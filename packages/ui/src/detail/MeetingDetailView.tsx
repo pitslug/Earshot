@@ -542,6 +542,8 @@ export function MeetingDetailView({
               onLink={(s, choice: LinkChoice) =>
                 run(() => ipc.linkSpeaker(id, s, choice), "The speaker was not linked")
               }
+              onMarkMe={(s) => run(() => ipc.markMe(id, s), "The voice was not marked as you")}
+              onUnmarkMe={(s) => run(() => ipc.unmarkMe(id, s), "The voice was not changed")}
               onMerge={(keep, merge) =>
                 run(() => ipc.mergeSpeakers(id, keep, merge), "The speakers were not merged")
               }

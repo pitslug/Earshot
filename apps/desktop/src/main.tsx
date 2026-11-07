@@ -13,7 +13,7 @@ import { createRoot } from "react-dom/client";
 // (`pnpm --filter @earshot/desktop dev`) it previews the UI on sample data, and "New
 // meeting" plays a scripted meeting in real time. The preview's Models page shows a
 // Surface-like computer (NPU); `?machine=desktop` shows a desktop with an NVIDIA card.
-// `?firstRun=1` opens on the first-run wizard. `?callEnded=1` asks whether to stop 3 s into a call. `?cuda=unavailable` shows the CUDA section as it is
+// `?firstRun=1` opens on the first-run wizard. `?inRoom=1` shows finished meetings as recorded in the room. `?callEnded=1` asks whether to stop 3 s into a call. `?cuda=unavailable` shows the CUDA section as it is
 // until the download exists, `?cuda=checking` while the start tries its files.
 const inTauri = isTauri();
 const query = new URLSearchParams(window.location.search);
@@ -25,6 +25,7 @@ const ipc = inTauri
       machine,
       firstRun: { show: query.get("firstRun") === "1" },
       cleanInstall: query.get("clean") === "1",
+      inRoom: query.get("inRoom") === "1",
       callEndOfferAfterMs: query.get("callEnded") === "1" ? 3_000 : undefined,
       cuda:
         query.get("cuda") === "unavailable"

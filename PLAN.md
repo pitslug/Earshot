@@ -1477,7 +1477,7 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T9.1t
   - do: the owner: the uninstaller removes the exe's name from the user's Windows Error Reporting exclusion list, except on an update. `bundle-check` proves it under its registry guard.
   - accept: `cargo test -p xtask bundle`; `cargo xtask build --bundle`; `cargo xtask bundle-check`
-- [ ] T9.12 Mark a voice as yourself in an in-room meeting
+- [x] T9.12 Mark a voice as yourself in an in-room meeting
   - deps: T7.4h
   - do: the owner: in an in-room meeting with no saved voice, the user can say a voice is theirs, instead of naming themselves creating a second person. Reviewer required: it changes who counts as the user.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark

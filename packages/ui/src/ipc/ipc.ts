@@ -223,6 +223,11 @@ export interface IpcCommands
   mergeSpeakers(meeting: string, keep: string, merge: string): Promise<void>;
   /** Links a speaker to a person; resolves with the person's id. */
   linkSpeaker(meeting: string, speaker: string, choice: LinkChoice): Promise<string>;
+  /** "This is me": a voice of an in-room meeting becomes its one "Me" row. Saves no voice.
+   * Rejects with `not_in_room` or `meeting_has_me`. */
+  markMe(meeting: string, speaker: string): Promise<void>;
+  /** "This isn't me": a "Me" row of an in-room meeting goes back to an unnamed voice. */
+  unmarkMe(meeting: string, speaker: string): Promise<void>;
   /** Renames a person and their speaker rows in every meeting. */
   renamePerson(person: string, name: string): Promise<number>;
   /** Every person, by name. */

@@ -112,6 +112,11 @@
 //!    numbers stay dense). When two earlier speakers now form one cluster, the edited one
 //!    wins, else the closer one, and the other row becomes a tombstone. A carried name of the
 //!    form "Speaker N" is never given to a new speaker. "Me" always stays the Me row (below).
+//!    The one Me row that takes part is a voice the user marked as themselves in an in-room
+//!    meeting ([`crate::edit::mark_me`], T9.12): it keeps its entry, and while this run named
+//!    no "Me" from the voiceprint it continues like any edit and stays the Me row; its
+//!    diarisation speaker stays a room voice, so it is never enrolled from. A voiceprint "Me"
+//!    takes the one Me row over; an unmatched voice loses the mark with its row.
 //!    Earlier speakers found with another embedding model, or an identity record this build
 //!    cannot read, are not carried over ([`PostWarning::SpeakerNamesNotCarried`]). This
 //!    holds for the whole-meeting pass ([`PostConfig::reuse_live`] off) too.
@@ -1445,7 +1450,13 @@ where
                 let Some(row) = earlier.iter().find(|s| s.id == identity.speaker) else {
                     continue;
                 };
-                if row.role == SpeakerRole::Me || !ours(row) {
+                // "Me" always stays the Me row and is not matched, with one exception: a voice
+                // the user marked as themselves in the room (T9.12), the only kind of Me row
+                // with an entry, which continues like any edit while this run found no "Me" of
+                // its own.
+                let marked =
+                    in_room_kinds(&recorded) && identity.user_edited && meeting_diar.me().is_none();
+                if (row.role == SpeakerRole::Me && !marked) || !ours(row) {
                     continue;
                 }
                 // Centroids of another model cannot be compared: no carry-over.
@@ -1527,13 +1538,19 @@ where
                     continue;
                 }
                 // The user's name and Person link are kept as they are; only the role
-                // follows this run's policy.
+                // follows this run's policy. A voice the user marked as themselves stays the
+                // Me row: its diarisation speaker stays a room voice, so nothing is enrolled.
                 if let Some((row, identity)) = earlier_speaker
                     && identity.edited(row)
                 {
                     let mut row = row.clone();
-                    if row.role != naming.role {
-                        row.role = naming.role;
+                    let role = if row.role == SpeakerRole::Me {
+                        SpeakerRole::Me
+                    } else {
+                        naming.role
+                    };
+                    if row.role != role {
+                        row.role = role;
                         row.meta.touch(stamp.hlc, stamp.clock);
                         tx.put_speaker(row.clone())?;
                     }
@@ -1554,7 +1571,7 @@ where
                     row_ids[k] = Some(row.id);
                     speakers.push(PostSpeaker {
                         id: row.id,
-                        role: naming.role,
+                        role,
                         track: s.track,
                         person: row.person_id,
                         display_name: row.display_name,
@@ -2117,6 +2134,14 @@ fn drop_masked(segments: &[Segment], mask: &[bool]) -> (Vec<Segment>, usize) {
     }
     (out, removed)
 }
+/// Whether a meeting that recorded these track kinds was recorded in the room: the mic and
+/// no computer audio. The one rule for the pass and for marking a voice as the user
+/// ([`crate::edit::records_in_room`]). Computer audio alone is the far end, and a mic with
+/// computer audio is a call ([`two_track`]).
+pub(crate) fn in_room_kinds(recorded: &BTreeSet<TrackId>) -> bool {
+    recorded.contains(&TrackId::Mic) && !recorded.contains(&TrackId::Reference)
+}
+
 /// Names the diarised speakers against the stored voiceprints (module docs, step 4),
 /// promoting the best user match among several mic voices to "Me" in `diar`.
 fn name_speakers<Repo: VoiceprintRepo + ?Sized>(

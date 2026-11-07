@@ -468,6 +468,129 @@ fn detail_in_room_meeting_rows_are_room_and_an_unknown_meeting_is_not_found() {
     );
 }
 
+/// An in-room meeting: one mic track and two unnamed voices of the room with a line each.
+fn in_room_meeting(svc: &Services, seed: u64) -> (EntityId, EntityId, EntityId) {
+    let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let m = Meeting::new("Site walk", T0, 600, Template::General, &mut stamp);
+    let mic = Track::new(m.id, TrackId::Mic, None, ClockDomain::Replay, &mut stamp);
+    store.put_meeting(m.clone()).unwrap();
+    store.put_track(mic.clone()).unwrap();
+    let mut rows = Vec::new();
+    for (n, text) in [
+        (1u64, "the gate opens at nine"),
+        (2, "bring the long ladder"),
+    ] {
+        let row = Speaker::new(
+            m.id,
+            SpeakerRole::Room,
+            format!("Speaker {n}"),
+            None,
+            &mut stamp,
+        );
+        store.put_speaker(row.clone()).unwrap();
+        let start = n * 2_000;
+        let mut s = Segment::from_words(
+            EntityId::generate(stamp.clock, &mut *stamp.rng),
+            mic.id,
+            words(text, start, 200),
+            MeetingTime::from_millis(start),
+        );
+        s.speaker_id = Some(row.id);
+        store
+            .put_segment(SegmentRow::new(
+                m.id,
+                TranscriptPass::Final,
+                s,
+                stamp.hlc,
+                stamp.clock,
+            ))
+            .unwrap();
+        rows.push(row.id);
+    }
+    (m.id, rows[0], rows[1])
+}
+
+#[test]
+fn detail_offers_this_is_me_only_in_a_room_with_no_me_row() {
+    let dir = TempDir::new("detail-mark-me");
+    let svc = services(&dir);
+
+    // A call: its Me comes from the mic track, nothing is offered and the runtime refuses.
+    let f = call_meeting(&svc, 40);
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(
+        d.speakers
+            .iter()
+            .all(|s| !s.can_mark_me && !s.can_unmark_me)
+    );
+    let e = IpcError::from(edit::mark_me(&svc, f.meeting, f.unnamed).unwrap_err());
+    assert_eq!(e.kind, "not_in_room");
+    let e = IpcError::from(edit::unmark_me(&svc, f.meeting, f.me).unwrap_err());
+    assert_eq!(e.kind, "not_in_room");
+
+    // In the room: every voice is offered until one is the user.
+    let (m, voice, other) = in_room_meeting(&svc, 41);
+    let d = meeting_detail(&svc, m).unwrap();
+    assert_eq!(d.header.mode, CaptureMode::InRoom);
+    assert!(d.speakers.iter().all(|s| s.can_mark_me && !s.can_unmark_me));
+    assert!(d.speakers.iter().all(|s| s.needs_name));
+
+    edit::mark_me(&svc, m, voice).unwrap();
+    let d = meeting_detail(&svc, m).unwrap();
+    let mine = card(&d, voice);
+    assert_eq!(mine.kind, SpeakerKind::Me);
+    assert!(!mine.needs_name && !mine.can_mark_me && mine.can_unmark_me);
+    assert_eq!(mine.source, SpeakerSource::Mic);
+    assert_eq!(mine.name, "Me");
+    assert!(!mine.person.as_ref().unwrap().has_voiceprint);
+    let theirs = card(&d, other);
+    assert_eq!(theirs.kind, SpeakerKind::Other);
+    assert!(theirs.needs_name && !theirs.can_mark_me && !theirs.can_unmark_me);
+    assert_eq!(d.transcript[0].speaker, "Me");
+    // A second voice is refused with fixed copy, and so is remembering the marked one.
+    let e = IpcError::from(edit::mark_me(&svc, m, other).unwrap_err());
+    assert_eq!(e.kind, "meeting_has_me");
+    assert_eq!(
+        e.message,
+        "One voice in this meeting is already you. Choose \"This isn't me\" on it first."
+    );
+    let e = remember(&svc, m, &[voice]).unwrap_err();
+    assert_eq!(e.kind, "me_voice");
+
+    // The user's name reaches the card and the transcript.
+    let user = mine.person.as_ref().unwrap().id.parse().unwrap();
+    edit::rename_person(&svc, user, "Casey Lane").unwrap();
+    let d = meeting_detail(&svc, m).unwrap();
+    assert_eq!(card(&d, voice).name, "Casey Lane");
+    assert_eq!(d.transcript[0].speaker, "Casey Lane");
+
+    // The undo: an unnamed voice that needs a name, and the offer is back on every voice.
+    edit::unmark_me(&svc, m, voice).unwrap();
+    let d = meeting_detail(&svc, m).unwrap();
+    let back = card(&d, voice);
+    assert_eq!(back.kind, SpeakerKind::Other);
+    assert_eq!(back.name, "Speaker 1");
+    assert!(back.person.is_none());
+    assert!(back.needs_name);
+    assert!(d.speakers.iter().all(|s| s.can_mark_me && !s.can_unmark_me));
+    assert_eq!(d.transcript[0].speaker, "Speaker 1");
+    let e = IpcError::from(edit::unmark_me(&svc, m, voice).unwrap_err());
+    assert_eq!(e.kind, "not_me");
+
+    // A merged-away voice is gone.
+    edit::merge_speakers(&svc, m, voice, other).unwrap();
+    let e = IpcError::from(edit::mark_me(&svc, m, other).unwrap_err());
+    assert_eq!(e.kind, "speaker_not_found");
+}
+
 #[test]
 fn detail_edit_refusals_become_plain_user_copy() {
     let id = EntityId::from_bytes([2; 16]);
@@ -488,6 +611,9 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::NotTheUser(id), "not_the_user"),
         (EditError::MeIsTheUser(id), "me_is_the_user"),
         (EditError::PersonIsTheUser(id), "person_is_the_user"),
+        (EditError::NotInRoom(id), "not_in_room"),
+        (EditError::MeetingHasMe(id), "meeting_has_me"),
+        (EditError::NotMe(id), "not_me"),
         (EditError::NoPreviousSummary, "no_previous_summary"),
         (EditError::PreviousSummaryStale, "previous_summary_stale"),
     ];

@@ -23,7 +23,17 @@ import {
   type SummaryEvent,
   type SummaryView,
 } from "./ipc";
-import { linked, merged, renamed, resummarised, sampleDetail, samplePersons } from "./mockDetail";
+import {
+  linked,
+  markedMe,
+  merged,
+  renamed,
+  resummarised,
+  sampleDetail,
+  sampleInRoomDetail,
+  samplePersons,
+  unmarkedMe,
+} from "./mockDetail";
 import { type SampleMachine, createModelsMock } from "./mockModels";
 import { searchSample } from "./mockSearch";
 import { type SettingsMockData, createSettingsMock } from "./mockSettings";
@@ -150,6 +160,9 @@ export interface MockIpcData {
   onQuit?: () => void;
   /** Meeting details by id (default: `sampleDetail` of each meeting). */
   details?: Record<string, MeetingDetail>;
+  /** Finished meetings without a detail of their own were recorded in the room, with no
+   * saved voice (`sampleInRoomDetail`). */
+  inRoom?: boolean;
   /** The persons (default: `samplePersons()`). */
   persons?: PersonItem[];
   /** The vault exports go to (the stored Obsidian vault); without one `exportMeeting`
@@ -365,7 +378,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     if (!row) return fail("meeting_not_found", "This meeting no longer exists.");
     let d = details.get(id);
     if (!d) {
-      d = sampleDetail(row);
+      d = data.inRoom && row.state === "Ready" ? sampleInRoomDetail(row) : sampleDetail(row);
       details.set(id, d);
     }
     return d;
@@ -609,6 +622,47 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       update(meeting, (d) => linked(d, speaker, person));
       return person.id;
+    },
+    markMe: async (meeting, speaker) => {
+      call("markMe", meeting, speaker);
+      const d = detailOf(meeting);
+      speakerOf(d, speaker);
+      if (d.header.mode !== "InRoom") {
+        fail(
+          "not_in_room",
+          "Only a voice in an in-room meeting can be marked as you. In a call, your voice comes from your microphone.",
+        );
+      }
+      if (d.speakers.some((s) => s.kind === "Me")) {
+        fail("meeting_has_me", 'One voice in this meeting is already you. Choose "This isn\'t me" on it first.');
+      }
+      let user = persons.find((p) => p.is_me);
+      if (!user) {
+        personSeq += 1;
+        user = {
+          id: `9e000000-0000-7000-8000-1000000000${String(personSeq).padStart(2, "0")}`,
+          name: "Me",
+          has_voiceprint: false,
+          is_me: true,
+        };
+        persons.push(user);
+        persons.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+      }
+      const me = user;
+      update(meeting, (x) => markedMe(x, speaker, me));
+    },
+    unmarkMe: async (meeting, speaker) => {
+      call("unmarkMe", meeting, speaker);
+      const d = detailOf(meeting);
+      const card = speakerOf(d, speaker);
+      if (d.header.mode !== "InRoom") {
+        fail(
+          "not_in_room",
+          "Only a voice in an in-room meeting can be marked as you. In a call, your voice comes from your microphone.",
+        );
+      }
+      if (card.kind !== "Me") fail("not_me", "This voice is not marked as you.");
+      update(meeting, (x) => unmarkedMe(x, speaker));
     },
     renamePerson: async (person, name) => {
       call("renamePerson", person, name);

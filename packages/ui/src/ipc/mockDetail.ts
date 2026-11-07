@@ -110,6 +110,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 41,
       sample_line: "Okay, that pushes commissioning past Christmas, which we can't wear.",
       needs_name: false,
+      can_mark_me: false,
+      can_unmark_me: false,
     },
     {
       id: SAMPLE_SPEAKERS.priya,
@@ -120,6 +122,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 22,
       sample_line: "If the seals go by air, we would want the vendor to carry that cost.",
       needs_name: false,
+      can_mark_me: false,
+      can_unmark_me: false,
     },
     {
       id: SAMPLE_SPEAKERS.second,
@@ -130,6 +134,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 30,
       sample_line: "We could split the order and air freight the seals, so the first set still...",
       needs_name: true,
+      can_mark_me: false,
+      can_unmark_me: false,
     },
     {
       id: SAMPLE_SPEAKERS.third,
@@ -140,6 +146,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 7,
       sample_line: "I can send the split-order quote this afternoon.",
       needs_name: true,
+      can_mark_me: false,
+      can_unmark_me: false,
     },
   ];
 }
@@ -179,6 +187,28 @@ export function sampleDetail(item: MeetingListItem): MeetingDetail {
     summary_stale: false,
     audio_kept: true,
     handovers: [],
+  };
+}
+
+/** A meeting recorded in the room with no saved voice: every voice may be the user. */
+export function sampleInRoomDetail(item: MeetingListItem): MeetingDetail {
+  const d = sampleDetail(item);
+  const speakers = sampleSpeakers().map(
+    (s, i): SpeakerCard => ({
+      ...s,
+      kind: "Other",
+      name: `Speaker ${i + 1}`,
+      person: null,
+      source: "Mic",
+      needs_name: true,
+      can_mark_me: true,
+    }),
+  );
+  return {
+    ...d,
+    header: { ...d.header, mode: "InRoom" },
+    speakers,
+    transcript: transcriptOf(LINES, speakers).map((r) => ({ ...r, track: "Room" })),
   };
 }
 
@@ -228,6 +258,35 @@ export function linked(detail: MeetingDetail, id: string, person: PersonItem): M
             needs_name: false,
           }
         : s,
+    ),
+  };
+}
+
+/** `detail` after "This is me" on `id`: the meeting's one Me row, the user's name. */
+export function markedMe(detail: MeetingDetail, id: string, user: PersonItem): MeetingDetail {
+  const next = linked(detail, id, user);
+  return {
+    ...next,
+    speakers: next.speakers.map((s) =>
+      s.id === id
+        ? { ...s, kind: "Me", can_mark_me: false, can_unmark_me: true }
+        : { ...s, can_mark_me: false },
+    ),
+  };
+}
+
+/** `detail` after "This isn't me" on `id`: an unnamed voice again, the smallest free number. */
+export function unmarkedMe(detail: MeetingDetail, id: string): MeetingDetail {
+  const taken = detail.speakers.filter((s) => s.id !== id).map((s) => s.name);
+  let n = 1;
+  while (taken.includes(`Speaker ${n}`)) n += 1;
+  const next = renamed(detail, id, `Speaker ${n}`);
+  return {
+    ...next,
+    speakers: next.speakers.map((s) =>
+      s.id === id
+        ? { ...s, kind: "Other", person: null, needs_name: true, can_mark_me: true, can_unmark_me: false }
+        : { ...s, can_mark_me: true },
     ),
   };
 }

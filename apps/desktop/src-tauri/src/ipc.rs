@@ -48,6 +48,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             rename_speaker,
             merge_speakers,
             link_speaker,
+            mark_me,
+            unmark_me,
             rename_person,
             list_persons,
             remember_voices,
@@ -583,6 +585,40 @@ async fn link_speaker(
     let services = state.services()?;
     let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
     blocking(move || detail::link(&services, meeting, speaker, &choice)).await
+}
+
+/// Says a voice of an in-room meeting is the user's ("This is me").
+#[tauri::command]
+#[specta::specta]
+async fn mark_me(
+    state: State<'_, AppState>,
+    meeting: String,
+    speaker: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || {
+        earshot_runtime::edit::mark_me(&services, meeting, speaker)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Puts a "Me" row of an in-room meeting back as an unnamed voice ("This isn't me").
+#[tauri::command]
+#[specta::specta]
+async fn unmark_me(
+    state: State<'_, AppState>,
+    meeting: String,
+    speaker: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || {
+        earshot_runtime::edit::unmark_me(&services, meeting, speaker)?;
+        Ok(())
+    })
+    .await
 }
 
 /// Renames a person (and their speaker rows in every meeting); returns how many rows changed.

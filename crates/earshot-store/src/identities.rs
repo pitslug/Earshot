@@ -2,6 +2,9 @@
 //! meeting, the embedding centroid of every speaker row the final pass wrote (except "Me"),
 //! with the name and person the pass gave the row, so a later run of the cleanup can carry
 //! the user's names over (`earshot_runtime::identities`, `earshot_runtime::post` step 4).
+//! A voice the user marked as themselves in the room (`earshot_runtime::edit::mark_me`, T9.12)
+//! keeps the entry it had, as an edit: the only "Me" row with one. Forgetting the user's voice
+//! drops it like any entry of that identity, and the next pass then loses the mark.
 //!
 //! The stored value (local_state `speaker-identities/<meeting>`, [`record_key`]) is
 //! `version (u32 LE) | JSON` ([`IdentityRecord`]); a record of another version or a damaged
@@ -104,7 +107,7 @@ impl SpeakerIdentity {
 /// A meeting's speaker identities (module docs).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct IdentityRecord {
-    /// One entry per speaker row ("Me" excluded).
+    /// One entry per speaker row ("Me" excluded, but for a voice the user marked: module docs).
     pub speakers: Vec<SpeakerIdentity>,
 }
 

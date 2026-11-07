@@ -204,7 +204,8 @@ fn local_keys(conn: &Connection) -> Result<Vec<String>, StoreError> {
 }
 
 /// "Speaker N" for the smallest N no name of `taken` uses, as the final pass numbers them.
-fn first_free_speaker_name(taken: &[String]) -> String {
+#[must_use]
+pub fn first_free_speaker_name(taken: &[String]) -> String {
     (1u32..)
         .map(|n| format!("Speaker {n}"))
         .find(|name| !taken.contains(name))

@@ -6,6 +6,8 @@
 //! - Speakers: [`rename_speaker`], [`merge_speakers`], [`link_speaker`]. Each write
 //!   re-stamps the speaker row, so a later re-run of the final pass reads it as a user edit
 //!   and keeps it (`earshot_store::identities`: any write after the pass is an edit).
+//! - The user's voice in the room: [`mark_me`] and its undo [`unmark_me`] (T9.12), in-room
+//!   meetings only: the row becomes the meeting's one "Me" row, with no biometric data made.
 //! - Persons: [`rename_person`] (rewrites that person's speaker rows in every meeting,
 //!   since [`MeetingView`] names come from `Speaker.display_name`), [`list_persons`].
 //! - Voiceprints (biometric, opt-in): [`remember_voices`] enrols named speakers from the
@@ -45,14 +47,15 @@ use earshot_core::capture::TrackId;
 use earshot_core::diar::{EmbeddingModelId, SpeakerEmbedder, SpeakerRole, SpeakerSegmenter};
 use earshot_core::identity::{Clock, EntityId};
 use earshot_core::model::{
-    AudioFileRepo, Meeting, MeetingRepo, Speaker, Stamp, Summary, TranscriptPass, live_segments,
+    AudioFileRepo, Meeting, MeetingRepo, Speaker, Stamp, Summary, Track, TranscriptPass,
+    live_segments,
 };
 use earshot_core::pipeline::{FinalPassRequest, FinalPassTrack};
 use earshot_core::summary::SummaryV1;
 use earshot_core::voiceprint::{
-    Person, VoiceprintError, VoiceprintRepo, enroll, identity_of, resolve_person,
+    Person, VoiceprintError, VoiceprintRepo, enroll, identity_of, me_person, resolve_person,
 };
-use earshot_store::StoreTx;
+use earshot_store::{StoreTx, first_free_speaker_name};
 use rand_core::Rng;
 
 use crate::backends::{Accelerator, EvidenceLoader, ModelDir, post_processor};
@@ -92,6 +95,15 @@ pub enum EditError {
     MeIsTheUser(EntityId),
     /// The user's own person cannot be removed (their name and voice have their own controls).
     PersonIsTheUser(EntityId),
+    /// This meeting (the id) is not in-room, or the voice is not a voice of the room: a
+    /// voice can be marked as the user only in an in-room meeting ([`records_in_room`]). In a
+    /// call "Me" comes from the mic track.
+    NotInRoom(EntityId),
+    /// The meeting already has its "Me" row (the id), and there is one per meeting: undo it
+    /// first ([`unmark_me`]).
+    MeetingHasMe(EntityId),
+    /// The speaker is not the meeting's "Me" row, so there is nothing to undo.
+    NotMe(EntityId),
     /// The meeting has no earlier summary to go back to.
     NoPreviousSummary,
     /// The earlier summary cites transcript segments that are no longer there (the meeting
@@ -146,6 +158,14 @@ impl fmt::Display for EditError {
                 write!(f, "speaker {id} is \"Me\" and can be linked only to you")
             }
             Self::PersonIsTheUser(id) => write!(f, "person {id} is you and cannot be removed"),
+            Self::NotInRoom(id) => write!(
+                f,
+                "meeting {id} is not an in-room meeting, so no voice in it can be marked as you"
+            ),
+            Self::MeetingHasMe(id) => {
+                write!(f, "speaker {id} is already \"Me\" in this meeting")
+            }
+            Self::NotMe(id) => write!(f, "speaker {id} is not \"Me\" in this meeting"),
             Self::NoPreviousSummary => f.write_str("there is no previous summary"),
             Self::PreviousSummaryStale => f.write_str(
                 "the previous summary cites a transcript that has been replaced; summarise again",
@@ -463,6 +483,131 @@ pub fn link_speaker(
         row.meta.touch(stamp.hlc, stamp.clock);
         tx.put_speaker(row)?;
         Ok(person.id)
+    })
+}
+
+/// Whether a meeting with these Track rows (its live ones count) was recorded in the room,
+/// by the final pass's own rule ([`crate::post::in_room_kinds`]).
+#[must_use]
+pub fn records_in_room(tracks: &[Track]) -> bool {
+    let kinds: BTreeSet<TrackId> = tracks
+        .iter()
+        .filter(|t| !t.meta.deleted)
+        .map(|t| t.kind)
+        .collect();
+    crate::post::in_room_kinds(&kinds)
+}
+
+/// Whether [`mark_me`] would accept `row` of a meeting with these `tracks` and live
+/// `speakers`: what the who-is-who panel offers, by the refusals' own rule.
+#[must_use]
+pub fn can_mark_me(tracks: &[Track], speakers: &[Speaker], row: &Speaker) -> bool {
+    records_in_room(tracks)
+        && row.role == SpeakerRole::Room
+        && !speakers
+            .iter()
+            .any(|s| s.role == SpeakerRole::Me && !s.meta.deleted)
+}
+
+/// Whether [`unmark_me`] would accept `row` of a meeting with these `tracks`.
+#[must_use]
+pub fn can_unmark_me(tracks: &[Track], row: &Speaker) -> bool {
+    records_in_room(tracks) && row.role == SpeakerRole::Me
+}
+
+/// "This is me" (T9.12): the user says that voice `speaker` of the in-room meeting `meeting`
+/// is theirs. The row becomes the meeting's "Me" row: role Me, linked to the user's person
+/// ([`me_person`], created as the final pass does) under the name that person displays.
+/// Returns the person's id.
+///
+/// There is one "Me" row per meeting, so a meeting that has one refuses
+/// ([`EditError::MeetingHasMe`]); the way to move it is [`unmark_me`] first.
+///
+/// This creates no biometric data: no voiceprint is enrolled or added to, and
+/// [`remember_voices`] keeps refusing the row. The voice's existing entry in the identity
+/// record (the centroid the final pass already stored) stays, marked as the user's edit, so a
+/// re-run can match the voice again (`crate::post`, step 4): the one kind of "Me" row with an
+/// entry. Like any edit the mark goes with the voice when a re-run does not match it. Written
+/// summaries are not touched.
+///
+/// # Errors
+/// [`EditError`] (unknown or deleted meeting or speaker, [`EditError::NotInRoom`],
+/// [`EditError::MeetingHasMe`]); store errors.
+pub fn mark_me(
+    services: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<EntityId, RuntimeError> {
+    write(services, |tx, stamp| {
+        let mut row = live_speaker(&*tx, meeting, speaker)?;
+        if !records_in_room(&tx.tracks(meeting)?) {
+            return Err(EditError::NotInRoom(meeting).into());
+        }
+        if let Some(me) = tx
+            .speakers(meeting)?
+            .into_iter()
+            .find(|s| s.role == SpeakerRole::Me && !s.meta.deleted)
+        {
+            return Err(EditError::MeetingHasMe(me.id).into());
+        }
+        if row.role != SpeakerRole::Room {
+            return Err(EditError::NotInRoom(meeting).into());
+        }
+        let me = me_person(tx, stamp).map_err(voiceprint_err)?;
+        row.role = SpeakerRole::Me;
+        row.person_id = Some(me.id);
+        row.display_name.clone_from(&me.display_name);
+        row.meta.touch(stamp.hlc, stamp.clock);
+        tx.put_speaker(row)?;
+        update_identity_entry(tx, meeting, speaker, |i| {
+            i.user_edited = true;
+            i.enrolled = false;
+        })?;
+        Ok(me.id)
+    })
+}
+
+/// "This isn't me" (T9.12), the way out of a mistake: the "Me" row `speaker` of the in-room
+/// meeting `meeting` goes back to an unnamed voice of the room, the smallest free "Speaker N"
+/// that needs a name, linked to nobody. Its identity entry reads as the pass's own naming
+/// again, so a re-run names the voice as any other. The user's person stays. Also takes a "Me"
+/// row a voiceprint named in this meeting; a re-run then names it again by that voiceprint.
+///
+/// # Errors
+/// [`EditError`] (unknown or deleted meeting or speaker, [`EditError::NotInRoom`],
+/// [`EditError::NotMe`]); store errors.
+pub fn unmark_me(
+    services: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<(), RuntimeError> {
+    write(services, |tx, stamp| {
+        let mut row = live_speaker(&*tx, meeting, speaker)?;
+        if !records_in_room(&tx.tracks(meeting)?) {
+            return Err(EditError::NotInRoom(meeting).into());
+        }
+        if row.role != SpeakerRole::Me {
+            return Err(EditError::NotMe(speaker).into());
+        }
+        let taken: Vec<String> = tx
+            .speakers(meeting)?
+            .into_iter()
+            .filter(|s| !s.meta.deleted && s.id != speaker)
+            .map(|s| s.display_name)
+            .collect();
+        row.role = SpeakerRole::Room;
+        row.person_id = None;
+        row.display_name = first_free_speaker_name(&taken);
+        row.meta.touch(stamp.hlc, stamp.clock);
+        tx.put_speaker(row.clone())?;
+        update_identity_entry(tx, meeting, speaker, |i| {
+            i.given_name.clone_from(&row.display_name);
+            i.given_person = None;
+            i.given_stamp = Some(row.meta.updated_at);
+            i.user_edited = false;
+            i.enrolled = false;
+        })?;
+        Ok(())
     })
 }
 

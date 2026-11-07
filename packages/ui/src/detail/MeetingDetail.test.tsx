@@ -271,6 +271,60 @@ describe("MeetingDetailView", () => {
     });
   });
 
+  it("offers This is me only in the room, and it and its undo follow through the transcript", async () => {
+    const { user, calls } = await setup({ inRoom: true });
+    await screen.findByRole("textbox", { name: "Name of Speaker 1" });
+    expect(within(panel()).getAllByRole("button", { name: "This is me" })).toHaveLength(4);
+    expect(within(panel()).queryByRole("button", { name: "This isn't me" })).toBeNull();
+
+    await user.click(within(speakerRow("Speaker 2")).getByRole("button", { name: "This is me" }));
+    expect(calls).toContainEqual(["markMe", ITEM.id, SAMPLE_SPEAKERS.priya]);
+    // One Me row: the offer leaves every voice, and the user's name shows.
+    const mine = await within(panel()).findByRole("listitem", { name: "Casey" });
+    expect(within(mine).getByRole("button", { name: "This isn't me" })).toBeInTheDocument();
+    expect(within(panel()).queryByRole("button", { name: "This is me" })).toBeNull();
+    expect(within(mine).queryByRole("textbox")).toBeNull();
+    // Nothing starts "remember voices" and no voiceprint call is made.
+    expect(calls.some((c) => c[0] === "rememberVoices")).toBe(false);
+    await user.click(screen.getByRole("tab", { name: "Transcript" }));
+    const table = screen.getByRole("table", { name: "Transcript" });
+    expect(within(table).getAllByText("Casey").length).toBeGreaterThan(0);
+
+    await user.click(within(mine).getByRole("button", { name: "This isn't me" }));
+    expect(calls).toContainEqual(["unmarkMe", ITEM.id, SAMPLE_SPEAKERS.priya]);
+    const back = await within(panel()).findByRole("listitem", { name: "Speaker 2" });
+    expect(within(back).getByRole("textbox", { name: "Name of Speaker 2" })).toBeInTheDocument();
+    expect(within(panel()).getAllByRole("button", { name: "This is me" })).toHaveLength(4);
+    expect(within(table).queryByText("Casey")).toBeNull();
+  });
+
+  it("offers neither on a call, and the mock refuses like the runtime", async () => {
+    const { ipc } = await setup();
+    await screen.findByRole("textbox", { name: "Name of Speaker 2" });
+    expect(within(panel()).queryByRole("button", { name: "This is me" })).toBeNull();
+    expect(within(panel()).queryByRole("button", { name: "This isn't me" })).toBeNull();
+    await expect(ipc.markMe(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
+      error: { kind: "not_in_room" },
+    });
+    await expect(ipc.unmarkMe(ITEM.id, SAMPLE_SPEAKERS.me)).rejects.toMatchObject({
+      error: { kind: "not_in_room" },
+    });
+  });
+
+  it("refuses a second voice in the mock with the runtime's copy", async () => {
+    const { ipc } = await setup({ inRoom: true });
+    await ipc.markMe(ITEM.id, SAMPLE_SPEAKERS.me);
+    await expect(ipc.markMe(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
+      error: {
+        kind: "meeting_has_me",
+        message: 'One voice in this meeting is already you. Choose "This isn\'t me" on it first.',
+      },
+    });
+    await expect(ipc.unmarkMe(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
+      error: { kind: "not_me" },
+    });
+  });
+
   it("names a voice from its name field and the transcript follows", async () => {
     const { user, calls } = await setup();
     const field = await screen.findByRole("textbox", { name: "Name of Speaker 2" });

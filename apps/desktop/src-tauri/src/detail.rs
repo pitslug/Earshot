@@ -177,6 +177,10 @@ pub struct SpeakerCard {
     pub sample_line: String,
     /// Not the user and not linked to a person: the voice needs a name.
     pub needs_name: bool,
+    /// The user may say this voice is theirs ("This is me": `edit::can_mark_me`).
+    pub can_mark_me: bool,
+    /// The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`).
+    pub can_unmark_me: bool,
 }
 
 /// The meeting's header line.
@@ -353,6 +357,16 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "person_is_the_user",
             "You cannot be removed. Your name and voice are set above.",
         ),
+        EditError::NotInRoom(_) => err(
+            "not_in_room",
+            "Only a voice in an in-room meeting can be marked as you. In a call, your voice comes \
+             from your microphone.",
+        ),
+        EditError::MeetingHasMe(_) => err(
+            "meeting_has_me",
+            "One voice in this meeting is already you. Choose \"This isn't me\" on it first.",
+        ),
+        EditError::NotMe(_) => err("not_me", "This voice is not marked as you."),
         EditError::NoPreviousSummary => err("no_previous_summary", "There is no previous summary."),
         EditError::PreviousSummaryStale => err(
             "previous_summary_stale",
@@ -521,6 +535,8 @@ fn speaker_cards(
                 name: s.display_name.clone(),
                 kind,
                 needs_name: needs_name(s.role, s.person_id.is_some()),
+                can_mark_me: edit::can_mark_me(&view.tracks, &view.speakers, s),
+                can_unmark_me: edit::can_unmark_me(&view.tracks, s),
                 person,
                 source,
                 share_percent,

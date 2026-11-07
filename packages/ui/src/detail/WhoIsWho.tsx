@@ -1,7 +1,7 @@
 // The who-is-who panel (docs/ui-design.md "Meeting detail"): one row per speaker with a
 // play-sample button, the name (a name field for voices that need one), where it came from,
-// share of talk time, a sample line, Merge, Link to person and Forget voice; and the opt-in
-// "Remember these voices for next time".
+// share of talk time, a sample line, Merge, Link to person and Forget voice; "This is me" and
+// "This isn't me" in an in-room meeting; and the opt-in "Remember these voices for next time".
 
 import {
   Body1Strong,
@@ -115,6 +115,10 @@ export interface WhoIsWhoProps {
   /** Renames a person, and so their speakers in every meeting. */
   onRenamePerson(person: string, name: string): Promise<void>;
   onLink(speaker: string, choice: LinkChoice): Promise<void>;
+  /** Says this voice is the user's, in this meeting. */
+  onMarkMe(speaker: string): Promise<void>;
+  /** Puts the user's row back as a voice that needs a name. */
+  onUnmarkMe(speaker: string): Promise<void>;
   onMerge(keep: string, merge: string): Promise<void>;
   onForget(person: string): Promise<void>;
   onRemember(speakers: string[]): Promise<void>;
@@ -184,6 +188,8 @@ function SpeakerRow({
   onPlay,
   onRename,
   onLink,
+  onMarkMe,
+  onUnmarkMe,
   onMerge,
   onForget,
   onRenamePerson,
@@ -299,6 +305,21 @@ function SpeakerRow({
               </MenuList>
             </MenuPopover>
           </Menu>
+        )}
+        {card.can_mark_me && (
+          <Tooltip
+            content="Shows this voice as you in this meeting. No voiceprint is made from it."
+            relationship="description"
+          >
+            <Button size="small" appearance="subtle" onClick={() => void onMarkMe(card.id)}>
+              This is me
+            </Button>
+          </Tooltip>
+        )}
+        {card.can_unmark_me && (
+          <Button size="small" appearance="subtle" onClick={() => void onUnmarkMe(card.id)}>
+            This isn&apos;t me
+          </Button>
         )}
         <LinkPopover card={card} persons={persons} onLink={onLink} />
         {!card.needs_name && card.kind === "Other" && editing === null && (

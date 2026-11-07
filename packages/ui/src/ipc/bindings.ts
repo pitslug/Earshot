@@ -58,6 +58,10 @@ export const commands = {
 	mergeSpeakers: (meeting: string, keep: string, merge: string) => typedError<null, IpcError>(__TAURI_INVOKE("merge_speakers", { meeting, keep, merge })),
 	/**  Links a speaker to an existing or a new person; returns the person's id. */
 	linkSpeaker: (meeting: string, speaker: string, choice: LinkChoice) => typedError<string, IpcError>(__TAURI_INVOKE("link_speaker", { meeting, speaker, choice })),
+	/**  Says a voice of an in-room meeting is the user's ("This is me"). */
+	markMe: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("mark_me", { meeting, speaker })),
+	/**  Puts a "Me" row of an in-room meeting back as an unnamed voice ("This isn't me"). */
+	unmarkMe: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("unmark_me", { meeting, speaker })),
 	/**  Renames a person (and their speaker rows in every meeting); returns how many rows changed. */
 	renamePerson: (person: string, name: string) => typedError<number, IpcError>(__TAURI_INVOKE("rename_person", { person, name })),
 	/**  Every live person, by name. */
@@ -1561,6 +1565,10 @@ export type SpeakerCard = {
 	sample_line: string,
 	/**  Not the user and not linked to a person: the voice needs a name. */
 	needs_name: boolean,
+	/**  The user may say this voice is theirs ("This is me": `edit::can_mark_me`). */
+	can_mark_me: boolean,
+	/**  The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`). */
+	can_unmark_me: boolean,
 };
 
 /**  Whether a speaker is the user. */

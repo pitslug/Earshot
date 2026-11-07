@@ -3455,6 +3455,9 @@ fn post_a_failed_diarisation_is_reported_over_the_induced_cancellation() {
 /// T6.25: speaker identities survive a re-run of the cleanup.
 mod identity_tests;
 
+/// T9.12: a voice the user marked as themselves survives a re-run.
+mod mark_me_tests;
+
 /// Audio with `level` (peak) over each of `spans`, silence elsewhere.
 fn level_audio(total_ms: u64, spans: &[(u64, u64, f32)]) -> MonoBuffer {
     let mut samples = vec![0.0_f32; total_ms as usize * 16];

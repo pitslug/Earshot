@@ -1130,3 +1130,7 @@ fn edit_summary_undo_refuses_a_previous_summary_of_a_replaced_transcript() {
 fn view_of(db: &crate::Db, meeting: EntityId) -> MeetingView {
     MeetingView::load(&**db, meeting).unwrap().unwrap()
 }
+
+/// T9.12: "This is me" and "This isn't me".
+#[path = "edit_mark_me_tests.rs"]
+mod mark_me_tests;
