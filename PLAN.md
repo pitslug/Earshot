@@ -1362,7 +1362,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - accept: `cargo xtask accept m1`; the crates' tests; `cargo xtask ci`
 - [x] T9.1k Earshot's source goes public from a fresh start
   - deps: T8.4ad, T8.4ae, T8.4af, T9.1j, T9.1m, T9.1ka, T9.1kb
-  - status: public. The owner read the files and approved the push. The CUDA set is in this repo's releases. Still to do, on the owner's word and only after installed builds have moved on: `earshot-releases` is removed.
+  - status: public. The owner read the files and approved the push. The CUDA set is in this repo's releases, and the owner has deleted `earshot-releases`.
   - do: decided by the owner. One repo: public `pitslug/Earshot`, starting from one cleaned commit, and the working folder is that repo. The earlier history is an archive that is no longer worked in. Recordings, logs and personal details stay out, as files ignored by git on the owner's machine. Automated code tests stay in, on invented names and public audio. A pre-push hook and a `cargo xtask ci` step check for them.
   - accept: the guard's tests catch a planted email, name and recording; `git log --format='%ae %ce' | sort -u` in the new repo shows only the noreply address; the owner's approval of the diff recorded
 - [x] T9.1n Choose light or dark in Settings
