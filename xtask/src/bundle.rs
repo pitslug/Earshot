@@ -16,6 +16,9 @@
 //!    what the build made. Its settings are an overlay written by [`bundle_config`], so a
 //!    plain `tauri build` stays off and `tauri.conf.json` keeps no copy of a build's paths.
 //!
+//! The installer also carries one hook of ours ([`NSIS_HOOKS`]), which takes the exe off the user's
+//! crash report exclusion list on a real uninstall (T9.11).
+//!
 //! What an install holds: the exe (the benchmark meeting is compiled into it), llama.cpp's DLLs,
 //! the exe's public symbols for crash logs ([`APP_SYMBOLS`]) and the meeting's attribution. Nothing
 //! in it names the build user ([`paths`]). No model, no ONNX Runtime (it lives in the models folder), no
@@ -72,7 +75,9 @@ const MEETING_NOTICE: &str = "apps/desktop/src-tauri/resources/benchmark/NOTICE.
 /// Where that attribution sits in an install.
 const MEETING_NOTICE_IN_INSTALL: &str = "resources/benchmark/NOTICE.md";
 /// The app's executable.
-const APP_EXE: &str = "earshot.exe";
+pub const APP_EXE: &str = "earshot.exe";
+/// The uninstaller's hook (`bundle.windows.nsis.installerHooks`), relative to the repo root.
+pub const NSIS_HOOKS: &str = "apps/desktop/src-tauri/nsis-hooks.nsh";
 /// The app's public-symbols program database as the link makes it (the app's `build.rs`).
 pub const APP_SYMBOLS_BUILT: &str = "earshot.stripped.pdb";
 /// Its name in an install: the one the exe's debug record names, beside the exe, where a crash
@@ -82,13 +87,18 @@ pub const APP_SYMBOLS: &str = "earshot.pdb";
 const BUNDLER_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// Deadline for a silent install or an administrative extract.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-/// Set as the `Run` value while an uninstaller runs: its deletion means the uninstaller has done
-/// its last registry step ([`nsis_uninstall`]). Not a real command, so a logon that finds one left
-/// by a killed run fails to start it and nothing else.
+/// Set as the `Run` value while an uninstaller runs: its deletion means the uninstaller has only
+/// our hook's registry step left ([`nsis_uninstall`]). Not a real command, so a logon that finds
+/// one left by a killed run fails to start it and nothing else.
 const RUN_SENTINEL: &str = "earshot-bundle-check-sentinel";
 /// How long a silent uninstall may take: the uninstaller re-runs itself from a temp copy and
 /// returns before it has finished.
 const UNINSTALL_WAIT: Duration = Duration::from_secs(90);
+/// How long the hook gets after the `Run` deletion, which comes moments before it.
+const HOOK_WAIT: Duration = Duration::from_secs(15);
+/// A mode of the installed exe that lists it, then exits at once when given nothing else: the app's
+/// own model check, which refuses to run without its `--languages` and `--models`.
+const LISTING_MODE: &str = "--model-check";
 
 /// The installers made for `target`.
 ///
@@ -272,11 +282,22 @@ pub fn refused_in_install(name: &str, features: &[String]) -> bool {
         || (name.eq_ignore_ascii_case("ggml-cuda.dll") && !features.iter().any(|f| f == "cuda"))
 }
 
-/// The settings laid over `tauri.conf.json` for one bundle run.
+/// [`NSIS_HOOKS`] below `root`, in the system's own separators: makensis finds no `!include` with
+/// both kinds.
+#[must_use]
+pub fn nsis_hooks_path(root: &Path) -> PathBuf {
+    let mut path = root.to_path_buf();
+    path.extend(Path::new(NSIS_HOOKS).iter());
+    path
+}
+
+/// The settings laid over `tauri.conf.json` for one bundle run. Every path is a whole one: the CLI
+/// canonicalises `installerHooks` from its own working folder, not from this file's.
 #[must_use]
 pub fn bundle_config(
     exe_dir: &Path,
     notice: &Path,
+    hooks: &Path,
     formats: &[&str],
     features: &[String],
 ) -> serde_json::Value {
@@ -307,7 +328,10 @@ pub fn bundle_config(
             "resources": resources,
             "windows": {
                 "webviewInstallMode": { "type": "skip" },
-                "nsis": { "installMode": "currentUser" },
+                "nsis": {
+                    "installMode": "currentUser",
+                    "installerHooks": hooks.display().to_string(),
+                },
             },
         }
     })
@@ -631,6 +655,21 @@ pub fn nsis_install_args(dir: &Path) -> String {
     format!("/S /NS /D={}", dir.display())
 }
 
+/// [`nsis_install_args`] for an update: the installer's `/UPDATE`, which `earshot_runtime::update`
+/// also passes, without its window and restart.
+#[must_use]
+pub fn nsis_update_install_args(dir: &Path) -> String {
+    format!("/S /NS /UPDATE /D={}", dir.display())
+}
+
+/// The uninstaller's silent update command line, as `installer.nsi` builds it: `_?=` must come last
+/// and unquoted, and runs it in place, so its process ends when it has finished. It then cannot
+/// delete itself or its folder.
+#[must_use]
+pub fn nsis_update_uninstall_args(dir: &Path) -> String {
+    format!("/S /UPDATE _?={}", dir.display())
+}
+
 /// Runs the bundle: returns the installers made.
 ///
 /// # Errors
@@ -681,7 +720,13 @@ pub fn run(
         check_binary(dll, &read_pe(&path)?, &triple, features)?;
     }
     let config = dir.join(format!("earshot-bundle-{triple}.json"));
-    let overlay = bundle_config(exe_dir, &root.join(MEETING_NOTICE), wanted, features);
+    let overlay = bundle_config(
+        exe_dir,
+        &root.join(MEETING_NOTICE),
+        &nsis_hooks_path(root),
+        wanted,
+        features,
+    );
     std::fs::write(&config, serde_json::to_string_pretty(&overlay)?)
         .with_context(|| format!("write {}", config.display()))?;
 
@@ -861,28 +906,48 @@ fn check_installer_paths(all: &mut bool, installer: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Runs the NSIS installer silently into `dir`.
-fn nsis_install(installer: &Path, dir: &Path) -> Result<()> {
-    let mut cmd = Command::new(installer);
+/// Runs `exe` with the raw command line `args`, which NSIS reads to the end of the line.
+fn run_raw(exe: &Path, args: &str, what: &str) -> Result<()> {
+    let mut cmd = Command::new(exe);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.raw_arg(nsis_install_args(dir));
+        cmd.raw_arg(args);
     }
+    #[cfg(not(windows))]
+    let _ = args;
     let out = run_with_timeout(&mut cmd, INSTALL_TIMEOUT)
-        .context("the silent install did not finish within the deadline")?;
-    ensure!(out.success, "the silent install failed: {}", out.describe());
+        .with_context(|| format!("the {what} did not finish within the deadline"))?;
+    ensure!(out.success, "the {what} failed: {}", out.describe());
     Ok(())
 }
 
-/// Runs the uninstaller in `dir` silently and waits until it has finished.
+/// Runs the NSIS installer silently into `dir`.
+fn nsis_install(installer: &Path, dir: &Path) -> Result<()> {
+    run_raw(installer, &nsis_install_args(dir), "silent install")
+}
+
+/// Makes sure the exe is on the crash report exclusion list, leaving an entry the app wrote as it
+/// is, with an invented neighbour beside it. The guard holds what was there.
+fn fill_exclusion_list(reg: &Reg) -> Result<()> {
+    if !reg.value_exists(registry::WER_EXCLUDED_KEY, APP_EXE)? {
+        reg.set_dword(registry::WER_EXCLUDED_KEY, APP_EXE, 1)?;
+    }
+    reg.set_dword(registry::WER_EXCLUDED_KEY, registry::WER_NEIGHBOUR, 1)
+}
+
+/// Runs the uninstaller in `dir` silently and waits until it has finished. Returns whether the exe
+/// came off the crash report exclusion list, with [`fill_exclusion_list`] done first.
 ///
 /// `uninstall.exe` re-runs itself from a temp copy and returns at once, and it deletes its files
 /// and folder before its registry work, so neither the process nor the folder says it is done: a
-/// restore that trusted them could be undone by the uninstaller afterwards. Its last registry step
-/// deletes the `Run` value, so the value is set to [`RUN_SENTINEL`] first (the guard already holds
-/// the real one) and its disappearance is the signal. That also proves the deletion happens.
-fn nsis_uninstall(dir: &Path, reg: &Reg, run_value: &str) -> Result<()> {
+/// restore that trusted them could be undone by the uninstaller afterwards. Its template's last
+/// registry step deletes the `Run` value, so the value is set to [`RUN_SENTINEL`] first (the guard
+/// already holds the real one) and its disappearance is the signal. That also proves the deletion
+/// happens. Our hook comes after it and is the real last step, so its deletion is awaited too;
+/// `false` after [`HOOK_WAIT`] means it did not run, as in an installer built without the hook.
+fn nsis_uninstall(dir: &Path, reg: &Reg, run_value: &str) -> Result<bool> {
+    fill_exclusion_list(reg)?;
     reg.set_string(registry::RUN_KEY, run_value, RUN_SENTINEL)?;
     let out = run_with_timeout(
         Command::new(dir.join("uninstall.exe")).arg("/S"),
@@ -899,6 +964,98 @@ fn nsis_uninstall(dir: &Path, reg: &Reg, run_value: &str) -> Result<()> {
         );
         std::thread::sleep(Duration::from_millis(500));
     }
+    let start = Instant::now();
+    while reg.value_exists(registry::WER_EXCLUDED_KEY, APP_EXE)? {
+        if start.elapsed() >= HOOK_WAIT {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Ok(true)
+}
+
+/// [`nsis_uninstall`], judged: the exe's value is gone and only that.
+fn uninstall_and_judge(all: &mut bool, dir: &Path, names: &Installed) -> Result<()> {
+    let reg = &names.reg;
+    let gone = nsis_uninstall(dir, reg, &names.product)?;
+    let neighbour = reg.value_exists(registry::WER_EXCLUDED_KEY, registry::WER_NEIGHBOUR)?;
+    verdict(
+        all,
+        "nsis: uninstall takes the exe off the crash report list and nothing else",
+        gone && neighbour,
+        &format!("{APP_EXE} gone: {gone}, a neighbouring value kept: {neighbour}"),
+    );
+    Ok(())
+}
+
+/// The real app, in `installed`, writes the name the hook removes: the list is emptied of it and
+/// the exe run in a mode that adds it. `prepare` is the replay's isolation.
+fn check_app_lists_itself(
+    all: &mut bool,
+    installed: &Path,
+    prepare: &dyn Fn(&mut Command),
+    reg: &Reg,
+) -> Result<()> {
+    if reg.value_exists(registry::WER_EXCLUDED_KEY, APP_EXE)? {
+        reg.delete_value(registry::WER_EXCLUDED_KEY, APP_EXE)?;
+    }
+    let mut cmd = Command::new(installed);
+    prepare(&mut cmd);
+    cmd.arg(LISTING_MODE);
+    let out = run_with_timeout(&mut cmd, INSTALL_TIMEOUT)
+        .context("the installed exe's model check did not finish within the deadline")?;
+    let listed = reg.value_exists(registry::WER_EXCLUDED_KEY, APP_EXE)?;
+    verdict(
+        all,
+        "nsis: the installed exe lists itself under the name the uninstaller removes",
+        listed,
+        &format!("{APP_EXE} listed: {listed}, exit code {:?}", out.code),
+    );
+    Ok(())
+}
+
+/// An update keeps the exe on the crash report list: through the installer's `/UPDATE`, which is
+/// what the app runs and which does not run the uninstaller at all, and through the uninstaller's,
+/// which is the branch of the hook. The uninstall key's deletion shows that uninstaller did run and
+/// the `Run` value that it read `/UPDATE`.
+fn check_update(all: &mut bool, nsis: &Path, work: &Path, names: &Installed) -> Result<()> {
+    let reg = &names.reg;
+    let dir = work.join("update");
+    nsis_install(nsis, &dir)?;
+    fill_exclusion_list(reg)?;
+    reg.set_string(registry::RUN_KEY, &names.product, RUN_SENTINEL)?;
+    let listed = || -> Result<bool> {
+        Ok(reg.value_exists(registry::WER_EXCLUDED_KEY, APP_EXE)?
+            && reg.value_exists(registry::WER_EXCLUDED_KEY, registry::WER_NEIGHBOUR)?)
+    };
+
+    run_raw(nsis, &nsis_update_install_args(&dir), "update install")?;
+    let kept = listed()?;
+    verdict(
+        all,
+        "nsis: an install with /UPDATE keeps the crash report list",
+        kept,
+        &format!("{APP_EXE} and its neighbour kept: {kept}"),
+    );
+
+    let uninstall_key = format!(r"{}\{}", registry::UNINSTALL_KEY, names.product);
+    run_raw(
+        &dir.join("uninstall.exe"),
+        &nsis_update_uninstall_args(&dir),
+        "update uninstall",
+    )?;
+    let ran = !reg.key_exists(&uninstall_key)?;
+    let read_update = reg.value_exists(registry::RUN_KEY, &names.product)?;
+    let kept = listed()?;
+    verdict(
+        all,
+        "nsis: an uninstall with /UPDATE keeps the crash report list",
+        ran && read_update && kept,
+        &format!(
+            "it ran: {ran}, it read /UPDATE: {read_update}, {APP_EXE} and its neighbour kept: \
+             {kept}"
+        ),
+    );
     Ok(())
 }
 
@@ -915,13 +1072,18 @@ fn nsis_uninstall(dir: &Path, reg: &Reg, run_value: &str) -> Result<()> {
 ///
 /// - Saved first and restored on every path, then read again ([`registry`]; the run is refused
 ///   before anything is touched if the save cannot be proven): `Run\Earshot`,
-///   `Uninstall\Earshot`, `Software\<manufacturer>\Earshot` and `Software\<manufacturer>`.
+///   `Uninstall\Earshot`, `Software\<manufacturer>\Earshot`, `Software\<manufacturer>` and, on the
+///   crash report list, the value `earshot.exe` and the check's invented neighbour. Other values
+///   on that list are neither saved nor changed.
 /// - Not restored: the uninstaller also clears the taskbar jump list of the app id
 ///   `earshot` (`DeleteAppUserModelId`), shared with an installed Earshot; the app
 ///   sets no jump list of its own, so at most Windows's recent items for it are lost.
 /// - Not covered: a process killed mid-run restores nothing, and the next run refuses until the
 ///   saved files in `<repo>\target\bundle-check-registry` are dealt with. Until then `Run\Earshot`
-///   may hold the sentinel, which fails harmlessly at logon.
+///   may hold the sentinel, which fails harmlessly at logon, and the owner's `earshot.exe` may be
+///   off the crash report list until the app's next start.
+/// - A real Earshot running during the check puts `earshot.exe` back whenever it starts a child
+///   process, which can fail a crash report verdict: run the check with the app closed.
 ///
 /// An agent shell of the Claude desktop app sees an MSIX-virtualised registry, so a run there
 /// proves the logic against that view only: what happens to the real `HKCU` needs a run from
@@ -1061,7 +1223,9 @@ fn check_saved(
         );
     }
 
-    nsis_uninstall(&install, &names.reg, &names.product)?;
+    check_app_lists_itself(&mut all, &installed, &isolated, &names.reg)?;
+
+    uninstall_and_judge(&mut all, &install, names)?;
     verdict(
         &mut all,
         "nsis: uninstall leaves no folder",
@@ -1081,7 +1245,7 @@ fn check_saved(
     std::fs::write(&database, "user data")?;
     std::fs::write(&model, "user data")?;
     std::fs::write(&webview, "user data")?;
-    nsis_uninstall(&shared, &names.reg, &names.product)?;
+    uninstall_and_judge(&mut all, &shared, names)?;
     verdict(
         &mut all,
         "nsis: uninstall keeps data in the install folder",
@@ -1091,6 +1255,8 @@ fn check_saved(
             && !shared.join(APP_EXE).exists(),
         "a database, a model and the browser engine's files beside the exe survive; the exe does not",
     );
+
+    check_update(&mut all, nsis, &work, names)?;
 
     Ok(all)
 }

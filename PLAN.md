@@ -1473,7 +1473,7 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T9.1ba
   - do: the owner: when a check finds an update, a mark beside Settings says so, not only the General page.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
-- [ ] T9.11 Clear the crash report exclusion on uninstall
+- [x] T9.11 Clear the crash report exclusion on uninstall
   - deps: T9.1t
   - do: the owner: the uninstaller removes the exe's name from the user's Windows Error Reporting exclusion list, except on an update. `bundle-check` proves it under its registry guard.
   - accept: `cargo test -p xtask bundle`; `cargo xtask build --bundle`; `cargo xtask bundle-check`

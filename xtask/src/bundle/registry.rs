@@ -6,15 +6,20 @@
 //! - The install writes that key too, and `Software\<manufacturer>\<product>` (the default folder
 //!   of the next install), creating `Software\<manufacturer>`. A silent uninstall leaves both.
 //!
-//! [`places`] names those four, [`restore_step`] is the rule, and [`RegistryGuard`] applies it:
-//! everything is read before anything changes, with a run that cannot prove its save refused, and
-//! put back on every path out, panics included, then read again and compared. A `reg.exe` that
-//! cannot say "not found" in the English this code knows counts as not proven, not as absent.
+//! - Our hook (T9.11, `nsis-hooks.nsh`) deletes the value `earshot.exe` of [`WER_EXCLUDED_KEY`], the
+//!   current user's Windows Error Reporting exclusion list, which the check also fills. It holds
+//!   the owner's real value on the owner's machine, and other programs' values.
+//!
+//! [`places`] names those places and the folders the check may have to make for them,
+//! [`restore_step`] is the rule, and [`RegistryGuard`] applies it: everything is read before
+//! anything changes, with a run that cannot prove its save refused, and put back on every path
+//! out, panics included, then read again and compared. A `reg.exe` that cannot say "not found" in
+//! the English this code knows counts as not proven, not as absent.
 //!
 //! A value is saved alone (a `.reg` of that one entry), never with the rest of its key, so that
-//! another program's `Run` entry changed meanwhile is left as it is. A killed process runs no drop
-//! guard: its saved files stay in the guard's folder and the next run refuses to start until they
-//! have been dealt with.
+//! another program's `Run` entry or listed exe changed meanwhile is left as it is. A killed process
+//! runs no drop guard: its saved files stay in the guard's folder and the next run refuses to start
+//! until they have been dealt with.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,6 +33,13 @@ use crate::proc::{CmdOutput, run_with_timeout};
 pub const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 /// The per-user Apps list.
 pub const UNINSTALL_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall";
+/// The current user's Windows Error Reporting key.
+pub const WER_KEY: &str = r"HKCU\Software\Microsoft\Windows\Windows Error Reporting";
+/// The current user's list of programs excluded from Windows Error Reporting, inside [`WER_KEY`].
+pub const WER_EXCLUDED_KEY: &str =
+    r"HKCU\Software\Microsoft\Windows\Windows Error Reporting\ExcludedApplications";
+/// An invented neighbour on that list, set by the check, which an uninstall must leave.
+pub const WER_NEIGHBOUR: &str = "earshot-bundle-check-neighbour.exe";
 /// The first line of every `.reg` file.
 const REG_HEADER: &str = "Windows Registry Editor Version 5.00";
 /// How long one `reg.exe` run may take.
@@ -75,8 +87,8 @@ pub enum Step {
     CreateKey,
 }
 
-/// The places a silent install and uninstall of `product` change (module docs). A container comes
-/// after the key inside it, so that it is empty when its turn comes.
+/// The places a silent install and uninstall of `product` and the check around them change (module
+/// docs). A container comes after what it holds, so that it is empty when its turn comes.
 #[must_use]
 pub fn places(manufacturer: &str, product: &str) -> Vec<Place> {
     let vendor = format!(r"HKCU\Software\{manufacturer}");
@@ -88,6 +100,16 @@ pub fn places(manufacturer: &str, product: &str) -> Vec<Place> {
         Place::Key(format!(r"{UNINSTALL_KEY}\{product}")),
         Place::Key(format!(r"{vendor}\{product}")),
         Place::Container(vendor),
+        Place::Value {
+            key: WER_EXCLUDED_KEY.to_owned(),
+            name: super::APP_EXE.to_owned(),
+        },
+        Place::Value {
+            key: WER_EXCLUDED_KEY.to_owned(),
+            name: WER_NEIGHBOUR.to_owned(),
+        },
+        Place::Container(WER_EXCLUDED_KEY.to_owned()),
+        Place::Container(WER_KEY.to_owned()),
     ]
 }
 
@@ -177,9 +199,13 @@ pub fn export_holds_key(text: &str, key: &str) -> bool {
 /// the key has no such value.
 #[must_use]
 pub fn value_entry(export: &str, name: &str) -> Option<String> {
+    // Windows compares value names without case, so a save must find any spelling and keep it.
     let start = format!("\"{name}\"=");
     let mut lines = export.lines();
-    let first = lines.find(|l| l.starts_with(&start))?;
+    let first = lines.find(|l| {
+        l.get(..start.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(&start))
+    })?;
     let mut entry = vec![first];
     // Long binary data continues with `\` at the line's end; a string ends with its quote.
     while entry.last().is_some_and(|l| l.ends_with('\\')) {
@@ -295,6 +321,23 @@ impl Reg {
     pub fn default_value_text(&self, key: &str) -> Result<Option<String>> {
         let out = self.run(&["query".as_ref(), key.as_ref(), "/ve".as_ref()])?;
         Ok(classify_read(out.success, &out.stderr)?.then_some(out.stdout))
+    }
+
+    /// Sets value `name` of `key` to the number `data`, creating the key if needed.
+    ///
+    /// # Errors
+    /// `reg.exe` fails.
+    pub fn set_dword(&self, key: &str, name: &str, data: u32) -> Result<()> {
+        let data = data.to_string();
+        self.change(&["add", key, "/v", name, "/t", "REG_DWORD", "/d", &data, "/f"])
+    }
+
+    /// Deletes value `name` of `key`.
+    ///
+    /// # Errors
+    /// `reg.exe` fails, also when the value is not there.
+    pub fn delete_value(&self, key: &str, name: &str) -> Result<()> {
+        self.change(&["delete", key, "/v", name, "/f"])
     }
 
     /// Sets value `name` of `key` to the string `data`, creating the key if needed.
@@ -491,8 +534,9 @@ mod tests {
     }
 
     #[test]
-    fn build_bundle_registry_places_are_the_three_and_the_folder_holding_one() {
+    fn build_bundle_registry_places_are_what_an_install_and_uninstall_change() {
         let p = places("vendor", "Earshot");
+        let list = r"HKCU\Software\Microsoft\Windows\Windows Error Reporting\ExcludedApplications";
         assert_eq!(
             p,
             [
@@ -505,8 +549,36 @@ mod tests {
                 ),
                 Place::Key(r"HKCU\Software\vendor\Earshot".to_owned()),
                 Place::Container(r"HKCU\Software\vendor".to_owned()),
+                // Each value alone, then the folders that may have had to be made to hold them,
+                // innermost first: another app's value on the list is never saved or put back.
+                Place::Value {
+                    key: list.to_owned(),
+                    name: "earshot.exe".to_owned(),
+                },
+                Place::Value {
+                    key: list.to_owned(),
+                    name: WER_NEIGHBOUR.to_owned(),
+                },
+                Place::Container(list.to_owned()),
+                Place::Container(
+                    r"HKCU\Software\Microsoft\Windows\Windows Error Reporting".to_owned()
+                ),
             ]
         );
+    }
+
+    #[test]
+    fn build_bundle_registry_a_dword_value_is_found_whatever_the_case_of_its_name() {
+        let export = "Windows Registry Editor Version 5.00\r\n\r\n\
+                      [HKEY_CURRENT_USER\\List]\r\n\
+                      \"other.exe\"=dword:00000001\r\n\
+                      \"Earshot.exe\"=dword:00000001\r\n";
+        // Windows treats the two as one value, so a save must see it and keep its spelling.
+        assert_eq!(
+            value_entry(export, "earshot.exe").unwrap(),
+            "\"Earshot.exe\"=dword:00000001"
+        );
+        assert_eq!(value_entry(export, "earshot"), None);
     }
 
     #[test]
@@ -737,6 +809,85 @@ mod tests {
         assert!(e.contains("did not finish restoring"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(scratch_dir());
+        cleanup(&reg);
+        assert!(!reg.key_exists(&root).unwrap());
+    }
+
+    #[test]
+    #[ignore = "writes to the real registry under a per-pid HKCU\\Software key, which it deletes; \
+                run with cargo test -p xtask build_bundle_registry -- --ignored"]
+    fn build_bundle_registry_guard_restores_one_dword_value_and_nothing_beside_it() {
+        let reg = Reg::system().unwrap();
+        let root = format!(
+            r"HKCU\Software\Earshot Xtask Registry Test {}",
+            std::process::id()
+        );
+        let list = format!(r"{root}\Error Reporting\Excluded");
+        let cleanup = |reg: &Reg| {
+            let _ = reg.change(&["delete", &root, "/f"]);
+        };
+        cleanup(&reg);
+        // Not scratch_dir: the other real-registry test clears that one while this runs.
+        let reads = scratch("dword-reads");
+        std::fs::create_dir_all(&reads).unwrap();
+        reg.set_dword(&list, "earshot.exe", 1).unwrap();
+        reg.set_dword(&list, "other.exe", 1).unwrap();
+        let place = Place::Value {
+            key: list.clone(),
+            name: "earshot.exe".to_owned(),
+        };
+        let invented = Place::Value {
+            key: list.clone(),
+            name: "invented.exe".to_owned(),
+        };
+
+        // Taken away: back with the same type, and what changed beside it stays changed.
+        let dir = scratch("dword");
+        let guard = RegistryGuard::save(reg.clone(), vec![place.clone(), invented], &dir).unwrap();
+        reg.delete_value(&list, "earshot.exe").unwrap();
+        reg.set_dword(&list, "invented.exe", 1).unwrap();
+        reg.delete_value(&list, "other.exe").unwrap();
+        guard.finish().unwrap();
+        let text = reg.export(&list, &reads).unwrap().unwrap();
+        assert_eq!(
+            value_entry(&text, "earshot.exe").unwrap(),
+            "\"earshot.exe\"=dword:00000001"
+        );
+        assert_eq!(value_entry(&text, "invented.exe"), None);
+        assert_eq!(value_entry(&text, "other.exe"), None, "not put back");
+
+        // Replaced by a string: back to what it was.
+        let dir = scratch("dword-replaced");
+        let guard = RegistryGuard::save(reg.clone(), vec![place], &dir).unwrap();
+        reg.set_string(&list, "earshot.exe", "planted").unwrap();
+        guard.finish().unwrap();
+        let text = reg.export(&list, &reads).unwrap().unwrap();
+        assert_eq!(
+            value_entry(&text, "earshot.exe").unwrap(),
+            "\"earshot.exe\"=dword:00000001"
+        );
+
+        // Folders that were not there before go, innermost first, once their values have.
+        let (parent, inner) = (format!(r"{root}\Absent"), format!(r"{root}\Absent\List"));
+        let dir = scratch("dword-absent");
+        let guard = RegistryGuard::save(
+            reg.clone(),
+            vec![
+                Place::Value {
+                    key: inner.clone(),
+                    name: "earshot.exe".to_owned(),
+                },
+                Place::Container(inner.clone()),
+                Place::Container(parent.clone()),
+            ],
+            &dir,
+        )
+        .unwrap();
+        reg.set_dword(&inner, "earshot.exe", 1).unwrap();
+        guard.finish().unwrap();
+        assert!(!reg.key_exists(&parent).unwrap());
+
+        let _ = std::fs::remove_dir_all(&reads);
         cleanup(&reg);
         assert!(!reg.key_exists(&root).unwrap());
     }

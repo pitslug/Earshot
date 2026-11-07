@@ -155,7 +155,7 @@ fn build_bundle_installs_exactly_llama_dlls_and_the_runtime_and_never_an_acceler
 fn build_bundle_config_turns_the_bundler_on_with_no_download_at_install_time() {
     let exe_dir = Path::new(r"C:\eb\x\release");
     let notice = Path::new(r"C:\repo\NOTICE.md");
-    let c = bundle_config(exe_dir, notice, &["nsis"], &[]);
+    let c = bundle_config(exe_dir, notice, Path::new("h.nsh"), &["nsis"], &[]);
     let b = &c["bundle"];
     assert_eq!(b["active"], true);
     assert_eq!(b["useLocalToolsDir"], true);
@@ -190,6 +190,108 @@ fn build_bundle_config_turns_the_bundler_on_with_no_download_at_install_time() {
     assert_eq!(
         resources[notice.to_str().unwrap()],
         "resources/benchmark/NOTICE.md"
+    );
+}
+
+/// `tauri.conf.json`, as `bundle-check` reads it.
+fn tauri_conf() -> serde_json::Value {
+    let path = crate::repo_root().join("apps/desktop/src-tauri/tauri.conf.json");
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn build_bundle_config_names_the_uninstall_hook_only_in_the_overlay() {
+    // The bundler resolves a relative path against its own working folder, so a whole path goes in.
+    let hooks = Path::new(r"C:\repo\apps\desktop\src-tauri\nsis-hooks.nsh");
+    let c = bundle_config(
+        Path::new(r"C:\eb\x\release"),
+        Path::new(r"C:\repo\NOTICE.md"),
+        hooks,
+        &["nsis"],
+        &[],
+    );
+    assert_eq!(
+        c["bundle"]["windows"]["nsis"]["installerHooks"],
+        hooks.to_str().unwrap()
+    );
+    // Beside the option it joins, not in its place.
+    assert_eq!(c["bundle"]["windows"]["nsis"]["installMode"], "currentUser");
+    assert_eq!(
+        tauri_conf()["bundle"]["windows"]["nsis"]["installerHooks"],
+        serde_json::Value::Null,
+        "tauri.conf.json keeps no build path"
+    );
+    assert!(
+        crate::repo_root().join(NSIS_HOOKS).is_file(),
+        "{NSIS_HOOKS}"
+    );
+}
+
+/// The hook file without its comments, each line trimmed.
+fn hook_lines() -> Vec<String> {
+    std::fs::read_to_string(crate::repo_root().join(NSIS_HOOKS))
+        .unwrap()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with(';'))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn build_bundle_hook_path_is_whole_with_one_kind_of_separator() {
+    // makensis cannot find an `!include` with both kinds, as `root.join(NSIS_HOOKS)` would give.
+    let path = nsis_hooks_path(Path::new(r"C:\repo"));
+    assert_eq!(
+        path.to_str().unwrap(),
+        r"C:\repo\apps\desktop\src-tauri\nsis-hooks.nsh"
+    );
+    assert!(nsis_hooks_path(&crate::repo_root()).is_file());
+}
+
+#[test]
+fn build_bundle_hook_removes_one_value_after_the_uninstall_except_on_an_update() {
+    let key = registry::WER_EXCLUDED_KEY.strip_prefix(r"HKCU\").unwrap();
+    // Exactly this: one value of one key, with nothing that could touch the key or its other
+    // values, last in the uninstall, and nothing else hooked.
+    assert_eq!(
+        hook_lines(),
+        [
+            "!macro NSIS_HOOK_POSTUNINSTALL".to_owned(),
+            "${If} $UpdateMode <> 1".to_owned(),
+            format!(r#"DeleteRegValue HKCU "{key}" "${{MAINBINARYNAME}}.exe""#),
+            "ClearErrors".to_owned(),
+            "${EndIf}".to_owned(),
+            "!macroend".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn build_bundle_hook_names_the_value_the_app_writes() {
+    // `${MAINBINARYNAME}` is `mainBinaryName`, which also names the file the installer writes.
+    let binary = tauri_conf()["mainBinaryName"].as_str().unwrap().to_owned();
+    assert_eq!(format!("{binary}.exe"), APP_EXE);
+    // `wer_win.rs` proves against the real registry that this key is where the list lives.
+    let wer =
+        std::fs::read_to_string(crate::repo_root().join("apps/desktop/src-tauri/src/wer_win.rs"))
+            .unwrap();
+    assert!(wer.contains(registry::WER_EXCLUDED_KEY));
+    // The text of a real NSIS script is read in the system code page without a byte order mark.
+    let text = std::fs::read(crate::repo_root().join(NSIS_HOOKS)).unwrap();
+    assert!(text.is_ascii());
+}
+
+#[test]
+fn build_bundle_update_runs_put_their_options_before_the_folder_unquoted() {
+    assert_eq!(
+        nsis_update_install_args(Path::new(r"C:\a b\install")),
+        r"/S /NS /UPDATE /D=C:\a b\install"
+    );
+    // `_?=` runs the uninstaller in place, so its process ends when it has finished.
+    assert_eq!(
+        nsis_update_uninstall_args(Path::new(r"C:\a b\install")),
+        r"/S /UPDATE _?=C:\a b\install"
     );
 }
 
@@ -557,12 +659,19 @@ fn build_bundle_vulkan_summaries_ship_their_backend_loader_and_licence() {
     for name in &dlls {
         assert!(!refused_in_install(name, &vulkan), "{name}");
     }
-    let conf = bundle_config(Path::new("C:/x"), Path::new("n.md"), &["nsis"], &vulkan);
+    let hooks = Path::new("h.nsh");
+    let conf = bundle_config(
+        Path::new("C:/x"),
+        Path::new("n.md"),
+        hooks,
+        &["nsis"],
+        &vulkan,
+    );
     let res = conf["bundle"]["resources"].as_object().unwrap();
     assert!(res.values().any(|v| v == VULKAN_LOADER));
     assert!(res.values().any(|v| v == VULKAN_LICENCE));
     // Without the feature none of it is in the install.
-    let plain = bundle_config(Path::new("C:/x"), Path::new("n.md"), &["nsis"], &[]);
+    let plain = bundle_config(Path::new("C:/x"), Path::new("n.md"), hooks, &["nsis"], &[]);
     let res = plain["bundle"]["resources"].as_object().unwrap();
     assert!(
         !res.values()
