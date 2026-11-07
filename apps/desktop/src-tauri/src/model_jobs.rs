@@ -5,7 +5,7 @@
 //! A download fetches every artefact of the model one after the other
 //! (`earshot_runtime::host::download_model`, through `earshot_runtime::download`); a cancel
 //! keeps the `.part` files, so starting it again resumes. The check runs the bundled clip
-//! through the installed models as `earshot benchmark` does, in a child process
+//! through the installed models as `earshot-cli benchmark` does, in a child process
 //! (`check_child`: ONNX Runtime and whisper.cpp's log are process-wide), and the parent
 //! records the answer with every trial (`host::record_model_check`); a cancel kills the
 //! child. The check is excluded from meetings and meeting jobs both ways

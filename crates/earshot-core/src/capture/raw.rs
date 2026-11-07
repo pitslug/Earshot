@@ -1,4 +1,4 @@
-//! The parts of a raw recording's `timestamps.json` (written by `earshot record-raw`,
+//! The parts of a raw recording's `timestamps.json` (written by `earshot-cli record-raw`,
 //! `earshot-capture-wasapi::recording`) that replay needs. Schema v1, v2 (adds
 //! `device_changes`), v3 (per-track `wav_channels` may exceed 1: the loopback WAV
 //! keeps its device channels, interleaved) and v4 (a mic device change may carry

@@ -1,4 +1,4 @@
-//! `earshot replay` end to end: the built binary replays a synthesized two-track meeting
+//! `earshot-cli replay` end to end: the built binary replays a synthesized two-track meeting
 //! (committed smoke speech) through the runtime with the production backends, then the
 //! test reads the data directory back.
 //!
@@ -101,7 +101,7 @@ fn write(path: &Path, rate: SampleRate, channels: u16, samples: &[f32]) {
     assert_eq!((back.rate(), back.channels()), (rate, channels));
 }
 fn earshot(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_earshot"))
+    Command::new(env!("CARGO_BIN_EXE_earshot-cli"))
         .args(args)
         .output()
         .expect("run earshot")
@@ -485,7 +485,7 @@ fn replay_summarises_through_anthropic_with_the_key_from_the_environment() {
     )])
     .unwrap();
     let base = server.base_url();
-    let out = Command::new(env!("CARGO_BIN_EXE_earshot"))
+    let out = Command::new(env!("CARGO_BIN_EXE_earshot-cli"))
         .args([
             "replay",
             "--mic",
@@ -537,7 +537,7 @@ fn replay_refuses_anthropic_without_a_key_before_recording() {
     let dir = TempDir::new("nokey");
     let (mic, _) = two_track_meeting(&dir.0);
     let data = dir.0.join("data");
-    let out = Command::new(env!("CARGO_BIN_EXE_earshot"))
+    let out = Command::new(env!("CARGO_BIN_EXE_earshot-cli"))
         .args([
             "replay",
             "--mic",

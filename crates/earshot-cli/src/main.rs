@@ -15,7 +15,7 @@ mod transcribe;
 
 /// Headless Earshot driver.
 #[derive(Debug, Parser)]
-#[command(name = "earshot", version, about)]
+#[command(name = "earshot-cli", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

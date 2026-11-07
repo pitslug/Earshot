@@ -437,12 +437,9 @@ mod tests {
 
     #[test]
     fn general_run_value_is_this_exe_in_quotes_in_the_tray_and_is_read_back_from_reg_output() {
-        let exe = Path::new(r"C:\Program Files\Earshot\earshot-desktop.exe");
+        let exe = Path::new(r"C:\Program Files\Earshot\earshot.exe");
         let cmd = run_command(exe);
-        assert_eq!(
-            cmd,
-            r#""C:\Program Files\Earshot\earshot-desktop.exe" --autostart"#
-        );
+        assert_eq!(cmd, r#""C:\Program Files\Earshot\earshot.exe" --autostart"#);
         let out = format!(
             "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\r\n    \
              Earshot    REG_SZ    {cmd}\r\n\r\n"

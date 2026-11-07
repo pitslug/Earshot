@@ -1,4 +1,4 @@
-//! `earshot devices` and `earshot record` on real audio devices: informational, run by
+//! `earshot-cli devices` and `earshot-cli record` on real audio devices: informational, run by
 //! hand on a host with a microphone and speakers (GATE-01), with
 //! `cargo test -p earshot-cli --test record -- --ignored`. `record` also needs the `ci`
 //! model set. Ctrl+C is checked by hand at GATE-01 (a console control event would reach
@@ -13,7 +13,7 @@ use earshot_core::model::{AudioFileRepo, MeetingRepo};
 use earshot_store::{DataDir, Store};
 
 fn earshot(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_earshot"))
+    Command::new(env!("CARGO_BIN_EXE_earshot-cli"))
         .args(args)
         .output()
         .expect("run earshot")

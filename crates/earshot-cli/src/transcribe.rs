@@ -1,4 +1,4 @@
-//! `earshot transcribe`: a WAV or FLAC file through whisper.cpp, in batch mode or through
+//! `earshot-cli transcribe`: a WAV or FLAC file through whisper.cpp, in batch mode or through
 //! the core streaming chunker with a VAD.
 //!
 //! - Batch: the whole file at 16 kHz, [`TranscribeOptions::batch`] (beam 5, temperature 0
@@ -99,7 +99,7 @@ fn parse_known_models(manifest: &str) -> Result<Vec<(String, String)>> {
     Ok(known)
 }
 
-/// `earshot transcribe` arguments.
+/// `earshot-cli transcribe` arguments.
 #[derive(Debug, Args)]
 pub struct TranscribeArgs {
     /// Input audio: WAV (any rate; channels are mixed down) or FLAC.
@@ -636,7 +636,7 @@ fn load_whisper_cli(
     Ok((Box::new(transcriber), info, evidence))
 }
 
-/// Runs `earshot transcribe` and prints the result to stdout.
+/// Runs `earshot-cli transcribe` and prints the result to stdout.
 pub fn run(args: &TranscribeArgs) -> Result<()> {
     let backend = args.backend.unwrap_or_else(default_backend);
     check_backend_built(backend)?;

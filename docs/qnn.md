@@ -149,4 +149,4 @@ Before GATE-03a, the converted models must be rebuilt (`cargo xtask qnn-convert`
 
 ## What only GATE-03a can tell
 
-NPU device registration, the encoder compile time on the HTP, NPU speed, NPU WER (within 1.5 points of the CPU) and a realtime meeting: `gates/GATE-03a.md`. A QNN ladder in `models/manifest.toml` (and so in `earshot benchmark`) waits on those measurements.
+NPU device registration, the encoder compile time on the HTP, NPU speed, NPU WER (within 1.5 points of the CPU) and a realtime meeting: `gates/GATE-03a.md`. A QNN ladder in `models/manifest.toml` (and so in `earshot-cli benchmark`) waits on those measurements.

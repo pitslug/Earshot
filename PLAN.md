@@ -1407,7 +1407,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T9.1e
   - do: the owner: a crash report can hold part of a process's memory, so transcript text, and depending on Windows settings go to Microsoft. The app excludes its own exe, for the current user, at start (`WerAddExcludedApplication`), before any model or child process runs. The child modes run the same exe, so they are covered by name. All `unsafe` in `wer_win.rs`. A failure never stops the app. The real effect is checked from the owner's own shell: an agent shell's registry is MSIX-virtualised. The owner's first run (2026-11-07): the report and event 1001 stop, but `LocalDumps` (apparently switched on by the NVIDIA App's HKLM entries) still writes a local dump, so the app deletes `<exe>.<number>.dmp` from `%LOCALAPPDATA%\CrashDumps` at each start, and PRIVACY.md says so (the owner).
   - accept: `cargo test -p earshot-desktop wer`; `cargo test -p earshot-desktop crash`; owner's check that a forced crash queues no report
-- [~] T9.1v The app's exe is earshot.exe
+- [x] T9.1v The app's exe is earshot.exe
   - deps: T9.1p
   - do: the owner: people see the exe's name, so the app's binary is `earshot` and the developer tool, which ships to nobody, becomes `earshot-cli`. The package stays `earshot-desktop`, so `cargo test -p` and the guards are unchanged. No `-x64` in the name: the installer's file name carries the architecture.
   - accept: `cargo test -p xtask bundle`; `cargo test -p earshot-cli`; `cargo xtask build --bundle`; `cargo xtask bundle-check`

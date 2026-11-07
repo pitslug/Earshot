@@ -2,7 +2,7 @@
 //! whisper.cpp (ggml) settings each target needs.
 //!
 //! - After the build, `llama.dll` and llama.cpp's `ggml*.dll` are copied next to
-//!   `earshot.exe` ([`crate::llama_dlls`], T6.21b), so the exe runs a local summary from
+//!   `earshot-cli.exe` ([`crate::llama_dlls`], T6.21b), so the exe runs a local summary from
 //!   any shell; the build runs with `--message-format=json-render-diagnostics` for that.
 //!
 //! - Without features, the whole workspace except xtask is built (`--workspace --exclude
@@ -777,7 +777,7 @@ pub fn run(
     target_dir: Option<&Path>,
 ) -> Result<()> {
     let args = build_args(target, features)?;
-    built(root, target, features, target_dir, args, "earshot").map(|_| ())
+    built(root, target, features, target_dir, args, "earshot-cli").map(|_| ())
 }
 
 /// Builds the desktop app as it ships for `target` (`None`: the host), front end first, llama.cpp's
@@ -803,7 +803,7 @@ pub fn app(
         &features,
         target_dir,
         app_build_args(target, &features),
-        "earshot-desktop",
+        "earshot",
     )
 }
 
@@ -971,7 +971,7 @@ fn built(
         &profile,
         &crate::native_flags::clean_args(target, custom_dir),
     )?;
-    // llama.cpp's DLLs beside earshot.exe (T6.21b): read from the captured messages, so
+    // llama.cpp's DLLs beside earshot-cli.exe (T6.21b): read from the captured messages, so
     // they must be complete.
     out.require_complete("the build's cargo messages")?;
     let exe = crate::accept::m6::executable_named(&out.stdout, exe_name)

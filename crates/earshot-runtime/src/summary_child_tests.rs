@@ -736,7 +736,7 @@ fn summary_child_live_window_cancel_kills_the_child() {
 /// in a temporary store. A cancel kills the child; the summary after it still gets the card, which
 /// a stuck earlier run would not leave free. It says nothing about speed.
 #[test]
-#[ignore = "needs a built app and the 4B model: cargo xtask build --app --target-dir C:\\eb\\lane-t93, then with EARSHOT_TEST_SUMMARY_CHILD_EXE at C:\\eb\\lane-t93\\release\\earshot-desktop.exe and EARSHOT_MODELS at the models folder: cargo test -p earshot-runtime --lib summary_child_real -- --ignored --nocapture"]
+#[ignore = "needs a built app and the 4B model: cargo xtask build --app --target-dir C:\\eb\\lane-t93, then with EARSHOT_TEST_SUMMARY_CHILD_EXE at C:\\eb\\lane-t93\\release\\earshot.exe and EARSHOT_MODELS at the models folder: cargo test -p earshot-runtime --lib summary_child_real -- --ignored --nocapture"]
 fn summary_child_real_app_on_the_real_card() {
     use crate::summary_model::{ChoiceReason, SUMMARY_MODELS, SummaryModelChoice};
 

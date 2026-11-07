@@ -1,4 +1,4 @@
-//! Replays a real `earshot record-raw` recording (GATE-10) through the core replay
+//! Replays a real `earshot-cli record-raw` recording (GATE-10) through the core replay
 //! source. The recording is private (`fixtures/private/`, never committed): the test
 //! looks in `EARSHOT_RAW_RECORDING` (a directory with `mic.wav`, `loopback.wav` and
 //! `timestamps.json`; a missing directory there is an error), then in `gate10.dir` of the

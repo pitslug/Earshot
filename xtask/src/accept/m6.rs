@@ -331,7 +331,7 @@ pub fn build_cli(root: &Path) -> Result<PathBuf> {
         "-p",
         "earshot-cli",
         "--bin",
-        "earshot",
+        "earshot-cli",
         "--message-format=json-render-diagnostics",
     ])
     .current_dir(root);
@@ -344,7 +344,7 @@ pub fn build_cli(root: &Path) -> Result<PathBuf> {
     // The executable path comes from cargo's JSON on stdout.
     out.require_complete("building earshot-cli")?;
     let exe = cli_executable(&out.stdout).context("cargo reported no earshot executable")?;
-    // <target dir>/release/earshot.exe: its C/C++ was optimised (T2.2c).
+    // <target dir>/release/earshot-cli.exe: its C/C++ was optimised (T2.2c).
     if let Some(profile) = exe.parent() {
         crate::native_flags::check_optimised(profile, "--release")?;
     }
@@ -353,10 +353,10 @@ pub fn build_cli(root: &Path) -> Result<PathBuf> {
     Ok(exe)
 }
 
-/// The `earshot` executable named in cargo''s JSON build messages.
+/// The `earshot-cli` executable named in cargo''s JSON build messages.
 #[must_use]
 pub fn cli_executable(messages: &str) -> Option<PathBuf> {
-    executable_named(messages, "earshot")
+    executable_named(messages, "earshot-cli")
 }
 
 /// The executable of target `name` in cargo''s JSON build messages.
@@ -521,17 +521,17 @@ pub(super) fn run(ctx: &Ctx) -> Result<RunOutput> {
         exe.display()
     );
     let out = run_with_timeout(&mut cmd, RUN_TIMEOUT)
-        .context("earshot replay did not finish within the deadline")?;
+        .context("earshot-cli replay did not finish within the deadline")?;
     if !out.success {
         bail!(
-            "earshot replay failed (work directory {}):\n{}\n{}",
+            "earshot-cli replay failed (work directory {}):\n{}\n{}",
             work.display(),
             out.stdout,
             out.stderr
         );
     }
     // The checks read the printed backend, audit entries and transcript from stdout.
-    out.require_complete("earshot replay")?;
+    out.require_complete("earshot-cli replay")?;
     let requests = server.requests();
     drop(server);
 
@@ -554,7 +554,7 @@ pub(super) fn run(ctx: &Ctx) -> Result<RunOutput> {
     }
     let mut m = Measurement::passed(ID, passed);
     m.backend = measured_backend(&out.stdout);
-    m.detail = Some(format!("earshot replay output:\n{}", out.stdout));
+    m.detail = Some(format!("earshot-cli replay output:\n{}", out.stdout));
     Ok(RunOutput {
         measurements: vec![m],
         checks,
@@ -905,14 +905,14 @@ mod tests {
         let msgs = concat!(
             r#"{"reason":"compiler-artifact","target":{"name":"earshot_core"},"executable":null}"#,
             "\n",
-            r#"{"reason":"compiler-artifact","target":{"name":"earshot"},"executable":"C:\\t\\release\\earshot.exe"}"#,
+            r#"{"reason":"compiler-artifact","target":{"name":"earshot-cli"},"executable":"C:\\t\\release\\earshot-cli.exe"}"#,
             "\n",
             r#"{"reason":"build-finished","success":true}"#,
             "\n"
         );
         assert_eq!(
             cli_executable(msgs),
-            Some(PathBuf::from("C:\\t\\release\\earshot.exe"))
+            Some(PathBuf::from("C:\\t\\release\\earshot-cli.exe"))
         );
         assert_eq!(cli_executable("not json\n"), None);
     }

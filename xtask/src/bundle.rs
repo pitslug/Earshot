@@ -72,12 +72,12 @@ const MEETING_NOTICE: &str = "apps/desktop/src-tauri/resources/benchmark/NOTICE.
 /// Where that attribution sits in an install.
 const MEETING_NOTICE_IN_INSTALL: &str = "resources/benchmark/NOTICE.md";
 /// The app's executable.
-const APP_EXE: &str = "earshot-desktop.exe";
+const APP_EXE: &str = "earshot.exe";
 /// The app's public-symbols program database as the link makes it (the app's `build.rs`).
-pub const APP_SYMBOLS_BUILT: &str = "earshot_desktop.stripped.pdb";
+pub const APP_SYMBOLS_BUILT: &str = "earshot.stripped.pdb";
 /// Its name in an install: the one the exe's debug record names, beside the exe, where a crash
 /// log's backtrace finds it. It holds function names only; the full database never ships.
-pub const APP_SYMBOLS: &str = "earshot_desktop.pdb";
+pub const APP_SYMBOLS: &str = "earshot.pdb";
 /// Deadline for the bundler.
 const BUNDLER_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// Deadline for a silent install or an administrative extract.
@@ -821,14 +821,14 @@ fn nsis_uninstall(dir: &Path, reg: &Reg, run_value: &str) -> Result<()> {
 ///
 /// **The user's own state.** The installer runs with `currentUser` mode and `/NS`, so it makes no
 /// shortcut and needs no elevation, and a running Earshot elsewhere is not stopped: its
-/// `CheckIfAppIsRunning` asks Restart Manager about `$INSTDIR\earshot-desktop.exe` by path, and
+/// `CheckIfAppIsRunning` asks Restart Manager about `$INSTDIR\earshot.exe` by path, and
 /// `$INSTDIR` is under `target`.
 ///
 /// - Saved first and restored on every path, then read again ([`registry`]; the run is refused
 ///   before anything is touched if the save cannot be proven): `Run\Earshot`,
 ///   `Uninstall\Earshot`, `Software\<manufacturer>\Earshot` and `Software\<manufacturer>`.
 /// - Not restored: the uninstaller also clears the taskbar jump list of the app id
-///   `io.github.pitslug.earshot` (`DeleteAppUserModelId`), shared with an installed Earshot; the app
+///   `earshot` (`DeleteAppUserModelId`), shared with an installed Earshot; the app
 ///   sets no jump list of its own, so at most Windows's recent items for it are lost.
 /// - Not covered: a process killed mid-run restores nothing, and the next run refuses until the
 ///   saved files in `<repo>\target\bundle-check-registry` are dealt with. Until then `Run\Earshot`
@@ -985,15 +985,22 @@ fn check_saved(
     nsis_install(nsis, &shared)?;
     let database = shared.join("earshot.db");
     let model = shared.join("models").join("kept.bin");
+    // The browser engine's files sit there too: the identifier names the same folder.
+    let webview = shared.join("EBWebView").join("kept.bin");
     std::fs::create_dir_all(shared.join("models"))?;
+    std::fs::create_dir_all(shared.join("EBWebView"))?;
     std::fs::write(&database, "user data")?;
     std::fs::write(&model, "user data")?;
+    std::fs::write(&webview, "user data")?;
     nsis_uninstall(&shared, &names.reg, &names.product)?;
     verdict(
         &mut all,
         "nsis: uninstall keeps data in the install folder",
-        database.is_file() && model.is_file() && !shared.join(APP_EXE).exists(),
-        "a database and a model beside the exe survive; the exe does not",
+        database.is_file()
+            && model.is_file()
+            && webview.is_file()
+            && !shared.join(APP_EXE).exists(),
+        "a database, a model and the browser engine's files beside the exe survive; the exe does not",
     );
 
     Ok(all)

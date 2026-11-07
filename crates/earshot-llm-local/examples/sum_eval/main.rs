@@ -8,7 +8,7 @@
 //! - source `reference`: the AMI manual words of every participant as speaker turns named
 //!   by role;
 //! - source `earshot`: the `SummaryInput` Earshot itself stored for the meeting
-//!   (`earshot replay --summary-input`, written by xtask from the IHM headsets: the
+//!   (`earshot-cli replay --summary-input`, written by xtask from the IHM headsets: the
 //!   production live pass and cleanup, speakers named as Earshot names them).
 //!
 //! A local candidate (`--model`) runs in process on llama.cpp through

@@ -1,4 +1,4 @@
-//! `--stored <data-dir>` (T6.23b evidence): scores the final transcript an `earshot replay`
+//! `--stored <data-dir>` (T6.23b evidence): scores the final transcript an `earshot-cli replay`
 //! of the recording stored in `<data-dir>/earshot.db`, counts only.
 //!
 //! - words per label on each track (stored final pass, after echo cleaning and the speaker

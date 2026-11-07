@@ -1,7 +1,7 @@
-//! llama.cpp's DLLs next to a built `earshot.exe` (T6.21b).
+//! llama.cpp's DLLs next to a built `earshot-cli.exe` (T6.21b).
 //!
 //! `earshot-llm-local` links llama.cpp and its ggml as DLLs (`dynamic-link`; whisper.cpp's
-//! ggml stays static, AGENTS.md), and `earshot.exe` delay-loads `llama.dll` for a local
+//! ggml stays static, AGENTS.md), and `earshot-cli.exe` delay-loads `llama.dll` for a local
 //! summary. Under `cargo test` / `cargo run` cargo puts llama-cpp-sys-2's `<OUT_DIR>/bin` on
 //! PATH; an exe that xtask builds and spawns directly, or that is copied elsewhere, needs
 //! them beside it. [`install_beside`] copies `llama.dll` and llama.cpp's own `ggml*.dll`
@@ -215,7 +215,7 @@ mod tests {
         std::fs::write(bin.join("notes.txt"), "x").unwrap();
         let release = root.join("release");
         std::fs::create_dir_all(&release).unwrap();
-        let exe = release.join("earshot.exe");
+        let exe = release.join("earshot-cli.exe");
         std::fs::write(&exe, "exe").unwrap();
 
         let msgs = message(&out);

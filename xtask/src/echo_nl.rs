@@ -812,7 +812,7 @@ pub fn measure(
     })
 }
 
-/// A raw recording (`earshot record-raw` output) at 16 kHz.
+/// A raw recording (`earshot-cli record-raw` output) at 16 kHz.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Recording {
     /// Mic track.

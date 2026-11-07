@@ -359,18 +359,18 @@ fn replay(
     cli_env(&mut cmd)?;
     eprintln!("t613: quality: {} ({mode})", input.name);
     let out = run_with_timeout(&mut cmd, Duration::from_secs(4 * 60 * 60))
-        .context("earshot replay did not finish within 4 hours")?;
+        .context("earshot-cli replay did not finish within 4 hours")?;
     if !out.success {
         // Private runs never print the CLI output (it holds the transcript).
         if input.private {
             bail!(
-                "earshot replay of {} ({mode}) failed: {} (output withheld: private recording)",
+                "earshot-cli replay of {} ({mode}) failed: {} (output withheld: private recording)",
                 input.name,
                 out.status_text()
             );
         }
         bail!(
-            "earshot replay of {} ({mode}) failed: {}",
+            "earshot-cli replay of {} ({mode}) failed: {}",
             input.name,
             out.describe()
         );
@@ -405,12 +405,12 @@ pub fn run(root: &Path, args: &QualityArgs) -> Result<PathBuf> {
             cmd.arg("benchmark").arg("--out").arg(&data);
             cli_env(&mut cmd)?;
             let out = run_with_timeout(&mut cmd, Duration::from_secs(30 * 60))
-                .context("earshot benchmark did not finish within 30 minutes")?;
+                .context("earshot-cli benchmark did not finish within 30 minutes")?;
             if !out.success {
-                bail!("earshot benchmark failed: {}", out.describe());
+                bail!("earshot-cli benchmark failed: {}", out.describe());
             }
             super::parse_recommendation(&out.stdout)
-                .context("earshot benchmark recommended no model")?
+                .context("earshot-cli benchmark recommended no model")?
         }
     };
     // Private runs' data (recordings and transcripts of the GATE-12 takes) lives only here:

@@ -1,4 +1,4 @@
-//! `earshot replay`: a recorded mic (and optionally the far-end loopback) through the
+//! `earshot-cli replay`: a recorded mic (and optionally the far-end loopback) through the
 //! runtime as if it were captured live, then the post pass, summary and export of
 //! [`crate::session`].
 //!
@@ -7,7 +7,7 @@
 //! start at the same instant and are delivered in 10 ms packets with exact timestamps
 //! ([`ReplayBuilder`]), as fast as the session consumes them. With `--timeline` the
 //! packets carry the device timestamps a raw recording saved (`timestamps.json` of
-//! `earshot record-raw`, [`ReplayBuilder::from_raw_timeline`]), so clock skew, drift
+//! `earshot-cli record-raw`, [`ReplayBuilder::from_raw_timeline`]), so clock skew, drift
 //! steering and jitter behave as they did live. No audio device is used.
 
 use std::io::Write;
@@ -30,7 +30,7 @@ use crate::transcribe::read_track;
 /// Device time of the first replayed frame (any value works; this is 1 s).
 const ORIGIN: DeviceTime = DeviceTime::from_ticks(10_000_000);
 
-/// `earshot replay` arguments.
+/// `earshot-cli replay` arguments.
 #[derive(Debug, Clone, Args)]
 pub struct ReplayArgs {
     /// The microphone recording (WAV or FLAC; mixed to mono).
@@ -44,7 +44,7 @@ pub struct ReplayArgs {
     /// consumes it, so the printed live ASR backlog shows whether this host keeps up.
     #[arg(long)]
     pub realtime: bool,
-    /// The `timestamps.json` of an `earshot record-raw` recording whose `mic.wav` and
+    /// The `timestamps.json` of an `earshot-cli record-raw` recording whose `mic.wav` and
     /// `loopback.wav` are `--mic` and `--ref`: packets carry the recorded device
     /// timestamps instead of exact ones.
     #[arg(long, requires = "reference")]

@@ -68,8 +68,8 @@ Measured on the x64 build of 2026-11-06:
 | NSIS installer | 22.7 MB |
 | MSI | 46.9 MB |
 | Installed files | 139.7 MB |
-| `earshot-desktop.exe` | 88.2 MB |
+| `earshot.exe` | 88.2 MB |
 | `ggml-vulkan.dll` | 45.2 MB |
 | `vulkan-1.dll` | 1.7 MB |
 
-`earshot-desktop.exe` and `ggml-vulkan.dll` both import `vulkan-1.dll`, so a PC without one could not start the app. The install carries LunarG's loader (Vulkan Runtime 1.4.363.0, MIT and Apache 2.0, licence file beside it), byte for byte the file Windows has on this desktop. With no driver Vulkan finds no device and summaries run on the CPU [Likely: not run on such a PC yet]. Transcription uses Vulkan only if the model check keeps it; with no check it runs on the CPU, which a first version of this build got wrong and `accept m7` caught.
+`earshot.exe` and `ggml-vulkan.dll` both import `vulkan-1.dll`, so a PC without one could not start the app. The install carries LunarG's loader (Vulkan Runtime 1.4.363.0, MIT and Apache 2.0, licence file beside it), byte for byte the file Windows has on this desktop. With no driver Vulkan finds no device and summaries run on the CPU [Likely: not run on such a PC yet]. Transcription uses Vulkan only if the model check keeps it; with no check it runs on the CPU, which a first version of this build got wrong and `accept m7` caught.

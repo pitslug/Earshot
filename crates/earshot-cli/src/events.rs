@@ -1,4 +1,4 @@
-//! `earshot replay --events-json <path>`: the session's events as timestamped JSON lines,
+//! `earshot-cli replay --events-json <path>`: the session's events as timestamped JSON lines,
 //! for timing harnesses (`cargo xtask t613`, T6.13).
 //!
 //! Each line is one JSON object with `t_ms`, the wall time in milliseconds since the log

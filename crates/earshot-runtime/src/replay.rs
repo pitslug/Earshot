@@ -1,4 +1,4 @@
-//! A replay paced in real time (host glue): `earshot replay --realtime` and the Settings
+//! A replay paced in real time (host glue): `earshot-cli replay --realtime` and the Settings
 //! benchmark (T7.4c) deliver a recorded meeting no faster than a capture device would.
 //!
 //! [`Paced`] wraps any [`AudioSource`]: with `realtime` it never delivers a packet before its

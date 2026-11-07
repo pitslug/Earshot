@@ -1,4 +1,4 @@
-//! The final pass never stores a whisper repetition loop (T6.16): `earshot replay` decodes
+//! The final pass never stores a whisper repetition loop (T6.16): `earshot-cli replay` decodes
 //! each track in speech pieces, and the stored final transcript is read back.
 //!
 //! `final_pass_pieces_quiet_stretches_between_speech` needs the `ci` model set (whisper
@@ -72,7 +72,7 @@ fn quiet(seconds: usize, seed: &mut u64) -> Vec<f32> {
 }
 
 fn earshot(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_earshot"))
+    Command::new(env!("CARGO_BIN_EXE_earshot-cli"))
         .args(args)
         .output()
         .expect("run earshot")

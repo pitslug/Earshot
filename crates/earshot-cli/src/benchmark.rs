@@ -1,7 +1,7 @@
-//! `earshot benchmark` (T6.10c2): the first-run model check. Reads the hardware, runs the
+//! `earshot-cli benchmark` (T6.10c2): the first-run model check. Reads the hardware, runs the
 //! bundled two-voice clip through the candidate models as a two-track load (fastest
 //! answer first), prints each trial and the recommendation, and records the answer in the
-//! data directory, where `earshot record` and `replay` use it when no `--model` is given.
+//! data directory, where `earshot-cli record` and `replay` use it when no `--model` is given.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use earshot_store::{DataDir, Store};
 
 use crate::session::model_dir;
 
-/// `earshot benchmark` arguments.
+/// `earshot-cli benchmark` arguments.
 #[derive(Debug, Clone, Args)]
 pub struct BenchmarkArgs {
     /// Earshot data directory to record the answer in (the one `record` and `replay` use;
@@ -184,7 +184,7 @@ pub fn run(args: &BenchmarkArgs, out: &mut dyn Write) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     writeln!(
         out,
-        "recorded in {}: `earshot record` and `replay` use {} when no --model is given",
+        "recorded in {}: `earshot-cli record` and `replay` use {} when no --model is given",
         args.out.display(),
         r.model
     )?;

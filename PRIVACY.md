@@ -11,7 +11,7 @@ This page describes the current code. If you find something here that the code d
 - **Voice data:** see "Voices" below.
 - **Crash logs:** in a local `crash-logs` folder. They hold where the code failed (file, line, function names), the app version, the time and a fixed thread name, and never a panic message or any meeting content. Earshot does not upload them.
 
-All of this is under `%LOCALAPPDATA%\Earshot`, which Earshot does not encrypt. Anyone or anything with access to your Windows account can read it. The app's window also keeps its browser engine's files, such as your theme choice, in `%LOCALAPPDATA%\io.github.pitslug.earshot`.
+All of this is under `%LOCALAPPDATA%\Earshot`, which Earshot does not encrypt. Anyone or anything with access to your Windows account can read it. The app's window keeps its browser engine's files, such as your theme choice, in the same folder.
 
 ## What can leave, and when
 
@@ -39,21 +39,23 @@ A voiceprint is biometric data, so:
 - Saving your own voice is optional, from a sample you record on purpose. The sample itself is held in memory and is never written to disk.
 - "Remember these voices for next time" is off until you tick it.
 - Each meeting's record holds a numeric voice summary per speaker, so names you gave survive a re-transcription. It can't be played back as audio, and it goes when the meeting is deleted.
-- You can forget your own voice, or anyone's, in Settings, Speakers. Voiceprints stay on this computer.
+- You can forget your own voice, or anyone's, in Settings, Speakers. Voiceprints stay on this computer, and deleting a meeting does not remove them.
 
 ## Deleting
 
 - **Audio** is deleted automatically after the final transcript, 7 days by default (Settings, Storage). A meeting whose final transcript never completed keeps its audio until you delete the meeting. Stray audio files with no meeting record, such as a crash can leave, are removed after 7 days.
-- **Deleting a meeting** removes its audio, transcript and summaries, and any voiceprint no other meeting uses, except your own. The database is set to overwrite deleted content.
-- **People's names stay.** A person named in a meeting stays in Settings, Speakers after that meeting is deleted. You can rename them or forget their voice, but there is no way yet to remove the name itself.
+- **Deleting a meeting** removes its audio, transcript and summaries. The database is set to overwrite deleted content.
+- **People stay until you remove them.** A person's name and saved voice stay in Settings, Speakers after their meetings are deleted. **Remove** there deletes both, and their lines in your meetings go back to "Speaker 1" and so on. Summaries, notes and exported files that already mention them do not change.
 - **Exported Obsidian notes stay.** They are your files in your vault, and Earshot does not delete them. If your vault syncs somewhere, your notes go with it.
-- **Uninstalling keeps your data**, so a reinstall finds your meetings. To remove everything, delete `%LOCALAPPDATA%\Earshot` afterwards, and any saved API key from Windows Credential Manager.
+- **Uninstalling keeps your data** unless you tick "Delete the application data", so a reinstall finds your meetings. That box deletes all of `%LOCALAPPDATA%\Earshot`, meetings and models included. Any saved API key stays in Windows Credential Manager until you delete it there.
 
 ## What other software does
 
 Earshot cannot control everything on your computer. These are the known cases:
 
-- **Windows Error Reporting:** if the app or one of its helper processes crashes outright, Windows may create a crash report, and depending on your Windows settings may send it to Microsoft. Such a report can hold part of the process's memory, which could include transcript text. Earshot does not currently opt out of this.
+- **Windows Error Reporting:** a crash report can hold part of a process's memory, which could include transcript text, and depending on your Windows settings may be sent to Microsoft. Earshot opts its own program out at every start, for your Windows account, and a test confirmed that this stops the report.
+- **Local crash dumps:** a separate Windows setting can still save a crash dump on your computer, in `%LOCALAPPDATA%\CrashDumps`. Software can turn this on: the NVIDIA App appears to on PCs that have it. A dump stays on your computer but can hold fragments of what the app had in memory, including transcript text, and deleting a meeting does not reach it. Earshot deletes its own dumps from that folder the next time it starts. A dump folder set elsewhere is not cleaned.
+- **The app's window:** it runs in Microsoft WebView2, in processes of Microsoft's that are not part of that opt-out and that display your transcript when you open one. Microsoft says WebView2 follows your Windows consent settings for crash reports. Earshot does not currently change this.
 - **System information from runtimes:** Earshot turns ONNX Runtime's telemetry off. Runtimes can still offer Windows' diagnostic channel system information such as runtime version, CPU, memory and driver names and versions. A check on the NPU path found no transcript text in those events. Anything that could carry conversation content would not be accepted.
 - **Windows notifications:** Windows stores these in its own database, so Earshot's use fixed text and counts, never a meeting's title or content.
 - **Your call app, your vault's sync and your backups** do what they do with their own data and yours.

@@ -9,8 +9,8 @@ fn main() {
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     if os == "windows" && env == "msvc" {
-        println!("cargo:rustc-link-arg-bin=earshot-desktop=/DELAYLOAD:llama.dll");
-        println!("cargo:rustc-link-arg-bin=earshot-desktop=delayimp.lib");
+        println!("cargo:rustc-link-arg-bin=earshot=/DELAYLOAD:llama.dll");
+        println!("cargo:rustc-link-arg-bin=earshot=delayimp.lib");
         // Function names for crash logs (T9.1j): a public-symbols program database, the only one
         // that ships. The full one beside it names the build user in the linker's temp paths.
         let release = std::env::var("PROFILE").is_ok_and(|p| p == "release");
@@ -19,9 +19,9 @@ fn main() {
             let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default());
             // <profile>\build\<package>\out
             if let Some(profile) = out.ancestors().nth(3) {
-                let file = profile.join("earshot_desktop.stripped.pdb");
+                let file = profile.join("earshot.stripped.pdb");
                 println!(
-                    "cargo:rustc-link-arg-bin=earshot-desktop=/PDBSTRIPPED:{}",
+                    "cargo:rustc-link-arg-bin=earshot=/PDBSTRIPPED:{}",
                     file.display()
                 );
             }

@@ -24,7 +24,7 @@ fn summary_child_registered_exe_runs_gpu_summaries_and_only_those() {
         reason: ChoiceReason::Requested,
     };
 
-    // Not registered: in process, as `earshot.exe` runs.
+    // Not registered: in process, as `earshot-cli.exe` runs.
     assert_eq!(registered(), None);
     let config = local_summary_config(&models, &choice, true).unwrap();
     assert_eq!(config.gpu_child, None);

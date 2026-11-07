@@ -77,7 +77,7 @@ impl Build {
             "-p",
             "earshot-cli",
             "--bin",
-            "earshot",
+            "earshot-cli",
             "--message-format=json-render-diagnostics",
         ]
         .map(Into::into)
@@ -155,7 +155,7 @@ pub fn parse_model_line(stdout: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The model of `earshot benchmark`'s `recommendation: <model> on <Backend>; ...` line.
+/// The model of `earshot-cli benchmark`'s `recommendation: <model> on <Backend>; ...` line.
 #[must_use]
 pub fn parse_recommendation(stdout: &str) -> Option<String> {
     let rest = stdout

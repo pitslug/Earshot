@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "earshot"
+name = "earshot-cli"
 path = "src/main.rs"
 
 [features]

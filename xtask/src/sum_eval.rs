@@ -1,7 +1,7 @@
 //! `cargo xtask sum-eval` (T6.20): the summary-quality evaluation over AMI meetings.
 //!
 //! 1. Earshot's own transcripts (source `earshot`, test split only): each test meeting is
-//!    replayed as a call through the release `earshot` CLI (`earshot replay`, the
+//!    replayed as a call through the release `earshot` CLI (`earshot-cli replay`, the
 //!    production live pass and cleanup, transcription model [`ASR_MODEL`]): the Project
 //!    Manager's headset is the mic ("Me"), the other three headsets summed are the far end
 //!    (the loopback reference). `--summary-input` stores the summary input Earshot would
@@ -884,7 +884,7 @@ fn replay_meetings(
                     r.describe()
                 );
             }
-            r.require_complete("earshot replay")?;
+            r.require_complete("earshot-cli replay")?;
             std::fs::write(
                 dir.join(format!("{meeting}.seconds")),
                 format!("{:.1}", started.elapsed().as_secs_f64()),
@@ -1699,13 +1699,14 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
             root,
             &build_args(
                 "earshot-cli",
-                &["--bin", "earshot"],
+                &["--bin", "earshot-cli"],
                 cuda.then_some("cuda"),
                 &target_dir,
             ),
             "the earshot CLI",
         )?;
-        let built = executable(&msgs, "earshot").context("cargo reported no earshot binary")?;
+        let built =
+            executable(&msgs, "earshot-cli").context("cargo reported no earshot-cli binary")?;
         let exe = out.join(format!("earshot-{}.exe", std::process::id()));
         std::fs::copy(&built, &exe)
             .with_context(|| format!("copy {} to {}", built.display(), exe.display()))?;
@@ -2033,7 +2034,7 @@ mod tests {
         assert!(
             build_args(
                 "earshot-cli",
-                &["--bin", "earshot"],
+                &["--bin", "earshot-cli"],
                 Some("cuda"),
                 Path::new("C:/b")
             )

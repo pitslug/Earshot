@@ -14,7 +14,7 @@
 //! - **Run** ([`run_benchmark`]): the production replay path on a throwaway [`Services`] in a
 //!   folder of its own under the host's scratch folder (its own store and audio), deleted on
 //!   every path, failure and cancel included ([`Scratch`]). The replay is paced in real time
-//!   ([`crate::replay::Paced`], as `earshot replay --realtime`); the live session runs with the meeting's
+//!   ([`crate::replay::Paced`], as `earshot-cli replay --realtime`); the live session runs with the meeting's
 //!   live transcription ([`host::live_factory`]), speaker timing and live summaries, then the
 //!   final pass and the summary ([`host::after_meeting`]) with the user's summary style copied
 //!   into the throwaway store. Nothing is written to the user's store except the result

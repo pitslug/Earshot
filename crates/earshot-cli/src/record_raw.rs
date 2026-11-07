@@ -1,4 +1,4 @@
-//! `earshot record-raw`: raw mic + loopback capture to WAV and `timestamps.json`
+//! `earshot-cli record-raw`: raw mic + loopback capture to WAV and `timestamps.json`
 //! (schema v4). `mic.wav` is mono; `loopback.wav` keeps the loopback's channels
 //! (stereo on a desktop and for process loopback), interleaved. No AEC, no resampling
 //! (a re-opened device is asked for the track's rate and channel count).
@@ -130,7 +130,7 @@ pub fn describe_track_stats(label: &str, t: &TrackReport) -> String {
 }
 
 /// The line printed for a Bluetooth hands-free mic (at the start or on a switch during
-/// the recording): the same text as `earshot record`'s session warning.
+/// the recording): the same text as `earshot-cli record`'s session warning.
 #[cfg(windows)]
 pub fn describe_mic_warning(w: &earshot_capture_wasapi::HandsFreeMic) -> String {
     crate::session::format_warning(&earshot_runtime::backends::hands_free_warning(w.clone()))

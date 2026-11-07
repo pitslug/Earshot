@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 fn model_check_hidden_mode_of_the_built_app_ends_with_one_error_line() {
     let dir = std::env::temp_dir().join(format!("earshot-desktop-check-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_earshot-desktop"))
+    let out = Command::new(env!("CARGO_BIN_EXE_earshot"))
         .args(["--model-check", "--languages", "en", "--models"])
         .arg(&dir)
         .stdin(Stdio::null())
@@ -31,7 +31,7 @@ fn model_check_hidden_mode_of_the_built_app_ends_with_one_error_line() {
         "{text}"
     );
     // Bad arguments are an error line too, never a window.
-    let out = Command::new(env!("CARGO_BIN_EXE_earshot-desktop"))
+    let out = Command::new(env!("CARGO_BIN_EXE_earshot"))
         .args(["--model-check"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())

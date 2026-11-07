@@ -18,7 +18,7 @@ fn write(path: &Path, text: &str) {
 
 /// T8.4ad: ONNX Runtime's CUDA provider adds no import to the exe, read from a real build.
 #[test]
-#[ignore = "reads a built app: cargo xtask build --app --target-dir C:\\eb\\<name>, then set EARSHOT_SHIPPED_EXE to its earshot-desktop.exe and run cargo test -p xtask bundle_shipped_exe -- --ignored"]
+#[ignore = "reads a built app: cargo xtask build --app --target-dir C:\\eb\\<name>, then set EARSHOT_SHIPPED_EXE to its earshot.exe and run cargo test -p xtask bundle_shipped_exe -- --ignored"]
 fn bundle_shipped_exe_imports_no_cuda_dll() {
     let exe = std::env::var_os("EARSHOT_SHIPPED_EXE").expect("set EARSHOT_SHIPPED_EXE");
     let pe = read_pe(Path::new(&exe)).unwrap();
@@ -137,12 +137,7 @@ fn build_bundle_installs_exactly_llama_dlls_and_never_an_accelerator_library() {
     ] {
         assert!(is_vendor_accelerator_library(bad), "{bad}");
     }
-    for fine in [
-        "llama.dll",
-        "ggml.dll",
-        "kernel32.dll",
-        "earshot-desktop.exe",
-    ] {
+    for fine in ["llama.dll", "ggml.dll", "kernel32.dll", "earshot.exe"] {
         assert!(!is_vendor_accelerator_library(fine), "{fine}");
     }
     assert!(refused_in_install("ggml-cuda.dll", &[]));
@@ -368,7 +363,7 @@ fn build_bundle_refuses_a_binary_for_the_wrong_machine_or_with_a_vendor_import()
 #[test]
 fn build_bundle_finds_every_file_of_an_install() {
     let root = tmp("install");
-    write(&root.join("earshot-desktop.exe"), "exe");
+    write(&root.join("earshot.exe"), "exe");
     write(&root.join("llama.dll"), "dll");
     write(&root.join("resources/benchmark/NOTICE.md"), "n");
     assert_eq!(files_under(&root).unwrap().len(), 3);
@@ -422,7 +417,7 @@ fn build_bundle_an_install_holds_exactly_the_expected_files() {
     // The Vulkan backend, its loader and the loader's licence, where x64 ships with them.
     let vulkan = if cfg!(target_arch = "x86_64") { 3 } else { 0 };
     assert_eq!(nsis.len(), crate::llama_dlls::REQUIRED.len() + 4 + vulkan);
-    assert!(nsis.contains(&rel(&["earshot_desktop.pdb"])));
+    assert!(nsis.contains(&rel(&["earshot.pdb"])));
     assert_eq!(
         nsis.contains(&rel(&["vulkan-1.dll"])),
         cfg!(target_arch = "x86_64")
@@ -437,7 +432,7 @@ fn build_bundle_an_install_holds_exactly_the_expected_files() {
             .iter()
             .any(|f| f.ends_with("vulkan-1.dll"))
     );
-    assert!(nsis.contains(&rel(&["earshot-desktop.exe"])));
+    assert!(nsis.contains(&rel(&["earshot.exe"])));
     assert!(nsis.contains(&rel(&["llama.dll"])));
     assert!(nsis.contains(&rel(&["uninstall.exe"])));
     assert!(nsis.contains(&rel(&["resources", "benchmark", "NOTICE.md"])));

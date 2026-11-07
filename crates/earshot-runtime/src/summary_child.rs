@@ -42,7 +42,7 @@
 //! # Who does not use it
 //!
 //! The CPU path never does: a slow processor is not a stall and its library does not touch a
-//! driver. `earshot.exe` (a developer tool) does not register an exe, so it keeps the in-process
+//! driver. `earshot-cli.exe` (a developer tool) does not register an exe, so it keeps the in-process
 //! watch of T8.4ab. The child uses the same set of llama.cpp's DLLs as this process
 //! ([`earshot_llm_local::loaded_folder`]), read after llama.cpp's gate has opened. Before a child
 //! loads the CUDA folder the parent checks its names and sizes ([`crate::cuda`]); the start's full

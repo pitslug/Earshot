@@ -9,7 +9,7 @@ Measured 2026-10-25 on the desktop (x86_64-pc-windows-msvc, RTX 5080, CUDA 13.4,
   - test: ES2004, ES2014, IS1009, TS3003, TS3007 (20 meetings, 705 minutes of audio). This split was run once with the chosen setting.
 - **Sources.**
   - `reference`: turns built from the AMI words files (a gap of 1.0 s or more, or 30 s of speech, starts a new turn; speakers named by role, for example "Project Manager").
-  - `earshot` (test split only): each test meeting is replayed through the release `earshot replay`. The Project Manager's headset is the mic ("Me") and the other three headsets, summed, are the far end. Transcription uses `parakeet-tdt-0.6b-v2`, followed by the production live pass and cleanup; `--summary-input` writes exactly what Earshot would summarise. All 20 replays are cached in `target/sum-eval/test/earshot/`.
+  - `earshot` (test split only): each test meeting is replayed through the release `earshot-cli replay`. The Project Manager's headset is the mic ("Me") and the other three headsets, summed, are the far end. Transcription uses `parakeet-tdt-0.6b-v2`, followed by the production live pass and cleanup; `--summary-input` writes exactly what Earshot would summarise. All 20 replays are cached in `target/sum-eval/test/earshot/`.
 - **Summariser.** The production path:
   - the `earshot_core::prompt` planner (single request or map-reduce);
   - the production templates;

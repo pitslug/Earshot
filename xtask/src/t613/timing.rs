@@ -1,8 +1,8 @@
 //! `cargo xtask t613 timing`: how far behind the meeting the single pass lands (T6.13).
 //!
 //! The shipped CLI replays the LibriSpeech meeting (`meeting::librispeech`) at wall-clock
-//! speed (`earshot replay --realtime --events-json`) with the production models: unless
-//! `--model` is given, `earshot benchmark` runs first in the same data directory and the
+//! speed (`earshot-cli replay --realtime --events-json`) with the production models: unless
+//! `--model` is given, `earshot-cli benchmark` runs first in the same data directory and the
 //! replay uses the model check's answer, exactly as `record` does. From the event log:
 //!
 //! - **stretch delay**: for every live final (one per speech stretch, T6.13b) the wall time
@@ -289,13 +289,13 @@ pub fn run(root: &Path, args: &TimingArgs) -> Result<PathBuf> {
         cmd.arg("benchmark").arg("--out").arg(&data);
         cli_env(&mut cmd)?;
         eprintln!(
-            "t613: earshot benchmark (the model check) into {}",
+            "t613: earshot-cli benchmark (the model check) into {}",
             data.display()
         );
         let out = run_with_timeout(&mut cmd, Duration::from_secs(30 * 60))
-            .context("earshot benchmark did not finish within 30 minutes")?;
+            .context("earshot-cli benchmark did not finish within 30 minutes")?;
         if !out.success {
-            bail!("earshot benchmark failed: {}", out.describe());
+            bail!("earshot-cli benchmark failed: {}", out.describe());
         }
         std::fs::write(work.join("benchmark.txt"), &out.stdout)?;
         benchmark = super::parse_recommendation(&out.stdout);
@@ -326,11 +326,11 @@ pub fn run(root: &Path, args: &TimingArgs) -> Result<PathBuf> {
     );
     let started = std::time::Instant::now();
     let out = run_with_timeout(&mut cmd, deadline)
-        .context("earshot replay did not finish within its deadline")?;
+        .context("earshot-cli replay did not finish within its deadline")?;
     std::fs::write(work.join("replay.txt"), &out.stdout)?;
     std::fs::write(work.join("replay.err.txt"), &out.stderr)?;
     if !out.success {
-        bail!("earshot replay failed (output in {})", work.display());
+        bail!("earshot-cli replay failed (output in {})", work.display());
     }
     let events = Events::parse(
         &std::fs::read_to_string(&events_path)

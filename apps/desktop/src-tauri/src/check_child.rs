@@ -3,7 +3,7 @@
 //! whisper.cpp's process-wide log ring, so it never runs inside the app's own process: the
 //! app starts its own exe in a hidden mode,
 //!
-//! `earshot-desktop.exe --model-check --languages en,de --models <dir> [--cuda-transcription]`,
+//! `earshot.exe --model-check --languages en,de --models <dir> [--cuda-transcription]`,
 //!
 //! which [`child_main`] handles at the very start of `main`, before Tauri is built: it opens
 //! no window and no store and never calls llama.cpp (`llama.dll` stays delay-loaded and

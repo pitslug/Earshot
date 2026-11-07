@@ -1,4 +1,4 @@
-//! `earshot transcribe` end to end: the built binary on a committed smoke clip.
+//! `earshot-cli transcribe` end to end: the built binary on a committed smoke clip.
 //!
 //! These tests need the `ci` model set (whisper base.en, Silero VAD, ONNX Runtime CPU). A
 //! missing model fails the test with the CLI's own `cargo xtask fetch-models` instruction in
@@ -33,7 +33,7 @@ fn reference() -> String {
 }
 
 fn earshot(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_earshot"))
+    Command::new(env!("CARGO_BIN_EXE_earshot-cli"))
         .args(args)
         .output()
         .expect("run earshot")
@@ -48,7 +48,7 @@ fn describe(out: &Output) -> String {
     )
 }
 
-/// Runs `earshot transcribe` and parses its JSON output; panics with the CLI's output
+/// Runs `earshot-cli transcribe` and parses its JSON output; panics with the CLI's output
 /// (which names the fetch command when a model is missing) on failure.
 fn transcribe_json(input: &Path, extra: &[&str]) -> Value {
     let input = input.to_str().expect("utf-8 path");
@@ -258,7 +258,7 @@ fn stereo_48k_wav_is_mixed_down_and_resampled() {
 #[test]
 fn missing_model_fails_with_the_fetch_instruction() {
     let dir = ScratchDir::new("models");
-    let out = Command::new(env!("CARGO_BIN_EXE_earshot"))
+    let out = Command::new(env!("CARGO_BIN_EXE_earshot-cli"))
         .args([
             "transcribe",
             clip_path().to_str().unwrap(),
@@ -295,7 +295,7 @@ fn missing_silero_model_fails_with_the_fetch_instruction() {
     }
     .join("whisper/ggml-base.en.bin");
     let dir = ScratchDir::new("models");
-    let out = Command::new(env!("CARGO_BIN_EXE_earshot"))
+    let out = Command::new(env!("CARGO_BIN_EXE_earshot-cli"))
         .args([
             "transcribe",
             clip_path().to_str().unwrap(),

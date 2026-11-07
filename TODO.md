@@ -53,7 +53,8 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-runtime/src/live/hold.rs:163: held audio is kept as f32 twice, about 230 MB at the cap; stretch tracks could hold i16.
 - crates/earshot-runtime/src/live/echo.rs: a mic worker that crashed freezes the prune point for reference words, so they grow for the rest of that meeting.
 - packages/ui mock: the preview still lands script lines during a hold.
-- crates/earshot-runtime/src/summary_child.rs: The owner to decide: a real abort in the child may send Windows Error Reporting a report from a process holding transcript text, depending on the machine's settings; the app itself has always had this risk. Excluding it needs a small unsafe call (`WerSetFlags` or similar), for the app and the child alike.
+- apps/desktop/src-tauri/src/wer_win.rs: WebView2's own processes can still report crashes under Windows' consent settings (PRIVACY.md); Microsoft's `IsCustomCrashReportingEnabled` environment option would stop that, and neither Tauri nor wry was found to expose it (not checked in their source).
+- apps/desktop/src-tauri/src/wer_win.rs: the uninstaller leaves the exe's name on the user's excluded list (harmless; `WerRemoveExcludedApplication` from an NSIS hook would clear it, and `bundle-check`'s registry places would then change with it).
 - crates/earshot-capture-wasapi/src/wasapi.rs: `Track::move_output` treats a followed call output as a chosen device, so its loss shows copy written for an Audio-page choice the user never made; fix before `follow-call` becomes the default.
 - acceptance/results/bench-*.json: these figures carry a shared-host note and a `-dirty` commit: re-run `cargo xtask bench asr|diar|aec --backend cpu` and `asr --backend vulkan`, no `--note`, on an idle host for a baseline.
 - xtask/src/bench.rs:187: the console line prints no note and `--note` is optional, so a loaded run reads as clean; print it, or record the load.
@@ -67,4 +68,4 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-runtime/src/live/preview_tests.rs: `live_preview_mic_in_a_call_shows_no_far_end_word` tests only that the preview track is the reference, not an echo leak as its name says.
 - crates/earshot-runtime/src/live/preview.rs: `previews_off` calls `finish(Duration::ZERO)`, which never joins, so a crash mid-meeting shows only as `off`, and a thread abandoned at the 2 s end wait reports `off: None`. Also unverified: that ONNX Runtime creates its pool threads at session creation, which `preview_pool_failed()` assumes.
 - crates/earshot-core/tests/capture_raw_recording.rs: `capture_replays_gate10_raw_recording` (ignored, private data) fails on main with `data_lost` 0 against 1, found 2026-11-07; it may be the first-packet discontinuity rule, not confirmed.
-- crates/earshot-runtime/src/delete.rs:17: a person's name outlives every meeting it came from and no UI or runtime path removes a person (rename and forget voice only); PRIVACY.md says so. Add a remove-person action, or forget a person with no live speaker when their last meeting goes.
+

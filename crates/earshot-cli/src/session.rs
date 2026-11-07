@@ -107,7 +107,7 @@ pub struct MeetingOptions {
     /// model (parakeet-ctc-110m, parakeet-tdt-110m, parakeet-tdt-0.6b-v2,
     /// parakeet-tdt-0.6b-v3; `cargo xtask fetch-models --set ci` fetches the defaults,
     /// `--set choice` and `--set eval` the others). Default: the model
-    /// `earshot benchmark` recorded in this data directory when it is current for this
+    /// `earshot-cli benchmark` recorded in this data directory when it is current for this
     /// machine, else base.en. Models come from EARSHOT_MODELS (default
     /// %LOCALAPPDATA%\Earshot\models).
     #[arg(long)]
@@ -834,7 +834,7 @@ pub fn choose_model(
         }
         ModelSource::Fallback(why) => writeln!(
             out,
-            "model: {FALLBACK_MODEL} ({why}; run `earshot benchmark --out {}`)",
+            "model: {FALLBACK_MODEL} ({why}; run `earshot-cli benchmark --out {}`)",
             data.root().display()
         )?,
     }
@@ -970,7 +970,7 @@ pub fn run_meeting(
     ) {
         Ok(s) => s,
         Err(SummarySetupError::LlamaDllsMissing(missing)) => bail!(
-            "a local summary needs llama.cpp's DLLs next to earshot.exe; not found: {} (build with `cargo xtask build`, which copies them, or pass --no-summary)",
+            "a local summary needs llama.cpp's DLLs next to earshot-cli.exe; not found: {} (build with `cargo xtask build`, which copies them, or pass --no-summary)",
             missing.join(", ")
         ),
         Err(SummarySetupError::CudaDllsMissing(missing)) => bail!(
@@ -1956,7 +1956,7 @@ mod tests {
                 backend: None
             }
         );
-        assert!(String::from_utf8_lossy(&out).contains("earshot benchmark"));
+        assert!(String::from_utf8_lossy(&out).contains("earshot-cli benchmark"));
         // A current check is used.
         let fingerprint = check_fingerprint(&models, &hardware_facts(), &["en"]);
         let check = |fingerprint: String| earshot_runtime::model_bench::StoredCheck {

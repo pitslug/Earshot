@@ -131,7 +131,7 @@ The loss is one meeting, TS3006b (7 to 4 decisions covered). Two other meetings 
 
 ## Measured on the Surface (T8.3jb2, 2026-11-03)
 
-Input: the first 30 minutes of AMI ES2004b as a two-track call, headset 0 as the mic and headsets 1 and 2 summed as the far end (built by a scratch script from the fetched AMI headsets; timing only, no summary quality is scored on this test-series meeting). `earshot replay --realtime` with `C:\eb\host\release\earshot.exe` (`cargo xtask build`, CPU), Parakeet TDT 0.6B v2 on the CPU for both tracks, speaker work during the call, the 4B on the CPU (`live_summary_threads`: 4 threads during the meeting), once with `--live-summaries on` and once `off`, one after the other on an otherwise idle machine. Events and lag lines in `target/t83jb2/{on,off}-events.jsonl` (not committed).
+Input: the first 30 minutes of AMI ES2004b as a two-track call, headset 0 as the mic and headsets 1 and 2 summed as the far end (built by a scratch script from the fetched AMI headsets; timing only, no summary quality is scored on this test-series meeting). `earshot-cli replay --realtime` with `C:\eb\host\release\earshot-cli.exe` (`cargo xtask build`, CPU), Parakeet TDT 0.6B v2 on the CPU for both tracks, speaker work during the call, the 4B on the CPU (`live_summary_threads`: 4 threads during the meeting), once with `--live-summaries on` and once `off`, one after the other on an otherwise idle machine. Events and lag lines in `target/t83jb2/{on,off}-events.jsonl` (not committed).
 
 | | Off | On |
 |---|---|---|

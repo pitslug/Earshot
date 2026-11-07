@@ -15,7 +15,7 @@
 //! 3. [`init_onnx_for`] (ONNX Runtime, the CPU library unless a Parakeet model may run on
 //!    CUDA or the NPU) and [`choose_speaker_timing`].
 //! 4. [`start_meeting`] with a [`Starter`] for the capture mode ([`wasapi_starter`] for a
-//!    call or the room on Windows, a replay for tests and `earshot replay`) and the live
+//!    call or the room on Windows, a replay for tests and `earshot-cli replay`) and the live
 //!    transcription of [`live_factory`]. The session's events are the host's to show.
 //! 5. [`after_meeting`] with the session's [`LiveOutcome`]: the final pass with progress
 //!    ([`HostStep`], including every [`PostStage`]) and a [`CancelToken`], then the summary
@@ -978,7 +978,7 @@ pub fn check_codex(plan: SummaryPlan, probe: &dyn crate::codex::CodexProbe) -> S
 }
 
 /// llama.cpp's DLLs a local summary loads (`cargo xtask build` copies them next to the
-/// exe): `llama.dll` (delay-loaded by `earshot.exe`, see its build.rs) and the ggml DLLs it
+/// exe): `llama.dll` (delay-loaded by `earshot-cli.exe`, see its build.rs) and the ggml DLLs it
 /// imports.
 pub const LLAMA_DLLS: &[&str] = &[
     "llama.dll",

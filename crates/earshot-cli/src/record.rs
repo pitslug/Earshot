@@ -1,4 +1,4 @@
-//! `earshot devices` and `earshot record`: live capture from the default devices
+//! `earshot-cli devices` and `earshot-cli record`: live capture from the default devices
 //! (Windows WASAPI).
 //!
 //! - `devices` lists the default console and communications microphones and the default
@@ -23,7 +23,7 @@ use earshot_core::identity::EntityId;
 use crate::MicRoleArg;
 use crate::session::MeetingOptions;
 
-/// `earshot record` arguments.
+/// `earshot-cli record` arguments.
 #[derive(Debug, Clone, Args)]
 pub struct RecordArgs {
     /// Stop this many seconds after the session is running (default: record until

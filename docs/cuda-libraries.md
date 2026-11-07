@@ -13,7 +13,7 @@ For the owner's own machines nothing is blocked: they is a licensee developing a
 ## Three things that change the plan
 
 1. **The libraries are about 1.35 GB on disk, not 2 to 3 GB.** [Certain, measured here] See the table below. D23's estimate came from a CUDA 12.4 file list.
-2. **The CUDA code inside the install will not be small.** [Likely] D23 assumes an app of about 40 MB. A release `earshot-desktop.exe` built for one GPU architecture (`C:\eb\host\release`, 2026-11-05) is already 82.0 MB, and that build's `ggml-cuda.dll` is 56.3 MB, because the GPU kernels are compiled in. Each extra real architecture adds roughly that kernel size to both copies of ggml. See "GPU architecture list".
+2. **The CUDA code inside the install will not be small.** [Likely] D23 assumes an app of about 40 MB. A release `earshot.exe` built for one GPU architecture (`C:\eb\host\release`, 2026-11-05) is already 82.0 MB, and that build's `ggml-cuda.dll` is 56.3 MB, because the GPU kernels are compiled in. Each extra real architecture adds roughly that kernel size to both copies of ggml. See "GPU architecture list".
 3. **Having an NVIDIA GPU is not enough to make the offer.** [Certain] cuDNN's minimum is Turing, compute capability 7.5 ([support matrix](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/support-matrix.html)). A GTX 10 series card would download over a gigabyte for nothing. T8.4a's offer also needs a compute capability check, which `earshot_hardware::read()` would have to supply.
 
 ## What Earshot actually needs
@@ -22,7 +22,7 @@ From the import tables of the binaries on this machine (read with a small PE par
 
 | File | MB on disk | Why |
 |---|---|---|
-| `cublas64_13.dll` | 54.9 | Imported by `onnxruntime_providers_cuda.dll`, `ggml-cuda.dll` and the CUDA `earshot-desktop.exe` |
+| `cublas64_13.dll` | 54.9 | Imported by `onnxruntime_providers_cuda.dll`, `ggml-cuda.dll` and the CUDA `earshot.exe` |
 | `cublasLt64_13.dll` | 492.8 | Imported by `cublas64_13.dll` and the ONNX provider |
 | 10 `cudnn*64_9.dll` files | 591.7 | ONNX Runtime's provider loads them at run time (LOG.md: refused without `cudnn64_9.dll`). Not in its import table |
 | `onnxruntime.dll`, `onnxruntime_providers_cuda.dll`, `onnxruntime_providers_shared.dll` | 214.6 | The ONNX Runtime 1.31.0 CUDA build (zip 309.5 MB, already pinned in `models/manifest.toml`) |
