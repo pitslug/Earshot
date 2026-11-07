@@ -43,6 +43,8 @@ mod testutil;
 #[cfg(windows)]
 mod toast_win;
 mod transcription_probe;
+#[cfg(windows)]
+mod wer_win;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -58,6 +60,10 @@ fn main() {
     // them in its own `--data` once that is checked.
     if !headless::asked(&args) {
         crash::install_default();
+        // Before any model or child process, and in the child modes too (T9.1t). The replay mode
+        // leaves the user's registry alone.
+        #[cfg(windows)]
+        wer_win::opt_out();
     }
     if let Some(code) = check_child::child_main(&args) {
         std::process::exit(code);
@@ -79,6 +85,8 @@ fn main() {
     if let Some(code) = headless::main_if_asked(&args) {
         std::process::exit(code);
     }
+    // Only the app itself: a child may be running while an earlier crash's dump is being written.
+    crash::remove_old_dumps();
     let by_windows = shell::started_by_windows(&args);
     let builder = ipc::specta_builder();
     let gate = activity::WorkGate::for_app();

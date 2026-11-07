@@ -60,6 +60,55 @@ pub fn default_dir() -> Option<PathBuf> {
     DataDir::from_local_app_data().map(|d| logs_dir(d.root()))
 }
 
+/// Windows' default folder for local crash dumps, `None` when `LOCALAPPDATA` is not set.
+fn default_dump_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("CrashDumps"))
+}
+
+/// Deletes dumps of the running exe left by earlier crashes (T9.1t). Windows' `LocalDumps` setting
+/// can write them whatever the error-reporting opt-out says (the NVIDIA App's entries appear to
+/// switch it on), and a dump can hold fragments of transcript text that deleting the meeting
+/// would not reach. Best effort; a dump folder set elsewhere is not reached (PRIVACY.md).
+pub fn remove_old_dumps() {
+    let exe = std::env::current_exe().ok();
+    let name = exe.as_deref().and_then(Path::file_name);
+    if let (Some(dir), Some(name)) = (default_dump_dir(), name) {
+        remove_dumps_of(&dir, &name.to_string_lossy());
+    }
+}
+
+/// Deletes `<exe>.<number>.dmp` files directly in `dir`, and nothing else. Returns how many went.
+fn remove_dumps_of(dir: &Path, exe: &str) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let prefix = format!("{}.", exe.to_ascii_lowercase());
+    let mut removed = 0;
+    for e in entries.filter_map(Result::ok) {
+        let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+        let Some(number) = name
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(".dmp"))
+        else {
+            continue;
+        };
+        let is_dump = !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit());
+        if is_dump
+            && e.file_type().is_ok_and(|t| t.is_file())
+            && std::fs::remove_file(e.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// The dump folder and dump rule, for the crash test beside the opt-out.
+#[cfg(test)]
+pub(crate) fn remove_dumps_for_test(exe: &str) -> usize {
+    default_dump_dir().map_or(0, |dir| remove_dumps_of(&dir, exe))
+}
+
 /// Installs the hook for the app's own data folder; without one the panic behaviour stays as
 /// it is.
 pub fn install_default() {
@@ -292,6 +341,47 @@ mod tests {
     use super::*;
     use crate::testutil::TempDir;
 
+    #[test]
+    fn crash_old_dumps_go_and_nothing_else_does() {
+        let dir = std::env::temp_dir().join(format!("earshot-dumps-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("earshot.exe.7.dmp")).unwrap();
+        for f in [
+            "earshot.exe.123.dmp",
+            "EARSHOT.EXE.456.DMP",
+            "earshot-cli.exe.123.dmp",
+            "other.exe.123.dmp",
+            "earshot.exe.note.dmp",
+            "earshot.exe.123.txt",
+            "earshot.exe..dmp",
+        ] {
+            std::fs::write(dir.join(f), "x").unwrap();
+        }
+        assert_eq!(remove_dumps_of(&dir, "earshot.exe"), 2);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| {
+                e.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+            })
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "earshot-cli.exe.123.dmp",
+                "earshot.exe..dmp",
+                "earshot.exe.123.txt",
+                "earshot.exe.7.dmp",
+                "earshot.exe.note.dmp",
+                "other.exe.123.dmp",
+            ]
+        );
+        assert_eq!(remove_dumps_of(&dir.join("missing"), "earshot.exe"), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// What the panics in the child say; no file may hold it.
     const MARKER: &str = "MEETING-TEXT-MARKER-7f3a";
     /// Names the folder the child logs to.
@@ -410,12 +500,12 @@ mod tests {
 
     #[test]
     fn crash_backtrace_keeps_function_names_only() {
-        let text = "   0: std::backtrace::Backtrace::force_capture\n             at /rustc/abc/library/std/src/backtrace.rs:312:9\n   1: earshot_desktop::jobs::run::{{closure}}\n             core::ops::function::FnOnce::call_once\n             at C:\\Users\\someone\\earshot\\jobs.rs:12:3\n   2: <unknown>\n   3: C:\\Users\\someone\\earshot.exe\n\n";
+        let text = "   0: std::backtrace::Backtrace::force_capture\n             at /rustc/abc/library/std/src/backtrace.rs:312:9\n   1: earshot::jobs::run::{{closure}}\n             core::ops::function::FnOnce::call_once\n             at C:\\Users\\someone\\earshot\\jobs.rs:12:3\n   2: <unknown>\n   3: C:\\Users\\someone\\earshot-cli.exe\n\n";
         assert_eq!(
             function_names(text),
             [
                 "0: std::backtrace::Backtrace::force_capture",
-                "1: earshot_desktop::jobs::run::{{closure}}",
+                "1: earshot::jobs::run::{{closure}}",
                 "core::ops::function::FnOnce::call_once",
                 "2: <unknown>",
             ]

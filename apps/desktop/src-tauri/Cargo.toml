@@ -5,6 +5,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+default-run = "earshot"
+
+# The file people see: earshot.exe. The developer tool is earshot-cli.exe.
+[[bin]]
+name = "earshot"
+path = "src/main.rs"
 
 [features]
 # Forwarded to the runtime (see its Cargo.toml): CUDA for whisper.cpp, ONNX Runtime and
@@ -44,8 +50,8 @@ serde_json = "1.0.154"
 [target.'cfg(windows)'.dependencies]
 # The capture mode and mic role of a live meeting (`host::wasapi_starter`).
 earshot-capture-wasapi = { path = "../../../crates/earshot-capture-wasapi" }
-# The Anthropic API key in Credential Manager (`src/credentials_win.rs`) and the vault folder
-# dialog (`src/folder_picker_win.rs`): all the app's `unsafe`. Same version as
+# The Anthropic API key in Credential Manager (`src/credentials_win.rs`), the vault folder
+# dialog (`src/folder_picker_win.rs`) and `src/wer_win.rs`: all the app's `unsafe`. Same version as
 # earshot-capture-wasapi; xtask does not depend on `windows`, so these features never widen
 # a crate the running xtask.exe was built from.
 windows = { version = "0.62", features = [
@@ -53,6 +59,8 @@ windows = { version = "0.62", features = [
     "Win32_Security",
     "Win32_Security_Credentials",
     "Win32_System_Com",
+    # The Windows Error Reporting opt-out (`src/wer_win.rs`).
+    "Win32_System_ErrorReporting",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     # Notifications (`src/toast_win.rs`): WinRT, safe calls.

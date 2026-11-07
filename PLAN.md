@@ -1403,7 +1403,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T9.1p
   - do: the owner: `io.github.pitslug.earshot` is odd to see in a user's folder. The identifier becomes `earshot`, so the browser engine's files sit in `%LOCALAPPDATA%\Earshot\EBWebView` with everything else. The uninstaller's "Delete the application data" box then deletes the whole folder, meetings and models included, where it used to delete only the browser files; a silent or unticked uninstall still keeps them. Android needs a dotted id and will set its own at T10.
   - accept: `cargo xtask build --bundle`; `cargo xtask bundle-check`
-- [~] T9.1t Opt out of Windows Error Reporting
+- [x] T9.1t Opt out of Windows Error Reporting
   - deps: T9.1e
   - do: the owner: a crash report can hold part of a process's memory, so transcript text, and depending on Windows settings go to Microsoft. The app excludes its own exe, for the current user, at start (`WerAddExcludedApplication`), before any model or child process runs. The child modes run the same exe, so they are covered by name. All `unsafe` in `wer_win.rs`. A failure never stops the app. The real effect is checked from the owner's own shell: an agent shell's registry is MSIX-virtualised. The owner's first run (2026-11-07): the report and event 1001 stop, but `LocalDumps` (apparently switched on by the NVIDIA App's HKLM entries) still writes a local dump, so the app deletes `<exe>.<number>.dmp` from `%LOCALAPPDATA%\CrashDumps` at each start, and PRIVACY.md says so (the owner).
   - accept: `cargo test -p earshot-desktop wer`; `cargo test -p earshot-desktop crash`; owner's check that a forced crash queues no report
