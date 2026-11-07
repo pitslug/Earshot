@@ -86,5 +86,6 @@ Models are not included in the installer. They are downloaded when you ask for t
 - **Summaries:** Qwen 3.5 4B and 9B (Alibaba Cloud Qwen team), Apache-2.0, GGUF conversions by Unsloth.
 - **Speech helpers:** Silero VAD (MIT), ONNX Runtime (MIT), and through sherpa-onnx, pyannote segmentation 3.0 (MIT) and 3D-Speaker CAM++ (Apache-2.0).
 - **Installer:** built with [NSIS](https://nsis.sourceforge.io/) (zlib/libpng licence), whose LZMA decompression code is under the Common Public License 1.0. The source is available from the NSIS project.
+- **Visual C++ runtime:** the installer carries Microsoft's runtime DLLs beside the app, as Microsoft's Visual Studio terms allow.
 - **Runtimes:** whisper.cpp and llama.cpp (MIT). The optional CUDA set links NVIDIA's runtime, under NVIDIA's terms ([docs/cuda-libraries.md](docs/cuda-libraries.md)).
 - **Benchmark audio:** an excerpt of meeting ES2004a from the AMI Meeting Corpus, University of Edinburgh and the AMI Consortium, CC BY 4.0.

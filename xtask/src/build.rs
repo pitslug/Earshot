@@ -226,12 +226,11 @@ pub fn arm64_vulkan_sdk(shim: &Path, sdk: &Path) -> Result<PathBuf> {
     Ok(shim.to_path_buf())
 }
 
-/// The host's MSVC x64 toolchain: `cl.exe` and the x64 library directories (MSVC, Windows
-/// SDK `um` and `ucrt`) of the latest Visual Studio with the x64 tools.
+/// The folder of the latest Visual Studio with the MSVC x64 tools.
 ///
 /// # Errors
-/// vswhere, the MSVC tools or the Windows SDK cannot be found.
-pub fn host_msvc_x64() -> Result<(PathBuf, Vec<PathBuf>)> {
+/// vswhere cannot run or finds none.
+pub fn visual_studio_install() -> Result<PathBuf> {
     let base = std::env::var_os("ProgramFiles(x86)").context("ProgramFiles(x86) is not set")?;
     let vswhere = Path::new(&base).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
     let out = run_with_timeout(
@@ -251,13 +250,23 @@ pub fn host_msvc_x64() -> Result<(PathBuf, Vec<PathBuf>)> {
     if !out.success {
         bail!("vswhere failed: {}", out.describe());
     }
-    let install = PathBuf::from(
+    Ok(PathBuf::from(
         out.stdout
             .lines()
             .map(str::trim)
             .find(|l| !l.is_empty())
             .context("vswhere found no Visual Studio with the MSVC x64 tools")?,
-    );
+    ))
+}
+
+/// The host's MSVC x64 toolchain: `cl.exe` and the x64 library directories (MSVC, Windows
+/// SDK `um` and `ucrt`) of the latest Visual Studio with the x64 tools.
+///
+/// # Errors
+/// vswhere, the MSVC tools or the Windows SDK cannot be found.
+pub fn host_msvc_x64() -> Result<(PathBuf, Vec<PathBuf>)> {
+    let base = std::env::var_os("ProgramFiles(x86)").context("ProgramFiles(x86) is not set")?;
+    let install = visual_studio_install()?;
     let version_file = install.join(r"VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt");
     let version = std::fs::read_to_string(&version_file)
         .with_context(|| format!("read {}", version_file.display()))?;

@@ -159,10 +159,82 @@ fn has_vulkan_summaries(features: &[String]) -> bool {
     features.iter().any(|f| f == build::SHIPPED_X64_FEATURE)
 }
 
+/// The Visual C++ runtime an install holds beside the exe (T9.1w, the owner), because a PC without
+/// Microsoft's redistributable could not start the app or load ONNX Runtime, and installing that
+/// needs an admin prompt and a download. Exactly what the exe, llama.cpp, ggml and ONNX Runtime
+/// import; the Universal CRT comes with Windows. Microsoft's terms allow these files for licensed
+/// Visual Studio users (`VC\Redist` in its redistribution list). A new release carries a new copy,
+/// because Windows Update does not service these.
+pub const VC_RUNTIME_DLLS: [&str; 4] = [
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+];
+
+/// Whether `name` is part of the Visual C++ runtime, which Windows may not have.
+#[must_use]
+pub fn is_vc_runtime_library(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    ["msvcp1", "vcruntime1", "concrt1", "vcomp1", "vccorlib1"]
+        .iter()
+        .any(|prefix| n.starts_with(prefix))
+}
+
+/// The newest `<redist>\<version>\<arch>\Microsoft.VC*.CRT` folder: a Visual Studio's folder
+/// `VC\Redist\MSVC` holds one version per update, and other names beside them.
+#[must_use]
+pub fn newest_vc_runtime_folder(redist: &Path, arch: &str) -> Option<PathBuf> {
+    let version = |name: &str| -> Option<Vec<u32>> {
+        name.split('.').map(|part| part.parse().ok()).collect()
+    };
+    let mut found: Vec<(Vec<u32>, PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(redist).ok()?.filter_map(Result::ok) {
+        let Some(v) = version(&entry.file_name().to_string_lossy()) else {
+            continue;
+        };
+        let Ok(inner) = std::fs::read_dir(entry.path().join(arch)) else {
+            continue;
+        };
+        for crt in inner.filter_map(Result::ok) {
+            let name = crt.file_name().to_string_lossy().to_ascii_lowercase();
+            if name.starts_with("microsoft.vc") && name.ends_with(".crt") {
+                found.push((v.clone(), crt.path()));
+            }
+        }
+    }
+    found.sort();
+    found.pop().map(|(_, path)| path)
+}
+
+/// Copies [`VC_RUNTIME_DLLS`] for `triple` beside the exe, from the Visual Studio that built it.
+fn place_vc_runtime(exe_dir: &Path, triple: &str) -> Result<()> {
+    let arch = if triple.starts_with("aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
+    let redist = build::visual_studio_install()?.join(r"VC\Redist\MSVC");
+    let folder = newest_vc_runtime_folder(&redist, arch).with_context(|| {
+        format!(
+            "no Visual C++ runtime for {arch} under {}: add the Visual Studio component \
+             Microsoft.VisualStudio.Component.VC.Redist.14.Latest",
+            redist.display()
+        )
+    })?;
+    for dll in VC_RUNTIME_DLLS {
+        let (from, to) = (folder.join(dll), exe_dir.join(dll));
+        std::fs::copy(&from, &to)
+            .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
+    }
+    Ok(())
+}
+
 /// The DLLs an install holds beside the exe for `features`.
 #[must_use]
 pub fn resource_dlls(features: &[String]) -> Vec<&'static str> {
     let mut dlls = llama_dlls::REQUIRED.to_vec();
+    dlls.extend(VC_RUNTIME_DLLS);
     if features.iter().any(|f| f == "cuda") {
         dlls.push("ggml-cuda.dll");
     }
@@ -533,6 +605,22 @@ pub fn check_binary(name: &str, pe: &Pe, target: &str, features: &[String]) -> R
             || resource_dlls(features).contains(&VULKAN_LOADER),
         "{name} imports {VULKAN_LOADER}, which an install built with {features:?} does not hold"
     );
+    // A runtime library the list misses would start here, where Visual Studio is installed, and
+    // nowhere else.
+    let missing: Vec<&String> = pe
+        .imports
+        .iter()
+        .filter(|i| {
+            is_vc_runtime_library(i)
+                && !VC_RUNTIME_DLLS
+                    .iter()
+                    .any(|dll| dll.eq_ignore_ascii_case(i))
+        })
+        .collect();
+    ensure!(
+        missing.is_empty(),
+        "{name} imports {missing:?}, which VC_RUNTIME_DLLS does not hold"
+    );
     Ok(())
 }
 
@@ -582,6 +670,7 @@ pub fn run(
                 .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
         }
     }
+    place_vc_runtime(exe_dir, &triple)?;
     ensure!(
         exe_dir.join(APP_SYMBOLS_BUILT).is_file(),
         "the build left no {APP_SYMBOLS_BUILT} beside {APP_EXE}"

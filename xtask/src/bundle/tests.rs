@@ -116,12 +116,17 @@ fn build_bundle_version_has_one_source() {
 }
 
 #[test]
-fn build_bundle_installs_exactly_llama_dlls_and_never_an_accelerator_library() {
-    assert_eq!(resource_dlls(&[]), crate::llama_dlls::REQUIRED);
+fn build_bundle_installs_exactly_llama_dlls_and_the_runtime_and_never_an_accelerator_library() {
+    let plain: Vec<&str> = crate::llama_dlls::REQUIRED
+        .iter()
+        .copied()
+        .chain(VC_RUNTIME_DLLS)
+        .collect();
+    assert_eq!(resource_dlls(&[]), plain);
     // A GPU build's own llama.cpp backend: code that can use CUDA, not NVIDIA's libraries (D23).
     let cuda = resource_dlls(&["cuda".to_owned()]);
     assert!(cuda.contains(&"ggml-cuda.dll"));
-    assert_eq!(cuda.len(), crate::llama_dlls::REQUIRED.len() + 1);
+    assert_eq!(cuda.len(), plain.len() + 1);
     for name in cuda {
         assert!(!is_vendor_accelerator_library(name), "{name}");
     }
@@ -164,7 +169,14 @@ fn build_bundle_config_turns_the_bundler_on_with_no_download_at_install_time() {
         serde_json::json!({ "type": "skip" })
     );
     let resources = b["resources"].as_object().unwrap();
-    assert_eq!(resources.len(), crate::llama_dlls::REQUIRED.len() + 2);
+    assert_eq!(
+        resources.len(),
+        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 2
+    );
+    for dll in VC_RUNTIME_DLLS {
+        let from = exe_dir.join(dll);
+        assert_eq!(resources[from.to_str().unwrap()], dll, "beside the exe");
+    }
     // The public symbols, under the name the exe's debug record gives; never the full database.
     assert_eq!(
         resources[exe_dir.join(APP_SYMBOLS_BUILT).to_str().unwrap()],
@@ -179,6 +191,55 @@ fn build_bundle_config_turns_the_bundler_on_with_no_download_at_install_time() {
         resources[notice.to_str().unwrap()],
         "resources/benchmark/NOTICE.md"
     );
+}
+
+#[test]
+fn build_bundle_refuses_a_binary_importing_a_runtime_library_the_install_lacks() {
+    let pe = |imports: &[&str]| Pe {
+        machine: machine_of(X64).unwrap(),
+        imports: imports.iter().map(|s| (*s).to_owned()).collect(),
+    };
+    check_binary(
+        "x.dll",
+        &pe(&["MSVCP140.dll", "VCRUNTIME140_1.dll", "KERNEL32.dll"]),
+        X64,
+        &[],
+    )
+    .unwrap();
+    for missing in ["MSVCP140_2.dll", "VCOMP140.DLL", "concrt140.dll"] {
+        let e = check_binary("x.dll", &pe(&[missing]), X64, &[]).unwrap_err();
+        assert!(e.to_string().contains(missing), "{e}");
+    }
+    // Windows provides these.
+    check_binary(
+        "x.dll",
+        &pe(&["api-ms-win-crt-runtime-l1-1-0.dll", "ucrtbase.dll"]),
+        X64,
+        &[],
+    )
+    .unwrap();
+}
+
+#[test]
+fn build_bundle_finds_the_newest_runtime_for_the_architecture() {
+    let root = tmp("vc-redist");
+    let crt = |version: &str, arch: &str| {
+        let dir = root.join(version).join(arch).join("Microsoft.VC143.CRT");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    };
+    let old = crt("14.9.1", "x64");
+    let newest = crt("14.44.35112", "x64");
+    let arm = crt("14.9.1", "arm64");
+    // Beside the versions in a real folder: not a version, and a debug folder under one.
+    crt("v143", "x64");
+    std::fs::create_dir_all(root.join("14.50.1").join("x64").join("Other")).unwrap();
+    assert_eq!(newest_vc_runtime_folder(&root, "x64"), Some(newest));
+    assert_eq!(newest_vc_runtime_folder(&root, "arm64"), Some(arm));
+    assert_eq!(newest_vc_runtime_folder(&root, "riscv"), None);
+    assert_eq!(newest_vc_runtime_folder(&root.join("missing"), "x64"), None);
+    assert_ne!(old, root);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -416,7 +477,19 @@ fn build_bundle_an_install_holds_exactly_the_expected_files() {
     let nsis = expected_files(X64);
     // The Vulkan backend, its loader and the loader's licence, where x64 ships with them.
     let vulkan = if cfg!(target_arch = "x86_64") { 3 } else { 0 };
-    assert_eq!(nsis.len(), crate::llama_dlls::REQUIRED.len() + 4 + vulkan);
+    assert_eq!(
+        nsis.len(),
+        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 4 + vulkan
+    );
+    for dll in VC_RUNTIME_DLLS {
+        assert!(nsis.contains(&rel(&[dll])), "{dll}");
+        assert!(
+            expected_files(ARM64_WINDOWS)
+                .iter()
+                .any(|f| f.ends_with(dll)),
+            "{dll} on ARM64"
+        );
+    }
     assert!(nsis.contains(&rel(&["earshot.pdb"])));
     assert_eq!(
         nsis.contains(&rel(&["vulkan-1.dll"])),
@@ -477,7 +550,10 @@ fn build_bundle_vulkan_summaries_ship_their_backend_loader_and_licence() {
     let dlls = resource_dlls(&vulkan);
     assert!(dlls.contains(&"ggml-vulkan.dll"));
     assert!(dlls.contains(&VULKAN_LOADER));
-    assert_eq!(dlls.len(), crate::llama_dlls::REQUIRED.len() + 2);
+    assert_eq!(
+        dlls.len(),
+        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 2
+    );
     for name in &dlls {
         assert!(!refused_in_install(name, &vulkan), "{name}");
     }

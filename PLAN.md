@@ -354,7 +354,7 @@ A gate is a hard stop that waits for the human. The protocol (how gates are open
 - Windows code signing for the installers (a paid certificate, the owner's decision): without it SmartScreen warns on install and possibly on every update. The update signature in D24 does not replace it.
 - (Resolved, the owner: the opt-in CUDA download has two parts, in T8.4a.)
 - (Resolved, the owner: our CUDA set is published in `pitslug/Earshot`'s releases, without waiting for NVIDIA's written answer. T9.1b's release host stays its own decision.)
-- Installers (T9.1c, T9.1p): NSIS carries CPL-1.0 on its LZMA stub (clear, not permissive; OK it before an installer leaves the owner's machines); the Visual C++ runtime is not bundled (`bundle.windows.bundleVcRuntime` is one line, but the redistribution terms need reading first; a machine without it probably cannot start the app); WebView2 is `skip` because every other mode contacts Microsoft (Windows 11 ships it); the default per-user NSIS folder is the data folder, `%LOCALAPPDATA%\Earshot`, and the owner chose to keep it per-user.
+- Installers (T9.1c, T9.1p): NSIS carries CPL-1.0 on its LZMA stub (clear, not permissive; OK it before an installer leaves the owner's machines); the Visual C++ runtime's four DLLs are bundled beside the exe (T9.1w, the owner), because downloading Microsoft's installer would need an admin prompt and a new network destination; WebView2 is `skip` because every other mode contacts Microsoft (Windows 11 ships it); the default per-user NSIS folder is the data folder, `%LOCALAPPDATA%\Earshot`, and the owner chose to keep it per-user.
 - Sync encryption: TLS-only behind a reverse proxy vs end-to-end encrypted payloads (GATE-08).
 
 ---
@@ -1417,9 +1417,13 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T7.4h
   - do: the owner: people's names and voiceprints stay when a meeting is deleted, and only removing them on the Speakers page deletes them. Meeting deletion stops forgetting voiceprints (replaces T6.26's rule; a meeting's own centroid record still goes with it). Remove erases the identity: the person rows (name cleared, tombstoned), voiceprints and speaker centroids in one transaction, then a checkpoint; every speaker row linked to them in a kept meeting goes back to "Speaker N", unlinked. The user is refused. Text already written (summaries, notes, exported files) is not rewritten, and the dialog says so.
   - accept: `cargo test -p earshot-store delete`; `cargo test -p earshot-runtime edit`; `cmd /c pnpm --filter @earshot/ui test`
+- [x] T9.1w The Visual C++ runtime beside the exe
+  - deps: T9.1p
+  - do: the owner: a PC without Microsoft's redistributable must still run the app, with no admin prompt or download at install. `xtask::bundle` copies `VC_RUNTIME_DLLS` (the four DLLs the exe, llama.cpp, ggml and ONNX Runtime import) from the building Visual Studio's newest `VC\Redist\MSVC` folder into every install, and refuses a binary importing a runtime library the list lacks. A run on a PC without the runtime is still to come, and the release notes say so.
+  - accept: `cargo test -p xtask bundle`; `cargo xtask build --bundle`; `cargo xtask bundle-check`; `cargo xtask ci`
 - [ ] T9.1r x64 early release
-  - deps: T9.1c, T9.1d, T9.2a, T9.1s, T9.1t, T9.1u, T9.1v
-  - do: The owner: x64 first, as a 0.x normal GitHub release (a pre-release would leave the CUDA set marked Latest), ahead of T8.4, GATE-03, T9.1b and GATE-04, which stay v1's. No in-app update, so the notes say each version is installed by hand. Concluded with the owner: NSIS's stub, NVIDIA (section 7). Still before release: the Visual C++ runtime; GATE-01a's listening note; the owner's word that the app was usable in real meetings (GATE-02). The release notes say what was not tried: a PC with no NVIDIA card, a device switch during a call, and the notification buttons. Those three are checked after release.
+  - deps: T9.1c, T9.1d, T9.2a, T9.1s, T9.1t, T9.1u, T9.1v, T9.1w
+  - do: The owner: x64 first, as a 0.x normal GitHub release (a pre-release would leave the CUDA set marked Latest), ahead of T8.4, GATE-03, T9.1b and GATE-04, which stay v1's. No in-app update, so the notes say each version is installed by hand. Concluded with the owner: NSIS's stub, NVIDIA (section 7). Still before release: GATE-01a's listening note; the owner's word that the app was usable in real meetings (GATE-02). The release notes say what was not tried: a PC with no NVIDIA card or no Visual C++ runtime, a device switch during a call, and the notification buttons. Those three are checked after release.
   - accept: `cargo xtask build --bundle`; `cargo xtask bundle-check`; the owner's approval of the release recorded
 - [ ] T9.1 Installers and first run
   - deps: GATE-03, T8.4a, T9.1c, T9.1d, T9.1e, T9.1f, T9.1g, T9.1h, T9.1i, T9.1j, T9.1k, T9.1l, T9.1m, T9.1n, T9.1o, T9.1p
