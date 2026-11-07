@@ -343,6 +343,7 @@ A gate is a hard stop that waits for the human. The protocol (how gates are open
 
 - (Resolved, the owner: the project's own code is MIT, `LICENSE`. Third-party files keep their own terms; NVIDIA's parts are never under it.)
 - Whether to re-host the AMI reference RTTMs/UEMs or derive them from AMI's own annotations (licence check in T0.4a).
+- (Resolved 2026-11-07, the owner: the app offers the pinned community Parakeet conversions (k2-fsa sherpa-onnx, CC-BY-4.0, checked by SHA-256) as downloads from their own hosts, in the x64 early release and until decided otherwise. Earshot does not host them: GitHub cannot hold the 2.27 GiB encoder, and the licence does not ask for it. The risk accepted is the uploader removing the files; converting from NVIDIA's `.nemo` and hosting on the owner's Hugging Face account is the way out if that happens.)
 - (Resolved 2026-10-24: T8.3 targets Parakeet through Qualcomm's ONNX Runtime QNN plugin; the owner accepts the Qualcomm AI Stack License for development on their own machines; the NPU never runs a real meeting before an ETW check shows the plugin emits no telemetry.)
 - Redistribution terms for the Qualcomm QNN HTP runtime DLLs bundled with the arm64 build (T8.4); look at Windows ML (Windows-supplied NPU providers) as an alternative to redistributing them.
 - Whether end users may fetch NVIDIA's files from NVIDIA's server (D23: asked in writing before a public release; the source itself is decided).
@@ -1304,7 +1305,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - accept: `cargo test -p earshot-desktop crash` (a panic whose message holds a marker leaves a file without the marker)
 - [x] T9.1f A clean install can start a meeting
   - deps: T9.1d, T7.4a
-  - do: found by T9.1c (2026-11-05): an installed app with an empty models folder cannot start a meeting. It needs ONNX Runtime and the speech helpers (Silero, segmentation, CAM++) plus a transcription model; `Catalogue` lists only transcription and summary models, and the refusal tells the user to run `cargo xtask fetch-models`. The app downloads what a meeting needs through `earshot_runtime::download` (same hosts, allowlist and checks), including safe archive extraction with xtask's rules (stored and deflate, no writing past the declared size, no duplicates or escaping paths), offers it in the wizard's models step and on the Models page with its size, and refuses a meeting with fixed user copy that points there, never a developer command. CUDA and QNN libraries stay out (T8.4a, T8.4). Models already allowed in-app stay as they are; whether Parakeet's development copies may be offered to anyone but the owner remains the T9.1 question in AGENTS.
+  - do: found by T9.1c (2026-11-05): an installed app with an empty models folder cannot start a meeting. It needs ONNX Runtime and the speech helpers (Silero, segmentation, CAM++) plus a transcription model; `Catalogue` lists only transcription and summary models, and the refusal tells the user to run `cargo xtask fetch-models`. The app downloads what a meeting needs through `earshot_runtime::download` (same hosts, allowlist and checks), including safe archive extraction with xtask's rules (stored and deflate, no writing past the declared size, no duplicates or escaping paths), offers it in the wizard's models step and on the Models page with its size, and refuses a meeting with fixed user copy that points there, never a developer command. CUDA and QNN libraries stay out (T8.4a, T8.4). Models already allowed in-app stay as they are; Parakeet's pinned copies are offered to everyone (the owner, 2026-11-07, section 7).
   - accept: `cargo test -p earshot-runtime catalogue`, `download`; `cargo test -p earshot-desktop`; `cmd /c pnpm -r test`; from an empty models folder with a local server, the helpers and ONNX Runtime download, verify and load; a meeting refused for a missing helper shows no `cargo` text.
 - [x] T9.1i Faint echo of the far end is not a voice on the mic
   - deps: T6.23a
@@ -1398,9 +1399,21 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T9.1k
   - do: The owner. `README.md` (install, usage, backends, credits) and `PRIVACY.md` (PLAN 3.9 as the code does it) ahead of T9.1 and T9.1b, whose update and ARM64 parts T9.2 still adds. Each claim checked against the code by a separate agent.
   - accept: `cargo xtask public-guard`; the fact-check's findings resolved
+- [ ] T9.1s One short app identifier
+  - deps: T9.1p
+  - do: the owner: `io.github.pitslug.earshot` is odd to see in a user's folder. The identifier becomes `earshot`, so the browser engine's files sit in `%LOCALAPPDATA%\Earshot\EBWebView` with everything else. The uninstaller's "Delete the application data" box then deletes the whole folder, meetings and models included, where it used to delete only the browser files; a silent or unticked uninstall still keeps them. Android needs a dotted id and will set its own at T10.
+  - accept: `cargo xtask build --bundle`; `cargo xtask bundle-check`
+- [ ] T9.1t Opt out of Windows Error Reporting
+  - deps: T9.1e
+  - do: the owner: a crash report can hold part of a process's memory, so transcript text, and depending on Windows settings go to Microsoft. The app excludes its own exe, for the current user, at start (`WerAddExcludedApplication`), before any model or child process runs. The child modes run the same exe, so they are covered by name. All `unsafe` in `wer_win.rs`. A failure never stops the app. The real effect is checked from the owner's own shell: an agent shell's registry is MSIX-virtualised.
+  - accept: `cargo test -p earshot-desktop wer`; owner's check that a forced crash leaves no new report
+- [ ] T9.1u Remove a person from Speakers
+  - deps: T7.4h
+  - do: the owner: people's names and voiceprints stay when a meeting is deleted, and only removing them on the Speakers page deletes them. Meeting deletion stops forgetting voiceprints (replaces T6.26's rule; a meeting's own centroid record still goes with it). Remove erases the identity: the person rows (name cleared, tombstoned), voiceprints and speaker centroids in one transaction, then a checkpoint; every speaker row linked to them in a kept meeting goes back to "Speaker N", unlinked. The user is refused. Text already written (summaries, notes, exported files) is not rewritten, and the dialog says so.
+  - accept: `cargo test -p earshot-store delete`; `cargo test -p earshot-runtime edit`; `cmd /c pnpm --filter @earshot/ui test`
 - [ ] T9.1r x64 early release
-  - deps: T9.1c, T9.1d, T9.2a
-  - do: The owner: x64 first, as a 0.x normal GitHub release (a pre-release would leave the CUDA set marked Latest), ahead of T8.4, GATE-03, T9.1b and GATE-04, which stay v1's. No in-app update, so the notes say each version is installed by hand. Only once these are concluded with the owner: whether Parakeet's community conversions may be offered (section 7, AGENTS); the NSIS CPL-1.0 OK and the Visual C++ runtime; NVIDIA's written answer or a decision on it; Windows Error Reporting (TODO.md); a start on an x64 PC with no NVIDIA card; GATE-01a and GATE-02.
+  - deps: T9.1c, T9.1d, T9.2a, T9.1s, T9.1t, T9.1u
+  - do: The owner: x64 first, as a 0.x normal GitHub release (a pre-release would leave the CUDA set marked Latest), ahead of T8.4, GATE-03, T9.1b and GATE-04, which stay v1's. No in-app update, so the notes say each version is installed by hand. Only once these are concluded with the owner: the NSIS CPL-1.0 OK and the Visual C++ runtime; NVIDIA's written answer or a decision on it; a start on an x64 PC with no NVIDIA card; GATE-01a and GATE-02.
   - accept: `cargo xtask build --bundle`; `cargo xtask bundle-check`; the owner's approval of the release recorded
 - [ ] T9.1 Installers and first run
   - deps: GATE-03, T8.4a, T9.1c, T9.1d, T9.1e, T9.1f, T9.1g, T9.1h, T9.1i, T9.1j, T9.1k, T9.1l, T9.1m, T9.1n, T9.1o, T9.1p

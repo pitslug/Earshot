@@ -73,7 +73,7 @@ Limits: the trace covers ONNX Runtime and the plugin through the providers the Q
 
 The runtime pads each piece's features to the static 3001 frames after computing them on the piece's own length (`parakeet::static_features`), so the per-feature normalisation never sees the padding and the `length` input masks it in the encoder.
 
-The conversions are hosted nowhere: shipping waits on the owner's hosting decision (Parakeet is CC-BY-4.0, converted from NVIDIA's .nemo files first) and on T8.4. `ParakeetModel::qnn_dir` is `parakeet-qnn/<name>`; a missing conversion is a refusal naming the `qnn-convert` command, and the CPU is used, reported.
+The conversions are hosted nowhere: shipping waits on where they are hosted (Parakeet is CC-BY-4.0) and on T8.4. `ParakeetModel::qnn_dir` is `parakeet-qnn/<name>`; a missing conversion is a refusal naming the `qnn-convert` command, and the CPU is used, reported.
 
 ## Measured on the desktop (x64, 2026-10-24)
 

@@ -18,9 +18,8 @@
 # `[[ladder]]` or a local LLM outside `summary`. cuda = the GPU (CUDA 13) build of ONNX
 # Runtime, needed only for `earshot-onnx --features cuda`; eval = candidate models for the
 # transcription model evaluation (T6.10e, `model-eval`), never shipped from here (community
-# ONNX conversions, pinned; a shipped model is converted from NVIDIA's originals by a script
-# in this repo first; the Parakeet defaults are also in ci and desktop as
-# development copies, see their artefacts); llm-eval = candidate summary models for the
+# ONNX conversions, pinned; the Parakeet defaults are also in ci and desktop, and the app offers
+# them as downloads, see their artefacts); llm-eval = candidate summary models for the
 # summary-quality evaluation (T6.20, `cargo xtask sum-eval`), never ci, never shipped from
 # here. summary = the shipped local summary models, chosen by T6.20 (the owner): Qwen 3.5 9B
 # (Q4_K_M) by default, Qwen 3.5 4B (Q4_K_M) on machines with less memory (earshot-runtime
@@ -524,8 +523,8 @@ attribution = "onnx-asr NeMo mel preprocessor (Ilya Stupakov), MIT, https://gith
 # k2-fsa sherpa-onnx project: Hugging Face mirror csukuangfj/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000
 # pinned to commit e9bea5a06247dc3f55319ff23d34b0328f2f5ddf. Licence: CC-BY-4.0 (NVIDIA model card); the export is a
 # modification (format conversion). Evaluation conversion (T6.10e2), also in ci and desktop as a
-# development copy of a default model (PLAN D22): an installer must not ship it from here until
-# the conversion from NVIDIA's originals by a script in this repo exists.
+# default model (PLAN D22). The app offers this pinned copy as a download (the owner, 2026-11-07,
+# PLAN 7); no installer holds it.
 
 [[artefact]]
 id = "parakeet-tdt-110m-encoder"
@@ -579,8 +578,8 @@ attribution = "NVIDIA Parakeet TDT-CTC 110M (NVIDIA NeMo and Suno.ai), CC-BY-4.0
 # encoder.weights next to encoder.onnx) by the k2-fsa sherpa-onnx project: Hugging Face mirror csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2
 # pinned to commit 86891485dd8ad7cb28cb1aade45c3e23d0197c30. Licence: CC-BY-4.0 (NVIDIA model card); the export is a
 # modification (format conversion). Evaluation conversion (T6.10e2), also in ci and desktop as a
-# development copy of a default model (PLAN D22): an installer must not ship it from here until
-# the conversion from NVIDIA's originals by a script in this repo exists.
+# default model (PLAN D22). The app offers this pinned copy as a download (the owner, 2026-11-07,
+# PLAN 7); no installer holds it.
 
 [[artefact]]
 id = "parakeet-tdt-0.6b-v2-encoder"
@@ -646,8 +645,7 @@ attribution = "NVIDIA Parakeet TDT 0.6B v2 (NVIDIA), CC-BY-4.0, https://huggingf
 # weights in encoder.weights next to encoder.onnx) by the k2-fsa sherpa-onnx project: Hugging Face mirror csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3
 # pinned to commit 1a468a35cbba69418f126de829e75261dea4a4e4. Licence: CC-BY-4.0 (NVIDIA model card); the export is a
 # modification (format conversion). Evaluation conversion (T6.10e2), also in choice (a user
-# choice the app offers, never tested; PLAN D22): not shippable from here until converted from
-# NVIDIA's originals by a script in this repo.
+# choice the app offers, never tested; PLAN D22; the owner, 2026-11-07, PLAN 7).
 
 [[artefact]]
 id = "parakeet-tdt-0.6b-v3-encoder"
@@ -986,9 +984,8 @@ detects_language = true
 # measured backends are listed; QNN is added when measured (GATE-03). Vulkan (T6.10d) runs
 # whisper.cpp only (ONNX Runtime has no Vulkan provider here): its rungs are whisper models.
 # Every English rung is a default model (PLAN D22) and in `desktop`; the ones ci and accept m2
-# load are in `ci`. Parakeet models are community conversions from `eval` (development copies,
-# not shippable until converted from NVIDIA's originals); base.en is the shippable fallback
-# today. Multilingual rungs are recommendations the app offers (`choice`), never tested.
+# load are in `ci`. Parakeet models are the pinned community conversions from `eval`, offered as
+# downloads (the owner, 2026-11-07, PLAN 7); base.en is the fallback. Multilingual rungs are recommendations the app offers (`choice`), never tested.
 
 [[ladder]]
 backend = "cuda"
