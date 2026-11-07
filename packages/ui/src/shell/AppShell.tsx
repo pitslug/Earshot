@@ -756,6 +756,7 @@ export function AppShell({
             onNewMeeting={newMeeting}
             nameVoices={nameVoices}
             onChanged={refresh}
+            timer={timer}
             jobs={jobs}
             onJobStarted={(id, job) => {
               jobSeq.current += 1;
@@ -914,6 +915,7 @@ function Detail({
   onNewMeeting,
   nameVoices,
   onChanged,
+  timer,
   jobs,
   onJobStarted,
   onJobDismissed,
@@ -923,6 +925,7 @@ function Detail({
   onNewMeeting: () => void;
   nameVoices: number;
   onChanged: () => void;
+  timer: Timer;
   jobs: Record<string, JobView>;
   onJobStarted: (id: string, job: JobKind) => void;
   onJobDismissed: (id: string) => void;
@@ -960,6 +963,7 @@ function Detail({
       item={selected}
       nameVoices={nameVoices}
       onChanged={onChanged}
+      timer={timer}
       job={jobs[selected.id]}
       onJobStarted={(job) => onJobStarted(selected.id, job)}
       onJobDismissed={() => onJobDismissed(selected.id)}

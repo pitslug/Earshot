@@ -19,7 +19,7 @@ import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppShell } from "../shell/AppShell";
-import { handoverLine, rememberText } from "./detail";
+import { COPIED_MS, handoverLine, rememberText, summaryMarkdown } from "./detail";
 
 const ITEM: MeetingListItem = { ...sampleMeetings()[1], started_at_ms: 2_000 };
 /** An older meeting, so `ITEM` is shown first. */
@@ -136,6 +136,139 @@ describe("MeetingDetailView", () => {
     expect(header).not.toBe(prompt);
     await user.click(prompt);
     expect(calls).toContainEqual(["resummarise", ITEM.id]);
+  });
+
+  describe("Copy summary", () => {
+    /** A `navigator.clipboard` whose `writeText` records its text, or does what `write` says.
+     * Installed after `setup`, which brings user-event's own clipboard stub. */
+    function stubClipboard(write: (text: string) => Promise<void> = async () => {}) {
+      const written: string[] = [];
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: (text: string) => {
+            written.push(text);
+            return write(text);
+          },
+        },
+      });
+      return written;
+    }
+
+    const copyButton = () => screen.queryByRole("button", { name: "Copy summary" });
+
+    it("copies the summary shown, says so for a while, then goes back", async () => {
+      const { user, timer } = await setup();
+      await screen.findByText(/TL;DR/);
+      const written = stubClipboard();
+      const summary = sampleDetail(ITEM).summary;
+      if (summary === null) throw new Error("sample has a summary");
+
+      await user.click(screen.getByRole("button", { name: "Copy summary" }));
+      expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+      expect(written).toEqual([summaryMarkdown(summary)]);
+
+      act(() => timer.advance(COPIED_MS - 1));
+      expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+      act(() => timer.advance(1));
+      expect(screen.getByRole("button", { name: "Copy summary" })).toBeInTheDocument();
+    });
+
+    it("keeps saying so for the full time after a second copy", async () => {
+      const { user, timer } = await setup();
+      await screen.findByText(/TL;DR/);
+      const written = stubClipboard();
+      await user.click(screen.getByRole("button", { name: "Copy summary" }));
+      await screen.findByRole("button", { name: "Copied" });
+      act(() => timer.advance(COPIED_MS - 1));
+
+      await user.click(screen.getByRole("button", { name: "Copied" }));
+      await waitFor(() => expect(written).toHaveLength(2));
+      act(() => timer.advance(COPIED_MS - 1));
+      expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+      act(() => timer.advance(1));
+      expect(screen.getByRole("button", { name: "Copy summary" })).toBeInTheDocument();
+    });
+
+    it("shows a fixed message when the copy fails, never the raw error, and a later copy clears it", async () => {
+      const { user } = await setup();
+      await screen.findByText(/TL;DR/);
+      let refuse = true;
+      stubClipboard(async () => {
+        if (refuse) throw new Error("raw clipboard failure");
+      });
+
+      await user.click(screen.getByRole("button", { name: "Copy summary" }));
+      expect(await screen.findByText("The summary could not be copied.")).toBeInTheDocument();
+      expect(screen.queryByText(/raw clipboard failure/)).toBeNull();
+      expect(screen.getByRole("button", { name: "Copy summary" })).toBeInTheDocument();
+
+      refuse = false;
+      await user.click(screen.getByRole("button", { name: "Copy summary" }));
+      await screen.findByRole("button", { name: "Copied" });
+      expect(screen.queryByText("The summary could not be copied.")).toBeNull();
+    });
+
+    it("shows the same message when the webview has no clipboard", async () => {
+      const { user } = await setup();
+      await screen.findByText(/TL;DR/);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+      await user.click(screen.getByRole("button", { name: "Copy summary" }));
+      expect(await screen.findByText("The summary could not be copied.")).toBeInTheDocument();
+    });
+
+    it("has no button without a summary", async () => {
+      await setup({ details: { [ITEM.id]: { ...sampleDetail(ITEM), summary: null } } });
+      await screen.findByRole("button", { name: "Summarise" });
+      expect(copyButton()).toBeNull();
+    });
+
+    it("has no button on a summary with nothing in it", async () => {
+      await setup({
+        details: {
+          [ITEM.id]: {
+            ...sampleDetail(ITEM),
+            summary: { title: "", tldr: "", decisions: [], actions: [], notes: [], open_questions: [] },
+          },
+        },
+      });
+      await screen.findByText(/TL;DR/);
+      expect(copyButton()).toBeNull();
+    });
+
+    it("has no button while a new summary is being written, and offers the new one after", async () => {
+      const { user, timer } = await setup();
+      await screen.findByText(/TL;DR/);
+      await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+      expect(screen.getByText("Writing a new summary")).toBeInTheDocument();
+      expect(copyButton()).toBeNull();
+
+      act(() => timer.advance(POST_STEP_MS));
+      await screen.findByText(/The client hears the new date by Friday/);
+      const written = stubClipboard();
+      await user.click(screen.getByRole("button", { name: "Copy summary" }));
+      await screen.findByRole("button", { name: "Copied" });
+      expect(written[0]).toContain("The client hears the new date by Friday");
+    });
+
+    it("keeps the button while the meeting is transcribed again: its summary stays on screen", async () => {
+      const { user } = await setup();
+      await screen.findByText(/TL;DR/);
+      await user.click(screen.getByRole("button", { name: "Re-transcribe" }));
+      expect(screen.getByRole("button", { name: "Copy summary" })).toBeInTheDocument();
+    });
+
+    it("keeps the button when a re-summary is refused: the old summary stays", async () => {
+      const { user, ipc } = await setup();
+      await screen.findByText(/TL;DR/);
+      // A refused start: no job runs, the old summary stays.
+      ipc.resummarise = async () => {
+        throw new IpcFailure({ kind: "busy", message: "busy", retryable: true });
+      };
+      await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+      await screen.findByText(/already being re-transcribed or re-summarised/);
+      expect(screen.getByRole("button", { name: "Copy summary" })).toBeInTheDocument();
+    });
   });
 
   it("names a voice from its name field and the transcript follows", async () => {

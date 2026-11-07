@@ -1,6 +1,6 @@
 // The meeting detail screen (docs/ui-design.md "Meeting detail", T7.3, T9.1o): a header that
-// stays in view with Export, Re-transcribe and Re-summarise, Summary and Transcript tabs, and the
-// who-is-who panel. Deleting starts from the meeting list. Every change goes through `useIpc()`;
+// stays in view with Export, Copy summary, Re-transcribe and Re-summarise, Summary and Transcript
+// tabs, and the who-is-who panel. Deleting starts from the meeting list. Every change goes through `useIpc()`;
 // the detail is read again after each one.
 
 import {
@@ -39,8 +39,10 @@ import {
 import { stepLabel } from "../meeting/liveMeeting";
 import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
+import { type Timer, realTimer } from "../time";
 import { WhoIsWho } from "./WhoIsWho";
 import {
+  COPIED_MS,
   failureText,
   handoverLine,
   headerLine,
@@ -48,6 +50,7 @@ import {
   recordingsGone,
   rememberText,
   rowTime,
+  summaryMarkdown,
   voicesToName,
 } from "./detail";
 
@@ -90,6 +93,10 @@ const useStyles = makeStyles({
     alignItems: "flex-start",
     gap: tokens.spacingHorizontalS,
     whiteSpace: "nowrap",
+  },
+  // Wide enough for "Copy summary", so the header's buttons stay put when it says "Copied".
+  copyButton: {
+    minWidth: "124px",
   },
   muted: {
     color: tokens.colorNeutralForeground3,
@@ -199,6 +206,8 @@ export interface MeetingDetailViewProps {
   onJobStarted(job: JobKind): void;
   /** The job's notice was dismissed. */
   onJobDismissed(): void;
+  /** Timers (injected by tests). */
+  timer?: Timer;
 }
 
 /** A meeting's job: which one, and its latest event (`null` until the first). `seq` changes
@@ -276,6 +285,7 @@ export function MeetingDetailView({
   job,
   onJobStarted,
   onJobDismissed,
+  timer = realTimer,
 }: MeetingDetailViewProps) {
   const styles = useStyles();
   const ipc = useIpc();
@@ -391,6 +401,9 @@ export function MeetingDetailView({
   const title = displayTitle(item);
   const jobBar = job !== undefined ? jobNotice(job) : null;
   const voices = detail ? voicesToName(detail) : 0;
+  // A new summary being written replaces the one shown, so there is nothing settled to copy.
+  const writingSummary = job !== undefined && job.job === "Resummarise" && !isTerminal(job.last);
+  const summaryText = detail?.summary && !writingSummary ? summaryMarkdown(detail.summary) : "";
 
   return (
     <section className={styles.root} aria-label="Meeting detail">
@@ -405,6 +418,16 @@ export function MeetingDetailView({
           <Button onClick={() => void exportNote()} disabled={detail === null}>
             Export to Obsidian
           </Button>
+          {summaryText !== "" && (
+            <CopySummaryButton
+              text={summaryText}
+              timer={timer}
+              onCopied={() => setNotice((n) => (n?.key === "copy" ? null : n))}
+              onFailed={() =>
+                setNotice({ key: "copy", intent: "error", text: "The summary could not be copied." })
+              }
+            />
+          )}
           {detail !== null && recordingsGone(detail) ? (
             // Focusable, so a keyboard reaches the reason.
             <CompoundButton disabledFocusable secondaryContent="Recording no longer kept">
@@ -548,6 +571,46 @@ export function MeetingDetailView({
       {/* The play-sample audio (blob: URL, CSP media-src blob:). */}
       <audio ref={audio} hidden />
     </section>
+  );
+}
+
+/** Copies `text` to the clipboard. The webview allows this without a plugin: the page is a
+ * secure context and writing needs no permission. */
+function CopySummaryButton({
+  text,
+  timer,
+  onCopied,
+  onFailed,
+}: {
+  text: string;
+  timer: Timer;
+  onCopied(): void;
+  onFailed(): void;
+}) {
+  const styles = useStyles();
+  const [copied, setCopied] = useState(false);
+  const cancelReset = useRef<(() => void) | null>(null);
+
+  useEffect(() => () => cancelReset.current?.(), []);
+
+  const copy = async () => {
+    cancelReset.current?.();
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      setCopied(false);
+      onFailed();
+      return;
+    }
+    setCopied(true);
+    onCopied();
+    cancelReset.current = timer.setTimeout(() => setCopied(false), COPIED_MS);
+  };
+
+  return (
+    <Button className={styles.copyButton} onClick={() => void copy()}>
+      <span aria-live="polite">{copied ? "Copied" : "Copy summary"}</span>
+    </Button>
   );
 }
 

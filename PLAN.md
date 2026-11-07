@@ -1461,7 +1461,7 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T7.3
   - do: the owner (2026-11-08): a box above the meeting list that finds meetings by title, transcript and summary text, on this computer only, and opens the one picked. No new table or migration.
   - accept: `cargo test -p earshot-runtime search`; `cargo test -p earshot-desktop search`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
-- [ ] T9.8 Copy the summary
+- [x] T9.8 Copy the summary
   - deps: T7.3
   - do: the owner: a button on a meeting that copies its summary as plain Markdown.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark

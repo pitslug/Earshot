@@ -32,7 +32,7 @@ Reassurance, not a wall of text (D20):
 
 ## Meeting detail (T7.3)
 
-- Header: title, date, duration, capture mode, transcript pass (final or draft), summary model and backend. Buttons: Export to Obsidian, Re-transcribe, Re-summarise (Summarise when there is none); the header stays in view while the meeting scrolls. Deleting starts from the meeting list: a trash can on hover or keyboard focus, or the right-click menu (Menu key or Shift+F10 from the keyboard), then the confirm dialog.
+- Header: title, date, duration, capture mode, transcript pass (final or draft), summary model and backend. Buttons: Export to Obsidian, Copy summary (when there is a summary and no new one is being written: plain Markdown, no citations), Re-transcribe, Re-summarise (Summarise when there is none); the header stays in view while the meeting scrolls. Deleting starts from the meeting list: a trash can on hover or keyboard focus, or the right-click menu (Menu key or Shift+F10 from the keyboard), then the confirm dialog.
 - Tabs: Summary, Transcript.
 - Summary tab: TL;DR, Decisions, Actions (owner column + task), each item with its citations as small links that jump to the cited transcript line. Actions are read-only in the app: ticking happens in the exported Obsidian note ("Tick actions in the Obsidian note"). A "Re-summarise" button uses the style saved in Settings (a one-off style was dropped); the new summary replaces the old one and the previous one is kept until the next re-summary, with a "Switch to previous summary" link.
 - A banner when voices need names ("2 voices need names. Names flow into the summary and export.") opening the who-is-who panel.

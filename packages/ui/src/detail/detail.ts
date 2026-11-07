@@ -7,9 +7,45 @@ import {
   type RememberOutcome,
   type RememberResult,
   type SpeakerCard,
+  type SummaryView,
 } from "../ipc";
 import { clock } from "../meeting/liveMeeting";
 import { clockTime } from "../shell/meetings";
+
+/** How long "Copy summary" says "Copied". */
+export const COPIED_MS = 2_000;
+
+/** A summary as plain Markdown (T9.8): TL;DR, Decisions, Actions, the notes, Open questions.
+ * Empty sections are left out; citations, the title and the transcript are never included.
+ * "" when the summary holds nothing. */
+export function summaryMarkdown(s: SummaryView): string {
+  const line = (text: string) => text.trim().replace(/\s*\n\s*/g, " ");
+  const bullets = (items: string[]) =>
+    items
+      .map(line)
+      .filter((item) => item !== "")
+      .map((item) => `- ${item}`)
+      .join("\n");
+  const section = (heading: string, body: string) => {
+    if (body === "") return null;
+    return heading === "" ? body : `## ${heading}\n\n${body}`;
+  };
+  const action = (a: SummaryView["actions"][number]) => {
+    const task = line(a.task);
+    if (task === "") return "";
+    const owner = line(a.owner);
+    const due = a.due === null ? "" : line(a.due);
+    return `${owner === "" ? "" : `${owner}: `}${task}${due === "" ? "" : ` (by ${due})`}`;
+  };
+  const sections = [
+    section("TL;DR", s.tldr.trim()),
+    section("Decisions", bullets(s.decisions.map((d) => d.text))),
+    section("Actions", bullets(s.actions.map(action))),
+    ...s.notes.map((n) => section(line(n.heading), bullets(n.bullets.map((b) => b.text)))),
+    section("Open questions", bullets(s.open_questions)),
+  ].filter((part) => part !== null);
+  return sections.length === 0 ? "" : `${sections.join("\n\n")}\n`;
+}
 
 /** The header's second line: "Mon 2 Nov 09:30 · 42 min · Call · Final transcript · Summary by
  * Qwen 3.5 9B · Transcribed on GPU (CUDA)". */
