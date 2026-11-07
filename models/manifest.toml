@@ -316,10 +316,10 @@ attribution = "NVIDIA cuDNN 9.28.0.42 for CUDA 13 (NVIDIA Corporation), under th
 id = "earshot-cuda-set-llama-0.1.160-win-x64"
 sets = ["cuda-libraries"]
 location = "cache"
-url = "https://github.com/pitslug/earshot-releases/releases/download/cuda-set-llama-0.1.160-1/earshot-cuda-set-llama-0.1.160-cuda-13.4-win-x64.zip"
+url = "https://github.com/pitslug/Earshot/releases/download/cuda-set-llama-0.1.160-2/earshot-cuda-set-llama-0.1.160-cuda-13.4-win-x64.zip"
 path = "archives/earshot-cuda-set-llama-0.1.160-cuda-13.4-win-x64.zip"
-sha256 = "db0169dfafb4444854bbc2db466d74eee6fc44031dcdaabc8808309a3d91354a"
-size = 57693088
+sha256 = "d62d12ea8a425116e4ca81a7a1476b361bd168a684ad06caf1cfa4ab9d4cd290"
+size = 57693080
 licence = "MIT AND LicenseRef-NVIDIA-CUDA-EULA"
 attribution = "llama.cpp and ggml (MIT; LICENSE-llama.cpp in the archive) with NVIDIA's CUDA runtime linked statically (CUDA EULA), see NOTICE.md in the archive"
 
@@ -1098,8 +1098,8 @@ size = 2704384
 [[cuda_archive.file]]
 name = "NOTICE.md"
 member = "NOTICE.md"
-sha256 = "eb3e4c6b4280205368df5980c2f36be5d88ec3394714a7f4b0201e1c5a393321"
-size = 936
+sha256 = "375ee8527c98d585f4fcaedb295addcbd314ef5000929bacf0dd20b2a7a1ce38"
+size = 927
 
 [[cuda_archive.file]]
 name = "LICENSE-llama.cpp"

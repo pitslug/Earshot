@@ -326,8 +326,8 @@ fn cuda_summaries_lists_exactly_cublas_and_the_published_llama_set() {
         ),
         (
             "NOTICE.md",
-            936,
-            "eb3e4c6b4280205368df5980c2f36be5d88ec3394714a7f4b0201e1c5a393321",
+            927,
+            "375ee8527c98d585f4fcaedb295addcbd314ef5000929bacf0dd20b2a7a1ce38",
         ),
         (
             "LICENSE-llama.cpp",
@@ -355,10 +355,10 @@ fn cuda_summaries_lists_exactly_cublas_and_the_published_llama_set() {
         "{}",
         artefact.url
     );
-    assert_eq!(artefact.size, 57_693_088);
+    assert_eq!(artefact.size, 57_693_080);
     assert_eq!(
         artefact.sha256,
-        "db0169dfafb4444854bbc2db466d74eee6fc44031dcdaabc8808309a3d91354a"
+        "d62d12ea8a425116e4ca81a7a1476b361bd168a684ad06caf1cfa4ab9d4cd290"
     );
 }
 

@@ -350,7 +350,7 @@ A gate is a hard stop that waits for the human. The protocol (how gates are open
 - In-app update (T9.1b, D24): the release host (it must serve releases without a token in the app, so not a private GitHub repo). Settled: no MSI; one per-user NSIS installer, which updates without admin.
 - Windows code signing for the installers (a paid certificate, the owner's decision): without it SmartScreen warns on install and possibly on every update. The update signature in D24 does not replace it.
 - (Resolved, the owner: the opt-in CUDA download has two parts, in T8.4a.)
-- (Resolved, the owner: our CUDA set is published at `pitslug/earshot-releases`, a public releases-only repo, without waiting for NVIDIA's written answer. T9.1b's release host stays its own decision.)
+- (Resolved, the owner: our CUDA set is published in `pitslug/Earshot`'s releases, without waiting for NVIDIA's written answer. T9.1b's release host stays its own decision.)
 - Installers (T9.1c, T9.1p): NSIS carries CPL-1.0 on its LZMA stub (clear, not permissive; OK it before an installer leaves the owner's machines); the Visual C++ runtime is not bundled (`bundle.windows.bundleVcRuntime` is one line, but the redistribution terms need reading first; a machine without it probably cannot start the app); WebView2 is `skip` because every other mode contacts Microsoft (Windows 11 ships it); the default per-user NSIS folder is the data folder, `%LOCALAPPDATA%\Earshot`, and the owner chose to keep it per-user.
 - Sync encryption: TLS-only behind a reverse proxy vs end-to-end encrypted payloads (GATE-08).
 
@@ -1362,7 +1362,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - accept: `cargo xtask accept m1`; the crates' tests; `cargo xtask ci`
 - [x] T9.1k Earshot's source goes public from a fresh start
   - deps: T8.4ad, T8.4ae, T8.4af, T9.1j, T9.1m, T9.1ka, T9.1kb
-  - status: public. The owner read the files and approved the push. Still to do, each on the owner's word: the CUDA set moves to this repo's releases, and `earshot-releases` is removed.
+  - status: public. The owner read the files and approved the push. The CUDA set is in this repo's releases. Still to do, on the owner's word and only after installed builds have moved on: `earshot-releases` is removed.
   - do: decided by the owner. One repo: public `pitslug/Earshot`, starting from one cleaned commit, and the working folder is that repo. The earlier history is an archive that is no longer worked in. Recordings, logs and personal details stay out, as files ignored by git on the owner's machine. Automated code tests stay in, on invented names and public audio. A pre-push hook and a `cargo xtask ci` step check for them.
   - accept: the guard's tests catch a planted email, name and recording; `git log --format='%ae %ce' | sort -u` in the new repo shows only the noreply address; the owner's approval of the diff recorded
 - [x] T9.1n Choose light or dark in Settings

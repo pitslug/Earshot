@@ -77,7 +77,7 @@ To rebuild the gap set: `cargo build --release -p earshot-llm-local --features c
 
 | Part | From | Download | On disk |
 |---|---|---|---|
-| Summaries: our CUDA set | GitHub releases (`pitslug/earshot-releases`) | 57.7 MB | 74.7 MB |
+| Summaries: our CUDA set | GitHub releases (`pitslug/Earshot`) | 57.7 MB | 74.7 MB |
 | Summaries: cuBLAS | NVIDIA | 423.6 MB | 547.8 MB |
 | Transcription, optional: cuDNN | NVIDIA | 1,265.9 MB | 602.7 MB |
 | Transcription, optional: ONNX Runtime's CUDA build | GitHub (Microsoft's release) | 309.5 MB | 214.9 MB |
@@ -88,7 +88,7 @@ The set's DLLs must match earshot-llm-local's `llama-cpp-sys-2` pin, so upgradin
 
 ## What this needs from the owner
 
-- **The set is published**: [cuda-set-llama-0.1.160-1](https://github.com/pitslug/earshot-releases/releases/tag/cuda-set-llama-0.1.160-1), no new host in the manifest. It moves to Earshot's own releases when the source goes public (T9.1k). It carries no conversation content.
+- **The set is published**: [cuda-set-llama-0.1.160-2](https://github.com/pitslug/Earshot/releases/tag/cuda-set-llama-0.1.160-2), no new host in the manifest. Its DLLs are those of the first release; only the link in `NOTICE.md` changed, and because that file is pinned, an existing install shows as partial and downloads the set once more. It carries no conversation content.
 - **The licence question.** That set links NVIDIA's runtime statically, which `docs/cuda-libraries.md` already asks NVIDIA about; the written answer stays open before a public release.
 
 ## Risks
