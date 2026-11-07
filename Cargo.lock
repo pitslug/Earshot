@@ -1175,11 +1175,11 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "earshot-asr-qnn"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "earshot-asr-whisper"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "claxon",
  "earshot-core",
@@ -1195,11 +1195,11 @@ dependencies = [
 
 [[package]]
 name = "earshot-capture-android"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "earshot-capture-wasapi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "earshot-core",
  "serde",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "earshot-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "earshot-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "claxon",
  "hound",
@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "earshot-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "earshot-capture-wasapi",
  "earshot-core",
@@ -1275,14 +1275,14 @@ dependencies = [
 
 [[package]]
 name = "earshot-hardware"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "windows",
 ]
 
 [[package]]
 name = "earshot-llm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "earshot-core",
  "earshot-llm-replay",
@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "earshot-llm-local"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "claxon",
  "earshot-asr-whisper",
@@ -1310,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "earshot-llm-replay"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "earshot-core",
  "earshot-llm",
@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "earshot-net"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "earshot-core",
  "reqwest",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "earshot-onnx"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "claxon",
  "earshot-core",
@@ -1349,11 +1349,11 @@ dependencies = [
 
 [[package]]
 name = "earshot-proc"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "earshot-runtime"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bzip2",
  "claxon",
@@ -1382,7 +1382,7 @@ dependencies = [
 
 [[package]]
 name = "earshot-store"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "claxon",
  "earshot-core",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "earshot-update"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ed25519-dalek",
  "serde",
@@ -6266,7 +6266,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bzip2",
