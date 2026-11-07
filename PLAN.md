@@ -1457,9 +1457,33 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T8.4ab
   - do: T8.4ab leaves a stalled GPU's thread behind, which holds its graphics memory until a restart, and a driver crash still takes the whole app down. Run GPU summaries in a child process (as the model check does, `earshot_proc::KillOnClose`), so a stall kills the child and frees the memory and a driver crash costs only that summary. Covers progress, cancelling, the handover of the transcript and live summaries; content stays on the machine and never enters a log or command line.
   - accept: tests with a fake child that a stall or a crash moves the summary to the CPU and says so; a stalled child is gone after the kill
+- [ ] T9.7 Search across meetings
+  - deps: T7.3
+  - do: the owner (2026-11-08): a box above the meeting list that finds meetings by title, transcript and summary text, on this computer only, and opens the one picked. No new table or migration.
+  - accept: `cargo test -p earshot-runtime search`; `cargo test -p earshot-desktop search`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
+- [ ] T9.8 Copy the summary
+  - deps: T7.3
+  - do: the owner: a button on a meeting that copies its summary as plain Markdown.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
+- [ ] T9.9 Cancel on "Finishing the meeting"
+  - deps: T7.3
+  - do: the owner: a Cancel on that view stops the final pass and the summary. The audio and the meeting stay, marked as not processed, and can be re-transcribed.
+  - accept: `cargo test -p earshot-desktop meeting`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
+- [ ] T9.10 Show when an update is available
+  - deps: T9.1ba
+  - do: the owner: when a check finds an update, a mark beside Settings says so, not only the General page.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
+- [ ] T9.11 Clear the crash report exclusion on uninstall
+  - deps: T9.1t
+  - do: the owner: the uninstaller removes the exe's name from the user's Windows Error Reporting exclusion list, except on an update. `bundle-check` proves it under its registry guard.
+  - accept: `cargo test -p xtask bundle`; `cargo xtask build --bundle`; `cargo xtask bundle-check`
+- [ ] T9.12 Mark a voice as yourself in an in-room meeting
+  - deps: T7.4h
+  - do: the owner: in an in-room meeting with no saved voice, the user can say a voice is theirs, instead of naming themselves creating a second person. Reviewer required: it changes who counts as the user.
+  - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
 - [ ] T9.5 Folders in the side panel
   - deps: T9.1
-  - do: The owner, after release. Group meetings into folders in the side panel. It needs a new table, a migration and a place in the future sync design, so it starts with a short design for the owner.
+  - do: The owner, after release. Group meetings into folders in the side panel. It needs a new table, a migration and a place in the future sync design, so it starts with a short design for the owner (docs/folders-design.md).
   - accept: the design agreed with the owner; its accept written then
 - [ ] T9.6 Shared models for an "everyone" install
   - deps: T9.1p
