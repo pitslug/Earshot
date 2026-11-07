@@ -311,6 +311,24 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// Make the release key for in-app updates, once (T9.1b): prints its public half.
+    UpdateKey {
+        /// Where the key goes: outside the repo, never over an existing file.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Sign the installer `build --bundle` left, for an in-app update (T9.1b).
+    SignUpdate {
+        /// The release key `update-key` made.
+        #[arg(long)]
+        key: std::path::PathBuf,
+        /// The installer's target (default: the host).
+        #[arg(long)]
+        target: Option<String>,
+        /// The folder `build --bundle` used.
+        #[arg(long)]
+        target_dir: Option<std::path::PathBuf>,
+    },
     /// T6.13 measurements: generate the test meetings, time the single pass on a realtime
     /// replay, compare it with the whole-meeting pass. Reports in target/t613/.
     T613 {
@@ -524,6 +542,17 @@ fn main() -> ExitCode {
         }
         Cmd::QnnEtw => xtask::qnn_etw::run(&root),
         Cmd::AecHeldoutBaseline => xtask::accept::m1::write_heldout_baseline(&root).map(|()| true),
+        Cmd::UpdateKey { out } => xtask::update::make_key(&root, &out).map(|public| {
+            println!("public key: {public}");
+            println!("keep {} safe and out of the repo", out.display());
+            true
+        }),
+        Cmd::SignUpdate {
+            key,
+            target,
+            target_dir,
+        } => xtask::update::run_sign(&root, &key, target.as_deref(), target_dir.as_deref())
+            .map(|_| true),
         Cmd::BenchMeeting { check } => xtask::bench_meeting::run(&root, check).map(|()| true),
         Cmd::EchoNl { dir, verbose } => {
             xtask::echo_nl::run(&root, dir.as_deref(), verbose).map(|()| true)
@@ -847,6 +876,8 @@ mod tests {
                 "echo-nl",
                 "aec-heldout-baseline",
                 "bench-meeting",
+                "update-key",
+                "sign-update",
                 "t613"
             ]
         );

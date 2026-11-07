@@ -18,9 +18,10 @@ All of this is under `%LOCALAPPDATA%\Earshot`, which Earshot does not encrypt. A
 | What | Where to | When |
 |---|---|---|
 | Requests for model files | `huggingface.co`, `github.com`, `raw.githubusercontent.com`, and on opt-in CUDA downloads `developer.download.nvidia.com`, plus the first two's download servers (`*.hf.co`, `release-assets.githubusercontent.com`) | Only when you start a download. Those hosts see your IP address and which file you asked for. Every file is checked against a pinned checksum. |
+| Requests for updates | `github.com` and its download server `release-assets.githubusercontent.com` | Only when you press **Check for updates** or **Download**, or when Earshot starts if you turned on automatic checks. Every update is verified against a key built into Earshot before it runs. |
 | Summary text | The provider you chose | Only if you chose one, as below. Local summaries, the default, send nothing. |
 
-No update check exists yet. When one is added, it will be off unless you press the button or turn on automatic checks, and it will carry no conversation content.
+Update checks are off unless you press **Check for updates** or turn on automatic checks in Settings, General. A check asks GitHub for one small file and carries no conversation content. GitHub sees your IP address and which file was asked for.
 
 ## If you choose a summary provider
 

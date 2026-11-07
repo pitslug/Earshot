@@ -237,6 +237,22 @@ fn read_capped(mut r: impl Read, cap: usize) -> (Vec<u8>, bool) {
     }
 }
 
+/// Starts `program` and leaves it running with nothing attached: no job object, so it outlives
+/// this process, which is the point (an update's installer replaces this exe after it exits).
+/// Everything else here keeps a child on a short lead; use this only for what must survive.
+///
+/// # Errors
+/// The program could not start.
+pub fn spawn_detached(program: &std::path::Path, args: &[&str]) -> io::Result<()> {
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(drop)
+}
+
 /// Runs `spec` (module docs). `cancelled` is polled every [`POLL`].
 ///
 /// # Errors

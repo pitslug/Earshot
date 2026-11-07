@@ -7,6 +7,7 @@ members = [
     "crates/earshot-asr-qnn",
     "crates/earshot-net",
     "crates/earshot-proc",
+    "crates/earshot-update",
     "crates/earshot-llm",
     "crates/earshot-llm-replay",
     "crates/earshot-llm-local",

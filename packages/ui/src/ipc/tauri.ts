@@ -141,6 +141,21 @@ export function createTauriIpc(): Ipc {
     onAudioCheckEvent: (handler) => events.audioCheckEvent.listen((event) => handler(event.payload)),
     onBenchmarkEvent: (handler) => events.benchmarkEvent.listen((event) => handler(event.payload)),
     onShellEvent: (handler) => events.shellEvent.listen((event) => handler(event.payload)),
+    onUpdateEvent: (handler) => events.updateEvent.listen((event) => handler(event.payload)),
+    updateStatus: async () => unwrap(await commands.updateStatus()),
+    checkForUpdate: async () => {
+      unwrap(await commands.checkForUpdate());
+    },
+    downloadUpdate: async () => {
+      unwrap(await commands.downloadUpdate());
+    },
+    cancelUpdate: async () => {
+      unwrap(await commands.cancelUpdate());
+    },
+    setUpdateAutoCheck: async (on) => unwrap(await commands.setUpdateAutoCheck(on)),
+    installUpdate: async () => {
+      unwrap(await commands.installUpdate());
+    },
     cudaSettings: async () => unwrap(await commands.cudaSettings()),
     setCudaSettings: async (value) => unwrap(await commands.setCudaSettings(value)),
     startCudaDownload: async (part, acceptedTerms) => {

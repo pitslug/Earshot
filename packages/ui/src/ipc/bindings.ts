@@ -182,6 +182,18 @@ export const commands = {
 	pickObsidianVault: (start: string) => typedError<string | null, IpcError>(__TAURI_INVOKE("pick_obsidian_vault", { start })),
 	/**  The General page: start with Windows, the theme and the version. */
 	generalSettings: () => typedError<GeneralView, IpcError>(__TAURI_INVOKE("general_settings")),
+	/**  What the Updates section shows. */
+	updateStatus: () => typedError<UpdateView, IpcError>(__TAURI_INVOKE("update_status")),
+	/**  Asks the update host for the latest version; `UpdateEvent`s follow. */
+	checkForUpdate: () => typedError<null, IpcError>(__TAURI_INVOKE("check_for_update")),
+	/**  Downloads what the last check found; `UpdateEvent`s follow. */
+	downloadUpdate: () => typedError<null, IpcError>(__TAURI_INVOKE("download_update")),
+	/**  Stops a download. */
+	cancelUpdate: () => typedError<null, IpcError>(__TAURI_INVOKE("cancel_update")),
+	/**  Turns the check at each start on or off. */
+	setUpdateAutoCheck: (on: boolean) => typedError<UpdateView, IpcError>(__TAURI_INVOKE("set_update_auto_check", { on })),
+	/**  Starts the verified installer and exits; the installer starts the new version when it ends. */
+	installUpdate: () => typedError<null, IpcError>(__TAURI_INVOKE("install_update")),
 	/**  Turns "start Earshot with Windows" on or off (`autostart` when Windows refuses). */
 	setStartWithWindows: (on: boolean) => typedError<GeneralView, IpcError>(__TAURI_INVOKE("set_start_with_windows", { on })),
 	/**  Whether meetings show provisional words. */
@@ -271,6 +283,7 @@ export const events = {
 	meetingEvent: makeEvent<MeetingEvent>("meeting-event"),
 	modelJobEvent: makeEvent<ModelJobEvent>("model-job-event"),
 	shellEvent: makeEvent<ShellEvent>("shell-event"),
+	updateEvent: makeEvent<UpdateEvent>("update-event"),
 	voiceEvent: makeEvent<VoiceEvent>("voice-event"),
 };
 
@@ -1716,6 +1729,53 @@ export type TranscriptState =
 "Live" | 
 /**  The live transcript stopped for this meeting; the full one is made after it. */
 "Stopped";
+
+/**  Where the update stands now, as an event. */
+export type UpdateEvent = {
+	/**  The new phase. */
+	phase: UpdatePhase,
+};
+
+/**  Where the update stands. */
+export type UpdatePhase = 
+/**  Nothing asked yet. */
+{ state: "Idle" } | 
+/**  Asking the update host. */
+{ state: "Checking" } | 
+/**  The latest release is this version or older. */
+{ state: "UpToDate" } | 
+/**  A newer release can be downloaded. */
+{ state: "Available"; 
+/**  The new version. */
+version: string; 
+/**  The installer's size in bytes. */
+size: number } | 
+/**  The installer is downloading. */
+{ state: "Downloading"; 
+/**  The new version. */
+version: string; 
+/**  Bytes held. */
+done: number; 
+/**  Bytes in all. */
+total: number } | 
+/**  The installer is here and verified: the next step restarts the app. */
+{ state: "Ready"; 
+/**  The new version. */
+version: string } | 
+/**  The last step failed. Fixed copy, never a URL or a path. */
+{ state: "Failed"; 
+/**  What to tell the user. */
+message: string };
+
+/**  What the page reads when it opens. */
+export type UpdateView = {
+	/**  The running version. */
+	current: string,
+	/**  Where the update stands. */
+	phase: UpdatePhase,
+	/**  Whether Earshot checks by itself when it starts. */
+	auto_check: boolean,
+};
 
 /**  What a check found for a model where it would run. */
 export type Verdict = 

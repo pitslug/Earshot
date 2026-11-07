@@ -34,6 +34,7 @@ pub mod t613;
 pub mod thresholds;
 pub mod timefmt;
 pub mod ui;
+pub mod update;
 pub mod vulkan_parity;
 
 use std::path::{Path, PathBuf};

@@ -22,6 +22,7 @@ import { type ReactNode, useEffect, useId, useState } from "react";
 import { type GeneralView, type PreviewsView, useIpc } from "../ipc";
 import { type ThemeChoice, useThemeChoice } from "../theme/EarshotThemeProvider";
 import { CrashLogsFolder } from "./CrashLogsFolder";
+import { UpdatesSection } from "./UpdatesSection";
 import { errorText } from "./useModels";
 
 const useStyles = makeStyles({
@@ -266,8 +267,8 @@ export function GeneralPage({ onOpenSetup }: GeneralPageProps) {
         </Section>
       )}
       <ThemeSection />
-      <Section title="About">
-        <Body1>Earshot {view.version}</Body1>
+      <Section title="Updates">
+        <UpdatesSection />
       </Section>
       <Section title="Crash logs">
         <CrashLogsFolder />

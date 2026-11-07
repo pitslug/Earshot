@@ -1,0 +1,20 @@
+[package]
+name = "earshot-update"
+description = "The signed version file of an in-app update (T9.1b): no network, no files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Signing a release (xtask only). The shipped app verifies.
+sign = []
+
+[dependencies]
+# Pure Rust. No default features: no random numbers, no signing helpers beyond the type.
+ed25519-dalek = { version = "3", default-features = false, features = ["fast"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

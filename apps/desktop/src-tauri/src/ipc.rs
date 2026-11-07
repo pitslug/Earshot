@@ -85,6 +85,12 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::obsidian::set_obsidian_settings,
             crate::obsidian::pick_obsidian_vault,
             crate::general::general_settings,
+            crate::update_settings::update_status,
+            crate::update_settings::check_for_update,
+            crate::update_settings::download_update,
+            crate::update_settings::cancel_update,
+            crate::update_settings::set_update_auto_check,
+            crate::update_settings::install_update,
             crate::general::set_start_with_windows,
             crate::general::previews_settings,
             crate::general::set_previews,
@@ -116,6 +122,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             MeetingEvent,
             JobEvent,
             ModelJobEvent,
+            crate::update_settings::UpdateEvent,
             crate::speaker_settings::VoiceEvent,
             crate::audio_check::AudioCheckEvent,
             crate::benchmark::BenchmarkEvent,
@@ -137,7 +144,7 @@ pub struct IpcError {
 }
 
 impl IpcError {
-    fn new(kind: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(kind: &str, message: impl Into<String>) -> Self {
         Self {
             kind: kind.into(),
             message: message.into(),
@@ -342,6 +349,11 @@ impl AppState {
         })?;
         let store = data.open_store().map_err(RuntimeError::from)?;
         Ok(Services::new(store, data.clone(), Arc::new(SystemClock))?)
+    }
+
+    /// The data folder, known even when the store failed to open.
+    pub(crate) fn data_dir(&self) -> Option<&DataDir> {
+        self.data.as_ref()
     }
 
     pub(crate) fn services(&self) -> Result<Services, IpcError> {

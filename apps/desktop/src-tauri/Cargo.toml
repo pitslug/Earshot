@@ -70,6 +70,8 @@ windows = { version = "0.62", features = [
 ] }
 
 [dev-dependencies]
+# The refusal the update tests name.
+earshot-update = { path = "../../../crates/earshot-update" }
 # Generates the TypeScript bindings in the drift test (same pin as tauri-specta's).
 specta-typescript = "=0.0.12"
 # Seeded row ids in tests (same versions as earshot-runtime).

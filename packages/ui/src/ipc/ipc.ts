@@ -38,6 +38,9 @@ import type {
   TranscriptState,
   ModelItem,
   ModelJobEvent,
+  UpdateEvent,
+  UpdatePhase,
+  UpdateView,
   ModelSettingsValue,
   ModelSettingsView,
   ModelUse,
@@ -128,6 +131,9 @@ export type {
   TranscriptState,
   ModelItem,
   ModelJobEvent,
+  UpdateEvent,
+  UpdatePhase,
+  UpdateView,
   ModelSettingsValue,
   ModelSettingsView,
   ModelUse,
@@ -214,6 +220,18 @@ export interface IpcCommands
   /** Forgets every voiceprint of a person. */
   forgetPersonVoices(person: string): Promise<number>;
   removePerson(person: string): Promise<void>;
+  /** The Updates section's state. */
+  updateStatus(): Promise<UpdateView>;
+  /** Asks the update host for the latest version; `UpdateEvent`s follow. */
+  checkForUpdate(): Promise<void>;
+  /** Downloads what the last check found; `UpdateEvent`s follow. */
+  downloadUpdate(): Promise<void>;
+  /** Stops a download; what arrived is kept. */
+  cancelUpdate(): Promise<void>;
+  /** Turns the check at each start on or off. */
+  setUpdateAutoCheck(on: boolean): Promise<UpdateView>;
+  /** Starts the verified installer and exits. Rejects with `busy` or `update_not_ready`. */
+  installUpdate(): Promise<void>;
   /** A speaker's sample as a base64 WAV file; `null` when the audio is no longer kept. */
   speakerSample(meeting: string, speaker: string): Promise<string | null>;
   /** Starts a re-transcription; `JobEvent`s follow. Rejects with `busy` / `meeting_busy`. */
@@ -317,6 +335,8 @@ export interface Ipc extends IpcCommands {
   onJobEvent(handler: (event: JobEvent) => void): Promise<() => void>;
   /** Calls `handler` for every model job event (downloads, the model check). */
   onModelJobEvent(handler: (event: ModelJobEvent) => void): Promise<() => void>;
+  /** Where an update stands, as it changes. */
+  onUpdateEvent(handler: (event: UpdateEvent) => void): Promise<() => void>;
   /** Calls `handler` for every voice sample event. */
   onVoiceEvent(handler: (event: VoiceEvent) => void): Promise<() => void>;
   /** Calls `handler` for every audio check event. */
@@ -337,6 +357,7 @@ export const EVENT_METHODS = [
   "onMeetingEvent",
   "onJobEvent",
   "onModelJobEvent",
+  "onUpdateEvent",
   "onVoiceEvent",
   "onAudioCheckEvent",
   "onBenchmarkEvent",

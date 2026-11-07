@@ -37,6 +37,8 @@ earshot-onnx = { path = "../earshot-onnx" }
 # Hardware facts for the Models page (T7.4d): processor, display adapters, NPUs, memory.
 earshot-hardware = { path = "../earshot-hardware" }
 earshot-store = { path = "../earshot-store" }
+# Verifying an in-app update (T9.1b).
+earshot-update = { path = "../earshot-update" }
 # Summaries: the OpenAI-compatible client. All HTTP goes through earshot-net (PLAN.md 3.9,
 # D14): allowlist of the configured endpoint only, audit log.
 earshot-llm = { path = "../earshot-llm" }
@@ -85,6 +87,8 @@ name = "diar_eval"
 test = true
 
 [dev-dependencies]
+# Signing the releases the update tests serve.
+earshot-update = { path = "../earshot-update", features = ["sign"] }
 # Loopback mock LLM endpoint (test support only; the ci `net` step fails if a shipped
 # crate depends on it normally).
 earshot-llm-replay = { path = "../earshot-llm-replay" }

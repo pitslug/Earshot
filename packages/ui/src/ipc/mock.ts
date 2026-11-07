@@ -8,6 +8,8 @@ import {
   type AppInfo,
   type CaptureMode,
   type Ipc,
+  type UpdateEvent,
+  type UpdatePhase,
   type IpcError,
   IpcFailure,
   type JobEvent,
@@ -160,6 +162,8 @@ export interface MockIpcData {
   onRememberVoices?: (meeting: string, speakers: string[]) => void;
   /** Called with every edit and job request (`["renameSpeaker", meeting, ...]`). */
   onCall?: (call: unknown[]) => void;
+  /** Where an update stands when the app opens (default: nothing asked), and a refusal of install. */
+  update?: { phase?: UpdatePhase; failInstall?: string };
   /** The sample computer of the Models page (default: the Surface-like one). */
   machine?: SampleMachine;
   /** The model check first warns with this (an accelerator's library could not load). */
@@ -212,6 +216,10 @@ export const SILENT_WAV_BASE64 = (() => {
   return btoa(binary);
 })();
 
+/** What the mock's update host offers. */
+const UPDATE_VERSION = "9.9.9";
+const UPDATE_SIZE = 25_000_000;
+
 /** How long the mock's catch-up after a held start lasts. */
 export const CATCH_UP_MS = 4_000;
 
@@ -222,6 +230,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const timer = data.timer ?? realTimer;
   const listeners = new Set<(event: MeetingEvent) => void>();
   const jobListeners = new Set<(event: JobEvent) => void>();
+  const updateListeners = new Set<(event: UpdateEvent) => void>();
+  let updatePhase: UpdatePhase = data.update?.phase ?? { state: "Idle" };
+  let updateAuto = false;
+  const emitUpdate = (phase: UpdatePhase) => {
+    updatePhase = phase;
+    for (const l of [...updateListeners]) l({ phase });
+  };
   const emitJob = (event: JobEvent) => {
     for (const l of [...jobListeners]) l(event);
   };
@@ -484,6 +499,35 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     quitApp: async () => {
       data.onQuit?.();
+    },
+    onUpdateEvent: async (handler) => {
+      updateListeners.add(handler);
+      return () => updateListeners.delete(handler);
+    },
+    updateStatus: async () => ({
+      current: appInfo.version,
+      phase: updatePhase,
+      auto_check: updateAuto,
+    }),
+    checkForUpdate: async () => {
+      call("checkForUpdate");
+      emitUpdate({ state: "Available", version: UPDATE_VERSION, size: UPDATE_SIZE });
+    },
+    downloadUpdate: async () => {
+      call("downloadUpdate");
+      emitUpdate({ state: "Ready", version: UPDATE_VERSION });
+    },
+    cancelUpdate: async () => {
+      call("cancelUpdate");
+      emitUpdate({ state: "Available", version: UPDATE_VERSION, size: UPDATE_SIZE });
+    },
+    setUpdateAutoCheck: async (on) => {
+      updateAuto = on;
+      return { current: appInfo.version, phase: updatePhase, auto_check: updateAuto };
+    },
+    installUpdate: async () => {
+      call("installUpdate");
+      if (data.update?.failInstall !== undefined) fail("busy", data.update.failInstall, true);
     },
     // The tray, the shortcut and notifications do not exist in the preview: nothing is sent.
     onShellEvent: async () => () => {},

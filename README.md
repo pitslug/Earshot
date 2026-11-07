@@ -4,7 +4,7 @@ A Windows meeting recorder that keeps your conversations on your own computer. I
 
 ## Status
 
-Earshot is early software. **[Download the x64 Windows installer](https://github.com/pitslug/Earshot/releases/latest)** from Releases, or build it from source (below). There is no in-app update yet, so each new version is installed by hand. Installers are not code-signed yet, so Windows SmartScreen warns when you run one: choose "More info", then "Run anyway".
+Earshot is early software. **[Download the x64 Windows installer](https://github.com/pitslug/Earshot/releases/latest)** from Releases, or build it from source (below). 0.1.0 has no in-app update, so it has to install the next version by hand; later versions will update from Settings, General. Installers are not code-signed yet, so Windows SmartScreen warns when you run one: choose "More info", then "Run anyway".
 
 ## What it does
 

@@ -69,6 +69,7 @@ pub mod summary_child;
 pub mod summary_model;
 pub mod summary_settings;
 pub mod summary_style;
+pub mod update;
 pub mod view;
 
 #[cfg(test)]

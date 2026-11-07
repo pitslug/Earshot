@@ -12,6 +12,9 @@ clap = { version = "4", features = ["derive"] }
 # `echo-nl` decodes the smoke FLACs for the call simulator (T1.2a).
 claxon = "0.4.3"
 earshot-core = { path = "../crates/earshot-core" }
+# The release key and the signed version file of an update (T9.1b).
+earshot-update = { path = "../crates/earshot-update", features = ["sign"] }
+getrandom = "0.4"
 # `accept m4` replays fixtures/llm through the real summarizer against a loopback mock.
 earshot-llm = { path = "../crates/earshot-llm" }
 earshot-llm-replay = { path = "../crates/earshot-llm-replay" }

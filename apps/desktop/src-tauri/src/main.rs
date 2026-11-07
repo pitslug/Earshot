@@ -43,6 +43,7 @@ mod testutil;
 #[cfg(windows)]
 mod toast_win;
 mod transcription_probe;
+mod update_settings;
 #[cfg(windows)]
 mod wer_win;
 
@@ -141,6 +142,31 @@ fn main() {
                     storage_settings::RETENTION_PERIOD,
                 );
             }
+            // In-app updates (T9.1b): what an earlier update left goes first; a check only if the
+            // user turned automatic checks on.
+            let handle = app.handle().clone();
+            let update_sink: update_settings::UpdateSink =
+                Arc::new(move |e: update_settings::UpdateEvent| {
+                    let _ = e.emit(&handle);
+                });
+            let update_dir = state.data_dir().map(earshot_runtime::update::updates_dir);
+            if let Some(dir) = &update_dir {
+                earshot_runtime::update::remove_leftovers(dir);
+            }
+            let update_jobs = update_settings::UpdateJobs::new(
+                Arc::new(update_settings::HostUpdates::new(
+                    update_dir,
+                    Arc::new(earshot_runtime::SystemClock),
+                )),
+                update_sink,
+            );
+            let check_now = state.services().is_ok_and(|services| {
+                earshot_runtime::update::auto_check(&services.store()).unwrap_or(false)
+            });
+            if check_now {
+                let _ = update_jobs.start_check(true);
+            }
+            app.manage(update_jobs);
             app.manage(state);
             app.manage(retention);
             let handle = app.handle().clone();

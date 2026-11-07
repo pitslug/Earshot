@@ -178,6 +178,8 @@ pub(crate) enum DeviceRecord {
     CudaTranscription,
     /// `settings/provisional-words`: whether a meeting shows provisional words (T9.1mb).
     Previews,
+    /// `settings/update-check`: whether Earshot checks for updates when it starts (T9.1b).
+    UpdateCheck,
 }
 
 impl DeviceRecord {
@@ -213,6 +215,7 @@ impl DeviceRecord {
         DeviceRecord::CudaSummaries,
         DeviceRecord::CudaTranscription,
         DeviceRecord::Previews,
+        DeviceRecord::UpdateCheck,
     ];
 
     /// Its key.
@@ -252,6 +255,7 @@ impl DeviceRecord {
                 DeviceRecord::CudaSummaries => crate::cuda_switch::CUDA_SUMMARIES_KEY,
                 DeviceRecord::CudaTranscription => crate::cuda_switch::CUDA_TRANSCRIPTION_KEY,
                 DeviceRecord::Previews => crate::preview_settings::PREVIEWS_KEY,
+                DeviceRecord::UpdateCheck => crate::update::AUTO_CHECK_KEY,
             }
             .to_owned(),
         )
