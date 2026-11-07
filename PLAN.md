@@ -343,10 +343,12 @@ A gate is a hard stop that waits for the human. The protocol (how gates are open
 
 - (Resolved, the owner: the project's own code is MIT, `LICENSE`. Third-party files keep their own terms; NVIDIA's parts are never under it.)
 - Whether to re-host the AMI reference RTTMs/UEMs or derive them from AMI's own annotations (licence check in T0.4a).
+- (Resolved 2026-11-07, the owner: the installer may carry NSIS's CPL-1.0 LZMA stub; the README credits it and says where its source is.)
+- (Resolved 2026-11-07, the owner: the device switch of GATE-01a and the notification checks of GATE-02 move to after the x64 early release; the desktop has one output device. They stay open, and the gates stay `[ ]`.)
 - (Resolved 2026-11-07, the owner: the app offers the pinned community Parakeet conversions (k2-fsa sherpa-onnx, CC-BY-4.0, checked by SHA-256) as downloads from their own hosts, in the x64 early release and until decided otherwise. Earshot does not host them: GitHub cannot hold the 2.27 GiB encoder, and the licence does not ask for it. The risk accepted is the uploader removing the files; converting from NVIDIA's `.nemo` and hosting on the owner's Hugging Face account is the way out if that happens.)
 - (Resolved 2026-10-24: T8.3 targets Parakeet through Qualcomm's ONNX Runtime QNN plugin; the owner accepts the Qualcomm AI Stack License for development on their own machines; the NPU never runs a real meeting before an ETW check shows the plugin emits no telemetry.)
 - Redistribution terms for the Qualcomm QNN HTP runtime DLLs bundled with the arm64 build (T8.4); look at Windows ML (Windows-supplied NPU providers) as an alternative to redistributing them.
-- Whether end users may fetch NVIDIA's files from NVIDIA's server (D23: asked in writing before a public release; the source itself is decided).
+- (Resolved 2026-11-07, the owner: end users fetch NVIDIA's files from NVIDIA's server without a written answer first. The owner accepts that risk at this scale.)
   Research for that decision: `docs/cuda-libraries.md` (no route settled on the licence text; ask NVIDIA in writing; measured about 1.35 GB on disk against D23's estimate of 2 to 3 GB; a CUDA install is about 400 to 500 MB by a guess, not D23's 40 MB app), `docs/arm64-cuda.md` (research half of T8.4b, which stays open for its build probe) and `docs/qnn-redistribution.md` (bundle inside the ARM64 installer, about 132 MB).
 - In-app update (T9.1b, D24): the release host (it must serve releases without a token in the app, so not a private GitHub repo). Settled: no MSI; one per-user NSIS installer, which updates without admin.
 - Windows code signing for the installers (a paid certificate, the owner's decision): without it SmartScreen warns on install and possibly on every update. The update signature in D24 does not replace it.
@@ -1417,7 +1419,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - accept: `cargo test -p earshot-store delete`; `cargo test -p earshot-runtime edit`; `cmd /c pnpm --filter @earshot/ui test`
 - [ ] T9.1r x64 early release
   - deps: T9.1c, T9.1d, T9.2a, T9.1s, T9.1t, T9.1u, T9.1v
-  - do: The owner: x64 first, as a 0.x normal GitHub release (a pre-release would leave the CUDA set marked Latest), ahead of T8.4, GATE-03, T9.1b and GATE-04, which stay v1's. No in-app update, so the notes say each version is installed by hand. Only once these are concluded with the owner: the NSIS CPL-1.0 OK and the Visual C++ runtime; NVIDIA's written answer or a decision on it; a start on an x64 PC with no NVIDIA card; GATE-01a and GATE-02.
+  - do: The owner: x64 first, as a 0.x normal GitHub release (a pre-release would leave the CUDA set marked Latest), ahead of T8.4, GATE-03, T9.1b and GATE-04, which stay v1's. No in-app update, so the notes say each version is installed by hand. Concluded with the owner: NSIS's stub, NVIDIA (section 7). Still before release: the Visual C++ runtime; GATE-01a's listening note; the owner's word that the app was usable in real meetings (GATE-02). The release notes say what was not tried: a PC with no NVIDIA card, a device switch during a call, and the notification buttons. Those three are checked after release.
   - accept: `cargo xtask build --bundle`; `cargo xtask bundle-check`; the owner's approval of the release recorded
 - [ ] T9.1 Installers and first run
   - deps: GATE-03, T8.4a, T9.1c, T9.1d, T9.1e, T9.1f, T9.1g, T9.1h, T9.1i, T9.1j, T9.1k, T9.1l, T9.1m, T9.1n, T9.1o, T9.1p
