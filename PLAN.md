@@ -1360,9 +1360,9 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T9.1kb
   - do: The owner. Dated recording folders move to `gate12.toml`; the real audio interface and webcam in test data become invented devices; the test-script sentence in five test files becomes invented text. No assertion changes.
   - accept: `cargo xtask accept m1`; the crates' tests; `cargo xtask ci`
-- [ ] T9.1k Earshot's source goes public from a fresh start
+- [x] T9.1k Earshot's source goes public from a fresh start
   - deps: T8.4ad, T8.4ae, T8.4af, T9.1j, T9.1m, T9.1ka, T9.1kb
-  - status: the working folder holds the fresh start; waiting for the owner's read and the first push.
+  - status: public. The owner read the files and approved the push. Still to do, each on the owner's word: the CUDA set moves to this repo's releases, and `earshot-releases` is removed.
   - do: decided by the owner. One repo: public `pitslug/Earshot`, starting from one cleaned commit, and the working folder is that repo. The earlier history is an archive that is no longer worked in. Recordings, logs and personal details stay out, as files ignored by git on the owner's machine. Automated code tests stay in, on invented names and public audio. A pre-push hook and a `cargo xtask ci` step check for them.
   - accept: the guard's tests catch a planted email, name and recording; `git log --format='%ae %ce' | sort -u` in the new repo shows only the noreply address; the owner's approval of the diff recorded
 - [x] T9.1n Choose light or dark in Settings
