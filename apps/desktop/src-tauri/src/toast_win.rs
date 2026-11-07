@@ -19,7 +19,7 @@ use windows::core::{HSTRING, IInspectable, Interface};
 use crate::shell::{Toast, ToastClick};
 
 /// The app id (`identifier` in `tauri.conf.json`).
-pub const APP_ID: &str = "io.github.pitslug.earshot";
+pub const APP_ID: &str = "earshot";
 
 /// What a click does.
 pub type OnClick = Arc<dyn Fn(ToastClick) + Send + Sync>;
@@ -147,6 +147,13 @@ fn register_app_id() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_app_id_is_the_identifier_in_the_tauri_config() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["identifier"], APP_ID);
+    }
 
     #[test]
     fn shell_toast_xml_is_silent_and_carries_its_clicks() {

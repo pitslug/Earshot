@@ -1399,7 +1399,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T9.1k
   - do: The owner. `README.md` (install, usage, backends, credits) and `PRIVACY.md` (PLAN 3.9 as the code does it) ahead of T9.1 and T9.1b, whose update and ARM64 parts T9.2 still adds. Each claim checked against the code by a separate agent.
   - accept: `cargo xtask public-guard`; the fact-check's findings resolved
-- [~] T9.1s One short app identifier
+- [x] T9.1s One short app identifier
   - deps: T9.1p
   - do: the owner: `io.github.pitslug.earshot` is odd to see in a user's folder. The identifier becomes `earshot`, so the browser engine's files sit in `%LOCALAPPDATA%\Earshot\EBWebView` with everything else. The uninstaller's "Delete the application data" box then deletes the whole folder, meetings and models included, where it used to delete only the browser files; a silent or unticked uninstall still keeps them. Android needs a dotted id and will set its own at T10.
   - accept: `cargo xtask build --bundle`; `cargo xtask bundle-check`

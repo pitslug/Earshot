@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Earshot",
-  "identifier": "io.github.pitslug.earshot",
+  "mainBinaryName": "earshot",
+  "identifier": "earshot",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
