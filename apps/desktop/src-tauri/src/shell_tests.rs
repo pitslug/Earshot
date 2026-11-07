@@ -204,6 +204,7 @@ fn shell_no_notification_for_a_summary_nobody_asked_for() {
         None
     );
     assert_eq!(finished_toast(&SummaryEvent::Cancelled), None);
+    assert_eq!(finished_toast(&SummaryEvent::PostCancelled), None);
 }
 
 #[test]

@@ -206,6 +206,9 @@ export interface IpcCommands
   startMeeting(mode: CaptureMode, title: string | null): Promise<string>;
   /** Stops the recording meeting. Rejects with an `IpcFailure` (`not_recording`). */
   stopMeeting(): Promise<void>;
+  /** Stops the final pass and the summary of a meeting whose recording is saved; its `Summary`
+   * event says how it ended. A meeting still recording or already finished: nothing happens. */
+  cancelFinishing(meeting: string): Promise<void>;
   /** "Keep recording" on the offer to stop when a call seems to have ended. */
   keepRecording(): Promise<void>;
   /** Shows the window as the compact listening card, or the full app. */

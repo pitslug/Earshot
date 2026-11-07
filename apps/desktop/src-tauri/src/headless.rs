@@ -355,8 +355,9 @@ impl Prepare for RecordingPrepare {
             after: Box::new(
                 move |svc: &Services,
                       outcome: &LiveOutcome,
+                      cancel: &earshot_core::asr::CancelToken,
                       progress: &mut dyn FnMut(HostStep<'_>)| {
-                    let host = after(svc, outcome, progress);
+                    let host = after(svc, outcome, cancel, progress);
                     let mut r = record.lock().unwrap_or_else(PoisonError::into_inner);
                     r.network = network_line(&host);
                     if let SummaryResult::Stored { outcome, .. } = &host.summary

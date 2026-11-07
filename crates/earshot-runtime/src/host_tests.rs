@@ -355,6 +355,150 @@ fn host_cancelled_post_keeps_the_draft_deletes_speaker_windows_and_still_summari
 }
 
 #[test]
+fn host_post_cancel_on_both_tokens_loads_nothing_and_asks_nothing() {
+    let dir = TempDir::new("host");
+    let (svc, _) = services(&dir);
+    let outcome = recorded(&svc, 161);
+    let meeting = outcome.meeting;
+    let speakers = format!("live-speakers/{meeting}/mic");
+    let stretches = format!("live-stretches/{meeting}/mic");
+    svc.store()
+        .set_local_value(&speakers, b"embeddings")
+        .unwrap();
+    svc.store().set_local_value(&stretches, b"pieces").unwrap();
+    let server = MockServer::start(vec![reply("Never")]).unwrap();
+    let service = SummaryService::new(
+        &SummaryConfig::new(server.endpoint().as_str(), "test-model"),
+        svc.clock.clone(),
+    )
+    .unwrap();
+    let models = ModelDir::new(dir.0.join("models"));
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let mut steps = Vec::new();
+    let result = after_meeting_with(
+        &svc,
+        &outcome,
+        &run(&models, Some(&service), &cancel, &cancel),
+        || -> Result<Fakes, RuntimeError> { panic!("a cancelled pass loads no model") },
+        &mut |step| steps.push(step_name(&step)),
+    );
+    assert!(
+        matches!(result.post, Ok(HostPost::Cancelled { .. })),
+        "{:?}",
+        result.post
+    );
+    assert!(
+        matches!(result.summary, SummaryResult::Cancelled),
+        "{:?}",
+        result.summary
+    );
+    assert_eq!(steps, ["loaded []", "finished ok=true"]);
+    assert!(result.network.is_empty(), "{:?}", result.network);
+    // What a tray quit leaves: the recordings, the transcript records, nothing final.
+    assert_eq!(svc.store().audio_files(meeting).unwrap().len(), 2);
+    assert!(
+        svc.store().local_value(&stretches).unwrap().is_some(),
+        "the live pieces stay"
+    );
+    assert_eq!(
+        svc.store().local_value(&speakers).unwrap(),
+        None,
+        "no final pass will finish from the speaker windows (biometric)"
+    );
+    assert_eq!(
+        svc.meeting_activity(meeting).unwrap(),
+        Some(MeetingActivity::Unprocessed)
+    );
+}
+
+/// A cancel that arrives as the final pass stores its result costs nothing it stored.
+#[test]
+fn host_post_cancel_at_the_moment_of_storing_keeps_the_final_transcript() {
+    let dir = TempDir::new("host");
+    let (svc, _) = services(&dir);
+    let outcome = recorded(&svc, 171);
+    let meeting = outcome.meeting;
+    let server = MockServer::start(vec![reply("Never")]).unwrap();
+    let service = SummaryService::new(
+        &SummaryConfig::new(server.endpoint().as_str(), "test-model"),
+        svc.clock.clone(),
+    )
+    .unwrap();
+    let models = ModelDir::new(dir.0.join("models"));
+    let cancel = CancelToken::new();
+    let mut steps = Vec::new();
+    let result = after_meeting_with(
+        &svc,
+        &outcome,
+        &run(&models, Some(&service), &cancel, &cancel),
+        fake_post,
+        &mut |step| {
+            if matches!(step, HostStep::Post(PostStage::Stored { .. })) {
+                cancel.cancel();
+            }
+            steps.push(step_name(&step));
+        },
+    );
+    assert!(
+        matches!(result.post, Ok(HostPost::Done(_))),
+        "{:?}",
+        result.post
+    );
+    assert!(
+        matches!(result.summary, SummaryResult::Cancelled),
+        "{:?}",
+        result.summary
+    );
+    assert!(!steps.iter().any(|s| s == "summary"), "{steps:?}");
+    assert!(result.network.is_empty(), "{:?}", result.network);
+    assert_eq!(
+        svc.meeting_activity(meeting).unwrap(),
+        Some(MeetingActivity::Ready),
+        "the final transcript stays"
+    );
+}
+
+#[test]
+fn host_post_a_cancellation_from_either_model_reads_as_cancelled() {
+    use earshot_core::diar::DiarError;
+    let (set, unset) = (CancelToken::new(), CancelToken::new());
+    set.cancel();
+    let asr = RuntimeError::Asr(AsrError::Cancelled);
+    let diar = RuntimeError::Diar(DiarError::Cancelled);
+    assert!(is_cancelled_pass(&asr, &set));
+    assert!(is_cancelled_pass(&diar, &set), "the echo check's embedder");
+    assert!(!is_cancelled_pass(&diar, &unset), "nobody asked");
+    let failure = RuntimeError::Internal("models broke");
+    assert!(!is_cancelled_pass(&failure, &set), "a failure stays one");
+}
+
+#[test]
+fn host_post_cancelled_before_its_turn_reads_as_a_cancelled_pass() {
+    let dir = TempDir::new("host");
+    let (svc, _) = services(&dir);
+    let outcome = recorded(&svc, 181);
+    let meeting = outcome.meeting;
+    let speakers = format!("live-speakers/{meeting}/mic");
+    svc.store()
+        .set_local_value(&speakers, b"embeddings")
+        .unwrap();
+    let result = HostOutcome::cancelled(&svc, meeting);
+    assert!(
+        matches!(result.post, Ok(HostPost::Cancelled { .. })),
+        "{:?}",
+        result.post
+    );
+    assert!(matches!(result.summary, SummaryResult::Cancelled));
+    assert_eq!(svc.store().local_value(&speakers).unwrap(), None);
+    assert_eq!(svc.store().audio_files(meeting).unwrap().len(), 2);
+    assert_eq!(
+        svc.meeting_activity(meeting).unwrap(),
+        Some(MeetingActivity::Unprocessed)
+    );
+}
+
+#[test]
 fn host_post_failure_stops_before_the_summary() {
     let dir = TempDir::new("host");
     let (svc, _) = services(&dir);

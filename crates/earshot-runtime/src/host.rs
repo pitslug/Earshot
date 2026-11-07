@@ -1452,6 +1452,22 @@ impl HostOutcome {
             handover_record_failures: Vec::new(),
         }
     }
+
+    /// The outcome of a run cancelled before it started, which takes no model and writes nothing:
+    /// the same as a final pass and a summary cancelled at their first look at the token.
+    #[must_use]
+    pub fn cancelled(services: &Services, meeting: EntityId) -> Self {
+        Self {
+            missing_tracks: Vec::new(),
+            post: Ok(HostPost::Cancelled {
+                speaker_windows_deleted: cleanup_cancelled(services, meeting),
+            }),
+            summary: SummaryResult::Cancelled,
+            network: Vec::new(),
+            handovers: Vec::new(),
+            handover_record_failures: Vec::new(),
+        }
+    }
 }
 
 /// How [`after_meeting`] runs.
@@ -1574,6 +1590,10 @@ where
         )
     } else {
         match run.summary {
+            // Cancelled already: nothing to load or send, whatever the transcript holds.
+            Some(_) if run.summary_cancel.is_cancelled() => {
+                (SummaryResult::Cancelled, Vec::new(), Vec::new(), Vec::new())
+            }
             Some(service) => {
                 progress(HostStep::SummaryStarting);
                 let result = run_summary(services, meeting, service, run.summary_cancel);
@@ -1654,6 +1674,11 @@ where
     if input.tracks.is_empty() {
         return Ok(HostPost::NothingToProcess);
     }
+    if cancel.is_cancelled() {
+        return Ok(HostPost::Cancelled {
+            speaker_windows_deleted: cleanup_cancelled(services, meeting),
+        });
+    }
     let mut setup = load()?;
     let work = setup.processor.cleanup_work(&input);
     progress(HostStep::PostStarting {
@@ -1670,13 +1695,17 @@ where
     );
     match result {
         Ok(o) => Ok(HostPost::Done(Box::new(o))),
-        Err(RuntimeError::Asr(AsrError::Cancelled)) if cancel.is_cancelled() => {
-            Ok(HostPost::Cancelled {
-                speaker_windows_deleted: cleanup_cancelled(services, meeting),
-            })
-        }
+        Err(e) if is_cancelled_pass(&e, cancel) => Ok(HostPost::Cancelled {
+            speaker_windows_deleted: cleanup_cancelled(services, meeting),
+        }),
         Err(e) => Err(e),
     }
+}
+
+/// Whether `e` is the pass answering `cancel`: from either model (the echo check's embedder
+/// answers as a diarisation error), and never a failure that happens to follow a cancel.
+fn is_cancelled_pass(e: &RuntimeError, cancel: &CancelToken) -> bool {
+    cancel.is_cancelled() && crate::post::is_cancellation(e)
 }
 
 /// The post pass was cancelled: no final pass will finish from the speaker windows computed

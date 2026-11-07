@@ -157,8 +157,11 @@ pub enum SummaryEvent {
         /// Whether trying again can succeed without changing anything.
         retryable: bool,
     },
-    /// Cancelled; nothing was stored.
+    /// The summary was cancelled; nothing was stored. A final transcript stays.
     Cancelled,
+    /// The final pass was cancelled, so no summary ran either: the recording and any draft
+    /// transcript stay and the meeting reads as `Unprocessed`.
+    PostCancelled,
 }
 
 /// Where the live transcript is, for the banner at the top of the meeting's transcript.
@@ -1032,7 +1035,8 @@ pub fn no_key_banner(reason: &SkipReason) -> Option<MeetingEvent> {
 }
 
 /// What the summary step did, from the host's outcome. A failed cleanup is reported as a
-/// failure (the summary never ran), with the cleanup's error.
+/// failure (the summary never ran), with the cleanup's error; a cancelled one as
+/// [`SummaryEvent::PostCancelled`].
 #[must_use]
 pub fn summary_event(outcome: &HostOutcome) -> SummaryEvent {
     if let Err(e) = &outcome.post {
@@ -1040,6 +1044,13 @@ pub fn summary_event(outcome: &HostOutcome) -> SummaryEvent {
             message: format!("The cleanup after the meeting failed: {e}"),
             retryable: e.is_retryable(),
         };
+    }
+    // With one token for both (the app's), nothing was summarised. A summary kept going on the draft
+    // has its own result to report.
+    if matches!(outcome.post, Ok(HostPost::Cancelled { .. }))
+        && !matches!(outcome.summary, SummaryResult::Stored { .. })
+    {
+        return SummaryEvent::PostCancelled;
     }
     let voices = match &outcome.post {
         Ok(HostPost::Done(post)) => voices_to_name(&post.speakers),

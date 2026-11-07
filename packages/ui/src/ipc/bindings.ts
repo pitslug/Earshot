@@ -31,6 +31,12 @@ export const commands = {
 	 *  meeting records.
 	 */
 	stopMeeting: () => typedError<null, IpcError>(__TAURI_INVOKE("stop_meeting")),
+	/**
+	 *  Stops the final pass and the summary of a meeting whose recording is saved; its audio stays and
+	 *  it can be re-transcribed. The meeting's `MeetingEvent::Summary` follows as usual. A meeting still
+	 *  recording, or one that has just finished, is left as it is: never an error.
+	 */
+	cancelFinishing: (meeting: string) => __TAURI_INVOKE<void>("cancel_finishing", { meeting }),
 	/**  The user answered "Keep recording" to the offer to stop when a call ends (T9.4). */
 	keepRecording: () => __TAURI_INVOKE<void>("keep_recording"),
 	/**  Shows the main window as the compact listening card (`true`) or the full app (`false`). */
@@ -1656,8 +1662,13 @@ reason: string } |
 message: string; 
 /**  Whether trying again can succeed without changing anything. */
 retryable: boolean } | 
-/**  Cancelled; nothing was stored. */
-{ kind: "Cancelled" };
+/**  The summary was cancelled; nothing was stored. A final transcript stays. */
+{ kind: "Cancelled" } | 
+/**
+ *  The final pass was cancelled, so no summary ran either: the recording and any draft
+ *  transcript stay and the meeting reads as `Unprocessed`.
+ */
+{ kind: "PostCancelled" };
 
 /**  The Summaries page settings as the UI sends and reads them. */
 export type SummarySettingsValue = {

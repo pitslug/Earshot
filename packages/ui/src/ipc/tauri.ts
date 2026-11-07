@@ -26,6 +26,9 @@ export function createTauriIpc(): Ipc {
     stopMeeting: async () => {
       unwrap(await commands.stopMeeting());
     },
+    cancelFinishing: async (meeting) => {
+      await commands.cancelFinishing(meeting);
+    },
     keepRecording: async () => {
       await commands.keepRecording();
     },

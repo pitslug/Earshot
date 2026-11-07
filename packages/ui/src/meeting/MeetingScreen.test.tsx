@@ -139,6 +139,109 @@ beforeEach(() => {
   installMatchMedia(false);
 });
 
+describe("cancelling while a meeting finishes", () => {
+  function countCancels(ipc: Ipc) {
+    const pressed: string[] = [];
+    const real = ipc.cancelFinishing.bind(ipc);
+    ipc.cancelFinishing = async (meeting) => {
+      pressed.push(meeting);
+      await real(meeting);
+    };
+    return pressed;
+  }
+
+  async function finishing(s: Setup) {
+    const view = await startMeeting(s, "Call", "Invented planning call");
+    advance(s.timer, 10_000);
+    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
+    expect(await screen.findByRole("heading", { name: "Finishing the meeting" })).toBeInTheDocument();
+  }
+
+  it("says it is stopping, takes one press, and leaves the meeting not processed", async () => {
+    const s = setup();
+    const pressed = countCancels(s.ipc);
+    await finishing(s);
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(cancel).toBeEnabled();
+    await s.user.click(cancel);
+    expect(await screen.findByText(/^Stopping\./)).toBeInTheDocument();
+    expect(cancel).toBeDisabled();
+    await s.user.click(cancel);
+    expect(pressed).toHaveLength(1);
+
+    advance(s.timer, POST_STEP_MS);
+    expect(await screen.findByRole("heading", { name: "Meeting saved" })).toBeInTheDocument();
+    expect(screen.getByText("Transcript not finished")).toBeInTheDocument();
+    expect(
+      screen.getByText(/The recording and any draft transcript are saved\. Re-transcribe the meeting/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    const listed = await s.ipc.listMeetings();
+    expect(listed[0].state).toBe("Unprocessed");
+    const list = screen.getByRole("list", { name: "Meetings" });
+    await waitFor(() => expect(within(list).getByText(/Draft transcript/)).toBeInTheDocument());
+
+    // Nothing was left running: the steps that were due never come.
+    advance(s.timer, (POST_STEPS.length + 2) * POST_STEP_MS);
+    expect(screen.queryByText("Summary ready")).toBeNull();
+    expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
+  });
+
+  it("past the final pass cancels only the summary", async () => {
+    const s = setup();
+    await finishing(s);
+    advance(s.timer, POST_STEPS.length * POST_STEP_MS);
+    expect(screen.getByText("Writing the summary")).toBeInTheDocument();
+    await s.user.click(screen.getByRole("button", { name: "Cancel" }));
+    advance(s.timer, POST_STEP_MS);
+    expect(await screen.findByText("Summary cancelled")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Meeting finished" })).toBeInTheDocument();
+    expect(screen.getByText(/The recording and transcript are saved\./)).toBeInTheDocument();
+    expect((await s.ipc.listMeetings())[0].state).toBe("Ready");
+  });
+
+  it("gets the button back with the reason when the press does not reach the app", async () => {
+    const s = setup();
+    await finishing(s);
+    s.ipc.cancelFinishing = async () => {
+      throw new Error("Invented failure of the press.");
+    };
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    await s.user.click(cancel);
+    expect(await screen.findByText("Invented failure of the press.")).toBeInTheDocument();
+    expect(cancel).toBeEnabled();
+    expect(screen.queryByText(/^Stopping\./)).toBeNull();
+  });
+
+  it("is not offered while a newer meeting records, which keeps recording", async () => {
+    const s = setup();
+    await finishing(s);
+    await startMeeting(s);
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop meeting" })).toBeEnabled();
+  }, 30_000);
+
+  it("reads a cancel of an older meeting as nothing to do with this one", () => {
+    const state = startedMeeting("this", "Call", ["You", "Them"], START);
+    expect(
+      reduce(state, { type: "Summary", meeting: "old", result: { kind: "PostCancelled" } }, START + 5),
+    ).toEqual({ ...state });
+  });
+
+  it("the mock's press after the end does nothing", async () => {
+    const timer = createManualTimer(START);
+    const ipc = createMockIpc({ meetings: [], timer });
+    const events: MeetingEvent[] = [];
+    await ipc.onMeetingEvent((e) => events.push(e));
+    const id = await ipc.startMeeting("Call", "Invented");
+    await ipc.stopMeeting();
+    timer.advance((POST_STEPS.length + 1) * POST_STEP_MS);
+    await ipc.cancelFinishing(id);
+    timer.advance(10 * POST_STEP_MS);
+    expect(events.filter((e) => e.type === "Summary")).toHaveLength(1);
+  });
+});
+
 describe("a meeting started while the previous one finishes", () => {
   const HELD = "Processing your previous meeting. Transcription will begin soon.";
 

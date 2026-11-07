@@ -931,7 +931,7 @@ fn diarise_tracks<S: SpeakerSegmenter, E: SpeakerEmbedder>(
 }
 
 /// Whether `e` is a cancellation (of either model).
-fn is_cancellation(e: &RuntimeError) -> bool {
+pub(crate) fn is_cancellation(e: &RuntimeError) -> bool {
     matches!(
         e,
         RuntimeError::Asr(AsrError::Cancelled)

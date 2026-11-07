@@ -354,6 +354,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     return { cancel, speaking, tracks };
   };
 
+  // What Cancel does to each meeting past its recording, until its summary event.
+  const finishing = new Map<string, () => void>();
   // A meeting that started while an older one finishes: its transcript starts when that ends.
   let afterOlder: (() => void) | null = null;
   let speakingNow: Record<LiveTrack, boolean> | null = null;
@@ -468,30 +470,47 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       if (held) row.state = "Waiting";
       let done = 0;
       let total: number | null = null;
-      POST_STEPS.forEach((step, i) => {
+      let stored = false;
+      const steps = POST_STEPS.map((step, i) =>
         timer.setTimeout(
           () => {
             if (step.kind === "Starting") total = 6;
             else if (step.kind !== "Loading" && step.kind !== "Summarising") done += 1;
+            if (step.kind === "Stored") stored = true;
             emit({ type: "PostProgress", meeting: row.id, step, done, total });
           },
           (i + 1) * POST_STEP_MS,
-        );
-      });
-      timer.setTimeout(
-        () => {
-          const result = data.summary ?? DEFAULT_SUMMARY;
-          processing = false;
-          row.state = "Ready";
-          // The detail read during processing was the draft; the next read is the final one.
-          details.delete(row.id);
-          if (result.kind === "Stored" && row.title === "") row.title = result.title;
-          emit({ type: "Summary", meeting: row.id, result });
-          afterOlder?.();
-          afterOlder = null;
-        },
+        ),
+      );
+      const end = (result: SummaryEvent) => {
+        finishing.delete(row.id);
+        processing = false;
+        row.state = result.kind === "PostCancelled" ? "Unprocessed" : "Ready";
+        // The detail read during processing was the draft; the next read is the final one.
+        if (result.kind !== "PostCancelled") details.delete(row.id);
+        if (result.kind === "Stored" && row.title === "") row.title = result.title;
+        emit({ type: "Summary", meeting: row.id, result });
+        afterOlder?.();
+        afterOlder = null;
+      };
+      const last = timer.setTimeout(
+        () => end(data.summary ?? DEFAULT_SUMMARY),
         (POST_STEPS.length + 1) * POST_STEP_MS,
       );
+      finishing.set(row.id, () => {
+        for (const c of steps) c();
+        last();
+        // A second press has nothing more to stop.
+        finishing.set(row.id, () => {});
+        // The model call in progress ends first.
+        timer.setTimeout(
+          () => end({ kind: stored ? "Cancelled" : "PostCancelled" }),
+          POST_STEP_MS,
+        );
+      });
+    },
+    cancelFinishing: async (meeting) => {
+      finishing.get(meeting)?.();
     },
     setCompact: async (compact) => {
       data.onSetCompact?.(compact);

@@ -40,6 +40,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             search_meetings,
             start_meeting,
             stop_meeting,
+            cancel_finishing,
             keep_recording,
             set_compact,
             set_window_theme,
@@ -495,6 +496,15 @@ async fn start_meeting(
 #[specta::specta]
 fn stop_meeting(driver: State<'_, MeetingDriver>) -> Result<(), IpcError> {
     driver.stop()
+}
+
+/// Stops the final pass and the summary of a meeting whose recording is saved; its audio stays and
+/// it can be re-transcribed. The meeting's `MeetingEvent::Summary` follows as usual. A meeting still
+/// recording, or one that has just finished, is left as it is: never an error.
+#[tauri::command]
+#[specta::specta]
+fn cancel_finishing(driver: State<'_, MeetingDriver>, meeting: String) {
+    driver.cancel_finishing(&meeting);
 }
 
 /// The user answered "Keep recording" to the offer to stop when a call ends (T9.4).

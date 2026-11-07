@@ -22,8 +22,15 @@
 //! tray need to know how it ended ([`MeetingEvent::Ended`], [`MeetingEvent::PostProgress`],
 //! [`MeetingEvent::Summary`], each with its meeting id), and nothing else once a newer one started.
 //!
+//! Cancelling ([`MeetingDriver::cancel_finishing`]) reaches one meeting past its recording: it stops
+//! that meeting's final pass and summary, or its wait for its turn, and its thread then ends as it
+//! always does, with its one summary event, so the next meeting's turn comes. Nothing else changes:
+//! a recording has no token to cancel. The live transcript's catch-up after the recording is not
+//! cancelled: the token is first read when it ends.
+//!
 //! The driver is generic over [`Prepare`], so tests run it on a replay and fake post work.
 
+use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -65,9 +72,11 @@ pub struct StartRequest {
 /// Starts the live session (runs on the meeting thread).
 pub type StartFn = Box<dyn FnOnce(&Services) -> Result<LiveSession, RuntimeError>>;
 
-/// The work after the meeting: the host's post-meeting runner with its progress callback.
-pub type AfterFn =
-    Box<dyn FnOnce(&Services, &LiveOutcome, &mut dyn FnMut(HostStep<'_>)) -> HostOutcome>;
+/// The work after the meeting: the host's post-meeting runner, with the token that cancels both its
+/// final pass and its summary and its progress callback.
+pub type AfterFn = Box<
+    dyn FnOnce(&Services, &LiveOutcome, &CancelToken, &mut dyn FnMut(HostStep<'_>)) -> HostOutcome,
+>;
 
 /// A meeting ready to start: everything the pre-flight checked.
 pub struct Prepared {
@@ -147,6 +156,8 @@ struct Inner {
     started: AtomicU64,
     /// The meeting the screen follows: the newest that started recording.
     shown: AtomicU64,
+    /// What cancels each meeting past its recording, by meeting id ([`Finishing`]).
+    finishing: Mutex<BTreeMap<String, CancelToken>>,
 }
 
 impl Inner {
@@ -203,6 +214,7 @@ impl MeetingDriver {
             queue: MeetingQueue::new(),
             started: AtomicU64::new(0),
             shown: AtomicU64::new(0),
+            finishing: Mutex::default(),
         }))
     }
 
@@ -326,6 +338,21 @@ impl MeetingDriver {
         }
     }
 
+    /// Stops the final pass and the summary of `meeting`, or its wait for its turn, and leaves
+    /// every other meeting alone. A meeting still recording, one already finished and a second
+    /// press change nothing, so the moment of pressing never matters; its one summary event says
+    /// how it ended.
+    pub fn cancel_finishing(&self, meeting: &str) {
+        let finishing = self
+            .0
+            .finishing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(cancel) = finishing.get(meeting) {
+            cancel.cancel();
+        }
+    }
+
     /// Where the meetings are.
     #[must_use]
     pub fn phase(&self) -> DriverPhase {
@@ -387,6 +414,35 @@ struct RunFlags {
     stop: Arc<AtomicBool>,
     keep: Arc<AtomicBool>,
     recording: Arc<AtomicBool>,
+}
+
+/// A meeting's entry in [`Inner::finishing`], taken out on every way off its thread, a panic's unwind
+/// included.
+struct Finishing<'a> {
+    inner: &'a Inner,
+    meeting: String,
+    cancel: CancelToken,
+}
+
+impl Finishing<'_> {
+    fn entries(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, CancelToken>> {
+        self.inner
+            .finishing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The recording is saved: from here on the meeting can be cancelled.
+    fn open(&self) {
+        self.entries()
+            .insert(self.meeting.clone(), self.cancel.clone());
+    }
+}
+
+impl Drop for Finishing<'_> {
+    fn drop(&mut self) {
+        self.entries().remove(&self.meeting);
+    }
 }
 
 /// Runs the offer to stop for a call (T9.4, [`earshot_runtime::call_end`]). It says what changes;
@@ -515,6 +571,12 @@ fn run(
     inner.shown.store(seq, Ordering::SeqCst);
     let _ = started.send(Ok(id.to_string()));
 
+    let cancel = CancelToken::new();
+    let finishing = Finishing {
+        inner,
+        meeting: id.to_string(),
+        cancel: cancel.clone(),
+    };
     // Taken when the recording is saved, so the meeting never reads as idle while it waits.
     let mut waiting = None;
     let mut saved_seen = false;
@@ -559,6 +621,8 @@ fn run(
                         call_end = None;
                         saved_seen = true;
                         waiting = svc.lease_meeting_for(id, MeetingJob::Waiting).ok();
+                        // Before the UI hears of the end, so its Cancel always finds this.
+                        finishing.open();
                     }
                     let mut mapped = mapper.map(&event, (inner.now)());
                     // The UI's "saved" event goes last, so what it hears can start a new meeting at
@@ -607,18 +671,24 @@ fn run(
             return;
         }
     };
-    // Its turn: uninterruptible, because nothing can be lost by waiting and quitting ends the
+    finishing.open();
+    // Its turn. Only a cancel ends the wait: nothing can be lost by waiting and quitting ends the
     // process.
-    ticket.wait_turn(&CancelToken::new());
+    ticket.wait_turn(&cancel);
     let mut progress = PostProgressMapper::of(id.to_string());
-    let host = (prepared.after)(svc, &outcome, &mut |step| {
-        if matches!(step, HostStep::PostFinished(_)) {
-            ticket.final_pass_done();
-        }
-        if let Some(e) = progress.step(&step) {
-            send(e);
-        }
-    });
+    let host = if cancel.is_cancelled() {
+        // Out of its turn, so it runs nothing; a newer meeting's turn comes when the ticket ends.
+        HostOutcome::cancelled(svc, id)
+    } else {
+        (prepared.after)(svc, &outcome, &cancel, &mut |step| {
+            if matches!(step, HostStep::PostFinished(_)) {
+                ticket.final_pass_done();
+            }
+            if let Some(e) = progress.step(&step) {
+                send(e);
+            }
+        })
+    };
     if let Ok(earshot_runtime::host::HostPost::Done(post)) = &host.post {
         for (key, message) in crate::plain_text::post_warning_copy(&post.warnings) {
             send(MeetingEvent::Warning {
@@ -1076,14 +1146,18 @@ mod production {
             let after = Box::new(
                 move |svc: &Services,
                       outcome: &earshot_runtime::live::LiveOutcome,
+                      cancel: &CancelToken,
                       progress: &mut dyn FnMut(host::HostStep<'_>)| {
-                    // What the live work ran on; decided now if its turn never came.
-                    let resolved = match meeting_models.resolve() {
+                    // What the live work ran on; decided now if its turn never came. This can wait
+                    // for the CUDA start, so a cancel may have come meanwhile.
+                    let resolved = meeting_models.resolve();
+                    if cancel.is_cancelled() {
+                        return HostOutcome::cancelled(svc, outcome.meeting);
+                    }
+                    let resolved = match resolved {
                         Ok(r) => r,
                         Err(e) => return HostOutcome::not_started(e),
                     };
-                    // The app has no cancel control yet: the tokens are never set.
-                    let (post_cancel, summary_cancel) = (CancelToken::new(), CancelToken::new());
                     let run = AfterMeeting {
                         models: &models,
                         model: &resolved.model,
@@ -1092,8 +1166,9 @@ mod production {
                         whole_pass: false,
                         summary: summary.as_ref().map(|s| &s.service),
                         no_summary,
-                        post_cancel: &post_cancel,
-                        summary_cancel: &summary_cancel,
+                        // One token: the user's Cancel stops both, so no summary runs on the draft.
+                        post_cancel: cancel,
+                        summary_cancel: cancel,
                     };
                     host::after_meeting(svc, outcome, &run, progress)
                 },

@@ -375,7 +375,9 @@ pub fn finished_toast(result: &SummaryEvent) -> Option<Toast> {
             buttons: vec![("Open", ToastClick::Meeting)],
             stays: false,
         }),
-        SummaryEvent::Skipped { .. } | SummaryEvent::Cancelled => None,
+        SummaryEvent::Skipped { .. } | SummaryEvent::Cancelled | SummaryEvent::PostCancelled => {
+            None
+        }
     }
 }
 

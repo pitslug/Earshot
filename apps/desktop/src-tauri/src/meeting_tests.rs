@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use earshot_core::asr::BackendKind;
+use earshot_core::asr::{BackendKind, CancelToken};
 use earshot_core::audio::{MonoBuffer, PIPELINE_RATE};
 use earshot_core::capture::{
     AudioSource, CaptureSession, CaptureSink, DeviceTime, ReplayBuilder, ReplaySource,
@@ -169,7 +169,7 @@ impl Prepare for FakePrepare {
             ),
         });
         let saw = Arc::clone(&self.after_saw);
-        let after: AfterFn = Box::new(move |_svc, outcome, progress| {
+        let after: AfterFn = Box::new(move |_svc, outcome, _cancel, progress| {
             *saw.lock().unwrap() = Some(outcome.meeting.to_string());
             assert!(script != Script::AfterPanics, "a post-meeting bug");
             let work = two_tracks();
@@ -964,7 +964,7 @@ impl Prepare for QueuePrepare {
                 Box::new(ChaCha8Rng::seed_from_u64(seed)),
             )
         });
-        let after: AfterFn = Box::new(move |svc, outcome, progress| {
+        let after: AfterFn = Box::new(move |svc, outcome, _cancel, progress| {
             let id = outcome.meeting;
             order.lock().unwrap().push(format!("{id} starts"));
             let post = Ok(HostPost::Skipped);
@@ -1207,4 +1207,398 @@ fn meeting_queue_driver_a_session_failure_after_the_save_does_not_blame_the_reco
     assert!(after.starts_with("The recording is saved"), "{after}");
     assert!(after.contains("live transcript"), "{after}");
     assert!(!after.contains("could not be finished"), "{after}");
+}
+
+/// What a meeting's work after the recording does in the cancel tests.
+enum Finish {
+    /// A final pass that runs until it is cancelled; says when it is running.
+    PassUntilCancelled(mpsc::Sender<()>),
+    /// A summary that runs until it is cancelled, after a final pass; says when it is running.
+    SummaryUntilCancelled(mpsc::Sender<()>),
+    /// Runs until its gate opens and logs whether it was cancelled.
+    Gate(mpsc::Receiver<()>),
+}
+
+/// Waits for a cancel the way a model call does: nothing else ends it, and only a failure runs into
+/// the guard.
+fn until_cancelled(cancel: &CancelToken) {
+    let deadline = Instant::now() + MEET_GUARD;
+    while !cancel.is_cancelled() {
+        assert!(Instant::now() < deadline, "no cancel came");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn outcome_of(post: Result<HostPost, RuntimeError>, summary: SummaryResult) -> HostOutcome {
+    HostOutcome {
+        missing_tracks: vec![],
+        post,
+        summary,
+        network: vec![],
+        handovers: vec![],
+        handover_record_failures: vec![],
+    }
+}
+
+/// Meetings in the real queue (a replay until stopped, held by their ticket), each with its scripted
+/// work after the recording.
+struct CancelPrepare {
+    finishes: Mutex<std::collections::VecDeque<Finish>>,
+    log: Arc<Mutex<Vec<String>>>,
+    seed: std::sync::atomic::AtomicU64,
+}
+
+impl CancelPrepare {
+    fn new(finishes: Vec<Finish>) -> Arc<Self> {
+        Arc::new(Self {
+            finishes: Mutex::new(finishes.into()),
+            log: Arc::default(),
+            seed: 700.into(),
+        })
+    }
+
+    fn logged(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+}
+
+impl Prepare for CancelPrepare {
+    fn prepare(
+        &self,
+        _svc: &Services,
+        request: &StartRequest,
+        ticket: &Arc<QueueTicket>,
+    ) -> Result<Prepared, IpcError> {
+        use earshot_runtime::live::{LiveAsrFactory, LiveHold};
+        use earshot_runtime::meeting_queue::MeetingHold;
+        let finish = self.finishes.lock().unwrap().pop_front().unwrap();
+        let log = Arc::clone(&self.log);
+        let seed = self.seed.fetch_add(1, Ordering::Relaxed);
+        let title = request.title.clone();
+        let hold = LiveHold::new(Arc::new(MeetingHold::new(Arc::clone(ticket))));
+        let start: StartFn = Box::new(move |svc: &Services| {
+            let factory: LiveAsrFactory = Box::new(|_, _| Ok(None));
+            start_live(
+                UntilStopped {
+                    inner: replay(0.5, false),
+                    stopped: false,
+                },
+                svc.clone(),
+                LiveConfig {
+                    title,
+                    hold: Some(hold),
+                    ..config()
+                },
+                Some(factory),
+                Box::new(ChaCha8Rng::seed_from_u64(seed)),
+            )
+        });
+        let after: AfterFn = Box::new(move |_svc, outcome, cancel, progress| {
+            let id = outcome.meeting;
+            log.lock().unwrap().push(format!("{id} starts"));
+            match finish {
+                Finish::PassUntilCancelled(running) => {
+                    running.send(()).unwrap();
+                    until_cancelled(cancel);
+                    let post = Ok(HostPost::Cancelled {
+                        speaker_windows_deleted: Ok(0),
+                    });
+                    progress(HostStep::PostFinished(&post));
+                    outcome_of(post, SummaryResult::Cancelled)
+                }
+                Finish::SummaryUntilCancelled(running) => {
+                    let post = Ok(HostPost::Skipped);
+                    progress(HostStep::PostFinished(&post));
+                    running.send(()).unwrap();
+                    until_cancelled(cancel);
+                    outcome_of(post, SummaryResult::Cancelled)
+                }
+                Finish::Gate(gate) => {
+                    let post = Ok(HostPost::Skipped);
+                    progress(HostStep::PostFinished(&post));
+                    gate.recv_timeout(MEET_GUARD).unwrap();
+                    let cancelled = cancel.is_cancelled();
+                    log.lock()
+                        .unwrap()
+                        .push(format!("{id} ends, cancelled {cancelled}"));
+                    let reason = SkipReason::NotRequested;
+                    outcome_of(post, SummaryResult::Skipped { reason })
+                }
+            }
+        });
+        Ok(Prepared {
+            start,
+            after,
+            notices: Vec::new(),
+            call_signal: None,
+        })
+    }
+}
+
+fn cancel_driver(prepare: Arc<CancelPrepare>) -> (MeetingDriver, Receiver<MeetingEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let sink: Sink = Arc::new(move |e| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let t0 = Instant::now();
+    (
+        MeetingDriver::new(
+            prepare,
+            sink,
+            Arc::new(move || t0),
+            crate::activity::WorkGate::new(),
+        ),
+        rx,
+    )
+}
+
+fn is_summary_of(meeting: &str, e: &MeetingEvent) -> bool {
+    matches!(e, MeetingEvent::Summary { meeting: m, .. } if m == meeting)
+}
+
+/// The result in the summary event of `meeting` at the end of `events`.
+fn result_of(events: &[MeetingEvent], meeting: &str) -> SummaryEvent {
+    match events.last() {
+        Some(MeetingEvent::Summary { meeting: m, result }) if m == meeting => result.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Waits for what the meeting's rows and leases say about it.
+fn activity_becomes(svc: &Services, meeting: &str, wanted: earshot_runtime::MeetingActivity) {
+    let id = crate::detail::parse_id(meeting).unwrap();
+    let deadline = Instant::now() + MEET_GUARD;
+    while svc.meeting_activity(id).unwrap() != Some(wanted) {
+        assert!(Instant::now() < deadline, "never became {wanted:?}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn recordings_of(svc: &Services, meeting: &str) -> usize {
+    let id = crate::detail::parse_id(meeting).unwrap();
+    svc.store().audio_files(id).unwrap().len()
+}
+
+#[test]
+fn meeting_cancel_stops_the_final_pass_and_leaves_the_meeting_unprocessed() {
+    let dir = TempDir::new("cancel-pass");
+    let svc = services(&dir);
+    let (running_tx, running) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::PassUntilCancelled(running_tx)]);
+    let (d, rx) = cancel_driver(prepare);
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    running.recv_timeout(MEET_GUARD).unwrap();
+
+    d.cancel_finishing(&meeting);
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert_eq!(result_of(&events, &meeting), SummaryEvent::PostCancelled);
+    assert!(rx.try_recv().is_err(), "nothing after the last event");
+    assert_eq!(recordings_of(&svc, &meeting), 1, "the audio stays");
+    activity_becomes(
+        &svc,
+        &meeting,
+        earshot_runtime::MeetingActivity::Unprocessed,
+    );
+    assert_eq!(d.phase(), DriverPhase::Idle);
+}
+
+#[test]
+fn meeting_cancel_during_the_summary_is_a_cancelled_summary() {
+    let dir = TempDir::new("cancel-summary");
+    let svc = services(&dir);
+    let (running_tx, running) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::SummaryUntilCancelled(running_tx)]);
+    let (d, rx) = cancel_driver(prepare);
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    running.recv_timeout(MEET_GUARD).unwrap();
+
+    d.cancel_finishing(&meeting);
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert_eq!(result_of(&events, &meeting), SummaryEvent::Cancelled);
+}
+
+#[test]
+fn meeting_cancel_while_it_records_changes_nothing() {
+    let dir = TempDir::new("cancel-recording");
+    let svc = services(&dir);
+    let (open, gate) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::Gate(gate)]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+
+    d.cancel_finishing(&meeting);
+    several_looks();
+    assert_eq!(d.phase(), DriverPhase::Recording, "still recording");
+
+    d.stop().unwrap();
+    open.send(()).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert!(
+        matches!(result_of(&events, &meeting), SummaryEvent::Skipped { .. }),
+        "its normal end"
+    );
+    assert_eq!(
+        prepare.logged(),
+        [
+            format!("{meeting} starts"),
+            format!("{meeting} ends, cancelled false")
+        ],
+        "the press was not kept for later"
+    );
+}
+
+/// The older meeting is cancelled while a newer one records: the recording carries on, and the
+/// newer meeting's turn comes because the ticket ended.
+#[test]
+fn meeting_cancel_leaves_a_newer_recording_alone_and_gives_it_its_turn() {
+    let dir = TempDir::new("cancel-newer");
+    let svc = services(&dir);
+    let (running_tx, running) = mpsc::channel();
+    let (open, gate) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![
+        Finish::PassUntilCancelled(running_tx),
+        Finish::Gate(gate),
+    ]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let first = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    running.recv_timeout(MEET_GUARD).unwrap();
+    events_until(&rx, |e| saved_is(&first, e));
+
+    let second = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    events_until(&rx, |e| {
+        *e == MeetingEvent::Transcript {
+            state: crate::meeting_events::TranscriptState::WaitingForPreviousMeeting,
+        }
+    });
+
+    d.cancel_finishing(&first);
+    let events = events_until(&rx, |e| is_summary_of(&first, e));
+    assert_eq!(result_of(&events, &first), SummaryEvent::PostCancelled);
+    // The hold opened: the newer meeting no longer waits, and it still records.
+    events_until(&rx, |e| {
+        matches!(e, MeetingEvent::Transcript { state } if *state
+            != crate::meeting_events::TranscriptState::WaitingForPreviousMeeting)
+    });
+    assert_eq!(d.phase(), DriverPhase::Recording);
+
+    d.stop().unwrap();
+    open.send(()).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&second, e));
+    d.join();
+    assert!(
+        matches!(result_of(&events, &second), SummaryEvent::Skipped { .. }),
+        "its own end"
+    );
+    assert_eq!(recordings_of(&svc, &first), 1);
+    assert_eq!(recordings_of(&svc, &second), 1);
+    assert_eq!(
+        prepare.logged(),
+        [
+            format!("{first} starts"),
+            format!("{second} starts"),
+            format!("{second} ends, cancelled false"),
+        ]
+    );
+}
+
+/// A meeting waiting behind an older one is cancelled: it runs nothing and reads as unprocessed at
+/// once, and the older one, and a queued meeting behind it, go on.
+#[test]
+fn meeting_cancel_while_it_waits_for_its_turn_runs_nothing_and_touches_no_other() {
+    let dir = TempDir::new("cancel-waiting");
+    let svc = services(&dir);
+    let (open_first, first_gate) = mpsc::channel();
+    let (never_tx, _never) = mpsc::channel();
+    let (open_third, third_gate) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![
+        Finish::Gate(first_gate),
+        Finish::PassUntilCancelled(never_tx),
+        Finish::Gate(third_gate),
+    ]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let first = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    events_until(&rx, |e| saved_is(&first, e));
+    let deadline = Instant::now() + MEET_GUARD;
+    while prepare.logged().is_empty() {
+        assert!(Instant::now() < deadline, "the first never started");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let second = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    events_until(&rx, |e| saved_is(&second, e));
+    activity_becomes(&svc, &second, earshot_runtime::MeetingActivity::Waiting);
+    let third = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    events_until(&rx, |e| saved_is(&third, e));
+    activity_becomes(&svc, &third, earshot_runtime::MeetingActivity::Waiting);
+
+    d.cancel_finishing(&second);
+    let events = events_until(&rx, |e| is_summary_of(&second, e));
+    assert_eq!(result_of(&events, &second), SummaryEvent::PostCancelled);
+    activity_becomes(&svc, &second, earshot_runtime::MeetingActivity::Unprocessed);
+    assert_eq!(recordings_of(&svc, &second), 1);
+    assert_eq!(
+        prepare.logged(),
+        [format!("{first} starts")],
+        "the older one still runs, and the one behind still waits for it"
+    );
+
+    open_first.send(()).unwrap();
+    events_until(&rx, |e| is_summary_of(&first, e));
+    open_third.send(()).unwrap();
+    events_until(&rx, |e| is_summary_of(&third, e));
+    d.join();
+    assert_eq!(
+        prepare.logged(),
+        [
+            format!("{first} starts"),
+            format!("{first} ends, cancelled false"),
+            format!("{third} starts"),
+            format!("{third} ends, cancelled false"),
+        ]
+    );
+}
+
+#[test]
+fn meeting_cancel_twice_and_after_the_end_is_harmless_with_one_summary_event() {
+    let dir = TempDir::new("cancel-twice");
+    let svc = services(&dir);
+    let (running_tx, running) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::PassUntilCancelled(running_tx)]);
+    let (d, rx) = cancel_driver(prepare);
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    running.recv_timeout(MEET_GUARD).unwrap();
+
+    d.cancel_finishing(&meeting);
+    d.cancel_finishing(&meeting);
+    events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.cancel_finishing(&meeting);
+    d.join();
+    d.cancel_finishing(&meeting);
+    d.cancel_finishing("not a meeting");
+    assert!(rx.try_recv().is_err(), "exactly one summary event");
+    assert_eq!(d.phase(), DriverPhase::Idle);
+}
+
+/// A meeting's token goes with its thread, also on a panic's way out.
+#[test]
+fn meeting_cancel_has_nothing_left_to_reach_after_a_panic() {
+    let dir = TempDir::new("cancel-panic");
+    let svc = services(&dir);
+    let prepare = FakePrepare::new(Script::AfterPanics);
+    let (d, rx) = driver(prepare);
+    let meeting = d.start(&svc, request(CaptureMode::Call)).unwrap();
+    until_summary(&rx);
+    d.join();
+    assert!(d.0.finishing.lock().unwrap().is_empty());
+    d.cancel_finishing(&meeting);
 }

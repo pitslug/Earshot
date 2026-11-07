@@ -297,6 +297,8 @@ export function AppShell({
   const [compact, setCompact] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
+  // The meeting a Cancel was pressed for; its result ends the view, and a newer meeting differs.
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [quitAsked, setQuitAsked] = useState<keyof typeof QUIT_COPY | null>(null);
   const [quitting, setQuitting] = useState(false);
@@ -449,6 +451,14 @@ export function AppShell({
     setStopError(null);
     ipc.stopMeeting().catch((e: unknown) => {
       setStopping(false);
+      setStopError(e instanceof Error ? e.message : String(e));
+    });
+  };
+  const cancelFinishing = (id: string) => {
+    setCancellingId(id);
+    setStopError(null);
+    ipc.cancelFinishing(id).catch((e: unknown) => {
+      setCancellingId(null);
       setStopError(e instanceof Error ? e.message : String(e));
     });
   };
@@ -747,6 +757,8 @@ export function AppShell({
             onOpen={open}
             onNameVoices={openNames}
             onDismissBanner={live.dismissBanner}
+            onCancel={() => cancelFinishing(meeting.meetingId)}
+            cancelling={cancellingId === meeting.meetingId}
           />
         )}
         {view === "detail" && (

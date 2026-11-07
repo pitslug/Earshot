@@ -791,6 +791,14 @@ fn meeting_events_summary_results_map_with_plain_copy() {
         summary_event(&outcome(Ok(HostPost::Skipped), SummaryResult::Cancelled)),
         SummaryEvent::Cancelled
     );
+    let post_cancelled = HostPost::Cancelled {
+        speaker_windows_deleted: Ok(1),
+    };
+    assert_eq!(
+        summary_event(&outcome(Ok(post_cancelled), SummaryResult::Cancelled)),
+        SummaryEvent::PostCancelled,
+        "the meeting reads as not processed, not as a cancelled summary"
+    );
     // A failed cleanup is a failure with the cleanup's error, not a skip.
     let post_failed = summary_event(&outcome(
         Err(RuntimeError::NoTracks),

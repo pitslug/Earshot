@@ -1465,7 +1465,7 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T7.3
   - do: the owner: a button on a meeting that copies its summary as plain Markdown.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
-- [ ] T9.9 Cancel on "Finishing the meeting"
+- [x] T9.9 Cancel on "Finishing the meeting"
   - deps: T7.3
   - do: the owner: a Cancel on that view stops the final pass and the summary. The audio and the meeting stay, marked as not processed, and can be re-transcribed.
   - accept: `cargo test -p earshot-desktop meeting`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark

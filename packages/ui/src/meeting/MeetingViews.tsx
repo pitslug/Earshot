@@ -727,17 +727,33 @@ export interface AfterMeetingViewProps {
   onOpen(meetingId: string): void;
   onNameVoices(meetingId: string): void;
   onDismissBanner(key: string): void;
+  /** Stops the work after the recording: the audio stays and the meeting can be re-transcribed. */
+  onCancel(): void;
+  /** True from the press until the meeting's result: a model call may have to end first. */
+  cancelling?: boolean;
+}
+
+function afterMeetingHeading(s: LiveMeeting["summary"]): string {
+  if (s === null) return "Finishing the meeting";
+  return s.kind === "PostCancelled" ? "Meeting saved" : "Meeting finished";
 }
 
 /** After the stop: the post-meeting steps, then the summary result. */
-export function AfterMeetingView({ meeting, onOpen, onNameVoices, onDismissBanner }: AfterMeetingViewProps) {
+export function AfterMeetingView({
+  meeting,
+  onOpen,
+  onNameVoices,
+  onDismissBanner,
+  onCancel,
+  cancelling = false,
+}: AfterMeetingViewProps) {
   const styles = useStyles();
   const p = meeting.progress;
   const s = meeting.summary;
   return (
     <section className={styles.view} aria-label="Meeting">
       <Title2 as="h1" className={styles.heading}>
-        {s === null ? "Finishing the meeting" : "Meeting finished"}
+        {afterMeetingHeading(s)}
       </Title2>
       {meeting.endedReason === "Failed" && (
         <MessageBar intent="error">
@@ -753,12 +769,23 @@ export function AfterMeetingView({ meeting, onOpen, onNameVoices, onDismissBanne
             value={p?.total ? p.done / p.total : undefined}
             max={1}
           />
-          <Body1 aria-live="polite">{p ? stepLabel(p.step) : "Finalising the recording"}</Body1>
+          <Body1 aria-live="polite">
+            {cancelling
+              ? "Stopping. This can take a moment if a model is still working or loading."
+              : p
+                ? stepLabel(p.step)
+                : "Finalising the recording"}
+          </Body1>
           {p?.total ? (
             <Caption1 className={styles.muted}>
               {p.done} of {p.total} steps
             </Caption1>
           ) : null}
+          <div className={styles.buttons}>
+            <Button onClick={onCancel} disabled={cancelling}>
+              Cancel
+            </Button>
+          </div>
         </div>
       )}
       <Banners banners={afterMeetingBanners(meeting)} onDismiss={onDismissBanner} />
@@ -771,7 +798,7 @@ function SummaryNotice({
   meeting,
   onOpen,
   onNameVoices,
-}: Omit<AfterMeetingViewProps, "onDismissBanner">) {
+}: Pick<AfterMeetingViewProps, "meeting" | "onOpen" | "onNameVoices">) {
   const s = meeting.summary;
   if (s === null) return null;
   const open = (
@@ -825,7 +852,18 @@ function SummaryNotice({
         <MessageBar intent="info" layout="multiline" role="status">
           <MessageBarBody>
             <MessageBarTitle>Summary cancelled</MessageBarTitle>
-            The recording and transcript are saved.
+            The recording and transcript are saved. You can summarise the meeting from its page.
+          </MessageBarBody>
+          <MessageBarActions>{open}</MessageBarActions>
+        </MessageBar>
+      );
+    case "PostCancelled":
+      return (
+        <MessageBar intent="info" layout="multiline" role="status">
+          <MessageBarBody>
+            <MessageBarTitle>Transcript not finished</MessageBarTitle>
+            The recording and any draft transcript are saved. Re-transcribe the meeting from its page
+            to get the full transcript.
           </MessageBarBody>
           <MessageBarActions>{open}</MessageBarActions>
         </MessageBar>
