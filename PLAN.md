@@ -351,6 +351,7 @@ A gate is a hard stop that waits for the human. The protocol (how gates are open
 - (Resolved 2026-11-07, the owner: end users fetch NVIDIA's files from NVIDIA's server without a written answer first. The owner accepts that risk at this scale.)
   Research for that decision: `docs/cuda-libraries.md` (no route settled on the licence text; ask NVIDIA in writing; measured about 1.35 GB on disk against D23's estimate of 2 to 3 GB; a CUDA install is about 400 to 500 MB by a guess, not D23's 40 MB app), `docs/arm64-cuda.md` (research half of T8.4b, which stays open for its build probe) and `docs/qnn-redistribution.md` (bundle inside the ARM64 installer, about 132 MB).
 - (Resolved 2026-11-08, the owner: the update host is this repo's GitHub Releases, `github.com` and its download host `release-assets.githubusercontent.com`, for now. Settled: no MSI; one per-user NSIS installer, which updates without admin. docs/updates.md.)
+- (Resolved 2026-11-08, the owner: T9.5 folders are one level with one folder per meeting, and the app opens on All meetings. Deleting a folder asks whether to delete its meetings or move them out, with moving as the default. docs/folders-design.md.)
 - Windows code signing for the installers (a paid certificate, the owner's decision): without it SmartScreen warns on install and possibly on every update. The update signature in D24 does not replace it.
 - (Resolved, the owner: the opt-in CUDA download has two parts, in T8.4a.)
 - (Resolved, the owner: our CUDA set is published in `pitslug/Earshot`'s releases, without waiting for NVIDIA's written answer. T9.1b's release host stays its own decision.)
@@ -1483,8 +1484,8 @@ Moved here by the owner: real work, not needed for the first release.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
 - [ ] T9.5 Folders in the side panel
   - deps: T9.1
-  - do: The owner, after release. Group meetings into folders in the side panel. It needs a new table, a migration and a place in the future sync design, so it starts with a short design for the owner (docs/folders-design.md).
-  - accept: the design agreed with the owner; its accept written then
+  - do: The owner, after release. Group meetings into folders in the side panel. It needs a new table, a migration and a place in the future sync design. The design is agreed (docs/folders-design.md); building waits for the owner's word, and the task is split then.
+  - accept: written when the owner says to build
 - [ ] T9.6 Shared models for an "everyone" install
   - deps: T9.1p
   - do: discussed with the owner, after release and only if a real user asks. `%ProgramData%\Earshot\models`, readable by all and writable only with admin, because the folder holds DLLs another user would run. Meetings, voiceprints and settings stay per user. Every file a shared load reads is checked, and its cost measured.
