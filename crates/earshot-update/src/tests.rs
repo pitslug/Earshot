@@ -193,8 +193,11 @@ fn update_hex_round_trips_and_refuses_the_wrong_length_or_digits() {
 }
 
 #[test]
-fn update_the_built_in_key_is_a_usable_key_when_set() {
-    if let Some(key) = RELEASE_PUBLIC_KEY {
-        assert!(VerifyingKey::from_bytes(&key).is_ok());
-    }
+fn update_the_built_in_key_is_the_owners_and_usable() {
+    let key = RELEASE_PUBLIC_KEY.expect("a release build needs the key");
+    assert_eq!(
+        to_hex(&key),
+        "303648c90818b9ff31bc64494e0b00cda75cf46ac7e2c277fbfbaf1cb952ac32"
+    );
+    assert!(VerifyingKey::from_bytes(&key).is_ok());
 }

@@ -15,10 +15,12 @@ use std::str::FromStr;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-/// The public key of the owner's release key, built into the app. `None` until one is generated
-/// (`cargo xtask update-key`): such a build says updates are not set up and `sign-update` refuses
-/// to make a file for it. Changing this leaves installed copies unable to verify later releases.
-pub const RELEASE_PUBLIC_KEY: Option<[u8; 32]> = None;
+/// The public key of the owner's release key, built into the app. A build with `None` says updates are not
+/// set up and `sign-update` refuses to make a file for it. Changing this leaves installed copies unable to verify later releases.
+pub const RELEASE_PUBLIC_KEY: Option<[u8; 32]> = Some([
+    0x30, 0x36, 0x48, 0xc9, 0x08, 0x18, 0xb9, 0xff, 0x31, 0xbc, 0x64, 0x49, 0x4e, 0x0b, 0x00, 0xcd,
+    0xa7, 0x5c, 0xf4, 0x6a, 0xc7, 0xe2, 0xc2, 0x77, 0xfb, 0xfb, 0xaf, 0x1c, 0xb9, 0x52, 0xac, 0x32,
+]);
 
 /// What the signature covers before the manifest.
 pub const DOMAIN: &[u8] = b"earshot-update-v1\n";

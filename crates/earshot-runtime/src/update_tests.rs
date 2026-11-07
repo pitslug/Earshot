@@ -360,10 +360,8 @@ fn update_the_real_source_contacts_only_this_repo_and_its_download_host() {
 }
 
 #[test]
-fn update_a_build_without_a_key_has_no_source() {
-    if earshot_update::RELEASE_PUBLIC_KEY.is_none() {
-        assert!(matches!(UpdateSource::releases(), Err(UpdateError::NoKey)));
-    }
+fn update_this_build_has_a_source_because_it_has_the_key() {
+    assert!(UpdateSource::releases().is_ok());
 }
 
 #[test]
