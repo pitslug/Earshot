@@ -183,6 +183,15 @@ const useStyles = makeStyles({
     width: "100%",
     justifyContent: "flex-start",
   },
+  updateMark: {
+    display: "inline-block",
+    width: "8px",
+    height: "8px",
+    marginLeft: tokens.spacingHorizontalS,
+    borderRadius: tokens.borderRadiusCircular,
+    backgroundColor: tokens.colorBrandBackground,
+    flexShrink: 0,
+  },
   detail: {
     flexGrow: 1,
     minWidth: 0,
@@ -321,6 +330,26 @@ export function AppShell({
   // Jobs on stored meetings, followed here so an ending is seen whatever meeting is shown.
   const [jobs, setJobs] = useState<Record<string, JobView>>({});
   const jobSeq = useRef(0);
+  // Whether an update waits for the user (available, downloading or ready): a mark beside Settings.
+  const [updateWaiting, setUpdateWaiting] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    const waiting = (state: string) => state === "Available" || state === "Downloading" || state === "Ready";
+    ipc.updateStatus().then(
+      (v) => {
+        if (live) setUpdateWaiting(waiting(v.phase.state));
+      },
+      () => {},
+    );
+    const stop = ipc.onUpdateEvent((e) => {
+      if (live) setUpdateWaiting(waiting(e.phase.state));
+    });
+    return () => {
+      live = false;
+      void stop.then((f) => f());
+    };
+  }, [ipc]);
 
   useEffect(() => {
     let live = true;
@@ -693,6 +722,7 @@ export function AppShell({
           <Button
             appearance="subtle"
             className={styles.settings}
+            aria-label={updateWaiting ? "Settings, update available" : undefined}
             onClick={() => {
               setSettingsSection(undefined);
               setView("settings");
@@ -700,6 +730,7 @@ export function AppShell({
             }}
           >
             Settings
+            {updateWaiting && <span aria-hidden="true" data-testid="update-mark" className={styles.updateMark} />}
           </Button>
         </div>
       </nav>

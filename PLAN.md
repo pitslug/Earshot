@@ -1469,7 +1469,7 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T7.3
   - do: the owner: a Cancel on that view stops the final pass and the summary. The audio and the meeting stay, marked as not processed, and can be re-transcribed.
   - accept: `cargo test -p earshot-desktop meeting`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
-- [ ] T9.10 Show when an update is available
+- [x] T9.10 Show when an update is available
   - deps: T9.1ba
   - do: the owner: when a check finds an update, a mark beside Settings says so, not only the General page.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
