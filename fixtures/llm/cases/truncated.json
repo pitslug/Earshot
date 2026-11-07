@@ -1,0 +1,63 @@
+{
+  "description": "The reply stops at the output limit (finish_reason length) mid-string; the next round asks again with a larger budget (a shorter reply only when it cannot grow).",
+  "input": "meeting.json",
+  "expect": {
+    "modes": [
+      "json_schema",
+      "json_schema"
+    ],
+    "repairs": 1
+  },
+  "exchanges": [
+    {
+      "status": 200,
+      "body": {
+        "id": "chatcmpl-replay-truncated-9",
+        "object": "chat.completion",
+        "created": 1792224009,
+        "model": "replay-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\n  \"title\": \"Beta launch check-in\",\n  \"tldr\": \"The team confirmed that the beta ships this Friday. Ben will write the release notes and check with Dana about beta support.\",\n  \"enhanced_notes\": [\n    {\n      \"heading\": \"Beta launch date\",\n      \"bullets\": [\n        {\n          \"text\": \"QA passed last night; engineering can ship on Friday\",\n          \"source_segment_ids\": [\n            2\n          ]\n        },\n        {\n          \"text\": \"Beta launch confirmed for this Friday\",\n          \"source_segment_ids\": [\n            3\n          ]\n        }\n      ]\n    },\n    {\n      \"heading\": \"Support owner\",\n      \"bullets\": [\n        {\n          \"text\": \"Nobody owns support for beta users yet\",\n          \"source_segment_ids\": [\n            5\n          ]\n        },\n        {\n          \"text\": \"The support team may take it; Ben checks with Dana\",\n          \"source_segment_ids\": [\n            6,\n            7\n          ]\n        }\n      ]\n    }\n  ],\n  \"decisions\": [\n    {\n      \"text\": \"Ship the beta this Frida"
+            },
+            "logprobs": null,
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1650,
+          "completion_tokens": 2048,
+          "total_tokens": 3698
+        }
+      }
+    },
+    {
+      "status": 200,
+      "body": {
+        "id": "chatcmpl-replay-truncated-10",
+        "object": "chat.completion",
+        "created": 1792224010,
+        "model": "replay-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"title\":\"Beta launch check-in\",\"tldr\":\"The team confirmed that the beta ships this Friday. Ben will write the release notes and check with Dana about beta support.\",\"enhanced_notes\":[{\"heading\":\"Beta launch date\",\"bullets\":[{\"text\":\"QA passed last night; engineering can ship on Friday\",\"source_segment_ids\":[2]},{\"text\":\"Beta launch confirmed for this Friday\",\"source_segment_ids\":[3]}]},{\"heading\":\"Support owner\",\"bullets\":[{\"text\":\"Nobody owns support for beta users yet\",\"source_segment_ids\":[5]},{\"text\":\"The support team may take it; Ben checks with Dana\",\"source_segment_ids\":[6,7]}]}],\"decisions\":[{\"text\":\"Ship the beta this Friday\",\"source_segment_ids\":[3]}],\"action_items\":[{\"owner\":\"Ben Okafor\",\"task\":\"Write the release notes and send them round\",\"due\":\"Thursday\",\"source_segment_ids\":[4]},{\"owner\":\"Ben Okafor\",\"task\":\"Ask Dana whether the support team can own beta support\",\"due\":\"Wednesday\",\"source_segment_ids\":[6,7,8]}],\"open_questions\":[\"Who will own support for beta users?\"],\"topics\":[\"beta launch\",\"release notes\",\"support\"]}"
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 2900,
+          "completion_tokens": 354,
+          "total_tokens": 3254
+        }
+      }
+    }
+  ]
+}

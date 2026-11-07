@@ -1,0 +1,86 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Industrial Designer",
+      "task": "Check the chip specifications to confirm the regular chip details."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "User Interface Designer",
+      "task": "Look for examples of rounded scroll wheels on devices like iPods or mobile phones."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "User Interface Designer",
+      "task": "Take a look at the button layout design."
+    },
+    {
+      "due": null,
+      "id": "S-A4",
+      "owner": "User Interface Designer",
+      "task": "Paint the design based on the agreed images."
+    },
+    {
+      "due": null,
+      "id": "S-A5",
+      "owner": "Marketing Expert",
+      "task": "See the design and confirm if it looks original and innovative."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "The remote control case will be made of hard plastic."
+    },
+    {
+      "id": "S-D2",
+      "text": "The remote control will use rechargeable batteries as the energy source."
+    },
+    {
+      "id": "S-D3",
+      "text": "The remote control will use the regular (second most expensive) chip."
+    },
+    {
+      "id": "S-D4",
+      "text": "The remote control will have a 2D curved shape, not 3D."
+    },
+    {
+      "id": "S-D5",
+      "text": "The numbers will be located at the bottom of the remote."
+    },
+    {
+      "id": "S-D6",
+      "text": "The channel switch buttons will be located in the middle of the remote."
+    },
+    {
+      "id": "S-D7",
+      "text": "The volume control will be a scroll wheel on the side of the remote."
+    },
+    {
+      "id": "S-D8",
+      "text": "The remote control will have a mostly square shape with rounded corners."
+    },
+    {
+      "id": "S-D9",
+      "text": "The remote control will include a small yellow scroll wheel."
+    },
+    {
+      "id": "S-D10",
+      "text": "The team decided to include speech recognition and an advanced chip in the remote control."
+    },
+    {
+      "id": "S-D11",
+      "text": "Decided to include speech recognition in the device."
+    }
+  ],
+  "failure": null,
+  "meeting": "TS3004c",
+  "model": "S2",
+  "notes": "## Design Aesthetic and Shape\n- The remote control should have a modern look with rounded corners, avoiding the appearance of old square remotes or fully curved iPod-style devices.\n- The shape will be mostly square with rounded corners, not fully curved in depth.\n- The design should look new and original, avoiding the look of old square remotes or the iPod style.\n## Materials and Power\n- The case will be made of hard plastic, not rubber or soft materials.\n- The remote control will use rechargeable batteries as the energy source.\n## Chip and Display\n- The remote control will use the regular (second most expensive) chip.\n- The team decided to include speech recognition and an advanced chip.\n## Interface Layout\n- The numbers will be located at the bottom of the remote.\n- The channel switch buttons will be located in the middle of the remote.\n- The volume control will be a scroll wheel on the side of the remote.\n- The scroll wheel will be small and yellow to match the 'Real Reaction' colors.",
+  "tldr": "The team finalized the design specifications for a modern remote control, settling on a mostly square shape with rounded corners, hard plastic construction, and a small yellow scroll wheel. They decided to include speech recognition and an advanced chip, though they initially debated the cost and complexity of these features.",
+  "valid": true
+}

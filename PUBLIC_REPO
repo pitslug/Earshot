@@ -1,0 +1,2 @@
+This repo is the public source of Earshot. `cargo xtask public-guard` enforces its rules
+here: no private names, personal commit emails, recordings, LOG.md or gates/.

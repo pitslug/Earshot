@@ -1,0 +1,63 @@
+{
+  "description": "The server rejects json_schema (400) and json_object (422); the plain-text reply has the object inside prose.",
+  "input": "meeting.json",
+  "expect": {
+    "modes": [
+      "json_schema",
+      "json_object",
+      "text"
+    ],
+    "repairs": 0
+  },
+  "exchanges": [
+    {
+      "status": 400,
+      "body": {
+        "error": {
+          "message": "response_format is not supported",
+          "type": "invalid_request_error"
+        }
+      }
+    },
+    {
+      "status": 422,
+      "body": {
+        "detail": [
+          {
+            "loc": [
+              "body",
+              "response_format"
+            ],
+            "msg": "unsupported value",
+            "type": "value_error"
+          }
+        ]
+      }
+    },
+    {
+      "status": 200,
+      "body": {
+        "id": "chatcmpl-replay-json_object_unsupported-12",
+        "object": "chat.completion",
+        "created": 1792224012,
+        "model": "replay-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "Sure! Here's the summary of your meeting:\n\n{\n  \"title\": \"Beta launch check-in\",\n  \"tldr\": \"The team confirmed that the beta ships this Friday. Ben will write the release notes and check with Dana about beta support.\",\n  \"enhanced_notes\": [\n    {\n      \"heading\": \"Beta launch date\",\n      \"bullets\": [\n        {\n          \"text\": \"QA passed last night; engineering can ship on Friday\",\n          \"source_segment_ids\": [\n            2\n          ]\n        },\n        {\n          \"text\": \"Beta launch confirmed for this Friday\",\n          \"source_segment_ids\": [\n            3\n          ]\n        }\n      ]\n    },\n    {\n      \"heading\": \"Support owner\",\n      \"bullets\": [\n        {\n          \"text\": \"Nobody owns support for beta users yet\",\n          \"source_segment_ids\": [\n            5\n          ]\n        },\n        {\n          \"text\": \"The support team may take it; Ben checks with Dana\",\n          \"source_segment_ids\": [\n            6,\n            7\n          ]\n        }\n      ]\n    }\n  ],\n  \"decisions\": [\n    {\n      \"text\": \"Ship the beta this Friday\",\n      \"source_segment_ids\": [\n        3\n      ]\n    }\n  ],\n  \"action_items\": [\n    {\n      \"owner\": \"Ben Okafor\",\n      \"task\": \"Write the release notes and send them round\",\n      \"due\": \"Thursday\",\n      \"source_segment_ids\": [\n        4\n      ]\n    },\n    {\n      \"owner\": \"Ben Okafor\",\n      \"task\": \"Ask Dana whether the support team can own beta support\",\n      \"due\": \"Wednesday\",\n      \"source_segment_ids\": [\n        6,\n        7,\n        8\n      ]\n    }\n  ],\n  \"open_questions\": [\n    \"Who will own support for beta users?\"\n  ],\n  \"topics\": [\n    \"beta launch\",\n    \"release notes\",\n    \"support\"\n  ]\n}\n\nI hope this helps."
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1650,
+          "completion_tokens": 516,
+          "total_tokens": 2166
+        }
+      }
+    }
+  ]
+}

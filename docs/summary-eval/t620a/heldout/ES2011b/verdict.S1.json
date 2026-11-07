@@ -1,0 +1,21 @@
+{
+  "meeting": "ES2011b",
+  "model": "S1",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D5 and the notes keep the location finder with a separate base unit sold with the remote."},
+    {"id": "D1.2", "verdict": "covered", "reason": "S-D5 says the finder uses a radio signal."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D2 removes speech recognition."},
+    {"id": "D3.1", "verdict": "covered", "reason": "S-D8 names teenagers and young professionals as the target audience."},
+    {"id": "D4.1", "verdict": "missing", "reason": "No summary part mentions a stand for the remote."},
+    {"id": "D5.1", "verdict": "missing", "reason": "No summary part says the locator removes the need for any component."},
+    {"id": "D6.1", "verdict": "covered", "reason": "The design notes say the location signal is a buzzer or beep rather than a light."},
+    {"id": "D6.2", "verdict": "covered", "reason": "S-D6 says the finder on the remote outputs a beep."},
+    {"id": "D7.1", "verdict": "covered", "reason": "S-D4 gives the remote a separate power button."},
+    {"id": "D8.1", "verdict": "missing", "reason": "The interface notes only say a scrolling touch-pad was discussed; nothing decides it or says it replaces a number pad."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "covered", "reason": "S-A2 has all attendees finish questionnaires."},
+    {"id": "A2.1", "verdict": "missing", "reason": "S-A2 gives individual work on ideas for the next meeting but no presentations."},
+    {"id": "A2.2", "verdict": "missing", "reason": "S-A2 gives individual work on ideas for the next meeting but no presentations."}
+  ]
+}

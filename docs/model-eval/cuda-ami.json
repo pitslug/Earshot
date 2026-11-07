@@ -1,0 +1,3471 @@
+{
+  "task": "T2.5b review (AMI IHM rule in model_eval)",
+  "measured": "2026-10-24, desktop, RTX 5080, optimised release whisper.cpp",
+  "note": "raw reports of the two runs, unmodified; docs/model-eval/cuda.json corpora.ami is copied from these rows",
+  "runs": [
+    {
+      "command": "model_eval --backend cuda --corpus ami --decoding greedy --decoding beam --model parakeet-tdt-0.6b-v2 --model parakeet-tdt-110m --model base.en --model parakeet-tdt-0.6b-v3 --model large-v3-turbo",
+      "report": {
+        "backend": "cuda",
+        "complete": true,
+        "cores": 32,
+        "corpora": [
+          "ami"
+        ],
+        "gate12": "not requested",
+        "onnx_models": "evaluated when selected",
+        "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4 }",
+        "rows": [
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "cuda:0",
+              "kind": "cuda",
+              "model": "parakeet-tdt_ctc-110m (TDT)"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 13.8433445,
+                    "headset": 0,
+                    "matched_words": 1020,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 58,
+                      "insertions": 19,
+                      "ref_words": 1147,
+                      "substitutions": 36,
+                      "wer_percent": 9.85178727114211
+                    }
+                  },
+                  {
+                    "decode_s": 3.5398809,
+                    "headset": 1,
+                    "matched_words": 150,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 9,
+                      "insertions": 4,
+                      "ref_words": 173,
+                      "substitutions": 11,
+                      "wer_percent": 13.872832369942195
+                    }
+                  },
+                  {
+                    "decode_s": 19.7738977,
+                    "headset": 2,
+                    "matched_words": 130,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 25,
+                      "insertions": 17,
+                      "ref_words": 185,
+                      "substitutions": 15,
+                      "wer_percent": 30.810810810810814
+                    }
+                  },
+                  {
+                    "decode_s": 14.8842144,
+                    "headset": 3,
+                    "matched_words": 361,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 16,
+                      "insertions": 12,
+                      "ref_words": 412,
+                      "substitutions": 19,
+                      "wer_percent": 11.407766990291263
+                    }
+                  },
+                  {
+                    "decode_s": 6.140971,
+                    "headset": 0,
+                    "matched_words": 246,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 16,
+                      "insertions": 7,
+                      "ref_words": 282,
+                      "substitutions": 14,
+                      "wer_percent": 13.120567375886525
+                    }
+                  },
+                  {
+                    "decode_s": 9.5716188,
+                    "headset": 1,
+                    "matched_words": 951,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 29,
+                      "insertions": 12,
+                      "ref_words": 1095,
+                      "substitutions": 39,
+                      "wer_percent": 7.30593607305936
+                    }
+                  },
+                  {
+                    "decode_s": 3.1597066,
+                    "headset": 2,
+                    "matched_words": 350,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 34,
+                      "insertions": 16,
+                      "ref_words": 440,
+                      "substitutions": 29,
+                      "wer_percent": 17.954545454545453
+                    }
+                  },
+                  {
+                    "decode_s": 8.7265556,
+                    "headset": 3,
+                    "matched_words": 711,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 26,
+                      "insertions": 16,
+                      "ref_words": 816,
+                      "substitutions": 21,
+                      "wer_percent": 7.720588235294118
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 108,
+                      "insertions": 52,
+                      "ref_words": 1917,
+                      "substitutions": 81,
+                      "wer_percent": 12.571726656233698
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 105,
+                      "insertions": 51,
+                      "ref_words": 2633,
+                      "substitutions": 103,
+                      "wer_percent": 9.836688188378275
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 79.64018949999999,
+                  "rtf": 0.04367483575361397
+                },
+                "timing": {
+                  "matched_words": 3919,
+                  "start_error_median_ms": 116,
+                  "start_error_p90_ms": 238,
+                  "within_250ms_percent": 91.88568512375606
+                },
+                "wer": {
+                  "deletions": 213,
+                  "insertions": 103,
+                  "ref_words": 4550,
+                  "substitutions": 184,
+                  "wer_percent": 10.989010989010989
+                }
+              }
+            },
+            "decoding": "greedy",
+            "evidence": {
+              "fully_on_requested": [
+                false,
+                true,
+                true
+              ],
+              "sessions": [
+                "requested cuda:0, placed: CPUExecutionProvider=489 CUDAExecutionProvider=1328",
+                "requested cuda:0, placed: CUDAExecutionProvider=7",
+                "requested cuda:0, placed: CUDAExecutionProvider=10"
+              ],
+              "source": "ONNX Runtime node placement"
+            },
+            "languages": "English",
+            "load_s": 3.1234955,
+            "model": "parakeet-tdt-110m",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 79.64018949999999,
+              "rtf": 0.04367483575361397
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "cuda:0",
+              "kind": "cuda",
+              "model": "parakeet-tdt-0.6b-v2"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 7.6977204,
+                    "headset": 0,
+                    "matched_words": 1111,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 18,
+                      "insertions": 30,
+                      "ref_words": 1147,
+                      "substitutions": 32,
+                      "wer_percent": 6.9747166521360064
+                    }
+                  },
+                  {
+                    "decode_s": 6.4006206,
+                    "headset": 1,
+                    "matched_words": 160,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 11,
+                      "insertions": 11,
+                      "ref_words": 173,
+                      "substitutions": 6,
+                      "wer_percent": 16.184971098265898
+                    }
+                  },
+                  {
+                    "decode_s": 14.7457046,
+                    "headset": 2,
+                    "matched_words": 136,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 22,
+                      "insertions": 37,
+                      "ref_words": 185,
+                      "substitutions": 26,
+                      "wer_percent": 45.94594594594595
+                    }
+                  },
+                  {
+                    "decode_s": 19.5999624,
+                    "headset": 3,
+                    "matched_words": 376,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 20,
+                      "insertions": 15,
+                      "ref_words": 412,
+                      "substitutions": 18,
+                      "wer_percent": 12.864077669902912
+                    }
+                  },
+                  {
+                    "decode_s": 4.3619408,
+                    "headset": 0,
+                    "matched_words": 263,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 1,
+                      "insertions": 27,
+                      "ref_words": 282,
+                      "substitutions": 14,
+                      "wer_percent": 14.893617021276595
+                    }
+                  },
+                  {
+                    "decode_s": 9.1336379,
+                    "headset": 1,
+                    "matched_words": 1009,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 7,
+                      "insertions": 11,
+                      "ref_words": 1095,
+                      "substitutions": 35,
+                      "wer_percent": 4.840182648401827
+                    }
+                  },
+                  {
+                    "decode_s": 7.0364061,
+                    "headset": 2,
+                    "matched_words": 398,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 4,
+                      "insertions": 23,
+                      "ref_words": 440,
+                      "substitutions": 18,
+                      "wer_percent": 10.227272727272728
+                    }
+                  },
+                  {
+                    "decode_s": 11.1487677,
+                    "headset": 3,
+                    "matched_words": 750,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 12,
+                      "insertions": 55,
+                      "ref_words": 816,
+                      "substitutions": 18,
+                      "wer_percent": 10.416666666666668
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 71,
+                      "insertions": 93,
+                      "ref_words": 1917,
+                      "substitutions": 82,
+                      "wer_percent": 12.832550860719873
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 24,
+                      "insertions": 116,
+                      "ref_words": 2633,
+                      "substitutions": 85,
+                      "wer_percent": 8.54538549183441
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 80.12476050000006,
+                  "rtf": 0.0439405754381732
+                },
+                "timing": {
+                  "matched_words": 4203,
+                  "start_error_median_ms": 60,
+                  "start_error_p90_ms": 162,
+                  "within_250ms_percent": 96.59766833214371
+                },
+                "wer": {
+                  "deletions": 95,
+                  "insertions": 209,
+                  "ref_words": 4550,
+                  "substitutions": 167,
+                  "wer_percent": 10.351648351648352
+                }
+              }
+            },
+            "decoding": "greedy",
+            "evidence": {
+              "fully_on_requested": [
+                false,
+                true,
+                true
+              ],
+              "sessions": [
+                "requested cuda:0, placed: CPUExecutionProvider=482 CUDAExecutionProvider=1515",
+                "requested cuda:0, placed: CUDAExecutionProvider=13",
+                "requested cuda:0, placed: CUDAExecutionProvider=10"
+              ],
+              "source": "ONNX Runtime node placement"
+            },
+            "languages": "English",
+            "load_s": 3.8292318,
+            "model": "parakeet-tdt-0.6b-v2",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 80.12476050000006,
+              "rtf": 0.0439405754381732
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "cuda:0",
+              "kind": "cuda",
+              "model": "parakeet-tdt-0.6b-v3"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 7.0716598,
+                    "headset": 0,
+                    "matched_words": 1103,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 24,
+                      "insertions": 33,
+                      "ref_words": 1147,
+                      "substitutions": 31,
+                      "wer_percent": 7.672188317349608
+                    }
+                  },
+                  {
+                    "decode_s": 2.5259222,
+                    "headset": 1,
+                    "matched_words": 159,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 5,
+                      "insertions": 14,
+                      "ref_words": 173,
+                      "substitutions": 9,
+                      "wer_percent": 16.184971098265898
+                    }
+                  },
+                  {
+                    "decode_s": 3.6122515,
+                    "headset": 2,
+                    "matched_words": 135,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 26,
+                      "insertions": 33,
+                      "ref_words": 185,
+                      "substitutions": 19,
+                      "wer_percent": 42.16216216216216
+                    }
+                  },
+                  {
+                    "decode_s": 7.2269659,
+                    "headset": 3,
+                    "matched_words": 384,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 13,
+                      "insertions": 37,
+                      "ref_words": 412,
+                      "substitutions": 17,
+                      "wer_percent": 16.2621359223301
+                    }
+                  },
+                  {
+                    "decode_s": 11.1175756,
+                    "headset": 0,
+                    "matched_words": 259,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 4,
+                      "insertions": 25,
+                      "ref_words": 282,
+                      "substitutions": 15,
+                      "wer_percent": 15.602836879432624
+                    }
+                  },
+                  {
+                    "decode_s": 14.7872691,
+                    "headset": 1,
+                    "matched_words": 1007,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 17,
+                      "insertions": 13,
+                      "ref_words": 1095,
+                      "substitutions": 27,
+                      "wer_percent": 5.205479452054795
+                    }
+                  },
+                  {
+                    "decode_s": 5.1037169,
+                    "headset": 2,
+                    "matched_words": 399,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 6,
+                      "insertions": 25,
+                      "ref_words": 440,
+                      "substitutions": 17,
+                      "wer_percent": 10.909090909090908
+                    }
+                  },
+                  {
+                    "decode_s": 7.6928731,
+                    "headset": 3,
+                    "matched_words": 750,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 11,
+                      "insertions": 32,
+                      "ref_words": 816,
+                      "substitutions": 23,
+                      "wer_percent": 8.088235294117647
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 68,
+                      "insertions": 117,
+                      "ref_words": 1917,
+                      "substitutions": 76,
+                      "wer_percent": 13.615023474178404
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 38,
+                      "insertions": 95,
+                      "ref_words": 2633,
+                      "substitutions": 82,
+                      "wer_percent": 8.165590581086214
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 59.13823409999997,
+                  "rtf": 0.03243152329611511
+                },
+                "timing": {
+                  "matched_words": 4196,
+                  "start_error_median_ms": 70,
+                  "start_error_p90_ms": 198,
+                  "within_250ms_percent": 94.89990467111535
+                },
+                "wer": {
+                  "deletions": 106,
+                  "insertions": 212,
+                  "ref_words": 4550,
+                  "substitutions": 158,
+                  "wer_percent": 10.461538461538462
+                }
+              }
+            },
+            "decoding": "greedy",
+            "evidence": {
+              "fully_on_requested": [
+                false,
+                true,
+                true
+              ],
+              "sessions": [
+                "requested cuda:0, placed: CPUExecutionProvider=482 CUDAExecutionProvider=1515",
+                "requested cuda:0, placed: CUDAExecutionProvider=13",
+                "requested cuda:0, placed: CUDAExecutionProvider=10"
+              ],
+              "source": "ONNX Runtime node placement"
+            },
+            "languages": "25 European languages (bg hr cs da nl en et fi fr de el hu it lv lt mt pl pt ro sk sl es sv ru uk), detected automatically",
+            "load_s": 3.1855704,
+            "model": "parakeet-tdt-0.6b-v3",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 59.13823409999997,
+              "rtf": 0.03243152329611511
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-base.en"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 7.4985243,
+                    "headset": 0,
+                    "matched_words": 978,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 79,
+                      "insertions": 27,
+                      "ref_words": 1147,
+                      "substitutions": 59,
+                      "wer_percent": 14.385353095030515
+                    }
+                  },
+                  {
+                    "decode_s": 1.7226096,
+                    "headset": 1,
+                    "matched_words": 137,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 15,
+                      "insertions": 4,
+                      "ref_words": 173,
+                      "substitutions": 14,
+                      "wer_percent": 19.07514450867052
+                    }
+                  },
+                  {
+                    "decode_s": 2.1614551,
+                    "headset": 2,
+                    "matched_words": 121,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 22,
+                      "insertions": 33,
+                      "ref_words": 185,
+                      "substitutions": 29,
+                      "wer_percent": 45.40540540540541
+                    }
+                  },
+                  {
+                    "decode_s": 3.1506334,
+                    "headset": 3,
+                    "matched_words": 359,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 17,
+                      "insertions": 18,
+                      "ref_words": 412,
+                      "substitutions": 29,
+                      "wer_percent": 15.53398058252427
+                    }
+                  },
+                  {
+                    "decode_s": 2.3937079,
+                    "headset": 0,
+                    "matched_words": 247,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 17,
+                      "insertions": 7,
+                      "ref_words": 282,
+                      "substitutions": 12,
+                      "wer_percent": 12.76595744680851
+                    }
+                  },
+                  {
+                    "decode_s": 7.1840331,
+                    "headset": 1,
+                    "matched_words": 928,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 49,
+                      "insertions": 12,
+                      "ref_words": 1095,
+                      "substitutions": 43,
+                      "wer_percent": 9.497716894977168
+                    }
+                  },
+                  {
+                    "decode_s": 3.1705258,
+                    "headset": 2,
+                    "matched_words": 320,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 56,
+                      "insertions": 14,
+                      "ref_words": 440,
+                      "substitutions": 38,
+                      "wer_percent": 24.545454545454547
+                    }
+                  },
+                  {
+                    "decode_s": 34.958019,
+                    "headset": 3,
+                    "matched_words": 704,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 29,
+                      "insertions": 13,
+                      "ref_words": 816,
+                      "substitutions": 33,
+                      "wer_percent": 9.191176470588236
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 133,
+                      "insertions": 82,
+                      "ref_words": 1917,
+                      "substitutions": 131,
+                      "wer_percent": 18.049034950443403
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 151,
+                      "insertions": 46,
+                      "ref_words": 2633,
+                      "substitutions": 126,
+                      "wer_percent": 12.26737561716673
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 62.23950820000006,
+                  "rtf": 0.03413226808081255
+                },
+                "timing": {
+                  "matched_words": 3794,
+                  "start_error_median_ms": 132,
+                  "start_error_p90_ms": 668,
+                  "within_250ms_percent": 66.63152345809172
+                },
+                "wer": {
+                  "deletions": 284,
+                  "insertions": 128,
+                  "ref_words": 4550,
+                  "substitutions": 257,
+                  "wer_percent": 14.703296703296703
+                }
+              }
+            },
+            "decoding": "greedy",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-base.en"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =   147.37 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "English",
+            "load_s": 0.1776655,
+            "model": "base.en",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 62.23950820000006,
+              "rtf": 0.03413226808081255
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-base.en"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 93.9931242,
+                    "headset": 0,
+                    "matched_words": 991,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 65,
+                      "insertions": 31,
+                      "ref_words": 1147,
+                      "substitutions": 63,
+                      "wer_percent": 13.862249346120315
+                    }
+                  },
+                  {
+                    "decode_s": 9.8439589,
+                    "headset": 1,
+                    "matched_words": 142,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 14,
+                      "insertions": 4,
+                      "ref_words": 173,
+                      "substitutions": 10,
+                      "wer_percent": 16.184971098265898
+                    }
+                  },
+                  {
+                    "decode_s": 4.8125198000000005,
+                    "headset": 2,
+                    "matched_words": 130,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 16,
+                      "insertions": 31,
+                      "ref_words": 185,
+                      "substitutions": 28,
+                      "wer_percent": 40.54054054054054
+                    }
+                  },
+                  {
+                    "decode_s": 24.7588231,
+                    "headset": 3,
+                    "matched_words": 366,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 10,
+                      "insertions": 25,
+                      "ref_words": 412,
+                      "substitutions": 31,
+                      "wer_percent": 16.019417475728158
+                    }
+                  },
+                  {
+                    "decode_s": 48.7995831,
+                    "headset": 0,
+                    "matched_words": 241,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 21,
+                      "insertions": 13,
+                      "ref_words": 282,
+                      "substitutions": 11,
+                      "wer_percent": 15.957446808510639
+                    }
+                  },
+                  {
+                    "decode_s": 74.5370401,
+                    "headset": 1,
+                    "matched_words": 936,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 42,
+                      "insertions": 11,
+                      "ref_words": 1095,
+                      "substitutions": 41,
+                      "wer_percent": 8.584474885844749
+                    }
+                  },
+                  {
+                    "decode_s": 10.7446111,
+                    "headset": 2,
+                    "matched_words": 328,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 47,
+                      "insertions": 13,
+                      "ref_words": 440,
+                      "substitutions": 35,
+                      "wer_percent": 21.59090909090909
+                    }
+                  },
+                  {
+                    "decode_s": 11.3325958,
+                    "headset": 3,
+                    "matched_words": 709,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 26,
+                      "insertions": 15,
+                      "ref_words": 816,
+                      "substitutions": 33,
+                      "wer_percent": 9.068627450980392
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 105,
+                      "insertions": 91,
+                      "ref_words": 1917,
+                      "substitutions": 132,
+                      "wer_percent": 17.110067814293167
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 136,
+                      "insertions": 52,
+                      "ref_words": 2633,
+                      "substitutions": 120,
+                      "wer_percent": 11.697683251044436
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 278.8222561000001,
+                  "rtf": 0.15290667081624154
+                },
+                "timing": {
+                  "matched_words": 3843,
+                  "start_error_median_ms": 122,
+                  "start_error_p90_ms": 636,
+                  "within_250ms_percent": 69.08665105386417
+                },
+                "wer": {
+                  "deletions": 241,
+                  "insertions": 143,
+                  "ref_words": 4550,
+                  "substitutions": 252,
+                  "wer_percent": 13.978021978021978
+                }
+              }
+            },
+            "decoding": "beam",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-base.en"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =   147.37 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "English",
+            "load_s": 0.1776655,
+            "model": "base.en",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 278.8222561000001,
+              "rtf": 0.15290667081624154
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-large-v3-turbo"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 12.2369719,
+                    "headset": 0,
+                    "matched_words": 1021,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 57,
+                      "insertions": 26,
+                      "ref_words": 1147,
+                      "substitutions": 37,
+                      "wer_percent": 10.46207497820401
+                    }
+                  },
+                  {
+                    "decode_s": 4.6484352,
+                    "headset": 1,
+                    "matched_words": 144,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 9,
+                      "insertions": 19,
+                      "ref_words": 173,
+                      "substitutions": 16,
+                      "wer_percent": 25.43352601156069
+                    }
+                  },
+                  {
+                    "decode_s": 5.9906125,
+                    "headset": 2,
+                    "matched_words": 126,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 19,
+                      "insertions": 38,
+                      "ref_words": 185,
+                      "substitutions": 29,
+                      "wer_percent": 46.48648648648649
+                    }
+                  },
+                  {
+                    "decode_s": 8.1079779,
+                    "headset": 3,
+                    "matched_words": 363,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 16,
+                      "insertions": 24,
+                      "ref_words": 412,
+                      "substitutions": 24,
+                      "wer_percent": 15.53398058252427
+                    }
+                  },
+                  {
+                    "decode_s": 15.0636841,
+                    "headset": 0,
+                    "matched_words": 248,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 11,
+                      "insertions": 20,
+                      "ref_words": 282,
+                      "substitutions": 14,
+                      "wer_percent": 15.957446808510639
+                    }
+                  },
+                  {
+                    "decode_s": 37.6568405,
+                    "headset": 1,
+                    "matched_words": 963,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 33,
+                      "insertions": 22,
+                      "ref_words": 1095,
+                      "substitutions": 27,
+                      "wer_percent": 7.488584474885844
+                    }
+                  },
+                  {
+                    "decode_s": 38.7236493,
+                    "headset": 2,
+                    "matched_words": 335,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 58,
+                      "insertions": 14,
+                      "ref_words": 440,
+                      "substitutions": 21,
+                      "wer_percent": 21.136363636363637
+                    }
+                  },
+                  {
+                    "decode_s": 46.9684297,
+                    "headset": 3,
+                    "matched_words": 681,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 65,
+                      "insertions": 20,
+                      "ref_words": 816,
+                      "substitutions": 24,
+                      "wer_percent": 13.357843137254902
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 101,
+                      "insertions": 107,
+                      "ref_words": 1917,
+                      "substitutions": 106,
+                      "wer_percent": 16.37976004173187
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 167,
+                      "insertions": 76,
+                      "ref_words": 2633,
+                      "substitutions": 86,
+                      "wer_percent": 12.495252563615647
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 169.39660110000008,
+                  "rtf": 0.09289742750126138
+                },
+                "timing": {
+                  "matched_words": 3881,
+                  "start_error_median_ms": 149,
+                  "start_error_p90_ms": 800,
+                  "within_250ms_percent": 63.38572532852358
+                },
+                "wer": {
+                  "deletions": 268,
+                  "insertions": 183,
+                  "ref_words": 4550,
+                  "substitutions": 192,
+                  "wer_percent": 14.131868131868131
+                }
+              }
+            },
+            "decoding": "greedy",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-large-v3-turbo"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =  1623.92 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "99 languages (Whisper), selectable or detected",
+            "load_s": 1.439381,
+            "model": "large-v3-turbo",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 169.39660110000008,
+              "rtf": 0.09289742750126138
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-large-v3-turbo"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 95.6794482,
+                    "headset": 0,
+                    "matched_words": 1013,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 62,
+                      "insertions": 29,
+                      "ref_words": 1147,
+                      "substitutions": 39,
+                      "wer_percent": 11.333914559721011
+                    }
+                  },
+                  {
+                    "decode_s": 29.4252067,
+                    "headset": 1,
+                    "matched_words": 149,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 6,
+                      "insertions": 22,
+                      "ref_words": 173,
+                      "substitutions": 12,
+                      "wer_percent": 23.121387283236995
+                    }
+                  },
+                  {
+                    "decode_s": 42.4012397,
+                    "headset": 2,
+                    "matched_words": 135,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 15,
+                      "insertions": 45,
+                      "ref_words": 185,
+                      "substitutions": 23,
+                      "wer_percent": 44.86486486486487
+                    }
+                  },
+                  {
+                    "decode_s": 61.1829642,
+                    "headset": 3,
+                    "matched_words": 368,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 13,
+                      "insertions": 24,
+                      "ref_words": 412,
+                      "substitutions": 23,
+                      "wer_percent": 14.563106796116504
+                    }
+                  },
+                  {
+                    "decode_s": 49.2577061,
+                    "headset": 0,
+                    "matched_words": 246,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 10,
+                      "insertions": 24,
+                      "ref_words": 282,
+                      "substitutions": 17,
+                      "wer_percent": 18.085106382978726
+                    }
+                  },
+                  {
+                    "decode_s": 96.5938847,
+                    "headset": 1,
+                    "matched_words": 970,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 35,
+                      "insertions": 20,
+                      "ref_words": 1095,
+                      "substitutions": 25,
+                      "wer_percent": 7.30593607305936
+                    }
+                  },
+                  {
+                    "decode_s": 27.9569084,
+                    "headset": 2,
+                    "matched_words": 343,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 44,
+                      "insertions": 18,
+                      "ref_words": 440,
+                      "substitutions": 26,
+                      "wer_percent": 20.0
+                    }
+                  },
+                  {
+                    "decode_s": 45.1040557,
+                    "headset": 3,
+                    "matched_words": 699,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 47,
+                      "insertions": 26,
+                      "ref_words": 816,
+                      "substitutions": 24,
+                      "wer_percent": 11.887254901960784
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 96,
+                      "insertions": 120,
+                      "ref_words": 1917,
+                      "substitutions": 97,
+                      "wer_percent": 16.327595200834637
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 136,
+                      "insertions": 88,
+                      "ref_words": 2633,
+                      "substitutions": 92,
+                      "wer_percent": 12.001519179642992
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 447.6014137000005,
+                  "rtf": 0.24546549109395252
+                },
+                "timing": {
+                  "matched_words": 3923,
+                  "start_error_median_ms": 132,
+                  "start_error_p90_ms": 771,
+                  "within_250ms_percent": 65.20520010196279
+                },
+                "wer": {
+                  "deletions": 232,
+                  "insertions": 208,
+                  "ref_words": 4550,
+                  "substitutions": 189,
+                  "wer_percent": 13.824175824175825
+                }
+              }
+            },
+            "decoding": "beam",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-large-v3-turbo"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =  1623.92 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "99 languages (Whisper), selectable or detected",
+            "load_s": 1.439381,
+            "model": "large-v3-turbo",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 447.6014137000005,
+              "rtf": 0.24546549109395252
+            },
+            "threads": 2
+          }
+        ],
+        "task": "T6.10e",
+        "threads": 2
+      }
+    },
+    {
+      "command": "model_eval --backend cuda --corpus ami --decoding greedy --decoding beam --model parakeet-ctc-110m --model tiny.en --model small.en --model small.en-q5_1 --model large-v3-turbo-q5_0",
+      "report": {
+        "backend": "cuda",
+        "complete": true,
+        "cores": 32,
+        "corpora": [
+          "ami"
+        ],
+        "gate12": "not requested",
+        "onnx_models": "evaluated when selected",
+        "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4 }",
+        "rows": [
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "cuda:0",
+              "kind": "cuda",
+              "model": "parakeet-tdt_ctc-110m (CTC)"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 41.1602495,
+                    "headset": 0,
+                    "matched_words": 1013,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 53,
+                      "insertions": 23,
+                      "ref_words": 1147,
+                      "substitutions": 50,
+                      "wer_percent": 10.985178727114212
+                    }
+                  },
+                  {
+                    "decode_s": 12.4403586,
+                    "headset": 1,
+                    "matched_words": 148,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 8,
+                      "insertions": 2,
+                      "ref_words": 173,
+                      "substitutions": 14,
+                      "wer_percent": 13.872832369942195
+                    }
+                  },
+                  {
+                    "decode_s": 8.3209651,
+                    "headset": 2,
+                    "matched_words": 124,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 17,
+                      "insertions": 19,
+                      "ref_words": 185,
+                      "substitutions": 28,
+                      "wer_percent": 34.5945945945946
+                    }
+                  },
+                  {
+                    "decode_s": 17.6406403,
+                    "headset": 3,
+                    "matched_words": 358,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 11,
+                      "insertions": 14,
+                      "ref_words": 412,
+                      "substitutions": 27,
+                      "wer_percent": 12.62135922330097
+                    }
+                  },
+                  {
+                    "decode_s": 22.7500581,
+                    "headset": 0,
+                    "matched_words": 244,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 12,
+                      "insertions": 10,
+                      "ref_words": 282,
+                      "substitutions": 20,
+                      "wer_percent": 14.893617021276595
+                    }
+                  },
+                  {
+                    "decode_s": 32.8379122,
+                    "headset": 1,
+                    "matched_words": 937,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 36,
+                      "insertions": 13,
+                      "ref_words": 1095,
+                      "substitutions": 49,
+                      "wer_percent": 8.949771689497716
+                    }
+                  },
+                  {
+                    "decode_s": 19.794502,
+                    "headset": 2,
+                    "matched_words": 344,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 33,
+                      "insertions": 16,
+                      "ref_words": 440,
+                      "substitutions": 35,
+                      "wer_percent": 19.090909090909093
+                    }
+                  },
+                  {
+                    "decode_s": 29.8203407,
+                    "headset": 3,
+                    "matched_words": 702,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 26,
+                      "insertions": 22,
+                      "ref_words": 816,
+                      "substitutions": 30,
+                      "wer_percent": 9.558823529411764
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 89,
+                      "insertions": 58,
+                      "ref_words": 1917,
+                      "substitutions": 119,
+                      "wer_percent": 13.875847678664579
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 107,
+                      "insertions": 61,
+                      "ref_words": 2633,
+                      "substitutions": 134,
+                      "wer_percent": 11.469806304595519
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 184.7650264999999,
+                  "rtf": 0.10132550206199131
+                },
+                "timing": {
+                  "matched_words": 3870,
+                  "start_error_median_ms": 120,
+                  "start_error_p90_ms": 244,
+                  "within_250ms_percent": 90.95607235142118
+                },
+                "wer": {
+                  "deletions": 196,
+                  "insertions": 119,
+                  "ref_words": 4550,
+                  "substitutions": 253,
+                  "wer_percent": 12.483516483516484
+                }
+              }
+            },
+            "decoding": "greedy",
+            "evidence": {
+              "fully_on_requested": [
+                false
+              ],
+              "sessions": [
+                "requested cuda:0, placed: CPUExecutionProvider=489 CUDAExecutionProvider=1330"
+              ],
+              "source": "ONNX Runtime node placement"
+            },
+            "languages": "English",
+            "load_s": 23.4820782,
+            "model": "parakeet-ctc-110m",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 184.7650264999999,
+              "rtf": 0.10132550206199131
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-tiny.en"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 48.8298177,
+                    "headset": 0,
+                    "matched_words": 988,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 65,
+                      "insertions": 37,
+                      "ref_words": 1147,
+                      "substitutions": 55,
+                      "wer_percent": 13.687881429816914
+                    }
+                  },
+                  {
+                    "decode_s": 8.9179201,
+                    "headset": 1,
+                    "matched_words": 131,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 20,
+                      "insertions": 4,
+                      "ref_words": 173,
+                      "substitutions": 16,
+                      "wer_percent": 23.121387283236995
+                    }
+                  },
+                  {
+                    "decode_s": 13.6077073,
+                    "headset": 2,
+                    "matched_words": 108,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 32,
+                      "insertions": 36,
+                      "ref_words": 185,
+                      "substitutions": 34,
+                      "wer_percent": 55.13513513513514
+                    }
+                  },
+                  {
+                    "decode_s": 24.5959244,
+                    "headset": 3,
+                    "matched_words": 352,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 20,
+                      "insertions": 42,
+                      "ref_words": 412,
+                      "substitutions": 31,
+                      "wer_percent": 22.572815533980584
+                    }
+                  },
+                  {
+                    "decode_s": 14.7724794,
+                    "headset": 0,
+                    "matched_words": 236,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 16,
+                      "insertions": 8,
+                      "ref_words": 282,
+                      "substitutions": 20,
+                      "wer_percent": 15.602836879432624
+                    }
+                  },
+                  {
+                    "decode_s": 35.5984841,
+                    "headset": 1,
+                    "matched_words": 909,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 60,
+                      "insertions": 15,
+                      "ref_words": 1095,
+                      "substitutions": 53,
+                      "wer_percent": 11.689497716894977
+                    }
+                  },
+                  {
+                    "decode_s": 14.5727833,
+                    "headset": 2,
+                    "matched_words": 319,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 46,
+                      "insertions": 14,
+                      "ref_words": 440,
+                      "substitutions": 49,
+                      "wer_percent": 24.772727272727273
+                    }
+                  },
+                  {
+                    "decode_s": 42.9982986,
+                    "headset": 3,
+                    "matched_words": 688,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 33,
+                      "insertions": 16,
+                      "ref_words": 816,
+                      "substitutions": 46,
+                      "wer_percent": 11.642156862745098
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 137,
+                      "insertions": 119,
+                      "ref_words": 1917,
+                      "substitutions": 136,
+                      "wer_percent": 20.448617631716225
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 155,
+                      "insertions": 53,
+                      "ref_words": 2633,
+                      "substitutions": 168,
+                      "wer_percent": 14.280288644132169
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 203.89341490000015,
+                  "rtf": 0.11181554768903425
+                },
+                "timing": {
+                  "matched_words": 3731,
+                  "start_error_median_ms": 126,
+                  "start_error_p90_ms": 638,
+                  "within_250ms_percent": 67.89064593942642
+                },
+                "wer": {
+                  "deletions": 292,
+                  "insertions": 172,
+                  "ref_words": 4550,
+                  "substitutions": 304,
+                  "wer_percent": 16.87912087912088
+                }
+              }
+            },
+            "decoding": "greedy",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-tiny.en"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =    77.11 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "English",
+            "load_s": 0.623196,
+            "model": "tiny.en",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 203.89341490000015,
+              "rtf": 0.11181554768903425
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-tiny.en"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 135.1507924,
+                    "headset": 0,
+                    "matched_words": 997,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 68,
+                      "insertions": 35,
+                      "ref_words": 1147,
+                      "substitutions": 43,
+                      "wer_percent": 12.728857890148213
+                    }
+                  },
+                  {
+                    "decode_s": 18.7401098,
+                    "headset": 1,
+                    "matched_words": 136,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 18,
+                      "insertions": 8,
+                      "ref_words": 173,
+                      "substitutions": 14,
+                      "wer_percent": 23.121387283236995
+                    }
+                  },
+                  {
+                    "decode_s": 24.5564442,
+                    "headset": 2,
+                    "matched_words": 117,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 28,
+                      "insertions": 42,
+                      "ref_words": 185,
+                      "substitutions": 30,
+                      "wer_percent": 54.054054054054056
+                    }
+                  },
+                  {
+                    "decode_s": 23.4745714,
+                    "headset": 3,
+                    "matched_words": 337,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 32,
+                      "insertions": 30,
+                      "ref_words": 412,
+                      "substitutions": 32,
+                      "wer_percent": 22.815533980582526
+                    }
+                  },
+                  {
+                    "decode_s": 36.2776281,
+                    "headset": 0,
+                    "matched_words": 241,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 12,
+                      "insertions": 17,
+                      "ref_words": 282,
+                      "substitutions": 20,
+                      "wer_percent": 17.375886524822697
+                    }
+                  },
+                  {
+                    "decode_s": 118.1615284,
+                    "headset": 1,
+                    "matched_words": 920,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 52,
+                      "insertions": 17,
+                      "ref_words": 1095,
+                      "substitutions": 51,
+                      "wer_percent": 10.95890410958904
+                    }
+                  },
+                  {
+                    "decode_s": 37.5916713,
+                    "headset": 2,
+                    "matched_words": 315,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 48,
+                      "insertions": 20,
+                      "ref_words": 440,
+                      "substitutions": 51,
+                      "wer_percent": 27.045454545454543
+                    }
+                  },
+                  {
+                    "decode_s": 66.6537497,
+                    "headset": 3,
+                    "matched_words": 686,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 30,
+                      "insertions": 18,
+                      "ref_words": 816,
+                      "substitutions": 47,
+                      "wer_percent": 11.642156862745098
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 146,
+                      "insertions": 115,
+                      "ref_words": 1917,
+                      "substitutions": 119,
+                      "wer_percent": 19.8226395409494
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 142,
+                      "insertions": 72,
+                      "ref_words": 2633,
+                      "substitutions": 169,
+                      "wer_percent": 14.546145081655906
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 460.60649529999995,
+                  "rtf": 0.25259750329041175
+                },
+                "timing": {
+                  "matched_words": 3749,
+                  "start_error_median_ms": 115,
+                  "start_error_p90_ms": 636,
+                  "within_250ms_percent": 69.85862896772473
+                },
+                "wer": {
+                  "deletions": 288,
+                  "insertions": 187,
+                  "ref_words": 4550,
+                  "substitutions": 288,
+                  "wer_percent": 16.76923076923077
+                }
+              }
+            },
+            "decoding": "beam",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-tiny.en"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =    77.11 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "English",
+            "load_s": 0.623196,
+            "model": "tiny.en",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 460.60649529999995,
+              "rtf": 0.25259750329041175
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-small.en"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 64.9259527,
+                    "headset": 0,
+                    "matched_words": 1008,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 58,
+                      "insertions": 26,
+                      "ref_words": 1147,
+                      "substitutions": 41,
+                      "wer_percent": 10.897994768962512
+                    }
+                  },
+                  {
+                    "decode_s": 17.7532429,
+                    "headset": 1,
+                    "matched_words": 145,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 8,
+                      "insertions": 15,
+                      "ref_words": 173,
+                      "substitutions": 13,
+                      "wer_percent": 20.809248554913296
+                    }
+                  },
+                  {
+                    "decode_s": 23.236509,
+                    "headset": 2,
+                    "matched_words": 133,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 22,
+                      "insertions": 34,
+                      "ref_words": 185,
+                      "substitutions": 17,
+                      "wer_percent": 39.45945945945946
+                    }
+                  },
+                  {
+                    "decode_s": 29.1323272,
+                    "headset": 3,
+                    "matched_words": 366,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 20,
+                      "insertions": 13,
+                      "ref_words": 412,
+                      "substitutions": 19,
+                      "wer_percent": 12.62135922330097
+                    }
+                  },
+                  {
+                    "decode_s": 15.6480818,
+                    "headset": 0,
+                    "matched_words": 249,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 16,
+                      "insertions": 10,
+                      "ref_words": 282,
+                      "substitutions": 7,
+                      "wer_percent": 11.702127659574469
+                    }
+                  },
+                  {
+                    "decode_s": 80.9334841,
+                    "headset": 1,
+                    "matched_words": 926,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 53,
+                      "insertions": 13,
+                      "ref_words": 1095,
+                      "substitutions": 34,
+                      "wer_percent": 9.1324200913242
+                    }
+                  },
+                  {
+                    "decode_s": 39.3882184,
+                    "headset": 2,
+                    "matched_words": 318,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 63,
+                      "insertions": 15,
+                      "ref_words": 440,
+                      "substitutions": 30,
+                      "wer_percent": 24.545454545454547
+                    }
+                  },
+                  {
+                    "decode_s": 66.1891479,
+                    "headset": 3,
+                    "matched_words": 694,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 42,
+                      "insertions": 16,
+                      "ref_words": 816,
+                      "substitutions": 23,
+                      "wer_percent": 9.926470588235293
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 108,
+                      "insertions": 88,
+                      "ref_words": 1917,
+                      "substitutions": 90,
+                      "wer_percent": 14.919144496609285
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 174,
+                      "insertions": 54,
+                      "ref_words": 2633,
+                      "substitutions": 94,
+                      "wer_percent": 12.22939612609191
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 337.20696400000026,
+                  "rtf": 0.1849249588698534
+                },
+                "timing": {
+                  "matched_words": 3839,
+                  "start_error_median_ms": 130,
+                  "start_error_p90_ms": 692,
+                  "within_250ms_percent": 66.73612920031258
+                },
+                "wer": {
+                  "deletions": 282,
+                  "insertions": 142,
+                  "ref_words": 4550,
+                  "substitutions": 184,
+                  "wer_percent": 13.362637362637365
+                }
+              }
+            },
+            "decoding": "greedy",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-small.en"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =   487.00 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "English",
+            "load_s": 1.3594655,
+            "model": "small.en",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 337.20696400000026,
+              "rtf": 0.1849249588698534
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-small.en"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 128.7709401,
+                    "headset": 0,
+                    "matched_words": 1023,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 49,
+                      "insertions": 21,
+                      "ref_words": 1147,
+                      "substitutions": 41,
+                      "wer_percent": 9.67741935483871
+                    }
+                  },
+                  {
+                    "decode_s": 41.948542,
+                    "headset": 1,
+                    "matched_words": 144,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 14,
+                      "insertions": 11,
+                      "ref_words": 173,
+                      "substitutions": 10,
+                      "wer_percent": 20.23121387283237
+                    }
+                  },
+                  {
+                    "decode_s": 79.7901785,
+                    "headset": 2,
+                    "matched_words": 136,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 16,
+                      "insertions": 25,
+                      "ref_words": 185,
+                      "substitutions": 21,
+                      "wer_percent": 33.513513513513516
+                    }
+                  },
+                  {
+                    "decode_s": 115.2587902,
+                    "headset": 3,
+                    "matched_words": 364,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 19,
+                      "insertions": 14,
+                      "ref_words": 412,
+                      "substitutions": 21,
+                      "wer_percent": 13.106796116504855
+                    }
+                  },
+                  {
+                    "decode_s": 41.5602415,
+                    "headset": 0,
+                    "matched_words": 250,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 13,
+                      "insertions": 15,
+                      "ref_words": 282,
+                      "substitutions": 9,
+                      "wer_percent": 13.120567375886525
+                    }
+                  },
+                  {
+                    "decode_s": 171.5013066,
+                    "headset": 1,
+                    "matched_words": 948,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 42,
+                      "insertions": 16,
+                      "ref_words": 1095,
+                      "substitutions": 27,
+                      "wer_percent": 7.76255707762557
+                    }
+                  },
+                  {
+                    "decode_s": 66.3264259,
+                    "headset": 2,
+                    "matched_words": 328,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 49,
+                      "insertions": 23,
+                      "ref_words": 440,
+                      "substitutions": 32,
+                      "wer_percent": 23.636363636363637
+                    }
+                  },
+                  {
+                    "decode_s": 99.6828431,
+                    "headset": 3,
+                    "matched_words": 689,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 48,
+                      "insertions": 17,
+                      "ref_words": 816,
+                      "substitutions": 25,
+                      "wer_percent": 11.029411764705882
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 98,
+                      "insertions": 71,
+                      "ref_words": 1917,
+                      "substitutions": 93,
+                      "wer_percent": 13.66718831507564
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 152,
+                      "insertions": 71,
+                      "ref_words": 2633,
+                      "substitutions": 93,
+                      "wer_percent": 12.001519179642992
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 744.8392679000002,
+                  "rtf": 0.40847131194200115
+                },
+                "timing": {
+                  "matched_words": 3882,
+                  "start_error_median_ms": 118,
+                  "start_error_p90_ms": 640,
+                  "within_250ms_percent": 69.80937660999484
+                },
+                "wer": {
+                  "deletions": 250,
+                  "insertions": 142,
+                  "ref_words": 4550,
+                  "substitutions": 186,
+                  "wer_percent": 12.703296703296704
+                }
+              }
+            },
+            "decoding": "beam",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-small.en"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =   487.00 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "English",
+            "load_s": 1.3594655,
+            "model": "small.en",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 744.8392679000002,
+              "rtf": 0.40847131194200115
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-small.en-q5_1"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 79.4974941,
+                    "headset": 0,
+                    "matched_words": 1006,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 64,
+                      "insertions": 23,
+                      "ref_words": 1147,
+                      "substitutions": 41,
+                      "wer_percent": 11.159546643417611
+                    }
+                  },
+                  {
+                    "decode_s": 21.4752347,
+                    "headset": 1,
+                    "matched_words": 145,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 10,
+                      "insertions": 11,
+                      "ref_words": 173,
+                      "substitutions": 11,
+                      "wer_percent": 18.497109826589593
+                    }
+                  },
+                  {
+                    "decode_s": 27.8111126,
+                    "headset": 2,
+                    "matched_words": 132,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 24,
+                      "insertions": 23,
+                      "ref_words": 185,
+                      "substitutions": 17,
+                      "wer_percent": 34.5945945945946
+                    }
+                  },
+                  {
+                    "decode_s": 28.6281496,
+                    "headset": 3,
+                    "matched_words": 361,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 19,
+                      "insertions": 11,
+                      "ref_words": 412,
+                      "substitutions": 22,
+                      "wer_percent": 12.62135922330097
+                    }
+                  },
+                  {
+                    "decode_s": 29.0282419,
+                    "headset": 0,
+                    "matched_words": 249,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 16,
+                      "insertions": 10,
+                      "ref_words": 282,
+                      "substitutions": 7,
+                      "wer_percent": 11.702127659574469
+                    }
+                  },
+                  {
+                    "decode_s": 102.9529654,
+                    "headset": 1,
+                    "matched_words": 932,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 48,
+                      "insertions": 12,
+                      "ref_words": 1095,
+                      "substitutions": 35,
+                      "wer_percent": 8.67579908675799
+                    }
+                  },
+                  {
+                    "decode_s": 42.0988081,
+                    "headset": 2,
+                    "matched_words": 318,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 62,
+                      "insertions": 14,
+                      "ref_words": 440,
+                      "substitutions": 32,
+                      "wer_percent": 24.545454545454547
+                    }
+                  },
+                  {
+                    "decode_s": 56.8207672,
+                    "headset": 3,
+                    "matched_words": 706,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 35,
+                      "insertions": 14,
+                      "ref_words": 816,
+                      "substitutions": 23,
+                      "wer_percent": 8.823529411764707
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 117,
+                      "insertions": 68,
+                      "ref_words": 1917,
+                      "substitutions": 91,
+                      "wer_percent": 14.397496087636933
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 161,
+                      "insertions": 50,
+                      "ref_words": 2633,
+                      "substitutions": 97,
+                      "wer_percent": 11.697683251044436
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 388.31277359999973,
+                  "rtf": 0.21295148485313783
+                },
+                "timing": {
+                  "matched_words": 3849,
+                  "start_error_median_ms": 126,
+                  "start_error_p90_ms": 681,
+                  "within_250ms_percent": 67.60197453884126
+                },
+                "wer": {
+                  "deletions": 278,
+                  "insertions": 118,
+                  "ref_words": 4550,
+                  "substitutions": 188,
+                  "wer_percent": 12.835164835164836
+                }
+              }
+            },
+            "decoding": "greedy",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-small.en-q5_1"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =   189.53 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "English",
+            "load_s": 5.4487476,
+            "model": "small.en-q5_1",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 388.31277359999973,
+              "rtf": 0.21295148485313783
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-small.en-q5_1"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 154.4398472,
+                    "headset": 0,
+                    "matched_words": 1019,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 52,
+                      "insertions": 24,
+                      "ref_words": 1147,
+                      "substitutions": 40,
+                      "wer_percent": 10.113339145597209
+                    }
+                  },
+                  {
+                    "decode_s": 24.5959329,
+                    "headset": 1,
+                    "matched_words": 144,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 14,
+                      "insertions": 7,
+                      "ref_words": 173,
+                      "substitutions": 10,
+                      "wer_percent": 17.91907514450867
+                    }
+                  },
+                  {
+                    "decode_s": 69.2664526,
+                    "headset": 2,
+                    "matched_words": 132,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 19,
+                      "insertions": 30,
+                      "ref_words": 185,
+                      "substitutions": 22,
+                      "wer_percent": 38.37837837837838
+                    }
+                  },
+                  {
+                    "decode_s": 78.7774826,
+                    "headset": 3,
+                    "matched_words": 363,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 19,
+                      "insertions": 14,
+                      "ref_words": 412,
+                      "substitutions": 24,
+                      "wer_percent": 13.834951456310678
+                    }
+                  },
+                  {
+                    "decode_s": 82.0120327,
+                    "headset": 0,
+                    "matched_words": 247,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 16,
+                      "insertions": 14,
+                      "ref_words": 282,
+                      "substitutions": 10,
+                      "wer_percent": 14.184397163120568
+                    }
+                  },
+                  {
+                    "decode_s": 136.6647241,
+                    "headset": 1,
+                    "matched_words": 946,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 39,
+                      "insertions": 15,
+                      "ref_words": 1095,
+                      "substitutions": 34,
+                      "wer_percent": 8.036529680365296
+                    }
+                  },
+                  {
+                    "decode_s": 119.6333128,
+                    "headset": 2,
+                    "matched_words": 322,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 58,
+                      "insertions": 17,
+                      "ref_words": 440,
+                      "substitutions": 31,
+                      "wer_percent": 24.09090909090909
+                    }
+                  },
+                  {
+                    "decode_s": 163.8590024,
+                    "headset": 3,
+                    "matched_words": 702,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 29,
+                      "insertions": 16,
+                      "ref_words": 816,
+                      "substitutions": 29,
+                      "wer_percent": 9.068627450980392
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 104,
+                      "insertions": 75,
+                      "ref_words": 1917,
+                      "substitutions": 96,
+                      "wer_percent": 14.345331246739699
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 142,
+                      "insertions": 62,
+                      "ref_words": 2633,
+                      "substitutions": 104,
+                      "wer_percent": 11.697683251044436
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 829.2487872999997,
+                  "rtf": 0.454761657544914
+                },
+                "timing": {
+                  "matched_words": 3875,
+                  "start_error_median_ms": 122,
+                  "start_error_p90_ms": 678,
+                  "within_250ms_percent": 68.07741935483871
+                },
+                "wer": {
+                  "deletions": 246,
+                  "insertions": 137,
+                  "ref_words": 4550,
+                  "substitutions": 200,
+                  "wer_percent": 12.813186813186814
+                }
+              }
+            },
+            "decoding": "beam",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-small.en-q5_1"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =   189.53 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "English",
+            "load_s": 5.4487476,
+            "model": "small.en-q5_1",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 829.2487872999997,
+              "rtf": 0.454761657544914
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-large-v3-turbo-q5_0"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 56.0751731,
+                    "headset": 0,
+                    "matched_words": 1015,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 59,
+                      "insertions": 27,
+                      "ref_words": 1147,
+                      "substitutions": 38,
+                      "wer_percent": 10.81081081081081
+                    }
+                  },
+                  {
+                    "decode_s": 16.0962186,
+                    "headset": 1,
+                    "matched_words": 140,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 10,
+                      "insertions": 21,
+                      "ref_words": 173,
+                      "substitutions": 21,
+                      "wer_percent": 30.057803468208093
+                    }
+                  },
+                  {
+                    "decode_s": 12.0879552,
+                    "headset": 2,
+                    "matched_words": 126,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 24,
+                      "insertions": 49,
+                      "ref_words": 185,
+                      "substitutions": 25,
+                      "wer_percent": 52.972972972972975
+                    }
+                  },
+                  {
+                    "decode_s": 20.4119589,
+                    "headset": 3,
+                    "matched_words": 367,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 15,
+                      "insertions": 22,
+                      "ref_words": 412,
+                      "substitutions": 21,
+                      "wer_percent": 14.077669902912621
+                    }
+                  },
+                  {
+                    "decode_s": 23.7882799,
+                    "headset": 0,
+                    "matched_words": 246,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 13,
+                      "insertions": 19,
+                      "ref_words": 282,
+                      "substitutions": 14,
+                      "wer_percent": 16.312056737588655
+                    }
+                  },
+                  {
+                    "decode_s": 36.8828461,
+                    "headset": 1,
+                    "matched_words": 959,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 36,
+                      "insertions": 18,
+                      "ref_words": 1095,
+                      "substitutions": 25,
+                      "wer_percent": 7.214611872146119
+                    }
+                  },
+                  {
+                    "decode_s": 34.2128808,
+                    "headset": 2,
+                    "matched_words": 332,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 63,
+                      "insertions": 15,
+                      "ref_words": 440,
+                      "substitutions": 19,
+                      "wer_percent": 22.045454545454547
+                    }
+                  },
+                  {
+                    "decode_s": 42.6595994,
+                    "headset": 3,
+                    "matched_words": 685,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 58,
+                      "insertions": 21,
+                      "ref_words": 816,
+                      "substitutions": 23,
+                      "wer_percent": 12.5
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 108,
+                      "insertions": 119,
+                      "ref_words": 1917,
+                      "substitutions": 105,
+                      "wer_percent": 17.318727177882106
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 170,
+                      "insertions": 73,
+                      "ref_words": 2633,
+                      "substitutions": 81,
+                      "wer_percent": 12.30535510824155
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 242.21491200000025,
+                  "rtf": 0.132831131682278
+                },
+                "timing": {
+                  "matched_words": 3870,
+                  "start_error_median_ms": 149,
+                  "start_error_p90_ms": 810,
+                  "within_250ms_percent": 63.43669250645995
+                },
+                "wer": {
+                  "deletions": 278,
+                  "insertions": 192,
+                  "ref_words": 4550,
+                  "substitutions": 186,
+                  "wer_percent": 14.417582417582416
+                }
+              }
+            },
+            "decoding": "greedy",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-large-v3-turbo-q5_0"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =   573.45 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "99 languages (Whisper), selectable or detected",
+            "load_s": 5.6762158,
+            "model": "large-v3-turbo-q5_0",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 242.21491200000025,
+              "rtf": 0.132831131682278
+            },
+            "threads": 2
+          },
+          {
+            "backend": "cuda",
+            "backend_info": {
+              "device": "NVIDIA GeForce RTX 5080",
+              "kind": "cuda",
+              "model": "ggml-large-v3-turbo-q5_0"
+            },
+            "corpora": {
+              "ami": {
+                "headsets": [
+                  {
+                    "decode_s": 133.8989719,
+                    "headset": 0,
+                    "matched_words": 1030,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 75,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 51,
+                      "insertions": 32,
+                      "ref_words": 1147,
+                      "substitutions": 38,
+                      "wer_percent": 10.54925893635571
+                    }
+                  },
+                  {
+                    "decode_s": 46.8663445,
+                    "headset": 1,
+                    "matched_words": 146,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 37,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 9,
+                      "insertions": 30,
+                      "ref_words": 173,
+                      "substitutions": 12,
+                      "wer_percent": 29.47976878612717
+                    }
+                  },
+                  {
+                    "decode_s": 80.8896647,
+                    "headset": 2,
+                    "matched_words": 123,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 18,
+                      "insertions": 35,
+                      "ref_words": 185,
+                      "substitutions": 33,
+                      "wer_percent": 46.48648648648649
+                    }
+                  },
+                  {
+                    "decode_s": 51.1150998,
+                    "headset": 3,
+                    "matched_words": 365,
+                    "meeting": "IS1009a",
+                    "outside_words": 0,
+                    "segments": 62,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 19,
+                      "insertions": 18,
+                      "ref_words": 412,
+                      "substitutions": 21,
+                      "wer_percent": 14.077669902912621
+                    }
+                  },
+                  {
+                    "decode_s": 45.1578714,
+                    "headset": 0,
+                    "matched_words": 245,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 48,
+                    "speaker": "A",
+                    "wer": {
+                      "deletions": 11,
+                      "insertions": 19,
+                      "ref_words": 282,
+                      "substitutions": 18,
+                      "wer_percent": 17.02127659574468
+                    }
+                  },
+                  {
+                    "decode_s": 86.0738544,
+                    "headset": 1,
+                    "matched_words": 974,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 94,
+                    "speaker": "B",
+                    "wer": {
+                      "deletions": 26,
+                      "insertions": 42,
+                      "ref_words": 1095,
+                      "substitutions": 23,
+                      "wer_percent": 8.310502283105023
+                    }
+                  },
+                  {
+                    "decode_s": 22.0692756,
+                    "headset": 2,
+                    "matched_words": 343,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 54,
+                    "speaker": "C",
+                    "wer": {
+                      "deletions": 46,
+                      "insertions": 19,
+                      "ref_words": 440,
+                      "substitutions": 24,
+                      "wer_percent": 20.227272727272727
+                    }
+                  },
+                  {
+                    "decode_s": 65.2561695,
+                    "headset": 3,
+                    "matched_words": 691,
+                    "meeting": "ES2004a",
+                    "outside_words": 0,
+                    "segments": 87,
+                    "speaker": "D",
+                    "wer": {
+                      "deletions": 57,
+                      "insertions": 30,
+                      "ref_words": 816,
+                      "substitutions": 22,
+                      "wer_percent": 13.357843137254902
+                    }
+                  }
+                ],
+                "meetings": [
+                  {
+                    "meeting": "IS1009a",
+                    "wer": {
+                      "deletions": 97,
+                      "insertions": 115,
+                      "ref_words": 1917,
+                      "substitutions": 104,
+                      "wer_percent": 16.484089723526342
+                    }
+                  },
+                  {
+                    "meeting": "ES2004a",
+                    "wer": {
+                      "deletions": 140,
+                      "insertions": 110,
+                      "ref_words": 2633,
+                      "substitutions": 87,
+                      "wer_percent": 12.799088492214207
+                    }
+                  }
+                ],
+                "outside_segments": {
+                  "deletions": 0,
+                  "insertions": 0,
+                  "ref_words": 0,
+                  "substitutions": 0,
+                  "wer_percent": null
+                },
+                "set": "AMI IS1009a + ES2004a, IHM with oracle segmentation (the accept m2 rule, asr_eval/refs.rs AmiHeadset): each annotated segment of a speaker, clipped to the UEM, decoded by one call on the speaker's headset and aligned against the speaker's words starting inside it; words outside every segment count as deletions; references: AMI manual annotations v1.6.2. Since 2026-10-24; before, this corpus was the merged Mix-Headset stream decoded in VAD pieces",
+                "speed": {
+                  "audio_s": 1823.4799999999998,
+                  "decode_s": 531.3272517999997,
+                  "rtf": 0.29138090453418725
+                },
+                "timing": {
+                  "matched_words": 3917,
+                  "start_error_median_ms": 134,
+                  "start_error_p90_ms": 732,
+                  "within_250ms_percent": 65.4582588715854
+                },
+                "wer": {
+                  "deletions": 237,
+                  "insertions": 225,
+                  "ref_words": 4550,
+                  "substitutions": 191,
+                  "wer_percent": 14.351648351648352
+                }
+              }
+            },
+            "decoding": "beam",
+            "evidence": {
+              "backend_info": {
+                "device": "NVIDIA GeForce RTX 5080",
+                "kind": "cuda",
+                "model": "ggml-large-v3-turbo-q5_0"
+              },
+              "lines": [
+                "whisper_model_load:        CUDA0 total size =   573.45 MB",
+                "whisper_backend_init_gpu: device 0: CUDA0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using CUDA0 backend"
+              ],
+              "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+              "whisper_log": "cuda"
+            },
+            "languages": "99 languages (Whisper), selectable or detected",
+            "load_s": 5.6762158,
+            "model": "large-v3-turbo-q5_0",
+            "speed": {
+              "audio_s": 1823.4799999999998,
+              "decode_s": 531.3272517999997,
+              "rtf": 0.29138090453418725
+            },
+            "threads": 2
+          }
+        ],
+        "task": "T6.10e",
+        "threads": 2
+      }
+    }
+  ]
+}

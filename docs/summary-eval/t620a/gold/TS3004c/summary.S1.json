@@ -1,0 +1,102 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Industrial Designer",
+      "task": "Discuss material possibilities with the team and provide material information later in the presentation."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "User Interface Designer",
+      "task": "Check the exact meaning of the technology department's research regarding speech recognition."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "User Interface Designer",
+      "task": "Get back on the idea of technological innovation and new features."
+    },
+    {
+      "due": null,
+      "id": "S-A4",
+      "owner": "Industrial Designer",
+      "task": "Check the regular chip specifications."
+    },
+    {
+      "due": null,
+      "id": "S-A5",
+      "owner": "Industrial Designer",
+      "task": "Work together on prototype drawing on the smart board for the next meeting."
+    },
+    {
+      "due": null,
+      "id": "S-A6",
+      "owner": "User Interface Designer",
+      "task": "Take a look at the left-to-right vs top-down button layout options."
+    },
+    {
+      "due": null,
+      "id": "S-A7",
+      "owner": "User Interface Designer",
+      "task": "Paint and draw the design to show the scroll wheel and other features."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "The remote control design will feature a modern, curved shape with round corners and soft materials."
+    },
+    {
+      "id": "S-D2",
+      "text": "The color scheme will be black and yellow, with the Real Reaction logo on the front."
+    },
+    {
+      "id": "S-D3",
+      "text": "The front of the remote will be transparent to allow for different colored fronts or replacement parts."
+    },
+    {
+      "id": "S-D4",
+      "text": "Buttons will be integrated into the surface on one level, not protruding."
+    },
+    {
+      "id": "S-D5",
+      "text": "Frequently used buttons (like channel switching) will be placed on the top, while less used buttons will be on the bottom."
+    },
+    {
+      "id": "S-D6",
+      "text": "The remote control will use rechargeable batteries as the energy source."
+    },
+    {
+      "id": "S-D7",
+      "text": "The remote control will use a regular (second most expensive) chip."
+    },
+    {
+      "id": "S-D8",
+      "text": "The remote control case will be made of hard plastic with a 2D curved shape."
+    },
+    {
+      "id": "S-D9",
+      "text": "The volume control will be a scroll wheel located on the side of the remote."
+    },
+    {
+      "id": "S-D10",
+      "text": "The channel switch buttons will be placed vertically above and below the number display."
+    },
+    {
+      "id": "S-D11",
+      "text": "The remote control shape will be mostly square with rounded corners."
+    },
+    {
+      "id": "S-D12",
+      "text": "The scroll wheel will be yellow and small."
+    }
+  ],
+  "failure": null,
+  "meeting": "TS3004c",
+  "model": "S1",
+  "notes": "## Design Aesthetics and Materials\n- The remote control design will feature a modern, curved shape with round corners and soft materials.\n- The color scheme will be black and yellow, with the Real Reaction logo on the front.\n- The front of the remote will be transparent to allow for different colored fronts or replacement parts.\n- Buttons will be integrated into the surface on one level, not protruding.\n- The remote control case will be made of hard plastic with a 2D curved shape.\n- The remote control shape will be mostly square with rounded corners.\n## Internal Components and Power\n- The remote control will use rechargeable batteries as the energy source.\n- The remote control will use a regular (second most expensive) chip.\n- The LED backlighting will use multiple colors (blue, red, green) and the case will be transparent or semi-transparent to allow the light to show.\n## Controls and Layout\n- The volume control will be a scroll wheel located on the side of the remote.\n- The scroll wheel will be yellow and small.\n- The channel switch buttons will be placed vertically above and below the number display.\n- Frequently used buttons (like channel switching) will be placed on the top, while less used buttons will be on the bottom.\n## Advanced Features and Product Strategy\n- Speech recognition will be included, requiring an advanced chip and microphone.\n- The team decided to include the voice response feature where the device answers after a user command.\n- Five versions of the product will be launched.\n- A docking station will be designed for the remote control.",
+  "tldr": "The team finalized the design of a new remote control with a modern, mostly square shape with rounded corners, a black and yellow color scheme, and a transparent front. Key features include a side-mounted yellow scroll wheel, rechargeable batteries, and speech recognition with a voice response feature. Five product versions will be launched.",
+  "valid": true
+}

@@ -1,0 +1,72 @@
+{
+  "meeting": {
+    "title": "Beta launch check-in",
+    "started": "2026-10-16 09:30",
+    "duration_ms": 92000,
+    "attendees": [
+      "Ana Lopez",
+      "Ben Okafor"
+    ]
+  },
+  "segments": [
+    {
+      "id": "019a3b2c-1d00-7a10-8b00-000000000001",
+      "start": 4000,
+      "speaker": "Ana Lopez",
+      "text": "Thanks for joining. The goal today is to confirm the beta launch date and who handles support."
+    },
+    {
+      "id": "019a3b2c-1d00-7a10-8b00-000000000002",
+      "start": 15200,
+      "speaker": "Ben Okafor",
+      "text": "The build passed QA last night, so from engineering we can ship on Friday."
+    },
+    {
+      "id": "019a3b2c-1d00-7a10-8b00-000000000003",
+      "start": 31000,
+      "speaker": "Ana Lopez",
+      "text": "Great, then let's make it official: the beta goes out this Friday."
+    },
+    {
+      "id": "019a3b2c-1d00-7a10-8b00-000000000004",
+      "start": 40500,
+      "speaker": "Ben Okafor",
+      "text": "I'll write the release notes and send them round by Thursday."
+    },
+    {
+      "id": "019a3b2c-1d00-7a10-8b00-000000000005",
+      "start": 55000,
+      "speaker": "Ana Lopez",
+      "text": "What about support for beta users? Nobody owns that yet."
+    },
+    {
+      "id": "019a3b2c-1d00-7a10-8b00-000000000006",
+      "start": 68300,
+      "speaker": "Ben Okafor",
+      "text": "Maybe the support team can take it, but I need to check with Dana."
+    },
+    {
+      "id": "019a3b2c-1d00-7a10-8b00-000000000007",
+      "start": 80100,
+      "speaker": "Ana Lopez",
+      "text": "Okay, can you ask Dana before Wednesday and let me know?"
+    },
+    {
+      "id": "019a3b2c-1d00-7a10-8b00-000000000008",
+      "start": 86400,
+      "speaker": "Ben Okafor",
+      "text": "Will do."
+    }
+  ],
+  "notes": [
+    {
+      "at": 2000,
+      "text": "Beta launch\n- date?\n- support owner?"
+    },
+    {
+      "at": 70000,
+      "text": "Ask Dana re support"
+    }
+  ],
+  "template": "general"
+}

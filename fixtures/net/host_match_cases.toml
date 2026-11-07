@@ -1,0 +1,108 @@
+# Shared redirect-host match cases (T7.4gd). `host_matches` exists twice: in earshot-net
+# (`allowlist::host_matches`, in-app downloads) and in xtask (`download::host_matches`,
+# fetch-fixtures and fetch-models). Both test suites run every case below and must give
+# exactly `matches`, so the two copies follow one rule:
+# - a pattern without `*.` matches only the identical host;
+# - `*.<domain>` matches hosts strictly below `<domain>`: never `<domain>` itself, never a
+#   host that merely ends with the same letters.
+# Hosts are given lower-case and canonical, as both callers pass them (they lower-case first;
+# the matcher itself is case-sensitive and does not strip a trailing dot, so a host with an
+# upper-case domain part or a trailing dot never matches). Each suite reads
+# this file with its own std-only reader: keep it to `[[cases]]` tables with exactly the
+# keys `pattern` (basic string), `host` (basic string) and `matches` (true or false), one
+# per line, no escapes.
+
+[[cases]]
+pattern = "*.hf.co"
+host = "cdn.hf.co"
+matches = true
+
+[[cases]]
+pattern = "*.hf.co"
+host = "us.aws.cdn.hf.co"
+matches = true
+
+[[cases]]
+pattern = "*.hf.co"
+host = "hf.co"
+matches = false
+
+[[cases]]
+pattern = "*.hf.co"
+host = "xhf.co"
+matches = false
+
+[[cases]]
+pattern = "*.hf.co"
+host = ".hf.co"
+matches = false
+
+[[cases]]
+pattern = "*.hf.co"
+host = "cdn.hf.co.evil.example"
+matches = false
+
+[[cases]]
+pattern = "*.hf.co"
+host = "cdn.hf.com"
+matches = false
+
+[[cases]]
+pattern = "a.b"
+host = "a.b"
+matches = true
+
+[[cases]]
+pattern = "a.b"
+host = "x.a.b"
+matches = false
+
+[[cases]]
+pattern = "a.b"
+host = "b"
+matches = false
+
+[[cases]]
+pattern = "cas-bridge.xethub.hf.co"
+host = "cas-bridge.xethub.hf.co"
+matches = true
+
+[[cases]]
+pattern = "*.githubusercontent.com"
+host = "objects.githubusercontent.com"
+matches = true
+
+[[cases]]
+pattern = "*.githubusercontent.com"
+host = "githubusercontent.com"
+matches = false
+
+[[cases]]
+pattern = "*.hf.co"
+host = "cdn.Hf.co"
+matches = false
+
+[[cases]]
+pattern = "*.hf.co"
+host = "cdn.HF.co"
+matches = false
+
+[[cases]]
+pattern = "*.hf.co"
+host = "cdn.hf.co."
+matches = false
+
+[[cases]]
+pattern = "hf.co"
+host = "HF.co"
+matches = false
+
+[[cases]]
+pattern = "hf.co"
+host = "Hf.Co"
+matches = false
+
+[[cases]]
+pattern = "hf.co"
+host = "hf.co."
+matches = false

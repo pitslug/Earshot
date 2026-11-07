@@ -1,0 +1,2416 @@
+# Fixture manifest (PLAN.md 4.1). Fetch with `cargo xtask fetch-fixtures --set <sets>`.
+#
+# Cache artefacts are downloaded into EARSHOT_FIXTURES (default
+# %LOCALAPPDATA%\earshot-dev\fixtures) at `path`, checked against `size` and `sha256`, and
+# extracted into `extract.into` when present. Repo artefacts are committed files, checked in
+# place. `url` must be https and its host must be listed in `hosts`; these are the only network
+# destinations of fetch-fixtures (no fixture URL redirects, so `redirect_hosts` is empty and any
+# redirect to another host is refused). Licences and attribution: fixtures/LICENSES.md.
+
+sets = ["smoke", "librispeech", "ami", "ami-sum", "ami-dev"]
+
+hosts = [
+    "www.openslr.org",
+    "groups.inf.ed.ac.uk",
+    "raw.githubusercontent.com",
+]
+
+redirect_hosts = []
+
+# LibriSpeech (OpenSLR SLR12). sha256 pinned on first download; the download was also checked
+# against the md5 published at https://www.openslr.org/resources/12/md5sum.txt.
+
+[[artefact]]
+id = "librispeech-test-clean"
+sets = ["librispeech"]
+location = "cache"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+path = "librispeech/test-clean.tar.gz"
+sha256 = "39fde525e59672dc6d1551919b1478f724438a95aa55f874b576be21967e6c23"
+size = 346663984
+publisher_checksum = "md5:32fa31d27d2e1cad72775fee3f4849a9"
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+extract = { format = "tar.gz", into = "librispeech/test-clean" }
+
+[[artefact]]
+id = "librispeech-dev-clean"
+sets = ["librispeech"]
+location = "cache"
+url = "https://www.openslr.org/resources/12/dev-clean.tar.gz"
+path = "librispeech/dev-clean.tar.gz"
+sha256 = "76f87d090650617fca0cac8f88b9416e0ebf80350acb97b343a85fa903728ab3"
+size = 337926286
+publisher_checksum = "md5:42e2234ba48799c1f50f24a7926300a1"
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+extract = { format = "tar.gz", into = "librispeech/dev-clean" }
+
+# AMI (PLAN.md 4.1, T0.4a): the first two meetings of lists/test.mini.txt in
+# pyannote AMI-diarization-setup. Audio from the official AMI download host (CC BY 4.0);
+# only_words RTTMs and UEMs from AMI-diarization-setup pinned to commit
+# 67c2d539286e89f68952d5dcf83912bd9f01dfae (repository licence Apache-2.0; the references are derived from the
+# AMI annotations, CC BY 4.0). No publisher checksums exist; sha256 pinned on first download.
+# The individual headsets Headset-0..3 (IHM, scored per speaker by asr.wer_ami_ihm, T2.5b)
+# come from the same host and were pinned on first download (2026-10-23; no redirect).
+# Array1-01 (SDM, the first microphone of the first array) is the far-field recording of the
+# informational `ami_sdm` check (T2.5c), decoded with the same oracle segments.
+
+[[artefact]]
+id = "ami-IS1009a-audio-Mix-Headset"
+sets = ["ami"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009a/audio/IS1009a.Mix-Headset.wav"
+path = "ami/audio/IS1009a.Mix-Headset.wav"
+sha256 = "6eb5a0ede0d9e72794f976ce7bea5b78133eae969f99b4c5418b43c2468d25b1"
+size = 26844093
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009a-audio-Array1-01"
+sets = ["ami"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009a/audio/IS1009a.Array1-01.wav"
+path = "ami/audio/IS1009a.Array1-01.wav"
+sha256 = "23fd54fd6dbe23870f10317b256f7c648fe0fd587e56d2f940840309f1578b60"
+size = 26849383
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009a-audio-Headset-0"
+sets = ["ami", "ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009a/audio/IS1009a.Headset-0.wav"
+path = "ami/audio/IS1009a.Headset-0.wav"
+sha256 = "634f42207e488b0eab3b34a81ff16d565705f8fc5e37be7cc3c3b56617ae3257"
+size = 26843921
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009a-audio-Headset-1"
+sets = ["ami", "ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009a/audio/IS1009a.Headset-1.wav"
+path = "ami/audio/IS1009a.Headset-1.wav"
+sha256 = "db98d175dda0d07613795c715667a72b99c5372aabd14ee4dcb94d1fa9c273ee"
+size = 26843921
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009a-audio-Headset-2"
+sets = ["ami", "ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009a/audio/IS1009a.Headset-2.wav"
+path = "ami/audio/IS1009a.Headset-2.wav"
+sha256 = "9e28bfd55727b07d6a6020b7bf2797d113b35c69a1a3ad25cc4150be0937bf28"
+size = 26843921
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009a-audio-Headset-3"
+sets = ["ami", "ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009a/audio/IS1009a.Headset-3.wav"
+path = "ami/audio/IS1009a.Headset-3.wav"
+sha256 = "7a0b041ad2f2cd9af1c8fcee08e598d6d88bd8f77a3174d7eb9e281a30ca0413"
+size = 26843921
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009a-rttm"
+sets = ["ami"]
+location = "cache"
+url = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/67c2d539286e89f68952d5dcf83912bd9f01dfae/only_words/rttms/test/IS1009a.rttm"
+path = "ami/rttm/IS1009a.rttm"
+sha256 = "ba38d35ca567f3f1e061d90fdc33579ce60d2060fc8664eaeb77d2e0fcd88b01"
+size = 11080
+licence = "Apache-2.0 AND CC-BY-4.0"
+attribution = "AMI-diarization-setup (Landini et al., BUT Speech@FIT; pyannote fork), only_words references derived from the AMI Meeting Corpus manual annotations v1.6.2, https://github.com/pyannote/AMI-diarization-setup"
+
+[[artefact]]
+id = "ami-IS1009a-uem"
+sets = ["ami"]
+location = "cache"
+url = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/67c2d539286e89f68952d5dcf83912bd9f01dfae/uems/test/IS1009a.uem"
+path = "ami/uem/IS1009a.uem"
+sha256 = "afdc9548c0178876108b7ac88b0464ace094fab910c5e8661c135837b81514c6"
+size = 27
+licence = "Apache-2.0 AND CC-BY-4.0"
+attribution = "AMI-diarization-setup (Landini et al., BUT Speech@FIT; pyannote fork), only_words references derived from the AMI Meeting Corpus manual annotations v1.6.2, https://github.com/pyannote/AMI-diarization-setup"
+
+[[artefact]]
+id = "ami-ES2004a-audio-Mix-Headset"
+sets = ["ami"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Mix-Headset.wav"
+path = "ami/audio/ES2004a.Mix-Headset.wav"
+sha256 = "3e2560b19bee6952c7c7ce041b0f1ea8a7ea9468044c4eea79d2a2c67e24ab0f"
+size = 33579394
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004a-audio-Array1-01"
+sets = ["ami"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Array1-01.wav"
+path = "ami/audio/ES2004a.Array1-01.wav"
+sha256 = "6936edac5d0904fc5c4ab175546c5cc5366601fdc1b1e5183a6ea2c10f05d150"
+size = 33579394
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004a-audio-Headset-0"
+sets = ["ami", "ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Headset-0.wav"
+path = "ami/audio/ES2004a.Headset-0.wav"
+sha256 = "abb4917719c6e033b066fbd400b6d37fe46ddd62c89b513f77016a51f54e2ad1"
+size = 33579394
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004a-audio-Headset-1"
+sets = ["ami", "ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Headset-1.wav"
+path = "ami/audio/ES2004a.Headset-1.wav"
+sha256 = "9be8e84e4ef93ea7eef669470cd6db017856f38f7321e0054199ad7393a1199c"
+size = 33579394
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004a-audio-Headset-2"
+sets = ["ami", "ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Headset-2.wav"
+path = "ami/audio/ES2004a.Headset-2.wav"
+sha256 = "a4f2f8ea7d965ede2c010e36bfc31c14c7792d07419bd5bc9519c8ddd1c8bc28"
+size = 33579394
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004a-audio-Headset-3"
+sets = ["ami", "ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Headset-3.wav"
+path = "ami/audio/ES2004a.Headset-3.wav"
+sha256 = "5b3cf59816d5160d77ff00315dc7f6db816c175edb65e0d61691679fae633572"
+size = 33579394
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004a-rttm"
+sets = ["ami"]
+location = "cache"
+url = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/67c2d539286e89f68952d5dcf83912bd9f01dfae/only_words/rttms/test/ES2004a.rttm"
+path = "ami/rttm/ES2004a.rttm"
+sha256 = "9869c6146c2fd9595403edb36c2caeda65c12ffa2c0af4ce48d6814b673fd5a9"
+size = 14796
+licence = "Apache-2.0 AND CC-BY-4.0"
+attribution = "AMI-diarization-setup (Landini et al., BUT Speech@FIT; pyannote fork), only_words references derived from the AMI Meeting Corpus manual annotations v1.6.2, https://github.com/pyannote/AMI-diarization-setup"
+
+[[artefact]]
+id = "ami-ES2004a-uem"
+sets = ["ami"]
+location = "cache"
+url = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/67c2d539286e89f68952d5dcf83912bd9f01dfae/uems/test/ES2004a.uem"
+path = "ami/uem/ES2004a.uem"
+sha256 = "514373eae2841ddf15fb07938a7d74bbecc2acad8afc2a28a93e0f7b24bfb446"
+size = 28
+licence = "Apache-2.0 AND CC-BY-4.0"
+attribution = "AMI-diarization-setup (Landini et al., BUT Speech@FIT; pyannote fork), only_words references derived from the AMI Meeting Corpus manual annotations v1.6.2, https://github.com/pyannote/AMI-diarization-setup"
+
+# AMI dev-series mixes (T6.9a, set ami-dev): the first meeting of each dev series, for the
+# word-boundary report only (docs/far-speakers/word-changes.md; its words come from set
+# ami-sum). Never an acceptance set. sha256 and size pinned on first download, 2026-11-07.
+
+[[artefact]]
+id = "ami-ES2003a-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2003a/audio/ES2003a.Mix-Headset.wav"
+path = "ami/audio/ES2003a.Mix-Headset.wav"
+sha256 = "41cf861afafc20e70061c6cc82b2cb1c620d630be6d13361da928f04fc00beea"
+size = 36472536
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2011a-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2011a/audio/ES2011a.Mix-Headset.wav"
+path = "ami/audio/ES2011a.Mix-Headset.wav"
+sha256 = "130bc4218891a5b4cdbedcd716c94cd062f6ea13b2c19b77fe9d82e4023e1c78"
+size = 35643096
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1008a-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1008a/audio/IS1008a.Mix-Headset.wav"
+path = "ami/audio/IS1008a.Mix-Headset.wav"
+sha256 = "75ae8796ca2177fa0c77055de2fe2f95325b412dc7152a9b32c76c9884a3d382"
+size = 30204093
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3004a-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3004a/audio/TS3004a.Mix-Headset.wav"
+path = "ami/audio/TS3004a.Mix-Headset.wav"
+sha256 = "ca3bc00d6c85451918290b0a3dd137e322ad8b063fd26f71fe3bdaa42ad66719"
+size = 43050368
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3006a-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3006a/audio/TS3006a.Mix-Headset.wav"
+path = "ami/audio/TS3006a.Mix-Headset.wav"
+sha256 = "d3a14878e387563dd7f6cc4d9fa26e70cd1073f2b7f90102a076878cb29bb6f3"
+size = 40091692
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+# AMI manual annotations v1.6.2 (T2.5): word-level reference transcripts of the two meetings
+# above for asr.wer_ami_ihm. The archive is extracted whole; only the eight words files of
+# IS1009a and ES2004a, their eight oracle segments files and the speaker-to-headset table
+# corpusResources/meetings.xml (T2.5b) are used and pinned. No publisher checksum; the
+# archive sha256 was pinned on first download (2026-10-18), the segments members on
+# 2026-10-24 from that same verified archive.
+# Summary-quality evaluation (T6.20, set ami-sum): the human abstractive summaries
+# (abstractive/<meeting>.abssumm.xml: abstract, actions, decisions, problems) and the words
+# files of the 40 scenario meetings of the AMI scenario-only partition, dev
+# ES2003 ES2011 IS1008 TS3004 TS3006 and test ES2004 ES2014 IS1009 TS3003 TS3007 (series
+# a-d each), pinned 2026-10-24 from the same verified archive.
+
+[[artefact]]
+id = "ami-manual-annotations"
+sets = ["ami", "ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip"
+path = "ami/ami_public_manual_1.6.2.zip"
+sha256 = "b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d"
+size = 22887865
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus manual annotations v1.6.2 (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[artefact.extract]
+format = "zip"
+into = "ami/annotations"
+
+[[artefact.extract.member]]
+path = "abstractive/ES2003a.abssumm.xml"
+sha256 = "2f27350c54ee3476925e4f1d935790147a944b63c7c3edacb6601f13f58c1876"
+size = 1797
+
+[[artefact.extract.member]]
+path = "abstractive/ES2003b.abssumm.xml"
+sha256 = "2b9ee9e9cd64bcdfd56de4f4de57b459a4d257803a9d4ebffba1b2db72d484aa"
+size = 3299
+
+[[artefact.extract.member]]
+path = "abstractive/ES2003c.abssumm.xml"
+sha256 = "23671245fd4c77d8c1f38a45f11a4bff2c66d0c0562bab1b57f045b221f07410"
+size = 2342
+
+[[artefact.extract.member]]
+path = "abstractive/ES2003d.abssumm.xml"
+sha256 = "de55f2c837d998d068536724dc66515c29191b076594fa4ff34655cad2e8589a"
+size = 2484
+
+[[artefact.extract.member]]
+path = "abstractive/ES2004a.abssumm.xml"
+sha256 = "d3922b70500dc6a3f84be77538583e4073d53a2208d504c04c1b72201e77db6a"
+size = 2048
+
+[[artefact.extract.member]]
+path = "abstractive/ES2004b.abssumm.xml"
+sha256 = "71a14e9843ed671e8986f0949eaa1d75155f61ef524cee960b1d5ba69abcb691"
+size = 3325
+
+[[artefact.extract.member]]
+path = "abstractive/ES2004c.abssumm.xml"
+sha256 = "c3e52e95e7350858cf45a0cf7d2fd469da4923c4ff1b9a97e78938fe8ae56af6"
+size = 2793
+
+[[artefact.extract.member]]
+path = "abstractive/ES2004d.abssumm.xml"
+sha256 = "6805a1db6ee94ac318e9bc39dfc323b571b41fe7ad94da8089453fa1123fd787"
+size = 3799
+
+[[artefact.extract.member]]
+path = "abstractive/ES2011a.abssumm.xml"
+sha256 = "1000aa991b5f14da4691a5114489c4db73de63368f7b67efd34277d9ca3dd53a"
+size = 2361
+
+[[artefact.extract.member]]
+path = "abstractive/ES2011b.abssumm.xml"
+sha256 = "ee790fd2f255184528d251ef1bef76b9d6f64b893da5aca268bab2ebb53ee5f6"
+size = 3873
+
+[[artefact.extract.member]]
+path = "abstractive/ES2011c.abssumm.xml"
+sha256 = "992a4fae4dffd3a3a441a83bc8d65a6dc93939b5e530a21cdf07a23af7330fce"
+size = 3730
+
+[[artefact.extract.member]]
+path = "abstractive/ES2011d.abssumm.xml"
+sha256 = "2d48259cd3f7ce0f47db1b3202ae532d2974d3bcb9e6c4710945e1044f5a8108"
+size = 3424
+
+[[artefact.extract.member]]
+path = "abstractive/ES2014a.abssumm.xml"
+sha256 = "e644cfd63ff7cad8ec39fa0269afafc5ab25179278fe7e69c67d2e319b715118"
+size = 2329
+
+[[artefact.extract.member]]
+path = "abstractive/ES2014b.abssumm.xml"
+sha256 = "e31c1effae383e0d6d3401cdbc6c3341e24ced159c742392b6e6311d643c1e07"
+size = 3510
+
+[[artefact.extract.member]]
+path = "abstractive/ES2014c.abssumm.xml"
+sha256 = "4d875b70e2d50c286ced1332df12909b39278f7c46e623112b64a98562527d3d"
+size = 3750
+
+[[artefact.extract.member]]
+path = "abstractive/ES2014d.abssumm.xml"
+sha256 = "254582da4a55d0a1c4677fee39c833b78758e8114b66f4a7b27bb083599e7734"
+size = 3943
+
+[[artefact.extract.member]]
+path = "abstractive/IS1008a.abssumm.xml"
+sha256 = "412d3232725209060f0c247bdbcebef541e89ea99940642cf5eb7d89fb0b5f48"
+size = 2831
+
+[[artefact.extract.member]]
+path = "abstractive/IS1008b.abssumm.xml"
+sha256 = "70f0a0af0d1ade4f0dff2c520dac7e294937a2d5618cefc7caac7af6ff5c179a"
+size = 3718
+
+[[artefact.extract.member]]
+path = "abstractive/IS1008c.abssumm.xml"
+sha256 = "0bc25b627ddf8b125b7dcf3c52f659180decd6a388169eb94da418a660e5198e"
+size = 3529
+
+[[artefact.extract.member]]
+path = "abstractive/IS1008d.abssumm.xml"
+sha256 = "80f79b86a495c774ece648cad6b851d69a4f8fd9e7d237f3bf9bb36ae8056d59"
+size = 4018
+
+[[artefact.extract.member]]
+path = "abstractive/IS1009a.abssumm.xml"
+sha256 = "15e09d143bc3cb57b3a2d86d81f657e0f2d34dc64e9b4cd3e4f89002d1e85606"
+size = 3028
+
+[[artefact.extract.member]]
+path = "abstractive/IS1009b.abssumm.xml"
+sha256 = "0ca0ecf5317b31548f713e0652240bb8150814391d9e31b65defd76b74618191"
+size = 2927
+
+[[artefact.extract.member]]
+path = "abstractive/IS1009c.abssumm.xml"
+sha256 = "a9e32c842b025a434225ee1e17e61a6f7adad1fe0d880b8e798cd5908bd2fb51"
+size = 3405
+
+[[artefact.extract.member]]
+path = "abstractive/IS1009d.abssumm.xml"
+sha256 = "77d380d2dab077009b5d77d64e1a8472d2075c4ed4faee9ee62d3c9c0dc83c72"
+size = 3515
+
+[[artefact.extract.member]]
+path = "abstractive/TS3003a.abssumm.xml"
+sha256 = "29ab4cc1fee871fed59e406e9e1468f227daafa33038e3caa806dada8e6d4385"
+size = 2161
+
+[[artefact.extract.member]]
+path = "abstractive/TS3003b.abssumm.xml"
+sha256 = "77a1081434a432f71b1a1a77bb5e95582a60f0f213f16af5befd15f745f5de91"
+size = 3860
+
+[[artefact.extract.member]]
+path = "abstractive/TS3003c.abssumm.xml"
+sha256 = "bdc9eddb5f2346355a3cda59981dca9dabacdb0d5e9bcacb6e7cdb2ef55f631d"
+size = 2934
+
+[[artefact.extract.member]]
+path = "abstractive/TS3003d.abssumm.xml"
+sha256 = "479931ffb4ad9a00936980e05921cbbc931b8b37d4fcd2705c8eb5b365e8a360"
+size = 4362
+
+[[artefact.extract.member]]
+path = "abstractive/TS3004a.abssumm.xml"
+sha256 = "88c014f082fc1c7cfcc86042b0994d78f44c6aa9440f430a97f28c413ffb2900"
+size = 2942
+
+[[artefact.extract.member]]
+path = "abstractive/TS3004b.abssumm.xml"
+sha256 = "7dad25375c71b08dff95b0ddbaef695d43043d20530e21e1d4d957362c512ffa"
+size = 3665
+
+[[artefact.extract.member]]
+path = "abstractive/TS3004c.abssumm.xml"
+sha256 = "9832a3af4dee25e52853d5a69a24c45bf1e9dd8ba0101ee6ad3b74ca7fb27eb5"
+size = 3972
+
+[[artefact.extract.member]]
+path = "abstractive/TS3004d.abssumm.xml"
+sha256 = "0208997c810179c4f7f4043523096d967e4a1a0c8de0de0db3af3abb53506c52"
+size = 3009
+
+[[artefact.extract.member]]
+path = "abstractive/TS3006a.abssumm.xml"
+sha256 = "2baa9d709e8de6ef0660c42878a54714cc4f3c7a641fc0c3fabe79ff5c8c7870"
+size = 2583
+
+[[artefact.extract.member]]
+path = "abstractive/TS3006b.abssumm.xml"
+sha256 = "9ffa70343d998c11a6921cedaf9292237d6b5cf0c0e5199a57e1bb20a5c8bdd4"
+size = 3863
+
+[[artefact.extract.member]]
+path = "abstractive/TS3006c.abssumm.xml"
+sha256 = "c42797870ee7c9ba502813188b5f02e582a1aa2aa66aae4a7fa8ed141d71e083"
+size = 2883
+
+[[artefact.extract.member]]
+path = "abstractive/TS3006d.abssumm.xml"
+sha256 = "35f972806698de5b557ffc3eb50c1643b9dbbd4dc87735e91c21ec249da3421e"
+size = 3310
+
+[[artefact.extract.member]]
+path = "abstractive/TS3007a.abssumm.xml"
+sha256 = "652b09f4035490d9c582c9977a0c0d7c22d8b62bd2ba9def0e2571e71f3672ec"
+size = 2688
+
+[[artefact.extract.member]]
+path = "abstractive/TS3007b.abssumm.xml"
+sha256 = "53d1dec605d776bd6b2fe8b1e19570cd343e9b744925f010e036f67f934c3f93"
+size = 2787
+
+[[artefact.extract.member]]
+path = "abstractive/TS3007c.abssumm.xml"
+sha256 = "13fd0871b8249cc096ee0338c5f1efa5a220ccb61e076398f91f2ae60b373708"
+size = 3517
+
+[[artefact.extract.member]]
+path = "abstractive/TS3007d.abssumm.xml"
+sha256 = "fe0a0c66f9e92157b10eb8db2792444efa6c72b7fb46ef105cfdcaf8a28477de"
+size = 2987
+
+[[artefact.extract.member]]
+path = "corpusResources/meetings.xml"
+sha256 = "8ab6cdcf03ed863e839418f31c7380392397a2eed892d73b9bc1b438c7ec520a"
+size = 119064
+
+[[artefact.extract.member]]
+path = "segments/ES2004a.A.segments.xml"
+sha256 = "fdba87577fb6f36139a0f62d5c249921635b53bec92ed127cdfee959f6a8cb2c"
+size = 10232
+
+[[artefact.extract.member]]
+path = "segments/ES2004a.B.segments.xml"
+sha256 = "130b464da1979e2b269c6b860eb046ac26e2d13b7482752d9befe3146bfc17f4"
+size = 19951
+
+[[artefact.extract.member]]
+path = "segments/ES2004a.C.segments.xml"
+sha256 = "fc1cdb6c1fd673d35caa84190a85c827db08da60bdcb2a856eca785f4a3b8bde"
+size = 11557
+
+[[artefact.extract.member]]
+path = "segments/ES2004a.D.segments.xml"
+sha256 = "1ecca19454d5c92b92c8c1825935b24262a355778c7138492dbacf10db9aa83d"
+size = 18503
+
+[[artefact.extract.member]]
+path = "segments/IS1009a.A.segments.xml"
+sha256 = "86f545f8fb114f4ac515fe364bfac318f2e2bda29f8d3248707baa8fc1a845f3"
+size = 16056
+
+[[artefact.extract.member]]
+path = "segments/IS1009a.B.segments.xml"
+sha256 = "9e5e4e9247f294cbfefb2b470b48b56b5fa5ac59fc033988f2157233dd8944cc"
+size = 7886
+
+[[artefact.extract.member]]
+path = "segments/IS1009a.C.segments.xml"
+sha256 = "67b7db585df2c2eb5d99a71e27a1d57c5102dd5e5b3877981c1b792111935567"
+size = 10101
+
+[[artefact.extract.member]]
+path = "segments/IS1009a.D.segments.xml"
+sha256 = "fa930c99ffa100b5318b957df024915ac770f5f623716815843a4aaca9fad7c9"
+size = 13229
+
+[[artefact.extract.member]]
+path = "words/ES2003a.A.words.xml"
+sha256 = "8ee1e2ba5ab4421e16ebf42d0e221247a83e174fe34aa06e3aadd7a08540e470"
+size = 48961
+
+[[artefact.extract.member]]
+path = "words/ES2003a.B.words.xml"
+sha256 = "d9af4424014f9e2ae55e1a33fc7fb95a2352903453e3afb51118845cea4c304d"
+size = 94469
+
+[[artefact.extract.member]]
+path = "words/ES2003a.C.words.xml"
+sha256 = "9393f7af2a0cd95da35d306e4861e2513544c54059b11515ff311cd9b051cff4"
+size = 39315
+
+[[artefact.extract.member]]
+path = "words/ES2003a.D.words.xml"
+sha256 = "bdcf987020238618bed2941bc906d31aa61aec6732e3104d16f11b7f1a104384"
+size = 19070
+
+[[artefact.extract.member]]
+path = "words/ES2003b.A.words.xml"
+sha256 = "40d587031566d3e4a82c810728403b590df1852d9beecd50043742d4a8af18d5"
+size = 131657
+
+[[artefact.extract.member]]
+path = "words/ES2003b.B.words.xml"
+sha256 = "89a94bfe0e8f3c25e396c3f717dec82137981b9e7a1bb888af4aa9c866fb8bf3"
+size = 219039
+
+[[artefact.extract.member]]
+path = "words/ES2003b.C.words.xml"
+sha256 = "d9431cf57246544d02d2d441dd8112ded56cac6e53f4d62b4c34bdab7a1bed63"
+size = 152825
+
+[[artefact.extract.member]]
+path = "words/ES2003b.D.words.xml"
+sha256 = "fc35e6ad74a58b8769163b8eb8fc586dbf19b8dd1b2dca17f057c4d04ab936f7"
+size = 54223
+
+[[artefact.extract.member]]
+path = "words/ES2003c.A.words.xml"
+sha256 = "fe906aa887b0d8c85bc03d8d8f52439e4f4f7cd68987cf8360fcc97b2271eaba"
+size = 171098
+
+[[artefact.extract.member]]
+path = "words/ES2003c.B.words.xml"
+sha256 = "e0b4c7cec1a95fbcf3dc43ba898dea0d7b15acf43d183962aaa2d22322fc8d62"
+size = 190820
+
+[[artefact.extract.member]]
+path = "words/ES2003c.C.words.xml"
+sha256 = "eb9c6e5974a6a83c3e16026d47665f3017b1e926dd821448721cea2f1f67e9f5"
+size = 137515
+
+[[artefact.extract.member]]
+path = "words/ES2003c.D.words.xml"
+sha256 = "94f69b54b4268f0b9380706973f4677ea96b713be589c7aec1f634f3e65ea28c"
+size = 85969
+
+[[artefact.extract.member]]
+path = "words/ES2003d.A.words.xml"
+sha256 = "254bf838678107b49ca1bbfc781514d1a0d39692be206ef04f1b823e9babb183"
+size = 133359
+
+[[artefact.extract.member]]
+path = "words/ES2003d.B.words.xml"
+sha256 = "d000259987f137527ac8664e320460d2cc5bb963b24880557da267ce0f9309ed"
+size = 248019
+
+[[artefact.extract.member]]
+path = "words/ES2003d.C.words.xml"
+sha256 = "372ac90595970d4a3eb2a61f7f7fa770e630ee84cdf45d768bf8b39847ee7a64"
+size = 176161
+
+[[artefact.extract.member]]
+path = "words/ES2003d.D.words.xml"
+sha256 = "85deeda7d73103b400c37ef45b1e0ef11bfc5d27446eac050fc350cdf1395048"
+size = 49114
+
+[[artefact.extract.member]]
+path = "words/ES2004a.A.words.xml"
+sha256 = "3b91765c8985e7c2652f1004832c00840e88bad4c3213296192b9fd741d675cc"
+size = 32225
+
+[[artefact.extract.member]]
+path = "words/ES2004a.B.words.xml"
+sha256 = "0e24646b84f2772bb3ca28e666df5f7ba48cde647589f7ae8f85e2724ff5cbc3"
+size = 107451
+
+[[artefact.extract.member]]
+path = "words/ES2004a.C.words.xml"
+sha256 = "07c25c4831fdc91cdff736ebf27c1380d0a7ef98e9835e33b15d44797fed7fd1"
+size = 45192
+
+[[artefact.extract.member]]
+path = "words/ES2004a.D.words.xml"
+sha256 = "e085188b2f4855808911934c309ba965c283e54371044c9086185f27913d44f8"
+size = 82827
+
+[[artefact.extract.member]]
+path = "words/ES2004b.A.words.xml"
+sha256 = "ad20241dea29b969b793efb75698bb074518e4a4c6328229833ca31e2ed569a1"
+size = 103845
+
+[[artefact.extract.member]]
+path = "words/ES2004b.B.words.xml"
+sha256 = "7ad3102b35c57a9f8a9c8aa0b6ac76b84ab3703a5b54d492b26975d734cab3bb"
+size = 198360
+
+[[artefact.extract.member]]
+path = "words/ES2004b.C.words.xml"
+sha256 = "b8fdfed824a4e09440c86f4b8e32af04b28b79c0ec9160310e985a4d960f91f8"
+size = 153316
+
+[[artefact.extract.member]]
+path = "words/ES2004b.D.words.xml"
+sha256 = "67c2cd59f26df56727d814c3646f693178443e6fc85afee288209a69ea4ad777"
+size = 201050
+
+[[artefact.extract.member]]
+path = "words/ES2004c.A.words.xml"
+sha256 = "9088056d2c6e05932d9f38749be9d8a3a93668a6a2e7400c137594271e037ecc"
+size = 123995
+
+[[artefact.extract.member]]
+path = "words/ES2004c.B.words.xml"
+sha256 = "6ec6884b65f1979d24cb35ff408d77c939b3e00625b8b37b1e57aca2bffd939a"
+size = 170359
+
+[[artefact.extract.member]]
+path = "words/ES2004c.C.words.xml"
+sha256 = "297f0fd814ded99fcdee863fb5f362ef0431e42579284677c9ebf99833245a23"
+size = 216577
+
+[[artefact.extract.member]]
+path = "words/ES2004c.D.words.xml"
+sha256 = "a397d6caf48ad4dfea6e555b176cd1003776dc573434fc8d71a9112c899c59ce"
+size = 162441
+
+[[artefact.extract.member]]
+path = "words/ES2004d.A.words.xml"
+sha256 = "61aba77f1def73e78e2d780972bcb316124fe448ad656fc567a947c1f118c424"
+size = 73478
+
+[[artefact.extract.member]]
+path = "words/ES2004d.B.words.xml"
+sha256 = "8cc367443319363dcfce6a2a876a4cf8cf4c085b666047a431323aefd23d75fe"
+size = 173986
+
+[[artefact.extract.member]]
+path = "words/ES2004d.C.words.xml"
+sha256 = "83d7fcf4bd7691c13200fd4cf719e1c8529c60f57e527e6d1a731f6de62f9e97"
+size = 171698
+
+[[artefact.extract.member]]
+path = "words/ES2004d.D.words.xml"
+sha256 = "e306e8260778ef67d39d0cd3c4383a230d93067e1cf47aedf02a693663e75bdf"
+size = 217811
+
+[[artefact.extract.member]]
+path = "words/ES2011a.A.words.xml"
+sha256 = "72637a4c320deba1650ad8b887f8e322f7ea5fcb846d66018118a9fae1ab743a"
+size = 103274
+
+[[artefact.extract.member]]
+path = "words/ES2011a.B.words.xml"
+sha256 = "fdfb497aaa7db5209d32c988b11b8446a4d1635bd49ac3ba6324bfc8cd42bf5f"
+size = 12456
+
+[[artefact.extract.member]]
+path = "words/ES2011a.C.words.xml"
+sha256 = "3adbd7754000fd413bccd6bfd720309a853947211ee364f7c5757562ccd2f57e"
+size = 77487
+
+[[artefact.extract.member]]
+path = "words/ES2011a.D.words.xml"
+sha256 = "396af803f2a9ceedd41f17104f01659d97dd38473f46c55935f879ff1e0c1830"
+size = 63667
+
+[[artefact.extract.member]]
+path = "words/ES2011b.A.words.xml"
+sha256 = "6b777ede5106375333b65c9607e8a4ab7deb4e9aa99b7bf3fe7c436e243d5838"
+size = 102329
+
+[[artefact.extract.member]]
+path = "words/ES2011b.B.words.xml"
+sha256 = "b335797230c8fa2d4c098907523de8a213adf253ecc55616461fa6cda446208a"
+size = 94074
+
+[[artefact.extract.member]]
+path = "words/ES2011b.C.words.xml"
+sha256 = "8edc2c5eacd1300590a3b883017d06a3dd5094f52a0e20dd1a2880f6daed6897"
+size = 133333
+
+[[artefact.extract.member]]
+path = "words/ES2011b.D.words.xml"
+sha256 = "b1d11e5a363a169113cbf0c86d597ce82e87a9f099881234ec4a1a431ba1db5a"
+size = 119764
+
+[[artefact.extract.member]]
+path = "words/ES2011c.A.words.xml"
+sha256 = "8ee84e1ff60154a2b9079314d04a052c1f3371b1b799089dec7784a849b10dc6"
+size = 112282
+
+[[artefact.extract.member]]
+path = "words/ES2011c.B.words.xml"
+sha256 = "baed0fb17d69954c19b257f7a72435d2f9b48ced62e611531a9c28be82f6b9ec"
+size = 102193
+
+[[artefact.extract.member]]
+path = "words/ES2011c.C.words.xml"
+sha256 = "9d0872ad1984cca807ea76d7932b5da5802206516bafba2b24b807eef2a0752c"
+size = 164856
+
+[[artefact.extract.member]]
+path = "words/ES2011c.D.words.xml"
+sha256 = "2036cf200a3a46680dd22660c57d4f0c00aef1a1942f29ee0077500b367228fc"
+size = 109183
+
+[[artefact.extract.member]]
+path = "words/ES2011d.A.words.xml"
+sha256 = "0ffe10dcc000381760b0cec476d0ca642e01ef727a47f9d876a9ed3edac19c49"
+size = 151400
+
+[[artefact.extract.member]]
+path = "words/ES2011d.B.words.xml"
+sha256 = "b4fe0a995a84d4720ccb41ad885f478eb636ad9d1cf59a80fb8d32ea9978bb1d"
+size = 113266
+
+[[artefact.extract.member]]
+path = "words/ES2011d.C.words.xml"
+sha256 = "66f80cabc6cdc3a7723f093f708d6e66dedbe364465569870d93db2d88149a85"
+size = 103394
+
+[[artefact.extract.member]]
+path = "words/ES2011d.D.words.xml"
+sha256 = "7757bd3193b2b5820b6650465ac903a49ea9ee8bc0442e0cc29a37f76cd6e366"
+size = 104737
+
+[[artefact.extract.member]]
+path = "words/ES2014a.A.words.xml"
+sha256 = "199eb11bd3e4f9d8f1244ca459c85a3fcbae98a7abb2fef67adc5ab1d3754941"
+size = 121671
+
+[[artefact.extract.member]]
+path = "words/ES2014a.B.words.xml"
+sha256 = "039979f31348e81075e09e1eea45f12132323e08d35755a41d3aabc3c9be42d0"
+size = 30587
+
+[[artefact.extract.member]]
+path = "words/ES2014a.C.words.xml"
+sha256 = "ec001435b4f656eaf5a3f43ad5382669e8e1ca9da5ba255012db84f94ee26954"
+size = 25929
+
+[[artefact.extract.member]]
+path = "words/ES2014a.D.words.xml"
+sha256 = "106a3465da7443c108d0b67cf4e1d55e292db5c6cfd4162c0acf2d2916c4bb70"
+size = 43294
+
+[[artefact.extract.member]]
+path = "words/ES2014b.A.words.xml"
+sha256 = "81ef09db61c4cc340f801b6bf5cbca1d5634cd610fdbb6447d013354f33c91f8"
+size = 201990
+
+[[artefact.extract.member]]
+path = "words/ES2014b.B.words.xml"
+sha256 = "7088a8674c3ad916a0e37013ae590b61890e183c387d4dfe063670bcecf1be66"
+size = 177266
+
+[[artefact.extract.member]]
+path = "words/ES2014b.C.words.xml"
+sha256 = "2d30dfc683dd586b494e19c5e89e9656ff0352d193d49c6f2bcb90d7886901a8"
+size = 99152
+
+[[artefact.extract.member]]
+path = "words/ES2014b.D.words.xml"
+sha256 = "b4c051a43a63cf45c8847bdd43623ce73108713707feff433f86b11e5a670c23"
+size = 116820
+
+[[artefact.extract.member]]
+path = "words/ES2014c.A.words.xml"
+sha256 = "b7996286188570aec8d3ff632c777a0cccc8994529d0a24bf02277e217a70f59"
+size = 193327
+
+[[artefact.extract.member]]
+path = "words/ES2014c.B.words.xml"
+sha256 = "9bafef2af85d5881b6a8627c09955a6b1e664ec1d6bc04c98eef290dcfa5ea44"
+size = 189770
+
+[[artefact.extract.member]]
+path = "words/ES2014c.C.words.xml"
+sha256 = "ace5527a388f4bbcdb2d726e55de9f95351fc9183b05b5381a1bed249e3add9a"
+size = 153854
+
+[[artefact.extract.member]]
+path = "words/ES2014c.D.words.xml"
+sha256 = "bf83baf4b40b2379ea9684959dca96a6e4265ca0ccf01d61a2eec1836e289d34"
+size = 92607
+
+[[artefact.extract.member]]
+path = "words/ES2014d.A.words.xml"
+sha256 = "7e3bac43ca553d0c24e2f859958bde8a168a67d01f92d1c16832a35d3474312b"
+size = 312868
+
+[[artefact.extract.member]]
+path = "words/ES2014d.B.words.xml"
+sha256 = "945cd7cf55f4cb56ce1f59a70834f02f0c7bac1339a36ecbac65c733075c3931"
+size = 165011
+
+[[artefact.extract.member]]
+path = "words/ES2014d.C.words.xml"
+sha256 = "3f4c0c97d2211081e0d8f96875eded4cb4f7f90b109ff19585f2c896b427d4bb"
+size = 95709
+
+[[artefact.extract.member]]
+path = "words/ES2014d.D.words.xml"
+sha256 = "2efc047e286fd36b7df1a537155295078447f750b20d64429ecfe39a3a582f25"
+size = 232839
+
+[[artefact.extract.member]]
+path = "words/IS1008a.A.words.xml"
+sha256 = "db744e8ca1f45f794e288c5521ab5dfbc2b2f8e5e9f814dd5300053cdab09a2d"
+size = 133051
+
+[[artefact.extract.member]]
+path = "words/IS1008a.B.words.xml"
+sha256 = "4a92c5b967c6a32fdfc4a288b7a61064d7259710b6afb32c27e49e4bd146f322"
+size = 24279
+
+[[artefact.extract.member]]
+path = "words/IS1008a.C.words.xml"
+sha256 = "d61e501c37877f731058889d799e7ff5a3d19494b8a22f12c7f0f50a87c62758"
+size = 41287
+
+[[artefact.extract.member]]
+path = "words/IS1008a.D.words.xml"
+sha256 = "e7f475b606a950de682d275b912821f3d3d612136ce62bd41bc685146767f40b"
+size = 42282
+
+[[artefact.extract.member]]
+path = "words/IS1008b.A.words.xml"
+sha256 = "53a4748c99b4b959241ac378651390116179a88f14a6221c4219dd157b569aa3"
+size = 132400
+
+[[artefact.extract.member]]
+path = "words/IS1008b.B.words.xml"
+sha256 = "dd8e9cccfae1b86f52f65a90a058c0b6e2a329000697b0053f4ebadcfcaed189"
+size = 122956
+
+[[artefact.extract.member]]
+path = "words/IS1008b.C.words.xml"
+sha256 = "519d9adc4c4cb9f77876e3e48582ddff3915715f44326333985af1329c04b497"
+size = 98956
+
+[[artefact.extract.member]]
+path = "words/IS1008b.D.words.xml"
+sha256 = "b96cb87f1b73de62e585f01431e4092c0ad8b99629be2fe7578c8c349f764666"
+size = 76422
+
+[[artefact.extract.member]]
+path = "words/IS1008c.A.words.xml"
+sha256 = "c6da2d05643ba3a5bb027d28ab195c55ac815aa03ea0153b1c2b6546f08b86ad"
+size = 69601
+
+[[artefact.extract.member]]
+path = "words/IS1008c.B.words.xml"
+sha256 = "8f43cdd5b2f3637ea577023def23e1cd426cc7d4236ec9c3dc6a6d41bd36aa02"
+size = 118087
+
+[[artefact.extract.member]]
+path = "words/IS1008c.C.words.xml"
+sha256 = "b0b94fe7f54383b1e58991aeef69614be53ea412f18a435690ec4372cf0a2c65"
+size = 140342
+
+[[artefact.extract.member]]
+path = "words/IS1008c.D.words.xml"
+sha256 = "f3ce17110c1a94b1280dd5b16d94d8f3ad63aa60e941653df9ad6be262be69ff"
+size = 83865
+
+[[artefact.extract.member]]
+path = "words/IS1008d.A.words.xml"
+sha256 = "35ed1917ea4ef7aeaec879abd1f8c3e1c12b2b7235a0f913e16005fb805b9acf"
+size = 122731
+
+[[artefact.extract.member]]
+path = "words/IS1008d.B.words.xml"
+sha256 = "15f5cfa14182e363c9b86906dc7b1e761db48cdd911f6ffb5f743881ade364ef"
+size = 87877
+
+[[artefact.extract.member]]
+path = "words/IS1008d.C.words.xml"
+sha256 = "cb3f1eadbcd24bb66f87d1be55ea36b9233f1a023d5d2a1ff624edae1d60b7e2"
+size = 111350
+
+[[artefact.extract.member]]
+path = "words/IS1008d.D.words.xml"
+sha256 = "99c99e3b1f64de718a60e082c457879a2a63014bda081e8ce75ff357c6dca17b"
+size = 96804
+
+[[artefact.extract.member]]
+path = "words/IS1009a.A.words.xml"
+sha256 = "003b03367aafbb3bc775e2c47fbb91933a95494d7c877cd7331ddc0a340eb2ef"
+size = 118835
+
+[[artefact.extract.member]]
+path = "words/IS1009a.B.words.xml"
+sha256 = "59755347ff5b45b3e2b646fec14b2f17779a9900c7c1168e3e39ca8d3a69d04e"
+size = 20637
+
+[[artefact.extract.member]]
+path = "words/IS1009a.C.words.xml"
+sha256 = "6a70b4d2301b67dd8b61e25adf16570921fae4bd3c72a6918b6972cd0f6c8d6a"
+size = 24142
+
+[[artefact.extract.member]]
+path = "words/IS1009a.D.words.xml"
+sha256 = "eebb82de5bd46511217319a700ab8e926c7e0bf227832154a15a78d820a9a792"
+size = 43553
+
+[[artefact.extract.member]]
+path = "words/IS1009b.A.words.xml"
+sha256 = "f7ff17ddfcf4b40b3a4420ced4abdaefb86f669259f0bb98b65f14bd35dc84cc"
+size = 143123
+
+[[artefact.extract.member]]
+path = "words/IS1009b.B.words.xml"
+sha256 = "2a612ee0514cb11e32e85841592f720af6f19d75b30807b058db74f84f454574"
+size = 92690
+
+[[artefact.extract.member]]
+path = "words/IS1009b.C.words.xml"
+sha256 = "5058eaaf1b13f8272455745f3ff8b52e84dd798a38a939e11397f83e2784c5db"
+size = 158930
+
+[[artefact.extract.member]]
+path = "words/IS1009b.D.words.xml"
+sha256 = "d142766bd0cf1bdab96bbe226367c319ae4a5b9536175c187a05375fc50fd242"
+size = 182847
+
+[[artefact.extract.member]]
+path = "words/IS1009c.A.words.xml"
+sha256 = "117320bc123e3f0b9f75f476caf80136e81f92329f7199920858ce1185a18554"
+size = 102600
+
+[[artefact.extract.member]]
+path = "words/IS1009c.B.words.xml"
+sha256 = "2463b857a947af4edd628da05e0ce238ef97dc74ecf3d35ed2fce48fc3f11243"
+size = 95836
+
+[[artefact.extract.member]]
+path = "words/IS1009c.C.words.xml"
+sha256 = "6b2a8cf0e13a1aa95df47a2689fd686578620498bd7e7a45c59272e655e926e3"
+size = 170305
+
+[[artefact.extract.member]]
+path = "words/IS1009c.D.words.xml"
+sha256 = "b2a7de351679d62dd08cf8ea62c9f38bbd1e78d82d19787785d8fef90778af05"
+size = 74852
+
+[[artefact.extract.member]]
+path = "words/IS1009d.A.words.xml"
+sha256 = "44539b5a052cab0595921f2940da971a656930b140d7e3076a6010de85478499"
+size = 178212
+
+[[artefact.extract.member]]
+path = "words/IS1009d.B.words.xml"
+sha256 = "ae42631189765dff78cbfa082763a66383a7c5164e293178c3c3746e065316b4"
+size = 59785
+
+[[artefact.extract.member]]
+path = "words/IS1009d.C.words.xml"
+sha256 = "3fded73fba41aaeda8e3fb1ce1d555997eba27922e676690917f8609c4a376c0"
+size = 57885
+
+[[artefact.extract.member]]
+path = "words/IS1009d.D.words.xml"
+sha256 = "3660328ec54a2f9774f93312acf2f58e33ec1899c1e6e8c4bec276b846639a78"
+size = 183856
+
+[[artefact.extract.member]]
+path = "words/TS3003a.A.words.xml"
+sha256 = "b343403033d4d960f2bdfc605d2425c4974956285a3191ba19ec66c74e4e3855"
+size = 198550
+
+[[artefact.extract.member]]
+path = "words/TS3003a.B.words.xml"
+sha256 = "2f0600d74984f3fc925482e556bcdcd2e82ee44e518a0e0910250bba056572ec"
+size = 18275
+
+[[artefact.extract.member]]
+path = "words/TS3003a.C.words.xml"
+sha256 = "6342c203442438c77906b41f8b95631ce84f85b459cb6411890a08e32d6d0e5e"
+size = 8362
+
+[[artefact.extract.member]]
+path = "words/TS3003a.D.words.xml"
+sha256 = "2fb26c7afff76c7ae34bd186b1fef28a974f73d9e3a1f22e3410dc3703c53a92"
+size = 40385
+
+[[artefact.extract.member]]
+path = "words/TS3003b.A.words.xml"
+sha256 = "218a42d3f4dc34f56b477b66a4e4ffe6c40c4a7583b88f8f26b117800fb29928"
+size = 180606
+
+[[artefact.extract.member]]
+path = "words/TS3003b.B.words.xml"
+sha256 = "fb9a340819eb3f2399190c6e3715acc5c4c043b9ee22fa4097711248772f4fab"
+size = 71675
+
+[[artefact.extract.member]]
+path = "words/TS3003b.C.words.xml"
+sha256 = "8e536bade4c9ec5dc1e88ba2713004ac589e1d89079a45cfec70e765e8261df6"
+size = 48497
+
+[[artefact.extract.member]]
+path = "words/TS3003b.D.words.xml"
+sha256 = "6d887dc2d6100a2ebbeaefed4d3f0d8f5112f7c913a28cf8a62686b0cce9c470"
+size = 166468
+
+[[artefact.extract.member]]
+path = "words/TS3003c.A.words.xml"
+sha256 = "38006fac0fa1ac7614a4895179b6e10354cb8a8459cc2e567c7fb996d3668899"
+size = 166516
+
+[[artefact.extract.member]]
+path = "words/TS3003c.B.words.xml"
+sha256 = "c4f27fea8721ed687f2417edbf97dcc9111b44ad49a895e59cbe8ca3f941d788"
+size = 118132
+
+[[artefact.extract.member]]
+path = "words/TS3003c.C.words.xml"
+sha256 = "65cfa734db01feda0e49092e52889f3914846cb5ca819407977020fd79dfa276"
+size = 57355
+
+[[artefact.extract.member]]
+path = "words/TS3003c.D.words.xml"
+sha256 = "9c31a56a4e4a292d0480b6be91956852f9af4851f2b2be7c285f9dfc567b1325"
+size = 105185
+
+[[artefact.extract.member]]
+path = "words/TS3003d.A.words.xml"
+sha256 = "8a760c88f852f4d6d4877f057340a622d0a3c4d235ab156a1e1852b48674947f"
+size = 271748
+
+[[artefact.extract.member]]
+path = "words/TS3003d.B.words.xml"
+sha256 = "24a6209d78212b3274dfb889a4e913f519d0692dc4195e29f1d99a04c1cef17f"
+size = 94768
+
+[[artefact.extract.member]]
+path = "words/TS3003d.C.words.xml"
+sha256 = "d7e83f317bf109be954c33b5521af6db49cfbd49266f830056e445c0f9c2cc9f"
+size = 70336
+
+[[artefact.extract.member]]
+path = "words/TS3003d.D.words.xml"
+sha256 = "6b1990546af8af9f704901335b5918f08c5953d599478003f2c49634023e09dd"
+size = 126280
+
+[[artefact.extract.member]]
+path = "words/TS3004a.A.words.xml"
+sha256 = "45ae99d88e3fdeb448d6576bb105521cf60b79cd6c55daa36ef92f45c87abf87"
+size = 153148
+
+[[artefact.extract.member]]
+path = "words/TS3004a.B.words.xml"
+sha256 = "85bd23005095a510210df0d4989165b1edc5c9a843aa44b8e123de2e545fc381"
+size = 58185
+
+[[artefact.extract.member]]
+path = "words/TS3004a.C.words.xml"
+sha256 = "e62fa4ffecf1c98bca72d7707b1b8a33165be89f59028c5dca46b4163cfe090d"
+size = 36241
+
+[[artefact.extract.member]]
+path = "words/TS3004a.D.words.xml"
+sha256 = "fa092f90f60d975aeb7c05d24faca5a114389f8ed32fda5f8f203e9c9af8bedd"
+size = 71594
+
+[[artefact.extract.member]]
+path = "words/TS3004b.A.words.xml"
+sha256 = "4eb45617dc76550f323d3a5d5410c0df6c910d5157baf99b7d8836dbb6e92456"
+size = 185885
+
+[[artefact.extract.member]]
+path = "words/TS3004b.B.words.xml"
+sha256 = "fe347775f85c1b2a46fef8b3e15637ddd1668b5bb6619359eed3c862429c72cc"
+size = 176809
+
+[[artefact.extract.member]]
+path = "words/TS3004b.C.words.xml"
+sha256 = "fdb75f58bdb88e3b13dd4cee7c34e077fec91511e56108a201f7368f7eb6f5a4"
+size = 138852
+
+[[artefact.extract.member]]
+path = "words/TS3004b.D.words.xml"
+sha256 = "6ea98b8ad943b43a06c799649c80b9c16d52dff8b0aede97c3e924a7bb120686"
+size = 162383
+
+[[artefact.extract.member]]
+path = "words/TS3004c.A.words.xml"
+sha256 = "a560dd6138036ab2facdb784c65b5ed64589df3c8de4f05045985f0bddf083e9"
+size = 187828
+
+[[artefact.extract.member]]
+path = "words/TS3004c.B.words.xml"
+sha256 = "03d1a704ca2a23682305b8ea134db2aeae6566e108e3ccb81982056e9d6d0f74"
+size = 224733
+
+[[artefact.extract.member]]
+path = "words/TS3004c.C.words.xml"
+sha256 = "844432278f0a151318f2d15c14f6761dd7178ec5163aa4c308b7ef9ac72f614b"
+size = 185850
+
+[[artefact.extract.member]]
+path = "words/TS3004c.D.words.xml"
+sha256 = "d70978f7e52c55a9f76eeb451700b5c1cb25d49716ae547d3bb6a7bd186ed8a4"
+size = 123159
+
+[[artefact.extract.member]]
+path = "words/TS3004d.A.words.xml"
+sha256 = "6f2837a9cc7335a1b21d3698f9b77c6162721c444ce4d6ac950ac04f9229d682"
+size = 164997
+
+[[artefact.extract.member]]
+path = "words/TS3004d.B.words.xml"
+sha256 = "cda3c0bfd96994ee32049b92c071c91b1fe0654a5d42f5ed42ba6ae84d67b4e5"
+size = 203931
+
+[[artefact.extract.member]]
+path = "words/TS3004d.C.words.xml"
+sha256 = "f61178bdc71a4766b01cd033234e4f1279fa7b0adaf753414cca9ffb1ade1eac"
+size = 134144
+
+[[artefact.extract.member]]
+path = "words/TS3004d.D.words.xml"
+sha256 = "a79f35996f56f88da4ecd93eac2093611b92b724ec9d376174391b0c426d8656"
+size = 179462
+
+[[artefact.extract.member]]
+path = "words/TS3006a.A.words.xml"
+sha256 = "df411d0fbc5728c50224ef6aa3f32b78d1909202f7a31c6dcf297b67d69e2a74"
+size = 107802
+
+[[artefact.extract.member]]
+path = "words/TS3006a.B.words.xml"
+sha256 = "8e08693d0a5c795177e1ac21d2267e351c0b58600227aa710ac938ece6992af7"
+size = 45177
+
+[[artefact.extract.member]]
+path = "words/TS3006a.C.words.xml"
+sha256 = "ce62e23185499b05de801f6b4cf98f6e79217b2f8f7fbc1a4588f8f88906cfa1"
+size = 70276
+
+[[artefact.extract.member]]
+path = "words/TS3006a.D.words.xml"
+sha256 = "63aa638f36eba12b4ebea9f15349f1353d26ea6451c900a2219f194c62a7c2a3"
+size = 72449
+
+[[artefact.extract.member]]
+path = "words/TS3006b.A.words.xml"
+sha256 = "afb7f443f69b191b12341c8d59871cfb4b8ac65bbca778147526ac57500b6c87"
+size = 186669
+
+[[artefact.extract.member]]
+path = "words/TS3006b.B.words.xml"
+sha256 = "464df4bf15280456f0c03af8400169600b0cadac28f19ef6d0d8d56654731d8f"
+size = 118986
+
+[[artefact.extract.member]]
+path = "words/TS3006b.C.words.xml"
+sha256 = "0f491dbc3d7462128bc2abfa4d4230976bb9932b52b08014ac2cb69c8df7ec7d"
+size = 128913
+
+[[artefact.extract.member]]
+path = "words/TS3006b.D.words.xml"
+sha256 = "e7c2f486f35c73e5e82bc6cd3655020036366230454e90492b0befddbf8af2f6"
+size = 288650
+
+[[artefact.extract.member]]
+path = "words/TS3006c.A.words.xml"
+sha256 = "d2a47e329aa77f7f6eff6d85d0d8c2a865c7e1fb9dae5dce3831bdd627ce8ff3"
+size = 149329
+
+[[artefact.extract.member]]
+path = "words/TS3006c.B.words.xml"
+sha256 = "4595f533263c2d306b9de62bc2840fb94fa6ab3af14bccd1a0e61ba06b73052e"
+size = 142691
+
+[[artefact.extract.member]]
+path = "words/TS3006c.C.words.xml"
+sha256 = "ae94c2563f83dcc2be4377bdaa17dd249c617d3d3ca722ce4d1487d9551e27ca"
+size = 270378
+
+[[artefact.extract.member]]
+path = "words/TS3006c.D.words.xml"
+sha256 = "0b919a8430ff8e5c66d0c3734b6d81c1e511aa0dcc6361e1a742a2cee246df2d"
+size = 209770
+
+[[artefact.extract.member]]
+path = "words/TS3006d.A.words.xml"
+sha256 = "dc631b86af7159db899f796a86ac4459b3ec577be7016eb97452bfcfcba843a7"
+size = 213542
+
+[[artefact.extract.member]]
+path = "words/TS3006d.B.words.xml"
+sha256 = "8d580ead281b74a584b6a97244faffd70fcf2940a649b633fdf0b5f313bc4992"
+size = 131654
+
+[[artefact.extract.member]]
+path = "words/TS3006d.C.words.xml"
+sha256 = "2982381a7620e8251bb94877f1c6f912be7fc3fa188a1a30ebd6eae3d9e14d63"
+size = 218757
+
+[[artefact.extract.member]]
+path = "words/TS3006d.D.words.xml"
+sha256 = "21298d80d9536318f5accde2dcfa82ac534ae1e004a52f847dd844f7a3ad0e7d"
+size = 364677
+
+[[artefact.extract.member]]
+path = "words/TS3007a.A.words.xml"
+sha256 = "bcc1c330b7d153bb7663a50dd160195f2931b9daa0003cfe86f57711fe44f91e"
+size = 200681
+
+[[artefact.extract.member]]
+path = "words/TS3007a.B.words.xml"
+sha256 = "8849c70c4eaa34e055f96a2c556e6e09e6ee04860d36833b5f34122f49d12d66"
+size = 47421
+
+[[artefact.extract.member]]
+path = "words/TS3007a.C.words.xml"
+sha256 = "be6d3df5d9274f6be76178c988e5297952ba0d096a6c37cd3bf5602881dfc2df"
+size = 22961
+
+[[artefact.extract.member]]
+path = "words/TS3007a.D.words.xml"
+sha256 = "80465d4ec00b5ecbdacea480c2863d4ccf30a483f2286130767d8a230c55b8ec"
+size = 89829
+
+[[artefact.extract.member]]
+path = "words/TS3007b.A.words.xml"
+sha256 = "3a8f2b1a23fbee78ede1c9d64783b355b7a2bc50453b0ee9f2ef0651d5ead31d"
+size = 123963
+
+[[artefact.extract.member]]
+path = "words/TS3007b.B.words.xml"
+sha256 = "4d94d6942679a8af811f65c35d1f5e576baf6b40c19ff2f1e9c1a02a6cb446f1"
+size = 178983
+
+[[artefact.extract.member]]
+path = "words/TS3007b.C.words.xml"
+sha256 = "875ecaac490797864053dc1412ed05282508c06a79a6641361cac9fe5fa6a535"
+size = 178433
+
+[[artefact.extract.member]]
+path = "words/TS3007b.D.words.xml"
+sha256 = "70c06bbe3d6ca21e9f617ab8a14cc9c1b9b1ff52c0b7629533d3e74111ae3675"
+size = 178915
+
+[[artefact.extract.member]]
+path = "words/TS3007c.A.words.xml"
+sha256 = "4f2981829aad17a55c2d07d418229450c2f4bf21cd76cb316b9db708de351474"
+size = 178012
+
+[[artefact.extract.member]]
+path = "words/TS3007c.B.words.xml"
+sha256 = "7b790de538cbd5c8f54ca9f8913b9aa72b11ec6ff8232aa4e2aee86008fae26e"
+size = 180376
+
+[[artefact.extract.member]]
+path = "words/TS3007c.C.words.xml"
+sha256 = "d11dc551be447c47a9ab8a1ebce3dddf0196ceb3f9a6481f51cad2be0e30014d"
+size = 228064
+
+[[artefact.extract.member]]
+path = "words/TS3007c.D.words.xml"
+sha256 = "070e73731339b436a1fb4d6cbc8ef2f9ff0600508e6b9727f03a2a78f39f55ae"
+size = 167623
+
+[[artefact.extract.member]]
+path = "words/TS3007d.A.words.xml"
+sha256 = "40f268c3dde4f5618508c7e389c01d8238350d60353af9c3711eb3d8db1d36a6"
+size = 282324
+
+[[artefact.extract.member]]
+path = "words/TS3007d.B.words.xml"
+sha256 = "8562f2d190a18d07bc2519ce97b42a68d869f42812055d74b021da77ec088209"
+size = 234912
+
+[[artefact.extract.member]]
+path = "words/TS3007d.C.words.xml"
+sha256 = "d088a1be29dc4a85febc2307a3ba6461d0a74d4df4544135b74cb3cb7cd96734"
+size = 163059
+
+[[artefact.extract.member]]
+path = "words/TS3007d.D.words.xml"
+sha256 = "c1620a6ace10cdc46f5ce1004ed358cb40607eaa8751e38c4c529d9a397bda6e"
+size = 193993
+
+# AMI IHM headsets of the summary-evaluation test meetings (T6.20, set ami-sum; ES2004a and
+# IS1009a are pinned above and also belong to it). No publisher checksums; sha256 pinned on
+# first download (2026-10-24), each file's size checked against the server's Content-Length.
+[[artefact]]
+id = "ami-ES2004b-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004b/audio/ES2004b.Headset-0.wav"
+path = "ami/audio/ES2004b.Headset-0.wav"
+sha256 = "824c27ff7a5cff2568cfa79ce493bc0a7b5a09cedb67e407b5c55fd26b3ac8a4"
+size = 75055832
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004b-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004b/audio/ES2004b.Headset-1.wav"
+path = "ami/audio/ES2004b.Headset-1.wav"
+sha256 = "b6c803f4a665ba465d5ed81eba0e0977dbfe25803b5965823ff0863c87d79325"
+size = 75055832
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004b-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004b/audio/ES2004b.Headset-2.wav"
+path = "ami/audio/ES2004b.Headset-2.wav"
+sha256 = "accf163836dcfeab5a57073b119be736840b1865f153d16528a65da12efc1355"
+size = 75055832
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004b-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004b/audio/ES2004b.Headset-3.wav"
+path = "ami/audio/ES2004b.Headset-3.wav"
+sha256 = "f6b7ccc28d8a8193ecd26f14798cc5c44950adae335b70d155ba9e2f4ac38611"
+size = 75055832
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004c-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004c/audio/ES2004c.Headset-0.wav"
+path = "ami/audio/ES2004c.Headset-0.wav"
+sha256 = "4df81bbdf7a3398a8813ea2ddd251e4d7040a909a25870c5ddef59eedb080c66"
+size = 74699820
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004c-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004c/audio/ES2004c.Headset-1.wav"
+path = "ami/audio/ES2004c.Headset-1.wav"
+sha256 = "5a0f57e67aabddf175e609696233f154f7a3bf88dab9872e25789df81e0c539b"
+size = 74699820
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004c-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004c/audio/ES2004c.Headset-2.wav"
+path = "ami/audio/ES2004c.Headset-2.wav"
+sha256 = "a00984e6465343765ab4ada33bfecd004cf9ebd5abcebe792e39eb1efde1fdbd"
+size = 74699820
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004c-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004c/audio/ES2004c.Headset-3.wav"
+path = "ami/audio/ES2004c.Headset-3.wav"
+sha256 = "5e3b33053c70a9e7deac6200a9656c6d52d15005925716979a5a26f143b5f84f"
+size = 74699820
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004d-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004d/audio/ES2004d.Headset-0.wav"
+path = "ami/audio/ES2004d.Headset-0.wav"
+sha256 = "210058ed9a9083e71faa63505662d62e9ae4fe10e0a7d8af606ea99b13e4ee90"
+size = 71113346
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004d-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004d/audio/ES2004d.Headset-1.wav"
+path = "ami/audio/ES2004d.Headset-1.wav"
+sha256 = "2ee130755b2501bb3e8ae085a491f76aff6d34b8424dd7db1735058f9d22ef5f"
+size = 71113346
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004d-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004d/audio/ES2004d.Headset-2.wav"
+path = "ami/audio/ES2004d.Headset-2.wav"
+sha256 = "0061f928a9296cae3e69c32eedd9c752037a279aab329aa16f58632f36dcd41d"
+size = 71113346
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2004d-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004d/audio/ES2004d.Headset-3.wav"
+path = "ami/audio/ES2004d.Headset-3.wav"
+sha256 = "b1dae76c373f3e7a378f1e4f8355f7d59311af2075f516bd46dddb18e66d0973"
+size = 71113346
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014a-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014a/audio/ES2014a.Headset-0.wav"
+path = "ami/audio/ES2014a.Headset-0.wav"
+sha256 = "87af7ae006e18e42a07eb581f9c4526a774f8c1f9f4990ad362b63c6b7df299f"
+size = 36768472
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014a-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014a/audio/ES2014a.Headset-1.wav"
+path = "ami/audio/ES2014a.Headset-1.wav"
+sha256 = "3b1f56aa2ba4ffb3efa90f092f9a6b40ecb16a3ffe38a10ee38fc0220d3c1f6b"
+size = 36768472
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014a-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014a/audio/ES2014a.Headset-2.wav"
+path = "ami/audio/ES2014a.Headset-2.wav"
+sha256 = "6cbaa642843c6d29977340515d0813f94ca20631a1db75172aaca02d071ac93a"
+size = 36768472
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014a-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014a/audio/ES2014a.Headset-3.wav"
+path = "ami/audio/ES2014a.Headset-3.wav"
+sha256 = "38ca58a53276ec39bb86d4e05b77a02556b8f664c18d8750a171245d34d987b3"
+size = 36768472
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014b-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014b/audio/ES2014b.Headset-0.wav"
+path = "ami/audio/ES2014b.Headset-0.wav"
+sha256 = "51437ce3d332a3028a9035a2ba7c8ff342248dd034c321c1125efd77e5b7b9f0"
+size = 74236632
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014b-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014b/audio/ES2014b.Headset-1.wav"
+path = "ami/audio/ES2014b.Headset-1.wav"
+sha256 = "7cac906be303e762850fe0afb18661e6c4a0301f641f5899998a9e08ba33e356"
+size = 74236632
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014b-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014b/audio/ES2014b.Headset-2.wav"
+path = "ami/audio/ES2014b.Headset-2.wav"
+sha256 = "ed18ca28eab8de57137afc7914dc05ca87223235c1594cf8444c13c10eb21aab"
+size = 74236632
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014b-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014b/audio/ES2014b.Headset-3.wav"
+path = "ami/audio/ES2014b.Headset-3.wav"
+sha256 = "687962f332c7ec5895892ce891cee5c5b35be36c29e49bf11654fb9f06ebd8ff"
+size = 74236632
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014c-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014c/audio/ES2014c.Headset-0.wav"
+path = "ami/audio/ES2014c.Headset-0.wav"
+sha256 = "c88b03985f288cc9e9d7e670ea0deeaec9ae901d2aa250c3eb91f71d8f084129"
+size = 72752856
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014c-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014c/audio/ES2014c.Headset-1.wav"
+path = "ami/audio/ES2014c.Headset-1.wav"
+sha256 = "12883d728ac2efd850289ff7cb4dc7ed936be68fb01f69a54dccbd0c2542e56d"
+size = 72752856
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014c-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014c/audio/ES2014c.Headset-2.wav"
+path = "ami/audio/ES2014c.Headset-2.wav"
+sha256 = "f74bd01fe70301541898215d024009632ff2b909ebb956ab876f4e1bd4baed48"
+size = 72752856
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014c-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014c/audio/ES2014c.Headset-3.wav"
+path = "ami/audio/ES2014c.Headset-3.wav"
+sha256 = "c65a1b21ad20f0e5ca1916a842a11c256228cc8b57d6ea7a457e46ef35f03b94"
+size = 72752856
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014d-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014d/audio/ES2014d.Headset-0.wav"
+path = "ami/audio/ES2014d.Headset-0.wav"
+sha256 = "aebe37d6b95009827c91a84f2b3245edb36a0ca501bec6d665173694b9e23f3f"
+size = 93163564
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014d-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014d/audio/ES2014d.Headset-1.wav"
+path = "ami/audio/ES2014d.Headset-1.wav"
+sha256 = "01123cee32e6466b7ff3df1e65986ad91cee4231635d1717d9bbd00b3e99f705"
+size = 93163564
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014d-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014d/audio/ES2014d.Headset-2.wav"
+path = "ami/audio/ES2014d.Headset-2.wav"
+sha256 = "9898bb8aeb11f1b68ab58de0d049e2c2c5f40c05a15b04b0df7e4a8baf579885"
+size = 93163564
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2014d-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2014d/audio/ES2014d.Headset-3.wav"
+path = "ami/audio/ES2014d.Headset-3.wav"
+sha256 = "f8e44c96f3a1aee3b3f8a13ebfbf6b0beb463dced9cf36386e970acd1552b636"
+size = 93163564
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009b-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009b/audio/IS1009b.Headset-0.wav"
+path = "ami/audio/IS1009b.Headset-0.wav"
+sha256 = "e31fa0e413e662e7872093fc006788f6534ef8a0a7aea2387fa1ae534d7d31a8"
+size = 65674001
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009b-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009b/audio/IS1009b.Headset-1.wav"
+path = "ami/audio/IS1009b.Headset-1.wav"
+sha256 = "4b226f2c9552650f189d52cf62b12863764cdd48dedda27fb4e8cb344863ad10"
+size = 65674001
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009b-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009b/audio/IS1009b.Headset-2.wav"
+path = "ami/audio/IS1009b.Headset-2.wav"
+sha256 = "a301ab3be81e249563e96518debd9bd3180ca33afbc39791622c6455a9cb7050"
+size = 65674001
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009b-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009b/audio/IS1009b.Headset-3.wav"
+path = "ami/audio/IS1009b.Headset-3.wav"
+sha256 = "d771f57b69281026626f4e4eb2904109982fa7bb3c33cad28dfaf34896aa3624"
+size = 65674001
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009c-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009c/audio/IS1009c.Headset-0.wav"
+path = "ami/audio/IS1009c.Headset-0.wav"
+sha256 = "2d0b713a9a10ad3b3ea1719c845ab3758be092d09cfced4a37188a5084af412d"
+size = 58262973
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009c-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009c/audio/IS1009c.Headset-1.wav"
+path = "ami/audio/IS1009c.Headset-1.wav"
+sha256 = "f95638c9089e04f1c523887d18a18a612cc74ffe7805fba0ad9fecaa55ebd62d"
+size = 58262973
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009c-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009c/audio/IS1009c.Headset-2.wav"
+path = "ami/audio/IS1009c.Headset-2.wav"
+sha256 = "2a58b4c93f34daf6fdafc3f4a7f86020b9c3c7445b6804ad32540d5055081f88"
+size = 58262973
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009c-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009c/audio/IS1009c.Headset-3.wav"
+path = "ami/audio/IS1009c.Headset-3.wav"
+sha256 = "0728c2e4e6123be0151f4315303654b95e0113244654abec2ff1cffb5e339d24"
+size = 58262973
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009d-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009d/audio/IS1009d.Headset-0.wav"
+path = "ami/audio/IS1009d.Headset-0.wav"
+sha256 = "66c73315fc23dfe4dbf20aa62bdd63d8d0347572e4846d3708857c2d77667dee"
+size = 62225169
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009d-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009d/audio/IS1009d.Headset-1.wav"
+path = "ami/audio/IS1009d.Headset-1.wav"
+sha256 = "b491356392d997f6edaf6bb803eeabb66a3360bababfa3ab8885605cb1c98168"
+size = 62225169
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009d-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009d/audio/IS1009d.Headset-2.wav"
+path = "ami/audio/IS1009d.Headset-2.wav"
+sha256 = "bfc4661f8e4d6ec82792411c268beb0a0663cdb9b924ecee43dc388255cee772"
+size = 62225169
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1009d-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1009d/audio/IS1009d.Headset-3.wav"
+path = "ami/audio/IS1009d.Headset-3.wav"
+sha256 = "45105c65c6b2162368c8f305029db6913edd24d962b6d0f7d93deca10978b402"
+size = 62225169
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003a-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003a/audio/TS3003a.Headset-0.wav"
+path = "ami/audio/TS3003a.Headset-0.wav"
+sha256 = "3c027c3cc99e439a9c0850b22c5148674f155f32ce178b43a69d4a39be28b173"
+size = 48183678
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003a-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003a/audio/TS3003a.Headset-1.wav"
+path = "ami/audio/TS3003a.Headset-1.wav"
+sha256 = "8b3526ddbdbbafbd285d52c08322395e79e3b715ce90d6b749a5d712240cb51f"
+size = 48183678
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003a-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003a/audio/TS3003a.Headset-2.wav"
+path = "ami/audio/TS3003a.Headset-2.wav"
+sha256 = "ec768ea3dd2ae1a28ce383fc35a5f64556993416dc28e4d2d87ea9116ee8a5c6"
+size = 48183678
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003a-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003a/audio/TS3003a.Headset-3.wav"
+path = "ami/audio/TS3003a.Headset-3.wav"
+sha256 = "7055b7dda7ac2d5a5a336e7b5d7e7009277df21774d2a0633dd9772b08eaaacc"
+size = 48183678
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003b-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003b/audio/TS3003b.Headset-0.wav"
+path = "ami/audio/TS3003b.Headset-0.wav"
+sha256 = "2bad3e4ab1c0fd044891d7ef0ad3684f835091f76eccaea6eb2636c697b76c9d"
+size = 70730794
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003b-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003b/audio/TS3003b.Headset-1.wav"
+path = "ami/audio/TS3003b.Headset-1.wav"
+sha256 = "7b765872cb866b8b63842c1bf89e086145c84dc3dd1b952fe88c383f06e67fd6"
+size = 70730794
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003b-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003b/audio/TS3003b.Headset-2.wav"
+path = "ami/audio/TS3003b.Headset-2.wav"
+sha256 = "694085cb8cd24504869e8d79be50469d963e152cfa4a5b65f59e6d2657f89f41"
+size = 70730794
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003b-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003b/audio/TS3003b.Headset-3.wav"
+path = "ami/audio/TS3003b.Headset-3.wav"
+sha256 = "b10d479fbd72831670c9caadc793f02a6e72880e3c6cfb617a879980b54b5023"
+size = 70730794
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003c-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003c/audio/TS3003c.Headset-0.wav"
+path = "ami/audio/TS3003c.Headset-0.wav"
+sha256 = "2011c8262787016fcd590064d1f1cf57bb36f58c596972fff0d0a4d39eea3b33"
+size = 82240044
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003c-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003c/audio/TS3003c.Headset-1.wav"
+path = "ami/audio/TS3003c.Headset-1.wav"
+sha256 = "96989d4270d183ca3df0552fed5a655ee45378cb2059eb534e0c18549cbe5f02"
+size = 82240044
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003c-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003c/audio/TS3003c.Headset-2.wav"
+path = "ami/audio/TS3003c.Headset-2.wav"
+sha256 = "0017240bb25d8067c069a199f8e01706fe3288e6eae9ab87324429d2efa2717e"
+size = 82240044
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003c-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003c/audio/TS3003c.Headset-3.wav"
+path = "ami/audio/TS3003c.Headset-3.wav"
+sha256 = "1215f020604beece7f3e2d0eac9cae439f70bbc749a5209fea94e659b85177ce"
+size = 82240044
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003d-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003d/audio/TS3003d.Headset-0.wav"
+path = "ami/audio/TS3003d.Headset-0.wav"
+sha256 = "b8ba489d252dc6f7e70d1c281083bd086dde190a1468a33ecf092ccf01738502"
+size = 83782444
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003d-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003d/audio/TS3003d.Headset-1.wav"
+path = "ami/audio/TS3003d.Headset-1.wav"
+sha256 = "57380f4aa833bf11e3dee2764b3748c1acd8a4d4cc37ff4ff1306981103a9c74"
+size = 83782444
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003d-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003d/audio/TS3003d.Headset-2.wav"
+path = "ami/audio/TS3003d.Headset-2.wav"
+sha256 = "8b279e06b0c243b5b77bf7387cb6f5ec2910ef7792eadf624a6f6292bc511097"
+size = 83782444
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3003d-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3003d/audio/TS3003d.Headset-3.wav"
+path = "ami/audio/TS3003d.Headset-3.wav"
+sha256 = "18eaa25589712fd9c1fcbc66bca28bf11a0297a514f77cd27810be64c51f5287"
+size = 83782444
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007a-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007a/audio/TS3007a.Headset-0.wav"
+path = "ami/audio/TS3007a.Headset-0.wav"
+sha256 = "4b47d34a1ab7e1b32d8d1569e2e5a032603fcbe8660964ce2380d0666c656ed5"
+size = 51500074
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007a-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007a/audio/TS3007a.Headset-1.wav"
+path = "ami/audio/TS3007a.Headset-1.wav"
+sha256 = "67a71caa34eb1c1d0fb9e86dffddd0b36d6ffb4a2ede89f84fe8c0c76a5c4644"
+size = 51500074
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007a-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007a/audio/TS3007a.Headset-2.wav"
+path = "ami/audio/TS3007a.Headset-2.wav"
+sha256 = "cadc6b8838dd0b9fbe5562f4342d9381934ec756cf9dac234388bf9c4eb36dde"
+size = 51500074
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007a-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007a/audio/TS3007a.Headset-3.wav"
+path = "ami/audio/TS3007a.Headset-3.wav"
+sha256 = "36d874f2423857c5673723d3eade35679ffc9b6618ba3bc2c3b2ccdfdcb50b49"
+size = 51500074
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007b-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007b/audio/TS3007b.Headset-0.wav"
+path = "ami/audio/TS3007b.Headset-0.wav"
+sha256 = "59001ec1f94a23b353542005986d739a8667b811f25e40b31e3353b01a5753a1"
+size = 107358590
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007b-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007b/audio/TS3007b.Headset-1.wav"
+path = "ami/audio/TS3007b.Headset-1.wav"
+sha256 = "08f045ccb31bebbcaecf5982d528f5b80212bd34cada60a26c8c6de1cc5ffd93"
+size = 107358590
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007b-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007b/audio/TS3007b.Headset-2.wav"
+path = "ami/audio/TS3007b.Headset-2.wav"
+sha256 = "e304e57abfcfd631269304ee2f652821f7b19fdb2752dfcdee58c87db8621d46"
+size = 107358590
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007b-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007b/audio/TS3007b.Headset-3.wav"
+path = "ami/audio/TS3007b.Headset-3.wav"
+sha256 = "821ca10e33815446997ea2674c7b402a6712c192cf323a04663c6eb91067c264"
+size = 107358590
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007c-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007c/audio/TS3007c.Headset-0.wav"
+path = "ami/audio/TS3007c.Headset-0.wav"
+sha256 = "cf485ebe045a0d4031221aa30918c42a2582f4fcf7796e6c8da4a8cded179d89"
+size = 77440044
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007c-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007c/audio/TS3007c.Headset-1.wav"
+path = "ami/audio/TS3007c.Headset-1.wav"
+sha256 = "3fe09f926b1a5ffdd6d49e0ab885f2a5da371a0bc2b6773dd0291c22184e9cad"
+size = 77440044
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007c-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007c/audio/TS3007c.Headset-2.wav"
+path = "ami/audio/TS3007c.Headset-2.wav"
+sha256 = "3d95f710ad4faf33fb435c3fa835f9cf52ce43ef7c70a2879beac9b7b535a3c9"
+size = 77440044
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007c-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007c/audio/TS3007c.Headset-3.wav"
+path = "ami/audio/TS3007c.Headset-3.wav"
+sha256 = "d6793e2eb8a183e8cd6e313d786f705c0d3b298fb65732627e3bc82bbe5ba90e"
+size = 77440044
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007d-audio-Headset-0"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007d/audio/TS3007d.Headset-0.wav"
+path = "ami/audio/TS3007d.Headset-0.wav"
+sha256 = "5f77cef37f6400b16ab0e29a343d840e2cdfda6671eac62117032e9409288ab7"
+size = 90377644
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007d-audio-Headset-1"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007d/audio/TS3007d.Headset-1.wav"
+path = "ami/audio/TS3007d.Headset-1.wav"
+sha256 = "330aa8b58485694e1ed1f0a6d36a7dd74d4b8ad1a6d030b1fa95e84c3b698599"
+size = 90377644
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007d-audio-Headset-2"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007d/audio/TS3007d.Headset-2.wav"
+path = "ami/audio/TS3007d.Headset-2.wav"
+sha256 = "4e0858845029d09493460a37006b2d92470cacc9068ba6e5ef00d45686cce9ac"
+size = 90377644
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3007d-audio-Headset-3"
+sets = ["ami-sum"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3007d/audio/TS3007d.Headset-3.wav"
+path = "ami/audio/TS3007d.Headset-3.wav"
+sha256 = "d0ad456a779046de705974def1b2695eecc76696c7097bbc72eff6a5aa74f884"
+size = 90377644
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+# Smoke set: 20 short test-clean utterances committed under fixtures/smoke/. The block below is
+# rewritten by `cargo xtask fetch-fixtures --set librispeech --pin`; do not edit it by hand.
+# BEGIN generated smoke set
+
+[[artefact]]
+id = "smoke-121-121726-0002"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/121/121726/121-121726-0002.flac"
+path = "fixtures/smoke/121-121726-0002.flac"
+sha256 = "5d461a2020d7c302d607d3b5a6a8f81a01d29e2b29041faccc7925ee098d6dc7"
+size = 69678
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-121-121726-0004"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/121/121726/121-121726-0004.flac"
+path = "fixtures/smoke/121-121726-0004.flac"
+sha256 = "44b0420506873ae701c23442188985b373540acd9d505718deffedb81cc2b22c"
+size = 60148
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-121-121726-0005"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/121/121726/121-121726-0005.flac"
+path = "fixtures/smoke/121-121726-0005.flac"
+sha256 = "2170f6b1a522e9f2b09b7a7d9cfab6dd6f58e449c788ec06abad17db3bc94cf4"
+size = 37096
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-121-121726-0006"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/121/121726/121-121726-0006.flac"
+path = "fixtures/smoke/121-121726-0006.flac"
+sha256 = "026df285b2c040506672ec0147d546d9581d6fab1e3a80f37a18fdae8f1adf85"
+size = 63563
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-121-121726-0008"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/121/121726/121-121726-0008.flac"
+path = "fixtures/smoke/121-121726-0008.flac"
+sha256 = "dbcd6ca85d3bc5f6cdc3b658fced5c03a1b4b43a473f721ce7b3a63489c04e1e"
+size = 69061
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-121-121726-0011"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/121/121726/121-121726-0011.flac"
+path = "fixtures/smoke/121-121726-0011.flac"
+sha256 = "3c51e25e938b8844e81d1ebcd53967b8ef9e15277b11ffc88a9f1181ed043c8e"
+size = 61414
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-121-121726-0012"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/121/121726/121-121726-0012.flac"
+path = "fixtures/smoke/121-121726-0012.flac"
+sha256 = "6d1fab44fd2e6930a69e1f6f7e52a141ed5290b9a45f56df5e0c3177fa05c6ba"
+size = 69432
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-121-121726-0013"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/121/121726/121-121726-0013.flac"
+path = "fixtures/smoke/121-121726-0013.flac"
+sha256 = "53cca804c910fc765cedc022edee0a9ae82c4d5067c73ea425cafb6151b4c074"
+size = 41433
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-121-121726-0014"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/121/121726/121-121726-0014.flac"
+path = "fixtures/smoke/121-121726-0014.flac"
+sha256 = "60d51d3a5989945df2fb2b77d59782ae05e45495fc2b01d495db428ff6ad55a6"
+size = 47414
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-121-127105-0004"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/121/127105/121-127105-0004.flac"
+path = "fixtures/smoke/121-127105-0004.flac"
+sha256 = "d9d95a450f8126deb14603a7d7ef8fa5acf92c4bf7e16b9069632b21db7f74c2"
+size = 35028
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-61-70968-0000"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/61/70968/61-70968-0000.flac"
+path = "fixtures/smoke/61-70968-0000.flac"
+sha256 = "fd3c84146d8b357efc7f0d21de86de770721fc5ddac7e6577688dbf3cdabff5b"
+size = 97158
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-61-70968-0001"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/61/70968/61-70968-0001.flac"
+path = "fixtures/smoke/61-70968-0001.flac"
+sha256 = "2f7236fa44f194f03b04571f94fd56cc99253f5d41496bff3476c3390dd20524"
+size = 76130
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-61-70968-0002"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/61/70968/61-70968-0002.flac"
+path = "fixtures/smoke/61-70968-0002.flac"
+sha256 = "8676316e531d8c0e496e3677811ed2bf63e5aaf0a12446cde70416fd490b1792"
+size = 62278
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-61-70968-0003"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/61/70968/61-70968-0003.flac"
+path = "fixtures/smoke/61-70968-0003.flac"
+sha256 = "c50e106a06d1603451f1b1a3f145900e83f733f2873deb12fa9838ef5f74655a"
+size = 87494
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-61-70968-0004"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/61/70968/61-70968-0004.flac"
+path = "fixtures/smoke/61-70968-0004.flac"
+sha256 = "2dcfde6a6365ccc73bc196294fe07b874b8c0d0827b6b6b1da1f03375d29f39d"
+size = 81223
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-61-70968-0006"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/61/70968/61-70968-0006.flac"
+path = "fixtures/smoke/61-70968-0006.flac"
+sha256 = "fb59db90ccbb471e52338b1a298b1b805084576c07abbd904f778eafe798e10d"
+size = 61401
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-61-70968-0007"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/61/70968/61-70968-0007.flac"
+path = "fixtures/smoke/61-70968-0007.flac"
+sha256 = "83b18d71a6ce8c2231fb1cd01acfd54f4493f30caddb1ac092cfa4fb55ebd1f0"
+size = 75925
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-61-70968-0008"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/61/70968/61-70968-0008.flac"
+path = "fixtures/smoke/61-70968-0008.flac"
+sha256 = "77cd105fd6b1fa77eb83f641fe3624f3cd8ea224f4696392ba7c627e319324ef"
+size = 75510
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-61-70968-0009"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/61/70968/61-70968-0009.flac"
+path = "fixtures/smoke/61-70968-0009.flac"
+sha256 = "4bcc8b7198b6162f26470adcb461a4eb23c77a803c30b7896c4b0a2d011ccfbb"
+size = 86297
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-61-70968-0012"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+source_member = "LibriSpeech/test-clean/61/70968/61-70968-0012.flac"
+path = "fixtures/smoke/61-70968-0012.flac"
+sha256 = "980dd86b87c173dc5c0e5395de5619c95523fb59e8dfbece50108afb4ce2277f"
+size = 59853
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+[[artefact]]
+id = "smoke-transcripts"
+sets = ["smoke"]
+location = "repo"
+url = "https://www.openslr.org/resources/12/test-clean.tar.gz"
+path = "fixtures/smoke/transcripts.txt"
+sha256 = "b71b936bcd9f1ccd1715d986a8a693b8e50dc4b47a721220abad498a1edf0a92"
+size = 1109
+licence = "CC-BY-4.0"
+attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
+
+# END generated smoke set

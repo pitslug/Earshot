@@ -1,0 +1,38 @@
+{
+  "attendees": [],
+  "expected_path": "2026-03-01 09-00 Meeting.md",
+  "meeting": {
+    "duration_ms": null,
+    "id": "01920000-0000-7000-8000-0000000000aa",
+    "meta": {
+      "created_at": {
+        "logical": 0,
+        "node": "07070707-0707-0707-0707-070707070707",
+        "wall_ms": 1
+      },
+      "deleted": false,
+      "origin_device_id": "07070707-0707-0707-0707-070707070707",
+      "updated_at": {
+        "logical": 0,
+        "node": "07070707-0707-0707-0707-070707070707",
+        "wall_ms": 1
+      }
+    },
+    "started_unix_ms": 1772355600000,
+    "tags": [],
+    "template": "general",
+    "title": "",
+    "utc_offset_minutes": 0
+  },
+  "notes": [],
+  "options": {
+    "folder": "",
+    "link_attendees": true,
+    "replace_em_dash": true,
+    "tags": []
+  },
+  "segments": [],
+  "speakers": [],
+  "summary": null,
+  "transcript": null
+}

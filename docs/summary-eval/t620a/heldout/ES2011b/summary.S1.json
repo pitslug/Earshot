@@ -1,0 +1,56 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Project Manager",
+      "task": "Check if the project requirements mean the device is for TV only or also for internet-type things, and update the team."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "All Attendees",
+      "task": "Finish questionnaires, then spend thirty minutes on individual work thinking about discussed ideas and bringing new ones to the next meeting."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "Teletext feature is removed from the remote."
+    },
+    {
+      "id": "S-D2",
+      "text": "Speech recognition feature is removed from the remote."
+    },
+    {
+      "id": "S-D3",
+      "text": "VCR capabilities are removed from the remote."
+    },
+    {
+      "id": "S-D4",
+      "text": "The remote will have a separate power button."
+    },
+    {
+      "id": "S-D5",
+      "text": "The location finder will use a radio signal from a separate base unit."
+    },
+    {
+      "id": "S-D6",
+      "text": "The location finder on the remote will output a beep."
+    },
+    {
+      "id": "S-D7",
+      "text": "The remote will be silver with yellow writing."
+    },
+    {
+      "id": "S-D8",
+      "text": "The target audience is teenagers and young professionals."
+    }
+  ],
+  "failure": null,
+  "meeting": "ES2011b",
+  "model": "S1",
+  "notes": "## Usability and Market Analysis\n- A study of 100 people showed users dislike how remotes look, feel, and match their operating behavior.\n- Users only use 10% of available buttons; the most important are channel selection, teletext, volume, and power.\n- People aged 15-35 are willing to pay more for advanced features like speech recognition, while those over 35 are less likely to pay.\n- The Marketing Expert noted that teenagers and young professionals are the most likely buyers.\n## Feature Decisions\n- Teletext is removed from the list due to internet popularity.\n- Speech recognition is dropped because it is hard to program, potentially silly, and too expensive for the budget.\n- VCR capabilities are dropped because VCR standards vary internationally, whereas DVD standards are consistent.\n- The location finder feature is kept, using a radio signal from a separate base unit (TV or wall) that triggers a beep on the remote.\n- A separate power button is required, as holding a button down is considered confusing for users.\n## Design Specifications\n- The remote will use a battery, button pad, pre-made chip, IR transmitter, and radio receiver.\n- The location signal sender will be a separate unit sold with the remote.\n- The location signal on the remote will be a buzzer/beep rather than a light.\n- The remote design should include a red power button.\n- The remote will be silver with yellow writing.\n## Interface and Compatibility\n- The team discussed a circular touch-pad interface similar to the iPod, noting its intuitive usability.\n- The device uses mouse-pad technology and allows scrolling to navigate channels or volume.\n- The team considered how the device might rotate and whether functions need to be switchable based on the mode (e.g., TV vs. DVD).\n- They discussed the need for a function switch button to change modes between TV, DVD, and VCR.",
+  "tldr": "The team reviewed usability findings and decided to target teenagers and young professionals, dropping teletext, speech recognition, and VCR features. They agreed on a silver remote with yellow writing, a separate power button, and a location finder using a radio signal and beep. The group discussed a circular touch-pad interface and assigned tasks to clarify device compatibility and prepare for the next meeting.",
+  "valid": true
+}

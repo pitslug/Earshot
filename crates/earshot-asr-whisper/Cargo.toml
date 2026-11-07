@@ -1,0 +1,43 @@
+[package]
+name = "earshot-asr-whisper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# whisper.cpp on CUDA (PLAN D3, D13). Needs the CUDA toolkit (CUDA_PATH); the CUDA
+# architectures come from CMAKE_CUDA_ARCHITECTURES in .cargo/config.toml.
+cuda = ["whisper-rs/cuda"]
+# whisper.cpp on Vulkan (needs the Vulkan SDK, VULKAN_SDK; `cargo xtask build --features vulkan`).
+vulkan = ["whisper-rs/vulkan"]
+
+[dependencies]
+earshot-core = { path = "../earshot-core" }
+# Pinned (PLAN D13): whisper-rs 0.16.0 vendors whisper.cpp 1.8.3 (ggml 0.9.5) through
+# whisper-rs-sys 0.15.0, which is pinned here as well so the vendored whisper.cpp cannot
+# move under a semver-compatible update. `log_backend` routes whisper.cpp/ggml logs to `log`.
+whisper-rs = { version = "=0.16.0", features = ["log_backend"] }
+whisper-rs-sys = "=0.15.0"
+# Backend evidence: whisper.cpp's log arrives through the `log` facade (`evidence`).
+log = "0.4"
+
+[dev-dependencies]
+claxon = "=0.4.3"
+# The `asr_eval` example (`cargo xtask accept m2`): Silero VAD for the streaming chunker,
+# the call simulator's seeded RNG (same specs as earshot-core and xtask) and JSON output.
+earshot-onnx = { path = "../earshot-onnx" }
+rand_chacha = { version = "0.10.0", default-features = false }
+rand_core = { version = "0.10.1", default-features = false }
+serde_json = "1"
+# Reads acceptance/thresholds.toml (same version and features as xtask, so no feature widening).
+toml = "1"
+
+# M2 acceptance evaluation, run by `cargo xtask accept m2`; its unit tests (reference
+# preparation) run with the crate's tests.
+[[example]]
+name = "asr_eval"
+test = true
+
+[lints]
+workspace = true

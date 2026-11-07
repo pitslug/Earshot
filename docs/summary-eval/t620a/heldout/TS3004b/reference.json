@@ -1,0 +1,35 @@
+{
+  "action_items": [
+    {
+      "id": "A1.1",
+      "text": "The Marketing Expert will prepare a report on trendwatching."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1.1",
+      "text": "The remote will not feature speech recognition."
+    },
+    {
+      "id": "D1.2",
+      "text": "The remote will not feature an LCD screen."
+    },
+    {
+      "id": "D2.1",
+      "text": "The remote will light up when a button is pressed, much like a mobile phone."
+    },
+    {
+      "id": "D3.1",
+      "text": "Complicated features will be hidden from the more simple functions on the main interface."
+    },
+    {
+      "id": "D4.1",
+      "text": "The remote will feature teletext capabilities."
+    },
+    {
+      "id": "D4.2",
+      "text": "The teletext buttons will be included on the main interface."
+    }
+  ],
+  "meeting": "TS3004b"
+}

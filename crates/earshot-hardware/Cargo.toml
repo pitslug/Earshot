@@ -1,0 +1,27 @@
+[package]
+name = "earshot-hardware"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# What "This is your hardware" shows (T7.4d): processor, display adapters, NPUs and memory,
+# read from the OS. Portable parsing in `lib.rs`; every OS call (and all `unsafe`) in
+# `src/windows.rs`. Off Windows the facts are empty. An NVIDIA card's compute capability comes
+# from the driver's own `nvml.dll`, loaded at run time from System32 (no import, no build
+# dependency): a machine without it simply has that fact unknown.
+
+[target.'cfg(windows)'.dependencies]
+# Same version as earshot-capture-wasapi (xtask does not depend on `windows`, so these
+# features never widen a crate the running xtask.exe was built from).
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_DXCore",
+    "Win32_Graphics_Dxgi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+] }
+
+[lints]
+workspace = true

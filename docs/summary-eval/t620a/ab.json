@@ -1,0 +1,81 @@
+{
+  "agree": 100,
+  "confusion_gold_by_judge": {
+    "contradicted": {
+      "contradicted": 5,
+      "covered": 1,
+      "missing": 0
+    },
+    "covered": {
+      "contradicted": 0,
+      "covered": 77,
+      "missing": 3
+    },
+    "missing": {
+      "contradicted": 0,
+      "covered": 0,
+      "missing": 18
+    }
+  },
+  "disagreements": [
+    {
+      "gold": "covered",
+      "gold_reason": "The Design Features notes list speech recognition among the features.",
+      "id": "D2.3",
+      "judge": "missing",
+      "judge_reason": "Design Features notes list speech recognition only as a proposed feature, not as part of the remote.",
+      "label": "S1",
+      "meeting": "IS1008c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The Design Features notes list a battery life light.",
+      "id": "D2.7",
+      "judge": "missing",
+      "judge_reason": "Design Features notes list a battery life light only as a proposed feature, not as part of the remote.",
+      "label": "S1",
+      "meeting": "IS1008c"
+    },
+    {
+      "gold": "contradicted",
+      "gold_reason": "S-D10 includes an advanced chip but S-D3 and the notes also say the regular chip, so the summary states a conflicting choice.",
+      "id": "D8.2",
+      "judge": "covered",
+      "judge_reason": "S-D10 and the tldr state an advanced chip will be included, though S-D3 also names the regular chip.",
+      "label": "S2",
+      "meeting": "TS3004c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-A4 has the User Interface Designer paint the design.",
+      "id": "A1.1",
+      "judge": "missing",
+      "judge_reason": "S-A4 has the design painted but no part mentions the smartboard or drawing it at the next meeting.",
+      "label": "S2",
+      "meeting": "TS3004c"
+    }
+  ],
+  "items": 104,
+  "kappa": 0.9001919385796546,
+  "per_verdict": {
+    "contradicted": {
+      "gold": 6,
+      "judge": 5,
+      "precision": 1.0,
+      "recall": 0.8333333333333334
+    },
+    "covered": {
+      "gold": 80,
+      "judge": 78,
+      "precision": 0.9871794871794872,
+      "recall": 0.9625
+    },
+    "missing": {
+      "gold": 18,
+      "judge": 21,
+      "precision": 0.8571428571428571,
+      "recall": 1.0
+    }
+  },
+  "percent": 96.15384615384616
+}

@@ -1,0 +1,175 @@
+{
+  "milestone": "m2",
+  "requested_backend": null,
+  "timestamp": "2026-11-06T23:53:59Z",
+  "host": "x86_64-pc-windows-msvc",
+  "commit": "7850fdd-dirty",
+  "backends": [
+    "cpu",
+    "cuda"
+  ],
+  "results": [
+    {
+      "id": "asr.echo_leak",
+      "metric": "far-end reference words in the near-end transcript after echo de-duplication, share of far-end words; far-only and double-talk at SER 0 and -10, mono and stereo, base.en",
+      "op": "<=",
+      "threshold": 1.0,
+      "unit": "%",
+      "value": 0.3561887800534283,
+      "passed": null,
+      "backend": "cuda",
+      "pass": true,
+      "reason": "0.3561887800534283 <= 1"
+    },
+    {
+      "id": "asr.stream_determinism",
+      "metric": "words differing, after Whisper normalisation, between live (production live transcription: default model and LiveTranscription mode) and the final pass on the same audio, concatenated ~60 s streams",
+      "op": "==",
+      "threshold": 0.0,
+      "unit": "count",
+      "value": 0.0,
+      "passed": null,
+      "backend": "cuda",
+      "pass": true,
+      "reason": "0 == 0"
+    },
+    {
+      "id": "asr.wer_aec_delta",
+      "metric": "WER of near-end after AEC minus WER of clean near-end, double-talk scenarios at SER 0 (SER -10 informational), production default transcription model",
+      "op": "<=",
+      "threshold": 3.0,
+      "unit": "points",
+      "value": 2.903225806451612,
+      "passed": null,
+      "backend": "cuda",
+      "pass": true,
+      "reason": "2.903225806451612 <= 3"
+    },
+    {
+      "id": "asr.wer_ami_ihm",
+      "metric": "AMI IHM per headset, oracle segments, production default transcription model",
+      "op": "<=",
+      "threshold": 22.0,
+      "unit": "%",
+      "value": 10.351648351648352,
+      "passed": null,
+      "backend": "cuda",
+      "pass": true,
+      "reason": "10.351648351648352 <= 22"
+    },
+    {
+      "id": "asr.wer_ls_base",
+      "metric": "LibriSpeech subset, base.en, CPU, batch",
+      "op": "<=",
+      "threshold": 6.0,
+      "unit": "%",
+      "value": 3.9307840205084386,
+      "passed": null,
+      "backend": "cpu",
+      "pass": true,
+      "reason": "3.9307840205084386 <= 6"
+    },
+    {
+      "id": "asr.wer_ls_default",
+      "metric": "LibriSpeech subset, production default transcription model (GPU if available, else CPU), one batch call per utterance",
+      "op": "<=",
+      "threshold": 3.5,
+      "unit": "%",
+      "value": 1.751762443922239,
+      "passed": null,
+      "backend": "cuda",
+      "pass": true,
+      "reason": "1.751762443922239 <= 3.5"
+    },
+    {
+      "id": "asr.wer_smoke_base",
+      "metric": "smoke set, base.en, CPU, batch",
+      "op": "<=",
+      "threshold": 10.0,
+      "unit": "%",
+      "value": 5.487804878048781,
+      "passed": null,
+      "backend": "cpu",
+      "pass": true,
+      "reason": "5.487804878048781 <= 10"
+    }
+  ],
+  "checks": [
+    {
+      "name": "production default transcription model (asr.stream_determinism, asr.wer_ls_default, asr.wer_ami_ihm, asr.wer_aec_delta, ami_sdm)",
+      "pass": true,
+      "detail": "parakeet-tdt-0.6b-v2: the model check's first English rung for cuda (model_check::candidates; ladder [\"parakeet-tdt-0.6b-v2\", \"parakeet-tdt-110m\", \"base.en\"], QUALITY_ORDER rank 0): the check's answer on a host that runs it in real time (the timed check itself is not run here); without a recorded check the CLI falls back to base.en"
+    },
+    {
+      "name": "backend evidence: parakeet-tdt-0.6b-v2 (live) on cuda",
+      "pass": true,
+      "detail": "backend_info cuda on `cuda:0`: ONNX Runtime placement: requested cuda:0, placed: CPUExecutionProvider=482 CUDAExecutionProvider=1515; requested cuda:0, placed: CUDAExecutionProvider=13; requested cuda:0, placed: CUDAExecutionProvider=10"
+    },
+    {
+      "name": "backend evidence: parakeet-tdt-0.6b-v2 (final pass) on cuda",
+      "pass": true,
+      "detail": "backend_info cuda on `cuda:0`: ONNX Runtime placement: requested cuda:0, placed: CPUExecutionProvider=482 CUDAExecutionProvider=1515; requested cuda:0, placed: CUDAExecutionProvider=13; requested cuda:0, placed: CUDAExecutionProvider=10"
+    },
+    {
+      "name": "backend evidence: base.en on cpu",
+      "pass": true,
+      "detail": "backend_info cpu on `cpu`, whisper.cpp log cpu: whisper_model_load:          CPU total size =   147.37 MB | whisper_backend_init_gpu: no GPU found"
+    },
+    {
+      "name": "backend evidence: base.en on cuda",
+      "pass": true,
+      "detail": "backend_info cuda on `NVIDIA GeForce RTX 5080`, whisper.cpp log cuda: whisper_model_load:        CUDA0 total size =   147.37 MB | whisper_backend_init_gpu: device 0: CUDA0 (type: 1) | whisper_backend_init_gpu: found GPU device 0: CUDA0 (type: 1, cnt: 0) | whisper_backend_init_gpu: using CUDA0 backend"
+    },
+    {
+      "name": "asr.echo_leak aec condition (gating): leak and near-end recall",
+      "pass": true,
+      "detail": "leak 0.36% (no cleaning 0.36%, text de-dup 0.36%; 14 ambiguous words given to the near end); near-end recall in double talk 100.0% (text de-dup 100.0%), no-echo scenarios 100.0% (with far-end speech 100.0%), overall 100.0%"
+    },
+    {
+      "name": "asr.echo_leak aec condition: cleaning keeps >= 98% of all near-end words heard",
+      "pass": true,
+      "detail": "100.0% kept"
+    },
+    {
+      "name": "asr.echo_leak aec condition: cleaning keeps >= 98% of near-end words heard in double talk",
+      "pass": true,
+      "detail": "100.0% kept"
+    },
+    {
+      "name": "informational: asr.echo_leak raw mic, canceller bypassed (not a threshold)",
+      "pass": true,
+      "detail": "leak 9.62% (no cleaning 60.02%, text de-dup 22.80%; 7 ambiguous words given to the near end); near-end recall in double talk 91.8% (text de-dup 91.8%), no-echo scenarios 100.0% (with far-end speech 100.0%), overall 96.5%"
+    },
+    {
+      "name": "asr.stream_determinism: every stream compared words",
+      "pass": true,
+      "detail": "0 of 4677 words differ over 26 streams, 0 streams with no words; WER against the references: live 1.624%, final pass 1.624%"
+    },
+    {
+      "name": "asr.wer_aec_delta per scenario: seeds, near-end word counts and per-seed spread",
+      "pass": true,
+      "detail": "double-talk-ser-0 (gating): +2.90 points over 310 words, seeds [103, 1103, 2103, 3103, 4103, 5103, 6103, 7103, 8103, 9103]; per seed 103 +2.86 (35 words, unscored clean 0 / aec 0), 1103 +12.50 (32 words, unscored clean 1 / aec 1), 2103 -7.14 (28 words, unscored clean 6 / aec 6), 3103 +3.12 (32 words, unscored clean 1 / aec 1), 4103 -7.14 (28 words, unscored clean 4 / aec 4), 5103 +10.00 (30 words, unscored clean 1 / aec 1), 6103 +9.68 (31 words, unscored clean 0 / aec 0), 7103 -3.23 (31 words, unscored clean 2 / aec 2), 8103 +3.12 (32 words, unscored clean 1 / aec 1), 9103 +3.23 (31 words, unscored clean 1 / aec 3); spread -7.14 to +12.50, mean +2.70, sd 6.89; double-talk-ser-10 (informational): +17.86 points over 308 words, seeds [104, 1104, 2104, 3104, 4104, 5104, 6104, 7104, 8104, 9104]; per seed 104 +37.50 (32 words, unscored clean 0 / aec 2), 1104 +20.00 (30 words, unscored clean 4 / aec 4), 2104 +12.12 (33 words, unscored clean 2 / aec 3), 3104 +0.00 (29 words, unscored clean 3 / aec 2), 4104 +22.86 (35 words, unscored clean 0 / aec 0), 5104 +7.41 (27 words, unscored clean 7 / aec 7), 6104 +16.67 (30 words, unscored clean 1 / aec 1), 7104 +19.35 (31 words, unscored clean 3 / aec 4), 8104 +25.81 (31 words, unscored clean 0 / aec 0), 9104 +13.33 (30 words, unscored clean 4 / aec 5); spread +0.00 to +37.50, mean +17.50, sd 10.34"
+    },
+    {
+      "name": "informational: AMI SDM (Array1-01) far-field WER with the asr.wer_ami_ihm oracle segments (not a threshold)",
+      "pass": true,
+      "detail": "SDM 28.44% (IHM 10.35%) over 4550 reference words (495 substitutions, 398 deletions, 401 insertions); IS1009a 24.83%, ES2004a 31.07%; production default parakeet-tdt-0.6b-v2 on cuda, no temperature fallback: Parakeet decodes greedily whatever the options ask"
+    },
+    {
+      "name": "informational: asr.wer_stream_delta on base.en, streaming chunker vs batch (the definition until 2026-10-24; not a threshold)",
+      "pass": true,
+      "detail": "+3.952 points (stream 7.819% - batch 3.867%), ggml-base.en on cuda"
+    },
+    {
+      "name": "informational: asr.wer_aec_delta on base.en, batch per utterance window (the definition until 2026-10-24; not a threshold)",
+      "pass": true,
+      "detail": "+21.935 points, ggml-base.en on cuda; double-talk-ser-0 (gating): +21.94 points over 310 words, seeds [103, 1103, 2103, 3103, 4103, 5103, 6103, 7103, 8103, 9103]; per seed 103 +25.71 (35 words), 1103 +9.38 (32 words), 2103 +25.00 (28 words), 3103 +12.50 (32 words), 4103 +28.57 (28 words), 5103 +26.67 (30 words), 6103 +41.94 (31 words), 7103 +19.35 (31 words), 8103 +12.50 (32 words), 9103 +19.35 (31 words); spread +9.38 to +41.94, mean +22.10, sd 9.65; double-talk-ser-10 (informational): +57.14 points over 308 words, seeds [104, 1104, 2104, 3104, 4104, 5104, 6104, 7104, 8104, 9104]; per seed 104 +53.12 (32 words), 1104 +90.00 (30 words), 2104 +60.61 (33 words), 3104 +55.17 (29 words), 4104 +60.00 (35 words), 5104 +37.04 (27 words), 6104 +56.67 (30 words), 7104 +29.03 (31 words), 8104 +70.97 (31 words), 9104 +56.67 (30 words); spread +29.03 to +90.00, mean +56.93, sd 16.68"
+    },
+    {
+      "name": "decoding settings (PLAN.md 4.0)",
+      "pass": true,
+      "detail": "asr.wer_smoke_base: ggml-base.en on cpu (cpu), options {\"decoding\":{\"fallback\":{\"increment\":0.20000000298023224,\"logprob_threshold\":-1.0,\"repetition_threshold\":2.4000000953674316},\"strategy\":{\"beam_size\":5,\"strategy\":\"beam_search\"},\"temperature\":0.0},\"language\":{\"code\":\"en\"},\"prompt\":null}, temperature fallback in 1 of 20 windows (1 retries); asr.wer_ls_base: ggml-base.en on cpu (cpu), options {\"decoding\":{\"fallback\":{\"increment\":0.20000000298023224,\"logprob_threshold\":-1.0,\"repetition_threshold\":2.4000000953674316},\"strategy\":{\"beam_size\":5,\"strategy\":\"beam_search\"},\"temperature\":0.0},\"language\":{\"code\":\"en\"},\"prompt\":null}, temperature fallback in 0 of 197 windows (0 retries); asr.stream_determinism: production default parakeet-tdt-0.6b-v2 on cuda (cuda:0), live_options {\"decoding\":{\"fallback\":{\"increment\":0.20000000298023224,\"logprob_threshold\":-1.0,\"repetition_threshold\":2.4000000953674316},\"strategy\":{\"strategy\":\"greedy\"},\"temperature\":0.0},\"language\":{\"code\":\"en\"},\"prompt\":null}, final_options {\"decoding\":{\"fallback\":{\"increment\":0.20000000298023224,\"logprob_threshold\":-1.0,\"repetition_threshold\":2.4000000953674316},\"strategy\":{\"strategy\":\"greedy\"},\"temperature\":0.0},\"language\":{\"code\":\"en\"},\"prompt\":null}, no temperature fallback: Parakeet decodes greedily whatever the options ask; asr.wer_ls_default: production default parakeet-tdt-0.6b-v2 on cuda (cuda:0), options {\"decoding\":{\"fallback\":{\"increment\":0.20000000298023224,\"logprob_threshold\":-1.0,\"repetition_threshold\":2.4000000953674316},\"strategy\":{\"beam_size\":5,\"strategy\":\"beam_search\"},\"temperature\":0.0},\"language\":{\"code\":\"en\"},\"prompt\":null}, no temperature fallback: Parakeet decodes greedily whatever the options ask; asr.wer_ami_ihm: production default parakeet-tdt-0.6b-v2 on cuda (cuda:0), options {\"decoding\":{\"fallback\":{\"increment\":0.20000000298023224,\"logprob_threshold\":-1.0,\"repetition_threshold\":2.4000000953674316},\"strategy\":{\"beam_size\":5,\"strategy\":\"beam_search\"},\"temperature\":0.0},\"language\":{\"code\":\"en\"},\"prompt\":null}, no temperature fallback: Parakeet decodes greedily whatever the options ask; asr.wer_aec_delta: production default parakeet-tdt-0.6b-v2 on cuda (cuda:0), options {\"decoding\":{\"fallback\":{\"increment\":0.20000000298023224,\"logprob_threshold\":-1.0,\"repetition_threshold\":2.4000000953674316},\"strategy\":{\"strategy\":\"greedy\"},\"temperature\":0.0},\"language\":{\"code\":\"en\"},\"prompt\":null}, no temperature fallback: Parakeet decodes greedily whatever the options ask; asr.echo_leak: ggml-base.en on cuda (NVIDIA GeForce RTX 5080), options {\"decoding\":{\"fallback\":{\"increment\":0.20000000298023224,\"logprob_threshold\":-1.0,\"repetition_threshold\":2.4000000953674316},\"strategy\":{\"strategy\":\"greedy\"},\"temperature\":0.0},\"language\":{\"code\":\"en\"},\"prompt\":null}, temperature fallback in 98 of 937 windows (100 retries)"
+    }
+  ],
+  "pass": true
+}

@@ -1,0 +1,58 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "User Interface Designer",
+      "task": "Look into the programming required to bring up a menu on the TV screen using the remote's output signal."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Project Manager",
+      "task": "Investigate the feasibility of interchangeable fruit or vegetable covers for the remote."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "User Interface Designer",
+      "task": "Play with play-dough and work on the look and feel of the design and user interface design."
+    },
+    {
+      "due": null,
+      "id": "S-A4",
+      "owner": "Industrial Designer",
+      "task": "Play with play-dough and work on the look and feel of the design and user interface design."
+    },
+    {
+      "due": null,
+      "id": "S-A5",
+      "owner": "Marketing Expert",
+      "task": "Do product evaluation."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "The team decided against including a dedicated screen on the remote control due to the high cost of the advanced chip required."
+    },
+    {
+      "id": "S-D2",
+      "text": "The team agreed to use a spongy, stress-ball-like material for the main grip area of the remote."
+    },
+    {
+      "id": "S-D3",
+      "text": "The team will create two prototypes to test covering the squishy part versus other options and ask users for feedback."
+    },
+    {
+      "id": "S-D4",
+      "text": "The team decided to proceed with batteries as the power source for now."
+    }
+  ],
+  "failure": null,
+  "meeting": "ES2011c",
+  "model": "S1",
+  "notes": "## Component Design and Interface\n- The team reviewed the last meeting's outcomes, including the targeted audience and the iPod-like button system concept which remains undecided.\n- The team discussed using a wheel or a central button to control channels and menus on a TV screen, noting that a dedicated screen on the remote is too expensive.\n- They considered a wheel that goes through at least a hundred channels, or a central button that brings up a menu on the TV for settings like brightness and timers.\n## Material and Aesthetics\n- Material options discussed are rubber, plastic, wood, and titanium; titanium is discouraged due to weight and flat-case limitations, and rubber is incompatible with plastic buttons.\n- Marketing trends indicate a focus on a fancy look and feel, specifically a fruit and vegetable theme with a spongy feel.\n- The remote should be smaller than previous concepts, possibly circular and handheld, using a spongy stress-ball-like material for comfort and a hard plastic section for the wheel.\n- The team considered interchangeable covers featuring fruits or vegetables to match room decor, though silver fruit covers are not available.\n- The product casing was described as silver and yellow.\n## Product Shape and Prototyping\n- The team debated whether the squishy part should be a detachable cover or a single unit that moulds to the hand like juggling balls.\n- The idea of having interchangeable squishy parts representing different fruits and vegetables was discussed.\n- The Industrial Designer noted that changing the shape every time a new part is swapped might be inconvenient.\n- The Industrial Designer explained that the squishy part needs to be a single unit that can snap off to allow battery access.\n## Power Source and Manufacturing\n- The team considered batteries, solar power, a dynamo (bicycle mechanism), and a kinetic wind-up option.\n- The Marketing Expert expressed a preference for the dynamo because it generates energy on its own without needing batteries.\n- The Industrial Designer noted that solar power seems unsuitable for a rubber case in a living room setting.\n- The Industrial Designer clarified that 'chip on print' refers to mass-producing chips stamped onto the device, similar to remote controls, making them cheap.\n- The Industrial Designer identified the chip as likely being the most expensive part of the device.",
+  "tldr": "The team reviewed component designs and material options, deciding against a dedicated screen on the remote due to cost. They settled on a spongy, stress-ball-like grip with interchangeable fruit or vegetable covers and agreed to proceed with batteries as the power source while testing prototypes.",
+  "valid": true
+}

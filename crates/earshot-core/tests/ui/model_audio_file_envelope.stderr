@@ -1,0 +1,43 @@
+error[E0277]: the trait bound `AudioFile: SyncSerialize` is not satisfied
+ --> tests/ui/model_audio_file_envelope.rs:5:27
+  |
+5 |     let _ = sync_envelope(file);
+  |             ------------- ^^^^ the trait `SyncSerialize` is not implemented for `AudioFile`
+  |             |
+  |             required by a bound introduced by this call
+  |
+  = help: the following other types implement trait `SyncSerialize`:
+            Meeting
+            Person
+            SegmentRow
+            Speaker
+            Summary
+            Track
+            Voiceprint
+            earshot_core::model::Note
+note: required by a bound in `sync_envelope`
+ --> src/identity/sync.rs
+  |
+  | pub fn sync_envelope<T: SyncSerialize>(record: &T) -> SyncEnvelope<'_, T> {
+  |                         ^^^^^^^^^^^^^ required by this bound in `sync_envelope`
+
+error[E0277]: the trait bound `AudioFile: SyncSerialize` is not satisfied
+ --> tests/ui/model_audio_file_envelope.rs:5:13
+  |
+5 |     let _ = sync_envelope(file);
+  |             ^^^^^^^^^^^^^^^^^^^ the trait `SyncSerialize` is not implemented for `AudioFile`
+  |
+  = help: the following other types implement trait `SyncSerialize`:
+            Meeting
+            Person
+            SegmentRow
+            Speaker
+            Summary
+            Track
+            Voiceprint
+            earshot_core::model::Note
+note: required by a bound in `SyncEnvelope`
+ --> src/identity/sync.rs
+  |
+  | pub struct SyncEnvelope<'a, T: SyncSerialize> {
+  |                                ^^^^^^^^^^^^^ required by this bound in `SyncEnvelope`

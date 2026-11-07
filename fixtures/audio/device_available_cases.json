@@ -1,0 +1,14 @@
+{
+  "about": "Whether a microphone or output choice can be recorded now (T7.4i): earshot_runtime::audio_settings::device_available and the UI mock's deviceAvailable both run every case. listed: [endpoint id, is the Windows default]; chosen: an endpoint id, or null for the Windows default.",
+  "cases": [
+    { "name": "the default with a default endpoint", "listed": [["a", false], ["b", true]], "chosen": null, "available": true },
+    { "name": "the default with endpoints but none the default", "listed": [["a", false]], "chosen": null, "available": false },
+    { "name": "the default with nothing listed", "listed": [], "chosen": null, "available": false },
+    { "name": "a chosen endpoint that is listed", "listed": [["a", true], ["b", false]], "chosen": "b", "available": true },
+    { "name": "a chosen endpoint that is the default", "listed": [["a", true]], "chosen": "a", "available": true },
+    { "name": "a chosen endpoint that is not listed", "listed": [["a", true]], "chosen": "gone", "available": false },
+    { "name": "a chosen endpoint with nothing listed", "listed": [], "chosen": "a", "available": false },
+    { "name": "ids compare exactly", "listed": [["{0.0.1.00000000}.{abc}", true]], "chosen": "{0.0.1.00000000}.{ABC}", "available": false },
+    { "name": "a prefix is not the id", "listed": [["{0.0.1.00000000}.{abc}", true]], "chosen": "{0.0.1.00000000}", "available": false }
+  ]
+}

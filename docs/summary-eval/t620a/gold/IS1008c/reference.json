@@ -1,0 +1,67 @@
+{
+  "action_items": [
+    {
+      "id": "A1.1",
+      "text": "The Industrial Designer will design the prototype of the remote control."
+    },
+    {
+      "id": "A1.2",
+      "text": "The User Interface Designer will design the prototype of the remote control."
+    },
+    {
+      "id": "A2.1",
+      "text": "The Marketing Expert will find out how much the display component costs."
+    },
+    {
+      "id": "A2.2",
+      "text": "The Marketing Expert will present his marketing strategy at the next meeting."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1.1",
+      "text": "The group decided on the features that will be included in the final design of the prototype."
+    },
+    {
+      "id": "D2.1",
+      "text": "The remote will have customized wood casing."
+    },
+    {
+      "id": "D2.2",
+      "text": "The remote will have ergonomic sizing."
+    },
+    {
+      "id": "D2.3",
+      "text": "The remote will have voice recognition."
+    },
+    {
+      "id": "D2.4",
+      "text": "The remote will have a locator function."
+    },
+    {
+      "id": "D2.5",
+      "text": "The remote will have rubber buttons in a simple arrangement."
+    },
+    {
+      "id": "D2.6",
+      "text": "The remote will have an advanced chip."
+    },
+    {
+      "id": "D2.7",
+      "text": "The remote will have a battery life indicator."
+    },
+    {
+      "id": "D3.1",
+      "text": "The group discussed including a display on the remote."
+    },
+    {
+      "id": "D3.2",
+      "text": "The prototype will be designed without a display until the Marketing Expert finds out how much it would cost to add it."
+    },
+    {
+      "id": "D4.1",
+      "text": "The group decided to contact another company to manufacture the product that could do it cheaply yet still paid fair wages."
+    }
+  ],
+  "meeting": "IS1008c"
+}

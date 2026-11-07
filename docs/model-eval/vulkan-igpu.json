@@ -1,0 +1,260 @@
+{
+  "backend": "vulkan",
+  "complete": true,
+  "cores": 32,
+  "corpora": [
+    "librispeech",
+    "speed"
+  ],
+  "gate12": "not requested",
+  "onnx_models": "skipped: ONNX Runtime has no Vulkan provider (whisper models only)",
+  "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4 }",
+  "rows": [
+    {
+      "backend": "vulkan",
+      "backend_info": {
+        "device": "AMD Radeon(TM) Graphics",
+        "kind": "vulkan",
+        "model": "ggml-tiny.en"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 133.71909959999994,
+            "rtf": 0.07445590410981592
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 30,
+            "insertions": 41,
+            "ref_words": 4681,
+            "substitutions": 179,
+            "wer_percent": 5.340739158299509
+          }
+        },
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 51.9728207,
+            "rtf": 0.08662136783333334
+          },
+          "words": 1039
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "AMD Radeon(TM) Graphics",
+          "kind": "vulkan",
+          "model": "ggml-tiny.en"
+        },
+        "lines": [
+          "whisper_model_load:      Vulkan0 total size =    77.11 MB",
+          "whisper_backend_init_gpu: device 0: Vulkan0 (type: 2)",
+          "whisper_backend_init_gpu: found GPU device 0: Vulkan0 (type: 2, cnt: 0)",
+          "whisper_backend_init_gpu: using Vulkan0 backend"
+        ],
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+        "whisper_log": "vulkan"
+      },
+      "languages": "English",
+      "load_s": 0.4145032,
+      "model": "tiny.en",
+      "speed": {
+        "audio_s": 2395.95025,
+        "decode_s": 185.69192029999994,
+        "rtf": 0.07750241070322722
+      },
+      "threads": 2
+    },
+    {
+      "backend": "vulkan",
+      "backend_info": {
+        "device": "AMD Radeon(TM) Graphics",
+        "kind": "vulkan",
+        "model": "ggml-base.en"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 227.03842509999984,
+            "rtf": 0.12641687880830765
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 25,
+            "insertions": 24,
+            "ref_words": 4681,
+            "substitutions": 144,
+            "wer_percent": 4.123050630207221
+          }
+        },
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 55.3242679,
+            "rtf": 0.09220711316666667
+          },
+          "words": 1063
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "AMD Radeon(TM) Graphics",
+          "kind": "vulkan",
+          "model": "ggml-base.en"
+        },
+        "lines": [
+          "whisper_model_load:      Vulkan0 total size =   147.37 MB",
+          "whisper_backend_init_gpu: device 0: Vulkan0 (type: 2)",
+          "whisper_backend_init_gpu: found GPU device 0: Vulkan0 (type: 2, cnt: 0)",
+          "whisper_backend_init_gpu: using Vulkan0 backend"
+        ],
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+        "whisper_log": "vulkan"
+      },
+      "languages": "English",
+      "load_s": 0.3819486,
+      "model": "base.en",
+      "speed": {
+        "audio_s": 2395.95025,
+        "decode_s": 282.36269299999987,
+        "rtf": 0.11784998165133015
+      },
+      "threads": 2
+    },
+    {
+      "backend": "vulkan",
+      "backend_info": {
+        "device": "AMD Radeon(TM) Graphics",
+        "kind": "vulkan",
+        "model": "ggml-small.en"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 526.4998495,
+            "rtf": 0.2931594845124468
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 12,
+            "insertions": 7,
+            "ref_words": 4681,
+            "substitutions": 101,
+            "wer_percent": 2.563554795983764
+          }
+        },
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 102.6227217,
+            "rtf": 0.1710378695
+          },
+          "words": 1069
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "AMD Radeon(TM) Graphics",
+          "kind": "vulkan",
+          "model": "ggml-small.en"
+        },
+        "lines": [
+          "whisper_model_load:      Vulkan0 total size =   487.00 MB",
+          "whisper_backend_init_gpu: device 0: Vulkan0 (type: 2)",
+          "whisper_backend_init_gpu: found GPU device 0: Vulkan0 (type: 2, cnt: 0)",
+          "whisper_backend_init_gpu: using Vulkan0 backend"
+        ],
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+        "whisper_log": "vulkan"
+      },
+      "languages": "English",
+      "load_s": 0.8864111,
+      "model": "small.en",
+      "speed": {
+        "audio_s": 2395.95025,
+        "decode_s": 629.1225712,
+        "rtf": 0.2625774768069579
+      },
+      "threads": 2
+    },
+    {
+      "backend": "vulkan",
+      "backend_info": {
+        "device": "AMD Radeon(TM) Graphics",
+        "kind": "vulkan",
+        "model": "ggml-large-v3-turbo"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 2543.8014569,
+            "rtf": 1.4164097568404248
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 11,
+            "insertions": 5,
+            "ref_words": 4681,
+            "substitutions": 64,
+            "wer_percent": 1.7090365306558428
+          }
+        },
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 341.6101409,
+            "rtf": 0.5693502348333332
+          },
+          "words": 1063
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "AMD Radeon(TM) Graphics",
+          "kind": "vulkan",
+          "model": "ggml-large-v3-turbo"
+        },
+        "lines": [
+          "whisper_model_load:      Vulkan0 total size =  1623.92 MB",
+          "whisper_backend_init_gpu: device 0: Vulkan0 (type: 2)",
+          "whisper_backend_init_gpu: found GPU device 0: Vulkan0 (type: 2, cnt: 0)",
+          "whisper_backend_init_gpu: using Vulkan0 backend"
+        ],
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+        "whisper_log": "vulkan"
+      },
+      "languages": "99 languages (Whisper), selectable or detected",
+      "load_s": 5.6851178,
+      "model": "large-v3-turbo",
+      "speed": {
+        "audio_s": 2395.95025,
+        "decode_s": 2885.4115978,
+        "rtf": 1.2042869411833572
+      },
+      "threads": 2
+    }
+  ],
+  "task": "T6.10e",
+  "threads": 2
+}

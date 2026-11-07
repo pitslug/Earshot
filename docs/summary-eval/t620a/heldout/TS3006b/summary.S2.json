@@ -1,0 +1,90 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Industrial Designer",
+      "task": "Create a drawing of the remote control layout with the screen at the bottom and buttons in the middle."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "User Interface Designer",
+      "task": "Prepare a list of all functions to be incorporated into the remote control."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "User Interface Designer",
+      "task": "Design a menu layout for the LCD screen with pages and a nice structure."
+    },
+    {
+      "due": null,
+      "id": "S-A4",
+      "owner": "Industrial Designer",
+      "task": "Create a list of functions that should be on the screen menu."
+    },
+    {
+      "due": null,
+      "id": "S-A5",
+      "owner": "Project Manager",
+      "task": "Reorganize the documents and create maps with all the gathered data."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "Teletext functionality will be excluded from the new remote control."
+    },
+    {
+      "id": "S-D2",
+      "text": "The new remote control will target customers under forty and include features like LCD screens and speech recognition."
+    },
+    {
+      "id": "S-D3",
+      "text": "The design must include the corporate logo and brand colours."
+    },
+    {
+      "id": "S-D4",
+      "text": "The remote control will target users under forty, with advanced functions available for younger users (16-40) and simpler functions for older users."
+    },
+    {
+      "id": "S-D5",
+      "text": "Advanced functions will be displayed on an onscreen menu, while basic functions will be on the remote itself."
+    },
+    {
+      "id": "S-D6",
+      "text": "The power button will be located on the right top of the remote for easy thumb access."
+    },
+    {
+      "id": "S-D7",
+      "text": "The screen will be positioned at the bottom of the remote for clear visibility while holding the device."
+    },
+    {
+      "id": "S-D8",
+      "text": "Screen and microphone should be on top of the remote for logical placement and to avoid being blocked by the hand."
+    },
+    {
+      "id": "S-D9",
+      "text": "Buttons for volume, channel up/down, and menu control are needed."
+    },
+    {
+      "id": "S-D10",
+      "text": "The remote control will include a menu button, a confirm button, a back button, and navigation arrows."
+    },
+    {
+      "id": "S-D11",
+      "text": "LED lights will be placed under the buttons to indicate which functions are active."
+    },
+    {
+      "id": "S-D12",
+      "text": "The Industrial Designer will handle the functional aspects of the remote control, while the User Interface Designer will handle the menu layout for the LCD screen."
+    }
+  ],
+  "failure": null,
+  "meeting": "TS3006b",
+  "model": "S2",
+  "notes": "## Technical Issues and Setup\n- The Industrial Designer's computer screen size was reduced, requiring a change in display settings.\n- The Marketing Expert's presentation was accidentally opened by the Project Manager, causing confusion about the remote control's functionality.\n- The team discussed how to access the presentation file, which was located in the project folder as a text file.\n## Functional Requirements and Features\n- Users dislike current remote controls for their look-and-feel and usability; the new design must address these issues.\n- Irrelevant functions like audio settings (mono/stereo), pitch, bass, and screen settings (brightness/colour) should be kept but made user-friendly.\n- Teletext functionality should be skipped as it is outdated.\n- The new product must target customers under forty, who are interested in features like LCD screens and speech recognition.\n- Classic functions like power, channel, and volume selection must be kept.\n## Design and Corporate Identity\n- The remote control must have a nice design that fits into the room's interior and feels good to use.\n- The design must include the corporate logo and brand colours.\n- The team agreed to merge the best functions from advanced and easy examples.\n## Target Audience and Functionality\n- Marketing research indicates users aged 16-45 are not afraid of many functions, but the product should control only one device (the TV).\n- The target group is defined as users under forty, though the team debated whether to start from age 16, 20, or 30 to balance market reach with simplicity.\n- Younger users (16-40) should have access to advanced functions, while older users need simpler interfaces. Advanced options should be hidden on the screen menu to keep the device simple.\n## Physical Layout and Screen Integration\n- The screen should be integrated into the remote to display advanced functions and configuration options, acting as a menu for non-regular functions.\n- The power button should be on the right top for easy thumb access. The screen should be placed at the bottom so it can be seen clearly while holding the device.\n- There is a trade-off between functionality and fashion; making the device too fashionable may reduce functionality.\n## Advanced Options for LCD\n- Sound options: Treble, Bass, Pitch, Mono/Stereo.\n- Image options: Brightness and Colour (Contrast).\n## Channel Programming\n- Functionality includes autoseek, saving channels, and swapping channels.\n## Remote control layout and button functions\n- The remote control should have a menu button, a confirm button, a back button, and navigation arrows.\n- The menu button should be placed under the screen, while the screen layout is the Industrial Designer's responsibility.\n- The navigation buttons (up, down, left, right) are multifunctional, used for both channel/volume control and menu navigation.\n- LED lights should be placed under the buttons to indicate which functions are active, making it easier to integrate multiple functions into one button.\n- The confirm button should be used for activation, while the back button is used to go one step back in the menu.\n## Responsibilities\n- The Industrial Designer is responsible for the functional aspects of the remote control, including integrating functions like channel changing into the design.\n- The User Interface Designer is responsible for designing the menu layout for the LCD screen and creating a nice menu with pages.\n- The Industrial Designer will provide a list of functions to be on the screen, and the User Interface Designer will decide on the user-friendly layout.",
+  "tldr": "The team defined the target audience as users under forty, settled on a layout with a top-mounted screen and bottom screen, and assigned responsibilities between the Industrial Designer and User Interface Designer.",
+  "valid": true
+}

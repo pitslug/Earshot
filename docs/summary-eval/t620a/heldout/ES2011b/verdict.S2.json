@@ -1,0 +1,21 @@
+{
+  "meeting": "ES2011b",
+  "model": "S2",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D2 has a separate radio sender for the location finder as part of a two-part package."},
+    {"id": "D1.2", "verdict": "covered", "reason": "S-D2 and the hardware notes use a radio signal."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D1 removes speech recognition."},
+    {"id": "D3.1", "verdict": "covered", "reason": "The tldr defines the target audience as teenagers and young professionals."},
+    {"id": "D4.1", "verdict": "missing", "reason": "No summary part mentions a stand for the remote."},
+    {"id": "D5.1", "verdict": "missing", "reason": "No summary part says the locator removes the need for any component."},
+    {"id": "D6.1", "verdict": "covered", "reason": "S-D3 uses a buzzer output instead of a light."},
+    {"id": "D6.2", "verdict": "covered", "reason": "S-D3 gives the location finder a buzzer output, which is the sound."},
+    {"id": "D7.1", "verdict": "covered", "reason": "S-D5 includes a red power button."},
+    {"id": "D8.1", "verdict": "contradicted", "reason": "S-D5 says the remote includes number keys, where the fact has a scroll function in place of a number pad."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "covered", "reason": "The next steps notes say attendees will finish questionnaires."},
+    {"id": "A2.1", "verdict": "missing", "reason": "The next steps notes give individual work and new ideas but no presentations."},
+    {"id": "A2.2", "verdict": "missing", "reason": "The next steps notes give individual work and new ideas but no presentations."}
+  ]
+}

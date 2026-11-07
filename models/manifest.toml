@@ -1,0 +1,1214 @@
+# Model manifest (PLAN.md 3.4). Fetch with `cargo xtask fetch-models --set ci|desktop|all`.
+#
+# Models are downloaded into EARSHOT_MODELS (default %LOCALAPPDATA%\Earshot\models), checked
+# against `size` and `sha256` before they are renamed into place, and extracted when `extract`
+# is given. Models are never committed. `url` must be https and its host must be listed in
+# `hosts`. Downloads follow HTTP redirects only over https and only to `hosts` or
+# `redirect_hosts` (the hosts' own CDNs: Hugging Face LFS/Xet storage under hf.co, GitHub
+# release asset storage); every hop is checked. These are the only network destinations of
+# fetch-models.
+#
+# Sets (PLAN D22: tests use only the default models): ci = what tests and
+# CI need, default models only (the English ladders' transcription models that ci and
+# `accept m2` load, Silero, segmentation, CAM++, ONNX Runtime x64); desktop = the desktop's
+# default models (every English-ladder transcription model plus the speech models); choice =
+# models the app offers as a user choice but no test, threshold or accept check loads
+# (tiny.en, small.en-q5_1, large-v3-turbo and its q5_0, Parakeet 0.6B v3); `cargo test -p
+# xtask models` fails if ci or desktop holds a transcription model outside every English
+# `[[ladder]]` or a local LLM outside `summary`. cuda = the GPU (CUDA 13) build of ONNX
+# Runtime, needed only for `earshot-onnx --features cuda`; eval = candidate models for the
+# transcription model evaluation (T6.10e, `model-eval`), never shipped from here (community
+# ONNX conversions, pinned; a shipped model is converted from NVIDIA's originals by a script
+# in this repo first; the Parakeet defaults are also in ci and desktop as
+# development copies, see their artefacts); llm-eval = candidate summary models for the
+# summary-quality evaluation (T6.20, `cargo xtask sum-eval`), never ci, never shipped from
+# here. summary = the shipped local summary models, chosen by T6.20 (the owner): Qwen 3.5 9B
+# (Q4_K_M) by default, Qwen 3.5 4B (Q4_K_M) on machines with less memory (earshot-runtime
+# `summary_model`, T6.21b); also in llm-eval, where they were measured. The local LLM tests
+# (`earshot-llm-local`, `earshot-runtime` summary) load the 4B from this set, never ci.
+# arm64 = ONNX Runtime for Windows ARM64 (the Surface); qnn = arm64 plus the QNN execution
+# provider for the Snapdragon NPU; qnn-x64 = the QNN execution provider for x64 (Qualcomm's
+# HTP simulator, desktop tests and ahead-of-time compilation). qnn and qnn-x64 carry
+# Qualcomm-licensed libraries for development only (see their artefacts); `--set all` fetches
+# them too. helpers-x64 and helpers-arm64 = what the app downloads for "Speech helpers" (T9.1f,
+# earshot-runtime `catalogue`): Silero, segmentation, CAM++ and that architecture's CPU build
+# of ONNX Runtime, never a CUDA or QNN library (T8.4a, T8.4). The app extracts only the
+# `[[artefact.extract.member]]` files of an archive, so a file it must keep (a licence) is a
+# member.
+#
+# Checksum provenance (`publisher_checksum`):
+# - whisper.cpp: sha256 equals the Hugging Face LFS oid of the file at the pinned commit.
+# - Silero VAD: the git blob sha1 of the file at the pinned tag (GitHub contents API).
+# - sherpa-onnx assets: GitHub publishes no digest for these assets; the sha256 of the ONNX
+#   model was checked against the Hugging Face LFS oid of the same file in the sherpa-onnx
+#   author's mirror (csukuangfj/...).
+# - ONNX Runtime: the sha256 digest GitHub publishes for the release asset.
+
+sets = ["ci", "desktop", "choice", "cuda", "eval", "arm64", "qnn", "qnn-x64", "llm-eval", "summary", "helpers-x64", "helpers-arm64", "cuda-libraries"]
+
+hosts = [
+    "huggingface.co",
+    "github.com",
+    "raw.githubusercontent.com",
+    "developer.download.nvidia.com",
+]
+
+# Only redirect targets actually observed are listed. Observed 2026-10-18 (curl -I on every
+# manifest URL): huggingface.co/.../resolve/... -> us.aws.cdn.hf.co (the regional host varies,
+# hence the wildcard); github.com/.../releases/download/... ->
+# release-assets.githubusercontent.com. developer.download.nvidia.com answered HEAD and ranged GET
+# of both pinned zips directly, with no redirect (2026-11-06; AkamaiNetStorage, Accept-Ranges:
+# bytes, 206 on Range), so it adds no entry here.
+redirect_hosts = [
+    "*.hf.co",
+    "release-assets.githubusercontent.com",
+]
+
+# Whisper (ggml) from ggerganov/whisper.cpp on Hugging Face, pinned to commit
+# 5359861c739e955e79d9a303bcbc70fb988958b1. Licence: MIT (OpenAI Whisper weights, MIT).
+
+[[artefact]]
+id = "whisper-tiny.en"
+sets = ["choice"]
+location = "cache"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin"
+path = "whisper/ggml-tiny.en.bin"
+sha256 = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
+size = 77704715
+publisher_checksum = "hf-lfs-sha256:921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
+licence = "MIT"
+attribution = "OpenAI Whisper tiny.en, converted to ggml by the whisper.cpp project (Georgi Gerganov)"
+
+[[artefact]]
+id = "whisper-base.en"
+sets = ["ci", "desktop"]
+location = "cache"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin"
+path = "whisper/ggml-base.en.bin"
+sha256 = "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
+size = 147964211
+publisher_checksum = "hf-lfs-sha256:a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
+licence = "MIT"
+attribution = "OpenAI Whisper base.en, converted to ggml by the whisper.cpp project (Georgi Gerganov)"
+
+[[artefact]]
+id = "whisper-small.en"
+sets = ["desktop"]
+location = "cache"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en.bin"
+path = "whisper/ggml-small.en.bin"
+sha256 = "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d"
+size = 487614201
+publisher_checksum = "hf-lfs-sha256:c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d"
+licence = "MIT"
+attribution = "OpenAI Whisper small.en, converted to ggml by the whisper.cpp project (Georgi Gerganov)"
+
+[[artefact]]
+id = "whisper-small.en-q5_1"
+sets = ["choice"]
+location = "cache"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en-q5_1.bin"
+path = "whisper/ggml-small.en-q5_1.bin"
+sha256 = "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30"
+size = 190098681
+publisher_checksum = "hf-lfs-sha256:bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30"
+licence = "MIT"
+attribution = "OpenAI Whisper small.en, q5_1 quantised ggml by the whisper.cpp project (Georgi Gerganov)"
+
+[[artefact]]
+id = "whisper-large-v3-turbo"
+sets = ["choice"]
+location = "cache"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo.bin"
+path = "whisper/ggml-large-v3-turbo.bin"
+sha256 = "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"
+size = 1624555275
+publisher_checksum = "hf-lfs-sha256:1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"
+licence = "MIT"
+attribution = "OpenAI Whisper large-v3-turbo, converted to ggml by the whisper.cpp project (Georgi Gerganov)"
+
+[[artefact]]
+id = "whisper-large-v3-turbo-q5_0"
+sets = ["choice"]
+location = "cache"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin"
+path = "whisper/ggml-large-v3-turbo-q5_0.bin"
+sha256 = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+size = 574041195
+publisher_checksum = "hf-lfs-sha256:394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+licence = "MIT"
+attribution = "OpenAI Whisper large-v3-turbo, q5_0 quantised ggml by the whisper.cpp project (Georgi Gerganov)"
+
+# Silero VAD v6.2.3 (snakers4/silero-vad, tag v6.2.3). Licence: MIT.
+
+[[artefact]]
+id = "silero-vad"
+sets = ["ci", "desktop", "helpers-x64", "helpers-arm64"]
+location = "cache"
+url = "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.3/src/silero_vad/data/silero_vad.onnx"
+path = "silero/silero_vad.onnx"
+sha256 = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+size = 2327524
+publisher_checksum = "git-blob-sha1:80c5592ef1f4c9ede3e357bbd02eb863358a6a9d"
+licence = "MIT"
+attribution = "Silero VAD v6.2.3, Silero Team, https://github.com/snakers4/silero-vad"
+
+# pyannote segmentation-3.0 exported to ONNX by sherpa-onnx (release tag
+# speaker-segmentation-models). Licence: MIT (CNRS, LICENSE file inside the archive).
+
+[[artefact]]
+id = "pyannote-segmentation-3.0"
+sets = ["ci", "desktop", "helpers-x64", "helpers-arm64"]
+location = "cache"
+url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+path = "archives/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+sha256 = "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"
+size = 6958444
+publisher_checksum = "member model.onnx = hf-lfs-sha256:220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079 (csukuangfj/sherpa-onnx-pyannote-segmentation-3-0)"
+licence = "MIT"
+attribution = "pyannote/segmentation-3.0 (Herve Bredin, Alexis Plaquet, CNRS), ONNX export by the k2-fsa sherpa-onnx project"
+
+[artefact.extract]
+format = "tar.bz2"
+into = "pyannote-segmentation-3.0"
+
+[[artefact.extract.member]]
+path = "sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
+sha256 = "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079"
+size = 5992913
+
+[[artefact.extract.member]]
+path = "sherpa-onnx-pyannote-segmentation-3-0/LICENSE"
+sha256 = "14d7016ad68e7394d6e6b78d96cc2ae431c905287b89674cfdf021e79e62b8ba"
+size = 1061
+
+# CAM++ speaker embedding (3D-Speaker, English VoxCeleb, 16 kHz) as ONNX from sherpa-onnx
+# (release tag speaker-recongition-models, sic). Licence: Apache-2.0 (3D-Speaker / ModelScope
+# iic/speech_campplus_sv_en_voxceleb_16k).
+
+[[artefact]]
+id = "campplus-en-voxceleb"
+sets = ["ci", "desktop", "helpers-x64", "helpers-arm64"]
+location = "cache"
+url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
+path = "embedding/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
+sha256 = "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b"
+size = 29596978
+publisher_checksum = "hf-lfs-sha256:357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b (csukuangfj/speaker-embedding-models)"
+licence = "Apache-2.0"
+attribution = "CAM++ speaker verification model (3D-Speaker, Alibaba DAMO Academy / Tongyi Lab), ONNX export by the k2-fsa sherpa-onnx project"
+
+# ONNX Runtime 1.31.0, Microsoft's official release build (microsoft/onnxruntime, tag v1.31.0),
+# loaded at run time by earshot-onnx (ort 2.0.0-rc.14 `load-dynamic`, C API 31). Licence: MIT.
+# The CPU build is what tests and CI use; the GPU build (CUDA 13.x runtime + cuDNN 9.x, both
+# installed separately, never fetched) is used only with `earshot-onnx --features cuda`.
+
+[[artefact]]
+id = "onnxruntime-win-x64"
+sets = ["ci", "desktop", "helpers-x64"]
+location = "cache"
+url = "https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-win-x64-1.31.0.zip"
+path = "archives/onnxruntime-win-x64-1.31.0.zip"
+sha256 = "3958d8a44984160692c1b4ffd0de3cb48f8c39f9d34bb31e433db06e30b82195"
+size = 82887349
+publisher_checksum = "github-asset-digest:sha256:3958d8a44984160692c1b4ffd0de3cb48f8c39f9d34bb31e433db06e30b82195"
+licence = "MIT"
+attribution = "ONNX Runtime 1.31.0 (Microsoft Corporation), https://github.com/microsoft/onnxruntime"
+
+[artefact.extract]
+format = "zip"
+into = "onnxruntime/win-x64-1.31.0"
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-x64-1.31.0/lib/onnxruntime.dll"
+sha256 = "0c42dc4e278f0968fdf9ebf1b1e54a74c657a9942e70803e453c91993451cf4c"
+size = 17253176
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-x64-1.31.0/lib/onnxruntime_providers_shared.dll"
+sha256 = "e45d471ea2a842b268c51291b96d53568b0dae10807f43d1fb7dc0eb84e83723"
+size = 21816
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-x64-1.31.0/LICENSE"
+sha256 = "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674"
+size = 1094
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-x64-1.31.0/ThirdPartyNotices.txt"
+sha256 = "c53a76501ef60db6f865f20599f220761201ac4057683acefdab37d861b86622"
+size = 344457
+
+[[artefact]]
+id = "onnxruntime-win-x64-gpu-cuda13"
+sets = ["cuda"]
+location = "cache"
+url = "https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-win-x64-gpu_cuda13-1.31.0.zip"
+path = "archives/onnxruntime-win-x64-gpu_cuda13-1.31.0.zip"
+sha256 = "d332ccf84acb769a11364cddd4e8d2992a168d16be472d5ba70b279b644552f5"
+size = 309484217
+publisher_checksum = "github-asset-digest:sha256:d332ccf84acb769a11364cddd4e8d2992a168d16be472d5ba70b279b644552f5"
+licence = "MIT"
+attribution = "ONNX Runtime 1.31.0 GPU build for CUDA 13 (Microsoft Corporation), https://github.com/microsoft/onnxruntime"
+
+[artefact.extract]
+format = "zip"
+into = "onnxruntime/win-x64-gpu_cuda13-1.31.0"
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-x64-gpu_cuda13-1.31.0/lib/onnxruntime.dll"
+sha256 = "00a206c08241370fdc363887428238fab1d926e9eef2539751c07c6e26059f01"
+size = 17719608
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-x64-gpu_cuda13-1.31.0/lib/onnxruntime_providers_shared.dll"
+sha256 = "389a67bd9dd3a2647ad51392fce073a7886466344da43250ff24f9df89f8201c"
+size = 21816
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-x64-gpu_cuda13-1.31.0/lib/onnxruntime_providers_cuda.dll"
+sha256 = "198309952e14aefc28c155de035df3e8c10252defb49b65a65ab122362e9e293"
+size = 196830520
+
+# NVIDIA's libraries for the opt-in CUDA download (T8.4ae, docs/cuda-libraries.md): zips from
+# NVIDIA's redist server, CUDA 13.4.1's cuBLAS 13.7.0.27 (not 13.5: cuDNN 9.28 lists CUDA up to
+# 13.4.1) and cuDNN 9.28.0.42. The zip's size and SHA-256 are those of NVIDIA's redistrib_13.4.1.json
+# and redistrib_9.28.0.json; each file's digest in `[[cuda_archive]]` was read from the zip with
+# Range requests on 2026-11-06, its CRC-32 checked. No `extract`: the app takes only the files
+# `[[cuda_archive]]` names (earshot-runtime `cuda`), and `cargo xtask fetch-models` only fetches
+# the archive (`--set all` includes them). Both LICENSE files were read on 2026-11-06 and agree
+# with docs/cuda-libraries.md, whose open question (does a user's fetch fit NVIDIA's licence?) is
+# still open before a public release.
+
+[[artefact]]
+id = "nvidia-cublas-13.7.0.27-win-x64"
+sets = ["cuda-libraries"]
+location = "cache"
+url = "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-13.7.0.27-archive.zip"
+path = "archives/libcublas-windows-x86_64-13.7.0.27-archive.zip"
+sha256 = "fff93984ee8a85dd8568e4b9000f9e3ef7153f0f73b176756bcbad3c6622d1f0"
+size = 423620712
+publisher_checksum = "nvidia-redist-json:sha256:fff93984ee8a85dd8568e4b9000f9e3ef7153f0f73b176756bcbad3c6622d1f0"
+licence = "LicenseRef-NVIDIA-CUDA-EULA"
+attribution = "NVIDIA cuBLAS 13.7.0.27 from the CUDA Toolkit 13.4.1 (NVIDIA Corporation), under the CUDA EULA in the archive's LICENSE"
+
+[[artefact]]
+id = "nvidia-cudnn-9.28.0.42-cuda13-win-x64"
+sets = ["cuda-libraries"]
+location = "cache"
+url = "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.28.0.42_cuda13-archive.zip"
+path = "archives/cudnn-windows-x86_64-9.28.0.42_cuda13-archive.zip"
+sha256 = "b1da81fc9b1e6196205a13ca59cba7b3a321d907c03e90a19d9665867d762137"
+size = 1265879195
+publisher_checksum = "nvidia-redist-json:sha256:b1da81fc9b1e6196205a13ca59cba7b3a321d907c03e90a19d9665867d762137"
+licence = "LicenseRef-NVIDIA-cuDNN-SLA"
+attribution = "NVIDIA cuDNN 9.28.0.42 for CUDA 13 (NVIDIA Corporation), under the cuDNN licence in the archive's LICENSE"
+
+# llama.cpp's CUDA set for the opt-in download (T8.4ada, T8.4ae): `cargo xtask build --cuda-set`
+# (RTX 2xxx to 5xxx in one `ggml-cuda.dll`, CUDA toolkit 13.4), published by this project because
+# NVIDIA cannot serve it. Observed 2026-11-06: github.com answers 302 to
+# release-assets.githubusercontent.com, both already listed, and Range gets 206. These DLLs must
+# match earshot-llm-local's `llama-cpp-sys-2` pin, so an upgrade of that pin needs a new release of
+# this set and a new entry here (`cuda_llama_set_matches_the_llama_cpp_sys_pin` compares the
+# version in the name; nothing compares the DLLs' contents).
+
+[[artefact]]
+id = "earshot-cuda-set-llama-0.1.160-win-x64"
+sets = ["cuda-libraries"]
+location = "cache"
+url = "https://github.com/pitslug/earshot-releases/releases/download/cuda-set-llama-0.1.160-1/earshot-cuda-set-llama-0.1.160-cuda-13.4-win-x64.zip"
+path = "archives/earshot-cuda-set-llama-0.1.160-cuda-13.4-win-x64.zip"
+sha256 = "db0169dfafb4444854bbc2db466d74eee6fc44031dcdaabc8808309a3d91354a"
+size = 57693088
+licence = "MIT AND LicenseRef-NVIDIA-CUDA-EULA"
+attribution = "llama.cpp and ggml (MIT; LICENSE-llama.cpp in the archive) with NVIDIA's CUDA runtime linked statically (CUDA EULA), see NOTICE.md in the archive"
+
+# The same ONNX Runtime 1.31.0 release built for Windows ARM64 (the Surface; T8.3). Native
+# arm64, not arm64x: the ARM64 build of earshot is aarch64-pc-windows-msvc.
+
+[[artefact]]
+id = "onnxruntime-win-arm64"
+sets = ["arm64", "qnn", "helpers-arm64"]
+location = "cache"
+url = "https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-win-arm64-1.31.0.zip"
+path = "archives/onnxruntime-win-arm64-1.31.0.zip"
+sha256 = "ef6206fa8d6975878d93a97035d280240ce5764c126a7430e5427e18923316d5"
+size = 85806468
+publisher_checksum = "github-asset-digest:sha256:ef6206fa8d6975878d93a97035d280240ce5764c126a7430e5427e18923316d5"
+licence = "MIT"
+attribution = "ONNX Runtime 1.31.0 for Windows ARM64 (Microsoft Corporation), https://github.com/microsoft/onnxruntime"
+
+[artefact.extract]
+format = "zip"
+into = "onnxruntime/win-arm64-1.31.0"
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-arm64-1.31.0/lib/onnxruntime.dll"
+sha256 = "b6da671624bce049c13c34a3b48b7ddfd1b521dbf07d20e83ff9af4441110641"
+size = 17507640
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-arm64-1.31.0/lib/onnxruntime_providers_shared.dll"
+sha256 = "9e73b6c38894c20376612b42e859b9211cecd9410824d522bbf516e0d59f76e2"
+size = 21304
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-arm64-1.31.0/LICENSE"
+sha256 = "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674"
+size = 1094
+
+[[artefact.extract.member]]
+path = "onnxruntime-win-arm64-1.31.0/ThirdPartyNotices.txt"
+sha256 = "c53a76501ef60db6f865f20599f220761201ac4057683acefdab37d861b86622"
+size = 344457
+
+# The ONNX Runtime QNN execution provider 2.7.0 (T8.3). Since ONNX Runtime 1.25 the QNN EP is
+# no longer part of Microsoft's release (the last Microsoft.ML.OnnxRuntime.QNN NuGet package
+# is 1.24.4): it is a plugin EP maintained by Qualcomm in github.com/onnxruntime/onnxruntime-qnn
+# (release v2.7.0, "ONNX Runtime Compatibility: >= 1.24.1 (compiled with v1.29.0)", QAIRT SDK
+# 2.51.0), registered at run time into the official ONNX Runtime 1.31 above
+# (`RegisterExecutionProviderLibrary`). The zip holds the plugin (onnxruntime_providers_qnn.dll,
+# MIT, LICENSE) and Qualcomm's QAIRT runtime libraries (QnnHtp.dll, the Hexagon stubs and
+# skels, ...) under Qualcomm's "AI Stack License" (Qualcomm_LICENSE.pdf in the zip): use and
+# copy solely to develop your applications, benchmarking allowed, distribution only in object
+# code incorporated in your application (never standalone), no reverse engineering,
+# terminable by Qualcomm at any time; accepting it is a condition of downloading or using.
+# Development and test only: the sets `qnn` (Surface, arm64) and `qnn-x64` (desktop: the x64
+# QnnHtp.dll is Qualcomm's HTP simulator for ahead-of-time compilation) are never shipped from
+# here; bundling them is T8.4's question for the owner (PLAN.md 7).
+
+[[artefact]]
+id = "qnn-ep-win-arm64"
+sets = ["qnn"]
+location = "cache"
+url = "https://github.com/onnxruntime/onnxruntime-qnn/releases/download/v2.7.0/onnxruntime-qnn-2.7.0-win-arm64.zip"
+path = "archives/onnxruntime-qnn-2.7.0-win-arm64.zip"
+sha256 = "a086c435fb733ec2da57adea1f5769079271e3964df83ab29f14091ce417527a"
+size = 62711786
+publisher_checksum = "github-asset-digest:sha256:a086c435fb733ec2da57adea1f5769079271e3964df83ab29f14091ce417527a"
+licence = "MIT AND LicenseRef-Qualcomm-AI-Stack"
+attribution = "ONNX Runtime QNN Execution Provider 2.7.0 (Qualcomm Technologies, Inc. and Microsoft Corporation, MIT) with the Qualcomm AI Runtime libraries (Qualcomm AI Stack License), https://github.com/onnxruntime/onnxruntime-qnn"
+
+[artefact.extract]
+format = "zip"
+into = "onnxruntime-qnn/win-arm64-2.7.0"
+
+[[artefact.extract.member]]
+path = "onnxruntime_providers_qnn.dll"
+sha256 = "b4934e352c4989e631f37381f7303dd34dfe890e5c98396d7377710faab6795c"
+size = 3861200
+
+[[artefact.extract.member]]
+path = "QnnHtp.dll"
+sha256 = "b12363877c1b7d0355467f4f16092b21a8ca0b9f5871a71459b5590378699450"
+size = 3716816
+
+[[artefact.extract.member]]
+path = "QnnHtpPrepare.dll"
+sha256 = "fbe222fa8f9bb81940956b496b0a8249c2c259c94220729ac5eb5bb3d095f3e7"
+size = 92841168
+
+[[artefact.extract.member]]
+path = "QnnSystem.dll"
+sha256 = "836d9ae9b46f1c217727d6d1c812297b13d2ed1b738de99455a4c742316e74a9"
+size = 3626192
+
+[[artefact.extract.member]]
+path = "QnnHtpV73Stub.dll"
+sha256 = "2c1ac50b3d799949e402f40ba7246805877ddd0cbd8f924970c4682cf537f76a"
+size = 577744
+
+[[artefact.extract.member]]
+path = "QnnHtpV81Stub.dll"
+sha256 = "b2b0637fccbcfcf13a9d00723deacf5b0270d54bba639318d786ed9afc841ad4"
+size = 577232
+
+[[artefact.extract.member]]
+path = "libQnnHtpV73Skel.so"
+sha256 = "4b53a5499d70459814079722dc4b57ba0bd23b915d50b89cdee99266a0624a28"
+size = 13018320
+
+[[artefact.extract.member]]
+path = "libQnnHtpV81Skel.so"
+sha256 = "e1eeb53f7fe1699fbe842ea2bb495a310ae7ac638c33e1ae42077d48a1ff0764"
+size = 14198532
+
+[[artefact.extract.member]]
+path = "Qualcomm_LICENSE.pdf"
+sha256 = "ec1dccfdcba5c6e64126e84199b8362bf4999107bfa567ebe831dbb4c461692b"
+size = 147577
+
+[[artefact]]
+id = "qnn-ep-win-x64"
+sets = ["qnn-x64"]
+location = "cache"
+url = "https://github.com/onnxruntime/onnxruntime-qnn/releases/download/v2.7.0/onnxruntime-qnn-2.7.0-win-x64.zip"
+path = "archives/onnxruntime-qnn-2.7.0-win-x64.zip"
+sha256 = "127e574b977950c2b9721d8eac4cab86413df9982aed95fba9437f9abb80819a"
+size = 87932435
+publisher_checksum = "github-asset-digest:sha256:127e574b977950c2b9721d8eac4cab86413df9982aed95fba9437f9abb80819a"
+licence = "MIT AND LicenseRef-Qualcomm-AI-Stack"
+attribution = "ONNX Runtime QNN Execution Provider 2.7.0 (Qualcomm Technologies, Inc. and Microsoft Corporation, MIT) with the Qualcomm AI Runtime libraries (Qualcomm AI Stack License), https://github.com/onnxruntime/onnxruntime-qnn"
+
+[artefact.extract]
+format = "zip"
+into = "onnxruntime-qnn/win-x64-2.7.0"
+
+[[artefact.extract.member]]
+path = "onnxruntime_providers_qnn.dll"
+sha256 = "836ec9b4da396641aa06d052909198e1ef4549b3f541b849576bf14c5e20d40b"
+size = 3672784
+
+[[artefact.extract.member]]
+path = "QnnHtp.dll"
+sha256 = "d336a0337eafc9180e6a2922bcc7a5bfdc5d735210e4fda95a584e1c8de4bb77"
+size = 100134096
+
+[[artefact.extract.member]]
+path = "QnnSystem.dll"
+sha256 = "5a41d85f78b76130af1bf9e9f662df2ec2ebfde6a326f8ed82b60d8f0a6d96c0"
+size = 3506384
+
+[[artefact.extract.member]]
+path = "Qualcomm_LICENSE.pdf"
+sha256 = "ec1dccfdcba5c6e64126e84199b8362bf4999107bfa567ebe831dbb4c461692b"
+size = 147577
+
+# NVIDIA Parakeet TDT-CTC 110M (nvidia/parakeet-tdt_ctc-110m, jointly developed by NVIDIA NeMo
+# and Suno.ai), CTC branch only, exported to ONNX (fp32) by the k2-fsa sherpa-onnx project:
+# Hugging Face mirror csukuangfj/sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000 pinned to
+# commit 3af92f152d32c836acabf38f4c993bc96b80eb2d. Licence: CC-BY-4.0 (NVIDIA model card); the
+# export is a modification (format conversion). Evaluation only (T6.10e).
+
+[[artefact]]
+id = "parakeet-tdt_ctc-110m-ctc"
+sets = ["eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000/resolve/3af92f152d32c836acabf38f4c993bc96b80eb2d/model.onnx"
+path = "parakeet/tdt_ctc-110m/model.onnx"
+sha256 = "936806cf3dd0db5aba53f8c7410bb5632d7a8ad6b2c51009f5e4fc0890ec76bf"
+size = 458161021
+publisher_checksum = "hf-lfs-sha256:936806cf3dd0db5aba53f8c7410bb5632d7a8ad6b2c51009f5e4fc0890ec76bf"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT-CTC 110M (NVIDIA NeMo and Suno.ai), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt_ctc-110m; CTC branch converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt_ctc-110m-tokens"
+sets = ["eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000/resolve/3af92f152d32c836acabf38f4c993bc96b80eb2d/tokens.txt"
+path = "parakeet/tdt_ctc-110m/tokens.txt"
+sha256 = "450e56bd2f036fe5b6aa821865838cc5aa9d8b0106134ce9a9ba0664abe6cd10"
+size = 9953
+publisher_checksum = "git-blob-sha1:ca1e2d374bcf7035ff0b8f359f1aa51ad6dc995c"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT-CTC 110M tokenizer vocabulary (NVIDIA NeMo and Suno.ai), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt_ctc-110m"
+
+# onnx-asr's NeMo log-mel preprocessor (128 bins) as published with istupakov/parakeet-tdt-0.6b-v2-onnx
+# at commit 0bbb45a3365852604aef28b538a8f066f4ccaa85. Licence: MIT (onnx-asr, Copyright (c) 2025
+# Ilya Stupakov). Used only as the reference for earshot-onnx's NeMo front end (T6.10e1).
+
+[[artefact]]
+id = "onnx-asr-nemo128"
+sets = ["eval"]
+location = "cache"
+url = "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/0bbb45a3365852604aef28b538a8f066f4ccaa85/nemo128.onnx"
+path = "parakeet/onnx-asr/nemo128.onnx"
+sha256 = "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f"
+size = 139764
+publisher_checksum = "hf-lfs-sha256:a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f"
+licence = "MIT"
+attribution = "onnx-asr NeMo mel preprocessor (Ilya Stupakov), MIT, https://github.com/istupakov/onnx-asr"
+
+# NVIDIA Parakeet TDT-CTC 110M, TDT (transducer) branch only, exported to ONNX (fp32) by the
+# k2-fsa sherpa-onnx project: Hugging Face mirror csukuangfj/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000
+# pinned to commit e9bea5a06247dc3f55319ff23d34b0328f2f5ddf. Licence: CC-BY-4.0 (NVIDIA model card); the export is a
+# modification (format conversion). Evaluation conversion (T6.10e2), also in ci and desktop as a
+# development copy of a default model (PLAN D22): an installer must not ship it from here until
+# the conversion from NVIDIA's originals by a script in this repo exists.
+
+[[artefact]]
+id = "parakeet-tdt-110m-encoder"
+sets = ["ci", "desktop", "eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000/resolve/e9bea5a06247dc3f55319ff23d34b0328f2f5ddf/encoder.onnx"
+path = "parakeet/tdt-110m/encoder.onnx"
+sha256 = "db260f1073c654c37dd65006885d1ee98ff16c22463b1ef992bbcabc29780a3f"
+size = 456050698
+publisher_checksum = "hf-lfs-sha256:db260f1073c654c37dd65006885d1ee98ff16c22463b1ef992bbcabc29780a3f"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT-CTC 110M (NVIDIA NeMo and Suno.ai), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt_ctc-110m; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-110m-decoder"
+sets = ["ci", "desktop", "eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000/resolve/e9bea5a06247dc3f55319ff23d34b0328f2f5ddf/decoder.onnx"
+path = "parakeet/tdt-110m/decoder.onnx"
+sha256 = "3da156bde41a04c94ef783e0bd92928e9974e08645b976a22d0c3e1063510249"
+size = 15753086
+publisher_checksum = "hf-lfs-sha256:3da156bde41a04c94ef783e0bd92928e9974e08645b976a22d0c3e1063510249"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT-CTC 110M (NVIDIA NeMo and Suno.ai), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt_ctc-110m; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-110m-joiner"
+sets = ["ci", "desktop", "eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000/resolve/e9bea5a06247dc3f55319ff23d34b0328f2f5ddf/joiner.onnx"
+path = "parakeet/tdt-110m/joiner.onnx"
+sha256 = "b603765c0724a0768c378a23326dabbeb9cfea932d260e4fcc14384fa5fd5aff"
+size = 5596854
+publisher_checksum = "hf-lfs-sha256:b603765c0724a0768c378a23326dabbeb9cfea932d260e4fcc14384fa5fd5aff"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT-CTC 110M (NVIDIA NeMo and Suno.ai), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt_ctc-110m; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-110m-tokens"
+sets = ["ci", "desktop", "eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000/resolve/e9bea5a06247dc3f55319ff23d34b0328f2f5ddf/tokens.txt"
+path = "parakeet/tdt-110m/tokens.txt"
+sha256 = "450e56bd2f036fe5b6aa821865838cc5aa9d8b0106134ce9a9ba0664abe6cd10"
+size = 9953
+publisher_checksum = "git-blob-sha1:ca1e2d374bcf7035ff0b8f359f1aa51ad6dc995c"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT-CTC 110M (NVIDIA NeMo and Suno.ai), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt_ctc-110m; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+# NVIDIA Parakeet TDT 0.6B v2 (English), exported to ONNX (fp32, encoder weights in
+# encoder.weights next to encoder.onnx) by the k2-fsa sherpa-onnx project: Hugging Face mirror csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2
+# pinned to commit 86891485dd8ad7cb28cb1aade45c3e23d0197c30. Licence: CC-BY-4.0 (NVIDIA model card); the export is a
+# modification (format conversion). Evaluation conversion (T6.10e2), also in ci and desktop as a
+# development copy of a default model (PLAN D22): an installer must not ship it from here until
+# the conversion from NVIDIA's originals by a script in this repo exists.
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v2-encoder"
+sets = ["ci", "desktop", "eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2/resolve/86891485dd8ad7cb28cb1aade45c3e23d0197c30/encoder.onnx"
+path = "parakeet/tdt-0.6b-v2/encoder.onnx"
+sha256 = "7ce8d2b3f45fcd3b553d3b7a188436db7748c271081cc004f28bf76f3df01893"
+size = 41766257
+publisher_checksum = "hf-lfs-sha256:7ce8d2b3f45fcd3b553d3b7a188436db7748c271081cc004f28bf76f3df01893"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT 0.6B v2 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v2-encoder-weights"
+sets = ["ci", "desktop", "eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2/resolve/86891485dd8ad7cb28cb1aade45c3e23d0197c30/encoder.weights"
+path = "parakeet/tdt-0.6b-v2/encoder.weights"
+sha256 = "90cd4bb6c9b60496d49be9bec3a844f4e9bf22c62a45ea93f391cc00f9a47cfe"
+size = 2435420160
+publisher_checksum = "hf-lfs-sha256:90cd4bb6c9b60496d49be9bec3a844f4e9bf22c62a45ea93f391cc00f9a47cfe"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT 0.6B v2 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v2-decoder"
+sets = ["ci", "desktop", "eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2/resolve/86891485dd8ad7cb28cb1aade45c3e23d0197c30/decoder.onnx"
+path = "parakeet/tdt-0.6b-v2/decoder.onnx"
+sha256 = "0140d12782ccf550a9709f03a52c2782b3c54d045f47ce14af39c713ab42de7f"
+size = 28883663
+publisher_checksum = "hf-lfs-sha256:0140d12782ccf550a9709f03a52c2782b3c54d045f47ce14af39c713ab42de7f"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT 0.6B v2 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v2-joiner"
+sets = ["ci", "desktop", "eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2/resolve/86891485dd8ad7cb28cb1aade45c3e23d0197c30/joiner.onnx"
+path = "parakeet/tdt-0.6b-v2/joiner.onnx"
+sha256 = "a9e57e488cd1016cbefd51f60712896af6590e3f61ff466a540e085bbd6af59e"
+size = 6907576
+publisher_checksum = "hf-lfs-sha256:a9e57e488cd1016cbefd51f60712896af6590e3f61ff466a540e085bbd6af59e"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT 0.6B v2 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v2-tokens"
+sets = ["ci", "desktop", "eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2/resolve/86891485dd8ad7cb28cb1aade45c3e23d0197c30/tokens.txt"
+path = "parakeet/tdt-0.6b-v2/tokens.txt"
+sha256 = "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d"
+size = 9384
+publisher_checksum = "git-blob-sha1:f0742785f6073e80b911964c455b05f3609bf23b"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT 0.6B v2 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+# NVIDIA Parakeet TDT 0.6B v3 (25 European languages), exported to ONNX (fp32, encoder
+# weights in encoder.weights next to encoder.onnx) by the k2-fsa sherpa-onnx project: Hugging Face mirror csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3
+# pinned to commit 1a468a35cbba69418f126de829e75261dea4a4e4. Licence: CC-BY-4.0 (NVIDIA model card); the export is a
+# modification (format conversion). Evaluation conversion (T6.10e2), also in choice (a user
+# choice the app offers, never tested; PLAN D22): not shippable from here until converted from
+# NVIDIA's originals by a script in this repo.
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v3-encoder"
+sets = ["eval", "choice"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3/resolve/1a468a35cbba69418f126de829e75261dea4a4e4/encoder.onnx"
+path = "parakeet/tdt-0.6b-v3/encoder.onnx"
+sha256 = "3eed7ce424bf8339ad09233533c687e2dbd07e74ccf5027b5e7344019ea373b0"
+size = 41766257
+publisher_checksum = "hf-lfs-sha256:3eed7ce424bf8339ad09233533c687e2dbd07e74ccf5027b5e7344019ea373b0"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT 0.6B v3 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v3-encoder-weights"
+sets = ["eval", "choice"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3/resolve/1a468a35cbba69418f126de829e75261dea4a4e4/encoder.weights"
+path = "parakeet/tdt-0.6b-v3/encoder.weights"
+sha256 = "3af3f51af5f2d01dbbf5af47d42c7962a2c205f11004254bb4f2b979862f39a8"
+size = 2435420160
+publisher_checksum = "hf-lfs-sha256:3af3f51af5f2d01dbbf5af47d42c7962a2c205f11004254bb4f2b979862f39a8"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT 0.6B v3 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v3-decoder"
+sets = ["eval", "choice"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3/resolve/1a468a35cbba69418f126de829e75261dea4a4e4/decoder.onnx"
+path = "parakeet/tdt-0.6b-v3/decoder.onnx"
+sha256 = "d593cdb0e571f5a457ec2219af9968cbf6b0e8198e8f7839b40a8754593bf68c"
+size = 47233743
+publisher_checksum = "hf-lfs-sha256:d593cdb0e571f5a457ec2219af9968cbf6b0e8198e8f7839b40a8754593bf68c"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT 0.6B v3 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v3-joiner"
+sets = ["eval", "choice"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3/resolve/1a468a35cbba69418f126de829e75261dea4a4e4/joiner.onnx"
+path = "parakeet/tdt-0.6b-v3/joiner.onnx"
+sha256 = "b9b0bcf88ac571902e69a6536223ed2d94885e981b85045410f1403d53121a63"
+size = 25286330
+publisher_checksum = "hf-lfs-sha256:b9b0bcf88ac571902e69a6536223ed2d94885e981b85045410f1403d53121a63"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT 0.6B v3 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v3-tokens"
+sets = ["eval", "choice"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3/resolve/1a468a35cbba69418f126de829e75261dea4a4e4/tokens.txt"
+path = "parakeet/tdt-0.6b-v3/tokens.txt"
+sha256 = "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+size = 93939
+publisher_checksum = "git-blob-sha1:fc43e1c723e262df60b70e1919614417162d1fe2"
+licence = "CC-BY-4.0"
+attribution = "NVIDIA Parakeet TDT 0.6B v3 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3; converted to ONNX by the k2-fsa sherpa-onnx project"
+
+# Qwen2.5 1.5B Instruct, Q4_K_M GGUF, from Qwen/Qwen2.5-1.5B-Instruct-GGUF on Hugging Face,
+# pinned to commit 91cad51170dc346986eccefdc2dd33a9da36ead9. Licence: Apache-2.0 (model card).
+# The local LLM spike model (T6.19), now only the small baseline of the summary evaluation
+# (llm-eval; PLAN D22: no test loads it).
+
+[[artefact]]
+id = "qwen2.5-1.5b-instruct-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+path = "llm/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+sha256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
+size = 1117320736
+publisher_checksum = "hf-lfs-sha256:6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
+licence = "Apache-2.0"
+attribution = "Qwen2.5-1.5B-Instruct (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+
+# Summary-quality evaluation candidates (T6.20, set llm-eval): Q4_K_M GGUFs of permissively
+# licensed instruct models, each pinned to a Hugging Face commit; sha256 equals the file's LFS
+# oid at that commit (HF API, 2026-10-24). Licences checked on each base model's card:
+# Qwen3/Qwen3.5 Apache-2.0, Phi-4-mini MIT, Granite 4.2 Apache-2.0, Gemma 4 Apache-2.0. Gemma 4
+# (added in the second round, 2026-10-25): Apache-2.0 per the google/gemma-4-12B-it card and
+# Google's Gemma 4 licence page; that site also links a general Gemma prohibited-use page, but
+# the licence itself adds no terms. Qwen2.5 1.5B above is also in this set
+# (the small baseline).
+# Every `licence` below is taken from Hugging Face model cards (2026-10-24), not from a licence
+# file kept here. Official GGUFs (Qwen3, Granite 4.2): the GGUF repo's own card. Unsloth
+# community GGUFs (Qwen3 4B Instruct 2507, Qwen3.5, Phi-4-mini): the base model's card (Qwen,
+# Microsoft), which the converter's card restates; the pin fixes the evaluated bytes, not the
+# fidelity of a third-party conversion. Evaluation only: nothing ships from llm-eval.
+
+# official GGUF from the Qwen team, pinned to commit bc640142c66e1fdd12af0bd68f40445458f3869b.
+[[artefact]]
+id = "qwen3-4b-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/bc640142c66e1fdd12af0bd68f40445458f3869b/Qwen3-4B-Q4_K_M.gguf"
+path = "llm/qwen3-4b-q4_k_m.gguf"
+sha256 = "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5"
+size = 2497280256
+publisher_checksum = "hf-lfs-sha256:7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5"
+licence = "Apache-2.0"
+attribution = "Qwen3-4B (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3-4B-GGUF"
+
+# official GGUF from the Qwen team, pinned to commit 7c41481f57cb95916b40956ab2f0b139b296d974.
+[[artefact]]
+id = "qwen3-8b-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/7c41481f57cb95916b40956ab2f0b139b296d974/Qwen3-8B-Q4_K_M.gguf"
+path = "llm/qwen3-8b-q4_k_m.gguf"
+sha256 = "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785"
+size = 5027783488
+publisher_checksum = "hf-lfs-sha256:d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785"
+licence = "Apache-2.0"
+attribution = "Qwen3-8B (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3-8B-GGUF"
+
+# official GGUF from the Qwen team, pinned to commit 530227a7d994db8eca5ab5ced2fb692b614357fd.
+[[artefact]]
+id = "qwen3-14b-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/530227a7d994db8eca5ab5ced2fb692b614357fd/Qwen3-14B-Q4_K_M.gguf"
+path = "llm/qwen3-14b-q4_k_m.gguf"
+sha256 = "500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0"
+size = 9001752960
+publisher_checksum = "hf-lfs-sha256:500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0"
+licence = "Apache-2.0"
+attribution = "Qwen3-14B (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3-14B-GGUF"
+
+# community GGUF (Unsloth) of the Qwen team's model (no official GGUF), pinned to commit a06e946bb6b655725eafa393f4a9745d460374c9.
+[[artefact]]
+id = "qwen3-4b-instruct-2507-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+path = "llm/qwen3-4b-instruct-2507-q4_k_m.gguf"
+sha256 = "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"
+size = 2497281120
+publisher_checksum = "hf-lfs-sha256:3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"
+licence = "Apache-2.0"
+attribution = "Qwen3-4B-Instruct-2507 (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507; GGUF conversion by Unsloth"
+
+# community GGUF (Unsloth) of the Qwen team's model (no official GGUF); text weights only, the vision projector is not fetched, pinned to commit f6d5376be1edb4d416d56da11e5397a961aca8ae. Added 2026-11-03 (T8.3l, the owner): the smallest Qwen 3.5 with summary-sized context, tested as a faster CPU model; licence Apache-2.0 on the Unsloth and Qwen/Qwen3.5-2B cards (HF API, 2026-11-03).
+[[artefact]]
+id = "qwen3.5-2b-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
+path = "llm/qwen3.5-2b-q4_k_m.gguf"
+sha256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
+size = 1280835840
+publisher_checksum = "hf-lfs-sha256:aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
+licence = "Apache-2.0"
+attribution = "Qwen3.5-2B (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3.5-2B; GGUF conversion by Unsloth"
+
+# community GGUF (Unsloth) of the Qwen team's model (no official GGUF); text weights only, the vision projector is not fetched, pinned to commit e87f176479d0855a907a41277aca2f8ee7a09523.
+[[artefact]]
+id = "qwen3.5-4b-q4_k_m"
+sets = ["llm-eval", "summary"]
+location = "cache"
+url = "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf"
+path = "llm/qwen3.5-4b-q4_k_m.gguf"
+sha256 = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+size = 2740937888
+publisher_checksum = "hf-lfs-sha256:00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+licence = "Apache-2.0"
+attribution = "Qwen3.5-4B (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3.5-4B; GGUF conversion by Unsloth"
+
+# community GGUF (Unsloth) of the Qwen team's model (no official GGUF); text weights only, the vision projector is not fetched, pinned to commit 3885219b6810b007914f3a7950a8d1b469d598a5.
+[[artefact]]
+id = "qwen3.5-9b-q4_k_m"
+sets = ["llm-eval", "summary"]
+location = "cache"
+url = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
+path = "llm/qwen3.5-9b-q4_k_m.gguf"
+sha256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
+size = 5680522464
+publisher_checksum = "hf-lfs-sha256:03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
+licence = "Apache-2.0"
+attribution = "Qwen3.5-9B (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3.5-9B; GGUF conversion by Unsloth"
+
+# community GGUF (Unsloth) of Microsoft's model (Microsoft publishes no GGUF), pinned to commit 78eb92a46fc37e6b524df991ed9aca9bc6aa7b80.
+[[artefact]]
+id = "phi-4-mini-instruct-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/78eb92a46fc37e6b524df991ed9aca9bc6aa7b80/Phi-4-mini-instruct-Q4_K_M.gguf"
+path = "llm/phi-4-mini-instruct-q4_k_m.gguf"
+sha256 = "88c00229914083cd112853aab84ed51b87bdf6b9ce42f532d8c85c7c63b1730a"
+size = 2491874272
+publisher_checksum = "hf-lfs-sha256:88c00229914083cd112853aab84ed51b87bdf6b9ce42f532d8c85c7c63b1730a"
+licence = "MIT"
+attribution = "Phi-4-mini-instruct (Microsoft), MIT, https://huggingface.co/microsoft/Phi-4-mini-instruct; GGUF conversion by Unsloth"
+
+# official GGUF from IBM, pinned to commit 93f3f6a8938ee922b784cf4e5b4203cd3428df8f.
+[[artefact]]
+id = "granite-4.2-8b-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF/resolve/93f3f6a8938ee922b784cf4e5b4203cd3428df8f/granite-4.2-8b-Q4_K_M.gguf"
+path = "llm/granite-4.2-8b-q4_k_m.gguf"
+sha256 = "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311"
+size = 5347917952
+publisher_checksum = "hf-lfs-sha256:16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311"
+licence = "Apache-2.0"
+attribution = "Granite 4.2 8B (IBM), Apache-2.0, https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF"
+
+# official QAT GGUF from Google (quantisation-aware trained, Q4_0: a different quantisation type
+# from the other candidates' Q4_K_M; the owner), text weights only (the vision
+# projector is not fetched), pinned to commit 29d097773436b69ff9feafd636ab4cf873786537.
+[[artefact]]
+id = "gemma-4-12b-it-qat-q4_0"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf/resolve/29d097773436b69ff9feafd636ab4cf873786537/gemma-4-12b-it-qat-q4_0.gguf"
+path = "llm/gemma-4-12b-it-qat-q4_0.gguf"
+sha256 = "93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b"
+size = 6975879296
+publisher_checksum = "hf-lfs-sha256:93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b"
+licence = "Apache-2.0"
+attribution = "Gemma 4 12B IT QAT Q4_0 (Google), Apache-2.0, https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf"
+
+# community GGUF (Unsloth) of the Qwen team's model (no official GGUF), pinned to commit 3221f178a6b842d04f1fb42f1c413534adcc0a6a. Desktop GPU only (about 17 GB; never a CPU candidate).
+[[artefact]]
+id = "qwen3.5-27b-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/3221f178a6b842d04f1fb42f1c413534adcc0a6a/Qwen3.5-27B-Q4_K_M.gguf"
+path = "llm/qwen3.5-27b-q4_k_m.gguf"
+sha256 = "84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806"
+size = 16740812704
+publisher_checksum = "hf-lfs-sha256:84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806"
+licence = "Apache-2.0"
+attribution = "Qwen3.5-27B (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3.5-27B; GGUF conversion by Unsloth"
+
+# T6.20d larger-model screen (evaluation only, unlikely to ship): community
+# GGUF (Unsloth) of the Qwen team's mixture-of-experts model (30B total, 3B active; the Qwen
+# team publishes no GGUF of the 2507 release), pinned to commit
+# eea7b2be5805a5f151f8847ede8e5f9a9284bf77; sha256 is the file's LFS oid at that commit (HF API,
+# 2026-10-31). Licence Apache-2.0 from the base model's card (card metadata `license:
+# apache-2.0` and its LICENSE file at commit 0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe). About
+# 18.6 GB: does not fit the 16 GB desktop GPU, so it runs on the CPU (partial offload is refused).
+[[artefact]]
+id = "qwen3-30b-a3b-instruct-2507-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF/resolve/eea7b2be5805a5f151f8847ede8e5f9a9284bf77/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf"
+path = "llm/qwen3-30b-a3b-instruct-2507-q4_k_m.gguf"
+sha256 = "6c997b8af17debdfb01d890214400ccbab00db6acc0ba8da5de1cc906c4774d0"
+size = 18556686752
+publisher_checksum = "hf-lfs-sha256:6c997b8af17debdfb01d890214400ccbab00db6acc0ba8da5de1cc906c4774d0"
+licence = "Apache-2.0"
+attribution = "Qwen3-30B-A3B-Instruct-2507 (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507; GGUF conversion by Unsloth"
+
+# Transcription models (T6.10e): the artefacts each needs and the languages it covers (from
+# whisper.cpp's language table and NVIDIA's model cards). `detects_language`: the model finds
+# the language itself; otherwise it is English only (`.en`, Parakeet v2 and 110M) or told
+# the language (whisper multilingual models also detect).
+
+[[model]]
+name = "tiny.en"
+engine = "whisper"
+artefacts = ["whisper-tiny.en"]
+languages = ["en"]
+detects_language = false
+
+[[model]]
+name = "base.en"
+engine = "whisper"
+artefacts = ["whisper-base.en"]
+languages = ["en"]
+detects_language = false
+
+[[model]]
+name = "small.en"
+engine = "whisper"
+artefacts = ["whisper-small.en"]
+languages = ["en"]
+detects_language = false
+
+[[model]]
+name = "small.en-q5_1"
+engine = "whisper"
+artefacts = ["whisper-small.en-q5_1"]
+languages = ["en"]
+detects_language = false
+
+[[model]]
+name = "large-v3-turbo"
+engine = "whisper"
+artefacts = ["whisper-large-v3-turbo"]
+languages = ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su", "yue"]
+detects_language = true
+
+[[model]]
+name = "large-v3-turbo-q5_0"
+engine = "whisper"
+artefacts = ["whisper-large-v3-turbo-q5_0"]
+languages = ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su", "yue"]
+detects_language = true
+
+[[model]]
+name = "parakeet-ctc-110m"
+engine = "parakeet-ctc"
+artefacts = ["parakeet-tdt_ctc-110m-ctc", "parakeet-tdt_ctc-110m-tokens"]
+languages = ["en"]
+detects_language = false
+
+[[model]]
+name = "parakeet-tdt-110m"
+engine = "parakeet-tdt"
+artefacts = ["parakeet-tdt-110m-encoder", "parakeet-tdt-110m-decoder", "parakeet-tdt-110m-joiner", "parakeet-tdt-110m-tokens"]
+languages = ["en"]
+detects_language = false
+
+[[model]]
+name = "parakeet-tdt-0.6b-v2"
+engine = "parakeet-tdt"
+artefacts = ["parakeet-tdt-0.6b-v2-encoder", "parakeet-tdt-0.6b-v2-encoder-weights", "parakeet-tdt-0.6b-v2-decoder", "parakeet-tdt-0.6b-v2-joiner", "parakeet-tdt-0.6b-v2-tokens"]
+languages = ["en"]
+detects_language = false
+
+[[model]]
+name = "parakeet-tdt-0.6b-v3"
+engine = "parakeet-tdt"
+artefacts = ["parakeet-tdt-0.6b-v3-encoder", "parakeet-tdt-0.6b-v3-encoder-weights", "parakeet-tdt-0.6b-v3-decoder", "parakeet-tdt-0.6b-v3-joiner", "parakeet-tdt-0.6b-v3-tokens"]
+languages = ["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk"]
+detects_language = true
+
+# Transcription model ladders (T6.10e, measured on the desktop 2026-10-23; docs/asr-models.md):
+# per backend, best first, each the fallback of the one before when a machine is too slow.
+# `english`: models for English meetings; `multilingual`: models that also cover other
+# languages (the model check keeps those covering the user's meeting languages). Only
+# measured backends are listed; QNN is added when measured (GATE-03). Vulkan (T6.10d) runs
+# whisper.cpp only (ONNX Runtime has no Vulkan provider here): its rungs are whisper models.
+# Every English rung is a default model (PLAN D22) and in `desktop`; the ones ci and accept m2
+# load are in `ci`. Parakeet models are community conversions from `eval` (development copies,
+# not shippable until converted from NVIDIA's originals); base.en is the shippable fallback
+# today. Multilingual rungs are recommendations the app offers (`choice`), never tested.
+
+[[ladder]]
+backend = "cuda"
+scope = "english"
+models = ["parakeet-tdt-0.6b-v2", "parakeet-tdt-110m", "base.en"]
+source = "docs/asr-models.md"
+
+[[ladder]]
+backend = "cuda"
+scope = "multilingual"
+models = ["parakeet-tdt-0.6b-v3", "large-v3-turbo"]
+source = "docs/asr-models.md"
+
+[[ladder]]
+backend = "vulkan"
+scope = "english"
+models = ["small.en", "base.en"]
+source = "docs/asr-models.md"
+
+[[ladder]]
+backend = "vulkan"
+scope = "multilingual"
+models = ["large-v3-turbo"]
+source = "docs/asr-models.md"
+
+[[ladder]]
+backend = "qnn"
+scope = "english"
+models = ["parakeet-tdt-0.6b-v2", "parakeet-tdt-110m"]
+source = "docs/asr-models.md"
+
+[[ladder]]
+backend = "cpu"
+scope = "english"
+models = ["parakeet-tdt-0.6b-v2", "parakeet-tdt-110m", "base.en"]
+source = "docs/asr-models.md"
+
+[[ladder]]
+backend = "cpu"
+scope = "multilingual"
+models = ["parakeet-tdt-0.6b-v3"]
+source = "docs/asr-models.md"
+
+
+# The opt-in CUDA folder (T8.4ae, earshot-runtime `cuda`): which files of which archive land flat
+# in `cuda/` under the models folder, by part. `cuda::CudaPart::required_files` lists what each part
+# cannot run without; a required file missing here is reported by `cuda::not_available_yet` and the
+# part is never installed.
+[[cuda_archive]]
+part = "summaries"
+artefact = "nvidia-cublas-13.7.0.27-win-x64"
+format = "zip"
+
+[[cuda_archive.file]]
+name = "LICENSE-cublas.txt"
+member = "libcublas-windows-x86_64-13.7.0.27-archive/LICENSE"
+sha256 = "088381bc2d891e719a2a9398645b00bb45f3b24231473a8283ac7e3e66b8a028"
+size = 68070
+
+[[cuda_archive.file]]
+name = "cublas64_13.dll"
+member = "libcublas-windows-x86_64-13.7.0.27-archive/bin/x64/cublas64_13.dll"
+sha256 = "1119dbca0a808e0c8850bb4221e330daf0b5ddb348d62d37b6ac533854723df9"
+size = 54942320
+
+[[cuda_archive.file]]
+name = "cublasLt64_13.dll"
+member = "libcublas-windows-x86_64-13.7.0.27-archive/bin/x64/cublasLt64_13.dll"
+sha256 = "0f5bc315fef706b5626248ebd74e8a48a9e82fa2f0cad38330f5f70984913107"
+size = 492752496
+
+[[cuda_archive]]
+part = "summaries"
+artefact = "earshot-cuda-set-llama-0.1.160-win-x64"
+format = "zip"
+
+[[cuda_archive.file]]
+name = "ggml-base.dll"
+member = "ggml-base.dll"
+sha256 = "cd087b8fd775f13a8eeca0ff5b149894de41d6c5d0fa4d379820aa98a8bea481"
+size = 677376
+
+[[cuda_archive.file]]
+name = "ggml-cpu.dll"
+member = "ggml-cpu.dll"
+sha256 = "e790db39ba15b8b4980348cf694be29cfc67403e133a0a1c9910e57be04ad429"
+size = 1101824
+
+[[cuda_archive.file]]
+name = "ggml-cuda.dll"
+member = "ggml-cuda.dll"
+sha256 = "d86092328c8c34b7672c61b2667e261f59b7640ba352a5fd3a4b36ccd4933d78"
+size = 70161920
+
+[[cuda_archive.file]]
+name = "ggml.dll"
+member = "ggml.dll"
+sha256 = "616a6d0eb21d2aa588092abdd85e1b34cfb4b21a71d451f1ad99cd2b66e5303c"
+size = 59904
+
+[[cuda_archive.file]]
+name = "llama.dll"
+member = "llama.dll"
+sha256 = "7ab448ca2ba8c0c2cd08632ce26ccb111f15eac04630dca624ed03e6c695dd77"
+size = 2704384
+
+[[cuda_archive.file]]
+name = "NOTICE.md"
+member = "NOTICE.md"
+sha256 = "eb3e4c6b4280205368df5980c2f36be5d88ec3394714a7f4b0201e1c5a393321"
+size = 936
+
+[[cuda_archive.file]]
+name = "LICENSE-llama.cpp"
+member = "LICENSE-llama.cpp"
+sha256 = "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+size = 1078
+
+[[cuda_archive]]
+part = "transcription"
+artefact = "nvidia-cudnn-9.28.0.42-cuda13-win-x64"
+format = "zip"
+
+[[cuda_archive.file]]
+name = "LICENSE-cudnn.txt"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/LICENSE"
+sha256 = "295a1b7118d3417f5d6a943e5f87b59e2a0631fb277129c3b15dee6248adc7cf"
+size = 29574
+
+[[cuda_archive.file]]
+name = "cudnn64_9.dll"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/bin/x64/cudnn64_9.dll"
+sha256 = "11655923d1fcfb89ea920a66d6a667ae76a7873be58e72a81b67b932f9b69786"
+size = 272496
+
+[[cuda_archive.file]]
+name = "cudnn_adv64_9.dll"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/bin/x64/cudnn_adv64_9.dll"
+sha256 = "65dd6d04d18dbd15d53549edf007138331128be6848c05afd723a6a170965472"
+size = 89196656
+
+[[cuda_archive.file]]
+name = "cudnn_cnn64_9.dll"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/bin/x64/cudnn_cnn64_9.dll"
+sha256 = "2ea69e78e938401cf39f4405a1663d8cf9700dfe150176f2cdfb473708b0bc64"
+size = 1462384
+
+[[cuda_archive.file]]
+name = "cudnn_engines_precompiled64_9.dll"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/bin/x64/cudnn_engines_precompiled64_9.dll"
+sha256 = "6bca3d6a7542a43cbe58abcc30184a2ffd14679c6d67be9b0b8299cdcffa1f04"
+size = 219385456
+
+[[cuda_archive.file]]
+name = "cudnn_engines_runtime_compiled64_9.dll"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/bin/x64/cudnn_engines_runtime_compiled64_9.dll"
+sha256 = "ae23efaad54793562b1455f5f873d9724608f85d23f51add223db5a8f10ae4c0"
+size = 38273136
+
+[[cuda_archive.file]]
+name = "cudnn_engines_tensor_ir64_9.dll"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/bin/x64/cudnn_engines_tensor_ir64_9.dll"
+sha256 = "09d74a8760973f28e8cedde96b57a879dd774643be03b829c67c60657a23be09"
+size = 156784
+
+[[cuda_archive.file]]
+name = "cudnn_ext64_9.dll"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/bin/x64/cudnn_ext64_9.dll"
+sha256 = "a9835173fb2e25ff30ab0d3a2becff81efe90195b14c366db8bad8104d1ca0e7"
+size = 130160
+
+[[cuda_archive.file]]
+name = "cudnn_graph64_9.dll"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/bin/x64/cudnn_graph64_9.dll"
+sha256 = "5f57fab1954f175b7e0b89699dc65b4aa415c7191791d0f3a902250a97f6d5b8"
+size = 125943920
+
+[[cuda_archive.file]]
+name = "cudnn_heuristic64_9.dll"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/bin/x64/cudnn_heuristic64_9.dll"
+sha256 = "b5836b87c18181380417662db966cf5e01d106446518eeee863a4fd99878fc63"
+size = 94795376
+
+[[cuda_archive.file]]
+name = "cudnn_ops64_9.dll"
+member = "cudnn-windows-x86_64-9.28.0.42_cuda13-archive/bin/x64/cudnn_ops64_9.dll"
+sha256 = "e02952224c32965974bc87c6be6a2e85594dbefaa91405e8dccda889ed002a1c"
+size = 33098864
+
+[[cuda_archive]]
+part = "transcription"
+artefact = "onnxruntime-win-x64-gpu-cuda13"
+format = "zip"
+
+[[cuda_archive.file]]
+name = "onnxruntime.dll"
+member = "onnxruntime-win-x64-gpu_cuda13-1.31.0/lib/onnxruntime.dll"
+sha256 = "00a206c08241370fdc363887428238fab1d926e9eef2539751c07c6e26059f01"
+size = 17719608
+
+[[cuda_archive.file]]
+name = "onnxruntime_providers_shared.dll"
+member = "onnxruntime-win-x64-gpu_cuda13-1.31.0/lib/onnxruntime_providers_shared.dll"
+sha256 = "389a67bd9dd3a2647ad51392fce073a7886466344da43250ff24f9df89f8201c"
+size = 21816
+
+[[cuda_archive.file]]
+name = "onnxruntime_providers_cuda.dll"
+member = "onnxruntime-win-x64-gpu_cuda13-1.31.0/lib/onnxruntime_providers_cuda.dll"
+sha256 = "198309952e14aefc28c155de035df3e8c10252defb49b65a65ab122362e9e293"
+size = 196830520
+
+[[cuda_archive.file]]
+name = "LICENSE-onnxruntime.txt"
+member = "onnxruntime-win-x64-gpu_cuda13-1.31.0/LICENSE"
+sha256 = "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674"
+size = 1094
+
+[[cuda_archive.file]]
+name = "ThirdPartyNotices-onnxruntime.txt"
+member = "onnxruntime-win-x64-gpu_cuda13-1.31.0/ThirdPartyNotices.txt"
+sha256 = "c53a76501ef60db6f865f20599f220761201ac4057683acefdab37d861b86622"
+size = 344457

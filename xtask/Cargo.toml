@@ -1,0 +1,36 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1"
+bzip2 = "0.6"
+clap = { version = "4", features = ["derive"] }
+# `echo-nl` decodes the smoke FLACs for the call simulator (T1.2a).
+claxon = "0.4.3"
+earshot-core = { path = "../crates/earshot-core" }
+# `accept m4` replays fixtures/llm through the real summarizer against a loopback mock.
+earshot-llm = { path = "../crates/earshot-llm" }
+earshot-llm-replay = { path = "../crates/earshot-llm-replay" }
+earshot-net = { path = "../crates/earshot-net" }
+# `accept m5` runs the real export writer against temp vaults.
+earshot-store = { path = "../crates/earshot-store" }
+flate2 = "1"
+# `echo-nl` seeds the call simulator exactly as the core tests do (T1.2a).
+rand_chacha = { version = "0.10.0", default-features = false }
+rand_core = { version = "0.10.1", default-features = false }
+rustfft = "6.4.1"
+serde = { version = "1", features = ["derive"] }
+# `float_roundtrip`: the held-out baseline (T1.6b) compares values read back from a file
+# with tolerance 0, so parsing must return the exact f64 that was written.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.11"
+tar = "0.4"
+toml = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[lints]
+workspace = true

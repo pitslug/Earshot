@@ -1,0 +1,148 @@
+{
+  "machine_load_percent": 0.0,
+  "model": "parakeet-tdt-0.6b-v2",
+  "new_lengths": [
+    {
+      "first_s": 0.2362042,
+      "length_s": 11.0,
+      "second_s": 0.248741
+    },
+    {
+      "first_s": 0.2592154,
+      "length_s": 11.27,
+      "second_s": 0.2337792
+    },
+    {
+      "first_s": 0.247044,
+      "length_s": 11.54,
+      "second_s": 0.2350632
+    },
+    {
+      "first_s": 0.2718389,
+      "length_s": 11.81,
+      "second_s": 0.2339584
+    },
+    {
+      "first_s": 0.2444144,
+      "length_s": 12.08,
+      "second_s": 0.2595274
+    },
+    {
+      "first_s": 0.276086,
+      "length_s": 12.35,
+      "second_s": 0.2431876
+    }
+  ],
+  "stages": [
+    {
+      "memory": {
+        "peak_working_set_gib": 0.04331207275390625,
+        "private_gib": 0.04396820068359375
+      },
+      "stage": "no session"
+    },
+    {
+      "load_s": 2.6582615,
+      "memory": {
+        "peak_working_set_gib": 4.681049346923828,
+        "private_gib": 4.683441162109375
+      },
+      "stage": "session 1 loaded"
+    },
+    {
+      "memory": {
+        "peak_working_set_gib": 4.7502899169921875,
+        "private_gib": 4.816204071044922
+      },
+      "stage": "session 1, 3 decodes of 12 s",
+      "took_s": [
+        0.2717905,
+        0.2640397,
+        0.2554523
+      ]
+    },
+    {
+      "load_s": 2.5330565,
+      "memory": {
+        "peak_working_set_gib": 7.110057830810547,
+        "private_gib": 7.179107666015625
+      },
+      "stage": "session 2 loaded"
+    },
+    {
+      "memory": {
+        "peak_working_set_gib": 7.178962707519531,
+        "private_gib": 7.314788818359375
+      },
+      "stage": "session 2, 3 decodes of 12 s",
+      "took_s": [
+        0.2532083,
+        0.2402263,
+        0.245617
+      ]
+    },
+    {
+      "load_s": 2.4289555,
+      "memory": {
+        "peak_working_set_gib": 9.538543701171875,
+        "private_gib": 9.67531967163086
+      },
+      "stage": "session 3 loaded"
+    },
+    {
+      "memory": {
+        "peak_working_set_gib": 9.60684585571289,
+        "private_gib": 9.810272216796875
+      },
+      "stage": "session 3, 3 decodes of 12 s",
+      "took_s": [
+        0.247015,
+        0.2556734,
+        0.2414311
+      ]
+    }
+  ],
+  "threads": 4,
+  "window_lengths": [
+    {
+      "length_s": 3.0,
+      "took_s": [
+        0.0931503,
+        0.0911981,
+        0.0870366
+      ]
+    },
+    {
+      "length_s": 6.0,
+      "took_s": [
+        0.1324487,
+        0.1327473,
+        0.1350825
+      ]
+    },
+    {
+      "length_s": 9.0,
+      "took_s": [
+        0.1993432,
+        0.2175273,
+        0.197572
+      ]
+    },
+    {
+      "length_s": 12.0,
+      "took_s": [
+        0.2404754,
+        0.2569449,
+        0.2414669
+      ]
+    },
+    {
+      "length_s": 15.0,
+      "took_s": [
+        0.3306343,
+        0.3268709,
+        0.3089776
+      ]
+    }
+  ]
+}

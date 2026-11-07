@@ -1,0 +1,15 @@
+{
+  "meeting": "TS3004b",
+  "model": "S2",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D3 and S-D7 exclude speech recognition."},
+    {"id": "D1.2", "verdict": "covered", "reason": "S-D3 drops LCD screens."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D9 and the lighting notes have buttons light up when pressed, similar to a telephone."},
+    {"id": "D3.1", "verdict": "missing", "reason": "S-A1 mentions layers and the notes say complicated buttons are not needed, but nothing says complicated features are hidden from the main functions."},
+    {"id": "D4.1", "verdict": "covered", "reason": "S-D10 gives the remote a single level for teletext options."},
+    {"id": "D4.2", "verdict": "missing", "reason": "S-D10 gives teletext a single level but does not say its buttons are on the main interface."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "missing", "reason": "No summary part mentions a trendwatching report."}
+  ]
+}

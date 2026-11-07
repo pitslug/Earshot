@@ -1,0 +1,46 @@
+{
+  "action_items": [
+    {
+      "due": "before the next meeting",
+      "id": "S-A1",
+      "owner": "Industrial Designer",
+      "task": "Find out more about the technology background of the advanced chip on print."
+    },
+    {
+      "due": "Before next meeting",
+      "id": "S-A2",
+      "owner": "User Interface Designer, Industrial Designer",
+      "task": "Come up with the prototype design/model."
+    },
+    {
+      "due": "Before next meeting",
+      "id": "S-A3",
+      "owner": "Marketing Expert",
+      "task": "Find out the cost of adding a display and develop the marketing strategy."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "The remote control case will be made of wood."
+    },
+    {
+      "id": "S-D2",
+      "text": "The remote control will use an advanced chip on print with integrated sensor and speaker."
+    },
+    {
+      "id": "S-D3",
+      "text": "Stick with a simple design for now until display costs are known."
+    },
+    {
+      "id": "S-D4",
+      "text": "Buttons will be rubber, not wood."
+    }
+  ],
+  "failure": null,
+  "meeting": "IS1008c",
+  "model": "S1",
+  "notes": "## Material Selection\n- Rubber was eliminated due to heat factors and compatibility issues with the board.\n- Plastic was eliminated because it gets brittle and cracks over time.\n- Titanium was eliminated because manufacturing cannot make curved cases out of it.\n- Wood is the only remaining option, chosen for being environmentally friendly and customizable.\n## Chip and Component Design\n- Simple chips were rejected for lacking intelligence.\n- An advanced chip on print was selected, which includes an infrared sender.\n- Manufacturing will integrate a sensor and speaker into the advanced chip.\n## Design Features and Layout\n- Layout includes an on/off switch, volume/channel controls, menu access, and a number pad, with ergonomic molding.\n- Proposed features include a flip screen to prevent accidental presses, a battery life light, audio/tactile feedback, and speech recognition.\n- Customizability allows for different sizes based on hand measurements; flip screen hinge material (e.g., copper) is being considered.\n- Button positioning depends on thumb placement: volume up/down, channels left/right, number pad lower due to less frequent use.\n## Market Trends and Consumer Preferences\n- Consumers want something 'fancy', 'feel-good', and easy to use; they are willing to pay for exciting technology.\n- Current remotes are too similar and hard to use; the new design must be totally new and different.\n- A flip-up display could lock the remote when closed and provide context-sensitive instructions.\n## Manufacturing and Customization Ideas\n- Suggestion to send a foam rubber ball with orders to mold to the user's hand shape and measure squeeze resistance for wood selection.\n- Custom cases could increase revenue but require consideration of manufacturing processes and labor laws.\n## Manufacturing and Cost\n- Consider manufacturing in countries like India, China, or Malaysia to balance cost and features.\n- Avoid exploiting labor in third-world countries; consider paying fair working wages.\n- Production strategy involves business tie-ups with fabric and electronics suppliers rather than owning a factory.\n## Design Concepts\n- Agreement on a customisable mahogany red wooden case.\n- Buttons will remain rubber for tactile experience, not wood.\n- Display inclusion is undecided; currently sticking with a simple design.\n## Next Steps\n- UI Designer and Industrial Designer to create a prototype model.\n- Marketing Expert to determine pricing for extra display options and develop marketing strategy.",
+  "tldr": "The team finalized the remote control design using a wooden case and an advanced chip, agreed on a simple layout with rubber buttons, and assigned tasks for prototyping and cost analysis.",
+  "valid": true
+}

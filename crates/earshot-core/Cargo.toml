@@ -1,0 +1,36 @@
+[package]
+name = "earshot-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[example]]
+name = "aec_eval"
+test = true
+
+[dependencies]
+hound = "3.5.1"
+# zlib for openai/whisper's compression-ratio repetition check (asr::pieces); pure Rust,
+# no unsafe, already in the workspace lock.
+miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
+rand_core = { version = "0.10.1", default-features = false }
+# Summary v1 JSON Schema (T4.1); pure Rust, checked by `cargo xtask purity`.
+schemars = "1.2.3"
+rubato = { version = "5.0.1", default-features = false }
+rustfft = "6.4.1"
+serde = { version = "1.0.229", features = ["derive"] }
+# Summary validation walks LLM output as `serde_json::Value` (T4.1).
+serde_json = "1.0.154"
+uuid = { version = "1.28.0", default-features = false, features = ["serde"] }
+
+[dev-dependencies]
+claxon = "0.4.3"
+rand_chacha = { version = "0.10.0", default-features = false }
+toml = "1.1.8"
+trybuild = "1.0.122"
+# Parses exported frontmatter in tests only (MIT OR Apache-2.0).
+yaml-rust2 = { version = "0.13.0", default-features = false }

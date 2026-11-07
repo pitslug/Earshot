@@ -1,0 +1,172 @@
+{
+  "audio": "bundled",
+  "capture_max_lag_s": 0.011,
+  "catch_up_after_end_s": 0.931803,
+  "decodes_mic": {
+    "audio_s": 100.63999999999999,
+    "calls": 11,
+    "rtf": 0.024037994833068364,
+    "took_s": {
+      "max": 0.550501,
+      "median": 0.1358741,
+      "n": 11,
+      "p95": 0.550501
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 108.528,
+    "calls": 11,
+    "rtf": 0.022385555801267873,
+    "took_s": {
+      "max": 0.4488631,
+      "median": 0.1629068,
+      "n": 11,
+      "p95": 0.4488631
+    }
+  },
+  "host": {
+    "logical_cores": 32,
+    "machine_load_percent": {
+      "max": 1.0,
+      "median": 1.0,
+      "n": 4,
+      "p95": 1.0
+    },
+    "peak_private_gib": 9.387542724609375,
+    "peak_working_set_gib": 9.408340454101562,
+    "process_cpu_s": 96.671875
+  },
+  "length_s": 150.0,
+  "live_backends": [
+    {
+      "device": "cpu",
+      "kind": "Cpu",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "cpu",
+      "kind": "Cpu",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "mic": {
+    "first_word_lag_s": {
+      "max": 37.88378,
+      "median": 6.875261899999998,
+      "n": 11,
+      "p95": 37.88378
+    },
+    "last_word_lag_s": {
+      "max": 17.083780000000004,
+      "median": 2.2101641,
+      "n": 11,
+      "p95": 17.083780000000004
+    },
+    "on_screen_lag_s": {
+      "max": 37.88378,
+      "median": 15.862058000000005,
+      "n": 242,
+      "p95": 32.60378
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "32786f4af80cb51266fa8e50aeb4ac9dee0785682301d90c34a73cb1e032080a",
+    "stretch_length_s": {
+      "max": 23.28,
+      "median": 4.88,
+      "n": 11,
+      "p95": 23.28
+    },
+    "stretches": 11,
+    "word_lag_s": {
+      "max": 37.88378,
+      "median": 15.862058000000005,
+      "n": 242,
+      "p95": 32.60378
+    },
+    "words": 242
+  },
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1993; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1993; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10"
+  ],
+  "previews": {
+    "audio_dropped": 0,
+    "audio_s": 635.864,
+    "cancelled": 0,
+    "decode_s": 14.487154500000003,
+    "decodes": 80,
+    "decodes_adding_nothing": 39,
+    "load_s": 2.2977086,
+    "off": null,
+    "rtf": 0.0227834167369123,
+    "skipped_busy": 1,
+    "slow_pauses": 0,
+    "slowest_s": 0.301368,
+    "track": "Reference",
+    "words_shown": 199
+  },
+  "reference": {
+    "first_word_lag_s": {
+      "max": 42.195343,
+      "median": 15.426671400000004,
+      "n": 8,
+      "p95": 42.195343
+    },
+    "last_word_lag_s": {
+      "max": 25.715343,
+      "median": 3.7154266000000007,
+      "n": 8,
+      "p95": 25.715343
+    },
+    "on_screen_lag_s": {
+      "max": 42.035343,
+      "median": 2.6043815999999964,
+      "n": 212,
+      "p95": 11.775423900000003
+    },
+    "previews": {
+      "changed": 11,
+      "kept": 187,
+      "updates": 48,
+      "vanished": 1,
+      "word_lag_s": {
+        "max": 11.935423900000004,
+        "median": 2.583199200000003,
+        "n": 199,
+        "p95": 7.383087
+      }
+    },
+    "stored_sha256": "c183ad90db4f5f1ec148cb38f63b25c40642580d0da2c7ba04d28af2095b5c0c",
+    "stretch_length_s": {
+      "max": 20.16,
+      "median": 14.72,
+      "n": 8,
+      "p95": 20.16
+    },
+    "stretches": 8,
+    "word_lag_s": {
+      "max": 42.195343,
+      "median": 14.515426600000005,
+      "n": 212,
+      "p95": 37.315343
+    },
+    "words": 212
+  },
+  "requested_backend": "Cpu",
+  "speakers": true,
+  "stopped_with": "Finished",
+  "warnings": 0
+}

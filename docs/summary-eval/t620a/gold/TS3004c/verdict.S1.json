@@ -1,0 +1,24 @@
+{
+  "meeting": "TS3004c",
+  "model": "S1",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D9 makes the volume control a scroll wheel."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D12 says the scroll wheel will be small."},
+    {"id": "D2.2", "verdict": "covered", "reason": "S-D12 says the scroll wheel will be yellow."},
+    {"id": "D2.3", "verdict": "missing", "reason": "S-D2 puts the logo on the front and names the colour scheme but never ties the colour to the logo."},
+    {"id": "D3.1", "verdict": "covered", "reason": "S-D6 states rechargeable batteries."},
+    {"id": "D3.2", "verdict": "covered", "reason": "The Advanced Features notes say a docking station will be designed for the remote."},
+    {"id": "D4.1", "verdict": "missing", "reason": "S-D4 and S-D5 describe button placement and level but not button material."},
+    {"id": "D4.2", "verdict": "covered", "reason": "S-D8 states a hard plastic case."},
+    {"id": "D5.1", "verdict": "missing", "reason": "No part says the remote has no LCD screen; S-D10 only mentions a number display."},
+    {"id": "D6.1", "verdict": "covered", "reason": "S-D8 gives a 2D curved shape and S-D11 mostly square with rounded corners."},
+    {"id": "D7.1", "verdict": "covered", "reason": "The notes launch five versions and S-D3 allows different coloured fronts or replacement parts."},
+    {"id": "D8.1", "verdict": "covered", "reason": "The Advanced Features notes and tldr include speech recognition."},
+    {"id": "D8.2", "verdict": "contradicted", "reason": "S-D7 says the remote will use a regular chip, though the notes say speech recognition requires an advanced one."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "covered", "reason": "S-A5 has the designers work together on the smart board drawing for the next meeting and S-A7 has the User Interface Designer draw the design."},
+    {"id": "A1.2", "verdict": "covered", "reason": "S-A5 names the Industrial Designer for the prototype drawing on the smart board for the next meeting."},
+    {"id": "A2.1", "verdict": "covered", "reason": "S-A6 has the User Interface Designer settle the button layout options."}
+  ]
+}

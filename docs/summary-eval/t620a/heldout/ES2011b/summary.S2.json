@@ -1,0 +1,38 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Project Manager",
+      "task": "Check project requirements to confirm if the device should be used only for television or also for DVD/internet, and update the team."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "Teletext and speech recognition features are removed from the remote."
+    },
+    {
+      "id": "S-D2",
+      "text": "The remote will use a separate radio sender for the location finder, sold as a two-part package."
+    },
+    {
+      "id": "S-D3",
+      "text": "The location finder will use a buzzer output instead of a light."
+    },
+    {
+      "id": "S-D4",
+      "text": "The remote will focus on DVD and TV control, dropping VCR capabilities."
+    },
+    {
+      "id": "S-D5",
+      "text": "The remote will include a red power button and number keys."
+    }
+  ],
+  "failure": null,
+  "meeting": "ES2011b",
+  "model": "S2",
+  "notes": "## Usability Test Results\n- Users dislike the look, feel, and mismatch with operating behavior of current remotes.\n- Users only use 10% of available buttons; most used are for channel selection (160 times/hour), teletext, volume, and power.\n- Settings buttons are rarely used (less than 0.8 times/hour).\n## Target Audience and Pricing\n- Users aged 15-35 are willing to pay more for the product (91% to 76%).\n- Users over 35 are less willing to pay, dropping to 8% for those over 65.\n## Design and Functionality\n- The remote will have basic functions for channel and volume control, plus a location finder feature.\n- Speech recognition was discussed but rejected due to programming difficulty and budget constraints.\n- Teletext is considered outdated and has been removed from the scope.\n- The remote will focus on TV control only, excluding internet features.\n## Hardware and Location Finder\n- The location finder will use a radio signal sent from a separate sender attached to the TV or wall, rather than IR.\n- The sender will be sold separately from the remote.\n- The location finder will use a buzzer output instead of a light.\n## Circular Touch Control Interface\n- The interface is a flat touch disc using the same technology as a mouse pad.\n- Users can scroll their thumb around the circle to navigate channels or tracks.\n- A specific region of the circle can be pressed to 'zap' or perform specific actions.\n- The iPod's wheel is re-programmable and can be used for volume control by pressing a middle region.\n## Device Compatibility and Functionality\n- The device needs to be compatible with channel selection for TV.\n- DVD players typically have their own remotes, but consolidating controls is desirable.\n- Volume is usually controlled on the TV, so the remote might not need dedicated volume buttons for DVD.\n- A function switch button may be needed to toggle between TV, DVD, and VCR modes.\n## Next Steps\n- Attendees will finish questionnaires and work individually after lunch.\n- Bring new ideas to the next meeting.",
+  "tldr": "The team finalized the design of a new remote control focusing on a circular touch interface for TV and DVD, removed speech recognition and teletext features, and defined the target audience as teenagers and young professionals.",
+  "valid": true
+}

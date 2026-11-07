@@ -1,0 +1,35 @@
+{
+  "action_items": [
+    {
+      "id": "A1.1",
+      "text": "The industrial designer will work on a prototype."
+    },
+    {
+      "id": "A1.2",
+      "text": "The user interface designer will work on a prototype."
+    },
+    {
+      "id": "A2.1",
+      "text": "The marketing expert will work on a product evaluation."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1.1",
+      "text": "The remote will use a lithium battery."
+    },
+    {
+      "id": "D2.1",
+      "text": "The remote will have a double curved design."
+    },
+    {
+      "id": "D3.1",
+      "text": "The remote will have a case made of rubber."
+    },
+    {
+      "id": "D4.1",
+      "text": "The remote will be yellow."
+    }
+  ],
+  "meeting": "ES2003c"
+}

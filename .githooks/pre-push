@@ -1,0 +1,28 @@
+#!/bin/sh
+# Refuses a push from a public repo that holds private details (T9.1ka). A repo without a
+# tracked PUBLIC_REPO file passes. Turn it on once per clone: git config core.hooksPath .githooks
+# The guard checks HEAD and every ref's history, so only HEAD may be pushed. Anything this
+# script cannot read is refused.
+head=$(git rev-parse --verify HEAD) || {
+    echo "pre-push: cannot read HEAD; refusing the push" >&2
+    exit 1
+}
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [ -z "$remote_sha" ]; then
+        echo "pre-push: cannot read the refs being pushed; refusing the push" >&2
+        exit 1
+    fi
+    case "$local_sha" in
+    *[!0]*) ;;
+    *) continue ;; # a deletion sends nothing
+    esac
+    commit=$(git rev-parse --verify --quiet "$local_sha^{commit}") || {
+        echo "pre-push: $local_ref is not a commit here; refusing the push" >&2
+        exit 1
+    }
+    if [ "$commit" != "$head" ]; then
+        echo "pre-push: $local_ref is not HEAD, and the guard checks HEAD. Check it out first." >&2
+        exit 1
+    fi
+done
+exec cargo xtask public-guard --require-list

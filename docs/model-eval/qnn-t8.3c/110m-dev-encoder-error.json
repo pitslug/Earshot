@@ -1,0 +1,42 @@
+{
+ "measure": "mean relative L2 error of the encoder output vs the float static model over valid frames, mean over dev pieces",
+ "dev_pieces": 16,
+ "encoders": {
+  "a16w8-minmax-j2": {
+   "relative_error": 0.10850739851593971,
+   "length_mismatches": 0
+  },
+  "a16w8-minmax-j4s4": {
+   "relative_error": 0.10734239360317588,
+   "length_mismatches": 0
+  },
+  "a16w8pc-minmax-j2": {
+   "relative_error": 0.034136330243200064,
+   "length_mismatches": 0
+  },
+  "a16w8-percentile-j2": {
+   "relative_error": 0.11198118701577187,
+   "length_mismatches": 0
+  },
+  "a16w8-entropy-j2": {
+   "relative_error": 0.10931368032470345,
+   "length_mismatches": 0
+  },
+  "a8w8pc-mixed-j2": {
+   "relative_error": 0.12810981692746282,
+   "length_mismatches": 0
+  },
+  "a8w8-minmax-j2": {
+   "relative_error": 0.9012573026120663,
+   "length_mismatches": 0
+  },
+  "length-calibrated-diagnostic": {
+   "relative_error": 0.15615498879924417,
+   "length_mismatches": 9
+  },
+  "t8.3": {
+   "relative_error": 0.15485292952507734,
+   "length_mismatches": 9
+  }
+ }
+}

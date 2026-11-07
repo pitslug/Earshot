@@ -1,0 +1,7 @@
+Your reply was cut off because it reached the output limit. Write a shorter summary.
+Your reply is not a valid summary. Problems found:
+- /decisions/0/source_segment_ids: must cite at least one transcript segment id
+- /action_items/1/source_segment_ids/0: segment id 01890a5d-ac96-774b-bcce-b302099a805a is not in the transcript
+- and 1 more
+Cite only segment numbers that appear in square brackets in the transcript you were given.
+Reply again with the complete corrected JSON object only, following the schema and the rules.

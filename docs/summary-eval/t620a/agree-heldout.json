@@ -1,0 +1,198 @@
+{
+  "agree": 95,
+  "confusion_gold_by_judge": {
+    "contradicted": {
+      "contradicted": 5,
+      "covered": 1,
+      "missing": 2
+    },
+    "covered": {
+      "contradicted": 1,
+      "covered": 64,
+      "missing": 9
+    },
+    "missing": {
+      "contradicted": 1,
+      "covered": 3,
+      "missing": 26
+    }
+  },
+  "disagreements": [
+    {
+      "gold": "covered",
+      "gold_reason": "S-D10 and the branding notes require the slogan and company initials in the design, so the corporate identity shows on it.",
+      "id": "D3.1",
+      "judge": "missing",
+      "judge_reason": "The summary mentions branding elements 'Real Reaction' and 'RR' but does not explicitly state that the corporate image must be recognizable on the remote.",
+      "label": "S1",
+      "meeting": "ES2003b"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The tldr and S-D1 give the remote a black and white display, which carries the screen decision though LCD is not named.",
+      "id": "D6.1",
+      "judge": "missing",
+      "judge_reason": "The summary mentions a 'black and white display' in S-D1 and the TLDR, but does not explicitly state that the remote will have an LCD screen.",
+      "label": "S2",
+      "meeting": "ES2003b"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-D6 and the locating notes use a speaker so the remote can be found by sound.",
+      "id": "D9.1",
+      "judge": "missing",
+      "judge_reason": "S-D6 and S-A2 mention incorporating a speaker and LED for locating the remote, but do not specify the beeping noise detail.",
+      "label": "S2",
+      "meeting": "ES2003b"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The design notes say the location signal is a buzzer or beep rather than a light.",
+      "id": "D6.1",
+      "judge": "contradicted",
+      "judge_reason": "The summary explicitly states in the Notes section that the location signal on the remote will be a buzzer/beep rather than a light, which contradicts the fact that it will not involve an LED indicator.",
+      "label": "S1",
+      "meeting": "ES2011b"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "No summary part mentions a stand for the remote.",
+      "id": "D4.1",
+      "judge": "covered",
+      "judge_reason": "The summary states the remote will have a separate radio sender for the location finder, sold as a two-part package, implying the remote itself does not have a stand for the remote when not in use.",
+      "label": "S2",
+      "meeting": "ES2011b"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "No summary part says the locator removes the need for any component.",
+      "id": "D5.1",
+      "judge": "contradicted",
+      "judge_reason": "The summary states in S-D2 that the remote will use a separate radio sender for the location finder, implying the locator function is still present and requires hardware, contradicting the fact that it eliminated the need for the component.",
+      "label": "S2",
+      "meeting": "ES2011b"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-D3 gives the location finder a buzzer output, which is the sound.",
+      "id": "D6.2",
+      "judge": "missing",
+      "judge_reason": "S-D3 states the location finder uses a buzzer output, which is a sound, but does not explicitly state it emits sound when located.",
+      "label": "S2",
+      "meeting": "ES2011b"
+    },
+    {
+      "gold": "contradicted",
+      "gold_reason": "S-D5 says the remote includes number keys, where the fact has a scroll function in place of a number pad.",
+      "id": "D8.1",
+      "judge": "missing",
+      "judge_reason": "The summary describes a circular touch interface for scrolling but does not mention replacing a number pad or explicitly state the number pad is removed.",
+      "label": "S2",
+      "meeting": "ES2011b"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "The notes say only that the team reconvenes to discuss further, not that the next meeting decides which features to include.",
+      "id": "D1.1",
+      "judge": "covered",
+      "judge_reason": "The summary states the team will reconvene in the next meeting to discuss further, which covers the fact that the group will discuss features at the next meeting.",
+      "label": "S1",
+      "meeting": "IS1008b"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "S-D2 says features are refined or eliminated later in the process, but nothing places that discussion at the next meeting.",
+      "id": "D1.2",
+      "judge": "covered",
+      "judge_reason": "The summary states the team agreed to include all features initially and eliminate them later, which covers the fact that the group will discuss which features to eliminate.",
+      "label": "S1",
+      "meeting": "IS1008b"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The interface notes want few buttons and a sleek, simple look.",
+      "id": "D2.2",
+      "judge": "missing",
+      "judge_reason": "The summary mentions a 'sleek, simple look' and minimizing buttons, but does not explicitly state the interface will be 'simple' as a defined fact.",
+      "label": "S2",
+      "meeting": "IS1008b"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The notes require the remote to be easy to find and to support finding it through a beep.",
+      "id": "D2.3",
+      "judge": "missing",
+      "judge_reason": "The summary states the remote must be easy to find and provides an oral cue, but does not explicitly mention a 'locator function' as a specific feature.",
+      "label": "S2",
+      "meeting": "IS1008b"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-D9 has buttons light up when pressed.",
+      "id": "D2.1",
+      "judge": "missing",
+      "judge_reason": "S-D8 and S-D9 cover the button lighting feature; the 'much like a mobile phone' comparison is missing.",
+      "label": "S1",
+      "meeting": "TS3004b"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The layout notes say the LEDs show which buttons are active for the current function.",
+      "id": "D8.2",
+      "judge": "missing",
+      "judge_reason": "S-D2, S-D6, and Notes mention LED indicators under buttons, but do not explicitly state that buttons currently in use will light up.",
+      "label": "S1",
+      "meeting": "TS3006b"
+    },
+    {
+      "gold": "contradicted",
+      "gold_reason": "S-A3 gives the working design, including how components interact, to the User Interface Designer instead of the Industrial Designer.",
+      "id": "A3.1",
+      "judge": "covered",
+      "judge_reason": "S-A2 assigns the task of finalizing the remote control design to the Industrial Designer, which covers the fact that the industrial designer will work on the remote.",
+      "label": "S1",
+      "meeting": "TS3006b"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-D11 and the layout notes use the LEDs to show which functions are active on the buttons.",
+      "id": "D8.2",
+      "judge": "missing",
+      "judge_reason": "S-D2 mentions LCD screens and speech recognition but does not state that buttons will light up; S-D11 mentions LED lights under buttons but does not explicitly state 'buttons in use will light up' as a standalone fact without context of the LED placement.",
+      "label": "S2",
+      "meeting": "TS3006b"
+    },
+    {
+      "gold": "contradicted",
+      "gold_reason": "S-A1 gives the remote layout drawing to the Industrial Designer instead of the User Interface Designer.",
+      "id": "A2.1",
+      "judge": "missing",
+      "judge_reason": "S-D2 mentions the User Interface Designer's role in the summary, but the specific task of working on the layout of the remote is not explicitly stated.",
+      "label": "S2",
+      "meeting": "TS3006b"
+    }
+  ],
+  "items": 112,
+  "kappa": 0.6999684840844627,
+  "per_verdict": {
+    "contradicted": {
+      "gold": 8,
+      "judge": 7,
+      "precision": 0.7142857142857143,
+      "recall": 0.625
+    },
+    "covered": {
+      "gold": 74,
+      "judge": 68,
+      "precision": 0.9411764705882353,
+      "recall": 0.8648648648648649
+    },
+    "missing": {
+      "gold": 30,
+      "judge": 37,
+      "precision": 0.7027027027027027,
+      "recall": 0.8666666666666667
+    }
+  },
+  "percent": 84.82142857142857
+}

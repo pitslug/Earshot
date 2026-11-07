@@ -1,0 +1,24 @@
+{
+  "description": "Anthropic Messages API: 401 authentication_error (a bad API key). Not a format rejection: no fallback, no retry, the run ends with the HTTP error; excluded from sum.schema_replay.",
+  "provider": "anthropic",
+  "input": "meeting.json",
+  "expect": {
+    "modes": [
+      "json_schema"
+    ],
+    "repairs": 0,
+    "outcome": "http"
+  },
+  "exchanges": [
+    {
+      "status": 401,
+      "body": {
+        "type": "error",
+        "error": {
+          "type": "authentication_error",
+          "message": "invalid x-api-key"
+        }
+      }
+    }
+  ]
+}

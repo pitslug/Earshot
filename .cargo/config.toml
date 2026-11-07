@@ -1,0 +1,46 @@
+[alias]
+# The runner gets its own target dir: `cargo xtask ci` runs `cargo test --workspace`,
+# whose feature unification (dev-dependencies included) can differ from
+# `cargo run -p xtask`, and on Windows a running xtask.exe cannot be replaced.
+xtask = "run --package xtask --target-dir target/xtask --"
+
+[env]
+# whisper-rs-sys forwards every CMAKE_* and GGML_* variable to whisper.cpp's CMake build, but
+# changing one does not trigger a rebuild: run `cargo clean -p whisper-rs-sys` after editing
+# any of them (a cold CUDA build takes about 4 minutes).
+#
+# Build the CUDA kernels only for Blackwell (sm_120, RTX 5080; ggml rewrites 120 to 120a)
+# instead of the default multi-arch list or `native`. CPU builds ignore it. An sm_120a-only
+# build does not run on other GPUs: `cargo xtask doctor` prints each GPU's compute capability
+# and the value to use; a real environment variable of the same name takes precedence.
+CMAKE_CUDA_ARCHITECTURES = "120"
+# Portable CPU code (T2.5a): GGML_NATIVE defaults ON for non-cross builds, which compiles for
+# the build host's CPU (AVX-512 on the desktop) and can crash shipped binaries on older CPUs.
+# The baseline is x86-64 with AVX2, FMA, F16C and BMI2 (x86-64-v3); AVX-512 stays off. ggml
+# ignores the x86 flags on ARM64 targets.
+GGML_NATIVE = "OFF"
+GGML_AVX = "ON"
+GGML_AVX2 = "ON"
+GGML_FMA = "ON"
+GGML_F16C = "ON"
+GGML_BMI2 = "ON"
+GGML_AVX512 = "OFF"
+# Optimise whisper.cpp and llama.cpp in release builds (T2.2c). On MSVC with the Visual Studio
+# generator the cmake crate replaces CMAKE_<LANG>_FLAGS_<build type> with its own flags minus
+# every /O flag unless the variable is defined, and whisper-rs-sys builds the Release
+# configuration with CMAKE_BUILD_TYPE=Release in release builds: without these, release
+# whisper.cpp had no /O2 (about 15x slower on the CPU). The values are CMake's MSVC defaults
+# with the dynamic CRT (clang-cl accepts them), so they are right only for *-windows-msvc
+# without +crt-static: cargo's [env] cannot be scoped to a target. Build anything else with
+# `cargo xtask build`, which overrides them (xtask/src/native_flags.rs). xtask's release builds
+# (`build`, `accept m2`, `accept m6`) check the built CMake caches; ci checks these lines.
+CMAKE_C_FLAGS_RELEASE = "/MD /O2 /Ob2 /DNDEBUG"
+CMAKE_CXX_FLAGS_RELEASE = "/MD /O2 /Ob2 /DNDEBUG"
+
+# ARM64 baseline (T2.6, same value as `xtask::build::ARM64_CPU_ARCH`, pinned by
+# `build_arm64_baseline_is_in_the_workspace_cargo_env`): with GGML_NATIVE off and no
+# GGML_CPU_ARM_ARCH, a clang ARM64 build would silently fall back to plain ARMv8-A without
+# the dot-product and int8 matmul kernels. ggml reads it only for ARM targets. ARM64 also
+# needs clang-cl and Ninja (ggml stops with "MSVC is not supported for ARM, use clang"):
+# build it with `cargo xtask build --target aarch64-pc-windows-msvc`.
+GGML_CPU_ARM_ARCH = "armv8.2-a+dotprod+i8mm"

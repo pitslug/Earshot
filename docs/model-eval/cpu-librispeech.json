@@ -1,0 +1,166 @@
+{
+  "backend": "cpu",
+  "complete": true,
+  "cores": 32,
+  "corpora": [
+    "librispeech"
+  ],
+  "gate12": "not requested",
+  "onnx_models": "evaluated when selected",
+  "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4 }",
+  "rows": [
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "ggml-tiny.en"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 2020.562837100001,
+            "rtf": 1.1250661520829994
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 30,
+            "insertions": 40,
+            "ref_words": 4681,
+            "substitutions": 179,
+            "wer_percent": 5.31937620166631
+          }
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "cpu",
+          "kind": "cpu",
+          "model": "ggml-tiny.en"
+        },
+        "lines": [
+          "whisper_model_load:          CPU total size =    77.11 MB",
+          "whisper_backend_init_gpu: no GPU found"
+        ],
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+        "whisper_log": "cpu"
+      },
+      "languages": "English",
+      "load_s": 0.1175043,
+      "model": "tiny.en",
+      "speed": {
+        "audio_s": 1795.95025,
+        "decode_s": 2020.562837100001,
+        "rtf": 1.1250661520829994
+      },
+      "threads": 4
+    },
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "ggml-base.en"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 2358.4197409999997,
+            "rtf": 1.313187679335772
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 24,
+            "insertions": 24,
+            "ref_words": 4681,
+            "substitutions": 145,
+            "wer_percent": 4.123050630207221
+          }
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "cpu",
+          "kind": "cpu",
+          "model": "ggml-base.en"
+        },
+        "lines": [
+          "whisper_model_load:          CPU total size =   147.37 MB",
+          "whisper_backend_init_gpu: no GPU found"
+        ],
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+        "whisper_log": "cpu"
+      },
+      "languages": "English",
+      "load_s": 0.159894,
+      "model": "base.en",
+      "speed": {
+        "audio_s": 1795.95025,
+        "decode_s": 2358.4197409999997,
+        "rtf": 1.313187679335772
+      },
+      "threads": 4
+    },
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "ggml-small.en"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 1306.4427941999998,
+            "rtf": 0.7274381872215
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 11,
+            "insertions": 8,
+            "ref_words": 4681,
+            "substitutions": 101,
+            "wer_percent": 2.563554795983764
+          }
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "cpu",
+          "kind": "cpu",
+          "model": "ggml-small.en"
+        },
+        "lines": [
+          "whisper_model_load:          CPU total size =   487.00 MB",
+          "whisper_backend_init_gpu: no GPU found"
+        ],
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+        "whisper_log": "cpu"
+      },
+      "languages": "English",
+      "load_s": 0.3479667,
+      "model": "small.en",
+      "speed": {
+        "audio_s": 1795.95025,
+        "decode_s": 1306.4427941999998,
+        "rtf": 0.7274381872215
+      },
+      "threads": 4
+    }
+  ],
+  "task": "T6.10e",
+  "threads": 4,
+  "notes": "tiny.en and base.en: 2026-10-23 (T6.10d), unoptimised release whisper.cpp; the small.en run was stopped then. small.en: 2026-10-24, separate run of the same example with optimised release whisper.cpp (T2.2c), the host shared with other builds; WER does not depend on speed."
+}

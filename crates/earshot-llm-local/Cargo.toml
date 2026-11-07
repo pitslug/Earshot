@@ -1,0 +1,42 @@
+[package]
+name = "earshot-llm-local"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# llama.cpp on CUDA (needs the CUDA toolkit; architectures from CMAKE_CUDA_ARCHITECTURES in
+# .cargo/config.toml, as for whisper). The coexistence test also runs whisper.cpp on CUDA.
+cuda = ["llama-cpp-sys-2/cuda", "earshot-asr-whisper/cuda"]
+# llama.cpp on Vulkan (needs the Vulkan SDK, VULKAN_SDK).
+vulkan = ["llama-cpp-sys-2/vulkan", "earshot-asr-whisper/vulkan"]
+
+[dependencies]
+earshot-core = { path = "../earshot-core" }
+# Pinned (PLAN D19, like whisper-rs in D13): llama-cpp-sys-2 0.1.160 vendors llama.cpp and
+# its ggml. `dynamic-link` builds them as DLLs so they coexist with whisper.cpp's static
+# ggml (crate docs, docs/local-llm.md). No `common` (it links an HTTP client), no openmp.
+llama-cpp-sys-2 = { version = "=0.1.160", default-features = false, features = ["dynamic-link"] }
+serde_json = "1"
+
+[dev-dependencies]
+# The coexistence test: whisper.cpp (static ggml) and llama.cpp (DLL ggml) in one binary.
+earshot-asr-whisper = { path = "../earshot-asr-whisper" }
+# The Vulkan device test compares the load with the adapters the machine reports.
+earshot-hardware = { path = "../earshot-hardware" }
+claxon = "=0.4.3"
+# The `sum_eval` example (T6.20): its informational remote ceiling goes through the remote
+# summarizer on earshot-net (only EARSHOT_LLM_URL is allowlisted).
+earshot-llm = { path = "../earshot-llm" }
+earshot-net = { path = "../earshot-net" }
+tokio = { version = "1.53.3", default-features = false, features = ["rt", "time"] }
+
+# The summary-quality evaluation (T6.20, `cargo xtask sum-eval`); its unit tests run with
+# the crate's.
+[[example]]
+name = "sum_eval"
+test = true
+
+[lints]
+workspace = true

@@ -1,0 +1,32 @@
+# Rumble dev set for the echo canceller (T6.23b; private notes). Dev data only: never
+# gating, never part of the held-out baseline or its scenarios hash, never used with held-out
+# speakers or seeds.
+#
+# Spectra measured on a private raw recording by `xtask::aec_rumble` (`cargo test --release -p xtask --lib aec_rumble_take3 --
+# --include-ignored --nocapture`), counts only:
+# - far_levels_db: far-end-only stretches,
+#   mic power not explained by a linear fit from the loopback (Welch coherence, 8192-sample
+#   Hann segments), per 10 Hz band from 0 to 150 Hz, dB relative to the echo (coherent) power
+#   above 100 Hz. The coherent power is a lower bound
+#   of the echo (nonlinear and time-varying echo counts as non-echo), so the level may be high.
+# - near_levels_db: a near-end-only stretch, the quietest fifth of the frames by power
+#   above 150 Hz (speech pauses), per 10 Hz band, dB relative to the voice power above 100 Hz
+#   (loudest half of the frames).
+#
+# A scenario with echo gets the far spectrum scaled to the echo power above 100 Hz over the
+# echo's active spans; one without echo gets the near spectrum scaled to the near-end voice
+# above 100 Hz over its utterances (`earshot_core::sim::rumble::add_rumble`).
+band_hz = 10.0
+far_levels_db = [12.1, 6.9, -3.9, -11.9, -14.5, -20.6, -23.1, -29.5, -30.1, -30.5, -24.8, -11.0, -19.0, -25.8, -27.8]
+near_levels_db = [-5.3, -12.1, -24.8, -22.4, -33.5, -34.5, -40.0, -46.4, -45.4, -40.9, -39.3, -35.6, -40.8, -42.6, -41.0]
+seed_offset = 7000000
+scenarios = [
+    "far-only",
+    "double-talk-ser-0",
+    "double-talk-ser-10",
+    "near-only",
+    "headphones",
+    "stereo-far-only",
+    "stereo-double-talk-ser-0",
+    "stereo-double-talk-ser-10",
+]

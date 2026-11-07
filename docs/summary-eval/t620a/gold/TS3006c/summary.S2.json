@@ -1,0 +1,72 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Marketing Expert",
+      "task": "Put the presentation in the shared folder."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Industrial Designer",
+      "task": "Find and upload a picture of a doubly curved case to the group folder."
+    },
+    {
+      "due": "30 minutes after this meeting",
+      "id": "S-A3",
+      "owner": "Industrial Designer, User Interface Designer",
+      "task": "Work on the smartboard for 30 minutes to design the look-and-feel and create sketches of the product shape."
+    },
+    {
+      "due": "half an hour",
+      "id": "S-A4",
+      "owner": "Industrial Designer, User Interface Designer",
+      "task": "Design the product."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "Kinetic energy was selected as the power source."
+    },
+    {
+      "id": "S-D2",
+      "text": "The case will be made of rubber."
+    },
+    {
+      "id": "S-D3",
+      "text": "The case will be single-curved."
+    },
+    {
+      "id": "S-D4",
+      "text": "Selected a dark blue base color with bright primary fruit accents."
+    },
+    {
+      "id": "S-D5",
+      "text": "Chose a blue backlight for the display."
+    },
+    {
+      "id": "S-D6",
+      "text": "Buttons will be red with red LEDs."
+    },
+    {
+      "id": "S-D7",
+      "text": "The flipping mechanism for the screen will be kept."
+    },
+    {
+      "id": "S-D8",
+      "text": "No flipping mechanism will be used."
+    },
+    {
+      "id": "S-D9",
+      "text": "The product name is 'The Real Remote'."
+    }
+  ],
+  "failure": null,
+  "meeting": "TS3006c",
+  "model": "S2",
+  "notes": "## Meeting Logistics and Setup\n- Marketing Expert switched the meeting language to English.\n- Marketing Expert and Industrial Designer discussed sharing presentations in the shared folder; Industrial Designer placed the conceptual design there.\n- Project Manager noted they are recording all decisions.\n- Attendees discussed difficulties using PowerPoint and suggested moving to the meeting room.\n## Marketing Trends\n- Marketing trends for young public favor fresh, bright colors, fruit/vegetable themes, and spongey materials.\n- Key priorities for the remote control are: 1. Fancy look-and-feel (most important), 2. Technological innovation, 3. Ease of use.\n## Component Design Discussion\n- Industrial Designer presented component options including basic battery, hand dynamo (kneipgatt), and solar cells.\n- Solar cells were noted as potentially unusable in low-light areas like Scandinavia.\n- Case options include traditional flat hard case, single curved, and double curved (preferred for being daring).\n- Preferred case materials include hard plastic, wood, titanium, and rubber (preferred for modern look).\n- Interface design discussion includes scroll buttons vs. push buttons (arrow buttons decided on push buttons).\n- Advanced chip selected for easier production implementation.\n## Energy Source\n- Kinetic energy was chosen as the power source because it is long-lasting and fun to use, though it is more expensive to manufacture than batteries.\n- Only one energy source can be fitted on the device.\n## Case Design\n- The case will be made of rubber and double-curved in two dimensions to appeal to a younger audience and be safe to throw.\n- The team debated between single and double curvature; single curvature was chosen as a compromise to appeal to a broader public.\n## User Interface\n- Speech commands will be implemented for both basic and advanced options, matching existing functions.\n- Buttons will have individual LED lights that can be customized, and the interface will support sound.\n## Ergonomic Design and Screen Mechanism\n- Discussed curved shapes and one-handed usability, including a trigger button for scrolling and confirmation.\n- Proposed a pop-up screen mechanism where simple functions are visible initially, and advanced options appear when flipped open.\n- Discussed mechanical flipping vs. a trigger button; agreed on a solid closing mechanism to protect the LCD screen from scratches.\n- Addressed left-handed usability concerns and the cost of designing two versions; decided to choose one ergonomic shape.\n## Color Scheme and Display\n- Agreed on a dark blue base color with bright primary colors (red, yellow, orange, green) for fruit-like accents.\n- Decided on a blue backlight for the display to avoid old-fashioned green or expensive specific color codes.\n- Discussed high contrast between background and foreground for visibility and accessibility for colorblind users.\n## Additional Features\n- Suggested adding flashing standby lights to help users locate the remote control easily.\n## Visual Design and Color Scheme\n- Background should be bright with colorful objects (yellow, orange, red) on it.\n- Buttons should be red to match the LEDs, as green buttons on a green background look cheap and lack contrast.\n- Green is considered a trendy color that works well.\n- Red and green LEDs are the easiest to discriminate for colorblind users.\n- Buttons should be made of see-through plastic with a colored LED behind them to shine.\n## Product Shape and Structure\n- The device should have a thin middle section for holding with fingers and a thicker upper side.\n- The display should be integrated into the bubble structure rather than flipping separately.\n- The flipping mechanism is kept to allow adjusting the angle of the screen.\n## Smartboard Work Session\n- Industrial Designer and User Interface Designer will work on the smartboard for 30 minutes to design look-and-feel.\n- They need to draw front, side, and back views, including the screen placement and button layout.",
+  "tldr": "The team reviewed marketing trends, finalized the product name as 'The Real Remote', and settled on a rubber double-curved case with red buttons and green LEDs, removing the flipping mechanism for safety.",
+  "valid": true
+}

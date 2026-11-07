@@ -1,0 +1,2192 @@
+{
+  "assistant_prefix": "<think>\n\n</think>\n\n",
+  "backend": "vulkan",
+  "candidate": "qwen3.5-9b-q4_k_m",
+  "chunk_seconds": 600,
+  "context_tokens": 16384,
+  "description": "qwen35 9B Q4_K - Medium",
+  "grammar": "indented-numbered-r5-chunk600",
+  "jobs": [
+    {
+      "aggregate": {
+        "actions": {
+          "caught": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "reference": 10,
+          "summary": 25
+        },
+        "actions_cov": {
+          "caught": 3,
+          "precision": 0.12,
+          "recall": 0.3,
+          "reference": 10,
+          "summary": 25
+        },
+        "actions_rr": {
+          "caught": 1,
+          "precision": 0.04,
+          "recall": 0.1,
+          "reference": 10,
+          "summary": 25
+        },
+        "decisions": {
+          "caught": 7,
+          "precision": 0.175,
+          "recall": 0.22580645161290322,
+          "reference": 31,
+          "summary": 40
+        },
+        "decisions_cov": {
+          "caught": 14,
+          "precision": 0.35,
+          "recall": 0.45161290322580644,
+          "reference": 31,
+          "summary": 40
+        },
+        "decisions_rr": {
+          "caught": 9,
+          "precision": 0.225,
+          "recall": 0.2903225806451613,
+          "reference": 31,
+          "summary": 40
+        },
+        "duplicates_dropped": 0.0,
+        "failed": 0,
+        "generated_tokens_per_s": 106.42140433536449,
+        "invalid_replies": 0.0,
+        "looping": 0.0,
+        "map_parts": 18.0,
+        "meetings": 5,
+        "ok": 5,
+        "prompt_tokens_per_s": 3101.438146525608,
+        "repairs": 0.0,
+        "requests": 23.0,
+        "rouge1_f": 0.3736255485535401,
+        "rouge2_f": 0.08431478608458651,
+        "rougeL_f": 0.18266533460330642,
+        "rougeLsum_f": 0.35462522787497386,
+        "seconds_per_meeting": 52.51323434,
+        "seconds_total": 262.5661717,
+        "timing": {
+          "audio_s": 10065.96,
+          "hangup_s": 128.05903229999998,
+          "hangup_s_per_meeting": 25.611806459999997,
+          "last_map_s": 43.18085260000001,
+          "map_s": 177.67910120000002,
+          "reduce_s": 84.8781797,
+          "reduce_s_per_meeting": 16.97563594,
+          "single_s": 0.0
+        },
+        "truncated": 0.0,
+        "two_call_actions": null
+      },
+      "meetings": [
+        {
+          "duration_s": 2121.0,
+          "failure": null,
+          "input_segments": 304,
+          "input_words": 5598,
+          "meeting": "ES2003b",
+          "ok": true,
+          "report": {
+            "duplicates_dropped": 0,
+            "generate_s": 44.8611216,
+            "generated_tokens": 4746,
+            "generated_tokens_per_s": 105.79316411919581,
+            "invalid_replies": 0,
+            "looping": 0,
+            "map_parts": 4,
+            "max_prompt_tokens": 5191,
+            "max_reply_budget": 4107,
+            "planner_window": 16384,
+            "prompt_s": 17.6761273,
+            "prompt_tokens": 20980,
+            "prompt_tokens_per_s": 1186.911569707919,
+            "reduce_steps": 1,
+            "repairs": 0,
+            "replans": 0,
+            "requests": 5,
+            "steps": [
+              {
+                "requests": 1,
+                "seconds": 23.1032653,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 7.453286,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 12.2918324,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 8.1155018,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 11.7277501,
+                "step": "reduce"
+              }
+            ],
+            "timing": {
+              "hangup_s": 19.8432519,
+              "last_map_s": 8.1155018,
+              "map_s": 50.9638855,
+              "map_steps": 4,
+              "reduce_s": 11.7277501,
+              "single_s": 0.0
+            },
+            "truncated": 0
+          },
+          "score": {
+            "actions": {
+              "caught": 0,
+              "matches": [],
+              "reference": 0,
+              "summary": 4
+            },
+            "actions_cov": {
+              "caught": 0,
+              "covered": [],
+              "reference": 0,
+              "summary": 4
+            },
+            "actions_rr": {
+              "caught": 0,
+              "matches": [],
+              "reference": 0,
+              "summary": 4
+            },
+            "decisions": {
+              "caught": 1,
+              "matches": [
+                {
+                  "reference": 1,
+                  "score": 0.5,
+                  "summary": 2
+                }
+              ],
+              "reference": 9,
+              "summary": 7
+            },
+            "decisions_cov": {
+              "caught": 5,
+              "covered": [
+                {
+                  "reference": 1,
+                  "score": 0.6666666666666666
+                },
+                {
+                  "reference": 3,
+                  "score": 0.6666666666666666
+                },
+                {
+                  "reference": 4,
+                  "score": 0.6666666666666666
+                },
+                {
+                  "reference": 5,
+                  "score": 0.5
+                },
+                {
+                  "reference": 6,
+                  "score": 0.6666666666666666
+                }
+              ],
+              "reference": 9,
+              "summary": 7
+            },
+            "decisions_rr": {
+              "caught": 3,
+              "matches": [
+                {
+                  "reference": 1,
+                  "score": 0.6666666666666666,
+                  "summary": 0
+                },
+                {
+                  "reference": 5,
+                  "score": 0.5,
+                  "summary": 2
+                },
+                {
+                  "reference": 3,
+                  "score": 0.6666666666666666,
+                  "summary": 3
+                }
+              ],
+              "reference": 9,
+              "summary": 7
+            },
+            "rouge1": {
+              "f": 0.3753846153846154,
+              "p": 0.32620320855614976,
+              "r": 0.4420289855072464
+            },
+            "rouge2": {
+              "f": 0.043343653250773995,
+              "p": 0.03763440860215054,
+              "r": 0.051094890510948905
+            },
+            "rougeL": {
+              "f": 0.16615384615384615,
+              "p": 0.1443850267379679,
+              "r": 0.1956521739130435
+            },
+            "rougeLsum": {
+              "f": 0.3569230769230769,
+              "p": 0.31016042780748665,
+              "r": 0.42028985507246375
+            }
+          },
+          "seconds": 62.6959598,
+          "summary": {
+            "action_items": [
+              {
+                "due": null,
+                "owner": "Project Manager",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000d6",
+                  "0193a5b0-1c00-7000-8000-0000000000d7"
+                ],
+                "task": "Finalize the remote control design details including the joystick layout and button functions before the next meeting."
+              },
+              {
+                "due": null,
+                "owner": "Industrial Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000108",
+                  "0193a5b0-1c00-7000-8000-000000000117"
+                ],
+                "task": "Look into the feasibility of the speaker, LED, and transmitter, considering power requirements for an LCD screen."
+              },
+              {
+                "due": null,
+                "owner": "Marketing Expert",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000010b"
+                ],
+                "task": "Provide the frequency and options people use most often for the software side of the interface."
+              },
+              {
+                "due": null,
+                "owner": "Marketing Expert",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000010c"
+                ],
+                "task": "See what people think about the minimalist approach with a joystick to control basic functions and manipulating it like a mobile."
+              }
+            ],
+            "decisions": [
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000008d",
+                  "0193a5b0-1c00-7000-8000-00000000008e"
+                ],
+                "text": "The remote control display will be black and white to reduce costs."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000092",
+                  "0193a5b0-1c00-7000-8000-000000000093"
+                ],
+                "text": "The target audience is the general public who have used mobile phones."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000e3",
+                  "0193a5b0-1c00-7000-8000-0000000000e4"
+                ],
+                "text": "Teletext functionality will be dropped from the remote control."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000009a",
+                  "0193a5b0-1c00-7000-8000-0000000000dc",
+                  "0193a5b0-1c00-7000-8000-0000000000e6"
+                ],
+                "text": "The remote will feature a joystick for channel and volume control, along with buttons for power and menu navigation."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000103",
+                  "0193a5b0-1c00-7000-8000-000000000118"
+                ],
+                "text": "The remote will include a speaker and an LED for locating purposes."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000011c",
+                  "0193a5b0-1c00-7000-8000-00000000011e"
+                ],
+                "text": "The transmitter for the locating feature may be built into the television."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000012c"
+                ],
+                "text": "The slogan 'Real Reaction' and the company initials 'RR' will be incorporated into the design."
+              }
+            ],
+            "enhanced_notes": [
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000009a",
+                      "0193a5b0-1c00-7000-8000-0000000000dc",
+                      "0193a5b0-1c00-7000-8000-0000000000e6"
+                    ],
+                    "text": "The remote will feature a joystick for channel and volume control, along with standard buttons for power and menu navigation."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000008d",
+                      "0193a5b0-1c00-7000-8000-00000000008e",
+                      "0193a5b0-1c00-7000-8000-00000000008f"
+                    ],
+                    "text": "The display should be black and white to keep unit costs down, with colour as a potential future development."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000103",
+                      "0193a5b0-1c00-7000-8000-000000000118"
+                    ],
+                    "text": "The remote will include a speaker and an LED for locating purposes."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000011c",
+                      "0193a5b0-1c00-7000-8000-00000000011e"
+                    ],
+                    "text": "The transmitter for the locating feature may be built into the television."
+                  }
+                ],
+                "heading": "Design Approach and Features"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000092",
+                      "0193a5b0-1c00-7000-8000-000000000093"
+                    ],
+                    "text": "The target audience is the general public who have used mobile phones."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000a7",
+                      "0193a5b0-1c00-7000-8000-0000000000a8"
+                    ],
+                    "text": "The market is focused on remote control rationalisation, where users want one device to control multiple devices."
+                  }
+                ],
+                "heading": "Target Audience and Market Strategy"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000012c"
+                    ],
+                    "text": "The slogan 'Real Reaction' and the company initials 'RR' will be incorporated into the design."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000125",
+                      "0193a5b0-1c00-7000-8000-000000000127",
+                      "0193a5b0-1c00-7000-8000-00000000012f"
+                    ],
+                    "text": "The Industrial Designer suggested the slogan 'We put the fashion in electronics' and noted that the double arc could serve as the enter button."
+                  }
+                ],
+                "heading": "Branding and Corporate Image"
+              }
+            ],
+            "open_questions": [],
+            "title": "Functional Design Meeting - Remote Control",
+            "tldr": "The team reviewed marketing research and previous minutes to define the new remote control's features. They decided to target the general public, drop teletext, and use a joystick with a black-and-white display. The design will include a locating feature with a speaker, LED, and a TV-attached transmitter, along with specific branding elements.",
+            "topics": [
+              "Design Approach and Features",
+              "Target Audience and Market Strategy",
+              "Branding and Corporate Image",
+              "Locating the Remote"
+            ]
+          }
+        },
+        {
+          "duration_s": 1581.0,
+          "failure": null,
+          "input_segments": 322,
+          "input_words": 4460,
+          "meeting": "ES2011b",
+          "ok": true,
+          "report": {
+            "duplicates_dropped": 0,
+            "generate_s": 40.5683236,
+            "generated_tokens": 4385,
+            "generated_tokens_per_s": 108.0892580929817,
+            "invalid_replies": 0,
+            "looping": 0,
+            "map_parts": 3,
+            "max_prompt_tokens": 5906,
+            "max_reply_budget": 2862,
+            "planner_window": 16384,
+            "prompt_s": 2.8025862999999998,
+            "prompt_tokens": 17881,
+            "prompt_tokens_per_s": 6380.178194691097,
+            "reduce_steps": 1,
+            "repairs": 0,
+            "replans": 0,
+            "requests": 4,
+            "steps": [
+              {
+                "requests": 1,
+                "seconds": 6.1713289,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 11.0333652,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 8.164739,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 18.052071,
+                "step": "reduce"
+              }
+            ],
+            "timing": {
+              "hangup_s": 26.216810000000002,
+              "last_map_s": 8.164739,
+              "map_s": 25.369433100000002,
+              "map_steps": 3,
+              "reduce_s": 18.052071,
+              "single_s": 0.0
+            },
+            "truncated": 0
+          },
+          "score": {
+            "actions": {
+              "caught": 0,
+              "matches": [],
+              "reference": 2,
+              "summary": 2
+            },
+            "actions_cov": {
+              "caught": 1,
+              "covered": [
+                {
+                  "reference": 0,
+                  "score": 0.5
+                }
+              ],
+              "reference": 2,
+              "summary": 2
+            },
+            "actions_rr": {
+              "caught": 1,
+              "matches": [
+                {
+                  "reference": 0,
+                  "score": 0.5,
+                  "summary": 1
+                }
+              ],
+              "reference": 2,
+              "summary": 2
+            },
+            "decisions": {
+              "caught": 3,
+              "matches": [
+                {
+                  "reference": 1,
+                  "score": 0.5,
+                  "summary": 0
+                },
+                {
+                  "reference": 6,
+                  "score": 0.6,
+                  "summary": 5
+                },
+                {
+                  "reference": 2,
+                  "score": 0.5714285714285714,
+                  "summary": 7
+                }
+              ],
+              "reference": 8,
+              "summary": 8
+            },
+            "decisions_cov": {
+              "caught": 3,
+              "covered": [
+                {
+                  "reference": 1,
+                  "score": 0.6666666666666666
+                },
+                {
+                  "reference": 3,
+                  "score": 0.5
+                },
+                {
+                  "reference": 6,
+                  "score": 0.6
+                }
+              ],
+              "reference": 8,
+              "summary": 8
+            },
+            "decisions_rr": {
+              "caught": 2,
+              "matches": [
+                {
+                  "reference": 1,
+                  "score": 0.6666666666666666,
+                  "summary": 0
+                },
+                {
+                  "reference": 6,
+                  "score": 0.6,
+                  "summary": 5
+                }
+              ],
+              "reference": 8,
+              "summary": 8
+            },
+            "rouge1": {
+              "f": 0.3211446740858505,
+              "p": 0.22544642857142858,
+              "r": 0.5580110497237569
+            },
+            "rouge2": {
+              "f": 0.06379585326953748,
+              "p": 0.0447427293064877,
+              "r": 0.1111111111111111
+            },
+            "rougeL": {
+              "f": 0.15262321144674085,
+              "p": 0.10714285714285714,
+              "r": 0.26519337016574585
+            },
+            "rougeLsum": {
+              "f": 0.3052464228934817,
+              "p": 0.21428571428571427,
+              "r": 0.5303867403314917
+            }
+          },
+          "seconds": 43.4225431,
+          "summary": {
+            "action_items": [
+              {
+                "due": null,
+                "owner": "Project Manager",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000129"
+                ],
+                "task": "Check if the project requirements mean using the remote only for television (not for DVD or internet) and update the team on the next meeting."
+              },
+              {
+                "due": null,
+                "owner": "Everyone",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000140"
+                ],
+                "task": "Finish the questionnaire, think about the discussed points, and bring new ideas to the next meeting."
+              }
+            ],
+            "decisions": [
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000006f"
+                ],
+                "text": "Speech recognition is removed from the remote features."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000050"
+                ],
+                "text": "Teletext is removed from the remote features."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000a2"
+                ],
+                "text": "VCR capabilities are removed from the remote features."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000075"
+                ],
+                "text": "The location finder will use a radio signal sender sold separately."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000096"
+                ],
+                "text": "The location finder output on the remote will be a buzzer."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000c1"
+                ],
+                "text": "The remote will include a separate power button."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000b5"
+                ],
+                "text": "The power button will be red."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000064"
+                ],
+                "text": "The target audience is teenagers and young professionals."
+              }
+            ],
+            "enhanced_notes": [
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000001d"
+                    ],
+                    "text": "A study of 100 people showed users dislike how remotes look, feel, and match their operating behavior."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000001e",
+                      "0193a5b0-1c00-7000-8000-000000000020"
+                    ],
+                    "text": "Users only use 10% of the buttons, specifically channel selection, teletext, volume, and power."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000020",
+                      "0193a5b0-1c00-7000-8000-000000000021"
+                    ],
+                    "text": "Other settings buttons are used less than 0.8 times per hour, suggesting a single settings button might suffice."
+                  }
+                ],
+                "heading": "Usability Study Findings"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000021",
+                      "0193a5b0-1c00-7000-8000-000000000022"
+                    ],
+                    "text": "People aged 15 to 35 are willing to pay more for features like speech recognition, while those over 35 are not."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000023"
+                    ],
+                    "text": "The team needs to discuss whether to include advanced features based on the target demographic."
+                  }
+                ],
+                "heading": "Target Market and Features"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000050"
+                    ],
+                    "text": "Teletext is removed from the list due to internet popularity."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000050"
+                    ],
+                    "text": "The remote should be used only for television, with no extra internet features."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000051",
+                      "0193a5b0-1c00-7000-8000-000000000052"
+                    ],
+                    "text": "The design must incorporate the corporate image with silver and gold or yellow colors."
+                  }
+                ],
+                "heading": "Project Requirements and Scope"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000069",
+                      "0193a5b0-1c00-7000-8000-00000000006f",
+                      "0193a5b0-1c00-7000-8000-000000000070"
+                    ],
+                    "text": "Speech recognition is dropped because it is hard to program, prone to interference from TV sound, and too expensive for the budget."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000045",
+                      "0193a5b0-1c00-7000-8000-000000000046",
+                      "0193a5b0-1c00-7000-8000-000000000075"
+                    ],
+                    "text": "The location finder feature is kept, requiring a separate sender device (e.g., sticking to the TV or wall) that emits a radio signal."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000094",
+                      "0193a5b0-1c00-7000-8000-000000000096",
+                      "0193a5b0-1c00-7000-8000-000000000099"
+                    ],
+                    "text": "The location finder output on the remote will be a buzzer, not a light, because sound works better when the remote is hidden under furniture."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000a2",
+                      "0193a5b0-1c00-7000-8000-0000000000a5",
+                      "0193a5b0-1c00-7000-8000-0000000000a8"
+                    ],
+                    "text": "VCR capabilities are dropped because VCR buttons are not standardized internationally, whereas DVD buttons are."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000c1"
+                    ],
+                    "text": "The remote must include a separate power button and number buttons."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000b5"
+                    ],
+                    "text": "The power button should be red."
+                  }
+                ],
+                "heading": "Feature Decisions"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000007e",
+                      "0193a5b0-1c00-7000-8000-000000000084"
+                    ],
+                    "text": "The location sender will be sold separately as a two-part package."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000049"
+                    ],
+                    "text": "The remote will use a battery, button pad, pre-made chip, IR transmitter, and radio receiver."
+                  }
+                ],
+                "heading": "Hardware and Design"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000c8",
+                      "0193a5b0-1c00-7000-8000-0000000000cc",
+                      "0193a5b0-1c00-7000-8000-0000000000cf"
+                    ],
+                    "text": "The team discussed a circular touch-pad interface similar to the iPod, noting its ease of use and ability to handle multiple functions in one device."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000d3",
+                      "0193a5b0-1c00-7000-8000-0000000000d6",
+                      "0193a5b0-1c00-7000-8000-0000000000dd"
+                    ],
+                    "text": "The design relies on the same technology as a mouse pad, allowing for scrolling and specific touch regions to trigger actions like 'zap' or volume changes."
+                  }
+                ],
+                "heading": "Interface Concept and Inspiration"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000e5",
+                      "0193a5b0-1c00-7000-8000-0000000000e9",
+                      "0193a5b0-1c00-7000-8000-0000000000ec"
+                    ],
+                    "text": "The group debated how to map functions like volume and channel selection on a rotating circle, considering whether to use a dedicated button to switch modes or rely on the device's logic."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000122",
+                      "0193a5b0-1c00-7000-8000-000000000136",
+                      "0193a5b0-1c00-7000-8000-00000000013a"
+                    ],
+                    "text": "They discussed the need for a function switch button to handle different devices (TV, DVD, VCR) and whether the circular disc can adapt its function based on the active device."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000012f",
+                      "0193a5b0-1c00-7000-8000-000000000132"
+                    ],
+                    "text": "The team noted that while DVD remotes are simple, having a unified remote for TV and DVD is desirable to avoid switching devices."
+                  }
+                ],
+                "heading": "Functionality and Device Compatibility"
+              }
+            ],
+            "open_questions": [
+              "Whether the circular touch-pad can effectively switch functions (e.g., from channel selection to track switching) depending on the active device (TV vs. DVD).",
+              "Whether a dedicated function switch button is needed to toggle between TV, DVD, and VCR modes."
+            ],
+            "title": "Functional Design Meeting: Remote Control",
+            "tldr": "The team reviewed usability findings and decided to target teenagers and young professionals, dropping speech recognition, teletext, and VCR capabilities. They agreed on a red power button, silver/gold styling, and a location finder with a buzzer output. The group discussed a circular touch-pad interface and assigned tasks to finalize questionnaires and clarify project scope.",
+            "topics": [
+              "Usability Study Results",
+              "Target Market Demographics",
+              "Feature Prioritization",
+              "UI Design Principles",
+              "Project Requirements",
+              "Target Audience",
+              "Hardware and Design",
+              "Interface Design",
+              "Functionality Mapping",
+              "Device Compatibility",
+              "Next Steps"
+            ]
+          }
+        },
+        {
+          "duration_s": 1764.0,
+          "failure": null,
+          "input_segments": 222,
+          "input_words": 4254,
+          "meeting": "IS1008b",
+          "ok": true,
+          "report": {
+            "duplicates_dropped": 0,
+            "generate_s": 43.4372944,
+            "generated_tokens": 4670,
+            "generated_tokens_per_s": 107.5113002434148,
+            "invalid_replies": 0,
+            "looping": 0,
+            "map_parts": 3,
+            "max_prompt_tokens": 4713,
+            "max_reply_budget": 3054,
+            "planner_window": 16384,
+            "prompt_s": 2.442197,
+            "prompt_tokens": 15928,
+            "prompt_tokens_per_s": 6521.99638276519,
+            "reduce_steps": 1,
+            "repairs": 0,
+            "replans": 0,
+            "requests": 4,
+            "steps": [
+              {
+                "requests": 1,
+                "seconds": 7.3865312,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 10.8880813,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 7.6993617,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 19.9551777,
+                "step": "reduce"
+              }
+            ],
+            "timing": {
+              "hangup_s": 27.6545394,
+              "last_map_s": 7.6993617,
+              "map_s": 25.9739742,
+              "map_steps": 3,
+              "reduce_s": 19.9551777,
+              "single_s": 0.0
+            },
+            "truncated": 0
+          },
+          "score": {
+            "actions": {
+              "caught": 0,
+              "matches": [],
+              "reference": 4,
+              "summary": 9
+            },
+            "actions_cov": {
+              "caught": 1,
+              "covered": [
+                {
+                  "reference": 3,
+                  "score": 0.6666666666666666
+                }
+              ],
+              "reference": 4,
+              "summary": 9
+            },
+            "actions_rr": {
+              "caught": 0,
+              "matches": [],
+              "reference": 4,
+              "summary": 9
+            },
+            "decisions": {
+              "caught": 0,
+              "matches": [],
+              "reference": 2,
+              "summary": 1
+            },
+            "decisions_cov": {
+              "caught": 0,
+              "covered": [],
+              "reference": 2,
+              "summary": 1
+            },
+            "decisions_rr": {
+              "caught": 0,
+              "matches": [],
+              "reference": 2,
+              "summary": 1
+            },
+            "rouge1": {
+              "f": 0.36867862969004894,
+              "p": 0.2684085510688836,
+              "r": 0.5885416666666666
+            },
+            "rouge2": {
+              "f": 0.11129296235679215,
+              "p": 0.08095238095238096,
+              "r": 0.17801047120418848
+            },
+            "rougeL": {
+              "f": 0.19249592169657426,
+              "p": 0.14014251781472684,
+              "r": 0.3072916666666667
+            },
+            "rougeLsum": {
+              "f": 0.34910277324632955,
+              "p": 0.25415676959619954,
+              "r": 0.5572916666666666
+            }
+          },
+          "seconds": 45.9300035,
+          "summary": {
+            "action_items": [
+              {
+                "due": null,
+                "owner": "Industrial Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000028"
+                ],
+                "task": "Add the unbreakable feature to the outline design."
+              },
+              {
+                "due": null,
+                "owner": "Project Manager",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000048"
+                ],
+                "task": "Send an email regarding the project aim and target revenue of at least fifty million Euro."
+              },
+              {
+                "due": null,
+                "owner": "Project Manager",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000087",
+                  "0193a5b0-1c00-7000-8000-000000000088"
+                ],
+                "task": "Provide technical feedback or coordinate a tie-up with companies like Intel or IBM for speech recognition if needed."
+              },
+              {
+                "due": null,
+                "owner": "Marketing Expert",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000008f"
+                ],
+                "task": "Go back to management to be more precise about whether they want to take a risk on a more expensive, innovative product."
+              },
+              {
+                "due": null,
+                "owner": "Marketing Expert",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000094"
+                ],
+                "task": "Provide sales projections to the Project Manager."
+              },
+              {
+                "due": null,
+                "owner": "Industrial Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000008d"
+                ],
+                "task": "Find out the timeframe needed to develop the speech recognition feature."
+              },
+              {
+                "due": null,
+                "owner": "Project Manager",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000be"
+                ],
+                "task": "Help the User Interface Designer get technical companies to assist with making the design slim and adding features like speech recognition."
+              },
+              {
+                "due": null,
+                "owner": "Project Manager",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000cd",
+                  "0193a5b0-1c00-7000-8000-0000000000d9"
+                ],
+                "task": "Send the minutes of the meeting to the team."
+              },
+              {
+                "due": null,
+                "owner": "All Attendees",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000d9"
+                ],
+                "task": "Put all information in the sharing folder so everybody can share the information."
+              }
+            ],
+            "decisions": [
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000c9",
+                  "0193a5b0-1c00-7000-8000-0000000000ca"
+                ],
+                "text": "The team will start by including all potential features in the design and eliminate them later in the process."
+              }
+            ],
+            "enhanced_notes": [
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000009"
+                    ],
+                    "text": "Teletext is considered outmoded and will not be included in the new design."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000009"
+                    ],
+                    "text": "The remote control should be used only for the TV."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000000a"
+                    ],
+                    "text": "The project must establish a strong marketing or corporate image."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000018"
+                    ],
+                    "text": "The device must turn the TV on and off reliably on the first press without waffling."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000018"
+                    ],
+                    "text": "The remote needs to be easy to find."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000022"
+                    ],
+                    "text": "The remote should be waterproof."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000022"
+                    ],
+                    "text": "The remote should provide an oral cue to confirm when it has received a command."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000024",
+                      "0193a5b0-1c00-7000-8000-000000000026"
+                    ],
+                    "text": "The remote should be unbreakable to withstand being thrown by children."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000049",
+                      "0193a5b0-1c00-7000-8000-00000000004a",
+                      "0193a5b0-1c00-7000-8000-00000000004c"
+                    ],
+                    "text": "The remote control should be universal for any TV and slim in design."
+                  }
+                ],
+                "heading": "Project Requirements and Design Goals"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000021"
+                    ],
+                    "text": "The Industrial Designer suggested an inflatable remote that changes size based on user preference."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000002c",
+                      "0193a5b0-1c00-7000-8000-00000000002e",
+                      "0193a5b0-1c00-7000-8000-000000000033"
+                    ],
+                    "text": "Titanium was proposed as a material for the remote."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000035",
+                      "0193a5b0-1c00-7000-8000-00000000003a"
+                    ],
+                    "text": "The team noted that titanium is expensive and difficult to inflate."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000004f",
+                      "0193a5b0-1c00-7000-8000-000000000050"
+                    ],
+                    "text": "The Industrial Designer noted that slim remotes might be hard to find."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000b5",
+                      "0193a5b0-1c00-7000-8000-0000000000b8",
+                      "0193a5b0-1c00-7000-8000-0000000000ba"
+                    ],
+                    "text": "The Industrial Designer noted that the 'feel' of the device when held is a critical parameter for daily users."
+                  }
+                ],
+                "heading": "Material and Design Concepts"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000060",
+                      "0193a5b0-1c00-7000-8000-000000000061"
+                    ],
+                    "text": "75-90% of the 15-35 age group is willing to pay for speech recognition on a remote."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000064",
+                      "0193a5b0-1c00-7000-8000-000000000067",
+                      "0193a5b0-1c00-7000-8000-000000000068"
+                    ],
+                    "text": "Proposed commands include 'louder', 'softer', 'on', 'off', and finding the remote via a beep sound."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000006f",
+                      "0193a5b0-1c00-7000-8000-000000000072"
+                    ],
+                    "text": "The Industrial Designer noted that training is an issue with commands and it might impact battery life."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000076",
+                      "0193a5b0-1c00-7000-8000-000000000078",
+                      "0193a5b0-1c00-7000-8000-00000000007e"
+                    ],
+                    "text": "The User Interface Designer warned that ambient TV speech could trigger false commands, suggesting single-word recognition is necessary."
+                  }
+                ],
+                "heading": "Speech Recognition Feature"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000059"
+                    ],
+                    "text": "The initial sales price was set at twenty-five Euro with a production price of twelve and a half Euro."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000005a",
+                      "0193a5b0-1c00-7000-8000-00000000005c",
+                      "0193a5b0-1c00-7000-8000-00000000008f"
+                    ],
+                    "text": "Marketing indicated that twenty-five Euros is a reasonable market price, but suggested taking a risk to push the price up slightly if added features are included."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000005c"
+                    ],
+                    "text": "Surveys show that 80% of the 15-35 age group is willing to spend more on trendy items."
+                  }
+                ],
+                "heading": "Pricing and Market Strategy"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000c0",
+                      "0193a5b0-1c00-7000-8000-0000000000c9",
+                      "0193a5b0-1c00-7000-8000-0000000000ca"
+                    ],
+                    "text": "The team debated whether to start designing with all proposed features or only the essential ones."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000c0",
+                      "0193a5b0-1c00-7000-8000-0000000000c9",
+                      "0193a5b0-1c00-7000-8000-0000000000ca"
+                    ],
+                    "text": "The Industrial Designer suggested starting with all features and eliminating them later, which the Project Manager agreed to."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000cf",
+                      "0193a5b0-1c00-7000-8000-0000000000d2",
+                      "0193a5b0-1c00-7000-8000-0000000000d4"
+                    ],
+                    "text": "The User Interface Designer expressed concern about wasting time on features that might be discarded, but the group proceeded with the suggestion to include all features initially."
+                  }
+                ],
+                "heading": "Feature Selection Strategy"
+              }
+            ],
+            "open_questions": [
+              "The team needs to rank the proposed material options and features.",
+              "The financial objectives and budget constraints for the project are not yet defined.",
+              "How much will the speech recognition feature impact the overall cost and battery life?",
+              "Can a speech recognizer be found that filters out TV speech to prevent false triggers?"
+            ],
+            "title": "Functional Design Meeting - Remote Control Project",
+            "tldr": "The team defined requirements for a new universal remote control, deciding to drop teletext and focus on reliability, waterproofing, and a slim design. They agreed to include all potential features initially to eliminate them later, with a target price of twenty-five Euro. Discussions covered speech recognition feasibility, material options like titanium, and the need for a strong corporate image.",
+            "topics": [
+              "New Project Requirements",
+              "Functional Design",
+              "User Requirements",
+              "Material Selection",
+              "Budget and Financials",
+              "Product Design",
+              "Pricing Strategy",
+              "Speech Recognition Feasibility",
+              "Market Research",
+              "User Interface Design Requirements",
+              "Industrial Design and Feel",
+              "Feature Selection Strategy"
+            ]
+          }
+        },
+        {
+          "duration_s": 2246.06,
+          "failure": null,
+          "input_segments": 547,
+          "input_words": 6314,
+          "meeting": "TS3004b",
+          "ok": true,
+          "report": {
+            "duplicates_dropped": 0,
+            "generate_s": 45.9939785,
+            "generated_tokens": 4812,
+            "generated_tokens_per_s": 104.62239095058933,
+            "invalid_replies": 0,
+            "looping": 0,
+            "map_parts": 4,
+            "max_prompt_tokens": 6591,
+            "max_reply_budget": 3892,
+            "planner_window": 16384,
+            "prompt_s": 8.2087937,
+            "prompt_tokens": 26389,
+            "prompt_tokens_per_s": 3214.723254648244,
+            "reduce_steps": 1,
+            "repairs": 0,
+            "replans": 0,
+            "requests": 5,
+            "steps": [
+              {
+                "requests": 1,
+                "seconds": 6.758118,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 11.4740194,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 9.3504789,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 8.6192699,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 18.0639771,
+                "step": "reduce"
+              }
+            ],
+            "timing": {
+              "hangup_s": 26.683247,
+              "last_map_s": 8.6192699,
+              "map_s": 36.2018862,
+              "map_steps": 4,
+              "reduce_s": 18.0639771,
+              "single_s": 0.0
+            },
+            "truncated": 0
+          },
+          "score": {
+            "actions": {
+              "caught": 0,
+              "matches": [],
+              "reference": 1,
+              "summary": 4
+            },
+            "actions_cov": {
+              "caught": 0,
+              "covered": [],
+              "reference": 1,
+              "summary": 4
+            },
+            "actions_rr": {
+              "caught": 0,
+              "matches": [],
+              "reference": 1,
+              "summary": 4
+            },
+            "decisions": {
+              "caught": 1,
+              "matches": [
+                {
+                  "reference": 0,
+                  "score": 0.5,
+                  "summary": 1
+                }
+              ],
+              "reference": 4,
+              "summary": 12
+            },
+            "decisions_cov": {
+              "caught": 2,
+              "covered": [
+                {
+                  "reference": 0,
+                  "score": 0.8333333333333334
+                },
+                {
+                  "reference": 3,
+                  "score": 0.6666666666666666
+                }
+              ],
+              "reference": 4,
+              "summary": 12
+            },
+            "decisions_rr": {
+              "caught": 1,
+              "matches": [
+                {
+                  "reference": 0,
+                  "score": 0.5,
+                  "summary": 1
+                }
+              ],
+              "reference": 4,
+              "summary": 12
+            },
+            "rouge1": {
+              "f": 0.37099494097807756,
+              "p": 0.2770780856423174,
+              "r": 0.5612244897959183
+            },
+            "rouge2": {
+              "f": 0.07106598984771573,
+              "p": 0.05303030303030303,
+              "r": 0.1076923076923077
+            },
+            "rougeL": {
+              "f": 0.17200674536256322,
+              "p": 0.12846347607052896,
+              "r": 0.2602040816326531
+            },
+            "rougeLsum": {
+              "f": 0.34401349072512644,
+              "p": 0.25692695214105793,
+              "r": 0.5204081632653061
+            }
+          },
+          "seconds": 54.267258,
+          "summary": {
+            "action_items": [
+              {
+                "due": null,
+                "owner": "User Interface Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000cf"
+                ],
+                "task": "Figure out what buttons to put on the remote control layers."
+              },
+              {
+                "due": null,
+                "owner": "User Interface Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000cf"
+                ],
+                "task": "Do the design of the remote control."
+              },
+              {
+                "due": null,
+                "owner": "Industrial Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000184"
+                ],
+                "task": "Fill out the personal preference section that was not completed due to time constraints."
+              },
+              {
+                "due": null,
+                "owner": "Project Manager",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000193",
+                  "0193a5b0-1c00-7000-8000-000000000194"
+                ],
+                "task": "Review and communicate the new project requirements regarding the target market (customers younger than forty)."
+              }
+            ],
+            "decisions": [
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000002e"
+                ],
+                "text": "The product is defined as a TV remote control only."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000056",
+                  "0193a5b0-1c00-7000-8000-000000000057"
+                ],
+                "text": "Speech recognition and LCD screens are excluded from the design."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000079",
+                  "0193a5b0-1c00-7000-8000-0000000000b3"
+                ],
+                "text": "The remote control interface will use standard buttons and basic functions to ensure usability for elderly people."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000085",
+                  "0193a5b0-1c00-7000-8000-000000000090"
+                ],
+                "text": "The 'favorites' feature was rejected because it requires users to remember which button corresponds to which channel."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000c3",
+                  "0193a5b0-1c00-7000-8000-0000000000c9"
+                ],
+                "text": "The remote will include a menu button for modern TV functions, separate from frequently used buttons like volume and channel switching."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000105",
+                  "0193a5b0-1c00-7000-8000-000000000106"
+                ],
+                "text": "The LED indicator for button presses will be red."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000011b",
+                  "0193a5b0-1c00-7000-8000-000000000121",
+                  "0193a5b0-1c00-7000-8000-000000000124"
+                ],
+                "text": "The remote will include an automatic search function to find TV codes."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000018b",
+                  "0193a5b0-1c00-7000-8000-00000000018c",
+                  "0193a5b0-1c00-7000-8000-00000000018e"
+                ],
+                "text": "The teletext option will be included in the remote control."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000001e6"
+                ],
+                "text": "Speech recognition is dropped from the remote control design."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000020f"
+                ],
+                "text": "Teletext options will be kept on a single level of the remote control."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000001f6"
+                ],
+                "text": "The remote control will feature a see-through design option."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000001f7"
+                ],
+                "text": "The remote control will feature different colors as an option."
+              }
+            ],
+            "enhanced_notes": [
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000002e"
+                    ],
+                    "text": "The product is a TV remote control only, not a universal remote."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000033",
+                      "0193a5b0-1c00-7000-8000-000000000193",
+                      "0193a5b0-1c00-7000-8000-000000000194"
+                    ],
+                    "text": "The target audience was initially people aged 40 and older, but requirements were updated to target customers younger than forty."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000044",
+                      "0193a5b0-1c00-7000-8000-000000000045",
+                      "0193a5b0-1c00-7000-8000-000000000053"
+                    ],
+                    "text": "Older users prefer a beautiful design and are willing to spend more money, while younger users are more critical about price."
+                  }
+                ],
+                "heading": "Product Scope and Target Audience"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000005f"
+                    ],
+                    "text": "The design style should follow the motto 'fashion in electronics'."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000060",
+                      "0193a5b0-1c00-7000-8000-000000000061",
+                      "0193a5b0-1c00-7000-8000-000000000062"
+                    ],
+                    "text": "The product must look unique to stand out from other controls, but the interface must remain simple for elderly users."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000d3",
+                      "0193a5b0-1c00-7000-8000-0000000000d4"
+                    ],
+                    "text": "The remote should have a different shape than usual to stand out in a shop display."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000001f6",
+                      "0193a5b0-1c00-7000-8000-0000000001f7",
+                      "0193a5b0-1c00-7000-8000-0000000001fb"
+                    ],
+                    "text": "The remote will feature a see-through design option and different colors as an option."
+                  }
+                ],
+                "heading": "Design Philosophy and Features"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000078",
+                      "0193a5b0-1c00-7000-8000-000000000079",
+                      "0193a5b0-1c00-7000-8000-00000000007b"
+                    ],
+                    "text": "The design should use standardized methods similar to existing remote controls, focusing on basic functions like numbers, on/off, volume, and channels."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000007b"
+                    ],
+                    "text": "Buttons should be large with clear icons or text to help elderly users identify functions quickly."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000000c3",
+                      "0193a5b0-1c00-7000-8000-0000000000c9"
+                    ],
+                    "text": "The remote will include a menu button for modern TV functions, separate from frequently used buttons like volume and channel switching."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000200",
+                      "0193a5b0-1c00-7000-8000-000000000201"
+                    ],
+                    "text": "Simple buttons will be placed on the top, with more complicated buttons (if any) down below."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000208",
+                      "0193a5b0-1c00-7000-8000-00000000020f",
+                      "0193a5b0-1c00-7000-8000-000000000210"
+                    ],
+                    "text": "Teletext options will remain on one level rather than a second level, as they are not used frequently enough to justify extra complexity."
+                  }
+                ],
+                "heading": "Technical Functions and Button Layout"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000105",
+                      "0193a5b0-1c00-7000-8000-000000000106"
+                    ],
+                    "text": "The team decided the LED indicator should be red to show that the remote is active or a button is pressed."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000001e5",
+                      "0193a5b0-1c00-7000-8000-0000000001ed",
+                      "0193a5b0-1c00-7000-8000-0000000001ef"
+                    ],
+                    "text": "Buttons will light up when pressed for a few seconds so users can see what buttons are available in the dark."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000001ef",
+                      "0193a5b0-1c00-7000-8000-0000000001f1"
+                    ],
+                    "text": "The lighting must only work when the remote is used, turning off after about twenty seconds."
+                  }
+                ],
+                "heading": "Button Lighting and Indicators"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000056",
+                      "0193a5b0-1c00-7000-8000-000000000057",
+                      "0193a5b0-1c00-7000-8000-000000000058"
+                    ],
+                    "text": "Speech recognition and LCD screens are excluded because they are too expensive for the budget and not desired by the target audience."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000001ac",
+                      "0193a5b0-1c00-7000-8000-0000000001d5",
+                      "0193a5b0-1c00-7000-8000-0000000001e6"
+                    ],
+                    "text": "Speech recognition was ultimately rejected because it is not useful enough and too hard to realize within the short time to market."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000186",
+                      "0193a5b0-1c00-7000-8000-000000000179",
+                      "0193a5b0-1c00-7000-8000-00000000017a"
+                    ],
+                    "text": "The team considered adding Bluetooth integration and a sound device to locate the remote, but noted the production cost is tight."
+                  }
+                ],
+                "heading": "Rejected Features and Constraints"
+              }
+            ],
+            "open_questions": [
+              "Whether the remote control should be offered in different colors to make it look like a fashion item.",
+              "Whether the 'ten plus' button combination for channels above ten is feasible for elderly users.",
+              "Whether to include Bluetooth integration and a sound device for locating the remote given the tight production cost.",
+              "Whether the teletext option should be skipped despite its low cost and existing usage."
+            ],
+            "title": "TV Remote Control Design Meeting",
+            "tldr": "The team defined the product as a TV remote control with a unique design, targeting a demographic that shifted from 40+ to under 40. They decided to include features like a red LED indicator, automatic TV code search, and a see-through option, while rejecting speech recognition and LCD screens. Action items were assigned to finalize button layouts and update project requirements.",
+            "topics": [
+              "Product Scope",
+              "Target Audience",
+              "Design Requirements",
+              "Feature Selection",
+              "Design Philosophy",
+              "Technical Functions",
+              "Product Form Factor",
+              "LED indicator design",
+              "Automatic TV search function",
+              "Target market demographics",
+              "Additional features (Bluetooth, sound)",
+              "Production costs"
+            ]
+          }
+        },
+        {
+          "duration_s": 2353.9,
+          "failure": null,
+          "input_segments": 773,
+          "input_words": 6865,
+          "meeting": "TS3006b",
+          "ok": true,
+          "report": {
+            "duplicates_dropped": 0,
+            "generate_s": 51.0806717,
+            "generated_tokens": 5432,
+            "generated_tokens_per_s": 106.34159299827688,
+            "invalid_replies": 0,
+            "looping": 0,
+            "map_parts": 4,
+            "max_prompt_tokens": 7296,
+            "max_reply_budget": 4127,
+            "planner_window": 16384,
+            "prompt_s": 5.1028416,
+            "prompt_tokens": 31195,
+            "prompt_tokens_per_s": 6113.260501756512,
+            "reduce_steps": 1,
+            "repairs": 0,
+            "replans": 0,
+            "requests": 5,
+            "steps": [
+              {
+                "requests": 1,
+                "seconds": 10.4190135,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 10.752104,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 7.4168245,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 10.5819802,
+                "step": "map"
+              },
+              {
+                "requests": 1,
+                "seconds": 17.0792038,
+                "step": "reduce"
+              }
+            ],
+            "timing": {
+              "hangup_s": 27.661184,
+              "last_map_s": 10.5819802,
+              "map_s": 39.1699222,
+              "map_steps": 4,
+              "reduce_s": 17.0792038,
+              "single_s": 0.0
+            },
+            "truncated": 0
+          },
+          "score": {
+            "actions": {
+              "caught": 0,
+              "matches": [],
+              "reference": 3,
+              "summary": 6
+            },
+            "actions_cov": {
+              "caught": 1,
+              "covered": [
+                {
+                  "reference": 1,
+                  "score": 0.6666666666666666
+                }
+              ],
+              "reference": 3,
+              "summary": 6
+            },
+            "actions_rr": {
+              "caught": 0,
+              "matches": [],
+              "reference": 3,
+              "summary": 6
+            },
+            "decisions": {
+              "caught": 2,
+              "matches": [
+                {
+                  "reference": 0,
+                  "score": 0.5454545454545454,
+                  "summary": 3
+                },
+                {
+                  "reference": 6,
+                  "score": 0.6,
+                  "summary": 10
+                }
+              ],
+              "reference": 8,
+              "summary": 12
+            },
+            "decisions_cov": {
+              "caught": 4,
+              "covered": [
+                {
+                  "reference": 0,
+                  "score": 1.0
+                },
+                {
+                  "reference": 1,
+                  "score": 0.6666666666666666
+                },
+                {
+                  "reference": 4,
+                  "score": 0.5
+                },
+                {
+                  "reference": 6,
+                  "score": 1.0
+                }
+              ],
+              "reference": 8,
+              "summary": 12
+            },
+            "decisions_rr": {
+              "caught": 3,
+              "matches": [
+                {
+                  "reference": 0,
+                  "score": 0.6,
+                  "summary": 3
+                },
+                {
+                  "reference": 4,
+                  "score": 0.5,
+                  "summary": 4
+                },
+                {
+                  "reference": 6,
+                  "score": 0.75,
+                  "summary": 10
+                }
+              ],
+              "reference": 8,
+              "summary": 12
+            },
+            "rouge1": {
+              "f": 0.431924882629108,
+              "p": 0.4052863436123348,
+              "r": 0.4623115577889447
+            },
+            "rouge2": {
+              "f": 0.1320754716981132,
+              "p": 0.12389380530973451,
+              "r": 0.1414141414141414
+            },
+            "rougeL": {
+              "f": 0.23004694835680753,
+              "p": 0.21585903083700442,
+              "r": 0.24623115577889448
+            },
+            "rougeLsum": {
+              "f": 0.41784037558685444,
+              "p": 0.3920704845814978,
+              "r": 0.4472361809045226
+            }
+          },
+          "seconds": 56.2504073,
+          "summary": {
+            "action_items": [
+              {
+                "due": null,
+                "owner": "Industrial Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000f0",
+                  "0193a5b0-1c00-7000-8000-0000000000f6"
+                ],
+                "task": "Finalize the design based on the discussed layout and functionality requirements."
+              },
+              {
+                "due": null,
+                "owner": "User Interface Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000142",
+                  "0193a5b0-1c00-7000-8000-000000000147"
+                ],
+                "task": "Create a drawing of the remote control layout to visualize the screen and button placement."
+              },
+              {
+                "due": null,
+                "owner": "User Interface Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000222"
+                ],
+                "task": "Design the interface for channel programming and swapping."
+              },
+              {
+                "due": null,
+                "owner": "Project Manager",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000241",
+                  "0193a5b0-1c00-7000-8000-000000000242"
+                ],
+                "task": "Reorganize the documents and create a map with all the gathered data."
+              },
+              {
+                "due": null,
+                "owner": "User Interface Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000023d",
+                  "0193a5b0-1c00-7000-8000-000000000240"
+                ],
+                "task": "Design the basic function menu for the LCD screen and create a map with pages."
+              },
+              {
+                "due": null,
+                "owner": "Industrial Designer",
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000025f"
+                ],
+                "task": "Create a list of functions that will be on the menu screen."
+              }
+            ],
+            "decisions": [
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000006b",
+                  "0193a5b0-1c00-7000-8000-000000000077"
+                ],
+                "text": "Teletext is excluded from the new remote control."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000064",
+                  "0193a5b0-1c00-7000-8000-00000000006b"
+                ],
+                "text": "Audio settings (mono, stereo, pitch, bass) are excluded from the new remote control."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000064",
+                  "0193a5b0-1c00-7000-8000-00000000006b"
+                ],
+                "text": "Screen settings (brightness, colour) are excluded from the new remote control."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000007b",
+                  "0193a5b0-1c00-7000-8000-000000000082"
+                ],
+                "text": "The new remote control will include an LCD screen."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000007b",
+                  "0193a5b0-1c00-7000-8000-000000000082"
+                ],
+                "text": "The new remote control will include speech recognition."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000006b"
+                ],
+                "text": "Classic functions (power, channel, volume) are kept in the new remote control."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000011f",
+                  "0193a5b0-1c00-7000-8000-00000000012c"
+                ],
+                "text": "The remote control will target users under forty years old."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000000d2",
+                  "0193a5b0-1c00-7000-8000-000000000136"
+                ],
+                "text": "Basic functions will be accessible directly on the remote, while advanced options will be hidden in a screen menu."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-000000000151",
+                  "0193a5b0-1c00-7000-8000-000000000156"
+                ],
+                "text": "The power button will be placed at the top right of the remote."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-00000000015e"
+                ],
+                "text": "The screen will be positioned below the buttons to ensure clear visibility."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000001a7",
+                  "0193a5b0-1c00-7000-8000-0000000001b0"
+                ],
+                "text": "The display and microphone are placed on top of the remote control."
+              },
+              {
+                "source_segment_ids": [
+                  "0193a5b0-1c00-7000-8000-0000000001d3",
+                  "0193a5b0-1c00-7000-8000-0000000001d4"
+                ],
+                "text": "The remote will include sound settings for treble, bass, pitch, mono, and stereo."
+              }
+            ],
+            "enhanced_notes": [
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000080",
+                      "0193a5b0-1c00-7000-8000-000000000082",
+                      "0193a5b0-1c00-7000-8000-00000000011f"
+                    ],
+                    "text": "The target audience is defined as users under forty years old."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000007b",
+                      "0193a5b0-1c00-7000-8000-000000000082",
+                      "0193a5b0-1c00-7000-8000-0000000000be"
+                    ],
+                    "text": "The new remote must include an LCD screen and speech recognition features."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000006b",
+                      "0193a5b0-1c00-7000-8000-000000000077"
+                    ],
+                    "text": "Teletext is excluded because it is outdated for the target audience."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000064",
+                      "0193a5b0-1c00-7000-8000-00000000006b"
+                    ],
+                    "text": "Classic functions (power, channel, volume) are kept, while audio settings (mono, stereo, pitch, bass) and screen settings (brightness, colour) are dropped."
+                  }
+                ],
+                "heading": "Target Audience and Core Features"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000015a",
+                      "0193a5b0-1c00-7000-8000-00000000019f",
+                      "0193a5b0-1c00-7000-8000-0000000001a7"
+                    ],
+                    "text": "The screen and microphone are placed on top of the remote control for better visibility and usability."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000014c",
+                      "0193a5b0-1c00-7000-8000-000000000151"
+                    ],
+                    "text": "The power button is located at the top right for right-handed users."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000027b"
+                    ],
+                    "text": "The remote design separates basic functions from advanced functions with a visual line."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000002a1",
+                      "0193a5b0-1c00-7000-8000-0000000002a5"
+                    ],
+                    "text": "LED lights are added under the buttons to indicate which buttons are active."
+                  }
+                ],
+                "heading": "Layout and Ergonomics"
+              },
+              {
+                "bullets": [
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-0000000001d3",
+                      "0193a5b0-1c00-7000-8000-0000000001ee"
+                    ],
+                    "text": "Advanced options include sound settings (treble, bass, pitch, mono/stereo) and image settings (brightness, contrast)."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-000000000207",
+                      "0193a5b0-1c00-7000-8000-00000000020c"
+                    ],
+                    "text": "The remote includes an autoseek function for channel programming and swapping."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000028b",
+                      "0193a5b0-1c00-7000-8000-00000000028d",
+                      "0193a5b0-1c00-7000-8000-00000000028f"
+                    ],
+                    "text": "The remote features a menu button, a confirm button, a back button, and a multifunctional navigation button."
+                  },
+                  {
+                    "source_segment_ids": [
+                      "0193a5b0-1c00-7000-8000-00000000023f",
+                      "0193a5b0-1c00-7000-8000-000000000240"
+                    ],
+                    "text": "The User Interface Designer will create a menu map with layers to organize the functions."
+                  }
+                ],
+                "heading": "Advanced Features and Menu"
+              }
+            ],
+            "open_questions": [
+              "Whether to include line control functionality in the remote.",
+              "The specific lower age limit for the target group (e.g., sixteen to forty vs. twenty to forty).",
+              "Whether to add a special addition for left-handed users."
+            ],
+            "title": "Remote Control Design and Requirements",
+            "tldr": "The team defined the target audience as users under forty and decided to include an LCD screen and speech recognition while dropping teletext and audio/screen settings. They finalized the layout with the screen and microphone on top, separated basic and advanced functions with a line, and assigned specific design tasks to the Industrial and User Interface designers.",
+            "topics": [
+              "Usability Research",
+              "Feature Decisions",
+              "Design Requirements",
+              "Target Audience",
+              "Functionality and Features",
+              "Screen and Interface Design",
+              "Layout and Ergonomics",
+              "Technical Requirements",
+              "Remote Control Layout",
+              "Advanced Features",
+              "Channel Programming",
+              "Button Functions"
+            ]
+          }
+        }
+      ],
+      "source": "reference",
+      "split": "dev"
+    }
+  ],
+  "kind": "local",
+  "load_evidence": [
+    "llama_prepare_model_devices: using device Vulkan0 (NVIDIA GeForce RTX 5080) (0000:01:00.0) - 15209 MiB free",
+    "load_tensors: offloading 31 repeating layers to GPU",
+    "load_tensors: offloaded 33/33 layers to GPU",
+    "load_tensors:   CPU_Mapped model buffer size =   545.62 MiB",
+    "load_tensors:      Vulkan0 model buffer size =  4861.28 MiB"
+  ],
+  "load_s": 4.5880866000000005,
+  "max_output_tokens": 8192,
+  "model_file": "qwen3.5-9b-q4_k_m.gguf",
+  "prompt_variant": "current",
+  "system_info": "CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | REPACK = 1 | ",
+  "threads": 8,
+  "two_call": false,
+  "two_track": false
+}

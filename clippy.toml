@@ -1,0 +1,5 @@
+# Workspace-wide clippy config (intentionally neutral).
+# `cargo xtask ci` runs its `clippy --workspace --all-targets` step with
+# CLIPPY_CONF_DIR pointing here, so crates/earshot-core/clippy.toml (the purity
+# contract, PLAN.md 3.2) is not applied to core's tests, which may read fixtures.
+# Core's lib target is held to its own clippy.toml by `cargo xtask purity`.

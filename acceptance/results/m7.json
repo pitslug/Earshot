@@ -1,0 +1,72 @@
+{
+  "milestone": "m7",
+  "requested_backend": null,
+  "timestamp": "2026-11-06T17:16:40Z",
+  "host": "x86_64-pc-windows-msvc",
+  "commit": "9d1352c",
+  "backends": [],
+  "results": [],
+  "checks": [
+    {
+      "name": "x64_build",
+      "pass": true,
+      "detail": "C:\\eb\\host\\release\\earshot-desktop.exe"
+    },
+    {
+      "name": "arm64_build",
+      "pass": true,
+      "detail": "C:\\eb\\aarch64-pc-windows-msvc\\release\\earshot-desktop.exe"
+    },
+    {
+      "name": "app_replay",
+      "pass": true,
+      "detail": "the app exited 0 after the export"
+    },
+    {
+      "name": "audio_files",
+      "pass": true,
+      "detail": "2 FLAC files of 640000 frames at 16 kHz"
+    },
+    {
+      "name": "transcript",
+      "pass": true,
+      "detail": "final pass: 8 mic and 7 loopback segments with text; backends (live mic, live loopback, final) Ok([\"Cpu\", \"Cpu\", \"Cpu\"])"
+    },
+    {
+      "name": "speakers_separated",
+      "pass": true,
+      "detail": "mic speakers [Some((Me, \"Me\"))]; loopback speakers [Some((Remote, \"Speaker 1\"))]; shared: false"
+    },
+    {
+      "name": "content_separated",
+      "pass": true,
+      "detail": "talker-only words: Me transcript 23 near-end / 0 far-end; loopback transcript 47 far-end / 0 near-end"
+    },
+    {
+      "name": "echo_leak",
+      "pass": true,
+      "detail": "far-end-only words in the Me transcript: []; near-end-only words in the loopback transcript: []"
+    },
+    {
+      "name": "summary",
+      "pass": true,
+      "detail": "0 validation errors, 2 citations, meeting title \"Replayed call\""
+    },
+    {
+      "name": "prompt",
+      "pass": true,
+      "detail": "1 request(s): transcript lines of Me and [\"Speaker 1\"], text only"
+    },
+    {
+      "name": "export",
+      "pass": true,
+      "detail": "1 file(s) in the vault; note Meetings/2026-11-06 17-16 Replayed call.md; missing []"
+    },
+    {
+      "name": "network",
+      "pass": true,
+      "detail": "1 audit entries, 1 requests at the mock, 0 not a successful POST to 127.0.0.1:52251/v1/chat/completions"
+    }
+  ],
+  "pass": true
+}

@@ -1,0 +1,54 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Industrial Designer",
+      "task": "Find out more about the 'advanced chip on print' design (whether it is micro-processor based) from the technology background."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Industrial Designer",
+      "task": "Consider who will manufacture the custom cases and learn about labor laws."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "Marketing Expert",
+      "task": "Find out the cost of adding a display."
+    },
+    {
+      "due": null,
+      "id": "S-A4",
+      "owner": "User Interface Designer, Industrial Designer",
+      "task": "Come up with the prototype model."
+    },
+    {
+      "due": null,
+      "id": "S-A5",
+      "owner": "Marketing Expert",
+      "task": "Come up with the marketing strategy."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "The team decided to stick with the simple design without a display for now."
+    },
+    {
+      "id": "S-D2",
+      "text": "The team agreed on a customizable mahogany red wooden case."
+    },
+    {
+      "id": "S-D3",
+      "text": "The team decided buttons will be rubber, not wood."
+    }
+  ],
+  "failure": null,
+  "meeting": "IS1008c",
+  "model": "S2",
+  "notes": "## Case Material and Design\n- Rubber, plastic, and titanium were eliminated; wood was selected as the environmentally friendly case material.\n- The case was specified as a customizable mahogany red wooden case.\n- Buttons will remain rubber to maintain tactile experience, rather than being made of wood.\n## Electronics and Features\n- The team agreed on an advanced chip-on-print design that includes an infrared sender and integrated sensors.\n- The team decided to stick with the simple design without a display for now until the cost of adding one is confirmed.\n- Features include an ergonomic molded shape, a flip screen to lock the remote, and a battery life indicator.\n## Manufacturing and Customization\n- The team decided to establish a business tie-up with a fabric manufacturer rather than building their own factory.\n- Customization involves a foam rubber ball sent to customers to capture hand geometry and squeeze resistance to determine the appropriate wood type.",
+  "tldr": "The team finalized the design for a new remote control featuring a customizable mahogany red wooden case with rubber buttons and an advanced chip-on-print design. They decided to omit the display for now to control costs and agreed on a manufacturing strategy involving a fabric manufacturer tie-up rather than building a factory.",
+  "valid": true
+}

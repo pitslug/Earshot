@@ -1,0 +1,965 @@
+{
+  "backend": "Cpu",
+  "model": "parakeet-tdt-0.6b-v2",
+  "options": "TranscribeOptions::live()",
+  "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4, recover_speech: None }",
+  "report_min_s": 0.25,
+  "rule": "speech_between_words: frames at or above the piece threshold whose start lies in a stretch no word covers",
+  "splits": [
+    {
+      "max_uncovered_speech_at_most_2_s": 0.64,
+      "max_uncovered_speech_s": 20.83,
+      "per_stream": [
+        {
+          "errors": 61,
+          "max_uncovered_speech_s": 17.31,
+          "pieces": 3,
+          "ref_words": 207,
+          "seconds": 66.81,
+          "stream": 1,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 51.28,
+              "speech_s": 17.31,
+              "start_s": 30.91
+            }
+          ],
+          "utterances": [
+            "84-121123-0000",
+            "174-50561-0001"
+          ]
+        },
+        {
+          "errors": 0,
+          "max_uncovered_speech_s": 0.64,
+          "pieces": 3,
+          "ref_words": 182,
+          "seconds": 71.08,
+          "stream": 2,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 54.37,
+              "speech_s": 0.64,
+              "start_s": 53.73
+            }
+          ],
+          "utterances": [
+            "174-50561-0003",
+            "422-122949-0000"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 160,
+          "seconds": 63.45,
+          "stream": 3,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 13.04,
+              "speech_s": 0.26,
+              "start_s": 12.8
+            }
+          ],
+          "utterances": [
+            "422-122949-0001",
+            "652-129742-0003"
+          ]
+        },
+        {
+          "errors": 5,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 3,
+          "ref_words": 193,
+          "seconds": 65.2,
+          "stream": 4,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "652-129742-0004",
+            "1272-128104-0002"
+          ]
+        },
+        {
+          "errors": 10,
+          "max_uncovered_speech_s": 0.22,
+          "pieces": 3,
+          "ref_words": 163,
+          "seconds": 62.48,
+          "stream": 5,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "1272-128104-0003",
+            "1462-170138-0002"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 3,
+          "ref_words": 163,
+          "seconds": 61.1,
+          "stream": 6,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "1462-170138-0005",
+            "1673-143396-0003"
+          ]
+        },
+        {
+          "errors": 0,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 201,
+          "seconds": 63.98,
+          "stream": 7,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 24.82,
+              "speech_s": 0.26,
+              "start_s": 24.58
+            }
+          ],
+          "utterances": [
+            "1919-142785-0000",
+            "1988-24833-0004"
+          ]
+        },
+        {
+          "errors": 2,
+          "max_uncovered_speech_s": 0.32,
+          "pieces": 3,
+          "ref_words": 186,
+          "seconds": 65.5,
+          "stream": 8,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 13.92,
+              "speech_s": 0.32,
+              "start_s": 13.6
+            }
+          ],
+          "utterances": [
+            "1993-147149-0000",
+            "2035-147960-0002"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 4,
+          "ref_words": 187,
+          "seconds": 73.88,
+          "stream": 9,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 21.71,
+              "speech_s": 0.26,
+              "start_s": 21.47
+            }
+          ],
+          "utterances": [
+            "2035-147960-0003",
+            "2078-142845-0005"
+          ]
+        },
+        {
+          "errors": 0,
+          "max_uncovered_speech_s": 0.22,
+          "pieces": 3,
+          "ref_words": 199,
+          "seconds": 68.91,
+          "stream": 10,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "2078-142845-0006",
+            "2086-149214-0002"
+          ]
+        },
+        {
+          "errors": 2,
+          "max_uncovered_speech_s": 0.1,
+          "pieces": 3,
+          "ref_words": 195,
+          "seconds": 62.1,
+          "stream": 11,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "2086-149214-0003",
+            "2412-153947-0000"
+          ]
+        },
+        {
+          "errors": 0,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 3,
+          "ref_words": 218,
+          "seconds": 65.57,
+          "stream": 12,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "2412-153947-0001",
+            "2428-83699-0003"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.32,
+          "pieces": 3,
+          "ref_words": 188,
+          "seconds": 74.01,
+          "stream": 13,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 28.83,
+              "speech_s": 0.32,
+              "start_s": 28.32
+            }
+          ],
+          "utterances": [
+            "2428-83699-0005",
+            "2902-9006-0001"
+          ]
+        },
+        {
+          "errors": 3,
+          "max_uncovered_speech_s": 0.22,
+          "pieces": 3,
+          "ref_words": 152,
+          "seconds": 61.64,
+          "stream": 14,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "2902-9006-0002",
+            "3000-15664-0002"
+          ]
+        },
+        {
+          "errors": 0,
+          "max_uncovered_speech_s": 0.0,
+          "pieces": 3,
+          "ref_words": 172,
+          "seconds": 68.94,
+          "stream": 15,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "3000-15664-0003",
+            "3170-137482-0000"
+          ]
+        },
+        {
+          "errors": 0,
+          "max_uncovered_speech_s": 0.19,
+          "pieces": 3,
+          "ref_words": 180,
+          "seconds": 60.28,
+          "stream": 16,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "3170-137482-0001",
+            "3170-137482-0003"
+          ]
+        },
+        {
+          "errors": 2,
+          "max_uncovered_speech_s": 0.19,
+          "pieces": 3,
+          "ref_words": 190,
+          "seconds": 61.98,
+          "stream": 17,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "3536-8226-0000",
+            "3576-138058-0001"
+          ]
+        },
+        {
+          "errors": 3,
+          "max_uncovered_speech_s": 0.48,
+          "pieces": 3,
+          "ref_words": 182,
+          "seconds": 66.01,
+          "stream": 18,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 11.73,
+              "speech_s": 0.48,
+              "start_s": 11.01
+            },
+            {
+              "end_s": 23.73,
+              "speech_s": 0.42,
+              "start_s": 23.33
+            },
+            {
+              "end_s": 27.26,
+              "speech_s": 0.26,
+              "start_s": 26.69
+            }
+          ],
+          "utterances": [
+            "3576-138058-0002",
+            "3752-4943-0002"
+          ]
+        },
+        {
+          "errors": 4,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 3,
+          "ref_words": 211,
+          "seconds": 68.79,
+          "stream": 19,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "3752-4943-0003",
+            "5338-24615-0000"
+          ]
+        },
+        {
+          "errors": 0,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 174,
+          "seconds": 64.38,
+          "stream": 20,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 42.29,
+              "speech_s": 0.26,
+              "start_s": 42.05
+            }
+          ],
+          "utterances": [
+            "5338-24615-0001",
+            "5536-43358-0001"
+          ]
+        },
+        {
+          "errors": 11,
+          "max_uncovered_speech_s": 2.5,
+          "pieces": 3,
+          "ref_words": 161,
+          "seconds": 62.38,
+          "stream": 21,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 62.38,
+              "speech_s": 2.5,
+              "start_s": 59.15
+            }
+          ],
+          "utterances": [
+            "5536-43358-0002",
+            "5895-34615-0001"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 3,
+          "ref_words": 169,
+          "seconds": 63.3,
+          "stream": 22,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "5895-34615-0002",
+            "6241-61943-0005"
+          ]
+        },
+        {
+          "errors": 4,
+          "max_uncovered_speech_s": 0.22,
+          "pieces": 3,
+          "ref_words": 183,
+          "seconds": 61.29,
+          "stream": 23,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "6295-64301-0000",
+            "6313-66125-0006"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.22,
+          "pieces": 4,
+          "ref_words": 197,
+          "seconds": 71.03,
+          "stream": 24,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "6319-57405-0000",
+            "6345-64257-0001"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 176,
+          "seconds": 68.11,
+          "stream": 25,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 20.88,
+              "speech_s": 0.26,
+              "start_s": 20.64
+            }
+          ],
+          "utterances": [
+            "6345-64257-0002",
+            "7850-73752-0003"
+          ]
+        },
+        {
+          "errors": 64,
+          "max_uncovered_speech_s": 20.83,
+          "pieces": 3,
+          "ref_words": 157,
+          "seconds": 64.38,
+          "stream": 26,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 44.78,
+              "speech_s": 20.83,
+              "start_s": 18.61
+            },
+            {
+              "end_s": 64.38,
+              "speech_s": 0.48,
+              "start_s": 63.34
+            }
+          ],
+          "utterances": [
+            "7850-73752-0004",
+            "8297-275154-0002"
+          ]
+        },
+        {
+          "errors": 2,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 2,
+          "ref_words": 137,
+          "seconds": 44.76,
+          "stream": 27,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "8297-275154-0003",
+            "8842-302196-0003"
+          ]
+        }
+      ],
+      "split": "dev-clean",
+      "streams": 27,
+      "uncovered_over_2_s": [
+        {
+          "end_s": 51.28,
+          "speech_s": 17.31,
+          "start_s": 30.91,
+          "stream": 1
+        },
+        {
+          "end_s": 62.38,
+          "speech_s": 2.5,
+          "start_s": 59.15,
+          "stream": 21
+        },
+        {
+          "end_s": 44.78,
+          "speech_s": 20.83,
+          "start_s": 18.61,
+          "stream": 26
+        }
+      ]
+    },
+    {
+      "max_uncovered_speech_at_most_2_s": 0.35,
+      "max_uncovered_speech_s": 23.36,
+      "per_stream": [
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.35,
+          "pieces": 3,
+          "ref_words": 167,
+          "seconds": 67.61,
+          "stream": 1,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 25.57,
+              "speech_s": 0.32,
+              "start_s": 25.25
+            },
+            {
+              "end_s": 35.97,
+              "speech_s": 0.35,
+              "start_s": 34.45
+            },
+            {
+              "end_s": 52.46,
+              "speech_s": 0.26,
+              "start_s": 52.22
+            }
+          ],
+          "utterances": [
+            "61-70968-0000",
+            "237-126133-0000"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 172,
+          "seconds": 62.45,
+          "stream": 2,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 60.82,
+              "speech_s": 0.26,
+              "start_s": 60.58
+            }
+          ],
+          "utterances": [
+            "237-126133-0001",
+            "672-122797-0000"
+          ]
+        },
+        {
+          "errors": 0,
+          "max_uncovered_speech_s": 0.32,
+          "pieces": 3,
+          "ref_words": 154,
+          "seconds": 61.99,
+          "stream": 3,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 30.43,
+              "speech_s": 0.32,
+              "start_s": 29.79
+            }
+          ],
+          "utterances": [
+            "672-122797-0001",
+            "908-31957-0002"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 159,
+          "seconds": 66.64,
+          "stream": 4,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 1.04,
+              "speech_s": 0.26,
+              "start_s": 0.8
+            },
+            {
+              "end_s": 1.68,
+              "speech_s": 0.26,
+              "start_s": 1.36
+            },
+            {
+              "end_s": 15.12,
+              "speech_s": 0.26,
+              "start_s": 14.88
+            }
+          ],
+          "utterances": [
+            "908-31957-0003",
+            "1188-133604-0001"
+          ]
+        },
+        {
+          "errors": 3,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 4,
+          "ref_words": 173,
+          "seconds": 64.55,
+          "stream": 5,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "1188-133604-0002",
+            "1221-135766-0002"
+          ]
+        },
+        {
+          "errors": 3,
+          "max_uncovered_speech_s": 0.22,
+          "pieces": 3,
+          "ref_words": 209,
+          "seconds": 69.4,
+          "stream": 6,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "1221-135766-0003",
+            "1320-122612-0001"
+          ]
+        },
+        {
+          "errors": 0,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 3,
+          "ref_words": 182,
+          "seconds": 63.21,
+          "stream": 7,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "1320-122612-0002",
+            "1995-1826-0000"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 163,
+          "seconds": 67.02,
+          "stream": 8,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 19.28,
+              "speech_s": 0.26,
+              "start_s": 19.04
+            }
+          ],
+          "utterances": [
+            "1995-1826-0001",
+            "2094-142345-0002"
+          ]
+        },
+        {
+          "errors": 0,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 149,
+          "seconds": 64.26,
+          "stream": 9,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 1.23,
+              "speech_s": 0.26,
+              "start_s": 0.99
+            }
+          ],
+          "utterances": [
+            "2094-142345-0003",
+            "2300-131720-0003"
+          ]
+        },
+        {
+          "errors": 2,
+          "max_uncovered_speech_s": 0.32,
+          "pieces": 4,
+          "ref_words": 210,
+          "seconds": 86.29,
+          "stream": 10,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 78.7,
+              "speech_s": 0.32,
+              "start_s": 78.38
+            }
+          ],
+          "utterances": [
+            "2300-131720-0004",
+            "2961-960-0000"
+          ]
+        },
+        {
+          "errors": 4,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 178,
+          "seconds": 69.29,
+          "stream": 11,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 34.51,
+              "speech_s": 0.26,
+              "start_s": 34.27
+            }
+          ],
+          "utterances": [
+            "2961-960-0001",
+            "3570-5694-0002"
+          ]
+        },
+        {
+          "errors": 6,
+          "max_uncovered_speech_s": 0.22,
+          "pieces": 4,
+          "ref_words": 206,
+          "seconds": 71.65,
+          "stream": 12,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "3570-5694-0003",
+            "3729-6852-0001"
+          ]
+        },
+        {
+          "errors": 5,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 3,
+          "ref_words": 194,
+          "seconds": 75.04,
+          "stream": 13,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "3729-6852-0002",
+            "4077-13751-0003"
+          ]
+        },
+        {
+          "errors": 5,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 163,
+          "seconds": 61.93,
+          "stream": 14,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 17.49,
+              "speech_s": 0.26,
+              "start_s": 17.25
+            },
+            {
+              "end_s": 58.96,
+              "speech_s": 0.26,
+              "start_s": 58.72
+            }
+          ],
+          "utterances": [
+            "4077-13751-0004",
+            "4507-16021-0001"
+          ]
+        },
+        {
+          "errors": 2,
+          "max_uncovered_speech_s": 0.32,
+          "pieces": 3,
+          "ref_words": 162,
+          "seconds": 63.72,
+          "stream": 15,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 37.02,
+              "speech_s": 0.32,
+              "start_s": 36.7
+            }
+          ],
+          "utterances": [
+            "4507-16021-0002",
+            "4992-23283-0000"
+          ]
+        },
+        {
+          "errors": 2,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 168,
+          "seconds": 61.37,
+          "stream": 16,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 48.5,
+              "speech_s": 0.26,
+              "start_s": 48.26
+            }
+          ],
+          "utterances": [
+            "4992-23283-0001",
+            "5105-28233-0003"
+          ]
+        },
+        {
+          "errors": 2,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 3,
+          "ref_words": 212,
+          "seconds": 69.71,
+          "stream": 17,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "5105-28233-0004",
+            "5639-40744-0001"
+          ]
+        },
+        {
+          "errors": 4,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 3,
+          "ref_words": 160,
+          "seconds": 64.58,
+          "stream": 18,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "5639-40744-0002",
+            "5683-32865-0005"
+          ]
+        },
+        {
+          "errors": 78,
+          "max_uncovered_speech_s": 23.36,
+          "pieces": 3,
+          "ref_words": 227,
+          "seconds": 77.72,
+          "stream": 19,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 49.65,
+              "speech_s": 23.36,
+              "start_s": 24.38
+            },
+            {
+              "end_s": 59.17,
+              "speech_s": 0.26,
+              "start_s": 58.85
+            }
+          ],
+          "utterances": [
+            "5683-32865-0006",
+            "6930-75918-0003"
+          ]
+        },
+        {
+          "errors": 7,
+          "max_uncovered_speech_s": 0.35,
+          "pieces": 4,
+          "ref_words": 170,
+          "seconds": 75.82,
+          "stream": 20,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 19.41,
+              "speech_s": 0.35,
+              "start_s": 18.88
+            }
+          ],
+          "utterances": [
+            "6930-75918-0004",
+            "7021-79730-0004"
+          ]
+        },
+        {
+          "errors": 3,
+          "max_uncovered_speech_s": 0.16,
+          "pieces": 3,
+          "ref_words": 205,
+          "seconds": 72.25,
+          "stream": 21,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "7021-79730-0005",
+            "7176-88083-0001"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.22,
+          "pieces": 3,
+          "ref_words": 180,
+          "seconds": 77.61,
+          "stream": 22,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "7176-88083-0002",
+            "7729-102255-0004"
+          ]
+        },
+        {
+          "errors": 1,
+          "max_uncovered_speech_s": 0.32,
+          "pieces": 3,
+          "ref_words": 138,
+          "seconds": 69.91,
+          "stream": 23,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 10.4,
+              "speech_s": 0.32,
+              "start_s": 10.08
+            },
+            {
+              "end_s": 38.32,
+              "speech_s": 0.26,
+              "start_s": 37.76
+            },
+            {
+              "end_s": 42.0,
+              "speech_s": 0.32,
+              "start_s": 41.68
+            }
+          ],
+          "utterances": [
+            "7729-102255-0005",
+            "8224-274381-0002"
+          ]
+        },
+        {
+          "errors": 3,
+          "max_uncovered_speech_s": 0.26,
+          "pieces": 3,
+          "ref_words": 169,
+          "seconds": 73.0,
+          "stream": 24,
+          "uncovered_over_report_min": [
+            {
+              "end_s": 22.35,
+              "speech_s": 0.26,
+              "start_s": 22.11
+            },
+            {
+              "end_s": 51.65,
+              "speech_s": 0.26,
+              "start_s": 51.15
+            }
+          ],
+          "utterances": [
+            "8224-274381-0003",
+            "8230-279154-0004"
+          ]
+        },
+        {
+          "errors": 6,
+          "max_uncovered_speech_s": 0.1,
+          "pieces": 4,
+          "ref_words": 217,
+          "seconds": 72.86,
+          "stream": 25,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "8455-210777-0000",
+            "8463-287645-0002"
+          ]
+        },
+        {
+          "errors": 12,
+          "max_uncovered_speech_s": 0.19,
+          "pieces": 3,
+          "ref_words": 194,
+          "seconds": 66.12,
+          "stream": 26,
+          "uncovered_over_report_min": [],
+          "utterances": [
+            "8463-287645-0003",
+            "8555-284447-0004"
+          ]
+        }
+      ],
+      "split": "test-clean",
+      "streams": 26,
+      "uncovered_over_2_s": [
+        {
+          "end_s": 49.65,
+          "speech_s": 23.36,
+          "start_s": 24.38,
+          "stream": 19
+        }
+      ]
+    }
+  ]
+}

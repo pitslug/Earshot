@@ -1,0 +1,6 @@
+{
+ "method": "entropy",
+ "per_channel": false,
+ "dev_pieces": 16,
+ "A16W8 (all)": 0.10931368032470345
+}

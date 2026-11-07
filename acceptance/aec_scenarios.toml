@@ -1,0 +1,277 @@
+# AEC call-simulator scenarios (PLAN.md T1.2, 4.0). Parsed by `earshot_core::sim::ScenarioFile`.
+# Signals are 16 kHz. Far-end speech comes from smoke speaker 61, near-end from speaker 121.
+# The reference is normalised to -20 dBFS active RMS; the echo to `echo_level_dbfs` (default -30)
+# at the mic; the near-end to echo level + `ser_db`. Times in seconds, delays in ms.
+#
+# Loudspeaker nonlinearity (T1.2a). `cargo xtask echo-nl --dir <raw recording>` (a real call
+# on speakers) fits the best linear echo path from loopback to mic per 8 s chunk and measures the
+# echo over the residual no linear filter explains, on far-end-only blocks with double talk
+# rejected, over their loudest quarter, with nothing subtracted (method and references in
+# xtask/src/echo_nl.rs). The same estimator ran on the far-only scenario at softclip 4 and 3,
+# so the gating scenarios use softclip = 3: the mildest level of the calibration grid that is
+# at least as severe as the measurement's point estimate (rounded towards more distortion;
+# the choice uses the point estimate, not the interval). The residual holds everything a linear canceller on the mono
+# loopback cannot model (loudspeaker distortion, stereo rendering, path changes within a
+# chunk), so this errs towards harder. The informational softclip4-* scenarios keep the
+# earlier, milder setting; runners report them but never gate on them (`informational`).
+#
+# Validity rule (sim::RECOVERY_WINDOW_S, checked by `cargo test -p earshot-core sim`): every
+# device-switch, path-change and delay-jump event is followed by an echo-only stretch of at
+# least 2.3 s (the 2 s recovery bound plus the 0.3 s tail mask of the time-to-15-dB metric):
+# far end talking, near end silent. Scenarios whose near end would talk across an event keep
+# it silent with `near_silent_s`, starting 0.5 s early so the near-end room tail has died out.
+
+[setup]
+room = { dims = [5.0, 4.0, 2.8], absorption = 0.35 }  # Sabine RT60 about 0.29 s
+mic = [2.0, 1.5, 0.8]
+speaker = [2.6, 1.5, 0.9]
+speaker_moved = [2.3, 2.2, 1.0]
+talker = [1.5, 1.4, 1.2]
+rir_ms = 250.0
+
+# aec.robustness: every listed scenario re-run on this delay x drift grid (PLAN.md 4.0:
+# bulk delay 0-500 ms, drift +/-200 ppm).
+[robustness]
+delays_ms = [0.0, 250.0, 500.0]
+drifts_ppm = [-200.0, 0.0, 200.0]
+scenarios = [
+    "far-only", "far-only-linear", "double-talk-ser-0", "double-talk-ser-10", "near-only",
+    # Echo-path events (T6.6a, from the M1 review: aec.robustness covers them too).
+    "path-change", "switch-speakers-to-headphones", "switch-headphones-to-speakers", "delay-jump",
+    # Stereo reference (T6.6a).
+    "stereo-far-only", "stereo-image-change", "stereo-double-talk-ser-0", "stereo-double-talk-ser-10",
+]
+
+# Held-out evaluation set (T1.6b, adopted by the owner; docs/aec-dev-split.md). Every
+# gating scenario (informational = false, selected by that field) is re-rendered at
+# seed + each offset, with far-end and near-end speech from the speaker pair pinned in
+# fixtures/librispeech/aec_heldout.toml (not the smoke speakers 61 and 121). `accept m1`
+# reports these runs as informational checks and fails only when a metric is worse than
+# acceptance/aec_heldout_baseline.json (`cargo xtask aec-heldout-baseline`). Everything
+# above (scenario seeds, the robustness grid, seed + 1000) is the dev set used for tuning;
+# never tune on, or quote per-scenario held-out values while choosing, a constant.
+[heldout]
+seed_offsets = [10000, 10001, 10002, 10003, 10004]
+
+[[scenario]]
+name = "far-only"
+description = "far end only, noise-free, mild loudspeaker clipping; scores ERLE and convergence"
+duration_s = 30.0
+seed = 101
+delay_ms = 120.0
+softclip = 3.0  # T1.2a: measured on a real recording, see the header
+
+[[scenario]]
+name = "far-only-linear"
+description = "far-only without loudspeaker clipping; scores aec.erle_linear (PLAN.md 4.0, T1.4)"
+duration_s = 30.0
+seed = 101
+delay_ms = 120.0
+
+[[scenario]]
+name = "near-only"
+description = "far end silent; the canceller must pass the mic through (aec.passthrough)"
+duration_s = 30.0
+seed = 102
+far_speech = false
+near_speech = true
+delay_ms = 120.0
+
+[[scenario]]
+name = "double-talk-ser-0"
+description = "far end throughout, near end from 5 s, signal-to-echo ratio 0 dB"
+duration_s = 30.0
+seed = 103
+near_speech = true
+near_start_s = 5.0
+delay_ms = 120.0
+softclip = 3.0  # T1.2a: measured on a real recording, see the header
+ser_db = 0.0
+
+[[scenario]]
+name = "double-talk-ser-10"
+description = "as double-talk-ser-0 with the echo 10 dB above the near end"
+duration_s = 30.0
+seed = 104
+near_speech = true
+near_start_s = 5.0
+delay_ms = 120.0
+softclip = 3.0  # T1.2a: measured on a real recording, see the header
+ser_db = -10.0
+
+[[scenario]]
+name = "path-change"
+description = "loudspeaker moves at 15 s; scores re-convergence (aec.path_change)"
+duration_s = 30.0
+seed = 105
+delay_ms = 120.0
+path_change_s = 15.0
+
+[[scenario]]
+name = "delay-450ms"
+description = "long bulk delay"
+duration_s = 30.0
+seed = 106
+delay_ms = 450.0
+
+[[scenario]]
+name = "drift-plus-200ppm"
+description = "render clock 200 ppm fast"
+duration_s = 30.0
+seed = 107
+delay_ms = 120.0
+drift_ppm = 200.0
+
+[[scenario]]
+name = "drift-minus-200ppm"
+description = "render clock 200 ppm slow"
+duration_s = 30.0
+seed = 108
+delay_ms = 120.0
+drift_ppm = -200.0
+
+[[scenario]]
+name = "noisy-office"
+description = "double talk with background noise at 15 dB SNR"
+duration_s = 30.0
+seed = 109
+near_speech = true
+near_start_s = 5.0
+delay_ms = 120.0
+softclip = 3.0  # T1.2a: measured on a real recording, see the header
+noise_snr_db = 15.0
+
+[[scenario]]
+name = "headphones"
+description = "far and near speech, no echo path"
+duration_s = 30.0
+seed = 110
+near_speech = true
+echo = false
+delay_ms = 120.0
+
+[[scenario]]
+name = "switch-speakers-to-headphones"
+description = "echo stops at 15 s; afterwards the near end must pass through"
+duration_s = 30.0
+seed = 111
+near_speech = true
+near_start_s = 5.0
+near_silent_s = [[14.5, 17.5]]  # validity rule: echo-only stretch after the switch
+delay_ms = 120.0
+echo_until_s = 15.0
+
+[[scenario]]
+name = "switch-headphones-to-speakers"
+description = "echo starts at 15 s and must be acquired"
+duration_s = 30.0
+seed = 112
+near_speech = true
+near_start_s = 5.0
+near_silent_s = [[14.5, 17.5]]  # validity rule: echo-only stretch after the switch
+delay_ms = 120.0
+echo_from_s = 15.0
+
+[[scenario]]
+name = "delay-jump"
+description = "bulk delay jumps from 40 ms to 400 ms at 15 s (switch to Bluetooth)"
+duration_s = 30.0
+seed = 113
+delay_ms = 40.0
+delay_jump = { at_s = 15.0, delay_ms = 400.0 }
+
+[[scenario]]
+name = "softclip4-far-only"
+description = "far-only at the pre-T1.2a softclip 4 (milder than GATE-10)"
+informational = true
+duration_s = 30.0
+seed = 101
+delay_ms = 120.0
+softclip = 4.0
+
+[[scenario]]
+name = "softclip4-double-talk-ser-0"
+description = "double-talk-ser-0 at the pre-T1.2a softclip 4 (milder than GATE-10)"
+informational = true
+duration_s = 30.0
+seed = 103
+near_speech = true
+near_start_s = 5.0
+delay_ms = 120.0
+softclip = 4.0
+ser_db = 0.0
+
+[[scenario]]
+name = "softclip4-double-talk-ser-10"
+description = "double-talk-ser-10 at the pre-T1.2a softclip 4 (milder than GATE-10)"
+informational = true
+duration_s = 30.0
+seed = 104
+near_speech = true
+near_start_s = 5.0
+delay_ms = 120.0
+softclip = 4.0
+ser_db = -10.0
+
+[[scenario]]
+name = "softclip4-noisy-office"
+description = "noisy-office at the pre-T1.2a softclip 4 (milder than GATE-10)"
+informational = true
+duration_s = 30.0
+seed = 109
+near_speech = true
+near_start_s = 5.0
+delay_ms = 120.0
+softclip = 4.0
+noise_snr_db = 15.0
+
+# Stereo reference (T6.6a, decided by the owner): the desktop path captures the
+# loopback in stereo, so these gate under the same thresholds as the mono scenarios and are
+# scored through `EchoCanceller::process_stereo*`. A second loudspeaker stands about 0.9 m
+# further from the mic than the first (a multipath spacing T1.2a found on a real
+# recording). `correlation` is the weight of the (1 ms lagged) left content in the
+# right channel; the rest is independent far-end speech. Same seeds as the mono scenarios, so
+# the left channel and the near end match them. The loudspeaker nonlinearity is the same
+# T1.2a anchor (softclip 3, applied per loudspeaker channel; see the header).
+
+[[scenario]]
+name = "stereo-far-only"
+description = "far-only through two loudspeakers with independent channels; ERLE and convergence"
+duration_s = 30.0
+seed = 101
+delay_ms = 120.0
+softclip = 3.0  # T1.2a: measured on a real recording, see the header
+stereo = { right_speaker = [2.9, 2.7, 0.9], correlation = 0.0, lag_ms = 1.0 }
+
+[[scenario]]
+name = "stereo-image-change"
+description = "far-only, strongly correlated channels (0.95) whose stereo image changes at 15 s (stereo non-uniqueness)"
+duration_s = 30.0
+seed = 101
+delay_ms = 120.0
+softclip = 3.0  # T1.2a: measured on a real recording, see the header
+stereo = { right_speaker = [2.9, 2.7, 0.9], correlation = 0.95, lag_ms = 1.0, image_change_s = 15.0 }
+
+[[scenario]]
+name = "stereo-double-talk-ser-0"
+description = "double-talk-ser-0 through two loudspeakers with independent channels"
+duration_s = 30.0
+seed = 103
+near_speech = true
+near_start_s = 5.0
+delay_ms = 120.0
+softclip = 3.0  # T1.2a: measured on a real recording, see the header
+ser_db = 0.0
+stereo = { right_speaker = [2.9, 2.7, 0.9], correlation = 0.0, lag_ms = 1.0 }
+
+[[scenario]]
+name = "stereo-double-talk-ser-10"
+description = "double-talk-ser-10 through two loudspeakers with independent channels"
+duration_s = 30.0
+seed = 104
+near_speech = true
+near_start_s = 5.0
+delay_ms = 120.0
+softclip = 3.0  # T1.2a: measured on a real recording, see the header
+ser_db = -10.0
+stereo = { right_speaker = [2.9, 2.7, 0.9], correlation = 0.0, lag_ms = 1.0 }

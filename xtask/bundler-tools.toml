@@ -1,0 +1,91 @@
+# The tools Tauri's bundler needs for `cargo xtask build --bundle` (T9.1c, PLAN D23). They are
+# build tools on the build host only: nothing here is read by the app, and this file is separate
+# from `models/manifest.toml` because that one is embedded in the app.
+#
+# Left alone the bundler downloads these itself. xtask fetches them from here (size and SHA-256
+# checked, resumable), places them where the bundler looks with `bundle.useLocalToolsDir`
+# (`<target-dir>\.tauri`, visible to every shell) and runs the bundler with no route to the
+# network, so a mismatch fails instead of downloading.
+#
+# Pinned to what tauri-bundler 2.10.3 (the version `@tauri-apps/cli` 2.12.3 is built with)
+# expects. Its checks use the constants named in each `publisher_checksum`; a CLI upgrade changes
+# `bundle::CLI_VERSION`, this file and `bundle::NSIS_REQUIRED` in one commit.
+#
+# Licences (read 2026-11-05 from each archive or repository; part of NSIS's is not permissive, so
+# distributing an installer waits on the owner's OK):
+# - NSIS: COPYING in the archive: zlib/libpng for the code, bzip2 and CPL-1.0 for those
+#   compression modules; the LZMA stub goes into every NSIS installer.
+# - nsis_tauri_utils: LICENSE_APACHE-2.0 and LICENSE_MIT in its repository.
+# - Vulkan runtime: VulkanRT-License.txt in the archive, read 2026-11-06: MIT and Apache 2.0. Unlike
+#   the tools above, its loader ships in the x64 install, with that licence file beside it (T8.4ac,
+#   The owner). sdk.lunarg.com served it directly, with no redirect, on 2026-11-06.
+
+sets = ["bundler"]
+
+hosts = ["github.com", "sdk.lunarg.com"]
+
+# Observed 2026-11-05 (curl -IL on every URL below).
+redirect_hosts = ["release-assets.githubusercontent.com"]
+
+[[artefact]]
+id = "nsis"
+sets = ["bundler"]
+location = "cache"
+url = "https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.13/nsis-3.13.zip"
+path = "downloads/nsis-3.13.zip"
+sha256 = "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8"
+size = 2363925
+publisher_checksum = "tauri-bundler-2.10.3:NSIS_SHA1:db14f8af2ea346b786c6ae19343f61aaf5e09b8e"
+licence = "Zlib AND bzip2-1.0.6 AND CPL-1.0"
+attribution = "NSIS 3.13 (NSIS contributors), https://nsis.sourceforge.io, packaged by the Tauri project"
+
+[artefact.extract]
+format = "zip"
+into = "downloads/nsis-3.13"
+
+[[artefact.extract.member]]
+path = "nsis-3.13/NSIS.exe"
+sha256 = "78e17de55fa013be7620487e85b6676c204c6c51d7ebabb74ee8a9cfce6252a0"
+size = 91352
+
+[[artefact.extract.member]]
+path = "nsis-3.13/Bin/makensis.exe"
+sha256 = "65343c225ec88393cc4453b0963caf63f763f42f48cb55736d51893ff2e29d4a"
+size = 468992
+
+[[artefact]]
+id = "nsis-tauri-utils"
+sets = ["bundler"]
+location = "cache"
+url = "https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll"
+path = "downloads/nsis_tauri_utils.dll"
+sha256 = "5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709"
+size = 34304
+publisher_checksum = "tauri-bundler-2.10.3:NSIS_TAURI_UTILS_SHA1:75197fee3c6a814fe035788d1c34ead39349b860"
+licence = "Apache-2.0 OR MIT"
+attribution = "nsis_tauri_utils 0.5.3 (Tauri Programme within The Commons Conservancy), https://github.com/tauri-apps/nsis-tauri-utils"
+
+[[artefact]]
+id = "vulkan-runtime"
+sets = ["bundler"]
+location = "cache"
+url = "https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip"
+path = "downloads/VulkanRT-X64-1.4.363.0-Components.zip"
+sha256 = "a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a"
+size = 18211191
+licence = "MIT AND Apache-2.0"
+attribution = "Vulkan Runtime 1.4.363.0 (The Khronos Group, LunarG, Valve), https://vulkan.lunarg.com"
+
+[artefact.extract]
+format = "zip"
+into = "downloads/vulkan-runtime"
+
+[[artefact.extract.member]]
+path = "VulkanRT-X64-1.4.363.0-Components/x64/vulkan-1.dll"
+sha256 = "e1fcfc9489beefa6a6d9d11d6c7517f6a2b7f16e0d3fb8f4103bee0210f314a3"
+size = 1729464
+
+[[artefact.extract.member]]
+path = "VulkanRT-X64-1.4.363.0-Components/VulkanRT-License.txt"
+sha256 = "404deb98dabf3e54bf9070d59676b31d69a3da2f9f6e56bdf09ad315c04c718c"
+size = 4008

@@ -1,0 +1,15 @@
+{
+  "meeting": "TS3004b",
+  "model": "S1",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D11 drops speech recognition."},
+    {"id": "D1.2", "verdict": "missing", "reason": "No summary part mentions an LCD screen."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D9 has buttons light up when pressed."},
+    {"id": "D3.1", "verdict": "missing", "reason": "Nothing says complicated features are hidden from the simple functions; S-D1 only names basic functions."},
+    {"id": "D4.1", "verdict": "covered", "reason": "S-D10 and the feature notes keep teletext options and a teletext button."},
+    {"id": "D4.2", "verdict": "covered", "reason": "S-D10 and the notes keep teletext on one level with a teletext button among the remote's buttons."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "missing", "reason": "No summary part mentions a trendwatching report."}
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "milestone": "m4",
+  "requested_backend": null,
+  "timestamp": "2026-11-05T22:33:13Z",
+  "host": "x86_64-pc-windows-msvc",
+  "commit": "5a8938c-dirty",
+  "backends": [],
+  "results": [
+    {
+      "id": "sum.grounding",
+      "metric": "invalid segment citations in accepted summaries",
+      "op": "==",
+      "threshold": 0.0,
+      "unit": "count",
+      "value": 0.0,
+      "passed": null,
+      "backend": null,
+      "pass": true,
+      "reason": "0 == 0"
+    },
+    {
+      "id": "sum.schema_replay",
+      "metric": "replayed LLM responses valid after repair",
+      "op": "==",
+      "threshold": 100.0,
+      "unit": "%",
+      "value": 100.0,
+      "passed": null,
+      "backend": null,
+      "pass": true,
+      "reason": "100 == 100"
+    }
+  ],
+  "checks": [
+    {
+      "name": "replay set covers the required case kinds",
+      "pass": true,
+      "detail": "16 cases: anthropic_auth_error, anthropic_gives_up, anthropic_max_tokens, anthropic_missing_fields, anthropic_structured_output_unsupported, anthropic_tools_unsupported, anthropic_valid, bad_citations, fenced_json, gives_up, json_object_unsupported, json_schema_unsupported, missing_fields, trailing_prose, truncated, valid; only anthropic_auth_error (Http), anthropic_gives_up (Invalid), gives_up (Invalid) are recorded as not valid"
+    },
+    {
+      "name": "each case follows its recorded request flow",
+      "pass": true,
+      "detail": "outcomes, response formats, repair rounds and exchanges as recorded"
+    },
+    {
+      "name": "requests went only to the loopback mock endpoint",
+      "pass": true,
+      "detail": "every audit entry is 127.0.0.1 on the case's mock port"
+    }
+  ],
+  "pass": true
+}

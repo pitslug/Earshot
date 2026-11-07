@@ -1,0 +1,104 @@
+{
+  "definition": {
+    "scenarios_sha256": "115406834321641610860f6f14894f43b97ece78a27f9373a1fb06384beabf2e",
+    "seed_offsets": [
+      10000,
+      10001,
+      10002,
+      10003,
+      10004
+    ],
+    "speech": {
+      "far": [
+        "260-123286-0001",
+        "260-123286-0004",
+        "260-123286-0005",
+        "260-123286-0007",
+        "260-123286-0008",
+        "260-123286-0010",
+        "260-123286-0011",
+        "260-123286-0012",
+        "260-123286-0013",
+        "260-123286-0014"
+      ],
+      "far_speaker": 260,
+      "near": [
+        "237-126133-0004",
+        "237-126133-0008",
+        "237-126133-0009",
+        "237-126133-0012",
+        "237-126133-0016",
+        "237-126133-0018",
+        "237-126133-0020",
+        "237-126133-0021",
+        "237-126133-0025",
+        "237-134493-0000"
+      ],
+      "near_speaker": 237
+    }
+  },
+  "generated_by": "cargo xtask aec-heldout-baseline (T1.6b); never edit by hand, log every regeneration in LOG.md",
+  "sha256": "d511388b2f3449d59f88a58492b3207a458cfc0bb53ad8961134223d24904a84",
+  "tolerance": 0.0,
+  "worst": {
+    "delay-450ms": {
+      "aec.convergence": 1.8,
+      "aec.erle_farend": 47.72662713606317,
+      "aec.erle_linear": 17.308268847387872
+    },
+    "delay-jump": {
+      "aec.path_change": 1.6999999999999993
+    },
+    "double-talk-ser-0": {
+      "aec.doubletalk_sisdr": 9.248550635663497
+    },
+    "double-talk-ser-10": {},
+    "drift-minus-200ppm": {
+      "aec.convergence": 1.4,
+      "aec.erle_farend": 41.25455393011944,
+      "aec.erle_linear": 11.721704598771062
+    },
+    "drift-plus-200ppm": {
+      "aec.convergence": 1.4,
+      "aec.erle_farend": 41.25264436988726,
+      "aec.erle_linear": 10.8616458884572
+    },
+    "far-only": {
+      "aec.convergence": 1.4,
+      "aec.erle_farend": 42.312634752593574
+    },
+    "far-only-linear": {
+      "aec.convergence": 1.4,
+      "aec.erle_farend": 46.344145543436845,
+      "aec.erle_linear": 15.96870572867456
+    },
+    "headphones": {
+      "aec.passthrough": 139.4853856496821
+    },
+    "near-only": {
+      "aec.passthrough": 139.4744366431865
+    },
+    "noisy-office": {},
+    "path-change": {
+      "aec.path_change": 2.8999999999999986
+    },
+    "stereo-double-talk-ser-0": {
+      "aec.doubletalk_sisdr": 7.8548680483554145
+    },
+    "stereo-double-talk-ser-10": {},
+    "stereo-far-only": {
+      "aec.convergence": 1.2,
+      "aec.erle_farend": 26.655192574084282
+    },
+    "stereo-image-change": {
+      "aec.convergence": 1.5,
+      "aec.erle_farend": 36.88121034138191
+    },
+    "switch-headphones-to-speakers": {
+      "aec.path_change": 2.3999999999999986
+    },
+    "switch-speakers-to-headphones": {
+      "aec.passthrough": 56.1279620396723
+    }
+  }
+}

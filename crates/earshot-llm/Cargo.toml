@@ -1,0 +1,38 @@
+[package]
+name = "earshot-llm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+earshot-core = { path = "../earshot-core" }
+# All HTTP goes through earshot-net (PLAN.md 3.9, D14).
+earshot-net = { path = "../earshot-net" }
+# Claude Code summaries (T7.4ga) run the user's CLI as a child process: deadline, cancel,
+# kill-on-close job object, complete output. std only (no HTTP, no `windows` crate).
+earshot-proc = { path = "../earshot-proc" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# Timers for cancellation polling and `select!`; the runtime comes from the caller.
+tokio = { version = "1.53.3", default-features = false, features = ["macros", "time"] }
+
+[dev-dependencies]
+# Loopback mock endpoint and replay cases (test support; `cargo xtask ci` step `net`
+# fails if a shipped crate depends on it normally).
+earshot-llm-replay = { path = "../earshot-llm-replay" }
+tokio = { version = "1.53.3", default-features = false, features = ["macros", "rt", "time"] }
+
+# The fake `claude` CLI is this test binary itself (std only), so the test brings its own
+# main (T7.4ga).
+[[test]]
+name = "claude_code"
+harness = false
+
+# The fake `codex` CLI is this test binary itself, as for Claude Code (T7.4gc).
+[[test]]
+name = "codex"
+harness = false

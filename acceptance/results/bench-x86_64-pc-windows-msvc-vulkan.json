@@ -1,0 +1,63 @@
+{
+  "asr": {
+    "audio_s": 300.0,
+    "backend": {
+      "device": "NVIDIA GeForce RTX 5080",
+      "kind": "vulkan",
+      "model": "ggml-small.en"
+    },
+    "commit": "8394c06-dirty",
+    "cores": 32,
+    "evidence": "whisper.cpp log: vulkan [whisper_model_load: Vulkan1 total size = 487.00 MB; whisper_backend_init_gpu: device 0: Vulkan0 (type: 2); whisper_backend_init_gpu: found GPU device 0: Vulkan0 (type: 2, cnt: 0); whisper_backend_init_gpu: device 1: Vulkan1 (type: 1); whisper_backend_init_gpu: found GPU device 1: Vulkan1 (type: 1, cnt: 1); whisper_backend_init_gpu: using Vulkan1 backend]",
+    "live": {
+      "backends": [
+        {
+          "backend": {
+            "device": "NVIDIA GeForce RTX 5080",
+            "kind": "vulkan",
+            "model": "ggml-small.en"
+          },
+          "track": "Mic"
+        },
+        {
+          "backend": {
+            "device": "NVIDIA GeForce RTX 5080",
+            "kind": "vulkan",
+            "model": "ggml-small.en"
+          },
+          "track": "Reference"
+        }
+      ],
+      "catch_up_ms": 442.1328,
+      "chunk": "one live final (a speech stretch)",
+      "kept_up": true,
+      "largest_capture_lag_ms": 15.0,
+      "latency_ms": {
+        "count": 19,
+        "max": 24502.4568,
+        "p50": 3102.0978999999998,
+        "p95": 24502.4568
+      },
+      "transcript_lag_ms": {
+        "count": 300,
+        "max": 42104.0,
+        "p50": 5936.0,
+        "p95": 33104.0
+      },
+      "words": 384
+    },
+    "load_s": 0.47928,
+    "model": "small.en",
+    "note": "shared host: other lanes building and testing at the same time; timings are not performance figures",
+    "peak_memory_mb": {
+      "committed": 3662,
+      "scope": "system memory of this process; video memory is not included",
+      "working_set": 807
+    },
+    "pieces": 19,
+    "rtf": 0.010972401333333333,
+    "timestamp": "2026-11-06T15:02:09Z"
+  },
+  "backend": "vulkan",
+  "host": "x86_64-pc-windows-msvc"
+}

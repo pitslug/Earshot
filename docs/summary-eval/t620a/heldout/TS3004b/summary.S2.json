@@ -1,0 +1,64 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "User Interface Designer",
+      "task": "Figure out what to put on the layers and later do the design."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Industrial Designer",
+      "task": "Review new project requirements and determine if teletext should be included."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "Product scope changed from universal remote to TV remote control only."
+    },
+    {
+      "id": "S-D2",
+      "text": "Target audience confirmed as 40+ years old."
+    },
+    {
+      "id": "S-D3",
+      "text": "Speech recognition and LCD screens are dropped from the design."
+    },
+    {
+      "id": "S-D4",
+      "text": "The LED indicator will be red to show an error or low battery."
+    },
+    {
+      "id": "S-D5",
+      "text": "The remote control will use an intelligent chip to automatically detect and save TV patterns."
+    },
+    {
+      "id": "S-D6",
+      "text": "The remote control will include LEDs around buttons to light up in the dark."
+    },
+    {
+      "id": "S-D7",
+      "text": "The team decided to exclude speech recognition from the remote control."
+    },
+    {
+      "id": "S-D8",
+      "text": "The design will feature a flashy, modern look similar to mobile phones."
+    },
+    {
+      "id": "S-D9",
+      "text": "Buttons will light up briefly when pressed to show which button was used."
+    },
+    {
+      "id": "S-D10",
+      "text": "The remote control will have a single level for teletext options."
+    }
+  ],
+  "failure": null,
+  "meeting": "TS3004b",
+  "model": "S2",
+  "notes": "## Attendee Introductions\n- Marketing Expert: Jens Damman.\n- User Interface Designer: Paul Wiezer.\n- Industrial Designer: Martijn Abbing.\n## Project Scope and Target Audience\n- Product is a TV remote control only, not a universal remote.\n- Target audience is 40+ years old, specifically older people.\n- Design focus is on beauty and usability for older users.\n## Design Requirements and Features\n- Must include good 'zap' buttons.\n- Only the top 10% of buttons need to be reachable.\n- Consider a home station for recharging batteries or a clap system.\n- Avoid speech recognition and LCD screens due to cost and complexity.\n## Design Philosophy and Aesthetics\n- The product must look unique and stand out from competitors, potentially using different colors or shapes like an iMac to avoid looking cheap.\n- Older users do not look for fashion or style; the main focus must be usability.\n- The design should be simple, keeping in mind that elderly people do not like new features.\n## Technical Functions and Buttons\n- Use standard remote control methods (numbers, on/off) and large buttons with clear icons or text for elderly users.\n- Include basic functions like volume, channels, on/off, and favorites, but avoid complex features like play/pause or back buttons which are too difficult for elderly people.\n- Consider a 'favorite' button that sends a sequence of numbers (e.g., 666) to a specific channel, though this requires remembering the channel number.\n- Implement a 'next' and 'previous' channel button, similar to a web browser, but keep it simple.\n- Use a '10+' button for channels above ten, allowing users to press 1, 0, or 1, 0, 0 quickly.\n- Include a mute button, though its placement is still to be determined.\n## Hardware and Implementation\n- The working design involves pressing a button to close a circuit, which the chip detects and sends as a pattern (like Morse code) to an LED that emits infrared light.\n- The team decided to stop discussing the two-level remote control concept as it is only for television now.\n## LED Indicator Design\n- The LED will indicate transmission status; red is chosen for 'wrong' or low battery, green for 'okay' or active.\n- The LED should be integrated into the design, possibly under or around the buttons, rather than just a separate light.\n- Adding LEDs around all buttons to light up in the dark is considered a good idea for usability, similar to mobile phones.\n## Chip and Pattern Logic\n- The chip must produce patterns that work with all TVs; a standard chip is insufficient.\n- The chip will automatically search for the correct TV pattern by turning the TV off and saving the setting.\n## New Requirements and Market\n- The target market is now younger than 40, so the remote should be flashy or more interesting.\n- Teletext functionality is being reconsidered; the remote should primarily focus on television control.\n## Design Aesthetics and Features\n- The design should be flashy and popular, similar to mobile phones, prioritizing aesthetics over strict usability.\n- The team considered a see-through design (like an iMac) as an option to look through the remote.\n- Buttons should be simple and integrated into the design; complicated buttons are not needed.\n## Lighting and Usability\n- Buttons should light up briefly (e.g., 20 seconds) when pressed to indicate which button was used, similar to a telephone.\n- The lighting should not be on all the time; it must activate only when the remote is used.\n## Speech Recognition\n- Speech recognition was discussed but ultimately rejected as not useful enough, especially given the difficulty of recognizing commands like 'TV channel one' and the need for multiple languages.",
+  "tldr": "The team defined the scope as a TV remote for users over 40, focusing on usability and aesthetics while dropping speech recognition and LCD screens. Decisions included using an intelligent chip for auto-detection, adding button backlights, and creating a flashy design similar to mobile phones.",
+  "valid": true
+}

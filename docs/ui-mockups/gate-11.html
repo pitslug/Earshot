@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earshot GATE-11 mockups</title>
+<style>
+:root{--surface-0:#f3f3f3;--surface-1:#f7f7f7;--surface-2:#fff;--border:#e0e0e0;--border-strong:#c8c8c8;--border-stronger:#8a8a8a;--text-primary:#1b1b1b;--text-secondary:#5f5f5f;--text-muted:#8a8a8a;--text-accent:#0f6cbd;--bg-accent:#ebf3fc;--text-warning:#835b00;--bg-warning:#fff9e6;--text-success:#107c10;--danger:#c42b1c}
+@media (prefers-color-scheme: dark){:root{--surface-0:#1c1c1c;--surface-1:#242424;--surface-2:#2b2b2b;--border:#3a3a3a;--border-strong:#4a4a4a;--border-stronger:#8a8a8a;--text-primary:#f0f0f0;--text-secondary:#b8b8b8;--text-muted:#8a8a8a;--text-accent:#62abf5;--bg-accent:#0e2a47;--text-warning:#f2c661;--bg-warning:#3d2f00;--text-success:#54b054}}
+body{margin:0;padding:24px 16px;background:var(--surface-0);color:var(--text-primary);font:14px/1.45 'Segoe UI Variable Text','Segoe UI',system-ui,sans-serif}
+main{max-width:860px;margin:0 auto}
+h1{font-size:20px;font-weight:600}h2{font-size:16px;font-weight:600;margin:32px 0 8px}
+.note{color:var(--text-secondary);font-size:12px}
+.win{border:1px solid var(--border-strong);border-radius:8px;overflow:hidden;background:var(--surface-2)}
+.side{width:200px;border-right:1px solid var(--border);background:var(--surface-1);padding:10px 8px}
+.row{padding:7px 8px;border-radius:4px}.row.sel{background:var(--bg-accent);color:var(--text-accent)}
+.muted{color:var(--text-secondary);font-size:12px}
+.meter{height:8px;border-radius:4px;background:var(--surface-1);overflow:hidden}.fill{height:100%;background:#54b054}
+.tile{background:var(--surface-1);border-radius:4px;padding:10px}.tile b{display:block;font-size:20px;font-weight:600}
+.grid{display:grid;grid-template-columns:48px minmax(0,1fr);column-gap:10px}
+.grid>div{padding:6px 0;border-top:1px solid var(--border)}
+.tgrid{display:grid;grid-template-columns:48px 90px minmax(0,1fr);column-gap:10px}
+.tgrid>div{padding:6px 0;border-top:1px solid var(--border)}
+.cite{font-size:11px;color:var(--text-accent);margin-left:4px}
+button{font:inherit;height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary)}
+.danger{background:var(--danger);color:#fff;border:none}
+</style>
+</head>
+<body><main>
+<h1>Earshot GATE-11 mockups (2026-11-01)</h1>
+<p class="note">Layout and flow only. Control sizes, type and colours come from Fluent UI React v9 in the app. Design: docs/ui-design.md.</p>
+
+<h2>Recording</h2>
+<div class="win"><div style="display:flex;min-height:420px">
+ <div class="side"><button style="width:100%;margin-bottom:10px">New meeting</button>
+  <div class="muted" style="padding:4px 8px">Today</div>
+  <div class="row sel"><b>Recording...</b><div class="muted">Started 14:02</div></div>
+  <div class="row">Vendor review: pumps<div class="muted">09:30 · 42 min</div></div>
+  <div class="muted" style="padding:8px 8px 4px">Yesterday</div>
+  <div class="row">QLD leadership sync<div class="muted">16:00 · 55 min</div></div>
+  <div class="row muted" style="margin-top:40px">Settings</div></div>
+ <div style="flex:1;padding:16px 20px;min-width:0">
+  <div style="display:flex;gap:10px;align-items:center"><span style="width:10px;height:10px;border-radius:50%;background:var(--danger)"></span><b style="font-size:16px">Listening</b><span class="muted">Call: mic + computer audio</span><span style="margin-left:auto;font-size:16px">23:41</span></div>
+  <div style="margin:12px 0;padding:8px 12px;border-radius:4px;background:var(--bg-warning);color:var(--text-warning);font-size:12px">Your mic is a Bluetooth headset in hands-free mode. Audio quality is low; a wired or USB mic transcribes better.</div>
+  <div style="display:grid;grid-template-columns:60px minmax(0,1fr) 12px;gap:10px;align-items:center">
+   <span>You</span><div class="meter"><div class="fill" style="width:20%"></div></div><span class="muted">o</span>
+   <span>Them</span><div class="meter"><div class="fill" style="width:55%"></div></div><span style="color:var(--text-success)">o</span></div>
+  <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:18px 0">
+   <div class="tile"><span class="muted">Words so far</span><b>3,412</b></div><div class="tile"><span class="muted">Transcript behind</span><b>38 s</b></div><div class="tile"><span class="muted">Running on</span><b style="font-size:15px">GPU (CUDA)</b></div></div>
+  <details open><summary class="muted">Transcript as it lands</summary><div class="grid" style="margin-top:6px">
+   <div><b>Them</b></div><div>so the lead time on the second pump set is now looking like eleven weeks</div>
+   <div><b>You</b></div><div>okay, that pushes commissioning past Christmas, which we can't wear</div>
+   <div><b>Them</b></div><div>we could split the order and air freight the seals</div>
+   <div></div><div class="muted">next stretch transcribing</div></div></details>
+  <div style="display:flex;gap:8px;margin-top:16px"><button class="danger">Stop meeting</button><button>Compact</button></div>
+ </div></div></div>
+<div style="display:flex;gap:16px;margin-top:16px;flex-wrap:wrap">
+ <div class="win" style="width:250px;padding:10px 12px"><b>Listening</b> <span style="float:right">23:41</span><div class="muted" style="margin-top:6px">You / Them meters · 3,412 words</div><button style="margin-top:8px">Stop</button></div>
+ <div class="win" style="flex:1;min-width:240px;padding:10px 12px"><b>Summary ready</b><div class="muted" style="margin:4px 0 8px">Vendor review: pumps · 4 actions, 2 decisions · 2 voices to name</div><button>Open</button> <button>Name voices</button></div>
+</div>
+
+<h2>Meeting detail</h2>
+<div class="win"><div style="padding:14px 20px 8px;border-bottom:1px solid var(--border)">
+ <div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1"><b style="font-size:18px">Vendor review: pumps</b><div class="muted">Today 09:30 · 42 min · call · final transcript · summary by Qwen 3.5 9B (local, GPU)</div></div><button>Export to Obsidian</button><button>...</button></div>
+ <div style="margin-top:10px"><b>Summary</b> &nbsp; <span class="muted">Transcript</span></div></div>
+ <div style="display:grid;grid-template-columns:minmax(0,1fr) 240px">
+  <div style="padding:12px 20px 18px">
+   <div style="padding:10px 12px;border-radius:4px;background:var(--bg-accent);color:var(--text-accent)">2 voices need names. Names flow into the summary and export. <button style="float:right;height:24px">Name voices</button></div>
+   <h3>TL;DR</h3><p>The second pump set slips to 11 weeks. The team agreed to split the order and air freight the seals to hold commissioning before Christmas.</p>
+   <h3>Decisions</h3><div>Split the pump order into two shipments<span class="cite">[14]</span></div><div>Air freight the seals at the vendor's cost<span class="cite">[22]</span></div>
+   <h3>Actions</h3><div class="grid" style="grid-template-columns:110px minmax(0,1fr)">
+    <div><b>Casey</b></div><div>Confirm revised commissioning date with the client by Fri<span class="cite">[31]</span></div>
+    <div><b>Speaker 2</b></div><div>Send split-order quote<span class="cite">[18]</span></div></div>
+   <p class="muted">Tick actions in the Obsidian note.</p>
+   <button>Re-summarise...</button> <span class="muted">Switch to previous summary</span>
+  </div>
+  <div style="border-left:1px solid var(--border);background:var(--surface-1);padding:14px"><b>Who is who</b>
+   <div style="border-top:1px solid var(--border);padding:8px 0;margin-top:6px"><b>Me (Casey)</b><div class="muted">mic · 41%</div></div>
+   <div style="border-top:1px solid var(--border);padding:8px 0"><b>Priya Shah</b><div class="muted">matched voiceprint · 22%</div></div>
+   <div style="border-top:1px solid var(--border);padding:8px 0"><input placeholder="Name speaker 2" style="width:100%;height:32px;box-sizing:border-box"><div class="muted">"we could split the order..." · 30%</div><div class="muted">Merge · Link to person</div></div>
+   <label class="muted"><input type="checkbox"> Remember these voices for next time</label></div>
+ </div></div>
+<div class="win" style="margin-top:12px;padding:10px 16px"><div class="muted">Transcript tab</div><div class="tgrid">
+ <div class="muted">12:04</div><div><b>Speaker 2</b></div><div>so the lead time on the second pump set is now looking like eleven weeks</div>
+ <div class="muted">12:11</div><div><b>Casey</b></div><div>okay, that pushes commissioning past Christmas, which we can't wear</div>
+ <div class="muted">12:19</div><div><b>Speaker 2</b></div><div style="background:var(--bg-accent)">we could split the order and air freight the seals <span class="cite">[14]</span></div></div></div>
+
+<h2>Settings and first run</h2>
+<p class="note">Sections: General, Audio, Summaries, Models, Speakers, Obsidian, Storage. First run: 1 vault, 2 models (size from the manifest, now / later / never), 3 summaries, 4 audio check and your voice. See docs/ui-design.md.</p>
+</main></body></html>

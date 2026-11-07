@@ -1,0 +1,258 @@
+# Acceptance thresholds (PLAN.md section 4.2).
+#
+# Humans own this file. Agents may tighten a threshold after a measured result beats it
+# comfortably, but must never loosen one (AGENTS.md rule 4 and section 6.1). If a value
+# looks unreachable, stop and ask the owner instead of changing it.
+#
+# Schema per entry:
+#   milestone   = "m<N>"
+#   metric      = description from PLAN.md 4.2
+#   op          = ">=" | "<=" | "==" | "pass"   ("pass" is a boolean check with no value)
+#   value       = number (omitted when op = "pass")
+#   unit        = "dB" | "s" | "%" | "points" | "ratio" | "count" | ""
+#   provisional = true where PLAN.md 4.2 marks the value (provisional)
+#
+# Percentages are stored as percent numbers: 6.0 means 6%.
+# WER uses Whisper-style English text normalisation. DER uses a 0.25 s collar with overlap scored.
+
+# M1 - Echo canceller
+
+[thresholds."aec.erle_farend"]
+milestone = "m1"
+metric = "ERLE, far-end-only, after 2 s"
+op = ">="
+value = 25.0
+unit = "dB"
+provisional = false
+
+[thresholds."aec.erle_linear"]
+milestone = "m1"
+metric = "ERLE of linear stage alone, unclipped far-only scenario"
+op = ">="
+value = 12.0
+unit = "dB"
+provisional = false
+
+[thresholds."aec.convergence"]
+milestone = "m1"
+metric = "time to ERLE >= 15 dB from cold start"
+op = "<="
+value = 1.5
+unit = "s"
+provisional = false
+
+[thresholds."aec.path_change"]
+milestone = "m1"
+metric = "recovery to ERLE >= 15 dB after echo path change"
+op = "<="
+value = 2.0
+unit = "s"
+provisional = false
+
+[thresholds."aec.doubletalk_sisdr"]
+milestone = "m1"
+metric = "SI-SDR of output vs clean near-end during double talk at SER 0 (SER -10 informational)"
+op = ">="
+value = 10.0
+unit = "dB"
+provisional = true
+
+[thresholds."aec.passthrough"]
+milestone = "m1"
+metric = "SI-SDR output vs input (the input after the app high-pass when one is configured) when far end silent"
+op = ">="
+value = 30.0
+unit = "dB"
+provisional = false
+
+[thresholds."aec.robustness"]
+milestone = "m1"
+metric = "all of the above hold for delay 0-500 ms and drift +/-200 ppm (stereo convergence at 500 ms bulk delay informational)"
+op = "pass"
+unit = ""
+provisional = false
+
+[thresholds."aec.rtf"]
+milestone = "m1"
+metric = "real-time factor, release build, one core"
+op = "<="
+value = 0.02
+unit = "ratio"
+provisional = false
+
+# M2 - Transcription
+
+[thresholds."asr.wer_smoke_base"]
+milestone = "m2"
+metric = "smoke set, base.en, CPU, batch"
+op = "<="
+value = 10.0
+unit = "%"
+provisional = false
+
+[thresholds."asr.wer_ls_base"]
+milestone = "m2"
+metric = "LibriSpeech subset, base.en, CPU, batch"
+op = "<="
+value = 6.0
+unit = "%"
+provisional = false
+
+[thresholds."asr.stream_determinism"]
+milestone = "m2"
+metric = "words differing, after Whisper normalisation, between live (production live transcription: default model and LiveTranscription mode) and the final pass on the same audio, concatenated ~60 s streams"
+op = "=="
+value = 0.0
+unit = "count"
+provisional = false
+
+[thresholds."asr.wer_ls_default"]
+milestone = "m2"
+metric = "LibriSpeech subset, production default transcription model (GPU if available, else CPU), one batch call per utterance"
+op = "<="
+value = 3.5
+unit = "%"
+provisional = false
+
+[thresholds."asr.wer_ami_ihm"]
+milestone = "m2"
+metric = "AMI IHM per headset, oracle segments, production default transcription model"
+op = "<="
+value = 22.0
+unit = "%"
+provisional = true
+
+[thresholds."asr.wer_aec_delta"]
+milestone = "m2"
+metric = "WER of near-end after AEC minus WER of clean near-end, double-talk scenarios at SER 0 (SER -10 informational), production default transcription model"
+op = "<="
+value = 3.0
+unit = "points"
+provisional = false
+
+[thresholds."asr.echo_leak"]
+milestone = "m2"
+metric = "far-end reference words in the near-end transcript after echo de-duplication, share of far-end words; far-only and double-talk at SER 0 and -10, mono and stereo, base.en"
+op = "<="
+value = 1.0
+unit = "%"
+provisional = true
+
+# M3 - Diarisation and voiceprints
+
+[thresholds."dia.der_ami_ihm"]
+milestone = "m3"
+metric = "DER, AMI IHM-mix"
+op = "<="
+value = 25.0
+unit = "%"
+provisional = true
+
+[thresholds."dia.der_ami_sdm"]
+milestone = "m3"
+metric = "DER, AMI SDM"
+op = "<="
+value = 35.0
+unit = "%"
+provisional = true
+
+[thresholds."dia.count_error"]
+milestone = "m3"
+metric = "median absolute speaker-count error, synthetic 1-6 speaker mixes + AMI"
+op = "<="
+value = 1.0
+unit = "count"
+provisional = false
+
+[thresholds."dia.count_error_large"]
+milestone = "m3"
+metric = "mean absolute speaker-count error, the synthetic 4-6 speaker mixes of dia.count_error"
+op = "<="
+value = 1.0
+unit = "count"
+provisional = false
+
+[thresholds."vp.top1"]
+milestone = "m3"
+metric = "voiceprint top-1 ID, 20 enrolled LibriSpeech speakers, 10 s enrolment, 2-3 s test clips"
+op = ">="
+value = 95.0
+unit = "%"
+provisional = false
+
+[thresholds."vp.false_accept"]
+milestone = "m3"
+metric = "unknown speakers wrongly matched"
+op = "<="
+value = 5.0
+unit = "%"
+provisional = false
+
+# M4 - Summaries
+
+[thresholds."sum.schema_replay"]
+milestone = "m4"
+metric = "replayed LLM responses valid after repair"
+op = "=="
+value = 100.0
+unit = "%"
+provisional = false
+
+[thresholds."sum.grounding"]
+milestone = "m4"
+metric = "invalid segment citations in accepted summaries"
+op = "=="
+value = 0.0
+unit = "count"
+provisional = false
+
+# M5 - Storage and Obsidian export
+
+[thresholds."exp.golden"]
+milestone = "m5"
+metric = "export output equals golden files"
+op = "pass"
+unit = ""
+provisional = false
+
+[thresholds."exp.idempotent"]
+milestone = "m5"
+metric = "re-export is byte-identical and preserves user edits"
+op = "pass"
+unit = ""
+provisional = false
+
+# M6 - Windows capture and runtime
+
+[thresholds."e2e.replay"]
+milestone = "m6"
+metric = "replayed two-track meeting -> valid summary + export, all invariants"
+op = "pass"
+unit = ""
+provisional = false
+
+# M10 - v2 Android in-person recorder
+
+[thresholds."asr.wer_ami_sdm"]
+milestone = "m10"
+metric = "AMI SDM, in-person pipeline, small.en q5 CPU"
+op = "<="
+value = 40.0
+unit = "%"
+provisional = true
+
+# M11 - Future: sync container
+
+[thresholds."sync.no_audio"]
+milestone = "m11"
+metric = "no audio types/bytes in any sync payload or server table"
+op = "pass"
+unit = ""
+provisional = false
+
+[thresholds."sync.convergence"]
+milestone = "m11"
+metric = "two clients converge after concurrent edits"
+op = "pass"
+unit = ""
+provisional = false

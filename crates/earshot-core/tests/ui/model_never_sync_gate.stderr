@@ -1,0 +1,43 @@
+error[E0277]: the trait bound `NeverSyncClass: SyncPermitted` is not satisfied
+  --> tests/ui/model_never_sync_gate.rs:11:22
+   |
+11 |     sync_permitted::<AudioFile>();
+   |                      ^^^^^^^^^ the trait `SyncPermitted` is not implemented for `NeverSyncClass`
+   |
+help: the following other types implement trait `SyncPermitted`
+  --> src/identity/sync.rs
+   |
+   | impl SyncPermitted for SyncableClass {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SyncableClass`
+   | impl SyncPermitted for SyncableOptInClass {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SyncableOptInClass`
+note: required by a bound in `sync_permitted`
+  --> tests/ui/model_never_sync_gate.rs:6:15
+   |
+ 4 | fn sync_permitted<T: SyncClass>()
+   |    -------------- required by a bound in this function
+ 5 | where
+ 6 |     T::Class: SyncPermitted,
+   |               ^^^^^^^^^^^^^ required by this bound in `sync_permitted`
+
+error[E0277]: the trait bound `NeverSyncClass: SyncPermitted` is not satisfied
+  --> tests/ui/model_never_sync_gate.rs:12:22
+   |
+12 |     sync_permitted::<ExportRecord>();
+   |                      ^^^^^^^^^^^^ the trait `SyncPermitted` is not implemented for `NeverSyncClass`
+   |
+help: the following other types implement trait `SyncPermitted`
+  --> src/identity/sync.rs
+   |
+   | impl SyncPermitted for SyncableClass {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SyncableClass`
+   | impl SyncPermitted for SyncableOptInClass {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SyncableOptInClass`
+note: required by a bound in `sync_permitted`
+  --> tests/ui/model_never_sync_gate.rs:6:15
+   |
+ 4 | fn sync_permitted<T: SyncClass>()
+   |    -------------- required by a bound in this function
+ 5 | where
+ 6 |     T::Class: SyncPermitted,
+   |               ^^^^^^^^^^^^^ required by this bound in `sync_permitted`

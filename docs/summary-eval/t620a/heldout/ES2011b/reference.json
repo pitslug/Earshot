@@ -1,0 +1,59 @@
+{
+  "action_items": [
+    {
+      "id": "A1.1",
+      "text": "All participants will fill out a questionnaire after the meeting."
+    },
+    {
+      "id": "A2.1",
+      "text": "The Designers will work on their individual presentations."
+    },
+    {
+      "id": "A2.2",
+      "text": "The Marketing Expert will work on their individual presentations."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1.1",
+      "text": "A locator device separate from the remote will be incorporated into the design."
+    },
+    {
+      "id": "D1.2",
+      "text": "The locator device will operate with radio signal."
+    },
+    {
+      "id": "D2.1",
+      "text": "Speech recognition will not be used."
+    },
+    {
+      "id": "D3.1",
+      "text": "The group decided that their target marketing group would be mostly teenagers and young professionals."
+    },
+    {
+      "id": "D4.1",
+      "text": "There will not be a stand for the remote when it is not in use."
+    },
+    {
+      "id": "D5.1",
+      "text": "The group decided that the locator function eliminated the need for this component."
+    },
+    {
+      "id": "D6.1",
+      "text": "The locator function will not involve an LED indicator."
+    },
+    {
+      "id": "D6.2",
+      "text": "The remote will emit a sound when located."
+    },
+    {
+      "id": "D7.1",
+      "text": "The main interface will include a power button."
+    },
+    {
+      "id": "D8.1",
+      "text": "The main interface will include a scroll wheel function in place of a number pad."
+    }
+  ],
+  "meeting": "ES2011b"
+}

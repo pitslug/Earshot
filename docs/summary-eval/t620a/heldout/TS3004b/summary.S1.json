@@ -1,0 +1,62 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Project Manager",
+      "task": "Review the new project requirements regarding the target market and features."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "The remote control will use standard buttons and basic functions suitable for elderly users."
+    },
+    {
+      "id": "S-D2",
+      "text": "The 'favorites' feature was dropped due to usability concerns for elderly users."
+    },
+    {
+      "id": "S-D3",
+      "text": "The 'back' button was dropped as it is too difficult for elderly users."
+    },
+    {
+      "id": "S-D4",
+      "text": "The remote will include a 'ten plus' button for channels above ten."
+    },
+    {
+      "id": "S-D5",
+      "text": "The remote will include a separate menu button."
+    },
+    {
+      "id": "S-D6",
+      "text": "The remote will include a mute button."
+    },
+    {
+      "id": "S-D7",
+      "text": "The remote's design will feature a unique shape or color to stand out."
+    },
+    {
+      "id": "S-D8",
+      "text": "The LED indicator for button activity will be red."
+    },
+    {
+      "id": "S-D9",
+      "text": "Buttons will light up when pressed and turn off after twenty seconds."
+    },
+    {
+      "id": "S-D10",
+      "text": "Teletext options will be kept on a single level of the remote."
+    },
+    {
+      "id": "S-D11",
+      "text": "Speech recognition feature is dropped from the remote control."
+    }
+  ],
+  "failure": null,
+  "meeting": "TS3004b",
+  "model": "S1",
+  "notes": "## Target Audience and Market Strategy\n- The target market was changed to customers younger than forty, requiring the remote to be flashy and interesting.\n- The design must stand out in the shop with a unique shape or color, similar to an iMac.\n- The remote will be offered in different colors and potentially as a see-through option.\n## Usability and Feature Selection\n- The interface uses standard methods with simple standard buttons and basic functions suitable for elderly users.\n- The 'favorites' feature was dropped because users might find it hard to remember which channel corresponds to which button.\n- The 'back' button was dropped as it is too difficult for elderly users.\n- Speech recognition was dropped due to usability issues and time constraints for market launch.\n- Teletext options will remain on one level of the remote control.\n## Design and Aesthetics\n- The remote's design will feature a unique shape or color to stand out.\n- The design should not look cheap despite the low price of 25 Euros.\n## Button Feedback and Lighting\n- The LED indicator for button activity will be red.\n- Buttons will light up when pressed and turn off after twenty seconds.\n- The lighting feature must only activate when the remote is used.\n## Remote Control Features and Layout\n- The remote will include a 'ten plus' button for channels above ten.\n- The remote will include a separate menu button.\n- The remote will include a mute button.\n- The remote will include a teletext button.",
+  "tldr": "The team designed a TV remote for a younger target market, featuring a unique shape, button lighting, and a red LED indicator. They dropped speech recognition and the 'favorites' feature to ensure usability and meet the 25 Euro price point.",
+  "valid": true
+}

@@ -1,0 +1,177 @@
+{
+  "backend": "vulkan",
+  "complete": true,
+  "cores": 32,
+  "corpora": [
+    "librispeech"
+  ],
+  "gate12": "not requested",
+  "onnx_models": "skipped: ONNX Runtime has no Vulkan provider (whisper models only)",
+  "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4, recover_speech: Some(2s) }",
+  "rows": [
+    {
+      "backend": "vulkan",
+      "backend_info": {
+        "device": "NVIDIA GeForce RTX 5080",
+        "kind": "vulkan",
+        "model": "ggml-base.en"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 76.91996369999998,
+            "rtf": 0.042829673984566094
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 24,
+            "insertions": 24,
+            "ref_words": 4681,
+            "substitutions": 145,
+            "wer_percent": 4.123050630207221
+          }
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "NVIDIA GeForce RTX 5080",
+          "kind": "vulkan",
+          "model": "ggml-base.en"
+        },
+        "lines": [
+          "whisper_model_load:      Vulkan1 total size =   147.37 MB",
+          "whisper_backend_init_gpu: device 0: Vulkan0 (type: 2)",
+          "whisper_backend_init_gpu: found GPU device 0: Vulkan0 (type: 2, cnt: 0)",
+          "whisper_backend_init_gpu: device 1: Vulkan1 (type: 1)",
+          "whisper_backend_init_gpu: found GPU device 1: Vulkan1 (type: 1, cnt: 1)",
+          "whisper_backend_init_gpu: using Vulkan1 backend"
+        ],
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+        "whisper_log": "vulkan"
+      },
+      "languages": "English",
+      "load_s": 0.9838916,
+      "model": "base.en",
+      "speed": {
+        "audio_s": 1795.95025,
+        "decode_s": 76.91996369999998,
+        "rtf": 0.042829673984566094
+      },
+      "threads": 2
+    },
+    {
+      "backend": "vulkan",
+      "backend_info": {
+        "device": "NVIDIA GeForce RTX 5080",
+        "kind": "vulkan",
+        "model": "ggml-small.en"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 48.533521599999965,
+            "rtf": 0.027023867504124884
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 11,
+            "insertions": 8,
+            "ref_words": 4681,
+            "substitutions": 101,
+            "wer_percent": 2.563554795983764
+          }
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "NVIDIA GeForce RTX 5080",
+          "kind": "vulkan",
+          "model": "ggml-small.en"
+        },
+        "lines": [
+          "whisper_model_load:      Vulkan1 total size =   487.00 MB",
+          "whisper_backend_init_gpu: device 0: Vulkan0 (type: 2)",
+          "whisper_backend_init_gpu: found GPU device 0: Vulkan0 (type: 2, cnt: 0)",
+          "whisper_backend_init_gpu: device 1: Vulkan1 (type: 1)",
+          "whisper_backend_init_gpu: found GPU device 1: Vulkan1 (type: 1, cnt: 1)",
+          "whisper_backend_init_gpu: using Vulkan1 backend"
+        ],
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+        "whisper_log": "vulkan"
+      },
+      "languages": "English",
+      "load_s": 0.4643522,
+      "model": "small.en",
+      "speed": {
+        "audio_s": 1795.95025,
+        "decode_s": 48.533521599999965,
+        "rtf": 0.027023867504124884
+      },
+      "threads": 2
+    },
+    {
+      "backend": "vulkan",
+      "backend_info": {
+        "device": "NVIDIA GeForce RTX 5080",
+        "kind": "vulkan",
+        "model": "ggml-large-v3-turbo"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 54.77771379999996,
+            "rtf": 0.030500685528454897
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 11,
+            "insertions": 7,
+            "ref_words": 4681,
+            "substitutions": 64,
+            "wer_percent": 1.751762443922239
+          }
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "NVIDIA GeForce RTX 5080",
+          "kind": "vulkan",
+          "model": "ggml-large-v3-turbo"
+        },
+        "lines": [
+          "whisper_model_load:      Vulkan1 total size =  1623.92 MB",
+          "whisper_backend_init_gpu: device 0: Vulkan0 (type: 2)",
+          "whisper_backend_init_gpu: found GPU device 0: Vulkan0 (type: 2, cnt: 0)",
+          "whisper_backend_init_gpu: device 1: Vulkan1 (type: 1)",
+          "whisper_backend_init_gpu: found GPU device 1: Vulkan1 (type: 1, cnt: 1)",
+          "whisper_backend_init_gpu: using Vulkan1 backend"
+        ],
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+        "whisper_log": "vulkan"
+      },
+      "languages": "99 languages (Whisper), selectable or detected",
+      "load_s": 2.1200926,
+      "model": "large-v3-turbo",
+      "speed": {
+        "audio_s": 1795.95025,
+        "decode_s": 54.77771379999996,
+        "rtf": 0.030500685528454897
+      },
+      "threads": 2
+    }
+  ],
+  "task": "T6.10e",
+  "threads": 2
+}

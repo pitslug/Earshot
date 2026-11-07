@@ -1,0 +1,22 @@
+[package]
+name = "earshot-llm-replay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Test and acceptance support, never shipped: a scripted OpenAI-compatible or Anthropic
+# Messages endpoint on 127.0.0.1 and the `fixtures/llm` replay cases. A dev-dependency of earshot-llm and a
+# dependency of xtask (`accept m4`). `cargo xtask ci` step `net` fails if a shipped crate
+# depends on it normally.
+
+[lints]
+workspace = true
+
+[dependencies]
+earshot-core = { path = "../earshot-core" }
+earshot-llm = { path = "../earshot-llm" }
+earshot-net = { path = "../earshot-net" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.53.3", default-features = false, features = ["rt", "time"] }

@@ -1,0 +1,127 @@
+{
+  "milestone": "m3",
+  "requested_backend": null,
+  "timestamp": "2026-11-06T21:23:40Z",
+  "host": "x86_64-pc-windows-msvc",
+  "commit": "2495b2d-dirty",
+  "backends": [
+    "cpu"
+  ],
+  "results": [
+    {
+      "id": "dia.count_error",
+      "metric": "median absolute speaker-count error, synthetic 1-6 speaker mixes + AMI",
+      "op": "<=",
+      "threshold": 1.0,
+      "unit": "count",
+      "value": 0.0,
+      "passed": null,
+      "backend": "cpu",
+      "pass": true,
+      "reason": "0 <= 1"
+    },
+    {
+      "id": "dia.count_error_large",
+      "metric": "mean absolute speaker-count error, the synthetic 4-6 speaker mixes of dia.count_error",
+      "op": "<=",
+      "threshold": 1.0,
+      "unit": "count",
+      "value": 0.9333333333333333,
+      "passed": null,
+      "backend": "cpu",
+      "pass": true,
+      "reason": "0.9333333333333333 <= 1"
+    },
+    {
+      "id": "dia.der_ami_ihm",
+      "metric": "DER, AMI IHM-mix",
+      "op": "<=",
+      "threshold": 25.0,
+      "unit": "%",
+      "value": 11.552724130023028,
+      "passed": null,
+      "backend": "cpu",
+      "pass": true,
+      "reason": "11.552724130023028 <= 25"
+    },
+    {
+      "id": "dia.der_ami_sdm",
+      "metric": "DER, AMI SDM",
+      "op": "<=",
+      "threshold": 35.0,
+      "unit": "%",
+      "value": 16.19214663688175,
+      "passed": null,
+      "backend": "cpu",
+      "pass": true,
+      "reason": "16.19214663688175 <= 35"
+    },
+    {
+      "id": "vp.false_accept",
+      "metric": "unknown speakers wrongly matched",
+      "op": "<=",
+      "threshold": 5.0,
+      "unit": "%",
+      "value": 2.5,
+      "passed": null,
+      "backend": "cpu",
+      "pass": true,
+      "reason": "2.5 <= 5"
+    },
+    {
+      "id": "vp.top1",
+      "metric": "voiceprint top-1 ID, 20 enrolled LibriSpeech speakers, 10 s enrolment, 2-3 s test clips",
+      "op": ">=",
+      "threshold": 95.0,
+      "unit": "%",
+      "value": 100.0,
+      "passed": null,
+      "backend": "cpu",
+      "pass": true,
+      "reason": "100 >= 95"
+    }
+  ],
+  "checks": [
+    {
+      "name": "clustering threshold is the dev-clean calibration for the embedding model",
+      "pass": true,
+      "detail": "campplus-en-voxceleb@357a834f702b: used 0.68, calibrated Some(0.68)"
+    },
+    {
+      "name": "voiceprint threshold is the dev-clean calibration for the embedding model",
+      "pass": true,
+      "detail": "campplus-en-voxceleb@357a834f702b: used 0.46196103, calibrated Some(0.46196103)"
+    },
+    {
+      "name": "speaker models on the CPU (ONNX Runtime node placement)",
+      "pass": true,
+      "detail": "segmentation pyannote-segmentation-3.0@220ad67ca923, 4 ONNX threads (32 cores); segmentation: \"requested cpu, placed: CPUExecutionProvider=49\"; embedding: \"requested cpu, placed: CPUExecutionProvider=1614\""
+    },
+    {
+      "name": "dia.der_ami_ihm per meeting (ihm_mix; only_words RTTM, UEM, 0.25 s collar)",
+      "pass": true,
+      "detail": "corpus DER 11.55% over 1177.3 s; IS1009a: DER 12.26% (missed 5.90%, false alarm 2.37%, confusion 4.00%) over 513.6 s scored, 4 speakers found of 4 (audio ami/audio/IS1009a.Mix-Headset.wav); ES2004a: DER 11.00% (missed 8.39%, false alarm 1.53%, confusion 1.09%) over 663.7 s scored, 4 speakers found of 4 (audio ami/audio/ES2004a.Mix-Headset.wav)"
+    },
+    {
+      "name": "dia.der_ami_sdm per meeting (sdm; only_words RTTM, UEM, 0.25 s collar)",
+      "pass": true,
+      "detail": "corpus DER 16.19% over 1177.3 s; IS1009a: DER 14.01% (missed 5.43%, false alarm 3.82%, confusion 4.75%) over 513.6 s scored, 4 speakers found of 4 (audio ami/audio/IS1009a.Array1-01.wav); ES2004a: DER 17.88% (missed 12.29%, false alarm 3.03%, confusion 2.56%) over 663.7 s scored, 4 speakers found of 4 (audio ami/audio/ES2004a.Array1-01.wav)"
+    },
+    {
+      "name": "dia.count_error distribution (|found - true| over synthetic scenes and AMI)",
+      "pass": true,
+      "detail": "median 0 over 34 items; histogram 0: 20, 1: 10, 2: 4; synthetic mean per k 1: 0.00, 2: 0.40, 3: 0.40, 4: 0.80, 5: 0.80, 6: 1.20; mean over k = 4-6 0.933 (15 scenes); AMI IS1009a ihm_mix 0, AMI ES2004a ihm_mix 0, AMI IS1009a sdm 0, AMI ES2004a sdm 0"
+    },
+    {
+      "name": "informational: synthetic scene DER (test-clean speakers, no UEM, 0.25 s collar)",
+      "pass": true,
+      "detail": "21.59% over 30 scenes; seeds [35100, 35101, 35102, 35103, 35104, 35200, 35201, 35202, 35203, 35204, 35300, 35301, 35302, 35303, 35304, 35400, 35401, 35402, 35403, 35404, 35500, 35501, 35502, 35503, 35504, 35600, 35601, 35602, 35603, 35604]; speakers [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729,4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555]"
+    },
+    {
+      "name": "vp.* tallies (test-clean, 2 folds of 20 enrolled / 20 unknown, 2.5 s clips)",
+      "pass": true,
+      "detail": "threshold 0.46196103; enrolled clips matched to their own person 120/120, to another person 0, rejected as unknown 0 (closed-set top-1 120/120); unknown clips accepted 3/120; folds 0: enrolled [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729] unknown [4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555]; 1: enrolled [4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555] unknown [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729]"
+    }
+  ],
+  "pass": true
+}

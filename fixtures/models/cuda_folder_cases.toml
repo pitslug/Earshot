@@ -1,0 +1,44 @@
+# Shared cases for "this manifest path is inside the CUDA folder" (T8.4ae). The rule exists twice:
+# earshot-runtime `catalogue::in_cuda_folder` and xtask `manifest::in_cuda_folder`. Both test suites
+# run every case below and must give exactly `inside`, so the two copies follow one rule: the first
+# path component that is not empty or `.`, split on `/` and `\`, equals `cuda` without regard to case.
+
+[[case]]
+path = "cuda/x.zip"
+inside = true
+
+[[case]]
+path = "cuda"
+inside = true
+
+[[case]]
+path = "CUDA/x.zip"
+inside = true
+
+[[case]]
+path = "Cuda\\x.zip"
+inside = true
+
+[[case]]
+path = "./cuda/x.zip"
+inside = true
+
+[[case]]
+path = "cuda/sub/x.zip"
+inside = true
+
+[[case]]
+path = "archives/cuda/x.zip"
+inside = false
+
+[[case]]
+path = "cuda.zip"
+inside = false
+
+[[case]]
+path = "cuda-x/y.zip"
+inside = false
+
+[[case]]
+path = ""
+inside = false

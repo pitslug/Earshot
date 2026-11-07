@@ -1,0 +1,2107 @@
+{
+  "format": 1,
+  "licence": "Text derived from the AMI manual annotations v1.6.2, CC BY 4.0 (fixtures/LICENSES.md)",
+  "meetings": {
+    "ES2003a": {
+      "action_items": [
+        {
+          "facts": [
+            "The team will decide how the user interface will work."
+          ],
+          "id": "A1",
+          "text": "The team will decide how the user interface will work"
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will cost 12.50 Euro to produce."
+          ],
+          "id": "D1",
+          "text": "The remote will cost 12.50 Euro to produce."
+        },
+        {
+          "facts": [
+            "The remote will sell for 25 Euro."
+          ],
+          "id": "D2",
+          "text": "The remote will sell for 25 Euro."
+        },
+        {
+          "facts": [
+            "The remote will feature an ergonomic design."
+          ],
+          "id": "D3",
+          "text": "The remote will feature an ergonomic design."
+        }
+      ]
+    },
+    "ES2003b": {
+      "action_items": [],
+      "decisions": [
+        {
+          "facts": [
+            "The team will not work with teletext."
+          ],
+          "id": "D1",
+          "text": "The team will not work with teletext."
+        },
+        {
+          "facts": [
+            "The remote will only control televisions."
+          ],
+          "id": "D2",
+          "text": "The remote will only control televisions."
+        },
+        {
+          "facts": [
+            "The corporate image must be recognizable on the remote."
+          ],
+          "id": "D3",
+          "text": "The corporate image must be recognizable on the remote."
+        },
+        {
+          "facts": [
+            "The remote will have a power button."
+          ],
+          "id": "D4",
+          "text": "The remote will have a power button."
+        },
+        {
+          "facts": [
+            "The remote will have a small joystick."
+          ],
+          "id": "D5",
+          "text": "The remote will have a small joystick."
+        },
+        {
+          "facts": [
+            "The remote will have LCD."
+          ],
+          "id": "D6",
+          "text": "The remote will have LCD."
+        },
+        {
+          "facts": [
+            "The remote will have a menu button."
+          ],
+          "id": "D7",
+          "text": "The remote will have a menu button."
+        },
+        {
+          "facts": [
+            "Instead of an \"okay\" button, the user will push down on the joystick."
+          ],
+          "id": "D8",
+          "text": "Instead of an \"okay\" button, the user will push down on the joystick."
+        },
+        {
+          "facts": [
+            "The remote will have a beeping noise which goes off when a user is trying to locate it."
+          ],
+          "id": "D9",
+          "text": "The remote will have a beeping noise which goes off when a user is trying to locate it."
+        }
+      ]
+    },
+    "ES2003c": {
+      "action_items": [
+        {
+          "facts": [
+            "The industrial designer will work on a prototype.",
+            "The user interface designer will work on a prototype."
+          ],
+          "id": "A1",
+          "text": "The industrial designer and user interface designer will work on a prototype."
+        },
+        {
+          "facts": [
+            "The marketing expert will work on a product evaluation."
+          ],
+          "id": "A2",
+          "text": "The marketing expert will work on a product evaluation"
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will use a lithium battery."
+          ],
+          "id": "D1",
+          "text": "The remote will use a lithium battery."
+        },
+        {
+          "facts": [
+            "The remote will have a double curved design."
+          ],
+          "id": "D2",
+          "text": "The remote will have a double curved design."
+        },
+        {
+          "facts": [
+            "The remote will have a case made of rubber."
+          ],
+          "id": "D3",
+          "text": "The remote will have a case made of rubber."
+        },
+        {
+          "facts": [
+            "The remote will be yellow."
+          ],
+          "id": "D4",
+          "text": "The remote will be yellow."
+        }
+      ]
+    },
+    "ES2003d": {
+      "action_items": [],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will feature an LCD."
+          ],
+          "id": "D1",
+          "text": "The remote will feature an LCD."
+        },
+        {
+          "facts": [
+            "The case for the remote will be single curved."
+          ],
+          "id": "D2",
+          "text": "The case for the remote will be single curved."
+        },
+        {
+          "facts": [
+            "The remote will be designed in a special color."
+          ],
+          "id": "D3",
+          "text": "The remote will be designed in a special color."
+        },
+        {
+          "facts": [
+            "The remote will be made of plastic instead of rubber."
+          ],
+          "id": "D4",
+          "text": "The remote will be made of plastic instead of rubber."
+        }
+      ]
+    },
+    "ES2004a": {
+      "action_items": [
+        {
+          "facts": [
+            "The group will prepare for the functional design meeting.",
+            "The functional design meeting will discuss the components of the product.",
+            "The functional design meeting will discuss the functions of the product."
+          ],
+          "id": "A1",
+          "text": "The group will prepare for the functional design meeting to discuss the components and functions of the product."
+        }
+      ],
+      "decisions": []
+    },
+    "ES2004b": {
+      "action_items": [
+        {
+          "facts": [
+            "The Marketing Expert will research consumers' opinions on instruction manuals."
+          ],
+          "id": "A1",
+          "text": "The Marketing Expert will research consumers' opinions on instruction manuals."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "It was decided that the group will produce one product design instead of creating alternate designs in an attempt to accomodate different users' preferences."
+          ],
+          "id": "D1",
+          "text": "It was decided that the group will produce one product design instead of creating alternate designs in an attempt to accomodate different users' preferences."
+        },
+        {
+          "facts": [
+            "The marketing will be focused towards a young, business-class buyer."
+          ],
+          "id": "D2",
+          "text": "The marketing will be focused towards a young, business-class buyer."
+        },
+        {
+          "facts": [
+            "The remote will feature Video Plus capabilities.",
+            "The remote will feature a seashell-like shape to accommodate the LCD display.",
+            "The remote will feature a seashell-like shape to accommodate the flip screen."
+          ],
+          "id": "D3",
+          "text": "The remote will feature Video Plus capabilities and a seashell-like shape to accomodate the LCD display and the flip screen."
+        },
+        {
+          "facts": [
+            "The remote will be bundled with a docking station to recharge the remote's batteries.",
+            "The remote will be bundled with a user-friendly instruction manual.",
+            "Multiple casings will be made available."
+          ],
+          "id": "D4",
+          "text": "The remote will be bundled with a docking station to recharge the remote's batteries and a user-friendly instruction manual, and multiple casings will be made available."
+        }
+      ]
+    },
+    "ES2004c": {
+      "action_items": [],
+      "decisions": [
+        {
+          "facts": [
+            "It was decided that the remote would feature an LCD screen.",
+            "It was decided that the remote would feature rubber buttons.",
+            "It was decided that the remote would feature colorful rubber changeable skins.",
+            "It was decided that the remote would feature a kinetic battery.",
+            "It was decided that the remote would possibly feature speech recognition if it is still within the budget to include it."
+          ],
+          "id": "D1",
+          "text": "It was decided that the remote would feature an LCD screen, rubber buttons, colorful rubber changeable skins, a kinetic battery, and possibly speech recognition if it is still within the budget to include it."
+        }
+      ]
+    },
+    "ES2004d": {
+      "action_items": [
+        {
+          "facts": [
+            "The group will suggest to the management that speech recognition remain in the product design."
+          ],
+          "id": "A1",
+          "text": "The group will suggest to the management that speech recognition remain in the product design."
+        },
+        {
+          "facts": [
+            "All members will fill out a final evaluation questionnaire."
+          ],
+          "id": "A2",
+          "text": "All members will fill out a final evaluation questionnaire."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "It was decided that the speech recognition component seemed feasible.",
+            "The speech recognition component was added to the prototype design.",
+            "The speech recognition component was added to provide a device locator function."
+          ],
+          "id": "D1",
+          "text": "It was decided that the speech recognition component seemed feasible, so it was added to the prototype design to provide a device locator function."
+        },
+        {
+          "facts": [
+            "The feature was removed when the project exceeded its initial budget.",
+            "It will be suggested to the management that the speech recognition should remain in the product design."
+          ],
+          "id": "D2",
+          "text": "It was removed when the project exceeded its initial budget, but it will be suggested to the management that the speech recognition should remain in the product design."
+        },
+        {
+          "facts": [
+            "The plastic case will be a neutral color.",
+            "The changeable rubber cases will be available in vibrant, fruit colors."
+          ],
+          "id": "D3",
+          "text": "The plastic case will be a neutral color, and the changeable rubber cases will be available in vibrant, fruit colors."
+        },
+        {
+          "facts": [
+            "The LCD screen will appear only in black and white."
+          ],
+          "id": "D4",
+          "text": "The LCD screen will appear only in black and white."
+        },
+        {
+          "facts": [
+            "The company logo will appear on the inside of the device when opened."
+          ],
+          "id": "D5",
+          "text": "The company logo will appear on the inside of the device when opened."
+        },
+        {
+          "facts": [
+            "The group decided that the device fulfilled enough of the project's initial goals to continue in production."
+          ],
+          "id": "D6",
+          "text": "The group decided that the device fulfilled enough of the project's initial goals to continue in production."
+        }
+      ]
+    },
+    "ES2011a": {
+      "action_items": [
+        {
+          "facts": [
+            "The Industrial Designer will research the working design and components."
+          ],
+          "id": "A1",
+          "text": "The Industrial Designer will research the working design and components."
+        },
+        {
+          "facts": [
+            "The User Interface Designer will research the technical functions."
+          ],
+          "id": "A2",
+          "text": "The User Interface Designer will research the technical functions."
+        },
+        {
+          "facts": [
+            "The Marketing Expert will research user requirements."
+          ],
+          "id": "A3",
+          "text": "The Marketing Expert will research user requirements."
+        }
+      ],
+      "decisions": []
+    },
+    "ES2011b": {
+      "action_items": [
+        {
+          "facts": [
+            "All participants will fill out a questionnaire after the meeting."
+          ],
+          "id": "A1",
+          "text": "All participants will fill out a questionnaire after the meeting."
+        },
+        {
+          "facts": [
+            "The Designers will work on their individual presentations.",
+            "The Marketing Expert will work on their individual presentations."
+          ],
+          "id": "A2",
+          "text": "The Designers and the Marketing Expert will work on their individual presentations."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "A locator device separate from the remote will be incorporated into the design.",
+            "The locator device will operate with radio signal."
+          ],
+          "id": "D1",
+          "text": "A locator device separate from the remote will be incorporated into the design, which will operate with radio signal."
+        },
+        {
+          "facts": [
+            "Speech recognition will not be used."
+          ],
+          "id": "D2",
+          "text": "Speech recognition will not be used."
+        },
+        {
+          "facts": [
+            "The group decided that their target marketing group would be mostly teenagers and young professionals."
+          ],
+          "id": "D3",
+          "text": "The group decided that their target marketing group would be mostly teenagers and young professionals."
+        },
+        {
+          "facts": [
+            "There will not be a stand for the remote when it is not in use."
+          ],
+          "id": "D4",
+          "text": "There will not be a stand in which the remote is placed when not in use."
+        },
+        {
+          "facts": [
+            "The group decided that the locator function eliminated the need for this component."
+          ],
+          "id": "D5",
+          "text": "The group decided that the locator function eliminated the need for this component."
+        },
+        {
+          "facts": [
+            "The locator function will not involve an LED indicator.",
+            "The remote will emit a sound when located."
+          ],
+          "id": "D6",
+          "text": "The locator function will not involve an LED indicator; the remote will simply emit a sound when located."
+        },
+        {
+          "facts": [
+            "The main interface will include a power button."
+          ],
+          "id": "D7",
+          "text": "The main interface will include a power button."
+        },
+        {
+          "facts": [
+            "The main interface will include a scroll wheel function in place of a number pad."
+          ],
+          "id": "D8",
+          "text": "The main interface will include a scroll wheel function in place of a number pad."
+        }
+      ]
+    },
+    "ES2011c": {
+      "action_items": [
+        {
+          "facts": [
+            "The Project Manager instructed the User Interface Designer to construct the prototype.",
+            "The Project Manager instructed the Industrial Designer to construct the prototype."
+          ],
+          "id": "A1",
+          "text": "The Project Manager instructed the User Interface Designer and the Industrial Designer to construct the prototype."
+        },
+        {
+          "facts": [
+            "The User Interface Designer will work on the interface.",
+            "The Industrial Designer will work on the look and feel of the device."
+          ],
+          "id": "A2",
+          "text": "The User Interface Designer will work on the interface and the Industrial Designer will work on the look and feel of the device."
+        },
+        {
+          "facts": [
+            "The Marketing Expert will prepare a prototype evaluation."
+          ],
+          "id": "A3",
+          "text": "The Marketing Expert will prepare a prototype evaluation."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will feature a spongy material."
+          ],
+          "id": "D1",
+          "text": "The remote will feature a spongy material."
+        },
+        {
+          "facts": [
+            "The fruits and vegetables trend will be incorporated into the design by including fruit colors along with the company colors."
+          ],
+          "id": "D2",
+          "text": "The fruits and vegetables trend will be incorporated into the design by including fruit colors along with the company colors."
+        },
+        {
+          "facts": [
+            "The remote will feature a changeable outer casing."
+          ],
+          "id": "D3",
+          "text": "The remote will feature a changeable outer casing."
+        }
+      ]
+    },
+    "ES2011d": {
+      "action_items": [
+        {
+          "facts": [
+            "All participants will write a final report."
+          ],
+          "id": "A1",
+          "text": "All participants will write a final report."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The group decided that the fruit and vegetable shapes of the device were uncomfortable to hold."
+          ],
+          "id": "D1",
+          "text": "The group decided that the fruit and vegetable shapes of the device were uncomfortable to hold."
+        },
+        {
+          "facts": [
+            "They decided to produce the device in one uniform shape.",
+            "They decided to include changeable covers in fruit colors and designs."
+          ],
+          "id": "D2",
+          "text": "They decided to produce the device in one uniform shape, with changeable covers in fruit colors and designs."
+        },
+        {
+          "facts": [
+            "The group decided that the final production cost was met sufficiently to be able to continue with the project.",
+            "The group decided that all of the other initial goals were met sufficiently to be able to continue with the project."
+          ],
+          "id": "D3",
+          "text": "The group decided that the final production cost and all of the other initial goals were met sufficiently to be able to continue with the project."
+        }
+      ]
+    },
+    "ES2014a": {
+      "action_items": [
+        {
+          "facts": [
+            "The Industrial Designer will prepare the working design."
+          ],
+          "id": "A1",
+          "text": "The Industrial Deigner will prepare the working design."
+        },
+        {
+          "facts": [
+            "The User Interface Designer will research technical functions."
+          ],
+          "id": "A2",
+          "text": "The User Interface Designer will research technical functions."
+        },
+        {
+          "facts": [
+            "The Marketing Expert will prepare the user requirement specification."
+          ],
+          "id": "A3",
+          "text": "The Marketing Expert will prepare the user requirement specification."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The group discussed the function of the prototype.",
+            "The group decided that they should restrict the remote to television for the time being instead of allowing it to control multiple devices."
+          ],
+          "id": "D1",
+          "text": "The group discussed the function of the prototype and decided that they should restrict the remote to television for the time being instead of allowing it to control multiple devices."
+        }
+      ]
+    },
+    "ES2014b": {
+      "action_items": [
+        {
+          "facts": [
+            "All participants will continue working on the remote functions."
+          ],
+          "id": "A1",
+          "text": "All participants will continue working on the remote functions."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will feature a locator function that responds to clapping."
+          ],
+          "id": "D1",
+          "text": "The remote will feature a locator function that responds to clapping."
+        },
+        {
+          "facts": [
+            "There will be a device that allows the user to enter two numbers separately to get a two-digit number in order to reduce the overall number of buttons."
+          ],
+          "id": "D2",
+          "text": "There will be a device that allows the user to enter two numbers separately to get a two-digit number in order to reduce the overall number of buttons."
+        },
+        {
+          "facts": [
+            "The remote will feature a panel that hides complicated functions on the back of the device."
+          ],
+          "id": "D3",
+          "text": "The remote will feature a panel that hides complicated functions on the back of the device."
+        },
+        {
+          "facts": [
+            "Buttons to adjust picture quality, channel tuning, and other settings will be hidden in this panel.",
+            "The number pad will remain on the main interface.",
+            "The channel-changing buttons will remain on the main interface.",
+            "The volume-changing buttons will remain on the main interface.",
+            "The power buttons will remain on the main interface."
+          ],
+          "id": "D4",
+          "text": "Buttons to adjust picture quality, channel tuning, and other settings will be hidden in this panel; the number pad, the channel- and volume-changing and power buttons will remain on the main interface."
+        }
+      ]
+    },
+    "ES2014c": {
+      "action_items": [
+        {
+          "facts": [
+            "The User Interface Designer will construct the prototype.",
+            "The Industrial Designer will construct the prototype."
+          ],
+          "id": "A1",
+          "text": "The User Interface Designer and the Industrial Designer will construct the prototype."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The group decided to use speech recognition.",
+            "The group decided to use speech recognition only for the locator function."
+          ],
+          "id": "D1",
+          "text": "The group decided to use speech recognition but only for the locator function."
+        },
+        {
+          "facts": [
+            "The remote will feature push buttons instead of scroll buttons.",
+            "The remote will feature a kinetic power supply."
+          ],
+          "id": "D2",
+          "text": "The remote will feature push buttons instead of scroll buttons, and a kinetic power supply."
+        },
+        {
+          "facts": [
+            "The remote will contain a simple chip."
+          ],
+          "id": "D3",
+          "text": "The remote will contain a simple chip."
+        },
+        {
+          "facts": [
+            "The group decided to focus on a basic remote that will appeal to the widest market."
+          ],
+          "id": "D4",
+          "text": "The group decided to focus on a basic remote that will appeal to the widest market."
+        },
+        {
+          "facts": [
+            "They decided to market the speech recognition component as a \"finder function\" so as not to confuse it with more advanced speech recognition components in other remote controls."
+          ],
+          "id": "D5",
+          "text": "They also decided to market the speech recognition component as a \"finder function\" so as not to confuse it with more advanced speech recognition components in other remote controls."
+        },
+        {
+          "facts": [
+            "The group decided to make the standby button in the shape of an apple."
+          ],
+          "id": "D6",
+          "text": "The group decided to make the standby button in the shape of an apple."
+        },
+        {
+          "facts": [
+            "The remote will feature a rubber case.",
+            "The remote will feature rubber buttons.",
+            "The remote will feature a single-curved design."
+          ],
+          "id": "D7",
+          "text": "The remote will also feature a rubber case and rubber buttons, and a single-curved design."
+        },
+        {
+          "facts": [
+            "The remote will feature the company logo.",
+            "The company logo on the remote will possibly be in a sticker form."
+          ],
+          "id": "D8",
+          "text": "The remote will feature the company logo, possibly in a sticker form."
+        }
+      ]
+    },
+    "ES2014d": {
+      "action_items": [
+        {
+          "facts": [
+            "The team must complete two questionnaires before they finish.",
+            "The team must complete a report on the last meeting before they finish."
+          ],
+          "id": "A1",
+          "text": "The team have two questionnaires and a report on the last meeting to complete before they finish."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will be single-curved.",
+            "The remote will have a cherry design on top."
+          ],
+          "id": "D1",
+          "text": "The remote will be single-curved with a cherry design on top."
+        },
+        {
+          "facts": [
+            "The case will be made of plastic."
+          ],
+          "id": "D2",
+          "text": "The case will be made of plastic."
+        },
+        {
+          "facts": [
+            "The buttons will be made of rubber.",
+            "The buttons will be mostly in a light blue colour."
+          ],
+          "id": "D3",
+          "text": "The buttons will be made of rubber mostly in a light blue colour."
+        },
+        {
+          "facts": [
+            "Volume and channel buttons will be different from the rest."
+          ],
+          "id": "D4",
+          "text": "However, volume and channel buttons will be different from the rest."
+        },
+        {
+          "facts": [
+            "Volume buttons will be lemon-shaped.",
+            "Volume buttons will be coloured."
+          ],
+          "id": "D5",
+          "text": "Volume buttons will be lemon-shaped and coloured."
+        },
+        {
+          "facts": [
+            "A slide-out panel with extra buttons for less-used functions is included."
+          ],
+          "id": "D6",
+          "text": "A slide-out panel with extra buttons for less-used functions is included."
+        },
+        {
+          "facts": [
+            "The buttons in this panel will all be in the standard blue colour."
+          ],
+          "id": "D7",
+          "text": "The buttons in this panel will all be in the standard blue colour."
+        },
+        {
+          "facts": [
+            "A simple chip is going to support the electronics of the device."
+          ],
+          "id": "D8",
+          "text": "A simple chip is going to support the electronics of the device."
+        },
+        {
+          "facts": [
+            "A sample sensor was included to add speech recognition."
+          ],
+          "id": "D9",
+          "text": "A sample sensor was included to add speech recognition."
+        },
+        {
+          "facts": [
+            "The remote is going to be powered by kinetic energy."
+          ],
+          "id": "D10",
+          "text": "The remote is going to be powered by kinetic energy."
+        }
+      ]
+    },
+    "IS1008a": {
+      "action_items": [
+        {
+          "facts": [
+            "The Marketing Expert will prepare a sales plan for the product.",
+            "The Marketing Expert will discuss the project budget.",
+            "The Marketing Expert will discuss the sales strategy."
+          ],
+          "id": "A1",
+          "text": "The Marketing Expert will prepare a sales plan for the product and discuss the project budget and the sales strategy."
+        },
+        {
+          "facts": [
+            "The Industrial Designer will prepare an initial functional design."
+          ],
+          "id": "A2",
+          "text": "The Industrial Designer will prepare an initial functional design."
+        },
+        {
+          "facts": [
+            "The User Interface Designer will contribute studies on user requirements to the functional design."
+          ],
+          "id": "A3",
+          "text": "The User Interface Designer will contribute studies on user requirements to the functional design."
+        },
+        {
+          "facts": [
+            "The Project Manager will post his presentation to be available for all participants."
+          ],
+          "id": "A4",
+          "text": "The Project Manager will post his presentation to be available for all participants."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The group will discuss the design plans of the three experts at the next meeting."
+          ],
+          "id": "D1",
+          "text": "The group will discuss the design plans of the three experts at the next meeting."
+        },
+        {
+          "facts": [
+            "The group will first work on a functional design of the device."
+          ],
+          "id": "D2",
+          "text": "The group will first work on a functional design of the device."
+        }
+      ]
+    },
+    "IS1008b": {
+      "action_items": [
+        {
+          "facts": [
+            "The Industrial Designer will make a presentation on the components concept for the product."
+          ],
+          "id": "A1",
+          "text": "The Industrial Designer will make a presentation on the components concept for the product."
+        },
+        {
+          "facts": [
+            "The User Interface Designer will make a presentation on the user interface concept."
+          ],
+          "id": "A2",
+          "text": "The User Interface Designer will make a presentation on the user interface concept."
+        },
+        {
+          "facts": [
+            "The Marketing Expert will present the marketing concept."
+          ],
+          "id": "A3",
+          "text": "The Marketing Expert will present the marketing concept."
+        },
+        {
+          "facts": [
+            "The Project Manager will research companies that can provide the Industrial Designer with help on integrating voice recognition into her design."
+          ],
+          "id": "A4",
+          "text": "The Project Manager will research companies that can provide the Industrial Designer with help on integrating voice recognition into her design."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The group will discuss which features to include in the final design of the product at the next meeting.",
+            "The group will discuss which features to eliminate from the final design of the product at the next meeting."
+          ],
+          "id": "D1",
+          "text": "The group will discuss which features to include in and eliminate from the final design of the product at the next meeting."
+        },
+        {
+          "facts": [
+            "The remote will have a slim shape.",
+            "The remote will have a simple interface.",
+            "The remote will include a locator function.",
+            "The remote will include voice recognition.",
+            "The remote will be made of a hard material."
+          ],
+          "id": "D2",
+          "text": "The remote will have a slim shape and a simple interface, include a locator function and voice recognition, and be made of a hard material."
+        }
+      ]
+    },
+    "IS1008c": {
+      "action_items": [
+        {
+          "facts": [
+            "The Industrial Designer will design the prototype of the remote control.",
+            "The User Interface Designer will design the prototype of the remote control."
+          ],
+          "id": "A1",
+          "text": "The Industrial Designer and the User Interface Designer will design the prototype of the remote control."
+        },
+        {
+          "facts": [
+            "The Marketing Expert will find out how much the display component costs.",
+            "The Marketing Expert will present his marketing strategy at the next meeting."
+          ],
+          "id": "A2",
+          "text": "The Marketing Expert will find out how much the display component costs and will present his marketing strategy at the next meeting."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The group decided on the features that will be included in the final design of the prototype."
+          ],
+          "id": "D1",
+          "text": "The group decided on the features that will be included in the final design of the prototype."
+        },
+        {
+          "facts": [
+            "The remote will have customized wood casing.",
+            "The remote will have ergonomic sizing.",
+            "The remote will have voice recognition.",
+            "The remote will have a locator function.",
+            "The remote will have rubber buttons in a simple arrangement.",
+            "The remote will have an advanced chip.",
+            "The remote will have a battery life indicator."
+          ],
+          "id": "D2",
+          "text": "The remote will have customized wood casing and ergonomic sizing, voice recognition, a locator function, rubber buttons in a simple arrangement, an advanced chip, and a battery life indicator."
+        },
+        {
+          "facts": [
+            "The group discussed including a display on the remote.",
+            "The prototype will be designed without a display until the Marketing Expert finds out how much it would cost to add it."
+          ],
+          "id": "D3",
+          "text": "The group discussed including a display on the remote, but the prototype will be designed without a display until the Marketing Expert finds out how much it would cost to add it."
+        },
+        {
+          "facts": [
+            "The group decided to contact another company to manufacture the product that could do it cheaply yet still paid fair wages."
+          ],
+          "id": "D4",
+          "text": "The group decided to contact another company to manufacture the product that could do it cheaply yet still paid fair wages."
+        }
+      ]
+    },
+    "IS1008d": {
+      "action_items": [
+        {
+          "facts": [
+            "The Project Manager will negotiate with production companies to decrease the cost of production.",
+            "The Project Manager will negotiate with management to decrease the cost of production."
+          ],
+          "id": "A1",
+          "text": "The Project Manager will negotiate with production companies and with management to decrease the cost of production."
+        },
+        {
+          "facts": [
+            "He will present the new promotion plan to management."
+          ],
+          "id": "A2",
+          "text": "He will also present the new promotion plan to management."
+        },
+        {
+          "facts": [
+            "The Marketing Expert will begin his marketing plan after production has begun."
+          ],
+          "id": "A3",
+          "text": "The Marketing Expert will begin his marketing plan after production has begun."
+        },
+        {
+          "facts": [
+            "The group will evaluate the product after real units have been produced."
+          ],
+          "id": "A4",
+          "text": "The group will evaluate the product after real units have been produced."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The group decided that the LCD display will be included in the design.",
+            "The group decided that the microphone for the remote will be placed on the side of the device."
+          ],
+          "id": "D1",
+          "text": "The group decided that the LCD display will be included in the design and that the microphone for the remote will be placed on the side of the device."
+        },
+        {
+          "facts": [
+            "The Project Manager decided to negotiate the cost of production.",
+            "The Project Manager decided to allow the integration of the display into the design."
+          ],
+          "id": "D2",
+          "text": "The Project Manager decided to negotiate the cost of production to allow the integration of the display into the design."
+        },
+        {
+          "facts": [
+            "The group will work with other companies to promote the product.",
+            "The group will have the product released along with other products.",
+            "The group will have the product released with an event, such as a sporting event."
+          ],
+          "id": "D3",
+          "text": "The group will work with other companies to promote the product and have it released along with other products or with an event, such as a sporting event."
+        },
+        {
+          "facts": [
+            "The Project Manager decided that no additional changes will be made to the remote."
+          ],
+          "id": "D4",
+          "text": "The Project Manager decided that no additional changes will be made to the remote."
+        },
+        {
+          "facts": [
+            "The product evaluation will occur at a later time.",
+            "The product evaluation will occur after the production of some real units have been produced.",
+            "The product evaluation will not evaluate the prototype."
+          ],
+          "id": "D5",
+          "text": "The product evaluation will occur at a later time, after the production of some real units have been produced, rather than evaluating the prototype."
+        }
+      ]
+    },
+    "IS1009a": {
+      "action_items": [
+        {
+          "facts": [
+            "The industrial designer will work on the working design.",
+            "The industrial designer will work on the technical function."
+          ],
+          "id": "A1",
+          "text": "The industrial designer will work on the working design and technical function."
+        },
+        {
+          "facts": [
+            "The interface specialist will do the working design.",
+            "The interface specialist will do the functional design."
+          ],
+          "id": "A2",
+          "text": "The interface specialist will do the working design and functional design."
+        },
+        {
+          "facts": [
+            "The marketing manager will look for user requirement specifications such as friendliness."
+          ],
+          "id": "A3",
+          "text": "The marketing manager will look for user requirement specifications such as friendliness"
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The selling price will be twenty five Euro."
+          ],
+          "id": "D1",
+          "text": "Selling price will be twenty five Euro."
+        },
+        {
+          "facts": [
+            "Company aims to profit fifty million Euro."
+          ],
+          "id": "D2",
+          "text": "Company aims to profit fifty million Euro."
+        },
+        {
+          "facts": [
+            "It should be compact.",
+            "It should be multi-functional.",
+            "It should be different in shape.",
+            "It should be different in color.",
+            "It should be different in material."
+          ],
+          "id": "D3",
+          "text": "It should be compact, multi-functional, different in shape/color/material."
+        },
+        {
+          "facts": [
+            "Have a locator to help find the remote when it is lost."
+          ],
+          "id": "D4",
+          "text": "Have a locator to help find the remote when it is lost."
+        }
+      ]
+    },
+    "IS1009b": {
+      "action_items": [],
+      "decisions": [
+        {
+          "facts": [
+            "They cannot make a device that works on the whole house.",
+            "They will need a focus."
+          ],
+          "id": "D1",
+          "text": "They cannot make a device that works on the whole house- will need a focus."
+        },
+        {
+          "facts": [
+            "They will eliminate teletext."
+          ],
+          "id": "D2",
+          "text": "They will eliminate teletext."
+        },
+        {
+          "facts": [
+            "They will maintain the corporate image by using the proper designs and colors."
+          ],
+          "id": "D3",
+          "text": "They will maintain the corporate image by using the proper designs and colors."
+        },
+        {
+          "facts": [
+            "Their target group is basically everybody who owns a TV."
+          ],
+          "id": "D4",
+          "text": "Their target group is basically everybody who owns a TV."
+        }
+      ]
+    },
+    "IS1009c": {
+      "action_items": [
+        {
+          "facts": [
+            "The marketing expert will do the product evaluation."
+          ],
+          "id": "A1",
+          "text": "The marketing expert will do the product evaluation."
+        },
+        {
+          "facts": [
+            "The industrial designer will work together on a prototype using modeling clay.",
+            "The interface specialist will work together on a prototype using modeling clay."
+          ],
+          "id": "A2",
+          "text": "The industrial designer and interface specialist will work together on a prototype using modeling clay."
+        },
+        {
+          "facts": [
+            "The industrial designer will come up with a user interface design."
+          ],
+          "id": "A3",
+          "text": "The industrial designer will come up with a user interface design."
+        },
+        {
+          "facts": [
+            "Their coaches will send specific instructions.",
+            "Their coaches will answer questions."
+          ],
+          "id": "A4",
+          "text": "Their coaches will send specific instructions and answer questions."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "They decided that the product should be bright.",
+            "They decided that the product should be colorful.",
+            "They decided that the product should be trendy in design.",
+            "They decided that the product should be strong.",
+            "They decided that the product should be compact.",
+            "They decided that the product should have push buttons.",
+            "They decided that the product should contain supplement features (possibly mute button, swapping button, voice recognition)."
+          ],
+          "id": "D1",
+          "text": "They decided that the product should be bright, colorful, trendy in design, strong, compact, have push buttons, and contain supplement features (possibly mute button, swapping button, voice recognition)."
+        },
+        {
+          "facts": [
+            "The power source will be batteries because it is cost-effective."
+          ],
+          "id": "D2",
+          "text": "The power source will be batteries because it is cost-effective."
+        },
+        {
+          "facts": [
+            "They will have the industrial engineer do more research on the cost of voice recognition before deciding whether to include that function."
+          ],
+          "id": "D3",
+          "text": "They will have the industrial engineer do more research on the cost of voice recognition before deciding whether to include that function."
+        }
+      ]
+    },
+    "IS1009d": {
+      "action_items": [],
+      "decisions": [
+        {
+          "facts": [
+            "The remote is a snail shape.",
+            "The remote has bright colors.",
+            "The remote is blue and yellow.",
+            "The remote has multi-colored buttons."
+          ],
+          "id": "D1",
+          "text": "The remote is a snail shape with bright colors, blue and yellow with multi-colored buttons."
+        },
+        {
+          "facts": [
+            "The item is compact in size."
+          ],
+          "id": "D2",
+          "text": "Compact in size."
+        },
+        {
+          "facts": [
+            "It includes a remote holder in the shape of a shell."
+          ],
+          "id": "D3",
+          "text": "It includes a remote holder in the shape of a shell."
+        },
+        {
+          "facts": [
+            "The case will be made of plastic.",
+            "The buttons will be made of soft rubber."
+          ],
+          "id": "D4",
+          "text": "The case will be made of plastic and the buttons of soft rubber."
+        },
+        {
+          "facts": [
+            "Its features will include an on/off button.",
+            "Its features will include two mute buttons.",
+            "Its features will include nine channel buttons.",
+            "Its features will include two buttons for increasing/decreasing the volume.",
+            "Its features will include two buttons for scrolling up/down channels.",
+            "Its features will include a menu button in the center which controls the color/sharpness/brightness of the picture.",
+            "Its features will include a swapping button."
+          ],
+          "id": "D5",
+          "text": "Its features will include an on/off button, two mute buttons, nine channel buttons, two buttons for increasing/decreasing the volume, two buttons for scrolling up/down channels, a menu button in the center which controls the color/sharpness/brightness of the picture, and a swapping button."
+        },
+        {
+          "facts": [
+            "Channel buttons are numbered.",
+            "The rest of the buttons have symbols indicating function."
+          ],
+          "id": "D6",
+          "text": "Channel buttons numbered, rest of the buttons have symbols indicating function."
+        },
+        {
+          "facts": [
+            "The light emitting diode is fluorescent green."
+          ],
+          "id": "D7",
+          "text": "Light emitting diode is flourescent green."
+        },
+        {
+          "facts": [
+            "In their cost evaluation they got 8.20.",
+            "The cost evaluation did not factor in the voice recognition feature."
+          ],
+          "id": "D8",
+          "text": "In their cost evaluation they got 8.20, not factoring in the voice recognition feature."
+        },
+        {
+          "facts": [
+            "They decide to settle for the level of quality the remaining 4.30 euros will get them."
+          ],
+          "id": "D9",
+          "text": "They decide to settle for the level of quality the remaining 4.30 euros will get them."
+        }
+      ]
+    },
+    "TS3003a": {
+      "action_items": [
+        {
+          "facts": [
+            "The team members will work on their individual projects."
+          ],
+          "id": "A1",
+          "text": "The team members will work on their individual projects"
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The selling price will be 25 Euro."
+          ],
+          "id": "D1",
+          "text": "The selling price will be 25 Euro."
+        },
+        {
+          "facts": [
+            "The focus will be on an international market."
+          ],
+          "id": "D2",
+          "text": "The focus will be on an international market."
+        },
+        {
+          "facts": [
+            "The production cost cannot exceed 12.50 Euro."
+          ],
+          "id": "D3",
+          "text": "The production cost cannot exceed 12.50 Euro."
+        },
+        {
+          "facts": [
+            "The remote will be able to control multiple devices."
+          ],
+          "id": "D4",
+          "text": "The remote will be able to control multiple devices."
+        },
+        {
+          "facts": [
+            "The remote will be shockproof."
+          ],
+          "id": "D5",
+          "text": "The remote will be shockproof."
+        },
+        {
+          "facts": [
+            "The remote will be waterproof."
+          ],
+          "id": "D6",
+          "text": "The remote will be waterproof."
+        }
+      ]
+    },
+    "TS3003b": {
+      "action_items": [
+        {
+          "facts": [
+            "The industrial designer will work on the components concept."
+          ],
+          "id": "A1",
+          "text": "The industrial designer will work on the components concept."
+        },
+        {
+          "facts": [
+            "The user interface designer will work on the user interface concept.",
+            "The user interface designer will work on trend-watching."
+          ],
+          "id": "A2",
+          "text": "The user interface designer will work on the user interface concept and trend-watching"
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will only be used for televisions."
+          ],
+          "id": "D1",
+          "text": "The remote will only be used for televisions."
+        },
+        {
+          "facts": [
+            "The user target group consists of adults age sixty to eighty."
+          ],
+          "id": "D2",
+          "text": "The user target group consists of adults age sixty to eighty."
+        },
+        {
+          "facts": [
+            "The corporate image must be visible in the design of the remote."
+          ],
+          "id": "D3",
+          "text": "The corporate image must be visible in the design of the remote."
+        },
+        {
+          "facts": [
+            "The team will implement teletext in their design if it does not cost too much."
+          ],
+          "id": "D4",
+          "text": "The team will implement teletext in their design if it does not cost too much."
+        },
+        {
+          "facts": [
+            "The remote will only have a few buttons."
+          ],
+          "id": "D5",
+          "text": "The remote will only have a few buttons."
+        },
+        {
+          "facts": [
+            "The remote will have a docking station."
+          ],
+          "id": "D6",
+          "text": "The remote will have a docking station."
+        },
+        {
+          "facts": [
+            "The remote will have an audio signal to allow users to locate it when misplaced.",
+            "The team will focus on creating a remote for elderly people."
+          ],
+          "id": "D7",
+          "text": "The remote will have an audio signal to allow users to locate it when misplaced-the team will focus on creating a remote for elderly people."
+        },
+        {
+          "facts": [
+            "The remote will feature a small LCD screen."
+          ],
+          "id": "D8",
+          "text": "The remote will feature a small LCD screen."
+        },
+        {
+          "facts": [
+            "The remote will be fancy."
+          ],
+          "id": "D9",
+          "text": "The remote will be fancy."
+        },
+        {
+          "facts": [
+            "The remote will be easy to learn."
+          ],
+          "id": "D10",
+          "text": "The remote will be easy to learn."
+        },
+        {
+          "facts": [
+            "The remote will be made to accommodate different languages."
+          ],
+          "id": "D11",
+          "text": "The remote will be made to accommodate different languages."
+        }
+      ]
+    },
+    "TS3003c": {
+      "action_items": [
+        {
+          "facts": [
+            "The team members will look at the corporate website."
+          ],
+          "id": "A1",
+          "text": "The team members will look at the corporate website."
+        },
+        {
+          "facts": [
+            "The user interface designer will continue with what he has been working on."
+          ],
+          "id": "A2",
+          "text": "The user interface designer will continue with what he has been working on."
+        },
+        {
+          "facts": [
+            "The industrial designer and user interface designer will work together."
+          ],
+          "id": "A3",
+          "text": "The industrial designer and user interface designer will work together"
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will have a docking station."
+          ],
+          "id": "D1",
+          "text": "The remote will have a docking station."
+        },
+        {
+          "facts": [
+            "The remote will use a conventional battery.",
+            "The remote will use a docking station which recharges the battery."
+          ],
+          "id": "D2",
+          "text": "The remote will use a conventional battery and a docking station which recharges the battery."
+        },
+        {
+          "facts": [
+            "The remote will use an advanced chip."
+          ],
+          "id": "D3",
+          "text": "The remote will use an advanced chip."
+        },
+        {
+          "facts": [
+            "The remote will have changeable case covers."
+          ],
+          "id": "D4",
+          "text": "The remote will have changeable case covers."
+        },
+        {
+          "facts": [
+            "The case covers will be available in wood or plastic."
+          ],
+          "id": "D5",
+          "text": "The case covers will be available in wood or plastic."
+        },
+        {
+          "facts": [
+            "The case will be single curved."
+          ],
+          "id": "D6",
+          "text": "The case will be single curved."
+        }
+      ]
+    },
+    "TS3003d": {
+      "action_items": [
+        {
+          "facts": [
+            "The project manager will prepare the final presentation.",
+            "The rest of the group will fill in a questionnaire."
+          ],
+          "id": "A1",
+          "text": "The project manager will prepare the final presentation, while the rest of the group will fill in a questionnaire."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The prototype will use a rechargable battery."
+          ],
+          "id": "D1",
+          "text": "The prototype will use a rechargable battery."
+        },
+        {
+          "facts": [
+            "The case will be plastic.",
+            "The case will be made in single-curve form."
+          ],
+          "id": "D2",
+          "text": "The case will be plastic and will be made in single-curve form."
+        },
+        {
+          "facts": [
+            "Five buttons are going to be used.",
+            "One button is for channel selection.",
+            "One button is for volume.",
+            "The channel selection button is assisted by the scrollwheel.",
+            "The volume button is assisted by the scrollwheel.",
+            "One button is for teletext.",
+            "One button is for on-off.",
+            "One button is for help."
+          ],
+          "id": "D3",
+          "text": "Five buttons are going to be used: one for channel selection, one for volume (both assisted by the scrollwheel), teletext, on-off and help button."
+        },
+        {
+          "facts": [
+            "These would be made of rubber in a colour different from that of the case."
+          ],
+          "id": "D4",
+          "text": "These would be made of rubber in a colour different from that of the case."
+        },
+        {
+          "facts": [
+            "Their functionality will be enriched by the use of a scrollwheel (going up or down the channel list, changing the volume, etc.)."
+          ],
+          "id": "D5",
+          "kept_whole": "the facts hold only 0.36 of the sentence",
+          "text": "Their functionality will be enriched by the use of a scrollwheel (going up or down the channel list, changing the volume, etc.)."
+        },
+        {
+          "facts": [
+            "Standard buttons like the ones for teletext shortcuts were considered superfluous."
+          ],
+          "id": "D6",
+          "text": "Standard buttons like the ones for teletext shortcuts were considered superfluous."
+        },
+        {
+          "facts": [
+            "An LCD screen will be providing functional information.",
+            "An LCD screen will be providing context tips when using the scrollwheel."
+          ],
+          "id": "D7",
+          "text": "An LCD screen will be providing functional information, and context tips when using the scrollwheel."
+        },
+        {
+          "facts": [
+            "The revised prototype will probably be targeted to a younger one, or even across the population."
+          ],
+          "id": "D8",
+          "text": "The revised prototype will probably be targeted to a younger one, or even across the population."
+        }
+      ]
+    },
+    "TS3004a": {
+      "action_items": [
+        {
+          "facts": [
+            "The Marketing Expert will present the user requirement specification.",
+            "The Marketing Expert will research which devices the remote will control."
+          ],
+          "id": "A1",
+          "text": "The Marketing Expert will present the user requirement specification and will research which devices the remote will control."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The group decided to make the remote a universal remote."
+          ],
+          "id": "D1",
+          "text": "The group decided to make the remote a universal remote."
+        }
+      ]
+    },
+    "TS3004b": {
+      "action_items": [
+        {
+          "facts": [
+            "The Marketing Expert will prepare a report on trendwatching."
+          ],
+          "id": "A1",
+          "text": "The Marketing Expert will prepare a report on trendwatching."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will not feature speech recognition.",
+            "The remote will not feature an LCD screen."
+          ],
+          "id": "D1",
+          "text": "The remote will not feature speech recognition or an LCD screen."
+        },
+        {
+          "facts": [
+            "The remote will light up when a button is pressed, much like a mobile phone."
+          ],
+          "id": "D2",
+          "kept_whole": "the facts hold only 0.50 of the sentence",
+          "text": "The remote will light up when a button is pressed, much like a mobile phone."
+        },
+        {
+          "facts": [
+            "Complicated features will be hidden from the more simple functions on the main interface."
+          ],
+          "id": "D3",
+          "text": "Complicated features will be hidden from the more simple functions on the main interface."
+        },
+        {
+          "facts": [
+            "The remote will feature teletext capabilities.",
+            "The teletext buttons will be included on the main interface."
+          ],
+          "id": "D4",
+          "text": "The remote will feature teletext capabilities, and the teletext buttons will be included on the main interface."
+        }
+      ]
+    },
+    "TS3004c": {
+      "action_items": [
+        {
+          "facts": [
+            "The User Interface Designer will draw the prototype design on the smartboard at the next meeting.",
+            "The Industrial Designer will draw the prototype design on the smartboard at the next meeting."
+          ],
+          "id": "A1",
+          "text": "The User Interface Designer and the Industrial Designer will draw the prototype design on the smartboard at the next meeting."
+        },
+        {
+          "facts": [
+            "The User Interface Designer was instructed to finalize the placement of the buttons."
+          ],
+          "id": "A2",
+          "text": "The User Interface Designer was instructed to finalize the placement of the buttons."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The group decided to use a scroll button for volume control."
+          ],
+          "id": "D1",
+          "text": "The group decided to use a scroll button for volume control."
+        },
+        {
+          "facts": [
+            "It will be small.",
+            "It will be yellow.",
+            "It will use one of the colors of the Real Reaction logo."
+          ],
+          "id": "D2",
+          "text": "It will be small and yellow, to use one of the colors of the Real Reaction logo."
+        },
+        {
+          "facts": [
+            "The remote will include rechargeable batteries.",
+            "The remote will be used with a recharging stand."
+          ],
+          "id": "D3",
+          "text": "The remote will include rechargeable batteries and will be used with a recharging stand."
+        },
+        {
+          "facts": [
+            "The remote will feature plastic buttons rather than rubber.",
+            "The remote will feature plastic casing rather than rubber."
+          ],
+          "id": "D4",
+          "text": "The remote will feature plastic buttons and casing, rather than rubber."
+        },
+        {
+          "facts": [
+            "The remote will not feature an LCD screen."
+          ],
+          "id": "D5",
+          "text": "The remote will not feature an LCD screen."
+        },
+        {
+          "facts": [
+            "The remote will feature a double-curved, rounded square design."
+          ],
+          "id": "D6",
+          "text": "The remote will feature a double-curved, rounded square design."
+        },
+        {
+          "facts": [
+            "The group decided to design five changeable faces for the device."
+          ],
+          "id": "D7",
+          "text": "The group decided to design five changeable faces for the device."
+        },
+        {
+          "facts": [
+            "They decided to incorporate speech recognition.",
+            "They decided to incorporate an advanced chip."
+          ],
+          "id": "D8",
+          "text": "They eventually decided to incorporate speech recognition and an advanced chip."
+        }
+      ]
+    },
+    "TS3004d": {
+      "action_items": [
+        {
+          "facts": [
+            "The group have to fill out a final questionnaire."
+          ],
+          "id": "A1",
+          "text": "The group have to fill out a final questionnaire."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will be made of hard, transparent coloured plastic.",
+            "The remote will come in different colours."
+          ],
+          "id": "D1",
+          "text": "The remote will be made of hard, transparent coloured plastic, and will come in different colours."
+        },
+        {
+          "facts": [
+            "The remote will include buttons.",
+            "The remote will include a scroll wheel."
+          ],
+          "id": "D2",
+          "text": "The remote will include buttons and a scroll wheel."
+        },
+        {
+          "facts": [
+            "The remote control will feature speech recognition.",
+            "The remote control will feature a slide-out second level."
+          ],
+          "id": "D3",
+          "text": "The remote control will feature speech recognition and a slide-out second level."
+        }
+      ]
+    },
+    "TS3006a": {
+      "action_items": [
+        {
+          "facts": [
+            "The interface designer should specify technical functions."
+          ],
+          "id": "A1",
+          "text": "The interface designer should specify technical functions."
+        },
+        {
+          "facts": [
+            "The marketing expert will come up with user requirements by doing internet research."
+          ],
+          "id": "A2",
+          "text": "The marketing expert will come up with user requirements by doing internet research."
+        },
+        {
+          "facts": [
+            "The industrial designer should produce a working design."
+          ],
+          "id": "A3",
+          "text": "The industrial designer should produce a working design."
+        },
+        {
+          "facts": [
+            "They will receive more information by email."
+          ],
+          "id": "A4",
+          "text": "They will receive more information by email"
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The product will be sold at 25 Euros."
+          ],
+          "id": "D1",
+          "text": "The product will be sold at 25 Euros."
+        },
+        {
+          "facts": [
+            "The aim is to sell 50 million Euros."
+          ],
+          "id": "D2",
+          "text": "The aim is to seel 50 million Euros."
+        },
+        {
+          "facts": [
+            "The production cost should be half the selling price."
+          ],
+          "id": "D3",
+          "text": "The production cost should be half the selling price."
+        },
+        {
+          "facts": [
+            "They will assume the remote to be for TV and video.",
+            "They will reserve the possibility to add features."
+          ],
+          "id": "D4",
+          "text": "To get started they will assume the remote to be for TV and video, and reserve the possibility to add features."
+        }
+      ]
+    },
+    "TS3006b": {
+      "action_items": [
+        {
+          "facts": [
+            "The project manager will write up the meeting minutes."
+          ],
+          "id": "A1",
+          "text": "The project manager will write up the meeting minutes."
+        },
+        {
+          "facts": [
+            "The user interface designer will work on the layout of the remote.",
+            "The user interface designer will work on the layout of the LCD screen menu."
+          ],
+          "id": "A2",
+          "text": "The user interface designer will work on the layout of the remote and the LCD screen menu."
+        },
+        {
+          "facts": [
+            "The industrial designer will work on the functional aspects of the remote."
+          ],
+          "id": "A3",
+          "text": "The industrial designer will work on the functional aspects of the remote."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will have an LCD screen.",
+            "The remote will have speech recognition."
+          ],
+          "id": "D1",
+          "text": "The remote will have an LCD screen and speech recognition."
+        },
+        {
+          "facts": [
+            "The advanced functions such as audio settings, contrast and channel programming will be accessed through the screen."
+          ],
+          "id": "D2",
+          "text": "The advanced functions such as audio settings, contrast and channel programming will be accessed through the screen."
+        },
+        {
+          "facts": [
+            "The target group will be aged 16-40."
+          ],
+          "id": "D3",
+          "text": "The target group will be aged 16-40."
+        },
+        {
+          "facts": [
+            "A teletext option will not be included."
+          ],
+          "id": "D4",
+          "text": "A teletext option will not be included."
+        },
+        {
+          "facts": [
+            "The remote will be for TV only."
+          ],
+          "id": "D5",
+          "text": "The remote will be for TV only."
+        },
+        {
+          "facts": [
+            "The remote will feature the corporate logo.",
+            "The remote will feature the corporate colour."
+          ],
+          "id": "D6",
+          "text": "The remote will feature the corporate logo and colour."
+        },
+        {
+          "facts": [
+            "The screen will be at the top of the remote.",
+            "The microphone will be at the top of the remote."
+          ],
+          "id": "D7",
+          "text": "The screen and microphone will be at the top of the remote."
+        },
+        {
+          "facts": [
+            "There will be LEDs under the buttons.",
+            "Buttons in use will light up."
+          ],
+          "id": "D8",
+          "text": "There will be LEDs under the buttons so that buttons in use will light up."
+        }
+      ]
+    },
+    "TS3006c": {
+      "action_items": [
+        {
+          "facts": [
+            "The industrial designer and user interface designer will work together on the prototype design."
+          ],
+          "id": "A1",
+          "text": "The industrial designer and user interface designer will work together on the prototype design."
+        },
+        {
+          "facts": [
+            "The marketing expert will prepare the prototype evaluation."
+          ],
+          "id": "A2",
+          "text": "The marketing expert will prepare the prototype evaluation."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will use kinetic energy."
+          ],
+          "id": "D1",
+          "text": "The remote will use kinetic energy."
+        },
+        {
+          "facts": [
+            "The case will be double-curved.",
+            "The case will be made of rubber."
+          ],
+          "id": "D2",
+          "text": "The case will be double-curved and made of rubber."
+        },
+        {
+          "facts": [
+            "The remote will use an advanced chip."
+          ],
+          "id": "D3",
+          "text": "The remote will use an advanced chip."
+        }
+      ]
+    },
+    "TS3006d": {
+      "action_items": [
+        {
+          "facts": [
+            "The project manager will complete the final report."
+          ],
+          "id": "A1",
+          "text": "The project manager will complete the final report."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will be single-curved."
+          ],
+          "id": "D1",
+          "text": "The remote will be single-curved."
+        },
+        {
+          "facts": [
+            "The remote will no longer feature speech recognition.",
+            "The remote will still have an LCD screen."
+          ],
+          "id": "D2",
+          "text": "The remote will no longer feature speech recognition, but will still have an LCD screen."
+        },
+        {
+          "facts": [
+            "It will be made of plastic instead of rubber."
+          ],
+          "id": "D3",
+          "text": "It will be made of plastic instead of rubber."
+        },
+        {
+          "facts": [
+            "It will have one integrated scroll push-button.",
+            "It will have no other buttons."
+          ],
+          "id": "D4",
+          "text": "It will have one integrated scroll push-button and no other buttons."
+        },
+        {
+          "facts": [
+            "The remote will be powered by a hand dynamo instead of kinetic energy."
+          ],
+          "id": "D5",
+          "text": "The remote will be powered by a hand dynamo instead of kinetic energy."
+        }
+      ]
+    },
+    "TS3007a": {
+      "action_items": [
+        {
+          "facts": [
+            "The Industrial Designer will work on the working design."
+          ],
+          "id": "A1",
+          "text": "The Industrial Designer will work on the working design."
+        },
+        {
+          "facts": [
+            "The User Interface Designer will research the technical functions."
+          ],
+          "id": "A2",
+          "text": "The User Interface Designer will research the technical functions."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The group decided that it was important to incorporate a feature that would make the product very unique."
+          ],
+          "id": "D1",
+          "text": "The group decided that it was important to incorporate a feature that would make the product very unique."
+        }
+      ]
+    },
+    "TS3007b": {
+      "action_items": [
+        {
+          "facts": [
+            "They will receive specific instructions for the next meeting by email."
+          ],
+          "id": "A1",
+          "text": "They will receive specific instructions for the next meeting by email."
+        },
+        {
+          "facts": [
+            "They will fill out the questionaire"
+          ],
+          "id": "A2",
+          "kept_whole": "the facts hold only 0.50 of the sentence",
+          "text": "They will fill out the questionaire"
+        }
+      ],
+      "decisions": []
+    },
+    "TS3007c": {
+      "action_items": [
+        {
+          "facts": [
+            "The industrial designer and user interface designer will work together on a prototype.",
+            "The industrial designer and user interface designer will use the SMARTboard.",
+            "The marketing expert will work on the product evaluation."
+          ],
+          "id": "A1",
+          "text": "The industrial designer and user interface designer will work together on a prototype, using the SMARTboard.  The marketing expert will work on the product evaluation."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The energy source will be a combination of batteries and kinetic energy."
+          ],
+          "id": "D1",
+          "text": "The energy source will be a combination of batteries and kinetic energy."
+        },
+        {
+          "facts": [
+            "The case will be double-curved.",
+            "The case will be made of rubber.",
+            "The case will have fruity-coloured removable covers."
+          ],
+          "id": "D2",
+          "text": "The case will be double-curved and made of rubber, with fruity-coloured removable covers."
+        },
+        {
+          "facts": [
+            "There will be a touch screen.",
+            "There will not be many buttons."
+          ],
+          "id": "D3",
+          "text": "There will be a touch screen and not many buttons."
+        },
+        {
+          "facts": [
+            "The remote will include games.",
+            "The remote will include a simple parental control feature."
+          ],
+          "id": "D4",
+          "text": "The remote will include games and a simple parental control feature."
+        },
+        {
+          "facts": [
+            "It will not use speech recognition."
+          ],
+          "id": "D5",
+          "text": "It will not use speech recognition."
+        }
+      ]
+    },
+    "TS3007d": {
+      "action_items": [
+        {
+          "facts": [
+            "The project manager will finish the final report."
+          ],
+          "id": "A1",
+          "text": "The project manager will finish the final report."
+        }
+      ],
+      "decisions": [
+        {
+          "facts": [
+            "The remote will come in fruity colours as standard.",
+            "The remote will have the option of buying different exchangeable covers."
+          ],
+          "id": "D1",
+          "text": "The remote will come in fruity colours as standard with the option of buying different exchangeable covers."
+        },
+        {
+          "facts": [
+            "The case will be single-curved instead of double-curved."
+          ],
+          "id": "D2",
+          "text": "The case will be single-curved instead of double-curved."
+        },
+        {
+          "facts": [
+            "The remote will be battery powered.",
+            "The remote will no longer use kinetic energy."
+          ],
+          "id": "D3",
+          "text": "The remote will be battery powered and will no longer use kinetic energy."
+        }
+      ]
+    }
+  },
+  "split_by": "qwen3.5-9b-q4_k_m"
+}

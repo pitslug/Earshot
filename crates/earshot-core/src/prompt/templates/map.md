@@ -1,0 +1,1 @@
+This meeting is too long to summarise at once, so it is split into parts. You receive part {{part}} of {{parts}} of the transcript and the user's notes written during that part. Summarise only this part, with the same JSON format and rules. Cite only segment numbers from this part. The parts are merged in a later step.

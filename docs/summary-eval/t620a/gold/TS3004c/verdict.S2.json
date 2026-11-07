@@ -1,0 +1,88 @@
+{
+  "meeting": "TS3004c",
+  "model": "S2",
+  "decisions": [
+    {
+      "id": "D1.1",
+      "verdict": "covered",
+      "reason": "S-D7 makes the volume control a scroll wheel."
+    },
+    {
+      "id": "D2.1",
+      "verdict": "covered",
+      "reason": "S-D9 says the scroll wheel will be small."
+    },
+    {
+      "id": "D2.2",
+      "verdict": "covered",
+      "reason": "S-D9 says the scroll wheel will be yellow."
+    },
+    {
+      "id": "D2.3",
+      "verdict": "covered",
+      "reason": "The Interface Layout notes say yellow matches the Real Reaction colours."
+    },
+    {
+      "id": "D3.1",
+      "verdict": "covered",
+      "reason": "S-D2 states rechargeable batteries."
+    },
+    {
+      "id": "D3.2",
+      "verdict": "missing",
+      "reason": "No part mentions a recharging stand or dock."
+    },
+    {
+      "id": "D4.1",
+      "verdict": "missing",
+      "reason": "The notes say the case is hard plastic but nothing gives the button material."
+    },
+    {
+      "id": "D4.2",
+      "verdict": "covered",
+      "reason": "S-D1 and the Materials notes state a hard plastic case, not rubber."
+    },
+    {
+      "id": "D5.1",
+      "verdict": "missing",
+      "reason": "No part says the remote has no LCD screen."
+    },
+    {
+      "id": "D6.1",
+      "verdict": "covered",
+      "reason": "S-D4 gives a 2D curved shape and S-D8 mostly square with rounded corners."
+    },
+    {
+      "id": "D7.1",
+      "verdict": "missing",
+      "reason": "No part mentions changeable faces or five of anything."
+    },
+    {
+      "id": "D8.1",
+      "verdict": "covered",
+      "reason": "S-D10 and S-D11 include speech recognition."
+    },
+    {
+      "id": "D8.2",
+      "verdict": "contradicted",
+      "reason": "Settled: S-D10 and the tldr say an advanced chip, S-D3 and the notes say the regular chip, so a reader cannot tell which."
+    }
+  ],
+  "action_items": [
+    {
+      "id": "A1.1",
+      "verdict": "missing",
+      "reason": "Settled: S-A4 has the design painted; no part mentions drawing it on the smartboard at the next meeting."
+    },
+    {
+      "id": "A1.2",
+      "verdict": "missing",
+      "reason": "The Industrial Designer's only item, S-A1, is about the chip and nothing gives them the drawing."
+    },
+    {
+      "id": "A2.1",
+      "verdict": "covered",
+      "reason": "S-A3 has the User Interface Designer work on the button layout design."
+    }
+  ]
+}

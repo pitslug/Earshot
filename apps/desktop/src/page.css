@@ -1,0 +1,16 @@
+/* Page frame only: the window is the app. Everything inside comes from Fluent. */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* The canvas before the app has mounted, on the theme public/theme-boot.js chose: Fluent's
+   colorNeutralBackground1 in each theme. */
+html[data-theme="light"] {
+  background-color: #ffffff;
+}
+html[data-theme="dark"] {
+  background-color: #292929;
+}

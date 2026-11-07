@@ -1,0 +1,44 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Industrial Designer",
+      "task": "Add 'unbreakable' feature to the outline design."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Marketing Expert",
+      "task": "Go back to management to be more precise about what they want, including sales projections, costs, and benefits."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "Project Manager",
+      "task": "Coordinate with Marketing Expert to get details on timeframe needed to develop the speech recognition feature."
+    },
+    {
+      "due": null,
+      "id": "S-A4",
+      "owner": "Project Manager",
+      "task": "Send meeting minutes and help coordinate with technical companies for design support."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "Design the remote control to be sleek, simple, and with a limited number of buttons."
+    },
+    {
+      "id": "S-D2",
+      "text": "Include all proposed features initially and refine them later in the process."
+    }
+  ],
+  "failure": null,
+  "meeting": "IS1008b",
+  "model": "S1",
+  "notes": "## Remote Control Functionality\n- The device must turn the TV on and off immediately upon pressing the big button, with no delay or 'waffling'.\n- Remote controls should be easy to find and not easily lost.\n- The remote should provide an oral cue to confirm when the command has been received.\n## Design and Material Preferences\n- The remote should be waterproof to handle spills or outdoor use.\n- The remote should be unbreakable to withstand drops and play by children.\n- The remote should be inflatable and change size based on user preference.\n- Titanium was suggested as a material option, though concerns were raised about its weight and cost.\n## Project Goals and Pricing\n- The company aims to make at least 50 million Euro; the price must be reasonable on the sales side.\n- Marketing Expert suggests a sales price of 25 Euro with a production price of 12.5 Euro, noting this is a market price for 15-35 year-olds willing to spend on trendy items.\n- Management wants a totally new product that could cost more but create a boom in the market.\n## Remote Control Design\n- The remote control should be slim (not fat) and universal for any TV.\n- Marketing Expert suggests adding color to make it trendy and fancy.\n- Design should be sleek and simple, minimizing the number of buttons to avoid clutter and confusion.\n- Frequently used buttons (power, channel, volume) should be larger and strategically placed.\n- Existing remotes often have too many buttons, tiny labels, and complex sequences that users forget.\n## Speech Recognition Feature\n- 80% of 15-35 year-olds are willing to spend more for trendy items; 75-90% are willing to pay for speech recognition on a remote.\n- Proposal: Single-word recognition commands (e.g., 'remote', 'on', 'off') with a beep sound to help users find the device among clutter.\n- Challenge: Speech recognition must filter out ambient TV sound and user speech to avoid false triggers (e.g., turning off TV when a movie character speaks).\n- Proposal: Use exact single-word recognition similar to telephone or car systems.\n- Project Manager offered to recommend technical partners like Intel or IBM for speech recognition training and technical backup.\n## Power and Battery\n- Speech recognition and fancy features may impact battery life.\n- Proposal: Add wireless charging or a solar cell inside the remote.\n## Feature Selection Strategy\n- The team agreed to include all proposed features initially and eliminate them later in the process.\n- User Interface Designer suggested starting with all features might waste time on features that will be discarded.\n## Next Steps\n- Project Manager will send meeting minutes and help coordinate with technical companies for design support.\n- Team will take a lunch break and reconvene in the next meeting to discuss further.",
+  "tldr": "The team discussed functional design requirements for a new remote control, including instant on/off functionality, durability, and user-friendly features. They debated material options, project goals, and speech recognition features before agreeing on a sleek design and a strategy to include all proposed features initially.",
+  "valid": true
+}

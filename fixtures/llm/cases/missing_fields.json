@@ -1,0 +1,63 @@
+{
+  "description": "Required fields missing (tldr, topics, a nullable due); fixed in one repair round.",
+  "input": "meeting.json",
+  "expect": {
+    "modes": [
+      "json_schema",
+      "json_schema"
+    ],
+    "repairs": 1
+  },
+  "exchanges": [
+    {
+      "status": 200,
+      "body": {
+        "id": "chatcmpl-replay-missing_fields-4",
+        "object": "chat.completion",
+        "created": 1792224004,
+        "model": "replay-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"title\":\"Beta launch check-in\",\"enhanced_notes\":[{\"heading\":\"Beta launch date\",\"bullets\":[{\"text\":\"QA passed last night; engineering can ship on Friday\",\"source_segment_ids\":[2]},{\"text\":\"Beta launch confirmed for this Friday\",\"source_segment_ids\":[3]}]},{\"heading\":\"Support owner\",\"bullets\":[{\"text\":\"Nobody owns support for beta users yet\",\"source_segment_ids\":[5]},{\"text\":\"The support team may take it; Ben checks with Dana\",\"source_segment_ids\":[6,7]}]}],\"decisions\":[{\"text\":\"Ship the beta this Friday\",\"source_segment_ids\":[3]}],\"action_items\":[{\"owner\":\"Ben Okafor\",\"task\":\"Write the release notes and send them round\",\"due\":\"Thursday\",\"source_segment_ids\":[4]},{\"owner\":\"Ben Okafor\",\"task\":\"Ask Dana whether the support team can own beta support\",\"source_segment_ids\":[6,7,8]}],\"open_questions\":[\"Who will own support for beta users?\"]}"
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1650,
+          "completion_tokens": 304,
+          "total_tokens": 1954
+        }
+      }
+    },
+    {
+      "status": 200,
+      "body": {
+        "id": "chatcmpl-replay-missing_fields-5",
+        "object": "chat.completion",
+        "created": 1792224005,
+        "model": "replay-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"title\":\"Beta launch check-in\",\"tldr\":\"The team confirmed that the beta ships this Friday. Ben will write the release notes and check with Dana about beta support.\",\"enhanced_notes\":[{\"heading\":\"Beta launch date\",\"bullets\":[{\"text\":\"QA passed last night; engineering can ship on Friday\",\"source_segment_ids\":[2]},{\"text\":\"Beta launch confirmed for this Friday\",\"source_segment_ids\":[3]}]},{\"heading\":\"Support owner\",\"bullets\":[{\"text\":\"Nobody owns support for beta users yet\",\"source_segment_ids\":[5]},{\"text\":\"The support team may take it; Ben checks with Dana\",\"source_segment_ids\":[6,7]}]}],\"decisions\":[{\"text\":\"Ship the beta this Friday\",\"source_segment_ids\":[3]}],\"action_items\":[{\"owner\":\"Ben Okafor\",\"task\":\"Write the release notes and send them round\",\"due\":\"Thursday\",\"source_segment_ids\":[4]},{\"owner\":\"Ben Okafor\",\"task\":\"Ask Dana whether the support team can own beta support\",\"due\":\"Wednesday\",\"source_segment_ids\":[6,7,8]}],\"open_questions\":[\"Who will own support for beta users?\"],\"topics\":[\"beta launch\",\"release notes\",\"support\"]}"
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 2350,
+          "completion_tokens": 354,
+          "total_tokens": 2704
+        }
+      }
+    }
+  ]
+}

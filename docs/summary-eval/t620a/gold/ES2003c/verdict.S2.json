@@ -1,0 +1,15 @@
+{
+  "meeting": "ES2003c",
+  "model": "S2",
+  "decisions": [
+    {"id": "D1.1", "verdict": "missing", "reason": "S-D1 says conventional batteries but never lithium, so only the topic appears."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D3 states a double-curved design."},
+    {"id": "D3.1", "verdict": "covered", "reason": "S-D2 says rubber is used for the casing."},
+    {"id": "D4.1", "verdict": "covered", "reason": "S-D6 selects bright yellow as the primary colour."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "missing", "reason": "No action item or note gives the Industrial Designer prototype work."},
+    {"id": "A1.2", "verdict": "missing", "reason": "S-A3 only has the User Interface Designer ask where to obtain clay, which is not working on the prototype."},
+    {"id": "A2.1", "verdict": "contradicted", "reason": "S-A2 gives the product evaluation plan to the Project Manager, not the marketing expert."}
+  ]
+}

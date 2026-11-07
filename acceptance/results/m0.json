@@ -1,0 +1,32 @@
+{
+  "milestone": "m0",
+  "requested_backend": null,
+  "timestamp": "2026-11-06T14:07:20Z",
+  "host": "x86_64-pc-windows-msvc",
+  "commit": "409b36b-dirty",
+  "backends": [],
+  "results": [],
+  "checks": [
+    {
+      "name": "thresholds.toml parses and every entry is well-formed",
+      "pass": true,
+      "detail": "29 entries"
+    },
+    {
+      "name": "threshold ids equal the PLAN.md 4.2 id list",
+      "pass": true,
+      "detail": "29 ids match"
+    },
+    {
+      "name": "PLAN.md 4.2 table matches the id list",
+      "pass": true,
+      "detail": "29 rows match"
+    },
+    {
+      "name": "thresholds.toml matches PLAN.md 4.2 rows (milestone, op, value, unit, provisional)",
+      "pass": true,
+      "detail": "every row matches"
+    }
+  ],
+  "pass": true
+}

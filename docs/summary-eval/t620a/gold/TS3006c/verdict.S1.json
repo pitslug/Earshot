@@ -1,0 +1,14 @@
+{
+  "meeting": "TS3006c",
+  "model": "S1",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D1 states kinetic energy."},
+    {"id": "D2.1", "verdict": "missing", "reason": "No part says anything about the case being curved."},
+    {"id": "D2.2", "verdict": "covered", "reason": "S-D2 states a rubber case."},
+    {"id": "D3.1", "verdict": "covered", "reason": "The Power and Electronics notes say an advanced chip will be used."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "covered", "reason": "S-A1 and S-A2 give the Industrial and User Interface Designers the same device design task."},
+    {"id": "A2.1", "verdict": "covered", "reason": "S-A3 has the Marketing Expert create a procedure for product evaluation."}
+  ]
+}

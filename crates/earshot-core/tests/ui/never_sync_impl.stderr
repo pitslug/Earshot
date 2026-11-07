@@ -1,0 +1,18 @@
+error[E0277]: the trait bound `NeverSyncClass: SyncPermitted` is not satisfied
+  --> tests/ui/never_sync_impl.rs:14:6
+   |
+14 | impl SyncSerialize for AudioFile {
+   |      ^^^^^^^^^^^^^ the trait `SyncPermitted` is not implemented for `NeverSyncClass`
+   |
+help: the following other types implement trait `SyncPermitted`
+  --> src/identity/sync.rs
+   |
+   | impl SyncPermitted for SyncableClass {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SyncableClass`
+   | impl SyncPermitted for SyncableOptInClass {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SyncableOptInClass`
+note: required by a bound in `SyncSerialize`
+  --> src/identity/sync.rs
+   |
+   | pub trait SyncSerialize: SyncClass<Class: SyncPermitted> + Serialize {
+   |                                           ^^^^^^^^^^^^^ required by this bound in `SyncSerialize`

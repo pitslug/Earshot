@@ -1,0 +1,40 @@
+[package]
+name = "earshot-onnx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# ONNX Runtime CUDA execution provider. Needs the GPU build of ONNX Runtime
+# (`cargo xtask fetch-models --set cuda`), the CUDA 13.x runtime and cuDNN 9.x at run time;
+# never needed by `cargo xtask ci`.
+cuda = ["ort/cuda"]
+# ONNX Runtime QNN execution provider (Snapdragon NPU, Windows ARM64; T8.3): Qualcomm's
+# plugin EP, registered at run time into the official ONNX Runtime (`earshot_onnx::qnn`;
+# `cargo xtask fetch-models --set qnn`, or `--set qnn-x64` for the HTP simulator on x64). It
+# goes through ort's device API, so no ort feature is needed.
+qnn = []
+
+[dependencies]
+earshot-core = { path = "../earshot-core" }
+# ort 2.0.0-rc.14 wraps the ONNX Runtime 1.31 C API (api-31). Pinned with `=`. On every target
+# ONNX Runtime is loaded at run time (`load-dynamic`) from Microsoft's official release build,
+# fetched and checksum-pinned through models/manifest.toml; nothing is downloaded or linked at
+# build time (no `download-binaries`).
+ort = { version = "=2.0.0-rc.14", default-features = false, features = ["std", "api-31", "load-dynamic"] }
+# Kaldi fbank front-end of CAM++ (same version as earshot-core).
+rustfft = "6.4.1"
+# Model-file hash for the EmbeddingModelId (same version as xtask, so no feature widening).
+sha2 = "0.11"
+
+[dev-dependencies]
+claxon = "=0.4.3"
+rand_chacha = { version = "0.10.0", default-features = false }
+rand_core = { version = "0.10.1", default-features = false }
+# Reads acceptance/aec_scenarios.toml (same version and features as xtask, so no feature widening).
+toml = "1"
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

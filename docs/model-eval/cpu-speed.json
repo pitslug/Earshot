@@ -1,0 +1,326 @@
+{
+  "backend": "cpu",
+  "complete": true,
+  "cores": 32,
+  "corpora": [
+    "speed"
+  ],
+  "gate12": "not requested",
+  "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4 }",
+  "rows": [
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "parakeet-tdt_ctc-110m (CTC)"
+      },
+      "corpora": {
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 5.8034621,
+            "rtf": 0.009672436833333332
+          },
+          "words": 1071
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "fully_on_requested": [
+          true
+        ],
+        "sessions": [
+          "requested cpu, placed: CPUExecutionProvider=1826"
+        ],
+        "source": "ONNX Runtime node placement"
+      },
+      "languages": "English",
+      "load_s": 1.269329,
+      "model": "parakeet-ctc-110m",
+      "speed": {
+        "audio_s": 600.0,
+        "decode_s": 5.8034621,
+        "rtf": 0.009672436833333332
+      },
+      "threads": 4
+    },
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "parakeet-tdt_ctc-110m (TDT)"
+      },
+      "corpora": {
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 6.2436798,
+            "rtf": 0.010406133
+          },
+          "words": 1072
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "fully_on_requested": [
+          true,
+          true,
+          true
+        ],
+        "sessions": [
+          "requested cpu, placed: CPUExecutionProvider=1824",
+          "requested cpu, placed: CPUExecutionProvider=7",
+          "requested cpu, placed: CPUExecutionProvider=10"
+        ],
+        "source": "ONNX Runtime node placement"
+      },
+      "languages": "English",
+      "load_s": 1.4206905,
+      "model": "parakeet-tdt-110m",
+      "speed": {
+        "audio_s": 600.0,
+        "decode_s": 6.2436798,
+        "rtf": 0.010406133
+      },
+      "threads": 4
+    },
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "parakeet-tdt-0.6b-v2"
+      },
+      "corpora": {
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 18.4518867,
+            "rtf": 0.0307531445
+          },
+          "words": 1149
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "fully_on_requested": [
+          true,
+          true,
+          true
+        ],
+        "sessions": [
+          "requested cpu, placed: CPUExecutionProvider=1993",
+          "requested cpu, placed: CPUExecutionProvider=13",
+          "requested cpu, placed: CPUExecutionProvider=10"
+        ],
+        "source": "ONNX Runtime node placement"
+      },
+      "languages": "English",
+      "load_s": 3.5556416,
+      "model": "parakeet-tdt-0.6b-v2",
+      "speed": {
+        "audio_s": 600.0,
+        "decode_s": 18.4518867,
+        "rtf": 0.0307531445
+      },
+      "threads": 4
+    },
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "parakeet-tdt-0.6b-v3"
+      },
+      "corpora": {
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 19.572809,
+            "rtf": 0.032621348333333335
+          },
+          "words": 1154
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "fully_on_requested": [
+          true,
+          true,
+          true
+        ],
+        "sessions": [
+          "requested cpu, placed: CPUExecutionProvider=1993",
+          "requested cpu, placed: CPUExecutionProvider=13",
+          "requested cpu, placed: CPUExecutionProvider=10"
+        ],
+        "source": "ONNX Runtime node placement"
+      },
+      "languages": "25 European languages (bg hr cs da nl en et fi fr de el hu it lv lt mt pl pt ro sk sl es sv ru uk), detected automatically",
+      "load_s": 4.4689302,
+      "model": "parakeet-tdt-0.6b-v3",
+      "speed": {
+        "audio_s": 600.0,
+        "decode_s": 19.572809,
+        "rtf": 0.032621348333333335
+      },
+      "threads": 4
+    },
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "ggml-tiny.en"
+      },
+      "corpora": {
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 95.2675238,
+            "rtf": 0.15877920633333334
+          },
+          "words": 1038
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "cpu",
+          "kind": "cpu",
+          "model": "ggml-tiny.en"
+        },
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)"
+      },
+      "languages": "English",
+      "load_s": 0.107756,
+      "model": "tiny.en",
+      "speed": {
+        "audio_s": 600.0,
+        "decode_s": 95.2675238,
+        "rtf": 0.15877920633333334
+      },
+      "threads": 4
+    },
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "ggml-base.en"
+      },
+      "corpora": {
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 188.0675213,
+            "rtf": 0.31344586883333336
+          },
+          "words": 1054
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "cpu",
+          "kind": "cpu",
+          "model": "ggml-base.en"
+        },
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)"
+      },
+      "languages": "English",
+      "load_s": 0.142149,
+      "model": "base.en",
+      "speed": {
+        "audio_s": 600.0,
+        "decode_s": 188.0675213,
+        "rtf": 0.31344586883333336
+      },
+      "threads": 4
+    },
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "ggml-small.en"
+      },
+      "corpora": {
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 615.6905808,
+            "rtf": 1.026150968
+          },
+          "words": 1022
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "cpu",
+          "kind": "cpu",
+          "model": "ggml-small.en"
+        },
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)"
+      },
+      "languages": "English",
+      "load_s": 0.3656853,
+      "model": "small.en",
+      "speed": {
+        "audio_s": 600.0,
+        "decode_s": 615.6905808,
+        "rtf": 1.026150968
+      },
+      "threads": 4
+    },
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "ggml-small.en-q5_1"
+      },
+      "corpora": {
+        "speed": {
+          "set": "AMI IS1009a Mix-Headset, first 600 s of the UEM span; speed only",
+          "speed": {
+            "audio_s": 600.0,
+            "decode_s": 2102.8614985,
+            "rtf": 3.5047691641666665
+          },
+          "words": 1127
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "backend_info": {
+          "device": "cpu",
+          "kind": "cpu",
+          "model": "ggml-small.en-q5_1"
+        },
+        "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)"
+      },
+      "languages": "English",
+      "load_s": 0.1815029,
+      "model": "small.en-q5_1",
+      "speed": {
+        "audio_s": 600.0,
+        "decode_s": 2102.8614985,
+        "rtf": 3.5047691641666665
+      },
+      "threads": 4
+    }
+  ],
+  "task": "T6.10e",
+  "threads": 4
+}

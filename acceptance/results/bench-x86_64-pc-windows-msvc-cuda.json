@@ -1,0 +1,63 @@
+{
+  "asr": {
+    "audio_s": 300.0,
+    "backend": {
+      "device": "cuda:0",
+      "kind": "cuda",
+      "model": "parakeet-tdt-0.6b-v2"
+    },
+    "commit": "e28b693",
+    "cores": 32,
+    "evidence": "ONNX Runtime placement: requested cuda:0, placed: CPUExecutionProvider=482 CUDAExecutionProvider=1515; requested cuda:0, placed: CUDAExecutionProvider=13; requested cuda:0, placed: CUDAExecutionProvider=10",
+    "live": {
+      "backends": [
+        {
+          "backend": {
+            "device": "cuda:0",
+            "kind": "cuda",
+            "model": "parakeet-tdt-0.6b-v2"
+          },
+          "track": "Mic"
+        },
+        {
+          "backend": {
+            "device": "cuda:0",
+            "kind": "cuda",
+            "model": "parakeet-tdt-0.6b-v2"
+          },
+          "track": "Reference"
+        }
+      ],
+      "catch_up_ms": 404.0187,
+      "chunk": "one live final (a speech stretch)",
+      "kept_up": true,
+      "largest_capture_lag_ms": 19.0,
+      "latency_ms": {
+        "count": 19,
+        "max": 25250.4555,
+        "p50": 2373.6191999999996,
+        "p95": 25250.4555
+      },
+      "transcript_lag_ms": {
+        "count": 300,
+        "max": 42104.0,
+        "p50": 4184.0,
+        "p95": 32183.999999999996
+      },
+      "words": 454
+    },
+    "load_s": 1.7647248,
+    "model": "parakeet-tdt-0.6b-v2",
+    "note": "idle host",
+    "peak_memory_mb": {
+      "committed": 9440,
+      "scope": "system memory of this process; video memory is not included",
+      "working_set": 1350
+    },
+    "pieces": 19,
+    "rtf": 0.008172292333333333,
+    "timestamp": "2026-11-06T17:51:08Z"
+  },
+  "backend": "cuda",
+  "host": "x86_64-pc-windows-msvc"
+}

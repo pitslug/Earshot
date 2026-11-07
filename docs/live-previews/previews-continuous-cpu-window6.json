@@ -1,0 +1,169 @@
+{
+  "audio": "continuous",
+  "capture_max_lag_s": 0.75,
+  "catch_up_after_end_s": 1.8009633,
+  "decodes_mic": {
+    "audio_s": -0.0,
+    "calls": 0,
+    "rtf": null,
+    "took_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 120.0,
+    "calls": 6,
+    "rtf": 0.03800033583333333,
+    "took_s": {
+      "max": 1.2057918,
+      "median": 0.8055873,
+      "n": 6,
+      "p95": 1.2057918
+    }
+  },
+  "host": {
+    "logical_cores": 32,
+    "machine_load_percent": {
+      "max": 4.0,
+      "median": 3.0,
+      "n": 4,
+      "p95": 4.0
+    },
+    "peak_private_gib": 9.015769958496094,
+    "peak_working_set_gib": 8.835914611816406,
+    "process_cpu_s": 85.171875
+  },
+  "length_s": 120.0,
+  "live_backends": [
+    {
+      "device": "cpu",
+      "kind": "Cpu",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "cpu",
+      "kind": "Cpu",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "mic": {
+    "first_word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "last_word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "on_screen_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stretch_length_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "stretches": 0,
+    "word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "words": 0
+  },
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1993; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1993; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10"
+  ],
+  "previews": {
+    "audio_dropped": 0,
+    "audio_s": 411.344,
+    "cancelled": 0,
+    "decode_s": 29.565169099999995,
+    "decodes": 69,
+    "off": null,
+    "rtf": 0.0718745602221012,
+    "skipped_busy": 3,
+    "slowest_s": 2.9499117,
+    "track": "Reference",
+    "words_shown": 53
+  },
+  "reference": {
+    "first_word_lag_s": {
+      "max": 55.24348710000001,
+      "median": 49.003387700000005,
+      "n": 6,
+      "p95": 55.24348710000001
+    },
+    "last_word_lag_s": {
+      "max": 31.535719799999995,
+      "median": 31.247448000000006,
+      "n": 6,
+      "p95": 31.535719799999995
+    },
+    "on_screen_lag_s": {
+      "max": 55.24348710000001,
+      "median": 35.615719799999994,
+      "n": 230,
+      "p95": 49.88348710000001
+    },
+    "previews": {
+      "changed": 1,
+      "kept": 52,
+      "updates": 11,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": 6.0969842999999955,
+        "median": 2.8675962000000013,
+        "n": 53,
+        "p95": 5.827596200000002
+      }
+    },
+    "stored_sha256": "00d93eb4118359fb85adcb96c82753838520392a68573b6716db2fd834eb68dd",
+    "stretch_length_s": {
+      "max": 26.0,
+      "median": 20.96,
+      "n": 6,
+      "p95": 26.0
+    },
+    "stretches": 6,
+    "word_lag_s": {
+      "max": 55.24348710000001,
+      "median": 37.85998450000001,
+      "n": 230,
+      "p95": 50.255719799999994
+    },
+    "words": 230
+  },
+  "requested_backend": "Cpu",
+  "speakers": true,
+  "stopped_with": "Finished",
+  "warnings": 0
+}

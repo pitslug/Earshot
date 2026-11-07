@@ -1,0 +1,6 @@
+{
+ "method": "minmax",
+ "per_channel": true,
+ "dev_pieces": 16,
+ "A16W8 (all)": 0.034136330243200064
+}

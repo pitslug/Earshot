@@ -1,0 +1,102 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "User Interface Designer",
+      "task": "Create a drawing of the remote control layout showing the screen at the bottom and buttons in the middle."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Industrial Designer",
+      "task": "Finalize the actual design of the remote control."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "User Interface Designer",
+      "task": "Design the working design for the remote control, including how the physical interaction between components works and how to program channels."
+    },
+    {
+      "due": null,
+      "id": "S-A4",
+      "owner": "Marketing Expert",
+      "task": "Look up the specific list of TV options presented earlier in the meeting."
+    },
+    {
+      "due": null,
+      "id": "S-A5",
+      "owner": "Project Manager",
+      "task": "Reorganize documents and create maps with all the gathered data."
+    },
+    {
+      "due": null,
+      "id": "S-A6",
+      "owner": "Industrial Designer",
+      "task": "Provide the list of functions to be included in the menu screen."
+    },
+    {
+      "due": null,
+      "id": "S-A7",
+      "owner": "User Interface Designer",
+      "task": "Design the menu layout with pages."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "Teletext function will be dropped from the new remote control."
+    },
+    {
+      "id": "S-D2",
+      "text": "Audio settings (mono, stereo, pitch, bass) and screen settings (brightness, colour) will be included despite being less used."
+    },
+    {
+      "id": "S-D3",
+      "text": "The new remote will include an LCD screen and speech recognition features."
+    },
+    {
+      "id": "S-D4",
+      "text": "The remote design must retain the corporate logo and colours."
+    },
+    {
+      "id": "S-D5",
+      "text": "The remote control will target users under forty, specifically focusing on the age range of sixteen to forty."
+    },
+    {
+      "id": "S-D6",
+      "text": "Basic functions will be on the remote, while advanced options will be hidden in an on-screen menu."
+    },
+    {
+      "id": "S-D7",
+      "text": "The power button will be placed on the top right of the remote."
+    },
+    {
+      "id": "S-D8",
+      "text": "The screen will be placed at the bottom of the remote."
+    },
+    {
+      "id": "S-D9",
+      "text": "The display and microphone are placed on top of the remote control."
+    },
+    {
+      "id": "S-D10",
+      "text": "The corporate logo is placed on the top left of the remote."
+    },
+    {
+      "id": "S-D11",
+      "text": "The remote includes sound settings for treble, bass, pitch, and mono/stereo."
+    },
+    {
+      "id": "S-D12",
+      "text": "The remote includes image settings for brightness and contrast."
+    }
+  ],
+  "failure": null,
+  "meeting": "TS3006b",
+  "model": "S1",
+  "notes": "## Target Audience and Functional Requirements\n- Research showed current remotes are ugly and bad for RSI; the new product targets users under forty (specifically sixteen to forty).\n- Teletext is considered outdated and will be dropped. Classic functions like power, channel, and volume must be kept.\n- Users under forty are interested in an LCD screen and speech recognition, which will be included.\n- Audio settings (mono, stereo, pitch, bass) and screen settings (brightness, colour) will be included despite being less used.\n## Design Layout and Features\n- The remote design must retain the corporate logo and colours and look like part of the room's interior.\n- The display and microphone are placed on top of the remote control for better usability.\n- The corporate logo is placed on the top left of the remote.\n- The remote includes sound settings for treble, bass, pitch, and mono/stereo, and image settings for brightness and contrast.\n- The remote includes channel programming with autoseek and swap channel functionality.\n- The remote control layout will be separated into basic functions and advanced functions with a visual line.\n- The remote control will feature a menu button, an OK button, a back button, and multifunctional navigation arrows.\n- LED lights under the buttons will be used to indicate which buttons are active for the current function.",
+  "tldr": "The team designed a new remote control targeting users under forty, featuring an LCD screen and speech recognition. They decided to drop teletext but keep audio and image settings, hiding advanced options in a menu. The layout includes the screen and microphone on top, basic buttons on the right, and LED indicators.",
+  "valid": true
+}

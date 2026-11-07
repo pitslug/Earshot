@@ -1,0 +1,156 @@
+# Shared AMI annotation parse cases (T2.5b). Two parsers read the same files: the
+# `fetch-fixtures --verify` check in xtask (`fixtures::ami_headset_speakers`,
+# `fixtures::ami_segments`) and the asr_eval example (`refs::parse_ami_channels`,
+# `refs::parse_ami_segments`). Both test suites run every case below and must produce
+# exactly the expected result, so the two parsers follow one rule:
+# - meetings.xml: the meeting's block lists one speaker on each headset 0-3, and the
+#   speaker letters are exactly A-D; result sorted by headset.
+# - segments file: at least one <segment>, all on one channel, every span 0 <= start < end;
+#   spans sorted by start.
+# Speaker and segment lines are copied from AMI manual annotations v1.6.2
+# (corpusResources/meetings.xml, segments/IS1009a.B.segments.xml), CC BY 4.0.
+
+[[meetings]]
+name = "official IS1009a block, speakers unsorted"
+meeting = "IS1009a"
+headsets = [0, 1, 2, 3]
+speakers = ["A", "B", "C", "D"]
+xml = '''
+<meetings>
+   <meeting nite:id="meet_37" type="scenario" observation="IS1009a" duration="831">
+      <speaker nite:id="IS1009a_4" channel="3" nxt_agent="D" camera="Closeup4" global_name="FIO089" role="ME"/>
+      <speaker nite:id="IS1009a_2" channel="1" nxt_agent="B" camera="Closeup2" global_name="FIO087" role="UI"/>
+      <speaker nite:id="IS1009a_1" channel="0" nxt_agent="A" camera="Closeup1" global_name="FIE088" role="PM"/>
+      <speaker nite:id="IS1009a_3" channel="2" nxt_agent="C" camera="Closeup3" global_name="FIO084" role="ID"/>
+   </meeting>
+   <meeting nite:id="meet_38" type="scenario" observation="IS1009b" duration="2051">
+      <speaker nite:id="IS1009b_4" channel="3" nxt_agent="D"/>
+   </meeting>
+</meetings>
+'''
+
+[[meetings]]
+name = "the mapping is read, not assumed: permuted table"
+meeting = "ES2004a"
+headsets = [0, 1, 2, 3]
+speakers = ["C", "B", "A", "D"]
+xml = '''
+<meetings>
+   <meeting nite:id="meet_49" observation="ES2004a" duration="1186">
+      <speaker nite:id="ES2004a_2" channel="1" nxt_agent="B" global_name="FEE013"/>
+      <speaker nite:id="ES2004a_3" channel="2" nxt_agent="A" global_name="MEE014"/>
+      <speaker nite:id="ES2004a_1" channel="0" nxt_agent="C" global_name="MEO015"/>
+      <speaker nite:id="ES2004a_4" channel="3" nxt_agent="D" global_name="FEE016"/>
+   </meeting>
+</meetings>
+'''
+
+[[meetings]]
+name = "speakers of the next meeting never leak in"
+meeting = "IS1009b"
+error = true
+xml = '''
+<meetings>
+   <meeting nite:id="meet_38" observation="IS1009b" duration="2051">
+      <speaker nite:id="IS1009b_4" channel="3" nxt_agent="D"/>
+   </meeting>
+   <meeting nite:id="meet_39" observation="IS1009c" duration="2051">
+      <speaker nite:id="IS1009c_1" channel="0" nxt_agent="A"/>
+      <speaker nite:id="IS1009c_2" channel="1" nxt_agent="B"/>
+      <speaker nite:id="IS1009c_3" channel="2" nxt_agent="C"/>
+   </meeting>
+</meetings>
+'''
+
+[[meetings]]
+name = "meeting missing"
+meeting = "ES2004a"
+error = true
+xml = '''
+<meetings>
+   <meeting nite:id="meet_38" observation="IS1009b" duration="2051">
+      <speaker nite:id="IS1009b_4" channel="3" nxt_agent="D"/>
+   </meeting>
+</meetings>
+'''
+
+[[meetings]]
+name = "two speakers on one headset"
+meeting = "IS1009a"
+error = true
+xml = '''
+<meetings>
+   <meeting nite:id="meet_37" observation="IS1009a" duration="831">
+      <speaker nite:id="IS1009a_1" channel="0" nxt_agent="A"/>
+      <speaker nite:id="IS1009a_2" channel="1" nxt_agent="B"/>
+      <speaker nite:id="IS1009a_3" channel="1" nxt_agent="C"/>
+      <speaker nite:id="IS1009a_4" channel="3" nxt_agent="D"/>
+   </meeting>
+</meetings>
+'''
+
+[[meetings]]
+name = "a speaker letter outside A-D"
+meeting = "IS1009a"
+error = true
+xml = '''
+<meetings>
+   <meeting nite:id="meet_37" observation="IS1009a" duration="831">
+      <speaker nite:id="IS1009a_1" channel="0" nxt_agent="A"/>
+      <speaker nite:id="IS1009a_2" channel="1" nxt_agent="B"/>
+      <speaker nite:id="IS1009a_3" channel="2" nxt_agent="E"/>
+      <speaker nite:id="IS1009a_4" channel="3" nxt_agent="D"/>
+   </meeting>
+</meetings>
+'''
+
+[[segments]]
+name = "official IS1009a.B lines, out of order"
+channel = 1
+spans = [[66.608, 80.88], [283.776, 285.12]]
+xml = '''
+<?xml version="1.0" encoding="ISO-8859-1" standalone="yes"?>
+<nite:root nite:id="IS1009a.B.segs" xmlns:nite="http://nite.sourceforge.net/">
+   <segment nite:id="IS1009a.sync.156" channel="1" transcriber_start="283.776" transcriber_end="285.12">
+      <nite:child href="IS1009a.B.words.xml#id(IS1009a.B.words40)"/>
+   </segment>
+   <segment nite:id="IS1009a.sync.154" channel="1" transcriber_start="66.608" transcriber_end="80.88">
+      <nite:child href="IS1009a.B.words.xml#id(IS1009a.B.words0)..id(IS1009a.B.words39)"/>
+   </segment>
+</nite:root>
+'''
+
+[[segments]]
+name = "segments on two channels"
+error = true
+xml = '''
+<nite:root>
+   <segment nite:id="a" channel="1" transcriber_start="66.608" transcriber_end="80.88"/>
+   <segment nite:id="b" channel="2" transcriber_start="283.776" transcriber_end="285.12"/>
+</nite:root>
+'''
+
+[[segments]]
+name = "segment without an end time"
+error = true
+xml = '''
+<nite:root>
+   <segment nite:id="a" channel="1" transcriber_start="66.608"/>
+</nite:root>
+'''
+
+[[segments]]
+name = "empty span"
+error = true
+xml = '''
+<nite:root>
+   <segment nite:id="a" channel="1" transcriber_start="66.608" transcriber_end="66.608"/>
+</nite:root>
+'''
+
+[[segments]]
+name = "no segment"
+error = true
+xml = '''
+<nite:root/>
+'''

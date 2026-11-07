@@ -1,0 +1,24 @@
+{
+  "meeting": "TS3006b",
+  "model": "S2",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D2 includes LCD screens."},
+    {"id": "D1.2", "verdict": "covered", "reason": "S-D2 includes speech recognition."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D5 puts advanced functions on an onscreen menu and the notes list sound, image and channel programming options."},
+    {"id": "D3.1", "verdict": "covered", "reason": "S-D4 gives the advanced functions to users 16-40 within a target of under forty."},
+    {"id": "D4.1", "verdict": "covered", "reason": "S-D1 excludes teletext."},
+    {"id": "D5.1", "verdict": "covered", "reason": "The target audience notes say the product should control only the TV."},
+    {"id": "D6.1", "verdict": "covered", "reason": "S-D3 includes the corporate logo."},
+    {"id": "D6.2", "verdict": "covered", "reason": "S-D3 includes the brand colours."},
+    {"id": "D7.1", "verdict": "contradicted", "reason": "S-D7 and S-A1 place the screen at the bottom, conflicting with the top placement that S-D8 also states."},
+    {"id": "D7.2", "verdict": "covered", "reason": "S-D8 places the microphone on top."},
+    {"id": "D8.1", "verdict": "covered", "reason": "S-D11 places LED lights under the buttons."},
+    {"id": "D8.2", "verdict": "covered", "reason": "S-D11 and the layout notes use the LEDs to show which functions are active on the buttons."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "missing", "reason": "S-A5 reorganises documents; no summary part mentions writing minutes."},
+    {"id": "A2.1", "verdict": "contradicted", "reason": "S-A1 gives the remote layout drawing to the Industrial Designer instead of the User Interface Designer."},
+    {"id": "A2.2", "verdict": "covered", "reason": "S-A3 has the User Interface Designer design the LCD screen menu layout."},
+    {"id": "A3.1", "verdict": "covered", "reason": "S-D12 and the responsibilities notes give the functional aspects to the Industrial Designer."}
+  ]
+}

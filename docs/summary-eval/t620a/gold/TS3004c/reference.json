@@ -1,0 +1,71 @@
+{
+  "action_items": [
+    {
+      "id": "A1.1",
+      "text": "The User Interface Designer will draw the prototype design on the smartboard at the next meeting."
+    },
+    {
+      "id": "A1.2",
+      "text": "The Industrial Designer will draw the prototype design on the smartboard at the next meeting."
+    },
+    {
+      "id": "A2.1",
+      "text": "The User Interface Designer was instructed to finalize the placement of the buttons."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1.1",
+      "text": "The group decided to use a scroll button for volume control."
+    },
+    {
+      "id": "D2.1",
+      "text": "It will be small."
+    },
+    {
+      "id": "D2.2",
+      "text": "It will be yellow."
+    },
+    {
+      "id": "D2.3",
+      "text": "It will use one of the colors of the Real Reaction logo."
+    },
+    {
+      "id": "D3.1",
+      "text": "The remote will include rechargeable batteries."
+    },
+    {
+      "id": "D3.2",
+      "text": "The remote will be used with a recharging stand."
+    },
+    {
+      "id": "D4.1",
+      "text": "The remote will feature plastic buttons rather than rubber."
+    },
+    {
+      "id": "D4.2",
+      "text": "The remote will feature plastic casing rather than rubber."
+    },
+    {
+      "id": "D5.1",
+      "text": "The remote will not feature an LCD screen."
+    },
+    {
+      "id": "D6.1",
+      "text": "The remote will feature a double-curved, rounded square design."
+    },
+    {
+      "id": "D7.1",
+      "text": "The group decided to design five changeable faces for the device."
+    },
+    {
+      "id": "D8.1",
+      "text": "They decided to incorporate speech recognition."
+    },
+    {
+      "id": "D8.2",
+      "text": "They decided to incorporate an advanced chip."
+    }
+  ],
+  "meeting": "TS3004c"
+}

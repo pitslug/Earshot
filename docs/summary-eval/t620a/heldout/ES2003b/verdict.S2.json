@@ -1,0 +1,16 @@
+{
+  "meeting": "ES2003b",
+  "model": "S2",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D5 drops teletext."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D4 and the notes limit the remote to television control."},
+    {"id": "D3.1", "verdict": "covered", "reason": "The minutes notes say the corporate image should stay recognisable."},
+    {"id": "D4.1", "verdict": "missing", "reason": "No summary part mentions a power button."},
+    {"id": "D5.1", "verdict": "covered", "reason": "S-D3 and the features notes include a small joystick."},
+    {"id": "D6.1", "verdict": "covered", "reason": "The tldr and S-D1 give the remote a black and white display, which carries the screen decision though LCD is not named."},
+    {"id": "D7.1", "verdict": "covered", "reason": "S-D3 and the features notes include a menu button."},
+    {"id": "D8.1", "verdict": "contradicted", "reason": "S-D3 and the features notes add a separate okay button to prevent joystick misinterpretation, the opposite of pushing down on the joystick."},
+    {"id": "D9.1", "verdict": "covered", "reason": "S-D6 and the locating notes use a speaker so the remote can be found by sound."}
+  ],
+  "action_items": []
+}

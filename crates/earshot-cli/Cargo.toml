@@ -1,0 +1,59 @@
+[package]
+name = "earshot-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "earshot"
+path = "src/main.rs"
+
+[features]
+# whisper.cpp on CUDA for `transcribe --backend cuda` (needs the CUDA toolkit; see
+# earshot-asr-whisper; its Silero VAD stays on the CPU ONNX Runtime). `replay` and `record`
+# then try CUDA first for the transcription model (Parakeet through ONNX Runtime's CUDA
+# library, `cargo xtask fetch-models --set cuda`); VAD and speaker models stay on the CPU (T6.11).
+cuda = ["earshot-asr-whisper/cuda", "earshot-runtime/cuda"]
+# The app's feature (earshot-runtime's `onnx-cuda`). The CLI never makes the choice that uses it.
+onnx-cuda = ["earshot-runtime/onnx-cuda"]
+# whisper.cpp on Vulkan (needs the Vulkan SDK, VULKAN_SDK; T2.6; build with `cargo xtask
+# build --features vulkan`). `transcribe --backend vulkan`; `replay`, `record` and `benchmark`
+# try Vulkan after CUDA for whisper models when a Vulkan device exists (T6.10d).
+vulkan = ["earshot-asr-whisper/vulkan", "earshot-runtime/vulkan"]
+vulkan-summaries = ["vulkan", "earshot-runtime/vulkan-summaries"]
+# Parakeet on the Snapdragon NPU through Qualcomm's QNN plugin for ONNX Runtime (T8.3;
+# `cargo xtask build --target aarch64-pc-windows-msvc --features qnn`; at run time
+# `cargo xtask fetch-models --set qnn`). `replay` and `record` then try QNN first on ARM64.
+qnn = ["earshot-runtime/qnn"]
+
+[dependencies]
+anyhow = "1"
+# FLAC input for `transcribe` (same pin as the whisper and onnx test helpers).
+claxon = "=0.4.3"
+clap = { version = "4", features = ["derive"] }
+earshot-asr-whisper = { path = "../earshot-asr-whisper" }
+earshot-capture-wasapi = { path = "../earshot-capture-wasapi" }
+earshot-core = { path = "../earshot-core" }
+# Summary provider settings (`--llm-provider`): the Anthropic defaults and the API key type.
+earshot-llm = { path = "../earshot-llm" }
+earshot-onnx = { path = "../earshot-onnx" }
+# The runtime drives `replay` and `record` (live session, post pass, summary, export).
+earshot-runtime = { path = "../earshot-runtime" }
+earshot-store = { path = "../earshot-store" }
+hound = "3.5"
+serde_json = "1"
+# Reads the embedded models/manifest.toml for --model names (same version as xtask).
+toml = "1"
+
+[dev-dependencies]
+# `final_pass_pieces` reads the private recording's settings.
+serde = { version = "1", features = ["derive"] }
+# Reads back what record-raw writes (timestamps.json reader, WAV reader, replay).
+earshot-core = { path = "../earshot-core" }
+# Loopback mock LLM endpoint for the `replay --llm-url` tests (test support only; the ci
+# `net` step fails if a shipped crate depends on it normally).
+earshot-llm-replay = { path = "../earshot-llm-replay" }
+
+[lints]
+workspace = true

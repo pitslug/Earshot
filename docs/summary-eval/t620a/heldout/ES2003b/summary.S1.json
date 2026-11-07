@@ -1,0 +1,70 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Industrial Designer",
+      "task": "Look into the feasibility of a small transmitter and whether an LCD screen requires too much power."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Marketing Expert",
+      "task": "Provide the frequency and options people use most often for the software side of the interface."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "Marketing Expert",
+      "task": "Look into user opinions on the minimalist approach and mobile-like manipulation of the remote."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "The display will be black and white to reduce costs."
+    },
+    {
+      "id": "S-D2",
+      "text": "The target audience is the general public who have used a mobile phone."
+    },
+    {
+      "id": "S-D3",
+      "text": "The remote will focus on television control only, excluding remote boxes."
+    },
+    {
+      "id": "S-D4",
+      "text": "Teletext functionality is dropped from the remote."
+    },
+    {
+      "id": "S-D5",
+      "text": "The remote will include a small joystick for channel and volume control."
+    },
+    {
+      "id": "S-D6",
+      "text": "The remote will include an LCD."
+    },
+    {
+      "id": "S-D7",
+      "text": "The remote will include a menu button and an okay button."
+    },
+    {
+      "id": "S-D8",
+      "text": "The team decided to include a speaker and an LED for locating the remote control."
+    },
+    {
+      "id": "S-D9",
+      "text": "The team agreed that the transmitter could be built into the television."
+    },
+    {
+      "id": "S-D10",
+      "text": "The team agreed to incorporate the slogan 'Real Reaction' and the company initials 'RR' into the design."
+    }
+  ],
+  "failure": null,
+  "meeting": "ES2003b",
+  "model": "S1",
+  "notes": "## Design Scope and Features\n- The remote will control the television only, excluding remote boxes and teletext functionality.\n- The display will be black and white to reduce costs, with color as a potential future development.\n- The remote will include a small joystick for channel and volume control, along with an LCD and a menu button.\n- The remote will include a speaker and an LED for locating the device.\n- The team agreed that the transmitter could be built into the television.\n## Target Audience and Branding\n- The target audience is the general public who have used a mobile phone.\n- The design must incorporate the slogan 'Real Reaction' and the company initials 'RR'.\n- The Industrial Designer confirmed the slogan is 'We put the fashion in electronics'.\n## Rejected Concepts\n- Voice recognition was dropped due to concerns about training time, accuracy, and power consumption.\n- The macro facility was considered limited in use and may not be required.",
+  "tldr": "The team finalized the design for a TV-only remote control featuring a black-and-white LCD, a joystick for navigation, and a speaker with an LED for locating the device. Decisions were made to drop teletext and voice recognition, focusing instead on a minimalist interface for the general public with branding elements 'Real Reaction' and 'RR'.",
+  "valid": true
+}

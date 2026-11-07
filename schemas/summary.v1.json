@@ -1,0 +1,167 @@
+{
+  "$defs": {
+    "ActionItem": {
+      "additionalProperties": false,
+      "description": "A task someone agreed to do.",
+      "properties": {
+        "due": {
+          "description": "When it is due, as said in the meeting (for example \"Friday\" or \"2026-11-01\"),\nor null when no date was given.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "description": "Who will do it (a speaker's name, or \"Unassigned\").",
+          "type": "string"
+        },
+        "source_segment_ids": {
+          "description": "Ids of the transcript segments where the task was agreed (at least one).",
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "task": {
+          "description": "What will be done.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "task",
+        "due",
+        "source_segment_ids"
+      ],
+      "type": "object"
+    },
+    "Decision": {
+      "additionalProperties": false,
+      "description": "A decision made in the meeting.",
+      "properties": {
+        "source_segment_ids": {
+          "description": "Ids of the transcript segments where the decision was made (at least one).",
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "What was decided.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "source_segment_ids"
+      ],
+      "type": "object"
+    },
+    "NoteBullet": {
+      "additionalProperties": false,
+      "description": "One bullet of enhanced notes.",
+      "properties": {
+        "source_segment_ids": {
+          "description": "Ids of the transcript segments this bullet is based on (may be empty for content\ntaken only from the user's notes).",
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "Bullet text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "source_segment_ids"
+      ],
+      "type": "object"
+    },
+    "NoteSection": {
+      "additionalProperties": false,
+      "description": "A section of enhanced notes.",
+      "properties": {
+        "bullets": {
+          "description": "Bullet points of the section.",
+          "items": {
+            "$ref": "#/$defs/NoteBullet"
+          },
+          "type": "array"
+        },
+        "heading": {
+          "description": "Section heading.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "heading",
+        "bullets"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A meeting summary produced by the LLM from the transcript and the user's notes.",
+  "properties": {
+    "action_items": {
+      "description": "Tasks someone agreed to do, each citing the segments where it was agreed.",
+      "items": {
+        "$ref": "#/$defs/ActionItem"
+      },
+      "type": "array"
+    },
+    "decisions": {
+      "description": "Decisions that were made, each citing the segments where it was made.",
+      "items": {
+        "$ref": "#/$defs/Decision"
+      },
+      "type": "array"
+    },
+    "enhanced_notes": {
+      "description": "The user's notes, enhanced with what was said, grouped into sections.",
+      "items": {
+        "$ref": "#/$defs/NoteSection"
+      },
+      "type": "array"
+    },
+    "open_questions": {
+      "description": "Questions raised but not answered.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "title": {
+      "description": "Short meeting title, without date or time.",
+      "type": "string"
+    },
+    "tldr": {
+      "description": "One to three sentences: what the meeting was about and what came out of it.",
+      "type": "string"
+    },
+    "topics": {
+      "description": "Short topic labels.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "title",
+    "tldr",
+    "enhanced_notes",
+    "decisions",
+    "action_items",
+    "open_questions",
+    "topics"
+  ],
+  "title": "Earshot meeting summary v1",
+  "type": "object"
+}

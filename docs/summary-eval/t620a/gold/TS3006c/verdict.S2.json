@@ -1,0 +1,14 @@
+{
+  "meeting": "TS3006c",
+  "model": "S2",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D1 selects kinetic energy."},
+    {"id": "D2.1", "verdict": "contradicted", "reason": "S-D3 and the Case Design notes say single curvature was chosen, though the tldr says double-curved."},
+    {"id": "D2.2", "verdict": "covered", "reason": "S-D2 states a rubber case."},
+    {"id": "D3.1", "verdict": "covered", "reason": "The Component Design notes say the advanced chip was selected."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "covered", "reason": "S-A3 and S-A4 have the Industrial and User Interface Designers design the product together."},
+    {"id": "A2.1", "verdict": "missing", "reason": "The Marketing Expert's only item, S-A1, is sharing a presentation and nothing mentions an evaluation."}
+  ]
+}

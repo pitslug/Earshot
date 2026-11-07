@@ -1,0 +1,42 @@
+{
+  "action_items": [],
+  "decisions": [
+    {
+      "id": "D1.1",
+      "text": "The team will not work with teletext."
+    },
+    {
+      "id": "D2.1",
+      "text": "The remote will only control televisions."
+    },
+    {
+      "id": "D3.1",
+      "text": "The corporate image must be recognizable on the remote."
+    },
+    {
+      "id": "D4.1",
+      "text": "The remote will have a power button."
+    },
+    {
+      "id": "D5.1",
+      "text": "The remote will have a small joystick."
+    },
+    {
+      "id": "D6.1",
+      "text": "The remote will have LCD."
+    },
+    {
+      "id": "D7.1",
+      "text": "The remote will have a menu button."
+    },
+    {
+      "id": "D8.1",
+      "text": "Instead of an \"okay\" button, the user will push down on the joystick."
+    },
+    {
+      "id": "D9.1",
+      "text": "The remote will have a beeping noise which goes off when a user is trying to locate it."
+    }
+  ],
+  "meeting": "ES2003b"
+}

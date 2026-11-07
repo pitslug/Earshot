@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/earshot-core",
+    "crates/earshot-asr-whisper",
+    "crates/earshot-onnx",
+    "crates/earshot-asr-qnn",
+    "crates/earshot-net",
+    "crates/earshot-proc",
+    "crates/earshot-llm",
+    "crates/earshot-llm-replay",
+    "crates/earshot-llm-local",
+    "crates/earshot-store",
+    "crates/earshot-capture-wasapi",
+    "crates/earshot-hardware",
+    "crates/earshot-capture-android",
+    "crates/earshot-runtime",
+    "crates/earshot-cli",
+    "apps/desktop/src-tauri",
+    "xtask",
+]
+# earshot-sync-server is added in M11.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+# Function names in crash logs (T9.1j): the link of the app makes a program database, whose
+# public-symbols copy ships (apps/desktop/src-tauri/build.rs). Only this package: `debug` on a
+# package with a CMake build would change which configuration the cmake crate picks.
+[profile.release.package.earshot-desktop]
+debug = "line-tables-only"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

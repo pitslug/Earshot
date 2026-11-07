@@ -1,0 +1,64 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Project Manager",
+      "task": "Send an email regarding the project aim and coordinate technical feedback or partnerships for speech recognition."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Marketing Expert",
+      "task": "Go back to management to be more precise about whether they want to take a risk on a more expensive, innovative product."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "Marketing Expert",
+      "task": "Provide sales projections to the Project Manager."
+    },
+    {
+      "due": null,
+      "id": "S-A4",
+      "owner": "Industrial Designer",
+      "task": "Find out the timeframe needed to develop the speech recognition feature."
+    },
+    {
+      "due": null,
+      "id": "S-A5",
+      "owner": "Project Manager",
+      "task": "Help the UI Designer get technical companies to assist with making the design slim and adding features like speech recognition."
+    },
+    {
+      "due": null,
+      "id": "S-A6",
+      "owner": "Project Manager",
+      "task": "Send the minutes of the meeting to the team."
+    },
+    {
+      "due": null,
+      "id": "S-A7",
+      "owner": "All Attendees",
+      "task": "Put all information in the sharing folder so everybody can share the information."
+    },
+    {
+      "due": null,
+      "id": "S-A8",
+      "owner": "Unassigned",
+      "task": "Discuss further which features to actually want to include after the lunch break."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "The team will start by including all potential features and eliminate them later in the design process."
+    }
+  ],
+  "failure": null,
+  "meeting": "IS1008b",
+  "model": "S2",
+  "notes": "## Project Requirements and Design Goals\n- Teletext is considered outmoded due to new computer systems and technology and will not be included in the new design.\n- The remote control should be used only for the TV.\n- Establishing a strong corporate image with the new product is a key goal.\n- The device must turn the TV on and off reliably on the first press of the big button.\n- The remote needs to be easy to find, as losing them is a major problem.\n- The remote should be waterproof to handle accidental drops in cups or near pools.\n- The remote should provide an oral cue to confirm when a command is understood.\n- The remote should be unbreakable to withstand being thrown by children or played with.\n- The remote should never require battery replacement.\n- The remote control should be universal for any TV and slim in design.\n## Market Strategy and Pricing\n- Management aims to make at least fifty million Euro in sales with reasonable pricing.\n- Initial sales price was set at twenty-five Euro with a production cost of twelve and a half Euro, but the Marketing Expert questioned if this is competitive given that eighty percent of the 15-35 age group is willing to spend more on trendy items.\n- The Marketing Expert suggested taking a risk to push the price up slightly if added features can be included.\n## Speech Recognition and Power Solutions\n- Seventy-five to ninety percent of the 15-35 age group is willing to pay for speech recognition on a remote.\n- The feature should support simple commands like louder, softer, on, off, and finding the remote via a beep sound.\n- The User Interface Designer raised concerns about ambient noise from TV affecting recognition, suggesting single-word recognition similar to telephone systems.\n- The Industrial Designer noted that speech recognition might impact battery life and suggested adding wireless recharging or a solar cell.\n## User Interface Design Requirements\n- The UI Designer explained that the design process involves analyzing existing remote controls to identify what users like and dislike, such as too many buttons, unclear labels, and small sizes.\n- The team agreed on necessary functionalities: turning the TV on/off, changing channels (direct or surfing), controlling volume, and navigating menus for settings like contrast.\n- The preferred design approach is to keep the number of buttons to a minimum, make frequently used buttons (like power, channel, volume) bigger and strategically placed, and maintain a sleek, simple look.\n## Feature Selection Strategy\n- The Industrial Designer suggested starting with all possible features and eliminating them later in the process.\n- The UI Designer expressed concern about spending time on features that might be discarded, but the group agreed to proceed with the suggestion to discuss further after the lunch break.",
+  "tldr": "The team defined requirements for a new universal remote control, deciding to drop teletext and focus on reliability, waterproofing, and unbreakability. They discussed market strategy, pricing, and the inclusion of speech recognition and wireless charging, agreeing to start with all potential features and eliminate them later.",
+  "valid": true
+}

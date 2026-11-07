@@ -1,0 +1,31 @@
+{
+  "action_items": [
+    {
+      "id": "A1.1",
+      "text": "The industrial designer and user interface designer will work together on the prototype design."
+    },
+    {
+      "id": "A2.1",
+      "text": "The marketing expert will prepare the prototype evaluation."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1.1",
+      "text": "The remote will use kinetic energy."
+    },
+    {
+      "id": "D2.1",
+      "text": "The case will be double-curved."
+    },
+    {
+      "id": "D2.2",
+      "text": "The case will be made of rubber."
+    },
+    {
+      "id": "D3.1",
+      "text": "The remote will use an advanced chip."
+    }
+  ],
+  "meeting": "TS3006c"
+}

@@ -1,0 +1,42 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Project Manager",
+      "task": "Look into the programming of how menus are shown on TVs and how they are programmed."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "User Interface Designer, Industrial Designer",
+      "task": "Play with play-dough and work on the look and feel of the design and user interface design."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "User Interface Designer, Industrial Designer",
+      "task": "Do product evaluation."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "The remote control will not include a built-in screen."
+    },
+    {
+      "id": "S-D2",
+      "text": "Two prototypes will be created to test user preference."
+    },
+    {
+      "id": "S-D3",
+      "text": "Batteries will be used as the power source."
+    }
+  ],
+  "failure": null,
+  "meeting": "ES2011c",
+  "model": "S2",
+  "notes": "## Component Design and Materials\n- Custom design needed for case (hard plastic or other material) and circuit board; standard parts include buttons, wheels, infrared LED, radio sender/receiver, and beeper.\n- Material options include rubber, plastic, wood, or titanium; titanium is rejected due to weight and flat-case limitation, and rubber requires rubber buttons.\n- iPod-style wheel requires a more expensive 'regular' grade chip instead of the minimal chip.\n- Marketing Expert expressed a dislike for spongy materials but agreed a stress ball-like texture could provide a nice feel.\n- User Interface Designer suggested integrating the fruit/vegetable theme into the tactile feel, perhaps making the whole device feel like a stress ball.\n- Marketing Expert proposed using covers to change the device's appearance, similar to mobile phone cases, rather than creating specific fruit-shaped objects.\n## Screen vs. Wheel Interface\n- User Interface Designer suggested a screen on the TV to handle menus and channel selection for large channel lists, while the remote would only have a wheel.\n- Industrial Designer noted that adding a screen requires an advanced chip, making it more expensive than the minimal or regular chip options.\n- Project Manager considered that a screen would be better for managing many options, but User Interface Designer agreed it might be silly if rarely used.\n## Remote Form Factor and Controls\n- User Interface Designer proposed a small, circular handheld device controlled by a wheel, similar to a wheely remote control.\n- Project Manager asked if the device would need buttons besides power, and User Interface Designer suggested the menu button could be held longer to turn on the TV.\n- Project Manager suggested adding a coverable panel for less-used functions like contrast adjustment to keep the design clean.\n## Shape and Design\n- The squishy part should be detachable so users can swap different fruit and vegetable shapes.\n- The squishy part will mould to the user's hand automatically.\n- The fruit and vegetable colours will match either the plastic face on the front or the squishy part underneath.\n- The company colour is silver and yellow.\n- The logo needs to be placed somewhere on the device.\n- The batteries must fit under the plastic case.\n- The squishy part and the rest of the device should be a single unit that can snap off.\n## Power Source\n- Options discussed included batteries, solar power, a dynamo (bicycle mechanism), and a kinetic wind-up mechanism.\n- Solar power was considered but deemed weird for a living room setting.\n- The dynamo creates energy automatically when moved, which is seen as cool.\n## Prototyping\n- Two prototypes will be created to test which design users prefer.",
+  "tldr": "The team finalized the design of a fruit/vegetable themed TV remote with a detachable squishy part, decided on batteries as the power source, and agreed to create two prototypes for user testing.",
+  "valid": true
+}

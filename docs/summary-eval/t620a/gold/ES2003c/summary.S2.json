@@ -1,0 +1,62 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Project Manager",
+      "task": "Prepare for the next meeting to discuss detailed design."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Project Manager",
+      "task": "Write up product evaluation plan and details on physical makeup."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "User Interface Designer",
+      "task": "Inquire about where to obtain clay for prototyping."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "Conventional batteries will be used instead of solar or kinetic cells."
+    },
+    {
+      "id": "S-D2",
+      "text": "Rubber material will be used for the casing."
+    },
+    {
+      "id": "S-D3",
+      "text": "The remote will have a double-curved design to accommodate ergonomic needs for left and right-handed users."
+    },
+    {
+      "id": "S-D4",
+      "text": "The interface will include a joystick, two function buttons, and an LCD, excluding a numeric keypad."
+    },
+    {
+      "id": "S-D5",
+      "text": "Agreed to use a spongy rubber texture for the remote control."
+    },
+    {
+      "id": "S-D6",
+      "text": "Selected bright yellow as the primary color for the remote control."
+    },
+    {
+      "id": "S-D7",
+      "text": "Decided to include on-board memory for the remote control."
+    },
+    {
+      "id": "S-D8",
+      "text": "Agreed to support international use with different languages and skins."
+    }
+  ],
+  "failure": null,
+  "meeting": "ES2003c",
+  "model": "S2",
+  "notes": "## Design Overview and Materials\n- The design is based on minimal requirements from the previous meeting including a joystick, LCD, navigation buttons, and a power button.\n- Marketing research indicates users prioritize aesthetics and perceived capability over functionality, preferring a 'cool' look.\n- The case material is rubber for an ergonomic feel suitable for both left and right-handed users, rejecting plastic, titanium, and wood.\n- The shape is double-curved to accommodate ergonomic needs, though it limits material options compared to single-curved designs.\n- The design is articulated at two points to allow adjustment for handedness.\n## Interface and Features\n- The interface includes a joystick, two function buttons, and an LCD display; a numeric keypad was dropped.\n- Basic mode uses the joystick for channel and volume control, while menu mode is accessed via buttons.\n- The top button serves as On/Off in basic mode and Enter in menu mode; bottom buttons switch modes.\n- Programming is primarily done via a computer cable for ease, but a non-computer programming mode is retained for compatibility.\n- The device requires on-board memory to store menu settings and user customizations.\n- USB connectivity is discussed for PC programming, though cost concerns were noted.\n- The device will support international use with different languages and skins.\n## Power and Components\n- Conventional batteries are selected instead of solar or kinetic energy sources.\n- The Industrial Designer presented slides covering components, findings, and internal workings, including the chip's role in translating key presses to infrared signals.\n- Buttons may include a scroll wheel (requires an expensive chip) or a number keypad; LCD requires a more powerful chip than standard button transmission.\n## Aesthetics and Branding\n- Consensus on a spongy rubber texture for the remote control.\n- Preference for bright yellow color to make the device harder to lose.\n- The design rejects the fruit and vegetable theme.\n- The device will include the company slogan.\n## Advanced Features\n- Marketing proposes a universal remote that auto-finds TV frequencies, though the UI Designer notes this is technically complex due to different command sets per manufacturer.\n- Project Manager suggests an LCD lookup feature where users enter the TV brand name to find codes, avoiding the need for a physical booklet.\n- Marketing suggests a 'monkey noise' sound effect when the remote is lost to help locate it.\n- Project Manager suggests a double curved design with a flexible rubber outer skin and a firm inner sub-structure to avoid structural weakness.\n- Industrial Designer suggests a banana shape if using the fruit/veg theme.",
+  "tldr": "The team finalized the conceptual design of a remote control with a spongy rubber texture, bright yellow color, and double-curved shape, settling on conventional batteries and an LCD interface while rejecting fruit/vegetable themes.",
+  "valid": true
+}

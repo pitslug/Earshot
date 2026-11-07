@@ -1,0 +1,29 @@
+# accept m6 (T6.6, e2e.replay): the two-track meeting that is replayed through the runtime.
+#
+# Its own room, positions, seed and levels, so it is none of the M1 echo scenarios in
+# aec_scenarios.toml (the canceller was developed against those). Speech comes from the
+# committed smoke clips (fixtures/smoke, LibriSpeech): the far end is speaker 61 and the
+# near end ("Me") speaker 121, loaded as `xtask::echo_nl::smoke_speech` loads them for the
+# simulator. Nothing in the runtime is tuned on this meeting. Times in seconds, delays in
+# ms, levels in dB (see aec_scenarios.toml and earshot_core::sim for the fields).
+
+[setup]
+room = { dims = [6.0, 4.5, 2.7], absorption = 0.3 }
+mic = [2.4, 2.0, 0.75]
+speaker = [3.0, 2.3, 0.85]
+speaker_moved = [3.0, 2.3, 0.85]  # unused: the meeting has no echo-path change
+talker = [1.9, 1.7, 1.15]
+rir_ms = 250.0
+
+[meeting]
+name = "m6-meeting"
+description = "a call on laptop speakers: the far end talks throughout, the user from 2 s, near end 5 dB above the echo, light room noise, 90 ms output latency, 40 ppm render drift"
+duration_s = 40.0
+seed = 606
+near_speech = true
+near_start_s = 2.0
+delay_ms = 90.0
+drift_ppm = 40.0
+softclip = 3.0  # loudspeaker distortion as anchored by the T1.2a measurement
+ser_db = 5.0
+noise_snr_db = 35.0

@@ -1,0 +1,42 @@
+{
+  "milestone": "m5",
+  "requested_backend": null,
+  "timestamp": "2026-10-18T06:56:10Z",
+  "host": "x86_64-pc-windows-msvc",
+  "commit": "856b758-dirty",
+  "backends": [],
+  "results": [
+    {
+      "id": "exp.golden",
+      "metric": "export output equals golden files",
+      "op": "pass",
+      "threshold": null,
+      "unit": "",
+      "value": null,
+      "passed": true,
+      "backend": null,
+      "pass": true,
+      "reason": "passed"
+    },
+    {
+      "id": "exp.idempotent",
+      "metric": "re-export is byte-identical and preserves user edits",
+      "op": "pass",
+      "threshold": null,
+      "unit": "",
+      "value": null,
+      "passed": true,
+      "backend": null,
+      "pass": true,
+      "reason": "passed"
+    }
+  ],
+  "checks": [
+    {
+      "name": "export case coverage",
+      "pass": true,
+      "detail": "4 cases including em_dash_off, full, minimal, no_summary"
+    }
+  ],
+  "pass": true
+}

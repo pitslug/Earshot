@@ -1,0 +1,36 @@
+[package]
+name = "earshot-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+earshot-core = { path = "../earshot-core" }
+# SQLite compiled from the bundled amalgamation (no system SQLite; PLAN.md 3.1, D9).
+# rusqlite is MIT, SQLite is public domain.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Pure-Rust FLAC encoder (Apache-2.0, PLAN.md D9). `par` (thread pool) is off with the other
+# defaults; the writer streams frame by frame.
+flacenc = { version = "0.5.1", default-features = false }
+# FLAC decoding for re-transcription (Apache-2.0; same pin as the other crates).
+claxon = "=0.4.3"
+# Row bodies (words, tags, summaries) are stored as JSON (same versions as earshot-core).
+serde = "1.0.229"
+serde_json = "1.0.154"
+# Device-id generation takes the caller's RNG (same version as earshot-core).
+rand_core = { version = "0.10.1", default-features = false }
+
+# No-replace rename for the export writer and the total memory for the model check
+# (`fsutil.rs`). Same version as the windows-sys already in the lock file, whose dependency
+# graph already enables these features, so no feature set widens.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
+
+[dev-dependencies]
+rand_chacha = { version = "0.10.0", default-features = false }
+# Pins the applied migrations by hash (same version as xtask and earshot-onnx).
+sha2 = "0.11"
+
+[lints]
+workspace = true

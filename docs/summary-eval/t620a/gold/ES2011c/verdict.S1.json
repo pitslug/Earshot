@@ -1,0 +1,16 @@
+{
+  "meeting": "ES2011c",
+  "model": "S1",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D2 agrees a spongy, stress-ball-like material."},
+    {"id": "D2.1", "verdict": "missing", "reason": "The tldr and notes bring in the theme through covers and name the casing colours, but never say fruit colours go with the company colours."},
+    {"id": "D3.1", "verdict": "covered", "reason": "The tldr says they settled on interchangeable fruit or vegetable covers."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "covered", "reason": "S-A3 gives the User Interface Designer the play-dough modelling and S-D3 says prototypes will be created."},
+    {"id": "A1.2", "verdict": "covered", "reason": "S-A4 gives the Industrial Designer the play-dough modelling and S-D3 says prototypes will be created."},
+    {"id": "A2.1", "verdict": "covered", "reason": "S-A3 gives the User Interface Designer the user interface design."},
+    {"id": "A2.2", "verdict": "covered", "reason": "S-A4 gives the Industrial Designer the look and feel of the design."},
+    {"id": "A3.1", "verdict": "covered", "reason": "S-A5 gives the Marketing Expert the product evaluation."}
+  ]
+}

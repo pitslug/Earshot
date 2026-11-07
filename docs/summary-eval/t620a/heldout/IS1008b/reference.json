@@ -1,0 +1,51 @@
+{
+  "action_items": [
+    {
+      "id": "A1.1",
+      "text": "The Industrial Designer will make a presentation on the components concept for the product."
+    },
+    {
+      "id": "A2.1",
+      "text": "The User Interface Designer will make a presentation on the user interface concept."
+    },
+    {
+      "id": "A3.1",
+      "text": "The Marketing Expert will present the marketing concept."
+    },
+    {
+      "id": "A4.1",
+      "text": "The Project Manager will research companies that can provide the Industrial Designer with help on integrating voice recognition into her design."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1.1",
+      "text": "The group will discuss which features to include in the final design of the product at the next meeting."
+    },
+    {
+      "id": "D1.2",
+      "text": "The group will discuss which features to eliminate from the final design of the product at the next meeting."
+    },
+    {
+      "id": "D2.1",
+      "text": "The remote will have a slim shape."
+    },
+    {
+      "id": "D2.2",
+      "text": "The remote will have a simple interface."
+    },
+    {
+      "id": "D2.3",
+      "text": "The remote will include a locator function."
+    },
+    {
+      "id": "D2.4",
+      "text": "The remote will include voice recognition."
+    },
+    {
+      "id": "D2.5",
+      "text": "The remote will be made of a hard material."
+    }
+  ],
+  "meeting": "IS1008b"
+}

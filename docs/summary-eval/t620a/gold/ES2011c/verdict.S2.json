@@ -1,0 +1,16 @@
+{
+  "meeting": "ES2011c",
+  "model": "S2",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "The tldr and Shape notes describe a squishy part with a stress ball-like texture."},
+    {"id": "D2.1", "verdict": "covered", "reason": "The Shape notes have fruit and vegetable colours on the device and give the company colour as silver and yellow."},
+    {"id": "D3.1", "verdict": "covered", "reason": "The tldr and notes describe a detachable part users can swap and covers that change the appearance."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "covered", "reason": "S-A2 gives the User Interface Designer the play-dough modelling and S-D2 says prototypes will be created."},
+    {"id": "A1.2", "verdict": "covered", "reason": "S-A2 gives the Industrial Designer the play-dough modelling and S-D2 says prototypes will be created."},
+    {"id": "A2.1", "verdict": "covered", "reason": "S-A2 names the User Interface Designer for the user interface design."},
+    {"id": "A2.2", "verdict": "covered", "reason": "S-A2 names the Industrial Designer for the look and feel."},
+    {"id": "A3.1", "verdict": "contradicted", "reason": "S-A3 gives the product evaluation to the User Interface and Industrial Designers, not the Marketing Expert."}
+  ]
+}

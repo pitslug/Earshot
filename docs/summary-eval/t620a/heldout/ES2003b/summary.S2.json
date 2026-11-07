@@ -1,0 +1,64 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Industrial Designer",
+      "task": "Research the feasibility of voice activation for the embedded system."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Industrial Designer",
+      "task": "Look at the speaker and LED design for locating the remote."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "Marketing Expert",
+      "task": "Provide the frequency data for the most common options used by people."
+    },
+    {
+      "due": null,
+      "id": "S-A4",
+      "owner": "Project Manager",
+      "task": "Email the team if anything is missed or needs rectification."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "Decided to use black and white displays to reduce unit costs."
+    },
+    {
+      "id": "S-D2",
+      "text": "Decided to target the general public who have used mobile phones."
+    },
+    {
+      "id": "S-D3",
+      "text": "Decided the remote will feature a joystick for channel and volume control, plus menu and okay buttons."
+    },
+    {
+      "id": "S-D4",
+      "text": "Decided to focus the remote on television control only, excluding interactive functions."
+    },
+    {
+      "id": "S-D5",
+      "text": "Decided to drop teletext functionality."
+    },
+    {
+      "id": "S-D6",
+      "text": "Incorporate a speaker and LED into the remote for locating it."
+    },
+    {
+      "id": "S-D7",
+      "text": "The double arc shape will be used for the enter button."
+    }
+  ],
+  "failure": null,
+  "meeting": "ES2003b",
+  "model": "S2",
+  "notes": "## Previous Meeting Minutes Review\n- Introduced the possibility of a macro facility, interacting with the TV, bar-code, joystick for user manipulation, and ergonomics of the remote control.\n- Teletext has become outdated due to the popularity of the internet.\n- Remote control should only be used for the TV.\n- Corporate image should stay recognisable, including colour and slogan.\n## Voice Recognition Feasibility\n- Voice recognition software exists already as open source.\n- People are willing to pay extra for voice recognition software.\n- Voice recognition works well for a fixed vocabulary (e.g., channel numbers) but may be impractical for frequent use like changing channels.\n- Voice recognition requires microphones in the remote control, which is an unusual feature.\n- Options include voice recognition alone (impractical for night time or visitors) or voice recognition combined with a regular remote.\n- Removing the regular remote part allows the device to be designed freely (shape, size, fancy appearance).\n- Concerns include training time, regional accents, and user returns due to speed compared to button presses.\n## User Interface Design Approaches\n- Two main trends exist: button-heavy interfaces (like early remotes) which are user-unfriendly, and user-focused designs that pare down to essential functions like channel and volume control.\n- A preferred approach is a programmable design with a full range of functions accessible via a minimal number of controls, such as a joystick, allowing users to specify their most likely needs.\n- Inspiration is drawn from game controllers like the PlayStation, using distinctive geometrical shapes for basic functions with further specification dependent on the mode.\n## Hardware and Internal Design\n- The Industrial Designer presented the internal layout of the remote, including the energy source, user interface, sender, chip, and digital signal transmission to the TV.\n- Options discussed include using many buttons versus many light bulbs to indicate appliance status, and the feasibility of adding a joystick which would require more components.\n- An alternative concept involves a small display (slightly larger than a mobile phone) to traverse menus and control functionality, alongside common buttons for volume and channel changes.\n## Display and Cost\n- Agreed to use black and white displays to keep unit costs down, with color as a potential future development.\n## Target Audience\n- Decided to target most people who have used a mobile phone, relying on their existing experience.\n## Remote Features and Design\n- The remote will include a small joystick for channel changes, volume control, and menu navigation, alongside standard up/down buttons.\n- Decided to include two function buttons: a menu button and an 'okay' button to prevent joystick misinterpretation.\n- Design constraint: The remote must be controllable one-handedly with the joystick operated by the thumb.\n## Locating the Remote Control\n- Consider adding a speaker and LED to the remote for locating it via sound and light.\n- The LED can be incorporated into the base of the TV unit to flash when the remote is found.\n- Small key-rings have both sound and light, suggesting this is a viable design touch.\n## Transmitter and Power Source\n- The transmitter could be built into the television itself if targeting TV manufacturers.\n- The electronics can be placed externally or internally without affecting the final product.\n- This approach could open up a new potential market.\n## Slogan and Branding\n- The slogan 'Fashion in Electronics' was proposed to be printed on the plastic.\n- The 'two Rs' logo was suggested as an alternative to 'Real Reaction'.\n## Button Design\n- The double arc shape on the remote could serve as the enter button.",
+  "tldr": "The team finalized the design of a new remote control focusing on television control with a joystick, black and white display, and locating features, while dropping teletext and voice recognition.",
+  "valid": true
+}

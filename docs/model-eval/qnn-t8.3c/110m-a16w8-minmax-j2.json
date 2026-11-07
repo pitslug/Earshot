@@ -1,0 +1,101 @@
+{
+  "backend": "cpu",
+  "complete": true,
+  "cores": 32,
+  "corpora": [
+    "librispeech_dev",
+    "librispeech",
+    "smoke"
+  ],
+  "gate12": "not requested",
+  "onnx_models": "evaluated when selected",
+  "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4 }",
+  "rows": [
+    {
+      "backend": "cpu",
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "parakeet-tdt_ctc-110m (TDT, NPU conversion)"
+      },
+      "corpora": {
+        "librispeech": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech test-clean, pinned subset",
+          "speed": {
+            "audio_s": 1795.95025,
+            "decode_s": 150.39774730000002,
+            "rtf": 0.08374271353006578
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 13,
+            "insertions": 6,
+            "ref_words": 4681,
+            "substitutions": 93,
+            "wer_percent": 2.39265114291818
+          }
+        },
+        "librispeech_dev": {
+          "pieces_dropped": 0,
+          "set": "LibriSpeech dev-clean, pinned subset (dev set: never calibration data)",
+          "speed": {
+            "audio_s": 1751.2850000000003,
+            "decode_s": 138.20023299999994,
+            "rtf": 0.07891361657297351
+          },
+          "utterances": 196,
+          "wer": {
+            "deletions": 14,
+            "insertions": 5,
+            "ref_words": 4883,
+            "substitutions": 80,
+            "wer_percent": 2.027442146221585
+          }
+        },
+        "smoke": {
+          "pieces_dropped": 0,
+          "set": "fixtures/smoke (20 committed clips)",
+          "speed": {
+            "audio_s": 73.085,
+            "decode_s": 10.8325925,
+            "rtf": 0.14821909420537732
+          },
+          "utterances": 20,
+          "wer": {
+            "deletions": 1,
+            "insertions": 0,
+            "ref_words": 164,
+            "substitutions": 10,
+            "wer_percent": 6.707317073170732
+          }
+        }
+      },
+      "decoding": "greedy",
+      "evidence": {
+        "fully_on_requested": [
+          true,
+          true,
+          true
+        ],
+        "sessions": [
+          "requested cpu, placed: CPUExecutionProvider=3757",
+          "requested cpu, placed: CPUExecutionProvider=7",
+          "requested cpu, placed: CPUExecutionProvider=10"
+        ],
+        "source": "ONNX Runtime node placement"
+      },
+      "languages": "English",
+      "load_s": 2.8352541,
+      "model": "parakeet-tdt-110m-qnn",
+      "speed": {
+        "audio_s": 3620.3202500000007,
+        "decode_s": 299.43057279999994,
+        "rtf": 0.08270831090150102
+      },
+      "threads": 4
+    }
+  ],
+  "task": "T6.10e",
+  "threads": 4
+}

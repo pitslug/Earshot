@@ -1,0 +1,24 @@
+{
+  "meeting": "TS3006b",
+  "model": "S1",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D3 includes an LCD screen."},
+    {"id": "D1.2", "verdict": "covered", "reason": "S-D3 includes speech recognition."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D6 puts advanced options in an on-screen menu and the notes list the audio, image and channel settings."},
+    {"id": "D3.1", "verdict": "covered", "reason": "S-D5 targets the age range sixteen to forty."},
+    {"id": "D4.1", "verdict": "covered", "reason": "S-D1 drops teletext."},
+    {"id": "D5.1", "verdict": "missing", "reason": "No summary part says the remote is for the TV only."},
+    {"id": "D6.1", "verdict": "covered", "reason": "S-D4 and S-D10 keep the corporate logo on the remote."},
+    {"id": "D6.2", "verdict": "covered", "reason": "S-D4 keeps the corporate colours."},
+    {"id": "D7.1", "verdict": "contradicted", "reason": "S-D8 and S-A1 place the screen at the bottom, conflicting with the top placement that S-D9 and the tldr also state."},
+    {"id": "D7.2", "verdict": "covered", "reason": "S-D9 and the tldr place the microphone on top."},
+    {"id": "D8.1", "verdict": "covered", "reason": "The layout notes put LED lights under the buttons."},
+    {"id": "D8.2", "verdict": "covered", "reason": "The layout notes say the LEDs show which buttons are active for the current function."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "missing", "reason": "S-A5 reorganises documents; no summary part mentions writing minutes."},
+    {"id": "A2.1", "verdict": "covered", "reason": "S-A1 has the User Interface Designer draw the remote control layout."},
+    {"id": "A2.2", "verdict": "covered", "reason": "S-A7 has the User Interface Designer design the menu layout, and the menu is on the screen per S-D6."},
+    {"id": "A3.1", "verdict": "contradicted", "reason": "S-A3 gives the working design, including how components interact, to the User Interface Designer instead of the Industrial Designer."}
+  ]
+}

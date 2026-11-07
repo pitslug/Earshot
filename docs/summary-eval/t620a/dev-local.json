@@ -1,0 +1,736 @@
+{
+  "meetings": {
+    "dev": [
+      "ES2003a",
+      "ES2003b",
+      "ES2003c",
+      "ES2003d",
+      "ES2011a",
+      "ES2011b",
+      "ES2011c",
+      "ES2011d",
+      "IS1008a",
+      "IS1008b",
+      "IS1008c",
+      "IS1008d",
+      "TS3004a",
+      "TS3004b",
+      "TS3004c",
+      "TS3004d",
+      "TS3006a",
+      "TS3006b",
+      "TS3006c",
+      "TS3006d"
+    ]
+  },
+  "models": {
+    "qwen3.5-4b": {
+      "action_items": {
+        "contradicted": 2,
+        "covered": 29,
+        "missing": 22
+      },
+      "decisions": {
+        "contradicted": 14,
+        "covered": 85,
+        "missing": 24
+      }
+    },
+    "qwen3.5-9b": {
+      "action_items": {
+        "contradicted": 4,
+        "covered": 29,
+        "missing": 20
+      },
+      "decisions": {
+        "contradicted": 11,
+        "covered": 82,
+        "missing": 30
+      }
+    }
+  },
+  "packet_set": "923d3e3d566d8ec6",
+  "per_meeting": [
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 3,
+          "missing": 0
+        }
+      },
+      "label": "S1",
+      "meeting": "ES2003a",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 3,
+          "missing": 0
+        }
+      },
+      "label": "S2",
+      "meeting": "ES2003a",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 6,
+          "missing": 2
+        }
+      },
+      "label": "S1",
+      "meeting": "ES2003b",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 5,
+          "missing": 3
+        }
+      },
+      "label": "S2",
+      "meeting": "ES2003b",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 3,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 3,
+          "missing": 0
+        }
+      },
+      "label": "S1",
+      "meeting": "ES2003c",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 2,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 4,
+          "missing": 0
+        }
+      },
+      "label": "S2",
+      "meeting": "ES2003c",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 4,
+          "missing": 0
+        }
+      },
+      "label": "S1",
+      "meeting": "ES2003d",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 3,
+          "missing": 0
+        }
+      },
+      "label": "S2",
+      "meeting": "ES2003d",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 1,
+          "covered": 2,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 0
+        }
+      },
+      "label": "S1",
+      "meeting": "ES2011a",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 1,
+          "covered": 2,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 0
+        }
+      },
+      "label": "S2",
+      "meeting": "ES2011a",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 2
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 6,
+          "missing": 3
+        }
+      },
+      "label": "S1",
+      "meeting": "ES2011b",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 2
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 7,
+          "missing": 2
+        }
+      },
+      "label": "S2",
+      "meeting": "ES2011b",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 3,
+          "missing": 2
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 2,
+          "missing": 1
+        }
+      },
+      "label": "S1",
+      "meeting": "ES2011c",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 1,
+          "covered": 3,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 2,
+          "missing": 1
+        }
+      },
+      "label": "S2",
+      "meeting": "ES2011c",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 2,
+          "missing": 2
+        }
+      },
+      "label": "S1",
+      "meeting": "ES2011d",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 2,
+          "covered": 3,
+          "missing": 0
+        }
+      },
+      "label": "S2",
+      "meeting": "ES2011d",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 5,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 2
+        }
+      },
+      "label": "S1",
+      "meeting": "IS1008a",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 6,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 1
+        }
+      },
+      "label": "S2",
+      "meeting": "IS1008a",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 3
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 6,
+          "missing": 1
+        }
+      },
+      "label": "S1",
+      "meeting": "IS1008b",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 1,
+          "covered": 0,
+          "missing": 3
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 4,
+          "missing": 3
+        }
+      },
+      "label": "S2",
+      "meeting": "IS1008b",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 3,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 9,
+          "missing": 2
+        }
+      },
+      "label": "S1",
+      "meeting": "IS1008c",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 1,
+          "covered": 2,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 8,
+          "missing": 2
+        }
+      },
+      "label": "S2",
+      "meeting": "IS1008c",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 2,
+          "missing": 3
+        },
+        "decisions": {
+          "contradicted": 3,
+          "covered": 3,
+          "missing": 5
+        }
+      },
+      "label": "S1",
+      "meeting": "IS1008d",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 2,
+          "missing": 3
+        },
+        "decisions": {
+          "contradicted": 2,
+          "covered": 7,
+          "missing": 2
+        }
+      },
+      "label": "S2",
+      "meeting": "IS1008d",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 0
+        }
+      },
+      "label": "S1",
+      "meeting": "TS3004a",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 2
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 0
+        }
+      },
+      "label": "S2",
+      "meeting": "TS3004a",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 3,
+          "missing": 3
+        }
+      },
+      "label": "S1",
+      "meeting": "TS3004b",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 4,
+          "missing": 2
+        }
+      },
+      "label": "S2",
+      "meeting": "TS3004b",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 1,
+          "covered": 2,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 9,
+          "missing": 3
+        }
+      },
+      "label": "S1",
+      "meeting": "TS3004c",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 3
+        },
+        "decisions": {
+          "contradicted": 3,
+          "covered": 7,
+          "missing": 3
+        }
+      },
+      "label": "S2",
+      "meeting": "TS3004c",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 6,
+          "missing": 0
+        }
+      },
+      "label": "S1",
+      "meeting": "TS3004d",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 3,
+          "missing": 3
+        }
+      },
+      "label": "S2",
+      "meeting": "TS3004d",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 3,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 4,
+          "missing": 0
+        }
+      },
+      "label": "S1",
+      "meeting": "TS3006a",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 2,
+          "missing": 2
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 2,
+          "missing": 3
+        }
+      },
+      "label": "S2",
+      "meeting": "TS3006a",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 3,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 9,
+          "missing": 2
+        }
+      },
+      "label": "S1",
+      "meeting": "TS3006b",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 2,
+          "missing": 2
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 10,
+          "missing": 1
+        }
+      },
+      "label": "S2",
+      "meeting": "TS3006b",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 2,
+          "missing": 0
+        },
+        "decisions": {
+          "contradicted": 0,
+          "covered": 3,
+          "missing": 1
+        }
+      },
+      "label": "S1",
+      "meeting": "TS3006c",
+      "model": "qwen3.5-9b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 1,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 3,
+          "missing": 0
+        }
+      },
+      "label": "S2",
+      "meeting": "TS3006c",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 5,
+          "missing": 1
+        }
+      },
+      "label": "S1",
+      "meeting": "TS3006d",
+      "model": "qwen3.5-4b"
+    },
+    {
+      "counts": {
+        "action_items": {
+          "contradicted": 0,
+          "covered": 0,
+          "missing": 1
+        },
+        "decisions": {
+          "contradicted": 1,
+          "covered": 6,
+          "missing": 0
+        }
+      },
+      "label": "S2",
+      "meeting": "TS3006d",
+      "model": "qwen3.5-9b"
+    }
+  ],
+  "verdicts": "target\\sum-eval\\facts-dev-local2"
+}

@@ -1,0 +1,19 @@
+{
+  "meeting": "IS1008b",
+  "model": "S2",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-A8 has the team discuss after the lunch break which features to include."},
+    {"id": "D1.2", "verdict": "covered", "reason": "S-D1 eliminates features later and the feature notes tie that to the further discussion after lunch."},
+    {"id": "D2.1", "verdict": "covered", "reason": "The requirements notes say the remote is slim in design."},
+    {"id": "D2.2", "verdict": "covered", "reason": "The interface notes want few buttons and a sleek, simple look."},
+    {"id": "D2.3", "verdict": "covered", "reason": "The notes require the remote to be easy to find and to support finding it through a beep."},
+    {"id": "D2.4", "verdict": "covered", "reason": "The tldr, the speech recognition notes and S-A1 include speech recognition among the features taken forward."},
+    {"id": "D2.5", "verdict": "missing", "reason": "The notes ask for an unbreakable remote but say nothing about its material."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "missing", "reason": "No summary part mentions a components presentation."},
+    {"id": "A2.1", "verdict": "missing", "reason": "No summary part mentions a user interface presentation."},
+    {"id": "A3.1", "verdict": "missing", "reason": "No summary part mentions a marketing presentation; S-A2 and S-A3 are different tasks."},
+    {"id": "A4.1", "verdict": "contradicted", "reason": "S-A5 has the Project Manager get technical companies to help the UI Designer, where the fact names the Industrial Designer."}
+  ]
+}

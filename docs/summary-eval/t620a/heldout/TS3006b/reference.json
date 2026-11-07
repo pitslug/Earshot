@@ -1,0 +1,71 @@
+{
+  "action_items": [
+    {
+      "id": "A1.1",
+      "text": "The project manager will write up the meeting minutes."
+    },
+    {
+      "id": "A2.1",
+      "text": "The user interface designer will work on the layout of the remote."
+    },
+    {
+      "id": "A2.2",
+      "text": "The user interface designer will work on the layout of the LCD screen menu."
+    },
+    {
+      "id": "A3.1",
+      "text": "The industrial designer will work on the functional aspects of the remote."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1.1",
+      "text": "The remote will have an LCD screen."
+    },
+    {
+      "id": "D1.2",
+      "text": "The remote will have speech recognition."
+    },
+    {
+      "id": "D2.1",
+      "text": "The advanced functions such as audio settings, contrast and channel programming will be accessed through the screen."
+    },
+    {
+      "id": "D3.1",
+      "text": "The target group will be aged 16-40."
+    },
+    {
+      "id": "D4.1",
+      "text": "A teletext option will not be included."
+    },
+    {
+      "id": "D5.1",
+      "text": "The remote will be for TV only."
+    },
+    {
+      "id": "D6.1",
+      "text": "The remote will feature the corporate logo."
+    },
+    {
+      "id": "D6.2",
+      "text": "The remote will feature the corporate colour."
+    },
+    {
+      "id": "D7.1",
+      "text": "The screen will be at the top of the remote."
+    },
+    {
+      "id": "D7.2",
+      "text": "The microphone will be at the top of the remote."
+    },
+    {
+      "id": "D8.1",
+      "text": "There will be LEDs under the buttons."
+    },
+    {
+      "id": "D8.2",
+      "text": "Buttons in use will light up."
+    }
+  ],
+  "meeting": "TS3006b"
+}

@@ -1,0 +1,19 @@
+{
+  "meeting": "IS1008b",
+  "model": "S1",
+  "decisions": [
+    {"id": "D1.1", "verdict": "missing", "reason": "The notes say only that the team reconvenes to discuss further, not that the next meeting decides which features to include."},
+    {"id": "D1.2", "verdict": "missing", "reason": "S-D2 says features are refined or eliminated later in the process, but nothing places that discussion at the next meeting."},
+    {"id": "D2.1", "verdict": "covered", "reason": "The design notes say the remote should be slim."},
+    {"id": "D2.2", "verdict": "covered", "reason": "S-D1 makes the remote simple with a limited number of buttons."},
+    {"id": "D2.3", "verdict": "covered", "reason": "The notes propose a beep to find the device and S-D2 includes all proposed features."},
+    {"id": "D2.4", "verdict": "covered", "reason": "The speech recognition notes, S-A3 and S-D2 keep the feature in the design."},
+    {"id": "D2.5", "verdict": "missing", "reason": "The notes ask for an unbreakable remote and only raise titanium as a suggestion with concerns; no hard material is settled."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "missing", "reason": "No summary part mentions a components presentation."},
+    {"id": "A2.1", "verdict": "missing", "reason": "No summary part mentions a user interface presentation."},
+    {"id": "A3.1", "verdict": "missing", "reason": "No summary part mentions a marketing presentation; S-A2 is a different task."},
+    {"id": "A4.1", "verdict": "covered", "reason": "S-A4 and the speech recognition notes have the Project Manager find technical companies to back speech recognition design."}
+  ]
+}

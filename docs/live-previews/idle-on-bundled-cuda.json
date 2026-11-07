@@ -1,0 +1,172 @@
+{
+  "audio": "bundled",
+  "capture_max_lag_s": 0.011,
+  "catch_up_after_end_s": 0.3483199,
+  "decodes_mic": {
+    "audio_s": 100.63999999999999,
+    "calls": 11,
+    "rtf": 0.010192387718600955,
+    "took_s": {
+      "max": 0.2117569,
+      "median": 0.07256,
+      "n": 11,
+      "p95": 0.2117569
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 108.528,
+    "calls": 11,
+    "rtf": 0.008367747493734335,
+    "took_s": {
+      "max": 0.1278253,
+      "median": 0.0659676,
+      "n": 11,
+      "p95": 0.1278253
+    }
+  },
+  "host": {
+    "logical_cores": 32,
+    "machine_load_percent": {
+      "max": 1.0,
+      "median": 1.0,
+      "n": 4,
+      "p95": 1.0
+    },
+    "peak_private_gib": 15.403312683105469,
+    "peak_working_set_gib": 3.3056640625,
+    "process_cpu_s": 35.1875
+  },
+  "length_s": 150.0,
+  "live_backends": [
+    {
+      "device": "cuda:0",
+      "kind": "Cuda",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "cuda:0",
+      "kind": "Cuda",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "mic": {
+    "first_word_lag_s": {
+      "max": 37.2472027,
+      "median": 6.818614499999999,
+      "n": 11,
+      "p95": 37.2472027
+    },
+    "last_word_lag_s": {
+      "max": 16.447202700000005,
+      "median": 2.147234499999996,
+      "n": 11,
+      "p95": 16.447202700000005
+    },
+    "on_screen_lag_s": {
+      "max": 37.2472027,
+      "median": 15.490127900000005,
+      "n": 242,
+      "p95": 31.9672027
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "32786f4af80cb51266fa8e50aeb4ac9dee0785682301d90c34a73cb1e032080a",
+    "stretch_length_s": {
+      "max": 23.28,
+      "median": 4.88,
+      "n": 11,
+      "p95": 23.28
+    },
+    "stretches": 11,
+    "word_lag_s": {
+      "max": 37.2472027,
+      "median": 15.490127900000005,
+      "n": 242,
+      "p95": 31.9672027
+    },
+    "words": 242
+  },
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested cuda:0, placed: CPUExecutionProvider=482 CUDAExecutionProvider=1515; requested cuda:0, placed: CUDAExecutionProvider=13; requested cuda:0, placed: CUDAExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested cuda:0, placed: CPUExecutionProvider=482 CUDAExecutionProvider=1515; requested cuda:0, placed: CUDAExecutionProvider=13; requested cuda:0, placed: CUDAExecutionProvider=10"
+  ],
+  "previews": {
+    "audio_dropped": 0,
+    "audio_s": 718.5120000000001,
+    "cancelled": 0,
+    "decode_s": 8.201660499999997,
+    "decodes": 87,
+    "decodes_adding_nothing": 35,
+    "load_s": 1.8344985999999999,
+    "off": null,
+    "rtf": 0.011414785695993938,
+    "skipped_busy": 0,
+    "slow_pauses": 0,
+    "slowest_s": 0.4299339,
+    "track": "Reference",
+    "words_shown": 213
+  },
+  "reference": {
+    "first_word_lag_s": {
+      "max": 41.538605100000005,
+      "median": 14.889371300000022,
+      "n": 8,
+      "p95": 41.538605100000005
+    },
+    "last_word_lag_s": {
+      "max": 25.058605100000005,
+      "median": 3.0588101999999964,
+      "n": 8,
+      "p95": 25.058605100000005
+    },
+    "on_screen_lag_s": {
+      "max": 39.3786051,
+      "median": 1.8721287000000189,
+      "n": 212,
+      "p95": 6.414070800000001
+    },
+    "previews": {
+      "changed": 12,
+      "kept": 192,
+      "updates": 59,
+      "vanished": 9,
+      "word_lag_s": {
+        "max": 8.6540708,
+        "median": 1.8542763000000022,
+        "n": 213,
+        "p95": 5.334103900000002
+      }
+    },
+    "stored_sha256": "c183ad90db4f5f1ec148cb38f63b25c40642580d0da2c7ba04d28af2095b5c0c",
+    "stretch_length_s": {
+      "max": 20.16,
+      "median": 14.72,
+      "n": 8,
+      "p95": 20.16
+    },
+    "stretches": 8,
+    "word_lag_s": {
+      "max": 41.538605100000005,
+      "median": 14.009371299999998,
+      "n": 212,
+      "p95": 36.6586051
+    },
+    "words": 212
+  },
+  "requested_backend": "Cuda",
+  "speakers": true,
+  "stopped_with": "Finished",
+  "warnings": 0
+}

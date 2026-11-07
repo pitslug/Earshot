@@ -1,0 +1,15 @@
+{
+  "meeting": "ES2003c",
+  "model": "S1",
+  "decisions": [
+    {"id": "D1.1", "verdict": "missing", "reason": "S-D1 and the notes say conventional batteries but never lithium, so only the topic appears."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D3 and S-D5 state a double curved design."},
+    {"id": "D3.1", "verdict": "covered", "reason": "S-D2 states a rubber casing."},
+    {"id": "D4.1", "verdict": "covered", "reason": "S-D8 says the remote will be yellow."}
+  ],
+  "action_items": [
+    {"id": "A1.1", "verdict": "covered", "reason": "The notes under Prototyping say the Industrial Designer will work on prototyping."},
+    {"id": "A1.2", "verdict": "covered", "reason": "The notes under Prototyping say the User Interface Designer will work on prototyping."},
+    {"id": "A2.1", "verdict": "contradicted", "reason": "S-A3 gives the product evaluation material to the Project Manager, not the marketing expert."}
+  ]
+}

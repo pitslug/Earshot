@@ -1,0 +1,56 @@
+# Rust
+target/
+
+# Node / pnpm
+node_modules/
+# Vite output and cache of the desktop app; Tauri's generated capability schemas
+apps/desktop/dist/
+.vite/
+apps/desktop/src-tauri/gen/
+
+# Fixtures: large sets are fetched outside the repo; private recordings never committed
+fixtures/private/
+
+# Models are fetched, never committed (keep the manifest)
+/models/*
+!/models/manifest.toml
+
+# Audio and model weights (small committed smoke audio is the only exception)
+*.wav
+*.flac
+!fixtures/smoke/**/*.wav
+!fixtures/smoke/**/*.flac
+# The benchmark meeting shipped with the app (T7.4c, cargo xtask bench-meeting)
+!apps/desktop/src-tauri/resources/benchmark/*.flac
+*.onnx
+*.bin
+*.gguf
+
+# Agent and local tool state
+.agent.lock
+.claude/settings.local.json
+
+# OS and editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/
+
+# Agent worktrees for parallel lanes
+.claude/worktrees/
+
+# Private files: kept on the owner's machine, never in this repo
+/CLAUDE.md
+/LOG.md
+/gates/
+/acceptance/results/m1.json
+/docs/aec-highpass.md
+/docs/cleanup-timing.md
+/docs/echo-gap-evidence.md
+/docs/model-eval/cuda-gate12.json
+/docs/teams-capture.md
+/scripts/qnn-transfer.ps1
+/scripts/setup-arm64.ps1

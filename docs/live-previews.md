@@ -1,0 +1,158 @@
+# Provisional words while someone is talking (T9.1m)
+
+Runs on 2026-11-07, real-time replay of public audio, production live session (speech stretches,
+speaker work on), Parakeet 0.6B v2. A word's lag is the wall time it reached the host loop minus the
+word's end in meeting time; the desktop adds only the event to the webview. Raw reports are in
+`docs/live-previews/`, counts and times only.
+
+**Start with "On an idle host" below**, the only runs with nothing else on the machine. The sections
+after it were measured with other lanes and a ci run active, so compare within a table only. The
+Surface and battery draw are not measured at all (GATE-03a first).
+
+## On an idle host
+
+Commit e28b693, nothing else running, machine load read median 0-3%, largest 4%. Far-end track.
+Reports are `docs/live-previews/idle-*.json`.
+
+| Audio, backend | Settled text median / p95, previews off | Settled text, on | On screen median / p95 | Largest on screen | Preview words shown | Settled text said otherwise | Left with no settled word |
+|---|---|---|---|---|---|---|---|
+| `continuous`, CPU | 37.4 / 50.2 s | 37.4 / 50.1 s | **2.4 / 4.4 s** | 51.4 s | 213 of 230 | 4 | 0 |
+| `continuous`, CUDA | 36.9 / 49.9 s | 36.8 / 49.6 s | **1.6 / 2.8 s** | 50.8 s | 225 of 230 | 5 | 0 |
+| `bundled`, CPU, first run | 14.9 / 37.9 s | 15.0 / 37.9 s | **2.9 / 6.5 s** | 40.6 s | 212 of 212 | 17 | 1 |
+| `bundled`, CPU, second run | | 14.9 / 37.8 s | **2.8 / 8.7 s** | 40.6 s | 207 of 212 | 13 | 1 |
+| `bundled`, CUDA | 14.1 / 36.8 s | 14.0 / 36.7 s | **1.9 / 6.4 s** | 39.4 s | 213 of 212 | 12 | 9 |
+
+- **The median holds under 3 s in every run. The 95th percentile does so only on unbroken speech on CUDA**; on meeting audio it is 6.4-8.7 s. The largest stays at 40-50 s: the first words of a stretch, before two previews agree.
+- **Stored words are identical** on and off, on both backends (`stored_sha256` per track). No audio dropped, no slow pauses, slowest preview 0.45 s; the 107-word and starved runs below did not recur in these runs, so those came from what else was on the machine or remain unexplained.
+- **Real decodes did not slow:** rtf 0.034-0.043 off and 0.033-0.036 on, on the CPU; 0.014 off and 0.008 on, on CUDA.
+- **Cost as before:** peak private memory 7.15 -> 9.39 GiB (CPU, bundled), 11.71 -> 15.40 GiB (CUDA); process CPU time 65 -> 131 s (bundled) and 31 -> 137 s (continuous) on the CPU, 29 -> 35 s and 14 -> 23 s on CUDA; one session 2.13 GiB, load 2.5 s on the CPU.
+Memory with T9.1l: a preview decode still running when a meeting ends is left to finish, so its session
+can overlap the next meeting's for as long as that decode takes (not measured; under 1 s at these rates).
+
+## The baseline: no previews
+
+First run, in a busy period (machine load median 5%, largest 30%):
+
+| Audio | Track | Words | Stretches | Word lag median | p95 | largest | Decode rtf |
+|---|---|---|---|---|---|---|---|
+| `bundled` (AMI ES2004a, 150 s, two tracks) | mic | 242 | 11 | 19.0 s | 37.3 s | 39.3 s | 0.13 |
+| `bundled` | reference | 212 | 8 | 23.6 s | 49.6 s | 54.5 s | 0.26 |
+| `continuous` (smoke clips, 200 ms gaps, 120 s, reference only) | reference | 230 | 6 | 42.3 s | 56.8 s | 63.1 s | 0.19 |
+
+- **The median is far over the 3 s target**, so the rule says go on.
+- **Most of the wait is for the stretch, not the decode**, as the plan guessed, but "up to about 30 s"
+  understates it: a person who never pauses waits about 40 s at the median and over 60 s at worst.
+  `settle` keeps a cut piece back until the next part can no longer merge into it, so a piece ending
+  20 s into a stretch settles about 30 s after its own end. Decoding is the small part: rtf 0.036 in
+  the quiet runs below (docs/asr-models.md says 0.03), 0.13-0.26 in this busy one. Quiet runs of the same audio with no previews: reference median 14.9 s and p95 37.8 s on `bundled`, 37.6 s and 50.4 s on `continuous`.
+
+## One copy of the weights (T9.1ma)
+
+**Why a preview cost 2.2 GiB:** Parakeet 0.6B's encoder keeps 2.27 GiB of weights in `encoder.weights`, and every session held its own copy, three in a call. CPU sessions now share one (`earshot_onnx::shared_weights`). Raw reports: `docs/live-previews/shared-weights/`. All on the bundled meeting unless named, idle host (machine load median 0-6%), rule chosen after measuring: least memory with stored words identical and on-screen lag inside today's run-to-run spread.
+
+| Way of loading | Peak private memory, previews on | Off | On screen median / p95 | Settled text changed a shown word | Runs |
+|---|---|---|---|---|---|
+| Each session its own copy (before) | 9.39 GiB | 7.15 GiB | 2.6-2.9 / 6.5-11.8 s | 11-17 of about 200 | 3 |
+| **One copy, prepacking off (shipped)** | **5.81 GiB** | **5.52 GiB** | 2.7-2.9 / 8.9-10.4 s | 11-14 | 2 built |
+| Same, trial patch | 5.81 GiB | 5.52 GiB | 2.7 / 10.0-17.3 s | 11-15 | 3 |
+| One copy, prepacked copies shared | 7.68 GiB | | 2.2-2.8 / 5.5-9.9 s | 11-15 | 2 |
+| Each its own, previews on Parakeet 110M | 7.90 GiB | | 2.0-2.1 / 21.9-22.8 s | 37-38 | 2 |
+
+`continuous`, built: peak 5.50 GiB, on screen 2.0 / 3.8 s, 5 words changed. Stored words matched the earlier runs by `stored_sha256` in every run, both tracks. Real decodes rtf 0.023-0.026 against 0.022-0.036. Sessions alone (`built-memory.json`): three take 3.11 GiB against 6.69, loading peaks at 2.41 GiB, a 12 s decode takes 0.27 s against 0.25-0.29 s.
+
+- **`AddExternalInitializersFromMemory` does not share:** it copies, and each session still cost 2.4 GiB (`share-heap*.json`). `AddInitializer`, one tensor at a time, does.
+- **Prepacking is a second copy.** Off, each session's kernels read the shared tensors. The p95 is noisy between identical runs, so these runs cannot say whether turning it off costs anything there. The prepacked variant needs about 1.9 GiB more and stays the fallback if a machine shows otherwise.
+- **110M is out:** cheapest in CPU time (62-68 s against 97-131 s) but about three times the corrected words, and a p95 of about 22 s on both backends.
+- **CUDA does not share:** 16.41 GiB (no prepacking) and 17.68 GiB (shared prepacking) against 15.40 GiB, because the graphics card holds its own copies. 110M previews there reach 13.32 GiB with the same corrections. CUDA stays as it was.
+- **The Surface is not measured.** Its encoder runs on QNN and does not share; only a CPU fallback there would.
+
+## Can a preview share the track's session?
+
+No. `Transcriber::transcribe` and `ort::Session::run` (2.0.0-rc.14) both take `&mut self`. Parakeet
+keeps no state between calls, so sharing would be correct, but only behind a lock a real decode could
+wait on for a whole preview (0.5-1.6 s measured), or on the worker's own thread with the same wait.
+"No preview may delay a real decode" rules both out. Whisper is worse: sampled retries depend on the
+state's history, so a preview must never touch it.
+
+So one extra session per meeting: previews run on one track only (below), on their own thread below
+normal priority, on background ONNX Runtime threads.
+
+Memory (`memory-cpu.json`, `--memory`), before T9.1ma: **2.2 GiB of private memory per session, nothing shared**
+between sessions, measured three times, load 4-14 s. The plan's "about 2.4 GB each" holds. The tables below are from before T9.1ma too.
+
+| | CPU, previews off | CPU, on | CUDA, off | CUDA, on |
+|---|---|---|---|---|
+| Process peak private memory, bundled | 7.15 GiB | 9.39 GiB | 11.69 GiB | 15.42 GiB |
+| Graphics memory, whole card (1.3 GiB before the run) | | | 9.1 GiB | 12.8 GiB |
+| Process CPU time, bundled (150 s) | 64 s | 132 s | 29 s | 38 s |
+| Process CPU time, continuous (120 s) | 31 s | 140 s | | 24 s |
+
+So on the CPU about 0.5 of a core over a meeting and 0.9 of a core while someone talks without pause.
+
+Setup cost of many short decodes: none found on the CPU. A length not seen before decodes as fast as
+a repeat of it (first against second, 0.98/0.72, 0.90/0.81, 0.85/0.86, 0.90/0.91, 1.22/1.25,
+1.26/2.05 s). On CUDA this was not isolated; preview rtf there was 0.008-0.015, so any such cost is
+small against the 1 s interval.
+
+## With previews
+
+The CPU rows are the final code; the CUDA rows ran before the slow-preview pause, which could not have fired there (slowest preview 0.57 and 0.37 s). Machine load read in these runs: median 1-3%, largest 7%. Parakeet 0.6B v2, far-end track.
+
+| Audio, backend | Word lag median / p95, settled text | On screen median / p95 | Preview words' own lag median / p95 | Preview words shown | Of those, the settled text said otherwise | Left with no settled word at them |
+|---|---|---|---|---|---|---|
+| `continuous` (230 words), CPU | 37.6 / 50.2 s | **2.4 / 5.3 s** | 2.4 / 4.4 s | 215 | 7 (3.3%) | 0 |
+| `continuous`, CUDA | 36.8 / 49.6 s | **1.5 / 2.5 s** | 1.5 / 2.4 s | 225 | 5 (2.2%) | 0 |
+| `bundled` (212 words), CPU | 14.8 / 37.8 s | **2.9 / 11.0 s** | 2.9 / 9.2 s | 201 | 11 (5.5%) | 1 |
+| `bundled`, CUDA | 14.0 / 36.8 s | **1.9 / 5.8 s** | 1.9 / 3.4 s | 205 | 14 (6.8%) | 1 |
+
+- **The 3 s target is met at the median in all four, and not at the 95th percentile.** The largest on-screen lag stays at about the settled text's, 40-50 s: a stretch's first words before any preview agrees, and words no preview caught.
+- **The CPU varies from run to run.** Three bundled CPU runs on the same audio: 2.9 / 11.0 s (above, 201 words shown), an earlier one at 5.8 / 28.9 s with 107 words shown and 47 of 73 decodes adding nothing (report not kept), and one in which previews were starved. The cause of the 107-word run is not known. In the starved run (`previews-bundled-cpu-starved.json`, machine load read 1-3%, real decodes at their normal rtf 0.036) previews ran at rtf 0.34 and took over 3 s each, and a rule then in place turned them off for the meeting after 6 decodes: below normal priority, they lost the machine to something the 30 s load reading did not see, and real decodes did not. Previews now pause for 30 s and try again instead (`PreviewReport.slow_pauses`). A quiet-host run is what settles this.
+- **A shown word never vanishes and returns**: only what a real decode covers leaves. The last column counts words that left with no settled word near them, which the plan asks for: the settled text lacked them. 35 of 74 decodes added nothing on the bundled meeting (two decodes must agree).
+- **Stored words are identical on and off**: `stored_sha256` matches per track between on and off, on both backends and both audio sets, and between backends (`previews-*`, `previews-off-*`). Real decode rtf: 0.036 off and 0.034-0.038 on, on the CPU; 0.013 off and 0.010 on, on CUDA. Per run previews skipped 0-3 and cancelled 0-3, and dropped no audio.
+- **Window**: 12 s kept. A 6 s window showed 53 of 230 words on continuous speech against 222 in the run beside it (`previews-continuous-cpu-window6.json`; the 222-word report was not kept). It ran in a noisier moment (slowest preview 2.9 s), so it is not a clean comparison, but nothing favours it.
+
+## What was chosen
+
+- **Interval 1 s, window 12 s**, the plan's starting values, and at least as long after a preview as
+  it took, so they never queue.
+- **One track per meeting: the far end in a call, the mic in the room.** A call's mic shows none: its
+  words are held and cleaned by the echo filter, and far-end words leak in until that runs
+  (`live_preview_mic_in_a_call_shows_no_far_end_word`). You know what you just said. A real decode
+  covers it within the same lag as before.
+- **Parakeet on the CPU and CUDA only.** The NPU stays off until GATE-03a and a measurement: its encoder
+  always takes a full 30 s input and its memory on 16 GB is unmeasured. Whisper on Vulkan or the CPU has
+  none: it would need its own second model, unmeasured here, and a preview must not touch the real
+  state. `backends::previews_refused` is the one rule.
+- **Machines:** at least 20 GiB of memory and, on CUDA, a card with at least 14 GiB (both judgements from
+  the numbers above; 12 GB and 16 GB machines stay off). Off on battery. Off for the rest of a meeting
+  when a track's queue passes 5 s, and during a hold and its catch-up. Three previews in a row slower
+  than 3 s pause them for 30 s. Each turn-off is in `PreviewReport.off`, and affects neither recording nor stored transcripts.
+
+## Re-measuring on a quiet host
+
+Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`
+after `-p earshot-runtime` and `--backend cuda` after `.`.
+
+```powershell
+cargo run --release -p earshot-runtime --example live_lag -- . --audio bundled --previews off --out target\live-lag\off-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --example live_lag -- . --audio bundled --previews on --out target\live-lag\on-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --example live_lag -- . --audio continuous --seconds 120 --previews off --out target\live-lag\off-continuous.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --example live_lag -- . --audio continuous --seconds 120 --previews on --out target\live-lag\on-continuous.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --example live_lag -- . --memory --out target\live-lag\memory.json
+```
+
+Each report holds counts and times only. `host.machine_load_percent` says what the run saw, and matching
+`stored_sha256` between an on and an off run says the same words were stored. On CUDA, read the card's
+peak with `nvidia-smi --query-gpu=memory.used --format=csv,noheader` during the run.

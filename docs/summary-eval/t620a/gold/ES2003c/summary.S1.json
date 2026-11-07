@@ -1,0 +1,86 @@
+{
+  "action_items": [
+    {
+      "due": null,
+      "id": "S-A1",
+      "owner": "Project Manager",
+      "task": "Look into cost implications of standard components, double curved design, and flexible rubber."
+    },
+    {
+      "due": null,
+      "id": "S-A2",
+      "owner": "Project Manager",
+      "task": "Prepare for the next meeting focusing on detailed design."
+    },
+    {
+      "due": null,
+      "id": "S-A3",
+      "owner": "Project Manager",
+      "task": "Write up a lot of material regarding product evaluation."
+    },
+    {
+      "due": null,
+      "id": "S-A4",
+      "owner": "Project Manager",
+      "task": "Look more at the physical makeup of the remote control."
+    },
+    {
+      "due": null,
+      "id": "S-A5",
+      "owner": "User Interface Designer",
+      "task": "Investigate if clay will be supplied for prototyping."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "S-D1",
+      "text": "Use conventional batteries instead of solar or kinetic power."
+    },
+    {
+      "id": "S-D2",
+      "text": "Use a rubber casing for ergonomic benefits."
+    },
+    {
+      "id": "S-D3",
+      "text": "Adopt a double-curved design articulated at two points to suit left and right-handed users."
+    },
+    {
+      "id": "S-D4",
+      "text": "The remote control will use a spongy, stress-ball type rubber material."
+    },
+    {
+      "id": "S-D5",
+      "text": "The remote control will have a double curved design with a firm sub-structure and flexible outer skin."
+    },
+    {
+      "id": "S-D6",
+      "text": "The remote control will include two points of articulation supported by a firm sub-structure."
+    },
+    {
+      "id": "S-D7",
+      "text": "The remote control will not include vibrator functionality."
+    },
+    {
+      "id": "S-D8",
+      "text": "The remote control will be yellow to match the logo."
+    },
+    {
+      "id": "S-D9",
+      "text": "The design will use a spongy rubber material."
+    },
+    {
+      "id": "S-D10",
+      "text": "The remote control will feature a bright yellow color option."
+    },
+    {
+      "id": "S-D11",
+      "text": "The 'RR' logo will be placed on the top function button."
+    }
+  ],
+  "failure": null,
+  "meeting": "ES2003c",
+  "model": "S1",
+  "notes": "## Design Material and Shape\n- The remote control will use a spongy, stress-ball type rubber material with a firm sub-structure and flexible outer skin.\n- The design features a double curved shape with two points of articulation to accommodate left and right-handed users.\n- The remote will not include vibrator functionality.\n## Color and Branding\n- The remote control will be bright yellow to match the logo and make it harder to lose.\n- The 'RR' logo will be placed on the top function button.\n## Power and Features\n- The team agreed to use conventional batteries instead of solar or kinetic power.\n- The remote requires on-board memory (flash memory) to store settings so they persist after battery changes.\n## Prototyping and Evaluation\n- The Industrial Designer and User Interface Designer will work closely on prototyping using clay.\n- Product evaluation will involve testing with users, potentially by putting products in the field or street testing.",
+  "tldr": "The team finalized the conceptual design for a stylish remote control, deciding on a spongy rubber material, a double-curved shape with articulation, and a bright yellow color. They settled on conventional batteries and agreed to drop vibrator functionality. The project will focus on prototyping with clay and evaluating the product with a target audience of younger singles.",
+  "valid": true
+}

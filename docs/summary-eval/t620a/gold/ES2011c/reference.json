@@ -1,0 +1,39 @@
+{
+  "action_items": [
+    {
+      "id": "A1.1",
+      "text": "The Project Manager instructed the User Interface Designer to construct the prototype."
+    },
+    {
+      "id": "A1.2",
+      "text": "The Project Manager instructed the Industrial Designer to construct the prototype."
+    },
+    {
+      "id": "A2.1",
+      "text": "The User Interface Designer will work on the interface."
+    },
+    {
+      "id": "A2.2",
+      "text": "The Industrial Designer will work on the look and feel of the device."
+    },
+    {
+      "id": "A3.1",
+      "text": "The Marketing Expert will prepare a prototype evaluation."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1.1",
+      "text": "The remote will feature a spongy material."
+    },
+    {
+      "id": "D2.1",
+      "text": "The fruits and vegetables trend will be incorporated into the design by including fruit colors along with the company colors."
+    },
+    {
+      "id": "D3.1",
+      "text": "The remote will feature a changeable outer casing."
+    }
+  ],
+  "meeting": "ES2011c"
+}

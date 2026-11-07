@@ -1,0 +1,172 @@
+{
+  "audio": "bundled",
+  "capture_max_lag_s": 0.048,
+  "catch_up_after_end_s": 1.2900452,
+  "decodes_mic": {
+    "audio_s": 100.63999999999999,
+    "calls": 11,
+    "rtf": 0.03712874205087441,
+    "took_s": {
+      "max": 0.8204622,
+      "median": 0.2138895,
+      "n": 11,
+      "p95": 0.8204622
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 108.528,
+    "calls": 11,
+    "rtf": 0.034088347707504046,
+    "took_s": {
+      "max": 0.7332135,
+      "median": 0.1932886,
+      "n": 11,
+      "p95": 0.7332135
+    }
+  },
+  "host": {
+    "logical_cores": 32,
+    "machine_load_percent": {
+      "max": 7.0,
+      "median": 2.0,
+      "n": 4,
+      "p95": 7.0
+    },
+    "peak_private_gib": 9.386455535888672,
+    "peak_working_set_gib": 9.407657623291016,
+    "process_cpu_s": 131.875
+  },
+  "length_s": 150.0,
+  "live_backends": [
+    {
+      "device": "cpu",
+      "kind": "Cpu",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "cpu",
+      "kind": "Cpu",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "mic": {
+    "first_word_lag_s": {
+      "max": 38.3746869,
+      "median": 6.963841199999997,
+      "n": 11,
+      "p95": 38.3746869
+    },
+    "last_word_lag_s": {
+      "max": 17.574686900000003,
+      "median": 2.2438411999999985,
+      "n": 11,
+      "p95": 17.574686900000003
+    },
+    "on_screen_lag_s": {
+      "max": 38.3746869,
+      "median": 16.171749000000005,
+      "n": 242,
+      "p95": 33.0946869
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "32786f4af80cb51266fa8e50aeb4ac9dee0785682301d90c34a73cb1e032080a",
+    "stretch_length_s": {
+      "max": 23.28,
+      "median": 4.88,
+      "n": 11,
+      "p95": 23.28
+    },
+    "stretches": 11,
+    "word_lag_s": {
+      "max": 38.3746869,
+      "median": 16.171749000000005,
+      "n": 242,
+      "p95": 33.0946869
+    },
+    "words": 242
+  },
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1993; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1993; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10"
+  ],
+  "previews": {
+    "audio_dropped": 0,
+    "audio_s": 574.2639999999998,
+    "cancelled": 0,
+    "decode_s": 21.795336600000006,
+    "decodes": 74,
+    "decodes_adding_nothing": 35,
+    "load_s": 5.8406231,
+    "off": null,
+    "rtf": 0.03795351371494646,
+    "skipped_busy": 2,
+    "slow_pauses": 0,
+    "slowest_s": 0.4927067,
+    "track": "Reference",
+    "words_shown": 201
+  },
+  "reference": {
+    "first_word_lag_s": {
+      "max": 42.6746524,
+      "median": 15.788644900000008,
+      "n": 8,
+      "p95": 42.6746524
+    },
+    "last_word_lag_s": {
+      "max": 26.1946524,
+      "median": 4.194742499999997,
+      "n": 8,
+      "p95": 26.1946524
+    },
+    "on_screen_lag_s": {
+      "max": 40.514652399999996,
+      "median": 2.9062614000000053,
+      "n": 212,
+      "p95": 10.9977244
+    },
+    "previews": {
+      "changed": 11,
+      "kept": 184,
+      "updates": 45,
+      "vanished": 1,
+      "word_lag_s": {
+        "max": 10.9977244,
+        "median": 2.9062614000000053,
+        "n": 196,
+        "p95": 9.237724400000001
+      }
+    },
+    "stored_sha256": "c183ad90db4f5f1ec148cb38f63b25c40642580d0da2c7ba04d28af2095b5c0c",
+    "stretch_length_s": {
+      "max": 20.16,
+      "median": 14.72,
+      "n": 8,
+      "p95": 20.16
+    },
+    "stretches": 8,
+    "word_lag_s": {
+      "max": 42.6746524,
+      "median": 14.8286449,
+      "n": 212,
+      "p95": 37.7946524
+    },
+    "words": 212
+  },
+  "requested_backend": "Cpu",
+  "speakers": true,
+  "stopped_with": "Finished",
+  "warnings": 0
+}

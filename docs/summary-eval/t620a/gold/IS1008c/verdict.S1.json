@@ -1,0 +1,83 @@
+{
+  "meeting": "IS1008c",
+  "model": "S1",
+  "decisions": [
+    {
+      "id": "D1.1",
+      "verdict": "covered",
+      "reason": "The tldr says the team finalized the design and the decisions list its features."
+    },
+    {
+      "id": "D2.1",
+      "verdict": "covered",
+      "reason": "S-D1 and the Design Concepts notes state a customisable wooden case."
+    },
+    {
+      "id": "D2.2",
+      "verdict": "covered",
+      "reason": "The Design Features notes give ergonomic molding and different sizes based on hand measurements."
+    },
+    {
+      "id": "D2.3",
+      "verdict": "missing",
+      "reason": "Settled: the notes list speech recognition only as a proposed feature, not as part of the remote."
+    },
+    {
+      "id": "D2.4",
+      "verdict": "missing",
+      "reason": "No part mentions a locator function."
+    },
+    {
+      "id": "D2.5",
+      "verdict": "covered",
+      "reason": "The tldr states a simple layout with rubber buttons and S-D4 repeats rubber."
+    },
+    {
+      "id": "D2.6",
+      "verdict": "covered",
+      "reason": "S-D2 states an advanced chip on print."
+    },
+    {
+      "id": "D2.7",
+      "verdict": "missing",
+      "reason": "Settled: the notes list a battery life light only as a proposed feature, not as part of the remote."
+    },
+    {
+      "id": "D3.1",
+      "verdict": "covered",
+      "reason": "The notes discuss a flip-up display and record display inclusion as undecided."
+    },
+    {
+      "id": "D3.2",
+      "verdict": "covered",
+      "reason": "S-D3 sticks with a simple design until display costs are known and S-A3 has the Marketing Expert find the cost."
+    },
+    {
+      "id": "D4.1",
+      "verdict": "covered",
+      "reason": "The Manufacturing and Cost notes give business tie-ups rather than a factory, balancing cost, and fair working wages."
+    }
+  ],
+  "action_items": [
+    {
+      "id": "A1.1",
+      "verdict": "covered",
+      "reason": "S-A2 names the Industrial Designer for the prototype design."
+    },
+    {
+      "id": "A1.2",
+      "verdict": "covered",
+      "reason": "S-A2 names the User Interface Designer for the prototype design."
+    },
+    {
+      "id": "A2.1",
+      "verdict": "covered",
+      "reason": "S-A3 has the Marketing Expert find the cost of adding a display."
+    },
+    {
+      "id": "A2.2",
+      "verdict": "covered",
+      "reason": "S-A3 has the Marketing Expert develop the marketing strategy before the next meeting."
+    }
+  ]
+}

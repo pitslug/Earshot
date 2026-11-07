@@ -1,0 +1,279 @@
+{
+  "agree": 78,
+  "confusion_gold_by_judge": {
+    "contradicted": {
+      "contradicted": 3,
+      "covered": 3,
+      "missing": 0
+    },
+    "covered": {
+      "contradicted": 5,
+      "covered": 62,
+      "missing": 10
+    },
+    "missing": {
+      "contradicted": 2,
+      "covered": 6,
+      "missing": 13
+    }
+  },
+  "disagreements": [
+    {
+      "gold": "missing",
+      "gold_reason": "S-D1 and the notes say conventional batteries but never lithium, so only the topic appears.",
+      "id": "D1.1",
+      "judge": "contradicted",
+      "judge_reason": "The summary states the team decided on 'conventional batteries' (S-D1, Notes), which contradicts the specific fact that the remote will use a 'lithium battery'.",
+      "label": "S1",
+      "meeting": "ES2003c"
+    },
+    {
+      "gold": "contradicted",
+      "gold_reason": "S-A3 gives the product evaluation material to the Project Manager, not the marketing expert.",
+      "id": "A2.1",
+      "judge": "covered",
+      "judge_reason": "S-A3 mentions writing up material regarding product evaluation, which covers the task of working on product evaluation.",
+      "label": "S1",
+      "meeting": "ES2003c"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "S-D1 says conventional batteries but never lithium, so only the topic appears.",
+      "id": "D1.1",
+      "judge": "covered",
+      "judge_reason": "S-D1 states 'Conventional batteries will be used', which covers the fact that the remote will use a lithium battery.",
+      "label": "S2",
+      "meeting": "ES2003c"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "S-A3 only has the User Interface Designer ask where to obtain clay, which is not working on the prototype.",
+      "id": "A1.2",
+      "judge": "covered",
+      "judge_reason": "The summary mentions the User Interface Designer has a task to inquire about clay for prototyping, which implies working on a prototype, covering the fact.",
+      "label": "S2",
+      "meeting": "ES2003c"
+    },
+    {
+      "gold": "contradicted",
+      "gold_reason": "S-A2 gives the product evaluation plan to the Project Manager, not the marketing expert.",
+      "id": "A2.1",
+      "judge": "covered",
+      "judge_reason": "S-A2 mentions writing a product evaluation plan, which covers the fact that the marketing expert will work on a product evaluation.",
+      "label": "S2",
+      "meeting": "ES2003c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-A3 gives the User Interface Designer the play-dough modelling and S-D3 says prototypes will be created.",
+      "id": "A1.1",
+      "judge": "missing",
+      "judge_reason": "The summary mentions the User Interface Designer has tasks, but none involve constructing a prototype; the fact's specific instruction is not covered.",
+      "label": "S1",
+      "meeting": "ES2011c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-A4 gives the Industrial Designer the play-dough modelling and S-D3 says prototypes will be created.",
+      "id": "A1.2",
+      "judge": "missing",
+      "judge_reason": "The summary mentions the Industrial Designer in S-A4 but assigns a UI task, not constructing a prototype. The fact's instruction to construct a prototype is not covered.",
+      "label": "S1",
+      "meeting": "ES2011c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The Shape notes have fruit and vegetable colours on the device and give the company colour as silver and yellow.",
+      "id": "D2.1",
+      "judge": "missing",
+      "judge_reason": "The summary mentions fruit/vegetable themes and colors in the notes, but does not explicitly state they will be incorporated into the design alongside company colors as a decision.",
+      "label": "S2",
+      "meeting": "ES2011c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-A2 gives the User Interface Designer the play-dough modelling and S-D2 says prototypes will be created.",
+      "id": "A1.1",
+      "judge": "missing",
+      "judge_reason": "The summary states the User Interface Designer will work on the design and user interface (S-A2), but does not explicitly mention constructing the prototype as instructed by the Project Manager.",
+      "label": "S2",
+      "meeting": "ES2011c"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "Settled: the notes list speech recognition only as a proposed feature, not as part of the remote.",
+      "id": "D2.3",
+      "judge": "covered",
+      "judge_reason": "The summary explicitly mentions 'speech recognition' as a proposed feature in the Design Features and Layout section.",
+      "label": "S1",
+      "meeting": "IS1008c"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "Settled: the notes list a battery life light only as a proposed feature, not as part of the remote.",
+      "id": "D2.7",
+      "judge": "covered",
+      "judge_reason": "The summary mentions a 'battery life light' in the notes under Design Features, which covers the fact.",
+      "label": "S1",
+      "meeting": "IS1008c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The Manufacturing and Cost notes give business tie-ups rather than a factory, balancing cost, and fair working wages.",
+      "id": "D4.1",
+      "judge": "missing",
+      "judge_reason": "The summary mentions considering manufacturing in India, China, or Malaysia and avoiding exploitation while paying fair wages, but does not mention contacting another company to manufacture the product.",
+      "label": "S1",
+      "meeting": "IS1008c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-A3 has the Marketing Expert develop the marketing strategy before the next meeting.",
+      "id": "A2.2",
+      "judge": "missing",
+      "judge_reason": "The summary states the Marketing Expert must develop the marketing strategy, but does not mention presenting it at the next meeting.",
+      "label": "S1",
+      "meeting": "IS1008c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The tldr and Manufacturing notes give a tie-up with another manufacturer rather than a factory, and S-A2 adds labor laws.",
+      "id": "D4.1",
+      "judge": "contradicted",
+      "judge_reason": "The summary states a tie-up with a fabric manufacturer, which contradicts the fact's decision to contact another company for manufacturing.",
+      "label": "S2",
+      "meeting": "IS1008c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-A4 names the User Interface Designer for the prototype model.",
+      "id": "A1.2",
+      "judge": "contradicted",
+      "judge_reason": "S-A4 assigns the prototype task to both User Interface Designer and Industrial Designer, while the Fact assigns it solely to the User Interface Designer.",
+      "label": "S2",
+      "meeting": "IS1008c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-A5 has the Marketing Expert come up with the marketing strategy.",
+      "id": "A2.2",
+      "judge": "missing",
+      "judge_reason": "The summary assigns the task of creating the marketing strategy to the Marketing Expert (S-A5), but does not mention presenting it at the next meeting.",
+      "label": "S2",
+      "meeting": "IS1008c"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "S-D2 puts the logo on the front and names the colour scheme but never ties the colour to the logo.",
+      "id": "D2.3",
+      "judge": "covered",
+      "judge_reason": "S-D2 states the color scheme is black and yellow with the Real Reaction logo on the front, which covers the fact that it will use one of the logo's colors.",
+      "label": "S1",
+      "meeting": "TS3004c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The Advanced Features notes say a docking station will be designed for the remote.",
+      "id": "D3.2",
+      "judge": "missing",
+      "judge_reason": "The summary mentions a 'rechargeable batteries' power source in S-D6 and Notes, but does not mention a 'recharging stand' or 'docking station' (only a docking station is mentioned in Notes).",
+      "label": "S1",
+      "meeting": "TS3004c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-D8 gives a 2D curved shape and S-D11 mostly square with rounded corners.",
+      "id": "D6.1",
+      "judge": "contradicted",
+      "judge_reason": "S-D1, S-D8, S-D11, and Notes confirm the shape is mostly square with rounded corners, but S-D8 explicitly states the case is '2D curved', contradicting the fact's 'double-curved' description.",
+      "label": "S1",
+      "meeting": "TS3004c"
+    },
+    {
+      "gold": "contradicted",
+      "gold_reason": "S-D7 says the remote will use a regular chip, though the notes say speech recognition requires an advanced one.",
+      "id": "D8.2",
+      "judge": "covered",
+      "judge_reason": "The summary explicitly states in the Notes section that speech recognition requires an advanced chip.",
+      "label": "S1",
+      "meeting": "TS3004c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-A5 has the designers work together on the smart board drawing for the next meeting and S-A7 has the User Interface Designer draw the design.",
+      "id": "A1.1",
+      "judge": "contradicted",
+      "judge_reason": "The summary assigns the prototype drawing task to the Industrial Designer (S-A5), whereas the fact states the User Interface Designer will do it.",
+      "label": "S1",
+      "meeting": "TS3004c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "The Interface Layout notes say yellow matches the Real Reaction colours.",
+      "id": "D2.3",
+      "judge": "missing",
+      "judge_reason": "The summary specifies a 'small yellow scroll wheel' and notes it matches 'Real Reaction' colors, but does not explicitly state the color comes from the Real Reaction logo.",
+      "label": "S2",
+      "meeting": "TS3004c"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "No part mentions a recharging stand or dock.",
+      "id": "D3.2",
+      "judge": "contradicted",
+      "judge_reason": "The summary states the remote uses rechargeable batteries, not a recharging stand.",
+      "label": "S2",
+      "meeting": "TS3004c"
+    },
+    {
+      "gold": "missing",
+      "gold_reason": "The notes say the case is hard plastic but nothing gives the button material.",
+      "id": "D4.1",
+      "judge": "covered",
+      "judge_reason": "The summary explicitly states in the Notes section that the case will be made of hard plastic, not rubber, which covers the fact.",
+      "label": "S2",
+      "meeting": "TS3004c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-D4 gives a 2D curved shape and S-D8 mostly square with rounded corners.",
+      "id": "D6.1",
+      "judge": "contradicted",
+      "judge_reason": "S-D8 covers the 'mostly square shape with rounded corners' part of the fact, but the 'double-curved' aspect is contradicted by S-D4 which specifies a '2D curved shape, not 3D'.",
+      "label": "S2",
+      "meeting": "TS3004c"
+    },
+    {
+      "gold": "covered",
+      "gold_reason": "S-A3 has the User Interface Designer work on the button layout design.",
+      "id": "A2.1",
+      "judge": "missing",
+      "judge_reason": "The summary mentions the User Interface Designer has action items to look at button layout and paint the design, but does not state they were instructed to finalize button placement.",
+      "label": "S2",
+      "meeting": "TS3004c"
+    }
+  ],
+  "items": 104,
+  "kappa": 0.43736995422388675,
+  "per_verdict": {
+    "contradicted": {
+      "gold": 6,
+      "judge": 10,
+      "precision": 0.3,
+      "recall": 0.5
+    },
+    "covered": {
+      "gold": 77,
+      "judge": 71,
+      "precision": 0.8732394366197183,
+      "recall": 0.8051948051948052
+    },
+    "missing": {
+      "gold": 21,
+      "judge": 23,
+      "precision": 0.5652173913043478,
+      "recall": 0.6190476190476191
+    }
+  },
+  "percent": 75.0
+}

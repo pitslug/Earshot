@@ -1,0 +1,16 @@
+{
+  "meeting": "ES2003b",
+  "model": "S1",
+  "decisions": [
+    {"id": "D1.1", "verdict": "covered", "reason": "S-D4 drops teletext from the remote."},
+    {"id": "D2.1", "verdict": "covered", "reason": "S-D3 and the notes say the remote controls the television only."},
+    {"id": "D3.1", "verdict": "covered", "reason": "S-D10 and the branding notes require the slogan and company initials in the design, so the corporate identity shows on it."},
+    {"id": "D4.1", "verdict": "missing", "reason": "No summary part mentions a power button."},
+    {"id": "D5.1", "verdict": "covered", "reason": "S-D5 includes a small joystick."},
+    {"id": "D6.1", "verdict": "covered", "reason": "S-D6 includes an LCD."},
+    {"id": "D7.1", "verdict": "covered", "reason": "S-D7 includes a menu button."},
+    {"id": "D8.1", "verdict": "contradicted", "reason": "S-D7 says the remote includes an okay button, where the fact replaces it with pushing down on the joystick."},
+    {"id": "D9.1", "verdict": "covered", "reason": "S-D8 and the notes include a speaker for locating the remote, which is the locating sound."}
+  ],
+  "action_items": []
+}

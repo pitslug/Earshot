@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earshot Settings Mockup</title>
+<style>
+/* Layout: the GATE-11 window frame (Windows 11 quiet native, Fluent v9 look), settings nav on the left, one page on the right; stacks at phone width. */
+:root{
+  --surface-0:#f3f3f3;--surface-1:#f7f7f7;--surface-2:#ffffff;
+  --border:#e0e0e0;--border-strong:#c8c8c8;
+  --text-primary:#1b1b1b;--text-secondary:#5f5f5f;--text-muted:#8a8a8a;
+  --text-accent:#0f6cbd;--bg-accent:#ebf3fc;--accent:#0f6cbd;--on-accent:#ffffff;
+  --text-warning:#835b00;--bg-warning:#fff9e6;--text-success:#107c10;--bg-success:#f1faf1;
+  --font-ui:'Segoe UI Variable Text','Segoe UI',system-ui,-apple-system,sans-serif;
+  --font-display:'Segoe UI Variable Display','Segoe UI',system-ui,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --surface-0:#1c1c1c;--surface-1:#242424;--surface-2:#2b2b2b;--border:#3a3a3a;--border-strong:#4a4a4a;
+  --text-primary:#f0f0f0;--text-secondary:#b8b8b8;--text-muted:#8a8a8a;--text-accent:#62abf5;--bg-accent:#0e2a47;
+  --accent:#479ef5;--on-accent:#0b1a2b;--text-warning:#f2c661;--bg-warning:#3d2f00;--text-success:#54b054;--bg-success:#0f2a10;color-scheme:dark}}
+:root[data-theme="dark"]{
+  --surface-0:#1c1c1c;--surface-1:#242424;--surface-2:#2b2b2b;--border:#3a3a3a;--border-strong:#4a4a4a;
+  --text-primary:#f0f0f0;--text-secondary:#b8b8b8;--text-muted:#8a8a8a;--text-accent:#62abf5;--bg-accent:#0e2a47;
+  --accent:#479ef5;--on-accent:#0b1a2b;--text-warning:#f2c661;--bg-warning:#3d2f00;--text-success:#54b054;--bg-success:#0f2a10;color-scheme:dark}
+body{margin:0;background:var(--surface-0);color:var(--text-primary);font:14px/1.45 var(--font-ui)}
+main{max-width:980px;margin:0 auto;padding-block:24px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:28px}
+h1{font:600 22px/1.25 var(--font-display);margin:0;text-wrap:balance}
+h2{font:600 17px/1.3 var(--font-display);margin:0;text-wrap:balance}
+h3{font:600 14px/1.3 var(--font-ui);margin:0}
+p{margin:0}
+.note{color:var(--text-secondary);font-size:12px;max-width:72ch}
+.muted{color:var(--text-secondary);font-size:12px}
+.eyebrow{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-muted)}
+.win{border:1px solid var(--border-strong);border-radius:8px;overflow:hidden;background:var(--surface-2)}
+.frame{display:flex;min-height:560px}
+.side{width:190px;flex:none;border-right:1px solid var(--border);background:var(--surface-1);padding:10px 8px;display:flex;flex-direction:column;gap:2px}
+.nav{padding:7px 10px;border-radius:4px;color:var(--text-primary);background:none;border:0;text-align:left;font:inherit;cursor:pointer;height:auto}
+.nav[aria-current="page"]{background:var(--bg-accent);color:var(--text-accent);font-weight:600}
+.page{flex:1;min-width:0;padding:18px 22px 24px;display:flex;flex-direction:column;gap:20px}
+.section{display:flex;flex-direction:column;gap:10px}
+.hw{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--border);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.hw>div{background:var(--surface-1);padding:10px 12px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.hw b{font-weight:600}
+.use{font-size:12px}.use.on{color:var(--text-success)}.use.off{color:var(--text-muted)}
+.rec{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:6px;background:var(--bg-accent);color:var(--text-primary)}
+.rec .tick{flex:none;width:22px;height:22px;border-radius:50%;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;font-weight:700;font-size:13px}
+.choices{display:grid;gap:8px}
+.choice{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:4px 12px;align-items:start;padding:12px 14px;border:1px solid var(--border-strong);border-radius:6px;background:var(--surface-2);cursor:pointer}
+.choice:has(input:checked){border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.choice input{margin:3px 0 0;accent-color:var(--accent);width:16px;height:16px}
+.choice .why{grid-column:2/3;color:var(--text-secondary);font-size:13px;max-width:62ch}
+.warn-note{margin:0;padding:8px 12px;border-radius:4px;background:var(--bg-warning);color:var(--text-warning);font-size:13px}
+.choice .warnline{grid-column:2/3;color:var(--text-warning);font-size:12px}
+.choice .act{grid-column:3;grid-row:1/4;display:flex;flex-direction:column;align-items:flex-end;gap:6px;text-align:right}
+.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:10px;background:var(--bg-accent);color:var(--text-accent);margin-left:6px;vertical-align:1px}
+.tag.ok{background:var(--bg-success);color:var(--text-success)}
+.tag.warn{background:var(--bg-warning);color:var(--text-warning)}
+.bar{height:4px;border-radius:2px;background:var(--surface-1);border:1px solid var(--border);overflow:hidden;width:140px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+button{font:inherit;height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
+button.link{border:0;background:none;color:var(--text-accent);padding:0;height:auto;font-size:12px}
+button:focus-visible,.nav:focus-visible,.choice:focus-within,.langs label:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.check{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 12px;border-radius:6px;background:var(--surface-1);border:1px solid var(--border)}
+.check .num{font-variant-numeric:tabular-nums;font-weight:600}
+.runs{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 16px;align-items:center}
+select{font:inherit;height:32px;padding:0 8px;border-radius:4px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);max-width:100%}
+.switch{display:flex;gap:12px;align-items:flex-start}
+.toggle{flex:none;width:40px;height:20px;border-radius:10px;border:1px solid var(--border-strong);background:var(--surface-2);position:relative;margin-top:2px}
+.toggle::after{content:"";position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:50%;background:var(--text-secondary)}
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:4px;overflow:hidden}
+.seg button{border:0;border-radius:0;height:28px}
+.seg button[aria-pressed="true"]{background:var(--bg-accent);color:var(--text-accent);font-weight:600}
+.wizard .steps{display:flex;gap:6px}
+.wizard .steps i{flex:1;height:4px;border-radius:2px;background:var(--border)}
+.wizard .steps i.done{background:var(--accent)}
+.langs{display:flex;flex-wrap:wrap;gap:8px}
+.langs label{display:inline-flex;gap:6px;align-items:center;padding:4px 10px;border:1px solid var(--border-strong);border-radius:4px;background:var(--surface-2);cursor:pointer}
+.langs input{accent-color:var(--accent)}
+ol.q,ul.q{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:10px;max-width:78ch}
+ol.q li::marker{color:var(--text-muted);font-variant-numeric:tabular-nums}
+.opts{color:var(--text-secondary);font-size:13px}
+@media (max-width:720px){
+  .frame{flex-direction:column}
+  .side{width:auto;flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--border)}
+  .hw{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .choice{grid-template-columns:20px minmax(0,1fr)}
+  .choice .act{grid-column:2;grid-row:auto;align-items:flex-start;text-align:left}
+  .runs{grid-template-columns:minmax(0,1fr)}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<main>
+  <header style="display:flex;flex-direction:column;gap:6px">
+    <h1>Earshot settings mockup (T7.4, round 3)</h1>
+    <p class="note">Layout and flow only. Controls, sizes and type come from Fluent UI React v9 in the app, as in the GATE-11 mockups. Hardware rows are examples of what the runtime detects (desktop memory is an example value). Model sizes are the real download sizes from the model manifest. Rounds 2 and 3 have your answers built in; what is still open is at the bottom. Pick models and "where it runs" options to see the hardware rows follow.</p>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span class="muted">Show this computer as</span>
+      <div class="seg" role="group" aria-label="Example computer">
+        <button type="button" id="dev-surface" aria-pressed="true">Surface Pro (NPU)</button>
+        <button type="button" id="dev-desktop" aria-pressed="false">Desktop (NVIDIA GPU)</button>
+      </div>
+    </div>
+  </header>
+
+  <section class="section">
+    <h2>Settings: Models</h2>
+    <div class="win"><div class="frame">
+      <nav class="side" aria-label="Settings sections">
+        <button class="nav" type="button">General</button>
+        <button class="nav" type="button">Audio</button>
+        <button class="nav" type="button">Summaries</button>
+        <button class="nav" type="button" aria-current="page">Models</button>
+        <button class="nav" type="button">Speakers</button>
+        <button class="nav" type="button">Obsidian</button>
+        <button class="nav" type="button">Storage</button>
+      </nav>
+      <div class="page">
+        <div class="section">
+          <h3>This is your hardware</h3>
+          <div class="hw" id="hw"></div>
+        </div>
+
+        <div class="rec" id="rec"></div>
+
+        <div class="section">
+          <h3>Transcription</h3>
+          <div class="choices" id="asr"></div>
+          <div class="check" id="check"></div>
+        </div>
+
+        <div class="section">
+          <h3>Summaries on this computer</h3>
+          <div class="choices" id="sum"></div>
+          <p class="muted">Your own endpoint or no summary: Settings, Summaries.</p>
+        </div>
+
+        <div class="section">
+          <h3>Where it runs</h3>
+          <div class="runs">
+            <label for="run-asr">Transcription</label><select id="run-asr"></select>
+            <label for="run-sum">Summaries</label><select id="run-sum"></select>
+          </div>
+          <p class="warn-note" id="run-note" hidden></p>
+          <p class="muted">Automatic uses the fastest part of this computer that passed the check. If you pick a slower one, Earshot says so during the meeting when it falls behind. A model that does not fit on the part you picked runs on the processor instead, and this page says so. "This is your hardware" above follows these choices.</p>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="section">
+    <h2>Settings: Summaries</h2>
+    <div class="win"><div class="page">
+      <div class="section">
+        <h3>Who writes the summary</h3>
+        <div class="choices">
+          <label class="choice"><input type="radio" name="who" id="who-local" checked><span><b>On this computer</b> <span class="muted" id="who-model"></span></span><span class="why">Nothing leaves this computer.</span></label>
+          <label class="choice"><input type="radio" name="who" id="who-endpoint"><span><b>Your own endpoint</b></span><span class="why">An OpenAI-compatible server or Claude. The transcript text is sent to the address you enter, and only there.</span></label>
+          <label class="choice"><input type="radio" name="who" id="who-none"><span><b>No summary</b></span><span class="why">Transcript and speakers only.</span></label>
+        </div>
+      </div>
+      <div class="switch">
+        <span class="toggle" role="img" aria-label="Off"></span>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <b>Summarise during the meeting</b>
+          <span class="muted">The summary is ready sooner after you hang up. It may miss some points. Uses this computer while you talk; only with a summary on this computer.</span>
+        </div>
+      </div>
+      <div class="section">
+        <h3>Summary style</h3>
+        <p class="muted">T7.4b: your own words for tone and length, for example "short, action items first". Fixed rules and layout stay outside it.</p>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="section wizard">
+    <h2>First run, step 2 of 4: Models</h2>
+    <div class="win"><div class="page">
+      <div class="steps" aria-hidden="true"><i class="done"></i><i class="done"></i><i></i><i></i></div>
+      <div class="section">
+        <h3>Which languages are spoken in your meetings?</h3>
+        <div class="langs" id="langs">
+          <label><input type="checkbox" id="lang-en" value="en" checked> English</label>
+          <label><input type="checkbox" id="lang-de" value="eu"> German</label>
+          <label><input type="checkbox" id="lang-fr" value="eu"> French</label>
+          <label><input type="checkbox" id="lang-es" value="eu"> Spanish</label>
+          <label><input type="checkbox" id="lang-it" value="eu"> Italian</label>
+          <label><input type="checkbox" id="lang-id" value="world"> Indonesian</label>
+          <label><input type="checkbox" id="lang-zh" value="world"> Mandarin</label>
+          <label><input type="checkbox" id="lang-ja" value="world"> Japanese</label>
+          <label><input type="checkbox" id="lang-other" value="world"> Other</label>
+        </div>
+        <p class="muted">The list in the app comes from the models' language lists. The recommendation below follows what you tick.</p>
+      </div>
+      <div class="rec" id="rec2"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="primary" type="button" id="dl-all"></button><button type="button">Choose something else</button><button type="button">Skip</button></div>
+    </div></div>
+  </section>
+
+  <section class="section">
+    <h2>Decided (built in above)</h2>
+    <ul class="q">
+      <li>Exact hardware names. Each row says what Earshot runs on that part right now, and follows the model and "where it runs" choices.</li>
+      <li>A model that is too slow here is marked and stays selectable. It is hidden only when it cannot fit in memory at all.</li>
+      <li>The check runs automatically after a download. When it says too slow, the user is told and may keep the model.</li>
+      <li>Four transcription choices. Onboarding asks which languages are spoken: any European language recommends Parakeet v3 (also when English is ticked), any other language Whisper large-v3-turbo.</li>
+      <li>Whisper large-v3-turbo says plainly that it is less accurate and slower than Parakeet. The page says nothing about its speed on a given computer; the benchmark (T7.4c) shows it.</li>
+      <li>No summary timings on the page: the wait depends on the meeting length and on summarising during the meeting. Timings belong to a later benchmark (T7.4c).</li>
+      <li>Forcing summaries onto the graphics card with a model too big for it runs that model on the processor, with a note.</li>
+      <li>No larger summary models: the 27B and 30B-A3B measured no better than the 9B.</li>
+      <li>Models not chosen can be removed, showing the space freed. Helper models are never listed. Settings keeps the left section list.</li>
+    </ul>
+  </section>
+
+</main>
+
+<script>
+const devices = {
+  surface: {
+    cpu: "Snapdragon X2 Elite, 12 cores", gpu: "Qualcomm Adreno", npu: "Qualcomm Hexagon", mem: "16 GB",
+    accel: "npu",
+    asr: [
+      {title: "Parakeet 0.6B v2", label: "Recommended", why: "Best accuracy for English meetings. Runs on the NPU and keeps up easily.", size: "2.5 GB", state: "installed", on: "npu"},
+      {title: "Parakeet 110M", label: "Lighter", why: "For an older or busy computer, or when space is tight. A little less accurate.", size: "477 MB", state: "download", on: "npu"},
+      {title: "Parakeet 0.6B v3", label: "Multilingual: European", why: "English and 24 other European languages. Runs on the processor here (no NPU version yet).", size: "2.6 GB", state: "progress", on: "cpu"},
+      {title: "Whisper large-v3-turbo", label: "Multilingual: every language", why: "About 100 languages, including Asian languages. Less accurate and slower than Parakeet: use it only for languages Parakeet v3 does not cover. Runs on the processor here (no NPU version).", size: "1.6 GB", state: "download", on: "cpu"}
+    ],
+    sum: [
+      {title: "Qwen 3.5 4B", label: "Recommended", why: "Runs on the processor.", size: "2.7 GB", state: "installed", gpuFits: false},
+      {title: "Qwen 3.5 9B", label: "More thorough", why: "Slower. More thorough summaries.", warn: "Too slow here: a much longer wait than the 4B on this processor. You can still choose it.", size: "5.7 GB", state: "download", gpuFits: false}
+    ],
+    runAsr: [["auto", "Automatic (NPU, then processor)"], ["npu", "NPU"], ["cpu", "Processor"]],
+    runSum: [["auto", "Automatic (processor)"], ["cpu", "Processor"]],
+    check: ["Checked 4 Nov 2026", "Parakeet 0.6B v2 on the NPU: <span class=num>0.06</span> of real time (about 18 s per 5 minutes of audio)"],
+    dl: "Download 5.2 GB"
+  },
+  desktop: {
+    cpu: "AMD Ryzen 9 9950X3D, 16 cores", gpu: "NVIDIA GeForce RTX 5080, 16 GB", npu: "None found", mem: "64 GB (example)",
+    accel: "gpu",
+    asr: [
+      {title: "Parakeet 0.6B v2", label: "Recommended", why: "Best accuracy for English meetings. Keeps up easily on the graphics card.", size: "2.5 GB", state: "installed", on: "gpu"},
+      {title: "Parakeet 110M", label: "Lighter", why: "For when the graphics card is busy with other work, or when space is tight. A little less accurate.", size: "477 MB", state: "download", on: "gpu"},
+      {title: "Parakeet 0.6B v3", label: "Multilingual: European", why: "English and 24 other European languages.", size: "2.6 GB", state: "progress", on: "gpu"},
+      {title: "Whisper large-v3-turbo", label: "Multilingual: every language", why: "About 100 languages, including Asian languages. Less accurate and slower than Parakeet: use it only for languages Parakeet v3 does not cover.", size: "1.6 GB", state: "download", on: "gpu"}
+    ],
+    sum: [
+      {title: "Qwen 3.5 9B", label: "Recommended", why: "Slower. More thorough summaries.", size: "5.7 GB", state: "installed", gpuFits: true},
+      {title: "Qwen 3.5 4B", label: "Faster", why: "A shorter wait, slightly less thorough.", size: "2.7 GB", state: "download", gpuFits: true}
+    ],
+    runAsr: [["auto", "Automatic (graphics card, then processor)"], ["gpu", "Graphics card"], ["cpu", "Processor"]],
+    runSum: [["auto", "Automatic (graphics card, then processor)"], ["gpu", "Graphics card"], ["cpu", "Processor"]],
+    check: ["Checked 2 Nov 2026 (example)", "Parakeet 0.6B v2 on the graphics card (CUDA): <span class=num>0.02</span> of real time (example)"],
+    dl: "Download 8.2 GB"
+  }
+};
+const PART = {cpu: "processor", gpu: "graphics card", npu: "NPU"};
+const $ = id => document.getElementById(id);
+let current = "surface";
+let pick = {asr: 0, sum: 0};
+
+function action(state, size, removable) {
+  let html;
+  if (state === "installed") html = '<span class="tag ok">Installed</span><span class="muted">' + size + '</span>';
+  else if (state === "download") html = '<button type="button">Download ' + size + '</button>';
+  else if (state === "progress") html = '<span class="muted">1.6 of ' + size + '</span><span class="bar"><i style="width:62%"></i></span><button type="button">Pause</button>';
+  else html = '<span class="muted">' + size + '</span>';
+  if (removable) html += '<button type="button" class="link">Remove (frees ' + size + ')</button>';
+  return html;
+}
+function choices(list, name) {
+  return list.map((c, i) => {
+    const cls = c.warn ? "tag warn" : "tag";
+    const removable = c.state === "installed" && i !== pick[name];
+    return '<label class="choice"><input type="radio" name="' + name + '" id="' + name + '-' + i + '" value="' + i + '"' + (i === pick[name] ? " checked" : "") + '>' +
+      '<span><b>' + c.title + '</b><span class="' + cls + '">' + c.label + '</span></span>' +
+      '<span class="why">' + c.why + '</span>' + (c.warn ? '<span class="warnline">' + c.warn + '</span>' : "") +
+      '<span class="act">' + action(c.state, c.size, removable) + '</span></label>';
+  }).join("");
+}
+function options(list) { return list.map(([v, t]) => '<option value="' + v + '">' + t + '</option>').join(""); }
+
+// Where each task runs, from the chosen model and the override.
+function placement() {
+  const d = devices[current];
+  const asr = d.asr[pick.asr], sum = d.sum[pick.sum];
+  const notes = [];
+  let asrOn = asr.on;
+  const ra = $("run-asr").value;
+  if (ra === "cpu") asrOn = "cpu";
+  else if (ra !== "auto" && ra !== asr.on) { asrOn = "cpu"; notes.push(asr.title + " has no " + PART[ra] + " version, so it runs on the processor."); }
+  let sumOn = d.accel === "gpu" && sum.gpuFits ? "gpu" : "cpu";
+  const rs = $("run-sum").value;
+  if (rs === "cpu") sumOn = "cpu";
+  else if (rs === "gpu" && !sum.gpuFits) { sumOn = "cpu"; notes.push(sum.title + " is too big for your graphics card, so summaries run on the processor and take longer."); }
+  return {asrOn, sumOn, notes, sum};
+}
+function hardware() {
+  const d = devices[current];
+  const p = placement();
+  const uses = {cpu: ["Speaker detection"], gpu: [], npu: []};
+  uses[p.asrOn].push("Transcription");
+  uses[p.sumOn].push("Summaries");
+  const line = k => uses[k].length ? uses[k].join(", ") : "Not used";
+  const mem = p.sumOn === "cpu" ? "Summaries run on the processor: " + p.sum.title + " fits" : "Only matters for summaries on the processor";
+  const rows = [
+    ["Processor", d.cpu, line("cpu"), true],
+    ["Graphics", d.gpu, line("gpu"), uses.gpu.length > 0],
+    ["NPU", d.npu, d.npu === "None found" ? "" : line("npu"), uses.npu.length > 0],
+    ["Memory", d.mem, mem, p.sumOn === "cpu"]
+  ];
+  $("hw").innerHTML = rows.map(([k, v, u, on]) => '<div><span class="eyebrow">' + k + '</span><b>' + v + '</b>' + (u ? '<span class="use ' + (on ? "on" : "off") + '">' + u + '</span>' : "") + '</div>').join("");
+  $("run-note").hidden = p.notes.length === 0;
+  $("run-note").textContent = p.notes.join(" ");
+  $("who-model").textContent = "(" + p.sum.title + ", " + PART[p.sumOn] + ")";
+}
+function recText(asrIdx) {
+  const d = devices[current];
+  const asr = d.asr[asrIdx], sum = d.sum[0];
+  const sumOn = d.accel === "gpu" && sum.gpuFits ? "gpu" : "cpu";
+  return "Transcription with <b>" + asr.title + " on the " + PART[asr.on] + "</b>, summaries with <b>" + sum.title + " on the " + PART[sumOn] + "</b>.";
+}
+function languageChoice() {
+  const ticked = [...document.querySelectorAll("#langs input:checked")].map(i => i.value);
+  if (ticked.includes("world")) return 3;
+  if (ticked.includes("eu")) return 2;
+  return 0;
+}
+function recBox(text) {
+  return '<span class="tick" aria-hidden="true">&#10003;</span><div style="display:flex;flex-direction:column;gap:2px"><b>On this computer we recommend</b><span>' + text + '</span></div>';
+}
+function render() {
+  const d = devices[current];
+  $("rec").innerHTML = recBox(recText(0));
+  $("rec2").innerHTML = recBox(recText(languageChoice()));
+  $("asr").innerHTML = choices(d.asr, "asr");
+  $("sum").innerHTML = choices(d.sum, "sum");
+  $("check").innerHTML = '<span class="tag ok">Keeps up</span><span>' + d.check[1] + '</span><span class="muted">' + d.check[0] + '</span><button type="button" style="margin-left:auto">Check again</button>';
+  $("dl-all").textContent = d.dl;
+  hardware();
+}
+function show(key) {
+  current = key;
+  pick = {asr: 0, sum: 0};
+  const d = devices[key];
+  $("run-asr").innerHTML = options(d.runAsr);
+  $("run-sum").innerHTML = options(d.runSum);
+  $("dev-surface").setAttribute("aria-pressed", key === "surface");
+  $("dev-desktop").setAttribute("aria-pressed", key === "desktop");
+  render();
+}
+$("dev-surface").addEventListener("click", () => show("surface"));
+$("dev-desktop").addEventListener("click", () => show("desktop"));
+$("asr").addEventListener("change", e => { pick.asr = Number(e.target.value); render(); });
+$("sum").addEventListener("change", e => { pick.sum = Number(e.target.value); render(); });
+$("run-asr").addEventListener("change", hardware);
+$("run-sum").addEventListener("change", hardware);
+$("langs").addEventListener("change", () => { $("rec2").innerHTML = recBox(recText(languageChoice())); });
+show("surface");
+</script>
+</body>
+</html>

@@ -1,0 +1,312 @@
+{
+  "attendees": [
+    "Ada Lovelace",
+    "Me"
+  ],
+  "expected_path": "Meetings/2026-10-17 14-05 Q4 planning - budget-forecast.md",
+  "meeting": {
+    "duration_ms": 2850000,
+    "id": "01920000-0000-7000-8000-000000000001",
+    "meta": {
+      "created_at": {
+        "logical": 0,
+        "node": "07070707-0707-0707-0707-070707070707",
+        "wall_ms": 1
+      },
+      "deleted": false,
+      "origin_device_id": "07070707-0707-0707-0707-070707070707",
+      "updated_at": {
+        "logical": 0,
+        "node": "07070707-0707-0707-0707-070707070707",
+        "wall_ms": 1
+      }
+    },
+    "started_unix_ms": 1792209900000,
+    "tags": [
+      "planning",
+      "Team Sync"
+    ],
+    "template": "general",
+    "title": "Q4 planning — budget/forecast",
+    "utc_offset_minutes": 600
+  },
+  "notes": [
+    {
+      "at": 75000,
+      "id": "01920000-0000-7000-8000-00000000001e",
+      "meeting_id": "01920000-0000-7000-8000-000000000001",
+      "meta": {
+        "created_at": {
+          "logical": 0,
+          "node": "07070707-0707-0707-0707-070707070707",
+          "wall_ms": 1
+        },
+        "deleted": false,
+        "origin_device_id": "07070707-0707-0707-0707-070707070707",
+        "updated_at": {
+          "logical": 0,
+          "node": "07070707-0707-0707-0707-070707070707",
+          "wall_ms": 1
+        }
+      },
+      "text": "budget over\ncheck travel — ask Ada"
+    },
+    {
+      "at": 2000000,
+      "id": "01920000-0000-7000-8000-00000000001f",
+      "meeting_id": "01920000-0000-7000-8000-000000000001",
+      "meta": {
+        "created_at": {
+          "logical": 0,
+          "node": "07070707-0707-0707-0707-070707070707",
+          "wall_ms": 1
+        },
+        "deleted": false,
+        "origin_device_id": "07070707-0707-0707-0707-070707070707",
+        "updated_at": {
+          "logical": 0,
+          "node": "07070707-0707-0707-0707-070707070707",
+          "wall_ms": 1
+        }
+      },
+      "text": "decide by Friday"
+    }
+  ],
+  "options": {
+    "folder": "Meetings",
+    "link_attendees": false,
+    "replace_em_dash": false,
+    "tags": [
+      "meeting"
+    ]
+  },
+  "segments": [
+    {
+      "confidence": 0.8999999761581421,
+      "end": 2450,
+      "id": "01920000-0000-7000-8000-000000000014",
+      "speaker_id": "01920000-0000-7000-8000-00000000000a",
+      "start": 1000,
+      "text": "Let's start with the budget.",
+      "track": "01920000-0000-7000-8000-000000000002",
+      "words": [
+        {
+          "end": 1250,
+          "probability": 0.8999999761581421,
+          "start": 1000,
+          "text": "Let's"
+        },
+        {
+          "end": 1550,
+          "probability": 0.8999999761581421,
+          "start": 1300,
+          "text": "start"
+        },
+        {
+          "end": 1850,
+          "probability": 0.8999999761581421,
+          "start": 1600,
+          "text": "with"
+        },
+        {
+          "end": 2150,
+          "probability": 0.8999999761581421,
+          "start": 1900,
+          "text": "the"
+        },
+        {
+          "end": 2450,
+          "probability": 0.8999999761581421,
+          "start": 2200,
+          "text": "budget."
+        }
+      ]
+    },
+    {
+      "confidence": 0.8999999761581421,
+      "end": 67050,
+      "id": "01920000-0000-7000-8000-000000000015",
+      "speaker_id": "01920000-0000-7000-8000-00000000000b",
+      "start": 65000,
+      "text": "We are over by ten percent—mostly travel.",
+      "track": "01920000-0000-7000-8000-000000000002",
+      "words": [
+        {
+          "end": 65250,
+          "probability": 0.8999999761581421,
+          "start": 65000,
+          "text": "We"
+        },
+        {
+          "end": 65550,
+          "probability": 0.8999999761581421,
+          "start": 65300,
+          "text": "are"
+        },
+        {
+          "end": 65850,
+          "probability": 0.8999999761581421,
+          "start": 65600,
+          "text": "over"
+        },
+        {
+          "end": 66150,
+          "probability": 0.8999999761581421,
+          "start": 65900,
+          "text": "by"
+        },
+        {
+          "end": 66450,
+          "probability": 0.8999999761581421,
+          "start": 66200,
+          "text": "ten"
+        },
+        {
+          "end": 66750,
+          "probability": 0.8999999761581421,
+          "start": 66500,
+          "text": "percent—mostly"
+        },
+        {
+          "end": 67050,
+          "probability": 0.8999999761581421,
+          "start": 66800,
+          "text": "travel."
+        }
+      ]
+    },
+    {
+      "confidence": 0.8999999761581421,
+      "end": 3726150,
+      "id": "01920000-0000-7000-8000-000000000016",
+      "speaker_id": "01920000-0000-7000-8000-00000000000a",
+      "start": 3725000,
+      "text": "Then we cut travel.",
+      "track": "01920000-0000-7000-8000-000000000002",
+      "words": [
+        {
+          "end": 3725250,
+          "probability": 0.8999999761581421,
+          "start": 3725000,
+          "text": "Then"
+        },
+        {
+          "end": 3725550,
+          "probability": 0.8999999761581421,
+          "start": 3725300,
+          "text": "we"
+        },
+        {
+          "end": 3725850,
+          "probability": 0.8999999761581421,
+          "start": 3725600,
+          "text": "cut"
+        },
+        {
+          "end": 3726150,
+          "probability": 0.8999999761581421,
+          "start": 3725900,
+          "text": "travel."
+        }
+      ]
+    }
+  ],
+  "speakers": [
+    {
+      "display_name": "Me",
+      "id": "01920000-0000-7000-8000-00000000000a",
+      "meeting_id": "01920000-0000-7000-8000-000000000001",
+      "meta": {
+        "created_at": {
+          "logical": 0,
+          "node": "07070707-0707-0707-0707-070707070707",
+          "wall_ms": 1
+        },
+        "deleted": false,
+        "origin_device_id": "07070707-0707-0707-0707-070707070707",
+        "updated_at": {
+          "logical": 0,
+          "node": "07070707-0707-0707-0707-070707070707",
+          "wall_ms": 1
+        }
+      },
+      "person_id": null,
+      "role": "me"
+    },
+    {
+      "display_name": "Ada Lovelace",
+      "id": "01920000-0000-7000-8000-00000000000b",
+      "meeting_id": "01920000-0000-7000-8000-000000000001",
+      "meta": {
+        "created_at": {
+          "logical": 0,
+          "node": "07070707-0707-0707-0707-070707070707",
+          "wall_ms": 1
+        },
+        "deleted": false,
+        "origin_device_id": "07070707-0707-0707-0707-070707070707",
+        "updated_at": {
+          "logical": 0,
+          "node": "07070707-0707-0707-0707-070707070707",
+          "wall_ms": 1
+        }
+      },
+      "person_id": "01920000-0000-7000-8000-000000000032",
+      "role": "remote"
+    }
+  ],
+  "summary": {
+    "action_items": [
+      {
+        "due": "Friday",
+        "owner": "Ada Lovelace",
+        "source_segment_ids": [
+          "01920000-0000-7000-8000-000000000015"
+        ],
+        "task": "Send revised travel numbers"
+      },
+      {
+        "due": null,
+        "owner": "Me",
+        "source_segment_ids": [
+          "01920000-0000-7000-8000-000000000016"
+        ],
+        "task": "Update the forecast"
+      }
+    ],
+    "decisions": [
+      {
+        "source_segment_ids": [
+          "01920000-0000-7000-8000-000000000016"
+        ],
+        "text": "Cut travel"
+      }
+    ],
+    "enhanced_notes": [
+      {
+        "bullets": [
+          {
+            "source_segment_ids": [
+              "01920000-0000-7000-8000-000000000015"
+            ],
+            "text": "Over by ten percent — mostly travel"
+          },
+          {
+            "source_segment_ids": [],
+            "text": "Check travel with Ada"
+          }
+        ],
+        "heading": "Budget"
+      }
+    ],
+    "open_questions": [
+      "Does the cut include conferences?"
+    ],
+    "title": "Q4 budget",
+    "tldr": "Budget is 10% over—travel is the cause. Travel gets cut.",
+    "topics": [
+      "budget"
+    ]
+  },
+  "transcript": "final"
+}

@@ -1,0 +1,53 @@
+error[E0277]: the trait bound `RawPcm: SyncSerialize` is not satisfied
+  --> tests/ui/never_sync_envelope.rs:14:27
+   |
+14 |     let _ = sync_envelope(&pcm);
+   |             ------------- ^^^^ unsatisfied trait bound
+   |             |
+   |             required by a bound introduced by this call
+   |
+help: the trait `SyncSerialize` is not implemented for `RawPcm`
+  --> tests/ui/never_sync_envelope.rs:4:1
+   |
+ 4 | struct RawPcm {
+   | ^^^^^^^^^^^^^
+   = help: the following other types implement trait `SyncSerialize`:
+             Meeting
+             Person
+             SegmentRow
+             Speaker
+             Summary
+             Track
+             Voiceprint
+             earshot_core::model::Note
+note: required by a bound in `sync_envelope`
+  --> src/identity/sync.rs
+   |
+   | pub fn sync_envelope<T: SyncSerialize>(record: &T) -> SyncEnvelope<'_, T> {
+   |                         ^^^^^^^^^^^^^ required by this bound in `sync_envelope`
+
+error[E0277]: the trait bound `RawPcm: SyncSerialize` is not satisfied
+  --> tests/ui/never_sync_envelope.rs:14:13
+   |
+14 |     let _ = sync_envelope(&pcm);
+   |             ^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `SyncSerialize` is not implemented for `RawPcm`
+  --> tests/ui/never_sync_envelope.rs:4:1
+   |
+ 4 | struct RawPcm {
+   | ^^^^^^^^^^^^^
+   = help: the following other types implement trait `SyncSerialize`:
+             Meeting
+             Person
+             SegmentRow
+             Speaker
+             Summary
+             Track
+             Voiceprint
+             earshot_core::model::Note
+note: required by a bound in `SyncEnvelope`
+  --> src/identity/sync.rs
+   |
+   | pub struct SyncEnvelope<'a, T: SyncSerialize> {
+   |                                ^^^^^^^^^^^^^ required by this bound in `SyncEnvelope`

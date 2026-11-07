@@ -1,0 +1,90 @@
+{
+  "description": "Unrecoverable: a refusal, then unknown citations, then an uncited decision. The client must give up after two repair rounds (Invalid, 3 attempts); excluded from sum.schema_replay.",
+  "input": "meeting.json",
+  "expect": {
+    "modes": [
+      "json_schema",
+      "json_schema",
+      "json_schema"
+    ],
+    "repairs": 2,
+    "outcome": "invalid"
+  },
+  "exchanges": [
+    {
+      "status": 200,
+      "body": {
+        "id": "chatcmpl-replay-gives_up-13",
+        "object": "chat.completion",
+        "created": 1792224013,
+        "model": "replay-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "I'm sorry, but I can't produce a structured summary for this meeting."
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1650,
+          "completion_tokens": 17,
+          "total_tokens": 1667
+        }
+      }
+    },
+    {
+      "status": 200,
+      "body": {
+        "id": "chatcmpl-replay-gives_up-14",
+        "object": "chat.completion",
+        "created": 1792224014,
+        "model": "replay-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"title\":\"Beta launch check-in\",\"tldr\":\"The team confirmed that the beta ships this Friday. Ben will write the release notes and check with Dana about beta support.\",\"enhanced_notes\":[{\"heading\":\"Beta launch date\",\"bullets\":[{\"text\":\"QA passed last night; engineering can ship on Friday\",\"source_segment_ids\":[2]},{\"text\":\"Beta launch confirmed for this Friday\",\"source_segment_ids\":[3]}]},{\"heading\":\"Support owner\",\"bullets\":[{\"text\":\"Nobody owns support for beta users yet\",\"source_segment_ids\":[5]},{\"text\":\"The support team may take it; Ben checks with Dana\",\"source_segment_ids\":[6,7]}]}],\"decisions\":[{\"text\":\"Ship the beta this Friday\",\"source_segment_ids\":[3]}],\"action_items\":[{\"owner\":\"Ben Okafor\",\"task\":\"Write the release notes and send them round\",\"due\":\"Thursday\",\"source_segment_ids\":[99]},{\"owner\":\"Ben Okafor\",\"task\":\"Ask Dana whether the support team can own beta support\",\"due\":\"Wednesday\",\"source_segment_ids\":[99]}],\"open_questions\":[\"Who will own support for beta users?\"],\"topics\":[\"beta launch\",\"release notes\",\"support\"]}"
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 2300,
+          "completion_tokens": 335,
+          "total_tokens": 2635
+        }
+      }
+    },
+    {
+      "status": 200,
+      "body": {
+        "id": "chatcmpl-replay-gives_up-15",
+        "object": "chat.completion",
+        "created": 1792224015,
+        "model": "replay-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"title\":\"Beta launch check-in\",\"tldr\":\"The team confirmed that the beta ships this Friday. Ben will write the release notes and check with Dana about beta support.\",\"enhanced_notes\":[{\"heading\":\"Beta launch date\",\"bullets\":[{\"text\":\"QA passed last night; engineering can ship on Friday\",\"source_segment_ids\":[2]},{\"text\":\"Beta launch confirmed for this Friday\",\"source_segment_ids\":[3]}]},{\"heading\":\"Support owner\",\"bullets\":[{\"text\":\"Nobody owns support for beta users yet\",\"source_segment_ids\":[5]},{\"text\":\"The support team may take it; Ben checks with Dana\",\"source_segment_ids\":[6,7]}]}],\"decisions\":[{\"text\":\"Ship the beta this Friday\",\"source_segment_ids\":[]}],\"action_items\":[{\"owner\":\"Ben Okafor\",\"task\":\"Write the release notes and send them round\",\"due\":\"Thursday\",\"source_segment_ids\":[4]},{\"owner\":\"Ben Okafor\",\"task\":\"Ask Dana whether the support team can own beta support\",\"due\":\"Wednesday\",\"source_segment_ids\":[6,7,8]}],\"open_questions\":[\"Who will own support for beta users?\"],\"topics\":[\"beta launch\",\"release notes\",\"support\"]}"
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 2350,
+          "completion_tokens": 345,
+          "total_tokens": 2695
+        }
+      }
+    }
+  ]
+}

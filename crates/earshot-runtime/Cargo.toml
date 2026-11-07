@@ -1,0 +1,115 @@
+[package]
+name = "earshot-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# CUDA for whisper.cpp, the ONNX Runtime CUDA provider and llama.cpp (local summaries)
+# (CUDA 13.x, cuDNN 9 and `cargo xtask fetch-models --set cuda` at run time). The default
+# build is CPU only.
+cuda = ["earshot-asr-whisper/cuda", "earshot-onnx/cuda", "earshot-llm-local/cuda"]
+# ONNX Runtime's CUDA provider and nothing else (T8.4ad, docs/cuda-install.md): what the shipped
+# x64 app uses. It adds no CUDA code and no import to the exe: Parakeet runs on CUDA only after
+# `cuda::use_for_transcription`, from the folder of NVIDIA's and ONNX Runtime's DLLs. whisper.cpp
+# and llama.cpp are not built for CUDA by it.
+onnx-cuda = ["earshot-onnx/cuda"]
+# whisper.cpp on Vulkan (needs the Vulkan SDK; T2.6): after CUDA in the backend order when a
+# Vulkan device exists (T6.10d). ONNX Runtime models have no Vulkan provider.
+vulkan = ["earshot-asr-whisper/vulkan"]
+# `vulkan` plus llama.cpp on Vulkan for local summaries (T8.4aa, D23): what the shipped x64 app
+# uses. Its own feature so an ARM64 `vulkan` build stays without it: summaries stay on the CPU
+# there. Needs Ninja and the Visual Studio x64 environment, which `cargo xtask build` sets.
+vulkan-summaries = ["vulkan", "earshot-llm-local/vulkan"]
+# The Snapdragon NPU through Qualcomm's QNN plugin for ONNX Runtime (T8.3; Parakeet only;
+# `cargo xtask fetch-models --set qnn` at run time). First in the order only on ARM64.
+qnn = ["earshot-onnx/qnn"]
+
+[dependencies]
+# The model check's embedded test clip is FLAC (same pin as earshot-store).
+claxon = "=0.4.3"
+earshot-core = { path = "../earshot-core" }
+# Production backends (T6.4d): whisper.cpp for ASR, ONNX Runtime (loaded at run time) for
+# Silero VAD, pyannote segmentation and CAM++ embeddings.
+earshot-asr-whisper = { path = "../earshot-asr-whisper" }
+earshot-onnx = { path = "../earshot-onnx" }
+# Hardware facts for the Models page (T7.4d): processor, display adapters, NPUs, memory.
+earshot-hardware = { path = "../earshot-hardware" }
+earshot-store = { path = "../earshot-store" }
+# Summaries: the OpenAI-compatible client. All HTTP goes through earshot-net (PLAN.md 3.9,
+# D14): allowlist of the configured endpoint only, audit log.
+earshot-llm = { path = "../earshot-llm" }
+earshot-net = { path = "../earshot-net" }
+# Local summaries (T6.21a): llama.cpp in process, no network. Its DLLs (llama.dll, ggml*.dll)
+# are found on PATH under `cargo test`/`cargo run` (earshot-llm-local's build script); a
+# shipped exe carries them next to it (T6.21b).
+earshot-llm-local = { path = "../earshot-llm-local" }
+# GPU summaries in a child process (T9.3): the workspace's one kill-on-close job object.
+earshot-proc = { path = "../earshot-proc" }
+# A current-thread runtime per summary service drives the async LLM client (time driver
+# required). Same features as earshot-llm-replay already brings into the workspace.
+tokio = { version = "1.53.3", default-features = false, features = ["rt", "time"] }
+# Ids and device ids take the caller's RNG (same versions as earshot-core). The runtime's
+# generator is ChaCha20 seeded from std's per-process random hash keys (no getrandom).
+rand_core = { version = "0.10.1", default-features = false }
+rand_chacha = { version = "0.10.0", default-features = false }
+# Fingerprints of exported notes ("export changed"). Same version and features as xtask.
+sha2 = "0.11"
+# Backend and echo-cleaning provenance in the device-local state (same versions as
+# earshot-core).
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# In-app model downloads (T7.4a) read the embedded models/manifest.toml `hosts` and
+# `redirect_hosts`; the `model_eval` and `m2_prod` examples read fixtures/librispeech/subset.toml
+# and acceptance/aec_scenarios.toml (same version and features as xtask, so no feature
+# widening).
+toml = "1"
+# Archive-backed downloads the app extracts (T9.1f: ONNX Runtime is a zip, segmentation a
+# tar.bz2). Same versions and features as xtask, so no feature widening; none speaks HTTP.
+bzip2 = "0.6"
+flate2 = "1"
+tar = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+# Live capture (WASAPI mic + loopback).
+earshot-capture-wasapi = { path = "../earshot-capture-wasapi" }
+
+[lints]
+workspace = true
+
+# M3 acceptance evaluation, run by `cargo xtask accept m3`; its unit tests (RTTM parsing,
+# scene construction, scoring) run with the crate's tests.
+[[example]]
+name = "diar_eval"
+test = true
+
+[dev-dependencies]
+# Loopback mock LLM endpoint (test support only; the ci `net` step fails if a shipped
+# crate depends on it normally).
+earshot-llm-replay = { path = "../earshot-llm-replay" }
+# Peak memory in the `bench` example (T8.1).
+earshot-proc = { path = "../earshot-proc" }
+
+# M2 on the production setup (`asr.stream_determinism`, `asr.wer_aec_delta`), built and run by
+# `cargo xtask accept m2`; its unit tests run with the crate's tests.
+[[example]]
+name = "m2_prod"
+test = true
+
+# The word-boundary report (T6.9a); its unit tests pin the rule and the scoring.
+[[example]]
+name = "word_changes"
+test = true
+
+# `cargo xtask bench` (T8.1): RTF, live latency and peak memory; its unit tests run with the
+# crate's tests.
+[[example]]
+name = "bench"
+test = true
+
+# How long words take from speech to the screen (T9.1m), a real-time replay of public audio; its
+# unit tests run with the crate's tests.
+[[example]]
+name = "live_lag"
+test = true

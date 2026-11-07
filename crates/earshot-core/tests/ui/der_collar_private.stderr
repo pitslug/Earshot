@@ -1,0 +1,9 @@
+error[E0451]: fields `collar` and `uem` of struct `DerConfig` are private
+ --> tests/ui/der_collar_private.rs:6:9
+  |
+5 |     let _ = DerConfig {
+  |             --------- in this type
+6 |         collar: AMI_COLLAR_PER_SIDE_S,
+  |         ^^^^^^ private field
+7 |         uem: None,
+  |         ^^^ private field

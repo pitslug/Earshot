@@ -1,0 +1,123 @@
+{
+  "description": "Anthropic Messages API: the server rejects output_config with 400 invalid_request_error; the forced summary tool is accepted and its tool_use input is the summary.",
+  "provider": "anthropic",
+  "input": "meeting.json",
+  "expect": {
+    "modes": [
+      "json_schema",
+      "tool"
+    ],
+    "repairs": 0
+  },
+  "exchanges": [
+    {
+      "status": 400,
+      "body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "output_config.format: structured outputs are not supported for this model"
+        }
+      }
+    },
+    {
+      "status": 200,
+      "body": {
+        "id": "msg_replay_0104",
+        "type": "message",
+        "role": "assistant",
+        "model": "replay-model",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_replay_01",
+            "name": "earshot_summary_v1",
+            "input": {
+              "title": "Beta launch check-in",
+              "tldr": "The team confirmed that the beta ships this Friday. Ben will write the release notes and check with Dana about beta support.",
+              "enhanced_notes": [
+                {
+                  "heading": "Beta launch date",
+                  "bullets": [
+                    {
+                      "text": "QA passed last night; engineering can ship on Friday",
+                      "source_segment_ids": [
+                        2
+                      ]
+                    },
+                    {
+                      "text": "Beta launch confirmed for this Friday",
+                      "source_segment_ids": [
+                        3
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "heading": "Support owner",
+                  "bullets": [
+                    {
+                      "text": "Nobody owns support for beta users yet",
+                      "source_segment_ids": [
+                        5
+                      ]
+                    },
+                    {
+                      "text": "The support team may take it; Ben checks with Dana",
+                      "source_segment_ids": [
+                        6,
+                        7
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "decisions": [
+                {
+                  "text": "Ship the beta this Friday",
+                  "source_segment_ids": [
+                    3
+                  ]
+                }
+              ],
+              "action_items": [
+                {
+                  "owner": "Ben Okafor",
+                  "task": "Write the release notes and send them round",
+                  "due": "Thursday",
+                  "source_segment_ids": [
+                    4
+                  ]
+                },
+                {
+                  "owner": "Ben Okafor",
+                  "task": "Ask Dana whether the support team can own beta support",
+                  "due": "Wednesday",
+                  "source_segment_ids": [
+                    6,
+                    7,
+                    8
+                  ]
+                }
+              ],
+              "open_questions": [
+                "Who will own support for beta users?"
+              ],
+              "topics": [
+                "beta launch",
+                "release notes",
+                "support"
+              ]
+            }
+          }
+        ],
+        "stop_reason": "tool_use",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 1700,
+          "output_tokens": 380
+        }
+      }
+    }
+  ]
+}
