@@ -684,6 +684,85 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
 }
 
 #[test]
+fn edit_remove_person_unnames_their_speakers_and_refuses_the_user() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 345);
+    let s = remote_speakers(&svc, m)[0].id;
+    let dana = link_speaker(
+        &svc,
+        m,
+        s,
+        &PersonChoice::New {
+            name: "Dana".into(),
+        },
+    )
+    .unwrap();
+    remember_voices_with(&svc, m, &[s], &calibrated(true)).unwrap();
+    assert_eq!(print_count(&svc, dana), Some(1));
+
+    let report = remove_person(&svc, dana).unwrap();
+    assert_eq!(
+        (report.persons_removed, report.voiceprints_forgotten),
+        (1, 1)
+    );
+    assert_eq!(report.speakers_unnamed, 1);
+    assert!(!list_persons(&svc).unwrap().iter().any(|p| p.id == dana));
+    let row = remote_speakers(&svc, m)
+        .into_iter()
+        .find(|r| r.id == s)
+        .unwrap();
+    assert_eq!(row.person_id, None);
+    assert!(
+        row.display_name.starts_with("Speaker "),
+        "{}",
+        row.display_name
+    );
+    // Their name is free to use again, for a new person.
+    assert_eq!(
+        refused(remove_person(&svc, dana)),
+        EditError::PersonNotFound(dana)
+    );
+    let again = link_speaker(
+        &svc,
+        m,
+        s,
+        &PersonChoice::New {
+            name: "Dana".into(),
+        },
+    )
+    .unwrap();
+    assert_ne!(again, dana);
+
+    let me = new_person(&svc, "Me", true, 346);
+    assert_eq!(
+        refused(remove_person(&svc, me)),
+        EditError::PersonIsTheUser(me)
+    );
+    assert!(list_persons(&svc).unwrap().iter().any(|p| p.id == me));
+}
+
+#[test]
+fn edit_remove_person_refuses_someone_the_user_was_merged_into() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let me = new_person(&svc, "Me", true, 347);
+    let other = new_person(&svc, "Other", false, 348);
+    {
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        merge_persons(store, me, other, hlc, &*clock).unwrap();
+    }
+    assert_eq!(
+        refused(remove_person(&svc, other)),
+        EditError::PersonIsTheUser(other)
+    );
+    assert!(!svc.store().person(me).unwrap().unwrap().meta.deleted);
+    assert!(svc.store().person(other).unwrap().unwrap().is_live());
+}
+
+#[test]
 fn edit_remember_mark_is_cleared_by_a_new_person_and_by_a_new_final_pass() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);

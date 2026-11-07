@@ -1399,20 +1399,24 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T9.1k
   - do: The owner. `README.md` (install, usage, backends, credits) and `PRIVACY.md` (PLAN 3.9 as the code does it) ahead of T9.1 and T9.1b, whose update and ARM64 parts T9.2 still adds. Each claim checked against the code by a separate agent.
   - accept: `cargo xtask public-guard`; the fact-check's findings resolved
-- [ ] T9.1s One short app identifier
+- [~] T9.1s One short app identifier
   - deps: T9.1p
   - do: the owner: `io.github.pitslug.earshot` is odd to see in a user's folder. The identifier becomes `earshot`, so the browser engine's files sit in `%LOCALAPPDATA%\Earshot\EBWebView` with everything else. The uninstaller's "Delete the application data" box then deletes the whole folder, meetings and models included, where it used to delete only the browser files; a silent or unticked uninstall still keeps them. Android needs a dotted id and will set its own at T10.
   - accept: `cargo xtask build --bundle`; `cargo xtask bundle-check`
-- [ ] T9.1t Opt out of Windows Error Reporting
+- [~] T9.1t Opt out of Windows Error Reporting
   - deps: T9.1e
-  - do: the owner: a crash report can hold part of a process's memory, so transcript text, and depending on Windows settings go to Microsoft. The app excludes its own exe, for the current user, at start (`WerAddExcludedApplication`), before any model or child process runs. The child modes run the same exe, so they are covered by name. All `unsafe` in `wer_win.rs`. A failure never stops the app. The real effect is checked from the owner's own shell: an agent shell's registry is MSIX-virtualised.
-  - accept: `cargo test -p earshot-desktop wer`; owner's check that a forced crash leaves no new report
-- [ ] T9.1u Remove a person from Speakers
+  - do: the owner: a crash report can hold part of a process's memory, so transcript text, and depending on Windows settings go to Microsoft. The app excludes its own exe, for the current user, at start (`WerAddExcludedApplication`), before any model or child process runs. The child modes run the same exe, so they are covered by name. All `unsafe` in `wer_win.rs`. A failure never stops the app. The real effect is checked from the owner's own shell: an agent shell's registry is MSIX-virtualised. The owner's first run (2026-11-07): the report and event 1001 stop, but `LocalDumps` (apparently switched on by the NVIDIA App's HKLM entries) still writes a local dump, so the app deletes `<exe>.<number>.dmp` from `%LOCALAPPDATA%\CrashDumps` at each start, and PRIVACY.md says so (the owner).
+  - accept: `cargo test -p earshot-desktop wer`; `cargo test -p earshot-desktop crash`; owner's check that a forced crash queues no report
+- [~] T9.1v The app's exe is earshot.exe
+  - deps: T9.1p
+  - do: the owner: people see the exe's name, so the app's binary is `earshot` and the developer tool, which ships to nobody, becomes `earshot-cli`. The package stays `earshot-desktop`, so `cargo test -p` and the guards are unchanged. No `-x64` in the name: the installer's file name carries the architecture.
+  - accept: `cargo test -p xtask bundle`; `cargo test -p earshot-cli`; `cargo xtask build --bundle`; `cargo xtask bundle-check`
+- [x] T9.1u Remove a person from Speakers
   - deps: T7.4h
   - do: the owner: people's names and voiceprints stay when a meeting is deleted, and only removing them on the Speakers page deletes them. Meeting deletion stops forgetting voiceprints (replaces T6.26's rule; a meeting's own centroid record still goes with it). Remove erases the identity: the person rows (name cleared, tombstoned), voiceprints and speaker centroids in one transaction, then a checkpoint; every speaker row linked to them in a kept meeting goes back to "Speaker N", unlinked. The user is refused. Text already written (summaries, notes, exported files) is not rewritten, and the dialog says so.
   - accept: `cargo test -p earshot-store delete`; `cargo test -p earshot-runtime edit`; `cmd /c pnpm --filter @earshot/ui test`
 - [ ] T9.1r x64 early release
-  - deps: T9.1c, T9.1d, T9.2a, T9.1s, T9.1t, T9.1u
+  - deps: T9.1c, T9.1d, T9.2a, T9.1s, T9.1t, T9.1u, T9.1v
   - do: The owner: x64 first, as a 0.x normal GitHub release (a pre-release would leave the CUDA set marked Latest), ahead of T8.4, GATE-03, T9.1b and GATE-04, which stay v1's. No in-app update, so the notes say each version is installed by hand. Only once these are concluded with the owner: the NSIS CPL-1.0 OK and the Visual C++ runtime; NVIDIA's written answer or a decision on it; a start on an x64 PC with no NVIDIA card; GATE-01a and GATE-02.
   - accept: `cargo xtask build --bundle`; `cargo xtask bundle-check`; the owner's approval of the release recorded
 - [ ] T9.1 Installers and first run

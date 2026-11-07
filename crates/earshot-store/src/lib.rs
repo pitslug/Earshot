@@ -30,7 +30,7 @@ pub use audio::{
     remove_audio, retention_clock, retention_clock_key, run_retention, sweep_orphan_audio,
 };
 pub use db::{SCHEMA_VERSION, Store, StoreError, StoreTx};
-pub use delete::MeetingDeletion;
+pub use delete::{MeetingDeletion, PersonRemoval};
 pub use export::{
     ExportAction, ExportDb, ExportItem, ExportReport, VaultError, export_note, export_notes,
     validate_vault,

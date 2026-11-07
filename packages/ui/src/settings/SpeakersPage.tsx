@@ -307,11 +307,15 @@ export function VoiceSection({ state, voice }: { state: SpeakersPageState; voice
 
 /** What the people section says it is. */
 export const PEOPLE_EXPLAINED =
-  "Everyone you have named in a meeting. A rename changes their name in every meeting. Summaries already written keep their wording until you summarise them again.";
+  "Everyone you have named in a meeting. They stay here, with any saved voice, after their meetings are deleted, until you remove them. A rename changes their name in every meeting. Summaries already written keep their wording until you summarise them again.";
 
 /** What the page says before it forgets someone's voice. */
 export const FORGET_PERSON_EXPLAINED =
   "Earshot deletes this person's voiceprint from this computer and stops recognising them from their voice. Their name stays in your meetings.";
+
+/** What the page says before it removes someone. */
+export const REMOVE_PERSON_EXPLAINED =
+  "Earshot deletes this name and any saved voice from this computer. In your meetings their lines go back to \"Speaker 1\" and so on, ready to be named again. Summaries, notes and exported files that already mention them do not change.";
 
 /** Everyone Earshot knows from meetings, other than you (the section above is yours). */
 function PeopleSection() {
@@ -321,6 +325,7 @@ function PeopleSection() {
   const [problem, setProblem] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [forgetting, setForgetting] = useState<PersonItem | null>(null);
+  const [removing, setRemoving] = useState<PersonItem | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -415,6 +420,9 @@ function PeopleSection() {
                     Forget voice
                   </Button>
                 )}
+                <Button aria-label={`Remove ${p.name}`} disabled={busy} onClick={() => setRemoving(p)}>
+                  Remove
+                </Button>
               </div>
             </div>
           ),
@@ -438,6 +446,29 @@ function PeopleSection() {
                 Forget voice
               </Button>
               <Button onClick={() => setForgetting(null)}>Cancel</Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+      <Dialog modalType="alert" open={removing !== null} onOpenChange={(_, d) => !d.open && setRemoving(null)}>
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Remove {removing?.name}?</DialogTitle>
+            <DialogContent>{REMOVE_PERSON_EXPLAINED}</DialogContent>
+            <DialogActions>
+              <Button
+                appearance="primary"
+                onClick={() => {
+                  const person = removing;
+                  setRemoving(null);
+                  if (person !== null) {
+                    void run(() => ipc.removePerson(person.id), "This person was not removed.");
+                  }
+                }}
+              >
+                Remove
+              </Button>
+              <Button onClick={() => setRemoving(null)}>Cancel</Button>
             </DialogActions>
           </DialogBody>
         </DialogSurface>

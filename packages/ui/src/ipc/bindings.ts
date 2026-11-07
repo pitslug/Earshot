@@ -55,6 +55,8 @@ export const commands = {
 	rememberVoices: (meeting: string, speakers: string[]) => typedError<RememberResult[], IpcError>(__TAURI_INVOKE("remember_voices", { meeting, speakers })),
 	/**  Forgets every voiceprint of a person; returns how many were forgotten. */
 	forgetPersonVoices: (person: string) => typedError<number, IpcError>(__TAURI_INVOKE("forget_person_voices", { person })),
+	/**  Removes a person: their name and voice, from this computer (the Speakers page). */
+	removePerson: (person: string) => typedError<null, IpcError>(__TAURI_INVOKE("remove_person", { person })),
 	/**  A speaker's play-sample audio (a base64 WAV file); `None` when the audio is gone. */
 	speakerSample: (meeting: string, speaker: string) => typedError<string | null, IpcError>(__TAURI_INVOKE("speaker_sample", { meeting, speaker })),
 	/**  Starts a re-transcription of `meeting` (`JobEvent`s follow). */

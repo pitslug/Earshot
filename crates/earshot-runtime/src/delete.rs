@@ -14,11 +14,10 @@
 //! - then a truncating checkpoint, so with `secure_delete` none of it survives in free pages
 //!   or the WAL.
 //!
-//! Persons are shared across meetings and are kept. A voiceprint has no per-meeting
-//! provenance (it is a running sum), so it is kept unless no live speaker of any other live
-//! meeting refers to its person any more (then it was learnt only from deleted meetings and
-//! is forgotten); the user's own voiceprint is always kept (it is deleted explicitly with
-//! `Store::forget_voiceprints`). See [`earshot_core::model::forget_unreferenced_voiceprints`].
+//! People and their voiceprints are shared across meetings and stay (the owner, T9.1u): only
+//! [`crate::edit::remove_person`], from the Speakers page, deletes a name and a voice, and
+//! [`crate::edit::forget_person_voices`] a voice alone. The meeting's own record of speaker
+//! centroids goes with it.
 //!
 //! # Concurrency
 //!

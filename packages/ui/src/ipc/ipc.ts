@@ -213,6 +213,7 @@ export interface IpcCommands
   rememberVoices(meeting: string, speakers: string[]): Promise<RememberResult[]>;
   /** Forgets every voiceprint of a person. */
   forgetPersonVoices(person: string): Promise<number>;
+  removePerson(person: string): Promise<void>;
   /** A speaker's sample as a base64 WAV file; `null` when the audio is no longer kept. */
   speakerSample(meeting: string, speaker: string): Promise<string | null>;
   /** Starts a re-transcription; `JobEvent`s follow. Rejects with `busy` / `meeting_busy`. */

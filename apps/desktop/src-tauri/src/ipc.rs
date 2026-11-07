@@ -49,6 +49,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             list_persons,
             remember_voices,
             forget_person_voices,
+            remove_person,
             speaker_sample,
             retranscribe,
             resummarise,
@@ -520,6 +521,19 @@ async fn remember_voices(
     let meeting = parse_id(&meeting)?;
     let speakers = parse_ids(&speakers)?;
     blocking(move || detail::remember(&services, meeting, &speakers)).await
+}
+
+/// Removes a person: their name and voice, from this computer (the Speakers page).
+#[tauri::command]
+#[specta::specta]
+async fn remove_person(state: State<'_, AppState>, person: String) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let person = parse_id(&person)?;
+    blocking(move || {
+        earshot_runtime::edit::remove_person(&services, person)?;
+        Ok(())
+    })
+    .await
 }
 
 /// Forgets every voiceprint of a person; returns how many were forgotten.

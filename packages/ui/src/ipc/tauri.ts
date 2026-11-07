@@ -48,6 +48,9 @@ export function createTauriIpc(): Ipc {
     rememberVoices: async (meeting, speakers) =>
       unwrap(await commands.rememberVoices(meeting, speakers)),
     forgetPersonVoices: async (person) => unwrap(await commands.forgetPersonVoices(person)),
+    removePerson: async (person) => {
+      unwrap(await commands.removePerson(person));
+    },
     speakerSample: async (meeting, speaker) =>
       unwrap(await commands.speakerSample(meeting, speaker)),
     retranscribe: async (meeting) => {

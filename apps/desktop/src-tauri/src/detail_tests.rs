@@ -487,6 +487,7 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::MeVoice(id), "me_voice"),
         (EditError::NotTheUser(id), "not_the_user"),
         (EditError::MeIsTheUser(id), "me_is_the_user"),
+        (EditError::PersonIsTheUser(id), "person_is_the_user"),
         (EditError::NoPreviousSummary, "no_previous_summary"),
         (EditError::PreviousSummaryStale, "previous_summary_stale"),
     ];

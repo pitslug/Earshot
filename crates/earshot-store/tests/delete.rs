@@ -17,7 +17,7 @@ use earshot_core::model::{
 };
 use earshot_core::prompt::Template;
 use earshot_core::voiceprint::{EnrolmentConfig, Person, VoiceprintRepo, enroll};
-use earshot_store::{AudioProvenance, DataDir, MeetingDeletion, Store, StoreError};
+use earshot_store::{AudioProvenance, DataDir, MeetingDeletion, PersonRemoval, Store, StoreError};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
@@ -229,7 +229,6 @@ fn store_delete_meeting_leaves_no_row_file_or_local_value_of_it() {
             stray_audio_removed: 1,
             export_records_removed: 1,
             local_values_erased: 2,
-            voiceprints_forgotten: 1,
         }
     );
     assert!(
@@ -264,22 +263,17 @@ fn store_delete_meeting_leaves_no_row_file_or_local_value_of_it() {
         Some(&b"kept"[..])
     );
     assert!(store.local_value("model-check").unwrap().is_some());
-    // Persons stay; Ada's voiceprint (only this meeting) goes; Bob's (also the kept meeting)
-    // and the user's stay.
+    // People and their voiceprints stay, even Ada's, who was only in this meeting (T9.1u).
     for p in [&ada, &bob, &me] {
         assert!(store.person(p.id).unwrap().unwrap().is_live(), "{p:?}");
+        assert!(
+            !store.voiceprints_of(p.id).unwrap()[0].meta.deleted,
+            "{p:?}"
+        );
     }
-    assert!(store.voiceprints_of(ada.id).unwrap()[0].meta.deleted);
-    assert!(!store.voiceprints_of(bob.id).unwrap()[0].meta.deleted);
-    assert!(!store.voiceprints_of(me.id).unwrap()[0].meta.deleted);
+    assert!(on_disk(&db, &ada_print), "Ada's voiceprint is kept");
 
-    for needle in [
-        title.as_bytes(),
-        said.as_bytes(),
-        typed.as_bytes(),
-        &local,
-        &ada_print,
-    ] {
+    for needle in [title.as_bytes(), said.as_bytes(), typed.as_bytes(), &local] {
         assert!(
             !on_disk(&db, needle),
             "deleted content survived in the database, its free pages or the WAL"
@@ -323,15 +317,14 @@ fn store_delete_meeting_tolerates_audio_already_gone() {
 }
 
 #[test]
-fn store_delete_meeting_forgets_the_speaker_centroids_of_the_voiceprints_it_forgets() {
-    // T6.25: a person created in M1 (with a voiceprint) named a speaker in M2's final pass,
-    // and the user then unlinked that M2 row by hand. Deleting M1 forgets the person's
-    // voiceprint (no live speaker refers to them any more), and with it the centroid M2's
-    // speaker identity record tagged with them; another person's entry stays.
+fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not() {
+    // T9.1u: a person named a speaker in M1 and in M2, with a voiceprint and a centroid in M2's
+    // identity record. Deleting M1 keeps all of it. Removing the person erases it, and M2's row
+    // goes back to "Speaker N"; another person's row and a row the user renamed stay.
     use earshot_store::identities::{
         IdentityRecord, SpeakerIdentity, StoredIdentities, decode, encode, record_key,
     };
-    let tmp = TempDir::new("delete-identities");
+    let tmp = TempDir::new("remove-person");
     let data = DataDir::new(tmp.path().join("Earshot"));
     data.create().unwrap();
     let db = data.db_path();
@@ -343,16 +336,22 @@ fn store_delete_meeting_forgets_the_speaker_centroids_of_the_voiceprints_it_forg
     let m2 = Meeting::new("Two", 2, 0, Template::General, &mut w.stamp());
     store.put_meeting(m1.clone()).unwrap();
     store.put_meeting(m2.clone()).unwrap();
-    let dee = enrolled(&mut store, &mut w, "Speaker 1", false, 0.017);
+    let name = "Dee Invented";
+    let dee = enrolled(&mut store, &mut w, name, false, 0.017);
     let cy = enrolled(&mut store, &mut w, "Cy", false, 0.029);
+    let dee_print = vector_bytes(&store, dee.id);
     speaker(&mut store, &mut w, m1.id, &dee);
-    // M2: the pass linked a row to Dee; the user then unlinked and renamed it. Cy's row
-    // stays linked.
-    let mut named = speaker(&mut store, &mut w, m2.id, &dee);
-    named.person_id = None;
-    named.display_name = "Guest".into();
-    named.meta.touch(&mut w.hlc, &w.clock);
-    store.put_speaker(named.clone()).unwrap();
+    let linked = speaker(&mut store, &mut w, m2.id, &dee);
+    // Someone merged away in M2 keeps no name either.
+    let mut merged_away = speaker(&mut store, &mut w, m2.id, &dee);
+    merged_away.meta.mark_deleted(&mut w.hlc, &w.clock);
+    store.put_speaker(merged_away.clone()).unwrap();
+    // The pass linked this row to Dee; the user then unlinked and renamed it.
+    let mut guest = speaker(&mut store, &mut w, m2.id, &dee);
+    guest.person_id = None;
+    guest.display_name = "Speaker 1".into();
+    guest.meta.touch(&mut w.hlc, &w.clock);
+    store.put_speaker(guest.clone()).unwrap();
     let cy_row = speaker(&mut store, &mut w, m2.id, &cy);
 
     let model = EmbeddingModelId::new("test-model@1");
@@ -375,40 +374,74 @@ fn store_delete_meeting_forgets_the_speaker_centroids_of_the_voiceprints_it_forg
         user_edited: false,
         enrolled: false,
     };
+    let dee_entry = SpeakerIdentity {
+        speaker: linked.id,
+        track: TrackId::Reference,
+        centroid: dee_c,
+        given_name: name.into(),
+        given_person: Some(dee.id),
+        given_stamp: None,
+        user_edited: false,
+        enrolled: false,
+    };
+    let both = IdentityRecord {
+        speakers: vec![dee_entry, cy_entry.clone()],
+    };
     store
-        .set_local_value(
-            &record_key(m2.id),
-            &encode(&IdentityRecord {
-                speakers: vec![
-                    SpeakerIdentity {
-                        speaker: named.id,
-                        track: TrackId::Reference,
-                        centroid: dee_c,
-                        given_name: "Speaker 1".into(),
-                        given_person: Some(dee.id),
-                        given_stamp: None,
-                        user_edited: false,
-                        enrolled: false,
-                    },
-                    cy_entry.clone(),
-                ],
-            }),
-        )
+        .set_local_value(&record_key(m2.id), &encode(&both))
         .unwrap();
     store.checkpoint().unwrap();
     assert!(on_disk(&db, &dee_n) && on_disk(&db, &cy_n), "sanity");
 
-    // Another connection stays open across the deletion and the close.
+    // Another connection stays open across everything and the close.
     let reader = rusqlite::Connection::open(&db).unwrap();
     let m1_id = m1.id.to_string();
-    let report = store
+    store
         .delete_meeting(&data, m1.id, &mut w.hlc, &w.clock, &mut |k: &str| {
             k.contains(&m1_id)
         })
         .unwrap();
-    assert_eq!(report.voiceprints_forgotten, 1, "{report:?}");
+    assert!(store.person(dee.id).unwrap().unwrap().is_live());
+    assert!(!store.voiceprints_of(dee.id).unwrap()[0].meta.deleted);
+    assert_eq!(
+        store
+            .local_value(&record_key(m2.id))
+            .unwrap()
+            .map(|b| decode(&b)),
+        Some(StoredIdentities::Record(both)),
+        "a meeting deletion leaves the other meeting's record alone"
+    );
+
+    // Deleting M2 as well would keep Dee too; instead, the Speakers page removes them.
+    let report = store.remove_person(dee.id, &mut w.hlc, &w.clock).unwrap();
+    assert_eq!(
+        report,
+        PersonRemoval {
+            persons_removed: 1,
+            voiceprints_forgotten: 1,
+            speakers_unnamed: 1,
+        }
+    );
+    let gone = store.person(dee.id).unwrap().unwrap();
+    assert!(gone.meta.deleted && gone.display_name.is_empty());
+    assert!(store.person(cy.id).unwrap().unwrap().is_live());
     assert!(store.voiceprints_of(dee.id).unwrap()[0].meta.deleted);
     assert!(!store.voiceprints_of(cy.id).unwrap()[0].meta.deleted);
+
+    let rows = store.speakers(m2.id).unwrap();
+    let row = |id: EntityId| rows.iter().find(|s| s.id == id).unwrap();
+    assert_eq!(
+        row(linked.id).display_name,
+        "Speaker 2",
+        "Speaker 1 is taken"
+    );
+    assert_eq!(row(linked.id).person_id, None);
+    assert!(!row(linked.id).meta.deleted);
+    assert_eq!(row(merged_away.id).display_name, "");
+    assert_eq!(row(merged_away.id).person_id, None);
+    assert_eq!(row(guest.id).display_name, "Speaker 1");
+    assert_eq!(row(cy_row.id).display_name, "Cy");
+    assert_eq!(row(cy_row.id).person_id, Some(cy.id));
     assert_eq!(
         store
             .local_value(&record_key(m2.id))
@@ -417,17 +450,56 @@ fn store_delete_meeting_forgets_the_speaker_centroids_of_the_voiceprints_it_forg
         Some(StoredIdentities::Record(IdentityRecord {
             speakers: vec![cy_entry]
         })),
-        "M2 keeps no centroid tagged with the forgotten person"
     );
-    assert!(
-        !on_disk(&db, &dee_n),
-        "the forgotten centroid survived on disk"
-    );
-    assert!(on_disk(&db, &cy_n));
+    assert!(on_disk(&db, &cy_n), "another person's centroid stays");
+    for gone in [name.as_bytes(), &dee_print, &dee_n] {
+        assert!(!on_disk(&db, gone), "removed data survived on disk");
+    }
     drop(store);
-    assert!(
-        !on_disk(&db, &dee_n),
-        "the forgotten centroid outlived the session"
-    );
+    for gone in [name.as_bytes(), &dee_print, &dee_n] {
+        assert!(!on_disk(&db, gone), "removed data outlived the session");
+    }
     drop(reader);
+}
+
+#[test]
+fn store_remove_person_takes_everyone_merged_into_them() {
+    let tmp = TempDir::new("remove-merged");
+    let data = DataDir::new(tmp.path().join("Earshot"));
+    data.create().unwrap();
+    let mut store = Store::open(&data.db_path()).unwrap();
+    let mut w = World::new();
+    let m = Meeting::new("One", 1, 0, Template::General, &mut w.stamp());
+    store.put_meeting(m.clone()).unwrap();
+    let keeper = enrolled(&mut store, &mut w, "Kay", false, 0.041);
+    let mut dup = enrolled(&mut store, &mut w, "Kay Too", false, 0.053);
+    let row = speaker(&mut store, &mut w, m.id, &dup);
+    dup.merged_into = Some(keeper.id);
+    dup.meta.touch(&mut w.hlc, &w.clock);
+    store.put_person(dup.clone()).unwrap();
+
+    let report = store
+        .remove_person(keeper.id, &mut w.hlc, &w.clock)
+        .unwrap();
+    assert_eq!(
+        report,
+        PersonRemoval {
+            persons_removed: 2,
+            voiceprints_forgotten: 2,
+            speakers_unnamed: 1,
+        }
+    );
+    assert!(
+        store
+            .person(dup.id)
+            .unwrap()
+            .unwrap()
+            .display_name
+            .is_empty()
+    );
+    let rows = store.speakers(m.id).unwrap();
+    assert_eq!(
+        rows.iter().find(|s| s.id == row.id).unwrap().display_name,
+        "Speaker 1"
+    );
 }

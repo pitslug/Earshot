@@ -156,8 +156,7 @@ pub fn decode(bytes: &[u8]) -> StoredIdentities {
 /// voiceprints ([`earshot_core::voiceprint::forget_voiceprints`]) and its speaker centroids
 /// in every meeting's record ([`forget_identity`] over
 /// [`earshot_core::voiceprint::identity_of`]). The one path for both
-/// [`crate::Store::forget_voiceprints`] and the voiceprints a meeting deletion forgets
-/// ([`crate::Store::delete_meeting`]). Returns how many voiceprints were forgotten; the
+/// [`crate::Store::forget_voiceprints`] and [`crate::Store::remove_person`]. Returns how many voiceprints were forgotten; the
 /// caller checkpoints after the commit.
 pub(crate) fn forget_identity_biometrics<C: Clock + ?Sized>(
     tx: &mut StoreTx<'_>,

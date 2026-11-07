@@ -416,7 +416,7 @@ pub fn meeting_deletion<R: MeetingRepo>(make: impl Fn() -> R) {
             .unwrap();
         sp.person_id.unwrap()
     };
-    let person = rows_of(&mut repo, m.id);
+    rows_of(&mut repo, m.id);
     rows_of(&mut repo, keep.id);
     let snapshot = |repo: &R, id| {
         (
@@ -436,11 +436,6 @@ pub fn meeting_deletion<R: MeetingRepo>(make: impl Fn() -> R) {
         out.rows_written,
         1 + 1 + 1 + 2 + 1 + 1,
         "every row of the meeting"
-    );
-    assert_eq!(
-        out.persons.into_iter().collect::<Vec<_>>(),
-        vec![person],
-        "the persons its speakers named (persons are kept)"
     );
     assert_eq!(
         snapshot(&repo, keep.id),

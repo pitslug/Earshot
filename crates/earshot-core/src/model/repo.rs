@@ -9,7 +9,6 @@ use super::entities::{
 use crate::asr::Segment;
 use crate::identity::{Clock, DeviceId, EntityId, Hlc};
 use crate::summary::SummaryV1;
-use crate::voiceprint::{VoiceprintError, VoiceprintRepo, forget_voiceprints, resolve_person};
 
 /// Repository errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,10 +172,6 @@ pub trait ExportRepo {
 pub struct MeetingErasure {
     /// Rows written (tombstoned and cleared); 0 when the meeting was already erased.
     pub rows_written: usize,
-    /// Persons the meeting's speakers were linked to. Persons are shared across meetings
-    /// and are kept; the caller decides about their voiceprints
-    /// ([`forget_unreferenced_voiceprints`]).
-    pub persons: BTreeSet<EntityId>,
 }
 
 /// Deletes `meeting`: the meeting row and every syncable child (tracks, speakers, segments
@@ -234,7 +229,6 @@ pub fn delete_meeting<R: MeetingRepo + ?Sized, C: Clock + ?Sized>(
         }
     }
     for s in repo.speakers(meeting)? {
-        out.persons.extend(s.person_id);
         let clear = |r: &mut Speaker| {
             r.display_name.clear();
             r.person_id = None;
@@ -273,84 +267,6 @@ pub fn delete_meeting<R: MeetingRepo + ?Sized, C: Clock + ?Sized>(
     if let Some(new) = erased(&m, |r| &mut r.meta, clear, hlc, clock) {
         repo.put_meeting(new)?;
         out.rows_written += 1;
-    }
-    Ok(out)
-}
-
-/// After a meeting deletion: forgets (tombstones and zeroes, [`forget_voiceprints`]) the
-/// voiceprints of each identity among `persons` that no live speaker of a live meeting refers
-/// to any more, so a voiceprint learnt only from deleted meetings goes with them. The user's
-/// own identity (`is_me`) is always kept: it is built over many meetings, enrolment is opt-in
-/// and it is deleted explicitly. Persons themselves are kept. An identity is the end of a
-/// person's `merged_into` chain ([`resolve_person`]); a person whose chain is broken is its
-/// own identity. Returns how many voiceprints were forgotten.
-///
-/// A voiceprint is a running sum with no per-meeting provenance, so the contribution of one
-/// meeting to a voiceprint that other meetings still use cannot be removed; it is kept.
-///
-/// # Errors
-/// Storage errors.
-pub fn forget_unreferenced_voiceprints<R, C>(
-    repo: &mut R,
-    persons: &BTreeSet<EntityId>,
-    hlc: &mut Hlc,
-    clock: &C,
-) -> Result<usize, RepoError>
-where
-    R: MeetingRepo + VoiceprintRepo + ?Sized,
-    C: Clock + ?Sized,
-{
-    let storage = |e: VoiceprintError| RepoError::Storage(e.to_string());
-    let mut forgotten = 0;
-    for id in unreferenced_identities(repo, persons)? {
-        forgotten += forget_voiceprints(repo, id, hlc, clock).map_err(storage)?;
-    }
-    Ok(forgotten)
-}
-
-/// The identities among `persons` whose biometric data a meeting deletion forgets
-/// ([`forget_unreferenced_voiceprints`], which has the rule): each identity's root id, once,
-/// in `persons` order, without the user's own and those a live speaker of a live meeting
-/// still refers to. A store with other biometric data per identity forgets it for exactly
-/// these.
-///
-/// # Errors
-/// Storage errors.
-pub fn unreferenced_identities<R>(
-    repo: &R,
-    persons: &BTreeSet<EntityId>,
-) -> Result<Vec<EntityId>, RepoError>
-where
-    R: MeetingRepo + VoiceprintRepo + ?Sized,
-{
-    let storage = |e: VoiceprintError| RepoError::Storage(e.to_string());
-    if persons.is_empty() {
-        return Ok(Vec::new());
-    }
-    let identity = |repo: &R, p: EntityId| -> Result<(EntityId, bool), RepoError> {
-        let own = repo.person(p).map_err(storage)?;
-        let root = resolve_person(repo, p).map_err(storage)?;
-        let is_me = own.is_some_and(|x| x.is_me) || root.as_ref().is_some_and(|r| r.is_me);
-        Ok((root.map_or(p, |r| r.id), is_me))
-    };
-    let mut referenced = BTreeSet::new();
-    for m in repo.meetings()? {
-        if m.meta.deleted {
-            continue;
-        }
-        for s in repo.speakers(m.id)? {
-            if let (false, Some(p)) = (s.meta.deleted, s.person_id) {
-                referenced.insert(identity(repo, p)?.0);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    for &p in persons {
-        let (id, is_me) = identity(repo, p)?;
-        if is_me || referenced.contains(&id) || out.contains(&id) {
-            continue;
-        }
-        out.push(id);
     }
     Ok(out)
 }

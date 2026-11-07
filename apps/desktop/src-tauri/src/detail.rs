@@ -349,6 +349,10 @@ pub fn edit_error(e: &EditError) -> IpcError {
         EditError::MeIsTheUser(_) => {
             err("me_is_the_user", "Your own row can only be linked to you.")
         }
+        EditError::PersonIsTheUser(_) => err(
+            "person_is_the_user",
+            "You cannot be removed. Your name and voice are set above.",
+        ),
         EditError::NoPreviousSummary => err("no_previous_summary", "There is no previous summary."),
         EditError::PreviousSummaryStale => err(
             "previous_summary_stale",

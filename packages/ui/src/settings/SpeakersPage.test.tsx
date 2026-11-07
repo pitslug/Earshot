@@ -8,7 +8,7 @@ import { AppShell } from "../shell/AppShell";
 import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
-import { FORGET_PERSON_EXPLAINED, PEOPLE_EXPLAINED } from "./SpeakersPage";
+import { FORGET_PERSON_EXPLAINED, REMOVE_PERSON_EXPLAINED, PEOPLE_EXPLAINED } from "./SpeakersPage";
 import { FORGET_EXPLAINED, NAME_EXPLAINED, NEXT_MEETING, READ_ALOUD, RECORD_CONSENT, VOICE_EXPLAINED } from "./SpeakersPage";
 
 interface Setup {
@@ -113,6 +113,28 @@ describe("Settings, Speakers, people", () => {
       expect(screen.queryByRole("button", { name: "Forget the voice of Alex Sample" })).toBeNull(),
     );
     expect((await s.ipc.listPersons()).find((p) => p.id === "a")?.has_voiceprint).toBe(false);
+  });
+
+  it("asks before removing a person, and Cancel changes nothing", async () => {
+    const s = await open({ persons: people });
+    await s.user.click(await screen.findByRole("button", { name: "Remove Bo Example" }));
+    expect(await screen.findByText(REMOVE_PERSON_EXPLAINED)).toBeTruthy();
+    await s.user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByText(REMOVE_PERSON_EXPLAINED)).toBeNull());
+    expect((await s.ipc.listPersons()).some((p) => p.id === "b")).toBe(true);
+
+    await s.user.click(await screen.findByRole("button", { name: "Remove Bo Example" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await s.user.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Remove Bo Example" })).toBeNull());
+    expect((await s.ipc.listPersons()).some((p) => p.id === "b")).toBe(false);
+    expect(screen.getByRole("button", { name: "Remove Alex Sample" })).toBeTruthy();
+  });
+
+  it("offers no way to remove you", async () => {
+    await open({ persons: [...people, { id: "me", name: "Casey", has_voiceprint: true, is_me: true }] });
+    await screen.findByRole("button", { name: "Remove Bo Example" });
+    expect(screen.queryByRole("button", { name: "Remove Casey" })).toBeNull();
   });
 });
 

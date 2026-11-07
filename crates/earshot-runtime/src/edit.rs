@@ -90,6 +90,8 @@ pub enum EditError {
     NotTheUser(EntityId),
     /// The meeting's "Me" row may be linked only to the user's person.
     MeIsTheUser(EntityId),
+    /// The user's own person cannot be removed (their name and voice have their own controls).
+    PersonIsTheUser(EntityId),
     /// The meeting has no earlier summary to go back to.
     NoPreviousSummary,
     /// The earlier summary cites transcript segments that are no longer there (the meeting
@@ -143,6 +145,7 @@ impl fmt::Display for EditError {
             Self::MeIsTheUser(id) => {
                 write!(f, "speaker {id} is \"Me\" and can be linked only to you")
             }
+            Self::PersonIsTheUser(id) => write!(f, "person {id} is you and cannot be removed"),
             Self::NoPreviousSummary => f.write_str("there is no previous summary"),
             Self::PreviousSummaryStale => f.write_str(
                 "the previous summary cites a transcript that has been replaced; summarise again",
@@ -733,6 +736,41 @@ pub fn forget_person_voices(services: &Services, person: EntityId) -> Result<usi
     }
     let (store, hlc) = db.parts();
     Ok(store.forget_voiceprints(person, hlc, &*clock)?)
+}
+
+/// Removes a person from this computer (the Speakers page, T9.1u): their name, voiceprints and
+/// speaker centroids, and anyone merged into them; their speakers go back to "Speaker N"
+/// ([`earshot_store::Store::remove_person`]). Text already written is not rewritten.
+///
+/// # Errors
+/// [`EditError::PersonNotFound`] for an unknown, deleted or merged-away person;
+/// [`EditError::PersonIsTheUser`] for the user, or someone merged into them; store errors.
+pub fn remove_person(
+    services: &Services,
+    person: EntityId,
+) -> Result<earshot_store::PersonRemoval, RuntimeError> {
+    let clock = Arc::clone(&services.clock);
+    let mut db = services.store();
+    let row = db
+        .person(person)
+        .map_err(voiceprint_err)?
+        .filter(Person::is_live)
+        .ok_or(EditError::PersonNotFound(person))?;
+    if row.is_me {
+        return Err(EditError::PersonIsTheUser(person).into());
+    }
+    let store: &earshot_store::Store = &db;
+    for id in identity_of(store, person).map_err(voiceprint_err)? {
+        if store
+            .person(id)
+            .map_err(voiceprint_err)?
+            .is_some_and(|p| p.is_me)
+        {
+            return Err(EditError::PersonIsTheUser(person).into());
+        }
+    }
+    let (store, hlc) = db.parts();
+    Ok(store.remove_person(person, hlc, &*clock)?)
 }
 
 /// The previous summary of a meeting ([`summary_history`]).

@@ -41,7 +41,7 @@ pub use entities::{
 pub use memory::InMemoryRepo;
 pub use repo::{
     AudioFileRepo, ExportRepo, MeetingErasure, MeetingRepo, RepoError, delete_meeting,
-    forget_unreferenced_voiceprints, live_segments, replace_segments, unreferenced_identities,
+    live_segments, replace_segments,
 };
 
 #[cfg(test)]

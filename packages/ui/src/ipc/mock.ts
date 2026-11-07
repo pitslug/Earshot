@@ -602,6 +602,25 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       return had;
     },
+    removePerson: async (person) => {
+      call("removePerson", person);
+      const at = persons.findIndex((x) => x.id === person);
+      if (at < 0) fail("person_not_found", "This person no longer exists.");
+      persons.splice(at, 1);
+      for (const [id, d] of details) {
+        const taken = d.speakers.filter((s) => s.person?.id !== person).map((s) => s.name);
+        details.set(id, {
+          ...d,
+          speakers: d.speakers.map((s) => {
+            if (s.person?.id !== person) return s;
+            let n = 1;
+            while (taken.includes(`Speaker ${n}`)) n += 1;
+            taken.push(`Speaker ${n}`);
+            return { ...s, name: `Speaker ${n}`, person: null, needs_name: true };
+          }),
+        });
+      }
+    },
     speakerSample: async (meeting, speaker) => {
       speakerOf(detailOf(meeting), speaker);
       return data.sample === undefined ? SILENT_WAV_BASE64 : data.sample;
