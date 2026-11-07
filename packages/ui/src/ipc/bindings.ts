@@ -14,6 +14,11 @@ export const commands = {
 	 */
 	listMeetings: () => typedError<MeetingListItem[], IpcError>(__TAURI_INVOKE("list_meetings")),
 	/**
+	 *  The live meetings whose title, transcript or summary contains `query`, newest first (T9.7).
+	 *  Runs off the main thread; the store lock is held only for each meeting's read.
+	 */
+	searchMeetings: (query: string) => typedError<SearchResultsView, IpcError>(__TAURI_INVOKE("search_meetings", { query })),
+	/**
 	 *  Starts a meeting in `mode` with an optional title and returns its id once it records.
 	 *  Every check (models, summary setup, ONNX Runtime) runs first; a failure records nothing.
 	 *  The meeting's progress arrives as `MeetingEvent`s. Fails with `busy` while another
@@ -1481,6 +1486,39 @@ export type RunsOn =
 "Vulkan" | 
 /**  The NPU. */
 "Npu";
+
+/**  Where a search found a meeting. */
+export type SearchMatch = 
+/**  Its title. */
+"Title" | 
+/**  A line of the transcript it shows. */
+"Transcript" | 
+/**  Its current summary. */
+"Summary";
+
+/**  One meeting a search found. */
+export type SearchResultItem = {
+	/**  Meeting id (hyphenated UUID). */
+	id: string,
+	/**  Title; empty until the user or a summary gives one. */
+	title: string,
+	/**  Start (Unix ms). */
+	started_at_ms: number,
+	/**  Where it matched. */
+	matched: SearchMatch,
+	/**  The text around the first match, on one line. */
+	snippet: string,
+	/**  When the matching line starts (ms from the meeting's start); only for a transcript match. */
+	line_ms: number | null,
+};
+
+/**  What a search found. */
+export type SearchResultsView = {
+	/**  The meetings found, newest first. */
+	items: SearchResultItem[],
+	/**  Whether more meetings matched than `items` holds. */
+	capped: boolean,
+};
 
 /**  Asks the UI to do something the tray, the shortcut or a notification cannot do alone. */
 export type ShellEvent = 

@@ -55,6 +55,7 @@ import { useLiveMeeting, useNow } from "../meeting/hooks";
 import { type SettingsSection, SettingsView } from "../settings/SettingsView";
 import { useThemeChoice } from "../theme/EarshotThemeProvider";
 import { type Timer, realTimer } from "../time";
+import { MeetingSearchBox, MeetingSearchResults, useMeetingSearch } from "./MeetingSearch";
 import { type DayGroup, displayTitle, groupByDay, secondaryLine } from "./meetings";
 
 const useStyles = makeStyles({
@@ -72,6 +73,9 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground2,
   },
   paneTop: {
+    display: "flex",
+    flexDirection: "column",
+    gap: tokens.spacingVerticalS,
     padding: tokens.spacingVerticalM,
     paddingLeft: tokens.spacingHorizontalM,
     paddingRight: tokens.spacingHorizontalM,
@@ -311,6 +315,7 @@ export function AppShell({
   const newMeetingButton = useRef<HTMLButtonElement | null>(null);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const refresh = useCallback(() => setReload((n) => n + 1), []);
+  const search = useMeetingSearch(ipc, timer, reload);
   // Jobs on stored meetings, followed here so an ending is seen whatever meeting is shown.
   const [jobs, setJobs] = useState<Record<string, JobView>>({});
   const jobSeq = useRef(0);
@@ -454,6 +459,11 @@ export function AppShell({
   const open = (id: string) => {
     setSelectedId(id);
     setView("detail");
+  };
+  // A result can outlast its meeting: reading the list again takes the result away too.
+  const pickResult = (id: string) => {
+    if (meetings.some((m) => m.id === id)) select(id);
+    else refresh();
   };
   const openNames = (id: string) => {
     open(id);
@@ -638,9 +648,20 @@ export function AppShell({
           >
             New meeting
           </Button>
+          {/* Nothing to search on a computer with no meetings yet. */}
+          {(load.status !== "loaded" || meetings.length > 0 || search.query !== "") && (
+            <MeetingSearchBox query={search.query} onChange={search.setQuery} />
+          )}
         </div>
         <div className={styles.listArea}>
-          {meetings.length > 0 && (
+          {search.active && (
+            <MeetingSearchResults
+              search={search}
+              selectedId={view === "start" ? null : selectedId}
+              onPick={pickResult}
+            />
+          )}
+          {!search.active && meetings.length > 0 && (
             <ul className={styles.list} aria-label="Meetings">
               {groupByDay(meetings, now()).map((group) => (
                 <MeetingGroup

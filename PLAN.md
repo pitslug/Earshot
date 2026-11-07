@@ -1457,7 +1457,7 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T8.4ab
   - do: T8.4ab leaves a stalled GPU's thread behind, which holds its graphics memory until a restart, and a driver crash still takes the whole app down. Run GPU summaries in a child process (as the model check does, `earshot_proc::KillOnClose`), so a stall kills the child and frees the memory and a driver crash costs only that summary. Covers progress, cancelling, the handover of the transcript and live summaries; content stays on the machine and never enters a log or command line.
   - accept: tests with a fake child that a stall or a crash moves the summary to the CPU and says so; a stalled child is gone after the kill
-- [ ] T9.7 Search across meetings
+- [x] T9.7 Search across meetings
   - deps: T7.3
   - do: the owner (2026-11-08): a box above the meeting list that finds meetings by title, transcript and summary text, on this computer only, and opens the one picked. No new table or migration.
   - accept: `cargo test -p earshot-runtime search`; `cargo test -p earshot-desktop search`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark

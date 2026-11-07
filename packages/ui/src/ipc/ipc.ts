@@ -58,6 +58,9 @@ import type {
   RemovedView,
   RowTrack,
   RunsOn,
+  SearchMatch,
+  SearchResultItem,
+  SearchResultsView,
   SpeakerCard,
   SpeakerKind,
   SpeakerSource,
@@ -151,6 +154,9 @@ export type {
   RemovedView,
   RowTrack,
   RunsOn,
+  SearchMatch,
+  SearchResultItem,
+  SearchResultsView,
   SpeakerCard,
   SpeakerKind,
   SpeakerSource,
@@ -192,6 +198,9 @@ export interface IpcCommands
   appInfo(): Promise<AppInfo>;
   /** The meetings, newest first. Rejects with an `IpcFailure`. */
   listMeetings(): Promise<MeetingListItem[]>;
+  /** The meetings whose title, transcript or summary contains `query`, newest first. An empty
+   * query finds nothing. Rejects with an `IpcFailure`. */
+  searchMeetings(query: string): Promise<SearchResultsView>;
   /** Starts a meeting and resolves with its id once it records. Rejects with an
    * `IpcFailure` (kind `busy` while another meeting runs, or a pre-flight failure). */
   startMeeting(mode: CaptureMode, title: string | null): Promise<string>;

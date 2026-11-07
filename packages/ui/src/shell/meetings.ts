@@ -57,6 +57,6 @@ export function secondaryLine(m: MeetingListItem): string {
 }
 
 /** The title shown for a meeting (titles stay empty until the user or a summary gives one). */
-export function displayTitle(m: MeetingListItem): string {
+export function displayTitle(m: Pick<MeetingListItem, "title">): string {
   return m.title.trim() === "" ? "Untitled meeting" : m.title;
 }

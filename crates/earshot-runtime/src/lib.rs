@@ -60,6 +60,7 @@ mod priority;
 pub mod recommend;
 pub mod replay;
 pub mod retention;
+pub mod search;
 pub mod services;
 pub mod speaker_timing;
 pub mod speakers;

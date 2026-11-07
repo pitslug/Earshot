@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use earshot_core::model::{Meeting, MeetingRepo};
+use earshot_runtime::search::MatchedIn;
 use earshot_runtime::{MeetingActivity, RuntimeError, Services, SystemClock};
 use earshot_store::DataDir;
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             app_info,
             list_meetings,
+            search_meetings,
             start_meeting,
             stop_meeting,
             keep_recording,
@@ -308,6 +310,71 @@ pub fn meeting_list(services: &Services) -> Result<Vec<MeetingListItem>, IpcErro
     Ok(items.into_iter().map(|(_, i)| i).collect())
 }
 
+/// Where a search found a meeting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum SearchMatch {
+    /// Its title.
+    Title,
+    /// A line of the transcript it shows.
+    Transcript,
+    /// Its current summary.
+    Summary,
+}
+
+/// One meeting a search found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct SearchResultItem {
+    /// Meeting id (hyphenated UUID).
+    pub id: String,
+    /// Title; empty until the user or a summary gives one.
+    pub title: String,
+    /// Start (Unix ms).
+    pub started_at_ms: i64,
+    /// Where it matched.
+    pub matched: SearchMatch,
+    /// The text around the first match, on one line.
+    pub snippet: String,
+    /// When the matching line starts (ms from the meeting's start); only for a transcript match.
+    pub line_ms: Option<u64>,
+}
+
+/// What a search found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct SearchResultsView {
+    /// The meetings found, newest first.
+    pub items: Vec<SearchResultItem>,
+    /// Whether more meetings matched than `items` holds.
+    pub capped: bool,
+}
+
+/// [`earshot_runtime::search::search_meetings`] as the UI sees it. The query goes no further:
+/// not into a log, a record or an error.
+///
+/// # Errors
+/// Store errors.
+pub fn meeting_search(services: &Services, query: &str) -> Result<SearchResultsView, IpcError> {
+    let results = earshot_runtime::search::search_meetings(services, query)?;
+    Ok(SearchResultsView {
+        items: results
+            .hits
+            .into_iter()
+            .map(|hit| SearchResultItem {
+                id: hit.meeting.to_string(),
+                title: hit.title,
+                started_at_ms: i64::try_from(hit.started_unix_ms).unwrap_or(i64::MAX),
+                matched: match hit.matched {
+                    MatchedIn::Title => SearchMatch::Title,
+                    MatchedIn::Transcript => SearchMatch::Transcript,
+                    MatchedIn::Summary => SearchMatch::Summary,
+                },
+                snippet: hit.snippet,
+                line_ms: hit.line_ms,
+            })
+            .collect(),
+        capped: results.capped,
+    })
+}
+
 /// The app's shared state: the services over the store, or why they could not be opened.
 pub struct AppState {
     data: Option<DataDir>,
@@ -384,6 +451,18 @@ async fn list_meetings(state: State<'_, AppState>) -> Result<Vec<MeetingListItem
     tauri::async_runtime::spawn_blocking(move || meeting_list(&services))
         .await
         .map_err(|_| IpcError::new("internal", "the meeting list task stopped"))?
+}
+
+/// The live meetings whose title, transcript or summary contains `query`, newest first (T9.7).
+/// Runs off the main thread; the store lock is held only for each meeting's read.
+#[tauri::command]
+#[specta::specta]
+async fn search_meetings(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<SearchResultsView, IpcError> {
+    let services = state.services()?;
+    blocking(move || meeting_search(&services, &query)).await
 }
 
 /// Starts a meeting in `mode` with an optional title and returns its id once it records.

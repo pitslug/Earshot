@@ -25,6 +25,7 @@ import {
 } from "./ipc";
 import { linked, merged, renamed, resummarised, sampleDetail, samplePersons } from "./mockDetail";
 import { type SampleMachine, createModelsMock } from "./mockModels";
+import { searchSample } from "./mockSearch";
 import { type SettingsMockData, createSettingsMock } from "./mockSettings";
 import { type SummariesMockData, createSummariesMock } from "./mockSummaries";
 import { type StorageMockData, createStorageMock } from "./mockStorage";
@@ -409,6 +410,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       [...meetings]
         .sort((a, b) => b.started_at_ms - a.started_at_ms || b.id.localeCompare(a.id))
         .map((m) => ({ ...m })),
+    searchMeetings: async (query) =>
+      searchSample(meetings, (row) => details.get(row.id) ?? sampleDetail(row), query),
     startMeeting: async (mode, title) => {
       if (data.startError) throw new IpcFailure(data.startError);
       if (live) fail("busy", "a meeting is already recording", true);

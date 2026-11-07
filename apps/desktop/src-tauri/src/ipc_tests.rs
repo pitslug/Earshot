@@ -133,6 +133,47 @@ fn list_meetings_of_an_empty_store_is_empty() {
 }
 
 #[test]
+fn search_answers_with_the_meetings_found_newest_first() {
+    let dir = TempDir::new("search");
+    let svc = services(&dir);
+    let old = meeting(&svc, "Orchard review", T0, Some(60_000), 21);
+    let new = meeting(&svc, "Orchard walk", T0 + 60_000, Some(60_000), 22);
+    let gone = meeting(&svc, "Orchard gone", T0 + 120_000, Some(60_000), 23);
+    meeting(&svc, "Something else", T0 + 180_000, Some(60_000), 24);
+    svc.delete_meeting(gone).unwrap();
+
+    let found = meeting_search(&svc, " ORCHARD ").unwrap();
+    assert!(!found.capped);
+    let ids: Vec<&str> = found.items.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ids, [new.to_string(), old.to_string()]);
+    assert_eq!(
+        found.items[0],
+        SearchResultItem {
+            id: new.to_string(),
+            title: "Orchard walk".into(),
+            started_at_ms: i64::try_from(T0 + 60_000).unwrap(),
+            matched: SearchMatch::Title,
+            snippet: "Orchard walk".into(),
+            line_ms: None,
+        }
+    );
+}
+
+#[test]
+fn search_of_nothing_or_no_match_is_an_empty_answer_that_does_not_repeat_the_query() {
+    let dir = TempDir::new("search-none");
+    let svc = services(&dir);
+    meeting(&svc, "Orchard review", T0, Some(60_000), 31);
+    for query in ["", "   ", "quinceharvest"] {
+        let answer = meeting_search(&svc, query).unwrap();
+        assert_eq!(answer.items, []);
+        assert!(!answer.capped);
+        let json = serde_json::to_string(&answer).unwrap();
+        assert!(!json.contains("quinceharvest"), "{json}");
+    }
+}
+
+#[test]
 fn app_state_opens_and_reports_the_store() {
     let dir = TempDir::new("state");
     let state = AppState::open(DataDir::new(dir.0.join("fresh")));

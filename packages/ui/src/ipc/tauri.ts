@@ -21,6 +21,7 @@ export function createTauriIpc(): Ipc {
   return {
     appInfo: () => commands.appInfo(),
     listMeetings: async () => unwrap(await commands.listMeetings()),
+    searchMeetings: async (query) => unwrap(await commands.searchMeetings(query)),
     startMeeting: async (mode, title) => unwrap(await commands.startMeeting(mode, title)),
     stopMeeting: async () => {
       unwrap(await commands.stopMeeting());
