@@ -1394,6 +1394,14 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T8.4af
   - do: a summary model chosen by name and not downloaded skips the summary with a banner rather than refusing the meeting; extraction renames a folder aside and takes a cancel; small CUDA and clean-install fixes from TODO.md.
   - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop`; `cargo test -p xtask --lib manifest`
+- [x] T9.2a README and privacy page for the x64 early release
+  - deps: T9.1k
+  - do: The owner. `README.md` (install, usage, backends, credits) and `PRIVACY.md` (PLAN 3.9 as the code does it) ahead of T9.1 and T9.1b, whose update and ARM64 parts T9.2 still adds. Each claim checked against the code by a separate agent.
+  - accept: `cargo xtask public-guard`; the fact-check's findings resolved
+- [ ] T9.1r x64 early release
+  - deps: T9.1c, T9.1d, T9.2a
+  - do: The owner: x64 first, as a 0.x normal GitHub release (a pre-release would leave the CUDA set marked Latest), ahead of T8.4, GATE-03, T9.1b and GATE-04, which stay v1's. No in-app update, so the notes say each version is installed by hand. Only once these are concluded with the owner: whether Parakeet's community conversions may be offered (section 7, AGENTS); the NSIS CPL-1.0 OK and the Visual C++ runtime; NVIDIA's written answer or a decision on it; Windows Error Reporting (TODO.md); a start on an x64 PC with no NVIDIA card; GATE-01a and GATE-02.
+  - accept: `cargo xtask build --bundle`; `cargo xtask bundle-check`; the owner's approval of the release recorded
 - [ ] T9.1 Installers and first run
   - deps: GATE-03, T8.4a, T9.1c, T9.1d, T9.1e, T9.1f, T9.1g, T9.1h, T9.1i, T9.1j, T9.1k, T9.1l, T9.1m, T9.1n, T9.1o, T9.1p
   - note: outstanding from T8.4a and T8.4af: a tester starts the app on an x64 PC with no NVIDIA card: it offers no download and reports the backend it used. Until then the release notes say so.

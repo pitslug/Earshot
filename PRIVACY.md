@@ -1,0 +1,71 @@
+# Privacy
+
+Earshot has no accounts, no servers and no telemetry of its own. Your audio stays on your computer. The only conversation content that can leave is text (the transcript, any notes and the meeting's details), and only if you choose a summary provider that is not on your computer.
+
+This page describes the current code. If you find something here that the code does not do, please open an issue.
+
+## What stays on your computer
+
+- **Audio:** the mic and computer-audio tracks, as FLAC files. No network code in Earshot accepts audio.
+- **Transcripts, summaries, meeting titles and names:** in a local SQLite database.
+- **Voice data:** see "Voices" below.
+- **Crash logs:** in a local `crash-logs` folder. They hold where the code failed (file, line, function names), the app version, the time and a fixed thread name, and never a panic message or any meeting content. Earshot does not upload them.
+
+All of this is under `%LOCALAPPDATA%\Earshot`, which Earshot does not encrypt. Anyone or anything with access to your Windows account can read it. The app's window also keeps its browser engine's files, such as your theme choice, in `%LOCALAPPDATA%\io.github.pitslug.earshot`.
+
+## What can leave, and when
+
+| What | Where to | When |
+|---|---|---|
+| Requests for model files | `huggingface.co`, `github.com`, `raw.githubusercontent.com`, and on opt-in CUDA downloads `developer.download.nvidia.com`, plus the first two's download servers (`*.hf.co`, `release-assets.githubusercontent.com`) | Only when you start a download. Those hosts see your IP address and which file you asked for. Every file is checked against a pinned checksum. |
+| Summary text | The provider you chose | Only if you chose one, as below. Local summaries, the default, send nothing. |
+
+No update check exists yet. When one is added, it will be off unless you press the button or turn on automatic checks, and it will carry no conversation content.
+
+## If you choose a summary provider
+
+The default is a model running on your computer. If you choose something else, each summary sends the transcript text with speaker names and line times, plus the meeting's title, start time, length and attendee names, any notes, your style text and your own name if you set one. It never sends audio.
+
+- **An OpenAI-compatible endpoint:** to the address you enter. If it runs on your own machine or network, the text stays there.
+- **Anthropic with your API key:** to Anthropic. The key is kept in Windows Credential Manager, and Earshot can use it but no screen can show it again.
+- **Claude Code or OpenAI Codex:** Earshot gives the text to the program you installed, which connects to its vendor using your sign-in. Earshot cannot see or audit that request. It records locally when it handed text over, how many characters and the outcome, never the text.
+
+That provider's own terms then apply to the text. Earshot never falls back to a remote provider you did not pick. If yours is unavailable, the summary is skipped or fails and says so. If your own endpoint is saved without a usable address and model, Earshot uses the local model and says so.
+
+## Voices
+
+A voiceprint is biometric data, so:
+
+- Saving your own voice is optional, from a sample you record on purpose. The sample itself is held in memory and is never written to disk.
+- "Remember these voices for next time" is off until you tick it.
+- Each meeting's record holds a numeric voice summary per speaker, so names you gave survive a re-transcription. It can't be played back as audio, and it goes when the meeting is deleted.
+- You can forget your own voice, or anyone's, in Settings, Speakers. Voiceprints stay on this computer.
+
+## Deleting
+
+- **Audio** is deleted automatically after the final transcript, 7 days by default (Settings, Storage). A meeting whose final transcript never completed keeps its audio until you delete the meeting. Stray audio files with no meeting record, such as a crash can leave, are removed after 7 days.
+- **Deleting a meeting** removes its audio, transcript and summaries, and any voiceprint no other meeting uses, except your own. The database is set to overwrite deleted content.
+- **People's names stay.** A person named in a meeting stays in Settings, Speakers after that meeting is deleted. You can rename them or forget their voice, but there is no way yet to remove the name itself.
+- **Exported Obsidian notes stay.** They are your files in your vault, and Earshot does not delete them. If your vault syncs somewhere, your notes go with it.
+- **Uninstalling keeps your data**, so a reinstall finds your meetings. To remove everything, delete `%LOCALAPPDATA%\Earshot` afterwards, and any saved API key from Windows Credential Manager.
+
+## What other software does
+
+Earshot cannot control everything on your computer. These are the known cases:
+
+- **Windows Error Reporting:** if the app or one of its helper processes crashes outright, Windows may create a crash report, and depending on your Windows settings may send it to Microsoft. Such a report can hold part of the process's memory, which could include transcript text. Earshot does not currently opt out of this.
+- **System information from runtimes:** Earshot turns ONNX Runtime's telemetry off. Runtimes can still offer Windows' diagnostic channel system information such as runtime version, CPU, memory and driver names and versions. A check on the NPU path found no transcript text in those events. Anything that could carry conversation content would not be accepted.
+- **Windows notifications:** Windows stores these in its own database, so Earshot's use fixed text and counts, never a meeting's title or content.
+- **Your call app, your vault's sync and your backups** do what they do with their own data and yours.
+
+## How this is enforced
+
+- All of Earshot's HTTP goes through one crate, `earshot-net`, with a host allowlist. An automated check fails the build if any other shipped code gains an HTTP client.
+- The app's web page can only talk to the app itself, through its content security policy.
+- An acceptance test replays a whole meeting and checks from `earshot-net`'s request log that nothing went anywhere except the test endpoint.
+
+These checks catch mistakes in Earshot's own code, and the replay can only see traffic that goes through `earshot-net`. They are not an outside audit, and the installers are not yet code-signed.
+
+## Recording other people
+
+Earshot does not announce itself to anyone on a call. Telling people, and getting any consent the law requires where you and they are, is your responsibility.
