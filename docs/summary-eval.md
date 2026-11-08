@@ -926,3 +926,18 @@ Written before measuring, 2026-11-09. Every evaluation so far ran Qwen 3.5 with 
 **Judging.** Atomic facts (`fixtures/ami/atomic_facts.json`), by Claude Code agents on blinded packets (`--judge-packets --facts`, `--import-verdicts --facts`), one agent per meeting, every packet of a meeting (both models, off and on) in one blinded round, with the brief recorded here.
 
 **Rule, fixed now (judgements).** For each model, count facts not covered (missing plus contradicted) over the ten meetings (108 facts). Thinking on earns a follow-up task only if, for at least one model, that count falls by at least 5 (about 5%; T6.20a found a difference of one or two items to be noise), with contradictions up by at most 1 and no more invalid summaries; and the other model's count does not rise by more than 2. Time per meeting is reported beside it and decides nothing here. If the rule fails, nothing follows; the tables go here either way.
+
+**Brief to each judge** (one Claude Code agent per meeting, 2026-11-09, working only inside that meeting's blinded packet folder, four summaries S1 to S4 per meeting): the verdict-file format and rules of "Meaning judge: packets and verdict format" above, per fact; a topic mentioned is not coverage and a missing detail is not a contradiction; an invalid summary covers nothing; judge each summary independently and consistently; reply with counts only.
+
+### Results (2026-11-09, `docs/summary-eval/t1210/verdicts.md`): thinking on fails the rule
+
+| Model | Facts not covered, off | On (cap 2048) | Contradicted off / on | Invalid off / on | At hang-up per meeting off / on |
+|---|---|---|---|---|---|
+| Qwen 3.5 9B | 25 of 108 | 22 | 2 / 2 | 0 / 0 | 20.7 / 52.6 s |
+| Qwen 3.5 4B | 26 of 108 | 33 | 6 / 2 | 0 / 1 | 17.2 / 37.4 s |
+
+- **9B:** 3 fewer facts not covered (decisions 17 -> 14 missing or contradicted, actions unchanged), against at least 5. A small gain inside T6.20a's noise.
+- **4B:** 7 more, so the "other model rises by at most 2" clause fails too: one meeting's thinking summary was invalid (TS3006c, 6 facts all missing) and its decisions fell (69 -> 58 covered or contradicted against missing 10 -> 21), while its action items improved (contradicted 3 -> 0, covered 16 -> 19).
+- **Time:** thinking roughly doubles to triples the time at hang-up (both models on the RTX 5080).
+
+**Decision:** no follow-up task; production stays thinking off. Generated off and on in the same build (format keys `...-chunk600` and `...-chunk600-think2048`, prefixes checked in each result header).
