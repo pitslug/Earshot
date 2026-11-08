@@ -1153,7 +1153,7 @@ M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go
   - deps: T7.6
   - do: found by the owner's first `cargo xtask build --app --features cuda` (2026-11-05): ggml-cuda's `sumrows.obj` was left at 0 bytes, MSBuild then treated it as up to date, and every rebuild failed with LNK1136 behind cmake's "exit code: 1". Before a build, `xtask build` removes 0-byte `.obj` files under the profile's native build folders and says so; when a build fails it names the first native error rather than only cargo's.
   - accept: `cargo test -p xtask build`; `cargo xtask build --app --features cuda` on the desktop
-- [ ] GATE-02 Desktop dogfood
+- [x] GATE-02 Desktop dogfood
   - deps: T7.6, T7.6a
   - do: open the gate: install the x64 build, use it in at least one real meeting, report issues in `gates/GATE-02.fail` or results in `.pass`. Optionally add the recording and a corrected transcript under `fixtures/private/`.
 
