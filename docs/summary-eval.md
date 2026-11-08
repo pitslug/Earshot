@@ -921,7 +921,7 @@ These are small samples, with few contradictions (a difference of one or two ite
 
 Written before measuring, 2026-11-09. Every evaluation so far ran Qwen 3.5 with thinking off (the empty `<think>` prefix). This measures thinking on, through an evaluation-only `sum_eval` option with its own format key; production is unchanged.
 
-**Setup.** Desktop GPU (CUDA), idle host, dev split only: the ten dev meetings of T6.20a's agent labels (the five `c` meetings of the gold set and the five `b` meetings), reference source, chunked 600 s, the settled rules, Qwen 3.5 9B and 4B. Thinking is a bounded `<think>` section before the summary JSON, allowed by the grammar, with a token cap so it cannot use the reply budget. Off summaries are generated again in the same run, so both sides come from the same build.
+**Setup.** Desktop GPU (CUDA), idle host, dev split only: the ten dev meetings of T6.20a's agent labels (the five `c` meetings of the gold set and the five `b` meetings), reference source, chunked 600 s, the settled rules, Qwen 3.5 9B and 4B. Thinking is a bounded `<think>` section before the summary JSON, allowed by the grammar, with a cap of 2048 thinking tokens (fixed 2026-11-09 before measuring, a judgement), counted apart from the reply budget. Off summaries are generated again in the same run, so both sides come from the same build.
 
 **Judging.** Atomic facts (`fixtures/ami/atomic_facts.json`), by Claude Code agents on blinded packets (`--judge-packets --facts`, `--import-verdicts --facts`), one agent per meeting, every packet of a meeting (both models, off and on) in one blinded round, with the brief recorded here.
 
