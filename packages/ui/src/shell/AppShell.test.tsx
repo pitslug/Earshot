@@ -12,10 +12,10 @@ const at = (day: number, hour: number, minute = 0) =>
 const NOW = at(2, 16, 0);
 
 const MEETINGS: MeetingListItem[] = [
-  { id: "m4", title: "Design review", started_at_ms: at(2, 14, 0), duration_ms: 34 * 60_000, state: "Ready" },
-  { id: "m3", title: "", started_at_ms: at(2, 9, 30), duration_ms: 47 * 60_000, state: "Ready" },
-  { id: "m2", title: "Supplier call", started_at_ms: at(1, 11, 5), duration_ms: 22 * 60_000, state: "Ready" },
-  { id: "m1", title: "Quarterly planning", started_at_ms: new Date(2026, 9, 27, 10, 0).getTime(), duration_ms: 95 * 60_000, state: "Ready" },
+  { id: "m4", title: "Design review", started_at_ms: at(2, 14, 0), duration_ms: 34 * 60_000, state: "Ready", folder_id: null },
+  { id: "m3", title: "", started_at_ms: at(2, 9, 30), duration_ms: 47 * 60_000, state: "Ready", folder_id: null },
+  { id: "m2", title: "Supplier call", started_at_ms: at(1, 11, 5), duration_ms: 22 * 60_000, state: "Ready", folder_id: null },
+  { id: "m1", title: "Quarterly planning", started_at_ms: new Date(2026, 9, 27, 10, 0).getTime(), duration_ms: 95 * 60_000, state: "Ready", folder_id: null },
 ];
 
 function renderShell(ipc: Ipc) {

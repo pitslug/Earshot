@@ -22,6 +22,7 @@ mod detail;
 mod first_run;
 #[cfg(windows)]
 mod folder_picker_win;
+mod folders;
 mod general;
 mod headless;
 mod ipc;

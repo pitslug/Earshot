@@ -584,6 +584,7 @@ describe("meeting screen", () => {
           started_at_ms: START - 3_600_000,
           duration_ms: 1_800_000,
           state: "Ready",
+          folder_id: null,
         },
       ],
     });

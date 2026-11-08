@@ -93,6 +93,21 @@ export const commands = {
 	 *  holds it).
 	 */
 	deleteMeeting: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("delete_meeting", { meeting })),
+	/**  Every live folder, by name. */
+	listFolders: () => typedError<FolderListItem[], IpcError>(__TAURI_INVOKE("list_folders")),
+	/**  Creates a folder; returns its id. Refuses an unusable name or one another folder has. */
+	createFolder: (name: string) => typedError<string, IpcError>(__TAURI_INVOKE("create_folder", { name })),
+	/**  Renames a folder. Refuses an unusable name or one another folder has. */
+	renameFolder: (folder: string, name: string) => typedError<null, IpcError>(__TAURI_INVOKE("rename_folder", { folder, name })),
+	/**  Moves a meeting into a folder, or out of any (`None`). Refused while it records. */
+	moveToFolder: (meeting: string, folder: string | null) => typedError<null, IpcError>(__TAURI_INVOKE("move_to_folder", { meeting, folder })),
+	/**  Deletes a folder; its meetings stay and show in "All meetings". */
+	deleteFolderKeepingMeetings: (folder: string) => typedError<FolderDeleted, IpcError>(__TAURI_INVOKE("delete_folder_keeping_meetings", { folder })),
+	/**
+	 *  Deletes a folder and its meetings. A meeting that is busy stays, and the folder stays with
+	 *  it: the result says how many were deleted and how many are left.
+	 */
+	deleteFolderWithMeetings: (folder: string) => typedError<FolderDeleted, IpcError>(__TAURI_INVOKE("delete_folder_with_meetings", { folder })),
 	/**
 	 *  This computer's hardware as read (processor, graphics, NPU, memory) and the parts this
 	 *  build runs models on, best first.
@@ -812,6 +827,29 @@ export type FirstRunView = {
 	declined_models: string[],
 };
 
+/**  What deleting a folder did: counts only. */
+export type FolderDeleted = {
+	/**
+	 *  Whether the folder is gone. `false` only when some of its meetings could not be deleted:
+	 *  the folder then stays with them.
+	 */
+	folder_deleted: boolean,
+	/**  Meetings deleted with the folder. */
+	meetings_deleted: number,
+	/**  Meetings still in the folder because their deletion failed (busy). */
+	meetings_left: number,
+	/**  Meetings that lost their folder and now show only in "All meetings". */
+	meetings_unfiled: number,
+};
+
+/**  A live folder as the side panel shows it. */
+export type FolderListItem = {
+	/**  Folder id (hyphenated UUID). */
+	id: string,
+	/**  Its name. */
+	name: string,
+};
+
 /**  The General page. */
 export type GeneralView = {
 	/**  Earshot starts with Windows (`null` when it cannot be read). */
@@ -1136,6 +1174,11 @@ export type MeetingListItem = {
 	duration_ms: number | null,
 	/**  Where it is in its life. */
 	state: MeetingState,
+	/**
+	 *  The folder it is in (folder id), resolved by `earshot_runtime::folders`: `None` for no
+	 *  folder and for one that is deleted or unknown.
+	 */
+	folder_id: string | null,
 };
 
 /**  Where a meeting is in its life ([`Services::meeting_activity`]). */

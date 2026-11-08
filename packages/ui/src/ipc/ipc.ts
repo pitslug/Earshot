@@ -94,6 +94,7 @@ import type {
 import type { BenchmarkCommands, BenchmarkEvent } from "./benchmark";
 import type { CudaCommands, CudaEvent } from "./cuda";
 import type { FirstRunCommands } from "./firstRun";
+import type { FolderCommands } from "./folders";
 import type { StorageCommands } from "./storage";
 import type { SummaryStyleCommands } from "./summaryStyle";
 
@@ -193,6 +194,7 @@ export interface IpcCommands
     SummaryStyleCommands,
     BenchmarkCommands,
     FirstRunCommands,
+    FolderCommands,
     CudaCommands {
   /** The app version and data directory. */
   appInfo(): Promise<AppInfo>;
@@ -389,6 +391,10 @@ type Missing =
   | Exclude<keyof IpcCommands, CommandName>
   | Exclude<keyof Ipc, CommandName | (typeof EVENT_METHODS)[number]>;
 export const everyCommandIsInIpc: [Missing] extends [never] ? true : never = true;
+
+/** The error kind every command fails with when the database was saved by a newer Earshot
+ * (`ipc::NEWER_DATA_KIND` in Rust): the app shows its own screen for it. */
+export const NEWER_DATA_KIND = "newer_data";
 
 /** A failed IPC call: carries the app's `IpcError`. */
 export class IpcFailure extends Error {

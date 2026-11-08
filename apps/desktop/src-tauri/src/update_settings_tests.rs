@@ -300,3 +300,19 @@ fn update_a_refused_start_leaves_the_app_open_for_work() {
     );
     drop(gate.enter_meeting().unwrap());
 }
+
+#[test]
+fn update_folders_newer_database_still_offers_the_check_by_hand() {
+    let dir = crate::testutil::TempDir::new("update-newer");
+    let state = AppState::open(crate::testutil::newer_database(&dir));
+    let (j, _) = jobs(Arc::new(Fake::default()));
+    let v = view(&state, &j).unwrap();
+    assert!(!v.auto_check);
+    assert_eq!(v.phase, UpdatePhase::Idle);
+    // Any other failure to open the store is still an error.
+    let broken = dir.0.join("broken");
+    std::fs::create_dir_all(broken.join("earshot.db")).unwrap();
+    let state = AppState::open(earshot_store::DataDir::new(broken));
+    let e = view(&state, &j).unwrap_err();
+    assert_ne!(e.kind, crate::ipc::NEWER_DATA_KIND);
+}

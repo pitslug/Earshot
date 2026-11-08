@@ -38,3 +38,16 @@ pub fn services(dir: &TempDir) -> Services {
     let store = data.open_store().unwrap();
     Services::new(store, data, Arc::new(ManualClock::new(T0))).unwrap()
 }
+
+/// A data folder in `dir` whose database a newer Earshot saved: a fresh store, closed, with
+/// SQLite's `user_version` (header bytes 60..64, big-endian) set past this build's.
+pub fn newer_database(dir: &TempDir) -> DataDir {
+    let data = DataDir::new(dir.0.join("newer"));
+    data.create().unwrap();
+    drop(data.open_store().unwrap());
+    let db = data.root().join("earshot.db");
+    let mut bytes = std::fs::read(&db).unwrap();
+    bytes[60..64].copy_from_slice(&9_999u32.to_be_bytes());
+    std::fs::write(&db, bytes).unwrap();
+    data
+}

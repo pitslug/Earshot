@@ -76,6 +76,17 @@ export function createTauriIpc(): Ipc {
     deleteMeeting: async (meeting) => {
       unwrap(await commands.deleteMeeting(meeting));
     },
+    listFolders: async () => unwrap(await commands.listFolders()),
+    createFolder: async (name) => unwrap(await commands.createFolder(name)),
+    renameFolder: async (folder, name) => {
+      unwrap(await commands.renameFolder(folder, name));
+    },
+    moveToFolder: async (meeting, folder) => {
+      unwrap(await commands.moveToFolder(meeting, folder));
+    },
+    deleteFolderKeepingMeetings: async (folder) =>
+      unwrap(await commands.deleteFolderKeepingMeetings(folder)),
+    deleteFolderWithMeetings: async (folder) => unwrap(await commands.deleteFolderWithMeetings(folder)),
     hardware: async () => unwrap(await commands.hardware()),
     models: async () => unwrap(await commands.models()),
     modelSettings: async () => unwrap(await commands.modelSettings()),

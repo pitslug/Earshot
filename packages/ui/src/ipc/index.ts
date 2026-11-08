@@ -1,5 +1,5 @@
 export { IpcProvider, useIpc } from "./context";
-export { EVENT_METHODS, IpcFailure, everyCommandIsInIpc } from "./ipc";
+export { EVENT_METHODS, IpcFailure, NEWER_DATA_KIND, everyCommandIsInIpc } from "./ipc";
 export type {
   ActionView,
   AudioCheckEvent,
@@ -133,6 +133,9 @@ export { BENCHMARK_MEETING_MS, BENCHMARK_STEP_MS, MOCK_BENCHMARK_FAILURE, create
 export type { BenchmarkMockData, MockBenchmarkEnd } from "./mockBenchmark";
 export type { SummaryStyleCommands, SummaryStyleView } from "./summaryStyle";
 export type { FirstRunCommands, FirstRunView } from "./firstRun";
+export type { FolderCommands, FolderDeleted, FolderListItem } from "./folders";
+export { SAMPLE_FOLDERS } from "./mockFolders";
+export type { FoldersMockData } from "./mockFolders";
 export type {
   CudaCommands,
   CudaEvent,

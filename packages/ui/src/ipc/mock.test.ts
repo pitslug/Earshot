@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { createManualTimer } from "../time";
 import { commands } from "./bindings";
-import { EVENT_METHODS, IpcFailure, type MeetingEvent, type ModelJobEvent } from "./ipc";
+import { EVENT_METHODS, IpcFailure, type MeetingEvent, type ModelJobEvent, NEWER_DATA_KIND } from "./ipc";
 import { POST_STEPS, POST_STEP_MS, SCRIPT_LINES, createMockIpc, sampleMeetings } from "./mock";
 import { CHECK_RUNNING_MESSAGE, DOWNLOADING_MESSAGE, MOCK_FALLBACK_MODEL, MODEL_STEP_MS } from "./mockModels";
+import { SAMPLE_FOLDERS } from "./mockFolders";
 import { createTauriIpc } from "./tauri";
 
 describe("mock IPC", () => {
@@ -33,8 +34,8 @@ describe("mock IPC", () => {
 
   it("serves the meetings it was given, sorted, as copies", async () => {
     const meetings = [
-      { id: "1", title: "Old", started_at_ms: 10, duration_ms: 5, state: "Ready" as const },
-      { id: "2", title: "New", started_at_ms: 20, duration_ms: null, state: "Recording" as const },
+      { id: "1", title: "Old", started_at_ms: 10, duration_ms: 5, state: "Ready" as const, folder_id: null },
+      { id: "2", title: "New", started_at_ms: 20, duration_ms: null, state: "Recording" as const, folder_id: null },
     ];
     const ipc = createMockIpc({ meetings });
     const listed = await ipc.listMeetings();
@@ -345,5 +346,89 @@ describe("mock speech helpers (T9.1f)", () => {
     expect(events.filter((e) => e.type === "Downloaded")).toEqual([{ type: "Downloaded", model: "speech-helpers" }]);
     // The sample machine has transcription models installed, so the check follows.
     expect(events.map((e) => e.type)).toContain("Checked");
+  });
+
+  it("folders: the sample meetings sit in the sample folders, listed by name", async () => {
+    const ipc = createMockIpc();
+    expect((await ipc.listFolders()).map((f) => f.name)).toEqual(["Planning", "Supplier calls"]);
+    const filed = (await ipc.listMeetings()).filter((m) => m.folder_id !== null);
+    expect(filed.map((m) => m.folder_id).sort()).toEqual(SAMPLE_FOLDERS.map((f) => f.id).sort());
+    // Meetings given without folders come with none.
+    expect(await createMockIpc({ meetings: [] }).listFolders()).toEqual([]);
+  });
+
+  it("folders: create, rename and move refuse what Rust refuses, in its copy", async () => {
+    const ipc = createMockIpc({ meetings: [], timer: createManualTimer(0) });
+    const id = await ipc.createFolder("  Orchard ");
+    expect(await ipc.listFolders()).toEqual([{ id, name: "Orchard" }]);
+    const refusal = async (p: Promise<unknown>) => {
+      const e = await p.catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(IpcFailure);
+      return (e as IpcFailure).error;
+    };
+    expect(await refusal(ipc.createFolder("ORCHARD"))).toMatchObject({
+      kind: "folder_name_taken",
+      message: "Another folder already has this name.",
+    });
+    expect((await refusal(ipc.createFolder(" "))).kind).toBe("invalid_name");
+    expect((await refusal(ipc.createFolder("a\tb"))).kind).toBe("invalid_name");
+    expect((await refusal(ipc.renameFolder("gone", "Pears"))).kind).toBe("folder_not_found");
+    await ipc.renameFolder(id, "orchard");
+    expect((await ipc.listFolders())[0].name).toBe("orchard");
+
+    const meeting = await ipc.startMeeting("Call", null);
+    expect(await refusal(ipc.moveToFolder(meeting, id))).toMatchObject({
+      kind: "meeting_recording",
+      message: "A meeting can be moved to a folder once it has finished recording.",
+    });
+    await ipc.stopMeeting();
+    await ipc.moveToFolder(meeting, id);
+    expect((await ipc.listMeetings())[0].folder_id).toBe(id);
+    expect((await refusal(ipc.moveToFolder(meeting, "gone"))).kind).toBe("folder_not_found");
+    await ipc.moveToFolder(meeting, null);
+    expect((await ipc.listMeetings())[0].folder_id).toBeNull();
+  });
+
+  it("folders: deleting keeps or deletes the meetings, and a busy one keeps the folder", async () => {
+    const at = (id: string, folder: string | null) => ({
+      id,
+      title: id,
+      started_at_ms: Number(id.slice(1)),
+      duration_ms: 60_000,
+      state: "Ready" as const,
+      folder_id: folder,
+    });
+    const folders = [{ id: "f1", name: "One" }, { id: "f2", name: "Two" }];
+    const ipc = createMockIpc({
+      meetings: [at("m1", "f1"), at("m2", "f1"), at("m3", "f2"), at("m4", "f2"), at("m5", null)],
+      folders,
+      timer: createManualTimer(0),
+    });
+    expect(await ipc.deleteFolderKeepingMeetings("f1")).toEqual({
+      folder_deleted: true,
+      meetings_deleted: 0,
+      meetings_left: 0,
+      meetings_unfiled: 2,
+    });
+    expect((await ipc.listMeetings()).filter((m) => m.folder_id === null)).toHaveLength(3);
+
+    await ipc.retranscribe("m3");
+    expect(await ipc.deleteFolderWithMeetings("f2")).toEqual({
+      folder_deleted: false,
+      meetings_deleted: 1,
+      meetings_left: 1,
+      meetings_unfiled: 0,
+    });
+    expect((await ipc.listFolders()).map((f) => f.id)).toEqual(["f2"]);
+    expect((await ipc.listMeetings()).map((m) => m.id)).toEqual(["m5", "m3", "m2", "m1"]);
+  });
+
+  it("folders: a newer database refuses the lists with newer_data", async () => {
+    const ipc = createMockIpc({ newerData: true });
+    for (const p of [ipc.listMeetings(), ipc.listFolders()]) {
+      const e = await p.catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(IpcFailure);
+      expect((e as IpcFailure).error.kind).toBe(NEWER_DATA_KIND);
+    }
   });
 });

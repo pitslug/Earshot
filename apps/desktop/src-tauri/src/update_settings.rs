@@ -421,8 +421,13 @@ impl UpdateJobs {
 }
 
 fn view(state: &AppState, jobs: &UpdateJobs) -> Result<UpdateView, IpcError> {
-    let services = state.services()?;
-    let auto_check = earshot_runtime::update::auto_check(&services.store())?;
+    // A database saved by a newer Earshot cannot be opened, and installing the newer version is
+    // the way out (T9.5c): the check by hand stays on offer, with the automatic one off.
+    let auto_check = match state.services() {
+        Ok(services) => earshot_runtime::update::auto_check(&services.store())?,
+        Err(e) if e.kind == crate::ipc::NEWER_DATA_KIND => false,
+        Err(e) => return Err(e),
+    };
     Ok(UpdateView {
         current: env!("CARGO_PKG_VERSION").into(),
         phase: jobs.phase(),

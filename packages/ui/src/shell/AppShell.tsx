@@ -16,7 +16,9 @@ import {
   DialogSurface,
   DialogTitle,
   Menu,
+  MenuDivider,
   MenuItem,
+  MenuItemRadio,
   MenuList,
   MenuPopover,
   MenuTrigger,
@@ -24,6 +26,8 @@ import {
   MessageBarActions,
   MessageBarBody,
   MessageBarTitle,
+  Radio,
+  RadioGroup,
   Spinner,
   Title2,
   makeStyles,
@@ -32,14 +36,16 @@ import {
   useFocusFinders,
   useRestoreFocusTarget,
 } from "@fluentui/react-components";
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import {
   type CaptureMode,
+  type FolderListItem,
   IpcFailure,
   type JobKind,
   type MeetingEvent,
   type MeetingListItem,
+  NEWER_DATA_KIND,
   useIpc,
 } from "../ipc";
 import {
@@ -56,7 +62,11 @@ import { type SettingsSection, SettingsView } from "../settings/SettingsView";
 import { useThemeChoice } from "../theme/EarshotThemeProvider";
 import { type Timer, realTimer } from "../time";
 import { MeetingSearchBox, MeetingSearchResults, useMeetingSearch } from "./MeetingSearch";
+import { ALL_MEETINGS_KEY, type FolderEdit, FolderGroup, NEW_FOLDER_KEY } from "./Folders";
+import { folderDeletionCopy, meetingCount, meetingsInFolder } from "./folderRules";
 import { type DayGroup, displayTitle, groupByDay, secondaryLine } from "./meetings";
+import { openMenuFromKeyboard } from "./menuKeys";
+import { NewerDataScreen } from "./NewerDataScreen";
 
 const useStyles = makeStyles({
   root: {
@@ -225,6 +235,11 @@ const useStyles = makeStyles({
   meta: {
     color: tokens.colorNeutralForeground3,
   },
+  emptyFolder: {
+    display: "block",
+    paddingLeft: tokens.spacingHorizontalS,
+    color: tokens.colorNeutralForeground3,
+  },
   empty: {
     flexGrow: 1,
     display: "flex",
@@ -253,7 +268,15 @@ export interface AppShellProps {
 type Load =
   | { status: "loading" }
   | { status: "failed"; message: string }
-  | { status: "loaded"; meetings: MeetingListItem[] };
+  // The database was saved by a newer Earshot: nothing can be read until it is installed.
+  | { status: "newer" }
+  | { status: "loaded"; meetings: MeetingListItem[]; folders: FolderListItem[] };
+
+/** A problem with a folder change, shown above the meeting pane until dismissed. */
+interface FolderNotice {
+  title: string;
+  text: string;
+}
 
 /** What the right-hand pane shows. */
 type View = "detail" | "start" | "meeting" | "settings" | "first-run";
@@ -325,6 +348,19 @@ export function AppShell({
   const refocusAfterDelete = useRef<string | null>(null);
   const newMeetingButton = useRef<HTMLButtonElement | null>(null);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
+  // The folder shown: "All meetings" (`null`) each time the app opens, never stored.
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [folderEdit, setFolderEdit] = useState<FolderEdit | null>(null);
+  // The folder the delete dialog asks about, and the choice in it (keeping the meetings is the
+  // default).
+  const [deletingFolder, setDeletingFolder] = useState<FolderListItem | null>(null);
+  const [deleteFolderMeetings, setDeleteFolderMeetings] = useState(false);
+  const [folderDeletePending, setFolderDeletePending] = useState(false);
+  const folderDeleteRunning = useRef(false);
+  const [folderNotice, setFolderNotice] = useState<FolderNotice | null>(null);
+  const folderButtons = useRef(new Map<string, HTMLButtonElement>());
+  // Where focus goes once the folders are drawn again: a `folderButtons` key or `meeting:<id>`.
+  const focusAfterFolders = useRef<string | null>(null);
   const refresh = useCallback(() => setReload((n) => n + 1), []);
   const search = useMeetingSearch(ipc, timer, reload);
   // Jobs on stored meetings, followed here so an ending is seen whatever meeting is shown.
@@ -429,16 +465,22 @@ export function AppShell({
 
   useEffect(() => {
     let current = true;
-    ipc.listMeetings().then(
-      (meetings) => {
+    Promise.all([ipc.listMeetings(), ipc.listFolders()]).then(
+      ([meetings, folders]) => {
         if (!current) return;
-        setLoad({ status: "loaded", meetings });
+        setLoad({ status: "loaded", meetings, folders });
         setSelectedId((sel) =>
           sel !== null && meetings.some((m) => m.id === sel) ? sel : (meetings[0]?.id ?? null),
         );
+        // A folder deleted (here or by another device) shows "All meetings" again.
+        setSelectedFolder((f) => (f !== null && folders.some((x) => x.id === f) ? f : null));
       },
       (error: unknown) => {
         if (!current) return;
+        if (error instanceof IpcFailure && error.error.kind === NEWER_DATA_KIND) {
+          setLoad({ status: "newer" });
+          return;
+        }
         const message =
           error instanceof IpcFailure || error instanceof Error ? error.message : String(error);
         setLoad({ status: "failed", message });
@@ -455,16 +497,32 @@ export function AppShell({
     if (compact && meeting?.phase !== "recording") goCompact(false);
   }, [compact, meeting?.phase, goCompact]);
 
+  const meetings = load.status === "loaded" ? load.meetings : [];
+  const folders = load.status === "loaded" ? load.folders : [];
+  const visible = meetingsInFolder(meetings, selectedFolder);
+  const selected = meetings.find((m) => m.id === selectedId) ?? null;
+
+  // A deleted row, or one moved out of the folder shown, took keyboard focus with it.
   useEffect(() => {
     const gone = refocusAfterDelete.current;
-    if (gone === null || load.status !== "loaded" || load.meetings.some((m) => m.id === gone)) return;
+    if (gone === null || load.status !== "loaded" || visible.some((m) => m.id === gone)) return;
     refocusAfterDelete.current = null;
     const row = selectedId !== null ? rowButtons.current.get(selectedId) : undefined;
     (row ?? newMeetingButton.current)?.focus();
-  }, [load, selectedId]);
+  });
 
-  const meetings = load.status === "loaded" ? load.meetings : [];
-  const selected = meetings.find((m) => m.id === selectedId) ?? null;
+  // After a folder input closes or a folder is deleted, focus goes where it makes sense.
+  useEffect(() => {
+    const target = focusAfterFolders.current;
+    if (target === null) return;
+    const el = target.startsWith("meeting:")
+      ? rowButtons.current.get(target.slice("meeting:".length))
+      : (folderButtons.current.get(target) ??
+        (target === ALL_MEETINGS_KEY ? folderButtons.current.get(NEW_FOLDER_KEY) : undefined));
+    if (el === undefined) return;
+    focusAfterFolders.current = null;
+    el.focus();
+  });
 
   // Only a recording meeting keeps the next one out; one that is finishing goes on behind it.
   const newMeeting = () => setView(meeting?.phase === "recording" ? "meeting" : "start");
@@ -533,6 +591,83 @@ export function AppShell({
       setDeletePending(false);
     }
   };
+
+  const submitFolderName = async (name: string): Promise<string | null> => {
+    const edit = folderEdit;
+    if (edit === null) return null;
+    try {
+      if (edit.kind === "new") {
+        const id = await ipc.createFolder(name);
+        if (edit.moveMeeting !== null) {
+          try {
+            await ipc.moveToFolder(edit.moveMeeting, id);
+          } catch (e) {
+            setFolderNotice({ title: "The meeting was not moved", text: failureText(e) });
+          }
+        }
+        focusAfterFolders.current = id;
+      } else {
+        await ipc.renameFolder(edit.folder.id, name);
+        focusAfterFolders.current = edit.folder.id;
+      }
+      setFolderEdit(null);
+      refresh();
+      return null;
+    } catch (e) {
+      return failureText(e);
+    }
+  };
+  const cancelFolderEdit = () => {
+    const edit = folderEdit;
+    if (edit !== null) {
+      focusAfterFolders.current =
+        edit.kind === "rename"
+          ? edit.folder.id
+          : edit.moveMeeting !== null
+            ? `meeting:${edit.moveMeeting}`
+            : NEW_FOLDER_KEY;
+    }
+    setFolderEdit(null);
+  };
+  const moveMeeting = async (item: MeetingListItem, folder: string | null) => {
+    try {
+      await ipc.moveToFolder(item.id, folder);
+      if (selectedFolder !== null && folder !== selectedFolder) refocusAfterDelete.current = item.id;
+      refresh();
+    } catch (e) {
+      setFolderNotice({ title: "The meeting was not moved", text: failureText(e) });
+    }
+  };
+  const askDeleteFolder = (folder: FolderListItem) => {
+    setDeleteFolderMeetings(false);
+    setDeletingFolder(folder);
+  };
+  const confirmDeleteFolder = async (folder: FolderListItem) => {
+    if (folderDeleteRunning.current) return;
+    folderDeleteRunning.current = true;
+    setFolderDeletePending(true);
+    try {
+      const done = deleteFolderMeetings
+        ? await ipc.deleteFolderWithMeetings(folder.id)
+        : await ipc.deleteFolderKeepingMeetings(folder.id);
+      setDeletingFolder(null);
+      const left = folderDeletionCopy(done);
+      setFolderNotice(left === null ? null : { title: "The folder was not deleted", text: left });
+      if (done.folder_deleted) {
+        setSelectedFolder((f) => (f === folder.id ? null : f));
+        focusAfterFolders.current = ALL_MEETINGS_KEY;
+      }
+      refresh();
+    } catch (e) {
+      setDeletingFolder(null);
+      setFolderNotice({ title: "The folder was not deleted", text: failureText(e) });
+    } finally {
+      folderDeleteRunning.current = false;
+      setFolderDeletePending(false);
+    }
+  };
+  const deletingCount =
+    deletingFolder === null ? 0 : meetings.filter((m) => m.folder_id === deletingFolder.id).length;
 
   // What the tray, the shortcut and notifications ask of the window. The latest handlers are
   // read through a ref so the subscription lasts the window's life.
@@ -673,6 +808,21 @@ export function AppShell({
     );
   }
 
+  if (load.status === "newer") {
+    return (
+      <>
+        <NewerDataScreen
+          onCheckForUpdates={() => {
+            setSettingsSection("General");
+            setView("settings");
+            onOpenSettings();
+          }}
+        />
+        {quitDialog}
+      </>
+    );
+  }
+
   const showMeeting = view === "meeting";
   return (
     <div className={styles.root}>
@@ -700,15 +850,38 @@ export function AppShell({
               onPick={pickResult}
             />
           )}
-          {!search.active && meetings.length > 0 && (
+          {!search.active && load.status === "loaded" && (meetings.length > 0 || folders.length > 0) && (
+            <FolderGroup
+              folders={folders}
+              selected={selectedFolder}
+              onSelect={setSelectedFolder}
+              edit={folderEdit}
+              onNewFolder={() => setFolderEdit({ kind: "new", moveMeeting: null })}
+              onRename={(folder) => setFolderEdit({ kind: "rename", folder })}
+              onDelete={askDeleteFolder}
+              onSubmitName={submitFolderName}
+              onCancelEdit={cancelFolderEdit}
+              buttonRef={(key, el) => {
+                if (el) folderButtons.current.set(key, el);
+                else folderButtons.current.delete(key);
+              }}
+            />
+          )}
+          {!search.active && selectedFolder !== null && visible.length === 0 && (
+            <Caption1 className={styles.emptyFolder}>No meetings in this folder.</Caption1>
+          )}
+          {!search.active && visible.length > 0 && (
             <ul className={styles.list} aria-label="Meetings">
-              {groupByDay(meetings, now()).map((group) => (
+              {groupByDay(visible, now()).map((group) => (
                 <MeetingGroup
                   key={group.label}
                   group={group}
                   selectedId={view === "start" ? null : selectedId}
+                  folders={folders}
                   onSelect={select}
                   onDelete={setDeleting}
+                  onMove={(item, folder) => void moveMeeting(item, folder)}
+                  onNewFolderFor={(item) => setFolderEdit({ kind: "new", moveMeeting: item.id })}
                   rowRef={(id, el) => {
                     if (el) rowButtons.current.set(id, el);
                     else rowButtons.current.delete(id);
@@ -754,6 +927,19 @@ export function AppShell({
               <MessageBarTitle>The meeting could not be stopped</MessageBarTitle>
               {stopError}
             </MessageBarBody>
+          </MessageBar>
+        )}
+        {folderNotice !== null && (
+          <MessageBar intent="warning" layout="multiline">
+            <MessageBarBody>
+              <MessageBarTitle>{folderNotice.title}</MessageBarTitle>
+              {folderNotice.text}
+            </MessageBarBody>
+            <MessageBarActions>
+              <Button size="small" appearance="transparent" onClick={() => setFolderNotice(null)}>
+                Dismiss
+              </Button>
+            </MessageBarActions>
           </MessageBar>
         )}
         {deleteError !== null && (
@@ -847,19 +1033,57 @@ export function AppShell({
           </DialogBody>
         </DialogSurface>
       </Dialog>
+      {/* Here, not in the Folders group: a delete unmounts the folder's row, and a dialog that
+          unmounts with its own screen leaves the page hidden from screen readers (T7.3d). */}
+      <Dialog
+        modalType="alert"
+        open={deletingFolder !== null}
+        onOpenChange={(_, d) => {
+          if (!d.open && !folderDeleteRunning.current) setDeletingFolder(null);
+        }}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Delete the folder &quot;{deletingFolder?.name ?? ""}&quot;?</DialogTitle>
+            <DialogContent>
+              {deletingCount === 0 ? (
+                "The folder is empty, so only the folder goes."
+              ) : (
+                <>
+                  <Body1 as="p">This folder holds {meetingCount(deletingCount)}.</Body1>
+                  <RadioGroup
+                    aria-label="What happens to its meetings"
+                    value={deleteFolderMeetings ? "delete" : "keep"}
+                    onChange={(_, d) => setDeleteFolderMeetings(d.value === "delete")}
+                  >
+                    <Radio value="keep" label="Keep the meetings. They stay in All meetings." />
+                    <Radio
+                      value="delete"
+                      label="Delete the meetings too, with their recordings, transcripts, summaries and speaker names. Notes in your Obsidian vault stay."
+                    />
+                  </RadioGroup>
+                </>
+              )}
+            </DialogContent>
+            <DialogActions>
+              {/* Focusable while disabled: focus must not fall out of the open modal. */}
+              <Button
+                appearance="primary"
+                disabledFocusable={folderDeletePending}
+                onClick={() => {
+                  if (deletingFolder !== null) void confirmDeleteFolder(deletingFolder);
+                }}
+              >
+                {deleteFolderMeetings && deletingCount > 0 ? "Delete folder and meetings" : "Delete folder"}
+              </Button>
+              <Button disabledFocusable={folderDeletePending} onClick={() => setDeletingFolder(null)}>
+                Cancel
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
     </div>
-  );
-}
-
-/** The Menu key and Shift+F10 open the row's menu, under the row. Windows normally turns them into
- * a `contextmenu` event itself; doing it here does not depend on that, and opening an open menu
- * changes nothing. */
-function openMenuFromKeyboard(e: KeyboardEvent<HTMLElement>) {
-  if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
-  e.preventDefault();
-  const r = e.currentTarget.getBoundingClientRect();
-  e.currentTarget.dispatchEvent(
-    new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 16, clientY: r.bottom }),
   );
 }
 
@@ -874,14 +1098,20 @@ function TrashIcon() {
 function MeetingGroup({
   group,
   selectedId,
+  folders,
   onSelect,
   onDelete,
+  onMove,
+  onNewFolderFor,
   rowRef,
 }: {
   group: DayGroup;
   selectedId: string | null;
+  folders: FolderListItem[];
   onSelect: (id: string) => void;
   onDelete: (item: MeetingListItem) => void;
+  onMove: (item: MeetingListItem, folder: string | null) => void;
+  onNewFolderFor: (item: MeetingListItem) => void;
   rowRef: (id: string, el: HTMLButtonElement | null) => void;
 }) {
   const styles = useStyles();
@@ -930,6 +1160,32 @@ function MeetingGroup({
                   </MenuTrigger>
                   <MenuPopover>
                     <MenuList>
+                      {/* A meeting is filed once it has finished recording. */}
+                      <Menu>
+                        <MenuTrigger disableButtonEnhancement>
+                          <MenuItem disabled={m.state === "Recording"}>Move to folder</MenuItem>
+                        </MenuTrigger>
+                        <MenuPopover>
+                          <MenuList
+                            checkedValues={{ folder: [m.folder_id ?? ""] }}
+                            onCheckedValueChange={(_, d) => {
+                              const to = d.checkedItems[0] ?? "";
+                              if (to !== (m.folder_id ?? "")) onMove(m, to === "" ? null : to);
+                            }}
+                          >
+                            {folders.map((f) => (
+                              <MenuItemRadio key={f.id} name="folder" value={f.id}>
+                                {f.name}
+                              </MenuItemRadio>
+                            ))}
+                            {folders.length > 0 && <MenuDivider />}
+                            <MenuItem onClick={() => onNewFolderFor(m)}>New folder...</MenuItem>
+                            <MenuItemRadio name="folder" value="">
+                              No folder
+                            </MenuItemRadio>
+                          </MenuList>
+                        </MenuPopover>
+                      </Menu>
                       <MenuItem onClick={() => onDelete(m)}>Delete meeting...</MenuItem>
                     </MenuList>
                   </MenuPopover>
@@ -977,6 +1233,8 @@ function Detail({
   if (load.status === "loading") {
     return <Spinner label="Loading meetings" />;
   }
+  // The whole window shows the newer-data screen instead.
+  if (load.status === "newer") return null;
   if (load.status === "failed") {
     return (
       <MessageBar intent="error">

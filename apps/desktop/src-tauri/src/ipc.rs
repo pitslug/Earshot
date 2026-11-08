@@ -7,10 +7,11 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
+use earshot_core::identity::EntityId;
 use earshot_core::model::{Meeting, MeetingRepo};
 use earshot_runtime::search::MatchedIn;
 use earshot_runtime::{MeetingActivity, RuntimeError, Services, SystemClock};
-use earshot_store::DataDir;
+use earshot_store::{DataDir, StoreError};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::State;
@@ -61,6 +62,12 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             undo_summary,
             export_meeting,
             delete_meeting,
+            crate::folders::list_folders,
+            crate::folders::create_folder,
+            crate::folders::rename_folder,
+            crate::folders::move_to_folder,
+            crate::folders::delete_folder_keeping_meetings,
+            crate::folders::delete_folder_with_meetings,
             hardware,
             models,
             model_settings,
@@ -158,8 +165,19 @@ impl IpcError {
     }
 }
 
+/// What the app says when its database was saved by a newer Earshot (T9.5c): the store is
+/// not touched, and every command fails with kind [`NEWER_DATA_KIND`].
+pub const NEWER_DATA_COPY: &str =
+    "This data was saved by a newer version of Earshot. Install the latest version to open it.";
+
+/// The error kind of a database saved by a newer Earshot; the UI shows its own screen for it.
+pub const NEWER_DATA_KIND: &str = "newer_data";
+
 impl From<RuntimeError> for IpcError {
     fn from(e: RuntimeError) -> Self {
+        if let RuntimeError::Store(StoreError::SchemaTooNew { .. }) = &e {
+            return Self::new(NEWER_DATA_KIND, NEWER_DATA_COPY);
+        }
         // Edit refusals carry plain user copy; everything else the runtime's own text, never
         // a developer command (`plain_text`).
         if let RuntimeError::Edit(edit) = &e {
@@ -276,21 +294,25 @@ pub struct MeetingListItem {
     pub duration_ms: Option<u64>,
     /// Where it is in its life.
     pub state: MeetingState,
+    /// The folder it is in (folder id), resolved by `earshot_runtime::folders`: `None` for no
+    /// folder and for one that is deleted or unknown.
+    pub folder_id: Option<String>,
 }
 
 impl MeetingListItem {
-    fn of(m: &Meeting, state: MeetingState) -> Self {
+    fn of(m: &Meeting, state: MeetingState, folder: Option<EntityId>) -> Self {
         Self {
             id: m.id.to_string(),
             title: m.title.clone(),
             started_at_ms: i64::try_from(m.started_unix_ms).unwrap_or(i64::MAX),
             duration_ms: m.duration_ms,
             state,
+            folder_id: folder.map(|f| f.to_string()),
         }
     }
 }
 
-/// The live meetings, newest first, each with its activity.
+/// The live meetings, newest first, each with its activity and resolved folder.
 ///
 /// # Errors
 /// Store errors.
@@ -299,13 +321,15 @@ pub fn meeting_list(services: &Services) -> Result<Vec<MeetingListItem>, IpcErro
         let db = services.store();
         db.meetings().map_err(RuntimeError::from)?
     };
+    // Never the raw `Meeting::folder_id`: a deleted or unknown folder reads as none.
+    let filed = earshot_runtime::folders::meeting_folders(services)?;
     let mut items: Vec<(u64, MeetingListItem)> = Vec::new();
     for m in meetings.iter().filter(|m| !m.meta.deleted) {
         // `None`: deleted since the read above.
         if let Some(activity) = services.meeting_activity(m.id)? {
             items.push((
                 m.started_unix_ms,
-                MeetingListItem::of(m, MeetingState::of(activity)),
+                MeetingListItem::of(m, MeetingState::of(activity), filed.get(&m.id).copied()),
             ));
         }
     }

@@ -1508,7 +1508,7 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T9.5a
   - do: `earshot_runtime::folders`, the one owner of folder reads and edits: create, rename, move (refused while recording), delete keeping meetings, delete with meetings (each through `Services::delete_meeting`, no lock held across the loop, closing transaction re-selects members, then `flush_erasures`; failures leave the folder with what is left and return counts), resolve (a dangling id reads as no folder). Case-insensitive unique live names checked in the transaction; `EditError` cases that never quote a name. Tests in docs/folders-design.md "Tests to write".
   - accept: `cargo test -p earshot-runtime folders`
-- [ ] T9.5c Folders: UI
+- [x] T9.5c Folders: UI
   - deps: T9.5b
   - do: IPC commands and bindings; the Folders group, the filter (opens on All meetings), Move to folder in the row menu, Rename and Delete with the two-choice dialog (keeping the meetings is the default) in `AppShell`; the start-up screen for a database saved by a newer Earshot. Screens checked light and dark.
   - accept: `cargo test -p earshot-desktop folders`; `cmd /c pnpm -r test`

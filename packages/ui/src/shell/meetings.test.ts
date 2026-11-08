@@ -8,7 +8,7 @@ const at = (day: number, hour: number, minute = 0) =>
   new Date(2026, 10, day, hour, minute).getTime();
 
 function meeting(id: string, started: number, duration: number | null = 30 * 60_000): MeetingListItem {
-  return { id, title: `Meeting ${id}`, started_at_ms: started, duration_ms: duration, state: "Ready" };
+  return { id, title: `Meeting ${id}`, started_at_ms: started, duration_ms: duration, state: "Ready", folder_id: null };
 }
 
 describe("groupByDay", () => {

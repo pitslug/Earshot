@@ -17,6 +17,7 @@ import {
   type MeetingDetail,
   type MeetingEvent,
   type MeetingListItem,
+  NEWER_DATA_KIND,
   type PersonItem,
   type PostStep,
   type RememberOutcome,
@@ -34,6 +35,7 @@ import {
   samplePersons,
   unmarkedMe,
 } from "./mockDetail";
+import type { FolderListItem } from "./folders";
 import { type SampleMachine, createModelsMock } from "./mockModels";
 import { searchSample } from "./mockSearch";
 import { type SettingsMockData, createSettingsMock } from "./mockSettings";
@@ -44,6 +46,7 @@ import { type CudaMockData, createCudaMock } from "./mockCuda";
 import { type AudioMockData, createAudioMock } from "./mockAudio";
 import { type AudioCheckMockData, createAudioCheckMock } from "./mockAudioCheck";
 import { type FirstRunMockData, createFirstRunMock } from "./mockFirstRun";
+import { SAMPLE_FOLDERS, createFoldersMock } from "./mockFolders";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -53,7 +56,7 @@ const DAY = 24 * HOUR;
 export const SAMPLE_NOW = Date.UTC(2026, 10, 2, 15, 0);
 
 /** Four sample meetings placed relative to `now`, newest first: two in the last few hours,
- * one about a day earlier and one last week. */
+ * one about a day earlier and one last week. The two oldest are filed in `SAMPLE_FOLDERS`. */
 export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
   return [
     {
@@ -62,6 +65,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       started_at_ms: now - 50 * MINUTE,
       duration_ms: 34 * MINUTE,
       state: "Processing",
+      folder_id: null,
     },
     {
       id: "0190f1a2-0000-7000-8000-000000000003",
@@ -69,6 +73,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       started_at_ms: now - 3 * HOUR,
       duration_ms: 47 * MINUTE,
       state: "Ready",
+      folder_id: null,
     },
     {
       id: "0190f1a2-0000-7000-8000-000000000002",
@@ -76,6 +81,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       started_at_ms: now - DAY - 2 * HOUR,
       duration_ms: 22 * MINUTE,
       state: "Ready",
+      folder_id: SAMPLE_FOLDERS[1].id,
     },
     {
       id: "0190f1a2-0000-7000-8000-000000000001",
@@ -83,6 +89,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       started_at_ms: now - 6 * DAY,
       duration_ms: 95 * MINUTE,
       state: "Ready",
+      folder_id: SAMPLE_FOLDERS[0].id,
     },
   ];
 }
@@ -202,6 +209,11 @@ export interface MockIpcData {
   firstRun?: FirstRunMockData;
   /** Offers to stop this long into a meeting (the preview's `?callEnded=1`). */
   callEndOfferAfterMs?: number;
+  /** The folders (default: `SAMPLE_FOLDERS` with the sample meetings, none with given ones). */
+  folders?: FolderListItem[];
+  /** The database was saved by a newer Earshot: the meeting and folder lists reject with
+   * `newer_data`, as every store command does in the app (the preview's `?newerData=1`). */
+  newerData?: boolean;
 }
 
 /** A 0.1 s silent 16 kHz mono WAV file, base64 (the mock's speaker sample). */
@@ -229,6 +241,10 @@ export const SILENT_WAV_BASE64 = (() => {
   for (const b of bytes) binary += String.fromCharCode(b);
   return btoa(binary);
 })();
+
+/** What the app says when its database was saved by a newer Earshot (`ipc::NEWER_DATA_COPY`). */
+export const NEWER_DATA_COPY =
+  "This data was saved by a newer version of Earshot. Install the latest version to open it.";
 
 /** What the mock's update host offers. */
 const UPDATE_VERSION = "9.9.9";
@@ -280,6 +296,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const fail = (kind: string, message: string, retryable = false): never => {
     throw new IpcFailure({ kind, message, retryable });
   };
+  const newerData = () => data.newerData === true;
 
   const record = (row: MeetingListItem, mode: CaptureMode, held: boolean) => {
     const call = mode === "Call";
@@ -403,6 +420,19 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     jobs.add(meeting);
   };
 
+  const foldersMock = createFoldersMock(meetings, data.folders ?? (data.meetings ? [] : SAMPLE_FOLDERS), {
+    call,
+    recording: (id) => live !== null && live.row.id === id,
+    busy: (id) => jobs.has(id) || (live !== null && live.row.id === id),
+    remove: (id) => {
+      meetings.splice(
+        meetings.findIndex((m) => m.id === id),
+        1,
+      );
+      details.delete(id);
+    },
+  });
+
   return {
     ...modelsMock,
     ...summariesMock,
@@ -420,11 +450,15 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     ...createBenchmarkMock(data.benchmark, timer),
     ...createCudaMock(data.machine ?? "surface", timer, data.cuda),
     ...createFirstRunMock(data.firstRun),
+    ...foldersMock,
+    listFolders: async () => (newerData() ? fail(NEWER_DATA_KIND, NEWER_DATA_COPY) : foldersMock.listFolders()),
     appInfo: async () => ({ ...appInfo }),
     listMeetings: async () =>
-      [...meetings]
-        .sort((a, b) => b.started_at_ms - a.started_at_ms || b.id.localeCompare(a.id))
-        .map((m) => ({ ...m })),
+      newerData()
+        ? fail(NEWER_DATA_KIND, NEWER_DATA_COPY)
+        : [...meetings]
+            .sort((a, b) => b.started_at_ms - a.started_at_ms || b.id.localeCompare(a.id))
+            .map((m) => ({ ...m })),
     searchMeetings: async (query) =>
       searchSample(meetings, (row) => details.get(row.id) ?? sampleDetail(row), query),
     startMeeting: async (mode, title) => {
@@ -438,6 +472,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         started_at_ms: timer.now(),
         duration_ms: null,
         state: "Recording",
+        folder_id: null,
       };
       meetings.push(row);
       const { cancel, speaking, tracks } = record(row, mode, held);
