@@ -75,6 +75,8 @@ fn assert_not_queued(seen: &Seen) {
 struct FakePreview {
     seen: Arc<Seen>,
     script: Script,
+    /// The backend it reports.
+    kind: BackendKind,
 }
 
 impl earshot_core::asr::Transcriber for FakePreview {
@@ -99,11 +101,50 @@ impl earshot_core::asr::Transcriber for FakePreview {
 
     fn backend_info(&self) -> BackendInfo {
         BackendInfo {
-            kind: BackendKind::Fake,
+            kind: self.kind,
             device: "fake".to_owned(),
             model: "fake".to_owned(),
         }
     }
+}
+
+/// A track's real transcriber reporting CUDA, as a meeting transcribed on the graphics card does.
+struct OnCuda(Box<dyn earshot_core::asr::Transcriber + Send>);
+
+impl earshot_core::asr::Transcriber for OnCuda {
+    fn transcribe(
+        &mut self,
+        audio: &MonoBuffer,
+        options: &TranscribeOptions,
+        cancel: &CancelToken,
+    ) -> Result<Transcription, AsrError> {
+        let mut t = self.0.transcribe(audio, options, cancel)?;
+        t.backend = self.backend_info();
+        Ok(t)
+    }
+
+    fn backend_info(&self) -> BackendInfo {
+        BackendInfo {
+            kind: BackendKind::Cuda,
+            ..self.0.backend_info()
+        }
+    }
+}
+
+/// [`factory_of`], with both tracks' transcribers reporting CUDA.
+fn cuda_factory_of(scene: &Scene) -> LiveAsrFactory {
+    let mut inner = factory_of(scene, Arc::default());
+    Box::new(move |track, entity| {
+        let mut asr = inner(track, entity)?;
+        if let Some(asr) = asr.as_mut() {
+            let real = std::mem::replace(
+                &mut asr.asr.transcriber,
+                Box::new(super::queue_tests::ContentWords),
+            );
+            asr.asr.transcriber = Box::new(OnCuda(real));
+        }
+        Ok(asr)
+    })
 }
 
 /// Words every decode agrees on, whatever the window.
@@ -124,7 +165,21 @@ fn loader(
         Ok(Box::new(FakePreview {
             seen: Arc::clone(&seen),
             script: Box::new(script),
+            kind: BackendKind::Fake,
         }) as Box<dyn earshot_core::asr::Transcriber + Send>)
+    })
+}
+
+/// A [`FakePreview`] answering `MARKER`-words that reports the backend it was loaded for, as a real
+/// session reports where ONNX Runtime placed it.
+fn fake_session_on(
+    seen: &Arc<Seen>,
+    on: &BackendInfo,
+) -> Box<dyn earshot_core::asr::Transcriber + Send> {
+    Box::new(FakePreview {
+        seen: Arc::clone(seen),
+        script: Box::new(marker_words),
+        kind: on.kind,
     })
 }
 
@@ -804,6 +859,99 @@ fn live_preview_own_voice_in_a_call_shows_both_tracks_and_reports_each() {
     }
     let (without, ..) = run_with(&scene, None, 331);
     assert_eq!(with, without);
+}
+
+/// T12.3a: in a meeting transcribed on CUDA, the far end's previews load on the track's backend and
+/// the user's own track's session loads on the CPU (`backends::load_preview_second_with`, the rule's
+/// own decision); each track's report says where its session ran.
+#[test]
+fn live_preview_own_voice_beside_cuda_loads_on_the_cpu_and_reports_it() {
+    use crate::preview_settings::PreviewChoice;
+    use earshot_hardware::{Gpu, Hardware};
+    let scene = scene_of(27);
+    let far = Arc::new(Seen::default());
+    let own = Arc::new(Seen::default());
+    let big = Hardware {
+        total_memory: Some(64 * 1024 * 1024 * 1024),
+        gpus: vec![Gpu {
+            name: "A card".to_owned(),
+            vendor_id: 0x10de,
+            dedicated_memory: Some(crate::backends::PREVIEW_MIN_CARD_MEMORY),
+            driver_version: None,
+            integrated: Some(false),
+            compute_capability: None,
+        }],
+        ..Hardware::default()
+    };
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let far_load: PreviewLoader = {
+        let (far, asked) = (Arc::clone(&far), Arc::clone(&asked));
+        Arc::new(move |backend: &BackendInfo| {
+            asked.lock().unwrap().push(("far", backend.kind));
+            Ok(fake_session_on(&far, backend))
+        })
+    };
+    let own_load: PreviewLoader = {
+        let (own, asked) = (Arc::clone(&own), Arc::clone(&asked));
+        Arc::new(move |backend: &BackendInfo| {
+            asked.lock().unwrap().push(("own", backend.kind));
+            crate::backends::load_preview_second_with(
+                backend,
+                &big,
+                PreviewChoice::Everyone,
+                |on| Ok(fake_session_on(&own, on)),
+            )
+        })
+    };
+    let config = LivePreviews {
+        own_voice: Some(own_load),
+        ..previews(far_load)
+    };
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let session = start_live(
+        fast_source(&scene),
+        svc.clone(),
+        config_with(Some(config)),
+        Some(cuda_factory_of(&scene)),
+        Box::new(ChaCha8Rng::seed_from_u64(341)),
+    )
+    .unwrap();
+    let (events, _) = collect(session);
+    // Both loaders were handed the track's backend: CUDA.
+    let mut asked = asked.lock().unwrap().clone();
+    asked.sort_unstable_by_key(|(slot, _)| *slot);
+    assert_eq!(
+        asked,
+        vec![("far", BackendKind::Cuda), ("own", BackendKind::Cuda)]
+    );
+    let mic = report_for(&events, TrackId::Mic);
+    assert_eq!(mic.backend, Some(BackendKind::Cpu), "{mic:?}");
+    assert_eq!(mic.off, None, "{mic:?}");
+    assert!(mic.decodes > 0, "{mic:?}");
+    let far_report = report_for(&events, TrackId::Reference);
+    assert_eq!(
+        far_report.backend,
+        Some(BackendKind::Cuda),
+        "{far_report:?}"
+    );
+    assert_eq!(far_report.off, None, "{far_report:?}");
+    assert!(shown_on(&events, TrackId::Mic));
+    assert!(shown_on(&events, TrackId::Reference));
+}
+
+/// A report says where its session ran, and nothing when no session loaded.
+#[test]
+fn live_preview_report_names_the_loaded_sessions_backend() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let (_, events, ..) = run_with(&scene, Some(previews(loader(&seen, marker_words))), 343);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.backend, Some(BackendKind::Fake), "{report:?}");
+    let refused: PreviewLoader = Arc::new(|_| Err("not on this backend".to_owned()));
+    let (_, events, ..) = run_with(&scene, Some(previews(refused)), 345);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.backend, None, "{report:?}");
 }
 
 /// Without the user's own track chosen a call is as before: the far end only, one report.

@@ -3,7 +3,7 @@
 //! people where the machine qualifies ([`crate::backends::previews_refused`], the one rule). "On"
 //! (the page's "Other people only") lets a machine below the memory limit try them; it cannot
 //! override the rest of that rule. "Everyone" does the same and adds the user's own track in a
-//! call where [`crate::backends::previews_refused_second`] allows a second session. The words are
+//! call where [`crate::backends::second_preview_backend`] allows a second session. The words are
 //! display only, so this setting never changes what is stored, and a setting never costs a
 //! recording.
 
@@ -11,7 +11,7 @@ use earshot_hardware::Hardware;
 use earshot_store::Store;
 
 use crate::RuntimeError;
-use crate::backends::{Accelerator, PREVIEW_MIN_MEMORY, previews_refused, previews_refused_second};
+use crate::backends::{Accelerator, PREVIEW_MIN_MEMORY, previews_refused, second_preview_backend};
 use crate::local::DeviceRecord;
 use earshot_core::asr::BackendKind;
 
@@ -98,8 +98,9 @@ pub const NOTE_NPU: &str = "Not available on this computer's NPU yet.";
 pub const NOTE_CARD: &str = "Your graphics card has too little memory for this.";
 /// Everyone chosen, and no room for the second session.
 pub const NOTE_EVERYONE_MEMORY: &str = "This computer shows them for the other people only: it needs more memory to run them for you too.";
-/// Everyone chosen, and the second session would be on the graphics card.
-pub const NOTE_EVERYONE_CARD: &str = "This computer shows them for the other people only: showing them for your own voice is not available on the graphics card yet.";
+/// Everyone chosen with transcription on the graphics card: the user's own words run on the
+/// processor (T12.3a).
+pub const NOTE_EVERYONE_PROCESSOR: &str = "Provisional words for your own voice run on the processor, so the graphics card keeps its room for the rest of the meeting.";
 
 /// The page for a machine whose transcription would lead with `lead`.
 #[must_use]
@@ -130,12 +131,10 @@ pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardwar
             below_limit.then_some(NOTE_ON_BELOW_LIMIT),
         ),
         PreviewChoice::Everyone => {
-            let note = if previews_refused_second(backend, hardware, choice).is_none() {
-                below_limit.then_some(NOTE_ON_BELOW_LIMIT)
-            } else if backend == BackendKind::Cuda {
-                Some(NOTE_EVERYONE_CARD)
-            } else {
-                Some(NOTE_EVERYONE_MEMORY)
+            let note = match second_preview_backend(backend, hardware, choice) {
+                Ok(second) if second != backend => Some(NOTE_EVERYONE_PROCESSOR),
+                Ok(_) => below_limit.then_some(NOTE_ON_BELOW_LIMIT),
+                Err(_) => Some(NOTE_EVERYONE_MEMORY),
             };
             (PreviewSetting::Everyone, note)
         }
@@ -347,17 +346,49 @@ mod tests {
         );
     }
 
+    /// T12.3a: beside CUDA the user's own words run on the processor, and the page says so.
     #[test]
-    fn preview_everyone_on_the_graphics_card_says_it_is_not_there_yet() {
+    fn preview_everyone_beside_the_graphics_card_says_your_words_run_on_the_processor() {
         let m = machine(Some(64 * GIB), Some(PREVIEW_MIN_CARD_MEMORY));
         assert_eq!(
             preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &m),
             PreviewPage {
                 shown: PreviewSetting::Everyone,
                 can_change: true,
-                note: Some(NOTE_EVERYONE_CARD)
+                note: Some(NOTE_EVERYONE_PROCESSOR)
             }
         );
+        // On the CPU nothing moves, so nothing is said.
+        assert_eq!(
+            preview_page(PreviewChoice::Everyone, Accelerator::Cpu, &m).note,
+            None
+        );
+        // "Other people only" beside CUDA runs no second session: no note.
+        assert_eq!(
+            preview_page(PreviewChoice::On, Accelerator::Cuda, &m).note,
+            None
+        );
+    }
+
+    /// Beside CUDA the second session needs the CPU's memory limit, as on the CPU.
+    #[test]
+    fn preview_everyone_beside_the_graphics_card_without_memory_for_both_says_so() {
+        let card = Some(PREVIEW_MIN_CARD_MEMORY);
+        for m in [
+            machine(Some(PREVIEW_BOTH_MIN_MEMORY - 1), card),
+            machine(None, card),
+        ] {
+            assert_eq!(
+                preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &m),
+                PreviewPage {
+                    shown: PreviewSetting::Everyone,
+                    can_change: true,
+                    note: Some(NOTE_EVERYONE_MEMORY)
+                },
+                "{:?}",
+                m.total_memory
+            );
+        }
     }
 
     #[test]
@@ -392,7 +423,7 @@ mod tests {
             NOTE_NPU,
             NOTE_CARD,
             NOTE_EVERYONE_MEMORY,
-            NOTE_EVERYONE_CARD,
+            NOTE_EVERYONE_PROCESSOR,
         ] {
             assert!(!note.contains('\u{2014}'), "{note}");
         }

@@ -16,8 +16,8 @@
 //! **Which tracks.** Each track has previews of its own ([`PreviewState`] by track), each with its
 //! own thread and model session: the far end in a call and the mic in the room
 //! ([`LivePreviews::load`]), plus the mic in a call when the user chose it for their own voice
-//! ([`LivePreviews::own_voice`], T9.14). A track's previews stopping never stops the other's, and
-//! each track sends its own [`PreviewReport`]. Without `own_voice` a mic in a call shows nothing:
+//! ([`LivePreviews::own_voice`], T9.14; on the CPU even when the track runs on CUDA, T12.3a). A
+//! track's previews stopping never stops the other's, and each track sends its own [`PreviewReport`]. Without `own_voice` a mic in a call shows nothing:
 //! far-end words leak into it until the echo filter removes them, and that filter works on settled
 //! text (`live_preview_mic_in_a_call_shows_no_far_end_word`).
 //!
@@ -184,6 +184,10 @@ pub struct PreviewReport {
     pub decodes_adding_nothing: u64,
     /// Seconds the model took to load, on the preview thread.
     pub load_s: f64,
+    /// Where the loaded session runs, as it reports itself (ONNX Runtime's placement for a real
+    /// model; `None`: no session loaded). It can differ from the track's: beside CUDA the user's own
+    /// track runs on the CPU (T12.3a).
+    pub backend: Option<earshot_core::asr::BackendKind>,
     /// Why previews stopped or never ran (`None`: they ran to the end).
     pub off: Option<String>,
 }
@@ -312,7 +316,11 @@ impl PreviewWork {
         }
         let loading = Instant::now();
         let mut transcriber = (self.previews.load)(&self.backend)?;
-        self.add(|r| r.load_s = loading.elapsed().as_secs_f64());
+        let ran = transcriber.backend_info().kind;
+        self.add(|r| {
+            r.load_s = loading.elapsed().as_secs_f64();
+            r.backend = Some(ran);
+        });
         let keep = PIPELINE_RATE.frames_for(self.previews.window);
         let min = PIPELINE_RATE.frames_for(MIN_PREVIEW_AUDIO) as u64;
         let options = TranscribeOptions::live();

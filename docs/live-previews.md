@@ -249,7 +249,9 @@ If it passes, `previews_refused_second` lets CUDA run the mic preview on the CPU
 | Peak private memory, bundled / continuous | 15.42 / 14.80 GiB | 17.95 / 17.27 GiB (+2.5) |
 | Card peak, bundled / continuous | 12,980 / 12,502 MiB | 12,970 / 12,570 MiB |
 
-Points 1, 2, 3 and 5 pass with room; point 4's mic median is 3.005 s against at most 3 s. Under the rule, CUDA keeps refusing the second session. The code is kept on branch `wip/T12.3a` for the owner's decision; nothing about it is on main.
+Points 1, 2, 3 and 5 pass with room; point 4's mic median is 3.005 s against at most 3 s, so the rule as written fails.
+
+**The owner's decision, 2026-11-09, after the result:** accepted. The 5 ms over the 3 s limit was judged no real difference, and on a smaller card the mic preview falling back to the CPU is fine. This is a decision made after measuring, not a pass under the rule. The code was merged from `wip/T12.3a`: with transcription on CUDA, Everyone runs the mic preview on the CPU within `PREVIEW_BOTH_MIN_MEMORY`, and the General page says so.
 
 ## Re-measuring on a quiet host
 
