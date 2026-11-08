@@ -30,7 +30,7 @@ use tauri_specta::Event;
 
 use crate::ipc::{AppState, IpcError};
 use crate::meeting::{DriverPhase, MeetingDriver, StartRequest};
-use crate::meeting_events::{MeetingEvent, SummaryEvent};
+use crate::meeting_events::{EndedReason, MeetingEvent, SummaryEvent};
 
 /// The argument of the `Run` value: started by Windows, stay in the tray.
 pub const AUTOSTART_ARG: &str = "--autostart";
@@ -394,6 +394,33 @@ pub fn listening_toast() -> Toast {
     }
 }
 
+/// The notification when a recording ends for `reason` with no window on screen, so a stop by the
+/// shortcut is confirmed before the summary arrives; `None` after the call-end stop, whose own
+/// notification already said it ([`call_end_stopped_toast`]). Fixed copy, never meeting content.
+#[must_use]
+pub fn ended_toast(reason: EndedReason, stopped_by_call_end: bool) -> Option<Toast> {
+    if stopped_by_call_end {
+        return None;
+    }
+    let (title, body) = match reason {
+        EndedReason::Stopped | EndedReason::Finished => (
+            "Recording saved",
+            "Earshot is finishing the meeting in the background.",
+        ),
+        EndedReason::Failed => (
+            "Recording stopped",
+            "Something went wrong. What was recorded is kept: open Earshot to see why.",
+        ),
+    };
+    Some(Toast {
+        title: title.into(),
+        body: body.into(),
+        click: ToastClick::Window,
+        buttons: Vec::new(),
+        stays: false,
+    })
+}
+
 /// The notification that the call seems to have ended (T9.4): fixed copy, and it stays on screen
 /// until it is answered or taken back.
 #[must_use]
@@ -516,6 +543,8 @@ pub struct Shell {
     has_tray: AtomicBool,
     /// The call-end question is open ([`call_end_open_after`]).
     call_end_open: AtomicBool,
+    /// The call-end offer stopped this recording ([`ended_toast`] says nothing more).
+    call_end_stopped: AtomicBool,
     #[cfg(windows)]
     toasts: crate::toast_win::Toaster,
 }
@@ -531,6 +560,7 @@ impl Shell {
             latch: Mutex::new(KeyLatch::default()),
             has_tray: AtomicBool::new(false),
             call_end_open: AtomicBool::new(false),
+            call_end_stopped: AtomicBool::new(false),
             #[cfg(windows)]
             toasts: crate::toast_win::Toaster::default(),
         }
@@ -741,11 +771,23 @@ impl Shell {
             self.take_back_call_end_toast();
         }
         match event {
+            MeetingEvent::Started { .. } => self.call_end_stopped.store(false, Ordering::SeqCst),
             MeetingEvent::CallEndOffer { open: true } if !self.window_watched() => {
                 self.notify(&call_end_toast(), None);
             }
-            MeetingEvent::CallEndStopped if !self.window_watched() => {
-                self.notify(&call_end_stopped_toast(), None);
+            MeetingEvent::CallEndStopped => {
+                self.call_end_stopped.store(true, Ordering::SeqCst);
+                if !self.window_watched() {
+                    self.notify(&call_end_stopped_toast(), None);
+                }
+            }
+            MeetingEvent::Ended { reason, .. } => {
+                let by_call_end = self.call_end_stopped.swap(false, Ordering::SeqCst);
+                if !self.window_watched()
+                    && let Some(toast) = ended_toast(*reason, by_call_end)
+                {
+                    self.notify(&toast, None);
+                }
             }
             _ => {}
         }

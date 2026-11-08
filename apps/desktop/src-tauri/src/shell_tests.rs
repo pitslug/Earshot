@@ -196,6 +196,41 @@ fn shell_notifications_never_carry_meeting_content() {
 }
 
 #[test]
+fn shell_a_recording_that_ends_says_so_once_with_fixed_copy() {
+    let saved = ended_toast(EndedReason::Stopped, false).unwrap();
+    assert_eq!(saved.title, "Recording saved");
+    assert_eq!(
+        saved.body,
+        "Earshot is finishing the meeting in the background."
+    );
+    assert_eq!(saved.click, ToastClick::Window);
+    assert!(saved.buttons.is_empty());
+    assert!(!saved.stays);
+    assert_eq!(ended_toast(EndedReason::Finished, false), Some(saved));
+    let failed = ended_toast(EndedReason::Failed, false).unwrap();
+    assert_eq!(failed.title, "Recording stopped");
+    assert_eq!(
+        failed.body,
+        "Something went wrong. What was recorded is kept: open Earshot to see why."
+    );
+    // The call-end stop already said "Earshot stopped recording": no second notification.
+    for reason in [
+        EndedReason::Stopped,
+        EndedReason::Finished,
+        EndedReason::Failed,
+    ] {
+        assert_eq!(ended_toast(reason, true), None, "{reason:?}");
+    }
+    for t in [ended_toast(EndedReason::Stopped, false), Some(failed)]
+        .into_iter()
+        .flatten()
+    {
+        let text = format!("{} {}", t.title, t.body);
+        assert!(!text.contains('\u{2014}') && !text.contains('!'), "{text}");
+    }
+}
+
+#[test]
 fn shell_no_notification_for_a_summary_nobody_asked_for() {
     assert_eq!(
         finished_toast(&SummaryEvent::Skipped {
