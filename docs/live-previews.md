@@ -149,7 +149,15 @@ The owner asked for grey words on their own voice in a call too: Settings, Gener
 
 The app refuses previews on the NPU (`backends::previews_refused`: "not measured on the NPU yet"). To measure them on the Surface, `live_lag` takes `--backend qnn` and an evaluation-only `--force-previews`, which loads the preview sessions through `backends::load_preview_unrefused`: the same load as the app's (background threads, the NPU conversion, `check_qnn_parakeet`), without the refusal. Nothing the app or `host::live_previews` decides changes; `backends_preview_unrefused_load_is_used_by_no_shipped_code` keeps it out of shipped code.
 
-**The rule for "the main transcript does not slow"** is written and committed by the coordinator before any of these runs. Not while the owner is in a meeting; plugged in (previews are off on battery); nothing else running.
+**The rule, written and committed 2026-11-09 before any NPU run** (judgements, not derived; not while the owner is in a meeting; plugged in, since previews are off on battery; nothing else running). Each of "on" and "everyone" is judged against "off" on the same audio, and passes only if it passes on both `bundled` and `continuous`:
+
+1. **It ran on the NPU.** Every preview session in `preview_sessions` reports `loaded.kind` Qnn with the encoder on `QNNExecutionProvider`, and both tracks' own sessions are on QNN. Otherwise the run says nothing about the NPU and is reported as such.
+2. **Stored words are identical.** `stored_sha256` matches "off" for every track.
+3. **The main transcript does not slow.** For each track, real decode rtf at most 1.5 times "off"'s (the NPU decodes at about 0.016, so contention for it shows as a multiple), and `catch_up_after_end_s` at most "off"'s plus 2 s. No audio dropped.
+4. **The previews are worth having.** `on_screen_lag_s` median at most 3 s on each previewed track, no preview turned off for slowness (`off` empty), and at most 2 slow pauses per track.
+5. **Memory leaves room on a 16 GB Surface.** In `--memory`, after the sessions the setting needs are loaded (two tracks' own plus one preview for "on", plus two for "everyone"), `system_free_gib` is at least 4 GiB.
+
+If "on" passes, QNN leaves `previews_refused` for "Other people only". If "everyone" also passes, `previews_refused_second` allows QNN. A failing setting stays refused, and the numbers and the failed point go here. Load time per NPU session (about 29 s) is reported, not judged: previews load after the track's own worker exists, so a meeting never waits for them.
 
 Build and run natively on the Surface, from the owner's own shell (the same build `cargo xtask model-eval --backend qnn` used there), with the models folder holding sets `qnn` (the plugin) and `qnn-models` (the NPU conversions) plus `ci` (VAD and speaker models). Add `--models <dir>` after `--backend qnn` if they are not in `%LOCALAPPDATA%\Earshot\models`. Each run is about 150 s of real time on the bundled meeting.
 
