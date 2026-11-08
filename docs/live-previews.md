@@ -145,6 +145,55 @@ The owner asked for grey words on their own voice in a call too: Settings, Gener
 - **Stored words are identical**: `stored_sha256` matches per track between the two runs.
 - **Far-end words on the mic**: the 42 that left are the reason the design above kept the mic off. The AMI headsets pick up the other speakers, and the mic's grey words show them until the settled, echo-cleaned text replaces them. On speakers without headphones expect more. Display only; the General page says so under Everyone.
 
+## NPU measurement (T12.4)
+
+The app refuses previews on the NPU (`backends::previews_refused`: "not measured on the NPU yet"). To measure them on the Surface, `live_lag` takes `--backend qnn` and an evaluation-only `--force-previews`, which loads the preview sessions through `backends::load_preview_unrefused`: the same load as the app's (background threads, the NPU conversion, `check_qnn_parakeet`), without the refusal. Nothing the app or `host::live_previews` decides changes; `backends_preview_unrefused_load_is_used_by_no_shipped_code` keeps it out of shipped code.
+
+**The rule for "the main transcript does not slow"** is written and committed by the coordinator before any of these runs. Not while the owner is in a meeting; plugged in (previews are off on battery); nothing else running.
+
+Build and run natively on the Surface, from the owner's own shell (the same build `cargo xtask model-eval --backend qnn` used there), with the models folder holding sets `qnn` (the plugin) and `qnn-models` (the NPU conversions) plus `ci` (VAD and speaker models). Add `--models <dir>` after `--backend qnn` if they are not in `%LOCALAPPDATA%\Earshot\models`. Each run is about 150 s of real time on the bundled meeting.
+
+Previews off:
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio bundled --previews off --out target\live-lag\qnn-off-bundled.json
+```
+
+The other people only (one preview session, the far end):
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio bundled --previews on --force-previews --out target\live-lag\qnn-on-bundled.json
+```
+
+Everyone (a preview session on each track: four NPU encoders with the two tracks' own sessions):
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio bundled --previews everyone --force-previews --out target\live-lag\qnn-everyone-bundled.json
+```
+
+Repeat the three with `--audio continuous --seconds 120` (file names `-continuous`). Memory and load time per session: `--memory` loads one track's own session, then a first and a second preview session as the app loads them (always past the refusal), each followed by three 12 s decodes. A call holds two track sessions, so a meeting adds one, two or three sessions to that for off, on and everyone; the replay runs above measure the whole meeting.
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --memory --out target\live-lag\qnn-memory.json
+```
+
+What to read:
+
+- `live_backends` and `onnx_placement`: each track's own session on QNN, from ONNX Runtime's placement (encoder on `QNNExecutionProvider`, prediction network and joint on the CPU).
+- `preview_refusal`: what the app would decide on this machine (`app_first`, `app_own_voice`) and `forced_past_it`. A run without `--force-previews` on the NPU shows the refusal in `preview_sessions[].not_loaded` and no previews: that is the app's behaviour, not a failure.
+- `preview_sessions`: one entry per preview load (`first` for the far end, `own_voice` for the mic under Everyone), `refusal_bypassed`, the backend the loaded session reports (`loaded.kind`, read from the encoder's placement) and each ONNX Runtime session's placement. A preview that did not reach the NPU has no `Qnn` there: say so beside its numbers.
+- The main transcript: `decodes_mic.rtf`, `decodes_reference.rtf`, `reference.word_lag_s` and `catch_up_after_end_s`, off against on and everyone, judged by the committed rule. `stored_sha256` must match between the runs of one audio.
+- The previews: `previews[]` per track (`rtf`, `slowest_s`, `slow_pauses`, `skipped_busy`, `off`), `reference.on_screen_lag_s` and, under Everyone, `mic.on_screen_lag_s`.
+- Memory: `host.peak_private_gib` per run; in `--memory`, each `session N loaded` stage (`role`: a track's own, first preview, second preview) with `load_s`, `backend`, `placement`, `private_gib` and `system_free_gib`. The NPU's memory may sit outside this process's private bytes, so read the machine's free memory too.
+
+**Sharing one copy of the model between NPU sessions: not measurable with how Earshot loads, so there is no `--share-npu`.** ONNX Runtime's key is `ep.share_ep_contexts` (`kOrtSessionOptionShareEpContexts`, "Share EP related resources across sessions", in `include/onnxruntime/core/session/onnxruntime_session_options_config_keys.h`, beside `ep.stop_share_ep_contexts` and `ep.context_enable`). In the QNN plugin Earshot loads (onnxruntime-qnn tag `v2.7.0`, `onnxruntime/core/providers/qnn/qnn_execution_provider.cc` and `shared_context.h`):
+
+1. Sharing works only for EP context models (a model holding `EPContext` nodes that point at a compiled QNN context binary, made with `ep.context_enable=1`): `GetCapability` takes the shared path only under `is_qnn_ctx_model && share_ep_contexts_`, and `Compile` looks graphs up in `SharedContext` only in `CompileContextModel`. Earshot loads the QDQ ONNX conversion and the plugin compiles it at every load, so the key would do nothing.
+2. Even with EP context models it does not let identical sessions share: `SharedContext::GetSharedQnnModel` moves the graph out of the shared list and erases it, so each graph name is taken by one session. It is made for one context binary holding several different graphs (QNN weight sharing across graphs), not for three sessions of one graph.
+3. The plugin's own `htp_share_resource_optimization=1` provider option shares the `QnnBackendManager` (backend handle and VTCM backup buffers) between sessions, not the weights; its exact provider-option key through the plugin interface is not confirmed here.
+
+So the NPU sessions of an Everyone meeting (two tracks' own and two previews) each hold their own compiled graph; `--memory` measures what that costs. Making them share would need a different design (one session serving several tracks, or a context binary with one graph per session) and is a separate task.
+
 ## Re-measuring on a quiet host
 
 Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`

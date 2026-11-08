@@ -1348,10 +1348,49 @@ pub fn load_preview_second(
     load_preview_session(models, backend)
 }
 
+/// A preview session loaded by [`load_preview_unrefused`], with the evidence of where it runs.
+pub struct EvaluatedPreview {
+    /// The session, as [`load_preview`] would have returned it.
+    pub transcriber: Box<dyn Transcriber + Send>,
+    /// Each ONNX Runtime session's requested provider and node placement, from ONNX Runtime's own
+    /// placement log (the load has already passed [`check_placement`], or [`check_qnn_parakeet`]
+    /// on QNN), never from the request.
+    pub placement: Vec<String>,
+}
+
+/// Evaluation only (T12.4, `live_lag --force-previews`): a preview session loaded exactly as
+/// [`load_preview`] and [`load_preview_second`] load one, without asking [`previews_refused`] or
+/// [`previews_refused_second`] first. It exists so the NPU can be measured while the app still
+/// refuses previews there; the app, the CLI and [`crate::host`] never call it (pinned by
+/// `backends_preview_unrefused_load_is_used_by_no_shipped_code`). Every other check stays: a
+/// whisper model, a missing file, a failed placement check or a preview thread that cannot lower
+/// its priority is still an `Err`.
+///
+/// # Errors
+/// As [`load_preview`], without its refusal.
+pub fn load_preview_unrefused(
+    models: &ModelDir,
+    backend: &BackendInfo,
+) -> Result<EvaluatedPreview, String> {
+    let session = load_preview_parakeet(models, backend)?;
+    let placement = session.backends().iter().map(ToString::to_string).collect();
+    Ok(EvaluatedPreview {
+        transcriber: Box::new(session),
+        placement,
+    })
+}
+
 fn load_preview_session(
     models: &ModelDir,
     backend: &BackendInfo,
 ) -> Result<Box<dyn Transcriber + Send>, String> {
+    Ok(Box::new(load_preview_parakeet(models, backend)?))
+}
+
+fn load_preview_parakeet(
+    models: &ModelDir,
+    backend: &BackendInfo,
+) -> Result<ParakeetTranscriber, String> {
     let Ok(AsrModel::Parakeet(model)) = asr_model(&backend.model) else {
         return Err("previews run on Parakeet only".to_owned());
     };
@@ -1362,7 +1401,7 @@ fn load_preview_session(
     if crate::priority::preview_pool_failed() {
         return Err("a preview thread could not lower its priority".to_owned());
     }
-    Ok(Box::new(session))
+    Ok(session)
 }
 
 /// [`load_parakeet`], on background threads when `background`.

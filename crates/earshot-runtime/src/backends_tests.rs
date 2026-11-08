@@ -1795,3 +1795,112 @@ fn backends_previews_everyone_lifts_the_first_sessions_memory_limit_like_on() {
         );
     }
 }
+
+/// T12.4: the NPU stays refused for previews, both sessions, whatever the choice; the loaders the
+/// app uses refuse before touching a file.
+#[test]
+fn backends_previews_stay_refused_on_the_npu_by_default() {
+    use crate::preview_settings::PreviewChoice;
+    use earshot_hardware::Hardware;
+    let big = Hardware {
+        total_memory: Some(64 * 1024 * 1024 * 1024),
+        ..Hardware::default()
+    };
+    for choice in [
+        PreviewChoice::Automatic,
+        PreviewChoice::On,
+        PreviewChoice::Everyone,
+    ] {
+        assert_eq!(
+            previews_refused(BackendKind::Qnn, &big, choice).as_deref(),
+            Some("not measured on the NPU yet"),
+            "{choice:?}"
+        );
+    }
+    assert_eq!(
+        previews_refused_second(BackendKind::Qnn, &big, PreviewChoice::Everyone).as_deref(),
+        Some("not measured on the NPU yet")
+    );
+    let empty = std::env::temp_dir().join(format!("earshot-preview-npu-{}", std::process::id()));
+    let models = ModelDir::new(&empty);
+    let npu = BackendInfo {
+        kind: BackendKind::Qnn,
+        device: "npu".to_owned(),
+        model: "parakeet-tdt-0.6b-v2".to_owned(),
+    };
+    for choice in [PreviewChoice::On, PreviewChoice::Everyone] {
+        let first = load_preview(&models, &npu, choice).err();
+        assert_eq!(first.as_deref(), Some("not measured on the NPU yet"));
+    }
+    let second = load_preview_second(&models, &npu, PreviewChoice::Everyone).err();
+    assert_eq!(second.as_deref(), Some("not measured on the NPU yet"));
+}
+
+/// T12.4: the evaluation load skips only the refusal: it goes on to load (and fails here on an
+/// empty models folder for a load reason), and every other rule still holds.
+#[test]
+fn backends_preview_unrefused_load_skips_only_the_refusal() {
+    let empty =
+        std::env::temp_dir().join(format!("earshot-preview-unrefused-{}", std::process::id()));
+    let models = ModelDir::new(&empty);
+    for kind in [BackendKind::Qnn, BackendKind::Cpu] {
+        let backend = BackendInfo {
+            kind,
+            device: String::new(),
+            model: "parakeet-tdt-0.6b-v2".to_owned(),
+        };
+        let Err(why) = load_preview_unrefused(&models, &backend) else {
+            panic!("{kind:?}: an empty models folder loaded a preview");
+        };
+        assert!(
+            !why.contains("not measured") && !why.contains("memory") && !why.contains("Settings"),
+            "{kind:?}: refused instead of loading: {why}"
+        );
+    }
+    let whisper = BackendInfo {
+        kind: BackendKind::Cpu,
+        device: String::new(),
+        model: "base.en".to_owned(),
+    };
+    assert_eq!(
+        load_preview_unrefused(&models, &whisper).err().as_deref(),
+        Some("previews run on Parakeet only")
+    );
+}
+
+/// T12.4: nothing shipped calls the evaluation load; only examples may.
+#[test]
+fn backends_preview_unrefused_load_is_used_by_no_shipped_code() {
+    fn scan(dir: &Path, found: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                if text.contains(concat!("load_preview_", "unrefused"))
+                    && !matches!(name, "backends.rs" | "backends_tests.rs")
+                {
+                    found.push(path);
+                }
+            }
+        }
+    }
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dirs = [
+        "crates/earshot-runtime/src",
+        "crates/earshot-cli/src",
+        "apps/desktop/src-tauri/src",
+    ];
+    let mut found = Vec::new();
+    for dir in dirs {
+        let dir = repo.join(dir);
+        assert!(dir.is_dir(), "{} is not a folder", dir.display());
+        scan(&dir, &mut found);
+    }
+    assert!(found.is_empty(), "shipped code calls it: {found:?}");
+}
