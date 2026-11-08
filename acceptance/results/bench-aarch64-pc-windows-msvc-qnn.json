@@ -1,0 +1,63 @@
+{
+  "asr": {
+    "audio_s": 300.0,
+    "backend": {
+      "device": "qnn:npu",
+      "kind": "qnn",
+      "model": "parakeet-tdt-0.6b-v2"
+    },
+    "commit": "33ffbbf",
+    "cores": 12,
+    "evidence": "ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "live": {
+      "backends": [
+        {
+          "backend": {
+            "device": "qnn:npu",
+            "kind": "qnn",
+            "model": "parakeet-tdt-0.6b-v2"
+          },
+          "track": "Mic"
+        },
+        {
+          "backend": {
+            "device": "qnn:npu",
+            "kind": "qnn",
+            "model": "parakeet-tdt-0.6b-v2"
+          },
+          "track": "Reference"
+        }
+      ],
+      "catch_up_ms": 1555.5487,
+      "chunk": "one live final (a speech stretch)",
+      "kept_up": true,
+      "largest_capture_lag_ms": 14.0,
+      "latency_ms": {
+        "count": 19,
+        "max": 25409.796700000003,
+        "p50": 2284.3897,
+        "p95": 25409.796700000003
+      },
+      "transcript_lag_ms": {
+        "count": 300,
+        "max": 42104.0,
+        "p50": 4104.0,
+        "p95": 32183.999999999996
+      },
+      "words": 457
+    },
+    "load_s": 28.8452832,
+    "model": "parakeet-tdt-0.6b-v2",
+    "note": null,
+    "peak_memory_mb": {
+      "committed": 4355,
+      "scope": "system memory of this process; video memory is not included",
+      "working_set": 4963
+    },
+    "pieces": 19,
+    "rtf": 0.015828927666666666,
+    "timestamp": "2026-11-08T13:08:23Z"
+  },
+  "backend": "qnn",
+  "host": "aarch64-pc-windows-msvc"
+}

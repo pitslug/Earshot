@@ -1,0 +1,126 @@
+{
+  "aec": {
+    "audio_s": 150.0,
+    "backend": {
+      "kind": "cpu"
+    },
+    "commit": "33ffbbf",
+    "converged_blocks": 3655,
+    "cores": 12,
+    "live": {
+      "chunk": "one 8 ms block",
+      "latency_ms": {
+        "count": 18750,
+        "max": 0.6043999999999999,
+        "p50": 0.0049,
+        "p95": 0.0245
+      }
+    },
+    "note": null,
+    "peak_memory_mb": {
+      "committed": 31,
+      "scope": "system memory of this process; video memory is not included",
+      "working_set": 38
+    },
+    "rtf": 0.002704639333333333,
+    "threads": 1,
+    "timestamp": "2026-11-08T13:10:19Z"
+  },
+  "asr": {
+    "audio_s": 300.0,
+    "backend": {
+      "device": "cpu",
+      "kind": "cpu",
+      "model": "parakeet-tdt-0.6b-v2"
+    },
+    "commit": "33ffbbf",
+    "cores": 12,
+    "evidence": "ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1992; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "live": {
+      "backends": [
+        {
+          "backend": {
+            "device": "cpu",
+            "kind": "cpu",
+            "model": "parakeet-tdt-0.6b-v2"
+          },
+          "track": "Mic"
+        },
+        {
+          "backend": {
+            "device": "cpu",
+            "kind": "cpu",
+            "model": "parakeet-tdt-0.6b-v2"
+          },
+          "track": "Reference"
+        }
+      ],
+      "catch_up_ms": 1589.9683,
+      "chunk": "one live final (a speech stretch)",
+      "kept_up": true,
+      "largest_capture_lag_ms": 17.0,
+      "latency_ms": {
+        "count": 19,
+        "max": 26509.4098,
+        "p50": 2474.6355,
+        "p95": 26509.4098
+      },
+      "transcript_lag_ms": {
+        "count": 300,
+        "max": 43104.0,
+        "p50": 4816.0,
+        "p95": 33184.0
+      },
+      "words": 454
+    },
+    "load_s": 2.4791476,
+    "model": "parakeet-tdt-0.6b-v2",
+    "note": null,
+    "peak_memory_mb": {
+      "committed": 3220,
+      "scope": "system memory of this process; video memory is not included",
+      "working_set": 2972
+    },
+    "pieces": 19,
+    "rtf": 0.032247165,
+    "timestamp": "2026-11-08T13:02:57Z"
+  },
+  "backend": "cpu",
+  "diar": {
+    "audio_s": 300.0,
+    "backend": {
+      "kind": "cpu"
+    },
+    "commit": "33ffbbf",
+    "cores": 12,
+    "evidence": {
+      "embedding": "requested cpu, placed: CPUExecutionProvider=1621",
+      "segmentation": "requested cpu, placed: CPUExecutionProvider=49"
+    },
+    "live": {
+      "chunk": "one batch of speaker windows",
+      "latency_ms": {
+        "count": 8,
+        "max": 2907.7617999999998,
+        "p50": 1160.2257,
+        "p95": 2907.7617999999998
+      }
+    },
+    "load_s": 0.3104094,
+    "model": "campplus-en-voxceleb@357a834f702b",
+    "note": null,
+    "peak_memory_mb": {
+      "committed": 1370,
+      "scope": "system memory of this process; video memory is not included",
+      "working_set": 1056
+    },
+    "rtf": 0.04910364333333333,
+    "speakers_per_track": [
+      1,
+      3
+    ],
+    "threads": 3,
+    "timestamp": "2026-11-08T13:09:40Z"
+  },
+  "host": "aarch64-pc-windows-msvc"
+}
