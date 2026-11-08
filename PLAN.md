@@ -1535,6 +1535,21 @@ Moved here by the owner: real work, not needed for the first release.
   - do: per-app capture is out for Teams: T6.15a measured a Communications stream as silent under process loopback and the call's process delivering exact zeros (private notes). Instead, with no output chosen on the Audio page, record the output holding a known call app's active session (`list_render_sessions` already walks every output), so a call on a headset is recorded while Windows defaults to the speakers, and follow it during the meeting with a two-poll rule so a passing sound does not move it. An output chosen on the Audio page always wins. `auto` stays off as an app default. Other call apps (Zoom) may still suit process loopback: measure with `teams-probe` before offering it.
   - accept: `cargo test -p earshot-capture-wasapi`; device tests under GATE-01a on a Teams call on a non-default output
 
+- [ ] T9.13 Provisional words on the NPU
+  - deps: T9.1m, T8.4
+  - do: the owner, 2026-11-08: the NPU is the part made for this, and `previews_refused` turns previews off there only because nothing was measured. On the Surface, measure a meeting with previews on QNN against off with `live_lag` (speech-to-screen, the main transcript's lag and rtf, memory), on replays and a real meeting; write the rule for "the main transcript does not slow" before measuring and commit it. If it holds, the NPU leaves `previews_refused`; if not, the numbers and the reason go in docs/live-previews.md. Not while the owner is in a meeting.
+  - accept: `cargo test -p earshot-runtime preview`; the rule, the measurements and the decision in docs/live-previews.md
+
+- [ ] T9.14 Provisional words for each track
+  - deps: T9.1m
+  - do: the owner, 2026-11-08: in a call, previews run on the far end only, so a solo test shows none and the user's own words settle only at a pause. Replace the on/off setting with Off / Other people only / Everyone (device-local, an older stored on/off reads as Other people only; in the room both read as the mic). Everyone runs a second preview session on the mic track in a call, under the same refusals per backend, and falls back to the other people with a note when this computer cannot run both (memory, card, slowness); measure the second session with `live_lag --memory` before choosing its limit. The General page says what each choice shows.
+  - accept: `cargo test -p earshot-runtime preview`; `cargo test -p earshot-desktop --bin earshot preview`; `cmd /c pnpm -r test`
+
+- [ ] T9.15 Settings and first-run tidy
+  - deps: T9.1d, T7.4f
+  - do: the owner, 2026-11-08: Settings and the first-run wizard grew one task at a time and are confusing. A design session with the owner first: walk through every page and step as they are, then agree the structure (what goes where, what first run asks and what it leaves to defaults, wording) in docs/settings-design.md before any code. Then split into build tasks with their own accept commands. Behaviour and stored settings stay as they are unless the design changes them.
+  - accept: docs/settings-design.md agreed by the owner; the build tasks added to this plan
+
 ### M10 - v2 Android in-person recorder
 
 - [ ] GATE-05 Android toolchain
