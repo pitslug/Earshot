@@ -1572,6 +1572,11 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner, 2026-11-08: every summary evaluation ran Qwen 3.5 with thinking off (the empty `<think>` prefix); measure thinking on. An evaluation-only option in `sum_eval` (its own format key in both `examples/sum_eval/main.rs` and `xtask::sum_eval`) whose grammar allows a bounded `<think>` section before the summary JSON (`earshot_llm_local::grammar`, a token cap on the thinking so it cannot use the reply budget; production grammar byte-identical). Write the rule before measuring and commit it: thinking on earns a follow-up task only if the blinded meaning judge finds missed decisions plus missed action items fall by at least a margin fixed in the rule, with no rise in invalid summaries; time per meeting reported beside it. Run on the desktop GPU, dev split only, 9B and 4B, off against on. No production change without the owner; not while the owner is in a meeting.
   - accept: `cargo test -p earshot-llm-local grammar`; `cargo test -p xtask sum_eval`; the rule, tables (judged and timing) and a recommendation in docs/summary-eval.md
 
+- [ ] T12.11 Short echo fragments under "Me" in the final transcript
+  - deps: none
+  - do: found at GATE-02 (2026-11-08): in a call where the user said nothing, the final transcript kept one 2-word mic segment under "Me", 0.7 s long and wholly inside far-end speech. `asr::dedupe_echo` matches runs of 3+ words by design, and the speaker check names the only mic voice "Me". Find a rule that removes such fragments without costing near-end words in talk-over: write it before measuring, design and tune only on `asr_eval --leak-dev` (and `--rumble`), keep `ECHO_NEAR_RECALL_FLOOR_PERCENT` and `asr.echo_leak` holding. No change if no rule passes.
+  - accept: `cargo test -p earshot-core asr`; `cargo test -p earshot-runtime post`; `cargo xtask accept m2`; the rule and leak-dev numbers in docs
+
 ### M10 - v2 Android in-person recorder
 
 - [ ] GATE-05 Android toolchain
