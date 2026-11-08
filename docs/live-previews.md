@@ -194,6 +194,23 @@ What to read:
 - The previews: `previews[]` per track (`rtf`, `slowest_s`, `slow_pauses`, `skipped_busy`, `off`), `reference.on_screen_lag_s` and, under Everyone, `mic.on_screen_lag_s`.
 - Memory: `host.peak_private_gib` per run; in `--memory`, each `session N loaded` stage (`role`: a track's own, first preview, second preview) with `load_s`, `backend`, `placement`, `private_gib` and `system_free_gib`. The NPU's memory may sit outside this process's private bytes, so read the machine's free memory too.
 
+**Result, 2026-11-09** (Surface, mains, the rule above unchanged; reports in `t124-qnn/`). Every session, the previews' included, ran its encoder on `QNNExecutionProvider`; stored words matched "off" on every track of every run.
+
+| | Off | Other people only | Everyone |
+|---|---|---|---|
+| Real decode rtf, bundled mic / reference | 0.022 / 0.020 | 0.024 / 0.023 | 0.025 / 0.031 (1.49x) |
+| Real decode rtf, continuous reference | 0.012 | 0.013 | 0.017 |
+| Catch-up after the end, bundled / continuous | 1.8 / 1.9 s | 3.4 / 2.7 s | **5.0 / 5.4 s** |
+| Far-end words on screen, median, bundled / continuous | 14.5 / 37.0 s | **2.6 / 2.1 s** | 5.7 / 36.9 s |
+| Mic words on screen, median, bundled | 15.7 s | 16.1 s | 3.6 s |
+| Preview audio dropped, slow pauses | - | 0, 0 | mic 1609 frames, 0 |
+| Peak private memory, bundled | 6.73 GiB | 8.75 GiB | 10.76 GiB |
+
+`--memory` (machine load 2%): each NPU session costs about 2.0 GiB of private memory and loads in 29-31 s; nothing is shared. System memory free: 6.04 GiB with no session, 3.25 with one, 1.10 with two, 1.06 with three.
+
+- **Everyone fails** points 3 (catch-up +3.3 and +3.5 s against at most +2 s) and 4 (far-end median 5.7 s on the meeting, and on continuous speech only 55 words shown against 186: four sessions contend for one NPU). It stays refused on the NPU.
+- **Other people only passes points 1 to 4 and fails point 5**: with the three sessions a call needs, 1.06 GiB was free against at least 4 GiB. The run started with only 6.04 GiB free of 16, so the Surface was holding about 10 GiB elsewhere; the rule's "nothing else running" was not met for memory. A `--memory` re-run straight after a restart, with nothing open, decides it under the same rule. Until then it stays refused.
+
 **Sharing one copy of the model between NPU sessions: not measurable with how Earshot loads, so there is no `--share-npu`.** ONNX Runtime's key is `ep.share_ep_contexts` (`kOrtSessionOptionShareEpContexts`, "Share EP related resources across sessions", in `include/onnxruntime/core/session/onnxruntime_session_options_config_keys.h`, beside `ep.stop_share_ep_contexts` and `ep.context_enable`). In the QNN plugin Earshot loads (onnxruntime-qnn tag `v2.7.0`, `onnxruntime/core/providers/qnn/qnn_execution_provider.cc` and `shared_context.h`):
 
 1. Sharing works only for EP context models (a model holding `EPContext` nodes that point at a compiled QNN context binary, made with `ep.context_enable=1`): `GetCapability` takes the shared path only under `is_qnn_ctx_model && share_ep_contexts_`, and `Compile` looks graphs up in `SharedContext` only in `CompileContextModel`. Earshot loads the QDQ ONNX conversion and the plugin compiles it at every load, so the key would do nothing.
