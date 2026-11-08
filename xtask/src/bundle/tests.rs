@@ -122,9 +122,9 @@ fn build_bundle_installs_exactly_llama_dlls_and_the_runtime_and_never_an_acceler
         .copied()
         .chain(VC_RUNTIME_DLLS)
         .collect();
-    assert_eq!(resource_dlls(&[]), plain);
+    assert_eq!(resource_dlls(X64, &[]), plain);
     // A GPU build's own llama.cpp backend: code that can use CUDA, not NVIDIA's libraries (D23).
-    let cuda = resource_dlls(&["cuda".to_owned()]);
+    let cuda = resource_dlls(X64, &["cuda".to_owned()]);
     assert!(cuda.contains(&"ggml-cuda.dll"));
     assert_eq!(cuda.len(), plain.len() + 1);
     for name in cuda {
@@ -145,17 +145,220 @@ fn build_bundle_installs_exactly_llama_dlls_and_the_runtime_and_never_an_acceler
     for fine in ["llama.dll", "ggml.dll", "kernel32.dll", "earshot.exe"] {
         assert!(!is_vendor_accelerator_library(fine), "{fine}");
     }
-    assert!(refused_in_install("ggml-cuda.dll", &[]));
-    assert!(!refused_in_install("ggml-cuda.dll", &["cuda".to_owned()]));
-    assert!(refused_in_install("cublas64_13.dll", &["cuda".to_owned()]));
-    assert!(!refused_in_install("llama.dll", &[]));
+    assert!(refused_in_install("ggml-cuda.dll", X64, &[]));
+    assert!(!refused_in_install(
+        "ggml-cuda.dll",
+        X64,
+        &["cuda".to_owned()]
+    ));
+    assert!(refused_in_install(
+        "cublas64_13.dll",
+        X64,
+        &["cuda".to_owned()]
+    ));
+    assert!(!refused_in_install("llama.dll", X64, &[]));
+}
+
+/// T8.4e: the QNN files the owner approved for the ARM64 install, by name.
+const APPROVED_QNN_LIBRARIES: [&str; 8] = [
+    "onnxruntime_providers_qnn.dll",
+    "QnnHtp.dll",
+    "QnnHtpPrepare.dll",
+    "QnnSystem.dll",
+    "QnnHtpV73Stub.dll",
+    "libQnnHtpV73Skel.so",
+    "QnnHtpV81Stub.dll",
+    "libQnnHtpV81Skel.so",
+];
+
+#[test]
+fn build_bundle_qnn_files_are_refused_on_x64_and_only_the_approved_ones_allowed_on_arm64() {
+    let shipped = build::shipped_features(Some(ARM64_WINDOWS), &[]);
+    for name in APPROVED_QNN_LIBRARIES {
+        // Still Qualcomm's library, and never in an x64 install.
+        assert!(is_vendor_accelerator_library(name), "{name}");
+        assert!(refused_in_install(name, X64, &[]), "{name} on x64");
+        assert!(
+            refused_in_install(name, X64, &build::shipped_features(Some(X64), &[])),
+            "{name} on x64"
+        );
+        assert!(!refused_in_install(name, ARM64_WINDOWS, &shipped), "{name}");
+        assert!(
+            !refused_in_install(&name.to_ascii_uppercase(), ARM64_WINDOWS, &shipped),
+            "{name}: case does not count"
+        );
+    }
+    // A QNN library the owner did not approve, the catalogue files, and NVIDIA's libraries stay
+    // out of an ARM64 install too.
+    for name in [
+        "QnnGpu.dll",
+        "QnnSaver.dll",
+        "QnnHtpV68Stub.dll",
+        "libQnnHtpV68Skel.so",
+        "libqnnhtpv73.cat",
+        "cublas64_13.dll",
+        "onnxruntime_providers_cuda.dll",
+    ] {
+        assert!(refused_in_install(name, ARM64_WINDOWS, &shipped), "{name}");
+    }
+}
+
+#[test]
+fn build_bundle_qnn_imports_are_accepted_only_on_arm64_and_never_by_the_exe() {
+    let pe = |machine: u16, imports: &[&str]| Pe {
+        machine,
+        imports: imports.iter().map(|s| (*s).to_owned()).collect(),
+    };
+    let arm = machine_of(ARM64_WINDOWS).unwrap();
+    let x64 = machine_of(X64).unwrap();
+    // One QNN library loading another beside it.
+    check_binary(
+        "QnnHtp.dll",
+        &pe(arm, &["KERNEL32.dll", "QnnSystem.dll"]),
+        ARM64_WINDOWS,
+        &[],
+    )
+    .unwrap();
+    assert!(
+        check_binary(
+            "QnnHtp.dll",
+            &pe(x64, &["KERNEL32.dll", "QnnSystem.dll"]),
+            X64,
+            &[]
+        )
+        .is_err()
+    );
+    // The exe loads the provider at run time: a static import of it would be a different design.
+    for import in ["onnxruntime_providers_qnn.dll", "QnnHtp.dll"] {
+        let e = check_binary(APP_EXE, &pe(arm, &[import]), ARM64_WINDOWS, &[]).unwrap_err();
+        assert!(e.to_string().contains(import), "{e}");
+        assert!(check_binary(APP_EXE, &pe(x64, &[import]), X64, &[]).is_err());
+    }
+    // An unapproved QNN library is refused everywhere.
+    assert!(check_binary("x.dll", &pe(arm, &["QnnGpu.dll"]), ARM64_WINDOWS, &[]).is_err());
+}
+
+#[test]
+fn build_bundle_arm64_install_holds_exactly_the_qnn_files_and_their_licences() {
+    assert_eq!(QNN_LIBRARIES, APPROVED_QNN_LIBRARIES);
+    let arm = expected_files(ARM64_WINDOWS);
+    let x64 = expected_files(X64);
+    let names: Vec<&str> = qnn_install_files().iter().map(|(_, to)| *to).collect();
+    for lib in APPROVED_QNN_LIBRARIES {
+        assert!(arm.contains(&PathBuf::from(lib)), "{lib}");
+        assert!(names.contains(&lib), "{lib}");
+    }
+    for licence in [
+        "Qualcomm_LICENSE.pdf",
+        QNN_LICENSE_IN_INSTALL,
+        QNN_NOTICES_IN_INSTALL,
+        QNN_NOTICE,
+    ] {
+        assert!(arm.contains(&PathBuf::from(licence)), "{licence}");
+    }
+    // Obvious names beside the exe, never a bare `LICENSE`.
+    assert_eq!(QNN_LICENSE_IN_INSTALL, "QNN-LICENSE.txt");
+    assert_eq!(QNN_NOTICES_IN_INSTALL, "QNN-ThirdPartyNotices.txt");
+    assert!(!arm.contains(&PathBuf::from("LICENSE")));
+    // Exactly these on top of what x64 and ARM64 share, and no catalogue file.
+    assert_eq!(qnn_install_files().len(), APPROVED_QNN_LIBRARIES.len() + 3);
+    let base = expected_files(ARM64_WINDOWS)
+        .into_iter()
+        .filter(|f| !names.contains(&f.to_str().unwrap()) && f != Path::new(QNN_NOTICE))
+        .count();
+    assert_eq!(arm.len(), base + qnn_install_files().len() + 1);
+    assert!(
+        !arm.iter()
+            .any(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("cat")))
+    );
+    // x64 holds none of it.
+    for name in names.iter().chain([&QNN_NOTICE]) {
+        assert!(!x64.contains(&PathBuf::from(name)), "{name} on x64");
+    }
+    assert!(x64.iter().all(|f| !refused_in_install(
+        &f.to_string_lossy(),
+        X64,
+        &build::shipped_features(Some(X64), &[])
+    )));
+}
+
+#[test]
+fn build_bundle_qnn_files_come_from_pinned_members_of_the_manifest() {
+    let m = Manifest::load(&crate::models::manifest_path(&crate::repo_root())).unwrap();
+    let art = m
+        .artefacts
+        .iter()
+        .find(|a| a.id == QNN_ARTEFACT)
+        .expect("the ARM64 QNN artefact");
+    assert!(art.sets.iter().any(|s| s == QNN_SET), "{:?}", art.sets);
+    let x = art.extract.as_ref().expect("extracted");
+    for (from, _) in qnn_install_files() {
+        assert!(
+            x.members.iter().any(|mm| mm.path == *from),
+            "{from} must be a pinned member of {QNN_ARTEFACT}"
+        );
+    }
+    // Every pinned library ships, so the install and the runtime's pins agree.
+    for mm in &x.members {
+        let library = mm.path.ends_with(".dll") || mm.path.ends_with(".so");
+        assert_eq!(
+            library,
+            QNN_LIBRARIES.contains(&mm.path.as_str()),
+            "{}",
+            mm.path
+        );
+    }
+}
+
+#[test]
+fn build_bundle_config_carries_the_qnn_files_only_on_arm64() {
+    let exe_dir = Path::new(r"C:\eb\a\release");
+    let arm = bundle_config(
+        exe_dir,
+        Path::new("n.md"),
+        Path::new("h.nsh"),
+        &["nsis"],
+        ARM64_WINDOWS,
+        &build::shipped_features(Some(ARM64_WINDOWS), &[]),
+    );
+    let res = arm["bundle"]["resources"].as_object().unwrap();
+    for (_, to) in qnn_install_files() {
+        assert_eq!(res[exe_dir.join(to).to_str().unwrap()], *to, "{to}");
+    }
+    assert_eq!(res[exe_dir.join(QNN_NOTICE).to_str().unwrap()], QNN_NOTICE);
+    let x64 = bundle_config(
+        exe_dir,
+        Path::new("n.md"),
+        Path::new("h.nsh"),
+        &["nsis"],
+        X64,
+        &[],
+    );
+    let res = x64["bundle"]["resources"].as_object().unwrap();
+    assert!(!res.values().any(|v| {
+        v.as_str()
+            .is_some_and(|v| v.to_ascii_lowercase().contains("qnn") || v == QNN_NOTICE)
+    }));
+}
+
+#[test]
+fn build_bundle_qnn_notice_names_every_file_and_the_qualcomm_licence() {
+    let text = qnn_notice_text();
+    for (_, to) in qnn_install_files() {
+        assert!(text.contains(to), "{to}");
+    }
+    assert!(text.contains("Qualcomm_LICENSE.pdf"));
+    assert!(text.contains("AI Stack License"));
+    assert!(text.contains("MIT"));
+    assert!(!text.contains('\u{2014}'), "no em dash");
+    assert!(text.is_ascii());
 }
 
 #[test]
 fn build_bundle_config_turns_the_bundler_on_with_no_download_at_install_time() {
     let exe_dir = Path::new(r"C:\eb\x\release");
     let notice = Path::new(r"C:\repo\NOTICE.md");
-    let c = bundle_config(exe_dir, notice, Path::new("h.nsh"), &["nsis"], &[]);
+    let c = bundle_config(exe_dir, notice, Path::new("h.nsh"), &["nsis"], X64, &[]);
     let b = &c["bundle"];
     assert_eq!(b["active"], true);
     assert_eq!(b["useLocalToolsDir"], true);
@@ -208,6 +411,7 @@ fn build_bundle_config_names_the_uninstall_hook_only_in_the_overlay() {
         Path::new(r"C:\repo\NOTICE.md"),
         hooks,
         &["nsis"],
+        X64,
         &[],
     );
     assert_eq!(
@@ -320,6 +524,32 @@ fn build_bundle_refuses_a_binary_importing_a_runtime_library_the_install_lacks()
         &[],
     )
     .unwrap();
+}
+
+#[test]
+fn build_bundle_vc_runtime_follows_the_target_and_refuses_the_x64_only_helper_on_arm64() {
+    assert_eq!(vc_runtime_dlls(X64), VC_RUNTIME_DLLS);
+    let arm = vc_runtime_dlls(ARM64_WINDOWS);
+    assert_eq!(arm, ["msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll"]);
+    let pe = Pe {
+        machine: machine_of(ARM64_WINDOWS).unwrap(),
+        imports: vec!["VCRUNTIME140.dll".into(), "MSVCP140.dll".into()],
+    };
+    check_binary("x.dll", &pe, ARM64_WINDOWS, &[]).unwrap();
+    // An ARM64 binary importing the x64-only helper would find no ARM64 copy.
+    let x64_helper = Pe {
+        imports: vec!["VCRUNTIME140_1.dll".into()],
+        ..pe
+    };
+    assert!(check_binary("x.dll", &x64_helper, ARM64_WINDOWS, &[]).is_err());
+    assert_eq!(
+        resource_dlls(ARM64_WINDOWS, &[]),
+        crate::llama_dlls::REQUIRED
+            .iter()
+            .copied()
+            .chain(arm.iter().copied())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -585,6 +815,8 @@ fn build_bundle_an_install_holds_exactly_the_expected_files() {
     );
     for dll in VC_RUNTIME_DLLS {
         assert!(nsis.contains(&rel(&[dll])), "{dll}");
+    }
+    for dll in vc_runtime_dlls(ARM64_WINDOWS) {
         assert!(
             expected_files(ARM64_WINDOWS)
                 .iter()
@@ -592,6 +824,12 @@ fn build_bundle_an_install_holds_exactly_the_expected_files() {
             "{dll} on ARM64"
         );
     }
+    // x64-only: Visual Studio's ARM64 CRT folder holds an x64 copy, which no ARM64 binary imports.
+    assert!(
+        !expected_files(ARM64_WINDOWS)
+            .iter()
+            .any(|f| f.ends_with("vcruntime140_1.dll"))
+    );
     assert!(nsis.contains(&rel(&["earshot.pdb"])));
     assert_eq!(
         nsis.contains(&rel(&["vulkan-1.dll"])),
@@ -649,7 +887,7 @@ fn build_bundle_silent_install_arguments_put_the_folder_last_unquoted() {
 #[test]
 fn build_bundle_vulkan_summaries_ship_their_backend_loader_and_licence() {
     let vulkan = vec!["vulkan-summaries".to_owned()];
-    let dlls = resource_dlls(&vulkan);
+    let dlls = resource_dlls(X64, &vulkan);
     assert!(dlls.contains(&"ggml-vulkan.dll"));
     assert!(dlls.contains(&VULKAN_LOADER));
     assert_eq!(
@@ -657,7 +895,7 @@ fn build_bundle_vulkan_summaries_ship_their_backend_loader_and_licence() {
         crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 2
     );
     for name in &dlls {
-        assert!(!refused_in_install(name, &vulkan), "{name}");
+        assert!(!refused_in_install(name, X64, &vulkan), "{name}");
     }
     let hooks = Path::new("h.nsh");
     let conf = bundle_config(
@@ -665,13 +903,21 @@ fn build_bundle_vulkan_summaries_ship_their_backend_loader_and_licence() {
         Path::new("n.md"),
         hooks,
         &["nsis"],
+        X64,
         &vulkan,
     );
     let res = conf["bundle"]["resources"].as_object().unwrap();
     assert!(res.values().any(|v| v == VULKAN_LOADER));
     assert!(res.values().any(|v| v == VULKAN_LICENCE));
     // Without the feature none of it is in the install.
-    let plain = bundle_config(Path::new("C:/x"), Path::new("n.md"), hooks, &["nsis"], &[]);
+    let plain = bundle_config(
+        Path::new("C:/x"),
+        Path::new("n.md"),
+        hooks,
+        &["nsis"],
+        X64,
+        &[],
+    );
     let res = plain["bundle"]["resources"].as_object().unwrap();
     assert!(
         !res.values()

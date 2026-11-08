@@ -22,7 +22,10 @@
 //! What an install holds: the exe (the benchmark meeting is compiled into it), llama.cpp's DLLs,
 //! the exe's public symbols for crash logs ([`APP_SYMBOLS`]) and the meeting's attribution. Nothing
 //! in it names the build user ([`paths`]). No model, no ONNX Runtime (it lives in the models folder), no
-//! CUDA or QNN library ([`refused_in_install`]), no updater. WebView2 mode is `skip`: Tauri's
+//! CUDA library, no QNN library on x64 ([`refused_in_install`]), no updater. The ARM64 install also
+//! holds Qualcomm's QNN execution provider and the libraries the manifest pins for it, with their
+//! licences and a notice ([`qnn_install_files`], T8.4e: the owner approved bundling them), copied
+//! from the verified extraction of `models/manifest.toml`'s [`QNN_ARTEFACT`]. WebView2 mode is `skip`: Tauri's
 //! other modes fetch from Microsoft at install or bundle time, a destination PLAN 3.9 does not
 //! list, so a machine without WebView2 gets no window (Windows 11 ships it).
 
@@ -182,6 +185,18 @@ pub const VC_RUNTIME_DLLS: [&str; 4] = [
     "vcruntime140_1.dll",
 ];
 
+/// [`VC_RUNTIME_DLLS`] for `target`. On ARM64 without `vcruntime140_1.dll`: that helper exists for
+/// x64 code only, and the copy in Visual Studio's `arm64\Microsoft.VC*.CRT` folder is an x64 binary
+/// (seen with 14.44.35112), which no ARM64 binary imports.
+#[must_use]
+pub fn vc_runtime_dlls(target: &str) -> &'static [&'static str] {
+    if target == ARM64_WINDOWS {
+        &VC_RUNTIME_DLLS[..3]
+    } else {
+        &VC_RUNTIME_DLLS
+    }
+}
+
 /// Whether `name` is part of the Visual C++ runtime, which Windows may not have.
 #[must_use]
 pub fn is_vc_runtime_library(name: &str) -> bool {
@@ -217,7 +232,7 @@ pub fn newest_vc_runtime_folder(redist: &Path, arch: &str) -> Option<PathBuf> {
     found.pop().map(|(_, path)| path)
 }
 
-/// Copies [`VC_RUNTIME_DLLS`] for `triple` beside the exe, from the Visual Studio that built it.
+/// Copies [`vc_runtime_dlls`] for `triple` beside the exe, from the Visual Studio that built it.
 fn place_vc_runtime(exe_dir: &Path, triple: &str) -> Result<()> {
     let arch = if triple.starts_with("aarch64") {
         "arm64"
@@ -232,7 +247,7 @@ fn place_vc_runtime(exe_dir: &Path, triple: &str) -> Result<()> {
             redist.display()
         )
     })?;
-    for dll in VC_RUNTIME_DLLS {
+    for dll in vc_runtime_dlls(triple) {
         let (from, to) = (folder.join(dll), exe_dir.join(dll));
         std::fs::copy(&from, &to)
             .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
@@ -240,11 +255,11 @@ fn place_vc_runtime(exe_dir: &Path, triple: &str) -> Result<()> {
     Ok(())
 }
 
-/// The DLLs an install holds beside the exe for `features`.
+/// The DLLs an install for `target` holds beside the exe for `features`.
 #[must_use]
-pub fn resource_dlls(features: &[String]) -> Vec<&'static str> {
+pub fn resource_dlls(target: &str, features: &[String]) -> Vec<&'static str> {
     let mut dlls = llama_dlls::REQUIRED.to_vec();
-    dlls.extend(VC_RUNTIME_DLLS);
+    dlls.extend(vc_runtime_dlls(target));
     if features.iter().any(|f| f == "cuda") {
         dlls.push("ggml-cuda.dll");
     }
@@ -274,12 +289,149 @@ pub fn is_vendor_accelerator_library(name: &str) -> bool {
     .any(|p| n.starts_with(p))
 }
 
-/// Whether a file named `name` must not be in an install built with `features`: a vendor library,
-/// or llama.cpp's CUDA backend outside a CUDA build (a stale one would need NVIDIA's libraries).
+/// Whether a file named `name` must not be in an install for `target` built with `features`: a
+/// vendor library (except, on ARM64, the QNN files of [`qnn_install_files`]), or llama.cpp's CUDA
+/// backend outside a CUDA build (a stale one would need NVIDIA's libraries).
 #[must_use]
-pub fn refused_in_install(name: &str, features: &[String]) -> bool {
-    is_vendor_accelerator_library(name)
+pub fn refused_in_install(name: &str, target: &str, features: &[String]) -> bool {
+    (is_vendor_accelerator_library(name) && !is_shipped_qnn_file(name, target))
         || (name.eq_ignore_ascii_case("ggml-cuda.dll") && !features.iter().any(|f| f == "cuda"))
+}
+
+/// The ARM64 package of Qualcomm's QNN execution provider in `models/manifest.toml` (T8.3).
+pub const QNN_ARTEFACT: &str = "qnn-ep-win-arm64";
+/// Its `cargo xtask fetch-models` set.
+pub const QNN_SET: &str = "qnn";
+/// The QNN libraries an ARM64 install holds beside the exe (T8.4e): exactly the libraries the
+/// manifest pins for the plugin, which `earshot_onnx::qnn::QNN_ARM64` checks before loading.
+/// The `.cat` catalogue files stay out until the Surface shows they are needed.
+pub const QNN_LIBRARIES: [&str; 8] = [
+    "onnxruntime_providers_qnn.dll",
+    "QnnHtp.dll",
+    "QnnHtpPrepare.dll",
+    "QnnSystem.dll",
+    "QnnHtpV73Stub.dll",
+    "libQnnHtpV73Skel.so",
+    "QnnHtpV81Stub.dll",
+    "libQnnHtpV81Skel.so",
+];
+/// The plugin's MIT licence (`LICENSE` in the zip) in an install, renamed so it says whose it is.
+pub const QNN_LICENSE_IN_INSTALL: &str = "QNN-LICENSE.txt";
+/// ONNX Runtime's third-party notices as the plugin's zip carries them, in an install.
+pub const QNN_NOTICES_IN_INSTALL: &str = "QNN-ThirdPartyNotices.txt";
+/// The notice an ARM64 install holds beside the exe, naming the QNN files and their licences.
+pub const QNN_NOTICE: &str = "NOTICE.md";
+
+/// `(file in the extraction, file in the install)` for every QNN file an ARM64 install holds,
+/// licences included; [`QNN_NOTICE`] is written by the bundle, not copied.
+#[must_use]
+pub fn qnn_install_files() -> &'static [(&'static str, &'static str)] {
+    &[
+        (
+            "onnxruntime_providers_qnn.dll",
+            "onnxruntime_providers_qnn.dll",
+        ),
+        ("QnnHtp.dll", "QnnHtp.dll"),
+        ("QnnHtpPrepare.dll", "QnnHtpPrepare.dll"),
+        ("QnnSystem.dll", "QnnSystem.dll"),
+        ("QnnHtpV73Stub.dll", "QnnHtpV73Stub.dll"),
+        ("libQnnHtpV73Skel.so", "libQnnHtpV73Skel.so"),
+        ("QnnHtpV81Stub.dll", "QnnHtpV81Stub.dll"),
+        ("libQnnHtpV81Skel.so", "libQnnHtpV81Skel.so"),
+        ("Qualcomm_LICENSE.pdf", "Qualcomm_LICENSE.pdf"),
+        ("LICENSE", QNN_LICENSE_IN_INSTALL),
+        ("ThirdPartyNotices.txt", QNN_NOTICES_IN_INSTALL),
+    ]
+}
+
+/// Whether `name` is one of the QNN files an install for `target` holds (ARM64 only).
+fn is_shipped_qnn_file(name: &str, target: &str) -> bool {
+    target == ARM64_WINDOWS
+        && qnn_install_files()
+            .iter()
+            .any(|(_, to)| to.eq_ignore_ascii_case(name))
+}
+
+/// The text of [`QNN_NOTICE`].
+#[must_use]
+pub fn qnn_notice_text() -> String {
+    let mut text = String::from(
+        "# Third-party files in this folder\n\
+         \n\
+         Earshot uses the Snapdragon NPU through Qualcomm's QNN execution provider for ONNX \
+         Runtime, release 2.7.0 (https://github.com/onnxruntime/onnxruntime-qnn). These files \
+         beside earshot.exe come unmodified from that release:\n\n",
+    );
+    for (_, to) in &qnn_install_files()[..QNN_LIBRARIES.len()] {
+        text.push_str(&format!("- {to}\n"));
+    }
+    text.push_str(&format!(
+        "\n\
+         `onnxruntime_providers_qnn.dll` is Copyright (c) Qualcomm Technologies, Inc. and/or its \
+         subsidiaries and Copyright (c) Microsoft Corporation, under the MIT licence in \
+         `{QNN_LICENSE_IN_INSTALL}`. ONNX Runtime's third-party notices, as that release carries \
+         them, are in `{QNN_NOTICES_IN_INSTALL}`.\n\
+         \n\
+         The other files are the Qualcomm AI Runtime libraries, distributed in object code as part \
+         of this application under the Qualcomm AI Stack License in `Qualcomm_LICENSE.pdf`. Read \
+         that licence for its terms; it does not permit distributing these files on their own.\n"
+    ));
+    text
+}
+
+/// Fetches [`QNN_ARTEFACT`] into the models folder (download and extraction checked against the
+/// manifest, every extracted file re-hashed), copies [`qnn_install_files`] beside the exe, checks
+/// each copy against its member pin, and writes [`QNN_NOTICE`].
+fn place_qnn(root: &Path, exe_dir: &Path) -> Result<()> {
+    let m = Manifest::load(&crate::models::manifest_path(root))?;
+    let arts: Vec<&manifest::Artefact> = m
+        .select(&[QNN_SET.to_owned()])?
+        .into_iter()
+        .filter(|a| a.id == QNN_ARTEFACT)
+        .collect();
+    ensure!(
+        arts.len() == 1,
+        "models/manifest.toml has no {QNN_ARTEFACT} in set {QNN_SET}"
+    );
+    let cache = crate::models::cache_dir()?;
+    let reports = manifest::fetch_all(&arts, root, &cache, true, &m.policy())?;
+    manifest::print_reports("bundle QNN files", &cache, &reports);
+    let extract = arts[0]
+        .extract
+        .as_ref()
+        .with_context(|| format!("{QNN_ARTEFACT} is not extracted"))?;
+    let into = crate::download::jail_join(&cache, &extract.into)?;
+    for (from, to) in qnn_install_files() {
+        let member = extract
+            .members
+            .iter()
+            .find(|mm| mm.path == *from)
+            .with_context(|| format!("{from} is not a pinned member of {QNN_ARTEFACT}"))?;
+        let (source, dest) = (crate::download::jail_join(&into, from)?, exe_dir.join(to));
+        std::fs::copy(&source, &dest)
+            .with_context(|| format!("copy {} to {}", source.display(), dest.display()))?;
+        crate::download::verify_file(
+            &dest,
+            &crate::download::Expected {
+                sha256: &member.sha256,
+                size: member.size,
+            },
+        )
+        .with_context(|| format!("{} after the copy", dest.display()))?;
+    }
+    let notice = exe_dir.join(QNN_NOTICE);
+    std::fs::write(&notice, qnn_notice_text())
+        .with_context(|| format!("write {}", notice.display()))
+}
+
+/// The QNN files and notice of an install for `target`, by their names in the install.
+fn qnn_install_names(target: &str) -> Vec<&'static str> {
+    if target != ARM64_WINDOWS {
+        return Vec::new();
+    }
+    let mut names: Vec<&str> = qnn_install_files().iter().map(|(_, to)| *to).collect();
+    names.push(QNN_NOTICE);
+    names
 }
 
 /// [`NSIS_HOOKS`] below `root`, in the system's own separators: makensis finds no `!include` with
@@ -299,11 +451,15 @@ pub fn bundle_config(
     notice: &Path,
     hooks: &Path,
     formats: &[&str],
+    target: &str,
     features: &[String],
 ) -> serde_json::Value {
     let mut resources = serde_json::Map::new();
-    for dll in resource_dlls(features) {
-        resources.insert(exe_dir.join(dll).display().to_string(), json!(dll));
+    for name in resource_dlls(target, features)
+        .into_iter()
+        .chain(qnn_install_names(target))
+    {
+        resources.insert(exe_dir.join(name).display().to_string(), json!(name));
     }
     if has_vulkan_summaries(features) {
         resources.insert(
@@ -612,21 +768,26 @@ pub fn check_binary(name: &str, pe: &Pe, target: &str, features: &[String]) -> R
         "{name} is for machine {:#x}, not {target}",
         pe.machine
     );
+    // The exe loads the QNN provider at run time, so even on ARM64 it imports no vendor library.
     let refused: Vec<&String> = pe
         .imports
         .iter()
-        .filter(|i| refused_in_install(i, features))
+        .filter(|i| {
+            refused_in_install(i, target, features)
+                || (name.eq_ignore_ascii_case(APP_EXE) && is_vendor_accelerator_library(i))
+        })
         .collect();
     ensure!(
         refused.is_empty(),
-        "{name} imports {refused:?}, which no install holds (a CUDA build's install is T8.4a's)"
+        "{name} imports {refused:?}, which no install holds or the exe must not import (a CUDA \
+         build's install is T8.4a's)"
     );
     // Without the loader such an exe does not start where drivers provide none (T8.4ac).
     ensure!(
         !pe.imports
             .iter()
             .any(|i| i.eq_ignore_ascii_case(VULKAN_LOADER))
-            || resource_dlls(features).contains(&VULKAN_LOADER),
+            || resource_dlls(target, features).contains(&VULKAN_LOADER),
         "{name} imports {VULKAN_LOADER}, which an install built with {features:?} does not hold"
     );
     // A runtime library the list misses would start here, where Visual Studio is installed, and
@@ -636,14 +797,14 @@ pub fn check_binary(name: &str, pe: &Pe, target: &str, features: &[String]) -> R
         .iter()
         .filter(|i| {
             is_vc_runtime_library(i)
-                && !VC_RUNTIME_DLLS
+                && !vc_runtime_dlls(target)
                     .iter()
                     .any(|dll| dll.eq_ignore_ascii_case(i))
         })
         .collect();
     ensure!(
         missing.is_empty(),
-        "{name} imports {missing:?}, which VC_RUNTIME_DLLS does not hold"
+        "{name} imports {missing:?}, which the install for {target} does not hold"
     );
     Ok(())
 }
@@ -710,14 +871,24 @@ pub fn run(
         }
     }
     place_vc_runtime(exe_dir, &triple)?;
+    if triple == ARM64_WINDOWS {
+        place_qnn(root, exe_dir)?;
+    }
     ensure!(
         exe_dir.join(APP_SYMBOLS_BUILT).is_file(),
         "the build left no {APP_SYMBOLS_BUILT} beside {APP_EXE}"
     );
     check_binary(APP_EXE, &read_pe(&exe)?, &triple, features)?;
-    for dll in resource_dlls(features) {
+    for dll in resource_dlls(&triple, features) {
         let path = exe_dir.join(dll);
         check_binary(dll, &read_pe(&path)?, &triple, features)?;
+    }
+    // The Hexagon skels are not Windows binaries.
+    for name in qnn_install_names(&triple)
+        .into_iter()
+        .filter(|n| n.ends_with(".dll"))
+    {
+        check_binary(name, &read_pe(&exe_dir.join(name))?, &triple, features)?;
     }
     let config = dir.join(format!("earshot-bundle-{triple}.json"));
     let overlay = bundle_config(
@@ -725,6 +896,7 @@ pub fn run(
         &root.join(MEETING_NOTICE),
         &nsis_hooks_path(root),
         wanted,
+        &triple,
         features,
     );
     std::fs::write(&config, serde_json::to_string_pretty(&overlay)?)
@@ -804,10 +976,11 @@ pub fn expected_files(target: &str) -> Vec<PathBuf> {
         PathBuf::from("uninstall.exe"),
     ];
     let features = build::shipped_features(Some(target), &[]);
-    files.extend(resource_dlls(&features).iter().map(PathBuf::from));
+    files.extend(resource_dlls(target, &features).iter().map(PathBuf::from));
     if has_vulkan_summaries(&features) {
         files.push(PathBuf::from(VULKAN_LICENCE));
     }
+    files.extend(qnn_install_names(target).into_iter().map(PathBuf::from));
     files
 }
 
@@ -856,10 +1029,11 @@ fn check_install(all: &mut bool, dir: &Path, exe_dir: &Path, target: &str) -> Re
     );
     let mut names = vec![APP_EXE];
     let features = build::shipped_features(Some(target), &[]);
-    names.extend(resource_dlls(&features));
+    names.extend(resource_dlls(target, &features));
     if has_vulkan_summaries(&features) {
         names.push(VULKAN_LICENCE);
     }
+    names.extend(qnn_install_names(target));
     let mut pairs: Vec<(&str, &str)> = names.into_iter().map(|n| (n, n)).collect();
     pairs.push((APP_SYMBOLS, APP_SYMBOLS_BUILT));
     for (name, built) in pairs {

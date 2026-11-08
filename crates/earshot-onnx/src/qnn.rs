@@ -4,10 +4,11 @@
 //! as a *plugin* execution provider (github.com/onnxruntime/onnxruntime-qnn, release 2.7.0,
 //! "ONNX Runtime Compatibility: >= 1.24.1"), registered at run time into the official ONNX
 //! Runtime loaded by [`crate::init`] (`RegisterExecutionProviderLibrary`; a session then
-//! selects the plugin's device with `SessionOptionsAppendExecutionProvider_V2`). Both the
-//! plugin and Qualcomm's HTP backend library are checksum-pinned in `models/manifest.toml`
-//! (sets `qnn` for Windows ARM64 and `qnn-x64` for x64) and verified before anything is
-//! loaded; nothing is found on `PATH`.
+//! selects the plugin's device with `SessionOptionsAppendExecutionProvider_V2`). The plugin,
+//! Qualcomm's HTP backend library and every companion library are checksum-pinned in
+//! `models/manifest.toml` (sets `qnn` for Windows ARM64 and `qnn-x64` for x64) and verified
+//! before anything is loaded; nothing is found on `PATH`. A shipped ARM64 install holds the
+//! same files beside the exe (T8.4e), found there by [`package_dir`] with the same pins.
 //!
 //! - On Windows ARM64 the plugin offers the NPU as an `NPU` device; only that device is used
 //!   (a QNN GPU or CPU device is refused, so the NPU is never claimed for something else).
@@ -39,7 +40,8 @@ pub const QNN_HTP_LIB: &str = "QnnHtp.dll";
 pub const QNN_REGISTRATION: &str = crate::runtime::QNN_EP;
 
 /// One platform's QNN package: where it is extracted (relative to the models directory) and
-/// the SHA-256 pins of the two libraries that are loaded.
+/// the SHA-256 pins of every library in it, the two that are loaded directly and the companions
+/// Qualcomm's backend loads from the same folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QnnPackage {
     /// Extraction directory, relative to the models directory (manifest `extract.into`).
@@ -48,13 +50,43 @@ pub struct QnnPackage {
     pub provider_sha256: &'static str,
     /// SHA-256 of [`QNN_HTP_LIB`] (manifest member pin).
     pub htp_sha256: &'static str,
+    /// `(file name, SHA-256)` of every other library the manifest pins for the package (T8.4e),
+    /// checked before anything is loaded, because the backend loads them from the same folder.
+    pub libraries: &'static [(&'static str, &'static str)],
 }
 
-/// The Windows ARM64 package (manifest `qnn-ep-win-arm64`, set `qnn`).
+/// The Windows ARM64 package (manifest `qnn-ep-win-arm64`, set `qnn`). An ARM64 install holds
+/// the same files beside the exe (T8.4e, [`package_dir`]).
 pub const QNN_ARM64: QnnPackage = QnnPackage {
     dir: "onnxruntime-qnn/win-arm64-2.7.0",
     provider_sha256: "b4934e352c4989e631f37381f7303dd34dfe890e5c98396d7377710faab6795c",
     htp_sha256: "b12363877c1b7d0355467f4f16092b21a8ca0b9f5871a71459b5590378699450",
+    libraries: &[
+        (
+            "QnnHtpPrepare.dll",
+            "fbe222fa8f9bb81940956b496b0a8249c2c259c94220729ac5eb5bb3d095f3e7",
+        ),
+        (
+            "QnnSystem.dll",
+            "836d9ae9b46f1c217727d6d1c812297b13d2ed1b738de99455a4c742316e74a9",
+        ),
+        (
+            "QnnHtpV73Stub.dll",
+            "2c1ac50b3d799949e402f40ba7246805877ddd0cbd8f924970c4682cf537f76a",
+        ),
+        (
+            "QnnHtpV81Stub.dll",
+            "b2b0637fccbcfcf13a9d00723deacf5b0270d54bba639318d786ed9afc841ad4",
+        ),
+        (
+            "libQnnHtpV73Skel.so",
+            "4b53a5499d70459814079722dc4b57ba0bd23b915d50b89cdee99266a0624a28",
+        ),
+        (
+            "libQnnHtpV81Skel.so",
+            "e1eeb53f7fe1699fbe842ea2bb495a310ae7ac638c33e1ae42077d48a1ff0764",
+        ),
+    ],
 };
 
 /// The x64 package with Qualcomm's HTP simulator (manifest `qnn-ep-win-x64`, set
@@ -63,6 +95,10 @@ pub const QNN_X64: QnnPackage = QnnPackage {
     dir: "onnxruntime-qnn/win-x64-2.7.0",
     provider_sha256: "836ec9b4da396641aa06d052909198e1ef4549b3f541b849576bf14c5e20d40b",
     htp_sha256: "d336a0337eafc9180e6a2922bcc7a5bfdc5d735210e4fda95a584e1c8de4bb77",
+    libraries: &[(
+        "QnnSystem.dll",
+        "5a41d85f78b76130af1bf9e9f662df2ec2ebfde6a326f8ed82b60d8f0a6d96c0",
+    )],
 };
 
 /// The package for the architecture this binary was built for.
@@ -130,10 +166,30 @@ static QNN: OnceLock<Registered> = OnceLock::new();
 /// Serialises registration attempts.
 static REGISTERING: Mutex<()> = Mutex::new(());
 
+/// Where `package`'s files are: beside the exe when `exe_dir` holds the plugin (a shipped
+/// install, T8.4e), else its extraction under the models directory `models` (development and
+/// the CLI). The same pins are checked either way ([`register_qnn_in`]).
+#[must_use]
+pub fn package_dir(models: &Path, package: &QnnPackage, exe_dir: Option<&Path>) -> PathBuf {
+    match exe_dir {
+        Some(dir) if dir.join(QNN_PROVIDER_LIB).is_file() => dir.to_path_buf(),
+        _ => models.join(package.dir),
+    }
+}
+
+/// The folder of the running executable, if it can be read.
+#[must_use]
+pub fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+}
+
 fn verify(path: &Path, expected: &str) -> Result<(), OnnxError> {
     if !path.is_file() {
         return Err(OnnxError::Library(format!(
-            "{} not found; run `cargo xtask fetch-models --set {QNN_HOST_SET}`",
+            "{} not found; run `cargo xtask fetch-models --set {QNN_HOST_SET}` (an ARM64 \
+             install holds it beside the exe)",
             path.display()
         )));
     }
@@ -156,21 +212,34 @@ fn failed(message: impl Into<String>) -> OnnxError {
     }
 }
 
-/// Registers the QNN plugin of `package` under the models directory `models` into the
-/// ONNX Runtime loaded by [`crate::init`] (call that first) and picks its device
-/// ([`choose_qnn_device`] for this architecture). Both libraries must match their pins
-/// before anything is loaded. Idempotent for the same package directory.
+/// Registers the QNN plugin of `package` under the models directory `models`
+/// ([`register_qnn_in`] on `models/<package.dir>`).
+///
+/// # Errors
+/// As [`register_qnn_in`].
+pub fn register_qnn(models: &Path, package: &QnnPackage) -> Result<&'static QnnDevice, OnnxError> {
+    register_qnn_in(&models.join(package.dir), package)
+}
+
+/// Registers the QNN plugin of `package` from the folder `package_root`, which holds its files
+/// directly (an extraction under the models directory, or an install's exe folder:
+/// [`package_dir`]), into the ONNX Runtime loaded by [`crate::init`] (call that first) and picks
+/// its device ([`choose_qnn_device`] for this architecture). Every library of the package must
+/// match its pin before anything is loaded. Idempotent for the same folder.
 ///
 /// # Errors
 /// [`OnnxError::Library`] for a missing or mismatched file (with the fetch command);
 /// [`OnnxError::NotInitialised`] before [`crate::init`]; [`OnnxError::ProviderFailed`] when
 /// the plugin does not register, offers no usable device, or another package was registered
 /// already.
-pub fn register_qnn(models: &Path, package: &QnnPackage) -> Result<&'static QnnDevice, OnnxError> {
+pub fn register_qnn_in(
+    package_root: &Path,
+    package: &QnnPackage,
+) -> Result<&'static QnnDevice, OnnxError> {
     // Absolute, not canonical: the plugin gets `backend_path` as a plain string, and a
     // verbatim `\\?\` path from `canonicalize` is not what the QNN SDK expects.
-    let rel = models.join(package.dir);
-    let dir = std::path::absolute(&rel)
+    let rel = package_root;
+    let dir = std::path::absolute(rel)
         .map_err(|e| OnnxError::Library(format!("{}: {e}", rel.display())))?;
     let same = |r: &'static Registered| -> Result<&'static QnnDevice, OnnxError> {
         if r.dir == dir {
@@ -195,6 +264,9 @@ pub fn register_qnn(models: &Path, package: &QnnPackage) -> Result<&'static QnnD
     }
     verify(&dir.join(QNN_PROVIDER_LIB), package.provider_sha256)?;
     verify(&dir.join(QNN_HTP_LIB), package.htp_sha256)?;
+    for (name, sha) in package.libraries {
+        verify(&dir.join(name), sha)?;
+    }
     let env = environment()?;
     let library = env
         .register_ep_library(QNN_REGISTRATION, dir.join(QNN_PROVIDER_LIB))
@@ -325,6 +397,82 @@ mod tests {
         }
         assert!(registered_qnn().is_none(), "nothing was registered");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A package whose two loaded libraries are pinned to `provider` and `htp` and whose other
+    /// library is pinned to a digest no file has.
+    fn package_pinned_to(provider: &[u8], htp: &[u8]) -> QnnPackage {
+        use sha2::Digest;
+        let hex = |bytes: &[u8]| -> &'static str {
+            let text: String = sha2::Sha256::digest(bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            Box::leak(text.into_boxed_str())
+        };
+        QnnPackage {
+            dir: "pkg",
+            provider_sha256: hex(provider),
+            htp_sha256: hex(htp),
+            libraries: &[(
+                "QnnSystem.dll",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            )],
+        }
+    }
+
+    #[test]
+    fn qnn_registration_refuses_a_missing_or_mismatched_companion_library() {
+        let root = std::env::temp_dir().join(format!("earshot-qnn-extra-{}", std::process::id()));
+        let dir = root.join("pkg");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(QNN_PROVIDER_LIB), b"plugin bytes").unwrap();
+        std::fs::write(dir.join(QNN_HTP_LIB), b"htp bytes").unwrap();
+        let pkg = package_pinned_to(b"plugin bytes", b"htp bytes");
+        // The two loaded libraries match; the companion is missing, so nothing loads.
+        match register_qnn_in(&dir, &pkg).unwrap_err() {
+            OnnxError::Library(m) => assert!(m.contains("QnnSystem.dll"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        std::fs::write(dir.join("QnnSystem.dll"), b"not the system library").unwrap();
+        match register_qnn_in(&dir, &pkg).unwrap_err() {
+            OnnxError::Library(m) => {
+                assert!(
+                    m.contains("QnnSystem.dll") && m.contains("refusing to load"),
+                    "{m}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(registered_qnn().is_none(), "nothing was registered");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn qnn_package_dir_is_beside_the_exe_when_the_install_holds_it() {
+        let root = std::env::temp_dir().join(format!("earshot-qnn-dir-{}", std::process::id()));
+        let (models, install) = (root.join("models"), root.join("install"));
+        std::fs::create_dir_all(&install).unwrap();
+        // No plugin beside the exe: the models folder, as in development.
+        assert_eq!(
+            package_dir(&models, &QNN_ARM64, Some(&install)),
+            models.join(QNN_ARM64.dir)
+        );
+        assert_eq!(
+            package_dir(&models, &QNN_ARM64, None),
+            models.join(QNN_ARM64.dir)
+        );
+        // A shipped install: the files beside the exe, never the models folder.
+        std::fs::write(install.join(QNN_PROVIDER_LIB), b"x").unwrap();
+        assert_eq!(package_dir(&models, &QNN_ARM64, Some(&install)), install);
+        // A folder named like the plugin is not the plugin.
+        let other = root.join("other");
+        std::fs::create_dir_all(other.join(QNN_PROVIDER_LIB)).unwrap();
+        assert_eq!(
+            package_dir(&models, &QNN_ARM64, Some(&other)),
+            models.join(QNN_ARM64.dir)
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

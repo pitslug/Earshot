@@ -1286,7 +1286,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T8.3
   - do: D23. CUDA 13.4 reportedly adds Windows on Arm64 as a developer preview, for NVIDIA's RTX Spark (N1X) machines. From NVIDIA's own release notes and a probe outside the shipped crates: does whisper.cpp build for ARM64 CUDA, does llama.cpp, does ONNX Runtime publish an ARM64 CUDA library, what driver does it need, and may the DLLs be redistributed? Installing the toolkit is the owner's step. No such machine exists here, so nothing can be run on CUDA: the report says what is proven by a build and what is not.
   - accept: `docs/arm64-cuda.md` with the findings, sources and a recommendation; the owner decides from it whether the ARM64 install offers the CUDA download on an NVIDIA machine (never shipped as working without a run on real hardware).
-- [ ] T8.4e QNN libraries in the ARM64 install
+- [x] T8.4e QNN libraries in the ARM64 install
   - deps: T8.4b
   - do: the owner approved bundling (section 7, 2026-11-08). The ARM64 installer carries the QNN libraries the manifest pins for the plugin (`onnxruntime_providers_qnn.dll`, `QnnHtp.dll`, `QnnHtpPrepare.dll`, `QnnSystem.dll`, the V73 and V81 stubs and skels) plus `Qualcomm_LICENSE.pdf`, the plugin's `LICENSE` and ONNX Runtime's `ThirdPartyNotices.txt`, copied from the verified extraction, named in the install's NOTICE. `earshot_onnx::qnn` finds them beside the exe (a package root parameter with the same SHA-256 pins), never in the models folder for a shipped build. `bundle.rs` refuses QNN files and imports only on x64; on ARM64 `expected_files` lists exactly these. The `.cat` files stay out until the Surface shows they are needed.
   - accept: `cargo test -p xtask bundle`; `cargo test -p earshot-onnx qnn`; `cargo xtask build --target aarch64-pc-windows-msvc --bundle`
@@ -1300,7 +1300,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - accept: `cargo test -p xtask models`; `cargo test -p earshot-runtime catalogue`; `cargo xtask fetch-models --set qnn-models --verify` after upload
 - [ ] T8.4h ARM64 bundle-check
   - deps: T8.4e
-  - do: `cargo xtask bundle-check --target <triple>` checks the build it names, and refuses (rather than checking the host's build) when the target cannot run on this host, saying to run it on an ARM64 machine. On ARM64 it also checks the QNN files are present and pinned.
+  - do: `cargo xtask bundle-check --target <triple>` checks the build it names, and refuses (rather than checking the host's build) when the target cannot run on this host, saying to run it on an ARM64 machine. `--installer <path>` checks a given installer file, so the Surface checks the exact ARM64 installer the desktop built and the owner signs on the desktop (the owner, 2026-11-08: the signing key stays on the desktop); it prints the installer's SHA-256 so the signed file can be matched to the checked one. On ARM64 it also checks the QNN files are present and pinned.
   - accept: `cargo test -p xtask bundle`
 - [ ] T8.4 ARM64 package
   - deps: T8.3, T8.3e, T8.4b, T8.4e, T8.4f, T8.4g, T8.4h

@@ -513,17 +513,30 @@ pub fn order_from(order: &[Accelerator], recommended: BackendKind) -> Vec<Accele
 }
 
 /// The QNN plugin files this architecture loads, relative to the models directory
-/// (`earshot_onnx::qnn::QNN_HOST`, set `qnn` on ARM64, `qnn-x64` on x64).
+/// (`earshot_onnx::qnn::QNN_HOST`, set `qnn` on ARM64, `qnn-x64` on x64): the plugin, the HTP
+/// backend and every companion library the package pins.
 #[must_use]
 pub fn qnn_files() -> Vec<String> {
-    let dir = earshot_onnx::qnn::QNN_HOST.dir;
+    let package = earshot_onnx::qnn::QNN_HOST;
     [
         earshot_onnx::qnn::QNN_PROVIDER_LIB,
         earshot_onnx::qnn::QNN_HTP_LIB,
     ]
-    .iter()
-    .map(|f| format!("{dir}/{f}"))
+    .into_iter()
+    .chain(package.libraries.iter().map(|(name, _)| *name))
+    .map(|f| format!("{}/{f}", package.dir))
     .collect()
+}
+
+/// The folder the QNN plugin is registered from: beside the exe in a shipped ARM64 install that
+/// holds it (T8.4e), else the models directory's extraction.
+#[must_use]
+pub fn qnn_package_dir(models: &ModelDir) -> PathBuf {
+    earshot_onnx::qnn::package_dir(
+        models.root(),
+        &earshot_onnx::qnn::QNN_HOST,
+        earshot_onnx::qnn::exe_dir().as_deref(),
+    )
 }
 
 /// Silero VAD's ONNX Runtime threads (a small model run on 32 ms frames).
@@ -618,8 +631,8 @@ fn session_config(accel: Accelerator) -> Result<SessionConfig, RuntimeError> {
 }
 
 /// Loads ONNX Runtime for `accel` from the models directory (once per process). For QNN
-/// that is the CPU library with Qualcomm's QNN plugin registered into it
-/// (`earshot_onnx::qnn::register_qnn`, both libraries checksum-verified).
+/// that is the CPU library with Qualcomm's QNN plugin registered into it from
+/// [`qnn_package_dir`] (`earshot_onnx::qnn::register_qnn_in`, every library checksum-verified).
 ///
 /// # Errors
 /// [`RuntimeError::Unavailable`] for CUDA or QNN in a build without the feature;
@@ -673,14 +686,20 @@ pub fn init_onnx(models: &ModelDir, accel: Accelerator) -> Result<PathBuf, Runti
         Accelerator::Vulkan => return Err(VULKAN_ONNX),
     };
     let library = models.require(rel)?;
-    if accel == Accelerator::Qnn {
+    // A shipped install holds the plugin beside the exe; only the models folder's copy needs the
+    // fetch instruction of a missing file.
+    let qnn_dir = (accel == Accelerator::Qnn).then(|| qnn_package_dir(models));
+    if qnn_dir
+        .as_deref()
+        .is_some_and(|d| d == models.root().join(earshot_onnx::qnn::QNN_HOST.dir))
+    {
         for f in qnn_files() {
             models.require(&f)?;
         }
     }
     earshot_onnx::init(&library, sha).map_err(RuntimeError::Onnx)?;
-    if accel == Accelerator::Qnn {
-        earshot_onnx::qnn::register_qnn(models.root(), &earshot_onnx::qnn::QNN_HOST)
+    if let Some(dir) = qnn_dir {
+        earshot_onnx::qnn::register_qnn_in(&dir, &earshot_onnx::qnn::QNN_HOST)
             .map_err(RuntimeError::Onnx)?;
     }
     Ok(library)

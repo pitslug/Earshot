@@ -287,6 +287,31 @@ fn backends_qnn_files_name_their_fetch_set() {
 }
 
 #[test]
+fn backends_qnn_files_cover_every_pinned_library_of_the_package() {
+    let package = earshot_onnx::qnn::QNN_HOST;
+    let files = qnn_files();
+    assert_eq!(files.len(), 2 + package.libraries.len());
+    for (name, _) in package.libraries {
+        let rel = format!("{}/{name}", package.dir);
+        assert!(files.contains(&rel), "{rel}");
+        // A missing companion names its fetch set like the plugin does.
+        assert_eq!(fetch_set(&rel), Some(earshot_onnx::qnn::QNN_HOST_SET));
+    }
+}
+
+#[test]
+fn backends_qnn_package_is_the_models_folder_unless_the_exe_folder_holds_the_plugin() {
+    let models = ModelDir::new(std::env::temp_dir().join("earshot-runtime-qnn-dir"));
+    // A test binary's folder holds no plugin, as in development and the CLI.
+    let exe = earshot_onnx::qnn::exe_dir().unwrap();
+    assert!(!exe.join(earshot_onnx::qnn::QNN_PROVIDER_LIB).exists());
+    assert_eq!(
+        qnn_package_dir(&models),
+        models.root().join(earshot_onnx::qnn::QNN_HOST.dir)
+    );
+}
+
+#[test]
 fn backends_whisper_is_never_offered_the_npu() {
     // whisper.cpp has no QNN backend: QNN is skipped without a load and without a refusal
     // (so an ARM64 qnn build shows no fallback warning for whisper).

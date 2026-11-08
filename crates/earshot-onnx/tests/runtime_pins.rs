@@ -56,7 +56,44 @@ fn runtime_qnn_plugin_pins_match_the_manifest() {
             member_sha(&manifest, &format!("{}/{QNN_HTP_LIB}", pkg.dir)),
             pkg.htp_sha256
         );
+        for (name, sha) in pkg.libraries {
+            assert_eq!(
+                member_sha(&manifest, &format!("{}/{name}", pkg.dir)),
+                *sha,
+                "{name}"
+            );
+        }
+        // Every library the manifest pins for the package is checked before loading (T8.4e), so
+        // nothing unpinned sits beside the plugin unchecked.
+        let mut pinned: Vec<String> = pkg.libraries.iter().map(|(n, _)| (*n).to_owned()).collect();
+        pinned.extend([QNN_PROVIDER_LIB.to_owned(), QNN_HTP_LIB.to_owned()]);
+        pinned.sort();
+        assert_eq!(member_libraries(&manifest, pkg.dir), pinned, "{}", pkg.dir);
     }
+}
+
+/// The `.dll` and `.so` members the manifest pins under the extraction folder `into`, sorted.
+fn member_libraries(manifest: &toml::Value, into: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in manifest["artefact"].as_array().unwrap() {
+        let Some(x) = a.get("extract") else { continue };
+        if x["into"].as_str() != Some(into) {
+            continue;
+        }
+        for m in x
+            .get("member")
+            .and_then(|m| m.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let path = m["path"].as_str().unwrap();
+            if path.ends_with(".dll") || path.ends_with(".so") {
+                out.push(path.to_owned());
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 #[test]

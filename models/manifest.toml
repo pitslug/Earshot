@@ -372,9 +372,10 @@ size = 344457
 # copy solely to develop your applications, benchmarking allowed, distribution only in object
 # code incorporated in your application (never standalone), no reverse engineering,
 # terminable by Qualcomm at any time; accepting it is a condition of downloading or using.
-# Development and test only: the sets `qnn` (Surface, arm64) and `qnn-x64` (desktop: the x64
-# QnnHtp.dll is Qualcomm's HTP simulator for ahead-of-time compilation) are never shipped from
-# here; bundling them is T8.4's question for the owner (PLAN.md 7).
+# The set `qnn` (Surface, arm64) is development and test data here; the ARM64 installer carries
+# its pinned libraries and licences, copied by `cargo xtask build --bundle` from this verified
+# extraction (T8.4e, approved by the owner, PLAN.md 7). The set `qnn-x64` (desktop: the x64
+# QnnHtp.dll is Qualcomm's HTP simulator for ahead-of-time compilation) is never shipped.
 
 [[artefact]]
 id = "qnn-ep-win-arm64"
@@ -436,6 +437,17 @@ size = 14198532
 path = "Qualcomm_LICENSE.pdf"
 sha256 = "ec1dccfdcba5c6e64126e84199b8362bf4999107bfa567ebe831dbb4c461692b"
 size = 147577
+
+# The plugin's MIT licence and ONNX Runtime's third-party notices, shipped beside them (T8.4e).
+[[artefact.extract.member]]
+path = "LICENSE"
+sha256 = "f11e754f932564a0d8a9ad2c233bf671253dde137d3e2ef3082448bbe83e1764"
+size = 1140
+
+[[artefact.extract.member]]
+path = "ThirdPartyNotices.txt"
+sha256 = "d039f057d20690116daa1fc65165cd0221ee168208d770062a84c1b4d579abb1"
+size = 69810
 
 [[artefact]]
 id = "qnn-ep-win-x64"
