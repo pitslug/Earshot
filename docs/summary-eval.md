@@ -937,7 +937,7 @@ Written before measuring, 2026-11-09. Every evaluation so far ran Qwen 3.5 with 
 | Qwen 3.5 4B | 26 of 108 | 33 | 6 / 2 | 0 / 1 | 17.2 / 37.4 s |
 
 - **9B:** 3 fewer facts not covered (decisions 17 -> 14 missing or contradicted, actions unchanged), against at least 5. A small gain inside T6.20a's noise.
-- **4B:** 7 more, so the "other model rises by at most 2" clause fails too: one meeting's thinking summary was invalid (TS3006c, 6 facts all missing) and its decisions fell (69 -> 58 covered or contradicted against missing 10 -> 21), while its action items improved (contradicted 3 -> 0, covered 16 -> 19).
+- **4B:** 7 more, so the "other model rises by at most 2" clause fails too: one meeting's thinking summary was invalid (TS3006c, 6 facts all missing) and its decisions not covered rose from 13 to 23, while its action items improved (contradicted 3 -> 0, covered 16 -> 19).
 - **Time:** thinking roughly doubles to triples the time at hang-up (both models on the RTX 5080).
 
 **Decision:** no follow-up task; production stays thinking off. Generated off and on in the same build (format keys `...-chunk600` and `...-chunk600-think2048`, prefixes checked in each result header).
