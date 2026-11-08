@@ -1292,7 +1292,7 @@ M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go
   - deps: T8.4e
   - do: `cargo xtask bundle-check --target <triple>` checks the build it names, and refuses (rather than checking the host's build) when the target cannot run on this host, saying to run it on an ARM64 machine. `--installer <path>` checks a given installer file, so the Surface checks the exact ARM64 installer the desktop built and the owner signs on the desktop (the owner, 2026-11-08: the signing key stays on the desktop); it prints the installer's SHA-256 so the signed file can be matched to the checked one. On ARM64 it also checks the QNN files are present and pinned.
   - accept: `cargo test -p xtask bundle`
-- [ ] T8.4 ARM64 package
+- [x] T8.4 ARM64 package
   - deps: T8.3, T8.3e, T8.4b, T8.4e, T8.4f, T8.4g, T8.4h
   - do: joint acceptance of T8.4e to T8.4h: built on the desktop, judged on the Surface. Backend auto-select QNN > CPU; a machine without that hardware starts and runs on what it has.
   - accept: `cargo xtask build --target aarch64-pc-windows-msvc --bundle` on the desktop; `cargo xtask bundle-check` on the Surface
