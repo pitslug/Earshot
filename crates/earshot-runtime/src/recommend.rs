@@ -79,6 +79,31 @@ pub struct Recommended {
     pub reason: String,
 }
 
+impl Recommended {
+    /// This recommendation as it would run with what `models` holds: a Parakeet model
+    /// recommended for the NPU runs on the processor until its NPU version is installed
+    /// ([`runs_on_here`], T8.4g), and the reason says so. Anything else is unchanged.
+    #[must_use]
+    pub fn here(self, models: &crate::backends::ModelDir, order: &[Accelerator]) -> Self {
+        if self.backend != BackendKind::Qnn {
+            return self;
+        }
+        let backend = runs_on_here(models, self.model, order);
+        if backend == BackendKind::Qnn {
+            return self;
+        }
+        Self {
+            reason: format!(
+                "{}; it runs on {} until you download its NPU version",
+                self.reason,
+                backend_name(backend)
+            ),
+            backend,
+            ..self
+        }
+    }
+}
+
 /// A backend's name for the user.
 #[must_use]
 pub fn backend_name(backend: BackendKind) -> &'static str {

@@ -132,10 +132,17 @@ fn models_view_lists_the_catalogue_choices_and_what_is_in_use() {
     let downloading = |m: &str| m == "parakeet-tdt-110m";
     let v = models_view(&svc, &models, &hw, SURFACE, &downloading).unwrap();
     assert_eq!(v.languages, ["en"]);
+    // Recommended for the NPU, but without its NPU version it runs on the processor, said (T8.4g).
     let rec = v.recommended.clone().unwrap();
     assert_eq!(
         (rec.model.as_str(), rec.runs_on),
-        ("parakeet-tdt-0.6b-v2", RunsOn::Npu)
+        ("parakeet-tdt-0.6b-v2", RunsOn::Processor)
+    );
+    assert!(
+        rec.reason
+            .ends_with("; it runs on the processor until you download its NPU version"),
+        "{}",
+        rec.reason
     );
     let roles: Vec<(ChoiceKind, &str)> = v
         .choices

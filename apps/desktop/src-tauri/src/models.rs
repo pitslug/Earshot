@@ -439,11 +439,15 @@ pub fn models_view(
     notes.extend(summary.note.clone());
     Ok(ModelsView {
         languages: settings.languages.clone(),
-        recommended: advice.transcription.map(|r| RecommendedView {
-            model: r.model.to_owned(),
-            runs_on: RunsOn::of(r.backend),
-            reason: r.reason,
-        }),
+        // Where it runs with what is installed: the NPU only with its NPU version (T8.4g).
+        recommended: advice
+            .transcription
+            .map(|r| r.here(models, order))
+            .map(|r| RecommendedView {
+                model: r.model.to_owned(),
+                runs_on: RunsOn::of(r.backend),
+                reason: r.reason,
+            }),
         choices: advice
             .choices
             .iter()

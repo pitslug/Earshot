@@ -1388,6 +1388,51 @@ fn catalogue_runs_on_here_says_npu_only_while_the_npu_version_is_installed() {
     );
 }
 
+#[test]
+fn catalogue_recommendation_says_npu_only_while_the_npu_version_is_installed() {
+    use crate::backends::Accelerator;
+    use crate::recommend::Recommended;
+    let surface = [Accelerator::Qnn, Accelerator::Cpu];
+    let dir = TempDir::new("catalogue-npu-recommended");
+    let models = ModelDir::new(dir.0.join("models"));
+    let model = "parakeet-tdt-0.6b-v2";
+    let advised = || Recommended {
+        model,
+        backend: BackendKind::Qnn,
+        reason: "the most accurate English model for the NPU".into(),
+    };
+    // Without the NPU version the recommendation runs on the processor and says how to change that.
+    let here = advised().here(&models, &surface);
+    assert_eq!(here.model, model);
+    assert_eq!(here.backend, BackendKind::Cpu);
+    assert_eq!(
+        here.reason,
+        "the most accurate English model for the NPU; it runs on the processor until you \
+         download its NPU version"
+    );
+    let Ok(AsrModel::Parakeet(p)) = asr_model(model) else {
+        panic!("a Parakeet model");
+    };
+    for rel in p.qnn_files() {
+        put(&models, &rel, b"x");
+    }
+    let here = advised().here(&models, &surface);
+    assert_eq!(here.backend, BackendKind::Qnn);
+    assert_eq!(here.reason, advised().reason, "unchanged once installed");
+    // A recommendation for another part is unchanged.
+    let cuda = Recommended {
+        model,
+        backend: BackendKind::Cuda,
+        reason: "r".into(),
+    };
+    let desktop = [Accelerator::Cuda, Accelerator::Cpu];
+    let kept = cuda.here(&models, &desktop);
+    assert_eq!(
+        (kept.backend, kept.reason.as_str()),
+        (BackendKind::Cuda, "r")
+    );
+}
+
 /// The real packed archives, before they are published: each downloads (from the folder
 /// `cargo xtask qnn-pack` wrote, checked against the manifest's size and SHA-256), extracts through
 /// `archive::extract_verified` and passes `backends::verify_qnn_conversion`.
