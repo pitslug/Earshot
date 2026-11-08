@@ -235,6 +235,22 @@ With transcription on CUDA, Everyone refuses the mic track's preview session ("n
 
 If it passes, `previews_refused_second` lets CUDA run the mic preview on the CPU, within the CPU memory limit (`PREVIEW_BOTH_MIN_MEMORY`), with the General page saying where it runs. If it fails, CUDA keeps refusing, and the numbers and the failed point go here.
 
+**Result, 2026-11-09 (overnight, idle desktop; reports and `nvidia-smi` logs in `t123a/`): fails point 4 by 5 ms.**
+
+| | Other people only (CUDA) | Everyone, mic preview on the CPU |
+|---|---|---|
+| Sessions (from placement) | both tracks and far-end preview CUDA | the same, plus the mic preview on the CPU |
+| Stored words, bundled and continuous | | identical (`stored_sha256` per track) |
+| Real decode rtf, bundled mic / reference | 0.0115 / 0.0110 | 0.0117 / 0.0100 |
+| Catch-up after the end, bundled / continuous | 0.39 / 0.34 s | 0.40 / 0.37 s |
+| Mic words on screen, median, bundled | 15.6 s | **3.005 s** (limit 3 s) |
+| Far-end words on screen, median, bundled / continuous | 2.00 / 1.51 s | 2.04 / 1.53 s |
+| Slow pauses, preview audio dropped | 0, 0 | 0, 0 |
+| Peak private memory, bundled / continuous | 15.42 / 14.80 GiB | 17.95 / 17.27 GiB (+2.5) |
+| Card peak, bundled / continuous | 12,980 / 12,502 MiB | 12,970 / 12,570 MiB |
+
+Points 1, 2, 3 and 5 pass with room; point 4's mic median is 3.005 s against at most 3 s. Under the rule, CUDA keeps refusing the second session. The code is kept on branch `wip/T12.3a` for the owner's decision; nothing about it is on main.
+
 ## Re-measuring on a quiet host
 
 Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`
