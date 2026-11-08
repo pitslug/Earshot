@@ -42,6 +42,7 @@ pub mod edit;
 pub mod export;
 pub mod export_settings;
 pub mod first_run;
+pub mod folders;
 pub mod host;
 
 pub mod identities;

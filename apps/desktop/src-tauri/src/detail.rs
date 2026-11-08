@@ -373,6 +373,15 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "The previous summary refers to a transcript that has been replaced. Re-summarise \
              instead.",
         ),
+        // Folder refusals (T9.5b); their screens come with T9.5c.
+        EditError::FolderNotFound(_) => err("folder_not_found", "This folder no longer exists."),
+        EditError::FolderNameTaken(_) => {
+            err("folder_name_taken", "Another folder already has this name.")
+        }
+        EditError::MeetingRecording(_) => err(
+            "meeting_recording",
+            "A meeting can be moved to a folder once it has finished recording.",
+        ),
     }
 }
 

@@ -616,6 +616,9 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::NotMe(id), "not_me"),
         (EditError::NoPreviousSummary, "no_previous_summary"),
         (EditError::PreviousSummaryStale, "previous_summary_stale"),
+        (EditError::FolderNotFound(id), "folder_not_found"),
+        (EditError::FolderNameTaken(id), "folder_name_taken"),
+        (EditError::MeetingRecording(id), "meeting_recording"),
     ];
     for (e, kind) in all {
         let ipc = IpcError::from(RuntimeError::Edit(e.clone()));

@@ -109,6 +109,14 @@ pub enum EditError {
     /// The earlier summary cites transcript segments that are no longer there (the meeting
     /// was transcribed again since): it cannot be restored.
     PreviousSummaryStale,
+    /// No such folder, or it is deleted ([`crate::folders`]).
+    FolderNotFound(EntityId),
+    /// Another live folder (the id) already has this name, ignoring case
+    /// ([`crate::folders`]). Never carries the name: it is content.
+    FolderNameTaken(EntityId),
+    /// The meeting (the id) is recording: it can be moved to a folder once it has ended
+    /// ([`crate::folders::move_meeting`]).
+    MeetingRecording(EntityId),
 }
 
 /// What is wrong with a name.
@@ -170,6 +178,14 @@ impl fmt::Display for EditError {
             Self::PreviousSummaryStale => f.write_str(
                 "the previous summary cites a transcript that has been replaced; summarise again",
             ),
+            Self::FolderNotFound(id) => write!(f, "folder {id} does not exist or is deleted"),
+            Self::FolderNameTaken(id) => {
+                write!(f, "folder {id} already has this name (case is ignored)")
+            }
+            Self::MeetingRecording(id) => write!(
+                f,
+                "meeting {id} is recording; it can be moved to a folder once it has ended"
+            ),
         }
     }
 }
@@ -227,7 +243,7 @@ fn voiceprint_err(e: VoiceprintError) -> RuntimeError {
 }
 
 /// The live meeting `meeting`.
-fn live_meeting<R: MeetingRepo + ?Sized>(
+pub(crate) fn live_meeting<R: MeetingRepo + ?Sized>(
     repo: &R,
     meeting: EntityId,
 ) -> Result<Meeting, RuntimeError> {

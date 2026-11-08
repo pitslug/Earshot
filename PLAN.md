@@ -1504,7 +1504,7 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T9.1
   - do: docs/folders-design.md "Data model": `Folder` (synced, `syncable_row!`), repo trait and contract cases, the `folder` table in `SYNCED_TABLES`, `meeting.folder_id BLOB` (no foreign key, `Option<EntityId>` with `serde(default)`) in schema version 2 by an appended migration with its `APPLIED` pin, cleared by core `delete_meeting`; trybuild `never_sync_envelope.stderr` regenerated. A committed version-1 database migrates. Reviewer required.
   - accept: `cargo test -p earshot-store folder`; `cargo test -p earshot-core model`
-- [ ] T9.5b Folders: runtime
+- [x] T9.5b Folders: runtime
   - deps: T9.5a
   - do: `earshot_runtime::folders`, the one owner of folder reads and edits: create, rename, move (refused while recording), delete keeping meetings, delete with meetings (each through `Services::delete_meeting`, no lock held across the loop, closing transaction re-selects members, then `flush_erasures`; failures leave the folder with what is left and return counts), resolve (a dangling id reads as no folder). Case-insensitive unique live names checked in the transaction; `EditError` cases that never quote a name. Tests in docs/folders-design.md "Tests to write".
   - accept: `cargo test -p earshot-runtime folders`

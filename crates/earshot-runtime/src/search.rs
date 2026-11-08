@@ -137,13 +137,19 @@ fn summary_texts(s: &SummaryV1) -> impl Iterator<Item = &str> {
         .chain(s.open_questions.iter().map(String::as_str))
 }
 
-/// Query text with its case folded, one character at a time so a position in folded text can be
+/// Query text with its case folded ([`fold_case`]), one character at a time so a position in folded text can be
 /// traced back to the text's own characters (some letters lower to two).
 struct Query(Vec<char>);
 
+/// `text` with its case folded one character at a time: the one case rule of search and of
+/// folder names ([`crate::folders`]).
+pub(crate) fn fold_case(text: &str) -> impl Iterator<Item = char> + '_ {
+    text.chars().flat_map(char::to_lowercase)
+}
+
 impl Query {
     fn new(query: &str) -> Self {
-        Self(query.chars().flat_map(char::to_lowercase).collect())
+        Self(fold_case(query).collect())
     }
 
     fn is_empty(&self) -> bool {
