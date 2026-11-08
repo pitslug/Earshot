@@ -221,6 +221,20 @@ What to read:
 
 So the NPU sessions of an Everyone meeting (two tracks' own and two previews) each hold their own compiled graph; `--memory` measures what that costs. Making them share would need a different design (one session serving several tracks, or a context binary with one graph per session) and is a separate task.
 
+## Your own words on the CPU beside CUDA (T12.3a)
+
+With transcription on CUDA, Everyone refuses the mic track's preview session ("not measured on the graphics card yet"): a fourth session on the card costs about 3.7 GiB of graphics memory. T12.3a runs that one session on the CPU instead, with the CPU's shared weights, so the card holds no more than today.
+
+**The rule, written and committed 2026-11-09 before any code or measurement** (judgements; desktop, RTX 5080, idle host, bundled and continuous audio, real time). "Everyone" with the mic preview on the CPU is judged against "Other people only" on CUDA, on the same audio, and passes only if it passes on both:
+
+1. **Where it ran.** The far-end preview and both tracks' own sessions report CUDA from ONNX Runtime's placement; the mic preview reports the CPU. Otherwise the run says nothing about this design.
+2. **Stored words are identical.** `stored_sha256` matches for every track.
+3. **The main transcript does not slow.** For each track, real decode rtf at most 1.5 times the comparison run's, and `catch_up_after_end_s` at most its value plus 2 s. No audio dropped.
+4. **The mic previews are worth having.** `mic.on_screen_lag_s` median at most 3 s on the bundled meeting (continuous audio has no mic speech), no preview turned off for slowness, at most 2 slow pauses per track; the far-end preview's on-screen median at most its comparison value plus 1 s.
+5. **Cost.** Peak private memory at most 3 GiB above the comparison run's, and graphics memory no higher than the comparison run's plus 0.5 GiB (read from `nvidia-smi` beside the run).
+
+If it passes, `previews_refused_second` lets CUDA run the mic preview on the CPU, within the CPU memory limit (`PREVIEW_BOTH_MIN_MEMORY`), with the General page saying where it runs. If it fails, CUDA keeps refusing, and the numbers and the failed point go here.
+
 ## Re-measuring on a quiet host
 
 Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`
