@@ -1512,7 +1512,7 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T9.5b
   - do: IPC commands and bindings; the Folders group, the filter (opens on All meetings), Move to folder in the row menu, Rename and Delete with the two-choice dialog (keeping the meetings is the default) in `AppShell`; the start-up screen for a database saved by a newer Earshot. Screens checked light and dark.
   - accept: `cargo test -p earshot-desktop folders`; `cmd /c pnpm -r test`
-- [ ] T9.5 Folders in the side panel
+- [x] T9.5 Folders in the side panel
   - deps: T9.5a, T9.5b, T9.5c
   - do: joint acceptance; design in docs/folders-design.md (the owner, 2026-11-08).
   - accept: `cargo xtask ci`
