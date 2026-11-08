@@ -1294,7 +1294,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T8.4e
   - do: a `qnn` feature on `earshot-desktop` forwarding to `earshot-runtime/qnn`, added by `build::shipped_features` for an ARM64 app, so the order is QNN > CPU for Parakeet there. A machine whose NPU or QNN library refuses to load starts and runs on the CPU with the reason shown once (fake loader test). No CUDA on ARM64: the owner has not chosen it after T8.4b.
   - accept: `cargo test -p earshot-runtime backends`; `cargo test -p xtask build`; `cargo xtask build --target aarch64-pc-windows-msvc --app`
-- [ ] T8.4g Hosted NPU conversions
+- [~] T8.4g Hosted NPU conversions
   - deps: T8.4f
   - do: the owner chose (section 7, 2026-11-08) Earshot's GitHub release "Earshot Dependencies" (tag `cuda-set-llama-0.1.160-2`, never marked latest). Publish the `parakeet-qnn/parakeet-tdt-0.6b-v2` and `parakeet-tdt-110m` conversions that GATE-03a measured (checked against their `conversion.json` and docs/qnn.md before upload) as zips with a NOTICE carrying the CC-BY-4.0 credit; manifest entries with size, SHA-256 and licence, extracted through `archive::extract_verified` into `parakeet-qnn/<model>`, offered on the Models page of an ARM64 app only, and kept by `backends::verify_qnn_conversion`. Uploading is the owner's go-ahead.
   - accept: `cargo test -p xtask models`; `cargo test -p earshot-runtime catalogue`; `cargo xtask fetch-models --set qnn-models --verify` after upload

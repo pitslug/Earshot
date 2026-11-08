@@ -18,7 +18,7 @@ import { type ReactNode, useId } from "react";
 
 import type { ModelItem } from "../ipc";
 import { CudaParts } from "./CudaSection";
-import { HelpersCard, ModelCard } from "./ModelCard";
+import { HelpersCard, ModelCard, NpuCard } from "./ModelCard";
 import {
   CheckLine,
   HardwareSection,
@@ -27,7 +27,7 @@ import {
   Recommendation,
   WhereItRuns,
 } from "./ModelsParts";
-import { HELPERS_WHY, ROLE_LABEL, choiceWhy, summaryLabel, summaryWhy, titleOf } from "./copy";
+import { HELPERS_WHY, NPU_WHY, ROLE_LABEL, choiceWhy, summaryLabel, summaryWhy, titleOf } from "./copy";
 import { useCuda } from "./useCuda";
 import { type ModelsData, type ModelsLoad, type ModelsPageState, useModels } from "./useModels";
 
@@ -238,6 +238,21 @@ export function ModelsPage() {
         data={load.data}
         summaryNote="Your own endpoint or no summary: Settings, Summaries."
       />
+
+      {models.npu.length > 0 && (
+        <Section title="NPU versions">
+          {models.npu.map((item) => (
+            <NpuCard
+              key={item.name}
+              item={item}
+              why={NPU_WHY}
+              onDownload={(m) => void state.download(m)}
+              onPause={(m) => void state.pause(m)}
+              onRemove={(m) => void state.remove(m)}
+            />
+          ))}
+        </Section>
+      )}
 
       <Section title="Where it runs">
         <WhereItRuns

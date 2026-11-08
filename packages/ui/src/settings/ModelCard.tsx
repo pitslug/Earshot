@@ -110,6 +110,46 @@ export function HelpersCard({
   );
 }
 
+/** A model's NPU version: nothing to choose (its model runs on the NPU while it is installed),
+ * downloaded and removed like a model. */
+export function NpuCard({
+  item,
+  why,
+  onDownload,
+  onPause,
+  onRemove,
+}: {
+  item: ModelItem;
+  why: string;
+  onDownload(model: string): void;
+  onPause(model: string): void;
+  onRemove(model: string): void;
+}) {
+  const styles = useStyles();
+  const removable = item.installed !== "No" && !item.protected && !item.downloading && item.held > 0;
+  return (
+    <div className={styles.card} data-model={item.name}>
+      <div className={styles.main}>
+        <Body1Strong>{item.title}</Body1Strong>
+        <Caption1>{why}</Caption1>
+      </div>
+      <div className={styles.actions}>
+        <InstallState item={item} title={item.title} onDownload={onDownload} onPause={onPause} />
+        {removable && (
+          <Button
+            size="small"
+            appearance="transparent"
+            aria-label={`Remove ${item.title} (frees ${formatSize(item.held)})`}
+            onClick={() => onRemove(item.name)}
+          >
+            Remove (frees {formatSize(item.held)})
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** A model as a radio card; must sit inside a `RadioGroup`. */
 export function ModelCard({ item, label, why, selected, onDownload, onPause, onRemove, offer }: ModelCardProps) {
   const styles = useStyles();

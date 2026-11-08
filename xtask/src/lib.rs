@@ -28,6 +28,7 @@ pub mod public_guard;
 pub mod purity;
 pub mod qnn_convert;
 pub mod qnn_etw;
+pub mod qnn_pack;
 pub mod schema;
 pub mod sum_eval;
 pub mod t613;

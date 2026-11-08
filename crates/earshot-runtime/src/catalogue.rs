@@ -28,6 +28,11 @@
 //!   then deleted; one already extracted costs no request.
 //! - **The opt-in CUDA files** (`[[cuda_archive]]`, T8.4ae): read and checked here, never
 //!   listed as models; everything done with them is [`crate::cuda`].
+//! - **NPU versions** ([`ModelKind::NpuVersion`], set [`NPU_SET`], T8.4g): Earshot's own
+//!   conversions of the Parakeet TDT models for the Snapdragon NPU, one pinned zip each,
+//!   extracted into `parakeet-qnn/<model>`. Checked on every build, listed only on ARM64
+//!   ([`NPU_OFFERED`]); downloaded and extracted like the helpers, removed folder and all
+//!   (put aside whole first), and kept while their model is protected (`host::protected_models`).
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -73,9 +78,22 @@ pub const HELPERS_SET: &str = if cfg!(target_arch = "aarch64") {
     HELPERS_SET_X64
 };
 
+/// The manifest set of Earshot's own NPU conversions of Parakeet TDT models (T8.4g): one zip
+/// each, extracted into `parakeet-qnn/<model>` (`backends::ParakeetModel::qnn_dir`).
+pub const NPU_SET: &str = "qnn-models";
+
+/// The folder under the models directory that holds the NPU conversions
+/// (`backends::ParakeetModel::qnn_dir` is `<NPU_DIR>/<model>`).
+const NPU_DIR: &str = "parakeet-qnn";
+
+/// Whether this build offers the NPU conversions on the Models page: ARM64 only (the Snapdragon
+/// NPU; an x64 build never lists them).
+pub const NPU_OFFERED: bool = cfg!(target_arch = "aarch64");
+
 /// The names the app shows for catalogue models (manifest id, display name). Every text
 /// for the user names a model through [`display_name`], never by its manifest id; the
-/// catalogue tests pin this list to the catalogue (one entry per model, no other).
+/// catalogue tests pin this list to the catalogue (one entry per model, no other; the NPU
+/// versions as an ARM64 build lists them).
 pub const DISPLAY_NAMES: &[(&str, &str)] = &[
     ("tiny.en", "Whisper tiny.en"),
     ("base.en", "Whisper base.en"),
@@ -90,6 +108,8 @@ pub const DISPLAY_NAMES: &[(&str, &str)] = &[
     ("qwen3.5-9b-q4_k_m", "Qwen 3.5 9B"),
     ("qwen3.5-4b-q4_k_m", "Qwen 3.5 4B"),
     (HELPERS_MODEL, "Speech helpers"),
+    ("parakeet-tdt-0.6b-v2-npu", "Parakeet 0.6B v2 (NPU version)"),
+    ("parakeet-tdt-110m-npu", "Parakeet 110M (NPU version)"),
 ];
 
 /// The name the user sees for model `id` ([`DISPLAY_NAMES`]); an id the list does not
@@ -443,6 +463,10 @@ pub enum ModelKind {
     Summary,
     /// What every meeting needs ([`HELPERS_MODEL`]; never chosen, never removed).
     Helpers,
+    /// The NPU version of a Parakeet TDT model (set [`NPU_SET`], ARM64 only, [`NPU_OFFERED`]):
+    /// an archive extracted into `parakeet-qnn/<model>`, never chosen on its own; its model
+    /// runs on the NPU only while it is installed (`backends::npu_order`).
+    NpuVersion,
 }
 
 /// A model the user can choose, download and remove.
@@ -582,6 +606,16 @@ impl Catalogue {
     /// the models directory, a bad URL or digest, a helper archive the app cannot extract);
     /// [`CatalogueError::Path`] for a cache path outside the models directory.
     pub fn parse(text: &str) -> Result<Self, CatalogueError> {
+        Self::parse_with(text, NPU_OFFERED)
+    }
+
+    /// [`Catalogue::parse`], listing the NPU versions (set [`NPU_SET`]) as models only when
+    /// `offers_npu` (an ARM64 build, [`NPU_OFFERED`]); they are checked either way.
+    ///
+    /// # Errors
+    /// As [`Catalogue::parse`]; an NPU version that is not a pinned zip extracted into
+    /// `parakeet-qnn/<model>` of a Parakeet TDT model, or that is in another set too.
+    pub fn parse_with(text: &str, offers_npu: bool) -> Result<Self, CatalogueError> {
         let raw: RawManifest = toml::from_str(text).map_err(|e| manifest_err(e.to_string()))?;
         let mut ids = BTreeSet::new();
         let mut artefacts = Vec::new();
@@ -681,6 +715,27 @@ impl Catalogue {
                 artefacts: vec![a.id.clone()],
                 languages: Vec::new(),
                 detects_language: false,
+            });
+        }
+        for a in artefacts
+            .iter()
+            .filter(|a| a.sets.iter().any(|s| s == NPU_SET))
+        {
+            let base = Self::npu_base_of(a, &models)?;
+            let (languages, detects_language) = (base.languages.clone(), base.detects_language);
+            if !offers_npu {
+                continue;
+            }
+            if !names.insert(a.id.clone()) {
+                return Err(manifest_err(format!("model `{}` repeats", a.id)));
+            }
+            models.push(Model {
+                name: a.id.clone(),
+                kind: ModelKind::NpuVersion,
+                engine: Engine::ParakeetTdt,
+                artefacts: vec![a.id.clone()],
+                languages,
+                detects_language,
             });
         }
         let helpers = Self::helpers_of(&artefacts, HELPERS_SET)?;
@@ -842,6 +897,53 @@ impl Catalogue {
             ids.push(a.id.clone());
         }
         Ok(ids)
+    }
+
+    /// The Parakeet TDT transcription model (of `models`) whose NPU version artefact `a` is: a
+    /// zip the app extracts, in set [`NPU_SET`] only, pinning what it holds, extracted into
+    /// `parakeet-qnn/<model>`.
+    fn npu_base_of<'m>(a: &Artefact, models: &'m [Model]) -> Result<&'m Model, CatalogueError> {
+        let bad = |why: &str| manifest_err(format!("NPU version `{}` {why}", a.id));
+        if a.sets.iter().any(|s| s != NPU_SET) {
+            return Err(bad("is in another set too"));
+        }
+        let Some(x) = &a.extract else {
+            return Err(bad("is not an archive"));
+        };
+        if archive::Format::parse(&x.format) != Some(archive::Format::Zip) || x.members.is_empty() {
+            return Err(bad("is not a zip that pins its files"));
+        }
+        let base = x
+            .into
+            .strip_prefix(NPU_DIR)
+            .and_then(|r| r.strip_prefix('/'))
+            .ok_or_else(|| bad("is not extracted into parakeet-qnn/<model>"))?;
+        models
+            .iter()
+            .find(|m| {
+                m.name == base
+                    && m.kind == ModelKind::Transcription
+                    && m.engine == Engine::ParakeetTdt
+            })
+            .ok_or_else(|| bad("is for no Parakeet TDT model of the manifest"))
+    }
+
+    /// The NPU version of transcription model `base` when this catalogue lists one (an ARM64
+    /// build, [`NPU_OFFERED`]).
+    #[must_use]
+    pub fn npu_version_of(&self, base: &str) -> Option<&Model> {
+        self.models_of(ModelKind::NpuVersion)
+            .find(|m| self.npu_base(&m.name) == Some(base))
+    }
+
+    /// The transcription model whose NPU version `name` is.
+    #[must_use]
+    pub fn npu_base(&self, name: &str) -> Option<&str> {
+        let m = self
+            .model(name)
+            .filter(|m| m.kind == ModelKind::NpuVersion)?;
+        let x = self.artefact(m.artefacts.first()?)?.extract.as_ref()?;
+        x.into.strip_prefix(NPU_DIR)?.strip_prefix('/')
     }
 
     fn check_model_artefacts(
@@ -1081,9 +1183,54 @@ impl Catalogue {
                     Err(e) => return Err(io_error(&path)(e)),
                 }
             }
+            if let Some(x) = &a.extract {
+                remove_extraction(x, models, &mut removed)?;
+            }
         }
         Ok(removed)
     }
+}
+
+/// Removes the extraction of `x` from `models` (an NPU version's folder; the speech helpers are
+/// never removed): a copy a crash left aside and a temp folder first, then the folder itself, put
+/// aside whole before it is deleted (`archive::aside_dir`), so a folder a meeting has a file of
+/// open refuses the removal with every file in place. Counts the pinned members it held. Once the
+/// rename succeeded nothing holds a file open, so the delete is not expected to stop part way; if it
+/// does, the copy left aside reads as partly installed and is never loaded (`npu_order` needs every
+/// file, `backends::verify_qnn_conversion` every digest).
+fn remove_extraction(
+    x: &Extract,
+    models: &ModelDir,
+    removed: &mut Removed,
+) -> Result<(), CatalogueError> {
+    let dir = x.dir(models)?;
+    for leftover in [archive::aside_dir(&dir), archive::tmp_dir(&dir)] {
+        match std::fs::remove_dir_all(&leftover) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_error(&leftover)(e)),
+        }
+    }
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let mut held = Vec::new();
+    for m in &x.members {
+        let path = jail_join(&dir, &m.path)?;
+        if let Ok(meta) = std::fs::metadata(&path)
+            && meta.is_file()
+        {
+            held.push((path, meta.len()));
+        }
+    }
+    let aside = archive::aside_dir(&dir);
+    std::fs::rename(&dir, &aside).map_err(io_error(&dir))?;
+    std::fs::remove_dir_all(&aside).map_err(io_error(&aside))?;
+    for (path, size) in held {
+        removed.bytes_freed += size;
+        removed.files.push(path);
+    }
+    Ok(())
 }
 
 /// Fetches one file: `(url, dest, expected, cancel, progress(done, total))`, as

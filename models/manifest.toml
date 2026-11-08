@@ -33,7 +33,8 @@
 # earshot-runtime `catalogue`): Silero, segmentation, CAM++ and that architecture's CPU build
 # of ONNX Runtime, never a CUDA or QNN library (T8.4a, T8.4). The app extracts only the
 # `[[artefact.extract.member]]` files of an archive, so a file it must keep (a licence) is a
-# member.
+# member. qnn-models = Earshot's own NPU conversions of the NPU ladder's Parakeet models (T8.4g),
+# which the ARM64 app offers as downloads on its Models page (never x64, never ci or desktop).
 #
 # Checksum provenance (`publisher_checksum`):
 # - whisper.cpp: sha256 equals the Hugging Face LFS oid of the file at the pinned commit.
@@ -43,7 +44,7 @@
 #   author's mirror (csukuangfj/...).
 # - ONNX Runtime: the sha256 digest GitHub publishes for the release asset.
 
-sets = ["ci", "desktop", "choice", "cuda", "eval", "arm64", "qnn", "qnn-x64", "llm-eval", "summary", "helpers-x64", "helpers-arm64", "cuda-libraries"]
+sets = ["ci", "desktop", "choice", "cuda", "eval", "arm64", "qnn", "qnn-x64", "llm-eval", "summary", "helpers-x64", "helpers-arm64", "cuda-libraries", "qnn-models"]
 
 hosts = [
     "huggingface.co",
@@ -913,6 +914,117 @@ size = 18556686752
 publisher_checksum = "hf-lfs-sha256:6c997b8af17debdfb01d890214400ccbab00db6acc0ba8da5de1cc906c4774d0"
 licence = "Apache-2.0"
 attribution = "Qwen3-30B-A3B-Instruct-2507 (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507; GGUF conversion by Unsloth"
+
+# Earshot's own NPU conversions of the two Parakeet TDT models of the NPU ladder (T8.3c, recipe
+# a16w8pc-minmax-j2, the conversions GATE-03a measured; T8.4g), packed by `cargo xtask qnn-pack`
+# (one stored zip each with a NOTICE.md carrying the CC-BY-4.0 credit) and published by this project
+# in the release that holds every file Earshot hosts ("Earshot Dependencies", tag
+# cuda-set-llama-0.1.160-2, never marked latest; PLAN 7, 2026-11-08). github.com answers 302 to
+# release-assets.githubusercontent.com, both already listed (observed for the CUDA set above). The
+# app offers them on the Models page of an ARM64 build only (earshot-runtime `catalogue`, set
+# qnn-models) and loads them only after `backends::verify_qnn_conversion`; the community copies they
+# were converted from stay on their own hosts. Licence: CC-BY-4.0 (NVIDIA model cards); a
+# modification (quantisation).
+
+[[artefact]]
+id = "parakeet-tdt-0.6b-v2-npu"
+sets = ["qnn-models"]
+location = "cache"
+url = "https://github.com/pitslug/Earshot/releases/download/cuda-set-llama-0.1.160-2/earshot-npu-parakeet-tdt-0.6b-v2-a16w8pc-minmax-j2.zip"
+path = "archives/earshot-npu-parakeet-tdt-0.6b-v2-a16w8pc-minmax-j2.zip"
+sha256 = "018b232b4234f128781a4c35357a3f7fc25ff9440566ee653ffc12838ba583a0"
+size = 641079341
+licence = "CC-BY-4.0"
+attribution = "Earshot's NPU conversion of NVIDIA Parakeet TDT 0.6B v2 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2; quantised for the Qualcomm NPU by `cargo xtask qnn-convert` (recipe a16w8pc-minmax-j2) from the ONNX export by the k2-fsa sherpa-onnx project (see NOTICE.md in the archive)"
+
+[artefact.extract]
+format = "zip"
+into = "parakeet-qnn/parakeet-tdt-0.6b-v2"
+
+[[artefact.extract.member]]
+path = "NOTICE.md"
+sha256 = "7a1529a3c824a44c017eb682b08369e1d59c79d137f0d6ed5e660f25da6327f1"
+size = 1804
+
+[[artefact.extract.member]]
+path = "conversion.json"
+sha256 = "9fc05c3e0f4ba7de49b8a92cbaf1683dc14cc4326989c8db7d645b12ea9baf77"
+size = 2143
+
+[[artefact.extract.member]]
+path = "tokens.txt"
+sha256 = "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d"
+size = 9384
+
+[[artefact.extract.member]]
+path = "encoder.onnx"
+sha256 = "41b9dba33fbc012381bba4ad357a016a161e0671015881495c46782826c5fc63"
+size = 2270401
+
+[[artefact.extract.member]]
+path = "encoder.weights"
+sha256 = "79aba9d50995861d79f03933871c4768fec4f35369d8631f85ff9bd16b49df63"
+size = 603003648
+
+[[artefact.extract.member]]
+path = "decoder.onnx"
+sha256 = "0140d12782ccf550a9709f03a52c2782b3c54d045f47ce14af39c713ab42de7f"
+size = 28883663
+
+[[artefact.extract.member]]
+path = "joiner.onnx"
+sha256 = "a9e57e488cd1016cbefd51f60712896af6590e3f61ff466a540e085bbd6af59e"
+size = 6907576
+
+[[artefact]]
+id = "parakeet-tdt-110m-npu"
+sets = ["qnn-models"]
+location = "cache"
+url = "https://github.com/pitslug/Earshot/releases/download/cuda-set-llama-0.1.160-2/earshot-npu-parakeet-tdt-110m-a16w8pc-minmax-j2.zip"
+path = "archives/earshot-npu-parakeet-tdt-110m-a16w8pc-minmax-j2.zip"
+sha256 = "0b2e89cf237b3f943a4cb6fd7b7728b7a690313603c3662f3f9e9c70c78657ba"
+size = 136729487
+licence = "CC-BY-4.0"
+attribution = "Earshot's NPU conversion of NVIDIA Parakeet TDT-CTC 110M (NVIDIA NeMo and Suno.ai), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt_ctc-110m; quantised for the Qualcomm NPU by `cargo xtask qnn-convert` (recipe a16w8pc-minmax-j2) from the ONNX export by the k2-fsa sherpa-onnx project (see NOTICE.md in the archive)"
+
+[artefact.extract]
+format = "zip"
+into = "parakeet-qnn/parakeet-tdt-110m"
+
+[[artefact.extract.member]]
+path = "NOTICE.md"
+sha256 = "9cf7b0735692d95a23ea09f515c494c605b250f4a630de4a52a8ba7398e2bf82"
+size = 1887
+
+[[artefact.extract.member]]
+path = "conversion.json"
+sha256 = "b8f4baeff709cbc1c05cf907909890d288b32b6dc1675a96c36d40b836480fbb"
+size = 2001
+
+[[artefact.extract.member]]
+path = "tokens.txt"
+sha256 = "450e56bd2f036fe5b6aa821865838cc5aa9d8b0106134ce9a9ba0664abe6cd10"
+size = 9953
+
+[[artefact.extract.member]]
+path = "encoder.onnx"
+sha256 = "17b68fbef5ed470e79fd048204c85e71e22a6a240b65dd4e2d9bc1bc6785c667"
+size = 2503056
+
+[[artefact.extract.member]]
+path = "encoder.weights"
+sha256 = "47760c4dfc4f3b93f3f746e1efdff605c2578ca787a125862f8f7b44966d1bbe"
+size = 112861928
+
+[[artefact.extract.member]]
+path = "decoder.onnx"
+sha256 = "3da156bde41a04c94ef783e0bd92928e9974e08645b976a22d0c3e1063510249"
+size = 15753086
+
+[[artefact.extract.member]]
+path = "joiner.onnx"
+sha256 = "b603765c0724a0768c378a23326dabbeb9cfea932d260e4fcc14384fa5fd5aff"
+size = 5596854
 
 # Transcription models (T6.10e): the artefacts each needs and the languages it covers (from
 # whisper.cpp's language table and NVIDIA's model cards). `detects_language`: the model finds

@@ -19,8 +19,8 @@
 //!    the [`Recipe`] (`--recipe`, default [`DEFAULT_RECIPE`]) and writes the model and
 //!    `conversion.json` (recipe, versions, hashes).
 //!
-//! The result is hosted nowhere: shipping waits on the owner's hosting decision (Parakeet is
-//! CC-BY-4.0) and the QNN redistribution question (T8.4).
+//! The NPU ladder's conversions are published by `cargo xtask qnn-pack` (T8.4g, [`crate::qnn_pack`]):
+//! one zip each with the CC-BY-4.0 credit, in the release that holds every file Earshot hosts.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

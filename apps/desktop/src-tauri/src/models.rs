@@ -176,6 +176,8 @@ pub enum ModelUse {
     Summary,
     /// What every meeting needs (the speech helpers).
     Helpers,
+    /// The NPU version of a transcription model (ARM64 only): never chosen on its own.
+    NpuVersion,
 }
 
 /// A model's files on this computer.
@@ -301,6 +303,9 @@ pub struct ModelsView {
     pub summary: Vec<ModelItem>,
     /// What every meeting needs, one item (T9.1f): never chosen, never removed.
     pub helpers: ModelItem,
+    /// The NPU versions of the transcription models (T8.4g): listed by an ARM64 build only, empty
+    /// on x64.
+    pub npu: Vec<ModelItem>,
     /// The stored check, if any.
     pub check: Option<CheckView>,
     /// What the app uses now.
@@ -388,7 +393,8 @@ pub fn models_view(
             .map_err(|e| internal(&e))?;
         let (kind, runs_on, check) = match m.kind {
             ModelKind::Transcription => {
-                let on = recommend::runs_on(&m.name, order);
+                // The NPU only while the model's NPU version is installed (T8.4g).
+                let on = recommend::runs_on_here(models, &m.name, order);
                 (
                     ModelUse::Transcription,
                     RunsOn::of(on),
@@ -397,6 +403,7 @@ pub fn models_view(
             }
             ModelKind::Summary => (ModelUse::Summary, summary_on, Verdict::Unknown),
             ModelKind::Helpers => (ModelUse::Helpers, RunsOn::Processor, Verdict::Unknown),
+            ModelKind::NpuVersion => (ModelUse::NpuVersion, RunsOn::Npu, Verdict::Unknown),
         };
         Ok(ModelItem {
             name: m.name.clone(),
@@ -457,6 +464,7 @@ pub fn models_view(
         transcription: list(ModelKind::Transcription)?,
         summary: list(ModelKind::Summary)?,
         helpers,
+        npu: list(ModelKind::NpuVersion)?,
         check: stored.as_ref().map(|c| CheckView {
             model: c.model.clone(),
             runs_on: RunsOn::of(c.backend),

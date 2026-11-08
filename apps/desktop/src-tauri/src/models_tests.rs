@@ -160,9 +160,10 @@ fn models_view_lists_the_catalogue_choices_and_what_is_in_use() {
     assert_eq!(v2.kind, ModelUse::Transcription);
     assert_eq!(v2.size, 2_512_987_040);
     assert_eq!(v2.installed, Installed::No);
+    // Without its NPU version the model runs on the processor, as a meeting would (T8.4g).
     assert_eq!(
         (v2.held, v2.runs_on, v2.check),
-        (0, RunsOn::Npu, Verdict::Unknown)
+        (0, RunsOn::Processor, Verdict::Unknown)
     );
     assert!(!v2.downloading && !v2.protected);
     assert!(item("parakeet-tdt-110m").downloading);
@@ -190,6 +191,44 @@ fn models_view_lists_the_catalogue_choices_and_what_is_in_use() {
     assert_eq!(v.in_use.summary, LOW_MEMORY_SUMMARY_MODEL);
     assert!(v.in_use.summaries_here);
     assert!(v.in_use.notes.is_empty());
+}
+
+#[test]
+fn models_view_says_npu_only_for_a_model_whose_npu_version_is_installed() {
+    use earshot_runtime::backends::{AsrModel, asr_model};
+    use earshot_runtime::catalogue::NPU_OFFERED;
+    let dir = TempDir::new("models-npu");
+    let svc = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let hw = surface();
+    let runs_on = |n: &str| {
+        let v = models_view(&svc, &models, &hw, SURFACE, &|_| false).unwrap();
+        v.transcription
+            .iter()
+            .find(|m| m.name == n)
+            .unwrap()
+            .runs_on
+    };
+    assert_eq!(runs_on("parakeet-tdt-0.6b-v2"), RunsOn::Processor);
+    let Ok(AsrModel::Parakeet(p)) = asr_model("parakeet-tdt-0.6b-v2") else {
+        panic!("a Parakeet model");
+    };
+    for rel in p.qnn_files() {
+        let f = models.root().join(rel);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, b"x").unwrap();
+    }
+    assert_eq!(runs_on("parakeet-tdt-0.6b-v2"), RunsOn::Npu);
+    assert_eq!(runs_on("parakeet-tdt-110m"), RunsOn::Processor);
+    // An x64 build lists no NPU version; an ARM64 build lists one for each of these two.
+    let v = models_view(&svc, &models, &hw, SURFACE, &|_| false).unwrap();
+    assert_eq!(v.npu.is_empty(), !NPU_OFFERED);
+    assert!(v.npu.iter().all(|m| m.kind == ModelUse::NpuVersion));
+    assert!(
+        v.transcription
+            .iter()
+            .all(|m| m.kind == ModelUse::Transcription)
+    );
 }
 
 #[test]

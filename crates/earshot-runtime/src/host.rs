@@ -599,9 +599,27 @@ pub fn protected_models(
     }
     let placement = local_summary_placement(store, build, hardware)?;
     keep.push(summary_model_for(&placement, hardware)?.model.id.to_owned());
+    if let Ok(catalogue) = crate::catalogue::Catalogue::embedded() {
+        keep = with_npu_versions(catalogue, keep);
+    }
     keep.sort();
     keep.dedup();
     Ok(keep)
+}
+
+/// `keep` with the NPU version (T8.4g) of every model in it, as `catalogue` lists them: a kept
+/// model's NPU files are kept too, because a meeting on the NPU has them open.
+#[must_use]
+pub fn with_npu_versions(
+    catalogue: &crate::catalogue::Catalogue,
+    keep: Vec<String>,
+) -> Vec<String> {
+    let npu: Vec<String> = keep
+        .iter()
+        .filter_map(|m| catalogue.npu_version_of(m))
+        .map(|v| v.name.clone())
+        .collect();
+    keep.into_iter().chain(npu).collect()
 }
 
 /// Removes model `name`'s files from `models` unless it is one of `protected`

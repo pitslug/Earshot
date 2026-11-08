@@ -8,8 +8,15 @@ import type { ChoiceKind, HardwareView, ModelItem, ModelsView, RunsOn, Verdict }
  * one display-name list, `earshot_runtime::catalogue::display_name`); a name the IPC does
  * not list is shown as it is. */
 export function titleOf(models: ModelsView, name: string): string {
-  return [models.helpers, ...models.transcription, ...models.summary].find((m) => m.name === name)?.title ?? name;
+  return (
+    [models.helpers, ...models.transcription, ...models.summary, ...models.npu].find((m) => m.name === name)?.title ??
+    name
+  );
 }
+
+/** Why you would download a model's NPU version (an ARM64 build only). */
+export const NPU_WHY =
+  "Lets this model run on the NPU, which leaves the processor for your call. Without it, the model runs on the processor.";
 
 /** What the speech helpers are, and that they are not enough on their own. */
 export const HELPERS_WHY =

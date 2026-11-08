@@ -150,8 +150,9 @@ impl ParakeetModel {
     /// The directory of its NPU conversion, relative to the models directory
     /// (`parakeet-qnn/<name>`; TDT models only): a static-shape, QDQ-quantised encoder for
     /// Qualcomm's HTP backend plus the float prediction network and joint, which run on the
-    /// CPU. Built locally by `cargo xtask qnn-convert --model <name>` and hosted nowhere yet
-    /// (T8.3), so it is not a manifest artefact.
+    /// CPU. Built by `cargo xtask qnn-convert --model <name>` (T8.3); the conversions of the NPU
+    /// ladder's models are also published as their NPU versions (manifest set `qnn-models`,
+    /// T8.4g), which the ARM64 app downloads from its Models page.
     #[must_use]
     pub fn qnn_dir(&self) -> Option<String> {
         (self.decoder == ParakeetDecoder::Tdt).then(|| format!("parakeet-qnn/{}", self.name))
@@ -309,6 +310,9 @@ fn fetch_set(rel: &str) -> Option<&'static str> {
     if crate::summary_model::is_summary_file(rel) {
         return Some(crate::summary_model::SUMMARY_FETCH_SET);
     }
+    if npu_conversion_published(rel) {
+        return Some(crate::catalogue::NPU_SET);
+    }
     if [SILERO, SEGMENTATION, CAMPPLUS, earshot_onnx::ORT_CPU_DYLIB].contains(&rel) {
         return Some("ci");
     }
@@ -316,6 +320,22 @@ fn fetch_set(rel: &str) -> Option<&'static str> {
         .iter()
         .find(|(n, _)| rel == format!("whisper/ggml-{n}.bin"))
         .map(|(_, set)| *set)
+}
+
+/// Whether `rel` is a file of an NPU conversion the manifest publishes (set
+/// [`crate::catalogue::NPU_SET`], T8.4g; listed in the artefacts on every build).
+fn npu_conversion_published(rel: &str) -> bool {
+    crate::catalogue::Catalogue::embedded().is_ok_and(|c| {
+        c.artefacts()
+            .iter()
+            .filter(|a| a.sets.iter().any(|s| s == crate::catalogue::NPU_SET))
+            .filter_map(|a| a.extract.as_ref())
+            .any(|x| {
+                x.members
+                    .iter()
+                    .any(|m| format!("{}/{}", x.into, m.path) == rel)
+            })
+    })
 }
 
 /// The models directory; see the module docs.
@@ -1080,10 +1100,12 @@ pub fn require_qnn_model(models: &ModelDir, model: &ParakeetModel) -> Result<Pat
         let path = models.root().join(&rel);
         if !path.is_file() {
             return Err(AsrError::Backend(format!(
-                "{} not found: the NPU conversion of {} is built locally with \
-                 `cargo xtask qnn-convert --model {}` (not hosted yet)",
+                "{} not found: the NPU conversion of {} is downloaded as its NPU version on the \
+                 Models page (`cargo xtask fetch-models --set {}`) or built with \
+                 `cargo xtask qnn-convert --model {}`",
                 path.display(),
                 model.name,
+                crate::catalogue::NPU_SET,
                 model.name
             )));
         }

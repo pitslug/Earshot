@@ -221,7 +221,9 @@ pub fn runtime_text(e: &RuntimeError) -> String {
             transcription_copy(helpers_there).to_owned()
         }
         Some((ModelKind::Summary, name)) => summary_copy_of(name),
-        None => MODELS_NEEDED.to_owned(),
+        // A model's NPU files are never loaded without every one of them (`npu_order`); the
+        // Models page offers them.
+        Some((ModelKind::NpuVersion, _)) | None => MODELS_NEEDED.to_owned(),
     }
 }
 

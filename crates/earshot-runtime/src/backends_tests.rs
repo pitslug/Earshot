@@ -1273,8 +1273,11 @@ fn backends_parakeet_npu_conversions_are_local_builds_of_the_tdt_models() {
                 ] {
                     assert!(files.contains(&format!("{dir}/{f}")), "{f}");
                 }
-                // Built locally, hosted nowhere yet: never a manifest artefact.
-                assert!(files.iter().all(|f| fetch_set(f).is_none()), "{files:?}");
+                // The NPU ladder's conversions are published (T8.4g, set qnn-models); any
+                // other is a local build only, never a manifest artefact.
+                let published = ["parakeet-tdt-0.6b-v2", "parakeet-tdt-110m"].contains(&p.name);
+                let want = published.then_some(crate::catalogue::NPU_SET);
+                assert!(files.iter().all(|f| fetch_set(f) == want), "{files:?}");
             }
         }
     }

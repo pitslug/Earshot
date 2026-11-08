@@ -29,10 +29,18 @@ fn catalogue_embedded_manifest_parses_with_every_path_in_the_models_directory() 
             }
         }
     }
-    // Models the user chooses are plain files: only the helpers need archive extraction.
-    for m in c.models().iter().filter(|m| m.kind != ModelKind::Helpers) {
-        for a in c.artefacts_of(&m.name).unwrap() {
-            assert!(a.extract.is_none(), "{} needs extraction", m.name);
+    // Models the user chooses are plain files: only the helpers and the NPU versions (ARM64)
+    // need archive extraction.
+    let arm64 = Catalogue::parse_with(MODELS_MANIFEST, true).unwrap();
+    for c in [c, &arm64] {
+        for m in c
+            .models()
+            .iter()
+            .filter(|m| matches!(m.kind, ModelKind::Transcription | ModelKind::Summary))
+        {
+            for a in c.artefacts_of(&m.name).unwrap() {
+                assert!(a.extract.is_none(), "{} needs extraction", m.name);
+            }
         }
     }
 }
@@ -591,12 +599,16 @@ fn catalogue_download_stops_at_a_cancel_and_keeps_what_finished() {
 
 #[test]
 fn catalogue_display_names_cover_every_model_and_nothing_else() {
+    // Every model of either build: an ARM64 build also lists the NPU versions.
+    let arm64 = Catalogue::parse_with(MODELS_MANIFEST, true).unwrap();
     let mut ids: Vec<&str> = catalogue()
         .models()
         .iter()
+        .chain(arm64.models())
         .map(|m| m.name.as_str())
         .collect();
     ids.sort_unstable();
+    ids.dedup();
     let mut named: Vec<&str> = DISPLAY_NAMES.iter().map(|(id, _)| *id).collect();
     named.sort_unstable();
     assert_eq!(named, ids);
@@ -1136,6 +1148,377 @@ fn catalogue_model_of_file_tells_a_summary_model_from_a_helper_and_a_transcripti
     );
     // Files no offered model holds.
     assert_eq!(kind(earshot_onnx::ORT_CUDA_DYLIB), None);
-    assert_eq!(kind("parakeet-qnn/parakeet-tdt-110m/encoder.onnx"), None);
+    // An NPU conversion's file belongs to its NPU version where the build offers one (ARM64).
+    assert_eq!(
+        kind("parakeet-qnn/parakeet-tdt-110m/encoder.onnx"),
+        NPU_OFFERED.then_some(ModelKind::NpuVersion)
+    );
     assert_eq!(kind("somewhere/else.bin"), None);
+}
+
+#[test]
+fn catalogue_npu_versions_are_offered_on_arm64_only_for_the_npu_ladder() {
+    assert_eq!(NPU_OFFERED, cfg!(target_arch = "aarch64"));
+    let x64 = Catalogue::parse_with(MODELS_MANIFEST, false).unwrap();
+    let arm64 = Catalogue::parse_with(MODELS_MANIFEST, true).unwrap();
+    assert_eq!(x64.models_of(ModelKind::NpuVersion).count(), 0);
+    assert!(x64.npu_version_of("parakeet-tdt-0.6b-v2").is_none());
+    // The embedded catalogue is this build's: none on x64.
+    assert_eq!(
+        catalogue().models_of(ModelKind::NpuVersion).count() > 0,
+        NPU_OFFERED
+    );
+    let listed: Vec<&str> = arm64
+        .models_of(ModelKind::NpuVersion)
+        .map(|m| m.name.as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        ["parakeet-tdt-0.6b-v2-npu", "parakeet-tdt-110m-npu"]
+    );
+    // One for each model of the NPU ladder, extracted where the runtime looks, holding every file
+    // the runtime reads and checks.
+    let ladder = arm64.ladder(BackendKind::Qnn, Scope::English).unwrap();
+    for base in &ladder.models {
+        let v = arm64.npu_version_of(base).unwrap();
+        assert_eq!(arm64.npu_base(&v.name), Some(base.as_str()));
+        assert_eq!(v.engine, Engine::ParakeetTdt);
+        assert_eq!(v.languages, arm64.model(base).unwrap().languages);
+        let Ok(AsrModel::Parakeet(p)) = asr_model(base) else {
+            panic!("{base} is a Parakeet model");
+        };
+        let files = arm64.artefacts_of(&v.name).unwrap();
+        assert_eq!(files.len(), 1);
+        let x = files[0].extract.as_ref().unwrap();
+        assert_eq!(Some(x.into.clone()), p.qnn_dir(), "{base}");
+        for rel in p.qnn_files() {
+            assert!(
+                x.members
+                    .iter()
+                    .any(|m| format!("{}/{}", x.into, m.path) == rel),
+                "{rel} is not pinned"
+            );
+        }
+        assert_ne!(display_name(&v.name), v.name);
+        assert!(display_name(&v.name).contains(display_name(base)));
+    }
+    // Never a transcription model of its own: not choosable, not in the check.
+    assert!(
+        arm64
+            .models_of(ModelKind::Transcription)
+            .all(|m| !m.name.ends_with("-npu"))
+    );
+    assert_eq!(arm64.npu_base("parakeet-tdt-0.6b-v2"), None);
+}
+
+/// A manifest with Parakeet TDT model `p` (one plain file) and its NPU version `p-npu` (a zip of
+/// `encoder.onnx` into `parakeet-qnn/p`); `npu` replaces the NPU version's table.
+fn small_npu(npu: Option<&str>) -> (String, Vec<u8>, Vec<u8>) {
+    let member = b"quantised encoder".to_vec();
+    let zip = stored_zip("encoder.onnx", &member);
+    let plain = b"float encoder".to_vec();
+    let table = npu.map_or_else(
+        || {
+            format!(
+                "[[artefact]]\nid = \"p-npu\"\nsets = [\"{NPU_SET}\"]\nlocation = \"cache\"\n\
+                 url = \"https://example.org/p-npu\"\npath = \"archives/p-npu.zip\"\n\
+                 sha256 = \"{}\"\nsize = {}\nlicence = \"CC-BY-4.0\"\nattribution = \"test\"\n\n\
+                 [artefact.extract]\nformat = \"zip\"\ninto = \"parakeet-qnn/p\"\n\n\
+                 [[artefact.extract.member]]\npath = \"encoder.onnx\"\nsha256 = \"{}\"\nsize = {}\n\n",
+                sha_of(&zip),
+                zip.len(),
+                sha_of(&member),
+                member.len()
+            )
+        },
+        str::to_owned,
+    );
+    let text = format!(
+        "sets = [\"ci\", \"{NPU_SET}\"]\nhosts = [\"example.org\"]\n\n\
+         [[artefact]]\nid = \"p-enc\"\nsets = [\"ci\"]\nlocation = \"cache\"\n\
+         url = \"https://example.org/p-enc\"\npath = \"parakeet/p/encoder.onnx\"\n\
+         sha256 = \"{}\"\nsize = {}\nlicence = \"CC-BY-4.0\"\nattribution = \"test\"\n\n{table}\
+         [[model]]\nname = \"p\"\nengine = \"parakeet-tdt\"\nartefacts = [\"p-enc\"]\n\
+         languages = [\"en\"]\ndetects_language = false\n",
+        sha_of(&plain),
+        plain.len()
+    );
+    (text, zip, member)
+}
+
+#[test]
+fn catalogue_npu_version_downloads_reads_installed_and_is_removed_folder_and_all() {
+    let (text, zip, member) = small_npu(None);
+    let c = Catalogue::parse_with(&text, true).unwrap();
+    let dir = TempDir::new("catalogue-npu");
+    let models = ModelDir::new(dir.0.join("models"));
+    assert_eq!(c.npu_version_of("p").unwrap().name, "p-npu");
+    assert_eq!(c.model("p-npu").unwrap().kind, ModelKind::NpuVersion);
+    assert_eq!(
+        c.install_state(&models, "p-npu").unwrap().state,
+        InstallState::Missing
+    );
+    let files = vec![("p-npu", zip.clone())];
+    let asked = std::cell::RefCell::new(Vec::new());
+    let mut fetch =
+        |url: &Url, dest: &Path, _: &Expected<'_>, _: &CancelToken, _: &mut dyn FnMut(u64, u64)| {
+            fake_fetch(&files, &asked, url, dest)
+        };
+    c.download(
+        &models,
+        "p-npu",
+        &CancelToken::new(),
+        &mut |_, _| {},
+        &mut fetch,
+    )
+    .unwrap();
+    let root = models.root();
+    assert_eq!(
+        std::fs::read(root.join("parakeet-qnn/p/encoder.onnx")).unwrap(),
+        member
+    );
+    assert!(
+        !root.join("archives/p-npu.zip").exists(),
+        "the archive goes"
+    );
+    assert_eq!(c.verify(&models, "p-npu").unwrap(), []);
+    let state = c.install_state(&models, "p-npu").unwrap();
+    assert_eq!(state.state, InstallState::Installed);
+    // The base model's own files are another download: still missing.
+    assert_eq!(
+        c.install_state(&models, "p").unwrap().state,
+        InstallState::Missing
+    );
+    // Kept while protected, like any model.
+    assert_eq!(
+        c.remove(&models, "p-npu", &["p-npu"]),
+        Err(CatalogueError::Chosen("p-npu".into()))
+    );
+    assert!(root.join("parakeet-qnn/p/encoder.onnx").is_file());
+    // Removed folder and all (the marker too), with what a crash left aside and a stale archive.
+    std::fs::create_dir_all(root.join("parakeet-qnn/p.old")).unwrap();
+    put(&models, "archives/p-npu.zip.part", b"xx");
+    let removed = c.remove(&models, "p-npu", &[]).unwrap();
+    assert_eq!(removed.bytes_freed, member.len() as u64 + 2);
+    assert!(
+        removed
+            .files
+            .contains(&root.join("parakeet-qnn/p/encoder.onnx"))
+    );
+    for gone in [
+        "parakeet-qnn/p",
+        "parakeet-qnn/p.old",
+        "parakeet-qnn/p.tmp",
+        "archives/p-npu.zip.part",
+    ] {
+        assert!(!root.join(gone).exists(), "{gone}");
+    }
+    assert!(
+        root.join("parakeet-qnn").is_dir(),
+        "only the model's own folder goes"
+    );
+    assert_eq!(
+        c.install_state(&models, "p-npu").unwrap().state,
+        InstallState::Missing
+    );
+    assert_eq!(c.remove(&models, "p-npu", &[]).unwrap(), Removed::default());
+}
+
+#[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "holds a file open with share_mode(0), a Windows API"
+)]
+fn catalogue_npu_version_held_open_refuses_its_removal_with_every_file_in_place() {
+    let (text, _, member) = small_npu(None);
+    let c = Catalogue::parse_with(&text, true).unwrap();
+    let dir = TempDir::new("catalogue-npu-held");
+    let models = ModelDir::new(dir.0.join("models"));
+    put(&models, "parakeet-qnn/p/encoder.onnx", &member);
+    assert!(c.is_installed(&models, "p-npu"));
+    #[cfg(windows)]
+    let held = {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(models.root().join("parakeet-qnn/p/encoder.onnx"))
+            .unwrap()
+    };
+    let e = c.remove(&models, "p-npu", &[]);
+    assert!(matches!(e, Err(CatalogueError::Io { .. })), "{e:?}");
+    assert!(c.is_installed(&models, "p-npu"), "nothing was deleted");
+    #[cfg(windows)]
+    drop(held);
+    assert!(c.remove(&models, "p-npu", &[]).is_ok());
+    assert!(!c.is_installed(&models, "p-npu"));
+}
+
+#[test]
+fn catalogue_runs_on_here_says_npu_only_while_the_npu_version_is_installed() {
+    use crate::backends::Accelerator;
+    use crate::recommend::{runs_on, runs_on_here};
+    let surface = [Accelerator::Qnn, Accelerator::Cpu];
+    let dir = TempDir::new("catalogue-npu-runs-on");
+    let models = ModelDir::new(dir.0.join("models"));
+    let model = "parakeet-tdt-0.6b-v2";
+    // The ladder alone would say NPU (what T8.4f showed unconditionally).
+    assert_eq!(runs_on(model, &surface), BackendKind::Qnn);
+    assert_eq!(runs_on_here(&models, model, &surface), BackendKind::Cpu);
+    let Ok(AsrModel::Parakeet(p)) = asr_model(model) else {
+        panic!("a Parakeet model");
+    };
+    for rel in p.qnn_files() {
+        put(&models, &rel, b"x");
+    }
+    assert_eq!(runs_on_here(&models, model, &surface), BackendKind::Qnn);
+    // Another model's conversion does not count; whisper and a build without the NPU are unchanged.
+    assert_eq!(
+        runs_on_here(&models, "parakeet-tdt-110m", &surface),
+        BackendKind::Cpu
+    );
+    assert_eq!(
+        runs_on_here(&models, "base.en", &surface),
+        runs_on("base.en", &surface)
+    );
+    let desktop = [Accelerator::Cuda, Accelerator::Cpu];
+    assert_eq!(
+        runs_on_here(&models, model, &desktop),
+        runs_on(model, &desktop)
+    );
+}
+
+/// The real packed archives, before they are published: each downloads (from the folder
+/// `cargo xtask qnn-pack` wrote, checked against the manifest's size and SHA-256), extracts through
+/// `archive::extract_verified` and passes `backends::verify_qnn_conversion`.
+#[test]
+#[ignore = "reads the packed NPU zips (about 780 MB): cargo xtask qnn-pack --out target\\qnn-pack, \
+            then cargo test -p earshot-runtime --lib catalogue_npu_packed -- --ignored"]
+fn catalogue_npu_packed_archives_extract_and_pass_the_conversion_check() {
+    let packed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/qnn-pack");
+    let arm64 = Catalogue::parse_with(MODELS_MANIFEST, true).unwrap();
+    let dir = TempDir::new("catalogue-npu-packed");
+    let models = ModelDir::new(dir.0.join("models"));
+    let mut fetch = |url: &Url,
+                     dest: &Path,
+                     exp: &Expected<'_>,
+                     _: &CancelToken,
+                     _: &mut dyn FnMut(u64, u64)|
+     -> Result<Outcome, DownloadError> {
+        let name = url.as_str().rsplit('/').next().unwrap();
+        let src = packed.join(name);
+        assert!(
+            src.is_file(),
+            "{} is missing: run cargo xtask qnn-pack --out target\\qnn-pack",
+            src.display()
+        );
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::copy(&src, dest).unwrap();
+        assert_eq!(std::fs::metadata(dest).unwrap().len(), exp.size, "{name}");
+        assert_eq!(sha256_file(dest).unwrap(), exp.sha256, "{name}");
+        Ok(Outcome::Downloaded { resumed_from: 0 })
+    };
+    for v in arm64.models_of(ModelKind::NpuVersion) {
+        arm64
+            .download(
+                &models,
+                &v.name,
+                &CancelToken::new(),
+                &mut |_, _| {},
+                &mut fetch,
+            )
+            .unwrap();
+        assert_eq!(arm64.verify(&models, &v.name).unwrap(), [], "{}", v.name);
+        let base = arm64.npu_base(&v.name).unwrap();
+        let Ok(AsrModel::Parakeet(p)) = asr_model(base) else {
+            panic!("{base} is a Parakeet model");
+        };
+        crate::backends::verify_qnn_conversion(&models.root().join(p.qnn_dir().unwrap())).unwrap();
+        assert!(crate::backends::require_qnn_model(&models, p).is_ok());
+    }
+}
+
+#[test]
+fn catalogue_npu_version_of_a_kept_model_is_kept() {
+    let arm64 = Catalogue::parse_with(MODELS_MANIFEST, true).unwrap();
+    let kept = crate::host::with_npu_versions(
+        &arm64,
+        vec!["parakeet-tdt-0.6b-v2".into(), "base.en".into()],
+    );
+    assert_eq!(
+        kept,
+        [
+            "parakeet-tdt-0.6b-v2",
+            "base.en",
+            "parakeet-tdt-0.6b-v2-npu"
+        ]
+    );
+    let dir = TempDir::new("catalogue-npu-kept");
+    let models = ModelDir::new(dir.0.join("models"));
+    let keep: Vec<&str> = kept.iter().map(String::as_str).collect();
+    assert_eq!(
+        arm64.remove(&models, "parakeet-tdt-0.6b-v2-npu", &keep),
+        Err(CatalogueError::Chosen("parakeet-tdt-0.6b-v2-npu".into()))
+    );
+    // The other model's NPU version is not kept; an x64 catalogue has none to keep.
+    assert!(
+        arm64
+            .remove(&models, "parakeet-tdt-110m-npu", &keep)
+            .is_ok()
+    );
+    let x64 = Catalogue::parse_with(MODELS_MANIFEST, false).unwrap();
+    assert_eq!(
+        crate::host::with_npu_versions(&x64, vec!["parakeet-tdt-0.6b-v2".into()]),
+        ["parakeet-tdt-0.6b-v2"]
+    );
+}
+
+#[test]
+fn catalogue_refuses_a_broken_npu_version() {
+    let (good, ..) = small_npu(None);
+    assert!(Catalogue::parse_with(&good, false).is_ok());
+    let cases = [
+        (
+            "sets = [\"qnn-models\"]",
+            "sets = [\"qnn-models\", \"ci\"]",
+            "another set",
+        ),
+        ("format = \"zip\"", "format = \"tar.bz2\"", "not a zip"),
+        (
+            "into = \"parakeet-qnn/p\"",
+            "into = \"parakeet-qnn/q\"",
+            "no Parakeet TDT model",
+        ),
+        (
+            "into = \"parakeet-qnn/p\"",
+            "into = \"npu/p\"",
+            "parakeet-qnn/<model>",
+        ),
+        (
+            "engine = \"parakeet-tdt\"",
+            "engine = \"parakeet-ctc\"",
+            "no Parakeet TDT model",
+        ),
+    ];
+    for (from, to, why) in cases {
+        let text = good.replacen(from, to, 1);
+        assert_ne!(text, good, "{from}");
+        // Checked whether or not this build lists them.
+        for offers in [false, true] {
+            let e = Catalogue::parse_with(&text, offers)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(why), "{to}: {e}");
+        }
+    }
+    // An NPU version that is no archive.
+    let plain = small_npu(Some(
+        "[[artefact]]\nid = \"p-npu\"\nsets = [\"qnn-models\"]\nlocation = \"cache\"\n\
+         url = \"https://example.org/p-npu\"\npath = \"archives/p-npu.onnx\"\n\
+         sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n\
+         size = 1\nlicence = \"CC-BY-4.0\"\nattribution = \"test\"\n\n",
+    ))
+    .0;
+    let e = Catalogue::parse_with(&plain, true).unwrap_err().to_string();
+    assert!(e.contains("not an archive"), "{e}");
 }

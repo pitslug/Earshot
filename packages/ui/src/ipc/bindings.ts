@@ -1324,7 +1324,9 @@ export type ModelUse =
 /**  A local summary model. */
 "Summary" | 
 /**  What every meeting needs (the speech helpers). */
-"Helpers";
+"Helpers" | 
+/**  The NPU version of a transcription model (ARM64 only): never chosen on its own. */
+"NpuVersion";
 
 /**  Everything the Models page lists. */
 export type ModelsView = {
@@ -1342,6 +1344,11 @@ export type ModelsView = {
 	summary: ModelItem[],
 	/**  What every meeting needs, one item (T9.1f): never chosen, never removed. */
 	helpers: ModelItem,
+	/**
+	 *  The NPU versions of the transcription models (T8.4g): listed by an ARM64 build only, empty
+	 *  on x64.
+	 */
+	npu: ModelItem[],
 	/**  The stored check, if any. */
 	check: CheckView | null,
 	/**  What the app uses now. */

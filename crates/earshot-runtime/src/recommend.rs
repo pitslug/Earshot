@@ -206,6 +206,20 @@ pub fn recommend_transcription(
     })
 }
 
+/// [`runs_on`] with what `models` holds: the processor rather than the NPU for a Parakeet model
+/// whose NPU version is not installed (`backends::npu_order`, T8.4g), as a meeting would run.
+#[must_use]
+pub fn runs_on_here(
+    models: &crate::backends::ModelDir,
+    model: &str,
+    order: &[Accelerator],
+) -> BackendKind {
+    runs_on(
+        model,
+        &crate::backends::npu_order(models, model, order.to_vec()).0,
+    )
+}
+
 /// Where `model` would run on a build with accelerator `order`: the first accelerator
 /// that can run it ([`crate::backends::model_order`]; Vulkan runs whisper only) and whose
 /// ladder lists it (where it was measured), else the processor.

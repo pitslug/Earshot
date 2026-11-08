@@ -105,7 +105,8 @@ mod tests {
                 "summary",
                 "helpers-x64",
                 "helpers-arm64",
-                "cuda-libraries"
+                "cuda-libraries",
+                "qnn-models"
             ]
         );
         // NVIDIA's libraries for the app's opt-in download (T8.4ae) join no other set: never ci
@@ -500,7 +501,10 @@ mod tests {
             // in the set of the app's opt-in download; the last id is llama.cpp's CUDA set, which
             // holds NVIDIA's runtime statically.
             let cuda_only = a.sets == ["cuda-libraries"];
-            let allowed: &[&str] = if eval_only {
+            // Earshot's own NPU conversions of the CC-BY-4.0 Parakeet models (T8.4g, PLAN 7:
+            // published with the credit), in their own set only.
+            let npu_only = a.sets == [crate::qnn_pack::SET];
+            let allowed: &[&str] = if eval_only || npu_only {
                 &["MIT", "Apache-2.0", "CC-BY-4.0"]
             } else if qnn_only {
                 &["MIT", "Apache-2.0", "MIT AND LicenseRef-Qualcomm-AI-Stack"]
@@ -619,6 +623,59 @@ mod tests {
         }
         let err = parse(&archive("summaries", "x", "zip", &good), "cuda/x.zip").unwrap_err();
         assert!(err.contains("inside the CUDA folder"), "{err}");
+    }
+
+    /// Earshot's NPU conversions (T8.4g): what `cargo xtask qnn-pack` writes, where the runtime
+    /// looks (`parakeet-qnn/<model>`, earshot-runtime `ParakeetModel::qnn_dir`), from the release
+    /// that holds every hosted file, every file pinned, and only in their own set.
+    #[test]
+    fn models_npu_conversions_are_the_packed_archives_of_the_npu_ladder() {
+        use crate::qnn_pack;
+        let m = load();
+        let held: Vec<&manifest::Artefact> = m
+            .artefacts
+            .iter()
+            .filter(|a| a.sets.iter().any(|s| s == qnn_pack::SET))
+            .collect();
+        let ids: BTreeSet<&str> = held.iter().map(|a| a.id.as_str()).collect();
+        let want: BTreeSet<String> = qnn_pack::MODELS
+            .iter()
+            .map(|n| format!("{n}-npu"))
+            .collect();
+        assert_eq!(ids, want.iter().map(String::as_str).collect());
+        let npu_ladder = m
+            .ladders
+            .iter()
+            .find(|l| l.backend == "qnn" && l.scope == "english")
+            .expect("the NPU ladder");
+        for a in held {
+            let model = a.id.strip_suffix("-npu").unwrap();
+            assert!(npu_ladder.models.iter().any(|n| n == model), "{model}");
+            assert!(
+                m.models
+                    .iter()
+                    .any(|x| x.name == model && x.engine == "parakeet-tdt"),
+                "{model}"
+            );
+            assert_eq!(a.sets, [qnn_pack::SET], "{}", a.id);
+            assert_eq!(a.url, qnn_pack::release_url(model), "{}", a.id);
+            assert_eq!(a.path, format!("archives/{}", qnn_pack::zip_name(model)));
+            assert_eq!(a.licence, "CC-BY-4.0", "{}", a.id);
+            assert!(a.attribution.contains("NVIDIA"), "{}", a.id);
+            assert!(
+                a.publisher_checksum.is_none(),
+                "this project is the publisher"
+            );
+            let x = a.extract.as_ref().expect("an archive");
+            assert_eq!(x.format, "zip");
+            assert_eq!(x.into, format!("parakeet-qnn/{model}"));
+            let members: Vec<&str> = x.members.iter().map(|mm| mm.path.as_str()).collect();
+            let mut want = vec![qnn_pack::NOTICE];
+            want.extend(qnn_pack::FILES);
+            assert_eq!(members, want, "{}", a.id);
+            // Every archive and file stays below 4 GiB: no zip64 (neither reader accepts it).
+            assert!(a.size < u64::from(u32::MAX), "{}", a.id);
+        }
     }
 
     #[test]

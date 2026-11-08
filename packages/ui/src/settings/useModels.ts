@@ -75,6 +75,7 @@ function patchItem(models: ModelsView, name: string, patch: (i: ModelItem) => Mo
     helpers: models.helpers.name === name ? patch(models.helpers) : models.helpers,
     transcription: map(models.transcription),
     summary: map(models.summary),
+    npu: map(models.npu),
   };
 }
 

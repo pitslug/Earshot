@@ -304,6 +304,44 @@ describe("Settings", () => {
     await waitFor(() => expect(card("parakeet-tdt-0.6b-v2")).toHaveTextContent("Download 2.5 GB"));
   });
 
+  it("lists the NPU versions on an ARM64 build and runs a model on the NPU only while its version is there", async () => {
+    const s = setup({ machine: "surface" });
+    await openModels(s);
+    const section = within(await screen.findByRole("region", { name: "NPU versions" }));
+    expect(section.getByText("Parakeet 0.6B v2 (NPU version)")).toBeInTheDocument();
+    expect(section.getByText("Parakeet 110M (NPU version)")).toBeInTheDocument();
+    // Kept with their models (the chosen model and the fallback): no Remove.
+    expect(section.queryByRole("button", { name: /^Remove/ })).toBeNull();
+    expect(card("parakeet-tdt-0.6b-v2")).toHaveTextContent("Runs on the NPU.");
+    await s.user.click(screen.getByRole("radio", { name: /^Parakeet 0\.6B v3/ }));
+    const size = (await s.ipc.models()).npu.find((m) => m.name === "parakeet-tdt-0.6b-v2-npu")?.size ?? 0;
+    const remove = await within(card("parakeet-tdt-0.6b-v2-npu")).findByRole("button", {
+      name: `Remove Parakeet 0.6B v2 (NPU version) (frees ${formatSize(size)})`,
+    });
+    await s.user.click(remove);
+    await waitFor(() =>
+      expect(card("parakeet-tdt-0.6b-v2-npu")).toHaveTextContent(`Download ${formatSize(size)}`),
+    );
+    expect(card("parakeet-tdt-0.6b-v2")).not.toHaveTextContent("Runs on the NPU.");
+    expect(card("parakeet-tdt-110m")).toHaveTextContent("Runs on the NPU.");
+    // Downloaded again: back on the NPU.
+    await s.user.click(
+      within(card("parakeet-tdt-0.6b-v2-npu")).getByRole("button", {
+        name: `Download Parakeet 0.6B v2 (NPU version) (${formatSize(size)})`,
+      }),
+    );
+    advance(s.timer, 12 * MODEL_STEP_MS);
+    await waitFor(() => expect(card("parakeet-tdt-0.6b-v2-npu")).toHaveTextContent("Installed"));
+    await waitFor(() => expect(card("parakeet-tdt-0.6b-v2")).toHaveTextContent("Runs on the NPU."));
+  });
+
+  it("lists no NPU versions on an x64 build", async () => {
+    const s = setup({ machine: "desktop" });
+    await openModels(s);
+    expect(screen.queryByRole("region", { name: "NPU versions" })).toBeNull();
+    expect((await s.ipc.models()).npu).toEqual([]);
+  });
+
   it("shows a refused removal", async () => {
     const s = setup({ machine: "surface" }, (ipc) => ({
       ...ipc,

@@ -293,6 +293,21 @@ enum Cmd {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Pack the NPU conversions of <models>/parakeet-qnn into one deterministic zip each with
+    /// a CC-BY-4.0 NOTICE.md (T8.4g), check them by extracting them again, and print their size,
+    /// SHA-256 and manifest entries. Uploads nothing.
+    QnnPack {
+        /// Where the zips go (git-ignored, e.g. target\qnn-pack).
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// The models directory holding parakeet-qnn (default: EARSHOT_MODELS or
+        /// %LOCALAPPDATA%\Earshot\models).
+        #[arg(long)]
+        models: Option<std::path::PathBuf>,
+        /// Only these models (default: parakeet-tdt-0.6b-v2 and parakeet-tdt-110m).
+        #[arg(long)]
+        model: Vec<String>,
+    },
     /// Record what the QNN plugin sends to Windows event tracing (ETW, the telemetry
     /// channel) on this machine (T8.3): providers, keywords, event and field names (no
     /// values). Fails on any telemetry-keyword event or field not reviewed as system
@@ -555,6 +570,9 @@ fn main() -> ExitCode {
         .map(|()| true),
         Cmd::QnnConvert { model, recipe, out } => {
             xtask::qnn_convert::run(&root, &model, &recipe, out.as_deref()).map(|()| true)
+        }
+        Cmd::QnnPack { out, models, model } => {
+            xtask::qnn_pack::run(&root, models.as_deref(), &out, &model).map(|()| true)
         }
         Cmd::QnnEtw => xtask::qnn_etw::run(&root),
         Cmd::AecHeldoutBaseline => xtask::accept::m1::write_heldout_baseline(&root).map(|()| true),
@@ -949,6 +967,7 @@ mod tests {
                 "bench",
                 "sum-eval",
                 "qnn-convert",
+                "qnn-pack",
                 "qnn-etw",
                 "echo-nl",
                 "aec-heldout-baseline",

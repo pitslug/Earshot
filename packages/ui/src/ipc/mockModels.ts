@@ -59,6 +59,12 @@ const SUMMARY: [string, number][] = [
 export const MOCK_HELPERS = "speech-helpers";
 const HELPERS_SIZE = 121_770_295;
 
+/** The NPU versions an ARM64 build lists (manifest set qnn-models): name, base model, size. */
+const NPU_VERSIONS: [string, string, number][] = [
+  ["parakeet-tdt-0.6b-v2-npu", "parakeet-tdt-0.6b-v2", 641_079_341],
+  ["parakeet-tdt-110m-npu", "parakeet-tdt-110m", 136_729_487],
+];
+
 /** The names the app shows (the Rust catalogue's `DISPLAY_NAMES`). */
 export const MOCK_DISPLAY_NAMES: Record<string, string> = {
   [MOCK_HELPERS]: "Speech helpers",
@@ -74,6 +80,8 @@ export const MOCK_DISPLAY_NAMES: Record<string, string> = {
   "parakeet-tdt-0.6b-v3": "Parakeet 0.6B v3",
   "qwen3.5-9b-q4_k_m": "Qwen 3.5 9B",
   "qwen3.5-4b-q4_k_m": "Qwen 3.5 4B",
+  "parakeet-tdt-0.6b-v2-npu": "Parakeet 0.6B v2 (NPU version)",
+  "parakeet-tdt-110m-npu": "Parakeet 110M (NPU version)",
 };
 
 const title = (m: string) => MOCK_DISPLAY_NAMES[m] ?? m;
@@ -88,8 +96,11 @@ const CUDA_MODELS = ["parakeet-tdt-0.6b-v2", "parakeet-tdt-110m", "base.en", "pa
 
 interface Machine {
   hardware: HardwareView;
-  /** Where a transcription model runs with "where it runs" on automatic. */
+  /** Where a transcription model runs with "where it runs" on automatic, its NPU version
+   * installed (without it a model runs on the processor, as the app's `runs_on_here` says). */
   runsOn(model: string): RunsOn;
+  /** Whether the build lists NPU versions (an ARM64 build). */
+  npuVersions: boolean;
   /** The graphics part transcription can be forced onto, if any. */
   gpu: RunsOn | null;
   installed: string[];
@@ -119,8 +130,16 @@ const MACHINES: Record<SampleMachine, Machine> = {
       accelerators: ["Npu", "Processor"],
     },
     runsOn: (m) => (NPU_MODELS.includes(m) ? "Npu" : "Processor"),
+    npuVersions: true,
     gpu: null,
-    installed: ["parakeet-tdt-0.6b-v2", "parakeet-tdt-110m", "base.en", "qwen3.5-4b-q4_k_m"],
+    installed: [
+      "parakeet-tdt-0.6b-v2",
+      "parakeet-tdt-110m",
+      "base.en",
+      "qwen3.5-4b-q4_k_m",
+      "parakeet-tdt-0.6b-v2-npu",
+      "parakeet-tdt-110m-npu",
+    ],
     fallback: "parakeet-tdt-110m",
     choices: [
       { role: "Recommended", model: "parakeet-tdt-0.6b-v2" },
@@ -159,6 +178,7 @@ const MACHINES: Record<SampleMachine, Machine> = {
       accelerators: ["Cuda", "Processor"],
     },
     runsOn: (m) => (CUDA_MODELS.includes(m) ? "Cuda" : "Processor"),
+    npuVersions: false,
     gpu: "Cuda",
     installed: ["parakeet-tdt-0.6b-v2", "base.en", "qwen3.5-9b-q4_k_m"],
     fallback: "base.en",
@@ -271,6 +291,32 @@ export function createModelsMock(
     protected: true,
     downloading: false,
   });
+  for (const [name, , size] of m.npuVersions ? NPU_VERSIONS : []) {
+    const installed = m.installed.includes(name);
+    all.set(name, {
+      name,
+      title: title(name),
+      kind: "NpuVersion",
+      size,
+      languages: [...EN],
+      installed: installed ? "Yes" : "No",
+      held: installed ? size : 0,
+      runs_on: "Npu",
+      check: "Unknown",
+      protected: false,
+      downloading: false,
+    });
+  }
+  /** The NPU version of `model`, if this build lists one. */
+  const npuVersionOf = (model: string) =>
+    NPU_VERSIONS.find(([name, base]) => base === model && all.has(name))?.[0] ?? null;
+  /** Where `model` runs here: the NPU only while its NPU version is installed. */
+  const runsOnHere = (model: string): RunsOn => {
+    const on = m.runsOn(model);
+    if (on !== "Npu") return on;
+    const v = npuVersionOf(model);
+    return v !== null && all.get(v)?.installed === "Yes" ? "Npu" : "Processor";
+  };
   let settings: ModelSettingsValue = {
     transcription: null,
     transcription_part: "Automatic",
@@ -290,12 +336,19 @@ export function createModelsMock(
 
   const transcriptionModel = () => settings.transcription ?? check?.model ?? MOCK_FALLBACK_MODEL;
   const summaryModel = () => settings.summary ?? m.summary.model;
-  const protectedModels = () =>
-    new Set([MOCK_HELPERS, MOCK_FALLBACK_MODEL, transcriptionModel(), summaryModel(), check?.fallback ?? ""]);
+  const protectedModels = () => {
+    const keep = [MOCK_HELPERS, MOCK_FALLBACK_MODEL, transcriptionModel(), summaryModel(), check?.fallback ?? ""];
+    // A kept model's NPU version is kept too (`host::with_npu_versions`).
+    const npu = keep.flatMap((k) => npuVersionOf(k) ?? []);
+    return new Set([...keep, ...npu]);
+  };
   const placement = (): { asr: RunsOn; sum: RunsOn; notes: string[] } => {
     const model = transcriptionModel();
     const notes: string[] = [];
-    let asr = m.runsOn(model);
+    let asr = runsOnHere(model);
+    if (settings.transcription_part === "Automatic" && m.runsOn(model) === "Npu" && asr !== "Npu") {
+      notes.push(`${title(model)} has no NPU version installed, so it runs on the processor.`);
+    }
     switch (settings.transcription_part) {
       case "Processor":
         asr = "Processor";
@@ -307,6 +360,9 @@ export function createModelsMock(
         } else if (!NPU_MODELS.includes(model)) {
           asr = "Processor";
           notes.push(`${title(model)} has no NPU version, so it runs on the processor.`);
+        } else if (runsOnHere(model) !== "Npu") {
+          asr = "Processor";
+          notes.push(`${title(model)} has no NPU version installed, so it runs on the processor.`);
         } else asr = "Npu";
         break;
       case "GraphicsCard":
@@ -338,7 +394,7 @@ export function createModelsMock(
       languages: [...i.languages],
       protected: keep.has(i.name),
       downloading: downloads.has(i.name),
-      runs_on: i.kind === "Summary" ? sum : i.runs_on,
+      runs_on: i.kind === "Summary" ? sum : i.kind === "Transcription" ? runsOnHere(i.name) : i.runs_on,
     }));
     const english = settings.languages.every((l) => l === "en");
     const european = settings.languages.every((l) => PARAKEET_V3.includes(l));
@@ -363,6 +419,7 @@ export function createModelsMock(
       transcription: list.filter((i) => i.kind === "Transcription"),
       summary: list.filter((i) => i.kind === "Summary"),
       helpers: list.find((i) => i.kind === "Helpers") ?? fail("unknown_model", "no speech helpers"),
+      npu: list.filter((i) => i.kind === "NpuVersion"),
       check: check ? { ...check } : null,
       in_use: {
         transcription: transcriptionModel(),
@@ -407,7 +464,7 @@ export function createModelsMock(
     if ([...downloads.keys()].some((d) => all.get(d)?.kind !== "Summary")) fail("busy", DOWNLOADING_MESSAGE, true);
     checking = true;
     const model = transcriptionModel();
-    const runs_on = m.runsOn(model);
+    const runs_on = runsOnHere(model);
     checkTimers = [];
     if (checkWarning !== undefined) {
       checkTimers.push(timer.setTimeout(() => emit({ type: "Warning", model: null, message: checkWarning }), 0));
