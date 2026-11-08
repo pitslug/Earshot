@@ -9,6 +9,7 @@ This page describes the current code. If you find something here that the code d
 - **Audio:** the mic and computer-audio tracks, as FLAC files. No network code in Earshot accepts audio.
 - **Transcripts, summaries, meeting titles and names:** in a local SQLite database.
 - **Voice data:** see "Voices" below.
+- **Grey words** shown while someone is talking are display only: they are never saved, logged, summarised or exported.
 - **Crash logs:** in a local `crash-logs` folder. They hold where the code failed (file, line, function names), the app version, the time and a fixed thread name, and never a panic message or any meeting content. Earshot does not upload them.
 
 All of this is under `%LOCALAPPDATA%\Earshot`, which Earshot does not encrypt. Anyone or anything with access to your Windows account can read it. The app's window keeps its browser engine's files, such as your theme choice, in the same folder.
@@ -17,11 +18,11 @@ All of this is under `%LOCALAPPDATA%\Earshot`, which Earshot does not encrypt. A
 
 | What | Where to | When |
 |---|---|---|
-| Requests for model files | `huggingface.co`, `github.com`, `raw.githubusercontent.com`, and on opt-in CUDA downloads `developer.download.nvidia.com`, plus the first two's download servers (`*.hf.co`, `release-assets.githubusercontent.com`) | Only when you start a download. Those hosts see your IP address and which file you asked for. Every file is checked against a pinned checksum. |
-| Requests for updates | `github.com` and its download server `release-assets.githubusercontent.com` | Only when you press **Check for updates** or **Download**, or when Earshot starts if you turned on automatic checks. Every update is verified against a key built into Earshot before it runs. |
+| Requests for model files | `huggingface.co`, `github.com`, `raw.githubusercontent.com`, and on opt-in CUDA downloads `developer.download.nvidia.com`, plus the first two's download servers (`*.hf.co`, `release-assets.githubusercontent.com`) | Only when you start a download. Those hosts see your IP address and which file you asked for. Every file is checked against a pinned checksum. On ARM64, a model's NPU version comes from this project's GitHub releases. |
+| Requests for updates | `github.com` (this project's releases) and its download server `release-assets.githubusercontent.com` | Only when you press **Check for updates** or **Download**, or each time Earshot starts if you turned on "Check for updates when Earshot starts". Every update is verified against a key built into Earshot before it runs. |
 | Summary text | The provider you chose | Only if you chose one, as below. Local summaries, the default, send nothing. |
 
-Update checks are off unless you press **Check for updates** or turn on automatic checks in Settings, General. A check asks GitHub for one small file and carries no conversation content. GitHub sees your IP address and which file was asked for.
+Update checks are off unless you press **Check for updates** or turn on "Check for updates when Earshot starts" in Settings, General; that switch is off by default. A check asks for one small file from this project's latest GitHub release, `earshot-update-x64.json` or `earshot-update-arm64.json` for your PC's architecture. The request names only that file: not your version, not your computer and no conversation content. Earshot compares the versions on your computer. GitHub sees your IP address and which file was asked for. The file's signature is checked against the key built into Earshot before anything in it is used, and nothing in it can send Earshot to another host. The installer is downloaded only when you press **Download**, and its size and SHA-256 are checked again right before it runs. An automatic check that fails says nothing.
 
 ## If you choose a summary provider
 
@@ -58,7 +59,7 @@ Earshot cannot control everything on your computer. These are the known cases:
 - **Local crash dumps:** a separate Windows setting can still save a crash dump on your computer, in `%LOCALAPPDATA%\CrashDumps`. Software can turn this on: the NVIDIA App appears to on PCs that have it. A dump stays on your computer but can hold fragments of what the app had in memory, including transcript text, and deleting a meeting does not reach it. Earshot deletes its own dumps from that folder the next time it starts. A dump folder set elsewhere is not cleaned.
 - **The app's window:** it runs in Microsoft WebView2, in processes of Microsoft's that are not part of that opt-out and that display your transcript when you open one. Microsoft says WebView2 follows your Windows consent settings for crash reports. Earshot does not currently change this.
 - **System information from runtimes:** Earshot turns ONNX Runtime's telemetry off. Runtimes can still offer Windows' diagnostic channel system information such as runtime version, CPU, memory and driver names and versions. A check on the NPU path found no transcript text in those events. Anything that could carry conversation content would not be accepted.
-- **Windows notifications:** Windows stores these in its own database, so Earshot's use fixed text and counts, never a meeting's title or content.
+- **Windows notifications:** Windows stores these in its own database and can show them on the lock screen, so Earshot's use fixed text and counts, never a meeting's title or content. They are silent, so a microphone does not pick them up.
 - **Your call app, your vault's sync and your backups** do what they do with their own data and yours.
 
 ## How this is enforced
@@ -67,7 +68,7 @@ Earshot cannot control everything on your computer. These are the known cases:
 - The app's web page can only talk to the app itself, through its content security policy.
 - An acceptance test replays a whole meeting and checks from `earshot-net`'s request log that nothing went anywhere except the test endpoint.
 
-These checks catch mistakes in Earshot's own code, and the replay can only see traffic that goes through `earshot-net`. They are not an outside audit, and the installers are not yet code-signed.
+These checks catch mistakes in Earshot's own code, and the replay can only see traffic that goes through `earshot-net`. They are not an outside audit. The installers are not code-signed with a certificate; in-app updates are signed with the project's own key, as above.
 
 ## Recording other people
 
