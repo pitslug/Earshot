@@ -30,6 +30,7 @@ mod gbnf_match;
 pub mod grammar;
 pub mod log;
 pub mod summarize;
+pub mod thinking;
 
 pub use dll_folder::{FolderRefused, load_from_folder, loaded_folder};
 pub use gate::{LlamaHold, callers_slept_at_the_gate, hold_llama, llama_held, wait_for_llama};

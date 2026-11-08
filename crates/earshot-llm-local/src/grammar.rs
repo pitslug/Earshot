@@ -272,6 +272,68 @@ fn grammar_for(
     )
 }
 
+/// The text that ends a thinking section (Qwen 3 and 3.5).
+pub const THINK_CLOSE: &str = "</think>";
+
+/// Rule names [`thinking_grammar`] and [`thinking_close_grammar`] add; a reply grammar that
+/// already defines one is refused.
+const THINK_RULES: [&str; 3] = ["think-text", "think-sep", "think-reply"];
+
+/// A thinking section (T12.10, evaluation only; production never calls it): `reply_grammar`
+/// (a GBNF grammar whose start rule is `root`, for example [`summary_grammar`]) after free
+/// text, [`THINK_CLOSE`] and up to two newlines. The prompt's assistant prefix has opened the
+/// section (`<think>\n`). The thinking text may hold any character but `<`, so the first
+/// `</think>` always ends it; its length is not bounded here but by the generation loop
+/// (`LocalLlm::generate_thinking`), which switches to [`thinking_close_grammar`] at the token
+/// cap. `reply_grammar` is kept byte for byte except that its start rule is renamed
+/// `think-reply`.
+///
+/// # Errors
+/// [`GrammarError`] when `reply_grammar` does not start with a `root ::= ` rule or already
+/// defines one of the added rule names.
+pub fn thinking_grammar(reply_grammar: &str) -> Result<String, GrammarError> {
+    let reply = renamed_reply(reply_grammar)?;
+    Ok(format!(
+        "root ::= think-text {close} think-sep think-reply\n\
+         think-text ::= [^<]*\n\
+         think-sep ::= \"\\n\"{{0,2}}\n\
+         {reply}",
+        close = gbnf_literal(THINK_CLOSE)
+    ))
+}
+
+/// The grammar a thinking generation switches to when its thinking reaches the token cap
+/// (evaluation only): an optional newline, [`THINK_CLOSE`], then the rest of
+/// [`thinking_grammar`] after the thinking text.
+///
+/// # Errors
+/// As [`thinking_grammar`].
+pub fn thinking_close_grammar(reply_grammar: &str) -> Result<String, GrammarError> {
+    let reply = renamed_reply(reply_grammar)?;
+    Ok(format!(
+        "root ::= \"\\n\"? {close} think-sep think-reply\n\
+         think-sep ::= \"\\n\"{{0,2}}\n\
+         {reply}",
+        close = gbnf_literal(THINK_CLOSE)
+    ))
+}
+
+/// `reply_grammar` with its first line's `root ::= ` renamed `think-reply ::= `.
+fn renamed_reply(reply_grammar: &str) -> Result<String, GrammarError> {
+    let body = reply_grammar
+        .strip_prefix("root ::= ")
+        .ok_or_else(|| GrammarError("the reply grammar does not start with `root ::= `".into()))?;
+    for line in reply_grammar.lines() {
+        let name = line.split(" ::= ").next().unwrap_or_default();
+        if THINK_RULES.contains(&name) {
+            return Err(GrammarError(format!(
+                "the reply grammar already defines `{name}`"
+            )));
+        }
+    }
+    Ok(format!("think-reply ::= {body}"))
+}
+
 /// Caps every array and turns `source_segment_ids` items into the enum of citable
 /// segment numbers.
 fn narrow(v: &mut Value, ids: &[Value], limits: SummaryLimits, narrowed: &mut usize) {
@@ -842,6 +904,63 @@ mod tests {
         let some = Gbnf::parse(&summary_grammar(&(0..2).into(), SummaryLimits::default()).unwrap());
         assert!(some.accepts(free));
         assert!(!some.accepts(&decided));
+    }
+
+    #[test]
+    fn grammar_thinking_wraps_the_production_grammar_unchanged() {
+        let cites: Citable = (0..2).into();
+        let production = summary_grammar(&cites, SummaryLimits::default()).unwrap();
+        // The production grammar knows nothing of thinking.
+        assert!(!production.contains("think"), "{production}");
+        for g in [
+            thinking_grammar(&production).unwrap(),
+            thinking_close_grammar(&production).unwrap(),
+        ] {
+            // Everything after the added rules is the production grammar, its start rule
+            // renamed and nothing else changed.
+            let at = g.find("think-reply ::= ").unwrap();
+            assert_eq!(
+                &g[at + "think-reply ::= ".len()..],
+                &production["root ::= ".len()..]
+            );
+        }
+        // A grammar without a root rule, or one already using an added name, is refused.
+        assert!(thinking_grammar("x ::= \"a\"\n").is_err());
+        assert!(thinking_grammar("root ::= think-sep\nthink-sep ::= \"a\"\n").is_err());
+        assert!(thinking_close_grammar("x ::= \"a\"\n").is_err());
+    }
+
+    #[test]
+    fn grammar_thinking_accepts_a_think_section_then_the_summary() {
+        use crate::gbnf_match::Gbnf;
+        let cites: Citable = (0..2).into();
+        let production = summary_grammar(&cites, SummaryLimits::default()).unwrap();
+        let think = Gbnf::parse(&thinking_grammar(&production).unwrap());
+        let close = Gbnf::parse(&thinking_close_grammar(&production).unwrap());
+        let plain = Gbnf::parse(&production);
+        let reply = r#"{"title":"Remote kick-off","tldr":"The team agreed on a yellow remote.","enhanced_notes":[],"decisions":[{"text":"The remote is yellow.","source_segment_ids":[2]}],"action_items":[],"open_questions":[],"topics":["design"]}"#;
+        assert!(plain.accepts(reply));
+        // The prefix opened the section: thinking text, the close, the summary.
+        let thought =
+            format!("The team chose yellow in segment 2. Nothing else.\n</think>\n\n{reply}");
+        assert!(think.accepts(&thought), "{thought}");
+        assert!(think.accepts(&format!("</think>{reply}")), "empty thinking");
+        assert!(think.accepts(&format!("x</think>\n\n{}", indent(reply))));
+        // Negative controls: no close, two closes, `<` in the thinking, a bad summary, more
+        // than two newlines, a summary without thinking.
+        assert!(!think.accepts(&format!("thinking {reply}")));
+        assert!(!think.accepts(&format!("a</think></think>{reply}")));
+        assert!(!think.accepts(&format!("a < b</think>{reply}")));
+        assert!(!think.accepts(&format!("a</think>{}", reply.replace("[2]", "[3]"))));
+        assert!(!think.accepts(&format!("a</think>\n\n\n{reply}")));
+        assert!(!think.accepts(reply));
+        // The production grammar takes no thinking at all.
+        assert!(!plain.accepts(&thought));
+        // At the cap the close grammar takes only the close and the summary.
+        assert!(close.accepts(&format!("</think>\n\n{reply}")));
+        assert!(close.accepts(&format!("\n</think>{reply}")));
+        assert!(!close.accepts(&format!("more thinking</think>{reply}")));
+        assert!(!close.accepts(reply));
     }
 
     #[test]

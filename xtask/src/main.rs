@@ -276,6 +276,11 @@ enum Cmd {
         /// Codex is found as the app finds it (PATH, then npm's global folder).
         #[arg(long, value_name = "PATH")]
         codex_cli: Option<std::path::PathBuf>,
+        /// Qwen thinking on (T12.10, evaluation only): every reply may think first, up to
+        /// this many tokens beside the reply budget (format key `-think<TOKENS>`). Qwen 3 and
+        /// 3.5 candidates only; use its own --out.
+        #[arg(long, value_name = "TOKENS", conflicts_with_all = ["two_call", "two_track"])]
+        thinking: Option<u32>,
     },
     /// Build the NPU conversion of a Parakeet TDT model (T8.3): static 30 s input shape,
     /// QDQ quantisation for Qualcomm's HTP backend, into <models>/parakeet-qnn/<name>.
@@ -540,6 +545,7 @@ fn main() -> ExitCode {
             two_track,
             meeting,
             codex_cli,
+            thinking,
         } => xtask::sum_eval::run(
             &root,
             &xtask::sum_eval::Options {
@@ -565,6 +571,7 @@ fn main() -> ExitCode {
                 two_track,
                 meetings: meeting,
                 codex_cli,
+                thinking,
             },
         )
         .map(|()| true),
@@ -828,6 +835,35 @@ mod tests {
         // Vulkan summaries were added for T8.3h; a backend sum-eval cannot run is still refused.
         assert!(Cli::try_parse_from(["xtask", "sum-eval", "--backend", "vulkan"]).is_ok());
         assert!(Cli::try_parse_from(["xtask", "sum-eval", "--backend", "qnn"]).is_err());
+    }
+
+    #[test]
+    fn sum_eval_thinking_takes_a_token_cap_and_is_off_by_default() {
+        let thinking_of = |args: &[&str]| {
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Cmd::SumEval { thinking, .. } = cli.command else {
+                panic!("expected sum-eval");
+            };
+            thinking
+        };
+        assert_eq!(thinking_of(&["xtask", "sum-eval"]), None);
+        assert_eq!(
+            thinking_of(&["xtask", "sum-eval", "--thinking", "2048"]),
+            Some(2048)
+        );
+        assert!(Cli::try_parse_from(["xtask", "sum-eval", "--thinking", "-1"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "xtask",
+                "sum-eval",
+                "--thinking",
+                "2048",
+                "--chunk-seconds",
+                "600",
+                "--two-call",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

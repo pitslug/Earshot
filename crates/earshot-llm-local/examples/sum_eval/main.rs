@@ -46,9 +46,14 @@ use earshot_core::prompt::{
 };
 use earshot_core::summary::SummaryV1;
 use earshot_llm_local::grammar::SummaryLimits;
+use earshot_llm_local::summarize::Generate;
 use earshot_llm_local::summarize::{
     StepTime, SummaryFailure, SummaryOptions, SummaryReport, TwoCallActions, summarize,
     summarize_chunks, summarize_chunks_two_call,
+};
+use earshot_llm_local::thinking::{
+    QWEN_THINKING_OFF_PREFIX, QWEN_THINKING_PREFIX, ThinkingLlm, ThinkingStats,
+    thinking_load_context,
 };
 use earshot_llm_local::{LoadOptions, LocalLlm};
 use serde_json::{Value, json};
@@ -73,7 +78,9 @@ const GRAMMAR: &str = "indented-numbered-r5";
 /// `-prompt-<variant>` for a T6.20b prompt variant other than the production one, so rows
 /// made with different chunking, calls or rules are never reused for each other, plus
 /// `-claude-code` for the T7.4gb Claude Code candidate or `-codex` for the T7.4gc Codex
-/// candidate (same place). xtask's `sum_eval::format_key` builds the same string.
+/// candidate (same place), plus `-think<cap>` for T12.10 thinking on with that token cap
+/// (after the agent suffix, before the prompt variant). xtask's `sum_eval::format_key` builds
+/// the same string.
 /// An agent-CLI candidate (`claude_cli.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentCli {
@@ -99,6 +106,7 @@ fn format_key(
     two_call: bool,
     two_track: bool,
     agent: Option<AgentCli>,
+    thinking: Option<usize>,
 ) -> String {
     let mut key = match chunk_seconds {
         Some(s) => format!("{GRAMMAR}-chunk{s}"),
@@ -114,6 +122,9 @@ fn format_key(
         Some(AgentCli::ClaudeCode) => key.push_str("-claude-code"),
         Some(AgentCli::Codex) => key.push_str("-codex"),
         None => {}
+    }
+    if let Some(cap) = thinking {
+        key.push_str(&format!("-think{cap}"));
     }
     if !variant.is_current() {
         key.push_str("-prompt-");
@@ -198,6 +209,11 @@ struct Args {
     /// The Codex CLI to run (evaluation only; without it `CodexCli::find`, as production).
     /// Needs `--codex`.
     codex_cli: Option<PathBuf>,
+    /// Qwen thinking on (T12.10, evaluation only): every reply may think first, up to this
+    /// many tokens beside its reply budget (`earshot_llm_local::thinking`). Needs `--model`
+    /// and the empty thinking block as `--assistant-prefix`, which it replaces with the opened
+    /// section.
+    thinking: Option<usize>,
 }
 
 impl Args {
@@ -299,6 +315,9 @@ fn parse_args() -> Result<Args, String> {
             "--codex" => a.codex = true,
             "--codex-model" => a.codex_model = Some(val()?),
             "--codex-cli" => a.codex_cli = Some(val()?.into()),
+            "--thinking" => {
+                a.thinking = Some(val()?.parse().map_err(|e| format!("--thinking: {e}"))?);
+            }
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -415,7 +434,31 @@ fn parse_args() -> Result<Args, String> {
     {
         return Err("give exactly one of --model, --remote, --claude-code and --codex".into());
     }
+    check_thinking(&a)?;
     Ok(a)
+}
+
+/// What a `--thinking` run (T12.10) refuses: anything but a local summary run of a model
+/// whose prompt ends with the empty thinking block (`--assistant-prefix`, the Qwen 3 and 3.5
+/// candidates), `--two-call` and `--two-track`, and a cap outside the module's range.
+fn check_thinking(a: &Args) -> Result<(), String> {
+    let Some(cap) = a.thinking else {
+        return Ok(());
+    };
+    if a.model.is_none() || a.remote || a.agent_cli().is_some() {
+        return Err("--thinking needs a local --model".into());
+    }
+    if a.assistant_prefix != QWEN_THINKING_OFF_PREFIX {
+        return Err(
+            "--thinking needs a model whose prompt ends with the empty thinking block \
+             (--assistant-prefix as xtask's Qwen candidates pass it)"
+                .into(),
+        );
+    }
+    if a.two_call || a.two_track {
+        return Err("--thinking is not combined with --two-call or --two-track".into());
+    }
+    thinking_load_context(a.context, cap).map(|_| ())
 }
 
 /// What a `--claude-code` run refuses: anything but summary jobs over the public AMI
@@ -646,10 +689,89 @@ fn actions_json(a: &TwoCallActions) -> Value {
     })
 }
 
+/// A local model: as loaded, or thinking first (T12.10).
+enum LocalModel {
+    Plain(Box<LocalLlm>),
+    Thinking(Box<ThinkingLlm>),
+}
+
+impl LocalModel {
+    /// The model as the summarizer drives it.
+    fn generate(&mut self) -> &mut dyn Generate {
+        match self {
+            Self::Plain(llm) => llm.as_mut(),
+            Self::Thinking(llm) => llm.as_mut(),
+        }
+    }
+
+    /// The thinking counts since the last call (none for a plain model), reset.
+    fn take_thinking(&mut self) -> Option<ThinkingStats> {
+        match self {
+            Self::Plain(_) => None,
+            Self::Thinking(llm) => Some(llm.take_stats()),
+        }
+    }
+}
+
+/// A meeting's thinking counts: token counts only, never the thinking text.
+fn thinking_json(t: &ThinkingStats) -> Value {
+    json!({
+        "requests": t.requests,
+        "thinking_tokens": t.thinking_tokens,
+        "max_thinking_tokens": t.max_thinking_tokens,
+        "forced_closes": t.forced_closes,
+    })
+}
+
+/// A local summary of `input` on `llm`: the production plan, forced chunking or the
+/// two-call chunks; the summary (or the failure text) and the run report as JSON.
+fn summarise_local(
+    llm: &mut dyn Generate,
+    input: &SummaryInput,
+    options: &SummaryOptions,
+    chunk_seconds: Option<u32>,
+    two_call: bool,
+) -> (Result<SummaryV1, String>, Value) {
+    if two_call {
+        let Some(s) = chunk_seconds else {
+            return (Err("--two-call needs --chunk-seconds".into()), json!({}));
+        };
+        let ranges = match time_chunks(input, s) {
+            Ok(r) => r,
+            Err(e) => return (Err(e.to_string()), json!({})),
+        };
+        let run = summarize_chunks_two_call(llm, input, options, &ranges);
+        let mut report = report_json(&run.report, chunk_seconds.is_some());
+        report["actions"] = actions_json(&run.actions);
+        if let Err(SummaryFailure::Invalid {
+            last_reply_tail, ..
+        }) = &run.result
+        {
+            report["last_reply_tail"] = json!(last_reply_tail);
+        }
+        return (run.result.map_err(|e| e.to_string()), report);
+    }
+    let run = match chunk_seconds {
+        None => summarize(llm, input, options),
+        Some(s) => match time_chunks(input, s) {
+            Ok(ranges) => summarize_chunks(llm, input, options, &ranges),
+            Err(e) => return (Err(e.to_string()), json!({})),
+        },
+    };
+    let mut report = report_json(&run.report, chunk_seconds.is_some());
+    if let Err(SummaryFailure::Invalid {
+        last_reply_tail, ..
+    }) = &run.result
+    {
+        report["last_reply_tail"] = json!(last_reply_tail);
+    }
+    (run.result.map_err(|e| e.to_string()), report)
+}
+
 /// One summariser: local llama.cpp or the remote endpoint.
 enum Engine {
     Local {
-        llm: Box<LocalLlm>,
+        llm: LocalModel,
         options: SummaryOptions,
         chunk_seconds: Option<u32>,
         two_call: bool,
@@ -668,40 +790,13 @@ impl Engine {
                 chunk_seconds,
                 two_call,
             } => {
-                if *two_call {
-                    let Some(s) = chunk_seconds else {
-                        return (Err("--two-call needs --chunk-seconds".into()), json!({}));
-                    };
-                    let ranges = match time_chunks(input, *s) {
-                        Ok(r) => r,
-                        Err(e) => return (Err(e.to_string()), json!({})),
-                    };
-                    let run = summarize_chunks_two_call(llm.as_mut(), input, options, &ranges);
-                    let mut report = report_json(&run.report, chunk_seconds.is_some());
-                    report["actions"] = actions_json(&run.actions);
-                    if let Err(SummaryFailure::Invalid {
-                        last_reply_tail, ..
-                    }) = &run.result
-                    {
-                        report["last_reply_tail"] = json!(last_reply_tail);
-                    }
-                    return (run.result.map_err(|e| e.to_string()), report);
+                llm.take_thinking();
+                let (result, mut report) =
+                    summarise_local(llm.generate(), input, options, *chunk_seconds, *two_call);
+                if let Some(t) = llm.take_thinking() {
+                    report["thinking"] = thinking_json(&t);
                 }
-                let run = match chunk_seconds {
-                    None => summarize(llm.as_mut(), input, options),
-                    Some(s) => match time_chunks(input, *s) {
-                        Ok(ranges) => summarize_chunks(llm.as_mut(), input, options, &ranges),
-                        Err(e) => return (Err(e.to_string()), json!({})),
-                    },
-                };
-                let mut report = report_json(&run.report, chunk_seconds.is_some());
-                if let Err(SummaryFailure::Invalid {
-                    last_reply_tail, ..
-                }) = &run.result
-                {
-                    report["last_reply_tail"] = json!(last_reply_tail);
-                }
-                (run.result.map_err(|e| e.to_string()), report)
+                (result, report)
             }
             Engine::Remote(r) => r.summarise(input),
             Engine::AgentCli(c) => c.summarise(input),
@@ -726,7 +821,7 @@ impl Engine {
                 json!({}),
             );
         };
-        match two_track::summarise(llm.as_mut(), input, ends_ms, *seconds, options) {
+        match two_track::summarise(llm.generate(), input, ends_ms, *seconds, options) {
             Ok((result, report, live_time, counts)) => {
                 let mut json = report_json(&report, true);
                 json["two_track"] = two_track::report_json(&report, live_time, &counts);
@@ -813,8 +908,30 @@ fn aggregate(meetings: &[Value]) -> Value {
                     .count(),
             })
         });
+    // Thinking runs (T12.10): token counts only.
+    let thsum = |k: &str| -> u64 {
+        meetings
+            .iter()
+            .map(|m| m["report"]["thinking"][k].as_u64().unwrap_or(0))
+            .sum()
+    };
+    let thinking = meetings
+        .iter()
+        .any(|m| m["report"]["thinking"].is_object())
+        .then(|| {
+            json!({
+                "requests": thsum("requests"),
+                "thinking_tokens": thsum("thinking_tokens"),
+                "max_thinking_tokens": meetings
+                    .iter()
+                    .filter_map(|m| m["report"]["thinking"]["max_thinking_tokens"].as_u64())
+                    .max(),
+                "forced_closes": thsum("forced_closes"),
+            })
+        });
     json!({
         "two_call_actions": two_call,
+        "thinking": thinking,
         "timing": {
             "audio_s": audio_s,
             "map_s": tsum("map_s"),
@@ -1433,12 +1550,32 @@ fn run() -> Result<(), String> {
                 path.display()
             ));
         }
+        // Thinking (T12.10) is loaded with its room on top of the run's budget, so the plan
+        // and every reply budget are the thinking-off run's.
+        let context_tokens = match a.thinking {
+            Some(cap) => thinking_load_context(a.context, cap)?,
+            None => a.context,
+        };
         let options = LoadOptions {
             gpu: a.gpu,
-            context_tokens: a.context,
+            context_tokens,
             threads: a.threads.unwrap_or_else(earshot_llm_local::default_threads),
         };
         let (llm, load) = LocalLlm::load(path, &options).map_err(|e| e.to_string())?;
+        let (llm, assistant_prefix, context) = match a.thinking {
+            Some(cap) => (
+                LocalModel::Thinking(Box::new(
+                    ThinkingLlm::new(llm, cap, a.context as usize).map_err(|e| e.to_string())?,
+                )),
+                QWEN_THINKING_PREFIX.to_owned(),
+                a.context,
+            ),
+            None => (
+                LocalModel::Plain(Box::new(llm)),
+                a.assistant_prefix.clone(),
+                load.context_tokens,
+            ),
+        };
         eprintln!(
             "sum_eval: {} on {} (load {:.1} s): {}",
             a.model_id,
@@ -1454,11 +1591,13 @@ fn run() -> Result<(), String> {
             "load_evidence": load.evidence,
             "description": load.description,
             "load_s": load.load_time.as_secs_f64(),
-            "context_tokens": load.context_tokens,
+            "context_tokens": context,
+            "loaded_context_tokens": load.context_tokens,
             "threads": options.threads,
             "max_output_tokens": a.max_output,
-            "assistant_prefix": a.assistant_prefix,
-            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None),
+            "assistant_prefix": assistant_prefix,
+            "thinking_cap": a.thinking,
+            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking),
             "chunk_seconds": a.chunk_seconds,
             "two_call": a.two_call,
             "two_track": a.two_track,
@@ -1466,10 +1605,10 @@ fn run() -> Result<(), String> {
             "system_info": earshot_llm_local::system_info(),
         });
         let engine = Engine::Local {
-            llm: Box::new(llm),
+            llm,
             options: SummaryOptions {
                 max_output_tokens: a.max_output,
-                assistant_prefix: a.assistant_prefix.clone(),
+                assistant_prefix,
                 limits: SummaryLimits::default(),
                 cancel: CancelToken::new(),
             },
@@ -1499,7 +1638,8 @@ fn run() -> Result<(), String> {
             a.prompt_variant,
             false,
             false,
-            Some(agent)
+            Some(agent),
+            None,
         ));
         header["chunk_seconds"] = json!(a.chunk_seconds);
         header["prompt_variant"] = json!(a.prompt_variant.name());
@@ -1540,7 +1680,8 @@ fn run() -> Result<(), String> {
             a.prompt_variant,
             a.two_call,
             a.two_track,
-            a.agent_cli()
+            a.agent_cli(),
+            a.thinking,
         )
     );
     let partial = a.out.with_extension("partial.jsonl");
@@ -1786,31 +1927,31 @@ mod tests {
     fn sum_eval_format_key_names_chunking_and_the_prompt_variant() {
         let current = PromptVariant::Current;
         assert_eq!(
-            format_key(None, current, false, false, None),
+            format_key(None, current, false, false, None, None),
             "indented-numbered-r5"
         );
         assert_eq!(
-            format_key(Some(600), current, false, false, None),
+            format_key(Some(600), current, false, false, None, None),
             "indented-numbered-r5-chunk600"
         );
         assert_eq!(
-            format_key(Some(600), PromptVariant::Lean, false, false, None),
+            format_key(Some(600), PromptVariant::Lean, false, false, None, None),
             "indented-numbered-r5-chunk600-prompt-lean"
         );
         assert_eq!(
-            format_key(None, PromptVariant::Owners, false, false, None),
+            format_key(None, PromptVariant::Owners, false, false, None, None),
             "indented-numbered-r5-prompt-owners"
         );
         assert_eq!(
-            format_key(Some(600), current, true, false, None),
+            format_key(Some(600), current, true, false, None, None),
             "indented-numbered-r5-chunk600-twocall"
         );
         assert_eq!(
-            format_key(Some(600), PromptVariant::Lean, true, false, None),
+            format_key(Some(600), PromptVariant::Lean, true, false, None, None),
             "indented-numbered-r5-chunk600-twocall-prompt-lean"
         );
         assert_eq!(
-            format_key(Some(600), current, false, true, None),
+            format_key(Some(600), current, false, true, None, None),
             "indented-numbered-r5-chunk600-twotrack"
         );
         // Every variant and call mode has its own key, and xtask builds the same strings.
@@ -1818,22 +1959,114 @@ mod tests {
             .into_iter()
             .flat_map(|v| {
                 [
-                    format_key(Some(600), v, false, false, None),
-                    format_key(Some(600), v, true, false, None),
-                    format_key(Some(600), v, false, true, None),
+                    format_key(Some(600), v, false, false, None, None),
+                    format_key(Some(600), v, true, false, None, None),
+                    format_key(Some(600), v, false, true, None, None),
                 ]
             })
             .collect();
         assert_eq!(keys.len(), 3 * PromptVariant::ALL.len());
         // The Claude Code candidate (T7.4gb), after the meeting and chunked.
         assert_eq!(
-            format_key(None, current, false, false, Some(AgentCli::ClaudeCode)),
+            format_key(
+                None,
+                current,
+                false,
+                false,
+                Some(AgentCli::ClaudeCode),
+                None
+            ),
             "indented-numbered-r5-claude-code"
         );
         assert_eq!(
-            format_key(Some(600), current, false, false, Some(AgentCli::ClaudeCode)),
+            format_key(
+                Some(600),
+                current,
+                false,
+                false,
+                Some(AgentCli::ClaudeCode),
+                None
+            ),
             "indented-numbered-r5-chunk600-claude-code"
         );
+    }
+
+    #[test]
+    fn sum_eval_thinking_has_its_own_format_key_after_every_other_mode() {
+        let current = PromptVariant::Current;
+        // Thinking (T12.10) after the chunking, before the prompt variant; xtask's
+        // `format_key` builds the same strings (`sum_eval_thinking_has_its_own_format_key_args_label_and_refusals`).
+        assert_eq!(
+            format_key(Some(600), current, false, false, None, Some(2048)),
+            "indented-numbered-r5-chunk600-think2048"
+        );
+        assert_eq!(
+            format_key(None, PromptVariant::Lean, false, false, None, Some(512)),
+            "indented-numbered-r5-think512-prompt-lean"
+        );
+        assert_ne!(
+            format_key(Some(600), current, false, false, None, Some(1024)),
+            format_key(Some(600), current, false, false, None, Some(2048)),
+        );
+        // Off is today's key.
+        assert_eq!(
+            format_key(Some(600), current, false, false, None, None),
+            "indented-numbered-r5-chunk600"
+        );
+    }
+
+    /// A local summary run of a Qwen candidate as xtask passes it, plus `extra`.
+    fn local_args(extra: &[&str]) -> Args {
+        let mut a = Args {
+            jobs: vec![("dev".into(), "reference".into())],
+            out: "o.json".into(),
+            model_id: "qwen3.5-9b-q4_k_m".into(),
+            model: Some("m.gguf".into()),
+            assistant_prefix: QWEN_THINKING_OFF_PREFIX.into(),
+            context: 16_384,
+            max_output: 8192,
+            chunk_seconds: Some(600),
+            ..Args::default()
+        };
+        let mut it = extra.iter();
+        while let Some(flag) = it.next() {
+            match *flag {
+                "--thinking" => a.thinking = Some(it.next().unwrap().parse().unwrap()),
+                "--prefix" => a.assistant_prefix = (*it.next().unwrap()).into(),
+                "--two-call" => a.two_call = true,
+                "--two-track" => a.two_track = true,
+                "--remote" => {
+                    a.model = None;
+                    a.remote = true;
+                }
+                other => panic!("{other}"),
+            }
+        }
+        a
+    }
+
+    #[test]
+    fn sum_eval_thinking_needs_a_local_qwen_run_and_a_cap_that_fits() {
+        check_thinking(&local_args(&[])).unwrap();
+        check_thinking(&local_args(&["--thinking", "2048"])).unwrap();
+        for (extra, why) in [
+            (
+                &["--thinking", "2048", "--prefix", ""][..],
+                "empty thinking block",
+            ),
+            (&["--thinking", "2048", "--two-call"][..], "--two-call"),
+            (&["--thinking", "2048", "--two-track"][..], "--two-track"),
+            (&["--thinking", "2048", "--remote"][..], "local --model"),
+            (&["--thinking", "0"][..], "thinking cap"),
+            (&["--thinking", "40000"][..], "thinking cap"),
+        ] {
+            let e = check_thinking(&local_args(extra)).unwrap_err();
+            assert!(e.contains(why), "{extra:?}: {e}");
+        }
+        // A budget whose thinking room does not fit the load context is refused, not shrunk.
+        let mut huge = local_args(&["--thinking", "2048"]);
+        huge.context = u32::MAX - 100;
+        assert!(check_thinking(&huge).unwrap_err().contains("too large"));
     }
 
     fn claude_args(extra: &[&str]) -> Args {
@@ -1885,11 +2118,18 @@ mod tests {
     fn sum_eval_codex_has_its_key_and_the_claude_code_rules() {
         let current = PromptVariant::Current;
         assert_eq!(
-            format_key(None, current, false, false, Some(AgentCli::Codex)),
+            format_key(None, current, false, false, Some(AgentCli::Codex), None),
             "indented-numbered-r5-codex"
         );
         assert_eq!(
-            format_key(Some(600), current, false, false, Some(AgentCli::Codex)),
+            format_key(
+                Some(600),
+                current,
+                false,
+                false,
+                Some(AgentCli::Codex),
+                None
+            ),
             "indented-numbered-r5-chunk600-codex"
         );
         let codex = |extra: &[&str]| {
