@@ -62,12 +62,19 @@ enum Cmd {
         #[arg(long)]
         cuda_set: bool,
     },
-    /// Install the host's NSIS build from `build --bundle` into <repo>\target, replay a meeting
-    /// through the installed app, and uninstall it.
+    /// Install the NSIS build from `build --bundle` (or a given installer) into <repo>\target,
+    /// replay a meeting through the installed app, and uninstall it. Only the host's own
+    /// architecture is checked.
     BundleCheck {
         /// The --target-dir of the bundle build.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "installer")]
         target_dir: Option<std::path::PathBuf>,
+        /// The --target of the bundle build (default: the host).
+        #[arg(long, conflicts_with = "installer")]
+        target: Option<String>,
+        /// Check this installer file instead of a build folder (Earshot_<v>_<arch>-setup.exe).
+        #[arg(long)]
+        installer: Option<std::path::PathBuf>,
     },
     /// Delete one short build directory, %SystemDrive%\eb\<NAME> (refused whole while a
     /// build is using it).
@@ -433,7 +440,16 @@ fn main() -> ExitCode {
             xtask::build::run(&root, target.as_deref(), &features, target_dir.as_deref())
         }
         .map(|()| true),
-        Cmd::BundleCheck { target_dir } => xtask::bundle::check(&root, target_dir.as_deref()),
+        Cmd::BundleCheck {
+            target_dir,
+            target,
+            installer,
+        } => xtask::bundle::check(
+            &root,
+            target_dir.as_deref(),
+            target.as_deref(),
+            installer.as_deref(),
+        ),
         Cmd::CleanBuild { name } => xtask::build::clean_build(&name),
         Cmd::Doctor { json } => xtask::doctor::run_doctor(json),
         Cmd::Accept { milestone, backend } => {
@@ -835,6 +851,67 @@ mod tests {
         }
         let cli = Cli::try_parse_from(["xtask", "bundle-check", "--target-dir", "t"]).unwrap();
         assert!(matches!(cli.command, Cmd::BundleCheck { .. }));
+    }
+
+    #[test]
+    fn bundle_check_takes_a_target_or_an_installer_never_both() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "bundle-check",
+            "--target",
+            "aarch64-pc-windows-msvc",
+            "--target-dir",
+            r"C:\eb",
+        ])
+        .unwrap();
+        match cli.command {
+            Cmd::BundleCheck {
+                target,
+                target_dir,
+                installer,
+            } => {
+                assert_eq!(target.as_deref(), Some("aarch64-pc-windows-msvc"));
+                assert_eq!(target_dir.as_deref(), Some(std::path::Path::new(r"C:\eb")));
+                assert!(installer.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "bundle-check",
+            "--installer",
+            r"D:\Earshot_0.1.0_arm64-setup.exe",
+        ])
+        .unwrap();
+        match cli.command {
+            Cmd::BundleCheck {
+                target,
+                target_dir,
+                installer,
+            } => {
+                assert!(target.is_none() && target_dir.is_none());
+                assert_eq!(
+                    installer.as_deref(),
+                    Some(std::path::Path::new(r"D:\Earshot_0.1.0_arm64-setup.exe"))
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // An installer names its own architecture and has no build folder.
+        for flag in [
+            ["--target", "x86_64-pc-windows-msvc"],
+            ["--target-dir", "t"],
+        ] {
+            let args = [
+                "xtask",
+                "bundle-check",
+                "--installer",
+                "i.exe",
+                flag[0],
+                flag[1],
+            ];
+            assert!(Cli::try_parse_from(args).is_err(), "{flag:?}");
+        }
     }
 
     #[test]

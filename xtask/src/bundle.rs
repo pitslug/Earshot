@@ -1010,9 +1010,287 @@ fn verdict(all: &mut bool, name: &str, pass: bool, detail: &str) {
     *all &= pass;
 }
 
+/// Refuses a `target` whose install this host cannot run: `bundle-check` installs the app and runs
+/// a meeting through it, so it judges only builds for the host's own architecture. An x64 build
+/// could run on ARM64 under emulation, but would prove nothing about x64 hardware, so that is
+/// refused too.
+///
+/// # Errors
+/// A target with no installer, or one that is not the host's.
+pub fn refuse_unless_runnable(target: &str, host: &str) -> Result<()> {
+    formats(target)?;
+    if target == host {
+        return Ok(());
+    }
+    if target == ARM64_WINDOWS {
+        bail!(
+            "bundle-check installs and runs the app, so an {target} build must be checked on an \
+             ARM64 Windows machine, not this {host} one: copy its installer there and run \
+             `cargo xtask bundle-check --installer <path>` from the repo (it checks only the host's \
+             own architecture; nothing was installed)"
+        );
+    }
+    bail!(
+        "bundle-check checks only the host's own architecture ({host}), not {target}: an x64 \
+         build under emulation on ARM64 is not judged; run it on an x64 Windows machine \
+         (nothing was installed)"
+    )
+}
+
+/// `(version, target)` from an installer's file name, `Earshot_<version>_<arch>-setup.exe` as
+/// [`installer_path`] makes it.
+///
+/// # Errors
+/// A name of another shape or architecture.
+pub fn installer_name_target(path: &Path) -> Result<(String, &'static str)> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .with_context(|| format!("{} has no file name", path.display()))?;
+    let parsed = name
+        .strip_prefix("Earshot_")
+        .and_then(|rest| rest.strip_suffix("-setup.exe"))
+        .and_then(|rest| rest.rsplit_once('_'))
+        .filter(|(version, _)| !version.is_empty());
+    let Some((version, arch)) = parsed else {
+        bail!("{name} is not named Earshot_<version>_<x64|arm64>-setup.exe as the bundle names it");
+    };
+    let target = match arch {
+        "x64" => X64_WINDOWS,
+        "arm64" => ARM64_WINDOWS,
+        other => bail!("{name} names architecture {other}, not x64 or arm64"),
+    };
+    Ok((version.to_owned(), target))
+}
+
+/// The target whose COFF machine is `machine` ([`machine_of`] reversed).
+#[must_use]
+pub fn target_of_machine(machine: u16) -> Option<&'static str> {
+    [X64_WINDOWS, ARM64_WINDOWS]
+        .into_iter()
+        .find(|t| machine_of(t).ok() == Some(machine))
+}
+
+/// Where `cargo xtask build --bundle` leaves the exe (and `bundle\`) for `target`, in the order
+/// to look: no target is the host's plain build; a named target is cargo's `<dir>\<triple>\release`
+/// in the folder [`build::short_target_dir`] chose for it, then, for the host's own triple, a
+/// plain build's folder too.
+#[must_use]
+pub fn built_release_dirs(
+    root: &Path,
+    explicit: Option<&Path>,
+    system_drive: Option<std::ffi::OsString>,
+    target: Option<&str>,
+    host: &str,
+) -> Vec<PathBuf> {
+    let Some(t) = target else {
+        return vec![build::short_target_dir(root, explicit, system_drive, None).join("release")];
+    };
+    let mut dirs = vec![
+        build::short_target_dir(root, explicit, system_drive.clone(), Some(t))
+            .join(t)
+            .join("release"),
+    ];
+    if t == host {
+        dirs.push(build::short_target_dir(root, explicit, system_drive, None).join("release"));
+    }
+    dirs
+}
+
+/// `(installed, built)`: the files of an install for `target` compared with the build byte for byte.
+fn built_comparisons(target: &str) -> Vec<(&'static str, &'static str)> {
+    let mut names = vec![APP_EXE];
+    let features = build::shipped_features(Some(target), &[]);
+    names.extend(resource_dlls(target, &features));
+    if has_vulkan_summaries(&features) {
+        names.push(VULKAN_LICENCE);
+    }
+    names.extend(qnn_install_names(target));
+    let mut pairs: Vec<(&str, &str)> = names.into_iter().map(|n| (n, n)).collect();
+    pairs.push((APP_SYMBOLS, APP_SYMBOLS_BUILT));
+    pairs
+}
+
+/// What replaces a byte comparison with the build when only an installer is checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Instead {
+    /// A QNN file: its manifest pin (size and SHA-256).
+    Pin,
+    /// The QNN notice: it names every QNN file.
+    Notice,
+    /// A Windows binary: its machine type and imports ([`check_binary`]).
+    Binary,
+    /// Nothing: no build and no pin to compare it with.
+    Skipped,
+}
+
+/// How `name`, in an install for `target`, is judged without the build.
+#[must_use]
+pub fn instead_of_build(name: &str, target: &str) -> Instead {
+    let lower = name.to_ascii_lowercase();
+    if is_shipped_qnn_file(name, target) {
+        Instead::Pin
+    } else if target == ARM64_WINDOWS && name.eq_ignore_ascii_case(QNN_NOTICE) {
+        Instead::Notice
+    } else if lower.ends_with(".dll") || lower.ends_with(".exe") {
+        Instead::Binary
+    } else {
+        Instead::Skipped
+    }
+}
+
+/// The byte comparisons with the build that nothing replaces without it, with the reason.
+#[must_use]
+pub fn skipped_without_build(target: &str) -> Vec<(&'static str, &'static str)> {
+    built_comparisons(target)
+        .into_iter()
+        .filter(|(name, _)| instead_of_build(name, target) == Instead::Skipped)
+        .map(|(name, _)| {
+            (
+                name,
+                "skipped: no build folder to compare with and no pin for it",
+            )
+        })
+        .collect()
+}
+
+/// One line per byte comparison with the build that an installer-only check cannot run, saying what
+/// replaces it or that it is skipped.
+#[must_use]
+pub fn skipped_lines(target: &str) -> Vec<String> {
+    built_comparisons(target)
+        .into_iter()
+        .map(|(name, _)| {
+            let how = match instead_of_build(name, target) {
+                Instead::Pin => "checked against its manifest pin (size and SHA-256) instead",
+                Instead::Notice => "checked that it names every QNN file instead",
+                Instead::Binary => "checked by machine type and imports instead",
+                Instead::Skipped => "skipped: no build folder to compare with and no pin for it",
+            };
+            format!("bundle-check: no build: {name}: same bytes as built not compared; {how}")
+        })
+        .collect()
+}
+
+/// The line printed first: which installer is checked, by its SHA-256.
+#[must_use]
+pub fn installer_digest_line(installer: &Path, sha256: &str) -> String {
+    format!(
+        "bundle-check: installer {} sha256 {sha256}",
+        installer.display()
+    )
+}
+
+/// The last line: the verdict with the installer's SHA-256, so the file signed can be matched to
+/// the file checked. `without_build` counts the comparisons with the build replaced or skipped.
+#[must_use]
+pub fn installer_summary(
+    pass: bool,
+    installer: &Path,
+    sha256: &str,
+    without_build: usize,
+) -> String {
+    let verdict = if pass { "PASS" } else { "FAIL" };
+    let mut line = format!(
+        "bundle-check: {verdict} installer {} sha256 {sha256}",
+        installer.display()
+    );
+    if without_build > 0 {
+        let s = if without_build == 1 { "" } else { "s" };
+        line.push_str(&format!(
+            " ({without_build} comparison{s} with the build replaced or skipped, listed at the start)"
+        ));
+    }
+    line
+}
+
+/// A QNN file's pin, by its name in the install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QnnPin {
+    /// Name in the install.
+    pub name: &'static str,
+    /// Lower-case hex SHA-256.
+    pub sha256: String,
+    /// Size in bytes.
+    pub size: u64,
+}
+
+/// The pins of every QNN file an ARM64 install holds, from [`QNN_ARTEFACT`]'s members in
+/// `models/manifest.toml`, in [`qnn_install_files`] order.
+///
+/// # Errors
+/// An unreadable manifest, or a QNN file that is not a pinned member.
+pub fn qnn_pins(root: &Path) -> Result<Vec<QnnPin>> {
+    let m = Manifest::load(&crate::models::manifest_path(root))?;
+    let extract = m
+        .artefacts
+        .iter()
+        .find(|a| a.id == QNN_ARTEFACT)
+        .and_then(|a| a.extract.as_ref())
+        .with_context(|| format!("models/manifest.toml has no extracted {QNN_ARTEFACT}"))?;
+    qnn_install_files()
+        .iter()
+        .map(|(from, to)| {
+            let member = extract
+                .members
+                .iter()
+                .find(|mm| mm.path == *from)
+                .with_context(|| format!("{from} is not a pinned member of {QNN_ARTEFACT}"))?;
+            Ok(QnnPin {
+                name: to,
+                sha256: member.sha256.clone(),
+                size: member.size,
+            })
+        })
+        .collect()
+}
+
+/// Each pin with whether the file of its name in `dir` matches it.
+#[must_use]
+pub fn qnn_pin_results<'a>(dir: &Path, pins: &'a [QnnPin]) -> Vec<(&'a QnnPin, Result<()>)> {
+    pins.iter()
+        .map(|pin| {
+            let result = crate::download::verify_file(
+                &dir.join(pin.name),
+                &crate::download::Expected {
+                    sha256: &pin.sha256,
+                    size: pin.size,
+                },
+            );
+            (pin, result)
+        })
+        .collect()
+}
+
+/// The QNN files the notice `text` does not name.
+#[must_use]
+pub fn notice_missing_names(text: &str) -> Vec<&'static str> {
+    qnn_install_files()
+        .iter()
+        .map(|(_, to)| *to)
+        .filter(|to| !text.contains(to))
+        .collect()
+}
+
+/// What an install is judged against.
+enum Reference<'a> {
+    /// The build folder `build --bundle` made it from: the exe and DLLs byte for byte.
+    Built(&'a Path),
+    /// Only the installer: pins, machine types and imports ([`instead_of_build`]).
+    Installer,
+}
+
 /// Whether the install at `dir` is what was built: exactly the expected files, with the exe and
-/// DLLs byte for byte.
-fn check_install(all: &mut bool, dir: &Path, exe_dir: &Path, target: &str) -> Result<()> {
+/// DLLs byte for byte against the build, or, with only the installer, against what replaces that
+/// ([`instead_of_build`]). Every Windows binary's machine and imports are checked either way, and
+/// on ARM64 the QNN files against their pins and the notice for their names.
+fn check_install(
+    all: &mut bool,
+    dir: &Path,
+    reference: &Reference,
+    target: &str,
+    qnn: &[QnnPin],
+) -> Result<()> {
     let mut found = Vec::new();
     for file in files_under(dir)? {
         found.push(file.strip_prefix(dir)?.to_path_buf());
@@ -1027,20 +1305,55 @@ fn check_install(all: &mut bool, dir: &Path, exe_dir: &Path, target: &str) -> Re
             found.len()
         ),
     );
-    let mut names = vec![APP_EXE];
-    let features = build::shipped_features(Some(target), &[]);
-    names.extend(resource_dlls(target, &features));
-    if has_vulkan_summaries(&features) {
-        names.push(VULKAN_LICENCE);
+    let pairs = built_comparisons(target);
+    if let Reference::Built(exe_dir) = reference {
+        for (name, built) in &pairs {
+            let installed = dir.join(name);
+            let same = installed.is_file()
+                && sha256_file(&installed)? == sha256_file(&exe_dir.join(built))?;
+            verdict(all, &format!("nsis: {name}"), same, "same bytes as built");
+        }
     }
-    names.extend(qnn_install_names(target));
-    let mut pairs: Vec<(&str, &str)> = names.into_iter().map(|n| (n, n)).collect();
-    pairs.push((APP_SYMBOLS, APP_SYMBOLS_BUILT));
-    for (name, built) in pairs {
-        let installed = dir.join(name);
-        let same =
-            installed.is_file() && sha256_file(&installed)? == sha256_file(&exe_dir.join(built))?;
-        verdict(all, &format!("nsis: {name}"), same, "same bytes as built");
+    let features = build::shipped_features(Some(target), &[]);
+    for (name, _) in &pairs {
+        let lower = name.to_ascii_lowercase();
+        if !(lower.ends_with(".dll") || lower.ends_with(".exe")) {
+            continue;
+        }
+        let checked = read_pe(&dir.join(name))
+            .and_then(|pe| check_binary(name, &pe, target, &features))
+            .map_err(|e| format!("{e:#}"));
+        verdict(
+            all,
+            &format!("nsis: {name} machine and imports"),
+            checked.is_ok(),
+            checked
+                .as_ref()
+                .err()
+                .map_or("built for this target, every import held", String::as_str),
+        );
+    }
+    if target == ARM64_WINDOWS {
+        for (pin, result) in qnn_pin_results(dir, qnn) {
+            let detail = match &result {
+                Ok(()) => format!("{} bytes, sha256 {} as pinned", pin.size, pin.sha256),
+                Err(e) => format!("{e:#}"),
+            };
+            verdict(
+                all,
+                &format!("nsis: {} matches its manifest pin", pin.name),
+                result.is_ok(),
+                &detail,
+            );
+        }
+        let notice = std::fs::read_to_string(dir.join(QNN_NOTICE)).unwrap_or_default();
+        let missing = notice_missing_names(&notice);
+        verdict(
+            all,
+            &format!("nsis: {QNN_NOTICE} names every QNN file"),
+            !notice.is_empty() && missing.is_empty(),
+            &format!("missing: {missing:?}"),
+        );
     }
     let (scanned, findings) = paths::scan_tree(dir, &[], &paths::Needles::of_this_user()?)?;
     verdict(
@@ -1233,8 +1546,9 @@ fn check_update(all: &mut bool, nsis: &Path, work: &Path, names: &Installed) -> 
     Ok(())
 }
 
-/// `cargo xtask bundle-check`: installs the host's NSIS build into a folder under
-/// `<repo>\target`, runs `accept m7`'s replay and judgement on the installed exe with nothing of
+/// `cargo xtask bundle-check`: installs the NSIS build for `target` (default the host's), or with
+/// `installer` that file (T8.4h: the Surface checks the exact ARM64 installer the desktop built),
+/// into a folder under `<repo>\target`, runs `accept m7`'s replay and judgement on the installed exe with nothing of
 /// the repo or the build on `PATH`, and uninstalls. Returns whether everything passed. The replay proves the installed
 /// exe and DLLs; its models and ONNX Runtime come from `EARSHOT_MODELS`, not from the install, so
 /// it says nothing about a machine without them.
@@ -1263,23 +1577,80 @@ fn check_update(all: &mut bool, nsis: &Path, work: &Path, names: &Installed) -> 
 /// proves the logic against that view only: what happens to the real `HKCU` needs a run from
 /// The owner's own shell.
 ///
+/// Only the host's own architecture is checked ([`refuse_unless_runnable`], before anything is
+/// touched). The installer's SHA-256 is printed first and in the last line. With `installer` there
+/// is no build folder, so the byte comparisons with the build are replaced by pins, machine types
+/// and imports, or skipped, each listed at the start ([`skipped_lines`]); its name gives the
+/// architecture and version, and the installed exe's machine must agree.
+///
 /// # Errors
-/// An installer that is missing or cannot run, or a registry save or restore that fails.
-pub fn check(root: &Path, target_dir: Option<&Path>) -> Result<bool> {
-    let triple = effective_target(None).to_owned();
+/// A target this host cannot run, an installer that is missing or cannot run, or a registry save
+/// or restore that fails.
+pub fn check(
+    root: &Path,
+    target_dir: Option<&Path>,
+    target: Option<&str>,
+    installer: Option<&Path>,
+) -> Result<bool> {
+    // The host is the architecture this xtask runs as: run it from the machine's own toolchain.
+    let host = effective_target(None);
     let version = workspace_version(root)?;
+    let (nsis, exe_dir, triple) = if let Some(path) = installer {
+        let (named, triple) = installer_name_target(path)?;
+        refuse_unless_runnable(triple, host)?;
+        ensure!(
+            named == version,
+            "{} is version {named} but this repo is {version}: check out the commit it was built \
+             from, so the expected files and the replay are the ones it was built with",
+            path.display()
+        );
+        ensure!(path.is_file(), "{} is not a file", path.display());
+        (path.to_path_buf(), None, triple)
+    } else {
+        let triple = effective_target(target);
+        refuse_unless_runnable(triple, host)?;
+        let name = installer_path(&version, triple)?;
+        let dirs = built_release_dirs(
+            root,
+            target_dir,
+            std::env::var_os("SystemDrive"),
+            target,
+            host,
+        );
+        let found = dirs
+            .iter()
+            .find(|d| d.join("bundle").join(&name).is_file())
+            .cloned();
+        let Some(exe_dir) = found else {
+            bail!(
+                "{} is missing: run `cargo xtask build --bundle{}` with the same --target-dir",
+                dirs[0].join("bundle").join(&name).display(),
+                target.map(|t| format!(" --target {t}")).unwrap_or_default()
+            );
+        };
+        (exe_dir.join("bundle").join(&name), Some(exe_dir), triple)
+    };
     // Before anything is touched: a user the scan cannot judge stops the run here.
     paths::Needles::of_this_user()?;
-    let dir = build::short_target_dir(root, target_dir, std::env::var_os("SystemDrive"), None);
-    let exe_dir = dir.join("release");
-    let nsis = exe_dir
-        .join("bundle")
-        .join(installer_path(&version, &triple)?);
-    ensure!(
-        nsis.is_file(),
-        "{} is missing: run `cargo xtask build --bundle` with the same --target-dir",
-        nsis.display()
-    );
+    let qnn = if triple == ARM64_WINDOWS {
+        qnn_pins(root)?
+    } else {
+        Vec::new()
+    };
+    let digest = sha256_file(&nsis)?;
+    println!("{}", installer_digest_line(&nsis, &digest));
+    let without_build = if exe_dir.is_none() {
+        let lines = skipped_lines(triple);
+        for line in &lines {
+            println!("{line}");
+        }
+        lines.len()
+    } else {
+        0
+    };
+    let reference = exe_dir
+        .as_deref()
+        .map_or(Reference::Installer, Reference::Built);
     let conf_path = root.join("apps/desktop/src-tauri/tauri.conf.json");
     let conf: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(&conf_path)
@@ -1300,7 +1671,7 @@ pub fn check(root: &Path, target_dir: Option<&Path>) -> Result<bool> {
         product,
         vendor,
     };
-    let result = check_saved(root, &nsis, &exe_dir, &triple, &names);
+    let result = check_saved(root, &nsis, &reference, triple, &qnn, &names);
     let restored = guard.finish();
     let mut all = with_restore_error(result, restored.as_ref().err())?;
     match restored {
@@ -1318,6 +1689,7 @@ pub fn check(root: &Path, target_dir: Option<&Path>) -> Result<bool> {
     } else {
         println!("bundle-check: work folder kept at {}", work.display());
     }
+    println!("{}", installer_summary(all, &nsis, &digest, without_build));
     Ok(all)
 }
 
@@ -1344,8 +1716,9 @@ struct Installed {
 fn check_saved(
     root: &Path,
     nsis: &Path,
-    exe_dir: &Path,
+    reference: &Reference,
     triple: &str,
+    qnn: &[QnnPin],
     names: &Installed,
 ) -> Result<bool> {
     let work = root.join("target").join("bundle-check");
@@ -1356,7 +1729,19 @@ fn check_saved(
     check_installer_paths(&mut all, nsis)?;
     let install = work.join("install");
     nsis_install(nsis, &install)?;
-    check_install(&mut all, &install, exe_dir, triple)?;
+    // The installed exe says what the installer is for; its name must agree.
+    let machine = read_pe(&install.join(APP_EXE)).map(|pe| pe.machine);
+    let built_for = machine.as_ref().ok().copied().and_then(target_of_machine);
+    verdict(
+        &mut all,
+        "nsis: the installed exe is for the installer's architecture",
+        built_for == Some(triple),
+        &match &machine {
+            Ok(m) => format!("{APP_EXE} machine {m:#x} ({built_for:?}), expected {triple}"),
+            Err(e) => format!("{e:#}"),
+        },
+    );
+    check_install(&mut all, &install, reference, triple, qnn)?;
 
     // The names the guard saved are the ones the installer really used.
     let product_key = format!(r"HKCU\Software\{}\{}", names.vendor, names.product);

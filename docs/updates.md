@@ -55,6 +55,8 @@ cargo xtask bundle-check
 cargo xtask sign-update --key "$env:USERPROFILE\.earshot-private\update-signing.key"
 ```
 
+   The ARM64 installer is built and signed here but checked on the Surface: see [arm64-release.md](arm64-release.md).
+
 4. Publish both files it prints in one normal release (not a pre-release) tagged `v<version>`, so it takes the Latest mark, which is what the app asks for.
 
 `sign-update` refuses a key that does not match the one built into the app, because installed copies would refuse the file. A later release with no version file makes a check say no update information is available.

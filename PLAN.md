@@ -1298,7 +1298,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T8.4f
   - do: the owner chose (section 7, 2026-11-08) Earshot's GitHub release "Earshot Dependencies" (tag `cuda-set-llama-0.1.160-2`, never marked latest). Publish the `parakeet-qnn/parakeet-tdt-0.6b-v2` and `parakeet-tdt-110m` conversions that GATE-03a measured (checked against their `conversion.json` and docs/qnn.md before upload) as zips with a NOTICE carrying the CC-BY-4.0 credit; manifest entries with size, SHA-256 and licence, extracted through `archive::extract_verified` into `parakeet-qnn/<model>`, offered on the Models page of an ARM64 app only, and kept by `backends::verify_qnn_conversion`. Uploading is the owner's go-ahead.
   - accept: `cargo test -p xtask models`; `cargo test -p earshot-runtime catalogue`; `cargo xtask fetch-models --set qnn-models --verify` after upload
-- [ ] T8.4h ARM64 bundle-check
+- [x] T8.4h ARM64 bundle-check
   - deps: T8.4e
   - do: `cargo xtask bundle-check --target <triple>` checks the build it names, and refuses (rather than checking the host's build) when the target cannot run on this host, saying to run it on an ARM64 machine. `--installer <path>` checks a given installer file, so the Surface checks the exact ARM64 installer the desktop built and the owner signs on the desktop (the owner, 2026-11-08: the signing key stays on the desktop); it prints the installer's SHA-256 so the signed file can be matched to the checked one. On ARM64 it also checks the QNN files are present and pinned.
   - accept: `cargo test -p xtask bundle`

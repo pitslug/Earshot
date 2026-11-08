@@ -950,3 +950,194 @@ fn build_bundle_the_vulkan_runtime_is_pinned_where_the_bundle_reads_it() {
     assert!(text.contains(&format!("path = \"{dir}/x64/{VULKAN_LOADER}\"")));
     assert!(text.contains(&format!("path = \"{dir}/{VULKAN_LICENCE}\"")));
 }
+
+#[test]
+fn bundle_check_refuses_a_target_this_host_cannot_run() {
+    // The host's own architecture is checked.
+    assert!(refuse_unless_runnable(X64, X64).is_ok());
+    assert!(refuse_unless_runnable(ARM64_WINDOWS, ARM64_WINDOWS).is_ok());
+    // ARM64 on x64: refused, saying where to run it and how.
+    let e = refuse_unless_runnable(ARM64_WINDOWS, X64)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("ARM64 Windows machine"), "{e}");
+    assert!(e.contains("--installer"), "{e}");
+    assert!(e.contains("only the host's own architecture"), "{e}");
+    // x64 on ARM64 could run under emulation, but the rule stays simple and says so.
+    let e = refuse_unless_runnable(X64, ARM64_WINDOWS)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("emulation"), "{e}");
+    assert!(e.contains(X64), "{e}");
+    // A target with no installer at all.
+    assert!(refuse_unless_runnable("x86_64-unknown-linux-gnu", X64).is_err());
+    assert!(!e.contains('\u{2014}'), "no em dash");
+}
+
+#[test]
+fn bundle_check_reads_the_target_and_version_from_an_installer_name() {
+    for target in [X64, ARM64_WINDOWS] {
+        let path = Path::new(r"D:\copied").join(installer_path("1.2.3", target).unwrap());
+        assert_eq!(
+            installer_name_target(&path).unwrap(),
+            ("1.2.3".to_owned(), target)
+        );
+    }
+    for bad in [
+        "Earshot_1.2.3_x86-setup.exe",
+        "Earshot_1.2.3_arm64.exe",
+        "Other_1.2.3_arm64-setup.exe",
+        "Earshot_arm64-setup.exe",
+        "Earshot__arm64-setup.exe",
+    ] {
+        assert!(installer_name_target(Path::new(bad)).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn bundle_check_takes_the_target_from_the_installed_exe_machine() {
+    assert_eq!(target_of_machine(machine_of(X64).unwrap()), Some(X64));
+    assert_eq!(
+        target_of_machine(machine_of(ARM64_WINDOWS).unwrap()),
+        Some(ARM64_WINDOWS)
+    );
+    assert_eq!(target_of_machine(0x014c), None);
+}
+
+#[test]
+fn bundle_check_finds_a_named_targets_build_under_its_own_folder() {
+    let root = Path::new(r"C:\r");
+    let drive = || Some(std::ffi::OsString::from("C:"));
+    // The host, unnamed: today's place, unchanged.
+    assert_eq!(
+        built_release_dirs(root, None, drive(), None, X64),
+        [build::short_target_dir(root, None, drive(), None).join("release")]
+    );
+    // A named target: where cargo puts a `--target` build, with the short folder `build` chose.
+    let arm = built_release_dirs(root, None, drive(), Some(ARM64_WINDOWS), X64);
+    assert_eq!(
+        arm,
+        [
+            build::short_target_dir(root, None, drive(), Some(ARM64_WINDOWS))
+                .join(ARM64_WINDOWS)
+                .join("release")
+        ]
+    );
+    // The host named: its `--target` folder first, then a plain build's.
+    let explicit = Path::new(r"C:\eb\x");
+    assert_eq!(
+        built_release_dirs(root, Some(explicit), drive(), Some(X64), X64),
+        [explicit.join(X64).join("release"), explicit.join("release")]
+    );
+}
+
+#[test]
+fn bundle_check_without_a_build_says_how_each_comparison_is_replaced() {
+    let arm = built_comparisons(ARM64_WINDOWS);
+    let how = |name: &str| instead_of_build(name, ARM64_WINDOWS);
+    for (name, _) in &arm {
+        let pinned = qnn_install_files().iter().any(|(_, to)| to == name);
+        if pinned {
+            assert_eq!(how(name), Instead::Pin, "{name}");
+        }
+    }
+    assert!(arm.iter().any(|(n, _)| *n == QNN_NOTICE));
+    assert_eq!(how(QNN_NOTICE), Instead::Notice);
+    assert_eq!(how(APP_EXE), Instead::Binary);
+    assert_eq!(how("llama.dll"), Instead::Binary);
+    assert_eq!(how("msvcp140.dll"), Instead::Binary);
+    assert_eq!(how(APP_SYMBOLS), Instead::Skipped);
+    // On x64 nothing is pinned, the notice is not there, and the licence text has no pin.
+    assert_eq!(instead_of_build("QnnHtp.dll", X64), Instead::Binary);
+    assert_eq!(instead_of_build(VULKAN_LICENCE, X64), Instead::Skipped);
+    // The listing names exactly the skipped ones, each with its reason.
+    let skipped = skipped_without_build(ARM64_WINDOWS);
+    let names: Vec<&str> = skipped.iter().map(|(n, _)| *n).collect();
+    assert_eq!(names, [APP_SYMBOLS]);
+    let lines = skipped_lines(ARM64_WINDOWS);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(APP_SYMBOLS) && l.contains("no pin")),
+        "{lines:?}"
+    );
+    // Binaries are listed too: their byte comparison is replaced, not dropped silently.
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(APP_EXE) && l.contains("machine type")),
+        "{lines:?}"
+    );
+    assert!(lines.iter().all(|l| !l.contains('\u{2014}')));
+    let x64: Vec<&str> = skipped_without_build(X64).iter().map(|(n, _)| *n).collect();
+    assert!(x64.contains(&APP_SYMBOLS));
+}
+
+#[test]
+fn bundle_check_prints_the_installer_digest_so_the_signed_file_can_be_matched() {
+    let dir = tmp("digest");
+    let file = dir.join("Earshot_1.2.3_arm64-setup.exe");
+    std::fs::write(&file, b"abc").unwrap();
+    let digest = sha256_file(&file).unwrap();
+    // SHA-256 of "abc".
+    assert_eq!(
+        digest,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    let start = installer_digest_line(&file, &digest);
+    assert!(start.contains(&digest), "{start}");
+    assert!(start.contains("Earshot_1.2.3_arm64-setup.exe"), "{start}");
+    let pass = installer_summary(true, &file, &digest, 1);
+    assert!(pass.contains("PASS") && pass.contains(&digest), "{pass}");
+    assert!(pass.contains("1 comparison"), "{pass}");
+    let fail = installer_summary(false, &file, &digest, 0);
+    assert!(fail.contains("FAIL") && fail.contains(&digest), "{fail}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bundle_check_qnn_pins_cover_every_shipped_qnn_file() {
+    let pins = qnn_pins(&crate::repo_root()).unwrap();
+    let names: Vec<&str> = pins.iter().map(|p| p.name).collect();
+    let wanted: Vec<&str> = qnn_install_files().iter().map(|(_, to)| *to).collect();
+    assert_eq!(names, wanted);
+    assert!(pins.iter().all(|p| p.sha256.len() == 64 && p.size > 0));
+}
+
+#[test]
+fn bundle_check_judges_qnn_files_and_the_notice_against_pins() {
+    let dir = tmp("qnn-pins");
+    let body = b"stub library";
+    let digest = {
+        let p = dir.join("probe");
+        std::fs::write(&p, body).unwrap();
+        sha256_file(&p).unwrap()
+    };
+    let pins = vec![
+        QnnPin {
+            name: "QnnHtp.dll",
+            sha256: digest.clone(),
+            size: body.len() as u64,
+        },
+        QnnPin {
+            name: "QnnSystem.dll",
+            sha256: digest,
+            size: body.len() as u64,
+        },
+    ];
+    std::fs::write(dir.join("QnnHtp.dll"), body).unwrap();
+    std::fs::write(dir.join("QnnSystem.dll"), b"something else").unwrap();
+    let results = qnn_pin_results(&dir, &pins);
+    assert_eq!(results.len(), 2);
+    assert!(results[0].1.is_ok(), "{:?}", results[0].1);
+    assert!(results[1].1.is_err(), "a changed file fails its pin");
+    // A missing file fails too.
+    std::fs::remove_file(dir.join("QnnHtp.dll")).unwrap();
+    assert!(qnn_pin_results(&dir, &pins)[0].1.is_err());
+
+    // The notice names every QNN file: the bundle's own text does, one missing a name does not.
+    assert!(notice_missing_names(&qnn_notice_text()).is_empty());
+    let cut = qnn_notice_text().replace("QnnHtpPrepare.dll", "");
+    assert_eq!(notice_missing_names(&cut), ["QnnHtpPrepare.dll"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
