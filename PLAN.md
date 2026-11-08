@@ -1516,6 +1516,10 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T9.5a, T9.5b, T9.5c
   - do: joint acceptance; design in docs/folders-design.md (the owner, 2026-11-08).
   - accept: `cargo xtask ci`
+- [ ] T6.20g Qwen thinking on against off (spike, evaluation only)
+  - deps: T6.20f, T9.5, T8.4
+  - do: the owner, 2026-11-08: every summary evaluation ran Qwen 3.5 with thinking off (the empty `<think>` prefix); measure thinking on. An evaluation-only option in `sum_eval` (its own format key in both `examples/sum_eval/main.rs` and `xtask::sum_eval`) whose grammar allows a bounded `<think>` section before the summary JSON (`earshot_llm_local::grammar`, a token cap on the thinking so it cannot use the reply budget; production grammar byte-identical). Write the rule before measuring and commit it: thinking on earns a follow-up task only if the blinded meaning judge finds missed decisions plus missed action items fall by at least a margin fixed in the rule, with no rise in invalid summaries; time per meeting reported beside it. Run on the desktop GPU, dev split only, 9B and 4B, off against on. No production change without the owner; not while the owner is in a meeting.
+  - accept: `cargo test -p earshot-llm-local grammar`; `cargo test -p xtask sum_eval`; the rule, tables (judged and timing) and a recommendation in docs/summary-eval.md
 - [ ] T9.6 Shared models for an "everyone" install
   - deps: T9.1p
   - do: discussed with the owner, after release and only if a real user asks. `%ProgramData%\Earshot\models`, readable by all and writable only with admin, because the folder holds DLLs another user would run. Meetings, voiceprints and settings stay per user. Every file a shared load reads is checked, and its cost measured.
