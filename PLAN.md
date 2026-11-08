@@ -973,7 +973,7 @@ M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go
   - deps: T2.2b
   - do: from TODO (T2.2b lane): whisper word times from DTW with per-model alignment heads (flash attention off), measured against the current token-timestamp times on the smoke set; Parakeet (the default) already has accurate word times (T6.10e: 97% within 250 ms), so this only matters for whisper rungs.
   - accept: `cargo test -p earshot-asr-whisper` (alignment-head tables pinned per model; word-time error measured and logged)
-- [ ] GATE-01a Real capture on the desktop
+- [x] GATE-01a Real capture on the desktop
   - deps: T6.6, T6.6a, T6.7, T6.10a, T6.10b, T6.14, T6.17, T6.18 (GATE-12 removed by the owner: talk-over leak is a robustness case and does not block real-call testing)
   - do: Changed by the owner: judged on the app, not `earshot record`. Real meetings since the capture fix count as the real call; Ctrl+C becomes quitting from the tray during the cleanup, keeping the audio with the meeting left `Unprocessed`; the device switch happens during any real call in the app. Originally: split from GATE-01 by the owner. Steps in gates/GATE-01.md (desktop part): device tests, `earshot devices`, a real call on speakers with an output-device switch, the cleanup progress and Ctrl+C during it, a listening note on residual echo in `mic.flac`.
 - [ ] GATE-01b Real capture on the Surface
