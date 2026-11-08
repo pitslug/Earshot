@@ -20,7 +20,7 @@ const CHECKPOINT_ATTEMPTS: u32 = 5;
 const CHECKPOINT_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Schema version this build writes (the number of migrations).
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Store errors.
 #[derive(Debug)]
@@ -116,7 +116,8 @@ impl From<RepoError> for StoreError {
 }
 
 /// The Earshot database (`earshot.db`, PLAN.md 3.6). Implements the core repository traits
-/// ([`earshot_core::model::MeetingRepo`], [`earshot_core::model::AudioFileRepo`],
+/// ([`earshot_core::model::MeetingRepo`], [`earshot_core::model::FolderRepo`],
+/// [`earshot_core::model::AudioFileRepo`],
 /// [`earshot_core::model::ExportRepo`], [`earshot_core::voiceprint::VoiceprintRepo`]).
 #[derive(Debug)]
 pub struct Store {
@@ -178,20 +179,36 @@ impl Store {
     fn migrate(&mut self) -> Result<(), StoreError> {
         let migrations = schema::migrations();
         debug_assert_eq!(migrations.len(), SCHEMA_VERSION as usize);
+        let too_new = |found| StoreError::SchemaTooNew {
+            found,
+            supported: SCHEMA_VERSION,
+        };
+        // Up to date: no write lock taken.
         let found = self.schema_version()?;
         if found > SCHEMA_VERSION {
-            return Err(StoreError::SchemaTooNew {
-                found,
-                supported: SCHEMA_VERSION,
-            });
+            return Err(too_new(found));
         }
-        for (i, sql) in migrations.iter().enumerate().skip(found as usize) {
-            let tx = self.conn.transaction()?;
+        if found == SCHEMA_VERSION {
+            return Ok(());
+        }
+        // Each step takes the write lock first (IMMEDIATE) and re-reads the version under
+        // it, so another connection opening the same file at the same time either finished
+        // the step already (skipped here) or waits for this one; never both apply it.
+        loop {
+            let tx = self
+                .conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let at: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            if at > SCHEMA_VERSION {
+                return Err(too_new(at));
+            }
+            let Some(sql) = migrations.get(at as usize) else {
+                return Ok(());
+            };
             tx.execute_batch(sql)?;
-            tx.pragma_update(None, "user_version", i as u32 + 1)?;
+            tx.pragma_update(None, "user_version", at + 1)?;
             tx.commit()?;
         }
-        Ok(())
     }
 
     /// The database's `user_version`.

@@ -4,8 +4,8 @@ use earshot_core::asr::{MeetingTime, Segment, Word};
 use earshot_core::diar::EmbeddingModelId;
 use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp, SyncMeta};
 use earshot_core::model::{
-    AudioFile, AudioFileRepo, ExportRecord, ExportRepo, Meeting, MeetingRepo, Note, RepoError,
-    SegmentRow, Speaker, Summary, Track, VaultPath,
+    AudioFile, AudioFileRepo, ExportRecord, ExportRepo, Folder, FolderRepo, Meeting, MeetingRepo,
+    Note, RepoError, SegmentRow, Speaker, Summary, Track, VaultPath,
 };
 use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintError, VoiceprintRepo};
 use rusqlite::types::{Type, Value};
@@ -244,13 +244,14 @@ fn need_child(
 
 // ---- meeting ----
 
-const MEETING: [&str; 6] = [
+const MEETING: [&str; 7] = [
     "title",
     "started_unix_ms",
     "utc_offset_minutes",
     "duration_ms",
     "tags",
     "template",
+    "folder_id",
 ];
 
 fn meeting_row(r: &Row<'_>) -> rusqlite::Result<Meeting> {
@@ -266,6 +267,7 @@ fn meeting_row(r: &Row<'_>) -> rusqlite::Result<Meeting> {
         template: template
             .parse()
             .map_err(|_| conv_err(REST + 5, Type::Text, BadValue(template.clone())))?,
+        folder_id: get_opt_id(r, REST + 6)?,
     })
 }
 
@@ -294,6 +296,7 @@ fn put_meeting(c: &Connection, m: &Meeting) -> Result<(), RepoError> {
             m.duration_ms.map_or(Ok(Value::Null), int)?,
             json(&m.tags)?,
             text(m.template.name()),
+            opt_id(m.folder_id),
         ],
     )?;
     exec(c, &upsert_sql("meeting", &synced_cols(&MEETING), "id"), &v)?;
@@ -530,6 +533,38 @@ fn put_summary(c: &Connection, s: &Summary) -> Result<(), RepoError> {
         ],
     )?;
     exec(c, &upsert_sql("summary", &synced_cols(&SUMMARY), "id"), &v)?;
+    Ok(())
+}
+
+// ---- folder ----
+
+const FOLDER: [&str; 1] = ["name"];
+
+fn folder_row(r: &Row<'_>) -> rusqlite::Result<Folder> {
+    Ok(Folder {
+        id: get_id(r, 0)?,
+        meta: get_meta(r, 1)?,
+        name: r.get(REST)?,
+    })
+}
+
+fn get_folder(c: &Connection, id: EntityId) -> Result<Option<Folder>, RepoError> {
+    let sql = select_sql("folder", &synced_cols(&FOLDER), "WHERE id = ?1");
+    Ok(query(c, &sql, &[id_value(id)], folder_row)?.pop())
+}
+
+fn all_folders(c: &Connection) -> Result<Vec<Folder>, RepoError> {
+    let sql = select_sql(
+        "folder",
+        &synced_cols(&FOLDER),
+        "ORDER BY created_wall, created_logical, created_node, id",
+    );
+    query(c, &sql, &[], folder_row)
+}
+
+fn put_folder(c: &Connection, f: &Folder) -> Result<(), RepoError> {
+    let v = synced_values(f.id, &f.meta, vec![text(&f.name)])?;
+    exec(c, &upsert_sql("folder", &synced_cols(&FOLDER), "id"), &v)?;
     Ok(())
 }
 
@@ -798,6 +833,18 @@ macro_rules! impl_repos {
             }
             fn put_summary(&mut self, summary: Summary) -> Result<(), RepoError> {
                 put_summary(&self.conn, &summary)
+            }
+        }
+
+        impl FolderRepo for $ty {
+            fn folder(&self, id: EntityId) -> Result<Option<Folder>, RepoError> {
+                get_folder(&self.conn, id)
+            }
+            fn folders(&self) -> Result<Vec<Folder>, RepoError> {
+                all_folders(&self.conn)
+            }
+            fn put_folder(&mut self, folder: Folder) -> Result<(), RepoError> {
+                put_folder(&self.conn, &folder)
             }
         }
 

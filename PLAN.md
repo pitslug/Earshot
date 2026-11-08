@@ -154,10 +154,10 @@ ONNX Runtime is Microsoft's official MIT release, fetched through the checksum-p
 
 ### 3.5 Data model (sync-ready from day one)
 
-Entities: `Meeting`, `Track` (kind, device name, clock domain), `AudioFile` (path, format, pipeline/AEC version that produced it), `Segment` (start, end, text, words, track, speaker_id, confidence), `Speaker` (per meeting, display name, optional `person_id`), `Person` (recurring identity, optional `merged_into` so duplicates created on two devices can be merged), `Voiceprint` (embedding vector, embedding model id, person_id), `Note` (user-typed, anchors as **milliseconds from meeting start**, never wall-clock), `Summary` (schema v1), `ExportRecord` (vault-relative path, device id).
+Entities: `Meeting`, `Track` (kind, device name, clock domain), `AudioFile` (path, format, pipeline/AEC version that produced it), `Segment` (start, end, text, words, track, speaker_id, confidence), `Speaker` (per meeting, display name, optional `person_id`), `Person` (recurring identity, optional `merged_into` so duplicates created on two devices can be merged), `Voiceprint` (embedding vector, embedding model id, person_id), `Note` (user-typed, anchors as **milliseconds from meeting start**, never wall-clock), `Summary` (schema v1), `Folder` (name; a meeting names at most one through `Meeting.folder_id`, T9.5), `ExportRecord` (vault-relative path, device id).
 
 The identity base (ids, clock, sync metadata, `SyncClass`) is built first, in T0.7, so every later type is born sync-ready. Every syncable row has: UUIDv7 id, `created_at`, `updated_at` as a hybrid logical clock, `deleted` tombstone, `origin_device_id`. Each entity type carries a compile-time `SyncClass`:
-- `Syncable`: Meeting, Track (metadata only), Segment, Speaker, Person, Note, Summary.
+- `Syncable`: Meeting, Track (metadata only), Segment, Speaker, Person, Note, Summary, Folder.
 - `SyncableOptIn`: Voiceprint (off by default, only when a sync server is configured and the user enables it).
 - `NeverSync`: AudioFile, audio data, raw PCM, ExportRecord (device-local). The sync layer must not be able to serialise these (enforced by types from T0.7, tested again in M11).
 
@@ -1500,7 +1500,7 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T7.4h
   - do: the owner: in an in-room meeting with no saved voice, the user can say a voice is theirs, instead of naming themselves creating a second person. Reviewer required: it changes who counts as the user.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
-- [ ] T9.5a Folders: model and migration
+- [x] T9.5a Folders: model and migration
   - deps: T9.1
   - do: docs/folders-design.md "Data model": `Folder` (synced, `syncable_row!`), repo trait and contract cases, the `folder` table in `SYNCED_TABLES`, `meeting.folder_id BLOB` (no foreign key, `Option<EntityId>` with `serde(default)`) in schema version 2 by an appended migration with its `APPLIED` pin, cleared by core `delete_meeting`; trybuild `never_sync_envelope.stderr` regenerated. A committed version-1 database migrates. Reviewer required.
   - accept: `cargo test -p earshot-store folder`; `cargo test -p earshot-core model`

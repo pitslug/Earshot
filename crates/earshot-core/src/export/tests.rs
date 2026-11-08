@@ -93,6 +93,7 @@ fn fixture() -> Fixture {
         duration_ms: Some(2_850_000),
         tags: vec!["planning".into(), "Team Sync".into()],
         template: Template::General,
+        folder_id: None,
     };
     let me = Speaker {
         id: id(10),

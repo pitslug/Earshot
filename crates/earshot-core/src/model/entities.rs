@@ -65,6 +65,12 @@ pub struct Meeting {
     pub tags: Vec<String>,
     /// Summary template.
     pub template: Template,
+    /// The [`Folder`] the user filed the meeting in; `None` for no folder. Not a foreign key:
+    /// sync may deliver a meeting before its folder, and an id naming a tombstoned or
+    /// unknown folder reads as no folder (docs/folders-design.md). `serde(default)` so JSON
+    /// written before folders existed still reads.
+    #[serde(default)]
+    pub folder_id: Option<EntityId>,
 }
 
 syncable_row!(Meeting, "meeting");
@@ -88,6 +94,38 @@ impl Meeting {
             duration_ms: None,
             tags: Vec::new(),
             template,
+            folder_id: None,
+        }
+    }
+}
+
+/// A named folder the user files meetings in (one level; a meeting is in at most one, through
+/// [`Meeting::folder_id`]). The name is content: a tombstone has it cleared. Name rules and
+/// uniqueness among live folders are the runtime's (T9.5b), never a storage constraint,
+/// because every tombstone carries the same cleared name and sync may deliver duplicates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Folder {
+    /// Row id.
+    pub id: EntityId,
+    /// Sync metadata.
+    pub meta: SyncMeta,
+    /// The name the user gave the folder; empty once deleted.
+    pub name: String,
+}
+
+syncable_row!(Folder, "folder");
+
+impl Folder {
+    /// A new folder named `name` (not checked here).
+    pub fn new<C: Clock + ?Sized, R: Rng + ?Sized>(
+        name: impl Into<String>,
+        stamp: &mut Stamp<'_, C, R>,
+    ) -> Self {
+        let (id, meta) = new_row(stamp);
+        Folder {
+            id,
+            meta,
+            name: name.into(),
         }
     }
 }

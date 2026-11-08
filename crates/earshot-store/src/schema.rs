@@ -5,7 +5,8 @@
 //! sync metadata is spread over the `META` columns (HLC as wall ms, logical counter, node);
 //! unsigned values are stored as INTEGER and range-checked on the way in and out; nested
 //! values (words, tags, summary bodies) are JSON text. Only children of a meeting have
-//! foreign keys; persons and voiceprints may arrive by sync in any order.
+//! foreign keys; persons, voiceprints, folders and a meeting's folder may arrive by sync in
+//! any order.
 
 /// The sync-metadata columns of every syncable table, in this order.
 pub(crate) const META: &str = "created_wall INTEGER NOT NULL, created_logical INTEGER NOT NULL, \
@@ -125,8 +126,21 @@ CREATE TABLE local_state (
 ) STRICT;
 ";
 
+/// Migration 2: folders (T9.5a, docs/folders-design.md). `meeting.folder_id` has no foreign
+/// key: sync may deliver a meeting before its folder. No unique index on `folder.name`:
+/// tombstones clear every name to the same value and sync may deliver two live folders with
+/// one name; the runtime checks live names.
+const V2: &str = "
+CREATE TABLE folder (
+    id BLOB PRIMARY KEY NOT NULL, {META},
+    name TEXT NOT NULL
+) STRICT;
+
+ALTER TABLE meeting ADD COLUMN folder_id BLOB;
+";
+
 /// Tables with sync metadata (the HLC high-water mark is the greatest `updated_*` in them).
-pub(crate) const SYNCED_TABLES: [&str; 8] = [
+pub(crate) const SYNCED_TABLES: [&str; 9] = [
     "meeting",
     "track",
     "speaker",
@@ -135,11 +149,12 @@ pub(crate) const SYNCED_TABLES: [&str; 8] = [
     "summary",
     "person",
     "voiceprint",
+    "folder",
 ];
 
 /// The migrations, in order, with `{META}` expanded.
 pub(crate) fn migrations() -> Vec<String> {
-    [V1].iter().map(|m| m.replace("{META}", META)).collect()
+    [V1, V2].iter().map(|m| m.replace("{META}", META)).collect()
 }
 
 #[cfg(test)]
@@ -149,7 +164,72 @@ mod tests {
     /// SHA-256 of each migration as applied. A migration that has shipped must never change
     /// (databases already at that version would silently differ); add a new one instead.
     /// Appending a migration appends its hash here.
-    const APPLIED: &[&str] = &["a852be73b469315e94109bf9f648c0201399ce286f94a86438e781e695bfdaed"];
+    const APPLIED: &[&str] = &[
+        "a852be73b469315e94109bf9f648c0201399ce286f94a86438e781e695bfdaed",
+        "3994bcb0037913aeecece98d816f969dd6d5ba90f0a3a0d55f144403ed633107",
+    ];
+
+    /// `(type, name, tbl_name, sql)` of every schema object, sorted.
+    fn objects(c: &rusqlite::Connection) -> Vec<(String, String, String, Option<String>)> {
+        let mut st = c
+            .prepare(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master \
+                 ORDER BY type, name",
+            )
+            .unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    /// The committed schema-1 fixture (`tests/data/schema_v1.sql`, used by
+    /// `tests/folder.rs`) creates exactly the objects migration 1 creates, byte for byte, so
+    /// the migration test runs on a real schema-1 database.
+    #[test]
+    fn store_folder_v1_fixture_has_exactly_the_schema_of_migration_1() {
+        let fixture = rusqlite::Connection::open_in_memory().unwrap();
+        fixture
+            .execute_batch(include_str!("../tests/data/schema_v1.sql"))
+            .unwrap();
+        let fresh = rusqlite::Connection::open_in_memory().unwrap();
+        fresh.execute_batch(&super::migrations()[0]).unwrap();
+        let want = objects(&fresh);
+        assert!(want.iter().any(|o| o.1 == "meeting"), "{want:?}");
+        assert_eq!(objects(&fixture), want);
+        let version: u32 = fixture
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+    }
+
+    /// Every table with sync metadata is in `SYNCED_TABLES` (the HLC resumes from them) and
+    /// every listed table has the metadata.
+    #[test]
+    fn store_synced_tables_are_exactly_the_tables_with_sync_metadata_including_folder() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        for m in super::migrations() {
+            c.execute_batch(&m).unwrap();
+        }
+        let mut st = c
+            .prepare(
+                "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) p \
+                 WHERE m.type = 'table' AND p.name = 'updated_wall' ORDER BY m.name",
+            )
+            .unwrap();
+        let with_meta: Vec<String> = st
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let mut listed: Vec<String> = super::SYNCED_TABLES
+            .iter()
+            .map(|t| (*t).to_owned())
+            .collect();
+        listed.sort();
+        assert_eq!(with_meta, listed);
+        assert!(listed.contains(&"folder".to_owned()));
+    }
 
     #[test]
     fn store_applied_migrations_never_change() {

@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::entities::{
-    AudioFile, ExportRecord, Meeting, Note, SegmentRow, Speaker, Summary, Track, TranscriptPass,
+    AudioFile, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary, Track,
+    TranscriptPass,
 };
 use crate::asr::Segment;
 use crate::identity::{Clock, DeviceId, EntityId, Hlc};
@@ -167,6 +168,75 @@ pub trait ExportRepo {
     fn put_export_record(&mut self, record: ExportRecord) -> Result<(), RepoError>;
 }
 
+/// Folders (syncable). `put_folder` inserts or replaces by id; reads return tombstoned rows
+/// too (deletions sync). No name is unique here: tombstones all carry the cleared name and
+/// sync may deliver two live folders with one name ([`super::repo_contract::folder_repo`]).
+pub trait FolderRepo {
+    /// The folder with `id`.
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn folder(&self, id: EntityId) -> Result<Option<Folder>, RepoError>;
+    /// Every folder, tombstones included, in creation order (`meta.created_at`, then id).
+    /// Display order (by name) is the caller's.
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn folders(&self) -> Result<Vec<Folder>, RepoError>;
+    /// Inserts or replaces a folder by id.
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn put_folder(&mut self, folder: Folder) -> Result<(), RepoError>;
+}
+
+/// The erasure rule of [`delete_meeting`] and [`delete_folder`]: clears a copy of `row`
+/// (marked deleted, then `clear`) and returns it re-stamped as a tombstone, or `None` when
+/// that changes nothing (already erased), so a repeated deletion writes nothing.
+fn erased<T: Clone + PartialEq, C: Clock + ?Sized>(
+    row: &T,
+    meta: impl Fn(&mut T) -> &mut crate::identity::SyncMeta,
+    clear: impl FnOnce(&mut T),
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Option<T> {
+    let mut new = row.clone();
+    meta(&mut new).deleted = true;
+    clear(&mut new);
+    if new == *row {
+        return None;
+    }
+    meta(&mut new).mark_deleted(hlc, clock);
+    Some(new)
+}
+
+/// Deletes `folder`: the row becomes a tombstone (so the deletion syncs) with its name
+/// cleared. Returns whether anything was written; an already erased folder is not written
+/// again. Meetings filed in it are not touched here: the caller clears their
+/// [`Meeting::folder_id`] in the same transaction (T9.5b), and a meeting still naming a
+/// tombstoned folder reads as no folder.
+///
+/// # Errors
+/// [`RepoError::MissingParent`] (`"folder"`) if the folder does not exist; storage errors.
+pub fn delete_folder<R: FolderRepo + ?Sized, C: Clock + ?Sized>(
+    repo: &mut R,
+    folder: EntityId,
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Result<bool, RepoError> {
+    let Some(old) = repo.folder(folder)? else {
+        return Err(RepoError::MissingParent {
+            entity: "folder",
+            id: folder,
+        });
+    };
+    let Some(new) = erased(&old, |r| &mut r.meta, |r| r.name.clear(), hlc, clock) else {
+        return Ok(false);
+    };
+    repo.put_folder(new)?;
+    Ok(true)
+}
+
 /// What [`delete_meeting`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MeetingErasure {
@@ -176,7 +246,7 @@ pub struct MeetingErasure {
 
 /// Deletes `meeting`: the meeting row and every syncable child (tracks, speakers, segments
 /// of both passes, notes, summaries) become tombstones, so the deletion syncs, and their
-/// content is cleared (title, tags, device names, speaker names and person links, segment
+/// content is cleared (title, tags, folder, device names, speaker names and person links, segment
 /// text and words, note text, summary body and model), so only ids, parent links, times and
 /// the sync metadata remain. Rows that were already tombstones (an earlier final pass's
 /// segments) are cleared too. Rows already erased are not written again, so a repeated call
@@ -198,23 +268,6 @@ pub fn delete_meeting<R: MeetingRepo + ?Sized, C: Clock + ?Sized>(
         });
     };
     let mut out = MeetingErasure::default();
-    // Clears a row in place; returns it, re-stamped as a tombstone, only if it changed.
-    fn erased<T: Clone + PartialEq, C: Clock + ?Sized>(
-        row: &T,
-        meta: impl Fn(&mut T) -> &mut crate::identity::SyncMeta,
-        clear: impl FnOnce(&mut T),
-        hlc: &mut Hlc,
-        clock: &C,
-    ) -> Option<T> {
-        let mut new = row.clone();
-        meta(&mut new).deleted = true;
-        clear(&mut new);
-        if new == *row {
-            return None;
-        }
-        meta(&mut new).mark_deleted(hlc, clock);
-        Some(new)
-    }
     // Children first, the meeting row last.
     for s in repo.segments(meeting)? {
         let clear = |r: &mut SegmentRow| {
@@ -263,6 +316,7 @@ pub fn delete_meeting<R: MeetingRepo + ?Sized, C: Clock + ?Sized>(
     let clear = |r: &mut Meeting| {
         r.title.clear();
         r.tags.clear();
+        r.folder_id = None;
     };
     if let Some(new) = erased(&m, |r| &mut r.meta, clear, hlc, clock) {
         repo.put_meeting(new)?;

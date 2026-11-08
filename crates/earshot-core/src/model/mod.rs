@@ -3,7 +3,8 @@
 //!
 //! | Entity | Sync class | Notes |
 //! |---|---|---|
-//! | [`Meeting`] | Syncable | start time (wall clock, injected), UTC offset, tags, template |
+//! | [`Meeting`] | Syncable | start time (wall clock, injected), UTC offset, tags, template, folder |
+//! | [`Folder`] | Syncable | a name; one level, a meeting is in at most one |
 //! | [`Track`] | Syncable | metadata only: kind, device name, clock domain |
 //! | [`SegmentRow`] | Syncable | an [`crate::asr::Segment`] plus sync metadata and its pass |
 //! | [`Speaker`] | Syncable | per meeting; optional [`Person`] |
@@ -21,9 +22,9 @@
 //! pipeline rate) and is re-exported here, so there is one type for transcript times and
 //! note anchors.
 //!
-//! Repositories: [`MeetingRepo`] (meetings and their syncable children), [`AudioFileRepo`],
-//! [`ExportRepo`]; persons and voiceprints use [`crate::voiceprint::VoiceprintRepo`].
-//! [`InMemoryRepo`] implements the three here; `earshot-store` implements them over SQLite.
+//! Repositories: [`MeetingRepo`] (meetings and their syncable children), [`FolderRepo`],
+//! [`AudioFileRepo`], [`ExportRepo`]; persons and voiceprints use
+//! [`crate::voiceprint::VoiceprintRepo`]. [`InMemoryRepo`] implements the four here; `earshot-store` implements them over SQLite.
 //! Both run the same checks from [`repo_contract`]. Reads return tombstoned rows too (the
 //! deletion must sync); [`live_segments`] and the `is_live` helpers filter them.
 
@@ -35,13 +36,13 @@ pub mod repo_contract;
 pub use crate::asr::MeetingTime;
 pub use crate::voiceprint::{Person, Stamp, Voiceprint};
 pub use entities::{
-    AudioFile, AudioFormat, ClockDomain, ExportRecord, Meeting, Note, SegmentRow, Speaker, Summary,
-    Track, TranscriptPass, VaultPath, VaultPathError,
+    AudioFile, AudioFormat, ClockDomain, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker,
+    Summary, Track, TranscriptPass, VaultPath, VaultPathError,
 };
 pub use memory::InMemoryRepo;
 pub use repo::{
-    AudioFileRepo, ExportRepo, MeetingErasure, MeetingRepo, RepoError, delete_meeting,
-    live_segments, replace_segments,
+    AudioFileRepo, ExportRepo, FolderRepo, MeetingErasure, MeetingRepo, RepoError, delete_folder,
+    delete_meeting, live_segments, replace_segments,
 };
 
 #[cfg(test)]

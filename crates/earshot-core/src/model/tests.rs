@@ -62,6 +62,7 @@ fn model_entities_have_the_sync_classes_of_plan_3_5() {
     assert_eq!(kind::<Speaker>(), SyncClassKind::Syncable);
     assert_eq!(kind::<Note>(), SyncClassKind::Syncable);
     assert_eq!(kind::<Summary>(), SyncClassKind::Syncable);
+    assert_eq!(kind::<Folder>(), SyncClassKind::Syncable);
     assert_eq!(kind::<Person>(), SyncClassKind::Syncable);
     assert_eq!(kind::<Voiceprint>(), SyncClassKind::SyncableOptIn);
     assert_eq!(kind::<AudioFile>(), SyncClassKind::NeverSync);
@@ -118,6 +119,8 @@ fn model_syncable_rows_go_through_the_sync_envelope_with_their_entity_names() {
     assert_eq!(sync_envelope(&sp).entity, "speaker");
     assert_eq!(sync_envelope(&n).entity, "note");
     assert_eq!(sync_envelope(&s).entity, "summary");
+    let folder = Folder::new("Projects", &mut w.stamp());
+    assert_eq!(sync_envelope(&folder).entity, "folder");
     let env = sync_envelope(&row);
     assert_eq!(env.entity, "segment");
     assert_eq!(env.id, seg.id, "a segment row keeps the ASR segment's id");
@@ -219,6 +222,37 @@ fn model_in_memory_repo_audio_file_contract() {
 #[test]
 fn model_in_memory_repo_meeting_deletion_contract() {
     repo_contract::meeting_deletion(InMemoryRepo::new);
+}
+
+#[test]
+fn model_in_memory_repo_folder_contract() {
+    repo_contract::folder_repo(InMemoryRepo::new);
+}
+
+#[test]
+fn model_meeting_json_without_a_folder_reads_as_no_folder() {
+    let mut w = World::new();
+    let mut m = Meeting::new("Weekly", 1, 60, Template::General, &mut w.stamp());
+    let mut json = serde_json::to_value(&m).unwrap();
+    assert!(
+        json.as_object_mut().unwrap().remove("folder_id").is_some(),
+        "the field is written"
+    );
+    let read: Meeting = serde_json::from_value(json).unwrap();
+    assert_eq!(read, m, "older JSON (no folder_id) reads as no folder");
+    m.folder_id = Some(EntityId::generate(&w.clock, &mut w.rng));
+    let back: Meeting = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+    assert_eq!(back, m, "a folder round-trips");
+}
+
+#[test]
+fn model_new_folder_and_meeting_start_unfiled() {
+    let mut w = World::new();
+    let m = Meeting::new("Weekly", 1, 60, Template::General, &mut w.stamp());
+    assert_eq!(m.folder_id, None);
+    let f = Folder::new("Clients", &mut w.stamp());
+    assert_eq!(f.name, "Clients");
+    assert!(!f.meta.deleted);
 }
 
 #[test]

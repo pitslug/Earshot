@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 
 use super::entities::{
-    AudioFile, ExportRecord, Meeting, Note, SegmentRow, Speaker, Summary, Track,
+    AudioFile, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary, Track,
 };
-use super::repo::{AudioFileRepo, ExportRepo, MeetingRepo, RepoError};
+use super::repo::{AudioFileRepo, ExportRepo, FolderRepo, MeetingRepo, RepoError};
 use crate::identity::{DeviceId, EntityId};
 
-/// In-memory implementation of [`MeetingRepo`], [`AudioFileRepo`] and [`ExportRepo`] with
-/// the same parent checks and orders as the SQLite store.
+/// In-memory implementation of [`MeetingRepo`], [`FolderRepo`], [`AudioFileRepo`] and
+/// [`ExportRepo`] with the same parent checks and orders as the SQLite store.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryRepo {
     meetings: BTreeMap<EntityId, Meeting>,
@@ -20,6 +20,7 @@ pub struct InMemoryRepo {
     summaries: BTreeMap<EntityId, Summary>,
     audio: BTreeMap<EntityId, AudioFile>,
     exports: BTreeMap<(EntityId, DeviceId), ExportRecord>,
+    folders: BTreeMap<EntityId, Folder>,
 }
 
 impl InMemoryRepo {
@@ -194,6 +195,23 @@ impl ExportRepo for InMemoryRepo {
         self.need_meeting(record.meeting_id)?;
         self.exports
             .insert((record.meeting_id, record.device_id), record);
+        Ok(())
+    }
+}
+
+impl FolderRepo for InMemoryRepo {
+    fn folder(&self, id: EntityId) -> Result<Option<Folder>, RepoError> {
+        Ok(self.folders.get(&id).cloned())
+    }
+
+    fn folders(&self) -> Result<Vec<Folder>, RepoError> {
+        let mut v: Vec<Folder> = self.folders.values().cloned().collect();
+        v.sort_by_key(|f| (f.meta.created_at, f.id));
+        Ok(v)
+    }
+
+    fn put_folder(&mut self, folder: Folder) -> Result<(), RepoError> {
+        self.folders.insert(folder.id, folder);
         Ok(())
     }
 }

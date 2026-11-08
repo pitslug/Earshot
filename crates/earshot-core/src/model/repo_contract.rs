@@ -12,10 +12,10 @@ use crate::prompt::Template;
 use crate::summary::{ActionItem, Decision, NoteBullet, NoteSection, SummaryV1};
 
 use super::entities::{
-    AudioFile, AudioFormat, ClockDomain, ExportRecord, Meeting, Note, SegmentRow, Speaker, Summary,
-    Track, TranscriptPass, VaultPath,
+    AudioFile, AudioFormat, ClockDomain, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker,
+    Summary, Track, TranscriptPass, VaultPath,
 };
-use super::repo::{AudioFileRepo, ExportRepo, MeetingRepo, RepoError};
+use super::repo::{AudioFileRepo, ExportRepo, FolderRepo, MeetingRepo, RepoError};
 
 /// Deterministic row factory (ids from a counter, metadata from a manual clock).
 struct Rows {
@@ -57,6 +57,9 @@ impl Rows {
             duration_ms: Some(3_600_000),
             tags: vec!["work".into(), "sync".into()],
             template: Template::OneOnOne,
+            // A folder that is never stored: `folder_id` is not a foreign key (sync may
+            // deliver a meeting before its folder), so every repo must accept it.
+            folder_id: Some(self.id()),
         }
     }
 
@@ -188,6 +191,7 @@ pub fn meeting_repo<R: MeetingRepo>(make: impl Fn() -> R) {
     renamed.title = "Renamed".into();
     renamed.duration_ms = None;
     renamed.tags.clear();
+    renamed.folder_id = None;
     renamed.meta.touch(&mut f.hlc, &f.clock);
     repo.put_meeting(renamed.clone()).unwrap();
     assert_eq!(repo.meeting(late.id).unwrap().as_ref(), Some(&renamed));
@@ -450,6 +454,11 @@ pub fn meeting_deletion<R: MeetingRepo>(make: impl Fn() -> R) {
     assert!(gone.meta.deleted);
     assert!(gone.meta.updated_at > before.0.as_ref().unwrap().meta.updated_at);
     assert!(gone.title.is_empty() && gone.tags.is_empty(), "{gone:?}");
+    assert!(
+        before.0.as_ref().unwrap().folder_id.is_some(),
+        "the deleted meeting was in a folder"
+    );
+    assert_eq!(gone.folder_id, None, "deletion clears the folder");
     for t in repo.tracks(m.id).unwrap() {
         assert!(t.meta.deleted && t.device_name.is_none(), "{t:?}");
     }
@@ -539,4 +548,100 @@ pub fn export_repo<R: MeetingRepo + ExportRepo>(make: impl Fn() -> R) {
         repo.export_record(m.id, there).unwrap().as_ref(),
         Some(&elsewhere)
     );
+}
+
+/// [`FolderRepo`] and [`super::delete_folder`]: round trip, replace by id, creation (HLC)
+/// order with tombstones kept, no unique name (two live folders may share one, and every
+/// tombstone carries the same cleared name), deletion tombstones and clears the name once.
+///
+/// # Panics
+/// On any violation.
+pub fn folder_repo<R: FolderRepo>(make: impl Fn() -> R) {
+    let mut f = Rows::new();
+    let mut repo = make();
+    let folder = |f: &mut Rows, name: &str| Folder {
+        id: f.id(),
+        meta: f.meta(),
+        name: name.into(),
+    };
+
+    let first = folder(&mut f, "Projects");
+    assert_eq!(repo.folder(first.id).unwrap(), None, "empty repo");
+    assert!(repo.folders().unwrap().is_empty());
+    repo.put_folder(first.clone()).unwrap();
+    assert_eq!(repo.folder(first.id).unwrap().as_ref(), Some(&first));
+
+    // Creation order is `meta.created_at`, not id order.
+    let mut later = folder(&mut f, "Clients");
+    let mut low = [0u8; 16];
+    low[6] = 0x70;
+    low[8] = 0x80;
+    low[15] = 1;
+    later.id = EntityId::from_bytes(low);
+    assert!(later.id < first.id, "ids sort against creation order");
+    repo.put_folder(later.clone()).unwrap();
+    assert_eq!(
+        repo.folders().unwrap(),
+        vec![first.clone(), later.clone()],
+        "folders are in creation (HLC) order"
+    );
+
+    // Replace by id.
+    let mut renamed = later.clone();
+    renamed.name = "Customers".into();
+    renamed.meta.touch(&mut f.hlc, &f.clock);
+    repo.put_folder(renamed.clone()).unwrap();
+    assert_eq!(repo.folder(later.id).unwrap().as_ref(), Some(&renamed));
+    assert_eq!(repo.folders().unwrap().len(), 2, "replace, not insert");
+
+    // No unique name: sync may deliver two live folders with one name.
+    let twin = folder(&mut f, "Projects");
+    repo.put_folder(twin.clone()).unwrap();
+    assert_eq!(repo.folders().unwrap().len(), 3);
+
+    // Deleting tombstones the row and clears its name; two deletions in a row leave two
+    // tombstones with the same cleared name.
+    for live in [first.clone(), twin.clone()] {
+        assert!(super::delete_folder(&mut repo, live.id, &mut f.hlc, &f.clock).unwrap());
+        let gone = repo
+            .folder(live.id)
+            .unwrap()
+            .expect("the tombstone stays (it syncs)");
+        assert!(gone.meta.deleted && gone.name.is_empty(), "{gone:?}");
+        assert!(gone.meta.updated_at > live.meta.updated_at, "{gone:?}");
+        assert_eq!(
+            gone.meta.created_at, live.meta.created_at,
+            "deletion keeps the creation time"
+        );
+    }
+    assert_eq!(
+        repo.folders().unwrap(),
+        vec![
+            repo.folder(first.id).unwrap().unwrap(),
+            renamed.clone(),
+            repo.folder(twin.id).unwrap().unwrap(),
+        ],
+        "tombstones are listed, in creation order"
+    );
+
+    // A second deletion writes nothing.
+    let erased = repo.folder(first.id).unwrap();
+    assert!(!super::delete_folder(&mut repo, first.id, &mut f.hlc, &f.clock).unwrap());
+    assert_eq!(repo.folder(first.id).unwrap(), erased);
+
+    // A tombstone that still holds a name (delivered by sync) is cleared.
+    let mut half = folder(&mut f, "Half deleted");
+    half.meta.mark_deleted(&mut f.hlc, &f.clock);
+    repo.put_folder(half.clone()).unwrap();
+    assert!(super::delete_folder(&mut repo, half.id, &mut f.hlc, &f.clock).unwrap());
+    assert!(repo.folder(half.id).unwrap().unwrap().name.is_empty());
+
+    let ghost = f.id();
+    match super::delete_folder(&mut repo, ghost, &mut f.hlc, &f.clock) {
+        Err(RepoError::MissingParent {
+            entity: "folder",
+            id,
+        }) if id == ghost => {}
+        other => panic!("deleting a missing folder: expected MissingParent, got {other:?}"),
+    }
 }
