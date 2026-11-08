@@ -371,6 +371,8 @@ A gate is a hard stop that waits for the human. The protocol (how gates are open
 ### Rules for picking work (summary; full protocol in AGENTS.md)
 Take the **first** task in document order whose status is `[ ]` and whose deps are all `[x]`. Tasks are done one at a time, one commit each (see AGENTS.md). Each task's `accept` command must pass before it is marked `[x]`.
 
+M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go only in M12 (and later milestones like it), with that milestone's own ids, never into M0 to M9 (the owner, 2026-11-08). A bug that blocks a v1 task or gate still goes before it. The section "Post-release v1 updates" is closed: it keeps the work done before M12 existed.
+
 ---
 
 ### M0 - Foundations
@@ -858,14 +860,6 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - status (2026-11-07): the long scenes and rule are merged, and the owner held the constant at 0.68. The rule picks 0.83 on clean LibriSpeech scenes (about 20 independent voices, not 40), but at 0.83 two of five AMI dev meetings collapse to one speaker and wrong-speaker words go from 13.16% to 32.53%. The ignored test pins both values.
   - do: found by T6.9: T3.2b used 15 s per speaker and no one-speaker scene, and 360 s dev scenes show a small over-count at 0.68. Add one-speaker and dominant-speaker long scenes to `diar_calibration` with the rule written first, using dev-clean speakers 21-40 (T6.9's tool saw the first 20). Change `CAMPPLUS_DEV_CLEAN_CLUSTER_THRESHOLD` only if the rule picks another value, never from a private recording.
   - accept: `cargo test --release -p earshot-onnx diar_calibration -- --include-ignored`; `cargo xtask accept m3`
-- [ ] T6.9d Calibrate clustering with AMI dev meetings in the data
-  - deps: T6.9b
-  - do: proposed by T6.9b: clean LibriSpeech scenes favour a higher threshold while real meetings already under-count at 0.68. A new rule, committed before measuring, with AMI dev mixes (set `ami-dev`) and long scenes on disjoint audio. Only with the owner's agreement.
-  - accept: `cargo test --release -p earshot-onnx diar_calibration -- --include-ignored`; `cargo xtask accept m3`; `cargo xtask accept m6`
-- [ ] T6.9c How many voices are in the far-end recordings
-  - deps: T6.9
-  - do: Confirm the voice count of the private test recording. If one voice, T6.9's first finding is wrong and an embedding-side fix task is added.
-  - accept: the answer recorded
 - [x] T6.10a Live ASR on per-track worker threads
   - deps: T6.8
   - do: found in T6.8 (private notes): the session thread pumped one capture packet, then ran live ASR inside `Pipeline::poll`, so a slow decode stalled capture; past `LIVE_QUEUE_CAP` (30 s) WASAPI frames were dropped from the recording, and coalescing never triggered because each poll saw 10 ms of new audio. Decided by the owner: threads. The runtime runs each track's live ASR on its own worker thread (core `pipeline::LiveTrack`, the stage the pipeline used internally, made public), fed from the pipeline's `Audio` events through a channel; the session thread only captures, cancels echo, writes FLAC and handles events. Workers drain everything queued before each decode (so `PartialPolicy::Coalesce` works), keep `max_asr_backlog` (a track that falls 10 min behind stops its live ASR, recording continues), and are finished before the pipeline's final-pass request and `Ended` are handled. Core still spawns no thread; `Pipeline::attach_live_asr` stays for single-threaded hosts and tests. Main value: the recording never waits on transcription (talk-over is rare, so parallel tracks are a bonus; the phone has one track).
@@ -1238,10 +1232,6 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T8.3f
   - do: Qwen 3.5 2B is the largest Qwen 3.5 Qualcomm publishes for Snapdragon, but only as GGUF for llama.cpp (no true NPU build); on our own llama.cpp it runs on the CPU with our grammar and 16K context, about twice as fast as the 4B. Add it to the manifest (`llm-eval`, Unsloth GGUF pinned like the 4B) and `sum-eval`'s candidates, then run it beside the 4B on T8.3ja's five dev meetings (normal chunked mode, CPU, 6 threads) and report validity, ROUGE-Lsum, item coverage and time. No shipping change without the owner.
   - accept (changed by the owner, before the run: 2-3 meetings each, hang-up times, action items judged by hand with reworded or combined items counting as caught): `cargo test -p xtask models`; `cargo xtask sum-eval --backend cpu --split dev --source reference --model qwen3.5-4b-q4_k_m,qwen3.5-2b-q4_k_m --chunk-seconds 600 --threads 6 --meeting IS1008b,TS3006a,ES2011c` (each model alone) -> `docs/summary-eval/actions-review-2026-11-03.md`
-- [ ] T8.3k Summaries on the Surface NPU, further
-  - deps: T8.3h
-  - do: explore NPU summaries beyond T8.3h's documentation review. Spike outside the shipped crates: choose a published QNN (Hexagon) build of an instruct model small enough for the Surface (Qualcomm AI Hub or ONNX Runtime GenAI, licence checked), add it and any runtime to `models/manifest.toml` (an evaluation set, pinned with SHA-256); find how to run ONNX Runtime GenAI with its telemetry off and prove it with an ETW check like `cargo xtask qnn-etw` before any meeting text goes in (AMI public text first); measure prompt and reply tokens/s and the real context limit; run `sum-eval` quality on the dev meetings with chunks resized to fit. Report what shipping would take (Rust binding, structured output or grammar, a Qwen 3.5-class NPU conversion, chunk redesign). No shipped change without the owner.
-  - accept: `docs/npu-summaries.md` NPU section with measurements, the telemetry check output and a recommendation; sum-eval results logged
 - [x] T8.4c Summaries on Vulkan against CUDA
   - deps: T8.3h
   - do: measure whether the GPU summaries run well on Vulkan on the RTX 5080, because Parakeet needs no GPU and a Vulkan summary would need no NVIDIA download. The rule is in `docs/vulkan-summaries.md`, written before measuring. No shipped change without the owner; the result decides T8.4a's scope (PLAN 7).
@@ -1395,16 +1385,16 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T9.1g
   - do: The owner. Re-summarise (Summarise when there is none) and Re-transcribe become buttons at the top of the meeting beside Export to Obsidian, and the More menu goes. "Recording no longer kept" moves onto the disabled Re-transcribe. The Summary tab's own stale-summary prompt and "Switch to previous summary" stay. Delete moves to the meeting list: a trash can that slides out on hover and also shows on keyboard focus, and a right-click menu reachable from the keyboard. Both open the existing confirm dialog, because deletion cannot be undone; any meeting can be deleted without opening it; a meeting recording or processing is still refused.
   - accept: `cmd /c pnpm -r test` (no existing assertion about what delete does or refuses is lost, only where it starts); screenshots of the preview in both themes
-- [x] T9.1ma Use less memory for transcription sessions
+- [x] T9.1md Use less memory for transcription sessions (committed and referenced in code as T9.1ma, an id used twice)
   - deps: T9.1m
   - do: The owner asked why a preview costs 2.2 GiB. Each Parakeet 0.6B session holds its own copy of a 2.27 GiB weights file, so a call holds three. Measure on an idle host, with `live_lag --memory` and the on and off runs of docs/live-previews.md: (a) one copy of the encoder weights shared between a meeting's sessions, through ONNX Runtime's external initializers; (b) previews on Parakeet 110M (about 0.42 GiB of encoder), with on-screen lag and how often settled text differs. Keep what wins, stored words identical on and off, and record the numbers in docs/live-previews.md.
   - status (2026-11-07): one copy of the weights, prepacking off, CPU sessions only: peak 9.39 -> 5.81 GiB with previews, 7.15 -> 5.52 GiB without. 110M rejected (about three times the corrected words). CUDA unchanged.
   - accept: `cargo run --release -p earshot-runtime --example live_lag -- . --memory --out target\live-lag\memory.json`; `cargo test --release -p earshot-onnx --test shared_weights -- --include-ignored`; `cargo test -p earshot-runtime live_preview`; `cargo xtask accept m2`
-- [x] T9.1mb A Settings switch for provisional words, and the memory limit
-  - deps: T9.1ma
+- [x] T9.1me A Settings switch for provisional words, and the memory limit (committed and referenced in code as T9.1mb, an id used twice)
+  - deps: T9.1md
   - do: The owner. A device-local on or off in Settings, on by default where the machine qualifies; turning it on below the limit is allowed, with a note about memory. A recording never suffers for it: it is off on battery and when behind, as now. Decided by the owner: 12 GiB on the CPU, CUDA unchanged at 20 GiB and a 14 GiB card; the NPU stays off until GATE-03a. Also decided: a card under 12 GiB transcribes on the CPU, because a call needs about 9.1 GiB of the card and the same model gives the same words on the CPU.
   - accept: `cargo test -p earshot-runtime live_preview`; `cargo test -p earshot-runtime preview`; `cargo test -p earshot-desktop cuda`; `cmd /c pnpm -r test`; the preview checked in light and dark
-- [x] T9.1mc Saved people on the Speakers page
+- [x] T9.1mf Saved people on the Speakers page (committed and referenced in code as T9.1mc, an id used twice)
   - deps: T7.4h
   - do: The owner. Settings, Speakers lists everyone Earshot knows other than the user, saying whose voice is saved, with rename (every meeting, the existing `renamePerson`) and forget voice (asks first, the existing `forgetPersonVoices`).
   - accept: `cmd /c pnpm -r test`; screenshots of the preview in light and dark
@@ -1470,7 +1460,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
 
 ### Post-release v1 updates
 
-Moved here by the owner: real work, not needed for the first release.
+Closed: work done after the x64 early release, before M12 existed. New ideas go in M12.
 
 - [x] T9.3 GPU summaries in a separate process
   - deps: T8.4ab
@@ -1516,39 +1506,71 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T9.5a, T9.5b, T9.5c
   - do: joint acceptance; design in docs/folders-design.md (the owner, 2026-11-08).
   - accept: `cargo xtask ci`
-- [ ] T6.20g Qwen thinking on against off (spike, evaluation only)
-  - deps: T6.20f, T9.5, T8.4
-  - do: the owner, 2026-11-08: every summary evaluation ran Qwen 3.5 with thinking off (the empty `<think>` prefix); measure thinking on. An evaluation-only option in `sum_eval` (its own format key in both `examples/sum_eval/main.rs` and `xtask::sum_eval`) whose grammar allows a bounded `<think>` section before the summary JSON (`earshot_llm_local::grammar`, a token cap on the thinking so it cannot use the reply budget; production grammar byte-identical). Write the rule before measuring and commit it: thinking on earns a follow-up task only if the blinded meaning judge finds missed decisions plus missed action items fall by at least a margin fixed in the rule, with no rise in invalid summaries; time per meeting reported beside it. Run on the desktop GPU, dev split only, 9B and 4B, off against on. No production change without the owner; not while the owner is in a meeting.
-  - accept: `cargo test -p earshot-llm-local grammar`; `cargo test -p xtask sum_eval`; the rule, tables (judged and timing) and a recommendation in docs/summary-eval.md
-- [ ] T9.6 Shared models for an "everyone" install
-  - deps: T9.1p
-  - do: discussed with the owner, after release and only if a real user asks. `%ProgramData%\Earshot\models`, readable by all and writable only with admin, because the folder holds DLLs another user would run. Meetings, voiceprints and settings stay per user. Every file a shared load reads is checked, and its cost measured.
-  - accept: written if it is taken up
-- [ ] T9.4 Offer to stop when the call ends
+### M12 - After v1 (ideas)
+
+New ideas and features, after the v1 release or beside it, with their own ids (the owner, 2026-11-08). A task moved here keeps its old id in brackets, because commits and code comments name it.
+
+- [ ] T12.1 Offer to stop when the call ends (was T9.4)
   - deps: T6.14a, T6.15a
   - status (2026-11-07): the code is merged (`call_end`, `RenderSessionPoller`, `MeetingEvent::CallEndOffer`). The owner changed the text below: a notification that stays on screen with Stop recording and Keep recording buttons, and a stop 3 minutes after the offer if nobody answers (the plan's 60 s was too likely to cut a live call, and asking alone leaves a recording running with nobody there). Left: the hang-up measurement and the real Teams and Zoom calls. The 30 s and 3 minutes are judgements until measured.
   - do: stop the recording once the meeting is over. First measure, with `teams-probe` extended, what a known call app's render sessions do at hang-up: during a test call Teams held active sessions and with no call none, but the moment of hang-up, being on hold, and Zoom are unmeasured. Then, in call mode only: when the call app's active session ends and the far end stays quiet, show a banner "The call seems to have ended" with Stop recording and Keep recording, plus a notification that stays on screen with the same buttons when the window is not focused, whose text is fixed copy; nobody answering for 3 minutes stops the recording and says so. Never stop on silence alone (hold, breaks, waiting for someone to join), and never without the chance to keep recording: a wrong stop loses part of a meeting. In-room meetings still stop by hand.
   - accept: the hang-up measurement logged; `cargo test -p earshot-runtime` with replayed session changes (ended then quiet stops after the wait; Keep recording cancels; silence with the session still active never stops; in-room never stops); `cmd /c pnpm -r test`; tried by the owner on real Teams and Zoom calls
-- [ ] T6.15 Record the output the call app plays on
+
+- [ ] T12.2 Record the output the call app plays on (was T6.15)
   - deps: T6.14, T6.14a, T6.15a
   - status (2026-11-07): the code is merged, opt-in as `--loopback-process follow-call` (`call_output`, `Track::move_output`); the app stays on `DefaultDevice`. Left: real calls including a non-default output, a Bluetooth headset and a ringer on a second output, and Zoom, which `teams_probe call` does not look at.
   - do: per-app capture is out for Teams: T6.15a measured a Communications stream as silent under process loopback and the call's process delivering exact zeros (private notes). Instead, with no output chosen on the Audio page, record the output holding a known call app's active session (`list_render_sessions` already walks every output), so a call on a headset is recorded while Windows defaults to the speakers, and follow it during the meeting with a two-poll rule so a passing sound does not move it. An output chosen on the Audio page always wins. `auto` stays off as an app default. Other call apps (Zoom) may still suit process loopback: measure with `teams-probe` before offering it.
   - accept: `cargo test -p earshot-capture-wasapi`; device tests under GATE-01a on a Teams call on a non-default output
 
-- [ ] T9.13 Provisional words on the NPU
-  - deps: T9.1m, T8.4
-  - do: the owner, 2026-11-08: the NPU is the part made for this, and `previews_refused` turns previews off there only because nothing was measured. On the Surface, measure a meeting with previews on QNN against off with `live_lag` (speech-to-screen, the main transcript's lag and rtf, memory), on replays and a real meeting; write the rule for "the main transcript does not slow" before measuring and commit it. If it holds, the NPU leaves `previews_refused`; if not, the numbers and the reason go in docs/live-previews.md. Not while the owner is in a meeting.
-  - accept: `cargo test -p earshot-runtime preview`; the rule, the measurements and the decision in docs/live-previews.md
-
-- [ ] T9.14 Provisional words for each track
+- [~] T12.3 Provisional words for each track (was T9.14)
   - deps: T9.1m
   - do: the owner, 2026-11-08: in a call, previews run on the far end only, so a solo test shows none and the user's own words settle only at a pause. Replace the on/off setting with Off / Other people only / Everyone (device-local, an older stored on/off reads as Other people only; in the room both read as the mic). Everyone runs a second preview session on the mic track in a call, under the same refusals per backend, and falls back to the other people with a note when this computer cannot run both (memory, card, slowness); measure the second session with `live_lag --memory` before choosing its limit. The General page says what each choice shows.
   - accept: `cargo test -p earshot-runtime preview`; `cargo test -p earshot-desktop --bin earshot preview`; `cmd /c pnpm -r test`
 
-- [ ] T9.15 Settings and first-run tidy
+- [ ] T12.3a Your own provisional words on the CPU when transcription is on CUDA
+  - deps: T12.3
+  - do: the owner, 2026-11-08: when transcription runs on CUDA and the card cannot take the mic track's preview session (`previews_refused_second`), Everyone runs that session on the CPU with shared weights (T9.1md) instead of falling back to other people only, within the CPU memory limit (`PREVIEW_BOTH_MIN_MEMORY`). Automatic, no new setting; the General page note says where it runs. Write the rule for "the main transcript does not slow" before measuring and commit it, then measure on the desktop with `live_lag --memory`.
+  - accept: `cargo test -p earshot-runtime preview`; `cargo test -p earshot-desktop --bin earshot preview`; the rule and measurements in docs/live-previews.md
+
+- [ ] T12.3b One CUDA session for a track's transcription and previews (spike)
+  - deps: T12.3
+  - do: the owner, 2026-11-08: ONNX Runtime's CUDA provider gives every session its own copy of the weights on the card. Find whether one session can serve both: first whether a newer `ort` lets `Session::run` take `&self`, else scope a minimal unsafe wrapper over the C API's `Run` (reviewer required). Write the rule (no preview delays a real decode by more than a stated bound) before measuring; measure card memory and how long real decodes wait. The result decides default on, default off or a setting (the owner). No shipped change without the owner.
+  - accept: the rule, findings and numbers in docs/live-previews.md
+
+- [ ] T12.4 Provisional words on the NPU (was T9.13)
+  - deps: T9.1m, T8.4
+  - do: the owner, 2026-11-08: the NPU is the part made for this, and `previews_refused` turns previews off there only because nothing was measured. On the Surface, measure a meeting with previews on QNN against off with `live_lag` (speech-to-screen, the main transcript's lag and rtf, memory), on replays and a real meeting; write the rule for "the main transcript does not slow" before measuring and commit it. If it holds, the NPU leaves `previews_refused`; if not, the numbers and the reason go in docs/live-previews.md. Not while the owner is in a meeting.
+  - accept: `cargo test -p earshot-runtime preview`; the rule, the measurements and the decision in docs/live-previews.md
+
+- [ ] T12.5 Settings and first-run tidy (was T9.15)
   - deps: T9.1d, T7.4f
   - do: the owner, 2026-11-08: Settings and the first-run wizard grew one task at a time and are confusing. A design session with the owner first: walk through every page and step as they are, then agree the structure (what goes where, what first run asks and what it leaves to defaults, wording) in docs/settings-design.md before any code. Then split into build tasks with their own accept commands. Behaviour and stored settings stay as they are unless the design changes them.
   - accept: docs/settings-design.md agreed by the owner; the build tasks added to this plan
+
+- [ ] T12.6 Shared models for an "everyone" install (was T9.6)
+  - deps: T9.1p
+  - do: discussed with the owner, after release and only if a real user asks. `%ProgramData%\Earshot\models`, readable by all and writable only with admin, because the folder holds DLLs another user would run. Meetings, voiceprints and settings stay per user. Every file a shared load reads is checked, and its cost measured.
+  - accept: written if it is taken up
+
+- [ ] T12.7 Summaries on the Surface NPU, further (was T8.3k)
+  - deps: T8.3h
+  - do: explore NPU summaries beyond T8.3h's documentation review. Spike outside the shipped crates: choose a published QNN (Hexagon) build of an instruct model small enough for the Surface (Qualcomm AI Hub or ONNX Runtime GenAI, licence checked), add it and any runtime to `models/manifest.toml` (an evaluation set, pinned with SHA-256); find how to run ONNX Runtime GenAI with its telemetry off and prove it with an ETW check like `cargo xtask qnn-etw` before any meeting text goes in (AMI public text first); measure prompt and reply tokens/s and the real context limit; run `sum-eval` quality on the dev meetings with chunks resized to fit. Report what shipping would take (Rust binding, structured output or grammar, a Qwen 3.5-class NPU conversion, chunk redesign). No shipped change without the owner.
+  - accept: `docs/npu-summaries.md` NPU section with measurements, the telemetry check output and a recommendation; sum-eval results logged
+
+- [ ] T12.8 How many voices are in the far-end recordings (was T6.9c)
+  - deps: T6.9
+  - do: Confirm the voice count of the private test recording. If one voice, T6.9's first finding is wrong and an embedding-side fix task is added.
+  - accept: the answer recorded
+
+- [ ] T12.9 Calibrate clustering with AMI dev meetings in the data (was T6.9d)
+  - deps: T6.9b
+  - do: proposed by T6.9b: clean LibriSpeech scenes favour a higher threshold while real meetings already under-count at 0.68. A new rule, committed before measuring, with AMI dev mixes (set `ami-dev`) and long scenes on disjoint audio. Only with the owner's agreement.
+  - accept: `cargo test --release -p earshot-onnx diar_calibration -- --include-ignored`; `cargo xtask accept m3`; `cargo xtask accept m6`
+
+- [ ] T12.10 Qwen thinking on against off (spike, evaluation only) (was T6.20g)
+  - deps: T6.20f, T9.5, T8.4
+  - do: the owner, 2026-11-08: every summary evaluation ran Qwen 3.5 with thinking off (the empty `<think>` prefix); measure thinking on. An evaluation-only option in `sum_eval` (its own format key in both `examples/sum_eval/main.rs` and `xtask::sum_eval`) whose grammar allows a bounded `<think>` section before the summary JSON (`earshot_llm_local::grammar`, a token cap on the thinking so it cannot use the reply budget; production grammar byte-identical). Write the rule before measuring and commit it: thinking on earns a follow-up task only if the blinded meaning judge finds missed decisions plus missed action items fall by at least a margin fixed in the rule, with no rise in invalid summaries; time per meeting reported beside it. Run on the desktop GPU, dev split only, 9B and 4B, off against on. No production change without the owner; not while the owner is in a meeting.
+  - accept: `cargo test -p earshot-llm-local grammar`; `cargo test -p xtask sum_eval`; the rule, tables (judged and timing) and a recommendation in docs/summary-eval.md
 
 ### M10 - v2 Android in-person recorder
 
