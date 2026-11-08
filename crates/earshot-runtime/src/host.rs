@@ -1246,16 +1246,25 @@ pub fn live_factory(
 
 /// Provisional words for a meeting's session (T9.1m): the model's own session, loaded on the preview
 /// thread for the backend the track turned out to run on. Whether this computer has them is decided
-/// there (`backends::previews_refused`), and never costs the meeting anything.
+/// there (`backends::previews_refused`), and never costs the meeting anything. With
+/// [`PreviewChoice::Everyone`](crate::preview_settings::PreviewChoice::Everyone) the user's own
+/// track in a call gets a second session of its own (`backends::previews_refused_second`, T9.14).
 #[must_use]
 pub fn live_previews(
     models: &ModelDir,
     choice: crate::preview_settings::PreviewChoice,
 ) -> crate::live::LivePreviews {
-    let models = models.clone();
-    crate::live::LivePreviews::new(Arc::new(move |backend| {
-        crate::backends::load_preview(&models, backend, choice)
-    }))
+    let first = models.clone();
+    let mut previews = crate::live::LivePreviews::new(Arc::new(move |backend| {
+        crate::backends::load_preview(&first, backend, choice)
+    }));
+    if choice == crate::preview_settings::PreviewChoice::Everyone {
+        let second = models.clone();
+        previews.own_voice = Some(Arc::new(move |backend| {
+            crate::backends::load_preview_second(&second, backend, choice)
+        }));
+    }
+    previews
 }
 
 /// Starts a live session from a capture source (the source differs between hosts and

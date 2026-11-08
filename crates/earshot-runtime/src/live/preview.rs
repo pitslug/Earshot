@@ -13,9 +13,13 @@
 //! (docs/live-previews.md has the memory this costs). It loads there too, so a slow or failed load
 //! costs only the previews.
 //!
-//! **Which track.** One per meeting, so one session: the far end in a call and the mic in the room.
-//! A mic in a call shows nothing: far-end words leak into it until the echo filter removes them,
-//! and that filter works on settled text (`live_preview_mic_in_a_call_shows_no_far_end_word`).
+//! **Which tracks.** Each track has previews of its own ([`PreviewState`] by track), each with its
+//! own thread and model session: the far end in a call and the mic in the room
+//! ([`LivePreviews::load`]), plus the mic in a call when the user chose it for their own voice
+//! ([`LivePreviews::own_voice`], T9.14). A track's previews stopping never stops the other's, and
+//! each track sends its own [`PreviewReport`]. Without `own_voice` a mic in a call shows nothing:
+//! far-end words leak into it until the echo filter removes them, and that filter works on settled
+//! text (`live_preview_mic_in_a_call_shows_no_far_end_word`).
 //!
 //! **What is decoded.** About every [`LivePreviews::interval`], while the track's voice activity says
 //! there is unfinished speech, the last [`LivePreviews::window`] of the audio after the worker's
@@ -87,8 +91,11 @@ pub type PreviewLoader =
 /// Previews of a session (module docs); [`super::LiveConfig::previews`].
 #[derive(Clone)]
 pub struct LivePreviews {
-    /// Loads the model, on the preview thread.
+    /// Loads the model, on the preview thread: for the far end in a call, the mic in the room.
     pub load: PreviewLoader,
+    /// Loads a second session for the user's own track (the mic) in a call (T9.14; `None`: the
+    /// other people only). Ignored in the room, where `load` serves the mic.
+    pub own_voice: Option<PreviewLoader>,
     /// How often the unfinished stretch is decoded (a starting value, default 1 s).
     pub interval: Duration,
     /// How much of it (a starting value, default 12 s).
@@ -114,6 +121,7 @@ impl LivePreviews {
     pub fn new(load: PreviewLoader) -> Self {
         Self {
             load,
+            own_voice: None,
             interval: Duration::from_secs(1),
             window: Duration::from_secs(12),
             slow: Duration::from_secs(3),
@@ -130,17 +138,26 @@ impl std::fmt::Debug for LivePreviews {
             .field("interval", &self.interval)
             .field("window", &self.window)
             .field("background", &self.background)
+            .field("own_voice", &self.own_voice.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl PartialEq for LivePreviews {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::addr_eq(Arc::as_ptr(&self.load), Arc::as_ptr(&other.load))
+        let same = |a: &PreviewLoader, b: &PreviewLoader| {
+            std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
+        };
+        same(&self.load, &other.load)
+            && match (&self.own_voice, &other.own_voice) {
+                (None, None) => true,
+                (Some(a), Some(b)) => same(a, b),
+                _ => false,
+            }
     }
 }
 
-/// What a session's previews did, counts and times only; sent once at the session's end.
+/// What a track's previews did, counts and times only; sent once per track at the session's end.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PreviewReport {
     /// The track they ran on.
@@ -402,7 +419,6 @@ impl PreviewWork {
 
 /// The session's end of a running preview thread.
 pub(super) struct PreviewThread {
-    track: TrackId,
     to: SyncSender<ToPreview>,
     from: Receiver<FromPreview>,
     stop: Arc<AtomicBool>,
@@ -453,7 +469,6 @@ impl PreviewThread {
             .name("earshot-live-preview".into())
             .spawn(move || work.run())?;
         Ok(Self {
-            track,
             to,
             from,
             stop,
@@ -531,10 +546,10 @@ impl PreviewThread {
     }
 }
 
-/// The session's previews: not started, running, or off and why.
+/// A track's previews: not started, running, or off and why.
 #[derive(Default)]
 pub(super) enum PreviewState {
-    /// This session has none.
+    /// This track has none.
     #[default]
     None,
     Pending(LivePreviews),
@@ -543,34 +558,49 @@ pub(super) enum PreviewState {
     Off(PreviewReport),
 }
 
+/// The tracks in [`slot`] order.
+const TRACKS: [TrackId; 2] = [TrackId::Mic, TrackId::Reference];
+
+impl LivePreviews {
+    /// Each track's previews (by [`slot`]) in a session with or without a far end (module docs).
+    pub(super) fn states(previews: Option<Self>, has_reference: bool) -> [PreviewState; 2] {
+        let Some(previews) = previews else {
+            return [PreviewState::None, PreviewState::None];
+        };
+        let own_voice = previews.own_voice.clone();
+        let first = Self {
+            own_voice: None,
+            ..previews
+        };
+        if has_reference {
+            let mic = own_voice.map_or(PreviewState::None, |load| {
+                PreviewState::Pending(Self {
+                    load,
+                    ..first.clone()
+                })
+            });
+            [mic, PreviewState::Pending(first)]
+        } else {
+            [PreviewState::Pending(first), PreviewState::None]
+        }
+    }
+}
+
 impl<S> Session<S>
 where
     S: AudioSource,
     S::Error: std::fmt::Debug,
 {
-    /// The track previews run on (module docs).
-    fn preview_track(&self) -> TrackId {
-        if self.capture.reference.is_some() {
-            TrackId::Reference
-        } else {
-            TrackId::Mic
-        }
-    }
-
-    /// Hands the running preview thread its track's next audio.
+    /// Hands the track's running preview thread its next audio.
     pub(super) fn preview_audio(&self, track: TrackId, start: u64, samples: &[Sample]) {
-        if let PreviewState::Running(p) = &self.previews
-            && p.track == track
-        {
+        if let PreviewState::Running(p) = &self.previews[slot(track)] {
             p.send(ToPreview::Audio(start, samples.to_vec()));
         }
     }
 
     /// A track's voice-activity change.
     pub(super) fn preview_voice(&self, track: TrackId, speaking: bool, at: MeetingTime) {
-        if let PreviewState::Running(p) = &self.previews
-            && p.track == track
-        {
+        if let PreviewState::Running(p) = &self.previews[slot(track)] {
             let at = at.to_pipeline_frames();
             p.send(ToPreview::Voice { speaking, at });
         }
@@ -578,17 +608,15 @@ where
 
     /// Settled text of `track` now reaches `end`.
     pub(super) fn preview_settled(&mut self, track: TrackId, end: MeetingTime) {
-        if let PreviewState::Running(p) = &mut self.previews
-            && p.track == track
-        {
+        if let PreviewState::Running(p) = &mut self.previews[slot(track)] {
             p.settled = p.settled.max(end);
         }
     }
 
-    fn previews_off(&mut self, why: String) {
-        let report = match std::mem::take(&mut self.previews) {
+    /// Stops `track`'s previews for the meeting; the other track's go on.
+    fn previews_off(&mut self, track: TrackId, why: String) {
+        let report = match std::mem::take(&mut self.previews[slot(track)]) {
             PreviewState::Running(p) => {
-                let track = p.track;
                 let shown = !p.sent.is_empty();
                 let report = p.finish(Duration::ZERO);
                 if shown {
@@ -600,73 +628,92 @@ where
                 report
             }
             PreviewState::Off(report) => report,
-            PreviewState::None | PreviewState::Pending(_) => PreviewReport::default(),
+            PreviewState::None | PreviewState::Pending(_) => PreviewReport {
+                track: Some(track),
+                ..PreviewReport::default()
+            },
         };
-        self.previews = PreviewState::Off(PreviewReport {
+        self.previews[slot(track)] = PreviewState::Off(PreviewReport {
             off: Some(why),
             ..report
         });
     }
 
-    /// Between two pumps, never waiting: starts previews once nothing holds them back, gives way to
-    /// a real decode, passes on what the thread found, and stops them when they should stop.
+    /// Between two pumps, never waiting: starts each track's previews once nothing holds them
+    /// back, gives way to a real decode, passes on what the threads found, and stops a track's
+    /// previews when they should stop.
     pub(super) fn check_previews(&mut self) {
-        match &self.previews {
-            PreviewState::None | PreviewState::Off(_) => return,
-            PreviewState::Pending(_) => self.start_previews(),
-            PreviewState::Running(_) => {}
+        let mut active = [false; 2];
+        for track in TRACKS {
+            match &self.previews[slot(track)] {
+                PreviewState::None | PreviewState::Off(_) => continue,
+                PreviewState::Pending(_) => self.start_previews(track),
+                PreviewState::Running(_) => {}
+            }
+            active[slot(track)] = true;
         }
-        if matches!(self.transcript_state, Some(LiveTranscriptState::Stopped)) {
-            self.previews_off("the live transcript stopped".to_owned());
+        if active == [false; 2] {
             return;
         }
-        let track = self.preview_track();
-        if let PreviewState::Running(p) = &self.previews {
-            let limit = p.fell_behind;
-            let behind = self
-                .workers
-                .iter()
-                .find(|w| w.track() == track)
-                .is_some_and(|w| w.backlog() > limit);
-            if behind {
-                self.previews_off(FELL_BEHIND_REASON.to_owned());
-                return;
+        if matches!(self.transcript_state, Some(LiveTranscriptState::Stopped)) {
+            for track in TRACKS {
+                if active[slot(track)] {
+                    self.previews_off(track, "the live transcript stopped".to_owned());
+                }
+            }
+            return;
+        }
+        for track in TRACKS {
+            if let PreviewState::Running(p) = &self.previews[slot(track)] {
+                let limit = p.fell_behind;
+                let behind = self
+                    .workers
+                    .iter()
+                    .find(|w| w.track() == track)
+                    .is_some_and(|w| w.backlog() > limit);
+                if behind {
+                    self.previews_off(track, FELL_BEHIND_REASON.to_owned());
+                }
             }
         }
         self.check_preview_power();
-        let PreviewState::Running(p) = &self.previews else {
-            return;
-        };
-        p.yield_to_real_decode();
-        let messages: Vec<FromPreview> = p.from.try_iter().collect();
-        // The thread trims words after the worker's frontier moved, and a worker sends a decode's
-        // finals before it publishes the frontier: so the finals behind these messages are queued
-        // now, and go out first. Settled text always lands before the words it replaces leave.
-        if !messages.is_empty() {
-            self.handle_workers();
-        }
-        let PreviewState::Running(p) = &mut self.previews else {
-            return;
-        };
-        let track = p.track;
-        let mut shows = Vec::new();
-        let mut off = None;
-        for message in messages {
-            match message {
-                FromPreview::Words(words) => {
-                    if let Some(words) = p.changed_show(words) {
-                        shows.push(words);
-                    }
-                }
-                FromPreview::Off(why) => off = Some(why),
-                FromPreview::Done => {}
+        let mut messages: [Vec<FromPreview>; 2] = [Vec::new(), Vec::new()];
+        for track in TRACKS {
+            if let PreviewState::Running(p) = &self.previews[slot(track)] {
+                p.yield_to_real_decode();
+                messages[slot(track)] = p.from.try_iter().collect();
             }
         }
-        for words in shows {
-            self.emit(RuntimeEvent::LivePreview { track, words });
+        // A thread trims words after the worker's frontier moved, and a worker sends a decode's
+        // finals before it publishes the frontier: so the finals behind these messages are queued
+        // now, and go out first. Settled text always lands before the words it replaces leave.
+        if messages.iter().any(|m| !m.is_empty()) {
+            self.handle_workers();
         }
-        if let Some(why) = off {
-            self.previews_off(why);
+        for track in TRACKS {
+            let messages = std::mem::take(&mut messages[slot(track)]);
+            let PreviewState::Running(p) = &mut self.previews[slot(track)] else {
+                continue;
+            };
+            let mut shows = Vec::new();
+            let mut off = None;
+            for message in messages {
+                match message {
+                    FromPreview::Words(words) => {
+                        if let Some(words) = p.changed_show(words) {
+                            shows.push(words);
+                        }
+                    }
+                    FromPreview::Off(why) => off = Some(why),
+                    FromPreview::Done => {}
+                }
+            }
+            for words in shows {
+                self.emit(RuntimeEvent::LivePreview { track, words });
+            }
+            if let Some(why) = off {
+                self.previews_off(track, why);
+            }
         }
     }
 
@@ -676,15 +723,19 @@ where
             return;
         }
         self.next_preview_power = Some(now + self.policy.power_poll);
-        if matches!(self.previews, PreviewState::Running(_))
-            && self.policy.power.supply() == PowerSupply::Battery
-        {
-            self.previews_off(ON_BATTERY_REASON.to_owned());
+        let running: Vec<TrackId> = TRACKS
+            .into_iter()
+            .filter(|t| matches!(self.previews[slot(*t)], PreviewState::Running(_)))
+            .collect();
+        if !running.is_empty() && self.policy.power.supply() == PowerSupply::Battery {
+            for track in running {
+                self.previews_off(track, ON_BATTERY_REASON.to_owned());
+            }
         }
     }
 
-    /// Starts the thread when nothing holds it back any more (module docs).
-    fn start_previews(&mut self) {
+    /// Starts `track`'s thread when nothing holds it back any more (module docs).
+    fn start_previews(&mut self, track: TrackId) {
         // Holding, or catching up after a hold: the transcript is not live yet.
         if self.hold.as_ref().is_some_and(|h| h.transcript_held)
             || matches!(
@@ -695,26 +746,26 @@ where
             return;
         }
         if !matches!(self.policy.transcription, LiveTranscription::Stretches(_)) {
-            self.previews_off("the live chunker has partials".to_owned());
+            self.previews_off(track, "the live chunker has partials".to_owned());
             return;
         }
-        let track = self.preview_track();
         let Some(worker) = self.workers.iter().find(|w| w.track() == track) else {
-            self.previews_off("no live transcript on the track".to_owned());
+            self.previews_off(track, "no live transcript on the track".to_owned());
             return;
         };
         let Some((_, record)) = self.stretch_records.iter().find(|(t, _)| *t == track) else {
-            self.previews_off("no live stretches on the track".to_owned());
+            self.previews_off(track, "no live stretches on the track".to_owned());
             return;
         };
         if self.policy.power.supply() == PowerSupply::Battery {
-            self.previews_off(ON_BATTERY_REASON.to_owned());
+            self.previews_off(track, ON_BATTERY_REASON.to_owned());
             return;
         }
         let backend = record.backend.clone();
         let (frontier, queued) = (worker.frontier_source(), worker.queue_source());
         let speaking = self.speaking[slot(track)];
-        let PreviewState::Pending(previews) = std::mem::take(&mut self.previews) else {
+        let PreviewState::Pending(previews) = std::mem::take(&mut self.previews[slot(track)])
+        else {
             return;
         };
         match PreviewThread::spawn(previews, track, backend, frontier, queued) {
@@ -725,41 +776,46 @@ where
                         at: self.sent[slot(track)],
                     });
                 }
-                self.previews = PreviewState::Running(Box::new(thread));
+                self.previews[slot(track)] = PreviewState::Running(Box::new(thread));
             }
-            Err(e) => self.previews_off(e.to_string()),
+            Err(e) => self.previews_off(track, e.to_string()),
         }
     }
 
     /// The recording is over: no more decodes. What is shown stays until the real decodes land.
     pub(super) fn stop_previews(&self) {
-        if let PreviewState::Running(p) = &self.previews {
-            p.stop.store(true, Ordering::Release);
+        for state in &self.previews {
+            if let PreviewState::Running(p) = state {
+                p.stop.store(true, Ordering::Release);
+            }
         }
     }
 
-    /// The live transcript is complete: nothing provisional is left, and the report goes out.
+    /// The live transcript is complete: nothing provisional is left, and each track's report
+    /// goes out.
     pub(super) fn finish_previews(&mut self) {
-        let report = match std::mem::take(&mut self.previews) {
-            PreviewState::None => return,
-            PreviewState::Pending(_) => PreviewReport {
-                off: Some("the meeting ended before previews started".to_owned()),
-                ..PreviewReport::default()
-            },
-            PreviewState::Off(report) => report,
-            PreviewState::Running(p) => {
-                let track = p.track;
-                let shown = !p.sent.is_empty();
-                let report = p.finish(self.policy.speaker_stop_wait);
-                if shown {
-                    self.emit(RuntimeEvent::LivePreview {
-                        track,
-                        words: Vec::new(),
-                    });
+        for track in TRACKS {
+            let report = match std::mem::take(&mut self.previews[slot(track)]) {
+                PreviewState::None => continue,
+                PreviewState::Pending(_) => PreviewReport {
+                    track: Some(track),
+                    off: Some("the meeting ended before previews started".to_owned()),
+                    ..PreviewReport::default()
+                },
+                PreviewState::Off(report) => report,
+                PreviewState::Running(p) => {
+                    let shown = !p.sent.is_empty();
+                    let report = p.finish(self.policy.speaker_stop_wait);
+                    if shown {
+                        self.emit(RuntimeEvent::LivePreview {
+                            track,
+                            words: Vec::new(),
+                        });
+                    }
+                    report
                 }
-                report
-            }
-        };
-        self.emit(RuntimeEvent::LivePreviewReport(report));
+            };
+            self.emit(RuntimeEvent::LivePreviewReport(report));
+        }
     }
 }

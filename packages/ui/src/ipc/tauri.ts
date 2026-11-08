@@ -156,7 +156,7 @@ export function createTauriIpc(): Ipc {
     generalSettings: async () => unwrap(await commands.generalSettings()),
     setStartWithWindows: async (on) => unwrap(await commands.setStartWithWindows(on)),
     previewsSettings: async () => unwrap(await commands.previewsSettings()),
-    setPreviews: async (on) => unwrap(await commands.setPreviews(on)),
+    setPreviews: async (choice) => unwrap(await commands.setPreviews(choice)),
     crashLogsFolder: () => commands.crashLogsFolder(),
     onVoiceEvent: (handler) => events.voiceEvent.listen((event) => handler(event.payload)),
     onAudioCheckEvent: (handler) => events.audioCheckEvent.listen((event) => handler(event.payload)),

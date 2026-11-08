@@ -78,6 +78,7 @@ import type {
   WarningKind,
   WriterChoice,
   GeneralView,
+  PreviewsChoice,
   PreviewsView,
   ShellEvent,
   ObsidianSettingsValue,
@@ -175,6 +176,7 @@ export type {
   WarningKind,
   WriterChoice,
   GeneralView,
+  PreviewsChoice,
   PreviewsView,
   ShellEvent,
   ObsidianSettingsValue,
@@ -324,8 +326,8 @@ export interface IpcCommands
   setStartWithWindows(on: boolean): Promise<GeneralView>;
   /** Whether meetings show provisional words on this computer (T9.1mb). */
   previewsSettings(): Promise<PreviewsView>;
-  /** Turns provisional words on or off, from the next meeting. */
-  setPreviews(on: boolean): Promise<PreviewsView>;
+  /** Stores whose provisional words meetings show (T9.14), from the next meeting. */
+  setPreviews(choice: PreviewsChoice): Promise<PreviewsView>;
   /** Where the crash logs are (T9.1e), null when the app has no data folder. */
   crashLogsFolder(): Promise<string | null>;
   /** Quits the app: a recording meeting is stopped and finalised first. */

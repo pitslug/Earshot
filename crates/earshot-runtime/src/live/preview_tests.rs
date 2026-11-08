@@ -139,7 +139,32 @@ fn previews(load: PreviewLoader) -> LivePreviews {
         // its own test, at its production value.
         fell_behind: Duration::from_secs(3600),
         background: false,
+        own_voice: None,
     }
+}
+
+/// Every report a session sent, one per track that had previews.
+fn reports_of(events: &[RuntimeEvent]) -> Vec<PreviewReport> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            RuntimeEvent::LivePreviewReport(r) => Some(r.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn report_for(events: &[RuntimeEvent], track: TrackId) -> PreviewReport {
+    let reports = reports_of(events);
+    let mine: Vec<&PreviewReport> = reports.iter().filter(|r| r.track == Some(track)).collect();
+    assert_eq!(mine.len(), 1, "one report for {track:?}: {reports:?}");
+    mine[0].clone()
+}
+
+fn shown_on(events: &[RuntimeEvent], track: TrackId) -> bool {
+    previews_of(events)
+        .iter()
+        .any(|(t, w)| *t == track && !w.is_empty())
 }
 
 fn config_with(previews: Option<LivePreviews>) -> LiveConfig {
@@ -740,6 +765,138 @@ fn live_preview_in_the_room_runs_on_the_mic() {
     let report = report_of(&events).expect("a report");
     assert_eq!(report.track, Some(TrackId::Mic));
     assert!(report.decodes > 0, "{report:?}");
+}
+
+/// T9.14: with the user's own track chosen, a call shows previews on both tracks, each from its own
+/// model session, and sends one report per track; what is stored does not change.
+#[test]
+fn live_preview_own_voice_in_a_call_shows_both_tracks_and_reports_each() {
+    let scene = scene_of(27);
+    let far = Arc::new(Seen::default());
+    let own = Arc::new(Seen::default());
+    let config = LivePreviews {
+        own_voice: Some(loader(&own, marker_words)),
+        ..previews(loader(&far, marker_words))
+    };
+    let (with, events, ..) = run_with(&scene, Some(config), 331);
+    let reports = reports_of(&events);
+    assert_eq!(reports.len(), 2, "{reports:?}");
+    for track in [TrackId::Reference, TrackId::Mic] {
+        let report = report_for(&events, track);
+        assert_eq!(report.off, None, "{report:?}");
+        assert!(report.decodes > 0, "{report:?}");
+        assert!(shown_on(&events, track), "nothing shown on {track:?}");
+    }
+    // Two sessions of their own: each loader was called once (`loader` refuses a second load).
+    assert!(far.calls.load(Ordering::SeqCst) > 0);
+    assert!(own.calls.load(Ordering::SeqCst) > 0);
+    assert!(words_left_early(&events).is_empty());
+    for track in [TrackId::Reference, TrackId::Mic] {
+        let last = previews_of(&events)
+            .into_iter()
+            .rev()
+            .find(|(t, _)| *t == track)
+            .expect("a preview");
+        assert!(
+            last.1.is_empty(),
+            "nothing provisional is left on {track:?}"
+        );
+    }
+    let (without, ..) = run_with(&scene, None, 331);
+    assert_eq!(with, without);
+}
+
+/// Without the user's own track chosen a call is as before: the far end only, one report.
+#[test]
+fn live_preview_without_own_voice_a_call_shows_only_the_far_end() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let (_, events, ..) = run_with(&scene, Some(previews(loader(&seen, marker_words))), 333);
+    let reports = reports_of(&events);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].track, Some(TrackId::Reference));
+    assert!(shown_on(&events, TrackId::Reference));
+    assert!(!shown_on(&events, TrackId::Mic));
+}
+
+/// The user's own track failing to load is that track's report: the far end still shows words.
+#[test]
+fn live_preview_own_voice_failing_to_load_leaves_the_far_end_running() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let config = LivePreviews {
+        own_voice: Some(Arc::new(|_| Err("needs more memory".to_owned()))),
+        ..previews(loader(&seen, marker_words))
+    };
+    let (with, events, ..) = run_with(&scene, Some(config), 335);
+    let mic = report_for(&events, TrackId::Mic);
+    assert_eq!(mic.off.as_deref(), Some("needs more memory"));
+    let far = report_for(&events, TrackId::Reference);
+    assert_eq!(far.off, None, "{far:?}");
+    assert!(far.decodes > 0, "{far:?}");
+    assert!(shown_on(&events, TrackId::Reference));
+    assert!(!shown_on(&events, TrackId::Mic));
+    assert!(warnings(&events).is_empty(), "{:?}", warnings(&events));
+    let (without, ..) = run_with(&scene, None, 335);
+    assert_eq!(with, without);
+}
+
+/// The user's own track crashing stops only its previews.
+#[test]
+fn live_preview_own_voice_crashing_leaves_the_far_end_running() {
+    let scene = scene_of(27);
+    let far = Arc::new(Seen::default());
+    let own = Arc::new(Seen::default());
+    let crash = |_: usize, _: &CancelToken| -> Result<Vec<Word>, AsrError> {
+        panic!("a test crash");
+    };
+    let config = LivePreviews {
+        own_voice: Some(loader(&own, crash)),
+        ..previews(loader(&far, marker_words))
+    };
+    let (_, events, ..) = run_with(&scene, Some(config), 337);
+    let mic = report_for(&events, TrackId::Mic);
+    assert_eq!(mic.off.as_deref(), Some("the preview thread crashed"));
+    let far_report = report_for(&events, TrackId::Reference);
+    assert_eq!(far_report.off, None, "{far_report:?}");
+    assert!(shown_on(&events, TrackId::Reference));
+}
+
+/// In the room the mic has the one session; the user's own track setting adds nothing.
+#[test]
+fn live_preview_in_the_room_ignores_own_voice() {
+    let scene = scene_of(27);
+    let first = Arc::new(Seen::default());
+    let own = Arc::new(Seen::default());
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, scene.mic.clone()))
+        .build()
+        .unwrap();
+    let paced = Paced::new(
+        source,
+        Arc::new(FastClock(Instant::now(), 10)),
+        true,
+        Arc::new(PaceState::default()),
+    );
+    let config = LivePreviews {
+        own_voice: Some(loader(&own, marker_words)),
+        ..previews(loader(&first, marker_words))
+    };
+    let session = start_live(
+        paced,
+        svc.clone(),
+        config_with(Some(config)),
+        Some(factory_of(&scene, Arc::default())),
+        Box::new(ChaCha8Rng::seed_from_u64(339)),
+    )
+    .unwrap();
+    let (events, _) = collect(session);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.track, Some(TrackId::Mic));
+    assert!(report.decodes > 0, "{report:?}");
+    assert!(first.calls.load(Ordering::SeqCst) > 0);
+    assert_eq!(own.calls.load(Ordering::SeqCst), 0, "own_voice loaded");
 }
 
 struct Fixed(PowerSupply);

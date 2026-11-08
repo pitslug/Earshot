@@ -19,7 +19,7 @@ import {
 } from "@fluentui/react-components";
 import { type ReactNode, useEffect, useId, useState } from "react";
 
-import { type GeneralView, type PreviewsView, useIpc } from "../ipc";
+import { type GeneralView, type PreviewsChoice, type PreviewsView, useIpc } from "../ipc";
 import { type ThemeChoice, useThemeChoice } from "../theme/EarshotThemeProvider";
 import { CrashLogsFolder } from "./CrashLogsFolder";
 import { UpdatesSection } from "./UpdatesSection";
@@ -67,11 +67,22 @@ export const shortcutExplained = (shortcut: string) =>
 export const SETUP_EXPLAINED =
   "The steps Earshot showed the first time: your Obsidian vault, the models, summaries, the audio check and your voice. Nothing changes until you choose something.";
 
+/** The name of the provisional words choice. */
+export const PREVIEWS_HEADING = "Show words while someone is talking";
+
 /** What provisional words are, on the General page. */
 export const PREVIEWS_EXPLAINED =
   "Shows grey words within a few seconds while someone is talking, then replaces them with the settled text. It uses more of your computer during a meeting and changes nothing that is saved. Only with a Parakeet model, and not on battery.";
 
-/** Whether meetings show provisional words: read and changed on its own, from the next meeting. */
+/** Whose words "Other people only" shows. */
+export const PREVIEWS_OTHER_PEOPLE_EXPLAINED =
+  "Other people only: in a call, grey words for the people you're talking to. In the room, for everyone.";
+
+/** Whose words "Everyone" shows. */
+export const PREVIEWS_EVERYONE_EXPLAINED =
+  "Everyone: in a call, also for your own voice. Uses more of your computer. Without headphones, your grey words can briefly show what the other people said, until the settled text replaces them.";
+
+/** Whose provisional words meetings show: read and changed on its own, from the next meeting. */
 function PreviewsSection() {
   const styles = useStyles();
   const ipc = useIpc();
@@ -94,10 +105,12 @@ function PreviewsSection() {
     };
   }, [ipc]);
 
-  const set = async (on: boolean) => {
+  const headingId = useId();
+
+  const set = async (choice: PreviewsChoice) => {
     setBusy(true);
     try {
-      setView(await ipc.setPreviews(on));
+      setView(await ipc.setPreviews(choice));
       setProblem(null);
     } catch (e) {
       setProblem(errorText(e));
@@ -108,13 +121,20 @@ function PreviewsSection() {
 
   return (
     <Section title="During a meeting">
-      <Switch
-        label="Show words while someone is talking"
-        checked={view?.on === true}
+      <Body1 id={headingId}>{PREVIEWS_HEADING}</Body1>
+      <RadioGroup
+        aria-labelledby={headingId}
+        value={view?.choice ?? ""}
         disabled={busy || view === null || !view.can_change}
-        onChange={(_, d) => void set(d.checked)}
-      />
+        onChange={(_, d) => void set(d.value as PreviewsChoice)}
+      >
+        <Radio value="off" label="Off" />
+        <Radio value="other_people" label="Other people only" />
+        <Radio value="everyone" label="Everyone" />
+      </RadioGroup>
       <Caption1 className={styles.muted}>{PREVIEWS_EXPLAINED}</Caption1>
+      <Caption1 className={styles.muted}>{PREVIEWS_OTHER_PEOPLE_EXPLAINED}</Caption1>
+      <Caption1 className={styles.muted}>{PREVIEWS_EVERYONE_EXPLAINED}</Caption1>
       {view?.note != null && <Caption1 className={styles.muted}>{view.note}</Caption1>}
       {problem !== null && (
         <MessageBar intent="error">

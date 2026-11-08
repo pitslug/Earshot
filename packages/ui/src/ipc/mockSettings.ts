@@ -7,6 +7,7 @@
 import { type Timer } from "../time";
 import {
   type GeneralView,
+  type PreviewsChoice,
   type PreviewsView,
   IpcFailure,
   type ObsidianSettingsValue,
@@ -81,7 +82,7 @@ export interface SettingsMockData {
   startWithWindows?: boolean;
   /** "Start with Windows" cannot be read or changed: this is why. */
   autostartError?: string;
-  /** Provisional words on this computer (default: on, nothing to say). */
+  /** Provisional words on this computer (default: other people only, nothing to say). */
   previews?: PreviewsView;
   /** Where the crash logs are (default `MOCK_CRASH_LOGS`; null: the app has no data folder). */
   crashLogsFolder?: string | null;
@@ -101,7 +102,7 @@ export interface SettingsMock {
   generalSettings(): Promise<GeneralView>;
   setStartWithWindows(on: boolean): Promise<GeneralView>;
   previewsSettings(): Promise<PreviewsView>;
-  setPreviews(on: boolean): Promise<PreviewsView>;
+  setPreviews(choice: PreviewsChoice): Promise<PreviewsView>;
   crashLogsFolder(): Promise<string | null>;
   onVoiceEvent(handler: (event: VoiceEvent) => void): Promise<() => void>;
   /** The stored Obsidian settings (export uses them). */
@@ -166,7 +167,7 @@ export function createSettingsMock(
   let speechMs = data.voiceSpeechMs ?? 0;
   let target: ObsidianSettingsValue = { vault: data.vault ?? "", folder: data.folder ?? DEFAULT_FOLDER };
   let autostart = data.startWithWindows ?? false;
-  let previews: PreviewsView = data.previews ?? { on: true, can_change: true, note: null, unknown: null };
+  let previews: PreviewsView = data.previews ?? { choice: "other_people", can_change: true, note: null, unknown: null };
   const listeners = new Set<(event: VoiceEvent) => void>();
   const emit = (event: VoiceEvent) => {
     for (const l of [...listeners]) l(event);
@@ -275,8 +276,8 @@ const voice = () => ({ saved: speechMs > 0, speech_ms: speechMs, sample_ms: VOIC
       return general();
     },
     previewsSettings: async () => ({ ...previews }),
-    setPreviews: async (on) => {
-      previews = { ...previews, on };
+    setPreviews: async (choice) => {
+      previews = { ...previews, choice };
       return { ...previews };
     },
     crashLogsFolder: async () => (data.crashLogsFolder === undefined ? MOCK_CRASH_LOGS : data.crashLogsFolder),

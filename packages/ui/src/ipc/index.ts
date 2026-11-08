@@ -80,6 +80,7 @@ export type {
   SummarySettingsView,
   WriterChoice,
   GeneralView,
+  PreviewsChoice,
   PreviewsView,
   ShellEvent,
   ObsidianSettingsValue,

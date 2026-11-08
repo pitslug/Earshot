@@ -1242,7 +1242,7 @@ pub const PREVIEW_MIN_CARD_MEMORY: u64 = 14 * 1024 * 1024 * 1024;
 /// rule (`live::preview` docs): the user's "off"; the NPU is off until the Surface numbers exist;
 /// whisper, on any backend, holds decoder state and sampled retries a preview must not touch and
 /// would need a second model that nothing here has measured; a card without room for a third
-/// session. The user's "on" lifts only the system memory limit.
+/// session. The user's "on" or "everyone" lifts only the system memory limit.
 #[must_use]
 pub fn previews_refused(
     backend: BackendKind,
@@ -1274,6 +1274,46 @@ pub fn previews_refused(
     None
 }
 
+/// A machine with less memory than this runs no second preview session (the user's own track in a
+/// call, T9.14) on the CPU: the same as one session's limit, because the second shares the model's
+/// weights and took a meeting's peak from 5.81 to 6.08 GiB (measured 2026-11-08, docs/live-previews.md).
+/// It cost about half a core more on a 32-thread host; the slow-preview pause covers smaller ones.
+pub const PREVIEW_BOTH_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
+
+/// Why a second session is refused on CUDA.
+pub const PREVIEW_SECOND_NOT_ON_CARD: &str = "not measured on the graphics card yet";
+
+/// Why this computer runs no second preview session, for the user's own track in a call (T9.14),
+/// or `None` when it does: only when the user chose everyone, only where the first session runs
+/// ([`previews_refused`]), only on the CPU (CUDA is not measured), and only with
+/// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there.
+#[must_use]
+pub fn previews_refused_second(
+    backend: BackendKind,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Option<String> {
+    use crate::preview_settings::PreviewChoice;
+    if choice != PreviewChoice::Everyone {
+        return Some("only for the other people".to_owned());
+    }
+    if let Some(why) = previews_refused(backend, hardware, choice) {
+        return Some(why);
+    }
+    match backend {
+        BackendKind::Cpu => {}
+        BackendKind::Cuda => return Some(PREVIEW_SECOND_NOT_ON_CARD.to_owned()),
+        _ => return Some("previews run on Parakeet on the CPU or CUDA only".to_owned()),
+    }
+    if hardware
+        .total_memory
+        .is_none_or(|m| m < PREVIEW_BOTH_MIN_MEMORY)
+    {
+        return Some("not enough memory for a third session of the model".to_owned());
+    }
+    None
+}
+
 /// The previews' own session of the model of a track that runs on `backend` (T9.1m): background
 /// threads, the thread budget of a live track, and nothing shared with the track. An `Err` says why
 /// this meeting has no previews ([`crate::live::PreviewLoader`]).
@@ -1289,6 +1329,29 @@ pub fn load_preview(
     if let Some(why) = previews_refused(backend.kind, &crate::hardware(), choice) {
         return Err(why);
     }
+    load_preview_session(models, backend)
+}
+
+/// [`load_preview`] for the second session, the user's own track in a call (T9.14), refused by
+/// [`previews_refused_second`]. It shares nothing with the first.
+///
+/// # Errors
+/// As [`load_preview`], with the second session's rule.
+pub fn load_preview_second(
+    models: &ModelDir,
+    backend: &BackendInfo,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<Box<dyn Transcriber + Send>, String> {
+    if let Some(why) = previews_refused_second(backend.kind, &crate::hardware(), choice) {
+        return Err(why);
+    }
+    load_preview_session(models, backend)
+}
+
+fn load_preview_session(
+    models: &ModelDir,
+    backend: &BackendInfo,
+) -> Result<Box<dyn Transcriber + Send>, String> {
     let Ok(AsrModel::Parakeet(model)) = asr_model(&backend.model) else {
         return Err("previews run on Parakeet only".to_owned());
     };

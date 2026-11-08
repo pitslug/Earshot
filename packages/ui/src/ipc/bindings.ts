@@ -228,8 +228,8 @@ export const commands = {
 	setStartWithWindows: (on: boolean) => typedError<GeneralView, IpcError>(__TAURI_INVOKE("set_start_with_windows", { on })),
 	/**  Whether meetings show provisional words. */
 	previewsSettings: () => typedError<PreviewsView, IpcError>(__TAURI_INVOKE("previews_settings")),
-	/**  Turns provisional words on or off, from the next meeting. */
-	setPreviews: (on: boolean) => typedError<PreviewsView, IpcError>(__TAURI_INVOKE("set_previews", { on })),
+	/**  Stores whose provisional words meetings show, from the next meeting. */
+	setPreviews: (choice: PreviewsChoice) => typedError<PreviewsView, IpcError>(__TAURI_INVOKE("set_previews", { choice })),
 	/**  Where the crash logs are, shown on the General page (`null` when the app has no data folder). */
 	crashLogsFolder: () => __TAURI_INVOKE<string | null>("crash_logs_folder"),
 	/**
@@ -1443,10 +1443,19 @@ track: LiveTrack } |
 /**  The summary is being written. */
 { kind: "Summarising" };
 
-/**  Provisional words on this computer (T9.1mb). */
+/**  Whose provisional words a meeting shows (T9.14). */
+export type PreviewsChoice = 
+/**  None. */
+"off" | 
+/**  The people the user is talking to in a call; everyone in the room. */
+"other_people" | 
+/**  Also the user's own voice in a call. */
+"everyone";
+
+/**  Provisional words on this computer (T9.1mb, T9.14). */
 export type PreviewsView = {
-	/**  The switch reads on. */
-	on: boolean,
+	/**  The choice that reads selected. */
+	choice: PreviewsChoice,
 	/**  The user can change it here. */
 	can_change: boolean,
 	/**  Something to say about this machine. */

@@ -2,14 +2,23 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { type Ipc, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
+import { type Ipc, IpcProvider, type MockIpcData, type PreviewsChoice, createMockIpc } from "../ipc";
 import { MOCK_CRASH_LOGS, MOCK_VERSION } from "../ipc/mockSettings";
 import { AppShell } from "../shell/AppShell";
 import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider, THEME_KEY } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { CRASH_LOGS_EXPLAINED, CRASH_LOGS_NO_FOLDER } from "./CrashLogsFolder";
-import { PREVIEWS_EXPLAINED, START_EXPLAINED, THEME_SYSTEM_EXPLAINED, TRAY_EXPLAINED, shortcutExplained } from "./GeneralPage";
+import {
+  PREVIEWS_EVERYONE_EXPLAINED,
+  PREVIEWS_EXPLAINED,
+  PREVIEWS_HEADING,
+  PREVIEWS_OTHER_PEOPLE_EXPLAINED,
+  START_EXPLAINED,
+  THEME_SYSTEM_EXPLAINED,
+  TRAY_EXPLAINED,
+  shortcutExplained,
+} from "./GeneralPage";
 
 async function open(data: MockIpcData = {}): Promise<{ ipc: Ipc; user: ReturnType<typeof userEvent.setup> }> {
   const timer = createManualTimer(1_000_000);
@@ -37,32 +46,54 @@ beforeEach(() => {
 });
 
 describe("Settings, General, provisional words", () => {
-  const label = "Show words while someone is talking";
-  const toggle = async () => (await screen.findByRole("switch", { name: label })) as HTMLInputElement;
-
-  it("says what it does and stores a change", async () => {
-    const s = await open({ settings: { previews: { on: true, can_change: true, note: null, unknown: null } } });
-    const sw = await toggle();
-    expect(sw.checked).toBe(true);
-    expect(screen.getByText(PREVIEWS_EXPLAINED)).toBeTruthy();
-    await s.user.click(sw);
-    await waitFor(async () => expect((await s.ipc.previewsSettings()).on).toBe(false));
-    expect((await toggle()).checked).toBe(false);
+  const group = async () => screen.findByRole("radiogroup", { name: PREVIEWS_HEADING });
+  const radio = async (name: string) => within(await group()).getByRole("radio", { name }) as HTMLInputElement;
+  const view = (choice: PreviewsChoice, can_change = true, note: string | null = null) => ({
+    previews: { choice, can_change, note, unknown: null },
   });
 
-  it("shows the note for a small machine, and lets it be turned on", async () => {
+  it("offers Off, Other people only and Everyone, says what each shows, and stores a change", async () => {
+    const s = await open({ settings: view("other_people") });
+    const labels = within(await group())
+      .getAllByRole("radio")
+      .map((r) => (r as HTMLInputElement).labels?.[0].textContent);
+    expect(labels).toEqual(["Off", "Other people only", "Everyone"]);
+    expect((await radio("Other people only")).checked).toBe(true);
+    expect(screen.getByText(PREVIEWS_EXPLAINED)).toBeTruthy();
+    expect(screen.getByText(PREVIEWS_OTHER_PEOPLE_EXPLAINED)).toBeTruthy();
+    expect(screen.getByText(PREVIEWS_EVERYONE_EXPLAINED)).toBeTruthy();
+    await s.user.click(await radio("Everyone"));
+    await waitFor(async () => expect((await s.ipc.previewsSettings()).choice).toBe("everyone"));
+    expect((await radio("Everyone")).checked).toBe(true);
+    await s.user.click(await radio("Off"));
+    await waitFor(async () => expect((await s.ipc.previewsSettings()).choice).toBe("off"));
+    expect((await radio("Off")).checked).toBe(true);
+    await s.user.click(await radio("Other people only"));
+    await waitFor(async () => expect((await s.ipc.previewsSettings()).choice).toBe("other_people"));
+  });
+
+  it("shows the note for a small machine, and lets them be turned on", async () => {
     const note = "A note about this computer.";
-    const s = await open({ settings: { previews: { on: false, can_change: true, note, unknown: null } } });
-    const sw = await toggle();
+    const s = await open({ settings: view("off", true, note) });
+    expect((await radio("Off")).checked).toBe(true);
     expect(screen.getByText(note)).toBeTruthy();
-    expect(sw.disabled).toBe(false);
-    await s.user.click(sw);
-    await waitFor(async () => expect((await s.ipc.previewsSettings()).on).toBe(true));
+    expect((await radio("Other people only")).disabled).toBe(false);
+    await s.user.click(await radio("Other people only"));
+    await waitFor(async () => expect((await s.ipc.previewsSettings()).choice).toBe("other_people"));
+  });
+
+  it("shows the note when Everyone is chosen but this computer runs them for the other people only", async () => {
+    const note = "This computer shows them for the other people only.";
+    await open({ settings: view("everyone", true, note) });
+    expect((await radio("Everyone")).checked).toBe(true);
+    expect(screen.getByText(note)).toBeTruthy();
   });
 
   it("cannot be changed where nothing can run them", async () => {
-    await open({ settings: { previews: { on: false, can_change: false, note: "Not here.", unknown: null } } });
-    expect((await toggle()).disabled).toBe(true);
+    await open({ settings: view("off", false, "Not here.") });
+    for (const name of ["Off", "Other people only", "Everyone"]) {
+      expect((await radio(name)).disabled).toBe(true);
+    }
     expect(screen.getByText("Not here.")).toBeTruthy();
   });
 });

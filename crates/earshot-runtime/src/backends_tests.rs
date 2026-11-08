@@ -1716,3 +1716,82 @@ fn backends_parallel_diarisation_needs_two_threads_per_copy() {
     assert!(!parallel_diarisation(4));
     assert!(!parallel_diarisation(1));
 }
+
+/// T9.14: the second preview session (the user's own track in a call) runs only when chosen, only
+/// where the first one runs, only on the CPU, and only with the memory for both.
+#[test]
+fn backends_previews_second_session_only_for_everyone_on_a_big_cpu_machine() {
+    use crate::preview_settings::PreviewChoice;
+    use earshot_hardware::{Gpu, Hardware};
+    let machine = |memory: Option<u64>, card: Option<u64>| Hardware {
+        total_memory: memory,
+        gpus: vec![Gpu {
+            name: "A card".to_owned(),
+            vendor_id: 0x10de,
+            dedicated_memory: card,
+            driver_version: None,
+            integrated: Some(false),
+            compute_capability: None,
+        }],
+        ..Hardware::default()
+    };
+    let big = machine(Some(64 * 1024 * 1024 * 1024), Some(PREVIEW_MIN_CARD_MEMORY));
+    assert_eq!(
+        previews_refused_second(BackendKind::Cpu, &big, PreviewChoice::Everyone),
+        None
+    );
+    let at_limit = machine(Some(PREVIEW_BOTH_MIN_MEMORY), None);
+    assert_eq!(
+        previews_refused_second(BackendKind::Cpu, &at_limit, PreviewChoice::Everyone),
+        None
+    );
+    let below = machine(Some(PREVIEW_BOTH_MIN_MEMORY - 1), None);
+    assert!(previews_refused_second(BackendKind::Cpu, &below, PreviewChoice::Everyone).is_some());
+    let unknown = machine(None, None);
+    assert!(previews_refused_second(BackendKind::Cpu, &unknown, PreviewChoice::Everyone).is_some());
+    // The first session would run on CUDA here; the second is not measured there.
+    assert_eq!(
+        previews_refused(BackendKind::Cuda, &big, PreviewChoice::Everyone),
+        None
+    );
+    let cuda = previews_refused_second(BackendKind::Cuda, &big, PreviewChoice::Everyone);
+    assert_eq!(cuda.as_deref(), Some(PREVIEW_SECOND_NOT_ON_CARD));
+    for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
+        assert!(
+            previews_refused_second(kind, &big, PreviewChoice::Everyone).is_some(),
+            "{kind:?}"
+        );
+    }
+    for choice in [
+        PreviewChoice::Off,
+        PreviewChoice::Automatic,
+        PreviewChoice::On,
+    ] {
+        assert!(
+            previews_refused_second(BackendKind::Cpu, &big, choice).is_some(),
+            "{choice:?}"
+        );
+    }
+}
+
+/// Everyone lifts the memory limit of the first session exactly as "on" does.
+#[test]
+fn backends_previews_everyone_lifts_the_first_sessions_memory_limit_like_on() {
+    use crate::preview_settings::PreviewChoice;
+    use earshot_hardware::Hardware;
+    for memory in [None, Some(PREVIEW_MIN_MEMORY - 1), Some(PREVIEW_MIN_MEMORY)] {
+        let m = Hardware {
+            total_memory: memory,
+            ..Hardware::default()
+        };
+        assert_eq!(
+            previews_refused(BackendKind::Cpu, &m, PreviewChoice::Everyone),
+            previews_refused(BackendKind::Cpu, &m, PreviewChoice::On),
+            "{memory:?}"
+        );
+        assert_eq!(
+            previews_refused(BackendKind::Cpu, &m, PreviewChoice::Everyone),
+            None
+        );
+    }
+}

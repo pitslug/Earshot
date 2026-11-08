@@ -16,7 +16,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::ipc::IpcError;
@@ -297,11 +297,44 @@ pub async fn general_settings(
     .await
 }
 
-/// Provisional words on this computer (T9.1mb).
+/// Whose provisional words a meeting shows (T9.14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewsChoice {
+    /// None.
+    Off,
+    /// The people the user is talking to in a call; everyone in the room.
+    OtherPeople,
+    /// Also the user's own voice in a call.
+    Everyone,
+}
+
+impl From<earshot_runtime::preview_settings::PreviewSetting> for PreviewsChoice {
+    fn from(setting: earshot_runtime::preview_settings::PreviewSetting) -> Self {
+        use earshot_runtime::preview_settings::PreviewSetting;
+        match setting {
+            PreviewSetting::Off => Self::Off,
+            PreviewSetting::OtherPeople => Self::OtherPeople,
+            PreviewSetting::Everyone => Self::Everyone,
+        }
+    }
+}
+
+impl From<PreviewsChoice> for earshot_runtime::preview_settings::PreviewSetting {
+    fn from(choice: PreviewsChoice) -> Self {
+        match choice {
+            PreviewsChoice::Off => Self::Off,
+            PreviewsChoice::OtherPeople => Self::OtherPeople,
+            PreviewsChoice::Everyone => Self::Everyone,
+        }
+    }
+}
+
+/// Provisional words on this computer (T9.1mb, T9.14).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct PreviewsView {
-    /// The switch reads on.
-    pub on: bool,
+    /// The choice that reads selected.
+    pub choice: PreviewsChoice,
     /// The user can change it here.
     pub can_change: bool,
     /// Something to say about this machine.
@@ -318,7 +351,7 @@ fn previews_view(services: &earshot_runtime::Services) -> Result<PreviewsView, I
         &earshot_runtime::hardware(),
     );
     Ok(PreviewsView {
-        on: page.on,
+        choice: page.shown.into(),
         can_change: page.can_change,
         note: page.note.map(str::to_owned),
         unknown,
@@ -343,19 +376,23 @@ pub async fn previews_settings(
     crate::ipc::blocking(move || previews_view(&services)).await
 }
 
-/// Turns provisional words on or off, from the next meeting.
+/// Stores whose provisional words meetings show, from the next meeting.
 #[tauri::command]
 #[specta::specta]
 pub async fn set_previews(
     state: tauri::State<'_, crate::ipc::AppState>,
-    on: bool,
+    choice: PreviewsChoice,
 ) -> Result<PreviewsView, IpcError> {
     let services = state.services()?;
-    crate::ipc::blocking(move || {
-        earshot_runtime::preview_settings::set_previews(&mut services.store(), on)?;
-        previews_view(&services)
-    })
-    .await
+    crate::ipc::blocking(move || store_previews(&services, choice)).await
+}
+
+fn store_previews(
+    services: &earshot_runtime::Services,
+    choice: PreviewsChoice,
+) -> Result<PreviewsView, IpcError> {
+    earshot_runtime::preview_settings::set_previews(&mut services.store(), choice.into())?;
+    previews_view(services)
 }
 
 /// Turns "start Earshot with Windows" on or off (`autostart` when Windows refuses).
@@ -481,5 +518,52 @@ mod tests {
         key.set(false).unwrap();
         assert!(!key.enabled().unwrap());
         key.set(false).unwrap();
+    }
+
+    #[test]
+    fn previews_choice_is_three_named_values_on_the_wire() {
+        for (choice, wire) in [
+            (PreviewsChoice::Off, "\"off\""),
+            (PreviewsChoice::OtherPeople, "\"other_people\""),
+            (PreviewsChoice::Everyone, "\"everyone\""),
+        ] {
+            assert_eq!(serde_json::to_string(&choice).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_str::<PreviewsChoice>(wire).unwrap(),
+                choice
+            );
+        }
+    }
+
+    #[test]
+    fn previews_each_choice_is_stored_and_read_back() {
+        let dir = crate::testutil::TempDir::new("previews");
+        let services = crate::testutil::services(&dir);
+        let first = previews_view(&services).unwrap();
+        assert_eq!(first.unknown, None);
+        for (choice, stored) in [
+            (PreviewsChoice::Off, &b"off"[..]),
+            (PreviewsChoice::OtherPeople, b"on"),
+            (PreviewsChoice::Everyone, b"everyone"),
+        ] {
+            let view = store_previews(&services, choice).unwrap();
+            assert_eq!(
+                services
+                    .store()
+                    .local_value(earshot_runtime::preview_settings::PREVIEWS_KEY)
+                    .unwrap()
+                    .as_deref(),
+                Some(stored)
+            );
+            // A machine that cannot run them at all (the NPU, a small card) shows Off whatever
+            // is stored; everywhere else the stored choice reads back.
+            let expected = if view.can_change {
+                choice
+            } else {
+                PreviewsChoice::Off
+            };
+            assert_eq!(view.choice, expected, "{view:?}");
+            assert_eq!(view.unknown, None);
+        }
     }
 }

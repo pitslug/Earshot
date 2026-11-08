@@ -115,7 +115,8 @@ The CPU rows are the final code; the CUDA rows ran before the slow-preview pause
 
 - **Interval 1 s, window 12 s**, the plan's starting values, and at least as long after a preview as
   it took, so they never queue.
-- **One track per meeting: the far end in a call, the mic in the room.** A call's mic shows none: its
+- **One track per meeting: the far end in a call, the mic in the room** (since T9.14 the default,
+  "Other people only"; "Everyone" adds the call's mic, below). A call's mic shows none by default: its
   words are held and cleaned by the echo filter, and far-end words leak in until that runs
   (`live_preview_mic_in_a_call_shows_no_far_end_word`). You know what you just said. A real decode
   covers it within the same lag as before.
@@ -127,6 +128,22 @@ The CPU rows are the final code; the CUDA rows ran before the slow-preview pause
   the numbers above; 12 GB and 16 GB machines stay off). Off on battery. Off for the rest of a meeting
   when a track's queue passes 5 s, and during a hold and its catch-up. Three previews in a row slower
   than 3 s pause them for 30 s. Each turn-off is in `PreviewReport.off`, and affects neither recording nor stored transcripts.
+
+## Both tracks in a call (T9.14)
+
+The owner asked for grey words on their own voice in a call too: Settings, General, "Everyone" runs a second preview session on the mic track (`own_voice`, refused by `backends::previews_refused_second`). Measured 2026-11-08 on the desktop's CPU, idle host (machine load at most 7%), the bundled meeting, real time, Parakeet 0.6B v2 (`t914-others-bundled-cpu.json`, `t914-everyone-bundled-cpu.json`):
+
+| | Other people only | Everyone |
+|---|---|---|
+| Peak private memory | 5.81 GiB | 6.08 GiB |
+| Process CPU time over 150 s | 138 s | 217 s |
+| Mic words on screen, median / p95 | 16.2 s / 32.9 s | 2.9 s / 22.0 s |
+| Real decode rtf, mic / reference | 0.039 / 0.038 | 0.039 / 0.039 |
+| Mic preview words that left without settling | - | 42 of 221 |
+
+- **Memory**: the second session shares the weights, so its limit stays at one session's (`PREVIEW_BOTH_MIN_MEMORY`, 12 GiB). CUDA is refused until measured there.
+- **Stored words are identical**: `stored_sha256` matches per track between the two runs.
+- **Far-end words on the mic**: the 42 that left are the reason the design above kept the mic off. The AMI headsets pick up the other speakers, and the mic's grey words show them until the settled, echo-cleaned text replaces them. On speakers without headphones expect more. Display only; the General page says so under Everyone.
 
 ## Re-measuring on a quiet host
 

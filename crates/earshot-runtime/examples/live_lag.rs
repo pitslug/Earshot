@@ -4,7 +4,7 @@
 //! ```text
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root>
 //!     [--audio bundled|continuous] [--backend cpu|cuda] [--models <dir>] [--speakers on|off]
-//!     [--seconds <n>] [--previews on|off] [--window <s>] [--interval <s>] [--out <file.json>]
+//!     [--seconds <n>] [--previews off|on|everyone] [--window <s>] [--interval <s>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root> --memory
 //!     [--backend cpu|cuda] [--out <file.json>]
 //! ```
@@ -44,6 +44,7 @@ use earshot_core::capture::{DeviceTime, ReplayBuilder, TrackId};
 use earshot_core::model::ClockDomain;
 use earshot_runtime::backends::{Accelerator, ModelDir, init_onnx, onnx_library};
 use earshot_runtime::live::{LiveAsrFactory, LiveConfig, RuntimeEvent, start_live};
+use earshot_runtime::preview_settings::PreviewChoice;
 use earshot_runtime::replay::{PaceClock, PaceState, Paced, WallClock};
 use earshot_runtime::{Services, host, model_check, os_seeded_rng};
 use earshot_store::DataDir;
@@ -70,8 +71,9 @@ struct Args {
     out: Option<PathBuf>,
     /// Measure what more sessions of the model cost instead of replaying (`memory_report`).
     memory: bool,
-    /// Run previews (production's, `host::live_previews`).
-    previews: bool,
+    /// Run previews (production's, `host::live_previews`) with this choice: `on` the other people
+    /// only, `everyone` also the user's own track in a call (T9.14); `None` (`off`) none.
+    previews: Option<PreviewChoice>,
     /// Their window and interval, when not the starting values.
     window: Option<f64>,
     interval: Option<f64>,
@@ -91,7 +93,7 @@ fn parse_args() -> Args {
         seconds: 120,
         out: None,
         memory: false,
-        previews: false,
+        previews: None,
         window: None,
         interval: None,
     };
@@ -118,7 +120,14 @@ fn parse_args() -> Args {
             }
             "--out" => args.out = Some(PathBuf::from(value())),
             "--memory" => args.memory = true,
-            "--previews" => args.previews = value() == "on",
+            "--previews" => {
+                args.previews = match value().as_str() {
+                    "off" => None,
+                    "on" => Some(PreviewChoice::Automatic),
+                    "everyone" => Some(PreviewChoice::Everyone),
+                    other => fail(format!("unknown --previews {other}")),
+                }
+            }
             "--window" => args.window = value().parse().ok(),
             "--interval" => args.interval = value().parse().ok(),
             other => fail(format!("unknown flag {other}")),
@@ -580,11 +589,8 @@ fn main() {
     let paced = Paced::new(source, pace, true, Arc::clone(&state)).on_start(move || {
         *start_flag.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
     });
-    let previews = args.previews.then(|| {
-        let mut p = host::live_previews(
-            &models,
-            earshot_runtime::preview_settings::PreviewChoice::Automatic,
-        );
+    let previews = args.previews.map(|choice| {
+        let mut p = host::live_previews(&models, choice);
         if let Some(s) = args.window {
             p.window = Duration::from_secs_f64(s);
         }
@@ -609,7 +615,7 @@ fn main() {
     let mut backends = Vec::new();
     let mut problems = 0usize;
     let mut catch_up = None;
-    let mut preview_report = None;
+    let mut preview_reports = Vec::new();
     let mut loads = Vec::new();
     let mut last = host_reading();
     let first_cpu = last.map(|r| r.1);
@@ -672,7 +678,7 @@ fn main() {
                 lags[index(track)].previews.update(at, &named_words(&words));
             }
             Ok(RuntimeEvent::LivePreviewReport(r)) => {
-                preview_report = Some(json!({
+                preview_reports.push(json!({
                     "track": r.track.map(|t| format!("{t:?}")),
                     "decodes": r.decodes,
                     "audio_s": r.audio_s,
@@ -736,7 +742,7 @@ fn main() {
         "stopped_with": format!("{:?}", outcome.reason),
         "capture_max_lag_s": state.max_lag().as_secs_f64(),
         "catch_up_after_end_s": catch_up,
-        "previews": preview_report,
+        "previews": preview_reports,
         "mic": lags[0].json(),
         "reference": lags[1].json(),
         "decodes_mic": decodes(&logs[0]),

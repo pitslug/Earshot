@@ -477,8 +477,9 @@ pub enum RuntimeEvent {
         /// In time order; each is shown until settled text reaches it.
         words: Vec<earshot_core::asr::Word>,
     },
-    /// What the session's previews did, counts and times only: once, after the live transcript
-    /// finished, in a session configured with [`LiveConfig::previews`].
+    /// What a track's previews did, counts and times only: once per track that had previews
+    /// ([`PreviewReport::track`]), after the live transcript finished, in a session configured
+    /// with [`LiveConfig::previews`].
     LivePreviewReport(PreviewReport),
     /// Summarising during the meeting ([`LiveConfig::live_summaries`]) does not run (from
     /// the start) or stopped for the rest of the meeting; the summary after the meeting
@@ -875,11 +876,10 @@ where
     let mut speaker_setups = Vec::new();
     // With a hold the factory runs later, on the hold's thread (`hold` module docs).
     let held = cfg.hold.clone().filter(|_| live_asr.is_some());
-    let previews = cfg
-        .previews
-        .clone()
-        .filter(|_| live_asr.is_some())
-        .map_or(PreviewState::None, PreviewState::Pending);
+    let previews = LivePreviews::states(
+        cfg.previews.clone().filter(|_| live_asr.is_some()),
+        capture.reference.is_some(),
+    );
     let worker_cap = live_asr_backlog(&cfg);
     if held.is_none()
         && let Some(factory) = live_asr.as_mut()
@@ -1229,8 +1229,8 @@ struct Session<S> {
     audio_files: Vec<(TrackId, EntityId)>,
     /// Failures while finalising.
     problems: Vec<RuntimeWarning>,
-    /// The session's previews (`preview` module docs).
-    previews: PreviewState,
+    /// Each track's previews (by [`slot`], `preview` module docs).
+    previews: [PreviewState; 2],
     /// When the running previews next read the power supply.
     next_preview_power: Option<Instant>,
     /// Each track's voice activity now (by [`slot`]).
