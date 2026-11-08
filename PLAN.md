@@ -1537,7 +1537,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner, 2026-11-08: ONNX Runtime's CUDA provider gives every session its own copy of the weights on the card. Find whether one session can serve both: first whether a newer `ort` lets `Session::run` take `&self`, else scope a minimal unsafe wrapper over the C API's `Run` (reviewer required). Write the rule (no preview delays a real decode by more than a stated bound) before measuring; measure card memory and how long real decodes wait. The result decides default on, default off or a setting (the owner). No shipped change without the owner.
   - accept: the rule, findings and numbers in docs/live-previews.md
 
-- [~] T12.4 Provisional words on the NPU (was T9.13)
+- [x] T12.4 Provisional words on the NPU (was T9.13)
   - deps: T9.1m, T8.4
   - do: the owner, 2026-11-08: the NPU is the part made for this, and `previews_refused` turns previews off there only because nothing was measured. On the Surface, measure a meeting with previews on QNN against off with `live_lag` (speech-to-screen, the main transcript's lag and rtf, memory), on replays and a real meeting; write the rule for "the main transcript does not slow" before measuring and commit it. If it holds, the NPU leaves `previews_refused`; if not, the numbers and the reason go in docs/live-previews.md. Not while the owner is in a meeting. Added by the owner the same day: measure Everyone too (previews on both tracks, three NPU sessions with the main transcription), and whether the NPU sessions of a meeting can share one copy of the model (ONNX Runtime's EP context sharing between sessions of one process) and what that saves in memory and load time. The measurement tooling (`live_lag --backend qnn`, an evaluation-only way past the refusal) is built on the desktop first; production refusals change only after the measurement.
   - accept: `cargo test -p earshot-runtime preview`; the rule, the measurements and the decision in docs/live-previews.md
@@ -1576,6 +1576,11 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - deps: none
   - do: found at GATE-02 (2026-11-08): in a call where the user said nothing, the final transcript kept one 2-word mic segment under "Me", 0.7 s long and wholly inside far-end speech. `asr::dedupe_echo` matches runs of 3+ words by design, and the speaker check names the only mic voice "Me". Find a rule that removes such fragments without costing near-end words in talk-over: write it before measuring, design and tune only on `asr_eval --leak-dev` (and `--rumble`), keep `ECHO_NEAR_RECALL_FLOOR_PERCENT` and `asr.echo_leak` holding. No change if no rule passes.
   - accept: `cargo test -p earshot-core asr`; `cargo test -p earshot-runtime post`; `cargo xtask accept m2`; the rule and leak-dev numbers in docs
+
+- [ ] T12.12 NPU sessions from precompiled models (spike)
+  - deps: T12.4
+  - do: found by T12.4 (2026-11-09): each NPU session compiles the Parakeet conversion at load (29-31 s) and costs about 2.0 GiB of private memory, nothing shared, so a call on the 16 GB Surface (idling above 60% memory use) leaves about 1.1 GiB available. Measure ONNX Runtime's EP context models for the QNN plugin (`ep.context_enable`, a compiled context binary made once and loaded by later sessions): load time and private memory per session with `live_lag --memory`, whether the QDQ initializers then stay in memory, and whether `ep.share_ep_contexts` or the plugin's weight sharing then lets sessions share. Where a compiled binary would live, how it is pinned and verified like other model files, and what invalidates it (driver, plugin, model version) go in the findings. Evaluation only; no shipped change without the owner. If a session drops well below 2 GiB, T12.4's rule is run again.
+  - accept: findings, `--memory` reports and a recommendation in docs/live-previews.md
 
 ### M10 - v2 Android in-person recorder
 
