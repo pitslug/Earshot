@@ -381,6 +381,30 @@ pub fn finished_toast(result: &SummaryEvent) -> Option<Toast> {
     }
 }
 
+/// The notification when a job on a stored meeting ends, and the meeting its clicks open: a
+/// re-summary says what a meeting's own summary says ([`finished_toast`]), and a re-summarise job
+/// that failed before it ran says the summary was not made. Nothing for a re-transcription or a
+/// job's steps.
+#[must_use]
+pub fn job_toast(event: &crate::jobs::JobEvent) -> Option<(Toast, String)> {
+    use crate::jobs::{JobEvent, JobKind};
+    match event {
+        JobEvent::Summary { meeting, result } => {
+            finished_toast(result).map(|t| (t, meeting.clone()))
+        }
+        JobEvent::Failed {
+            meeting,
+            job: JobKind::Resummarise,
+            ..
+        } => finished_toast(&SummaryEvent::Failed {
+            message: String::new(),
+            retryable: false,
+        })
+        .map(|t| (t, meeting.clone())),
+        _ => None,
+    }
+}
+
 /// The notification when a meeting started with no window on screen: someone is being
 /// recorded, and a tray icon alone can be hidden in the overflow.
 #[must_use]
@@ -796,6 +820,16 @@ impl Shell {
             && let Some(toast) = finished_toast(result)
         {
             self.notify(&toast, Some(meeting.clone()));
+        }
+    }
+
+    /// A job's event, after the UI got it: a finished re-summary notifies when the window is not
+    /// being looked at, as a meeting's own summary does.
+    pub fn on_job_event(self: &Arc<Self>, event: &crate::jobs::JobEvent) {
+        if !self.window_watched()
+            && let Some((toast, meeting)) = job_toast(event)
+        {
+            self.notify(&toast, Some(meeting));
         }
     }
 

@@ -231,6 +231,59 @@ fn shell_a_recording_that_ends_says_so_once_with_fixed_copy() {
 }
 
 #[test]
+fn shell_a_resummary_notifies_like_a_meetings_summary() {
+    use crate::jobs::{JobEvent, JobKind};
+    let id = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_owned();
+    let done = JobEvent::Summary {
+        meeting: id.clone(),
+        result: stored(2),
+    };
+    assert_eq!(
+        job_toast(&done),
+        Some((finished_toast(&stored(2)).unwrap(), id.clone()))
+    );
+    // A summary that ran and failed, and a re-summarise job that failed before it ran, both say so.
+    let failed_summary = JobEvent::Summary {
+        meeting: id.clone(),
+        result: SummaryEvent::Failed {
+            message: "Sam's secret reason".into(),
+            retryable: true,
+        },
+    };
+    let failed_job = JobEvent::Failed {
+        meeting: id.clone(),
+        job: JobKind::Resummarise,
+        message: "Sam's secret reason".into(),
+        retryable: true,
+    };
+    for e in [failed_summary, failed_job] {
+        let (toast, meeting) = job_toast(&e).unwrap();
+        assert_eq!(toast.title, "The summary was not made");
+        assert_eq!(meeting, id);
+        assert!(!format!("{toast:?}").contains("Sam"));
+    }
+    // Nothing for a summary nobody asked for, a re-transcription or a job's steps.
+    for e in [
+        JobEvent::Summary {
+            meeting: id.clone(),
+            result: SummaryEvent::Cancelled,
+        },
+        JobEvent::Failed {
+            meeting: id.clone(),
+            job: JobKind::Retranscribe,
+            message: "m".into(),
+            retryable: false,
+        },
+        JobEvent::Warning {
+            meeting: id.clone(),
+            message: "m".into(),
+        },
+    ] {
+        assert_eq!(job_toast(&e), None, "{e:?}");
+    }
+}
+
+#[test]
 fn shell_no_notification_for_a_summary_nobody_asked_for() {
     assert_eq!(
         finished_toast(&SummaryEvent::Skipped {

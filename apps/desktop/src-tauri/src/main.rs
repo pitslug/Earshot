@@ -187,6 +187,9 @@ fn main() {
             let handle = app.handle().clone();
             let job_sink: jobs::JobSink = Arc::new(move |e: jobs::JobEvent| {
                 let _ = e.emit(&handle);
+                if let Some(shell) = handle.try_state::<Arc<shell::Shell>>() {
+                    shell.on_job_event(&e);
+                }
             });
             app.manage(jobs::JobRunner::new(
                 Arc::new(jobs::HostJobs),
