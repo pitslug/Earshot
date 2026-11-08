@@ -348,6 +348,7 @@ A gate is a hard stop that waits for the human. The protocol (how gates are open
 - (Resolved 2026-11-07, the owner: the app offers the pinned community Parakeet conversions (k2-fsa sherpa-onnx, CC-BY-4.0, checked by SHA-256) as downloads from their own hosts, in the x64 early release and until decided otherwise. Earshot does not host them: GitHub cannot hold the 2.27 GiB encoder, and the licence does not ask for it. The risk accepted is the uploader removing the files; converting from NVIDIA's `.nemo` and hosting on the owner's Hugging Face account is the way out if that happens.)
 - (Resolved 2026-10-24: T8.3 targets Parakeet through Qualcomm's ONNX Runtime QNN plugin; the owner accepts the Qualcomm AI Stack License for development on their own machines; the NPU never runs a real meeting before an ETW check shows the plugin emits no telemetry.)
 - (Resolved 2026-11-08, the owner: the Qualcomm QNN runtime libraries are bundled inside the ARM64 installer under clause 1(iv) of the Qualcomm AI Stack License, with its licence and notices files beside them; never downloaded on their own (docs/qnn-redistribution.md). Windows ML is not used.)
+- (Resolved 2026-11-08, the owner: Earshot's own NPU conversions of Parakeet (`parakeet-qnn/<model>`, about 640 MB for the 0.6B and 137 MB for the 110M) are published on `pitslug/Earshot` with the CC-BY-4.0 credit, in the one release that holds every file Earshot hosts (titled "Earshot Dependencies"; its tag stays `cuda-set-llama-0.1.160-2` because installed apps fetch the CUDA set by that URL, and it is never marked latest, which would break the update check), and the app downloads them from the Models page through the manifest, checked by SHA-256. The community Parakeet copies themselves stay on their own hosts.)
 - (Resolved 2026-11-07, the owner: end users fetch NVIDIA's files from NVIDIA's server without a written answer first. The owner accepts that risk at this scale.)
   Research for that decision: `docs/cuda-libraries.md` (no route settled on the licence text; ask NVIDIA in writing; measured about 1.35 GB on disk against D23's estimate of 2 to 3 GB; a CUDA install is about 400 to 500 MB by a guess, not D23's 40 MB app), `docs/arm64-cuda.md` (research half of T8.4b, which stays open for its build probe) and `docs/qnn-redistribution.md` (bundle inside the ARM64 installer, about 132 MB).
 - (Resolved 2026-11-08, the owner: the update host is this repo's GitHub Releases, `github.com` and its download host `release-assets.githubusercontent.com`, for now. Settled: no MSI; one per-user NSIS installer, which updates without admin. docs/updates.md.)
@@ -1285,10 +1286,26 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T8.3
   - do: D23. CUDA 13.4 reportedly adds Windows on Arm64 as a developer preview, for NVIDIA's RTX Spark (N1X) machines. From NVIDIA's own release notes and a probe outside the shipped crates: does whisper.cpp build for ARM64 CUDA, does llama.cpp, does ONNX Runtime publish an ARM64 CUDA library, what driver does it need, and may the DLLs be redistributed? Installing the toolkit is the owner's step. No such machine exists here, so nothing can be run on CUDA: the report says what is proven by a build and what is not.
   - accept: `docs/arm64-cuda.md` with the findings, sources and a recommendation; the owner decides from it whether the ARM64 install offers the CUDA download on an NVIDIA machine (never shipped as working without a run on real hardware).
+- [ ] T8.4e QNN libraries in the ARM64 install
+  - deps: T8.4b
+  - do: the owner approved bundling (section 7, 2026-11-08). The ARM64 installer carries the QNN libraries the manifest pins for the plugin (`onnxruntime_providers_qnn.dll`, `QnnHtp.dll`, `QnnHtpPrepare.dll`, `QnnSystem.dll`, the V73 and V81 stubs and skels) plus `Qualcomm_LICENSE.pdf`, the plugin's `LICENSE` and ONNX Runtime's `ThirdPartyNotices.txt`, copied from the verified extraction, named in the install's NOTICE. `earshot_onnx::qnn` finds them beside the exe (a package root parameter with the same SHA-256 pins), never in the models folder for a shipped build. `bundle.rs` refuses QNN files and imports only on x64; on ARM64 `expected_files` lists exactly these. The `.cat` files stay out until the Surface shows they are needed.
+  - accept: `cargo test -p xtask bundle`; `cargo test -p earshot-onnx qnn`; `cargo xtask build --target aarch64-pc-windows-msvc --bundle`
+- [ ] T8.4f NPU in the ARM64 app's backend order
+  - deps: T8.4e
+  - do: a `qnn` feature on `earshot-desktop` forwarding to `earshot-runtime/qnn`, added by `build::shipped_features` for an ARM64 app, so the order is QNN > CPU for Parakeet there. A machine whose NPU or QNN library refuses to load starts and runs on the CPU with the reason shown once (fake loader test). No CUDA on ARM64: the owner has not chosen it after T8.4b.
+  - accept: `cargo test -p earshot-runtime backends`; `cargo test -p xtask build`; `cargo xtask build --target aarch64-pc-windows-msvc --app`
+- [ ] T8.4g Hosted NPU conversions
+  - deps: T8.4f
+  - do: the owner chose (section 7, 2026-11-08) Earshot's GitHub release "Earshot Dependencies" (tag `cuda-set-llama-0.1.160-2`, never marked latest). Publish the `parakeet-qnn/parakeet-tdt-0.6b-v2` and `parakeet-tdt-110m` conversions that GATE-03a measured (checked against their `conversion.json` and docs/qnn.md before upload) as zips with a NOTICE carrying the CC-BY-4.0 credit; manifest entries with size, SHA-256 and licence, extracted through `archive::extract_verified` into `parakeet-qnn/<model>`, offered on the Models page of an ARM64 app only, and kept by `backends::verify_qnn_conversion`. Uploading is the owner's go-ahead.
+  - accept: `cargo test -p xtask models`; `cargo test -p earshot-runtime catalogue`; `cargo xtask fetch-models --set qnn-models --verify` after upload
+- [ ] T8.4h ARM64 bundle-check
+  - deps: T8.4e
+  - do: `cargo xtask bundle-check --target <triple>` checks the build it names, and refuses (rather than checking the host's build) when the target cannot run on this host, saying to run it on an ARM64 machine. On ARM64 it also checks the QNN files are present and pinned.
+  - accept: `cargo test -p xtask bundle`
 - [ ] T8.4 ARM64 package
-  - deps: T8.3, T8.3e, T8.4b
-  - do: arm64 Tauri bundle (NSIS) including the dynamically loaded ORT QNN runtime libraries; if the owner chose it after T8.4b, the CUDA download of T8.4a is offered on an NVIDIA machine (D23). Backend auto-select QNN > CPU, with CUDA first where it applies. A machine without that hardware starts and runs on what it has. Check QNN HTP DLL redistribution terms first (section 7).
-  - accept: `cargo xtask build --target aarch64-pc-windows-msvc --bundle`
+  - deps: T8.3, T8.3e, T8.4b, T8.4e, T8.4f, T8.4g, T8.4h
+  - do: joint acceptance of T8.4e to T8.4h: built on the desktop, judged on the Surface. Backend auto-select QNN > CPU; a machine without that hardware starts and runs on what it has.
+  - accept: `cargo xtask build --target aarch64-pc-windows-msvc --bundle` on the desktop; `cargo xtask bundle-check` on the Surface
 - [ ] GATE-03 Accelerated backends on hardware
   - deps: T8.4
   - do: open the gate: on the Surface run `cargo xtask accept m2 --backend cpu`, `--backend qnn`, and `bench` for both; on the desktop run `bench --backend cuda` if not already in `acceptance/results`. Also (from T6.23d): a short take on the Surface's built-in mic with the T6.23d script (`record-raw`), Windows Voice Clarity / Studio Effects noted on or off, scored counts only as the desktop takes were (script words under "Me", far-end text under "Me", summary action owners, low-frequency level); informational, not a pass criterion. Pass criteria: QNN WER within 1.5 points of CPU, live chunk p95 latency under 3 s on the Surface.
@@ -1483,10 +1500,22 @@ Moved here by the owner: real work, not needed for the first release.
   - deps: T7.4h
   - do: the owner: in an in-room meeting with no saved voice, the user can say a voice is theirs, instead of naming themselves creating a second person. Reviewer required: it changes who counts as the user.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
-- [ ] T9.5 Folders in the side panel
+- [ ] T9.5a Folders: model and migration
   - deps: T9.1
-  - do: The owner, after release. Group meetings into folders in the side panel. It needs a new table, a migration and a place in the future sync design. The design is agreed (docs/folders-design.md); building waits for the owner's word, and the task is split then.
-  - accept: written when the owner says to build
+  - do: docs/folders-design.md "Data model": `Folder` (synced, `syncable_row!`), repo trait and contract cases, the `folder` table in `SYNCED_TABLES`, `meeting.folder_id BLOB` (no foreign key, `Option<EntityId>` with `serde(default)`) in schema version 2 by an appended migration with its `APPLIED` pin, cleared by core `delete_meeting`; trybuild `never_sync_envelope.stderr` regenerated. A committed version-1 database migrates. Reviewer required.
+  - accept: `cargo test -p earshot-store folder`; `cargo test -p earshot-core model`
+- [ ] T9.5b Folders: runtime
+  - deps: T9.5a
+  - do: `earshot_runtime::folders`, the one owner of folder reads and edits: create, rename, move (refused while recording), delete keeping meetings, delete with meetings (each through `Services::delete_meeting`, no lock held across the loop, closing transaction re-selects members, then `flush_erasures`; failures leave the folder with what is left and return counts), resolve (a dangling id reads as no folder). Case-insensitive unique live names checked in the transaction; `EditError` cases that never quote a name. Tests in docs/folders-design.md "Tests to write".
+  - accept: `cargo test -p earshot-runtime folders`
+- [ ] T9.5c Folders: UI
+  - deps: T9.5b
+  - do: IPC commands and bindings; the Folders group, the filter (opens on All meetings), Move to folder in the row menu, Rename and Delete with the two-choice dialog (keeping the meetings is the default) in `AppShell`; the start-up screen for a database saved by a newer Earshot. Screens checked light and dark.
+  - accept: `cargo test -p earshot-desktop folders`; `cmd /c pnpm -r test`
+- [ ] T9.5 Folders in the side panel
+  - deps: T9.5a, T9.5b, T9.5c
+  - do: joint acceptance; design in docs/folders-design.md (the owner, 2026-11-08).
+  - accept: `cargo xtask ci`
 - [ ] T9.6 Shared models for an "everyone" install
   - deps: T9.1p
   - do: discussed with the owner, after release and only if a real user asks. `%ProgramData%\Earshot\models`, readable by all and writable only with admin, because the folder holds DLLs another user would run. Meetings, voiceprints and settings stay per user. Every file a shared load reads is checked, and its cost measured.
