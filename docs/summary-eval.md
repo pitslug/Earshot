@@ -916,3 +916,13 @@ These are small samples, with few contradictions (a difference of one or two ite
 **Reading.** The facts work: they turn one bundled sentence into something a judge can decide part by part. A local Qwen 3.5 9B judge is not good enough to replace agent judges for this purpose. Judging by agents on blinded fact packets works today through `--judge-packets --facts`. A better local judge is future work only if automatic judging is ever needed; summary quality has no threshold, so nothing waits on it.
 
 **Reproduce.** `sum_eval` (with `--gpu --assistant-prefix` set as in `xtask::sum_eval::CANDIDATES`): `--split-facts fixtures/ami/atomic_facts.json`; `--judge-packets <dir> --facts fixtures/ami/atomic_facts.json --blind-key <key> --summaries ...`; `--judge-facts <dir> --out <dir2>`; `--agreement <gold> --against <dir2>`; `--import-verdicts <dir2> --facts ... --blind-key <key>`. Keys are `facts-dev-key.json` and `facts-test-key.json` in `docs/summary-eval/t620a/`; `gold/` and `heldout/` hold the packets and agent verdicts.
+
+## T12.10: Qwen thinking on against off (evaluation only)
+
+Written before measuring, 2026-11-09. Every evaluation so far ran Qwen 3.5 with thinking off (the empty `<think>` prefix). This measures thinking on, through an evaluation-only `sum_eval` option with its own format key; production is unchanged.
+
+**Setup.** Desktop GPU (CUDA), idle host, dev split only: the ten dev meetings of T6.20a's agent labels (the five `c` meetings of the gold set and the five `b` meetings), reference source, chunked 600 s, the settled rules, Qwen 3.5 9B and 4B. Thinking is a bounded `<think>` section before the summary JSON, allowed by the grammar, with a token cap so it cannot use the reply budget. Off summaries are generated again in the same run, so both sides come from the same build.
+
+**Judging.** Atomic facts (`fixtures/ami/atomic_facts.json`), by Claude Code agents on blinded packets (`--judge-packets --facts`, `--import-verdicts --facts`), one agent per meeting, every packet of a meeting (both models, off and on) in one blinded round, with the brief recorded here.
+
+**Rule, fixed now (judgements).** For each model, count facts not covered (missing plus contradicted) over the ten meetings (108 facts). Thinking on earns a follow-up task only if, for at least one model, that count falls by at least 5 (about 5%; T6.20a found a difference of one or two items to be noise), with contradictions up by at most 1 and no more invalid summaries; and the other model's count does not rise by more than 2. Time per meeting is reported beside it and decides nothing here. If the rule fails, nothing follows; the tables go here either way.
