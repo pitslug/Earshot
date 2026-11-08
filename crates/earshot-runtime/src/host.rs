@@ -423,12 +423,14 @@ pub fn transcription_setup(
         build,
         hardware,
     );
-    let mut notes: Vec<String> = placement.note.into_iter().collect();
+    // A Parakeet model whose NPU conversion is not installed runs on the processor, said (T8.4f).
+    let (order, npu_note) = crate::backends::npu_order(models, &choice.model, placement.order);
+    let mut notes: Vec<String> = placement.note.into_iter().chain(npu_note).collect();
     notes.extend(unknown.iter().map(ToString::to_string));
     Ok(TranscriptionSetup {
         choice,
         source,
-        order: placement.order,
+        order,
         languages: settings.languages.clone(),
         notes,
     })
@@ -690,6 +692,7 @@ pub fn init_onnx_for_check(
     let library = crate::backends::onnx_library_for_all(order);
     match init_onnx(models, library) {
         Err(e) if library != Accelerator::Cpu => {
+            fell_back(library);
             on_fallback(library, &e);
             init_onnx(models, Accelerator::Cpu)
         }
@@ -1174,10 +1177,19 @@ pub fn init_onnx_for(
     let library = onnx_library(model, order);
     match init_onnx(models, library) {
         Err(e) if library != Accelerator::Cpu => {
+            fell_back(library);
             on_fallback(library, &e);
             init_onnx(models, Accelerator::Cpu)
         }
         r => r,
+    }
+}
+
+/// Keeps a library that did not load out of the rest of the process, so the warning just heard is
+/// its only one: the NPU's here (T8.4f); CUDA's is recorded by `init_onnx` itself.
+fn fell_back(library: Accelerator) {
+    if library == Accelerator::Qnn {
+        crate::backends::record_qnn_load_failure();
     }
 }
 

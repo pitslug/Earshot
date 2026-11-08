@@ -417,8 +417,29 @@ pub fn accelerator_order() -> Vec<Accelerator> {
             .any(|d| d.backend == BackendKind::Vulkan);
     with_npu(
         order_for(onnx_cuda_usable(), vulkan),
-        cfg!(all(feature = "qnn", target_arch = "aarch64")),
+        NPU_BUILD && !qnn_load_failed(),
     )
+}
+
+/// Whether this build offers the NPU: an ARM64 `qnn` build (T8.3, T8.4f).
+const NPU_BUILD: bool = cfg!(all(feature = "qnn", target_arch = "aarch64"));
+
+/// Set once the QNN library of this process failed to load ([`record_qnn_load_failure`]).
+static QNN_LOAD_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Records that ONNX Runtime with the QNN plugin did not load (no NPU, a library failing its
+/// SHA-256, a provider that refuses, missing files). The NPU leaves the order for the rest of the
+/// process, as CUDA does after `cuda::record_load_failure`: the Models page, the check's
+/// fingerprint and later meetings see what really runs, and only the caller that heard the failure
+/// reports it (`host::init_onnx_for`).
+pub(crate) fn record_qnn_load_failure() {
+    QNN_LOAD_FAILED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether the QNN library failed to load in this process ([`record_qnn_load_failure`]).
+#[must_use]
+pub fn qnn_load_failed() -> bool {
+    QNN_LOAD_FAILED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Whether this process may run ONNX Runtime's CUDA provider: a developer's `cuda` build, or the
@@ -453,13 +474,13 @@ pub fn model_order(model: &AsrModel, order: &[Accelerator]) -> Vec<Accelerator> 
     let order = model_order_with(model, order, !crate::cuda::transcription_from_folder());
     // A setup read before the library failed to load must not try it again: the one warning was
     // the library's.
-    if crate::cuda::load_failed() {
-        return order
-            .into_iter()
-            .filter(|a| *a != Accelerator::Cuda)
-            .collect();
-    }
+    let cuda_failed = crate::cuda::load_failed();
+    let qnn_failed = qnn_load_failed();
     order
+        .into_iter()
+        .filter(|a| !(cuda_failed && *a == Accelerator::Cuda))
+        .filter(|a| !(qnn_failed && *a == Accelerator::Qnn))
+        .collect()
 }
 
 /// [`model_order`], with whether whisper.cpp may be offered CUDA given. Asked directly anyway,
@@ -528,14 +549,78 @@ pub fn qnn_files() -> Vec<String> {
     .collect()
 }
 
-/// The folder the QNN plugin is registered from: beside the exe in a shipped ARM64 install that
-/// holds it (T8.4e), else the models directory's extraction.
+/// Whether this build takes the QNN plugin only from beside the exe: the shipped ARM64 app
+/// (`qnn-installed`, through the desktop's `qnn` feature; T8.4e, T8.4f). The CLI and development
+/// builds may use the models folder's extraction.
+pub const QNN_INSTALL_ONLY: bool = cfg!(feature = "qnn-installed");
+
+/// The folder the QNN plugin is registered from ([`qnn_package_dir_in`] for this exe and build).
 #[must_use]
-pub fn qnn_package_dir(models: &ModelDir) -> PathBuf {
-    earshot_onnx::qnn::package_dir(
-        models.root(),
-        &earshot_onnx::qnn::QNN_HOST,
+pub fn qnn_package_dir(models: &ModelDir) -> Option<PathBuf> {
+    qnn_package_dir_in(
+        models,
         earshot_onnx::qnn::exe_dir().as_deref(),
+        QNN_INSTALL_ONLY,
+    )
+}
+
+/// The folder the QNN plugin is registered from: `exe_dir` when it holds the plugin (a shipped
+/// ARM64 install, T8.4e); otherwise the models directory's extraction, unless `install_only` (a
+/// shipped build never reads the models folder for it: `None`).
+#[must_use]
+pub fn qnn_package_dir_in(
+    models: &ModelDir,
+    exe_dir: Option<&Path>,
+    install_only: bool,
+) -> Option<PathBuf> {
+    let beside_exe = exe_dir.filter(|d| d.join(earshot_onnx::qnn::QNN_PROVIDER_LIB).is_file());
+    match beside_exe {
+        Some(dir) => Some(dir.to_path_buf()),
+        None if install_only => None,
+        None => Some(earshot_onnx::qnn::package_dir(
+            models.root(),
+            &earshot_onnx::qnn::QNN_HOST,
+            None,
+        )),
+    }
+}
+
+/// This install holds no QNN libraries beside the exe ([`QNN_INSTALL_ONLY`]).
+const QNN_NOT_INSTALLED: RuntimeError =
+    RuntimeError::Unavailable("this installation of Earshot holds no NPU libraries beside it");
+
+/// `order` for transcription model `name` given what `models` holds: without the NPU, and the
+/// user's note why, when `name` is a Parakeet model whose NPU conversion
+/// ([`ParakeetModel::qnn_files`]) is not all there (T8.4f; the conversions are a separate download,
+/// T8.4g). Only presence is read here: the files are checked against their `conversion.json` when
+/// the model loads ([`require_qnn_model`]), and a refusal there falls back to the CPU, reported. An
+/// order without the NPU, or a model never offered it ([`model_order`]), is unchanged.
+#[must_use]
+pub fn npu_order(
+    models: &ModelDir,
+    name: &str,
+    order: Vec<Accelerator>,
+) -> (Vec<Accelerator>, Option<String>) {
+    let Ok(AsrModel::Parakeet(model)) = asr_model(name) else {
+        return (order, None);
+    };
+    if !order.contains(&Accelerator::Qnn) {
+        return (order, None);
+    }
+    let files = model.qnn_files();
+    if !files.is_empty() && files.iter().all(|f| models.root().join(f).is_file()) {
+        return (order, None);
+    }
+    let note = format!(
+        "{} has no NPU version installed, so it runs on the processor.",
+        crate::catalogue::display_name(name)
+    );
+    (
+        order
+            .into_iter()
+            .filter(|a| *a != Accelerator::Qnn)
+            .collect(),
+        Some(note),
     )
 }
 
@@ -563,13 +648,14 @@ fn cores() -> usize {
 /// VAD and the speaker models, at the cost of its load time and memory and of needing cuDNN
 /// even for Whisper meetings); the CPU library with the QNN plugin registered when `model`
 /// is a Parakeet model and QNN is in the order (T8.3; the same DLL as the CPU library, so
-/// no conflict); otherwise the CPU library.
+/// no conflict); otherwise the CPU library. After the QNN library failed to load in this process
+/// ([`qnn_load_failed`]) the NPU is not asked for again.
 #[must_use]
 pub fn onnx_library(model: &str, order: &[Accelerator]) -> Accelerator {
     let parakeet = matches!(asr_model(model), Ok(AsrModel::Parakeet(_)));
     if order.contains(&Accelerator::Cuda) {
         Accelerator::Cuda
-    } else if parakeet && order.contains(&Accelerator::Qnn) {
+    } else if parakeet && order.contains(&Accelerator::Qnn) && !qnn_load_failed() {
         Accelerator::Qnn
     } else {
         Accelerator::Cpu
@@ -577,11 +663,13 @@ pub fn onnx_library(model: &str, order: &[Accelerator]) -> Accelerator {
 }
 
 /// The ONNX Runtime library for trying every accelerator of `order` (the model check):
-/// CUDA's when CUDA is in the order, else the QNN plugin's when QNN is, else the CPU's.
+/// CUDA's when CUDA is in the order, else the QNN plugin's when QNN is (and has not failed to load
+/// in this process), else the CPU's.
 #[must_use]
 pub fn onnx_library_for_all(order: &[Accelerator]) -> Accelerator {
     [Accelerator::Cuda, Accelerator::Qnn]
         .into_iter()
+        .filter(|a| *a != Accelerator::Qnn || !qnn_load_failed())
         .find(|a| order.contains(a))
         .unwrap_or(Accelerator::Cpu)
 }
@@ -635,7 +723,8 @@ fn session_config(accel: Accelerator) -> Result<SessionConfig, RuntimeError> {
 /// [`qnn_package_dir`] (`earshot_onnx::qnn::register_qnn_in`, every library checksum-verified).
 ///
 /// # Errors
-/// [`RuntimeError::Unavailable`] for CUDA or QNN in a build without the feature;
+/// [`RuntimeError::Unavailable`] for CUDA or QNN in a build without the feature, and for QNN in a
+/// shipped build ([`QNN_INSTALL_ONLY`]) whose install holds no QNN libraries;
 /// [`RuntimeError::ModelMissing`]; [`RuntimeError::Onnx`] if a library fails its
 /// checksum, another ONNX Runtime library is already loaded, or the QNN plugin offers no
 /// device.
@@ -687,8 +776,11 @@ pub fn init_onnx(models: &ModelDir, accel: Accelerator) -> Result<PathBuf, Runti
     };
     let library = models.require(rel)?;
     // A shipped install holds the plugin beside the exe; only the models folder's copy needs the
-    // fetch instruction of a missing file.
-    let qnn_dir = (accel == Accelerator::Qnn).then(|| qnn_package_dir(models));
+    // fetch instruction of a missing file. A shipped build never falls back to that copy.
+    let qnn_dir = match accel {
+        Accelerator::Qnn => Some(qnn_package_dir(models).ok_or(QNN_NOT_INSTALLED)?),
+        _ => None,
+    };
     if qnn_dir
         .as_deref()
         .is_some_and(|d| d == models.root().join(earshot_onnx::qnn::QNN_HOST.dir))

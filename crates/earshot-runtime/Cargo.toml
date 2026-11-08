@@ -25,6 +25,10 @@ vulkan-summaries = ["vulkan", "earshot-llm-local/vulkan"]
 # The Snapdragon NPU through Qualcomm's QNN plugin for ONNX Runtime (T8.3; Parakeet only;
 # `cargo xtask fetch-models --set qnn` at run time). First in the order only on ARM64.
 qnn = ["earshot-onnx/qnn"]
+# `qnn` as the shipped ARM64 app has it (T8.4f): the QNN libraries only from beside the exe
+# (T8.4e), never from the models folder (`backends::QNN_INSTALL_ONLY`). The CLI and development
+# builds keep the models folder.
+qnn-installed = ["qnn"]
 
 [dependencies]
 # The model check's embedded test clip is FLAC (same pin as earshot-store).

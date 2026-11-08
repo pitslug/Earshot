@@ -19,6 +19,10 @@ cuda = ["earshot-runtime/cuda"]
 onnx-cuda = ["earshot-runtime/onnx-cuda"]
 vulkan = ["earshot-runtime/vulkan"]
 vulkan-summaries = ["vulkan", "earshot-runtime/vulkan-summaries"]
+# Parakeet on the Snapdragon NPU (T8.4f): what the ARM64 app ships with (`xtask::build::
+# shipped_features`). The QNN libraries come only from beside the exe (T8.4e), never from the
+# models folder.
+qnn = ["earshot-runtime/qnn", "earshot-runtime/qnn-installed"]
 
 [build-dependencies]
 # Pinned with `=` to match `@tauri-apps/cli` and `@tauri-apps/api` 2.12 in apps/desktop.

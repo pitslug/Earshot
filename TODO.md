@@ -74,7 +74,6 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-store/src/db.rs (init, the `journal_mode = WAL` step): two `Store::open`s racing on a brand-new database file still in rollback mode can fail with "database is locked" (found in T9.5a; installed databases are already WAL, and the app is single-instance).
 - packages/ui/src/shell/AppShell.tsx: choosing a folder filters the list but leaves the open meeting as it was, even when it is not in that folder; and folder rows have no visible menu button (right-click and Shift+F10 only, as meeting rows). Owner to judge after using it.
 - crates/earshot-runtime/src/folders.rs: folders sort by code point after case folding, so a name starting with an accented letter sorts after z.
-- crates/earshot-runtime/src/backends.rs (`qnn_package_dir`): a shipped ARM64 install missing its QNN files falls back to the models folder (still hash-pinned); PLAN T8.4e says never the models folder for a shipped build. Tighten with a shipped-build signal (T8.4f).
 - xtask/src/bundle/tests.rs:265: `build_bundle_arm64_install_holds_exactly_the_qnn_files_and_their_licences` derives `base` from the ARM64 list itself, so its count check catches only duplicates; derive it from the x64 list minus the Vulkan files.
 - crates/earshot-runtime/src/backends_tests.rs:300: `backends_qnn_package_is_the_models_folder_unless_the_exe_folder_holds_the_plugin` covers only the models-folder branch.
 - crates/earshot-onnx/src/qnn.rs:191: the missing-file message mentions an ARM64 install for the x64 package too.

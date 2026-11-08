@@ -300,6 +300,10 @@ fn backends_qnn_files_cover_every_pinned_library_of_the_package() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "qnn-installed",
+    ignore = "checks a build that may take the plugin from the models folder"
+)]
 fn backends_qnn_package_is_the_models_folder_unless_the_exe_folder_holds_the_plugin() {
     let models = ModelDir::new(std::env::temp_dir().join("earshot-runtime-qnn-dir"));
     // A test binary's folder holds no plugin, as in development and the CLI.
@@ -307,8 +311,146 @@ fn backends_qnn_package_is_the_models_folder_unless_the_exe_folder_holds_the_plu
     assert!(!exe.join(earshot_onnx::qnn::QNN_PROVIDER_LIB).exists());
     assert_eq!(
         qnn_package_dir(&models),
-        models.root().join(earshot_onnx::qnn::QNN_HOST.dir)
+        Some(models.root().join(earshot_onnx::qnn::QNN_HOST.dir))
     );
+}
+
+#[test]
+fn backends_qnn_install_only_takes_the_plugin_from_beside_the_exe_alone() {
+    let root = std::env::temp_dir().join(format!("earshot-qnn-install-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let models = ModelDir::new(root.join("models"));
+    let install = root.join("install");
+    let empty = root.join("empty");
+    std::fs::create_dir_all(&install).unwrap();
+    std::fs::create_dir_all(&empty).unwrap();
+    std::fs::write(install.join(earshot_onnx::qnn::QNN_PROVIDER_LIB), b"plugin").unwrap();
+    // The models folder's copy exists too: a shipped build never reads it.
+    let in_models = models.root().join(earshot_onnx::qnn::QNN_HOST.dir);
+    std::fs::create_dir_all(&in_models).unwrap();
+    std::fs::write(
+        in_models.join(earshot_onnx::qnn::QNN_PROVIDER_LIB),
+        b"plugin",
+    )
+    .unwrap();
+    // A shipped app: the install's folder, else nothing.
+    assert_eq!(
+        qnn_package_dir_in(&models, Some(&install), true),
+        Some(install.clone())
+    );
+    assert_eq!(qnn_package_dir_in(&models, Some(&empty), true), None);
+    assert_eq!(qnn_package_dir_in(&models, None, true), None);
+    // Development and the CLI: the install's folder when it holds the plugin, else the models
+    // folder.
+    assert_eq!(
+        qnn_package_dir_in(&models, Some(&install), false),
+        Some(install.clone())
+    );
+    assert_eq!(
+        qnn_package_dir_in(&models, Some(&empty), false),
+        Some(in_models.clone())
+    );
+    assert_eq!(qnn_package_dir_in(&models, None, false), Some(in_models));
+    // Only the desktop's `qnn` feature turns it on.
+    assert_eq!(QNN_INSTALL_ONLY, cfg!(feature = "qnn-installed"));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Writes every file of `model`'s NPU conversion (empty: only their presence is read here).
+fn put_npu_conversion(models: &ModelDir, model: &str) {
+    let Ok(AsrModel::Parakeet(p)) = asr_model(model) else {
+        panic!("{model} is no Parakeet model");
+    };
+    for rel in p.qnn_files() {
+        let f = models.root().join(rel);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, b"").unwrap();
+    }
+}
+
+#[test]
+fn backends_npu_is_left_out_for_a_model_without_its_npu_conversion() {
+    let root = std::env::temp_dir().join(format!("earshot-npu-order-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let models = ModelDir::new(root.clone());
+    let surface = vec![Accelerator::Qnn, Accelerator::Cpu];
+    // No conversion: the processor, and the user is told.
+    let (order, note) = npu_order(&models, "parakeet-tdt-0.6b-v2", surface.clone());
+    assert_eq!(order, [Accelerator::Cpu]);
+    let note = note.unwrap();
+    assert_eq!(
+        note,
+        format!(
+            "{} has no NPU version installed, so it runs on the processor.",
+            crate::catalogue::display_name("parakeet-tdt-0.6b-v2")
+        )
+    );
+    assert_eq!(crate::catalogue::manifest_id_in(&note), None, "{note}");
+    // One file short is still missing.
+    put_npu_conversion(&models, "parakeet-tdt-0.6b-v2");
+    let Ok(AsrModel::Parakeet(p)) = asr_model("parakeet-tdt-0.6b-v2") else {
+        unreachable!()
+    };
+    let last = models.root().join(p.qnn_files().last().unwrap());
+    std::fs::remove_file(&last).unwrap();
+    assert_eq!(
+        npu_order(&models, "parakeet-tdt-0.6b-v2", surface.clone()).0,
+        [Accelerator::Cpu]
+    );
+    // With every file the NPU stays first (its files are checked when the model loads).
+    std::fs::write(&last, b"").unwrap();
+    assert_eq!(
+        npu_order(&models, "parakeet-tdt-0.6b-v2", surface.clone()),
+        (surface.clone(), None)
+    );
+    // A whisper model is never offered the NPU, so nothing is said; an order without the NPU is
+    // left alone.
+    assert_eq!(
+        npu_order(&models, "base.en", surface.clone()),
+        (surface.clone(), None)
+    );
+    assert_eq!(
+        npu_order(&models, "parakeet-tdt-110m", vec![Accelerator::Cpu]),
+        (vec![Accelerator::Cpu], None)
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn backends_transcription_setup_without_the_npu_conversion_runs_on_the_processor_and_says_so() {
+    use crate::model_settings::{ModelPick, ModelSettings, Part, set_model_settings};
+    let root = std::env::temp_dir().join(format!("earshot-npu-setup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut db = Store::open(&root.join("earshot.db")).unwrap();
+    let models = ModelDir::new(root.join("models"));
+    let surface = [Accelerator::Qnn, Accelerator::Cpu];
+    let hw = earshot_hardware::Hardware::default();
+    for part in [Part::Automatic, Part::Npu] {
+        let s = ModelSettings {
+            transcription: ModelPick::Named("parakeet-tdt-0.6b-v2".into()),
+            transcription_part: part,
+            ..ModelSettings::default()
+        };
+        set_model_settings(&mut db, &s).unwrap();
+        let t = crate::host::transcription_setup(&db, &models, &surface, &hw).unwrap();
+        assert_eq!(t.order, [Accelerator::Cpu], "{part:?}");
+        assert_eq!(
+            t.notes,
+            [format!(
+                "{} has no NPU version installed, so it runs on the processor.",
+                crate::catalogue::display_name("parakeet-tdt-0.6b-v2")
+            )],
+            "{part:?}"
+        );
+    }
+    // Once the conversion is there the NPU is tried first, and nothing is said.
+    put_npu_conversion(&models, "parakeet-tdt-0.6b-v2");
+    let t = crate::host::transcription_setup(&db, &models, &surface, &hw).unwrap();
+    assert_eq!(t.order, surface);
+    assert!(t.notes.is_empty(), "{:?}", t.notes);
+    drop(db);
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]

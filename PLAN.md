@@ -1290,7 +1290,7 @@ Take the **first** task in document order whose status is `[ ]` and whose deps a
   - deps: T8.4b
   - do: the owner approved bundling (section 7, 2026-11-08). The ARM64 installer carries the QNN libraries the manifest pins for the plugin (`onnxruntime_providers_qnn.dll`, `QnnHtp.dll`, `QnnHtpPrepare.dll`, `QnnSystem.dll`, the V73 and V81 stubs and skels) plus `Qualcomm_LICENSE.pdf`, the plugin's `LICENSE` and ONNX Runtime's `ThirdPartyNotices.txt`, copied from the verified extraction, named in the install's NOTICE. `earshot_onnx::qnn` finds them beside the exe (a package root parameter with the same SHA-256 pins), never in the models folder for a shipped build. `bundle.rs` refuses QNN files and imports only on x64; on ARM64 `expected_files` lists exactly these. The `.cat` files stay out until the Surface shows they are needed.
   - accept: `cargo test -p xtask bundle`; `cargo test -p earshot-onnx qnn`; `cargo xtask build --target aarch64-pc-windows-msvc --bundle`
-- [ ] T8.4f NPU in the ARM64 app's backend order
+- [x] T8.4f NPU in the ARM64 app's backend order
   - deps: T8.4e
   - do: a `qnn` feature on `earshot-desktop` forwarding to `earshot-runtime/qnn`, added by `build::shipped_features` for an ARM64 app, so the order is QNN > CPU for Parakeet there. A machine whose NPU or QNN library refuses to load starts and runs on the CPU with the reason shown once (fake loader test). No CUDA on ARM64: the owner has not chosen it after T8.4b.
   - accept: `cargo test -p earshot-runtime backends`; `cargo test -p xtask build`; `cargo xtask build --target aarch64-pc-windows-msvc --app`

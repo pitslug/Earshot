@@ -479,18 +479,30 @@ pub const SHIPPED_X64_FEATURE: &str = "vulkan-summaries";
 /// (`bundle_shipped_exe_imports_no_cuda_dll`), and nothing runs on CUDA until the app chooses it.
 pub const SHIPPED_X64_ONNX_FEATURE: &str = "onnx-cuda";
 
+/// The feature an ARM64 app is built with when none is named (T8.4f): Parakeet on the Snapdragon
+/// NPU through the QNN libraries beside the exe (T8.4e), never those of the models folder. Never
+/// on x64, whose QNN package is Qualcomm's HTP simulator, for tests.
+pub const SHIPPED_ARM64_FEATURE: &str = "qnn";
+
 /// The features of the app for `target`: those named, else what ships. An x64 app built on x64
 /// runs summaries on Vulkan, and Parakeet on CUDA if the app chooses it. An x64 app cross-built on
 /// ARM64 has none, because llama.cpp's Vulkan
 /// build needs Ninja and the x64 tools ([`needs_msvc_x64_env`]): it is for tests there, not for
-/// release. ARM64 stays on the CPU for summaries.
+/// release. An ARM64 app runs Parakeet on the NPU ([`SHIPPED_ARM64_FEATURE`]); it stays on the CPU
+/// for summaries.
 #[must_use]
 pub fn shipped_features(target: Option<&str>, features: &[String]) -> Vec<String> {
     if !features.is_empty() {
         return features.to_vec();
     }
+    let builds_arm64 = match target {
+        Some(t) => t == ARM64_WINDOWS,
+        None => cfg!(target_arch = "aarch64"),
+    };
     let builds_x64 = target != Some(ARM64_WINDOWS) && cfg!(target_arch = "x86_64");
-    if builds_x64 {
+    if builds_arm64 {
+        vec![SHIPPED_ARM64_FEATURE.to_owned()]
+    } else if builds_x64 {
         vec![
             SHIPPED_X64_FEATURE.to_owned(),
             SHIPPED_X64_ONNX_FEATURE.to_owned(),
@@ -1147,10 +1159,41 @@ mod tests {
             expected
         );
         // ARM64 stays on the CPU for summaries, and a named feature is what it says.
-        assert!(shipped_features(Some(ARM64_WINDOWS), &[]).is_empty());
+        let arm64 = shipped_features(Some(ARM64_WINDOWS), &[]);
+        assert!(!arm64.iter().any(|f| f == SHIPPED_X64_FEATURE), "{arm64:?}");
         let cuda = vec!["cuda".to_owned()];
         assert_eq!(shipped_features(None, &cuda), cuda);
         assert_eq!(shipped_features(Some(ARM64_WINDOWS), &cuda), cuda);
+    }
+
+    #[test]
+    fn build_an_arm64_app_ships_with_the_npu_and_an_x64_app_never_does() {
+        let npu = vec![SHIPPED_ARM64_FEATURE.to_owned()];
+        assert_eq!(shipped_features(Some(ARM64_WINDOWS), &[]), npu);
+        // The host's own architecture when no target is named.
+        let on_arm64 = cfg!(target_arch = "aarch64");
+        assert_eq!(
+            shipped_features(None, &[]).contains(&SHIPPED_ARM64_FEATURE.to_owned()),
+            on_arm64
+        );
+        // Never on x64 (the x64 QNN package is Qualcomm's HTP simulator, for tests).
+        assert!(
+            !shipped_features(Some("x86_64-pc-windows-msvc"), &[])
+                .contains(&SHIPPED_ARM64_FEATURE.to_owned())
+        );
+        // A named feature is what it says.
+        let named = vec!["vulkan".to_owned()];
+        assert_eq!(shipped_features(Some(ARM64_WINDOWS), &named), named);
+        // Features are matched by exact name: the app forwards this one to the runtime's.
+        let manifest =
+            std::fs::read_to_string(crate::repo_root().join("apps/desktop/src-tauri/Cargo.toml"))
+                .unwrap();
+        let line = manifest
+            .lines()
+            .find(|l| l.starts_with(&format!("{SHIPPED_ARM64_FEATURE} = [")))
+            .unwrap_or_else(|| panic!("earshot-desktop has no `{SHIPPED_ARM64_FEATURE}` feature"));
+        assert!(line.contains("\"earshot-runtime/qnn\""), "{line}");
+        assert!(line.contains("\"earshot-runtime/qnn-installed\""), "{line}");
     }
 
     #[test]
