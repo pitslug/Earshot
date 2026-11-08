@@ -1248,7 +1248,8 @@ pub fn live_factory(
 /// thread for the backend the track turned out to run on. Whether this computer has them is decided
 /// there (`backends::previews_refused`), and never costs the meeting anything. With
 /// [`PreviewChoice::Everyone`](crate::preview_settings::PreviewChoice::Everyone) the user's own
-/// track in a call gets a second session of its own (`backends::previews_refused_second`, T9.14).
+/// track in a call gets a second session of its own, where `backends::second_preview_backend`
+/// says (T9.14; the CPU, also beside CUDA: T12.3a).
 #[must_use]
 pub fn live_previews(
     models: &ModelDir,

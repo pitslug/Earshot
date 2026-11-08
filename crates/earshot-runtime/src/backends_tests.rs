@@ -1749,13 +1749,15 @@ fn backends_previews_second_session_only_for_everyone_on_a_big_cpu_machine() {
     assert!(previews_refused_second(BackendKind::Cpu, &below, PreviewChoice::Everyone).is_some());
     let unknown = machine(None, None);
     assert!(previews_refused_second(BackendKind::Cpu, &unknown, PreviewChoice::Everyone).is_some());
-    // The first session would run on CUDA here; the second is not measured there.
+    // The first session would run on CUDA here; the second runs on the CPU (T12.3a).
     assert_eq!(
         previews_refused(BackendKind::Cuda, &big, PreviewChoice::Everyone),
         None
     );
-    let cuda = previews_refused_second(BackendKind::Cuda, &big, PreviewChoice::Everyone);
-    assert_eq!(cuda.as_deref(), Some(PREVIEW_SECOND_NOT_ON_CARD));
+    assert_eq!(
+        previews_refused_second(BackendKind::Cuda, &big, PreviewChoice::Everyone),
+        None
+    );
     for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
         assert!(
             previews_refused_second(kind, &big, PreviewChoice::Everyone).is_some(),
@@ -1772,6 +1774,133 @@ fn backends_previews_second_session_only_for_everyone_on_a_big_cpu_machine() {
             "{choice:?}"
         );
     }
+}
+
+/// T12.3a: where the second session runs. On the CPU it runs beside the first; with transcription on
+/// CUDA it runs on the CPU, never as another session on the card, under the CPU's memory limit.
+/// Everything else refuses as before.
+#[test]
+fn backends_previews_second_session_beside_cuda_runs_on_the_cpu() {
+    use crate::preview_settings::PreviewChoice;
+    use earshot_hardware::{Gpu, Hardware};
+    let machine = |memory: Option<u64>, card: Option<u64>| Hardware {
+        total_memory: memory,
+        gpus: vec![Gpu {
+            name: "A card".to_owned(),
+            vendor_id: 0x10de,
+            dedicated_memory: card,
+            driver_version: None,
+            integrated: Some(false),
+            compute_capability: None,
+        }],
+        ..Hardware::default()
+    };
+    let card = Some(PREVIEW_MIN_CARD_MEMORY);
+    let big = machine(Some(64 * 1024 * 1024 * 1024), card);
+    let everyone = PreviewChoice::Everyone;
+    assert_eq!(
+        second_preview_backend(BackendKind::Cuda, &big, everyone),
+        Ok(BackendKind::Cpu)
+    );
+    assert_eq!(
+        second_preview_backend(BackendKind::Cpu, &big, everyone),
+        Ok(BackendKind::Cpu)
+    );
+    let at_limit = machine(Some(PREVIEW_BOTH_MIN_MEMORY), card);
+    assert_eq!(
+        second_preview_backend(BackendKind::Cuda, &at_limit, everyone),
+        Ok(BackendKind::Cpu)
+    );
+    // Too little or unknown memory refuses with the CPU's reason, as on the CPU.
+    for m in [
+        machine(Some(PREVIEW_BOTH_MIN_MEMORY - 1), card),
+        machine(None, card),
+    ] {
+        let cuda = second_preview_backend(BackendKind::Cuda, &m, everyone);
+        let cpu = second_preview_backend(BackendKind::Cpu, &m, everyone);
+        assert!(cuda.is_err(), "{:?}", m.total_memory);
+        assert_eq!(cuda, cpu, "{:?}", m.total_memory);
+    }
+    // A card too small for the first session refuses both, with the first session's reason.
+    let small_card = machine(Some(64 * 1024 * 1024 * 1024), Some(8 * 1024 * 1024 * 1024));
+    assert_eq!(
+        second_preview_backend(BackendKind::Cuda, &small_card, everyone).err(),
+        previews_refused(BackendKind::Cuda, &small_card, everyone)
+    );
+    assert!(previews_refused(BackendKind::Cuda, &small_card, everyone).is_some());
+    for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
+        assert!(
+            second_preview_backend(kind, &big, everyone).is_err(),
+            "{kind:?}"
+        );
+    }
+    for choice in [
+        PreviewChoice::Off,
+        PreviewChoice::Automatic,
+        PreviewChoice::On,
+    ] {
+        for kind in [BackendKind::Cpu, BackendKind::Cuda] {
+            assert!(
+                second_preview_backend(kind, &big, choice).is_err(),
+                "{kind:?} {choice:?}"
+            );
+        }
+    }
+    // The refusal is the same rule, read as a reason.
+    for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
+        assert_eq!(
+            previews_refused_second(kind, &big, everyone),
+            second_preview_backend(kind, &big, everyone).err()
+        );
+    }
+}
+
+/// T12.3a: the second session's load asks for the backend the rule returns: a CUDA track's own-voice
+/// session is loaded on the CPU, a refusal loads nothing.
+#[test]
+fn backends_previews_second_session_on_a_cuda_track_is_loaded_on_the_cpu() {
+    use crate::preview_settings::PreviewChoice;
+    use earshot_hardware::Hardware;
+    let big = Hardware {
+        total_memory: Some(64 * 1024 * 1024 * 1024),
+        gpus: vec![earshot_hardware::Gpu {
+            name: "A card".to_owned(),
+            vendor_id: 0x10de,
+            dedicated_memory: Some(PREVIEW_MIN_CARD_MEMORY),
+            driver_version: None,
+            integrated: Some(false),
+            compute_capability: None,
+        }],
+        ..Hardware::default()
+    };
+    let track = BackendInfo {
+        kind: BackendKind::Cuda,
+        device: "CUDA0".to_owned(),
+        model: "parakeet-tdt-0.6b-v2".to_owned(),
+    };
+    let asked = std::sync::Mutex::new(Vec::new());
+    let load = |on: &BackendInfo| -> Result<Box<dyn Transcriber + Send>, String> {
+        asked.lock().unwrap().push(on.clone());
+        Err("a fake load".to_owned())
+    };
+    let result = load_preview_second_with(&track, &big, PreviewChoice::Everyone, load);
+    assert_eq!(result.err().as_deref(), Some("a fake load"));
+    let asked = asked.into_inner().unwrap();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].kind, BackendKind::Cpu);
+    assert_eq!(asked[0].model, track.model);
+    // A refused second session never reaches the load.
+    let small = Hardware {
+        total_memory: Some(PREVIEW_BOTH_MIN_MEMORY - 1),
+        ..big.clone()
+    };
+    let refused = load_preview_second_with(&track, &small, PreviewChoice::Everyone, |_| {
+        panic!("a refused session was loaded")
+    });
+    assert_eq!(
+        refused.err(),
+        previews_refused_second(BackendKind::Cuda, &small, PreviewChoice::Everyone)
+    );
 }
 
 /// Everyone lifts the memory limit of the first session exactly as "on" does.

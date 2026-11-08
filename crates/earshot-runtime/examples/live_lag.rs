@@ -55,7 +55,7 @@ use earshot_core::capture::{DeviceTime, ReplayBuilder, TrackId};
 use earshot_core::model::ClockDomain;
 use earshot_runtime::backends::{
     Accelerator, ModelDir, init_onnx, load_preview_unrefused, onnx_library, previews_refused,
-    previews_refused_second,
+    previews_refused_second, second_preview_backend,
 };
 use earshot_runtime::live::{
     LiveAsrFactory, LiveConfig, LivePreviews, PreviewLoader, RuntimeEvent, start_live,
@@ -778,6 +778,11 @@ fn main() {
             "app_first": previews_refused(args.backend, &machine, choice),
             "app_own_voice": (choice == PreviewChoice::Everyone)
                 .then(|| previews_refused_second(args.backend, &machine, choice)),
+            // Where the app would run the user's own track's session (T12.3a: the CPU beside CUDA).
+            "app_own_voice_on": (choice == PreviewChoice::Everyone)
+                .then(|| second_preview_backend(args.backend, &machine, choice).ok())
+                .flatten()
+                .map(|k| format!("{k:?}")),
         })
     });
     let previews = args.previews.map(|choice| {
@@ -883,6 +888,7 @@ fn main() {
                     "words_shown": r.words_shown,
                     "decodes_adding_nothing": r.decodes_adding_nothing,
                     "load_s": r.load_s,
+                    "backend": r.backend.map(|k| format!("{k:?}")),
                     "off": r.off,
                 }));
             }

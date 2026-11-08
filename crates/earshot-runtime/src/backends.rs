@@ -1280,38 +1280,48 @@ pub fn previews_refused(
 /// It cost about half a core more on a 32-thread host; the slow-preview pause covers smaller ones.
 pub const PREVIEW_BOTH_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 
-/// Why a second session is refused on CUDA.
-pub const PREVIEW_SECOND_NOT_ON_CARD: &str = "not measured on the graphics card yet";
+/// Where this computer runs the second preview session, for the user's own track in a call (T9.14),
+/// when the track runs on `backend`; `Err` says why it runs none. The one rule: only when the user
+/// chose everyone, only where the first session runs ([`previews_refused`]), and only with
+/// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there. It always runs on the CPU, with the CPU's shared
+/// weights: beside the CPU's own sessions, and beside CUDA too (T12.3a), so that the card holds no
+/// more sessions than with "Other people only".
+///
+/// # Errors
+/// The reason no second session runs.
+pub fn second_preview_backend(
+    backend: BackendKind,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<BackendKind, String> {
+    use crate::preview_settings::PreviewChoice;
+    if choice != PreviewChoice::Everyone {
+        return Err("only for the other people".to_owned());
+    }
+    if let Some(why) = previews_refused(backend, hardware, choice) {
+        return Err(why);
+    }
+    if !matches!(backend, BackendKind::Cpu | BackendKind::Cuda) {
+        return Err("previews run on Parakeet on the CPU or CUDA only".to_owned());
+    }
+    if hardware
+        .total_memory
+        .is_none_or(|m| m < PREVIEW_BOTH_MIN_MEMORY)
+    {
+        return Err("not enough memory for a third session of the model".to_owned());
+    }
+    Ok(BackendKind::Cpu)
+}
 
-/// Why this computer runs no second preview session, for the user's own track in a call (T9.14),
-/// or `None` when it does: only when the user chose everyone, only where the first session runs
-/// ([`previews_refused`]), only on the CPU (CUDA is not measured), and only with
-/// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there.
+/// Why this computer runs no second preview session (T9.14), or `None` when it does: the reason
+/// [`second_preview_backend`] gives.
 #[must_use]
 pub fn previews_refused_second(
     backend: BackendKind,
     hardware: &earshot_hardware::Hardware,
     choice: crate::preview_settings::PreviewChoice,
 ) -> Option<String> {
-    use crate::preview_settings::PreviewChoice;
-    if choice != PreviewChoice::Everyone {
-        return Some("only for the other people".to_owned());
-    }
-    if let Some(why) = previews_refused(backend, hardware, choice) {
-        return Some(why);
-    }
-    match backend {
-        BackendKind::Cpu => {}
-        BackendKind::Cuda => return Some(PREVIEW_SECOND_NOT_ON_CARD.to_owned()),
-        _ => return Some("previews run on Parakeet on the CPU or CUDA only".to_owned()),
-    }
-    if hardware
-        .total_memory
-        .is_none_or(|m| m < PREVIEW_BOTH_MIN_MEMORY)
-    {
-        return Some("not enough memory for a third session of the model".to_owned());
-    }
-    None
+    second_preview_backend(backend, hardware, choice).err()
 }
 
 /// The previews' own session of the model of a track that runs on `backend` (T9.1m): background
@@ -1332,8 +1342,9 @@ pub fn load_preview(
     load_preview_session(models, backend)
 }
 
-/// [`load_preview`] for the second session, the user's own track in a call (T9.14), refused by
-/// [`previews_refused_second`]. It shares nothing with the first.
+/// [`load_preview`] for the second session, the user's own track in a call (T9.14), loaded where
+/// [`second_preview_backend`] says (the CPU, also beside CUDA: T12.3a) or refused by it. It shares
+/// nothing with the first.
 ///
 /// # Errors
 /// As [`load_preview`], with the second session's rule.
@@ -1342,10 +1353,24 @@ pub fn load_preview_second(
     backend: &BackendInfo,
     choice: crate::preview_settings::PreviewChoice,
 ) -> Result<Box<dyn Transcriber + Send>, String> {
-    if let Some(why) = previews_refused_second(backend.kind, &crate::hardware(), choice) {
-        return Err(why);
-    }
-    load_preview_session(models, backend)
+    load_preview_second_with(backend, &crate::hardware(), choice, |on| {
+        load_preview_session(models, on)
+    })
+}
+
+/// [`load_preview_second`] on `hardware`, loading through `load` with the track's model on the
+/// backend the rule chose.
+pub(crate) fn load_preview_second_with(
+    backend: &BackendInfo,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+    load: impl FnOnce(&BackendInfo) -> Result<Box<dyn Transcriber + Send>, String>,
+) -> Result<Box<dyn Transcriber + Send>, String> {
+    let kind = second_preview_backend(backend.kind, hardware, choice)?;
+    load(&BackendInfo {
+        kind,
+        ..backend.clone()
+    })
 }
 
 /// A preview session loaded by [`load_preview_unrefused`], with the evidence of where it runs.
