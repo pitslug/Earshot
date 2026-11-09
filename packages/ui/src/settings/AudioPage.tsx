@@ -246,9 +246,9 @@ export function AudioPage() {
         </div>
       </Section>
 
-      <Section title="Capture mode">
+      <Section title="Call or in the room">
         <span id={modeLabel} hidden>
-          Capture mode
+          Call or in the room
         </span>
         <RadioGroup
           aria-labelledby={modeLabel}

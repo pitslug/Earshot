@@ -123,7 +123,7 @@ describe("Settings", () => {
           "This is your hardware",
           "What every meeting needs",
           "Where it runs",
-          "The model check",
+          "Model check",
           "How fast Earshot is on this computer",
         ],
         Transcription: [
@@ -142,7 +142,7 @@ describe("Settings", () => {
           "This is your hardware",
           "What every meeting needs",
           "Where it runs",
-          "The model check",
+          "Model check",
           "NVIDIA CUDA libraries",
           "How fast Earshot is on this computer",
         ],
@@ -161,10 +161,52 @@ describe("Settings", () => {
       expect(screen.getByRole("region", { name: "Recommendation" })).toBeInTheDocument();
       // The summary models sit under "On this computer".
       await goTo(s, "Summaries");
-      const local = screen.getByRole("group", { name: "The model on this computer" });
+      const local = screen.getByRole("group", { name: "Which model writes the summary" });
       expect(within(local).getByRole("radiogroup", { name: "Summary model" })).toBeInTheDocument();
       cleanup();
     }
+  });
+
+  it("keeps choices out of every part a Save button saves: a choice applies at once, typed text needs Save", async () => {
+    // The one exception: the endpoint's provider is saved with the address and model typed beside
+    // it, because a provider alone is not an endpoint (docs/ui-design.md "Settings").
+    const allowed = (el: Element) =>
+      el instanceof HTMLSelectElement &&
+      document.getElementById(el.getAttribute("aria-labelledby") ?? "")?.textContent === "Provider";
+    const seen = new Set<string>();
+    const checkPage = () => {
+      const saves = within(screen.getByRole("main")).queryAllByRole("button", { name: /^(Save|Use this endpoint)/ });
+      for (const button of saves) {
+        const part = button.closest("form, [role='group'], section");
+        expect(part).not.toBeNull();
+        const choices = [
+          ...(part as Element).querySelectorAll("input[type='radio'], input[type='checkbox'], select, [role='combobox']"),
+        ].filter((el) => !allowed(el));
+        expect(choices, `choices beside "${button.textContent}"`).toEqual([]);
+        seen.add(button.textContent ?? "");
+      }
+    };
+    const s = setup({ machine: "desktop" });
+    await openSettings(s);
+    for (const section of SETTINGS_SECTIONS) {
+      await goTo(s, section);
+      if (section === "People") await screen.findByRole("textbox", { name: "Your name" });
+      if (section === "Notes and storage") await screen.findByRole("textbox", { name: "Vault folder" });
+      checkPage();
+    }
+    // The writers' own parts on Summaries: the endpoint (with the Anthropic key) and the two CLIs.
+    await goTo(s, "Summaries");
+    await s.user.click(screen.getByRole("radio", { name: /^Your own endpoint/ }));
+    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
+    checkPage();
+    await s.user.click(screen.getByRole("radio", { name: /^Claude \(through Claude Code\)/ }));
+    await screen.findByRole("group", { name: "Claude through Claude Code" });
+    checkPage();
+    await s.user.click(screen.getByRole("radio", { name: /^OpenAI \(through Codex\)/ }));
+    await screen.findByRole("group", { name: "OpenAI through Codex" });
+    checkPage();
+    expect([...seen].sort()).toEqual(["Save", "Save key", "Save model", "Use this endpoint"]);
   });
 
   it("holds one subscription to model job events across its pages, and the setup guide its own", async () => {
@@ -281,7 +323,7 @@ describe("Settings", () => {
     await openPage(s, "System");
     const select = screen.getByRole("combobox", { name: "Summaries" });
     expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "Automatic (graphics card, then processor)",
+      "Automatic (graphics card or processor)",
       "Graphics card",
       "Processor",
     ]);
@@ -301,7 +343,7 @@ describe("Settings", () => {
     await s.user.click(screen.getByRole("radio", { name: /^No summary/ }));
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("NoSummary"));
     // No summary: the model choices under "On this computer" go.
-    expect(screen.queryByRole("group", { name: "The model on this computer" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Which model writes the summary" })).toBeNull();
     await goTo(s, "System");
     await waitFor(() => expect(hwRow("Graphics")).not.toHaveTextContent("Summaries"));
   });
@@ -309,7 +351,7 @@ describe("Settings", () => {
   it("chooses the summary model under On this computer", async () => {
     const s = setup({ machine: "desktop" });
     await openPage(s, "Summaries");
-    const local = within(screen.getByRole("group", { name: "The model on this computer" }));
+    const local = within(screen.getByRole("group", { name: "Which model writes the summary" }));
     expect(local.getByRole("radio", { name: /^Qwen 3\.5 9B/ })).toBeChecked();
     await s.user.click(local.getByRole("radio", { name: /^Qwen 3\.5 4B/ }));
     await waitFor(async () => expect((await s.ipc.modelSettings()).value.summary).toBe("qwen3.5-4b-q4_k_m"));
@@ -340,10 +382,10 @@ describe("Settings", () => {
     const group = screen.getByRole("radiogroup", { name: "Transcription model" });
     const radios = within(group).getAllByRole("radio");
     expect(radios.map((r) => (r as HTMLInputElement).labels?.[0]?.textContent)).toEqual([
-      "Parakeet 0.6B v2RecommendedKeeps up",
+      "Parakeet 0.6B v2RecommendedKeeps up with live speech on this computer",
       "Parakeet 110MLighter",
-      "Parakeet 0.6B v3Multilingual: European",
-      "Whisper large-v3-turboMultilingual: every language",
+      "Parakeet 0.6B v3European languages",
+      "Whisper large-v3-turboMany languages",
     ]);
     expect(radios[0]).toBeChecked();
     expect(card("parakeet-tdt-0.6b-v2")).toHaveTextContent("Best accuracy for English meetings. Runs on the NPU.");
@@ -354,14 +396,14 @@ describe("Settings", () => {
       "English and 24 other European languages. Runs on the processor here (no NPU version).",
     );
     expect(card("large-v3-turbo")).toHaveTextContent(
-      "About 100 languages, including Asian languages. Less accurate and slower than Parakeet: use it only for languages Parakeet v3 does not cover. Runs on the processor here (no NPU version).",
+      "About 100 languages, including Asian languages. Less accurate and slower than Parakeet 0.6B v3: use it only for languages Parakeet 0.6B v3 does not cover. Runs on the processor here (no NPU version).",
     );
     expect(card("large-v3-turbo")).toHaveTextContent("Download 1.6 GB");
     expect(card("parakeet-tdt-0.6b-v2")).toHaveTextContent("Installed");
     // Summaries: the shipped models, recommended first, no verdict without a stored one, under
     // "On this computer" on the Summaries page.
     await goTo(s, "Summaries");
-    const local = within(screen.getByRole("group", { name: "The model on this computer" }));
+    const local = within(screen.getByRole("group", { name: "Which model writes the summary" }));
     const sums = within(local.getByRole("radiogroup", { name: "Summary model" })).getAllByRole("radio");
     expect(sums.map((r) => (r as HTMLInputElement).labels?.[0]?.textContent)).toEqual([
       "Qwen 3.5 4BRecommended",
@@ -369,7 +411,7 @@ describe("Settings", () => {
     ]);
     expect(card("qwen3.5-4b-q4_k_m")).toHaveTextContent("Runs on the processor.");
     expect(card("qwen3.5-9b-q4_k_m")).toHaveTextContent("Slower. More thorough summaries.");
-    expect(card("qwen3.5-9b-q4_k_m")).not.toHaveTextContent("Too slow here");
+    expect(card("qwen3.5-9b-q4_k_m")).not.toHaveTextContent("Too slow for live speech on this computer");
   });
 
   it("uses the desktop copy for the lighter model and the faster summary model", async () => {
@@ -400,9 +442,9 @@ describe("Settings", () => {
       },
     }));
     await openPage(s, "Transcription");
-    expect(card("parakeet-tdt-0.6b-v3")).toHaveTextContent("Too slow here");
+    expect(card("parakeet-tdt-0.6b-v3")).toHaveTextContent("Too slow for live speech on this computer");
     expect(card("parakeet-tdt-0.6b-v3")).toHaveTextContent("You can still use it.");
-    expect(card("large-v3-turbo")).toHaveTextContent("Did not work here");
+    expect(card("large-v3-turbo")).toHaveTextContent("Did not work on this computer");
     expect(card("parakeet-tdt-110m")).not.toHaveTextContent(/Keeps up|Too slow|Did not work/);
     const slow = screen.getByRole("radio", { name: /^Parakeet 0\.6B v3/ });
     expect(slow).toBeEnabled();
@@ -520,9 +562,9 @@ describe("Settings", () => {
     const s = setup({ machine: "surface" });
     await openPage(s, "System");
     const line = screen.getByRole("status", { name: "Model check" });
-    expect(line).toHaveTextContent("Keeps up");
+    expect(line).toHaveTextContent("Keeps up with live speech on this computer");
     expect(line).toHaveTextContent(
-      "Last check: Parakeet 0.6B v2 on the NPU. When it falls behind: Parakeet 110M.",
+      "Last check: Parakeet 0.6B v2 on the NPU. If a meeting falls behind, Earshot switches to Parakeet 110M.",
     );
     await s.user.click(within(line).getByRole("button", { name: "Check again" }));
     expect(screen.getByRole("status", { name: "Model check" })).toHaveTextContent("Starting the check");
@@ -534,7 +576,7 @@ describe("Settings", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument(),
     );
-    expect(screen.getByRole("status", { name: "Model check" })).toHaveTextContent("Keeps up");
+    expect(screen.getByRole("status", { name: "Model check" })).toHaveTextContent("Keeps up with live speech on this computer");
   });
 
   it("cancels a running check and says why it stopped", async () => {
@@ -561,7 +603,8 @@ describe("Settings", () => {
     await s.user.click(screen.getByRole("button", { name: "Check again" }));
     advance(s.timer, 0);
     expect(await screen.findByText(warning)).toBeInTheDocument();
-    expect(screen.getByText("Model check")).toBeInTheDocument();
+    // The notice is titled; the section heading of the same words is left out.
+    expect(screen.getByText("Model check", { ignore: "h2, script, style" })).toBeInTheDocument();
     await s.user.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText(warning)).toBeNull();
   });

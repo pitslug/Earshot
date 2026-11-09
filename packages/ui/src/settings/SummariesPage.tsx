@@ -584,7 +584,7 @@ function WriterSection({
       )}
       {shown === "OnThisComputer" && localModels !== undefined && (
         <div className={styles.endpoint} role="group" aria-labelledby={localLabel}>
-          <Body1Strong id={localLabel}>The model on this computer</Body1Strong>
+          <Body1Strong id={localLabel}>Which model writes the summary</Body1Strong>
           {localModels.load.status === "loaded" ? (
             <SummaryModelChoices state={localModels} data={localModels.load.data} />
           ) : (

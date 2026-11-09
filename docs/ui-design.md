@@ -44,12 +44,16 @@ Reassurance, not a wall of text (D20):
 Seven pages, in this order, as agreed in docs/settings-design.md; Settings opens on General:
 
 1. General: start with Windows, closing to the tray, the keyboard shortcut, theme, updates, and the setup guide.
-2. Audio: devices, capture mode, audio check.
+2. Audio: devices, whether a new meeting is a call or in the room, audio check.
 3. System: the hardware, the recommendation, the speech helpers, where each task runs, the model check, NVIDIA's CUDA libraries where offered, and the benchmark (T7.4c: the current settings run against a bundled 2.5-minute meeting replayed in real time; transcript lag during it, final transcript and summary times after it, next to the model check's verdict; nothing stored as a meeting, no network).
 4. Transcription: meeting languages first (they decide the recommendation), the transcription models with downloads, size and progress (and their NPU versions on ARM64), whose words show while someone is talking, and when speakers are found.
 5. Summaries: who writes the summary, with the summary model under "On this computer", your own endpoint with URL, provider and key fields and the remote-endpoint warning, Claude Code and Codex with their sign-in check, or no summary; summarising during the meeting; the style text.
 6. People: your name, your voice (record or forget), and the people Earshot knows.
 7. Notes and storage: the Obsidian vault folder and subfolder (validated on save), how long recordings are kept (the T7.4 list, default 7 days), and where the crash logs are.
+
+The save rule (T12.5c), on every page and in the wizard: a choice (radio, switch, dropdown, checkbox) applies as soon as it changes; typed text is saved only by its Save button (or Enter in a one-line field), and in the wizard by Next. Leaving a field saves nothing. No choice sits inside a part that a Save button saves, with one exception: the provider of your own endpoint is saved with the address and model typed beside it, because a provider alone is not an endpoint. A folder picked with "Choose folder..." fills the vault field, which is typed text and saves with Save.
+
+Wording (T12.5c): plain words in headings, labels and tags; a developer term (ONNX Runtime, Vulkan) only in detail text, never in a heading or label. A heading and the field under it never repeat the same words: the field keeps them as its accessible name only. "Keeps up" always says what with: live speech on this computer. Model names come only from the app's display names. Privacy wording (what is sent where, what is kept) changes only with the owner.
 
 Settings holds one model state for System, Transcription and Summaries, so a download or the model check carries on across pages; the first-run wizard holds its own, and the two are never shown together.
 

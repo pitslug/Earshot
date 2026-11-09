@@ -117,6 +117,14 @@ const useStyles = makeStyles({
   name: {
     maxWidth: "520px",
   },
+  nameField: {
+    display: "flex",
+    flexDirection: "column",
+    gap: tokens.spacingVerticalS,
+  },
+  save: {
+    alignSelf: "flex-start",
+  },
   passage: {
     margin: 0,
     fontSize: tokens.fontSizeBase400,
@@ -171,32 +179,53 @@ export function voiceStatus(voice: VoiceView): string {
     : "No voice is saved.";
 }
 
-/** "Your name": saved when the field is left or Enter is pressed, if it changed; in the first-run
- * wizard when Enter or Next is pressed. */
+/** The name field's name: its label, or, under a heading of the same words (`hideLabel`), only
+ * its accessible name. */
+export const NAME_LABEL = "Your name";
+
+/** "Your name", typed text, so saved only by its Save button or Enter, if it changed (the save
+ * rule, docs/ui-design.md "Settings"); in the first-run wizard by Enter or Next. */
 export function MyNameField({
   state,
   name,
   saveOnNext,
+  hideLabel = false,
 }: {
   state: SpeakersPageState;
   name: string;
   saveOnNext?: SaveOnNext;
+  /** The page shows a heading with the same words, so the field shows no label of its own. */
+  hideLabel?: boolean;
 }) {
+  const styles = useStyles();
   const [value, setValue] = useState(name);
   useEffect(() => setValue(name), [name]);
-  const save = async () => value.trim() === name || state.setName(value);
+  const changed = value.trim() !== name;
+  const save = async () => !changed || state.setName(value);
   useSaveOnNext(saveOnNext, save);
   return (
-    <Field label="Your name" hint={NAME_EXPLAINED}>
-      <Input
-        value={value}
-        onChange={(_, d) => setValue(d.value)}
-        onBlur={saveOnNext === undefined ? () => void save() : undefined}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") void save();
-        }}
-      />
-    </Field>
+    <div className={styles.nameField}>
+      <Field label={hideLabel ? undefined : NAME_LABEL} hint={NAME_EXPLAINED}>
+        <Input
+          aria-label={hideLabel ? NAME_LABEL : undefined}
+          value={value}
+          onChange={(_, d) => setValue(d.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void save();
+          }}
+        />
+      </Field>
+      {saveOnNext === undefined && (
+        <Button
+          appearance="primary"
+          className={styles.save}
+          disabled={state.busy || !changed}
+          onClick={() => void save()}
+        >
+          Save
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -609,9 +638,9 @@ export function PeoplePage() {
         People
       </Title2>
       <SpeakersNoticeBar state={state} />
-      <Section title="Your name">
+      <Section title={NAME_LABEL}>
         <div className={styles.name}>
-          <MyNameField state={state} name={view.voice.name} />
+          <MyNameField state={state} name={view.voice.name} hideLabel />
         </div>
       </Section>
       <VoiceSection state={state} voice={view.voice} withName={false} />
