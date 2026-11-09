@@ -1121,6 +1121,10 @@ M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go
   - deps: T7.4i
   - do: split from T7.4: the optional audio check (first run and Settings, never during a meeting) as T7.4 describes: chirps through the chosen output, speaker-to-mic delay and echo level, headphones detected, too quiet or clipping flagged, stored per mic + output pair as the delay estimator's warm-start hint (`set_delay_hint`).
   - accept: `cargo test -p earshot-runtime audio_check` (chirp analysis on recorded and simulated inputs); a device run logged
+- [x] T7.4ja Audio check: an echo with two arrivals is heard
+  - deps: T7.4j
+  - do: the owner reported the check saying the microphone did not hear chirps it plainly heard, on a tablet's built-in speakers. Each chirp's correlation peak lands on one of two arrivals about 3 ms apart, so a two and two split failed the 1 ms agreement rule. Widen `audio_check::AGREE` to 5 ms (agreed by the owner); lags far apart still do not count as one echo.
+  - accept: `cargo test -p earshot-core --lib audio_check`; `cargo test -p earshot-runtime --lib audio_check`; a device run on the Surface
 - [x] T7.4k Storage: audio retention
   - deps: T7.4f
   - do: split from T7.4: the retention setting with T7.4's list (1 hour to forever, default 7 days); the clock starts when the summary is stored, or when the final pass ends with summaries off; never before a summary succeeds (changed by the owner: the clock starts when the final transcript is stored, whatever the summary does); only audio files go; runs at start-up and periodically; shortening it shows how many recordings go and asks first. `earshot_store::RetentionPolicy` gains sub-day durations and the summary-gated rule.

@@ -65,8 +65,12 @@ pub const CHIRP_FADE: Duration = Duration::from_millis(5);
 /// Longest delay searched (1 s; wider than the canceller's 600 ms search so a long delay
 /// is reported rather than missed).
 pub const MAX_LAG: Duration = Duration::from_secs(1);
-/// Stretches whose lags are within this of their median agree (1 ms).
-pub const AGREE: Duration = Duration::from_millis(1);
+/// Stretches whose lags are within this of their median agree (5 ms; a judgement, widened from
+/// 1 ms after a real run: a tablet's built-in speakers gave two arrivals about 3 ms apart with
+/// each chirp's peak on either, so a clearly heard echo split two and two and read as
+/// headphones). Which arrival the delay lands on can differ between runs; a hint only seeds
+/// the canceller's search, so one on the other arrival gives no head start and does no harm.
+pub const AGREE: Duration = Duration::from_millis(5);
 /// A stretch's correlation peak must be at least this many times the median magnitude of
 /// its correlation over all lags (a judgement: noise alone gives about 6.5 for 16 000
 /// lags, the expected Gaussian maximum over the median).

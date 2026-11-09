@@ -181,6 +181,43 @@ fn audio_check_unrelated_sound_at_the_mic_is_not_an_echo() {
     assert_eq!(r.outcome, Outcome::NoEcho, "{r:?}");
 }
 
+/// The test signal's chirps at the mic, each alone at its own delay (ms), over quiet noise.
+fn chirps_at(delays_ms: [usize; CHIRP_COUNT]) -> (Vec<f32>, Vec<f32>) {
+    let reference = test_signal(PIPELINE_RATE);
+    let mut mic = noise(reference.len() + 16_000, 1e-3, 21);
+    let lead = PIPELINE_RATE.frames_for(LEAD_IN);
+    let period = PIPELINE_RATE.frames_for(CHIRP_PERIOD);
+    for (k, ms) in delays_ms.into_iter().enumerate() {
+        let one = chirp(PIPELINE_RATE, k % 2 == 0);
+        let at = lead + k * period + ms * 16;
+        for (i, v) in one.iter().enumerate() {
+            mic[at + i] += v * 0.2;
+        }
+    }
+    (reference, mic)
+}
+
+#[test]
+fn audio_check_two_arrivals_a_few_ms_apart_are_one_echo() {
+    // A tablet's built-in speakers give two arrivals about 3 ms apart, and each chirp's peak
+    // lands on either: two chirps on each must still count as heard.
+    let (reference, mic) = chirps_at([81, 84, 81, 84]);
+    let r = analyse(&reference, &mic, false);
+    let (delay, _, _) = echo_of(&r);
+    assert!(
+        (81.0 * 16.0 - 16.0..=84.0 * 16.0 + 16.0).contains(&delay),
+        "{delay} samples: {r:?}"
+    );
+}
+
+#[test]
+fn audio_check_chirps_far_apart_in_delay_are_not_one_echo() {
+    // The limit is on spread: lags 20 ms apart are not one path, however clear each peak.
+    let (reference, mic) = chirps_at([80, 100, 80, 100]);
+    let r = analyse(&reference, &mic, false);
+    assert_eq!(r.outcome, Outcome::NoEcho, "{r:?}");
+}
+
 #[test]
 fn audio_check_silent_loopback_is_not_played() {
     let n = PIPELINE_RATE.frames_for(test_signal_duration());
