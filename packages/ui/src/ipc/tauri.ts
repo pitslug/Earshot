@@ -117,7 +117,6 @@ export function createTauriIpc(): Ipc {
     setStorageSettings: async (retention) => unwrap(await commands.setStorageSettings(retention)),
     firstRunState: async () => unwrap(await commands.firstRunState()),
     finishFirstRun: async () => unwrap(await commands.finishFirstRun()),
-    setModelDeclined: async (model, declined) => unwrap(await commands.setModelDeclined(model, declined)),
     summaryStyle: async () => unwrap(await commands.summaryStyle()),
     setSummaryStyle: async (style) => unwrap(await commands.setSummaryStyle(style)),
     audioSettings: async () => unwrap(await commands.audioSettings()),

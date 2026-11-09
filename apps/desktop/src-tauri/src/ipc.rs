@@ -120,7 +120,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::summary_style::set_summary_style,
             crate::first_run::first_run_state,
             crate::first_run::finish_first_run,
-            crate::first_run::set_model_declined,
             crate::cuda_settings::cuda_settings,
             crate::cuda_settings::set_cuda_settings,
             crate::cuda_settings::start_cuda_download,

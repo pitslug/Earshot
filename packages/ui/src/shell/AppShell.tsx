@@ -56,7 +56,7 @@ import {
 } from "../meeting/MeetingViews";
 import { failureText } from "../detail/detail";
 import { type JobView, MeetingDetailView, isTerminal } from "../detail/MeetingDetailView";
-import { FirstRunWizard } from "../firstRun/FirstRunWizard";
+import { FirstRunWizard, NO_MODEL_NOTE } from "../firstRun/FirstRunWizard";
 import { useLiveMeeting, useNow } from "../meeting/hooks";
 import { type SettingsSection, SettingsView } from "../settings/SettingsView";
 import { useThemeChoice } from "../theme/EarshotThemeProvider";
@@ -326,6 +326,8 @@ export function AppShell({
   const [firstRunKnown, setFirstRunKnown] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
   const [setupFromSettings, setSetupFromSettings] = useState(false);
+  // The wizard ended with no transcription model: said once it is gone, until dismissed.
+  const [noModelNote, setNoModelNote] = useState(false);
   const [compact, setCompact] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
@@ -780,8 +782,9 @@ export function AppShell({
         )}
         <div className={styles.wizardBody}>
           <FirstRunWizard
-            onDone={() => {
+            onDone={(noModel) => {
               refresh();
+              setNoModelNote(noModel);
               setView(setupFromSettings ? "settings" : active ? "meeting" : "detail");
             }}
           />
@@ -791,18 +794,38 @@ export function AppShell({
     );
   }
 
+  const noModelBar = noModelNote && (
+    <MessageBar intent="warning" layout="multiline">
+      <MessageBarBody>{NO_MODEL_NOTE}</MessageBarBody>
+      <MessageBarActions>
+        <Button size="small" appearance="transparent" onClick={() => setNoModelNote(false)}>
+          Dismiss
+        </Button>
+      </MessageBarActions>
+    </MessageBar>
+  );
+
   if (view === "settings") {
-    return (
+    const settings = (
+      <SettingsView
+        initialSection={settingsSection}
+        onBack={() => setView(active ? "meeting" : "detail")}
+        onOpenSetup={() => {
+          setSetupFromSettings(true);
+          setSettingsSection("General");
+          setView("first-run");
+        }}
+      />
+    );
+    return noModelNote ? (
+      <div className={styles.wizardFrame}>
+        {noModelBar}
+        <div className={styles.wizardBody}>{settings}</div>
+        {quitDialog}
+      </div>
+    ) : (
       <>
-        <SettingsView
-          initialSection={settingsSection}
-          onBack={() => setView(active ? "meeting" : "detail")}
-          onOpenSetup={() => {
-            setSetupFromSettings(true);
-            setSettingsSection("General");
-            setView("first-run");
-          }}
-        />
+        {settings}
         {quitDialog}
       </>
     );
@@ -913,6 +936,7 @@ export function AppShell({
             {notice}
           </Badge>
         )}
+        {noModelBar}
         {startError !== null && (
           <MessageBar intent="error">
             <MessageBarBody>

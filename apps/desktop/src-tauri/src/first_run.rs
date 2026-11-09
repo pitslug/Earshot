@@ -14,16 +14,11 @@ use crate::ipc::IpcError;
 pub struct FirstRunView {
     /// The app opens on the wizard.
     pub show: bool,
-    /// The optional models the user said "never" to.
-    pub declined_models: Vec<String>,
 }
 
 impl From<FirstRunState> for FirstRunView {
     fn from(s: FirstRunState) -> Self {
-        Self {
-            show: s.show,
-            declined_models: s.declined_models,
-        }
+        Self { show: s.show }
     }
 }
 
@@ -43,20 +38,7 @@ pub fn finish(services: &Services) -> Result<FirstRunView, IpcError> {
     Ok(first_run::finish_first_run(&mut services.store())?.into())
 }
 
-/// Records or clears "never" for `model`.
-///
-/// # Errors
-/// `unknown_model` (nothing stored); store errors.
-pub fn set_declined(
-    services: &Services,
-    model: &str,
-    declined: bool,
-) -> Result<FirstRunView, IpcError> {
-    crate::model_jobs::require_catalogue_model(model)?;
-    Ok(first_run::set_model_declined(&mut services.store(), model, declined)?.into())
-}
-
-/// Whether the app opens on the first-run wizard, and its "never" answers.
+/// Whether the app opens on the first-run wizard.
 #[tauri::command]
 #[specta::specta]
 pub async fn first_run_state(
@@ -76,19 +58,6 @@ pub async fn finish_first_run(
     crate::ipc::blocking(move || finish(&services)).await
 }
 
-/// Records or clears the wizard's "never" for an optional model (`unknown_model`: nothing
-/// stored). It stops no download and removes no file.
-#[tauri::command]
-#[specta::specta]
-pub async fn set_model_declined(
-    state: tauri::State<'_, crate::ipc::AppState>,
-    model: String,
-    declined: bool,
-) -> Result<FirstRunView, IpcError> {
-    let services = state.services()?;
-    crate::ipc::blocking(move || set_declined(&services, &model, declined)).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,34 +67,9 @@ mod tests {
     fn first_run_view_follows_the_record_through_the_ipc_types() {
         let dir = TempDir::new("first-run");
         let svc = services(&dir);
-        assert_eq!(
-            state_view(&svc).unwrap(),
-            FirstRunView {
-                show: true,
-                declined_models: Vec::new(),
-            }
-        );
-        let v = set_declined(&svc, "tiny.en", true).unwrap();
-        assert!(v.show);
-        assert_eq!(v.declined_models, ["tiny.en"]);
+        assert_eq!(state_view(&svc).unwrap(), FirstRunView { show: true });
         let v = finish(&svc).unwrap();
         assert!(!v.show);
-        assert_eq!(v.declined_models, ["tiny.en"]);
         assert_eq!(state_view(&svc).unwrap(), v);
-        assert!(
-            set_declined(&svc, "tiny.en", false)
-                .unwrap()
-                .declined_models
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn first_run_refuses_a_model_the_catalogue_does_not_have() {
-        let dir = TempDir::new("first-run");
-        let svc = services(&dir);
-        let e = set_declined(&svc, "no-such-model", true).unwrap_err();
-        assert_eq!(e.kind, "unknown_model");
-        assert!(state_view(&svc).unwrap().declined_models.is_empty());
     }
 }

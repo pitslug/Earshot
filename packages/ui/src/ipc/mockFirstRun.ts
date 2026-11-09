@@ -4,14 +4,11 @@
 
 import type { FirstRunCommands, FirstRunView } from "./firstRun";
 import { IpcFailure } from "./ipc";
-import { MOCK_DISPLAY_NAMES } from "./mockModels";
 
 /** What the first-run mock starts with. */
 export interface FirstRunMockData {
   /** The app opens on the wizard (default false). */
   show?: boolean;
-  /** The models already answered "never". */
-  declined?: string[];
   /** `firstRunState` rejects (the store cannot be read). */
   stateFails?: boolean;
   /** `finishFirstRun` rejects this many times (the store cannot be written). */
@@ -23,9 +20,8 @@ export interface FirstRunMockData {
 /** The first-run commands of the mock `Ipc`. */
 export function createFirstRunMock(data: FirstRunMockData = {}): FirstRunCommands {
   let show = data.show ?? false;
-  let declined = [...(data.declined ?? [])].sort();
   let failures = data.finishFailures ?? 0;
-  const view = (): FirstRunView => ({ show, declined_models: [...declined] });
+  const view = (): FirstRunView => ({ show });
   return {
     firstRunState: async () => {
       if (data.stateFails) {
@@ -40,19 +36,6 @@ export function createFirstRunMock(data: FirstRunMockData = {}): FirstRunCommand
         throw new IpcFailure({ kind: "store", message: "the database could not be written", retryable: true });
       }
       show = false;
-      return view();
-    },
-    setModelDeclined: async (model, no) => {
-      data.onCall?.(["setModelDeclined", model, no]);
-      if (!(model in MOCK_DISPLAY_NAMES)) {
-        throw new IpcFailure({
-          kind: "unknown_model",
-          message: `${model} is not a model of this version`,
-          retryable: false,
-        });
-      }
-      declined = declined.filter((m) => m !== model);
-      if (no) declined = [...declined, model].sort();
       return view();
     },
   };

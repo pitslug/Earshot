@@ -37,8 +37,8 @@ export interface SpeakersPageState {
   busy: boolean;
   dismiss(): void;
   setTiming(timing: SpeakerTimingChoice): Promise<void>;
-  /** Stores the user's name. */
-  setName(name: string): Promise<void>;
+  /** Stores the user's name; resolves true when stored. */
+  setName(name: string): Promise<boolean>;
   /** Starts the sample (the user has agreed). */
   record(): Promise<void>;
   cancel(): Promise<void>;
@@ -124,8 +124,10 @@ export function useSpeakers(): SpeakersPageState {
       try {
         setView(await ipc.setMyName(name));
         setNotice(null);
+        return true;
       } catch (e) {
         setNotice({ title: "Your name was not saved", message: errorText(e) });
+        return false;
       } finally {
         setBusy(false);
       }

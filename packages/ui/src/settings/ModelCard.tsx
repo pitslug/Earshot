@@ -12,7 +12,6 @@ import {
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import type { ReactNode } from "react";
 
 import type { ModelItem } from "../ipc";
 import { formatSize, verdictTag } from "./copy";
@@ -80,8 +79,6 @@ export interface ModelCardProps {
   onDownload(model: string): void;
   onPause(model: string): void;
   onRemove(model: string): void;
-  /** Shown under the install state (the first-run wizard's later / never). */
-  offer?: ReactNode;
 }
 
 /** The speech helpers: what every meeting needs, so a card with nothing to choose or remove. */
@@ -151,7 +148,7 @@ export function NpuCard({
 }
 
 /** A model as a radio card; must sit inside a `RadioGroup`. */
-export function ModelCard({ item, label, why, selected, onDownload, onPause, onRemove, offer }: ModelCardProps) {
+export function ModelCard({ item, label, why, selected, onDownload, onPause, onRemove }: ModelCardProps) {
   const styles = useStyles();
   const title = item.title;
   const verdict = verdictTag(item.check);
@@ -180,7 +177,6 @@ export function ModelCard({ item, label, why, selected, onDownload, onPause, onR
       </div>
       <div className={styles.actions}>
         <InstallState item={item} title={title} onDownload={onDownload} onPause={onPause} />
-        {offer}
         {removable && (
           <Button
             size="small"

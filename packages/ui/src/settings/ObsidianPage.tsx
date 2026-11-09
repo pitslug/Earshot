@@ -19,6 +19,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { type ObsidianSettingsView, useIpc } from "../ipc";
+import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import { errorText } from "./useModels";
 
 const useStyles = makeStyles({
@@ -61,12 +62,12 @@ type Load =
 export interface ObsidianPageProps {
   /** Leaves out the page's own heading (the first-run wizard has its own). */
   noHeading?: boolean;
-  /** Told whether the fields hold something that is not saved. */
-  onUnsavedChange?: (unsaved: boolean) => void;
+  /** The first-run wizard saves with its Next, so no Save button shows. */
+  saveOnNext?: SaveOnNext;
 }
 
 /** The Obsidian page of Settings. */
-export function ObsidianPage({ noHeading = false, onUnsavedChange }: ObsidianPageProps) {
+export function ObsidianPage({ noHeading = false, saveOnNext }: ObsidianPageProps) {
   const styles = useStyles();
   const ipc = useIpc();
   const [load, setLoad] = useState<Load>({ status: "loading" });
@@ -100,9 +101,23 @@ export function ObsidianPage({ noHeading = false, onUnsavedChange }: ObsidianPag
   }, [ipc]);
 
   const unsaved = load.status === "loaded" && (vault !== load.view.value.vault || folder !== load.view.value.folder);
-  useEffect(() => {
-    onUnsavedChange?.(unsaved);
-  }, [unsaved, onUnsavedChange]);
+
+  const save = async () => {
+    setBusy(true);
+    setSaved(false);
+    try {
+      show(await ipc.setObsidianSettings({ vault, folder }));
+      setError(null);
+      setSaved(true);
+      return true;
+    } catch (e) {
+      setError(errorText(e));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  useSaveOnNext(saveOnNext, async () => !unsaved || save());
 
   if (load.status === "loading") return <Spinner label="Reading the Obsidian settings" />;
   if (load.status === "failed") {
@@ -117,20 +132,6 @@ export function ObsidianPage({ noHeading = false, onUnsavedChange }: ObsidianPag
   }
   const stored = load.view.value;
   const changed = unsaved;
-
-  const save = async () => {
-    setBusy(true);
-    setSaved(false);
-    try {
-      show(await ipc.setObsidianSettings({ vault, folder }));
-      setError(null);
-      setSaved(true);
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const choose = async () => {
     setPicking(true);
@@ -210,9 +211,11 @@ export function ObsidianPage({ noHeading = false, onUnsavedChange }: ObsidianPag
         >
           <Input value={folder} onChange={(_, d) => setFolder(d.value)} spellCheck={false} />
         </Field>
-        <Button type="submit" appearance="primary" className={styles.save} disabled={busy || !changed}>
-          Save
-        </Button>
+        {saveOnNext === undefined && (
+          <Button type="submit" appearance="primary" className={styles.save} disabled={busy || !changed}>
+            Save
+          </Button>
+        )}
       </form>
       {saved && !changed && (
         <MessageBar intent="success">
