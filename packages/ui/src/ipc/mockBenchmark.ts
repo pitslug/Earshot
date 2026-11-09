@@ -32,7 +32,7 @@ export const BENCHMARK_STEP_MS = 250;
 const REPLAYED_PER_STEP_MS = 10_000;
 /** The message of a scripted failure. */
 export const MOCK_BENCHMARK_FAILURE =
-  "A model these settings use is not downloaded. Download it on the Models page, then run the benchmark again.";
+  "A model these settings use is not downloaded. Download it on the System, Transcription or Summaries page, then run the benchmark again.";
 /** The meeting's attribution (`benchmark::MEETING_ATTRIBUTION`). */
 export const BENCHMARK_ATTRIBUTION =
   "The benchmark meeting is an excerpt (9:30 to 12:00) of meeting ES2004a of the AMI Meeting Corpus, University of Edinburgh and the AMI Consortium, licensed under CC BY 4.0 (groups.inf.ed.ac.uk/ami/corpus).";
@@ -46,7 +46,7 @@ export function mockBenchmarkResult(end: Exclude<MockBenchmarkEnd, "Failed">, at
     app_version: "0.0.0-preview",
     kept_up: keptUp,
     headline: !keptUp
-      ? "Live transcription fell behind. A lighter model, or another part on the Models page, may keep up."
+      ? "Live transcription fell behind. A lighter model on the Transcription page, or another part on the System page, may keep up."
       : summary
         ? "Live transcription kept up, and the summary was ready 48 seconds after the meeting ended."
         : "Live transcription kept up.",

@@ -3,13 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { type Ipc, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
-import { AFTER_CALL_WARNING, VOICE_SAMPLE_MS, VOICE_STEP_MS, voiceMessage } from "../ipc/mockSettings";
+import { VOICE_SAMPLE_MS, VOICE_STEP_MS, voiceMessage } from "../ipc/mockSettings";
 import { AppShell } from "../shell/AppShell";
 import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
-import { FORGET_PERSON_EXPLAINED, REMOVE_PERSON_EXPLAINED, PEOPLE_EXPLAINED } from "./SpeakersPage";
-import { FORGET_EXPLAINED, NAME_EXPLAINED, NEXT_MEETING, READ_ALOUD, RECORD_CONSENT, VOICE_EXPLAINED } from "./SpeakersPage";
+import { FORGET_PERSON_EXPLAINED, REMOVE_PERSON_EXPLAINED, PEOPLE_EXPLAINED } from "./PeoplePage";
+import { FORGET_EXPLAINED, NAME_EXPLAINED, READ_ALOUD, RECORD_CONSENT, VOICE_EXPLAINED } from "./PeoplePage";
 
 interface Setup {
   ipc: Ipc;
@@ -30,13 +30,11 @@ async function open(data: MockIpcData = {}): Promise<Setup> {
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Settings" }));
   const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "Speakers" }));
-  await screen.findByRole("heading", { level: 1, name: "Speakers" });
-  await screen.findByRole("radiogroup", { name: "When speakers are found" });
+  await user.click(within(nav).getByRole("button", { name: "People" }));
+  await screen.findByRole("heading", { level: 1, name: "People" });
+  await screen.findByRole("textbox", { name: /Your name/ });
   return { ipc, timer, user };
 }
-
-const radio = (name: RegExp) => screen.getByRole("radio", { name });
 
 function advance(timer: ManualTimer, ms: number) {
   act(() => timer.advance(ms));
@@ -46,7 +44,7 @@ beforeEach(() => {
   installMatchMedia(false);
 });
 
-describe("Settings, Speakers, people", () => {
+describe("Settings, People, people", () => {
   const people = [
     { id: "me", name: "The User", has_voiceprint: true, is_me: true },
     { id: "a", name: "Alex Sample", has_voiceprint: true, is_me: false },
@@ -138,19 +136,7 @@ describe("Settings, Speakers, people", () => {
   });
 });
 
-describe("Settings, Speakers", () => {
-  it("offers the battery choice on a laptop only, with the warning text", async () => {
-    await open({ machine: "surface" });
-    expect(radio(/^During the call/)).toBeChecked();
-    expect(radio(/^After the call$/)).not.toBeChecked();
-    expect(radio(/^After the call on battery/)).toBeInTheDocument();
-    expect(screen.getByText(AFTER_CALL_WARNING)).toBeInTheDocument();
-    expect(screen.getByText(NEXT_MEETING)).toBeInTheDocument();
-    cleanup();
-    await open({ machine: "desktop" });
-    expect(screen.queryByRole("radio", { name: /^After the call on battery/ })).toBeNull();
-    expect(screen.getAllByRole("radio")).toHaveLength(2);
-  });
+describe("Settings, People", () => {
 
   it("saves your name when you leave the field, and only if it changed", async () => {
     const s = await open();
@@ -179,14 +165,6 @@ describe("Settings, Speakers", () => {
     expect((await s.ipc.speakers()).voice.name).toBe("Casey");
   });
 
-  it("saves a new timing at once", async () => {
-    const s = await open();
-    await s.user.click(radio(/^After the call on battery/));
-    await waitFor(async () => expect((await s.ipc.speakers()).timing).toBe("AfterCallOnBattery"));
-    expect(radio(/^After the call on battery/)).toBeChecked();
-    await s.user.click(radio(/^After the call$/));
-    await waitFor(async () => expect((await s.ipc.speakers()).timing).toBe("AfterCall"));
-  });
 
   it("explains the voiceprint and asks before recording; cancelling the question records nothing", async () => {
     const s = await open();

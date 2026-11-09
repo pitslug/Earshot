@@ -472,7 +472,8 @@ pub const MIC_FAILED: &str = "The microphone could not be opened or stopped work
      then try again.";
 /// The speaker models (or ONNX Runtime) are missing or did not load.
 pub const MODELS_FAILED: &str = "The speaker detection models are not installed or did not \
-     load, so nothing was saved. Open the Models page, download the models, then try again.";
+     load, so nothing was saved. Open Settings, System, download the speech helpers, then try \
+     again.";
 /// The store could not be read or written.
 pub const STORE_FAILED: &str = "Earshot could not save your voice to its database, so nothing \
      was saved. Try again.";

@@ -8,7 +8,7 @@ import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { PICKED_VAULT } from "../ipc/mockSettings";
-import { EXPORT_EXPLAINED, exportPlace } from "./ObsidianPage";
+import { EXPORT_EXPLAINED, exportPlace } from "./ObsidianSection";
 
 interface Setup {
   ipc: Ipc;
@@ -28,8 +28,9 @@ async function open(data: MockIpcData = {}): Promise<Setup> {
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Settings" }));
   const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "Obsidian" }));
-  await screen.findByRole("heading", { level: 1, name: "Obsidian" });
+  await user.click(within(nav).getByRole("button", { name: "Notes and storage" }));
+  await screen.findByRole("heading", { level: 1, name: "Notes and storage" });
+  await screen.findByRole("region", { name: "Obsidian" });
   await screen.findByLabelText("Vault folder");
   return { ipc, user };
 }
@@ -43,7 +44,7 @@ beforeEach(() => {
   installMatchMedia(false);
 });
 
-describe("Settings, Obsidian", () => {
+describe("Settings, Notes and storage, Obsidian", () => {
   it("starts with no vault and the default subfolder, and saves a checked vault that export then uses", async () => {
     const s = await open();
     expect(screen.getByText(EXPORT_EXPLAINED)).toBeInTheDocument();

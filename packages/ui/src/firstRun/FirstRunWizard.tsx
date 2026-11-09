@@ -3,7 +3,12 @@
 // and the quit dialog stay as they are. Every step is the Settings page's own parts and hooks;
 // the wizard holds only the order, its own short words, what the Download step adds up, and the
 // "done" call. Next saves what the step's parts registered (`saveOnNext`), so no part shows a Save
-// button here. No step starts a download, a check, a sound or a recording by itself.
+// button here. Nothing downloads, records, plays a sound or runs the model check or the audio
+// check until the user presses its button. The one thing that runs by itself: when the Claude
+// Code or Codex choice is shown on the Summaries step, its card asks that agent CLI whether it is
+// installed and signed in (`checkClaudeCode` / `checkCodex`), which sends no meeting content.
+// The wizard holds its own `useModels`; `SettingsView` holds the other, and `AppShell` never
+// shows both, so only one subscription to model job events is live at a time.
 
 import {
   Body1,
@@ -24,9 +29,9 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { type ModelItem, useIpc } from "../ipc";
 import { AudioCheckSection } from "../settings/AudioCheckSection";
 import { LanguagesPicker, Notices, Recommendation } from "../settings/ModelsParts";
-import { ModelChoices, ModelsNotLoaded, UnknownModelSettings } from "../settings/ModelsPage";
-import { ObsidianPage } from "../settings/ObsidianPage";
-import { MyNameField, SpeakersNoticeBar, SpeakersNotLoaded, VoiceSection } from "../settings/SpeakersPage";
+import { ModelChoices, ModelsNotLoaded, UnknownModelSettings } from "../settings/ModelSections";
+import { ObsidianSection } from "../settings/ObsidianSection";
+import { MyNameField, SpeakersNoticeBar, SpeakersNotLoaded, VoiceSection } from "../settings/PeoplePage";
 import { SummaryWriterChoices } from "../settings/SummariesPage";
 import { formatSize } from "../settings/copy";
 import type { SaveOnNext, SaveStep } from "../settings/saveOnNext";
@@ -55,7 +60,7 @@ export const STEPS = [
 ] as const;
 
 /** Said after the wizard when it ended with no transcription model. */
-export const NO_MODEL_NOTE = "Meetings need a transcription model. You can download one any time in Settings.";
+export const NO_MODEL_NOTE = "Meetings need a transcription model. You can download one any time in Settings, Transcription.";
 
 /** Why the voice sample waits: the speech helpers are on their way. */
 export const HELPERS_ARRIVING = "The voice sample needs the speech helpers. They are still downloading, and this button turns on when they arrive.";
@@ -393,7 +398,7 @@ function OptionalExtrasStep({
   return (
     <>
       <ExtraRow title="Obsidian" words={OBSIDIAN_ROW}>
-        <ObsidianPage noHeading saveOnNext={saveOnNext} />
+        <ObsidianSection saveOnNext={saveOnNext} />
       </ExtraRow>
       <ExtraRow title="Audio check" words={AUDIO_CHECK_ROW}>
         <AudioCheckSection state={check} disabled={false} />

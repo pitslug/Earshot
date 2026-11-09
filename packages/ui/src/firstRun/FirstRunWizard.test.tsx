@@ -8,7 +8,7 @@ import { MODEL_STEP_MS } from "../ipc/mockModels";
 import { VOICE_SAMPLE_MS } from "../ipc/mockSettings";
 import { CHECK_WARNING } from "../settings/AudioCheckSection";
 import { SETUP_EXPLAINED } from "../settings/GeneralPage";
-import { EXPORT_EXPLAINED } from "../settings/ObsidianPage";
+import { EXPORT_EXPLAINED } from "../settings/ObsidianSection";
 import { CLAUDE_CODE_PRIVACY, CODEX_PRIVACY } from "../settings/SummariesPage";
 import { formatSize } from "../settings/copy";
 import { AppShell } from "../shell/AppShell";
@@ -231,8 +231,10 @@ describe("First run wizard", () => {
 
     it("keeps your own endpoint under Other, with its words", async () => {
       const s = setup();
-      await screen.findByRole("radiogroup", { name: "Who writes the summary" });
+      const group = await screen.findByRole("radiogroup", { name: "Who writes the summary" });
       expect(screen.queryByRole("radio", { name: /^Your own endpoint/ })).toBeNull();
+      // Other is a button, so it sits just after the group, not among its radios.
+      expect(within(group).queryByRole("button", { name: "Other" })).toBeNull();
       await s.user.click(screen.getByRole("button", { name: "Other", expanded: false }));
       expect(await screen.findByRole("radio", { name: /^Your own endpoint/ })).not.toBeChecked();
       expect(screen.getByText(/are sent to the address you enter, and only there/)).toBeInTheDocument();

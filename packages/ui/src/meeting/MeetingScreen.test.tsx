@@ -457,7 +457,7 @@ describe("meeting screen", () => {
     const s = setup({
       startError: {
         kind: "model",
-        message: "Earshot needs a download that is not on this computer yet. Open Settings, Models.",
+        message: "Earshot needs a transcription model that is not on this computer yet. Open Settings, Transcription to download one.",
         retryable: false,
       },
     });
@@ -465,7 +465,7 @@ describe("meeting screen", () => {
     await s.user.click(within(main).getByRole("button", { name: "New meeting" }));
     await s.user.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByText("The meeting could not start")).toBeInTheDocument();
-    expect(screen.getByText(/Open Settings, Models/)).toBeInTheDocument();
+    expect(screen.getByText(/Open Settings, Transcription/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
   });
 

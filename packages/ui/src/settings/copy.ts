@@ -20,7 +20,7 @@ export const NPU_WHY =
 
 /** What the speech helpers are, and that they are not enough on their own. */
 export const HELPERS_WHY =
-  "Every meeting needs these: voice detection, speaker detection and the ONNX Runtime library they run on. You also need a transcription model, below; which one is your choice.";
+  "Every meeting needs these: voice detection, speaker detection and the ONNX Runtime library they run on. You also need a transcription model, under Transcription; which one is your choice.";
 
 /** The three parts of the computer the page talks about. */
 export type Part = "processor" | "graphics" | "npu";

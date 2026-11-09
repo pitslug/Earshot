@@ -1,4 +1,4 @@
-// Settings, General: where the crash logs are (T9.1e). The path is read-only, for copying; the
+// Settings, Notes and storage: where the crash logs are (T9.1e). The path is read-only, for copying; the
 // app has no opener plugin.
 
 import { Caption1, Input, makeStyles, tokens } from "@fluentui/react-components";

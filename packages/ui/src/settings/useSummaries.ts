@@ -1,5 +1,5 @@
 // The Summaries page's state: the stored settings, whether an API key is stored (never the
-// key), the model a summary on this computer uses (from the Models page data), Claude Code's
+// key), the model a summary on this computer uses (from the models view), Claude Code's
 // and Codex's status (each asked only when its choice is shown: it runs the CLI's own checks)
 // and the refusals to show. Everything is saved through the IPC; nothing is decided here.
 
@@ -41,9 +41,9 @@ export interface SummariesNotice {
 
 export interface SummariesPageState {
   load: SummariesLoad;
-  /** The Models page data for "On this computer" (null until read or when it failed). */
+  /** The models view for "On this computer" (null until read or when it failed). */
   models: ModelsView | null;
-  /** Why the Models page data could not be read. */
+  /** Why the models view could not be read. */
   modelsError: string | null;
   notice: SummariesNotice | null;
   /** Why the key state is unknown (Credential Manager failed). */

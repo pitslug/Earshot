@@ -39,13 +39,23 @@ Reassurance, not a wall of text (D20):
 - Who-is-who panel (right column): one row per speaker with a play-sample button, name (or a name field for unknown voices), where it came from (mic, matched voiceprint), share of talk time, one sample line, and Merge / Link to person. "Remember these voices for next time" is unticked by default (voiceprints are opt-in). Renames rewrite the speaker rows, so summary, transcript and export all follow.
 - Transcript tab: the transcript grid (time, speaker, text), a cited line highlighted when reached from a citation.
 
-## Settings (T7.4)
+## Settings (T7.4, T12.5b)
 
-Sections: General, Audio (devices, capture mode, audio check), Summaries (local model shown / own endpoint with URL, provider and key fields and the remote-endpoint warning / no summary; style text), Models (backend order and model check, downloads with size and progress), Benchmark (T7.4c: the current settings run against a bundled 2.5-minute meeting replayed in real time; transcript lag during it, final transcript and summary times after it, next to the model check's verdict; nothing stored as a meeting, no network), Speakers (detection timing, your voice: record or forget), Obsidian (vault folder and subfolder, validated on save), Storage (audio retention, the T7.4 list, default 7 days).
+Seven pages, in this order, as agreed in docs/settings-design.md; Settings opens on General:
+
+1. General: start with Windows, closing to the tray, the keyboard shortcut, theme, updates, and the setup guide.
+2. Audio: devices, capture mode, audio check.
+3. System: the hardware, the recommendation, the speech helpers, where each task runs, the model check, NVIDIA's CUDA libraries where offered, and the benchmark (T7.4c: the current settings run against a bundled 2.5-minute meeting replayed in real time; transcript lag during it, final transcript and summary times after it, next to the model check's verdict; nothing stored as a meeting, no network).
+4. Transcription: meeting languages first (they decide the recommendation), the transcription models with downloads, size and progress (and their NPU versions on ARM64), whose words show while someone is talking, and when speakers are found.
+5. Summaries: who writes the summary, with the summary model under "On this computer", your own endpoint with URL, provider and key fields and the remote-endpoint warning, Claude Code and Codex with their sign-in check, or no summary; summarising during the meeting; the style text.
+6. People: your name, your voice (record or forget), and the people Earshot knows.
+7. Notes and storage: the Obsidian vault folder and subfolder (validated on save), how long recordings are kept (the T7.4 list, default 7 days), and where the crash logs are.
+
+Settings holds one model state for System, Transcription and Summaries, so a download or the model check carries on across pages; the first-run wizard holds its own, and the two are never shown together.
 
 The benchmark never runs beside a meeting, a meeting job, the model check, the voice sample or the audio check, and none of them starts while it runs.
 
-While the "your voice" sample is being recorded and saved (Speakers), a meeting cannot start and the model check cannot run; the sample in turn cannot start during a meeting or the model check.
+While the "your voice" sample is being recorded and saved (People), a meeting cannot start and the model check cannot run; the sample in turn cannot start during a meeting or the model check.
 
 ## First run (T9.1d, T12.5a)
 
@@ -56,7 +66,7 @@ Four short steps with a progress bar on top, as agreed in docs/settings-design.m
 3. About me: your name, then the voice sample with its own Skip. While the speech helpers are not there, the record button is off with a line saying why, and it turns on when they arrive.
 4. Optional extras: Obsidian and the audio check as two rows, each opening when pressed. Then Finish.
 
-Next saves what is on the step, typed fields included, so the wizard has no Save buttons; a refused save stays on the step and says why. Back leaves what was typed unsaved. Back and Next are the way through, with Skip setup at the top. Finishing or skipping with no transcription model says on the next screen that meetings need one and that it is in Settings; it stops nothing. No step starts a download, a check, a sound or a recording by itself.
+Next saves what is on the step, typed fields included, so the wizard has no Save buttons; a refused save stays on the step and says why. Back leaves what was typed unsaved. Back and Next are the way through, with Skip setup at the top. Finishing or skipping with no transcription model says on the next screen that meetings need one and that it is in Settings, Transcription; it stops nothing. Nothing downloads, records or plays a sound, and neither the model check nor the audio check runs, until its button is pressed. The one thing that runs by itself: when the Claude Code or Codex choice is shown on the Summaries step, its card asks that agent CLI whether it is installed and signed in, which sends no meeting content.
 
 ## Later (not M7)
 

@@ -1,7 +1,8 @@
-// Settings, Speakers (docs/ui-design.md "Settings", PLAN T7.4h): when speaker detection runs
-// (the T6.13d4 setting, used from the next meeting) and your voice: record a short sample and
-// save it as your voiceprint (the page asks first: voiceprints are opt-in), or forget it. Also the
-// people Earshot knows from your meetings, to rename or to forget their voices (T9.1mc).
+// Settings, People (docs/ui-design.md "Settings", PLAN T7.4h, T12.5b): your name, and your voice:
+// record a short sample and save it as your voiceprint (the page asks first: voiceprints are
+// opt-in), or forget it. Also the people Earshot knows from your meetings, to rename or to forget
+// their voices (T9.1mc), and, for the Transcription page, when speaker detection runs (the
+// T6.13d4 setting, used from the next meeting).
 
 import {
   Body1,
@@ -112,6 +113,9 @@ const useStyles = makeStyles({
     gap: tokens.spacingVerticalXXS,
     minWidth: 0,
     overflowWrap: "anywhere",
+  },
+  name: {
+    maxWidth: "520px",
   },
   passage: {
     margin: 0,
@@ -539,11 +543,61 @@ export function SpeakersNoticeBar({ state }: { state: SpeakersPageState }) {
   );
 }
 
-/** The Speakers page of Settings. */
-export function SpeakersPage() {
+/** When speakers are found (the T6.13d4 setting, used from the next meeting): a section of the
+ * Transcription page, with its own speaker state. */
+export function SpeakerTimingSection() {
   const styles = useStyles();
   const state = useSpeakers();
   const timingLabel = useId();
+  const { load } = state;
+
+  return (
+    <Section title="When speakers are found">
+      {load.status !== "loaded" ? (
+        <SpeakersNotLoaded load={load} />
+      ) : (
+        <>
+          <SpeakersNoticeBar state={state} />
+          {load.view.unknown.length > 0 && (
+            <MessageBar intent="warning">
+              <MessageBarBody>
+                <MessageBarTitle>A stored setting is not known to this version</MessageBarTitle>
+                {load.view.unknown.join(" ")}
+              </MessageBarBody>
+            </MessageBar>
+          )}
+          <span id={timingLabel} hidden>
+            When speakers are found
+          </span>
+          <RadioGroup
+            aria-labelledby={timingLabel}
+            value={load.view.timing}
+            disabled={state.busy}
+            onChange={(_, d) => void state.setTiming(d.value as SpeakerTimingChoice)}
+            className={styles.choices}
+          >
+            {load.view.options.map((o) => (
+              <div
+                key={o.value}
+                className={mergeClasses(styles.card, o.value === load.view.timing && styles.selected)}
+                data-timing={o.value}
+              >
+                <Radio value={o.value} label={<Body1Strong>{o.label}</Body1Strong>} />
+                <Caption1 className={styles.why}>{o.description}</Caption1>
+              </div>
+            ))}
+          </RadioGroup>
+          <Caption1 className={styles.muted}>{NEXT_MEETING}</Caption1>
+        </>
+      )}
+    </Section>
+  );
+}
+
+/** The People page of Settings: your name, your voice and the people Earshot knows. */
+export function PeoplePage() {
+  const styles = useStyles();
+  const state = useSpeakers();
   const { load } = state;
 
   if (load.status !== "loaded") return <SpeakersNotLoaded load={load} />;
@@ -552,44 +606,15 @@ export function SpeakersPage() {
   return (
     <div className={styles.page}>
       <Title2 as="h1" className={styles.heading}>
-        Speakers
+        People
       </Title2>
       <SpeakersNoticeBar state={state} />
-      {view.unknown.length > 0 && (
-        <MessageBar intent="warning">
-          <MessageBarBody>
-            <MessageBarTitle>A stored setting is not known to this version</MessageBarTitle>
-            {view.unknown.join(" ")}
-          </MessageBarBody>
-        </MessageBar>
-      )}
-
-      <Section title="When speakers are found">
-        <span id={timingLabel} hidden>
-          When speakers are found
-        </span>
-        <RadioGroup
-          aria-labelledby={timingLabel}
-          value={view.timing}
-          disabled={state.busy}
-          onChange={(_, d) => void state.setTiming(d.value as SpeakerTimingChoice)}
-          className={styles.choices}
-        >
-          {view.options.map((o) => (
-            <div
-              key={o.value}
-              className={mergeClasses(styles.card, o.value === view.timing && styles.selected)}
-              data-timing={o.value}
-            >
-              <Radio value={o.value} label={<Body1Strong>{o.label}</Body1Strong>} />
-              <Caption1 className={styles.why}>{o.description}</Caption1>
-            </div>
-          ))}
-        </RadioGroup>
-        <Caption1 className={styles.muted}>{NEXT_MEETING}</Caption1>
+      <Section title="Your name">
+        <div className={styles.name}>
+          <MyNameField state={state} name={view.voice.name} />
+        </div>
       </Section>
-
-      <VoiceSection state={state} voice={view.voice} />
+      <VoiceSection state={state} voice={view.voice} withName={false} />
       <PeopleSection />
     </div>
   );

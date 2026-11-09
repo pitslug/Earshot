@@ -1,5 +1,7 @@
 //! What the app says when something a meeting needs is not on this computer (T9.1f): fixed
-//! copy that points at Settings, Models. The runtime's own text names developer commands
+//! copy that points at the Settings page holding it (T12.5b): the speech helpers on System,
+//! transcription models on Transcription, summary models on Summaries. The runtime's own text
+//! names developer commands
 //! (`RuntimeError`'s Display, for the CLI and for tests); none of them may reach a window.
 //!
 //! The exits, each pinned by a test in this module: every runtime error becomes an `IpcError`
@@ -10,8 +12,8 @@
 //! [`library_problem`]. Transcript text and summary titles are the user's and pass unchanged.
 //!
 //! The copy names what to download only when the error's own file says what it is
-//! ([`Catalogue::model_of_file`]); otherwise it points at the Models page, which lists what is
-//! missing. Telling someone to fetch the wrong thing is worse than telling them where to look.
+//! ([`Catalogue::model_of_file`]); otherwise it points at the System and Transcription pages,
+//! which list what is missing. Telling someone to fetch the wrong thing is worse than telling them where to look.
 
 use earshot_runtime::RuntimeError;
 use earshot_runtime::catalogue::{Catalogue, ModelKind, display_name};
@@ -24,25 +26,26 @@ use crate::model_jobs::ModelJobEvent;
 
 /// What the user is told when a download is missing and nothing says which.
 pub const MODELS_NEEDED: &str = "Earshot needs a download that is not on this computer yet. Open \
-     Settings, Models to see what is missing.";
+     Settings: the System and Transcription pages show what is missing.";
 
 /// The speech helpers are what is missing.
 pub const HELPERS_NEEDED: &str = "Earshot needs the speech helpers, which are not on this \
-     computer yet. Open Settings, Models to download them.";
+     computer yet. Open Settings, System to download them.";
 
 /// A transcription model is what is missing. Which one is the user's choice, so none is named:
 /// on a clean install the one a run would try is only the fallback.
 pub const TRANSCRIPTION_NEEDED: &str = "Earshot needs a transcription model that is not on this \
-     computer yet. Open Settings, Models to download one.";
+     computer yet. Open Settings, Transcription to download one.";
 
 /// A transcription model and the speech helpers are both missing, as on a clean install: said in
 /// one go, so a meeting is not refused for one and then for the other.
 pub const TRANSCRIPTION_AND_HELPERS_NEEDED: &str = "Earshot needs a transcription model and the \
-     speech helpers, which are not on this computer yet. Open Settings, Models to download them.";
+     speech helpers, which are not on this computer yet. Open Settings to download them: the \
+     model on the Transcription page, the helpers on the System page.";
 
 /// A summary model chosen in Settings is what is missing, when its file does not say which.
 pub const SUMMARY_MODEL_NEEDED: &str = "The summary model you chose is not on this computer yet. \
-     Open Settings, Models to download it or choose another.";
+     Open Settings, Summaries to download it or choose another.";
 
 /// What the app says about what the final pass warned of, as `(banner key, text)`: fixed copy and
 /// counts, one banner per kind and track, never a warning's own developer text. Left out: what
@@ -180,7 +183,7 @@ fn model_file_missing(e: &RuntimeError) -> bool {
 /// The copy for summary model `model` missing, named as the user knows it.
 fn summary_copy_of(model: &str) -> String {
     format!(
-        "The summary model you chose, {}, is not on this computer yet. Open Settings, Models to \
+        "The summary model you chose, {}, is not on this computer yet. Open Settings, Summaries to \
          download it or choose another.",
         display_name(model)
     )
@@ -222,7 +225,7 @@ pub fn runtime_text(e: &RuntimeError) -> String {
         }
         Some((ModelKind::Summary, name)) => summary_copy_of(name),
         // A model's NPU files are never loaded without every one of them (`npu_order`); the
-        // Models page offers them.
+        // Transcription page offers them.
         Some((ModelKind::NpuVersion, _)) | None => MODELS_NEEDED.to_owned(),
     }
 }
@@ -521,14 +524,20 @@ mod tests {
             assert_eq!(ipc.message, copy);
             no_developer_text(&ipc.message);
         }
-        for copy in [
-            MODELS_NEEDED,
-            HELPERS_NEEDED,
-            TRANSCRIPTION_NEEDED,
-            TRANSCRIPTION_AND_HELPERS_NEEDED,
-            SUMMARY_MODEL_NEEDED,
+        // Each points at the Settings page that holds what is missing (T12.5b).
+        for (copy, pages) in [
+            (MODELS_NEEDED, &["System and Transcription pages"][..]),
+            (HELPERS_NEEDED, &["Settings, System"][..]),
+            (TRANSCRIPTION_NEEDED, &["Settings, Transcription"][..]),
+            (
+                TRANSCRIPTION_AND_HELPERS_NEEDED,
+                &["Transcription page", "System page"][..],
+            ),
+            (SUMMARY_MODEL_NEEDED, &["Settings, Summaries"][..]),
         ] {
-            assert!(copy.contains("Settings, Models"), "{copy}");
+            for page in pages {
+                assert!(copy.contains(page), "{copy}");
+            }
             no_developer_text(copy);
             assert_eq!(earshot_runtime::catalogue::manifest_id_in(copy), None);
         }
@@ -557,7 +566,7 @@ mod tests {
         for e in [missing, incomplete] {
             for text in [runtime_text(&e), summary_model_not_installed(&e)] {
                 assert!(text.contains(display_name(summary.id)), "{text}");
-                assert!(text.contains("Settings, Models"), "{text}");
+                assert!(text.contains("Settings, Summaries"), "{text}");
                 assert!(!text.contains("speech helpers"), "{text}");
                 assert!(!text.contains("transcription"), "{text}");
                 no_developer_text(&text);
@@ -699,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_a_skipped_summary_points_at_the_models_page() {
+    fn plain_text_a_skipped_summary_points_at_the_summaries_page() {
         let dir = TempDir::new("plain-skip");
         let models = ModelDir::new(dir.0.join("models"));
         let why = host::require_models(&models, "base.en", false)
@@ -710,7 +719,7 @@ mod tests {
             why,
         });
         no_developer_text(&copy);
-        assert!(copy.contains("Settings, Models"), "{copy}");
+        assert!(copy.contains("Settings, Summaries"), "{copy}");
         assert_eq!(earshot_runtime::catalogue::manifest_id_in(&copy), None);
     }
 

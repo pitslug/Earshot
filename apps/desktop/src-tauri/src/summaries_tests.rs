@@ -500,7 +500,7 @@ fn assert_summary_model_copy(message: &str, model: &str) {
         message.contains(earshot_runtime::catalogue::display_name(model)),
         "{message}"
     );
-    assert!(message.contains("Settings, Models"), "{message}");
+    assert!(message.contains("Settings, Summaries"), "{message}");
     assert!(!message.contains("speech helpers"), "{message}");
     assert!(!message.contains("transcription"), "{message}");
     assert!(

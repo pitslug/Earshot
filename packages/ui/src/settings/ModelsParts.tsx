@@ -1,5 +1,6 @@
-// The smaller parts of the Models page: hardware rows, the recommendation, the check line,
-// "where it runs", meeting languages and the notices.
+// The smaller model parts of Settings (System and Transcription) and the first-run wizard:
+// hardware rows, the recommendation, the check line, "where it runs", meeting languages and the
+// notices.
 
 import {
   Badge,
