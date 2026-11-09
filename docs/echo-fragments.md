@@ -74,3 +74,33 @@ The decision rule above stands unchanged, in full:
 ### On failure
 
 The code is reverted, the numbers and the reason go here, and T12.11's result is no change. No constant is moved after seeing a result to make a point pass, and the dev set is not changed within this round. A new shape or a new dev set would be another round, with its own rule written first. `fixtures/private/` and the acceptance scenarios choose nothing.
+
+## Round 2 results (2026-11-10): the rule removes nothing, nothing changes
+
+The rule (`asr::echo_fragment_mask`, with unit tests for each condition and the negative control, all passing) ran in `asr_eval` on the words the run rule and the speaker check left, per scenario with its lock; the speaker-check numbers are the unchanged production path. Runs: `asr_eval --metric asr.echo_leak --leak-dev [--rumble acceptance/aec_rumble_dev.toml] --backend cpu`, base.en, release, built from 828f868 plus the rule. It was not wired into `post::clean_mic_echo`, because nothing earned it a place.
+
+| run | condition | leak, unchanged | leak at 300 / 500 / 1000 ms | near-end kept in leak scenarios | near-end kept in near-only | words removed |
+|---|---|---|---|---|---|---|
+| leak-dev | aec | 18 / 1145 (1.57%) | 18 / 18 / 18 | 112 of 112 at every tolerance | 134 of 134 | 0 / 0 / 0 |
+| leak-dev | raw | 110 / 1145 (9.61%) | 110 / 110 / 110 | 63 (94.0% of heard) | 137 | 0 / 0 / 0 |
+| leak-dev rumble | aec | 21 / 1145 (1.83%) | 21 / 21 / 21 | 84 of 84 | 137 of 137 | 0 / 0 / 0 |
+| leak-dev rumble | raw | 119 / 1145 (10.39%) | 119 / 119 / 119 | 59 (98.3% of heard) | 129 | 0 / 0 / 0 |
+
+Point 2 holds (nothing removed, nothing lost); point 1 fails (leak held at every tolerance on both runs, lower on neither). No tolerance is chosen. The code was reverted; `accept m2` was not run, because no code changed.
+
+### Why: what the cleaning leaves in far-only speech is not repeated text
+
+An island count of the words left after cleaning, in scenarios with a lock (islands as defined above; "repeated" means the same normalised word on the reference within +-1 s of the delay, wider than any tolerance swept):
+
+| run | condition | far-only: words left | islands of 1 / 2 / 3 words | islands with 1+ repeated word | with 2+ |
+|---|---|---|---|---|---|
+| leak-dev | aec | 9 | 3 / 3 / 0 | 1 (a single word) | 0 |
+| leak-dev rumble | aec | 14 | 8 / 3 / 0 | 0 | 0 |
+| leak-dev | raw | 29 | 3 / 0 / 1 (+ 4 longer) | 3 | 1 (in an island of 6) |
+| leak-dev rumble | raw | 31 | 1 / 3 / 2 (+ 2 longer) | 2 | 1 (in an island of 14) |
+
+After the canceller, the short pieces left in far-only speech are garbled residue: none of them holds two words that repeat the far end, and only one holds even one. Almost none of them is a counted leak either: of the 18 leaked words on leak-dev, 16 are in double talk and 2 are two separate one-word islands in `delay-450ms` far-only speech (one word each, which no rule may remove); all 21 on the rumble run are in double talk, as single far-end words inside near-end talk. Even in the raw condition, where the mic hears the echo at full level, no short island repeats two far-end words.
+
+### What a rule of this kind could catch
+
+On these dev runs, nothing: the leak this kind of text rule targets (2 in-order repeats, isolated, inside far-end talk) does not occur after the canceller, and every leaked word on dev is either inside near-end talk or a lone word. For a longer stretch of garbled far-end speech under "Me", a text rule of any run length catches only the words the recogniser reproduces exactly and in order; on dev the garbled residue repeats almost none (1 word in 23 across both aec runs). Such residue is the speaker check's and the echo-cluster rules' job (`diar::speaker_echo_spans`, `drop_echo_clusters` rules 2 and 3), which judge the voice and level, not the words. The GATE-02 fragment matched the far end word for word, which the dev simulator does not produce; finding out whether a text rule earns its place for that shape needs dev scenarios that produce it, defined before measuring, as round 1 already said.
