@@ -1494,7 +1494,7 @@ Closed: work done after the x64 early release, before M12 existed. New ideas go 
   - deps: T7.4h
   - do: the owner: in an in-room meeting with no saved voice, the user can say a voice is theirs, instead of naming themselves creating a second person. Reviewer required: it changes who counts as the user.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
-- [x] T9.14 Keep recording through idle sleep and report any gap
+- [x] T9.16 Keep recording through idle sleep and report any gap
   - deps: T7.5
   - do: the owner: real meetings lost audio when Windows put an idle computer into Modern Standby during a recording: capture stopped, the gap was stored as silence and nothing was said. Hold a Windows power request for the life of capture, and report a gap in the mic track during the meeting and after it. Reviewer required: new unsafe FFI in `wasapi.rs`.
   - accept: `cargo test -p earshot-runtime --lib live_recording_gap`; `cargo test -p earshot-capture-wasapi keep_awake`; `cargo test -p earshot-desktop --bin earshot meeting_events`; a real run past the Windows idle timeout on the Surface with no standby
@@ -1594,6 +1594,26 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - deps: T12.4
   - do: found by T12.4 (2026-11-09): each NPU session compiles the Parakeet conversion at load (29-31 s) and costs about 2.0 GiB of private memory, nothing shared, so a call on the 16 GB Surface (idling above 60% memory use) leaves about 1.1 GiB available. Measure ONNX Runtime's EP context models for the QNN plugin (`ep.context_enable`, a compiled context binary made once and loaded by later sessions): load time and private memory per session with `live_lag --memory`, whether the QDQ initializers then stay in memory, and whether `ep.share_ep_contexts` or the plugin's weight sharing then lets sessions share. Where a compiled binary would live, how it is pinned and verified like other model files, and what invalidates it (driver, plugin, model version) go in the findings. Evaluation only; no shipped change without the owner. If a session drops well below 2 GiB, T12.4's rule is run again.
   - accept: findings, `--memory` reports and a recommendation in docs/live-previews.md
+
+- [ ] T12.13 Keep a meeting's summary on this computer
+  - deps: T7.4g
+  - do: the owner: a "keep this local" switch when a meeting starts and during it, because the summary writer is one global setting and some meetings should never leave the computer. It is stored per meeting, device-locally, and read wherever a summary starts (after the meeting and on re-summarise), with no network client built for such a meeting. Without a local summary model it skips the summary with a banner and never falls back to a remote writer; a record that cannot be read counts as local. Decide with the owner whether switching it off later is allowed, and how an existing remote summary reads when it is switched on. Reviewer required: privacy.
+  - accept: `cargo test -p earshot-runtime summary`; `cargo test -p earshot-desktop --bin earshot meeting`; `cmd /c pnpm --filter @earshot/ui test`; a test that a kept-local meeting opens no connection with a remote writer set (audit log empty); screenshot light and dark
+
+- [ ] T12.14 Keep the Summary and Transcript tabs in view
+  - deps: T7.3
+  - do: the owner: the tabs scroll away with the page, and the page's scroll position carries across a tab change, so opening Summary from the end of a long transcript lands at the end of the summary. Pin the tabs under the sticky meeting header, open Summary at its top, and keep a citation scrolling to its row in the transcript.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot of a long meeting, light and dark
+
+- [ ] T12.15 Your vocabulary
+  - deps: T7.4b
+  - do: the owner: a section in Settings for the user's own words (acronyms, company and site names), so they come out right. First, a device-local list, checked and bounded like the summary style, given to every summary request. Then a spike on the transcript, because Parakeet takes no prompt and Whisper does: compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data. A correction pass must never change a word without keeping the original. No test or doc holds a word from the user's list. An empty list leaves every prompt byte-identical.
+  - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; the spike's numbers and a recommendation in docs
+
+- [ ] T12.16 Edit a meeting's title, transcript and summary
+  - deps: T7.3
+  - do: the owner: correct a title and fix words in the transcript or summary. Today only speakers can be edited. Edits go through `edit::write`; an edit to a transcript segment keeps its id and times so citations still work, and its word times stay honest about what changed. Decide with the owner what a re-transcribe does to edited text (keep, warn or replace) and whether a changed transcript marks the summary out of date. A replaced summary keeps today's undo. Exports follow the edited text.
+  - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
 
 ### M10 - v2 Android in-person recorder
 

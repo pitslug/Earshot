@@ -614,7 +614,7 @@ pub enum RuntimeWarning {
     /// The far end is heard after [`RuntimeWarning::FarEndSilent`]. At most once per session.
     FarEndHeard,
     /// The mic stopped delivering audio for at least [`REPORTED_GAP`] at a time, so speech was
-    /// lost (T9.14; the `gaps` module docs), usually because the computer went to sleep. Sent
+    /// lost (T9.16; the `gaps` module docs), usually because the computer went to sleep. Sent
     /// each time the total grows, and once more in [`LiveOutcome::problems`].
     RecordingGap {
         /// All the audio lost so far in this meeting.

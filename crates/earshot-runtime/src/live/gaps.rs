@@ -1,4 +1,4 @@
-//! Gaps in the recording (T9.14): the mic stopped delivering audio, and the pipeline stored the
+//! Gaps in the recording (T9.16): the mic stopped delivering audio, and the pipeline stored the
 //! time as silence. The usual cause is the computer going to sleep with the meeting on, which the
 //! capture adapter's power request (`KeepAwake`) prevents only for idle sleep: a closed lid or the
 //! power button still sleeps. The speech in a gap is lost, so the user is told.

@@ -2513,7 +2513,7 @@ pub fn install_ctrl_c_handler() -> Result<&'static CtrlC, CaptureError> {
     Ok(&CTRL_C)
 }
 
-/// Asks Windows not to put the computer to sleep while it is held (T9.14): idle Modern Standby
+/// Asks Windows not to put the computer to sleep while it is held (T9.16): idle Modern Standby
 /// stops capture and the speech in that time is lost. The screen may still turn off. A closed lid
 /// or the power button still sleeps; the runtime reports the gap that leaves. Dropping it releases
 /// the request, and Windows also releases it if the process ends.
