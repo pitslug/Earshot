@@ -1587,14 +1587,15 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: explore NPU summaries beyond T8.3h's documentation review. Spike outside the shipped crates: choose a published QNN (Hexagon) build of an instruct model small enough for the Surface (Qualcomm AI Hub or ONNX Runtime GenAI, licence checked), add it and any runtime to `models/manifest.toml` (an evaluation set, pinned with SHA-256); find how to run ONNX Runtime GenAI with its telemetry off and prove it with an ETW check like `cargo xtask qnn-etw` before any meeting text goes in (AMI public text first); measure prompt and reply tokens/s and the real context limit; run `sum-eval` quality on the dev meetings with chunks resized to fit. Report what shipping would take (Rust binding, structured output or grammar, a Qwen 3.5-class NPU conversion, chunk redesign). No shipped change without the owner.
   - accept: `docs/npu-summaries.md` NPU section with measurements, the telemetry check output and a recommendation; sum-eval results logged
 
-- [ ] T12.8 How many voices are in the far-end recordings (was T6.9c)
+- [x] T12.8 How many voices are in the far-end recordings (was T6.9c)
   - deps: T6.9
-  - status (2026-11-10): the counts-only harness finds two voices on the take 3 and fan recordings [Likely]; the counts are in the private log. Waiting on the owner's listen to confirm.
+  - status (2026-11-10): two voices, confirmed by the owner's listen; the harness found two, so T6.9's first finding stands and no embedding-side task is added. One stretch where both voices talk was given to one voice (TODO.md).
   - do: Confirm the voice count of the private test recording. If one voice, T6.9's first finding is wrong and an embedding-side fix task is added.
   - accept: the answer recorded
 
-- [ ] T12.9 Calibrate clustering with AMI dev meetings in the data (was T6.9d)
+- [x] T12.9 Calibrate clustering with AMI dev meetings in the data (was T6.9d)
   - deps: T6.9b
+  - decision (2026-11-10): the owner keeps 0.68: the gain is three short over-splits, 0.72 sits one step below a merge, and a split is easy to fix in the app while a merge is not. The accept commands are for a move and were not run.
   - status (2026-11-10): measured with the owner's agreement (`cluster_sweep`, docs/far-speakers/ami-dev-calibration.md, the rule committed first). The rule picks 0.72 on its count branch (C 4 -> 1, AMI DER 0.1014 -> 0.0992), one grid step below a merge cliff at 0.73; the lane's judgement is 0.70 if anything. The threshold stays 0.68. Left: the owner's decision; a move then runs this task's accept commands and changes the two pinning tests in the same commit.
   - do: proposed by T6.9b: clean LibriSpeech scenes favour a higher threshold while real meetings already under-count at 0.68. A new rule, committed before measuring, with AMI dev mixes (set `ami-dev`) and long scenes on disjoint audio. Only with the owner's agreement.
   - accept: `cargo test --release -p earshot-onnx diar_calibration -- --include-ignored`; `cargo xtask accept m3`; `cargo xtask accept m6`
