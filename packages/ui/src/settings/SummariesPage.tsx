@@ -227,7 +227,7 @@ function EndpointForm({
   });
 
   return (
-    <div className={styles.endpoint} role="group" aria-label="Your own endpoint">
+    <div className={styles.endpoint} role="group" aria-label="Your own server">
       <div className={styles.fields}>
         <Field label="Provider">
           <Select
@@ -519,7 +519,7 @@ function WriterSection({
   const ownEndpoint = (
     <Choice
       value="OwnEndpoint"
-      label="Your own endpoint"
+      label="Your own server"
       why="An OpenAI-compatible server or Claude. The meeting's transcript, title, speaker names and notes are sent to the address you enter, and only there."
       selected={shown === "OwnEndpoint"}
     />

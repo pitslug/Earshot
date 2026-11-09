@@ -71,7 +71,7 @@ describe("Settings, Summaries", () => {
       const detail = `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
       expect(await screen.findByText(detail)).toBeInTheDocument();
       expect(screen.getByText("Nothing leaves this computer.")).toBeInTheDocument();
-      expect(screen.queryByRole("group", { name: "Your own endpoint" })).toBeNull();
+      expect(screen.queryByRole("group", { name: "Your own server" })).toBeNull();
       expect(live()).not.toBeChecked();
       expect(live()).toBeEnabled();
       expect(screen.getByText(LIVE_DESCRIPTION)).toBeInTheDocument();
@@ -100,8 +100,8 @@ describe("Settings, Summaries", () => {
 
   it("uses a local network endpoint only once saved, without the remote warning", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own endpoint/));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(radio(/^Your own server/));
+    const form = screen.getByRole("group", { name: "Your own server" });
     // Nothing is stored until the endpoint is saved.
     expect((await s.ipc.summarySettings()).value.writer).toBe("OnThisComputer");
     await s.user.type(within(form).getByLabelText("Address"), "http://192.168.1.20:8080/v1");
@@ -118,14 +118,14 @@ describe("Settings, Summaries", () => {
     // Back to this computer and to the endpoint again: the stored one is used at once.
     await s.user.click(radio(/^On this computer/));
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("OnThisComputer"));
-    await s.user.click(radio(/^Your own endpoint/));
+    await s.user.click(radio(/^Your own server/));
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("OwnEndpoint"));
   });
 
   it("shows a refused endpoint as a message and stores nothing", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own endpoint/));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(radio(/^Your own server/));
+    const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.type(within(form).getByLabelText("Address"), "http://llm.example.com/v1");
     await s.user.type(within(form).getByLabelText("Model"), "m");
     await s.user.click(within(form).getByRole("button", { name: "Use this endpoint" }));
@@ -148,8 +148,8 @@ describe("Settings, Summaries", () => {
 
   it("refuses an address holding the path the client appends", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own endpoint/));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(radio(/^Your own server/));
+    const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     await s.user.type(within(form).getByLabelText("Address"), "/v1");
     await s.user.type(within(form).getByLabelText("Model"), "claude-opus-5-5");
@@ -174,8 +174,8 @@ describe("Settings, Summaries", () => {
 
   it("keeps the Anthropic key write-only: save shows Key saved, remove brings the field back", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own endpoint/));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(radio(/^Your own server/));
+    const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     expect(within(form).getByLabelText("Address")).toHaveValue(MOCK_ANTHROPIC_URL);
     // A placeholder only: nothing is filled in or stored for the model.
@@ -210,7 +210,7 @@ describe("Settings, Summaries", () => {
         settings: { writer: "OwnEndpoint", provider: "Anthropic", url: MOCK_ANTHROPIC_URL, model: "claude" },
       },
     });
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.type(within(form).getByLabelText("API key"), "two words");
     await s.user.click(within(form).getByRole("button", { name: "Save key" }));
     expect(await screen.findByText("The API key was not saved")).toBeInTheDocument();
@@ -235,7 +235,7 @@ describe("Settings, Summaries", () => {
         apiKeySaved: true,
       },
     });
-    expect(radio(/^Your own endpoint/)).toBeChecked();
+    expect(radio(/^Your own server/)).toBeChecked();
     expect(await screen.findByText("Key saved")).toBeInTheDocument();
     expect(screen.getByText(remoteWarning("api.anthropic.com"))).toBeInTheDocument();
     expect(live()).toBeDisabled();
@@ -245,8 +245,8 @@ describe("Settings, Summaries", () => {
     const texts: string[] = [];
     const s = await open();
     texts.push(pageText());
-    await s.user.click(radio(/^Your own endpoint/));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(radio(/^Your own server/));
+    const form = screen.getByRole("group", { name: "Your own server" });
     texts.push(pageText());
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     await s.user.type(within(form).getByLabelText("Model"), "claude");

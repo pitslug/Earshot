@@ -68,8 +68,8 @@ export function formatMemory(bytes: number): string {
 export const ROLE_LABEL: Record<ChoiceKind, string> = {
   Recommended: "Recommended",
   Lighter: "Lighter",
-  European: "European languages",
-  EveryLanguage: "Many languages",
+  European: "Multilingual: European",
+  EveryLanguage: "Multilingual: every language",
 };
 
 /** Where a model would run, said on its card (from `ModelItem.runs_on`; `best` is the

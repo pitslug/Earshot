@@ -196,8 +196,8 @@ describe("Settings", () => {
     }
     // The writers' own parts on Summaries: the endpoint (with the Anthropic key) and the two CLIs.
     await goTo(s, "Summaries");
-    await s.user.click(screen.getByRole("radio", { name: /^Your own endpoint/ }));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(screen.getByRole("radio", { name: /^Your own server/ }));
+    const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     checkPage();
     await s.user.click(screen.getByRole("radio", { name: /^Claude \(through Claude Code\)/ }));
@@ -384,8 +384,8 @@ describe("Settings", () => {
     expect(radios.map((r) => (r as HTMLInputElement).labels?.[0]?.textContent)).toEqual([
       "Parakeet 0.6B v2RecommendedKeeps up with live speech on this computer",
       "Parakeet 110MLighter",
-      "Parakeet 0.6B v3European languages",
-      "Whisper large-v3-turboMany languages",
+      "Parakeet 0.6B v3Multilingual: European",
+      "Whisper large-v3-turboMultilingual: every language",
     ]);
     expect(radios[0]).toBeChecked();
     expect(card("parakeet-tdt-0.6b-v2")).toHaveTextContent("Best accuracy for English meetings. Runs on the NPU.");

@@ -77,7 +77,7 @@ In this order:
 | Notes and storage | Obsidian, recordings retention, crash logs | Obsidian, Storage, General |
 
 - Settings opens on General.
-- Plain words: "Speech helpers" stays, ONNX Runtime goes to its detail text; "Multilingual" becomes "Many languages"; "Keeps up" says what it means.
+- Plain words: "Speech helpers" stays, ONNX Runtime goes to its detail text; "Multilingual" stays (the owner, 2026-11-10); own endpoint is shown as "Your own server"; "Keeps up" says what it means.
 - Save rule: a choice applies at once, typed text needs Save. Today's pages already nearly follow this; the rule makes it deliberate.
 - Text elsewhere that names a page ("Open the Models page", "Settings, Models") follows the move.
 

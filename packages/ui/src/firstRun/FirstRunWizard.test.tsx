@@ -232,11 +232,11 @@ describe("First run wizard", () => {
     it("keeps your own endpoint under Other, with its words", async () => {
       const s = setup();
       const group = await screen.findByRole("radiogroup", { name: "Who writes the summary" });
-      expect(screen.queryByRole("radio", { name: /^Your own endpoint/ })).toBeNull();
+      expect(screen.queryByRole("radio", { name: /^Your own server/ })).toBeNull();
       // Other is a button, so it sits just after the group, not among its radios.
       expect(within(group).queryByRole("button", { name: "Other" })).toBeNull();
       await s.user.click(screen.getByRole("button", { name: "Other", expanded: false }));
-      expect(await screen.findByRole("radio", { name: /^Your own endpoint/ })).not.toBeChecked();
+      expect(await screen.findByRole("radio", { name: /^Your own server/ })).not.toBeChecked();
       expect(screen.getByText(/are sent to the address you enter, and only there/)).toBeInTheDocument();
     });
 
@@ -244,14 +244,14 @@ describe("First run wizard", () => {
       setup({
         summaries: { settings: { writer: "OwnEndpoint", url: "http://127.0.0.1:8080/v1", model: "local" } },
       });
-      expect(await screen.findByRole("radio", { name: /^Your own endpoint/ })).toBeChecked();
+      expect(await screen.findByRole("radio", { name: /^Your own server/ })).toBeChecked();
     });
 
     it("Next saves a typed endpoint, with no Save button", async () => {
       const s = setup();
       await s.user.click(await screen.findByRole("button", { name: "Other" }));
-      await s.user.click(await screen.findByRole("radio", { name: /^Your own endpoint/ }));
-      const form = within(await screen.findByRole("group", { name: "Your own endpoint" }));
+      await s.user.click(await screen.findByRole("radio", { name: /^Your own server/ }));
+      const form = within(await screen.findByRole("group", { name: "Your own server" }));
       expect(form.queryByRole("button", { name: /endpoint/ })).toBeNull();
       await s.user.type(form.getByRole("textbox", { name: /^Address/ }), "http://127.0.0.1:8080/v1");
       await s.user.type(form.getByRole("textbox", { name: /^Model/ }), "local");
@@ -267,8 +267,8 @@ describe("First run wizard", () => {
     it("a refused endpoint stays on the step and says why, and another choice gets past it", async () => {
       const s = setup();
       await s.user.click(await screen.findByRole("button", { name: "Other" }));
-      await s.user.click(await screen.findByRole("radio", { name: /^Your own endpoint/ }));
-      await screen.findByRole("group", { name: "Your own endpoint" });
+      await s.user.click(await screen.findByRole("radio", { name: /^Your own server/ }));
+      await screen.findByRole("group", { name: "Your own server" });
       await s.user.click(button("Next"));
       expect(await screen.findByText("Enter the endpoint's address.")).toBeInTheDocument();
       expect(screen.getByText(SAVE_REFUSED_NOTE)).toBeInTheDocument();
@@ -282,8 +282,8 @@ describe("First run wizard", () => {
     it("Next saves a typed API key with the endpoint", async () => {
       const s = setup();
       await s.user.click(await screen.findByRole("button", { name: "Other" }));
-      await s.user.click(await screen.findByRole("radio", { name: /^Your own endpoint/ }));
-      const form = within(await screen.findByRole("group", { name: "Your own endpoint" }));
+      await s.user.click(await screen.findByRole("radio", { name: /^Your own server/ }));
+      const form = within(await screen.findByRole("group", { name: "Your own server" }));
       await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
       await s.user.type(form.getByRole("textbox", { name: /^Model/ }), "a-model");
       await s.user.type(await screen.findByLabelText(/^API key/), "test-key");
