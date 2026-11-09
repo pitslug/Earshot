@@ -110,6 +110,12 @@ test = true
 name = "word_changes"
 test = true
 
+# The clustering threshold sweep with AMI dev meetings (T12.9, measurement only); its unit tests
+# pin the scenes, the measures and the rule of docs/far-speakers/ami-dev-calibration.md.
+[[example]]
+name = "cluster_sweep"
+test = true
+
 # `cargo xtask bench` (T8.1): RTF, live latency and peak memory; its unit tests run with the
 # crate's tests.
 [[example]]
