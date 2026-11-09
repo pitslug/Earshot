@@ -1560,15 +1560,15 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner, 2026-11-08: Settings and the first-run wizard grew one task at a time and are confusing. A design session with the owner first: walk through every page and step as they are, then agree the structure (what goes where, what first run asks and what it leaves to defaults, wording) in docs/settings-design.md before any code. Then split into build tasks with their own accept commands. Behaviour and stored settings stay as they are unless the design changes them.
   - accept: docs/settings-design.md agreed by the owner; the build tasks added to this plan
 
-- [ ] T12.5a First run as designed
+- [x] T12.5a First run as designed
   - deps: T12.5
-  - status (2026-11-10): built, reviewed and merged (8915be7); tests pass. Left: screenshots of every step in light and dark on both mock machines, and the owner's on-screen check.
+  - status (2026-11-10): built, reviewed and merged (8915be7); tests pass in the batch ci; the owner checked the screens on the preview and approved them.
   - do: docs/settings-design.md "First run": Summaries (with Claude and ChatGPT, this computer preselected, own endpoint under Other), Download (languages first, one button sized to the summary choice, the full list on request), About me (name, voice sample with a Skip; the sample waits for the speech helpers and says so, starting nothing by itself), Optional extras (Obsidian, audio check). Next saves the step. Finishing or skipping with no transcription model says meetings need one. Later and Never go: stop writing the record, and an old record still reads. The wizard stays a view of `AppShell` built from the Settings parts. Update docs/ui-design.md "First run" and AGENTS.md's first-run bullet.
   - accept: `cargo test -p earshot-runtime first_run`; `cargo test -p earshot-desktop bindings`; `cmd /c pnpm --filter @earshot/ui test`; screenshot of each step, light and dark, on `?firstRun=1` with `clean=1`, on both mock machines; the owner checks it on screen
 
-- [ ] T12.5b Settings pages as designed
+- [x] T12.5b Settings pages as designed
   - deps: T12.5
-  - status (2026-11-10): built, reviewed and merged (492e70c); tests pass, including the page-name guards. Left: screenshots of every page in light and dark on both mock machines, and the owner's on-screen check.
+  - status (2026-11-10): built, reviewed and merged (492e70c); tests pass in the batch ci, including the page-name guards; the owner checked the screens on the preview and approved them.
   - do: docs/settings-design.md "Settings": General, Audio, System, Transcription, Summaries, People, Notes and storage, in that order, opening on General. Models and Benchmark dissolve into System, Transcription and Summaries; Speakers, Obsidian and Storage move as listed. Stored settings and IPC do not change. `useModels` stays the only subscriber to `ModelJobEvent`, so it moves above the pages that share it. Text that names a page follows the move, on both sides of IPC (`speaker_settings::failure_copy`, `plain_text`, the wizard). Update docs/ui-design.md "Settings" and the AGENTS.md bullets that name these pages.
   - accept: `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; a test that no user-facing string names a page that no longer exists; screenshot of each page, light and dark, on both mock machines; the owner checks it on screen
 
