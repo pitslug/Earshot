@@ -2,18 +2,13 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { type Ipc, IpcProvider, type MockIpcData, type PreviewsChoice, createMockIpc } from "../ipc";
-import { MOCK_CRASH_LOGS, MOCK_VERSION } from "../ipc/mockSettings";
+import { type Ipc, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
+import { MOCK_VERSION } from "../ipc/mockSettings";
 import { AppShell } from "../shell/AppShell";
 import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider, THEME_KEY } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
-import { CRASH_LOGS_EXPLAINED, CRASH_LOGS_NO_FOLDER } from "./CrashLogsFolder";
 import {
-  PREVIEWS_EVERYONE_EXPLAINED,
-  PREVIEWS_EXPLAINED,
-  PREVIEWS_HEADING,
-  PREVIEWS_OTHER_PEOPLE_EXPLAINED,
   START_EXPLAINED,
   THEME_SYSTEM_EXPLAINED,
   TRAY_EXPLAINED,
@@ -43,59 +38,6 @@ const start = () => screen.getByRole("switch", { name: "Start Earshot with Windo
 
 beforeEach(() => {
   installMatchMedia(false);
-});
-
-describe("Settings, General, provisional words", () => {
-  const group = async () => screen.findByRole("radiogroup", { name: PREVIEWS_HEADING });
-  const radio = async (name: string) => within(await group()).getByRole("radio", { name }) as HTMLInputElement;
-  const view = (choice: PreviewsChoice, can_change = true, note: string | null = null) => ({
-    previews: { choice, can_change, note, unknown: null },
-  });
-
-  it("offers Off, Other people only and Everyone, says what each shows, and stores a change", async () => {
-    const s = await open({ settings: view("other_people") });
-    const labels = within(await group())
-      .getAllByRole("radio")
-      .map((r) => (r as HTMLInputElement).labels?.[0].textContent);
-    expect(labels).toEqual(["Off", "Other people only", "Everyone"]);
-    expect((await radio("Other people only")).checked).toBe(true);
-    expect(screen.getByText(PREVIEWS_EXPLAINED)).toBeTruthy();
-    expect(screen.getByText(PREVIEWS_OTHER_PEOPLE_EXPLAINED)).toBeTruthy();
-    expect(screen.getByText(PREVIEWS_EVERYONE_EXPLAINED)).toBeTruthy();
-    await s.user.click(await radio("Everyone"));
-    await waitFor(async () => expect((await s.ipc.previewsSettings()).choice).toBe("everyone"));
-    expect((await radio("Everyone")).checked).toBe(true);
-    await s.user.click(await radio("Off"));
-    await waitFor(async () => expect((await s.ipc.previewsSettings()).choice).toBe("off"));
-    expect((await radio("Off")).checked).toBe(true);
-    await s.user.click(await radio("Other people only"));
-    await waitFor(async () => expect((await s.ipc.previewsSettings()).choice).toBe("other_people"));
-  });
-
-  it("shows the note for a small machine, and lets them be turned on", async () => {
-    const note = "A note about this computer.";
-    const s = await open({ settings: view("off", true, note) });
-    expect((await radio("Off")).checked).toBe(true);
-    expect(screen.getByText(note)).toBeTruthy();
-    expect((await radio("Other people only")).disabled).toBe(false);
-    await s.user.click(await radio("Other people only"));
-    await waitFor(async () => expect((await s.ipc.previewsSettings()).choice).toBe("other_people"));
-  });
-
-  it("shows the note when Everyone is chosen but this computer runs them for the other people only", async () => {
-    const note = "This computer shows them for the other people only.";
-    await open({ settings: view("everyone", true, note) });
-    expect((await radio("Everyone")).checked).toBe(true);
-    expect(screen.getByText(note)).toBeTruthy();
-  });
-
-  it("cannot be changed where nothing can run them", async () => {
-    await open({ settings: view("off", false, "Not here.") });
-    for (const name of ["Off", "Other people only", "Everyone"]) {
-      expect((await radio(name)).disabled).toBe(true);
-    }
-    expect(screen.getByText("Not here.")).toBeTruthy();
-  });
 });
 
 describe("Settings, General", () => {
@@ -151,17 +93,6 @@ describe("Settings, General", () => {
     expect(screen.getByText("Ctrl+Alt+Shift+R is in use by another app.")).toBeInTheDocument();
   });
 
-  it("shows where the crash logs are, read-only, and says what they hold", async () => {
-    await open();
-    expect(screen.getByText(CRASH_LOGS_EXPLAINED)).toBeInTheDocument();
-    const path = await screen.findByRole("textbox", { name: "Crash logs folder" });
-    expect(path).toHaveValue(MOCK_CRASH_LOGS);
-    expect(path).toHaveAttribute("readonly");
-    cleanup();
-    await open({ settings: { crashLogsFolder: null } });
-    expect(await screen.findByText(CRASH_LOGS_NO_FOLDER)).toBeInTheDocument();
-    expect(screen.queryByRole("textbox", { name: "Crash logs folder" })).not.toBeInTheDocument();
-  });
 
   it("disables the switch with the reason when the setting cannot be read", async () => {
     await open({ settings: { autostartError: "the Windows folder is unknown (SystemRoot)" } });

@@ -1,7 +1,7 @@
 // Settings, Summaries (docs/ui-mockups/t7-4.html, PLAN T7.4g): who writes the summary (this
 // computer, your own endpoint, Claude through Claude Code (T7.4ga), OpenAI through Codex
-// (T7.4gc) or no summary), the endpoint with its API key for Anthropic, Claude Code's and
-// Codex's status and model,
+// (T7.4gc) or no summary), the summary model under "On this computer" (T12.5b, was on Models),
+// the endpoint with its API key for Anthropic, Claude Code's and Codex's status and model,
 // summarising during the meeting, and the summary style (T7.4b, `SummaryStyleSection`). Choices
 // save as they change; the endpoint saves with its button. The API key is only ever sent
 // to the app, never shown or read back.
@@ -28,12 +28,14 @@ import {
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import type { ProviderChoice, SummarySettingsView, WriterChoice } from "../ipc";
+import { ModelsNotLoaded, SummaryModelChoices } from "./ModelSections";
 import { SummaryStyleSection } from "./SummaryStyleSection";
 import { partName, titleOf } from "./copy";
 import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
+import type { ModelsPageState } from "./useModels";
 import { type CliCheck, type SummariesPageState, useSummaries } from "./useSummaries";
 
 const useStyles = makeStyles({
@@ -481,20 +483,25 @@ function WriterSection({
   keySaved,
   endpointUnderOther = false,
   saveOnNext,
+  localModels,
 }: {
   state: SummariesPageState;
   settings: SummarySettingsView;
   keySaved: boolean | null;
   endpointUnderOther?: boolean;
   saveOnNext?: SaveOnNext;
+  /** The model state Settings holds: with it, the summary models show under "On this computer". */
+  localModels?: ModelsPageState;
 }) {
   const styles = useStyles();
   const writerLabel = useId();
+  const localLabel = useId();
   const [pendingEndpoint, setPendingEndpoint] = useState(false);
   const [otherOpen, setOtherOpen] = useState(false);
   const value = settings.value;
   const shown: WriterChoice = pendingEndpoint ? "OwnEndpoint" : value.writer;
-  const models = state.models;
+  const loaded = localModels?.load.status === "loaded" ? localModels.load.data : null;
+  const models = loaded?.models ?? state.models;
   const local =
     models === null
       ? undefined
@@ -560,20 +567,30 @@ function WriterSection({
           why="Transcript and speakers only."
           selected={shown === "NoSummary"}
         />
-        {endpointUnderOther && shown !== "OwnEndpoint" && (
-          <Button
-            appearance="subtle"
-            className={styles.other}
-            aria-expanded={otherOpen}
-            onClick={() => setOtherOpen((open) => !open)}
-          >
-            Other
-          </Button>
-        )}
         {endpointUnderOther && endpointOpen && ownEndpoint}
       </RadioGroup>
+      {endpointUnderOther && shown !== "OwnEndpoint" && (
+        <Button
+          appearance="subtle"
+          className={styles.other}
+          aria-expanded={otherOpen}
+          onClick={() => setOtherOpen((open) => !open)}
+        >
+          Other
+        </Button>
+      )}
       {state.modelsError !== null && (
         <Caption1 className={styles.muted}>The model in use could not be read: {state.modelsError}</Caption1>
+      )}
+      {shown === "OnThisComputer" && localModels !== undefined && (
+        <div className={styles.endpoint} role="group" aria-labelledby={localLabel}>
+          <Body1Strong id={localLabel}>The model on this computer</Body1Strong>
+          {localModels.load.status === "loaded" ? (
+            <SummaryModelChoices state={localModels} data={localModels.load.data} />
+          ) : (
+            <ModelsNotLoaded load={localModels.load} />
+          )}
+        </div>
       )}
       {shown === "OwnEndpoint" && (
         <EndpointForm state={state} settings={settings} keySaved={keySaved} saveOnNext={saveOnNext} />
@@ -648,11 +665,26 @@ export function SummaryWriterChoices({ saveOnNext }: { saveOnNext: SaveOnNext })
   );
 }
 
+export interface SummariesPageProps {
+  /** The model state Settings holds for its pages: the summary models show under "On this
+   * computer", and a change of writer reads the models again (it changes what runs where). */
+  models?: ModelsPageState;
+}
+
 /** The Summaries page of Settings. */
-export function SummariesPage() {
+export function SummariesPage({ models }: SummariesPageProps) {
   const styles = useStyles();
   const state = useSummaries();
   const { load } = state;
+  const writer = load.status === "loaded" ? load.settings.value.writer : null;
+  const refresh = models?.refresh;
+  const lastWriter = useRef<string | null>(null);
+  useEffect(() => {
+    if (writer === null) return;
+    const before = lastWriter.current;
+    lastWriter.current = writer;
+    if (before !== null && before !== writer) void refresh?.();
+  }, [writer, refresh]);
 
   if (load.status !== "loaded") return <SummariesNotLoaded load={load} />;
   const { settings, keySaved } = load;
@@ -665,7 +697,7 @@ export function SummariesPage() {
       </Title2>
       <SummariesNotices state={state} settings={settings} />
 
-      <WriterSection state={state} settings={settings} keySaved={keySaved} />
+      <WriterSection state={state} settings={settings} keySaved={keySaved} localModels={models} />
 
       <Section title="During the meeting">
         <Switch

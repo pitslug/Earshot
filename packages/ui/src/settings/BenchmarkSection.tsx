@@ -1,4 +1,4 @@
-// Settings, Benchmark (PLAN T7.4c): like a game's benchmark, the current settings run against
+// Settings, System, the benchmark (PLAN T7.4c, T12.5b): like a game's benchmark, the current settings run against
 // a short meeting shipped with Earshot, and the page shows how far the transcript fell behind
 // during it and how long the final transcript and the summary took after it, next to what the
 // model check found. The app runs, measures and words the result; this shows it.
@@ -14,7 +14,6 @@ import {
   ProgressBar,
   Spinner,
   Subtitle2,
-  Title2,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
@@ -33,12 +32,6 @@ export const BENCHMARK_PRIVATE =
   "Nothing plays through your speakers, nothing from it is saved as a meeting, and nothing leaves this computer.";
 
 const useStyles = makeStyles({
-  page: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
-  },
   section: {
     display: "flex",
     flexDirection: "column",
@@ -169,8 +162,8 @@ function Result({ result }: { result: BenchmarkResultView }) {
   );
 }
 
-/** The Benchmark page. */
-export function BenchmarkPage() {
+/** The benchmark, a section of the System page. */
+export function BenchmarkSection() {
   const styles = useStyles();
   const state = useBenchmark();
   const headingId = useId();
@@ -197,71 +190,66 @@ export function BenchmarkPage() {
     );
 
   return (
-    <div className={styles.page}>
-      <Title2 as="h1" className={styles.heading}>
-        Benchmark
-      </Title2>
-      <section className={styles.section} aria-labelledby={headingId}>
-        <Subtitle2 as="h2" id={headingId} className={styles.heading}>
-          How fast Earshot is on this computer
-        </Subtitle2>
-        <Body1 className={styles.text}>{BENCHMARK_EXPLAINED}</Body1>
-        <Body1 className={styles.text}>{BENCHMARK_PRIVATE}</Body1>
-        {view.unreadable && (
-          <MessageBar intent="warning">
-            <MessageBarBody>
-              An earlier benchmark was saved by another version of Earshot and cannot be read. Run the benchmark again.
-            </MessageBarBody>
-          </MessageBar>
-        )}
-        {view.last !== null ? (
-          <Result result={view.last} />
-        ) : (
-          <Caption1 className={styles.muted}>The benchmark has not run on this computer yet.</Caption1>
-        )}
+    <section className={styles.section} aria-labelledby={headingId}>
+      <Subtitle2 as="h2" id={headingId} className={styles.heading}>
+        How fast Earshot is on this computer
+      </Subtitle2>
+      <Body1 className={styles.text}>{BENCHMARK_EXPLAINED}</Body1>
+      <Body1 className={styles.text}>{BENCHMARK_PRIVATE}</Body1>
+      {view.unreadable && (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            An earlier benchmark was saved by another version of Earshot and cannot be read. Run the benchmark again.
+          </MessageBarBody>
+        </MessageBar>
+      )}
+      {view.last !== null ? (
+        <Result result={view.last} />
+      ) : (
+        <Caption1 className={styles.muted}>The benchmark has not run on this computer yet.</Caption1>
+      )}
 
-        {running && (
-          <div className={styles.running} role="group" aria-label="Benchmark running">
-            {progress}
-            <div className={styles.row}>
-              <Caption1>{progressText(run)}</Caption1>
-              <Button disabled={run.status === "cancelling"} onClick={() => void state.cancel()}>
-                Cancel
-              </Button>
-            </div>
+      {running && (
+        <div className={styles.running} role="group" aria-label="Benchmark running">
+          {progress}
+          <div className={styles.row}>
+            <Caption1>{progressText(run)}</Caption1>
+            <Button disabled={run.status === "cancelling"} onClick={() => void state.cancel()}>
+              Cancel
+            </Button>
           </div>
-        )}
-        {run.status === "cancelled" && (
-          <MessageBar intent="info">
-            <MessageBarBody>The benchmark was cancelled. Nothing was saved.</MessageBarBody>
-          </MessageBar>
-        )}
-        {run.status === "failed" && (
-          <MessageBar intent="error">
-            <MessageBarBody>{run.message}</MessageBarBody>
-          </MessageBar>
-        )}
-        {state.notice !== null && (
-          <MessageBar intent="error">
-            <MessageBarBody>
-              <MessageBarTitle>The benchmark did not start</MessageBarTitle>
-              {state.notice}
-            </MessageBarBody>
-          </MessageBar>
-        )}
+        </div>
+      )}
+      {run.status === "cancelled" && (
+        <MessageBar intent="info">
+          <MessageBarBody>The benchmark was cancelled. Nothing was saved.</MessageBarBody>
+        </MessageBar>
+      )}
+      {run.status === "failed" && (
+        <MessageBar intent="error">
+          <MessageBarBody>{run.message}</MessageBarBody>
+        </MessageBar>
+      )}
+      {state.notice !== null && (
+        <MessageBar intent="error">
+          <MessageBarBody>
+            <MessageBarTitle>The benchmark did not start</MessageBarTitle>
+            {state.notice}
+          </MessageBarBody>
+        </MessageBar>
+      )}
 
-        {!running && (
-          <>
-            <Caption1 className={styles.muted}>{lengthNote(view.meeting_ms)}</Caption1>
-            <div className={styles.row}>
-              <Button appearance={view.last !== null ? "secondary" : "primary"} onClick={() => void state.start()}>
-                {view.last !== null ? "Run benchmark again" : "Run benchmark"}
-              </Button>
-            </div>
-          </>
-        )}
-        <Caption1 className={styles.muted}>{view.attribution}</Caption1>
-      </section>
-    </div>
+      {!running && (
+        <>
+          <Caption1 className={styles.muted}>{lengthNote(view.meeting_ms)}</Caption1>
+          <div className={styles.row}>
+            <Button appearance={view.last !== null ? "secondary" : "primary"} onClick={() => void state.start()}>
+              {view.last !== null ? "Run benchmark again" : "Run benchmark"}
+            </Button>
+          </div>
+        </>
+      )}
+      <Caption1 className={styles.muted}>{view.attribution}</Caption1>
+    </section>
   );
 }

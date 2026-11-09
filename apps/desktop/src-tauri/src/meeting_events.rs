@@ -906,7 +906,7 @@ pub fn skip_copy(reason: &SkipReason) -> String {
         // `why` is the runtime's developer text, for the CLI.
         SkipReason::NotInstalled { .. } => {
             "No summary model is installed on this computer. You can download one in Settings, \
-             Models."
+             Summaries."
                 .into()
         }
         SkipReason::ChosenNotInstalled { model } => crate::plain_text::chosen_summary_model(model),

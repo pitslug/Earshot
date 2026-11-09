@@ -33,6 +33,8 @@ mod meeting_events;
 mod model_jobs;
 mod models;
 mod obsidian;
+#[cfg(test)]
+mod page_names_tests;
 mod plain_text;
 mod shell;
 mod speaker_settings;

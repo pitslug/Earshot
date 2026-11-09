@@ -35,6 +35,8 @@ async function open(
   );
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Settings" }));
+  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
+  await user.click(within(nav).getByRole("button", { name: "System" }));
   await screen.findByRole("list", { name: "This is your hardware" });
   return { ipc, timer, user };
 }
@@ -52,7 +54,7 @@ beforeEach(() => {
   installMatchMedia(false);
 });
 
-describe("Settings, Models: the CUDA section", () => {
+describe("Settings, System: the CUDA section", () => {
   it("is not there on a computer without a suitable card", async () => {
     const read = vi.fn();
     await open("surface", {}, (ipc) => ({

@@ -1,6 +1,8 @@
-// The Models page's state: what the IPC says (hardware, models, settings), the running
-// check, and the notices (MessageBars). This hook is the one subscriber to `ModelJobEvent`,
-// used by the Models page and, for the whole of its life, the first-run wizard.
+// The model state of Settings: what the IPC says (hardware, models, settings), the running
+// check, and the notices (MessageBars). This hook is the one subscriber to `ModelJobEvent`:
+// `SettingsView` holds it for the System, Transcription and Summaries pages, and the first-run
+// wizard holds its own for the whole of its life. They are views of `AppShell` and never both
+// mounted, so only one subscription is ever live.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -79,7 +81,7 @@ function patchItem(models: ModelsView, name: string, patch: (i: ModelItem) => Mo
   };
 }
 
-/** Loads the Models page and follows model job events. */
+/** Loads the models and follows model job events. */
 export function useModels(): ModelsPageState {
   const ipc = useIpc();
   const [load, setLoad] = useState<ModelsLoad>({ status: "loading" });

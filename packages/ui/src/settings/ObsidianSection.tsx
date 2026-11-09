@@ -1,4 +1,4 @@
-// Settings, Obsidian (docs/ui-design.md "Settings", PLAN 3.8, T7.4h): the vault folder and
+// Settings, Notes and storage, Obsidian (docs/ui-design.md "Settings", PLAN 3.8, T7.4h): the vault folder and
 // the subfolder exported notes go to. The app checks them when they are saved (the folder
 // exists, is a folder and can be written to; the subfolder stays inside the vault). "Choose
 // folder..." fills the vault field from the Windows folder dialog (T7.4l); Save still stores.
@@ -12,7 +12,6 @@ import {
   MessageBarBody,
   MessageBarTitle,
   Spinner,
-  Title2,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
@@ -28,9 +27,6 @@ const useStyles = makeStyles({
     flexDirection: "column",
     gap: tokens.spacingVerticalXL,
     maxWidth: "860px",
-  },
-  heading: {
-    margin: 0,
   },
   text: {
     maxWidth: "70ch",
@@ -59,15 +55,14 @@ type Load =
   | { status: "failed"; message: string }
   | { status: "loaded"; view: ObsidianSettingsView };
 
-export interface ObsidianPageProps {
-  /** Leaves out the page's own heading (the first-run wizard has its own). */
-  noHeading?: boolean;
+export interface ObsidianSectionProps {
   /** The first-run wizard saves with its Next, so no Save button shows. */
   saveOnNext?: SaveOnNext;
 }
 
-/** The Obsidian page of Settings. */
-export function ObsidianPage({ noHeading = false, saveOnNext }: ObsidianPageProps) {
+/** The Obsidian settings: a section of the Notes and storage page, and a row of the first-run
+ * wizard. The heading is the caller's. */
+export function ObsidianSection({ saveOnNext }: ObsidianSectionProps) {
   const styles = useStyles();
   const ipc = useIpc();
   const [load, setLoad] = useState<Load>({ status: "loading" });
@@ -151,11 +146,6 @@ export function ObsidianPage({ noHeading = false, saveOnNext }: ObsidianPageProp
 
   return (
     <div className={styles.page}>
-      {!noHeading && (
-        <Title2 as="h1" className={styles.heading}>
-          Obsidian
-        </Title2>
-      )}
       <Body1 className={styles.text}>{EXPORT_EXPLAINED}</Body1>
       {load.view.unknown.length > 0 && (
         <MessageBar intent="warning">

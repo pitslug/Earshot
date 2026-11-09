@@ -15,7 +15,7 @@ import { AppShell } from "../shell/AppShell";
 import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
-import { RETENTION_DESCRIPTION, RETENTION_NEEDED } from "./StoragePage";
+import { RETENTION_DESCRIPTION, RETENTION_NEEDED } from "./RetentionSection";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -38,8 +38,8 @@ async function open(data: MockIpcData = {}): Promise<Setup> {
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Settings" }));
   const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "Storage" }));
-  await screen.findByRole("heading", { level: 1, name: "Storage" });
+  await user.click(within(nav).getByRole("button", { name: "Notes and storage" }));
+  await screen.findByRole("heading", { level: 1, name: "Notes and storage" });
   await screen.findByRole("combobox", { name: "Keep recordings for" });
   return { ipc, user };
 }
@@ -52,7 +52,7 @@ beforeEach(() => {
   installMatchMedia(false);
 });
 
-describe("Settings, Storage", () => {
+describe("Settings, Notes and storage, Recordings", () => {
   it("lists every choice, shortest first, with 7 days chosen by default", async () => {
     await open();
     const options = within(select())
@@ -151,7 +151,7 @@ describe("Settings, Storage", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Settings" }));
     const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-    await user.click(within(nav).getByRole("button", { name: "Storage" }));
+    await user.click(within(nav).getByRole("button", { name: "Notes and storage" }));
     await screen.findByRole("combobox", { name: "Keep recordings for" });
     await user.selectOptions(select(), "forever");
     expect(await screen.findByText("This setting was not saved")).toBeInTheDocument();
@@ -188,7 +188,7 @@ describe("Settings, Storage", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Settings" }));
     const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-    await user.click(within(nav).getByRole("button", { name: "Storage" }));
+    await user.click(within(nav).getByRole("button", { name: "Notes and storage" }));
     expect(await screen.findByText("The storage settings could not be read")).toBeInTheDocument();
     expect(screen.getByText("the database is locked")).toBeInTheDocument();
   });

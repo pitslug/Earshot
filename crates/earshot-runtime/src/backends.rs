@@ -1101,7 +1101,7 @@ pub fn require_qnn_model(models: &ModelDir, model: &ParakeetModel) -> Result<Pat
         if !path.is_file() {
             return Err(AsrError::Backend(format!(
                 "{} not found: the NPU conversion of {} is downloaded as its NPU version on the \
-                 Models page (`cargo xtask fetch-models --set {}`) or built with \
+                 app's Transcription page (`cargo xtask fetch-models --set {}`) or built with \
                  `cargo xtask qnn-convert --model {}`",
                 path.display(),
                 model.name,

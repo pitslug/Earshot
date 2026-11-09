@@ -775,7 +775,7 @@ fn meeting_events_summary_results_map_with_plain_copy() {
         panic!("{missing:?}");
     };
     assert!(reason.starts_with("No summary model is installed"));
-    assert!(reason.contains("Settings, Models"));
+    assert!(reason.contains("Settings, Summaries"));
     assert!(!reason.contains("fetch-models"), "{reason}");
     let failed = summary_event(&outcome(
         Ok(HostPost::Skipped),

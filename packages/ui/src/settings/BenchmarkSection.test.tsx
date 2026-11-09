@@ -16,7 +16,7 @@ import { AppShell } from "../shell/AppShell";
 import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
-import { BENCHMARK_EXPLAINED, BENCHMARK_PRIVATE, lengthNote, minutesText, progressText } from "./BenchmarkPage";
+import { BENCHMARK_EXPLAINED, BENCHMARK_PRIVATE, lengthNote, minutesText, progressText } from "./BenchmarkSection";
 
 interface Setup {
   ipc: Ipc;
@@ -37,8 +37,9 @@ async function open(data: MockIpcData = {}): Promise<Setup> {
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Settings" }));
   const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "Benchmark" }));
-  await screen.findByRole("heading", { level: 1, name: "Benchmark" });
+  await user.click(within(nav).getByRole("button", { name: "System" }));
+  await screen.findByRole("heading", { level: 1, name: "System" });
+  await screen.findByRole("region", { name: "How fast Earshot is on this computer" });
   return { ipc, timer, user };
 }
 
@@ -53,14 +54,18 @@ beforeEach(() => {
   installMatchMedia(false);
 });
 
-describe("Settings, Benchmark", () => {
-  it("comes after Models in the section list", async () => {
+describe("Settings, System, the benchmark", () => {
+  it("is the last section of the System page, and no page of its own", async () => {
     await open();
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const names = within(nav)
       .getAllByRole("button")
       .map((b) => b.textContent);
-    expect(names.indexOf("Benchmark")).toBe(names.indexOf("Models") + 1);
+    expect(names).not.toContain("Benchmark");
+    const sections = within(screen.getByRole("main"))
+      .getAllByRole("heading", { level: 2 })
+      .map((h) => h.textContent);
+    expect(sections.at(-1)).toBe("How fast Earshot is on this computer");
   });
 
   it("says what it does, how long it takes and where the meeting comes from", async () => {

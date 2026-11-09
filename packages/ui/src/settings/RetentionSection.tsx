@@ -1,6 +1,6 @@
-// Settings, Storage (PLAN T7.4k, docs/ui-design.md "Settings"): how long a meeting's
-// recordings are kept after its transcript is ready. A choice that deletes recordings now is
-// confirmed first with how many go.
+// Settings, Notes and storage, Recordings (PLAN T7.4k, T12.5b, docs/ui-design.md "Settings"): how
+// long a meeting's recordings are kept after its transcript is ready. A choice that deletes
+// recordings now is confirmed first with how many go.
 
 import {
   Body1,
@@ -20,7 +20,6 @@ import {
   Select,
   Spinner,
   Subtitle2,
-  Title2,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
@@ -37,12 +36,6 @@ export const RETENTION_NEEDED =
   "The recordings are needed to transcribe a meeting again and to play speaker samples. A meeting whose transcript is not ready yet keeps its recordings.";
 
 const useStyles = makeStyles({
-  page: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
-  },
   section: {
     display: "flex",
     flexDirection: "column",
@@ -63,8 +56,8 @@ const useStyles = makeStyles({
   },
 });
 
-/** The Storage page. */
-export function StoragePage() {
+/** How long recordings are kept, a section of the Notes and storage page. */
+export function RetentionSection() {
   const styles = useStyles();
   const state = useStorage();
   const headingId = useId();
@@ -84,10 +77,7 @@ export function StoragePage() {
   const { view } = load;
 
   return (
-    <div className={styles.page}>
-      <Title2 as="h1" className={styles.heading}>
-        Storage
-      </Title2>
+    <>
       {state.notice !== null && (
         <MessageBar intent={state.notice.intent}>
           <MessageBarBody>
@@ -162,6 +152,6 @@ export function StoragePage() {
           </DialogBody>
         </DialogSurface>
       </Dialog>
-    </div>
+    </>
   );
 }

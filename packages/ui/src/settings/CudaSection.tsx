@@ -1,4 +1,4 @@
-// Settings, Models: NVIDIA's CUDA libraries (T8.4af). Shown only on a computer the app offers them
+// Settings, System: NVIDIA's CUDA libraries (T8.4af). Shown only on a computer the app offers them
 // to; every decision comes from the IPC (`cuda_settings`), this file only shows it.
 
 import {
