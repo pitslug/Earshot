@@ -1589,7 +1589,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [x] T12.8 How many voices are in the far-end recordings (was T6.9c)
   - deps: T6.9
-  - status (2026-11-10): two voices, confirmed by the owner's listen; the harness found two, so T6.9's first finding stands and no embedding-side task is added. One stretch where both voices talk was given to one voice (TODO.md).
+  - status (2026-11-10): two voices, confirmed by the owner's listen (one asks, the other answers, matching where the harness put them); T6.9's first finding stands and no embedding-side task is added.
   - do: Confirm the voice count of the private test recording. If one voice, T6.9's first finding is wrong and an embedding-side fix task is added.
   - accept: the answer recorded
 
