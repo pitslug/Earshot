@@ -1595,6 +1595,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.9 Calibrate clustering with AMI dev meetings in the data (was T6.9d)
   - deps: T6.9b
+  - status (2026-11-10): measured with the owner's agreement (`cluster_sweep`, docs/far-speakers/ami-dev-calibration.md, the rule committed first). The rule picks 0.72 on its count branch (C 4 -> 1, AMI DER 0.1014 -> 0.0992), one grid step below a merge cliff at 0.73; the lane's judgement is 0.70 if anything. The threshold stays 0.68. Left: the owner's decision; a move then runs this task's accept commands and changes the two pinning tests in the same commit.
   - do: proposed by T6.9b: clean LibriSpeech scenes favour a higher threshold while real meetings already under-count at 0.68. A new rule, committed before measuring, with AMI dev mixes (set `ami-dev`) and long scenes on disjoint audio. Only with the owner's agreement.
   - accept: `cargo test --release -p earshot-onnx diar_calibration -- --include-ignored`; `cargo xtask accept m3`; `cargo xtask accept m6`
 

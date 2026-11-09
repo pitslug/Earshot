@@ -115,6 +115,8 @@ What this does and does not say:
 - 0.72 is inside the T3.2b valley only by 0.0041 (S 0.1851 against a limit of 0.1892).
 - Close-talking mixes only: a far-field merge (the `accept m3` SDM loss at 0.83) cannot be seen here.
 
+The rule's output is 0.72. The lane's judgement, outside the rule, is 0.70 if the owner moves at all, for the margin to the cliff above; keeping 0.68 is also defensible, since the whole gain is three short over-splits. The owner holds 0.68 until deciding.
+
 ## If the owner agrees to a move
 
 The constant would change in `crates/earshot-core/src/diar/cluster.rs`, and these would then need the owner's decision, because each pins 0.68 today:
