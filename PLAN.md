@@ -1572,8 +1572,9 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: docs/settings-design.md "Settings": General, Audio, System, Transcription, Summaries, People, Notes and storage, in that order, opening on General. Models and Benchmark dissolve into System, Transcription and Summaries; Speakers, Obsidian and Storage move as listed. Stored settings and IPC do not change. `useModels` stays the only subscriber to `ModelJobEvent`, so it moves above the pages that share it. Text that names a page follows the move, on both sides of IPC (`speaker_settings::failure_copy`, `plain_text`, the wizard). Update docs/ui-design.md "Settings" and the AGENTS.md bullets that name these pages.
   - accept: `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; a test that no user-facing string names a page that no longer exists; screenshot of each page, light and dark, on both mock machines; the owner checks it on screen
 
-- [ ] T12.5c Settings wording and the save rule
+- [x] T12.5c Settings wording and the save rule
   - deps: T12.5a, T12.5b
+  - status (2026-11-10): merged (df0674f), reviewed clear; UI tests 389 pass; the old and new text listed for the owner in chat. Privacy wording unchanged; "Your own endpoint" -> "Your own server" proposed, not made.
   - do: docs/settings-design.md: plain words ("Many languages" for Multilingual, what "Keeps up" means, ONNX Runtime only in detail text), and the save rule: a choice applies at once, typed text needs Save, on every page. Privacy wording does not change without the owner.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot`; the old and new text listed for the owner
 
