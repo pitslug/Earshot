@@ -20,7 +20,7 @@ export const NPU_WHY =
 
 /** What the speech helpers are, and that they are not enough on their own. */
 export const HELPERS_WHY =
-  "Every meeting needs these: voice detection, speaker detection and the ONNX Runtime library they run on. You also need a transcription model, under Transcription; which one is your choice.";
+  "Every meeting needs these: voice detection, speaker detection and the library they run on (ONNX Runtime). You also need a transcription model, under Transcription; which one is your choice.";
 
 /** The three parts of the computer the page talks about. */
 export type Part = "processor" | "graphics" | "npu";
@@ -68,8 +68,8 @@ export function formatMemory(bytes: number): string {
 export const ROLE_LABEL: Record<ChoiceKind, string> = {
   Recommended: "Recommended",
   Lighter: "Lighter",
-  European: "Multilingual: European",
-  EveryLanguage: "Multilingual: every language",
+  European: "European languages",
+  EveryLanguage: "Many languages",
 };
 
 /** Where a model would run, said on its card (from `ModelItem.runs_on`; `best` is the
@@ -81,8 +81,9 @@ export function placementLine(on: RunsOn, best: RunsOn): string {
   return "Runs on the processor.";
 }
 
-/** Why you would pick a transcription choice. */
-export function choiceWhy(role: ChoiceKind, item: ModelItem, best: RunsOn): string {
+/** Why you would pick a transcription choice. `european` is the title of the European choice, if
+ * there is one: the every-language choice is compared with it by name. */
+export function choiceWhy(role: ChoiceKind, item: ModelItem, best: RunsOn, european?: string): string {
   let why: string;
   switch (role) {
     case "Recommended":
@@ -102,7 +103,11 @@ export function choiceWhy(role: ChoiceKind, item: ModelItem, best: RunsOn): stri
       break;
     }
     case "EveryLanguage":
-      why = `About ${Math.round(item.languages.length / 10) * 10} languages, including Asian languages. Less accurate and slower than Parakeet: use it only for languages Parakeet v3 does not cover.`;
+      why = `About ${Math.round(item.languages.length / 10) * 10} languages, including Asian languages. ${
+        european === undefined
+          ? "Less accurate and slower than the other choices: use it only for languages they do not cover."
+          : `Less accurate and slower than ${european}: use it only for languages ${european} does not cover.`
+      }`;
       break;
   }
   return `${why} ${placementLine(item.runs_on, best)}`;
@@ -131,11 +136,11 @@ export function verdictTag(
 ): { text: string; color: "success" | "warning" | "danger"; line?: string } | null {
   switch (v) {
     case "KeepsUp":
-      return { text: "Keeps up", color: "success" };
+      return { text: "Keeps up with live speech on this computer", color: "success" };
     case "TooSlow":
-      return { text: "Too slow here", color: "warning", line: "You can still use it." };
+      return { text: "Too slow for live speech on this computer", color: "warning", line: "You can still use it." };
     case "Fails":
-      return { text: "Did not work here", color: "danger" };
+      return { text: "Did not work on this computer", color: "danger" };
     default:
       return null;
   }

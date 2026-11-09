@@ -18,7 +18,7 @@ import { useEffect, useId, useState } from "react";
 
 import { type PreviewsChoice, type PreviewsView, useIpc } from "../ipc";
 import { ModelNotices, ModelsNotLoaded, NpuVersions, Section, TranscriptionChoices } from "./ModelSections";
-import { LanguagesPicker } from "./ModelsParts";
+import { LANGUAGES_LABEL, LanguagesPicker } from "./ModelsParts";
 import { SpeakerTimingSection } from "./PeoplePage";
 import { type ModelsPageState, errorText } from "./useModels";
 
@@ -123,8 +123,9 @@ function TranscriptionModels({ models }: { models: ModelsPageState }) {
   return (
     <>
       <ModelNotices state={models} data={load.data} />
-      <Section title="Meeting languages">
+      <Section title={LANGUAGES_LABEL}>
         <LanguagesPicker
+          hideLabel
           models={load.data.models}
           value={settings.value.languages}
           onChange={(languages) => void models.save({ languages })}

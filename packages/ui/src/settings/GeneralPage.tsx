@@ -61,7 +61,7 @@ export const TRAY_EXPLAINED =
 
 /** What the global shortcut does. */
 export const shortcutExplained = (shortcut: string) =>
-  `Press ${shortcut} anywhere in Windows to start a meeting, and again to stop it. A meeting started this way uses the capture mode on the Audio page.`;
+  `Press ${shortcut} anywhere in Windows to start a meeting, and again to stop it. A meeting started this way is a call or in the room, as chosen on the Audio page.`;
 
 /** What the setup guide is, on the General page. */
 export const SETUP_EXPLAINED =

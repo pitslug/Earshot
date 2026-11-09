@@ -201,7 +201,7 @@ export function CheckLine({
       )}
       <Body1>
         Last check: {titleOf(models, c.model)} on the {partName(c.runs_on)}.
-        {c.fallback !== null && ` When it falls behind: ${titleOf(models, c.fallback)}.`}
+        {c.fallback !== null && ` If a meeting falls behind, Earshot switches to ${titleOf(models, c.fallback)}.`}
       </Body1>
       {!c.current && (
         <Caption1 className={styles.muted}>
@@ -215,9 +215,12 @@ export function CheckLine({
   );
 }
 
-function automaticLabel(order: RunsOn[]): string {
-  const parts = [...new Set(order.map(partName))];
-  return `Automatic (${parts.join(", then ")})`;
+/** "Automatic (processor)", or "Automatic (graphics card or processor)" when there is more than
+ * one part to pick from, best first: one of them, not one after the other. */
+export function automaticLabel(parts: string[]): string {
+  const unique = [...new Set(parts)];
+  if (unique.length < 2) return `Automatic (${unique.join("")})`;
+  return `Automatic (${unique.slice(0, -1).join(", ")} or ${unique[unique.length - 1]})`;
 }
 
 const PART_LABEL: Record<PartChoice, string> = {
@@ -256,8 +259,8 @@ export function WhereItRuns({
   const order = hardware.accelerators;
   const sumAuto =
     partOf(models.summary_recommended.runs_on) === "graphics"
-      ? "Automatic (graphics card, then processor)"
-      : "Automatic (processor)";
+      ? automaticLabel(["graphics card", "processor"])
+      : automaticLabel(["processor"]);
   return (
     <>
       <div className={styles.runs}>
@@ -269,7 +272,7 @@ export function WhereItRuns({
         >
           {partChoices(order, true, transcription).map((p) => (
             <option key={p} value={p}>
-              {p === "Automatic" ? automaticLabel(order) : PART_LABEL[p]}
+              {p === "Automatic" ? automaticLabel(order.map(partName)) : PART_LABEL[p]}
             </option>
           ))}
         </Select>
@@ -301,15 +304,22 @@ export function WhereItRuns({
   );
 }
 
+/** The languages field's name: its label, or, under a heading of the same words
+ * (`hideLabel`), only its accessible name. */
+export const LANGUAGES_LABEL = "Meeting languages";
+
 /** The meeting languages: every language a transcription model covers. */
 export function LanguagesPicker({
   models,
   value,
   onChange,
+  hideLabel = false,
 }: {
   models: ModelsView;
   value: string[];
   onChange(languages: string[]): void;
+  /** The page shows a heading with the same words, so the field shows no label of its own. */
+  hideLabel?: boolean;
 }) {
   const styles = useStyles();
   const codes = [...new Set(models.transcription.flatMap((m) => m.languages))];
@@ -320,10 +330,11 @@ export function LanguagesPicker({
   return (
     <Field
       className={styles.languages}
-      label="Meeting languages"
+      label={hideLabel ? undefined : LANGUAGES_LABEL}
       hint="The recommendation and the check follow the languages spoken in your meetings."
     >
       <Combobox
+        aria-label={hideLabel ? LANGUAGES_LABEL : undefined}
         multiselect
         value={shown}
         selectedOptions={value}

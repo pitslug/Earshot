@@ -47,7 +47,7 @@ function SystemModels({ models }: { models: ModelsPageState }) {
           onChange={(task, part) => void models.save({ [task]: part })}
         />
       </Section>
-      <Section title="The model check">
+      <Section title="Model check">
         <CheckSection state={models} data={load.data} />
       </Section>
       {cuda.view?.offered === true && (

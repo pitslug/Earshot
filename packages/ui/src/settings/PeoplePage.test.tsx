@@ -74,9 +74,9 @@ describe("Settings, People, people", () => {
     await s.user.click(await screen.findByRole("button", { name: "Rename Bo Example" }));
     const field = screen.getByRole("textbox", { name: "New name for Bo Example" });
     await s.user.clear(field);
-    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(screen.getByRole("region", { name: "People" })).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
     await s.user.type(field, "Bo Renamed");
-    await s.user.click(screen.getByRole("button", { name: "Save" }));
+    await s.user.click(within(screen.getByRole("region", { name: "People" })).getByRole("button", { name: "Save" }));
     await screen.findByText("Bo Renamed");
     expect(screen.queryByText("Bo Example")).toBeNull();
     expect((await s.ipc.listPersons()).find((p) => p.id === "b")?.name).toBe("Bo Renamed");
@@ -89,7 +89,7 @@ describe("Settings, People, people", () => {
     };
     await s.user.click(await screen.findByRole("button", { name: "Rename Bo Example" }));
     await s.user.type(screen.getByRole("textbox", { name: "New name for Bo Example" }), "!");
-    await s.user.click(screen.getByRole("button", { name: "Save" }));
+    await s.user.click(within(screen.getByRole("region", { name: "People" })).getByRole("button", { name: "Save" }));
     await screen.findByText("The name was not saved. Try another name.");
     expect((screen.getByRole("textbox", { name: "New name for Bo Example" }) as HTMLInputElement).value).toBe(
       "Bo Example!",
@@ -138,14 +138,20 @@ describe("Settings, People, people", () => {
 
 describe("Settings, People", () => {
 
-  it("saves your name when you leave the field, and only if it changed", async () => {
+  it("saves your name with Save, not when you leave the field, and only if it changed", async () => {
     const s = await open();
     const field = screen.getByRole("textbox", { name: /Your name/ });
+    const save = () => within(screen.getByRole("region", { name: "Your name" })).getByRole("button", { name: "Save" });
     expect(field).toHaveValue("");
+    expect(save()).toBeDisabled();
     await s.user.type(field, "Casey Parker");
     expect((await s.ipc.speakers()).voice.name).toBe("");
+    // Typed text is saved only by Save or Enter (the save rule): leaving the field saves nothing.
     await s.user.tab();
+    expect((await s.ipc.speakers()).voice.name).toBe("");
+    await s.user.click(save());
     await waitFor(async () => expect((await s.ipc.speakers()).voice.name).toBe("Casey Parker"));
+    await waitFor(() => expect(save()).toBeDisabled());
     expect(screen.getByRole("textbox", { name: /Your name/ })).toHaveValue("Casey Parker");
     expect(screen.getByText(NAME_EXPLAINED)).toBeInTheDocument();
     // Enter saves too, and clearing it goes back to no name.
@@ -160,7 +166,7 @@ describe("Settings, People", () => {
     expect(field).toHaveValue("Casey");
     await s.user.clear(field);
     await s.user.paste("x".repeat(101));
-    await s.user.tab();
+    await s.user.click(within(screen.getByRole("region", { name: "Your name" })).getByRole("button", { name: "Save" }));
     expect(await screen.findByText("Your name was not saved")).toBeInTheDocument();
     expect((await s.ipc.speakers()).voice.name).toBe("Casey");
   });

@@ -136,6 +136,7 @@ export function TranscriptionChoices({ state, data }: { state: ModelsPageState; 
     return item ? [{ role: c.role, item }] : [];
   });
   const inUseIsAChoice = choices.some((c) => c.item.name === models.in_use.transcription);
+  const european = choices.find((c) => c.role === "European")?.item.title;
   return (
     <>
       <span id={label} hidden>
@@ -148,7 +149,7 @@ export function TranscriptionChoices({ state, data }: { state: ModelsPageState; 
         className={styles.choices}
       >
         {choices.map(({ role, item }) =>
-          card(item, ROLE_LABEL[role], choiceWhy(role, item, best), item.name === models.in_use.transcription),
+          card(item, ROLE_LABEL[role], choiceWhy(role, item, best, european), item.name === models.in_use.transcription),
         )}
       </RadioGroup>
       {!inUseIsAChoice && (
@@ -160,10 +161,16 @@ export function TranscriptionChoices({ state, data }: { state: ModelsPageState; 
   );
 }
 
+/** What the model check does, above its line. */
+export const CHECK_EXPLAINED =
+  "Earshot tries the transcription models on this computer to find which ones keep up with live speech.";
+
 /** The model check's line and its notices. */
 export function CheckSection({ state, data }: { state: ModelsPageState; data: ModelsData }) {
+  const styles = useStyles();
   return (
     <>
+      <Caption1 className={styles.muted}>{CHECK_EXPLAINED}</Caption1>
       <CheckLine
         models={data.models}
         checking={state.checking}

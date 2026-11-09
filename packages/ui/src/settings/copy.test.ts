@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { type RunsOn, createMockIpc } from "../ipc";
+import { automaticLabel } from "./ModelsParts";
 import { formatMemory, formatSize, hardwareRows, languageName, partName, placementLine, titleOf, verdictTag } from "./copy";
 
 describe("Models page copy", () => {
@@ -65,9 +66,17 @@ describe("Models page copy", () => {
   });
 
   it("tags only a stored verdict", () => {
-    expect(verdictTag("KeepsUp")?.text).toBe("Keeps up");
-    expect(verdictTag("TooSlow")).toEqual({ text: "Too slow here", color: "warning", line: "You can still use it." });
-    expect(verdictTag("Fails")?.text).toBe("Did not work here");
+    expect(verdictTag("KeepsUp")?.text).toBe("Keeps up with live speech on this computer");
+    expect(verdictTag("TooSlow")).toEqual({ text: "Too slow for live speech on this computer", color: "warning", line: "You can still use it." });
+    expect(verdictTag("Fails")?.text).toBe("Did not work on this computer");
     expect(verdictTag("Unknown")).toBeNull();
+  });
+
+  it("says in plain words what Automatic picks from", () => {
+    expect(automaticLabel(["processor"])).toBe("Automatic (processor)");
+    expect(automaticLabel(["graphics card", "processor"])).toBe("Automatic (graphics card or processor)");
+    expect(automaticLabel(["graphics card", "graphics card", "NPU", "processor"])).toBe(
+      "Automatic (graphics card, NPU or processor)",
+    );
   });
 });
