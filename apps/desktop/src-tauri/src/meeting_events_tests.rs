@@ -888,6 +888,67 @@ fn meeting_queue_events_a_failed_save_is_told_with_the_save() {
     assert!(matches!(out[1], MeetingEvent::Ended { .. }));
 }
 
+/// The screen after a meeting shows only banners sent after `Ended`, and whoever was not watching
+/// during the meeting still has to hear about lost audio.
+#[test]
+fn meeting_events_a_recording_gap_comes_after_the_end_and_once() {
+    let gap = RuntimeWarning::RecordingGap {
+        total: std::time::Duration::from_secs(97),
+    };
+    let saving = RuntimeWarning::Recording {
+        track: TrackId::Mic,
+        error: "disk full".into(),
+    };
+    let mut m = EventMapper::new(CaptureMode::InRoom);
+    let now = Instant::now();
+    let out = m.map(
+        &RuntimeEvent::RecordingSaved {
+            reason: EndReason::Stopped,
+            problems: vec![gap.clone(), saving.clone()],
+        },
+        now,
+    );
+    assert!(
+        matches!(
+            &out[0],
+            MeetingEvent::Warning {
+                kind: WarningKind::Recording,
+                ..
+            }
+        ),
+        "{out:?}"
+    );
+    assert!(matches!(out[1], MeetingEvent::Ended { .. }), "{out:?}");
+    assert!(
+        matches!(&out[2], MeetingEvent::Warning { key, message, .. }
+            if key == "recording-gap" && message.contains("about 1 minute 37 seconds")),
+        "{out:?}"
+    );
+    assert_eq!(out.len(), 3);
+    let out = m.map(&ended(EndReason::Stopped, vec![gap, saving]), now);
+    assert!(out.is_empty(), "already told: {out:?}");
+}
+
+#[test]
+fn meeting_events_a_recording_gap_keeps_one_banner_with_the_total() {
+    for (secs, words) in [
+        (2, "about 2 seconds"),
+        (40, "about 40 seconds"),
+        (60, "about 1 minute,"),
+        (97, "about 1 minute 37 seconds"),
+        (120, "about 2 minutes,"),
+        (185, "about 3 minutes 5 seconds"),
+    ] {
+        let (key, kind, message) = banner(&RuntimeWarning::RecordingGap {
+            total: std::time::Duration::from_secs(secs),
+        });
+        assert_eq!(key, "recording-gap");
+        assert_eq!(kind, WarningKind::Audio);
+        assert!(message.contains(words), "{secs}: {message}");
+        assert!(message.contains("lost"), "{message}");
+    }
+}
+
 /// The outcome holds every problem, and the save's were told already: each is said once.
 #[test]
 fn meeting_queue_events_a_problem_told_with_the_save_is_not_told_again_at_the_end() {

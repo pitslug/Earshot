@@ -3120,6 +3120,101 @@ fn live_far_end_warning_follows_what_each_track_hears() {
     assert_eq!(far_end_warnings(&talk, None, 8000, 80), []);
 }
 
+/// The recording-gap warnings during a session with `gaps` (track, start ms, length ms) over
+/// 12 s, and the total in its outcome. With `reference`, a second track runs alongside the mic.
+fn recording_gaps(
+    reference: bool,
+    gaps: &[(TrackId, u64, u64)],
+    seed: u64,
+) -> (Vec<Duration>, Option<Duration>) {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let total_ms = 12_000;
+    let talk = words("a", 500, 20);
+    let mut builder =
+        ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, speech(&talk, total_ms, seed)));
+    if reference {
+        builder = builder.reference(MonoBuffer::new(R16, speech(&talk, total_ms, seed + 1)));
+    }
+    for &(track, start, len) in gaps {
+        builder = builder.gap(track, start * 16, len * 16).unwrap();
+    }
+    let session = start_live(
+        builder.build().unwrap(),
+        svc,
+        config(earshot_core::model::ClockDomain::Replay),
+        None,
+        Box::new(ChaCha8Rng::seed_from_u64(seed + 2)),
+    )
+    .unwrap();
+    let (events, outcome) = collect(session);
+    let during = events
+        .iter()
+        .filter_map(|e| match e {
+            RuntimeEvent::Warning(RuntimeWarning::RecordingGap { total }) => Some(*total),
+            _ => None,
+        })
+        .collect();
+    let at_end = outcome.problems.iter().find_map(|p| match p {
+        RuntimeWarning::RecordingGap { total } => Some(*total),
+        _ => None,
+    });
+    (during, at_end)
+}
+
+fn assert_about(got: Duration, want_ms: u64) {
+    let got = got.as_millis() as u64;
+    assert!(
+        got.abs_diff(want_ms) <= 50,
+        "{got} ms, wanted about {want_ms} ms"
+    );
+}
+
+#[test]
+fn live_recording_gap_on_the_mic_is_reported_during_and_after_the_meeting() {
+    let (during, at_end) = recording_gaps(false, &[(TrackId::Mic, 4000, 3000)], 90);
+    assert_about(*during.last().expect("a warning during the meeting"), 3000);
+    assert_about(at_end.expect("in the outcome"), 3000);
+}
+
+#[test]
+fn live_recording_gap_during_sleep_counts_once_across_both_tracks() {
+    // A computer asleep stops both tracks together.
+    let (during, at_end) = recording_gaps(
+        true,
+        &[(TrackId::Mic, 4000, 3000), (TrackId::Reference, 4000, 3000)],
+        100,
+    );
+    assert_about(*during.last().expect("a warning"), 3000);
+    assert_about(at_end.expect("in the outcome"), 3000);
+}
+
+#[test]
+fn live_recording_gaps_add_up() {
+    let (_, at_end) = recording_gaps(
+        false,
+        &[(TrackId::Mic, 2000, 2500), (TrackId::Mic, 7000, 3000)],
+        110,
+    );
+    assert_about(at_end.expect("in the outcome"), 5500);
+}
+
+#[test]
+fn live_recording_gap_is_not_reported_when_nothing_was_lost_from_the_mic() {
+    // No gap at all; a gap too short to report; a reference that goes quiet, as any loopback
+    // does while nothing plays.
+    assert_eq!(recording_gaps(false, &[], 120), (vec![], None));
+    assert_eq!(
+        recording_gaps(false, &[(TrackId::Mic, 4000, 1000)], 130),
+        (vec![], None)
+    );
+    assert_eq!(
+        recording_gaps(true, &[(TrackId::Reference, 4000, 3000)], 140),
+        (vec![], None)
+    );
+    assert_eq!(recording_gaps(true, &[], 150), (vec![], None));
+}
+
 #[test]
 fn live_voice_activity_stays_off_on_silence_and_ends_with_the_session() {
     // Negative control: quiet noise only, no "speaking" ever.

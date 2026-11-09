@@ -126,6 +126,8 @@ use crate::stretches::StretchRecord;
 use crate::{BoxRng, RuntimeError, Services};
 
 pub mod echo;
+mod gaps;
+pub use gaps::REPORTED_GAP;
 mod hold;
 mod preview;
 pub(crate) mod speaker_thread;
@@ -611,6 +613,13 @@ pub enum RuntimeWarning {
     FarEndSilent,
     /// The far end is heard after [`RuntimeWarning::FarEndSilent`]. At most once per session.
     FarEndHeard,
+    /// The mic stopped delivering audio for at least [`REPORTED_GAP`] at a time, so speech was
+    /// lost (T9.14; the `gaps` module docs), usually because the computer went to sleep. Sent
+    /// each time the total grows, and once more in [`LiveOutcome::problems`].
+    RecordingGap {
+        /// All the audio lost so far in this meeting.
+        total: Duration,
+    },
     /// A chosen microphone or output (T7.4i, the Audio page) could not be opened when the
     /// meeting started, so the Windows default is recorded instead. Sent at the start with
     /// the other start warnings. (One lost during the meeting is
@@ -665,8 +674,8 @@ pub struct LiveOutcome {
     pub audio_files: Vec<(TrackId, EntityId)>,
     /// Tracks whose device was unavailable when capture ended.
     pub unavailable_at_end: Vec<TrackId>,
-    /// Failures while finalising (a track's audio file, the meeting row); empty when
-    /// everything was stored.
+    /// Failures while finalising (a track's audio file, the meeting row) and any
+    /// [`RuntimeWarning::RecordingGap`]; empty when everything was recorded and stored.
     pub problems: Vec<RuntimeWarning>,
     /// Live "Me" words removed as echo of the far end ([`echo`]).
     pub echo_words_removed: usize,
@@ -1095,6 +1104,7 @@ where
         capture_end: None,
         audio_files: Vec::new(),
         problems: Vec::new(),
+        gaps: gaps::GapWatch::default(),
         previews,
         next_preview_power: None,
         speaking: [false, false],
@@ -1229,6 +1239,8 @@ struct Session<S> {
     audio_files: Vec<(TrackId, EntityId)>,
     /// Failures while finalising.
     problems: Vec<RuntimeWarning>,
+    /// The audio the mic did not deliver.
+    gaps: gaps::GapWatch,
     /// Each track's previews (by [`slot`], `preview` module docs).
     previews: [PreviewState; 2],
     /// When the running previews next read the power supply.
@@ -1399,6 +1411,9 @@ where
                     self.emit(RuntimeEvent::Levels(l));
                 }
                 PipelineEvent::Stats(s) => {
+                    if let Some(total) = self.gaps.stats(&s.mic) {
+                        self.warn(RuntimeWarning::RecordingGap { total });
+                    }
                     self.echo.stats(&s);
                     latest_stats = Some(s.clone());
                     self.emit(RuntimeEvent::Stats(s));
@@ -1438,6 +1453,15 @@ where
                             self.stretch_records.iter_mut().find(|(t, _)| t == track)
                     {
                         r.stopped.get_or_insert_with(|| error.to_string());
+                    }
+                    if let PipelineError::TimestampJump {
+                        track: TrackId::Mic,
+                        gap,
+                        backwards: false,
+                    } = e
+                    {
+                        let total = self.gaps.jump(gap);
+                        self.warn(RuntimeWarning::RecordingGap { total });
                     }
                     self.warn(RuntimeWarning::Pipeline(e));
                 }
@@ -1966,6 +1990,11 @@ where
             .lease_meeting_for(self.meeting_id, crate::MeetingJob::Processing)
         {
             self._lease = lease;
+        }
+        let lost = self.gaps.total();
+        if !lost.is_zero() {
+            self.problems
+                .push(RuntimeWarning::RecordingGap { total: lost });
         }
         self.emit(RuntimeEvent::RecordingSaved {
             reason: ended.reason,

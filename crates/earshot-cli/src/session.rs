@@ -542,6 +542,11 @@ pub(crate) fn format_warning(w: &RuntimeWarning) -> String {
              has heard nothing; check that the call plays through the captured output"
             .to_owned(),
         RuntimeWarning::FarEndHeard => "the far end's track now hears sound".to_owned(),
+        RuntimeWarning::RecordingGap { total } => format!(
+            "warning: the mic delivered no audio for {:.1} s in total (did the computer sleep?); \
+             speech in that time is lost",
+            total.as_secs_f64()
+        ),
         RuntimeWarning::CaptureRepeated { message, times } => {
             format!("warning: capture: {message} (repeated {times} more times)")
         }

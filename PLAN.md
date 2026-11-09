@@ -1494,6 +1494,10 @@ Closed: work done after the x64 early release, before M12 existed. New ideas go 
   - deps: T7.4h
   - do: the owner: in an in-room meeting with no saved voice, the user can say a voice is theirs, instead of naming themselves creating a second person. Reviewer required: it changes who counts as the user.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
+- [x] T9.14 Keep recording through idle sleep and report any gap
+  - deps: T7.5
+  - do: the owner: real meetings lost audio when Windows put an idle computer into Modern Standby during a recording: capture stopped, the gap was stored as silence and nothing was said. Hold a Windows power request for the life of capture, and report a gap in the mic track during the meeting and after it. Reviewer required: new unsafe FFI in `wasapi.rs`.
+  - accept: `cargo test -p earshot-runtime --lib live_recording_gap`; `cargo test -p earshot-capture-wasapi keep_awake`; `cargo test -p earshot-desktop --bin earshot meeting_events`; a real run past the Windows idle timeout on the Surface with no standby
 - [x] T9.5a Folders: model and migration
   - deps: T9.1
   - do: docs/folders-design.md "Data model": `Folder` (synced, `syncable_row!`), repo trait and contract cases, the `folder` table in `SYNCED_TABLES`, `meeting.folder_id BLOB` (no foreign key, `Option<EntityId>` with `serde(default)`) in schema version 2 by an appended migration with its `APPLIED` pin, cleared by core `delete_meeting`; trybuild `never_sync_envelope.stderr` regenerated. A committed version-1 database migrates. Reviewer required.

@@ -501,8 +501,12 @@ impl EventMapper {
             // The stop never waits for the rest of a live transcript to decode.
             RuntimeEvent::RecordingSaved { reason, problems } => {
                 self.told.clone_from(problems);
-                let mut out: Vec<MeetingEvent> =
-                    problems.iter().filter_map(warning_event).collect();
+                let is_gap = |w: &&RuntimeWarning| matches!(w, RuntimeWarning::RecordingGap { .. });
+                let mut out: Vec<MeetingEvent> = problems
+                    .iter()
+                    .filter(|w| !is_gap(w))
+                    .filter_map(warning_event)
+                    .collect();
                 out.push(MeetingEvent::Ended {
                     meeting: self.meeting.clone(),
                     reason: match reason {
@@ -511,6 +515,9 @@ impl EventMapper {
                         EndReason::Failed => EndedReason::Failed,
                     },
                 });
+                // After `Ended`: the screen after a meeting shows only what follows it, and the
+                // person who was not watching during the meeting still has to hear this.
+                out.extend(problems.iter().filter(is_gap).filter_map(warning_event));
                 out
             }
             // The outcome is the whole record: what the save already said is not said again.
@@ -534,6 +541,19 @@ impl EventMapper {
             // A mapped window is reported by the summary after the meeting.
             | RuntimeEvent::LiveSummaryMapped { .. } => Vec::new(),
         }
+    }
+}
+
+/// A recording gap in words: whole seconds under a minute, then minutes and seconds.
+fn gap_length(total: Duration) -> String {
+    let secs = total.as_secs_f64().round() as u64;
+    match (secs / 60, secs % 60) {
+        (0, 1) => "about 1 second".to_owned(),
+        (0, s) => format!("about {s} seconds"),
+        (1, 0) => "about 1 minute".to_owned(),
+        (m, 0) => format!("about {m} minutes"),
+        (1, s) => format!("about 1 minute {s} seconds"),
+        (m, s) => format!("about {m} minutes {s} seconds"),
     }
 }
 
@@ -632,6 +652,17 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
             "far-end".into(),
             WarningKind::DeviceRestored,
             "Earshot now hears this computer's sound output.".into(),
+        ),
+        // One banner, with the total so far.
+        RuntimeWarning::RecordingGap { total } => warning(
+            "recording-gap".into(),
+            WarningKind::Audio,
+            format!(
+                "This recording has gaps totalling {}, and speech in them is lost. The microphone \
+                 stopped sending sound, which also happens when the computer goes to sleep: keep \
+                 the lid open and leave it switched on while recording.",
+                gap_length(*total)
+            ),
         ),
         RuntimeWarning::ChosenDeviceUnavailable {
             track,
