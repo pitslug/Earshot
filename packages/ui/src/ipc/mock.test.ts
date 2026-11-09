@@ -348,6 +348,13 @@ describe("mock speech helpers (T9.1f)", () => {
     expect(events.map((e) => e.type)).toContain("Checked");
   });
 
+  it("noModels leaves a machine with no model and no stored check", async () => {
+    const m = await createMockIpc({ noModels: true }).models();
+    expect([...m.transcription, ...m.summary, ...m.npu].filter((i) => i.installed === "Yes")).toEqual([]);
+    expect(m.check).toBeNull();
+    expect(m.helpers.installed).toBe("Yes");
+  });
+
   it("folders: the sample meetings sit in the sample folders, listed by name", async () => {
     const ipc = createMockIpc();
     expect((await ipc.listFolders()).map((f) => f.name)).toEqual(["Planning", "Supplier calls"]);

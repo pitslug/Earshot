@@ -26,6 +26,7 @@ const ipc = inTauri
       machine,
       firstRun: { show: query.get("firstRun") === "1" },
       cleanInstall: query.get("clean") === "1",
+      noModels: query.get("clean") === "1",
       inRoom: query.get("inRoom") === "1",
       callEndOfferAfterMs: query.get("callEnded") === "1" ? 3_000 : undefined,
       newerData: query.get("newerData") === "1",

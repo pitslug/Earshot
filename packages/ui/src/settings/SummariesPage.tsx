@@ -33,6 +33,7 @@ import { type ReactNode, useEffect, useId, useState } from "react";
 import type { ProviderChoice, SummarySettingsView, WriterChoice } from "../ipc";
 import { SummaryStyleSection } from "./SummaryStyleSection";
 import { partName, titleOf } from "./copy";
+import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import { type CliCheck, type SummariesPageState, useSummaries } from "./useSummaries";
 
 const useStyles = makeStyles({
@@ -100,6 +101,9 @@ const useStyles = makeStyles({
     flexWrap: "wrap",
     alignItems: "center",
     gap: tokens.spacingHorizontalS,
+  },
+  other: {
+    justifySelf: "start",
   },
 });
 
@@ -186,12 +190,12 @@ function EndpointForm({
   state,
   settings,
   keySaved,
-  onUnsavedChange,
+  saveOnNext,
 }: {
   state: SummariesPageState;
   settings: SummarySettingsView;
   keySaved: boolean | null;
-  onUnsavedChange?: (unsaved: boolean) => void;
+  saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
   const stored = settings.value;
@@ -211,11 +215,14 @@ function EndpointForm({
   const anthropic = provider === "Anthropic";
   const changed = !inUse || provider !== stored.provider || url !== stored.url || model !== stored.model;
   const showWarning = inUse && settings.endpoint_host !== null && !settings.endpoint_local;
-  const unsaved = changed || key.trim() !== "";
-  useEffect(() => {
-    onUnsavedChange?.(unsaved);
-    return () => onUnsavedChange?.(false);
-  }, [unsaved, onUnsavedChange]);
+  const wizard = saveOnNext !== undefined;
+  useSaveOnNext(saveOnNext, async () => {
+    if (changed && !(await state.save({ writer: "OwnEndpoint", provider, url, model }))) return false;
+    if (!anthropic || key.trim() === "") return true;
+    const saved = await state.saveKey(key);
+    if (saved) setKey("");
+    return saved;
+  });
 
   return (
     <div className={styles.endpoint} role="group" aria-label="Your own endpoint">
@@ -256,16 +263,18 @@ function EndpointForm({
           />
         </Field>
       </div>
-      <div className={styles.row}>
-        <Button
-          appearance="primary"
-          disabled={state.busy || !changed}
-          onClick={() => void state.save({ writer: "OwnEndpoint", provider, url, model })}
-        >
-          {inUse ? "Save endpoint" : "Use this endpoint"}
-        </Button>
-        {inUse && !changed && <Caption1 className={styles.muted}>Saved.</Caption1>}
-      </div>
+      {!wizard && (
+        <div className={styles.row}>
+          <Button
+            appearance="primary"
+            disabled={state.busy || !changed}
+            onClick={() => void state.save({ writer: "OwnEndpoint", provider, url, model })}
+          >
+            {inUse ? "Save endpoint" : "Use this endpoint"}
+          </Button>
+          {inUse && !changed && <Caption1 className={styles.muted}>Saved.</Caption1>}
+        </div>
+      )}
       {showWarning && (
         <MessageBar intent="warning">
           <MessageBarBody>{remoteWarning(settings.endpoint_host ?? "")}</MessageBarBody>
@@ -294,16 +303,18 @@ function EndpointForm({
                   autoComplete="off"
                   onChange={(_, d) => setKey(d.value)}
                 />
-                <Button
-                  disabled={state.busy || key.trim() === ""}
-                  onClick={() =>
-                    void state.saveKey(key).then((ok) => {
-                      if (ok) setKey("");
-                    })
-                  }
-                >
-                  Save key
-                </Button>
+                {!wizard && (
+                  <Button
+                    disabled={state.busy || key.trim() === ""}
+                    onClick={() =>
+                      void state.saveKey(key).then((ok) => {
+                        if (ok) setKey("");
+                      })
+                    }
+                  >
+                    Save key
+                  </Button>
+                )}
               </div>
             </Field>
           )}
@@ -340,6 +351,7 @@ function AgentCliCard({
   placeholder,
   hint,
   saveModel,
+  saveOnNext,
 }: {
   state: SummariesPageState;
   /** The choice this card belongs to. */
@@ -358,6 +370,7 @@ function AgentCliCard({
   hint: string;
   /** The settings change that stores `model`. */
   saveModel(model: string): Partial<SummarySettingsView["value"]>;
+  saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
   const [model, setModel] = useState(stored);
@@ -367,6 +380,7 @@ function AgentCliCard({
     if (check.status === "idle") void recheck();
   }, [check.status, recheck]);
   const changed = model.trim() !== stored;
+  useSaveOnNext(saveOnNext, async () => !changed || state.save({ writer, ...saveModel(model) }));
   return (
     <div className={styles.endpoint} role="group" aria-label={group}>
       {check.status === "checking" && <Spinner size="tiny" label={`Checking ${name}`} />}
@@ -396,22 +410,31 @@ function AgentCliCard({
           <Input value={model} placeholder={placeholder} onChange={(_, d) => setModel(d.value)} spellCheck={false} />
         </Field>
       </div>
-      <div className={styles.row}>
-        <Button
-          appearance="primary"
-          disabled={state.busy || !changed}
-          onClick={() => void state.save({ writer, ...saveModel(model) })}
-        >
-          Save model
-        </Button>
-        {inUse && !changed && <Caption1 className={styles.muted}>Saved.</Caption1>}
-      </div>
+      {saveOnNext === undefined && (
+        <div className={styles.row}>
+          <Button
+            appearance="primary"
+            disabled={state.busy || !changed}
+            onClick={() => void state.save({ writer, ...saveModel(model) })}
+          >
+            Save model
+          </Button>
+          {inUse && !changed && <Caption1 className={styles.muted}>Saved.</Caption1>}
+        </div>
+      )}
     </div>
   );
 }
 
+/** The props of the cards under a writer choice. */
+interface WriterCardProps {
+  state: SummariesPageState;
+  settings: SummarySettingsView;
+  saveOnNext?: SaveOnNext;
+}
+
 /** Claude Code's status and the model it is asked for (T7.4ga). */
-function ClaudeCodeCard({ state, settings }: { state: SummariesPageState; settings: SummarySettingsView }) {
+function ClaudeCodeCard({ state, settings, saveOnNext }: WriterCardProps) {
   return (
     <AgentCliCard
       state={state}
@@ -425,12 +448,13 @@ function ClaudeCodeCard({ state, settings }: { state: SummariesPageState; settin
       placeholder={CLAUDE_MODEL_PLACEHOLDER}
       hint="Optional. A model name Claude Code accepts, for example opus or sonnet. Leave it empty for Claude Code's own default."
       saveModel={(m) => ({ claude_model: m })}
+      saveOnNext={saveOnNext}
     />
   );
 }
 
 /** Codex's status and the model it is asked for (T7.4gc). */
-function CodexCard({ state, settings }: { state: SummariesPageState; settings: SummarySettingsView }) {
+function CodexCard({ state, settings, saveOnNext }: WriterCardProps) {
   return (
     <AgentCliCard
       state={state}
@@ -444,31 +468,30 @@ function CodexCard({ state, settings }: { state: SummariesPageState; settings: S
       placeholder={CODEX_MODEL_PLACEHOLDER}
       hint="Optional. A model name Codex accepts. Leave it empty for Codex's own default."
       saveModel={(m) => ({ codex_model: m })}
+      saveOnNext={saveOnNext}
     />
   );
 }
 
-/** Every choice of who writes the summary, in the page's order. */
-const ALL_WRITERS: WriterChoice[] = ["OnThisComputer", "OwnEndpoint", "ClaudeCode", "Codex", "NoSummary"];
-
-/** "Who writes the summary": the choices and, under the chosen one, its form or card. */
+/** "Who writes the summary": the choices and, under the chosen one, its form or card. With
+ * `endpointUnderOther` (the first-run wizard) your own endpoint comes last, behind "Other". */
 function WriterSection({
   state,
   settings,
   keySaved,
-  writers,
-  onUnsavedChange,
+  endpointUnderOther = false,
+  saveOnNext,
 }: {
   state: SummariesPageState;
   settings: SummarySettingsView;
   keySaved: boolean | null;
-  /** The choices shown. */
-  writers: WriterChoice[];
-  onUnsavedChange?: (unsaved: boolean) => void;
+  endpointUnderOther?: boolean;
+  saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
   const writerLabel = useId();
   const [pendingEndpoint, setPendingEndpoint] = useState(false);
+  const [otherOpen, setOtherOpen] = useState(false);
   const value = settings.value;
   const shown: WriterChoice = pendingEndpoint ? "OwnEndpoint" : value.writer;
   const models = state.models;
@@ -486,7 +509,16 @@ function WriterSection({
     setPendingEndpoint(false);
     void state.save({ writer: w });
   };
-  const offered = (w: WriterChoice) => writers.includes(w);
+  const ownEndpoint = (
+    <Choice
+      value="OwnEndpoint"
+      label="Your own endpoint"
+      why="An OpenAI-compatible server or Claude. The meeting's transcript, title, speaker names and notes are sent to the address you enter, and only there."
+      selected={shown === "OwnEndpoint"}
+    />
+  );
+  // What is stored always shows.
+  const endpointOpen = otherOpen || shown === "OwnEndpoint";
 
   return (
     <Section title="Who writes the summary">
@@ -500,58 +532,54 @@ function WriterSection({
         onChange={(_, d) => choose(d.value as WriterChoice)}
         className={styles.choices}
       >
-        {offered("OnThisComputer") && (
-          <Choice
-            value="OnThisComputer"
-            label="On this computer"
-            detail={local}
-            why="Nothing leaves this computer."
-            selected={shown === "OnThisComputer"}
-          />
+        <Choice
+          value="OnThisComputer"
+          label="On this computer"
+          detail={local}
+          why="Nothing leaves this computer."
+          selected={shown === "OnThisComputer"}
+        />
+        {!endpointUnderOther && ownEndpoint}
+        <Choice
+          value="ClaudeCode"
+          label="Claude (through Claude Code)"
+          detail="Uses your Claude sign-in"
+          why={CLAUDE_CODE_PRIVACY}
+          selected={shown === "ClaudeCode"}
+        />
+        <Choice
+          value="Codex"
+          label="OpenAI (through Codex)"
+          detail="Uses your ChatGPT sign-in"
+          why={CODEX_PRIVACY}
+          selected={shown === "Codex"}
+        />
+        <Choice
+          value="NoSummary"
+          label="No summary"
+          why="Transcript and speakers only."
+          selected={shown === "NoSummary"}
+        />
+        {endpointUnderOther && shown !== "OwnEndpoint" && (
+          <Button
+            appearance="subtle"
+            className={styles.other}
+            aria-expanded={otherOpen}
+            onClick={() => setOtherOpen((open) => !open)}
+          >
+            Other
+          </Button>
         )}
-        {offered("OwnEndpoint") && (
-          <Choice
-            value="OwnEndpoint"
-            label="Your own endpoint"
-            why="An OpenAI-compatible server or Claude. The meeting's transcript, title, speaker names and notes are sent to the address you enter, and only there."
-            selected={shown === "OwnEndpoint"}
-          />
-        )}
-        {offered("ClaudeCode") && (
-          <Choice
-            value="ClaudeCode"
-            label="Claude (through Claude Code)"
-            detail="Uses your Claude sign-in"
-            why={CLAUDE_CODE_PRIVACY}
-            selected={shown === "ClaudeCode"}
-          />
-        )}
-        {offered("Codex") && (
-          <Choice
-            value="Codex"
-            label="OpenAI (through Codex)"
-            detail="Uses your ChatGPT sign-in"
-            why={CODEX_PRIVACY}
-            selected={shown === "Codex"}
-          />
-        )}
-        {offered("NoSummary") && (
-          <Choice
-            value="NoSummary"
-            label="No summary"
-            why="Transcript and speakers only."
-            selected={shown === "NoSummary"}
-          />
-        )}
+        {endpointUnderOther && endpointOpen && ownEndpoint}
       </RadioGroup>
       {state.modelsError !== null && (
         <Caption1 className={styles.muted}>The model in use could not be read: {state.modelsError}</Caption1>
       )}
       {shown === "OwnEndpoint" && (
-        <EndpointForm state={state} settings={settings} keySaved={keySaved} onUnsavedChange={onUnsavedChange} />
+        <EndpointForm state={state} settings={settings} keySaved={keySaved} saveOnNext={saveOnNext} />
       )}
-      {shown === "ClaudeCode" && <ClaudeCodeCard state={state} settings={settings} />}
-      {shown === "Codex" && <CodexCard state={state} settings={settings} />}
+      {shown === "ClaudeCode" && <ClaudeCodeCard state={state} settings={settings} saveOnNext={saveOnNext} />}
+      {shown === "Codex" && <CodexCard state={state} settings={settings} saveOnNext={saveOnNext} />}
     </Section>
   );
 }
@@ -600,20 +628,12 @@ function SummariesNotices({ state, settings }: { state: SummariesPageState; sett
   );
 }
 
-/** Who writes the summary, on its own, for the first-run wizard: `writers`, and the stored
- * choice if it is another one, so what is stored always shows. */
-export function SummaryWriterChoices({
-  writers,
-  onUnsavedChange,
-}: {
-  writers: WriterChoice[];
-  onUnsavedChange?: (unsaved: boolean) => void;
-}) {
+/** Who writes the summary, on its own, for the first-run wizard: its Next saves what is typed. */
+export function SummaryWriterChoices({ saveOnNext }: { saveOnNext: SaveOnNext }) {
   const styles = useStyles();
   const state = useSummaries();
   const { load } = state;
   if (load.status !== "loaded") return <SummariesNotLoaded load={load} />;
-  const stored = load.settings.value.writer;
   return (
     <div className={styles.page}>
       <SummariesNotices state={state} settings={load.settings} />
@@ -621,8 +641,8 @@ export function SummaryWriterChoices({
         state={state}
         settings={load.settings}
         keySaved={load.keySaved}
-        writers={writers.includes(stored) ? writers : [...writers, stored]}
-        onUnsavedChange={onUnsavedChange}
+        endpointUnderOther
+        saveOnNext={saveOnNext}
       />
     </div>
   );
@@ -645,7 +665,7 @@ export function SummariesPage() {
       </Title2>
       <SummariesNotices state={state} settings={settings} />
 
-      <WriterSection state={state} settings={settings} keySaved={keySaved} writers={ALL_WRITERS} />
+      <WriterSection state={state} settings={settings} keySaved={keySaved} />
 
       <Section title="During the meeting">
         <Switch

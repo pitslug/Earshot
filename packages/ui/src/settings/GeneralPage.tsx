@@ -65,7 +65,7 @@ export const shortcutExplained = (shortcut: string) =>
 
 /** What the setup guide is, on the General page. */
 export const SETUP_EXPLAINED =
-  "The steps Earshot showed the first time: your Obsidian vault, the models, summaries, the audio check and your voice. Nothing changes until you choose something.";
+  "The steps Earshot showed the first time: summaries, the downloads, your name and voice, Obsidian and the audio check. Nothing changes until you choose something.";
 
 /** The name of the provisional words choice. */
 export const PREVIEWS_HEADING = "Show words while someone is talking";

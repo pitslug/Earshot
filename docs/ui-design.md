@@ -47,9 +47,16 @@ The benchmark never runs beside a meeting, a meeting job, the model check, the v
 
 While the "your voice" sample is being recorded and saved (Speakers), a meeting cannot start and the model check cannot run; the sample in turn cannot start during a meeting or the model check.
 
-## First run (T9.1d)
+## First run (T9.1d, T12.5a)
 
-Four steps, each skippable, progress bar on top: 1 Obsidian vault, 2 Models (picked for this computer, size from the manifest, download now / later / never for optional ones), 3 Summaries (local / own endpoint / none), 4 Audio check and your voice (optional).
+Four short steps with a progress bar on top, as agreed in docs/settings-design.md:
+
+1. Summaries: on this computer (preselected), Claude through Claude Code, OpenAI through Codex, or no summary, each with its line saying what is sent where; your own endpoint under "Other".
+2. Download: meeting languages, then one line and one button with the total size for this computer: speech helpers, the recommended transcription model, and a summary model only if step 1 chose this computer. "Choose different models" opens the full list. Downloads carry on in the background.
+3. About me: your name, then the voice sample with its own Skip. While the speech helpers are not there, the record button is off with a line saying why, and it turns on when they arrive.
+4. Optional extras: Obsidian and the audio check as two rows, each opening when pressed. Then Finish.
+
+Next saves what is on the step, typed fields included, so the wizard has no Save buttons; a refused save stays on the step and says why. Back leaves what was typed unsaved. Back and Next are the way through, with Skip setup at the top. Finishing or skipping with no transcription model says on the next screen that meetings need one and that it is in Settings; it stops nothing. No step starts a download, a check, a sound or a recording by itself.
 
 ## Later (not M7)
 

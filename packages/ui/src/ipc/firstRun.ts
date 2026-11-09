@@ -7,10 +7,8 @@ export type { FirstRunView };
 
 /** The first-run part of `IpcCommands`. */
 export interface FirstRunCommands {
-  /** Whether the app opens on the wizard, and its "never" answers. */
+  /** Whether the app opens on the wizard. */
   firstRunState(): Promise<FirstRunView>;
   /** Marks the wizard done, whichever steps were skipped. */
   finishFirstRun(): Promise<FirstRunView>;
-  /** Records or clears "never" for an optional model. Rejects with `unknown_model`. */
-  setModelDeclined(model: string, declined: boolean): Promise<FirstRunView>;
 }

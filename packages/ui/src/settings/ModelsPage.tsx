@@ -103,14 +103,11 @@ export function ModelChoices({
   state,
   data,
   summaryNote,
-  offer,
 }: {
   state: ModelsPageState;
   data: ModelsData;
-  /** The line under the summary models. */
-  summaryNote: string;
-  /** Shown under a model's install state (the first-run wizard's later / never). */
-  offer?: (item: ModelItem) => ReactNode;
+  /** The line under the summary models, if any. */
+  summaryNote?: string;
 }) {
   const styles = useStyles();
   const transcriptionLabel = useId();
@@ -138,7 +135,6 @@ export function ModelChoices({
       onDownload={(m) => void state.download(m)}
       onPause={(m) => void state.pause(m)}
       onRemove={(m) => void state.remove(m)}
-      offer={offer?.(item)}
     />
   );
 
@@ -203,7 +199,7 @@ export function ModelChoices({
         {!models.in_use.summaries_here && (
           <Caption1 className={styles.muted}>{SUMMARIES_ELSEWHERE}</Caption1>
         )}
-        <Caption1 className={styles.muted}>{summaryNote}</Caption1>
+        {summaryNote !== undefined && <Caption1 className={styles.muted}>{summaryNote}</Caption1>}
       </Section>
     </>
   );

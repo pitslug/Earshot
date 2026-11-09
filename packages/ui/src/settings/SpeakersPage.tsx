@@ -33,6 +33,7 @@ import {
 import { type ReactNode, useEffect, useId, useState } from "react";
 
 import { type PersonItem, type SpeakerTimingChoice, type VoiceView, useIpc } from "../ipc";
+import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import { type SpeakersPageState, sampleRunning, useSpeakers } from "./useSpeakers";
 
 const useStyles = makeStyles({
@@ -166,29 +167,51 @@ export function voiceStatus(voice: VoiceView): string {
     : "No voice is saved.";
 }
 
-/** "Your name": saved when the field is left or Enter is pressed, if it changed. */
-function MyNameField({ state, name }: { state: SpeakersPageState; name: string }) {
+/** "Your name": saved when the field is left or Enter is pressed, if it changed; in the first-run
+ * wizard when Enter or Next is pressed. */
+export function MyNameField({
+  state,
+  name,
+  saveOnNext,
+}: {
+  state: SpeakersPageState;
+  name: string;
+  saveOnNext?: SaveOnNext;
+}) {
   const [value, setValue] = useState(name);
   useEffect(() => setValue(name), [name]);
-  const save = () => {
-    if (value.trim() !== name) void state.setName(value);
-  };
+  const save = async () => value.trim() === name || state.setName(value);
+  useSaveOnNext(saveOnNext, save);
   return (
     <Field label="Your name" hint={NAME_EXPLAINED}>
       <Input
         value={value}
         onChange={(_, d) => setValue(d.value)}
-        onBlur={save}
+        onBlur={saveOnNext === undefined ? () => void save() : undefined}
         onKeyDown={(e) => {
-          if (e.key === "Enter") save();
+          if (e.key === "Enter") void save();
         }}
       />
     </Field>
   );
 }
 
-/** "Your voice": your name, the status, the sample and forgetting. */
-export function VoiceSection({ state, voice }: { state: SpeakersPageState; voice: VoiceView }) {
+/** "Your voice": your name, the status, the sample and forgetting. The first-run wizard shows the
+ * name itself (`withName`), can hold the sample back with a reason (`recordBlocked`) and adds a
+ * way past it (`onSkip`). */
+export function VoiceSection({
+  state,
+  voice,
+  withName = true,
+  recordBlocked = null,
+  onSkip,
+}: {
+  state: SpeakersPageState;
+  voice: VoiceView;
+  withName?: boolean;
+  recordBlocked?: string | null;
+  onSkip?: () => void;
+}) {
   const styles = useStyles();
   const [asking, setAsking] = useState(false);
   const [forgetting, setForgetting] = useState(false);
@@ -197,7 +220,7 @@ export function VoiceSection({ state, voice }: { state: SpeakersPageState; voice
 
   return (
     <Section title="Your voice">
-      <MyNameField state={state} name={voice.name} />
+      {withName && <MyNameField state={state} name={voice.name} />}
       <Body1 className={styles.text}>{VOICE_EXPLAINED}</Body1>
       <Body1Strong>{voiceStatus(voice)}</Body1Strong>
 
@@ -247,7 +270,11 @@ export function VoiceSection({ state, voice }: { state: SpeakersPageState; voice
 
       {!running && (
         <div className={styles.row}>
-          <Button appearance={voice.saved ? "secondary" : "primary"} onClick={() => setAsking(true)}>
+          <Button
+            appearance={voice.saved ? "secondary" : "primary"}
+            disabled={recordBlocked !== null}
+            onClick={() => setAsking(true)}
+          >
             {voice.saved ? "Add another sample" : "Record my voice"}
           </Button>
           {voice.saved && (
@@ -255,8 +282,10 @@ export function VoiceSection({ state, voice }: { state: SpeakersPageState; voice
               Forget my voice
             </Button>
           )}
+          {onSkip !== undefined && <Button onClick={onSkip}>Skip the voice sample</Button>}
         </div>
       )}
+      {!running && recordBlocked !== null && <Caption1 className={styles.muted}>{recordBlocked}</Caption1>}
       {!running && voice.saved && (
         <Caption1 className={styles.muted}>Another sample adds to the saved voiceprint and makes it more reliable.</Caption1>
       )}

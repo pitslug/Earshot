@@ -231,15 +231,18 @@ const fail = (kind: string, message: string, retryable = false): never => {
 
 /** The Models page of the mock `Ipc` on `machine`, playing jobs on `timer`. With
  * `checkWarning` the check first warns that an accelerator's library could not load. The speech
- * helpers are there unless `cleanInstall` (a machine straight after installing). */
+ * helpers are there unless `cleanInstall` (a machine straight after installing), and the sample's
+ * models unless `noModels`, which also leaves no stored check. */
 export function createModelsMock(
   machine: SampleMachine,
   timer: Timer,
   checkWarning?: string,
   cleanInstall = false,
+  noModels = false,
 ): ModelsMock {
   const helpersInstalled = !cleanInstall;
-  const m = MACHINES[machine];
+  const sample = MACHINES[machine];
+  const m: Machine = noModels ? { ...sample, installed: [] } : sample;
   const listeners = new Set<(event: ModelJobEvent) => void>();
   const emit = (e: ModelJobEvent) => {
     for (const l of [...listeners]) l(e);
@@ -324,12 +327,14 @@ export function createModelsMock(
     summary_part: "Automatic",
     languages: ["en"],
   };
-  let check: ModelsView["check"] = {
-    model: "parakeet-tdt-0.6b-v2",
-    runs_on: m.runsOn("parakeet-tdt-0.6b-v2"),
-    fallback: m.fallback,
-    current: true,
-  };
+  let check: ModelsView["check"] = noModels
+    ? null
+    : {
+        model: "parakeet-tdt-0.6b-v2",
+        runs_on: m.runsOn("parakeet-tdt-0.6b-v2"),
+        fallback: m.fallback,
+        current: true,
+      };
   const downloads = new Map<string, () => void>();
   let checking = false;
   let checkTimers: (() => void)[] = [];

@@ -8,13 +8,7 @@ fn first_run_shows_on_a_store_that_never_held_a_meeting() {
     let dir = TempDir::new("first-run");
     let (svc, _) = services(&dir);
     let db = svc.store();
-    assert_eq!(
-        first_run_state(&db).unwrap(),
-        FirstRunState {
-            show: true,
-            declined_models: Vec::new(),
-        }
-    );
+    assert_eq!(first_run_state(&db).unwrap(), FirstRunState { show: true });
     assert_eq!(
         db.local_value(FIRST_RUN_KEY).unwrap(),
         None,
@@ -65,26 +59,31 @@ fn first_run_finish_survives_reopening_the_store() {
     assert!(!first_run_state(&Store::open(&path).unwrap()).unwrap().show);
 }
 
+/// A record from before T12.5a holds the old "never" answers: it still reads for what it says
+/// about the wizard, and the answers go at the next write.
 #[test]
-fn first_run_never_answers_do_not_end_the_wizard_and_are_kept_by_finishing() {
+fn first_run_an_old_record_with_declined_models_still_reads() {
     let dir = TempDir::new("first-run");
     let (svc, _) = services(&dir);
     let mut db = svc.store();
-    let s = set_model_declined(&mut db, "tiny.en", true).unwrap();
-    assert!(s.show, "an answer on the way through is not finishing");
-    set_model_declined(&mut db, "base.en", true).unwrap();
-    let s = set_model_declined(&mut db, "tiny.en", true).unwrap();
-    assert_eq!(
-        s.declined_models,
-        ["base.en", "tiny.en"],
-        "sorted, once each"
+    let key = DeviceRecord::FirstRun.key();
+
+    let not_done = b"\x01\x00\x00\x00{\"done\":false,\"declined_models\":[\"tiny.en\"]}";
+    crate::local::set(&mut db, &key, not_done).unwrap();
+    assert!(first_run_state(&db).unwrap().show, "not finished stays so");
+
+    let done = b"\x01\x00\x00\x00{\"done\":true,\"declined_models\":[\"base.en\",\"tiny.en\"]}";
+    crate::local::set(&mut db, &key, done).unwrap();
+    assert!(!first_run_state(&db).unwrap().show, "finished stays so");
+
+    crate::local::set(&mut db, &key, not_done).unwrap();
+    assert!(!finish_first_run(&mut db).unwrap().show);
+    let bytes = db.local_value(FIRST_RUN_KEY).unwrap().unwrap();
+    assert_eq!(decode(&bytes), Some(Record { done: true }));
+    assert!(
+        !bytes.windows(8).any(|w| w == b"declined"),
+        "the answers are not written back"
     );
-    let s = set_model_declined(&mut db, "tiny.en", false).unwrap();
-    assert_eq!(s.declined_models, ["base.en"]);
-    assert!(s.show);
-    let s = finish_first_run(&mut db).unwrap();
-    assert_eq!(s.declined_models, ["base.en"]);
-    assert!(!s.show);
 }
 
 #[test]
@@ -102,10 +101,7 @@ fn first_run_a_record_this_version_cannot_read_counts_as_done() {
         crate::local::set(&mut db, &key, bad).unwrap();
         assert_eq!(
             first_run_state(&db).unwrap(),
-            FirstRunState {
-                show: false,
-                declined_models: Vec::new(),
-            },
+            FirstRunState { show: false },
             "{bad:?}"
         );
     }
@@ -120,11 +116,5 @@ fn first_run_record_is_the_registry_key_with_its_version_outside_the_payload() {
     finish_first_run(&mut db).unwrap();
     let bytes = db.local_value(FIRST_RUN_KEY).unwrap().unwrap();
     assert_eq!(bytes[..4], RECORD_VERSION.to_le_bytes());
-    assert_eq!(
-        decode(&bytes),
-        Some(Record {
-            done: true,
-            declined_models: Vec::new(),
-        })
-    );
+    assert_eq!(decode(&bytes), Some(Record { done: true }));
 }

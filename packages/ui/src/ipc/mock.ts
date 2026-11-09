@@ -191,6 +191,8 @@ export interface MockIpcData {
   modelCheckWarning?: string;
   /** A machine straight after installing: no speech helpers yet. */
   cleanInstall?: boolean;
+  /** No model is on this machine and there is no stored check. */
+  noModels?: boolean;
   /** The Summaries page's stored settings and API key (default: on this computer, no key). */
   summaries?: SummariesMockData;
   /** The Storage page's stored choice and kept recordings (default: 7 days, three). */
@@ -283,7 +285,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   // The running meeting: its row and the timers to cancel at stop.
   let live: { row: MeetingListItem; cancel: (() => void)[] } | null = null;
   let processing = false;
-  const modelsMock = createModelsMock(data.machine ?? "surface", timer, data.modelCheckWarning, data.cleanInstall);
+  const modelsMock = createModelsMock(
+    data.machine ?? "surface",
+    timer,
+    data.modelCheckWarning,
+    data.cleanInstall,
+    data.noModels,
+  );
   const summariesMock = createSummariesMock(data.summaries, data.machine ?? "surface");
   const { exportTarget, ...settingsMock } = createSettingsMock(
     { vault: data.vault, ...data.settings },

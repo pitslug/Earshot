@@ -1,16 +1,17 @@
-//! The first-run wizard's state (T9.1d, D21): whether the wizard is still to be shown, and
-//! which optional models the user said "never" to. One device-local record ([`FIRST_RUN_KEY`],
-//! `version u32 LE | JSON`, never synced, no content), written only here.
+//! The first-run wizard's state (T9.1d, D21): whether the wizard is still to be shown. One
+//! device-local record ([`FIRST_RUN_KEY`], `version u32 LE | JSON`, never synced, no content),
+//! written only here.
 //!
 //! The rule for showing the wizard exists once, [`first_run_state`]: it shows until it was
 //! finished (skipping every step counts) on a store that has never held a meeting. A store
 //! with any meeting row, a deleted one's tombstone included, counts as done without a record,
 //! so someone who has already used Earshot never sees it. A record this version cannot read
-//! also counts as done: it says the wizard ran, and being shown it again is worse than losing
-//! the "never" answers.
+//! also counts as done: it says the wizard ran, and being shown it again is worse.
 //!
-//! "Never" only records an answer: the wizard shows it again when reopened, and Settings,
-//! Models still offers the model.
+//! A record from before T12.5a also holds `declined_models`, the wizard's old "never" answers.
+//! It still reads and the answers are ignored; the next write leaves them out. An older version
+//! reading a new record finds that field missing and so counts the wizard as done, which is
+//! what a new record says: only finishing writes one.
 
 use earshot_store::Store;
 use serde::{Deserialize, Serialize};
@@ -32,8 +33,6 @@ const RECORD_VERSION: u32 = 1;
 struct Record {
     /// The wizard was finished or skipped.
     done: bool,
-    /// The optional models the user said "never" to, sorted.
-    declined_models: Vec<String>,
 }
 
 fn encode(record: &Record) -> Result<Vec<u8>, RuntimeError> {
@@ -52,15 +51,12 @@ fn decode(bytes: &[u8]) -> Option<Record> {
     serde_json::from_slice(json).ok()
 }
 
-/// The stored record; `None` when there is none. One this version cannot read comes back done,
-/// with no answers (module docs).
+/// The stored record; `None` when there is none. One this version cannot read comes back done
+/// (module docs).
 fn read(store: &Store) -> Result<Option<Record>, RuntimeError> {
-    Ok(store.local_value(FIRST_RUN_KEY)?.map(|bytes| {
-        decode(&bytes).unwrap_or(Record {
-            done: true,
-            declined_models: Vec::new(),
-        })
-    }))
+    Ok(store
+        .local_value(FIRST_RUN_KEY)?
+        .map(|bytes| decode(&bytes).unwrap_or(Record { done: true })))
 }
 
 fn write(store: &mut Store, record: &Record) -> Result<(), RuntimeError> {
@@ -73,8 +69,6 @@ fn write(store: &mut Store, record: &Record) -> Result<(), RuntimeError> {
 pub struct FirstRunState {
     /// The app opens on the wizard.
     pub show: bool,
-    /// The optional models the user said "never" to, sorted.
-    pub declined_models: Vec<String>,
 }
 
 /// The wizard's state (module docs: the one rule for showing it).
@@ -84,39 +78,15 @@ pub struct FirstRunState {
 pub fn first_run_state(store: &Store) -> Result<FirstRunState, RuntimeError> {
     let record = read(store)?.unwrap_or_default();
     let show = !record.done && !store.has_meeting_row()?;
-    Ok(FirstRunState {
-        show,
-        declined_models: record.declined_models,
-    })
+    Ok(FirstRunState { show })
 }
 
-/// Marks the wizard done, whichever steps were skipped; keeps the "never" answers. Finishing
-/// again (after reopening it from Settings) changes nothing else.
+/// Marks the wizard done, whichever steps were skipped. Finishing again (after reopening it from
+/// Settings) changes nothing else.
 ///
 /// # Errors
 /// Store errors.
 pub fn finish_first_run(store: &mut Store) -> Result<FirstRunState, RuntimeError> {
-    let mut record = read(store)?.unwrap_or_default();
-    record.done = true;
-    write(store, &record)?;
-    first_run_state(store)
-}
-
-/// Records or clears "never" for `model`. Callers check the name against the catalogue.
-///
-/// # Errors
-/// Store errors.
-pub fn set_model_declined(
-    store: &mut Store,
-    model: &str,
-    declined: bool,
-) -> Result<FirstRunState, RuntimeError> {
-    let mut record = read(store)?.unwrap_or_default();
-    record.declined_models.retain(|m| m != model);
-    if declined {
-        record.declined_models.push(model.to_owned());
-        record.declined_models.sort();
-    }
-    write(store, &record)?;
+    write(store, &Record { done: true })?;
     first_run_state(store)
 }

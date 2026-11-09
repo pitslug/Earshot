@@ -274,15 +274,10 @@ export const commands = {
 	summaryStyle: () => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("summary_style")),
 	/**  Checks and stores the summary style ("" for none; `invalid_setting`: nothing stored). */
 	setSummaryStyle: (style: string) => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("set_summary_style", { style })),
-	/**  Whether the app opens on the first-run wizard, and its "never" answers. */
+	/**  Whether the app opens on the first-run wizard. */
 	firstRunState: () => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("first_run_state")),
 	/**  Marks the first-run wizard done, whichever steps were skipped. */
 	finishFirstRun: () => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("finish_first_run")),
-	/**
-	 *  Records or clears the wizard's "never" for an optional model (`unknown_model`: nothing
-	 *  stored). It stops no download and removes no file.
-	 */
-	setModelDeclined: (model: string, declined: boolean) => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("set_model_declined", { model, declined })),
 	/**  The CUDA section of the Models page. */
 	cudaSettings: () => typedError<CudaView, IpcError>(__TAURI_INVOKE("cuda_settings")),
 	/**  Stores the two settings; they apply at the next start. `invalid_setting`: nothing stored. */
@@ -823,8 +818,6 @@ export type ExportDone = {
 export type FirstRunView = {
 	/**  The app opens on the wizard. */
 	show: boolean,
-	/**  The optional models the user said "never" to. */
-	declined_models: string[],
 };
 
 /**  What deleting a folder did: counts only. */
