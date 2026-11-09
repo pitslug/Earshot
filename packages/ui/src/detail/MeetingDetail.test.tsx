@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   type Ipc,
@@ -111,6 +111,66 @@ describe("MeetingDetailView", () => {
     expect(rows[2]).toHaveAttribute("aria-current", "true");
     expect(rows[2].textContent).toContain("We could split the order");
     expect(rows.filter((r) => r.getAttribute("aria-current") === "true")).toHaveLength(1);
+  });
+
+  describe("tabs", () => {
+    afterEach(() => {
+      delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+    });
+
+    /** Records what the view scrolls to, since jsdom has no layout. */
+    function watchScrolling() {
+      const scrolled = vi.fn<(el: Element, options: unknown) => void>();
+      HTMLElement.prototype.scrollIntoView = function (options) {
+        scrolled(this, options);
+      };
+      return scrolled;
+    }
+
+    it("stay pinned with the meeting's header while the page scrolls", async () => {
+      await setup();
+      const tabs = await screen.findByRole("tablist");
+      let pinned: HTMLElement | null = tabs;
+      while (pinned !== null && getComputedStyle(pinned).position !== "sticky") {
+        pinned = pinned.parentElement;
+      }
+      expect(pinned, "the tabs have a sticky ancestor").not.toBeNull();
+      expect(pinned).toContainElement(screen.getByRole("heading", { level: 1, name: ITEM.title }));
+      // Negative control: the content below the tabs scrolls.
+      expect(pinned).not.toContainElement(panel());
+    });
+
+    it("open the summary at its top, however far down the transcript was", async () => {
+      const scrolled = watchScrolling();
+      const { user } = await setup();
+      const view = screen.getByRole("region", { name: "Meeting detail" });
+      await user.click(await screen.findByRole("tab", { name: "Transcript" }));
+      scrolled.mockClear();
+      await user.click(screen.getByRole("tab", { name: "Summary" }));
+      expect(scrolled).toHaveBeenCalledWith(view, { block: "start" });
+    });
+
+    it("open the transcript at its top when no citation asks for a row", async () => {
+      const scrolled = watchScrolling();
+      const { user } = await setup();
+      const view = screen.getByRole("region", { name: "Meeting detail" });
+      const tab = await screen.findByRole("tab", { name: "Transcript" });
+      scrolled.mockClear();
+      await user.click(tab);
+      expect(scrolled).toHaveBeenCalledWith(view, { block: "start" });
+    });
+
+    it("still take a citation to its row in the transcript", async () => {
+      const scrolled = watchScrolling();
+      const { user } = await setup();
+      await screen.findByText(/TL;DR/);
+      const view = screen.getByRole("region", { name: "Meeting detail" });
+      scrolled.mockClear();
+      await user.click(screen.getByRole("button", { name: "Show line 3 in the transcript" }));
+      expect(screen.getByRole("tab", { name: "Transcript" })).toHaveAttribute("aria-selected", "true");
+      expect(scrolled).toHaveBeenCalledWith(expect.anything(), { block: "center" });
+      expect(scrolled).not.toHaveBeenCalledWith(view, { block: "start" });
+    });
   });
 
   it("shows a citation of a replaced transcript as unavailable with the stale banner", async () => {

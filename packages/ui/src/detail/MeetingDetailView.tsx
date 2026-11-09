@@ -61,19 +61,24 @@ const useStyles = makeStyles({
     gap: tokens.spacingVerticalM,
     minWidth: 0,
   },
-  // Stays in view while the pane scrolls: the buttons live here. AppShell's pane covers its own
-  // top padding, so the header sticks just below it, where it starts.
-  header: {
+  // Stays in view while the pane scrolls: the buttons and the tabs live here. AppShell's pane
+  // covers its own top padding, so this sticks just below it, where it starts.
+  pinned: {
     position: "sticky",
     top: 0,
     zIndex: 1,
     display: "flex",
+    flexDirection: "column",
+    gap: tokens.spacingVerticalXS,
+    backgroundColor: tokens.colorNeutralBackground1,
+    borderBottom: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+  },
+  header: {
+    display: "flex",
     flexWrap: "wrap",
     alignItems: "flex-start",
     gap: tokens.spacingHorizontalS,
-    paddingBottom: tokens.spacingVerticalS,
-    backgroundColor: tokens.colorNeutralBackground1,
-    borderBottom: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    paddingBottom: tokens.spacingVerticalXS,
   },
   headerText: {
     flexGrow: 1,
@@ -301,6 +306,7 @@ export function MeetingDetailView({
   const [noAudio, setNoAudio] = useState<Set<string>>(new Set());
   const rows = useRef(new Map<string, HTMLDivElement>());
   const nameField = useRef<HTMLInputElement | null>(null);
+  const view = useRef<HTMLElement | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const audioUrl = useRef<string | null>(null);
 
@@ -337,9 +343,12 @@ export function MeetingDetailView({
     if (nameVoices > 0 && detail !== null) nameField.current?.focus();
   }, [nameVoices, detail]);
 
-  // A citation: show its row.
+  // A citation shows its row. Any other tab change opens at the top: the pane's scroll position
+  // would otherwise carry over, and the end of a long transcript is past the end of a summary.
   useEffect(() => {
-    if (tab === "transcript" && cited !== null) rows.current.get(cited)?.scrollIntoView?.({ block: "center" });
+    const row = tab === "transcript" && cited !== null ? rows.current.get(cited) : undefined;
+    if (row !== undefined) row.scrollIntoView?.({ block: "center" });
+    else view.current?.scrollIntoView?.({ block: "start" });
   }, [tab, cited]);
 
   const run = async (f: () => Promise<unknown>, failTitle: string) => {
@@ -408,45 +417,53 @@ export function MeetingDetailView({
   const summaryText = detail?.summary && !writingSummary ? summaryMarkdown(detail.summary) : "";
 
   return (
-    <section className={styles.root} aria-label="Meeting detail">
-      <div className={styles.header}>
-        <div className={styles.headerText}>
-          <Title2 as="h1" className={styles.heading}>
-            {title}
-          </Title2>
-          {detail !== null && <Caption1 className={styles.muted}>{headerLine(detail)}</Caption1>}
-        </div>
-        <div className={styles.headerButtons}>
-          <Button onClick={() => void exportNote()} disabled={detail === null}>
-            Export to Obsidian
-          </Button>
-          {summaryText !== "" && (
-            <CopySummaryButton
-              text={summaryText}
-              timer={timer}
-              onCopied={() => setNotice((n) => (n?.key === "copy" ? null : n))}
-              onFailed={() =>
-                setNotice({ key: "copy", intent: "error", text: "The summary could not be copied." })
-              }
-            />
-          )}
-          {detail !== null && recordingsGone(detail) ? (
-            // Focusable, so a keyboard reaches the reason.
-            <CompoundButton disabledFocusable secondaryContent="Recording no longer kept">
-              Re-transcribe
-            </CompoundButton>
-          ) : (
-            <Button
-              disabled={detail === null}
-              onClick={() => void startJob("retranscribe")}
-            >
-              Re-transcribe
+    <section ref={view} className={styles.root} aria-label="Meeting detail">
+      <div className={styles.pinned}>
+        <div className={styles.header}>
+          <div className={styles.headerText}>
+            <Title2 as="h1" className={styles.heading}>
+              {title}
+            </Title2>
+            {detail !== null && <Caption1 className={styles.muted}>{headerLine(detail)}</Caption1>}
+          </div>
+          <div className={styles.headerButtons}>
+            <Button onClick={() => void exportNote()} disabled={detail === null}>
+              Export to Obsidian
             </Button>
-          )}
-          <Button disabled={detail === null} onClick={() => void startJob("resummarise")}>
-            {detail !== null && detail.summary === null ? "Summarise" : "Re-summarise"}
-          </Button>
+            {summaryText !== "" && (
+              <CopySummaryButton
+                text={summaryText}
+                timer={timer}
+                onCopied={() => setNotice((n) => (n?.key === "copy" ? null : n))}
+                onFailed={() =>
+                  setNotice({ key: "copy", intent: "error", text: "The summary could not be copied." })
+                }
+              />
+            )}
+            {detail !== null && recordingsGone(detail) ? (
+              // Focusable, so a keyboard reaches the reason.
+              <CompoundButton disabledFocusable secondaryContent="Recording no longer kept">
+                Re-transcribe
+              </CompoundButton>
+            ) : (
+              <Button
+                disabled={detail === null}
+                onClick={() => void startJob("retranscribe")}
+              >
+                Re-transcribe
+              </Button>
+            )}
+            <Button disabled={detail === null} onClick={() => void startJob("resummarise")}>
+              {detail !== null && detail.summary === null ? "Summarise" : "Re-summarise"}
+            </Button>
+          </div>
         </div>
+        {detail !== null && (
+          <TabList selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as Tab)}>
+            <Tab value="summary">Summary</Tab>
+            <Tab value="transcript">Transcript</Tab>
+          </TabList>
+        )}
       </div>
 
       {jobBar !== null && (
@@ -496,10 +513,6 @@ export function MeetingDetailView({
 
       {detail !== null && (
         <>
-          <TabList selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as Tab)}>
-            <Tab value="summary">Summary</Tab>
-            <Tab value="transcript">Transcript</Tab>
-          </TabList>
           <div className={styles.columns}>
             <div className={styles.main}>
               {voices > 0 && (

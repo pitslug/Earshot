@@ -210,8 +210,8 @@ const useStyles = makeStyles({
     padding: tokens.spacingHorizontalXXL,
     gap: tokens.spacingVerticalM,
     overflowY: "auto",
-    // Keyboard focus never lands behind the meeting's sticky header.
-    scrollPaddingTop: "96px",
+    // Keyboard focus never lands behind the meeting's sticky header and tabs.
+    scrollPaddingTop: "144px",
     // Covers the top padding while the pane scrolls, so nothing shows above a sticky header.
     "::before": {
       content: '""',

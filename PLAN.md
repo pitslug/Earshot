@@ -1600,7 +1600,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner: a "keep this local" switch when a meeting starts and during it, because the summary writer is one global setting and some meetings should never leave the computer. It is stored per meeting, device-locally, and read wherever a summary starts (after the meeting and on re-summarise), with no network client built for such a meeting. Without a local summary model it skips the summary with a banner and never falls back to a remote writer; a record that cannot be read counts as local. Decide with the owner whether switching it off later is allowed, and how an existing remote summary reads when it is switched on. Reviewer required: privacy.
   - accept: `cargo test -p earshot-runtime summary`; `cargo test -p earshot-desktop --bin earshot meeting`; `cmd /c pnpm --filter @earshot/ui test`; a test that a kept-local meeting opens no connection with a remote writer set (audit log empty); screenshot light and dark
 
-- [ ] T12.14 Keep the Summary and Transcript tabs in view
+- [x] T12.14 Keep the Summary and Transcript tabs in view
   - deps: T7.3
   - do: the owner: the tabs scroll away with the page, and the page's scroll position carries across a tab change, so opening Summary from the end of a long transcript lands at the end of the summary. Pin the tabs under the sticky meeting header, open Summary at its top, and keep a citation scrolling to its row in the transcript.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot of a long meeting, light and dark
