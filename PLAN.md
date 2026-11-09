@@ -1555,10 +1555,25 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner, 2026-11-08: the NPU is the part made for this, and `previews_refused` turns previews off there only because nothing was measured. On the Surface, measure a meeting with previews on QNN against off with `live_lag` (speech-to-screen, the main transcript's lag and rtf, memory), on replays and a real meeting; write the rule for "the main transcript does not slow" before measuring and commit it. If it holds, the NPU leaves `previews_refused`; if not, the numbers and the reason go in docs/live-previews.md. Not while the owner is in a meeting. Added by the owner the same day: measure Everyone too (previews on both tracks, three NPU sessions with the main transcription), and whether the NPU sessions of a meeting can share one copy of the model (ONNX Runtime's EP context sharing between sessions of one process) and what that saves in memory and load time. The measurement tooling (`live_lag --backend qnn`, an evaluation-only way past the refusal) is built on the desktop first; production refusals change only after the measurement.
   - accept: `cargo test -p earshot-runtime preview`; the rule, the measurements and the decision in docs/live-previews.md
 
-- [ ] T12.5 Settings and first-run tidy (was T9.15)
+- [x] T12.5 Settings and first-run tidy (was T9.15) (design agreed 2026-11-10; built by T12.5a to T12.5c)
   - deps: T9.1d, T7.4f
   - do: the owner, 2026-11-08: Settings and the first-run wizard grew one task at a time and are confusing. A design session with the owner first: walk through every page and step as they are, then agree the structure (what goes where, what first run asks and what it leaves to defaults, wording) in docs/settings-design.md before any code. Then split into build tasks with their own accept commands. Behaviour and stored settings stay as they are unless the design changes them.
   - accept: docs/settings-design.md agreed by the owner; the build tasks added to this plan
+
+- [ ] T12.5a First run as designed
+  - deps: T12.5
+  - do: docs/settings-design.md "First run": Summaries (with Claude and ChatGPT, this computer preselected, own endpoint under Other), Download (languages first, one button sized to the summary choice, the full list on request), About me (name, voice sample with a Skip; the sample waits for the speech helpers and says so, starting nothing by itself), Optional extras (Obsidian, audio check). Next saves the step. Finishing or skipping with no transcription model says meetings need one. Later and Never go: stop writing the record, and an old record still reads. The wizard stays a view of `AppShell` built from the Settings parts. Update docs/ui-design.md "First run" and AGENTS.md's first-run bullet.
+  - accept: `cargo test -p earshot-runtime first_run`; `cargo test -p earshot-desktop bindings`; `cmd /c pnpm --filter @earshot/ui test`; screenshot of each step, light and dark, on `?firstRun=1` with `clean=1`, on both mock machines; the owner checks it on screen
+
+- [ ] T12.5b Settings pages as designed
+  - deps: T12.5
+  - do: docs/settings-design.md "Settings": General, Audio, System, Transcription, Summaries, People, Notes and storage, in that order, opening on General. Models and Benchmark dissolve into System, Transcription and Summaries; Speakers, Obsidian and Storage move as listed. Stored settings and IPC do not change. `useModels` stays the only subscriber to `ModelJobEvent`, so it moves above the pages that share it. Text that names a page follows the move, on both sides of IPC (`speaker_settings::failure_copy`, `plain_text`, the wizard). Update docs/ui-design.md "Settings" and the AGENTS.md bullets that name these pages.
+  - accept: `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; a test that no user-facing string names a page that no longer exists; screenshot of each page, light and dark, on both mock machines; the owner checks it on screen
+
+- [ ] T12.5c Settings wording and the save rule
+  - deps: T12.5a, T12.5b
+  - do: docs/settings-design.md: plain words ("Many languages" for Multilingual, what "Keeps up" means, ONNX Runtime only in detail text), and the save rule: a choice applies at once, typed text needs Save, on every page. Privacy wording does not change without the owner.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot`; the old and new text listed for the owner
 
 - [ ] T12.6 Shared models for an "everyone" install (was T9.6)
   - deps: T9.1p
@@ -1614,6 +1629,11 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - deps: T7.3
   - do: the owner: correct a title and fix words in the transcript or summary. Today only speakers can be edited. Edits go through `edit::write`; an edit to a transcript segment keeps its id and times so citations still work, and its word times stay honest about what changed. Decide with the owner what a re-transcribe does to edited text (keep, warn or replace) and whether a changed transcript marks the summary out of date. A replaced summary keeps today's undo. Exports follow the edited text.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
+
+- [ ] T12.17 A few summary templates, shorter by default
+  - deps: T7.4b
+  - do: the owner, 2026-11-10: summaries are too long; decisions and actions are the priority, not minutiae. Offer a few templated prompts on Summaries, built on the summary style setting so every decision and action stays required. Not before the next local model is evaluated (Qwen 4 if it comes in the 9B and 4B sizes), because a local model's rules are judged on that model. Rule written before measuring, on the owner's meetings and AMI dev, with the 12-item cap (`SummaryLimits::max_items`) re-examined in the same evaluation.
+  - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; the rule and numbers in docs/summary-eval.md, with no private measurement committed
 
 ### M10 - v2 Android in-person recorder
 
