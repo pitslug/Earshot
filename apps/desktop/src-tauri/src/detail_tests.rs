@@ -422,6 +422,109 @@ two",
 }
 
 #[test]
+fn detail_a_summary_edit_shows_at_once_and_can_be_undone() {
+    let dir = TempDir::new("detail-summary-edit");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 42);
+    let id = put_summary(
+        &svc,
+        f.meeting,
+        vec![f.segments[1]],
+        vec![f.segments[3]],
+        false,
+        43,
+    );
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.summary.as_ref().unwrap().id, id.to_string());
+    assert!(!d.can_undo_summary);
+
+    let field = |f: SummaryFieldRef| f.field();
+    edit::edit_summary(
+        &svc,
+        f.meeting,
+        id,
+        field(SummaryFieldRef::Decision { index: 0 }),
+        "Split the pump order in two",
+    )
+    .unwrap();
+    edit::edit_summary(
+        &svc,
+        f.meeting,
+        id,
+        field(SummaryFieldRef::ActionDue { index: 0 }),
+        "",
+    )
+    .unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let s = d.summary.as_ref().unwrap();
+    assert_eq!(s.id, id.to_string(), "edited in place");
+    assert_eq!(s.decisions[0].text, "Split the pump order in two");
+    assert_eq!(s.decisions[0].citations[0].row, Some(1));
+    assert_eq!(s.actions[0].due, None);
+    assert!(
+        d.can_undo_summary,
+        "the text before the edit can be restored"
+    );
+    assert!(
+        !d.summary_stale,
+        "a summary edit leaves the transcript as it was"
+    );
+    edit::undo_summary(&svc, f.meeting).unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(
+        d.summary.as_ref().unwrap().actions[0].due.as_deref(),
+        Some("Friday")
+    );
+
+    // A summary that is no longer current is refused as user copy.
+    let e: IpcError = edit::edit_summary(
+        &svc,
+        f.meeting,
+        id,
+        field(SummaryFieldRef::Tldr),
+        "Anything.",
+    )
+    .unwrap_err()
+    .into();
+    assert_eq!(e.kind, "summary_changed");
+}
+
+#[test]
+fn detail_summary_field_refs_name_the_runtime_fields() {
+    use earshot_runtime::edit::SummaryField as F;
+    let cases = [
+        (SummaryFieldRef::Title, F::Title),
+        (SummaryFieldRef::Tldr, F::Tldr),
+        (SummaryFieldRef::Decision { index: 2 }, F::Decision(2)),
+        (SummaryFieldRef::ActionOwner { index: 1 }, F::ActionOwner(1)),
+        (SummaryFieldRef::ActionTask { index: 1 }, F::ActionTask(1)),
+        (SummaryFieldRef::ActionDue { index: 3 }, F::ActionDue(3)),
+        (
+            SummaryFieldRef::NoteHeading { section: 1 },
+            F::NoteHeading(1),
+        ),
+        (
+            SummaryFieldRef::NoteBullet {
+                section: 1,
+                bullet: 4,
+            },
+            F::NoteBullet(1, 4),
+        ),
+        (
+            SummaryFieldRef::OpenQuestion { index: 0 },
+            F::OpenQuestion(0),
+        ),
+    ];
+    for (r, want) in cases {
+        assert_eq!(r.field(), want);
+    }
+    // The UI sends them tagged by kind.
+    let r: SummaryFieldRef =
+        serde_json::from_str(r#"{"kind":"NoteBullet","section":0,"bullet":2}"#).unwrap();
+    assert_eq!(r.field(), F::NoteBullet(0, 2));
+}
+
+#[test]
 fn detail_can_undo_only_with_a_restorable_previous_summary() {
     let dir = TempDir::new("detail-undo");
     let svc = services(&dir);
@@ -679,6 +782,20 @@ fn detail_edit_refusals_become_plain_user_copy() {
         ),
         (EditError::SegmentNotFound(id), "segment_not_found"),
         (EditError::DraftTranscript(id), "draft_transcript"),
+        (EditError::SummaryNotCurrent(id), "summary_changed"),
+        (EditError::SummaryItemNotFound, "summary_changed"),
+        (
+            EditError::InvalidSummaryText(TextProblem::Empty),
+            "invalid_summary_text",
+        ),
+        (
+            EditError::InvalidSummaryText(TextProblem::TooLong),
+            "invalid_summary_text",
+        ),
+        (
+            EditError::InvalidSummaryText(TextProblem::ControlCharacter),
+            "invalid_summary_text",
+        ),
     ];
     for (e, kind) in all {
         let ipc = IpcError::from(RuntimeError::Edit(e.clone()));

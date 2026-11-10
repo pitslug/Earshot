@@ -52,8 +52,12 @@ function cite(...rows: number[]): Citation[] {
   return rows.map((row) => ({ segment_id: segmentId(row + 1), row }));
 }
 
+/** The id of a mock summary (`n` from 1). */
+const summaryId = (n: number) => `5a000000-0000-7000-8000-${String(n).padStart(12, "0")}`;
+
 function sampleSummary(): SummaryView {
   return {
+    id: summaryId(1),
     title: "Vendor review: pumps",
     tldr:
       "The second pump set slips to 11 weeks. The team agreed to split the order and air freight the seals to hold commissioning before Christmas.",
@@ -217,6 +221,7 @@ export function sampleInRoomDetail(item: MeetingListItem): MeetingDetail {
 export function resummarised(previous: SummaryView): SummaryView {
   return {
     ...previous,
+    id: summaryId(Number(previous.id.slice(-12)) + 1),
     tldr: `${previous.tldr} The client hears the new date by Friday.`,
   };
 }

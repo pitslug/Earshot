@@ -19,7 +19,8 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 
 use crate::credentials::{CredentialManager, KeyVault};
 use crate::detail::{
-    self, ExportDone, LinkChoice, MeetingDetail, PersonItem, RememberResult, parse_id, parse_ids,
+    self, ExportDone, LinkChoice, MeetingDetail, PersonItem, RememberResult, SummaryFieldRef,
+    parse_id, parse_ids,
 };
 use crate::jobs::{JobEvent, JobKind, JobRunner};
 use crate::meeting::{MeetingDriver, StartRequest};
@@ -48,6 +49,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             get_meeting,
             rename_meeting,
             edit_segment,
+            edit_summary,
             rename_speaker,
             merge_speakers,
             link_speaker,
@@ -610,6 +612,26 @@ async fn edit_segment(
     let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
     blocking(move || {
         earshot_runtime::edit::edit_segment(&services, meeting, segment, &text)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Corrects one text of `meeting`'s current summary `summary` (T12.16); the text before the
+/// edit becomes the previous summary.
+#[tauri::command]
+#[specta::specta]
+async fn edit_summary(
+    state: State<'_, AppState>,
+    meeting: String,
+    summary: String,
+    field: SummaryFieldRef,
+    text: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, summary) = (parse_id(&meeting)?, parse_id(&summary)?);
+    blocking(move || {
+        earshot_runtime::edit::edit_summary(&services, meeting, summary, field.field(), &text)?;
         Ok(())
     })
     .await

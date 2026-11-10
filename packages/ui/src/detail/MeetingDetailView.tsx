@@ -25,7 +25,7 @@ import {
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type Citation,
@@ -35,6 +35,7 @@ import {
   type MeetingDetail,
   type MeetingListItem,
   type PersonItem,
+  type SummaryFieldRef,
   type SummaryView,
   useIpc,
 } from "../ipc";
@@ -198,6 +199,34 @@ const useStyles = makeStyles({
   },
   lineEdit: {
     opacity: 0,
+  },
+  // A summary text with its Edit buttons at the end (T12.16). Hidden, a button takes no width,
+  // so the text and citations read as before; hover or focus shows it.
+  editable: {
+    ":hover .earshot-inline-edit": {
+      opacity: 1,
+      maxWidth: "none",
+      minWidth: "auto",
+      paddingLeft: tokens.spacingHorizontalS,
+      paddingRight: tokens.spacingHorizontalS,
+    },
+    ":focus-within .earshot-inline-edit": {
+      opacity: 1,
+      maxWidth: "none",
+      minWidth: "auto",
+      paddingLeft: tokens.spacingHorizontalS,
+      paddingRight: tokens.spacingHorizontalS,
+    },
+  },
+  inlineEdit: {
+    opacity: 0,
+    maxWidth: 0,
+    minWidth: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+    marginLeft: tokens.spacingHorizontalXS,
   },
   editedMark: {
     marginLeft: tokens.spacingHorizontalXS,
@@ -596,6 +625,12 @@ export function MeetingDetailView({
                 <SummaryTab
                   detail={detail}
                   onCite={openCitation}
+                  onEdit={
+                    writingSummary
+                      ? undefined
+                      : (summary, field, text) =>
+                          save(() => ipc.editSummary(id, summary, field, text), "The summary was not changed")
+                  }
                   onResummarise={() => void startJob("resummarise")}
                   onUndo={() => void run(() => ipc.undoSummary(id), "The previous summary could not be restored")}
                 />
@@ -725,15 +760,76 @@ function Citations({ citations, onCite }: { citations: Citation[]; onCite(c: Cit
   );
 }
 
-function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Citation): void }) {
+/** One text of a summary the user may correct (T12.16). */
+interface EditField {
+  /** Names the field: "Edit {label}" and the editor's label. */
+  label: string;
+  /** The button's own text. */
+  button: string;
+  text: string;
+  onSave(text: string): Promise<boolean>;
+}
+
+/** Summary content with Edit buttons at its end, shown on hover and focus; a field being
+ * edited replaces the content with its editor. With no fields it is the content alone. */
+function Editable({ fields, children }: { fields: EditField[]; children: ReactNode }) {
   const styles = useStyles();
+  const [editing, setEditing] = useState<EditField | null>(null);
+  if (editing !== null) {
+    return (
+      <TextEditor
+        label={editing.label}
+        initial={editing.text}
+        multiline
+        onSave={async (t) => {
+          if (await editing.onSave(t)) setEditing(null);
+        }}
+        onCancel={() => setEditing(null)}
+      />
+    );
+  }
+  return (
+    <span className={styles.editable}>
+      {children}
+      {fields.map((f) => (
+        <Button
+          key={f.label}
+          size="small"
+          appearance="subtle"
+          className={mergeClasses(styles.inlineEdit, "earshot-inline-edit")}
+          aria-label={`Edit ${f.label}`}
+          onClick={() => setEditing(f)}
+        >
+          {f.button}
+        </Button>
+      ))}
+    </span>
+  );
+}
+
+function SummaryBody({
+  summary,
+  onCite,
+  onEdit,
+}: {
+  summary: SummaryView;
+  onCite(c: Citation): void;
+  /** Saves one text; false when it was refused. Absent: read only. */
+  onEdit?: (field: SummaryFieldRef, text: string) => Promise<boolean>;
+}) {
+  const styles = useStyles();
+  /** The field as an Edit button, or none when read only. */
+  const edit = (field: SummaryFieldRef, label: string, text: string, button = "Edit"): EditField[] =>
+    onEdit === undefined ? [] : [{ label, button, text, onSave: (t) => onEdit(field, t) }];
   return (
     <>
       <div className={styles.section}>
         <Subtitle2 as="h2" className={styles.sectionHeading}>
           TL;DR
         </Subtitle2>
-        <Body1>{summary.tldr}</Body1>
+        <Body1>
+          <Editable fields={edit({ kind: "Tldr" }, "TL;DR", summary.tldr)}>{summary.tldr}</Editable>
+        </Body1>
       </div>
       {summary.decisions.length > 0 && (
         <div className={styles.section}>
@@ -743,8 +839,10 @@ function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Cita
           <ul className={styles.list} aria-label="Decisions">
             {summary.decisions.map((d, i) => (
               <li key={i}>
-                <Body1>{d.text}</Body1>
-                <Citations citations={d.citations} onCite={onCite} />
+                <Editable fields={edit({ kind: "Decision", index: i }, `decision ${i + 1}`, d.text)}>
+                  <Body1>{d.text}</Body1>
+                  <Citations citations={d.citations} onCite={onCite} />
+                </Editable>
               </li>
             ))}
           </ul>
@@ -759,14 +857,27 @@ function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Cita
             {summary.actions.map((a, i) => (
               <div role="row" key={i} style={{ display: "contents" }}>
                 <Body1Strong role="cell" className={styles.owner}>
-                  {a.owner}
+                  <Editable
+                    fields={edit({ kind: "ActionOwner", index: i }, `who does action ${i + 1}`, a.owner)}
+                  >
+                    {a.owner}
+                  </Editable>
                 </Body1Strong>
                 <span role="cell">
-                  <Body1>
-                    {a.task}
-                    {a.due !== null && ` (by ${a.due})`}
-                  </Body1>
-                  <Citations citations={a.citations} onCite={onCite} />
+                  <Editable
+                    fields={[
+                      ...edit({ kind: "ActionTask", index: i }, `action ${i + 1}`, a.task),
+                      ...(a.due === null
+                        ? []
+                        : edit({ kind: "ActionDue", index: i }, `when action ${i + 1} is due`, a.due, "Edit date")),
+                    ]}
+                  >
+                    <Body1>
+                      {a.task}
+                      {a.due !== null && ` (by ${a.due})`}
+                    </Body1>
+                    <Citations citations={a.citations} onCite={onCite} />
+                  </Editable>
                 </span>
               </div>
             ))}
@@ -777,13 +888,23 @@ function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Cita
       {summary.notes.map((n, i) => (
         <div className={styles.section} key={`notes-${i}`}>
           <Subtitle2 as="h2" className={styles.sectionHeading}>
-            {n.heading}
+            <Editable fields={edit({ kind: "NoteHeading", section: i }, `heading ${n.heading}`, n.heading)}>
+              {n.heading}
+            </Editable>
           </Subtitle2>
           <ul className={styles.list}>
             {n.bullets.map((b, j) => (
               <li key={j}>
-                <Body1>{b.text}</Body1>
-                <Citations citations={b.citations} onCite={onCite} />
+                <Editable
+                  fields={edit(
+                    { kind: "NoteBullet", section: i, bullet: j },
+                    `note ${j + 1} under ${n.heading}`,
+                    b.text,
+                  )}
+                >
+                  <Body1>{b.text}</Body1>
+                  <Citations citations={b.citations} onCite={onCite} />
+                </Editable>
               </li>
             ))}
           </ul>
@@ -797,7 +918,9 @@ function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Cita
           <ul className={styles.list}>
             {summary.open_questions.map((q, i) => (
               <li key={i}>
-                <Body1>{q}</Body1>
+                <Editable fields={edit({ kind: "OpenQuestion", index: i }, `open question ${i + 1}`, q)}>
+                  <Body1>{q}</Body1>
+                </Editable>
               </li>
             ))}
           </ul>
@@ -810,11 +933,15 @@ function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Cita
 function SummaryTab({
   detail,
   onCite,
+  onEdit,
   onResummarise,
   onUndo,
 }: {
   detail: MeetingDetail;
   onCite(c: Citation): void;
+  /** Saves one text of summary `summary`; false when refused. Absent while a new summary is
+   * being written. */
+  onEdit?: (summary: string, field: SummaryFieldRef, text: string) => Promise<boolean>;
   onResummarise(): void;
   onUndo(): void;
 }) {
@@ -845,7 +972,11 @@ function SummaryTab({
               : "This meeting has no summary yet."}
         </Body1>
       ) : (
-        <SummaryBody summary={s} onCite={onCite} />
+        <SummaryBody
+          summary={s}
+          onCite={onCite}
+          onEdit={onEdit === undefined ? undefined : (field, text) => onEdit(s.id, field, text)}
+        />
       )}
       {detail.can_undo_summary && (
         <div className={styles.summaryButtons}>

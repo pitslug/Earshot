@@ -71,6 +71,7 @@ import type {
   SummaryEvent,
   SummarySettingsValue,
   SummarySettingsView,
+  SummaryFieldRef,
   SummaryView,
   TranscriptKind,
   TranscriptRow,
@@ -169,6 +170,7 @@ export type {
   SummaryEvent,
   SummarySettingsValue,
   SummarySettingsView,
+  SummaryFieldRef,
   SummaryView,
   TranscriptKind,
   TranscriptRow,
@@ -226,6 +228,9 @@ export interface IpcCommands
   /** Replaces the text of one line of the final transcript; the line keeps its id and times.
    * Rejects with `invalid_text`, `segment_not_found` or `draft_transcript`. */
   editSegment(meeting: string, segment: string, text: string): Promise<void>;
+  /** Corrects one text of the current summary `summary` (T12.16); the text before the edit
+   * becomes the previous summary. Rejects with `invalid_summary_text` or `summary_changed`. */
+  editSummary(meeting: string, summary: string, field: SummaryFieldRef, text: string): Promise<void>;
   /** Renames a speaker. Rejects with an edit refusal (`invalid_name`, ...). */
   renameSpeaker(meeting: string, speaker: string, name: string): Promise<void>;
   /** Merges speaker `merge` into `keep`. */

@@ -389,3 +389,229 @@ fn edit_retranscribe_rule_leaves_out_only_new_words_under_an_edited_span() {
     let new = vec![seg(21, 1, vec![w("kept", 2_900, 3_100)])];
     assert_eq!(drop_words_under_edits(new.clone(), &[point]), (new, 0));
 }
+
+/// A summary with one of every editable field, citing `segment`.
+fn full_summary(segment: EntityId) -> SummaryV1 {
+    use earshot_core::summary::{ActionItem, NoteBullet, NoteSection};
+    SummaryV1 {
+        title: "Release planning".into(),
+        tldr: "The release moves to Friday.".into(),
+        enhanced_notes: vec![NoteSection {
+            heading: "Timing".into(),
+            bullets: vec![NoteBullet {
+                text: "Testing needs two more days.".into(),
+                source_segment_ids: vec![segment],
+            }],
+        }],
+        decisions: vec![Decision {
+            text: "Ship on Friday.".into(),
+            source_segment_ids: vec![segment],
+        }],
+        action_items: vec![ActionItem {
+            owner: "Alice".into(),
+            task: "Tell the support team.".into(),
+            due: Some("Thursday".into()),
+            source_segment_ids: vec![segment],
+        }],
+        open_questions: vec!["Who signs off the notes?".into()],
+        topics: vec![],
+    }
+}
+
+fn store_full(svc: &Services, meeting: EntityId, seed: u64) -> EntityId {
+    let v = view(svc, meeting);
+    crate::summary::store_summary(
+        svc,
+        &v,
+        "test-model".into(),
+        &full_summary(v.segments[0].id),
+        &mut ChaCha8Rng::seed_from_u64(seed),
+    )
+    .unwrap()
+    .0
+}
+
+#[test]
+fn edit_summary_fields_change_in_place_and_undo_brings_the_text_back() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Release", 420);
+    let id = store_full(&svc, m, 421);
+    let before = view(&svc, m).summary.unwrap();
+
+    for (field, text) in [
+        (SummaryField::Title, "Release plan"),
+        (SummaryField::Tldr, "The release moves to Friday morning."),
+        (SummaryField::Decision(0), "Ship on Friday morning."),
+        (SummaryField::ActionOwner(0), "Bob"),
+        (SummaryField::ActionTask(0), "Tell support and sales."),
+        (SummaryField::ActionDue(0), "Wednesday"),
+        (SummaryField::NoteHeading(0), "Dates"),
+        (
+            SummaryField::NoteBullet(0, 0),
+            "Testing needs three more days.",
+        ),
+        (
+            SummaryField::OpenQuestion(0),
+            "Who signs off the release notes?",
+        ),
+    ] {
+        assert!(edit_summary(&svc, m, id, field, &format!("  {text} ")).unwrap());
+        // The same text again writes nothing.
+        assert!(!edit_summary(&svc, m, id, field, text).unwrap());
+    }
+    let after = view(&svc, m).summary.unwrap();
+    assert_eq!(after.id, id, "the summary keeps its id");
+    assert_eq!(after.meta.created_at, before.meta.created_at);
+    assert_eq!(
+        (after.model.clone(), after.template),
+        (before.model.clone(), before.template)
+    );
+    let s = &after.summary;
+    assert_eq!(s.title, "Release plan");
+    assert_eq!(s.tldr, "The release moves to Friday morning.");
+    assert_eq!(s.decisions[0].text, "Ship on Friday morning.");
+    let a = &s.action_items[0];
+    assert_eq!(
+        (a.owner.as_str(), a.task.as_str(), a.due.as_deref()),
+        ("Bob", "Tell support and sales.", Some("Wednesday"))
+    );
+    assert_eq!(s.enhanced_notes[0].heading, "Dates");
+    assert_eq!(
+        s.enhanced_notes[0].bullets[0].text,
+        "Testing needs three more days."
+    );
+    assert_eq!(s.open_questions[0], "Who signs off the release notes?");
+    // Citations are untouched.
+    assert_eq!(
+        s.decisions[0].source_segment_ids,
+        before.summary.decisions[0].source_segment_ids
+    );
+    // An empty due date removes it.
+    assert!(edit_summary(&svc, m, id, SummaryField::ActionDue(0), " ").unwrap());
+    assert_eq!(
+        view(&svc, m).summary.unwrap().summary.action_items[0].due,
+        None
+    );
+
+    // Export and search follow the edited summary.
+    let note = exported(&svc, &dir, m, 422);
+    assert!(note.contains("Ship on Friday morning."), "{note}");
+    assert_eq!(
+        crate::search::search_meetings(&svc, "release notes")
+            .unwrap()
+            .hits
+            .len(),
+        1
+    );
+
+    // Undo brings back the text before the last edit, and again the edit.
+    let h = summary_history(&svc, m).unwrap();
+    let prev = h.previous.unwrap();
+    assert!(prev.restorable);
+    assert_eq!(
+        prev.summary.summary.action_items[0].due.as_deref(),
+        Some("Wednesday")
+    );
+    assert_eq!(prev.summary.meta.created_at, before.meta.created_at);
+    let restored = undo_summary(&svc, m).unwrap();
+    assert_ne!(restored, id);
+    let s = view(&svc, m).summary.unwrap();
+    assert_eq!(s.summary.action_items[0].due.as_deref(), Some("Wednesday"));
+    assert_eq!(s.summary.decisions[0].text, "Ship on Friday morning.");
+    assert_eq!(undo_summary(&svc, m).unwrap(), id);
+    assert_eq!(
+        view(&svc, m).summary.unwrap().summary.action_items[0].due,
+        None
+    );
+}
+
+#[test]
+fn edit_summary_refuses_a_replaced_summary_a_missing_item_and_bad_text() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Release", 423);
+    let unknown = EntityId::from_bytes([5; 16]);
+    assert_eq!(
+        refused(edit_summary(&svc, m, unknown, SummaryField::Tldr, "Words.")),
+        EditError::SummaryNotCurrent(unknown)
+    );
+    let old = store_full(&svc, m, 424);
+    let new = store_full(&svc, m, 425);
+    assert_eq!(
+        refused(edit_summary(&svc, m, old, SummaryField::Tldr, "Words.")),
+        EditError::SummaryNotCurrent(old)
+    );
+    for field in [
+        SummaryField::Decision(1),
+        SummaryField::ActionOwner(1),
+        SummaryField::ActionTask(1),
+        SummaryField::ActionDue(1),
+        SummaryField::NoteHeading(1),
+        SummaryField::NoteBullet(0, 1),
+        SummaryField::NoteBullet(1, 0),
+        SummaryField::OpenQuestion(1),
+    ] {
+        assert_eq!(
+            refused(edit_summary(&svc, m, new, field, "Words.")),
+            EditError::SummaryItemNotFound,
+            "{field:?}"
+        );
+    }
+    let too_long = "w".repeat(MAX_SUMMARY_TEXT_CHARS + 1);
+    let long_title = "t".repeat(MAX_TITLE_CHARS + 1);
+    for (field, bad, problem) in [
+        (SummaryField::Tldr, "   ", TextProblem::Empty),
+        (SummaryField::Title, " ", TextProblem::Empty),
+        (SummaryField::ActionOwner(0), "", TextProblem::Empty),
+        (
+            SummaryField::Decision(0),
+            "two\nlines",
+            TextProblem::ControlCharacter,
+        ),
+        (SummaryField::Tldr, too_long.as_str(), TextProblem::TooLong),
+        (
+            SummaryField::Title,
+            long_title.as_str(),
+            TextProblem::TooLong,
+        ),
+    ] {
+        assert_eq!(
+            refused(edit_summary(&svc, m, new, field, bad)),
+            EditError::InvalidSummaryText(problem)
+        );
+    }
+    // A summary title may be as long as a meeting title.
+    assert!(
+        edit_summary(
+            &svc,
+            m,
+            new,
+            SummaryField::Title,
+            &"t".repeat(MAX_TITLE_CHARS)
+        )
+        .unwrap()
+    );
+    delete(&svc, m);
+    assert_eq!(
+        refused(edit_summary(&svc, m, new, SummaryField::Tldr, "Words.")),
+        EditError::MeetingNotFound(m)
+    );
+}
+
+#[test]
+fn edit_summary_keeps_the_summary_out_of_date_after_a_transcript_edit() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Release", 426);
+    let id = store_full(&svc, m, 427);
+    let line = view(&svc, m).segments[1].id;
+    assert!(edit_segment(&svc, m, line, "a corrected line").unwrap());
+    assert!(view(&svc, m).summary_out_of_date());
+    // Correcting the summary's words does not make it a summary of the new transcript.
+    assert!(edit_summary(&svc, m, id, SummaryField::Tldr, "Reworded.").unwrap());
+    assert!(view(&svc, m).summary_out_of_date());
+    // And the copy kept for undo is out of date too.
+    undo_summary(&svc, m).unwrap();
+    assert!(view(&svc, m).summary_out_of_date());
+}

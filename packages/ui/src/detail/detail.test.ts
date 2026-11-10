@@ -6,6 +6,7 @@ import { summaryMarkdown } from "./detail";
 const CITE: Citation = { segment_id: "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee", row: 41 };
 
 const EMPTY: SummaryView = {
+  id: "5a000000-0000-7000-8000-000000000001",
   title: "A title that stays out",
   tldr: "",
   decisions: [],

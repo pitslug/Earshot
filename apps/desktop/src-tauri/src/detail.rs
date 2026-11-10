@@ -17,7 +17,7 @@ use earshot_core::model::{AudioFileRepo, Speaker, TranscriptPass};
 use earshot_core::summary::SummaryV1;
 use earshot_runtime::backends::pass_backend;
 use earshot_runtime::edit::{
-    self, EditError, NameProblem, PersonChoice, PersonInfo, Remembered, TextProblem,
+    self, EditError, NameProblem, PersonChoice, PersonInfo, Remembered, SummaryField, TextProblem,
 };
 use earshot_runtime::identities::{SpeakerIdentity, StoredIdentities, decode};
 use earshot_runtime::view::MeetingView;
@@ -98,6 +98,8 @@ pub struct NotesView {
 /// The current summary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct SummaryView {
+    /// Its id (hyphenated UUID): edits name the summary they change (T12.16).
+    pub id: String,
     /// Its title.
     pub title: String,
     /// TL;DR.
@@ -314,6 +316,75 @@ pub struct RememberResult {
     pub outcome: RememberOutcome,
 }
 
+/// Which text of a summary an edit changes (T12.16; `edit::SummaryField`). Indices count
+/// from 0 in the order the summary shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind")]
+pub enum SummaryFieldRef {
+    /// The title.
+    Title,
+    /// The TL;DR.
+    Tldr,
+    /// A decision.
+    Decision {
+        /// Which.
+        index: u32,
+    },
+    /// Who an action is for.
+    ActionOwner {
+        /// Which action.
+        index: u32,
+    },
+    /// What an action is.
+    ActionTask {
+        /// Which action.
+        index: u32,
+    },
+    /// When an action is due ("" removes it).
+    ActionDue {
+        /// Which action.
+        index: u32,
+    },
+    /// A notes heading.
+    NoteHeading {
+        /// Which section.
+        section: u32,
+    },
+    /// A notes bullet.
+    NoteBullet {
+        /// Which section.
+        section: u32,
+        /// Which bullet of it.
+        bullet: u32,
+    },
+    /// An open question.
+    OpenQuestion {
+        /// Which.
+        index: u32,
+    },
+}
+
+impl SummaryFieldRef {
+    /// The runtime's field.
+    #[must_use]
+    pub fn field(self) -> SummaryField {
+        let at = |i: u32| usize::try_from(i).unwrap_or(usize::MAX);
+        match self {
+            Self::Title => SummaryField::Title,
+            Self::Tldr => SummaryField::Tldr,
+            Self::Decision { index } => SummaryField::Decision(at(index)),
+            Self::ActionOwner { index } => SummaryField::ActionOwner(at(index)),
+            Self::ActionTask { index } => SummaryField::ActionTask(at(index)),
+            Self::ActionDue { index } => SummaryField::ActionDue(at(index)),
+            Self::NoteHeading { section } => SummaryField::NoteHeading(at(section)),
+            Self::NoteBullet { section, bullet } => {
+                SummaryField::NoteBullet(at(section), at(bullet))
+            }
+            Self::OpenQuestion { index } => SummaryField::OpenQuestion(at(index)),
+        }
+    }
+}
+
 /// Where an export wrote the note.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct ExportDone {
@@ -417,6 +488,22 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "draft_transcript",
             "The words can be corrected once the final transcript is ready.",
         ),
+        EditError::SummaryNotCurrent(_) | EditError::SummaryItemNotFound => err(
+            "summary_changed",
+            "The summary changed while you were editing it. Check the new text and edit again.",
+        ),
+        EditError::InvalidSummaryText(TextProblem::Empty) => err(
+            "invalid_summary_text",
+            "Enter some words. Only a due date can be left empty.",
+        ),
+        EditError::InvalidSummaryText(TextProblem::TooLong) => err(
+            "invalid_summary_text",
+            "This text is too long for the summary.",
+        ),
+        EditError::InvalidSummaryText(TextProblem::ControlCharacter) => err(
+            "invalid_summary_text",
+            "Summary text cannot contain line breaks or tabs.",
+        ),
     }
 }
 
@@ -442,8 +529,9 @@ fn citations(ids: &[EntityId], rows: &BTreeMap<EntityId, u32>) -> Vec<Citation> 
         .collect()
 }
 
-fn summary_view(s: &SummaryV1, rows: &BTreeMap<EntityId, u32>) -> SummaryView {
+fn summary_view(id: EntityId, s: &SummaryV1, rows: &BTreeMap<EntityId, u32>) -> SummaryView {
     SummaryView {
+        id: id.to_string(),
         title: s.title.clone(),
         tldr: s.tldr.clone(),
         decisions: s
@@ -659,7 +747,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
     let summary = view
         .summary
         .as_ref()
-        .map(|s| summary_view(&s.summary, &rows));
+        .map(|s| summary_view(s.id, &s.summary, &rows));
     let summary_stale = view.summary_out_of_date();
     let can_undo_summary = history.previous.is_some_and(|p| p.restorable);
     Ok(MeetingDetail {

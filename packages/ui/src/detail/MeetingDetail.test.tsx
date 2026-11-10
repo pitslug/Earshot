@@ -278,6 +278,64 @@ describe("MeetingDetailView", () => {
       expect(screen.getByRole("textbox", { name: "Line 2" })).toBeInTheDocument();
     });
 
+    it("corrects a decision and an action in the summary, and undo brings the old text back", async () => {
+      const { user, calls } = await setup();
+      await screen.findByText(/TL;DR/);
+      expect(screen.queryByRole("button", { name: "Switch to previous summary" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Edit decision 1" }));
+      const field = screen.getByRole("textbox", { name: "decision 1" });
+      expect(field).toHaveValue("Split the pump order into two shipments");
+      await user.clear(field);
+      await user.type(field, "Split the pump order into two deliveries{Enter}");
+      expect(await screen.findByText("Split the pump order into two deliveries")).toBeInTheDocument();
+      const summaryId = sampleDetail(ITEM).summary?.id;
+      expect(calls).toContainEqual([
+        "editSummary",
+        ITEM.id,
+        summaryId,
+        { kind: "Decision", index: 0 },
+        "Split the pump order into two deliveries",
+      ]);
+
+      await user.click(screen.getByRole("button", { name: "Edit when action 1 is due" }));
+      const due = screen.getByRole("textbox", { name: "when action 1 is due" });
+      await user.clear(due);
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByText(/\(by Friday\)/)).not.toBeInTheDocument());
+      expect(calls).toContainEqual(["editSummary", ITEM.id, summaryId, { kind: "ActionDue", index: 0 }, ""]);
+      // A summary edit sends nothing to a summary writer.
+      expect(calls.some((c) => c[0] === "resummarise")).toBe(false);
+
+      await user.click(screen.getByRole("button", { name: "Switch to previous summary" }));
+      expect(await screen.findByText(/\(by Friday\)/)).toBeInTheDocument();
+      expect(screen.getByText("Split the pump order into two deliveries")).toBeInTheDocument();
+    });
+
+    it("cancels a summary edit with Escape and keeps it open on a refusal", async () => {
+      const { user, calls } = await setup();
+      await screen.findByText(/TL;DR/);
+      await user.click(screen.getByRole("button", { name: "Edit TL;DR" }));
+      await user.type(screen.getByRole("textbox", { name: "TL;DR" }), " More.{Escape}");
+      expect(screen.queryByRole("textbox", { name: "TL;DR" })).not.toBeInTheDocument();
+      expect(calls.some((c) => c[0] === "editSummary")).toBe(false);
+
+      await user.click(screen.getByRole("button", { name: "Edit TL;DR" }));
+      await user.clear(screen.getByRole("textbox", { name: "TL;DR" }));
+      await user.keyboard("{Enter}");
+      expect(await screen.findByText("Enter some words. Only a due date can be left empty.")).toBeInTheDocument();
+      expect(screen.getByText("The summary was not changed")).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "TL;DR" })).toBeInTheDocument();
+    });
+
+    it("offers no summary edit while a new summary is being written", async () => {
+      const { user } = await setup();
+      await screen.findByText(/TL;DR/);
+      expect(screen.getByRole("button", { name: "Edit TL;DR" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+      await screen.findByText("Writing a new summary");
+      expect(screen.queryByRole("button", { name: /^Edit / })).not.toBeInTheDocument();
+    });
+
     it("offers no line edit on a draft transcript", async () => {
       const base = sampleDetail(ITEM);
       const draft = { ...base, header: { ...base.header, transcript: "Draft" as const } };
@@ -378,7 +436,15 @@ describe("MeetingDetailView", () => {
         details: {
           [ITEM.id]: {
             ...sampleDetail(ITEM),
-            summary: { title: "", tldr: "", decisions: [], actions: [], notes: [], open_questions: [] },
+            summary: {
+              id: "5a000000-0000-7000-8000-000000000009",
+              title: "",
+              tldr: "",
+              decisions: [],
+              actions: [],
+              notes: [],
+              open_questions: [],
+            },
           },
         },
       });

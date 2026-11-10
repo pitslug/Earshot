@@ -56,6 +56,11 @@ export const commands = {
 	renameMeeting: (meeting: string, title: string) => typedError<null, IpcError>(__TAURI_INVOKE("rename_meeting", { meeting, title })),
 	/**  Replaces the text of one line of `meeting`'s final transcript (T12.16). */
 	editSegment: (meeting: string, segment: string, text: string) => typedError<null, IpcError>(__TAURI_INVOKE("edit_segment", { meeting, segment, text })),
+	/**
+	 *  Corrects one text of `meeting`'s current summary `summary` (T12.16); the text before the
+	 *  edit becomes the previous summary.
+	 */
+	editSummary: (meeting: string, summary: string, field: SummaryFieldRef, text: string) => typedError<null, IpcError>(__TAURI_INVOKE("edit_summary", { meeting, summary, field, text })),
 	/**  Renames a speaker of `meeting`. */
 	renameSpeaker: (meeting: string, speaker: string, name: string) => typedError<null, IpcError>(__TAURI_INVOKE("rename_speaker", { meeting, speaker, name })),
 	/**  Merges speaker `merge` into `keep`. */
@@ -1738,6 +1743,46 @@ retryable: boolean } |
  */
 { kind: "PostCancelled" };
 
+/**
+ *  Which text of a summary an edit changes (T12.16; `edit::SummaryField`). Indices count
+ *  from 0 in the order the summary shows.
+ */
+export type SummaryFieldRef = 
+/**  The title. */
+{ kind: "Title" } | 
+/**  The TL;DR. */
+{ kind: "Tldr" } | 
+/**  A decision. */
+{ kind: "Decision"; 
+/**  Which. */
+index: number } | 
+/**  Who an action is for. */
+{ kind: "ActionOwner"; 
+/**  Which action. */
+index: number } | 
+/**  What an action is. */
+{ kind: "ActionTask"; 
+/**  Which action. */
+index: number } | 
+/**  When an action is due ("" removes it). */
+{ kind: "ActionDue"; 
+/**  Which action. */
+index: number } | 
+/**  A notes heading. */
+{ kind: "NoteHeading"; 
+/**  Which section. */
+section: number } | 
+/**  A notes bullet. */
+{ kind: "NoteBullet"; 
+/**  Which section. */
+section: number; 
+/**  Which bullet of it. */
+bullet: number } | 
+/**  An open question. */
+{ kind: "OpenQuestion"; 
+/**  Which. */
+index: number };
+
 /**  The Summaries page settings as the UI sends and reads them. */
 export type SummarySettingsValue = {
 	/**  Who writes the summary. */
@@ -1787,6 +1832,8 @@ export type SummaryStyleView = {
 
 /**  The current summary. */
 export type SummaryView = {
+	/**  Its id (hyphenated UUID): edits name the summary they change (T12.16). */
+	id: string,
 	/**  Its title. */
 	title: string,
 	/**  TL;DR. */

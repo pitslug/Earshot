@@ -27,6 +27,9 @@
 //!   Search and export read the edited text through [`MeetingView`]. A text edit later than
 //!   the summary marks the summary out of date ([`MeetingView::summary_out_of_date`]), and
 //!   nothing is summarised by itself.
+//! - Summary text (T12.16): [`edit_summary`] corrects one field of the current summary in
+//!   place and keeps the text before the edit as the previous summary, so
+//!   [`undo_summary`] undoes the edit. No schema change.
 //! - [`retranscribe`]: the final pass again from the stored audio, with no live reuse. It
 //!   keeps every edited segment and leaves out the new words under it
 //!   (`crate::post::drop_words_under_edits`), saying so in a warning
@@ -60,6 +63,7 @@ use earshot_core::model::{
     live_segments,
 };
 use earshot_core::pipeline::{FinalPassRequest, FinalPassTrack};
+use earshot_core::summary::SummaryV1;
 use earshot_core::voiceprint::{
     Person, VoiceprintError, VoiceprintRepo, enroll, identity_of, me_person, resolve_person,
 };
@@ -82,6 +86,10 @@ pub const MAX_TITLE_CHARS: usize = 200;
 /// The longest text of one transcript segment the user may write, in characters (after
 /// trimming). A segment is at most about 30 s of speech, a few hundred characters.
 pub const MAX_SEGMENT_CHARS: usize = 5_000;
+
+/// The longest text of one summary field the user may write, in characters (after
+/// trimming); a title follows [`MAX_TITLE_CHARS`].
+pub const MAX_SUMMARY_TEXT_CHARS: usize = 2_000;
 
 /// Why an edit was refused (nothing was written).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +150,13 @@ pub enum EditError {
     /// The meeting (the id) shows only its live draft: the final pass replaces it, so an
     /// edit would be lost. Its text can be edited once the final transcript exists.
     DraftTranscript(EntityId),
+    /// The summary (the id) is no longer the meeting's current one ([`edit_summary`]): a
+    /// new summary or an undo replaced it meanwhile.
+    SummaryNotCurrent(EntityId),
+    /// The summary has no such item ([`edit_summary`]; it changed meanwhile).
+    SummaryItemNotFound,
+    /// The summary text is unusable ([`edit_summary`]). Never carries the text.
+    InvalidSummaryText(TextProblem),
 }
 
 /// What is wrong with a title or transcript text.
@@ -231,6 +246,13 @@ impl fmt::Display for EditError {
                 f,
                 "meeting {id} has only its live draft; edit the text once the final transcript exists"
             ),
+            Self::SummaryNotCurrent(id) => {
+                write!(f, "summary {id} is no longer the meeting's current summary")
+            }
+            Self::SummaryItemNotFound => f.write_str("the summary has no such item"),
+            Self::InvalidSummaryText(p) => {
+                write!(f, "the text {}", text_problem(*p, MAX_SUMMARY_TEXT_CHARS))
+            }
         }
     }
 }
@@ -358,6 +380,135 @@ pub fn edit_segment(
         row.meta.touch(stamp.hlc, stamp.clock);
         row.text_edited_at = Some(row.meta.updated_at);
         tx.put_segment(row)?;
+        Ok(true)
+    })
+}
+
+/// A text field of a summary the user may correct (T12.16). Indices count from 0 in the
+/// stored order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryField {
+    /// The summary's title.
+    Title,
+    /// The TL;DR.
+    Tldr,
+    /// A decision's text.
+    Decision(usize),
+    /// Who an action item is for.
+    ActionOwner(usize),
+    /// What an action item is.
+    ActionTask(usize),
+    /// When an action item is due ("" removes it).
+    ActionDue(usize),
+    /// A notes section's heading.
+    NoteHeading(usize),
+    /// A notes bullet: the section, then the bullet.
+    NoteBullet(usize, usize),
+    /// An open question.
+    OpenQuestion(usize),
+}
+
+/// Writes `text` into `field` of `summary`; `Ok(false)` when it already holds it.
+fn set_summary_field(
+    summary: &mut SummaryV1,
+    field: SummaryField,
+    text: String,
+) -> Result<bool, EditError> {
+    let missing = || EditError::SummaryItemNotFound;
+    let slot: &mut String = match field {
+        SummaryField::Title => &mut summary.title,
+        SummaryField::Tldr => &mut summary.tldr,
+        SummaryField::Decision(i) => &mut summary.decisions.get_mut(i).ok_or_else(missing)?.text,
+        SummaryField::ActionOwner(i) => {
+            &mut summary.action_items.get_mut(i).ok_or_else(missing)?.owner
+        }
+        SummaryField::ActionTask(i) => {
+            &mut summary.action_items.get_mut(i).ok_or_else(missing)?.task
+        }
+        SummaryField::ActionDue(i) => {
+            let due = &mut summary.action_items.get_mut(i).ok_or_else(missing)?.due;
+            let new = (!text.is_empty()).then_some(text);
+            if *due == new {
+                return Ok(false);
+            }
+            *due = new;
+            return Ok(true);
+        }
+        SummaryField::NoteHeading(i) => {
+            &mut summary
+                .enhanced_notes
+                .get_mut(i)
+                .ok_or_else(missing)?
+                .heading
+        }
+        SummaryField::NoteBullet(i, j) => {
+            &mut summary
+                .enhanced_notes
+                .get_mut(i)
+                .and_then(|n| n.bullets.get_mut(j))
+                .ok_or_else(missing)?
+                .text
+        }
+        SummaryField::OpenQuestion(i) => summary.open_questions.get_mut(i).ok_or_else(missing)?,
+    };
+    if *slot == text {
+        return Ok(false);
+    }
+    *slot = text;
+    Ok(true)
+}
+
+/// Corrects one text field of `meeting`'s current summary `summary` (T12.16). Citations,
+/// the model and the template stay. The text is trimmed and at most
+/// [`MAX_SUMMARY_TEXT_CHARS`] ([`MAX_TITLE_CHARS`] for the title) with no control
+/// character; it may be empty only for an action's due date (which removes it).
+///
+/// Today's undo covers it: the summary as it was before the edit is kept as a tombstone
+/// copy with a new id (the row's own `created_at`, so its staleness reads as the original's)
+/// and becomes the previous summary, while the current row keeps its id and `created_at`
+/// and is changed in place. "Switch to previous summary" ([`undo_summary`]) therefore
+/// brings back the text before the last edit, and switching again returns to the edit;
+/// each edit keeps one such copy. The previous summary is always the newest tombstone, so
+/// after an edit the summary a re-summarise replaced is no longer reachable by undo (it
+/// stays a tombstone, with its body, until the meeting is deleted). An edit does not make the summary current with the
+/// transcript: [`MeetingView::summary_out_of_date`] still compares the transcript's edits
+/// with the summary's creation. Returns whether anything changed (the same text writes
+/// nothing).
+///
+/// # Errors
+/// [`EditError`] (unknown or deleted meeting, a summary that is not the current one, an
+/// item it does not have, unusable text); store errors.
+pub fn edit_summary(
+    services: &Services,
+    meeting: EntityId,
+    summary: EntityId,
+    field: SummaryField,
+    text: &str,
+) -> Result<bool, RuntimeError> {
+    let text = match field {
+        SummaryField::Title => clean_text(text, MAX_TITLE_CHARS, false),
+        SummaryField::ActionDue(_) => clean_text(text, MAX_SUMMARY_TEXT_CHARS, true),
+        _ => clean_text(text, MAX_SUMMARY_TEXT_CHARS, false),
+    }
+    .map_err(EditError::InvalidSummaryText)?;
+    write(services, |tx, stamp| {
+        live_meeting(&*tx, meeting)?;
+        let current = history(&*tx, meeting)?
+            .current
+            .filter(|s| s.id == summary)
+            .ok_or(EditError::SummaryNotCurrent(summary))?;
+        let mut edited = current.clone();
+        if !set_summary_field(&mut edited.summary, field, text)? {
+            return Ok(false);
+        }
+        // The text before the edit, as the previous summary (doc comment).
+        let mut before = current;
+        before.id = EntityId::generate(stamp.clock, &mut *stamp.rng);
+        before.meta.origin_device_id = stamp.hlc.node();
+        before.meta.mark_deleted(stamp.hlc, stamp.clock);
+        tx.put_summary(before)?;
+        edited.meta.touch(stamp.hlc, stamp.clock);
+        tx.put_summary(edited)?;
         Ok(true)
     })
 }
