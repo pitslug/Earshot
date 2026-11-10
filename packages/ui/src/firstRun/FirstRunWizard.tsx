@@ -34,7 +34,7 @@ import { ObsidianSection } from "../settings/ObsidianSection";
 import { MyNameField, SpeakersNoticeBar, SpeakersNotLoaded, VoiceSection } from "../settings/PeoplePage";
 import { SummaryWriterChoices } from "../settings/SummariesPage";
 import { formatSize } from "../settings/copy";
-import type { SaveOnNext, SaveStep } from "../settings/saveOnNext";
+import { type SaveOnNext, type SaveStep, saveStep } from "../settings/saveOnNext";
 import { checkRunning, useAudioCheck } from "../settings/useAudioCheck";
 import { type ModelsData, type ModelsLoad, type ModelsPageState, errorText, useModels } from "../settings/useModels";
 import { sampleRunning, useSpeakers } from "../settings/useSpeakers";
@@ -87,7 +87,8 @@ export const AUDIO_CHECK_ROW = "Play a few short sounds to see how your micropho
 export const DEVICES_NOTE = "The check uses the devices in Settings, Audio: the Windows defaults unless you chose others.";
 
 /** Why Next stayed on the step. */
-export const SAVE_REFUSED_NOTE = "This step was not saved, so you are still on it. The reason is above.";
+export const SAVE_REFUSED_NOTE =
+  "Something on this step was not saved, so you are still on it. The reason is above.";
 
 /** Why the buttons wait during the check or the voice sample. */
 export const RUNNING_NOTE = "Wait for this to finish, or cancel it, before you move on.";
@@ -466,11 +467,9 @@ export function FirstRunWizard({ onDone }: FirstRunWizardProps) {
     setSaving(true);
     setRefused(false);
     try {
-      for (const save of [...savers.current]) {
-        if (!(await save())) {
-          setRefused(true);
-          return;
-        }
+      if (!(await saveStep([...savers.current]))) {
+        setRefused(true);
+        return;
       }
       // The Download step reads who writes the summaries from the models view.
       if (step === 0) await models.refresh();
