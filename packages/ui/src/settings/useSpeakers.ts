@@ -24,6 +24,8 @@ export type VoiceSample =
 
 /** A refusal or failure, shown until dismissed or replaced. */
 export interface SpeakersNotice {
+  /** What it is about: the speaker timing setting, or your name and voice. */
+  kind: "timing" | "voice";
   title: string;
   message: string;
 }
@@ -110,7 +112,7 @@ export function useSpeakers(): SpeakersPageState {
         setView(await ipc.setSpeakerTiming(timing));
         setNotice(null);
       } catch (e) {
-        setNotice({ title: "This setting was not saved", message: errorText(e) });
+        setNotice({ kind: "timing", title: "This setting was not saved", message: errorText(e) });
       } finally {
         setBusy(false);
       }
@@ -126,7 +128,7 @@ export function useSpeakers(): SpeakersPageState {
         setNotice(null);
         return true;
       } catch (e) {
-        setNotice({ title: "Your name was not saved", message: errorText(e) });
+        setNotice({ kind: "voice", title: "Your name was not saved", message: errorText(e) });
         return false;
       } finally {
         setBusy(false);
@@ -143,7 +145,7 @@ export function useSpeakers(): SpeakersPageState {
       await ipc.startVoiceSample();
     } catch (e) {
       setSample({ status: "idle" });
-      setNotice({ title: "The recording did not start", message: errorText(e) });
+      setNotice({ kind: "voice", title: "The recording did not start", message: errorText(e) });
     }
   }, [ipc]);
 
@@ -160,7 +162,7 @@ export function useSpeakers(): SpeakersPageState {
       setSample({ status: "idle" });
       setForgotten("Your voice was forgotten. Earshot no longer recognises you from your voice.");
     } catch (e) {
-      setNotice({ title: "Your voice was not forgotten", message: errorText(e) });
+      setNotice({ kind: "voice", title: "Your voice was not forgotten", message: errorText(e) });
     } finally {
       setBusy(false);
     }

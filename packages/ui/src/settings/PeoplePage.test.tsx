@@ -10,6 +10,8 @@ import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
 import { FORGET_PERSON_EXPLAINED, REMOVE_PERSON_EXPLAINED, PEOPLE_EXPLAINED } from "./PeoplePage";
 import { FORGET_EXPLAINED, NAME_EXPLAINED, READ_ALOUD, RECORD_CONSENT, VOICE_EXPLAINED } from "./PeoplePage";
+import { SpeakersNoticeBar } from "./PeoplePage";
+import type { SpeakersNotice, SpeakersPageState } from "./useSpeakers";
 
 interface Setup {
   ipc: Ipc;
@@ -158,6 +160,52 @@ describe("Settings, People", () => {
     await s.user.clear(field);
     await s.user.keyboard("{Enter}");
     await waitFor(async () => expect((await s.ipc.speakers()).voice.name).toBe(""));
+  });
+
+  it("saves the name once when Enter is pressed again while the save is on its way", async () => {
+    const s = await open();
+    const calls: string[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const real = s.ipc.setMyName.bind(s.ipc);
+    s.ipc.setMyName = async (name) => {
+      calls.push(name);
+      await gate;
+      return real(name);
+    };
+    const field = screen.getByRole("textbox", { name: /Your name/ });
+    await s.user.type(field, "Casey Parker");
+    await s.user.keyboard("{Enter}");
+    await s.user.keyboard("{Enter}");
+    await s.user.click(within(screen.getByRole("region", { name: "Your name" })).getByRole("button", { name: "Save" }));
+    expect(calls).toEqual(["Casey Parker"]);
+    release();
+    await waitFor(async () => expect((await s.ipc.speakers()).voice.name).toBe("Casey Parker"));
+    expect(calls).toEqual(["Casey Parker"]);
+  });
+
+  it("shows only a speaker timing notice under the speaker timing", () => {
+    const state = (kind: SpeakersNotice["kind"]) =>
+      ({
+        notice: { kind, title: `Invented ${kind} notice`, message: "Invented reason." },
+        dismiss: () => {},
+      }) as unknown as SpeakersPageState;
+    const voice = render(
+      <EarshotThemeProvider>
+        <SpeakersNoticeBar state={state("voice")} kinds={["timing"]} />
+      </EarshotThemeProvider>,
+    );
+    expect(within(voice.container).queryByText("Invented voice notice")).toBeNull();
+    voice.unmount();
+    const timing = render(
+      <EarshotThemeProvider>
+        <SpeakersNoticeBar state={state("timing")} kinds={["timing"]} />
+      </EarshotThemeProvider>,
+    );
+    expect(within(timing.container).getByText("Invented timing notice")).toBeInTheDocument();
+    timing.unmount();
   });
 
   it("shows the name already given and says when one is refused", async () => {
