@@ -298,10 +298,28 @@ describe("First run wizard", () => {
       await s.user.click(await screen.findByRole("radio", { name: /^Claude \(through Claude Code\)/ }));
       const card = within(await screen.findByRole("group", { name: "Claude through Claude Code" }));
       expect(card.queryByRole("button", { name: "Save model" })).toBeNull();
-      await s.user.type(card.getByRole("textbox", { name: /^Model/ }), "opus");
+      await s.user.selectOptions(card.getByRole("combobox", { name: "Model" }), "Other");
+      expect(card.queryByRole("button", { name: "Save model" })).toBeNull();
+      await s.user.type(card.getByRole("textbox", { name: /^Model name/ }), "opus-custom");
       await s.user.click(button("Next"));
       await stepHeading(STEPS[1].title);
-      expect((await s.ipc.summarySettings()).value).toMatchObject({ writer: "ClaudeCode", claude_model: "opus" });
+      expect((await s.ipc.summarySettings()).value).toMatchObject({ writer: "ClaudeCode", claude_model: "opus-custom" });
+    });
+
+    it("applies a listed Claude Code model and effort at once, as the Summaries page does", async () => {
+      const s = setup();
+      await s.user.click(await screen.findByRole("radio", { name: /^Claude \(through Claude Code\)/ }));
+      const card = within(await screen.findByRole("group", { name: "Claude through Claude Code" }));
+      await s.user.selectOptions(card.getByRole("combobox", { name: "Model" }), "Haiku");
+      await s.user.selectOptions(card.getByRole("combobox", { name: "Effort" }), "Medium");
+      await waitFor(async () =>
+        expect((await s.ipc.summarySettings()).value).toMatchObject({
+          writer: "ClaudeCode",
+          claude_model: "haiku",
+          claude_effort: "Medium",
+        }),
+      );
+      expect(card.queryByRole("button", { name: /^Save/ })).toBeNull();
     });
   });
 

@@ -37,6 +37,7 @@ fn endpoint(provider: EndpointProvider, url: &str, model: &str) -> SummarySettin
         model: model.into(),
         live: false,
         claude_model: String::new(),
+        claude_effort: None,
         codex_model: String::new(),
     }
 }
@@ -601,6 +602,56 @@ fn summary_settings_claude_code_model_round_trips_and_is_checked() {
     assert_eq!(unknown[0].key, SUMMARY_CLAUDE_CODE_MODEL_KEY);
 }
 
+#[test]
+fn summary_settings_claude_code_effort_round_trips_and_an_unknown_one_reads_as_the_default() {
+    use earshot_llm::claude_code::Effort;
+    let dir = TempDir::new("summary-settings-claude-effort");
+    let mut db = store(&dir);
+    // Absent: Claude Code's own default.
+    assert_eq!(summary_settings(&db).unwrap().0.claude_effort, None);
+    for (effort, word) in [
+        (Effort::Low, "low"),
+        (Effort::Medium, "medium"),
+        (Effort::High, "high"),
+        (Effort::ExtraHigh, "xhigh"),
+        (Effort::Max, "max"),
+    ] {
+        let s = SummarySettings {
+            writer: SummaryWriter::ClaudeCode,
+            claude_effort: Some(effort),
+            ..SummarySettings::default()
+        };
+        let saved = set_summary_settings(&mut db, &s).unwrap();
+        assert_eq!(saved.claude_effort, Some(effort));
+        assert_eq!(
+            stored(&db, SUMMARY_CLAUDE_CODE_EFFORT_KEY).as_deref(),
+            Some(word)
+        );
+        assert_eq!(summary_settings(&db).unwrap(), (saved, Vec::new()));
+    }
+    // The default is stored as an empty value, read back as the default with nothing reported.
+    let default = SummarySettings {
+        writer: SummaryWriter::ClaudeCode,
+        ..SummarySettings::default()
+    };
+    set_summary_settings(&mut db, &default).unwrap();
+    assert_eq!(
+        stored(&db, SUMMARY_CLAUDE_CODE_EFFORT_KEY).as_deref(),
+        Some("")
+    );
+    assert_eq!(summary_settings(&db).unwrap(), (default, Vec::new()));
+    // A stored word this version does not know reads as the default, reported by its key.
+    for unknown_word in ["ultra", "High", "--model", "x high"] {
+        db.set_local_value(SUMMARY_CLAUDE_CODE_EFFORT_KEY, unknown_word.as_bytes())
+            .unwrap();
+        let (read, unknown) = summary_settings(&db).unwrap();
+        assert_eq!(read.claude_effort, None, "{unknown_word}");
+        assert_eq!(read.writer, SummaryWriter::ClaudeCode);
+        assert_eq!(unknown.len(), 1, "{unknown_word}");
+        assert_eq!(unknown[0].key, SUMMARY_CLAUDE_CODE_EFFORT_KEY);
+    }
+}
+
 /// A Claude Code probe with a fixed answer that counts its calls.
 struct CountingProbe {
     status: crate::claude_code::ClaudeCodeStatus,
@@ -629,6 +680,7 @@ fn installed(sign_in: earshot_llm::SignIn) -> crate::claude_code::ClaudeCodeStat
         },
         version: Some("2.1.290 (Claude Code)".into()),
         sign_in,
+        accepts_effort: None,
     }
 }
 
@@ -643,6 +695,7 @@ fn summary_settings_host_claude_code_is_checked_and_never_falls_back() {
         &SummarySettings {
             writer: SummaryWriter::ClaudeCode,
             claude_model: "sonnet".into(),
+            claude_effort: Some(earshot_llm::claude_code::Effort::High),
             // A filled-in endpoint is kept but not used.
             ..endpoint(
                 EndpointProvider::Anthropic,
@@ -659,6 +712,11 @@ fn summary_settings_host_claude_code_is_checked_and_never_falls_back() {
     assert!(!s.request.skip && s.request.no_key.is_none());
     let config = s.request.claude_code.clone().expect("claude code");
     assert_eq!(config.model.as_deref(), Some("sonnet"));
+    assert_eq!(
+        config.effort,
+        Some(earshot_llm::claude_code::Effort::High),
+        "the effort goes to the run, which passes it only when the CLI lists it"
+    );
     let models = crate::backends::ModelDir::new(dir.0.join("models"));
     let plan = || host::summary_plan(&s.request, None, false, &models).unwrap();
     assert!(matches!(plan(), host::SummaryPlan::ClaudeCode(_)));

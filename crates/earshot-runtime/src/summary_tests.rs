@@ -151,6 +151,7 @@ fn summary_claude_code_is_stored_with_its_handovers_and_no_network() {
         };
         let config = crate::claude_code::ClaudeCodeSummaryConfig {
             model: Some("opus".into()),
+            effort: None,
             cli: Some(claude_code_stand_in(&dir, &summary)),
             request_timeout: None,
         };
