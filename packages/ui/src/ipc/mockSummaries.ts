@@ -3,7 +3,10 @@
 // that, as in the app, is never returned. The same on both sample machines (the model in use
 // comes from the Models mock) except Claude Code's status (T7.4ga): signed in on the desktop,
 // installed but not signed in on the Surface; and Codex's (T7.4gc): installed and signed in
-// with ChatGPT on the desktop, not installed on the Surface.
+// with ChatGPT on the desktop, not installed on the Surface. The rules, messages and limits
+// copied from Rust are pinned by `fixtures/ui/summary_settings_cases.json`, which this mock's
+// tests and the app's own run (T12.20): a Rust change that alters one fails both until the table
+// and this copy follow.
 
 import {
   type ClaudeCodeStatusView,
@@ -125,7 +128,10 @@ function checkVocabulary(words: string[]): string[] {
   let total = 0;
   for (const raw of words) {
     if (/\p{Cc}/u.test(raw)) fail("invalid_setting", "A word can hold only text, with no line breaks or tabs.");
-    const word = raw.split(/\s+/).filter((p) => p !== "").join(" ");
+    const word = raw
+      .split(/\p{White_Space}+/u)
+      .filter((p) => p !== "")
+      .join(" ");
     if (word === "") continue;
     const n = [...word].length;
     if (n > MAX_VOCABULARY_WORD_CHARS) {
@@ -153,13 +159,27 @@ function checkStyle(text: string): string {
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(text)) {
     fail("invalid_setting", "The summary style can hold only text, line breaks and tabs.");
   }
-  const style = text.replace(/\r\n?/g, "\n").trim();
+  const style = rustTrim(text.replace(/\r\n?/g, "\n"));
   const n = [...style].length;
   if (n > MAX_STYLE_CHARS) {
     fail("invalid_setting", `The summary style can be at most ${MAX_STYLE_CHARS} characters; this one has ${n}.`);
   }
   return style;
 }
+
+/** `text` trimmed as Rust's `str::trim` does: Unicode White_Space only. JavaScript's `trim` and
+ * `\s` also take U+FEFF, which Rust keeps. */
+function rustTrim(text: string): string {
+  return text.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+}
+
+/** The length Rust's `str::len` gives: UTF-8 bytes, which its name limits count. */
+function utf8Length(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/** The longest endpoint address (`earshot_runtime::summary_settings`'s `MAX_URL`), in bytes. */
+const MAX_URL = 2048;
 
 const fail = (kind: string, message: string): never => {
   throw new IpcFailure({ kind, message, retryable: false });
@@ -187,6 +207,7 @@ function parse(url: string): URL | null {
 
 function checkUrl(url: string, provider: SummarySettingsValue["provider"]): void {
   const bad = (why: string): never => fail("invalid_setting", `This address cannot be used: ${why}.`);
+  if (utf8Length(url) > MAX_URL) bad(`it is longer than ${MAX_URL} characters`);
   const u = parse(url);
   if (u === null) bad("not a valid URL: relative URL without a base");
   const parsed = u as URL;
@@ -209,13 +230,13 @@ function checkUrl(url: string, provider: SummarySettingsValue["provider"]): void
 }
 
 function validate(s: SummarySettingsValue): SummarySettingsValue {
-  const url = s.url.trim();
-  const model = s.model.trim();
-  if (model.length > 200 || /[\u0000-\u001f\u007f]/.test(model)) {
+  const url = rustTrim(s.url);
+  const model = rustTrim(s.model);
+  if (utf8Length(model) > 200 || /\p{Cc}/u.test(model)) {
     fail("invalid_setting", "The model name must be at most 200 characters, without line breaks.");
   }
-  const claude_model = s.claude_model.trim();
-  if (claude_model.length > 200) {
+  const claude_model = rustTrim(s.claude_model);
+  if (utf8Length(claude_model) > 200) {
     fail("invalid_setting", "This Claude Code model name cannot be used: it is longer than 200 characters.");
   }
   if (claude_model.startsWith("-")) {
@@ -229,8 +250,8 @@ function validate(s: SummarySettingsValue): SummarySettingsValue {
   }
   // Codex (`earshot_llm::codex::check_model`): a letter or digit, then up to 63 of
   // letters, digits and `._-`.
-  const codex_model = s.codex_model.trim();
-  if (codex_model.length > 64) {
+  const codex_model = rustTrim(s.codex_model);
+  if (utf8Length(codex_model) > 64) {
     fail("invalid_setting", "This Codex model name cannot be used: it is longer than 64 characters.");
   }
   if (codex_model !== "" && !/^[A-Za-z0-9]/.test(codex_model)) {

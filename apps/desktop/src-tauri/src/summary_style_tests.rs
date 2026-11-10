@@ -51,3 +51,32 @@ fn summary_style_the_view_serialises_for_the_ui() {
         serde_json::json!({"style": "Short.", "unknown": [], "max_chars": 1000})
     );
 }
+
+#[test]
+fn summary_style_follows_the_shared_case_table() {
+    let table = crate::testutil::summary_cases();
+    let dir = TempDir::new("summary-style");
+    let svc = services(&dir);
+    assert_eq!(
+        table["limits"]["max_style_chars"],
+        style_view(&svc).unwrap().max_chars
+    );
+    let cases = table["style"].as_array().unwrap();
+    assert!(cases.len() >= 7, "the table lost cases");
+    let mut wrong = Vec::new();
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let text = case["text"].as_str().unwrap();
+        match (set_style(&svc, text), case["error"].as_str()) {
+            (Err(e), Some(want)) if e.kind == "invalid_setting" && e.message == want => {}
+            (Ok(view), None) => {
+                if case["stored"].as_str() != Some(view.style.as_str()) {
+                    wrong.push(format!("{name}: stored {:?}", view.style));
+                }
+            }
+            (Err(e), _) => wrong.push(format!("{name}: refused {:?}", e.message)),
+            (Ok(view), Some(_)) => wrong.push(format!("{name}: stored {:?}", view.style)),
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}

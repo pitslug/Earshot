@@ -71,3 +71,34 @@ fn summary_vocabulary_the_view_serialises_for_the_ui() {
         })
     );
 }
+
+#[test]
+fn summary_vocabulary_follows_the_shared_case_table() {
+    let table = crate::testutil::summary_cases();
+    let limits = &table["limits"];
+    let dir = TempDir::new("summary-vocabulary");
+    let svc = services(&dir);
+    let v = vocabulary_view(&svc).unwrap();
+    assert_eq!(limits["max_vocabulary_words"], v.max_words);
+    assert_eq!(limits["max_vocabulary_word_chars"], v.max_word_chars);
+    assert_eq!(limits["max_vocabulary_chars"], v.max_chars);
+    let cases = table["vocabulary"].as_array().unwrap();
+    assert!(cases.len() >= 13, "the table lost cases");
+    let mut wrong = Vec::new();
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let words: Vec<String> = serde_json::from_value(case["words"].clone()).unwrap();
+        match (set_words(&svc, &words), case["error"].as_str()) {
+            (Err(e), Some(want)) if e.kind == "invalid_setting" && e.message == want => {}
+            (Ok(view), None) => {
+                let want: Vec<String> = serde_json::from_value(case["stored"].clone()).unwrap();
+                if view.words != want {
+                    wrong.push(format!("{name}: stored {:?}", view.words));
+                }
+            }
+            (Err(e), _) => wrong.push(format!("{name}: refused {:?}", e.message)),
+            (Ok(view), Some(_)) => wrong.push(format!("{name}: stored {:?}", view.words)),
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
