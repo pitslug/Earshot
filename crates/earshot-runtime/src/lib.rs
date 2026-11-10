@@ -73,6 +73,7 @@ pub mod summary_settings;
 pub mod summary_style;
 pub mod update;
 pub mod view;
+pub mod vocabulary;
 
 #[cfg(test)]
 mod testutil;

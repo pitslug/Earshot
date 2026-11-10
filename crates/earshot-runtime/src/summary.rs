@@ -76,7 +76,7 @@ use earshot_core::identity::EntityId;
 use earshot_core::model::{MeetingRepo, Stamp, Summary};
 use earshot_core::prompt::{
     ContextBudget, MeetingInfo, PromptSegment, SummaryInput, SummaryStyle, TimeChunkError,
-    UserNote, time_chunks,
+    UserNote, Vocabulary, time_chunks,
 };
 use earshot_core::summary::SummaryV1;
 use earshot_llm::{
@@ -801,8 +801,8 @@ impl SummaryService {
     /// # Errors
     /// [`RuntimeError::Internal`] if the meeting does not exist; store errors.
     pub fn input(services: &Services, meeting: EntityId) -> Result<SummaryInput, RuntimeError> {
-        let (view, style) = load_input(services, meeting)?;
-        Ok(input_of(&view, &style))
+        let (view, settings) = load_input(services, meeting)?;
+        Ok(input_of(&view, &settings))
     }
 
     /// Summarises `meeting` and stores the result (module docs). Blocks until the
@@ -821,8 +821,8 @@ impl SummaryService {
         rng: &mut R,
         cancel: &CancelToken,
     ) -> Result<SummaryOutcome, RuntimeError> {
-        let (view, style) = load_input(services, meeting)?;
-        let input = input_of(&view, &style);
+        let (view, settings) = load_input(services, meeting)?;
+        let input = input_of(&view, &settings);
         // Claude Code and Codex: every handover of this run is stored for the meeting as it
         // happens (`crate::claude_code::MeetingHandovers`); the sink is cleared when the run ends.
         let _sink = self.agent_cli_client().map(|c| {
@@ -886,18 +886,28 @@ impl SummaryService {
     }
 }
 
-/// The meeting's view and the summary style stored now ([`crate::summary_style`]; a stored
-/// style this version refuses is no style, reported on the Summaries page and in the
-/// meeting's start notes by `host::summary_from_settings`), read under one store lock.
+/// The user's settings a summary request carries, as stored when it is written.
+struct PromptSettings {
+    /// The summary style ([`crate::summary_style`]).
+    style: SummaryStyle,
+    /// The user's own words ([`crate::vocabulary`]).
+    vocabulary: Vocabulary,
+}
+
+/// The meeting's view with the summary style and the user's own words stored now
+/// ([`crate::summary_style`], [`crate::vocabulary`]; a stored value this version refuses is
+/// none, reported on the Summaries and Dictionary pages and in the meeting's start notes by
+/// `host::summary_from_settings`), read under one store lock.
 fn load_input(
     services: &Services,
     meeting: EntityId,
-) -> Result<(MeetingView, SummaryStyle), RuntimeError> {
+) -> Result<(MeetingView, PromptSettings), RuntimeError> {
     let db = services.store();
     let view =
         MeetingView::load(&**db, meeting)?.ok_or(RuntimeError::Internal("no such meeting"))?;
     let (style, _refused) = crate::summary_style::summary_style(&db)?;
-    Ok((view, style))
+    let (vocabulary, _refused) = crate::vocabulary::vocabulary(&db)?;
+    Ok((view, PromptSettings { style, vocabulary }))
 }
 
 /// The partials a live session recorded for the meeting of `view`, with the live segments
@@ -1452,8 +1462,8 @@ pub(crate) fn store_summary<R: Rng + ?Sized>(
     stored
 }
 
-/// The prompt input of a meeting view with the user's summary style.
-fn input_of(view: &MeetingView, style: &SummaryStyle) -> SummaryInput {
+/// The prompt input of a meeting view with the user's summary style and own words.
+fn input_of(view: &MeetingView, settings: &PromptSettings) -> SummaryInput {
     let m = &view.meeting;
     SummaryInput {
         meeting: MeetingInfo {
@@ -1477,7 +1487,8 @@ fn input_of(view: &MeetingView, style: &SummaryStyle) -> SummaryInput {
             .collect(),
         template: m.template,
         prompt_variant: earshot_core::prompt::PromptVariant::Current,
-        style: style.clone(),
+        style: settings.style.clone(),
+        vocabulary: settings.vocabulary.clone(),
         user_name: view.user_name(),
     }
 }

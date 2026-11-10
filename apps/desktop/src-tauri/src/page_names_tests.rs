@@ -92,6 +92,7 @@ fn page_names_the_rule_finds_a_gone_page_and_passes_the_pages_that_exist() {
         "System",
         "Transcription",
         "Summaries",
+        "Dictionary",
         "People",
         "Notes and storage",
     ] {

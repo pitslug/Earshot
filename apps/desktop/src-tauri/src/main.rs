@@ -41,6 +41,7 @@ mod speaker_settings;
 mod storage_settings;
 mod summaries;
 mod summary_style;
+mod summary_vocabulary;
 #[cfg(test)]
 mod testutil;
 #[cfg(windows)]

@@ -14,6 +14,7 @@ import {
 } from "./ipc";
 import type { SampleMachine } from "./mockModels";
 import type { SummaryStyleView } from "./summaryStyle";
+import type { SummaryVocabularyView } from "./summaryVocabulary";
 
 /** The Anthropic API address the app offers. */
 export const MOCK_ANTHROPIC_URL = "https://api.anthropic.com";
@@ -35,10 +36,19 @@ export interface SummariesMockData {
   codex?: CodexStatusView;
   /** The stored summary style (T7.4b; default: none). */
   style?: string;
+  /** The stored Dictionary words (T12.15a; default: none). */
+  vocabulary?: string[];
 }
 
 /** The longest summary style the app accepts (`earshot_core::prompt::MAX_STYLE_CHARS`). */
 export const MAX_STYLE_CHARS = 1000;
+
+/** The most Dictionary words the app accepts (`earshot_core::prompt::MAX_VOCABULARY_WORDS`). */
+export const MAX_VOCABULARY_WORDS = 100;
+/** The longest Dictionary word (`earshot_core::prompt::MAX_VOCABULARY_WORD_CHARS`). */
+export const MAX_VOCABULARY_WORD_CHARS = 40;
+/** The longest Dictionary in all (`earshot_core::prompt::MAX_VOCABULARY_CHARS`). */
+export const MAX_VOCABULARY_CHARS = 1000;
 
 /** Claude Code's status on each sample machine (the app's copy, `summaries::claude_code_status`). */
 export const CLAUDE_CODE_STATUS: Record<SampleMachine, ClaudeCodeStatusView> = {
@@ -94,6 +104,38 @@ export interface SummariesMock {
   codexStatus(): Promise<CodexStatusView>;
   summaryStyle(): Promise<SummaryStyleView>;
   setSummaryStyle(style: string): Promise<SummaryStyleView>;
+  summaryVocabulary(): Promise<SummaryVocabularyView>;
+  setSummaryVocabulary(words: string[]): Promise<SummaryVocabularyView>;
+}
+
+/** The words as stored, with the app's rules and messages (`Vocabulary::new`): a control
+ * character refuses the list; each word is trimmed with inner white space joined, empty ones
+ * and repeats in another case are dropped (the first spelling wins), then the limits apply. */
+function checkVocabulary(words: string[]): string[] {
+  const kept: string[] = [];
+  const folded = new Set<string>();
+  let total = 0;
+  for (const raw of words) {
+    if (/\p{Cc}/u.test(raw)) fail("invalid_setting", "A word can hold only text, with no line breaks or tabs.");
+    const word = raw.split(/\s+/).filter((p) => p !== "").join(" ");
+    if (word === "") continue;
+    const n = [...word].length;
+    if (n > MAX_VOCABULARY_WORD_CHARS) {
+      fail("invalid_setting", `A word can have at most ${MAX_VOCABULARY_WORD_CHARS} characters; this one has ${n}.`);
+    }
+    const key = word.toLowerCase();
+    if (folded.has(key)) continue;
+    folded.add(key);
+    total += n;
+    kept.push(word);
+  }
+  if (kept.length > MAX_VOCABULARY_WORDS) {
+    fail("invalid_setting", `The list can hold at most ${MAX_VOCABULARY_WORDS} words; this one has ${kept.length}.`);
+  }
+  if (total > MAX_VOCABULARY_CHARS) {
+    fail("invalid_setting", `The list can have at most ${MAX_VOCABULARY_CHARS} characters in all; this one has ${total}.`);
+  }
+  return kept;
 }
 
 /** The style as stored, with the app's rules and messages (`SummaryStyle::new`): control
@@ -231,6 +273,14 @@ export function createSummariesMock(
   let keySaved = data.apiKeySaved ?? false;
   let style = data.style ?? "";
   const styleView = (): SummaryStyleView => ({ style, unknown: [], max_chars: MAX_STYLE_CHARS });
+  let vocabulary = checkVocabulary(data.vocabulary ?? []);
+  const vocabularyView = (): SummaryVocabularyView => ({
+    words: [...vocabulary],
+    unknown: [],
+    max_words: MAX_VOCABULARY_WORDS,
+    max_word_chars: MAX_VOCABULARY_WORD_CHARS,
+    max_chars: MAX_VOCABULARY_CHARS,
+  });
   const store = () => {
     if (data.keyStoreError !== undefined) {
       fail("api_key", `Windows Credential Manager failed: ${data.keyStoreError}.`);
@@ -265,6 +315,11 @@ export function createSummariesMock(
     setSummaryStyle: async (text) => {
       style = checkStyle(text);
       return styleView();
+    },
+    summaryVocabulary: async () => vocabularyView(),
+    setSummaryVocabulary: async (words) => {
+      vocabulary = checkVocabulary(words);
+      return vocabularyView();
     },
   };
 }

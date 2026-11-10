@@ -180,6 +180,8 @@ pub(crate) enum DeviceRecord {
     Previews,
     /// `settings/update-check`: whether Earshot checks for updates when it starts (T9.1b).
     UpdateCheck,
+    /// `settings/vocabulary`: the user's own words for summaries (T12.15a).
+    Vocabulary,
 }
 
 impl DeviceRecord {
@@ -216,6 +218,7 @@ impl DeviceRecord {
         DeviceRecord::CudaTranscription,
         DeviceRecord::Previews,
         DeviceRecord::UpdateCheck,
+        DeviceRecord::Vocabulary,
     ];
 
     /// Its key.
@@ -256,6 +259,7 @@ impl DeviceRecord {
                 DeviceRecord::CudaTranscription => crate::cuda_switch::CUDA_TRANSCRIPTION_KEY,
                 DeviceRecord::Previews => crate::preview_settings::PREVIEWS_KEY,
                 DeviceRecord::UpdateCheck => crate::update::AUTO_CHECK_KEY,
+                DeviceRecord::Vocabulary => crate::vocabulary::VOCABULARY_KEY,
             }
             .to_owned(),
         )

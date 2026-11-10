@@ -14,6 +14,7 @@ use super::template::{
     Template, USER_NAME,
 };
 use super::tokens::{TOKENS_PER_MESSAGE, TOKENS_PER_REQUEST, estimate_tokens};
+use super::vocabulary::Vocabulary;
 use crate::asr::{MeetingTime, Segment};
 use crate::identity::EntityId;
 use crate::summary::{
@@ -134,6 +135,11 @@ pub struct SummaryInput {
     /// serialised inputs from before T7.4b read and write unchanged.
     #[serde(default, skip_serializing_if = "SummaryStyle::is_empty")]
     pub style: SummaryStyle,
+    /// The user's own words (T12.15a): spelling help for names and acronyms, in every
+    /// request (single, map, every merge). Empty (the default) adds nothing. Left out of the
+    /// JSON when empty, so serialised inputs from before T12.15a read and write unchanged.
+    #[serde(default, skip_serializing_if = "Vocabulary::is_empty")]
+    pub vocabulary: Vocabulary,
     /// How the user appears in the transcript, when they gave a name: every request says so
     /// (T9.1h). `None` adds nothing, and is left out of the JSON.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -360,6 +366,7 @@ pub fn plan(input: &SummaryInput, budget: ContextBudget) -> Result<PromptPlan, P
                     input.prompt_variant,
                     input.user_name.as_deref(),
                     None,
+                    &input.vocabulary,
                     Some(&input.style),
                 ),
             ),
@@ -383,6 +390,7 @@ pub fn plan(input: &SummaryInput, budget: ContextBudget) -> Result<PromptPlan, P
             input.prompt_variant,
             input.user_name.as_deref(),
             Some(&map_extra),
+            &input.vocabulary,
             None,
         ))
         + estimate_tokens(&user_text(
@@ -477,6 +485,7 @@ fn map_chunks(
                             input.prompt_variant,
                             input.user_name.as_deref(),
                             Some(&ask.text(part, parts)),
+                            &input.vocabulary,
                             None,
                         ),
                     ),
@@ -703,6 +712,7 @@ fn reduce_groups_with(
             input.prompt_variant,
             input.user_name.as_deref(),
             Some(&merge.text()),
+            &input.vocabulary,
             merge.style(input, MergeLevel::Last),
         ))
         + estimate_tokens(&reduce_user_text(input, &[], &numbers));
@@ -809,6 +819,7 @@ fn reduce_prompt_with(
                     input.prompt_variant,
                     input.user_name.as_deref(),
                     Some(&merge.text()),
+                    &input.vocabulary,
                     merge.style(input, level),
                 ),
             ),
@@ -888,13 +899,15 @@ fn schema_text() -> &'static str {
 }
 
 /// The system message: the shared rules with the schema, the template, `extra` (a map or
-/// merge instruction) and last the user's style block (T7.4b; nothing when `style` is
-/// `None` or empty, so a request without a style is unchanged).
+/// merge instruction), the user's own words (T12.15a; every request, nothing when empty) and
+/// last the user's style block (T7.4b; nothing when `style` is `None` or empty). A request
+/// without words or a style is unchanged.
 fn system_text(
     template: Template,
     variant: PromptVariant,
     user_name: Option<&str>,
     extra: Option<&str>,
+    vocabulary: &Vocabulary,
     style: Option<&SummaryStyle>,
 ) -> String {
     let mut s = variant.rules().replace("{{schema}}", schema_text());
@@ -907,6 +920,10 @@ fn system_text(
     if let Some(e) = extra {
         s.push('\n');
         s.push_str(e);
+    }
+    if let Some(block) = vocabulary.block() {
+        s.push('\n');
+        s.push_str(&block);
     }
     if let Some(block) = style.and_then(SummaryStyle::block) {
         s.push('\n');

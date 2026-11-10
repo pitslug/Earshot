@@ -342,6 +342,7 @@ fn meeting(n: usize) -> SummaryInput {
         template: Template::General,
         prompt_variant: Default::default(),
         style: Default::default(),
+        vocabulary: Default::default(),
         user_name: None,
     }
 }

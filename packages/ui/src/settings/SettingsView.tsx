@@ -1,6 +1,7 @@
-// The Settings screen (docs/ui-design.md "Settings", docs/settings-design.md "Settings: seven
+// The Settings screen (docs/ui-design.md "Settings", docs/settings-design.md "Settings: eight
 // pages", T12.5b): the section list on the left, one page on the right: General, Audio (T7.4i),
-// System, Transcription, Summaries (T7.4g), People and Notes and storage. It opens on General.
+// System, Transcription, Summaries (T7.4g), Dictionary (T12.15a), People and Notes and storage.
+// It opens on General.
 // It holds the one `useModels` state for every page that shows a model part (System,
 // Transcription, Summaries), so a download or the model check carries on across pages.
 
@@ -8,6 +9,7 @@ import { Button, makeStyles, mergeClasses, tokens } from "@fluentui/react-compon
 import { useState } from "react";
 
 import { AudioPage } from "./AudioPage";
+import { DictionaryPage } from "./DictionaryPage";
 import { GeneralPage } from "./GeneralPage";
 import { NotesStoragePage } from "./NotesStoragePage";
 import { PeoplePage } from "./PeoplePage";
@@ -23,6 +25,7 @@ export const SETTINGS_SECTIONS = [
   "System",
   "Transcription",
   "Summaries",
+  "Dictionary",
   "People",
   "Notes and storage",
 ] as const;
@@ -112,6 +115,8 @@ export function SettingsView({ onBack, initialSection = "General", onOpenSetup }
           <TranscriptionPage models={models} />
         ) : section === "Summaries" ? (
           <SummariesPage models={models} />
+        ) : section === "Dictionary" ? (
+          <DictionaryPage />
         ) : section === "People" ? (
           <PeoplePage />
         ) : (

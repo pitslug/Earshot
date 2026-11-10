@@ -127,6 +127,7 @@ pub fn two_track(input: &SummaryInput, ends_ms: &[u64], me: &str) -> TwoTrack {
         template: input.template,
         prompt_variant: input.prompt_variant,
         style: input.style.clone(),
+        vocabulary: input.vocabulary.clone(),
         user_name: None,
     };
     TwoTrack {
@@ -271,6 +272,7 @@ mod tests {
             template: Template::General,
             prompt_variant: PromptVariant::Current,
             style: Default::default(),
+            vocabulary: Default::default(),
             user_name: None,
         }
     }
