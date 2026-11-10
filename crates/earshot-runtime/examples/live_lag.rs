@@ -4,10 +4,10 @@
 //! ```text
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root>
 //!     [--audio bundled|continuous] [--backend cpu|cuda|qnn] [--models <dir>] [--speakers on|off]
-//!     [--seconds <n>] [--previews off|on|everyone] [--force-previews] [--window <s>]
-//!     [--interval <s>] [--out <file.json>]
+//!     [--seconds <n>] [--previews off|on|everyone] [--force-previews] [--card-memory-gib <n>]
+//!     [--window <s>] [--interval <s>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root> --memory
-//!     [--backend cpu|cuda|qnn] [--out <file.json>]
+//!     [--backend cpu|cuda|qnn] [--card-memory-gib <n>] [--out <file.json>]
 //! ```
 //!
 //! `--backend qnn` needs an ARM64 build with `--features qnn` (the NPU, T12.4). The app refuses
@@ -19,6 +19,14 @@
 //! Runtime's placement log, already checked by the load), never the request. `--memory` loads a
 //! track's session and then two preview sessions (always past the refusal): the first preview
 //! session comes with "on", the second only with "everyone".
+//!
+//! `--card-memory-gib <n>` (evaluation only, T12.3c) simulates a smaller graphics card: the preview
+//! rule reads this machine's hardware facts with every non-integrated adapter's dedicated memory set
+//! to `n` GiB, and the preview sessions load through `backends::load_preview_on_hardware`, the app's
+//! rule and loader on that machine (refusals included). Nothing else reads the simulated value:
+//! transcription runs where `--backend` asks and the card's real memory is untouched. The report
+//! records it (`simulated_card_gib`). With `--memory` the two preview sessions load where the rule
+//! puts them on that machine (Everyone), not past the refusal.
 //!
 //! Audio (public only): `bundled` is the Settings benchmark's meeting (AMI ES2004a, two tracks);
 //! `continuous` is `fixtures/smoke` joined with 200 ms gaps on the reference track, the mic
@@ -54,7 +62,8 @@ use earshot_core::audio::{MonoBuffer, PIPELINE_RATE};
 use earshot_core::capture::{DeviceTime, ReplayBuilder, TrackId};
 use earshot_core::model::ClockDomain;
 use earshot_runtime::backends::{
-    Accelerator, ModelDir, init_onnx, load_preview_unrefused, onnx_library, previews_refused,
+    Accelerator, ModelDir, PreviewSlot, init_onnx, load_preview_on_hardware,
+    load_preview_unrefused, onnx_library, preview_backend, previews_refused,
     previews_refused_second, second_preview_backend,
 };
 use earshot_runtime::live::{
@@ -97,6 +106,9 @@ struct Args {
     /// `backends::load_preview_unrefused`, past the app's refusal (`previews_refused`,
     /// `previews_refused_second`), so the NPU can be measured. The report records it.
     force_previews: bool,
+    /// Evaluation only (T12.3c): the preview rule reads a graphics card of this many GiB
+    /// ([`simulated_machine`]), through `backends::load_preview_on_hardware`.
+    card_memory_gib: Option<u64>,
 }
 
 fn parse_args() -> Args {
@@ -121,6 +133,7 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         window: None,
         interval: None,
         force_previews: false,
+        card_memory_gib: None,
     };
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -152,6 +165,15 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
             "--window" => args.window = value()?.parse().ok(),
             "--interval" => args.interval = value()?.parse().ok(),
             "--force-previews" => args.force_previews = true,
+            "--card-memory-gib" => {
+                let gib: u64 = value()?
+                    .parse()
+                    .map_err(|e| format!("--card-memory-gib: {e}"))?;
+                if gib == 0 {
+                    return Err("--card-memory-gib must be at least 1".to_owned());
+                }
+                args.card_memory_gib = Some(gib);
+            }
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -162,7 +184,51 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 .to_owned(),
         );
     }
+    if args.force_previews && args.card_memory_gib.is_some() {
+        return Err(
+            "--card-memory-gib applies the app's rule to a simulated card; --force-previews skips \
+             the rule: use one"
+                .to_owned(),
+        );
+    }
     Ok(args)
+}
+
+/// Bytes in a GiB.
+const GIB: u64 = 1024 * 1024 * 1024;
+
+/// Evaluation only (`--card-memory-gib`, T12.3c): `machine` with every non-integrated graphics
+/// adapter's dedicated memory set to `gib` GiB and nothing else changed, the facts the preview rule
+/// reads for the card.
+fn simulated_machine(
+    mut machine: earshot_hardware::Hardware,
+    gib: u64,
+) -> Result<earshot_hardware::Hardware, String> {
+    let mut any = false;
+    for gpu in machine
+        .gpus
+        .iter_mut()
+        .filter(|g| g.integrated != Some(true))
+    {
+        gpu.dedicated_memory = Some(gib * GIB);
+        any = true;
+    }
+    if any {
+        Ok(machine)
+    } else {
+        Err("--card-memory-gib: this machine lists no graphics card to simulate".to_owned())
+    }
+}
+
+/// How a run's preview sessions are loaded.
+#[derive(Clone)]
+enum PreviewLoads {
+    /// The app's loaders (`host::live_previews`), on this machine.
+    App,
+    /// `--force-previews` (T12.4): past the app's refusal.
+    Forced,
+    /// `--card-memory-gib` (T12.3c): the app's rule and loader on a simulated machine.
+    Simulated(earshot_hardware::Hardware),
 }
 
 /// What one preview loader did: the session asked for (`requested`, the track's backend) and,
@@ -242,20 +308,82 @@ fn forced_loader(
     })
 }
 
-/// The session's previews for `choice`: production's (`host::live_previews`), or with
-/// `force` the evaluation loaders; either way every load is recorded in `log`.
+/// Evaluation only (`--card-memory-gib`, T12.3c): the app's rule and loader for `slot` on the
+/// simulated `machine`, through `backends::load_preview_on_hardware`, with the placement of every
+/// session written to `log`.
+fn simulated_loader(
+    slot: PreviewSlot,
+    models: ModelDir,
+    choice: PreviewChoice,
+    machine: earshot_hardware::Hardware,
+    log: Arc<Mutex<Vec<Value>>>,
+) -> PreviewLoader {
+    Arc::new(move |backend: &BackendInfo| {
+        let result = load_preview_on_hardware(&models, backend, choice, slot, &machine);
+        let mut record = preview_record(
+            match slot {
+                PreviewSlot::First => "first",
+                PreviewSlot::OwnVoice => "own_voice",
+            },
+            false,
+            backend,
+            result
+                .as_ref()
+                .map(|p| (p.transcriber.backend_info(), Some(p.placement.clone())))
+                .map_err(String::as_str),
+        );
+        record["simulated_card_gib"] = json!(simulated_card_gib(&machine));
+        log.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(record);
+        result.map(|p| p.transcriber)
+    })
+}
+
+/// The card memory a simulated machine shows, in GiB.
+fn simulated_card_gib(machine: &earshot_hardware::Hardware) -> Option<u64> {
+    machine
+        .gpus
+        .iter()
+        .filter(|g| g.integrated != Some(true))
+        .filter_map(|g| g.dedicated_memory)
+        .max()
+        .map(|m| m / GIB)
+}
+
+/// The session's previews for `choice`: production's (`host::live_previews`), or the evaluation
+/// loaders of `loads`; either way every load is recorded in `log`.
 fn previews_for(
     models: &ModelDir,
     choice: PreviewChoice,
-    force: bool,
+    loads: &PreviewLoads,
     log: &Arc<Mutex<Vec<Value>>>,
 ) -> LivePreviews {
-    if force {
-        let mut p = LivePreviews::new(forced_loader("first", models.clone(), Arc::clone(log)));
-        if choice == PreviewChoice::Everyone {
-            p.own_voice = Some(forced_loader("own_voice", models.clone(), Arc::clone(log)));
+    match loads {
+        PreviewLoads::App => {}
+        PreviewLoads::Forced => {
+            let mut p = LivePreviews::new(forced_loader("first", models.clone(), Arc::clone(log)));
+            if choice == PreviewChoice::Everyone {
+                p.own_voice = Some(forced_loader("own_voice", models.clone(), Arc::clone(log)));
+            }
+            return p;
         }
-        return p;
+        PreviewLoads::Simulated(machine) => {
+            let loader = |slot| {
+                simulated_loader(
+                    slot,
+                    models.clone(),
+                    choice,
+                    machine.clone(),
+                    Arc::clone(log),
+                )
+            };
+            let mut p = LivePreviews::new(loader(PreviewSlot::First));
+            if choice == PreviewChoice::Everyone {
+                p.own_voice = Some(loader(PreviewSlot::OwnVoice));
+            }
+            return p;
+        }
     }
     let mut p = host::live_previews(models, choice);
     p.load = recorded_loader("first", p.load, Arc::clone(log));
@@ -588,7 +716,13 @@ impl TrackLags {
 /// What the model costs per session, and decoding a preview window: this process's memory after
 /// each load and after three decodes on it, and each decode's time at two window lengths and at
 /// lengths not seen before (ONNX Runtime may set up per new input length). Numbers only.
-fn memory_report(models: &ModelDir, model: &str, accel: Accelerator, audio: &[f32]) -> Value {
+fn memory_report(
+    models: &ModelDir,
+    model: &str,
+    accel: Accelerator,
+    audio: &[f32],
+    simulated: Option<&earshot_hardware::Hardware>,
+) -> Value {
     let earshot_runtime::backends::AsrModel::Parakeet(parakeet) =
         earshot_runtime::backends::asr_model(model).unwrap_or_else(|e| fail(e))
     else {
@@ -627,8 +761,9 @@ fn memory_report(models: &ModelDir, model: &str, accel: Accelerator, audio: &[f3
     let mut stages = vec![json!({ "stage": "no session", "memory": memory() })];
     let mut sessions: Vec<Box<dyn Transcriber + Send>> = Vec::new();
     // Session 1 is a track's own (a normal session); 2 and 3 are preview sessions loaded as the
-    // app loads them (background threads), past the app's refusal (evaluation only, T12.4): the
-    // first preview comes with "on", the second only with "everyone".
+    // app loads them (background threads), past the app's refusal (evaluation only, T12.4), or on
+    // a simulated machine where the app's rule puts them under Everyone (T12.3c): the first
+    // preview comes with "on", the second only with "everyone".
     let requested = BackendInfo {
         kind: accel.backend(),
         device: String::new(),
@@ -646,6 +781,21 @@ fn memory_report(models: &ModelDir, model: &str, accel: Accelerator, audio: &[f3
                     .unwrap_or_else(|e| fail(e));
             let placement = s.backends().iter().map(ToString::to_string).collect();
             (Box::new(s), placement)
+        } else if let Some(machine) = simulated {
+            let slot = if n == 2 {
+                PreviewSlot::First
+            } else {
+                PreviewSlot::OwnVoice
+            };
+            let p = load_preview_on_hardware(
+                models,
+                &requested,
+                PreviewChoice::Everyone,
+                slot,
+                machine,
+            )
+            .unwrap_or_else(|e| fail(e));
+            (p.transcriber, p.placement)
         } else {
             let p = load_preview_unrefused(models, &requested).unwrap_or_else(|e| fail(e));
             (p.transcriber, p.placement)
@@ -656,7 +806,8 @@ fn memory_report(models: &ModelDir, model: &str, accel: Accelerator, audio: &[f3
             "stage": format!("session {n} loaded"),
             "role": role,
             "preview_session": n > 1,
-            "refusal_bypassed": n > 1,
+            "refusal_bypassed": n > 1 && simulated.is_none(),
+            "simulated_card_gib": simulated.and_then(simulated_card_gib),
             "backend": { "kind": format!("{:?}", ran.kind), "device": ran.device },
             "placement": placement,
             "load_s": load_s,
@@ -684,6 +835,7 @@ fn memory_report(models: &ModelDir, model: &str, accel: Accelerator, audio: &[f3
     }
     json!({
         "model": model,
+        "simulated_card_gib": simulated.and_then(simulated_card_gib),
         "threads": threads,
         "stages": stages,
         "window_lengths": lengths,
@@ -726,8 +878,13 @@ fn main() {
     init_onnx(&models, onnx_library(model, &order))
         .unwrap_or_else(|e| fail(format!("ONNX Runtime: {e}")));
 
+    // Evaluation only (T12.3c): the machine the preview rule reads, when a card is simulated.
+    let simulated = args
+        .card_memory_gib
+        .map(|gib| simulated_machine(earshot_runtime::hardware(), gib).unwrap_or_else(|e| fail(e)));
+
     if args.memory {
-        let report = memory_report(&models, model, accel, &reference);
+        let report = memory_report(&models, model, accel, &reference, simulated.as_ref());
         let text = serde_json::to_string_pretty(&report).unwrap_or_else(|e| fail(e));
         println!("{text}");
         if let Some(out) = &args.out {
@@ -772,10 +929,15 @@ fn main() {
     let preview_sessions = Arc::new(Mutex::new(Vec::new()));
     // What the app would decide on this machine, whatever this run does.
     let refusal = args.previews.map(|choice| {
-        let machine = earshot_runtime::hardware();
+        let machine = simulated.clone().unwrap_or_else(earshot_runtime::hardware);
         json!({
             "forced_past_it": args.force_previews,
+            "simulated_card_gib": simulated.as_ref().and_then(simulated_card_gib),
             "app_first": previews_refused(args.backend, &machine, choice),
+            // Where the app would run the first session (T12.3c: the CPU beside a small card).
+            "app_first_on": preview_backend(args.backend, &machine, choice)
+                .ok()
+                .map(|k| format!("{k:?}")),
             "app_own_voice": (choice == PreviewChoice::Everyone)
                 .then(|| previews_refused_second(args.backend, &machine, choice)),
             // Where the app would run the user's own track's session (T12.3a: the CPU beside CUDA).
@@ -786,7 +948,12 @@ fn main() {
         })
     });
     let previews = args.previews.map(|choice| {
-        let mut p = previews_for(&models, choice, args.force_previews, &preview_sessions);
+        let loads = match (&simulated, args.force_previews) {
+            (Some(machine), _) => PreviewLoads::Simulated(machine.clone()),
+            (None, true) => PreviewLoads::Forced,
+            (None, false) => PreviewLoads::App,
+        };
+        let mut p = previews_for(&models, choice, &loads, &preview_sessions);
         if let Some(s) = args.window {
             p.window = Duration::from_secs_f64(s);
         }
@@ -932,6 +1099,7 @@ fn main() {
         "audio": args.audio,
         "length_s": length.as_secs_f64(),
         "requested_backend": format!("{:?}", args.backend),
+        "simulated_card_gib": simulated.as_ref().and_then(simulated_card_gib),
         "live_backends": backends,
         "onnx_placement": *evidence.lock().unwrap_or_else(PoisonError::into_inner),
         "speakers": args.speakers,
@@ -1037,7 +1205,12 @@ mod tests {
     #[test]
     fn live_lag_preview_loads_are_the_apps_unless_forced() {
         let log = Arc::new(Mutex::new(Vec::new()));
-        let p = previews_for(&empty_models(), PreviewChoice::Everyone, false, &log);
+        let p = previews_for(
+            &empty_models(),
+            PreviewChoice::Everyone,
+            &PreviewLoads::App,
+            &log,
+        );
         let own = p.own_voice.clone().expect("everyone has a second loader");
         for load in [p.load, own] {
             assert_eq!(
@@ -1056,7 +1229,7 @@ mod tests {
         let on = previews_for(
             &empty_models(),
             PreviewChoice::Automatic,
-            false,
+            &PreviewLoads::App,
             &Arc::new(Mutex::new(Vec::new())),
         );
         assert!(on.own_voice.is_none());
@@ -1067,7 +1240,12 @@ mod tests {
     #[test]
     fn live_lag_forced_preview_loads_skip_only_the_refusal() {
         let log = Arc::new(Mutex::new(Vec::new()));
-        let p = previews_for(&empty_models(), PreviewChoice::Everyone, true, &log);
+        let p = previews_for(
+            &empty_models(),
+            PreviewChoice::Everyone,
+            &PreviewLoads::Forced,
+            &log,
+        );
         let own = p.own_voice.clone().expect("everyone has a second loader");
         for load in [p.load, own] {
             let why = load(&npu_track()).err().expect("no models here");
@@ -1079,13 +1257,131 @@ mod tests {
         let on = previews_for(
             &empty_models(),
             PreviewChoice::Automatic,
-            true,
+            &PreviewLoads::Forced,
             &Arc::new(Mutex::new(Vec::new())),
         );
         assert!(
             on.own_voice.is_none(),
             "forcing never adds the second session"
         );
+    }
+
+    #[test]
+    fn live_lag_parses_the_simulated_card() {
+        let a = parse(&[
+            "--backend",
+            "cuda",
+            "--card-memory-gib",
+            "12",
+            "--previews",
+            "on",
+        ])
+        .unwrap();
+        assert_eq!(a.card_memory_gib, Some(12));
+        let a = parse(&["--backend", "cuda", "--card-memory-gib", "12", "--memory"]).unwrap();
+        assert_eq!(a.card_memory_gib, Some(12));
+        assert_eq!(
+            parse(&[]).unwrap().card_memory_gib,
+            None,
+            "never simulated unless asked"
+        );
+        assert!(parse(&["--card-memory-gib"]).is_err());
+        assert!(parse(&["--card-memory-gib", "twelve"]).is_err());
+        assert!(parse(&["--card-memory-gib", "0"]).is_err());
+        assert!(
+            parse(&[
+                "--card-memory-gib",
+                "12",
+                "--previews",
+                "on",
+                "--force-previews"
+            ])
+            .is_err(),
+            "the simulation applies the rule, forcing skips it"
+        );
+    }
+
+    fn a_card(memory: Option<u64>, integrated: Option<bool>) -> earshot_hardware::Gpu {
+        earshot_hardware::Gpu {
+            name: "A card".to_owned(),
+            vendor_id: 0x10de,
+            dedicated_memory: memory,
+            driver_version: None,
+            integrated,
+            compute_capability: None,
+        }
+    }
+
+    /// The simulation changes only the dedicated memory of the adapters the rule reads as the card.
+    #[test]
+    fn live_lag_simulated_machine_changes_only_the_cards_memory() {
+        let machine = earshot_hardware::Hardware {
+            total_memory: Some(64 * GIB),
+            gpus: vec![
+                a_card(Some(16 * GIB), Some(false)),
+                a_card(Some(GIB / 2), Some(true)),
+                a_card(None, None),
+            ],
+            ..earshot_hardware::Hardware::default()
+        };
+        let sim = simulated_machine(machine.clone(), 12).unwrap();
+        assert_eq!(sim.total_memory, machine.total_memory);
+        assert_eq!(sim.gpus[0].dedicated_memory, Some(12 * GIB));
+        assert_eq!(sim.gpus[1].dedicated_memory, Some(GIB / 2), "integrated");
+        assert_eq!(sim.gpus[2].dedicated_memory, Some(12 * GIB));
+        assert_eq!(sim.gpus[0].name, machine.gpus[0].name);
+        assert_eq!(simulated_card_gib(&sim), Some(12));
+        // The rule sees a small card: a CUDA track's previews move to the CPU.
+        assert_eq!(
+            preview_backend(BackendKind::Cuda, &sim, PreviewChoice::Automatic),
+            Ok(BackendKind::Cpu)
+        );
+        assert_eq!(
+            preview_backend(BackendKind::Cuda, &machine, PreviewChoice::Automatic),
+            Ok(BackendKind::Cuda)
+        );
+        let integrated_only = earshot_hardware::Hardware {
+            gpus: vec![a_card(Some(GIB), Some(true))],
+            ..earshot_hardware::Hardware::default()
+        };
+        assert!(simulated_machine(integrated_only, 12).is_err());
+    }
+
+    /// With a simulated card the app's rule runs on that machine: a CUDA track's previews are
+    /// asked for on the CPU (the load fails here for a load reason, on an empty models folder), the
+    /// NPU is still refused, and every record names the simulated card and no bypass.
+    #[test]
+    fn live_lag_simulated_preview_loads_apply_the_apps_rule_to_the_simulated_card() {
+        let machine = earshot_hardware::Hardware {
+            total_memory: Some(64 * GIB),
+            gpus: vec![a_card(Some(12 * GIB), Some(false))],
+            ..earshot_hardware::Hardware::default()
+        };
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let p = previews_for(
+            &empty_models(),
+            PreviewChoice::Everyone,
+            &PreviewLoads::Simulated(machine),
+            &log,
+        );
+        let own = p.own_voice.clone().expect("everyone has a second loader");
+        let cuda = BackendInfo {
+            kind: BackendKind::Cuda,
+            device: "CUDA0".to_owned(),
+            model: "parakeet-tdt-0.6b-v2".to_owned(),
+        };
+        for load in [&p.load, &own] {
+            let why = load(&cuda).err().expect("no models here");
+            assert!(!why.contains("card") && !why.contains("memory"), "{why}");
+            assert_eq!(
+                load(&npu_track()).err().as_deref(),
+                Some("not measured on the NPU yet")
+            );
+        }
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 4);
+        assert!(log.iter().all(|r| r["refusal_bypassed"] == false));
+        assert!(log.iter().all(|r| r["simulated_card_gib"] == 12));
     }
 
     #[test]

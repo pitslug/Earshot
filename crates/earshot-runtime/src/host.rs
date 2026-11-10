@@ -1245,8 +1245,9 @@ pub fn live_factory(
 }
 
 /// Provisional words for a meeting's session (T9.1m): the model's own session, loaded on the preview
-/// thread for the backend the track turned out to run on. Whether this computer has them is decided
-/// there (`backends::previews_refused`), and never costs the meeting anything. With
+/// thread for the backend the track turned out to run on. Whether and where this computer has them is
+/// decided there (`backends::preview_backend`: the track's backend, or the CPU beside a graphics card
+/// too small for them, T12.3c), and never costs the meeting anything. With
 /// [`PreviewChoice::Everyone`](crate::preview_settings::PreviewChoice::Everyone) the user's own
 /// track in a call gets a second session of its own, where `backends::second_preview_backend`
 /// says (T9.14; the CPU, also beside CUDA: T12.3a).

@@ -1233,45 +1233,63 @@ pub const PREVIEW_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 /// The same on CUDA, where sessions do not share their weights and a meeting reaches 15.4 GiB.
 pub const PREVIEW_MIN_MEMORY_CUDA: u64 = 20 * 1024 * 1024 * 1024;
 
-/// A graphics card with less dedicated memory than this runs no previews on CUDA: a third session
-/// took a meeting's use of the card from 7.8 to 11.5 GiB (measured, docs/live-previews.md). A
-/// judgement: the 11.5 and room for the rest of the desktop.
+/// A graphics card with less dedicated memory than this (or of unknown memory) runs no preview
+/// session on CUDA: a third session took a meeting's use of the card from 7.8 to 11.5 GiB (measured,
+/// docs/live-previews.md). A judgement: the 11.5 and room for the rest of the desktop. Below it a
+/// CUDA track's previews run on the CPU instead (T12.3c, [`preview_backend`]).
 pub const PREVIEW_MIN_CARD_MEMORY: u64 = 14 * 1024 * 1024 * 1024;
 
-/// Why this computer runs no previews for a track on `backend`, or `None` when it does. The one
-/// rule (`live::preview` docs): the user's "off"; the NPU is off until the Surface numbers exist;
-/// whisper, on any backend, holds decoder state and sampled retries a preview must not touch and
-/// would need a second model that nothing here has measured; a card without room for a third
-/// session. The user's "on" or "everyone" lifts only the system memory limit.
+/// Where this computer runs the previews' session for a track on `backend` (the far end in a call,
+/// the mic in the room), or why it runs none. The one rule (`live::preview` docs): the user's
+/// "off"; the NPU is off until the Surface numbers exist; whisper, on any backend, holds decoder
+/// state and sampled retries a preview must not touch and would need a second model that nothing
+/// here has measured. A CUDA track whose card has no room for a third session
+/// ([`PREVIEW_MIN_CARD_MEMORY`]) runs it on the CPU with the CPU's shared weights and the CPU's
+/// memory limit (T12.3c), so the card holds no more than with previews off. The user's "on" or
+/// "everyone" lifts only the system memory limit.
+///
+/// # Errors
+/// The reason no preview session runs.
+pub fn preview_backend(
+    backend: BackendKind,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<BackendKind, String> {
+    use crate::preview_settings::PreviewChoice;
+    if choice == PreviewChoice::Off {
+        return Err("turned off in Settings".to_owned());
+    }
+    let (runs_on, memory_limit) = match backend {
+        BackendKind::Cpu => (BackendKind::Cpu, PREVIEW_MIN_MEMORY),
+        BackendKind::Cuda => {
+            let card = crate::model_settings::graphics_memory(hardware);
+            if card.is_none_or(|m| m < PREVIEW_MIN_CARD_MEMORY) {
+                (BackendKind::Cpu, PREVIEW_MIN_MEMORY)
+            } else {
+                (BackendKind::Cuda, PREVIEW_MIN_MEMORY_CUDA)
+            }
+        }
+        BackendKind::Qnn => return Err("not measured on the NPU yet".to_owned()),
+        BackendKind::Vulkan | BackendKind::Fake => {
+            return Err("previews run on Parakeet only".to_owned());
+        }
+    };
+    if choice == PreviewChoice::Automatic && hardware.total_memory.is_none_or(|m| m < memory_limit)
+    {
+        return Err("not enough memory for a second session of the model".to_owned());
+    }
+    Ok(runs_on)
+}
+
+/// Why this computer runs no previews for a track on `backend`, or `None` when it does: the reason
+/// [`preview_backend`] gives.
 #[must_use]
 pub fn previews_refused(
     backend: BackendKind,
     hardware: &earshot_hardware::Hardware,
     choice: crate::preview_settings::PreviewChoice,
 ) -> Option<String> {
-    use crate::preview_settings::PreviewChoice;
-    if choice == PreviewChoice::Off {
-        return Some("turned off in Settings".to_owned());
-    }
-    let memory_limit = match backend {
-        BackendKind::Cpu => PREVIEW_MIN_MEMORY,
-        BackendKind::Cuda => {
-            let card = crate::model_settings::graphics_memory(hardware);
-            if card.is_none_or(|m| m < PREVIEW_MIN_CARD_MEMORY) {
-                return Some("the graphics card is too small for a third session".to_owned());
-            }
-            PREVIEW_MIN_MEMORY_CUDA
-        }
-        BackendKind::Qnn => return Some("not measured on the NPU yet".to_owned()),
-        BackendKind::Vulkan | BackendKind::Fake => {
-            return Some("previews run on Parakeet only".to_owned());
-        }
-    };
-    if choice == PreviewChoice::Automatic && hardware.total_memory.is_none_or(|m| m < memory_limit)
-    {
-        return Some("not enough memory for a second session of the model".to_owned());
-    }
-    None
+    preview_backend(backend, hardware, choice).err()
 }
 
 /// A machine with less memory than this runs no second preview session (the user's own track in a
@@ -1285,7 +1303,8 @@ pub const PREVIEW_BOTH_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 /// chose everyone, only where the first session runs ([`previews_refused`]), and only with
 /// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there. It always runs on the CPU, with the CPU's shared
 /// weights: beside the CPU's own sessions, and beside CUDA too (T12.3a), so that the card holds no
-/// more sessions than with "Other people only".
+/// more sessions than with "Other people only"; beside a card too small for the first, with the
+/// first on the CPU too (T12.3c).
 ///
 /// # Errors
 /// The reason no second session runs.
@@ -1325,8 +1344,9 @@ pub fn previews_refused_second(
 }
 
 /// The previews' own session of the model of a track that runs on `backend` (T9.1m): background
-/// threads, the thread budget of a live track, and nothing shared with the track. An `Err` says why
-/// this meeting has no previews ([`crate::live::PreviewLoader`]).
+/// threads, the thread budget of a live track, and nothing shared with the track. It loads where
+/// [`preview_backend`] says: the track's backend, or the CPU beside a card too small for it
+/// (T12.3c). An `Err` says why this meeting has no previews ([`crate::live::PreviewLoader`]).
 ///
 /// # Errors
 /// A whisper model (it holds decoder state and sampled retries, and is not measured here); the
@@ -1336,10 +1356,24 @@ pub fn load_preview(
     backend: &BackendInfo,
     choice: crate::preview_settings::PreviewChoice,
 ) -> Result<Box<dyn Transcriber + Send>, String> {
-    if let Some(why) = previews_refused(backend.kind, &crate::hardware(), choice) {
-        return Err(why);
-    }
-    load_preview_session(models, backend)
+    load_preview_with(backend, &crate::hardware(), choice, |on| {
+        load_preview_session(models, on)
+    })
+}
+
+/// [`load_preview`] on `hardware`, loading through `load` with the track's model on the backend
+/// the rule chose.
+pub(crate) fn load_preview_with<T>(
+    backend: &BackendInfo,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+    load: impl FnOnce(&BackendInfo) -> Result<T, String>,
+) -> Result<T, String> {
+    let kind = preview_backend(backend.kind, hardware, choice)?;
+    load(&BackendInfo {
+        kind,
+        ..backend.clone()
+    })
 }
 
 /// [`load_preview`] for the second session, the user's own track in a call (T9.14), loaded where
@@ -1360,12 +1394,12 @@ pub fn load_preview_second(
 
 /// [`load_preview_second`] on `hardware`, loading through `load` with the track's model on the
 /// backend the rule chose.
-pub(crate) fn load_preview_second_with(
+pub(crate) fn load_preview_second_with<T>(
     backend: &BackendInfo,
     hardware: &earshot_hardware::Hardware,
     choice: crate::preview_settings::PreviewChoice,
-    load: impl FnOnce(&BackendInfo) -> Result<Box<dyn Transcriber + Send>, String>,
-) -> Result<Box<dyn Transcriber + Send>, String> {
+    load: impl FnOnce(&BackendInfo) -> Result<T, String>,
+) -> Result<T, String> {
     let kind = second_preview_backend(backend.kind, hardware, choice)?;
     load(&BackendInfo {
         kind,
@@ -1373,7 +1407,8 @@ pub(crate) fn load_preview_second_with(
     })
 }
 
-/// A preview session loaded by [`load_preview_unrefused`], with the evidence of where it runs.
+/// A preview session loaded by [`load_preview_unrefused`] or [`load_preview_on_hardware`], with
+/// the evidence of where it runs.
 pub struct EvaluatedPreview {
     /// The session, as [`load_preview`] would have returned it.
     pub transcriber: Box<dyn Transcriber + Send>,
@@ -1403,6 +1438,45 @@ pub fn load_preview_unrefused(
         transcriber: Box::new(session),
         placement,
     })
+}
+
+/// Which of a meeting's preview sessions an evaluation loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewSlot {
+    /// The first: the far end in a call, the mic in the room ([`load_preview`]).
+    First,
+    /// The user's own track in a call under Everyone ([`load_preview_second`]).
+    OwnVoice,
+}
+
+/// Evaluation only (T12.3c, `live_lag --card-memory-gib`): a preview session loaded exactly as
+/// [`load_preview`] (`slot` [`PreviewSlot::First`]) or [`load_preview_second`]
+/// ([`PreviewSlot::OwnVoice`]) load one, with the whole rule, refusals included, applied to
+/// `hardware` instead of this computer's. It exists so a smaller graphics card can be simulated on
+/// a bigger one; the app, the CLI and [`crate::host`] never call it (pinned by
+/// `backends_preview_on_hardware_load_is_used_by_no_shipped_code`).
+///
+/// # Errors
+/// As [`load_preview`] or [`load_preview_second`] on `hardware`.
+pub fn load_preview_on_hardware(
+    models: &ModelDir,
+    backend: &BackendInfo,
+    choice: crate::preview_settings::PreviewChoice,
+    slot: PreviewSlot,
+    hardware: &earshot_hardware::Hardware,
+) -> Result<EvaluatedPreview, String> {
+    let load = |on: &BackendInfo| {
+        let session = load_preview_parakeet(models, on)?;
+        let placement = session.backends().iter().map(ToString::to_string).collect();
+        Ok(EvaluatedPreview {
+            transcriber: Box::new(session),
+            placement,
+        })
+    };
+    match slot {
+        PreviewSlot::First => load_preview_with(backend, hardware, choice, load),
+        PreviewSlot::OwnVoice => load_preview_second_with(backend, hardware, choice, load),
+    }
 }
 
 fn load_preview_session(

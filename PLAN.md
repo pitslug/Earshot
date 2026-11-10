@@ -1547,6 +1547,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.3c Provisional words on the CPU when the graphics card is too small
   - deps: T12.3a
+  - status (2026-11-10): rule committed first (36e7055), code merged and reviewed clear; tests pass in the lane. Left: the rule's measurements on an idle desktop, then the owner's answer on the automatic memory limit beside a small card (12 GiB CPU vs 20 GiB CUDA). Not done until measured.
   - do: the owner, 2026-11-09: with transcription on CUDA and a card under `PREVIEW_MIN_CARD_MEMORY`, `previews_refused` refuses every preview today. Run the preview sessions on the CPU with shared weights instead (the far end's, and under Everyone your own as in T12.3a), within the CPU memory limits (`PREVIEW_MIN_MEMORY`, `PREVIEW_BOTH_MIN_MEMORY`), and say so on the General page (replacing `NOTE_CARD`). Automatic, no new setting. Write the rule (where each session ran, identical stored words, the main transcript does not slow, on-screen lag, memory) and commit it before measuring; measure on the desktop with `live_lag --memory`, with the card limit simulated through the hardware the rule reads.
   - accept: `cargo test -p earshot-runtime preview`; `cargo test -p earshot-desktop --bin earshot preview`; the rule and measurements in docs/live-previews.md
 
