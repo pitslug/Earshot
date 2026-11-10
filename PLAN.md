@@ -1654,6 +1654,22 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: T12.15's second half. The words come from the Dictionary and the names of saved people (the owner, 2026-11-10: a saved Kam should win over Cam, Kat over Cat); people's names are used on this computer only and never added to a summary request beyond the meeting's own speakers. Compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data, with the rule written before measuring. A correction pass never changes a word without keeping the original. No shipped change without the owner.
   - accept: the spike's numbers and a recommendation in docs
 
+- [ ] T12.15c Your words in the transcript: Parakeet's nudge on meeting speech
+  - deps: T12.15b
+  - decision (2026-11-11, the owner): ship T12.15b's chosen boost (open, bonus 2: B-WER -19.1% within every guard) for 0.3; the 20% bar is waived. It is re-measured on meeting speech first.
+  - do: evaluation, rule written and committed before measuring (docs/vocabulary.md, new section). The variant is fixed: boost open 2, nothing tuned. Data: AMI dev meeting speech only (headset audio of the `ami-dev` meetings, a new fixture set pinned in `fixtures/manifest.toml`, oracle segments as `asr.wer_ami_ihm` decodes them), never a test meeting. Lists: per meeting, the AMI named-entity annotations of that meeting if v1.6.2 holds them, else T12.15b's rare-word rule; filled with distractors to 100 words. Guards G1-G3 as in T12.15b against the Parakeet baseline on the same segments, plus G4: on non-speech (model_eval's `silence` corpus) the boost writes no listed word. Passes when every guard passes and listed-word B-WER is lower than the baseline's. Decode time recorded with the host load, deciding nothing.
+  - accept: the numbers and the verdict in docs/vocabulary.md; `cargo test -p xtask fixtures`
+
+- [ ] T12.15d Your words in the transcript: ship the nudge
+  - deps: T12.15c
+  - do: only if T12.15c passes. Parakeet decodes with the boost (open, bonus 2) in every production decode: live stretches, the final pass, re-transcribe and provisional words, on every backend that runs Parakeet; whisper is unchanged (its prompt is not shipped). The list: the Dictionary's words, then the words of saved people's names (the owner, 2026-11-10: a saved Kam wins over Cam), deduplicated without case, at most `MAX_VOCABULARY_WORDS` (the measured size); title-case and lower-case paths as in T12.15b. People's names stay on this computer: they never join a summary request. Read once per live session at its start and by each final pass; the stretch record keeps the list's digest so a stretch decoded with another list is decoded again (record version bump, `post::reusable`); an empty list decodes byte-identically to today (pinned). The Dictionary page says transcripts now use the words (Parakeet only). The boost leaves T12.15b's evaluation-only scan tests' intent intact: `transcribe_biased` stays evaluation only, production goes through one shipped constructor.
+  - accept: `cargo test -p earshot-onnx parakeet`; `cargo test -p earshot-runtime post`; `cargo test -p earshot-runtime live`; `cmd /c pnpm --filter @earshot/ui test`; `cargo xtask accept m2` unchanged
+
+- [ ] T12.15e Your words in the transcript: suggestions beside words
+  - deps: T12.15d
+  - do: the owner, 2026-11-11 (option b): after the nudge, a decoded word that sounds like a listed word is marked with the listed word as a suggestion, accepted with a click (an edit through `edit::edit_segment`); nothing changes until accepted. A quiet design first (T12.15b's careful matcher suggested about 70 times an hour on audiobook speech, a third wrong): measure how many remain after the nudge on T12.15c's data, then agree the design with the owner.
+  - accept: agreed with the owner
+
 - [x] T12.16 Edit a meeting's title, transcript and summary
   - deps: T7.3
   - status (2026-11-11): merged (T12.16a 08fec3e, T12.16b 0563027), reviewed clear (4 advisories: banner copy fixed at merge, rest in TODO.md); migration 3 adds the segment edit mark; desktop 354, runtime, store and UI pass on the merge (UI timeouts under lane load passed on re-run); batch ci at the end.
