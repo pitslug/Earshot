@@ -791,6 +791,18 @@ impl SummaryService {
         self.agent_cli() == Some(HandoverCli::ClaudeCode)
     }
 
+    /// Whether this service's Claude Code ran at its own default effort although an effort was
+    /// chosen, because its `--help` could not be read (T12.20; an older CLI that does not list
+    /// `--effort` is said on the Summaries page instead). False before its first run.
+    #[must_use]
+    pub fn claude_effort_unread(&self) -> bool {
+        matches!(
+            self.agent_cli_client(),
+            Some(LlmClient::ClaudeCode(c))
+                if c.effort_probe() == Some(earshot_llm::claude_code::EffortProbe::Unreadable)
+        )
+    }
+
     /// Whether this service runs Codex.
     #[must_use]
     pub fn is_codex(&self) -> bool {

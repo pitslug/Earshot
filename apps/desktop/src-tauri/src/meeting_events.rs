@@ -953,6 +953,21 @@ pub fn handover_record_warning(why: &str) -> MeetingEvent {
     }
 }
 
+/// Claude Code wrote the summary at its own default effort although one was chosen: its help
+/// could not be read, so Earshot could not tell whether it takes the choice (T12.20). Shown as
+/// banner `summary-effort` after a meeting and as a re-summary job's warning.
+pub const CLAUDE_EFFORT_UNREAD: &str = "Claude Code wrote this summary at its own default effort: Earshot could not read whether this Claude Code takes the effort you chose.";
+
+/// The banner of [`CLAUDE_EFFORT_UNREAD`].
+#[must_use]
+pub fn claude_effort_unread_warning() -> MeetingEvent {
+    MeetingEvent::Warning {
+        key: "summary-effort".into(),
+        kind: WarningKind::Backend,
+        message: CLAUDE_EFFORT_UNREAD.into(),
+    }
+}
+
 /// The copy of [`handover_record_warning`] (also a re-summary job's warning).
 #[must_use]
 pub fn handover_record_copy(why: &str) -> String {

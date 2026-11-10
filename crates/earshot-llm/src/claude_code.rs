@@ -36,8 +36,9 @@
 //! - The prompt goes only on standard input ([`stdin_text`]); the command line holds only
 //!   fixed text, the model name ([`check_model`]) and an [`Effort`] word from a fixed list.
 //!   `--effort` is passed only when the installed CLI's `claude --help` lists it
-//!   ([`help_lists_effort`], asked once per client): an older CLI runs without it, at its own
-//!   default effort. Claude Code's own system prompt is
+//!   ([`help_lists_effort`], asked once per client, stopped by the run's cancel token): an
+//!   older CLI or an unreadable help runs without it, at its own default effort, and
+//!   [`ClaudeCodeClient::effort_probe`] tells the two apart. Claude Code's own system prompt is
 //!   replaced by [`SYSTEM_PROMPT`] (fixed; the summary rules travel on standard input).
 //! - The working folder is a new, empty temporary folder, deleted afterwards.
 //! - `CLAUDECODE` (the marker of a session started from inside Claude Code) and
@@ -70,7 +71,7 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use earshot_core::asr::CancelToken;
@@ -461,17 +462,32 @@ impl ClaudeCli {
 
     /// A quick CLI query (`--version`, `auth status`) in an empty temporary folder.
     fn query(&self, args: &[&str], timeout: Duration) -> Result<ChildOutput, ClaudeCodeError> {
+        self.query_until(args, timeout, &|| false)
+            .map_err(|e| e.unwrap_or(ClaudeCodeError::OutputIncomplete))
+    }
+
+    /// [`Self::query`], stopped as soon as `cancelled` says so: `Err(None)` then.
+    fn query_until(
+        &self,
+        args: &[&str],
+        timeout: Duration,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ChildOutput, Option<ClaudeCodeError>> {
         let dir = TempFolder::new(&std::env::temp_dir(), TEMP_PREFIX)
-            .map_err(|e| ClaudeCodeError::Start(e.to_string()))?;
+            .map_err(|e| Some(ClaudeCodeError::Start(e.to_string())))?;
         let spec = self.spec(
             args.iter().map(OsString::from).collect(),
             dir.path(),
             Vec::new(),
             timeout,
         );
-        let out = earshot_proc::run(&spec, &|| false).map_err(child_error)?;
+        let out = match earshot_proc::run(&spec, cancelled) {
+            Ok(out) => out,
+            Err(ChildError::Cancelled) => return Err(None),
+            Err(e) => return Err(Some(child_error(e))),
+        };
         out.require_complete()
-            .map_err(|_| ClaudeCodeError::OutputIncomplete)
+            .map_err(|_| Some(ClaudeCodeError::OutputIncomplete))
     }
 
     /// The CLI's version (`claude --version`, first line, for example
@@ -497,10 +513,30 @@ impl ClaudeCli {
     /// `None` when the help could not be read (exit code not 0, cut off, not started).
     #[must_use]
     pub fn accepts_effort(&self, timeout: Duration) -> Option<bool> {
-        let out = self.query(&["--help"], timeout).ok()?;
-        out.status
-            .success()
-            .then(|| help_lists_effort(&String::from_utf8_lossy(&out.stdout)))
+        match self.effort_probe(timeout, &|| false)? {
+            EffortProbe::Listed => Some(true),
+            EffortProbe::NotListed => Some(false),
+            EffortProbe::Unreadable => None,
+        }
+    }
+
+    /// What `claude --help` says of `--effort`, stopped as soon as `cancelled` says so (`None`
+    /// then: no answer).
+    #[must_use]
+    pub fn effort_probe(
+        &self,
+        timeout: Duration,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<EffortProbe> {
+        match self.query_until(&["--help"], timeout, cancelled) {
+            Err(None) => None,
+            Err(Some(_)) => Some(EffortProbe::Unreadable),
+            Ok(out) if !out.status.success() => Some(EffortProbe::Unreadable),
+            Ok(out) if help_lists_effort(&String::from_utf8_lossy(&out.stdout)) => {
+                Some(EffortProbe::Listed)
+            }
+            Ok(_) => Some(EffortProbe::NotListed),
+        }
     }
 
     /// Whether the CLI is signed in (`claude auth status --json`, which never signs in).
@@ -610,6 +646,18 @@ impl Effort {
     pub fn parse(word: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|e| e.as_str() == word)
     }
+}
+
+/// What the installed CLI's `claude --help` said of `--effort` (T12.18, T12.20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffortProbe {
+    /// It lists `--effort`: a chosen effort is passed.
+    Listed,
+    /// It does not (an older Claude Code): runs go at its own default effort.
+    NotListed,
+    /// The help could not be read (did not start, failed, timed out or was cut off): runs go at
+    /// its own default effort, so an older CLI never sees an option it would refuse.
+    Unreadable,
 }
 
 /// Whether `claude --help` output lists the `--effort` option: a line that starts (after its
@@ -737,8 +785,9 @@ pub struct ClaudeCodeClient {
     clock: Arc<dyn Clock + Send + Sync>,
     log: HandoverLog,
     sink: Arc<Mutex<Option<Arc<dyn HandoverSink>>>>,
-    /// Whether the CLI takes `--effort`, asked once (only when an effort is set).
-    effort_accepted: Arc<OnceLock<bool>>,
+    /// What the CLI's help said of `--effort`, asked once (only when an effort is set); a help
+    /// stopped by a cancel leaves it unasked.
+    effort_probe: Arc<Mutex<Option<EffortProbe>>>,
 }
 
 impl fmt::Debug for ClaudeCodeClient {
@@ -757,18 +806,52 @@ impl ClaudeCodeClient {
             clock,
             log: HandoverLog::new(),
             sink: Arc::new(Mutex::new(None)),
-            effort_accepted: Arc::new(OnceLock::new()),
+            effort_probe: Arc::new(Mutex::new(None)),
         }
     }
 
     /// The effort to pass: the configured one when the CLI's `--help` lists `--effort`
     /// (asked once per client and its clones, within [`STATUS_TIMEOUT`]; a help that cannot be
-    /// read counts as not listed, so an older CLI never sees an option it would refuse).
-    fn effort(&self) -> Option<Effort> {
-        let effort = self.config.effort?;
-        self.effort_accepted
-            .get_or_init(|| self.config.cli.accepts_effort(STATUS_TIMEOUT) == Some(true))
-            .then_some(effort)
+    /// read counts as not listed, so an older CLI never sees an option it would refuse, and
+    /// [`Self::effort_probe`] says so). The help stops on `cancel` and is then asked again by
+    /// the next run.
+    ///
+    /// # Errors
+    /// [`LlmError::Cancelled`] when `cancel` stopped the help.
+    fn effort(&self, cancel: &CancelToken) -> Result<Option<Effort>, LlmError> {
+        let Some(effort) = self.config.effort else {
+            return Ok(None);
+        };
+        // Held across the help so clones ask once; a run waits at most the help's deadline.
+        let mut probe = self
+            .effort_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let answer = match *probe {
+            Some(p) => p,
+            None => {
+                let p = self
+                    .config
+                    .cli
+                    .effort_probe(STATUS_TIMEOUT, &|| cancel.is_cancelled())
+                    .ok_or(LlmError::Cancelled)?;
+                *probe = Some(p);
+                p
+            }
+        };
+        Ok((answer == EffortProbe::Listed).then_some(effort))
+    }
+
+    /// What the CLI's help said of `--effort` for the chosen effort: `None` when no effort is
+    /// chosen or no run has asked yet. [`EffortProbe::Unreadable`] means the runs went at
+    /// Claude Code's own default effort without the help saying the CLI is too old (T12.20).
+    #[must_use]
+    pub fn effort_probe(&self) -> Option<EffortProbe> {
+        self.config.effort?;
+        *self
+            .effort_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Sets (or clears) where handovers are reported as they happen; shared by clones.
@@ -799,7 +882,7 @@ impl ClaudeCodeClient {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
-        let effort = self.effort();
+        let effort = self.effort(cancel)?;
         let text = stdin_text(messages);
         let characters = text.chars().count();
         let dir = TempFolder::new(&self.config.temp_root, TEMP_PREFIX)

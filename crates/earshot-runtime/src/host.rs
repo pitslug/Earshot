@@ -1517,6 +1517,9 @@ pub struct HostOutcome {
     /// Why storing a handover in the meeting's local record failed (store error text, never
     /// meeting text); the summary's own result is unaffected. Empty when all were stored.
     pub handover_record_failures: Vec<String>,
+    /// Claude Code ran at its own default effort although one was chosen, because its help
+    /// could not be read ([`SummaryService::claude_effort_unread`], T12.20).
+    pub claude_effort_unread: bool,
 }
 
 impl HostOutcome {
@@ -1532,6 +1535,7 @@ impl HostOutcome {
             network: Vec::new(),
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
+            claude_effort_unread: false,
         }
     }
 
@@ -1548,6 +1552,7 @@ impl HostOutcome {
             network: Vec::new(),
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
+            claude_effort_unread: false,
         }
     }
 }
@@ -1706,6 +1711,10 @@ where
         network,
         handovers,
         handover_record_failures,
+        // Asked only by a run that went ahead; false for a skipped or cancelled summary.
+        claude_effort_unread: run
+            .summary
+            .is_some_and(SummaryService::claude_effort_unread),
     }
 }
 

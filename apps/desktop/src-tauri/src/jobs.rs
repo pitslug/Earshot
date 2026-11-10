@@ -482,6 +482,9 @@ pub(crate) fn summarise_with(
             for why in s.service.handover_record_failures() {
                 warn(crate::meeting_events::handover_record_copy(&why));
             }
+            if s.service.claude_effort_unread() {
+                warn(crate::meeting_events::CLAUDE_EFFORT_UNREAD.into());
+            }
             result
         }
         None => SummaryResult::Skipped {

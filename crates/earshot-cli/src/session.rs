@@ -1137,6 +1137,12 @@ pub fn run_meeting(
             "handover: a handover could not be stored in the local record ({why})"
         )?;
     }
+    if host.claude_effort_unread {
+        writeln!(
+            out,
+            "claude-code: ran at its own default effort (its --help could not be read)"
+        )?;
+    }
     if summary.is_some() {
         for e in &host.network {
             writeln!(
