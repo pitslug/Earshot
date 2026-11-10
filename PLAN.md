@@ -1619,6 +1619,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.13 Keep a meeting's summary on this computer
   - deps: T7.4g
+  - decision (2026-11-10, the owner): the switch is set only when a meeting starts, never later and never during it; a local meeting may later be switched to the remote writer (local -> remote, with a confirm, nothing sent until Re-summarise), never the other way, so no remote summary ever exists on a kept-local meeting.
   - do: the owner: a "keep this local" switch when a meeting starts and during it, because the summary writer is one global setting and some meetings should never leave the computer. It is stored per meeting, device-locally, and read wherever a summary starts (after the meeting and on re-summarise), with no network client built for such a meeting. Without a local summary model it skips the summary with a banner and never falls back to a remote writer; a record that cannot be read counts as local. Decide with the owner whether switching it off later is allowed, and how an existing remote summary reads when it is switched on. Reviewer required: privacy.
   - accept: `cargo test -p earshot-runtime summary`; `cargo test -p earshot-desktop --bin earshot meeting`; `cmd /c pnpm --filter @earshot/ui test`; a test that a kept-local meeting opens no connection with a remote writer set (audit log empty); screenshot light and dark
 
@@ -1627,13 +1628,24 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner: the tabs scroll away with the page, and the page's scroll position carries across a tab change, so opening Summary from the end of a long transcript lands at the end of the summary. Pin the tabs under the sticky meeting header, open Summary at its top, and keep a citation scrolling to its row in the transcript.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot of a long meeting, light and dark
 
-- [ ] T12.15 Your vocabulary
+- [ ] T12.15 Your vocabulary (split 2026-11-10 into T12.15a and T12.15b)
   - deps: T7.4b
   - do: the owner: a section in Settings for the user's own words (acronyms, company and site names), so they come out right. First, a device-local list, checked and bounded like the summary style, given to every summary request. Then a spike on the transcript, because Parakeet takes no prompt and Whisper does: compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data. A correction pass must never change a word without keeping the original. No test or doc holds a word from the user's list. An empty list leaves every prompt byte-identical.
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; the spike's numbers and a recommendation in docs
 
+- [ ] T12.15a Your vocabulary in summaries
+  - deps: T7.4b
+  - do: T12.15's first half: a device-local word list on the Summaries page, checked and bounded like the summary style, given to every summary request; an empty list leaves every prompt byte-identical; no test or doc holds a word from the user's list.
+  - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`
+
+- [ ] T12.15b Your vocabulary in the transcript (spike)
+  - deps: T12.15a
+  - do: T12.15's second half: compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data, with the rule written before measuring. A correction pass never changes a word without keeping the original. No shipped change without the owner.
+  - accept: the spike's numbers and a recommendation in docs
+
 - [ ] T12.16 Edit a meeting's title, transcript and summary
   - deps: T7.3
+  - decision (2026-11-10, the owner): a re-transcribe keeps edited segments and says so in a warning; an edit to the transcript marks the summary out of date (as re-transcribe does), sending nothing by itself.
   - do: the owner: correct a title and fix words in the transcript or summary. Today only speakers can be edited. Edits go through `edit::write`; an edit to a transcript segment keeps its id and times so citations still work, and its word times stay honest about what changed. Decide with the owner what a re-transcribe does to edited text (keep, warn or replace) and whether a changed transcript marks the summary out of date. A replaced summary keeps today's undo. Exports follow the edited text.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
 
@@ -1641,6 +1653,21 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - deps: T7.4b
   - do: the owner, 2026-11-10: summaries are too long; decisions and actions are the priority, not minutiae. Offer a few templated prompts on Summaries, built on the summary style setting so every decision and action stays required. Not before the next local model is evaluated (Qwen 4 if it comes in the 9B and 4B sizes), because a local model's rules are judged on that model. Rule written before measuring, on the owner's meetings and AMI dev, with the 12-item cap (`SummaryLimits::max_items`) re-examined in the same evaluation.
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; the rule and numbers in docs/summary-eval.md, with no private measurement committed
+
+- [ ] T12.18 Choose the Claude and Codex model and effort from a list
+  - deps: T7.4ga, T7.4gc, T12.15a
+  - do: the owner, 2026-11-10: typing a model name is not intuitive. On the Summaries page, Claude Code's model becomes a dropdown (Claude Code's default, Fable, Opus, Sonnet, Haiku: the CLI's aliases for the latest model, so the list does not go stale) with Other for a typed name, and an effort dropdown (Claude Code's default, Low, Medium, High, Extra high, Max), passed as `--effort` only when the installed CLI's `--help` lists it. Codex: a model dropdown with Codex's default and Other; effort only if a real run confirms `model_reasoning_effort` on the installed CLI, from its own capture. Both are choices, so they apply at once (save rule) and the Save model button goes. Effort is a fixed value from a list, never free text, on the command line; the stored values are device-local, an unknown stored value reads as the default and is reported. The first-run Summaries step uses the same parts.
+  - accept: `cargo test -p earshot-llm claude_code`; `cargo test -p earshot-llm codex`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
+
+- [ ] T12.19 The Speakers panel slides out, with Ignore
+  - deps: T12.16
+  - do: the owner, 2026-11-10: "Who is who" becomes "Speakers", a panel that slides in from the right and pushes the transcript aside rather than covering it. Closed by default when no voice needs a name, open by itself when one does; a Speakers button in the meeting header toggles it, with a badge such as "2 need names". Each unnamed voice gets Ignore: an ignored voice no longer counts as needing a name (so it never opens the panel), keeps its "Speaker N" label in the transcript, summary and export, is never enrolled or matched as a person, and can be un-ignored from the panel. Ignore is a per-meeting user edit through `edit::write`, carried across a re-transcribe like other user edits (`identities::match_previous`), and `meeting_events::needs_name` stays the one rule, now excluding ignored voices. Text naming "Who is who" follows the rename.
+  - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot of the panel open and closed, light and dark
+
+- [ ] T12.20 UI review follow-ups from TODO.md
+  - deps: T12.16, T12.13, T12.18
+  - do: the owner, 2026-11-10: clear the UI advisories in TODO.md that need no decision: AppShell's missing Cancel for a meeting finishing behind a newer recording (`cancellingId`), `mockSummaries.ts` refusal messages pinned against Rust, NPU versions in the first-run `ModelChoices`, the wizard's savers stopping at the first refusal, the TypeScript page-name guard matching the Rust one's forms, PeoplePage's Enter racing a save in flight, and `SpeakerTimingSection` showing voice notices. Each closed line leaves TODO.md in the same commit; anything that turns out to need the owner stays with a note.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot`
 
 ### M10 - v2 Android in-person recorder
 

@@ -5,6 +5,7 @@ import {
   createMockIpc,
   createTauriIpc,
   isTauri,
+  suppressBrowserMenu,
 } from "@earshot/ui";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -42,6 +43,10 @@ const ipc = inTauri
               }
             : {},
     });
+
+// In the app the webview's own right-click menu (Back, Refresh, Print) is hidden except in text
+// fields and over selected text; the browser preview keeps it, for inspecting.
+if (inTauri) suppressBrowserMenu(document);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html has no #root");
