@@ -1393,8 +1393,25 @@ pub fn unignore_speaker(
     speaker: EntityId,
 ) -> Result<bool, RuntimeError> {
     write(services, |tx, _| {
-        live_speaker(&*tx, meeting, speaker)?;
-        update_identity_entry(tx, meeting, speaker, |i| i.ignored = false)
+        let row = live_speaker(&*tx, meeting, speaker)?;
+        update_identity_entry(tx, meeting, speaker, |i| {
+            if !i.ignored {
+                return;
+            }
+            i.ignored = false;
+            // A re-run carried the ignore as an edit (no stamp, `user_edited`). When the row
+            // is still what the pass gave it, nothing else of it was the user's: it reads as
+            // the pass's own naming again (as `unmark_me` leaves it), so a later run may
+            // renumber or name it. A row the user renamed or linked stays an edit.
+            if i.user_edited
+                && i.given_stamp.is_none()
+                && row.display_name == i.given_name
+                && row.person_id == i.given_person
+            {
+                i.user_edited = false;
+                i.given_stamp = Some(row.meta.updated_at);
+            }
+        })
     })
 }
 

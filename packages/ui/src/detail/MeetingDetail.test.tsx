@@ -730,6 +730,62 @@ describe("MeetingDetailView", () => {
     expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
   });
 
+  it("opens by itself when a reload brings more voices that need a name, and never closes by itself", async () => {
+    const base = sampleDetail(ITEM);
+    const allNamed = {
+      ...base,
+      speakers: base.speakers.map((s) =>
+        s.needs_name
+          ? {
+              ...s,
+              name: "Tom Reid",
+              person: { id: "9e000000-0000-7000-8000-000000000003", name: "Tom Reid", has_voiceprint: true },
+              source: "Voiceprint" as const,
+              needs_name: false,
+              can_ignore: false,
+            }
+          : s,
+      ),
+    };
+    const { user, ipc, timer } = await setup({ details: { [ITEM.id]: allNamed } });
+    await screen.findByText(/TL;DR/);
+    const closed = () => screen.queryByRole("complementary", { name: "Speakers" });
+    expect(closed()).toBeNull();
+    // A reload that brings no new voice to name leaves it closed.
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    await user.type(screen.getByRole("textbox", { name: "Meeting title" }), " again{Enter}");
+    await screen.findByRole("heading", { level: 1, name: `${ITEM.title} again` });
+    expect(closed()).toBeNull();
+
+    // A re-transcription ends with two voices that need names: the panel opens by itself.
+    ipc.getMeeting = async () => base;
+    await user.click(screen.getByRole("button", { name: "Re-transcribe" }));
+    for (let i = 0; i < 12; i++) act(() => timer.advance(POST_STEP_MS));
+    expect(await screen.findByRole("complementary", { name: "Speakers" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Speakers, 2 need names" })).toHaveAttribute("aria-expanded", "true");
+
+    // Closed by the user, it stays closed on a reload with no more voices to name than before.
+    await user.click(within(panel()).getByRole("button", { name: "Close Speakers" }));
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    await user.type(screen.getByRole("textbox", { name: "Meeting title" }), "{Enter}");
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Meeting title" })).toBeNull());
+    expect(closed()).toBeNull();
+  });
+
+  it("returns focus to the Speakers button when the panel closes, and points at the panel only while it exists", async () => {
+    const { user } = await setup();
+    await screen.findByText(/TL;DR/);
+    const toggle = screen.getByRole("button", { name: "Speakers, 2 need names" });
+    expect(toggle.getAttribute("aria-controls")).toBe(panel().id);
+    within(panel()).getByRole("button", { name: "Close Speakers" }).focus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
+    expect(toggle).toHaveFocus();
+    expect(toggle).not.toHaveAttribute("aria-controls");
+    await user.keyboard("{Enter}");
+    expect(toggle.getAttribute("aria-controls")).toBe(panel().id);
+  });
+
   it("puts the panel beside the summary and transcript, pushing them aside rather than covering them", async () => {
     await setup();
     await screen.findByText(/TL;DR/);

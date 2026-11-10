@@ -403,6 +403,8 @@ export function MeetingDetailView({
   // voice needs a name (T12.19); the header's Speakers button toggles it.
   const [speakersOpen, setSpeakersOpen] = useState<boolean | null>(null);
   const panelId = useId();
+  const voicesBefore = useRef(0);
+  const speakersButton = useRef<HTMLButtonElement | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
   const nameField = useRef<HTMLInputElement | null>(null);
   const view = useRef<HTMLElement | null>(null);
@@ -413,9 +415,14 @@ export function MeetingDetailView({
     try {
       const [d, p] = await Promise.all([ipc.getMeeting(id), ipc.listPersons()]);
       setDetail(d);
-      // Decided once, with the first detail (in the same render): open by itself exactly when
-      // a voice needs a name. A voice recognised from a voiceprint has one, so it never opens it.
-      setSpeakersOpen((open) => open ?? voicesToName(d) > 0);
+      // Decided with each detail, in the same render: the first opens it exactly when a voice
+      // needs a name; a later one opens it when more voices need a name than before (a
+      // re-transcription found new ones). Never closed by itself. A voice recognised from a
+      // voiceprint has a name, so it never opens it.
+      const needing = voicesToName(d);
+      const before = voicesBefore.current;
+      voicesBefore.current = needing;
+      setSpeakersOpen((open) => (open === null ? needing > 0 : needing > before ? true : open));
       setPersons(p);
       setLoadError(null);
     } catch (e) {
@@ -568,8 +575,9 @@ export function MeetingDetailView({
           </div>
           <div className={styles.headerButtons}>
             <Button
+              ref={speakersButton}
               aria-expanded={speakersOpen === true}
-              aria-controls={panelId}
+              aria-controls={speakersOpen === true ? panelId : undefined}
               aria-label={voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers"}
               disabled={detail === null}
               onClick={() => setSpeakersOpen((open) => open !== true)}
@@ -707,7 +715,11 @@ export function MeetingDetailView({
                     detail={detail}
                     persons={persons}
                     noAudio={noAudio}
-                    onClose={() => setSpeakersOpen(false)}
+                    onClose={() => {
+                      setSpeakersOpen(false);
+                      // The Close button leaves with the panel: focus goes back where it opens.
+                      speakersButton.current?.focus();
+                    }}
                     onPlay={(s) => void play(s)}
                     onRename={(s, name) => run(() => ipc.renameSpeaker(id, s, name), "The name was not saved")}
                     onRenamePerson={(person, name) =>

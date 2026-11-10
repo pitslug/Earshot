@@ -77,11 +77,32 @@ fn edit_ignore_speaker_keeps_the_label_and_is_carried_by_a_retranscribe() {
     assert_eq!(row(&svc, m, s.id).display_name, s.display_name);
     assert!(ignored(&svc, m, s.id));
 
-    // Un-ignored: it needs a name again and reads as the pass's naming.
+    // Un-ignored: it needs a name again and reads as the pass's naming, even though the
+    // re-run carried the ignore as an edit.
     assert!(unignore_speaker(&svc, m, s.id).unwrap());
     assert!(!unignore_speaker(&svc, m, s.id).unwrap());
     assert!(!ignored(&svc, m, s.id));
-    assert!(!entry(&svc, m, s.id).ignored);
+    let e = entry(&svc, m, s.id);
+    assert!(!e.ignored);
+    assert!(!e.edited(&row(&svc, m, s.id)), "{e:?}");
+}
+
+#[test]
+fn edit_unignoring_after_a_retranscribe_keeps_a_rename_the_user_made() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 505);
+    let s = remote_speakers(&svc, m)[1].id;
+    assert!(rename_speaker(&svc, m, s, "Visitor").unwrap());
+    assert!(ignore_speaker(&svc, m, s).unwrap());
+    let cancel = CancelToken::new();
+    retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    assert!(ignored(&svc, m, s));
+    assert!(unignore_speaker(&svc, m, s).unwrap());
+    // The row is the user's own edit: un-ignoring does not undo it.
+    let after = row(&svc, m, s);
+    assert_eq!(after.display_name, "Visitor");
+    assert!(entry(&svc, m, s).edited(&after));
 }
 
 #[test]
@@ -282,6 +303,22 @@ fn edit_save_voice_never_enrols_the_user_and_writes_nothing_when_refused() {
         )),
         EditError::MeVoice(me.id)
     );
+    assert_eq!(print_count(&svc, user), None);
+    // The same with a link that really writes (the Me row named apart from the user's
+    // person, so the link rewrites it): the enrolment's refusal rolls the link back.
+    assert!(rename_speaker(&svc, m, me.id, "Me in the office").unwrap());
+    let renamed = row(&svc, m, me.id);
+    assert_eq!(
+        refused(save_voice_with(
+            &svc,
+            m,
+            me.id,
+            &PersonChoice::Existing(user),
+            &any
+        )),
+        EditError::MeVoice(me.id)
+    );
+    assert_eq!(row(&svc, m, me.id), renamed, "the link was rolled back");
     assert_eq!(print_count(&svc, user), None);
     // Another voice saved as the user: refused.
     let s = remote_speakers(&svc, m)[0].clone();
