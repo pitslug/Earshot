@@ -12,10 +12,7 @@ use std::path::{Path, PathBuf};
 
 /// The shared table of gone pages, forms and cases.
 fn table() -> serde_json::Value {
-    serde_json::from_str(include_str!(
-        "../../../../fixtures/ui/page_name_cases.json"
-    ))
-    .unwrap()
+    serde_json::from_str(include_str!("../../../../fixtures/ui/page_name_cases.json")).unwrap()
 }
 
 fn strings(value: &serde_json::Value) -> Vec<String> {

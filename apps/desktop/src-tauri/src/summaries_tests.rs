@@ -1233,7 +1233,9 @@ fn summaries_settings_follow_the_shared_case_table() {
                     wrong.push(format!("{name}: refused {:?} {:?}", e.kind, e.message));
                 }
                 // Nothing stored.
-                if settings_view(&svc).unwrap().value != serde_json::from_value(table["base"].clone()).unwrap() {
+                if settings_view(&svc).unwrap().value
+                    != serde_json::from_value(table["base"].clone()).unwrap()
+                {
                     wrong.push(format!("{name}: a refusal stored something"));
                 }
             }
@@ -1264,7 +1266,12 @@ fn summaries_messages_match_the_shared_case_table() {
     assert_eq!(m["anthropic_url"], ANTHROPIC_DEFAULT_URL);
     let dir = TempDir::new("summaries-cases");
     let svc = services(&dir);
-    let mut claude = value(WriterChoice::ClaudeCode, ProviderChoice::OpenAiCompatible, "", "");
+    let mut claude = value(
+        WriterChoice::ClaudeCode,
+        ProviderChoice::OpenAiCompatible,
+        "",
+        "",
+    );
     claude.live = false;
     let view = set_settings(&svc, &claude).unwrap();
     assert_eq!(
@@ -1285,5 +1292,8 @@ fn summaries_messages_match_the_shared_case_table() {
         codex.message,
         m["codex_not_installed"]["message"].as_str().unwrap()
     );
-    assert_eq!(codex.fix.as_deref(), m["codex_not_installed"]["fix"].as_str());
+    assert_eq!(
+        codex.fix.as_deref(),
+        m["codex_not_installed"]["fix"].as_str()
+    );
 }
