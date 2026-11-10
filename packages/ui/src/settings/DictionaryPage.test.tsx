@@ -60,11 +60,22 @@ describe("Dictionary", () => {
     expect(screen.getByText(/2 of 100 words, each up to 40 characters/)).toBeInTheDocument();
   });
 
+  it("shows the words in alphabetical order, any case, with Add above them", async () => {
+    setup({ summaries: { vocabulary: ["zephyrine", "Brackwell", "apsley", "QXR-7", "Ostrelby Ridge"] } });
+    await waitFor(() =>
+      expect(shown()).toEqual(["apsley", "Brackwell", "Ostrelby Ridge", "QXR-7", "zephyrine"]),
+    );
+    const field = screen.getByRole("textbox", { name: ADD_LABEL });
+    const list = screen.getByRole("list", { name: "Your words" });
+    // The Add field comes before the list, so a long list never pushes it off the page.
+    expect(field.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("deletes one word at once and keeps the others in order", async () => {
     const s = setup({ summaries: { vocabulary: ["Quillmarsh", "QXR-7", "Ostrelby Ridge"] } });
-    await waitFor(() => expect(shown()).toEqual(["Quillmarsh", "QXR-7", "Ostrelby Ridge"]));
+    await waitFor(() => expect(shown()).toEqual(["Ostrelby Ridge", "Quillmarsh", "QXR-7"]));
     await s.user.click(screen.getByRole("button", { name: "Delete QXR-7" }));
-    await waitFor(() => expect(shown()).toEqual(["Quillmarsh", "Ostrelby Ridge"]));
+    await waitFor(() => expect(shown()).toEqual(["Ostrelby Ridge", "Quillmarsh"]));
     expect((await s.ipc.summaryVocabulary()).words).toEqual(["Quillmarsh", "Ostrelby Ridge"]);
     await s.user.click(screen.getByRole("button", { name: "Delete Quillmarsh" }));
     await s.user.click(await screen.findByRole("button", { name: "Delete Ostrelby Ridge" }));

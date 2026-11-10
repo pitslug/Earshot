@@ -1,7 +1,8 @@
 // Settings, Dictionary (T12.15a; the owner, 2026-11-10: its own page, after Summaries): the
 // user's own words, such as names, acronyms and company or site names, given to every summary
-// request so the summary spells them right (`earshot_runtime::vocabulary`). A list of words,
-// each with its own Delete, and an Add field; both apply at once (docs/ui-design.md
+// request so the summary spells them right (`earshot_runtime::vocabulary`). An Add field above
+// the words in alphabetical order (the owner, 2026-11-11: a long list never pushes Add off the
+// page), each word with its own Delete; both apply at once (docs/ui-design.md
 // "Settings"). Transcripts do not use the words yet (T12.15b).
 
 import {
@@ -81,6 +82,12 @@ export const DICTIONARY_INTRO =
 /** The Add field's label. */
 export const ADD_LABEL = "Add a word";
 
+/** The words as the page lists them: alphabetical, ignoring case and accents (the stored order,
+ * which every summary prompt uses, is unchanged). */
+export function sortedWords(words: readonly string[]): string[] {
+  return [...words].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }) || (a < b ? -1 : 1));
+}
+
 /** The Dictionary page. */
 export function DictionaryPage() {
   const styles = useStyles();
@@ -117,33 +124,6 @@ export function DictionaryPage() {
                 </MessageBarBody>
               </MessageBar>
             )}
-            {load.view.words.length === 0 ? (
-              <Caption1 className={styles.muted}>No words yet.</Caption1>
-            ) : (
-              <ul className={styles.list} aria-label="Your words">
-                {load.view.words.map((word) => (
-                  <li key={word} className={styles.word}>
-                    <Body1>{word}</Body1>
-                    <Button
-                      size="small"
-                      aria-label={`Delete ${word}`}
-                      disabled={state.busy}
-                      onClick={() => void state.remove(word)}
-                    >
-                      Delete
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {state.deleteError !== null && (
-              <MessageBar intent="error">
-                <MessageBarBody>
-                  <MessageBarTitle>The word could not be deleted</MessageBarTitle>
-                  {state.deleteError}
-                </MessageBarBody>
-              </MessageBar>
-            )}
             <form
               aria-label={ADD_LABEL}
               onSubmit={(e) => {
@@ -170,6 +150,33 @@ export function DictionaryPage() {
                 </div>
               </Field>
             </form>
+            {load.view.words.length === 0 ? (
+              <Caption1 className={styles.muted}>No words yet.</Caption1>
+            ) : (
+              <ul className={styles.list} aria-label="Your words">
+                {sortedWords(load.view.words).map((word) => (
+                  <li key={word} className={styles.word}>
+                    <Body1>{word}</Body1>
+                    <Button
+                      size="small"
+                      aria-label={`Delete ${word}`}
+                      disabled={state.busy}
+                      onClick={() => void state.remove(word)}
+                    >
+                      Delete
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {state.deleteError !== null && (
+              <MessageBar intent="error">
+                <MessageBarBody>
+                  <MessageBarTitle>The word could not be deleted</MessageBarTitle>
+                  {state.deleteError}
+                </MessageBarBody>
+              </MessageBar>
+            )}
           </>
         )}
       </section>
