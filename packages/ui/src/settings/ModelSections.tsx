@@ -246,8 +246,9 @@ export function NpuVersions({ state, data }: { state: ModelsPageState; data: Mod
   );
 }
 
-/** What every meeting needs, the transcription choices with the check, and the summary models:
- * the first-run wizard's "Choose different models", all in one place. */
+/** What every meeting needs, the transcription choices with the check, the NPU versions where
+ * the build offers them, and the summary models: the first-run wizard's "Choose different
+ * models", all in one place. */
 export function ModelChoices({ state, data }: { state: ModelsPageState; data: ModelsData }) {
   return (
     <>
@@ -256,6 +257,7 @@ export function ModelChoices({ state, data }: { state: ModelsPageState; data: Mo
         <TranscriptionChoices state={state} data={data} />
         <CheckSection state={state} data={data} />
       </Section>
+      <NpuVersions state={state} data={data} />
       <Section title="Summaries on this computer">
         <SummaryModelChoices state={state} data={data} />
       </Section>

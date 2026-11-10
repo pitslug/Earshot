@@ -376,6 +376,24 @@ describe("First run wizard", () => {
       await screen.findByText(/for this computer: Speech helpers and Qwen 3\.5 4B\.$/);
     });
 
+    it("offers the NPU versions in the full list on an ARM64 computer, and fetches one", async () => {
+      const s = setup(CLEAN);
+      const start = vi.spyOn(s.ipc, "startDownload");
+      await toStep(s, 1);
+      await s.user.click(await screen.findByRole("button", { name: "Choose different models" }));
+      const npu = await screen.findByRole("region", { name: "NPU versions" });
+      await s.user.click(within(npu).getByRole("button", { name: /^Download Parakeet 0\.6B v2 \(NPU version\)/ }));
+      await waitFor(() => expect(start.mock.calls.map(([m]) => m)).toEqual(["parakeet-tdt-0.6b-v2-npu"]));
+    });
+
+    it("has no NPU versions on a computer without them", async () => {
+      const s = setup({ ...CLEAN, machine: "desktop" });
+      await toStep(s, 1);
+      await s.user.click(await screen.findByRole("button", { name: "Choose different models" }));
+      await screen.findByRole("region", { name: "What every meeting needs" });
+      expect(screen.queryByRole("region", { name: "NPU versions" })).toBeNull();
+    });
+
     it("follows a model chosen from the full list", async () => {
       const s = setup(CLEAN);
       await toStep(s, 1);
