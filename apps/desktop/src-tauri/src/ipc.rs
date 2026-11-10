@@ -46,6 +46,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             set_compact,
             set_window_theme,
             get_meeting,
+            rename_meeting,
+            edit_segment,
             rename_speaker,
             merge_speakers,
             link_speaker,
@@ -573,6 +575,41 @@ async fn rename_speaker(
     let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
     blocking(move || {
         earshot_runtime::edit::rename_speaker(&services, meeting, speaker, &name)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Gives `meeting` a new title (empty: untitled).
+#[tauri::command]
+#[specta::specta]
+async fn rename_meeting(
+    state: State<'_, AppState>,
+    meeting: String,
+    title: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let meeting = parse_id(&meeting)?;
+    blocking(move || {
+        earshot_runtime::edit::rename_meeting(&services, meeting, &title)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Replaces the text of one line of `meeting`'s final transcript (T12.16).
+#[tauri::command]
+#[specta::specta]
+async fn edit_segment(
+    state: State<'_, AppState>,
+    meeting: String,
+    segment: String,
+    text: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
+    blocking(move || {
+        earshot_runtime::edit::edit_segment(&services, meeting, segment, &text)?;
         Ok(())
     })
     .await

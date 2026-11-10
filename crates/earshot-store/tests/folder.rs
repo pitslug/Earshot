@@ -107,8 +107,9 @@ fn store_folder_schema_v1_database_migrates_to_no_folders() {
 
     let before = {
         let store = Store::open(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 2);
-        assert_eq!(SCHEMA_VERSION, 2);
+        // Migrated through folders (2) to the current schema (3 adds segment edit marks).
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        const { assert!(SCHEMA_VERSION >= 2) };
         let meetings = store.meetings().unwrap();
         assert_eq!(meetings.len(), 2, "{meetings:?}");
         assert!(
@@ -124,7 +125,7 @@ fn store_folder_schema_v1_database_migrates_to_no_folders() {
         assert!(store.folders().unwrap().is_empty(), "nothing is backfilled");
         meetings
     };
-    assert_eq!(user_version(&path), 2);
+    assert_eq!(user_version(&path), SCHEMA_VERSION);
     assert!(columns(&path, "meeting").contains(&"folder_id".to_owned()));
     assert_eq!(
         columns(&path, "folder").last().map(String::as_str),
@@ -133,7 +134,7 @@ fn store_folder_schema_v1_database_migrates_to_no_folders() {
 
     // Reopening changes nothing.
     let mut store = Store::open(&path).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 2);
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     assert_eq!(store.meetings().unwrap(), before);
 
     // A migrated meeting can be filed.
@@ -232,12 +233,12 @@ fn store_folder_two_connections_opening_one_v1_database_both_migrate_it_once() {
         .collect();
     let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
     for (version, meetings) in &results {
-        assert_eq!(*version, 2);
+        assert_eq!(*version, SCHEMA_VERSION);
         assert_eq!(meetings.len(), 2, "{meetings:?}");
         assert!(meetings.iter().all(|m| m.folder_id.is_none()));
     }
     assert_eq!(results[0].1, results[1].1);
-    assert_eq!(user_version(&path), 2);
+    assert_eq!(user_version(&path), SCHEMA_VERSION);
     assert_eq!(
         columns(&path, "meeting")
             .iter()

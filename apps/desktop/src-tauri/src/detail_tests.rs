@@ -379,6 +379,49 @@ fn detail_a_summary_citing_a_replaced_segment_is_stale_and_shows_it_unavailable(
 }
 
 #[test]
+fn detail_an_edited_title_and_line_show_and_mark_an_older_summary_out_of_date() {
+    let dir = TempDir::new("detail-text-edit");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 40);
+    put_summary(&svc, f.meeting, vec![f.segments[2]], vec![], false, 41);
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(!d.summary_stale);
+    assert!(d.transcript.iter().all(|r| !r.edited));
+
+    edit::rename_meeting(&svc, f.meeting, "Supplier review").unwrap();
+    edit::edit_segment(
+        &svc,
+        f.meeting,
+        f.segments[2],
+        "yes, that works for both of us",
+    )
+    .unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.header.title, "Supplier review");
+    let row = &d.transcript[2];
+    assert_eq!(row.segment_id, f.segments[2].to_string());
+    assert_eq!(row.text, "yes, that works for both of us");
+    assert!(row.edited);
+    assert_eq!(d.transcript.iter().filter(|r| r.edited).count(), 1);
+    // The summary still finds the line it cites, but was written from the old words.
+    let c = &d.summary.as_ref().unwrap().decisions[0].citations;
+    assert_eq!(c[0].row, Some(2));
+    assert!(d.summary_stale);
+    // Refusals arrive as user copy.
+    let e: IpcError = edit::edit_segment(&svc, f.meeting, f.segments[2], " ")
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "invalid_text");
+    let e: IpcError = edit::rename_meeting(
+        &svc, f.meeting, "one
+two",
+    )
+    .unwrap_err()
+    .into();
+    assert_eq!(e.kind, "invalid_title");
+}
+
+#[test]
 fn detail_can_undo_only_with_a_restorable_previous_summary() {
     let dir = TempDir::new("detail-undo");
     let svc = services(&dir);
@@ -619,6 +662,23 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::FolderNotFound(id), "folder_not_found"),
         (EditError::FolderNameTaken(id), "folder_name_taken"),
         (EditError::MeetingRecording(id), "meeting_recording"),
+        (EditError::InvalidTitle(TextProblem::Empty), "invalid_title"),
+        (
+            EditError::InvalidTitle(TextProblem::TooLong),
+            "invalid_title",
+        ),
+        (
+            EditError::InvalidTitle(TextProblem::ControlCharacter),
+            "invalid_title",
+        ),
+        (EditError::InvalidText(TextProblem::Empty), "invalid_text"),
+        (EditError::InvalidText(TextProblem::TooLong), "invalid_text"),
+        (
+            EditError::InvalidText(TextProblem::ControlCharacter),
+            "invalid_text",
+        ),
+        (EditError::SegmentNotFound(id), "segment_not_found"),
+        (EditError::DraftTranscript(id), "draft_transcript"),
     ];
     for (e, kind) in all {
         let ipc = IpcError::from(RuntimeError::Edit(e.clone()));

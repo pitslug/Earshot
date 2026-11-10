@@ -9,8 +9,8 @@ use crate::asr::{MeetingTime, Segment};
 use crate::capture::TrackId;
 use crate::diar::SpeakerRole;
 use crate::identity::{
-    Clock, DeviceId, EntityId, Hlc, NeverSyncClass, SyncClass, SyncMeta, SyncSerialize,
-    SyncableClass,
+    Clock, DeviceId, EntityId, Hlc, HlcTimestamp, NeverSyncClass, SyncClass, SyncMeta,
+    SyncSerialize, SyncableClass,
 };
 use crate::prompt::Template;
 use crate::summary::{SUMMARY_SCHEMA_VERSION, SummaryV1};
@@ -247,6 +247,15 @@ pub struct SegmentRow {
     pub pass: TranscriptPass,
     /// The segment; `segment.id` is the row id.
     pub segment: Segment,
+    /// When the user last changed this segment's text (T12.16); `None` for text exactly as
+    /// the recogniser wrote it. An edited segment keeps its id, track, start and end (so
+    /// summary citations still find it and its audio is the same stretch) and has no words:
+    /// per-word times described the recogniser's words, which the user's text no longer is,
+    /// so they are dropped rather than kept beside text they do not match. `confidence`
+    /// stays the recogniser's for the replaced text. A re-transcription keeps an edited
+    /// segment (`earshot_runtime::post`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_edited_at: Option<HlcTimestamp>,
 }
 
 impl SyncClass for SegmentRow {
@@ -277,6 +286,7 @@ impl SegmentRow {
             meeting_id,
             pass,
             segment,
+            text_edited_at: None,
         }
     }
 }

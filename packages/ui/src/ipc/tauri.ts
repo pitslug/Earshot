@@ -39,6 +39,12 @@ export function createTauriIpc(): Ipc {
       unwrap(await commands.setWindowTheme(theme));
     },
     getMeeting: async (meeting) => unwrap(await commands.getMeeting(meeting)),
+    renameMeeting: async (meeting, title) => {
+      unwrap(await commands.renameMeeting(meeting, title));
+    },
+    editSegment: async (meeting, segment, text) => {
+      unwrap(await commands.editSegment(meeting, segment, text));
+    },
     renameSpeaker: async (meeting, speaker, name) => {
       unwrap(await commands.renameSpeaker(meeting, speaker, name));
     },

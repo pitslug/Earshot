@@ -16,7 +16,9 @@ use earshot_core::identity::EntityId;
 use earshot_core::model::{AudioFileRepo, Speaker, TranscriptPass};
 use earshot_core::summary::SummaryV1;
 use earshot_runtime::backends::pass_backend;
-use earshot_runtime::edit::{self, EditError, NameProblem, PersonChoice, PersonInfo, Remembered};
+use earshot_runtime::edit::{
+    self, EditError, NameProblem, PersonChoice, PersonInfo, Remembered, TextProblem,
+};
 use earshot_runtime::identities::{SpeakerIdentity, StoredIdentities, decode};
 use earshot_runtime::view::MeetingView;
 use earshot_runtime::{RuntimeError, Services, os_seeded_rng};
@@ -125,6 +127,9 @@ pub struct TranscriptRow {
     pub track: RowTrack,
     /// The text.
     pub text: String,
+    /// The user edited the text (T12.16): it is kept by a re-transcription, and it has no
+    /// per-word times.
+    pub edited: bool,
 }
 
 /// Whether a speaker is the user.
@@ -219,7 +224,9 @@ pub struct MeetingDetail {
     pub speakers: Vec<SpeakerCard>,
     /// The previous summary can be restored ("Switch to previous summary").
     pub can_undo_summary: bool,
-    /// The current summary cites segments the transcript no longer has.
+    /// The current summary no longer matches the transcript
+    /// (`MeetingView::summary_out_of_date`): it cites segments the transcript no longer has,
+    /// or the user edited the transcript's text after it was written (T12.16).
     pub summary_stale: bool,
     /// At least one track's recording is still kept: re-transcription and speaker samples
     /// need it (T7.4k: audio retention deletes recordings, everything else stays).
@@ -382,6 +389,34 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "meeting_recording",
             "A meeting can be moved to a folder once it has finished recording.",
         ),
+        // Title and transcript text (T12.16).
+        EditError::InvalidTitle(TextProblem::TooLong) => {
+            err("invalid_title", "Titles can be up to 200 characters long.")
+        }
+        EditError::InvalidTitle(TextProblem::ControlCharacter) => err(
+            "invalid_title",
+            "Titles cannot contain line breaks or tabs.",
+        ),
+        // An empty title is allowed; kept for exhaustiveness.
+        EditError::InvalidTitle(TextProblem::Empty) => err("invalid_title", "Enter a title."),
+        EditError::InvalidText(TextProblem::Empty) => err(
+            "invalid_text",
+            "Enter the words of this line. A line cannot be left empty.",
+        ),
+        EditError::InvalidText(TextProblem::TooLong) => {
+            err("invalid_text", "A line can be up to 5,000 characters long.")
+        }
+        EditError::InvalidText(TextProblem::ControlCharacter) => {
+            err("invalid_text", "A line cannot contain line breaks or tabs.")
+        }
+        EditError::SegmentNotFound(_) => err(
+            "segment_not_found",
+            "This line is no longer in the transcript. It may have been transcribed again.",
+        ),
+        EditError::DraftTranscript(_) => err(
+            "draft_transcript",
+            "The words can be corrected once the final transcript is ready.",
+        ),
     }
 }
 
@@ -446,20 +481,6 @@ fn summary_view(s: &SummaryV1, rows: &BTreeMap<EntityId, u32>) -> SummaryView {
             .collect(),
         open_questions: s.open_questions.clone(),
     }
-}
-
-fn is_stale(s: &SummaryView) -> bool {
-    s.decisions
-        .iter()
-        .flat_map(|d| &d.citations)
-        .chain(s.actions.iter().flat_map(|a| &a.citations))
-        .chain(
-            s.notes
-                .iter()
-                .flat_map(|n| &n.bullets)
-                .flat_map(|b| &b.citations),
-        )
-        .any(|c| c.row.is_none())
 }
 
 /// The first [`SAMPLE_LINE_CHARS`] of `text`, cut at a word, with "..." when cut.
@@ -626,6 +647,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             speaker: view.speaker_name(s),
             track: track_of(s),
             text: s.text.clone(),
+            edited: view.edited.contains_key(&s.id),
         })
         .collect();
     let rows: BTreeMap<EntityId, u32> = view
@@ -638,7 +660,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         .summary
         .as_ref()
         .map(|s| summary_view(&s.summary, &rows));
-    let summary_stale = summary.as_ref().is_some_and(is_stale);
+    let summary_stale = view.summary_out_of_date();
     let can_undo_summary = history.previous.is_some_and(|p| p.restorable);
     Ok(MeetingDetail {
         id: meeting.to_string(),

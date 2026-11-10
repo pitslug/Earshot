@@ -198,6 +198,96 @@ describe("MeetingDetailView", () => {
     expect(calls).toContainEqual(["resummarise", ITEM.id]);
   });
 
+  describe("editing the title and the transcript (T12.16)", () => {
+    const LINE_1 = "So the lead time on the second pump set is now looking like eleven weeks.";
+
+    it("renames the meeting with Enter and keeps the old title on Escape", async () => {
+      const { user, calls } = await setup();
+      await user.click(await screen.findByRole("button", { name: "Rename" }));
+      const field = screen.getByRole("textbox", { name: "Meeting title" });
+      expect(field).toHaveValue(ITEM.title);
+      expect(field).toHaveFocus();
+      await user.clear(field);
+      await user.type(field, "Pump order follow-up{Escape}");
+      expect(screen.queryByRole("textbox", { name: "Meeting title" })).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 1, name: ITEM.title })).toBeInTheDocument();
+      expect(calls.some((c) => c[0] === "renameMeeting")).toBe(false);
+
+      await user.click(screen.getByRole("button", { name: "Rename" }));
+      const again = screen.getByRole("textbox", { name: "Meeting title" });
+      await user.clear(again);
+      await user.type(again, "  Pump order follow-up {Enter}");
+      expect(await screen.findByRole("heading", { level: 1, name: "Pump order follow-up" })).toBeInTheDocument();
+      expect(calls).toContainEqual(["renameMeeting", ITEM.id, "  Pump order follow-up "]);
+      expect(screen.queryByRole("textbox", { name: "Meeting title" })).not.toBeInTheDocument();
+    });
+
+    it("keeps the title editor open with the refusal when the title is refused", async () => {
+      const { user } = await setup();
+      await user.click(await screen.findByRole("button", { name: "Rename" }));
+      const field = screen.getByRole("textbox", { name: "Meeting title" });
+      await user.clear(field);
+      await user.type(field, "x".repeat(201));
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(await screen.findByText("Titles can be up to 200 characters long.")).toBeInTheDocument();
+      expect(screen.getByText("The title was not saved")).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "Meeting title" })).toBeInTheDocument();
+    });
+
+    it("corrects a line with Save, marks it edited and the summary out of date", async () => {
+      const { user, calls } = await setup();
+      await user.click(await screen.findByRole("tab", { name: "Transcript" }));
+      expect(screen.queryByText(/refers to lines of an earlier transcript/)).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Edit line 1" }));
+      const field = screen.getByRole("textbox", { name: "Line 1" });
+      expect(field).toHaveValue(LINE_1);
+      expect(field).toHaveFocus();
+      await user.clear(field);
+      await user.type(field, "So the lead time on the second pump set is now about eleven weeks.");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      const row = (await screen.findByText(/now about eleven weeks/)).closest('[role="row"]');
+      if (!(row instanceof HTMLElement)) throw new Error("no row");
+      expect(within(row).getByText("(edited)")).toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: "Line 1" })).not.toBeInTheDocument();
+      expect(calls).toContainEqual([
+        "editSegment",
+        ITEM.id,
+        sampleDetail(ITEM).transcript[0].segment_id,
+        "So the lead time on the second pump set is now about eleven weeks.",
+      ]);
+      // Nothing is summarised by itself: the summary says it is out of date.
+      expect(calls.some((c) => c[0] === "resummarise")).toBe(false);
+      await user.click(screen.getByRole("tab", { name: "Summary" }));
+      expect(screen.getByText(/refers to lines of an earlier transcript/)).toBeInTheDocument();
+    });
+
+    it("cancels a line with Escape and keeps it open on a refusal", async () => {
+      const { user, calls } = await setup();
+      await user.click(await screen.findByRole("tab", { name: "Transcript" }));
+      await user.click(screen.getByRole("button", { name: "Edit line 2" }));
+      await user.type(screen.getByRole("textbox", { name: "Line 2" }), " Really.{Escape}");
+      expect(screen.queryByRole("textbox", { name: "Line 2" })).not.toBeInTheDocument();
+      expect(calls.some((c) => c[0] === "editSegment")).toBe(false);
+
+      await user.click(screen.getByRole("button", { name: "Edit line 2" }));
+      await user.clear(screen.getByRole("textbox", { name: "Line 2" }));
+      await user.keyboard("{Enter}");
+      expect(await screen.findByText(/A line cannot be left empty/)).toBeInTheDocument();
+      expect(screen.getByText("The line was not saved")).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "Line 2" })).toBeInTheDocument();
+    });
+
+    it("offers no line edit on a draft transcript", async () => {
+      const base = sampleDetail(ITEM);
+      const draft = { ...base, header: { ...base.header, transcript: "Draft" as const } };
+      const { user } = await setup({ details: { [ITEM.id]: draft } });
+      await user.click(await screen.findByRole("tab", { name: "Transcript" }));
+      expect(screen.getByText(LINE_1)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Edit line/ })).not.toBeInTheDocument();
+    });
+  });
+
   describe("Copy summary", () => {
     /** A `navigator.clipboard` whose `writeText` records its text, or does what `write` says.
      * Installed after `setup`, which brings user-event's own clipboard stub. */

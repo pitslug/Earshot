@@ -94,6 +94,7 @@ export function transcriptOf(lines: typeof LINES, speakers: SpeakerCard[]): Tran
       speaker: card?.name ?? NAMES[who],
       track: who === "me" ? "You" : "Them",
       text,
+      edited: false,
     };
   });
 }

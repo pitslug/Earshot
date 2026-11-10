@@ -221,6 +221,11 @@ export interface IpcCommands
   setWindowTheme(theme: WindowTheme | null): Promise<void>;
   /** Everything the meeting detail screen shows. Rejects with `meeting_not_found`. */
   getMeeting(meeting: string): Promise<MeetingDetail>;
+  /** Gives the meeting a new title ("" makes it untitled). Rejects with `invalid_title`. */
+  renameMeeting(meeting: string, title: string): Promise<void>;
+  /** Replaces the text of one line of the final transcript; the line keeps its id and times.
+   * Rejects with `invalid_text`, `segment_not_found` or `draft_transcript`. */
+  editSegment(meeting: string, segment: string, text: string): Promise<void>;
   /** Renames a speaker. Rejects with an edit refusal (`invalid_name`, ...). */
   renameSpeaker(meeting: string, speaker: string, name: string): Promise<void>;
   /** Merges speaker `merge` into `keep`. */

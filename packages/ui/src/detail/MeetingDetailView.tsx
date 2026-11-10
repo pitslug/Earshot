@@ -9,6 +9,7 @@ import {
   Button,
   Caption1,
   CompoundButton,
+  Input,
   Link,
   MessageBar,
   MessageBarActions,
@@ -18,12 +19,13 @@ import {
   Subtitle2,
   Tab,
   TabList,
+  Textarea,
   Title2,
   makeStyles,
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type Citation,
@@ -91,6 +93,25 @@ const useStyles = makeStyles({
   heading: {
     margin: 0,
     overflowWrap: "anywhere",
+  },
+  titleLine: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: tokens.spacingHorizontalS,
+    minWidth: 0,
+  },
+  // The title and transcript editors (T12.16): the field, then Save and Cancel.
+  editor: {
+    display: "flex",
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+    gap: tokens.spacingHorizontalS,
+    minWidth: 0,
+  },
+  field: {
+    flexGrow: 1,
+    minWidth: "200px",
   },
   headerButtons: {
     display: "flex",
@@ -163,7 +184,7 @@ const useStyles = makeStyles({
   },
   row: {
     display: "grid",
-    gridTemplateColumns: "56px 120px minmax(0, 1fr)",
+    gridTemplateColumns: "56px 120px minmax(0, 1fr) auto",
     columnGap: tokens.spacingHorizontalM,
     alignItems: "baseline",
     paddingTop: tokens.spacingVerticalXS,
@@ -171,6 +192,16 @@ const useStyles = makeStyles({
     paddingLeft: tokens.spacingHorizontalS,
     paddingRight: tokens.spacingHorizontalS,
     borderRadius: tokens.borderRadiusMedium,
+    // The Edit button shows on hover and whenever the row holds focus (T12.16).
+    ":hover .earshot-line-edit": { opacity: 1 },
+    ":focus-within .earshot-line-edit": { opacity: 1 },
+  },
+  lineEdit: {
+    opacity: 0,
+  },
+  editedMark: {
+    marginLeft: tokens.spacingHorizontalXS,
+    color: tokens.colorNeutralForeground3,
   },
   rowCited: {
     backgroundColor: tokens.colorBrandBackground2,
@@ -304,6 +335,7 @@ export function MeetingDetailView({
   const [cited, setCited] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [noAudio, setNoAudio] = useState<Set<string>>(new Set());
+  const [editingTitle, setEditingTitle] = useState(false);
   const rows = useRef(new Map<string, HTMLDivElement>());
   const nameField = useRef<HTMLInputElement | null>(null);
   const view = useRef<HTMLElement | null>(null);
@@ -359,6 +391,20 @@ export function MeetingDetailView({
     } catch (e) {
       setNotice({ key: "edit", intent: "error", title: failTitle, text: failureText(e) });
     }
+  };
+
+  /** Saves a typed edit (T12.16); false when it was refused, so the editor stays open. */
+  const save = async (f: () => Promise<unknown>, failTitle: string): Promise<boolean> => {
+    try {
+      await f();
+    } catch (e) {
+      setNotice({ key: "edit", intent: "error", title: failTitle, text: failureText(e) });
+      return false;
+    }
+    setNotice((n) => (n?.key === "edit" ? null : n));
+    await reload();
+    onChanged();
+    return true;
   };
 
   const openCitation = (c: Citation) => {
@@ -421,9 +467,30 @@ export function MeetingDetailView({
       <div className={styles.pinned}>
         <div className={styles.header}>
           <div className={styles.headerText}>
-            <Title2 as="h1" className={styles.heading}>
-              {title}
-            </Title2>
+            {editingTitle && detail !== null ? (
+              <TextEditor
+                label="Meeting title"
+                initial={detail.header.title}
+                multiline={false}
+                onSave={async (text) => {
+                  if (await save(() => ipc.renameMeeting(id, text), "The title was not saved")) {
+                    setEditingTitle(false);
+                  }
+                }}
+                onCancel={() => setEditingTitle(false)}
+              />
+            ) : (
+              <div className={styles.titleLine}>
+                <Title2 as="h1" className={styles.heading}>
+                  {title}
+                </Title2>
+                {detail !== null && (
+                  <Button size="small" appearance="subtle" onClick={() => setEditingTitle(true)}>
+                    Rename
+                  </Button>
+                )}
+              </div>
+            )}
             {detail !== null && <Caption1 className={styles.muted}>{headerLine(detail)}</Caption1>}
           </div>
           <div className={styles.headerButtons}>
@@ -536,6 +603,9 @@ export function MeetingDetailView({
                 <TranscriptTab
                   detail={detail}
                   cited={cited}
+                  onEdit={(segment, text) =>
+                    save(() => ipc.editSegment(id, segment, text), "The line was not saved")
+                  }
                   rowRef={(segment, el) => {
                     if (el) rows.current.set(segment, el);
                     else rows.current.delete(segment);
@@ -786,22 +856,97 @@ function SummaryTab({
   );
 }
 
+/** A typed text with Save and Cancel (T12.16): Enter saves, Escape cancels. A title or a
+ * transcript line holds no line break, so Enter never adds one. */
+function TextEditor({
+  label,
+  initial,
+  multiline,
+  onSave,
+  onCancel,
+}: {
+  label: string;
+  initial: string;
+  multiline: boolean;
+  onSave(text: string): Promise<void>;
+  onCancel(): void;
+}) {
+  const styles = useStyles();
+  const [text, setText] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await onSave(text);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void submit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      onCancel();
+    }
+  };
+  return (
+    <div className={styles.editor}>
+      {multiline ? (
+        <Textarea
+          className={styles.field}
+          aria-label={label}
+          value={text}
+          resize="vertical"
+          autoFocus
+          onChange={(_, d) => setText(d.value)}
+          onKeyDown={onKeyDown}
+        />
+      ) : (
+        <Input
+          className={styles.field}
+          aria-label={label}
+          value={text}
+          autoFocus
+          onChange={(_, d) => setText(d.value)}
+          onKeyDown={onKeyDown}
+        />
+      )}
+      <Button appearance="primary" disabled={saving} onClick={() => void submit()}>
+        Save
+      </Button>
+      <Button disabled={saving} onClick={onCancel}>
+        Cancel
+      </Button>
+    </div>
+  );
+}
+
 function TranscriptTab({
   detail,
   cited,
+  onEdit,
   rowRef,
 }: {
   detail: MeetingDetail;
   cited: string | null;
+  /** Saves a line's new text; false when it was refused. */
+  onEdit(segment: string, text: string): Promise<boolean>;
   rowRef(segment: string, el: HTMLDivElement | null): void;
 }) {
   const styles = useStyles();
+  const [editing, setEditing] = useState<string | null>(null);
+  // Only the final transcript can be corrected: the final pass replaces a draft.
+  const canEdit = detail.header.transcript === "Final";
   if (detail.transcript.length === 0) {
     return <Body1 className={styles.muted}>No speech was transcribed in this meeting.</Body1>;
   }
   return (
     <div role="table" aria-label="Transcript" className={styles.transcript}>
-      {detail.transcript.map((r) => (
+      {detail.transcript.map((r, i) => (
         <div
           role="row"
           key={r.segment_id}
@@ -815,9 +960,38 @@ function TranscriptTab({
           <Body1Strong role="cell" className={styles.speaker}>
             {r.speaker}
           </Body1Strong>
-          <Body1 role="cell" className={styles.text}>
-            {r.text}
-          </Body1>
+          {editing === r.segment_id ? (
+            <div role="cell" className={styles.text}>
+              <TextEditor
+                label={`Line ${i + 1}`}
+                initial={r.text}
+                multiline
+                onSave={async (text) => {
+                  if (await onEdit(r.segment_id, text)) setEditing(null);
+                }}
+                onCancel={() => setEditing(null)}
+              />
+            </div>
+          ) : (
+            <Body1 role="cell" className={styles.text}>
+              {r.text}
+              {r.edited && <Caption1 className={styles.editedMark}>(edited)</Caption1>}
+            </Body1>
+          )}
+          {/* Not a cell: a row's cells are its time, speaker and words. */}
+          <span>
+            {canEdit && editing !== r.segment_id && (
+              <Button
+                size="small"
+                appearance="subtle"
+                className={mergeClasses(styles.lineEdit, "earshot-line-edit")}
+                aria-label={`Edit line ${i + 1}`}
+                onClick={() => setEditing(r.segment_id)}
+              >
+                Edit
+              </Button>
+            )}
+          </span>
         </div>
       ))}
     </div>

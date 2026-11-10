@@ -52,6 +52,10 @@ export const commands = {
 "dark" | null) => typedError<null, IpcError>(__TAURI_INVOKE("set_window_theme", { theme })),
 	/**  Everything the meeting detail screen shows of `meeting`. */
 	getMeeting: (meeting: string) => typedError<MeetingDetail, IpcError>(__TAURI_INVOKE("get_meeting", { meeting })),
+	/**  Gives `meeting` a new title (empty: untitled). */
+	renameMeeting: (meeting: string, title: string) => typedError<null, IpcError>(__TAURI_INVOKE("rename_meeting", { meeting, title })),
+	/**  Replaces the text of one line of `meeting`'s final transcript (T12.16). */
+	editSegment: (meeting: string, segment: string, text: string) => typedError<null, IpcError>(__TAURI_INVOKE("edit_segment", { meeting, segment, text })),
 	/**  Renames a speaker of `meeting`. */
 	renameSpeaker: (meeting: string, speaker: string, name: string) => typedError<null, IpcError>(__TAURI_INVOKE("rename_speaker", { meeting, speaker, name })),
 	/**  Merges speaker `merge` into `keep`. */
@@ -1036,7 +1040,11 @@ export type MeetingDetail = {
 	speakers: SpeakerCard[],
 	/**  The previous summary can be restored ("Switch to previous summary"). */
 	can_undo_summary: boolean,
-	/**  The current summary cites segments the transcript no longer has. */
+	/**
+	 *  The current summary no longer matches the transcript
+	 *  (`MeetingView::summary_out_of_date`): it cites segments the transcript no longer has,
+	 *  or the user edited the transcript's text after it was written (T12.16).
+	 */
 	summary_stale: boolean,
 	/**
 	 *  At least one track's recording is still kept: re-transcription and speaker samples
@@ -1824,6 +1832,11 @@ export type TranscriptRow = {
 	track: RowTrack,
 	/**  The text. */
 	text: string,
+	/**
+	 *  The user edited the text (T12.16): it is kept by a re-transcription, and it has no
+	 *  per-word times.
+	 */
+	edited: boolean,
 };
 
 /**  Where the live transcript is, for the banner at the top of the meeting's transcript. */
