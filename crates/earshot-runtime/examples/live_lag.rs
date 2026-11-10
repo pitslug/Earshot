@@ -8,6 +8,8 @@
 //!     [--window <s>] [--interval <s>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root> --memory
 //!     [--backend cpu|cuda|qnn] [--card-memory-gib <n>] [--out <file.json>]
+//! cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- <repo-root>
+//!     --backend cuda --contention alone|own|shared [--audio bundled|continuous] [--out <file.json>]
 //! ```
 //!
 //! `--backend qnn` needs an ARM64 build with `--features qnn` (the NPU, T12.4). The app refuses
@@ -27,6 +29,12 @@
 //! transcription runs where `--backend` asks and the card's real memory is untouched. The report
 //! records it (`simulated_card_gib`). With `--memory` the two preview sessions load where the rule
 //! puts them on that machine (Everyone), not past the refusal.
+//!
+//! `--contention alone|own|shared` (evaluation only, T12.3b, CUDA) replays nothing: it times a
+//! track's real decodes of the reference track while previews run at the app's cadence on another
+//! thread, with no preview (`alone`), the preview on its own session (`own`, today) or borrowing
+//! the track's encoder through `backends::load_preview_sharing_encoder` (`shared`). It reports
+//! every real decode's time, its wait for the shared encoder's lock and a hash of its words.
 //!
 //! Audio (public only): `bundled` is the Settings benchmark's meeting (AMI ES2004a, two tracks);
 //! `continuous` is `fixtures/smoke` joined with 200 ms gaps on the reference track, the mic
@@ -109,6 +117,9 @@ struct Args {
     /// Evaluation only (T12.3c): the preview rule reads a graphics card of this many GiB
     /// ([`simulated_machine`]), through `backends::load_preview_on_hardware`.
     card_memory_gib: Option<u64>,
+    /// Evaluation only (T12.3b): measure real decodes beside previews instead of replaying
+    /// ([`contention_report`]).
+    contention: Option<Contention>,
 }
 
 fn parse_args() -> Args {
@@ -134,6 +145,7 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         interval: None,
         force_previews: false,
         card_memory_gib: None,
+        contention: None,
     };
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -174,6 +186,14 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
                 args.card_memory_gib = Some(gib);
             }
+            "--contention" => {
+                args.contention = Some(match value()?.as_str() {
+                    "alone" => Contention::Alone,
+                    "own" => Contention::Own,
+                    "shared" => Contention::Shared,
+                    other => return Err(format!("unknown --contention {other}")),
+                });
+            }
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -188,6 +208,19 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         return Err(
             "--card-memory-gib applies the app's rule to a simulated card; --force-previews skips \
              the rule: use one"
+                .to_owned(),
+        );
+    }
+    if args.contention.is_some()
+        && (args.memory
+            || args.previews.is_some()
+            || args.force_previews
+            || args.card_memory_gib.is_some()
+            || args.backend != BackendKind::Cuda)
+    {
+        return Err(
+            "--contention measures one CUDA track's decodes beside previews: it needs \
+             --backend cuda and no --memory, --previews, --force-previews or --card-memory-gib"
                 .to_owned(),
         );
     }
@@ -844,6 +877,251 @@ fn memory_report(
     })
 }
 
+/// The set-ups `--contention` compares (T12.3b, evaluation only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Contention {
+    /// The track's session alone: the reference times.
+    Alone,
+    /// Today: a preview on its own session, loaded as the app loads one.
+    Own,
+    /// The preview borrowing the track's encoder (`backends::load_preview_sharing_encoder`).
+    Shared,
+}
+
+/// Length of a track's real decode in `--contention` (a speech stretch's piece).
+const CONTENTION_PIECE_S: f64 = 15.0;
+/// Times the real decodes go over the audio after the untimed warm-up pass.
+const CONTENTION_PASSES: usize = 3;
+/// Pause between two real decodes, so previews fall between and during them.
+const CONTENTION_GAP: Duration = Duration::from_millis(500);
+/// The preview window and interval of the app (docs/live-previews.md, "What was chosen").
+const CONTENTION_WINDOW_S: f64 = 12.0;
+const CONTENTION_INTERVAL: Duration = Duration::from_secs(1);
+
+/// A decode that returns its words' hash and how long it waited for a shared encoder's lock.
+type ContentionDecode = Box<dyn FnMut(&MonoBuffer) -> (String, Vec<Duration>) + Send>;
+
+/// The words of a transcription (text and times), hashed: never the text itself.
+fn words_sha256(t: &Transcription) -> String {
+    let mut h = Sha256::new();
+    for w in t.segments.iter().flat_map(|s| s.words.iter()) {
+        h.update(w.text.as_bytes());
+        h.update(w.start.as_millis().to_le_bytes());
+        h.update(w.end.as_millis().to_le_bytes());
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn plain_decode(mut t: Box<dyn Transcriber + Send>) -> ContentionDecode {
+    let options = TranscribeOptions::live();
+    let cancel = CancelToken::new();
+    Box::new(move |audio| {
+        let words = t
+            .transcribe(audio, &options, &cancel)
+            .unwrap_or_else(|e| fail(e));
+        (words_sha256(&words), Vec::new())
+    })
+}
+
+fn sharing_decode(mut t: earshot_onnx::parakeet::ParakeetTdt) -> ContentionDecode {
+    let options = TranscribeOptions::live();
+    let cancel = CancelToken::new();
+    Box::new(move |audio| {
+        let words = t
+            .transcribe(audio, &options, &cancel)
+            .unwrap_or_else(|e| fail(e));
+        (words_sha256(&words), t.take_encoder_waits())
+    })
+}
+
+/// Evaluation only (T12.3b): how long a track's real decodes take while previews run at the app's
+/// cadence on another thread, with the preview on its own session (`own`), on the track's encoder
+/// (`shared`) or absent (`alone`). Real decodes are consecutive [`CONTENTION_PIECE_S`] pieces of
+/// `audio`, [`CONTENTION_PASSES`] times after an untimed warm-up pass, [`CONTENTION_GAP`] apart;
+/// previews decode a [`CONTENTION_WINDOW_S`] window moving 1 s at a time and wait the longer of
+/// [`CONTENTION_INTERVAL`] and their own decode. Counts, times and word hashes only.
+fn contention_report(
+    models: &ModelDir,
+    model: &str,
+    accel: Accelerator,
+    audio: &[f32],
+    setup: Contention,
+) -> Value {
+    let threads = earshot_runtime::backends::onnx_cpu_threads(
+        std::thread::available_parallelism().map_or(1, std::num::NonZero::get),
+        2,
+    );
+    let gib = |v: f64| v / 1024.0 / 1024.0 / 1024.0;
+    let memory = || host_reading().map(|r| json!({ "private_gib": gib(r.2) }));
+    let frames = |seconds: f64| (seconds * f64::from(PIPELINE_RATE.hz())) as usize;
+    let window = |start_s: f64, length_s: f64| {
+        let start = frames(start_s).min(audio.len());
+        let end = (start + frames(length_s)).min(audio.len());
+        MonoBuffer::new(PIPELINE_RATE, audio[start..end].to_vec())
+    };
+    let requested = BackendInfo {
+        kind: accel.backend(),
+        device: String::new(),
+        model: model.to_owned(),
+    };
+    let mut placements = serde_json::Map::new();
+    let mut encoder_users = None;
+    let began = Instant::now();
+    let (mut track, preview): (ContentionDecode, Option<ContentionDecode>) = match setup {
+        Contention::Alone | Contention::Own => {
+            let earshot_runtime::backends::AsrModel::Parakeet(parakeet) =
+                earshot_runtime::backends::asr_model(model).unwrap_or_else(|e| fail(e))
+            else {
+                fail("the contention report is for Parakeet")
+            };
+            let t =
+                earshot_runtime::backends::load_parakeet(models, parakeet, accel, Some(threads))
+                    .unwrap_or_else(|e| fail(e));
+            placements.insert(
+                "track".into(),
+                json!(
+                    t.backends()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                ),
+            );
+            let preview = (setup == Contention::Own).then(|| {
+                let p = load_preview_unrefused(models, &requested).unwrap_or_else(|e| fail(e));
+                placements.insert("preview".into(), json!(p.placement));
+                plain_decode(p.transcriber)
+            });
+            (plain_decode(Box::new(t)), preview)
+        }
+        Contention::Shared => {
+            let pair = earshot_runtime::backends::load_preview_sharing_encoder(
+                models,
+                model,
+                accel,
+                Some(threads),
+            )
+            .unwrap_or_else(|e| fail(e));
+            let names = |t: &earshot_onnx::parakeet::ParakeetTdt| {
+                t.backends()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            };
+            placements.insert("track".into(), json!(names(&pair.track)));
+            placements.insert("preview".into(), json!(names(&pair.preview)));
+            placements.insert(
+                "shared_encoder".into(),
+                json!(pair.encoder.backend().to_string()),
+            );
+            encoder_users = Some(pair.encoder.users());
+            (
+                sharing_decode(pair.track),
+                Some(sharing_decode(pair.preview)),
+            )
+        }
+    };
+    let load_s = began.elapsed().as_secs_f64();
+    let loaded_memory = memory();
+
+    // Point 2's fixed window: the preview's words for it against the track's.
+    let fixed = window(20.0, CONTENTION_WINDOW_S);
+    let (track_fixed, _) = track(&fixed);
+    let mut preview = preview;
+    let preview_fixed = preview.as_mut().map(|p| p(&fixed).0);
+
+    let length_s = audio.len() as f64 / f64::from(PIPELINE_RATE.hz());
+    let pieces: Vec<f64> = (0..)
+        .map(|k| f64::from(k) * CONTENTION_PIECE_S)
+        .take_while(|s| *s + 1.0 < length_s)
+        .collect();
+    // Warm-up: every piece length once, untimed (a CUDA session sets up per new input length).
+    for start in &pieces {
+        let _ = track(&window(*start, CONTENTION_PIECE_S));
+    }
+
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let preview_thread = preview.map(|mut p| {
+        let stop = Arc::clone(&stop);
+        let audio_windows: Vec<MonoBuffer> = (0..)
+            .map(f64::from)
+            .take_while(|s| *s + CONTENTION_WINDOW_S < length_s)
+            .map(|s| window(s, CONTENTION_WINDOW_S))
+            .collect();
+        std::thread::spawn(move || {
+            let mut took = Vec::new();
+            let mut waits = Vec::new();
+            let mut k = 0;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) && !audio_windows.is_empty() {
+                let began = Instant::now();
+                let (_, w) = p(&audio_windows[k % audio_windows.len()]);
+                let t = began.elapsed();
+                took.push(t.as_secs_f64());
+                waits.extend(w.iter().map(Duration::as_secs_f64));
+                k += 1;
+                std::thread::sleep(t.max(CONTENTION_INTERVAL));
+            }
+            (took, waits)
+        })
+    });
+
+    let mut decodes = Vec::new();
+    let (mut took_all, mut waited_all) = (Vec::new(), Vec::new());
+    for pass in 0..CONTENTION_PASSES {
+        for (piece, start) in pieces.iter().enumerate() {
+            let buffer = window(*start, CONTENTION_PIECE_S);
+            let began = Instant::now();
+            let (words, waits) = track(&buffer);
+            let took = began.elapsed().as_secs_f64();
+            let waited: f64 = waits.iter().map(Duration::as_secs_f64).sum();
+            took_all.push(took);
+            waited_all.push(waited);
+            decodes.push(json!({
+                "pass": pass,
+                "piece": piece,
+                "start_s": start,
+                "took_s": took,
+                "encoder_wait_s": waited,
+                "encoder_calls": waits.len(),
+                "words_sha256": words,
+            }));
+            std::thread::sleep(CONTENTION_GAP);
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let previews = preview_thread.map(|h| {
+        let (took, waits) = h
+            .join()
+            .unwrap_or_else(|_| fail("the preview thread panicked"));
+        json!({
+            "decodes": took.len(),
+            "took_s": spread(&took),
+            "encoder_wait_s": spread(&waits),
+        })
+    });
+    json!({
+        "contention": format!("{setup:?}").to_lowercase(),
+        "model": model,
+        "threads": threads,
+        "placements": placements,
+        "encoder_users": encoder_users,
+        "load_s": load_s,
+        "memory_after_load": loaded_memory,
+        "fixed_window": {
+            "track_words_sha256": track_fixed,
+            "preview_words_sha256": preview_fixed,
+            "preview_matches_track": preview_fixed.as_ref().map(|p| *p == track_fixed),
+        },
+        "piece_s": CONTENTION_PIECE_S,
+        "passes": CONTENTION_PASSES,
+        "real_decodes": decodes,
+        "real_took_s": spread(&took_all),
+        "real_encoder_wait_s": spread(&waited_all),
+        "previews": previews,
+        "memory_at_end": memory(),
+        "machine_load_percent": host_reading().map(|r| r.0),
+    })
+}
+
 fn main() {
     let args = parse_args();
     let models = args.models.clone().map_or_else(
@@ -882,6 +1160,16 @@ fn main() {
     let simulated = args
         .card_memory_gib
         .map(|gib| simulated_machine(earshot_runtime::hardware(), gib).unwrap_or_else(|e| fail(e)));
+
+    if let Some(setup) = args.contention {
+        let report = contention_report(&models, model, accel, &reference, setup);
+        let text = serde_json::to_string_pretty(&report).unwrap_or_else(|e| fail(e));
+        println!("{text}");
+        if let Some(out) = &args.out {
+            std::fs::write(out, &text).unwrap_or_else(|e| fail(e));
+        }
+        return;
+    }
 
     if args.memory {
         let report = memory_report(&models, model, accel, &reference, simulated.as_ref());
@@ -1402,6 +1690,31 @@ mod tests {
         assert_eq!(r["loaded"]["kind"], "Cpu");
         assert_eq!(r["loaded"]["placement"], json!(placement));
         assert!(r.get("not_loaded").is_none());
+    }
+
+    /// T12.3b: `--contention` is CUDA only and stands alone.
+    #[test]
+    fn live_lag_contention_needs_cuda_and_no_other_mode() {
+        for (value, setup) in [
+            ("alone", Contention::Alone),
+            ("own", Contention::Own),
+            ("shared", Contention::Shared),
+        ] {
+            let a = parse(&["--backend", "cuda", "--contention", value]).unwrap();
+            assert_eq!(a.contention, Some(setup));
+        }
+        assert!(parse(&["--contention", "shared"]).is_err(), "the CPU");
+        assert!(parse(&["--backend", "cuda", "--contention", "both"]).is_err());
+        for extra in [
+            &["--memory"][..],
+            &["--previews", "on"],
+            &["--card-memory-gib", "12"],
+        ] {
+            let mut a = vec!["--backend", "cuda", "--contention", "shared"];
+            a.extend_from_slice(extra);
+            assert!(parse(&a).is_err(), "{extra:?}");
+        }
+        assert_eq!(parse(&[]).unwrap().contention, None);
     }
 
     #[test]

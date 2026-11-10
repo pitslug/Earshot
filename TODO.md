@@ -99,3 +99,6 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-core/src/prompt/vocabulary.rs:930: format characters (zero-width, bidi marks) pass `is_control`, as in `SummaryStyle`; refuse Cf in both together if at all. T12.15a review.
 - apps/desktop/src-tauri/src/meeting.rs: HostPrepare's wiring of `StartRequest::keep_local` into the summary setup is covered only by ignored tests that need the ci models. T12.13.
 - apps/desktop/src-tauri/src/keep_local.rs: `allow` while the meeting is still finishing does not change that run's (local) summary, but the bar disappears; consider refusing while `Processing`. T12.13.
+- crates/earshot-onnx/src/parakeet.rs (`Encoder::with`): a poisoned shared-encoder lock is reused, not an error; map it to `OnnxError::Runtime` if sharing ever ships. T12.3b review.
+- crates/earshot-onnx/Cargo.toml:25: ort 2.0.0-rc.15 fixes over 30 UB instances; plan an upgrade task with the re-checks in AGENTS.md. T12.3b.
+- crates/earshot-runtime/src/backends_tests.rs (`shipped_files_naming`): the evaluation-only scans skip `earshot-onnx/src` and `backends.rs` itself. T12.3b and T12.3c reviews.

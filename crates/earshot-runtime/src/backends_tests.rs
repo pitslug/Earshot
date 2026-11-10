@@ -2242,6 +2242,19 @@ fn backends_preview_on_hardware_load_is_used_by_no_shipped_code() {
     assert!(found.is_empty(), "shipped code calls it: {found:?}");
 }
 
+/// T12.3b: nothing shipped shares a Parakeet encoder between sessions; only examples may.
+#[test]
+fn backends_preview_sharing_encoder_is_used_by_no_shipped_code() {
+    for name in [
+        concat!("load_preview_", "sharing_encoder"),
+        concat!("share_", "encoder"),
+        concat!("load_", "sharing("),
+    ] {
+        let found = shipped_files_naming(name);
+        assert!(found.is_empty(), "shipped code calls {name}: {found:?}");
+    }
+}
+
 /// The shipped source files (runtime, CLI, desktop) other than `backends.rs` and its tests that
 /// contain `name`.
 fn shipped_files_naming(name: &str) -> Vec<PathBuf> {

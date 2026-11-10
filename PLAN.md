@@ -1542,6 +1542,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.3b One CUDA session for a track's transcription and previews (spike)
   - deps: T12.3
+  - status (2026-11-10): rule committed first (ca9f310); evaluation-only prototype merged (one encoder shared through a Mutex, no unsafe; ort rc.15 does not help), reviewed clear. Left: the measurement on an idle desktop (`live_lag --contention`), then the owner's choice.
   - do: the owner, 2026-11-08: ONNX Runtime's CUDA provider gives every session its own copy of the weights on the card. Find whether one session can serve both: first whether a newer `ort` lets `Session::run` take `&self`, else scope a minimal unsafe wrapper over the C API's `Run` (reviewer required). Write the rule (no preview delays a real decode by more than a stated bound) before measuring; measure card memory and how long real decodes wait. The result decides default on, default off or a setting (the owner). No shipped change without the owner.
   - accept: the rule, findings and numbers in docs/live-previews.md
 
