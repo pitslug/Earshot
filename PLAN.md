@@ -1635,12 +1635,12 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.15a Your vocabulary in summaries
   - deps: T7.4b
-  - do: T12.15's first half: a device-local word list on the Summaries page, checked and bounded like the summary style, given to every summary request; an empty list leaves every prompt byte-identical; no test or doc holds a word from the user's list.
+  - do: T12.15's first half: a device-local word list on its own Settings page, Dictionary (the owner, 2026-11-10), between Summaries and People, checked and bounded like the summary style, given to every summary request; an empty list leaves every prompt byte-identical; no test or doc holds a word from the user's list.
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`
 
 - [ ] T12.15b Your vocabulary in the transcript (spike)
   - deps: T12.15a
-  - do: T12.15's second half: compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data, with the rule written before measuring. A correction pass never changes a word without keeping the original. No shipped change without the owner.
+  - do: T12.15's second half. The words come from the Dictionary and the names of saved people (the owner, 2026-11-10: a saved Kam should win over Cam, Kat over Cat); people's names are used on this computer only and never added to a summary request beyond the meeting's own speakers. Compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data, with the rule written before measuring. A correction pass never changes a word without keeping the original. No shipped change without the owner.
   - accept: the spike's numbers and a recommendation in docs
 
 - [ ] T12.16 Edit a meeting's title, transcript and summary
@@ -1661,7 +1661,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.19 The Speakers panel slides out, with Ignore
   - deps: T12.16
-  - do: the owner, 2026-11-10: "Who is who" becomes "Speakers", a panel that slides in from the right and pushes the transcript aside rather than covering it. Closed by default when no voice needs a name, open by itself when one does; a Speakers button in the meeting header toggles it, with a badge such as "2 need names". Each unnamed voice gets Ignore: an ignored voice no longer counts as needing a name (so it never opens the panel), keeps its "Speaker N" label in the transcript, summary and export, is never enrolled or matched as a person, and can be un-ignored from the panel. Ignore is a per-meeting user edit through `edit::write`, carried across a re-transcribe like other user edits (`identities::match_previous`), and `meeting_events::needs_name` stays the one rule, now excluding ignored voices. Text naming "Who is who" follows the rename.
+  - do: the owner, 2026-11-10: the "Remember these voices for next time" tickbox for all speakers goes; each unnamed voice gets its own Save (name it, link it to that person and remember the voice, in one step, the per-person consent replacing the tickbox). A saved voice moves out of the needs-a-name list into a collapsed list of named voices in the same panel, where a wrong name or a wrong match can still be fixed or forgotten; a voice recognised in a later meeting is named there, counts as named and so never opens the panel, and is marked as recognised. "Who is who" becomes "Speakers", a panel that slides in from the right and pushes the transcript aside rather than covering it. Closed by default when no voice needs a name, open by itself when one does; a Speakers button in the meeting header toggles it, with a badge such as "2 need names". Each unnamed voice gets Ignore: an ignored voice no longer counts as needing a name (so it never opens the panel), keeps its "Speaker N" label in the transcript, summary and export, is never enrolled or matched as a person, and can be un-ignored from the panel. Ignore is a per-meeting user edit through `edit::write`, carried across a re-transcribe like other user edits (`identities::match_previous`), and `meeting_events::needs_name` stays the one rule, now excluding ignored voices. Text naming "Who is who" follows the rename.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot of the panel open and closed, light and dark
 
 - [ ] T12.20 UI review follow-ups from TODO.md
