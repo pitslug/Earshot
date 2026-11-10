@@ -168,6 +168,7 @@ fn benchmark_run_measures_from_the_replay_end_and_leaves_no_files() {
             clock: Arc::clone(&clock) as Arc<dyn PaceClock>,
             live_summaries: LiveSummariesRun::NotRun,
             style: SummaryStyle::default(),
+            vocabulary: Vocabulary::default(),
             realtime: false,
             services_clock: Arc::new(ManualClock::new(T0)),
             scratch_root: &root,
@@ -244,6 +245,7 @@ fn benchmark_cancel_during_the_replay_runs_nothing_after_and_leaves_no_files() {
             clock: Arc::clone(&clock) as Arc<dyn PaceClock>,
             live_summaries: LiveSummariesRun::NotRun,
             style: SummaryStyle::default(),
+            vocabulary: Vocabulary::default(),
             realtime: false,
             services_clock: Arc::new(ManualClock::new(T0)),
             scratch_root: &root,
@@ -281,6 +283,7 @@ fn benchmark_cancel_during_the_final_pass_is_cancelled_not_a_result() {
             clock: Arc::clone(&clock) as Arc<dyn PaceClock>,
             live_summaries: LiveSummariesRun::NotRun,
             style: SummaryStyle::default(),
+            vocabulary: Vocabulary::default(),
             realtime: false,
             services_clock: Arc::new(ManualClock::new(T0)),
             scratch_root: &root,
@@ -336,6 +339,7 @@ fn benchmark_failed_final_pass_is_an_error_and_leaves_no_files() {
             clock: Arc::new(TestClock::default()),
             live_summaries: LiveSummariesRun::NotRun,
             style: SummaryStyle::default(),
+            vocabulary: Vocabulary::default(),
             realtime: false,
             services_clock: Arc::new(ManualClock::new(T0)),
             scratch_root: &root,
@@ -410,6 +414,7 @@ fn setup(check: Option<StoredCheck>) -> BenchmarkSetup {
         live_summaries: true,
         check,
         style: SummaryStyle::default(),
+        vocabulary: Vocabulary::default(),
         notes: vec!["Parakeet 0.6B v3 has no NPU version, so it runs on the processor.".into()],
     }
 }
@@ -655,6 +660,7 @@ fn benchmark_run_keeps_the_live_summaries_state_it_was_given() {
             after: after(&clock, &calls, &models),
             live_summaries: LiveSummariesRun::NotRun,
             style: SummaryStyle::default(),
+            vocabulary: Vocabulary::default(),
             clock: Arc::clone(&clock) as Arc<dyn PaceClock>,
             realtime: false,
             services_clock: Arc::new(ManualClock::new(T0)),
@@ -724,6 +730,7 @@ fn benchmark_live_summaries_that_never_started_carry_the_runtimes_reason() {
             after: after(&clock, &calls, &models),
             live_summaries: LiveSummariesRun::On,
             style: SummaryStyle::default(),
+            vocabulary: Vocabulary::default(),
             clock: Arc::clone(&clock) as Arc<dyn PaceClock>,
             realtime: false,
             services_clock: Arc::new(ManualClock::new(T0)),
@@ -761,6 +768,7 @@ fn benchmark_catch_up_does_not_depend_on_when_the_loop_reads_the_event() {
             after: after(&clock, &calls, &models),
             live_summaries: LiveSummariesRun::Off,
             style: SummaryStyle::default(),
+            vocabulary: Vocabulary::default(),
             clock: Arc::clone(&clock) as Arc<dyn PaceClock>,
             realtime: false,
             services_clock: Arc::new(ManualClock::new(T0)),
@@ -832,6 +840,7 @@ fn benchmark_prepared_summary_skipped_by_the_host_is_an_error_not_a_setting() {
             after: after(&clock, &calls, &models),
             live_summaries: LiveSummariesRun::Off,
             style: SummaryStyle::default(),
+            vocabulary: Vocabulary::default(),
             clock: Arc::clone(&clock) as Arc<dyn PaceClock>,
             realtime: false,
             services_clock: Arc::new(ManualClock::new(T0)),
@@ -853,6 +862,7 @@ fn benchmark_copies_the_users_summary_style_into_the_throwaway_store() {
     let models = ModelDir::new(dir.0.join("models"));
     let meeting = meeting();
     let seen = std::sync::Mutex::new(None);
+    let seen_words = std::sync::Mutex::new(Vec::new());
     let after: AfterFn<'_> = Box::new(|svc, outcome, cancel, progress| {
         *seen.lock().unwrap() = Some(
             crate::summary_style::summary_style(&svc.store())
@@ -861,6 +871,12 @@ fn benchmark_copies_the_users_summary_style_into_the_throwaway_store() {
                 .as_str()
                 .to_owned(),
         );
+        // The word list too (T12.15a; invented words).
+        *seen_words.lock().unwrap() = crate::vocabulary::vocabulary(&svc.store())
+            .unwrap()
+            .0
+            .words()
+            .to_vec();
         host::after_meeting_with(
             svc,
             outcome,
@@ -877,6 +893,7 @@ fn benchmark_copies_the_users_summary_style_into_the_throwaway_store() {
             after,
             live_summaries: LiveSummariesRun::Off,
             style: SummaryStyle::new("Short, no jargon.").unwrap(),
+            vocabulary: Vocabulary::new(["Quillmarsh", "QXR-7"]).unwrap(),
             clock: Arc::new(TestClock::default()),
             realtime: false,
             services_clock: Arc::new(ManualClock::new(T0)),
@@ -889,6 +906,7 @@ fn benchmark_copies_the_users_summary_style_into_the_throwaway_store() {
     .unwrap()
     .unwrap();
     assert_eq!(seen.lock().unwrap().as_deref(), Some("Short, no jargon."));
+    assert_eq!(*seen_words.lock().unwrap(), ["Quillmarsh", "QXR-7"]);
 }
 
 #[test]
@@ -927,6 +945,7 @@ fn benchmark_that_reached_the_network_fails_and_records_nothing() {
             after,
             live_summaries: LiveSummariesRun::Off,
             style: SummaryStyle::default(),
+            vocabulary: Vocabulary::default(),
             clock: Arc::new(TestClock::default()),
             realtime: false,
             services_clock: Arc::new(ManualClock::new(T0)),
@@ -962,6 +981,7 @@ fn benchmark_panic_while_the_session_runs_still_deletes_the_scratch_folder() {
         after: after(&clock, &calls, &models),
         live_summaries: LiveSummariesRun::Off,
         style: SummaryStyle::default(),
+        vocabulary: Vocabulary::default(),
         clock: Arc::clone(&clock) as Arc<dyn PaceClock>,
         realtime: false,
         services_clock: Arc::new(ManualClock::new(T0)),

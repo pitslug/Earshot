@@ -114,6 +114,7 @@ fn input(template: Template) -> SummaryInput {
         template,
         prompt_variant: PromptVariant::Current,
         style: SummaryStyle::default(),
+        vocabulary: Vocabulary::default(),
         user_name: None,
     }
 }
@@ -322,6 +323,7 @@ fn long_input(n: usize) -> SummaryInput {
         template: Template::General,
         prompt_variant: PromptVariant::Current,
         style: SummaryStyle::default(),
+        vocabulary: Vocabulary::default(),
         user_name: None,
     }
 }
@@ -1195,6 +1197,9 @@ fn prompt_two_call_reduce_snapshot() {
 
 // T7.4b: the user's summary style.
 mod style_tests;
+
+// T12.15a: the user's own words.
+mod vocabulary_tests;
 
 fn named(user_name: Option<&str>) -> SummaryInput {
     SummaryInput {

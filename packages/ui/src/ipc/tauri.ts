@@ -119,6 +119,8 @@ export function createTauriIpc(): Ipc {
     finishFirstRun: async () => unwrap(await commands.finishFirstRun()),
     summaryStyle: async () => unwrap(await commands.summaryStyle()),
     setSummaryStyle: async (style) => unwrap(await commands.setSummaryStyle(style)),
+    summaryVocabulary: async () => unwrap(await commands.summaryVocabulary()),
+    setSummaryVocabulary: async (words) => unwrap(await commands.setSummaryVocabulary(words)),
     audioSettings: async () => unwrap(await commands.audioSettings()),
     setAudioSettings: async (settings) => unwrap(await commands.setAudioSettings(settings)),
     defaultCaptureMode: async () => unwrap(await commands.defaultCaptureMode()),

@@ -534,12 +534,15 @@ pub fn summary_from_settings(
     }
     let mut notes: Vec<String> = placement.note.clone().into_iter().collect();
     notes.extend(unknown.iter().map(ToString::to_string));
-    // The style itself is read again when the summary is written
-    // (`SummaryService::summarize`); here only a refused stored style is reported.
-    if settings.writer != SummaryWriter::NoSummary
-        && let (_, Some(refused)) = crate::summary_style::summary_style(store)?
-    {
-        notes.push(refused.to_string());
+    // The style and the user's own words are read again when the summary is written
+    // (`SummaryService::summarize`); here only a refused stored value is reported.
+    if settings.writer != SummaryWriter::NoSummary {
+        if let (_, Some(refused)) = crate::summary_style::summary_style(store)? {
+            notes.push(refused.to_string());
+        }
+        if let (_, Some(refused)) = crate::vocabulary::vocabulary(store)? {
+            notes.push(refused.to_string());
+        }
     }
     Ok(SettingsSummary {
         request,

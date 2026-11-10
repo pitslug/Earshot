@@ -78,7 +78,7 @@ beforeEach(() => {
 });
 
 describe("Settings", () => {
-  it("opens on General, lists the seven pages in order, switches and goes back to the meetings", async () => {
+  it("opens on General, lists the eight pages in order, switches and goes back to the meetings", async () => {
     const s = setup();
     await openSettings(s);
     expect(SETTINGS_SECTIONS).toEqual([
@@ -87,6 +87,7 @@ describe("Settings", () => {
       "System",
       "Transcription",
       "Summaries",
+      "Dictionary",
       "People",
       "Notes and storage",
     ]);
@@ -134,6 +135,7 @@ describe("Settings", () => {
           "When speakers are found",
         ],
         Summaries: ["Who writes the summary", "During the meeting", "Summary style"],
+        Dictionary: ["Your words"],
         People: ["Your name", "Your voice", "People"],
         "Notes and storage": ["Obsidian", "Recordings", "Crash logs"],
       },
@@ -175,7 +177,7 @@ describe("Settings", () => {
       document.getElementById(el.getAttribute("aria-labelledby") ?? "")?.textContent === "Provider";
     const seen = new Set<string>();
     const checkPage = () => {
-      const saves = within(screen.getByRole("main")).queryAllByRole("button", { name: /^(Save|Use this endpoint)/ });
+      const saves = within(screen.getByRole("main")).queryAllByRole("button", { name: /^(Save|Use this endpoint|Add$)/ });
       for (const button of saves) {
         const part = button.closest("form, [role='group'], section");
         expect(part).not.toBeNull();
@@ -191,6 +193,7 @@ describe("Settings", () => {
     for (const section of SETTINGS_SECTIONS) {
       await goTo(s, section);
       if (section === "People") await screen.findByRole("textbox", { name: "Your name" });
+      if (section === "Dictionary") await screen.findByRole("textbox", { name: "Add a word" });
       if (section === "Notes and storage") await screen.findByRole("textbox", { name: "Vault folder" });
       checkPage();
     }
@@ -206,7 +209,7 @@ describe("Settings", () => {
     await s.user.click(screen.getByRole("radio", { name: /^OpenAI \(through Codex\)/ }));
     await screen.findByRole("group", { name: "OpenAI through Codex" });
     checkPage();
-    expect([...seen].sort()).toEqual(["Save", "Save key", "Save model", "Use this endpoint"]);
+    expect([...seen].sort()).toEqual(["Add", "Save", "Save key", "Save model", "Use this endpoint"]);
   });
 
   it("holds one subscription to model job events across its pages, and the setup guide its own", async () => {

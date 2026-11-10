@@ -1634,8 +1634,9 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner: a section in Settings for the user's own words (acronyms, company and site names), so they come out right. First, a device-local list, checked and bounded like the summary style, given to every summary request. Then a spike on the transcript, because Parakeet takes no prompt and Whisper does: compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data. A correction pass must never change a word without keeping the original. No test or doc holds a word from the user's list. An empty list leaves every prompt byte-identical.
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; the spike's numbers and a recommendation in docs
 
-- [ ] T12.15a Your vocabulary in summaries
+- [x] T12.15a Your vocabulary in summaries
   - deps: T7.4b
+  - status (2026-11-10): merged (lane abe5b9f), reviewed clear (3 advisories in TODO.md); core prompt 77, runtime summary 156, desktop 346, UI 401 pass in the lane; batch ci at the end of the night.
   - do: T12.15's first half: a device-local word list on its own Settings page, Dictionary (the owner, 2026-11-10), between Summaries and People, checked and bounded like the summary style, given to every summary request; an empty list leaves every prompt byte-identical; no test or doc holds a word from the user's list.
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`
 

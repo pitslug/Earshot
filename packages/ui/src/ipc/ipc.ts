@@ -98,6 +98,7 @@ import type { FirstRunCommands } from "./firstRun";
 import type { FolderCommands } from "./folders";
 import type { StorageCommands } from "./storage";
 import type { SummaryStyleCommands } from "./summaryStyle";
+import type { SummaryVocabularyCommands } from "./summaryVocabulary";
 
 export type {
   ActionView,
@@ -194,6 +195,7 @@ export type {
 export interface IpcCommands
   extends StorageCommands,
     SummaryStyleCommands,
+    SummaryVocabularyCommands,
     BenchmarkCommands,
     FirstRunCommands,
     FolderCommands,

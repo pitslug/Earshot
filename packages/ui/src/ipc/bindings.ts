@@ -274,6 +274,13 @@ export const commands = {
 	summaryStyle: () => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("summary_style")),
 	/**  Checks and stores the summary style ("" for none; `invalid_setting`: nothing stored). */
 	setSummaryStyle: (style: string) => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("set_summary_style", { style })),
+	/**  The user's own words for summaries (and a stored list this version refuses). */
+	summaryVocabulary: () => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("summary_vocabulary")),
+	/**
+	 *  Checks and stores the user's own words (empty for none; `invalid_setting`: nothing
+	 *  stored).
+	 */
+	setSummaryVocabulary: (words: string[]) => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("set_summary_vocabulary", { words })),
 	/**  Whether the app opens on the first-run wizard. */
 	firstRunState: () => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("first_run_state")),
 	/**  Marks the first-run wizard done, whichever steps were skipped. */
@@ -1791,6 +1798,20 @@ export type SummaryView = {
 	notes: NotesView[],
 	/**  Open questions (may be empty). */
 	open_questions: string[],
+};
+
+/**  The stored words with what the page says about them. */
+export type SummaryVocabularyView = {
+	/**  The words in use, in the user's order (empty for none, the default). */
+	words: string[],
+	/**  One line when the stored list is one this version refuses (none is used). */
+	unknown: string[],
+	/**  The most words accepted. */
+	max_words: number,
+	/**  The longest word accepted, in characters. */
+	max_word_chars: number,
+	/**  The longest list accepted, in characters over every word. */
+	max_chars: number,
 };
 
 /**  NVIDIA's terms for a part. */

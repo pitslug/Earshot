@@ -62,7 +62,7 @@ Also:
 - Skip setup or Finish with no transcription model says that meetings need one, and that it is in Settings.
 - Later and Never go: the download button is "now", and doing nothing is "later".
 
-## Settings: seven pages, Models dissolved
+## Settings: eight pages, Models dissolved
 
 In this order:
 
@@ -73,6 +73,7 @@ In this order:
 | System | Hardware, recommendation, speech helpers, where it runs, the model check, CUDA, benchmark | Models, Benchmark |
 | Transcription | Languages first, transcription models, show words while talking, when speakers are found | Models, General, Speakers |
 | Summaries | Writer; under "On this computer", the model; during the meeting; style | Summaries, Models |
+| Dictionary | Your words: names, acronyms, company and site names | New (T12.15a) |
 | People | Your name, your voice, people | Speakers |
 | Notes and storage | Obsidian, recordings retention, crash logs | Obsidian, Storage, General |
 
@@ -92,6 +93,7 @@ The owner, 2026-11-10:
 3. **The advanced page:** named System, always listed, between Audio and Transcription.
 4. **Later and Never:** removed.
 5. **Summary length:** left for later, perhaps as a few templated prompts (T12.17).
+6. **Your words (T12.15a):** their own page, named Dictionary, after Summaries and before People, rather than a section of Summaries, because transcripts will use the words too (T12.15b). A list of words, each with its own Delete, and an Add field with an Add button; Enter or Add adds one word. Both apply at once. The page says the words help summaries spell names and acronyms right and that transcripts will use them later.
 
 ## What this design does not do
 
