@@ -528,10 +528,10 @@ export function AppShell({
 
   // Only a recording meeting keeps the next one out; one that is finishing goes on behind it.
   const newMeeting = () => setView(meeting?.phase === "recording" ? "meeting" : "start");
-  const start = async (mode: CaptureMode, title: string | null) => {
+  const start = async (mode: CaptureMode, title: string | null, keepLocal: boolean) => {
     live.reset();
     setStopError(null);
-    const id = await ipc.startMeeting(mode, title);
+    const id = await ipc.startMeeting(mode, title, keepLocal);
     setSelectedId(id);
     setView("meeting");
   };

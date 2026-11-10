@@ -40,6 +40,7 @@ import { stepLabel } from "../meeting/liveMeeting";
 import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
+import { KeptLocal } from "./KeptLocal";
 import { WhoIsWho } from "./WhoIsWho";
 import {
   COPIED_MS,
@@ -531,6 +532,9 @@ export function MeetingDetailView({
                   onCite={openCitation}
                   onResummarise={() => void startJob("resummarise")}
                   onUndo={() => void run(() => ipc.undoSummary(id), "The previous summary could not be restored")}
+                  onAllowWriter={() =>
+                    void run(() => ipc.allowSummaryWriter(id), "The meeting could not be changed")
+                  }
                 />
               ) : (
                 <TranscriptTab
@@ -742,11 +746,13 @@ function SummaryTab({
   onCite,
   onResummarise,
   onUndo,
+  onAllowWriter,
 }: {
   detail: MeetingDetail;
   onCite(c: Citation): void;
   onResummarise(): void;
   onUndo(): void;
+  onAllowWriter(): void;
 }) {
   const styles = useStyles();
   const s = detail.summary;
@@ -765,6 +771,7 @@ function SummaryTab({
           </MessageBarActions>
         </MessageBar>
       )}
+      <KeptLocal keptLocal={detail.kept_local} onAllow={onAllowWriter} />
       {handoverLine(detail) !== null && <Caption1 className={styles.muted}>{handoverLine(detail)}</Caption1>}
       {s === null ? (
         <Body1 className={styles.muted}>

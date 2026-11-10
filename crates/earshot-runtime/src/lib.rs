@@ -46,6 +46,7 @@ pub mod folders;
 pub mod host;
 
 pub mod identities;
+pub mod keep_local;
 pub mod live;
 pub mod live_summaries;
 mod local;
@@ -176,6 +177,9 @@ pub enum RuntimeError {
     /// The summary endpoint's API key is missing or its store failed
     /// ([`summary_settings::ApiKeyError`]; never the key itself).
     ApiKey(summary_settings::ApiKeyError),
+    /// The meeting's summary is kept on this computer ([`keep_local`], T12.13) and the summary
+    /// service would send it elsewhere: refused before any text left the store.
+    SummaryKeptLocal(earshot_core::identity::EntityId),
 }
 
 impl RuntimeError {
@@ -267,6 +271,10 @@ impl fmt::Display for RuntimeError {
             ),
             Self::Edit(e) => write!(f, "edit refused: {e}"),
             Self::ApiKey(e) => write!(f, "{e}"),
+            Self::SummaryKeptLocal(m) => write!(
+                f,
+                "meeting {m} keeps its summary on this computer; only a local summary model may summarise it"
+            ),
         }
     }
 }

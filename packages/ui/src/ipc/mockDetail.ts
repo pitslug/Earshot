@@ -187,6 +187,7 @@ export function sampleDetail(item: MeetingListItem): MeetingDetail {
     summary_stale: false,
     audio_kept: true,
     handovers: [],
+    kept_local: null,
   };
 }
 

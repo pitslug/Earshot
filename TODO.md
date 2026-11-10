@@ -97,3 +97,5 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-runtime/src/live_summaries.rs:308: `reusable` ignores the word list, so live map partials made before a Dictionary change are reused by the final summary; record the list (or its hash) in `live-summaries/<meeting>` and refuse reuse on a difference. T12.15a review.
 - packages/ui/src/ipc/mockSummaries.ts:126: `checkVocabulary` mirrors `Vocabulary::new` by hand (JS `\s` folds U+FEFF, Rust does not); pin both with a shared cases file. T12.15a review.
 - crates/earshot-core/src/prompt/vocabulary.rs:930: format characters (zero-width, bidi marks) pass `is_control`, as in `SummaryStyle`; refuse Cf in both together if at all. T12.15a review.
+- apps/desktop/src-tauri/src/meeting.rs: HostPrepare's wiring of `StartRequest::keep_local` into the summary setup is covered only by ignored tests that need the ci models. T12.13.
+- apps/desktop/src-tauri/src/keep_local.rs: `allow` while the meeting is still finishing does not change that run's (local) summary, but the bar disappears; consider refusing while `Processing`. T12.13.

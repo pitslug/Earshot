@@ -357,7 +357,14 @@ fn summary_settings_host_no_summary_skips_without_reading_a_key() {
     )
     .unwrap();
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(s.request.skip && s.request.remote.is_none());
     assert_eq!(s.writer, SummaryWriter::NoSummary);
     assert_eq!(keys.reads.get(), 0);
@@ -383,7 +390,14 @@ fn summary_settings_host_on_this_computer_is_the_local_model() {
     )
     .unwrap();
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(!s.request.skip && s.request.remote.is_none());
     assert_eq!(s.request.local_model, None, "the memory rule picks");
     assert_eq!(s.writer, SummaryWriter::OnThisComputer);
@@ -408,7 +422,14 @@ fn summary_settings_host_openai_endpoint_allowlists_exactly_the_endpoint() {
     )
     .unwrap();
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(
         keys.reads.get(),
         0,
@@ -462,7 +483,14 @@ fn summary_settings_host_anthropic_reads_the_key_at_use_time() {
     .unwrap();
     // With a key: the remote config carries it, the allowlist is the endpoint alone.
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(keys.reads.get(), 1);
     let config = s.request.remote.as_ref().expect("remote");
     assert_eq!(config.provider, earshot_llm::Provider::Anthropic);
@@ -480,7 +508,14 @@ fn summary_settings_host_anthropic_reads_the_key_at_use_time() {
     // the reason, never a local model or another provider. The key store is read once.
     let models = crate::backends::ModelDir::new(dir.0.join("models"));
     let none = FakeKeys::new(Ok(None));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &none).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &none,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(none.reads.get(), 1);
     assert!(s.request.remote.is_none() && s.request.local_model.is_none());
     assert_eq!(s.request.no_key, Some(ApiKeyError::Missing));
@@ -502,7 +537,14 @@ fn summary_settings_host_anthropic_reads_the_key_at_use_time() {
     );
     // A store failure is the reason as it is.
     let broken = FakeKeys::new(Err(ApiKeyError::Store("access denied".into())));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &broken).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &broken,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(broken.reads.get(), 1);
     assert_eq!(
         s.request.no_key,
@@ -524,7 +566,14 @@ fn summary_settings_host_notes_are_the_unknown_values_and_local_placement_only()
     // A "where it runs" note that only matters on this computer.
     db.set_local_value(crate::model_settings::SUMMARY_PART_KEY, b"gpu")
         .unwrap();
-    let s = host::summary_from_settings(&db, CPU, &machine(), &NoApiKeys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &NoApiKeys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(s.notes.len(), 1, "{:?}", s.notes);
     assert!(s.placement.note.is_some());
     set_summary_settings(
@@ -536,7 +585,14 @@ fn summary_settings_host_notes_are_the_unknown_values_and_local_placement_only()
     )
     .unwrap();
     db.set_local_value(SUMMARY_PROVIDER_KEY, b"gemini").unwrap();
-    let s = host::summary_from_settings(&db, CPU, &machine(), &NoApiKeys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &NoApiKeys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(s.placement.note.is_none());
     assert_eq!(s.notes.len(), 1, "{:?}", s.notes);
     assert!(s.notes[0].contains(SUMMARY_PROVIDER_KEY), "{:?}", s.notes);
@@ -653,7 +709,14 @@ fn summary_settings_host_claude_code_is_checked_and_never_falls_back() {
     )
     .unwrap();
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(keys.reads.get(), 0, "no API key is read for Claude Code");
     assert!(s.request.remote.is_none() && s.request.local_model.is_none());
     assert!(!s.request.skip && s.request.no_key.is_none());
@@ -834,7 +897,14 @@ fn summary_settings_host_codex_is_checked_and_never_falls_back() {
     )
     .unwrap();
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(keys.reads.get(), 0, "no API key is read for Codex");
     assert!(s.request.remote.is_none() && s.request.local_model.is_none());
     assert!(s.request.claude_code.is_none(), "never Claude Code instead");

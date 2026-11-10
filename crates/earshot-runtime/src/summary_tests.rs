@@ -81,6 +81,149 @@ fn summary_goes_only_to_the_configured_endpoint_and_is_stored() {
     assert_eq!(db.meeting(id).unwrap().unwrap().title, "Release planning");
 }
 
+/// Keeps `meeting`'s summary on this computer (T12.13), as a meeting started so carries it.
+fn keep_local(svc: &Services, meeting: EntityId) {
+    crate::local::set(
+        &mut svc.store(),
+        &crate::keep_local::record_key(meeting),
+        &crate::keep_local::encode(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn summary_kept_local_meeting_opens_no_connection_with_an_endpoint_set() {
+    let dir = TempDir::new("summary");
+    let (svc, _) = services(&dir);
+    let id = meeting(&svc, "", 1);
+    keep_local(&svc, id);
+    let server = MockServer::start(vec![reply("Release planning")]).unwrap();
+    let service = SummaryService::new(
+        &SummaryConfig::new(server.endpoint().as_str(), "test-model"),
+        svc.clock.clone(),
+    )
+    .unwrap();
+    let summarize = || {
+        service.summarize(
+            &svc,
+            id,
+            &mut ChaCha8Rng::seed_from_u64(2),
+            &CancelToken::new(),
+        )
+    };
+    let e = summarize().unwrap_err();
+    assert!(
+        matches!(e, RuntimeError::SummaryKeptLocal(m) if m == id),
+        "{e:?}"
+    );
+    assert!(!e.is_retryable());
+    // Nothing was attempted, nothing arrived, nothing was stored.
+    assert!(service.audit_log().is_empty());
+    assert!(server.requests().is_empty());
+    assert!(svc.store().summaries(id).unwrap().is_empty());
+    // A record this version cannot read keeps it here too.
+    crate::local::set(
+        &mut svc.store(),
+        &crate::keep_local::record_key(id),
+        b"damaged",
+    )
+    .unwrap();
+    assert!(matches!(
+        summarize(),
+        Err(RuntimeError::SummaryKeptLocal(_))
+    ));
+    assert!(server.requests().is_empty());
+    // Control: once the user lets the writer have it, the same service sends it when asked.
+    crate::keep_local::allow_writer(&svc, id).unwrap();
+    assert!(server.requests().is_empty(), "allowing sends nothing");
+    summarize().unwrap();
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the Claude Code and Codex stand-ins are cmd.exe"
+)]
+fn summary_kept_local_meeting_spawns_no_agent_cli() {
+    #[cfg(windows)]
+    {
+        let dir = TempDir::new("summary");
+        let (svc, _) = services(&dir);
+        let summary = SummaryV1 {
+            title: "Release planning".into(),
+            tldr: "The team agreed to ship the release on Friday.".into(),
+            enhanced_notes: vec![],
+            decisions: vec![],
+            action_items: vec![],
+            open_questions: vec![],
+            topics: vec!["release".into()],
+        };
+        let claude = SummaryService::claude_code(
+            &crate::claude_code::ClaudeCodeSummaryConfig {
+                cli: Some(claude_code_stand_in(&dir, &summary)),
+                ..Default::default()
+            },
+            svc.clock.clone(),
+        )
+        .unwrap();
+        let events = [
+            serde_json::json!({"type": "thread.started", "thread_id": "t"}),
+            serde_json::json!({"type": "turn.started"}),
+            serde_json::json!({"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": serde_json::to_string(&summary).unwrap()}}),
+            serde_json::json!({"type": "turn.completed"}),
+        ];
+        let codex = SummaryService::codex(
+            &crate::codex::CodexSummaryConfig {
+                cli: Some(codex_printing(&dir, &events)),
+                ..Default::default()
+            },
+            svc.clock.clone(),
+        )
+        .unwrap();
+        for (seed, service) in [(1, &claude), (2, &codex)] {
+            let id = meeting(&svc, "", seed);
+            keep_local(&svc, id);
+            let summarize = || {
+                service.summarize(
+                    &svc,
+                    id,
+                    &mut ChaCha8Rng::seed_from_u64(seed),
+                    &CancelToken::new(),
+                )
+            };
+            let e = summarize().unwrap_err();
+            assert!(
+                matches!(e, RuntimeError::SummaryKeptLocal(m) if m == id),
+                "{e:?}"
+            );
+            // No handover was made or recorded: the CLI never ran.
+            assert!(service.handovers().is_empty());
+            assert!(service.audit_log().is_empty());
+            let db = svc.store();
+            assert_eq!(
+                db.local_value(crate::claude_code::record_key(id).as_str())
+                    .unwrap(),
+                None,
+                "no handover record"
+            );
+            assert!(db.summaries(id).unwrap().is_empty());
+            drop(db);
+            // Control: allowed, the same stand-in runs and its handover is recorded.
+            crate::keep_local::allow_writer(&svc, id).unwrap();
+            summarize().unwrap();
+            assert_eq!(service.handovers().len(), 1);
+            assert_eq!(
+                crate::claude_code::summary_handovers(&svc.store(), id)
+                    .unwrap()
+                    .entries
+                    .len(),
+                1
+            );
+        }
+    }
+}
+
 /// A stand-in for the Claude Code CLI: `cmd /c type <reply file> & rem <the provider's
 /// arguments>` prints a Claude Code JSON result holding `summary` (the provider's own tests
 /// in earshot-llm run a full fake CLI).
@@ -1464,6 +1607,26 @@ mod local {
                 panic!("a remote report: {r:?}")
             }
         }
+    }
+
+    #[test]
+    fn summary_kept_local_meeting_is_summarised_by_the_local_model() {
+        let dir = TempDir::new("summary");
+        let (svc, _) = services(&dir);
+        let id = meeting(&svc, "", 53);
+        super::keep_local(&svc, id);
+        let (service, shared) = fake_service(&config());
+        service
+            .summarize(
+                &svc,
+                id,
+                &mut ChaCha8Rng::seed_from_u64(54),
+                &CancelToken::new(),
+            )
+            .unwrap();
+        assert_eq!(shared.loads.load(Ordering::SeqCst), 1);
+        assert!(service.audit_log().is_empty());
+        assert_eq!(svc.store().summaries(id).unwrap().len(), 1);
     }
 
     #[test]

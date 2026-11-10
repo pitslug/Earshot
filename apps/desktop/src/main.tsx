@@ -16,7 +16,8 @@ import { createRoot } from "react-dom/client";
 // Surface-like computer (NPU); `?machine=desktop` shows a desktop with an NVIDIA card.
 // `?firstRun=1` opens on the first-run wizard. `?inRoom=1` shows finished meetings as recorded in the room. `?callEnded=1` asks whether to stop 3 s into a call. `?cuda=unavailable` shows the CUDA section as it is
 // until the download exists, `?cuda=checking` while the start tries its files. `?newerData=1`
-// shows the screen for a database saved by a newer Earshot.
+// shows the screen for a database saved by a newer Earshot. `?keptLocal=1` keeps the weekly sync
+// on this computer with Claude Code as the summary writer (T12.13).
 const inTauri = isTauri();
 const query = new URLSearchParams(window.location.search);
 const machine = query.get("machine") === "desktop" ? "desktop" : "surface";
@@ -31,6 +32,12 @@ const ipc = inTauri
       inRoom: query.get("inRoom") === "1",
       callEndOfferAfterMs: query.get("callEnded") === "1" ? 3_000 : undefined,
       newerData: query.get("newerData") === "1",
+      ...(query.get("keptLocal") === "1"
+        ? {
+            keptLocal: ["0190f1a2-0000-7000-8000-000000000003"],
+            summaries: { settings: { writer: "ClaudeCode" as const } },
+          }
+        : {}),
       cuda:
         query.get("cuda") === "unavailable"
           ? { notAvailable: "This download is not available yet, so there is nothing to install. Earshot keeps running as it does now." }

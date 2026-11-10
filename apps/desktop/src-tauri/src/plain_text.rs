@@ -205,9 +205,32 @@ pub fn chosen_summary_model(model: &str) -> String {
     summary_copy_of(model)
 }
 
+/// Why a meeting kept on this computer (T12.13) gets no summary: only a summary model on this
+/// computer may write it and `model` is not downloaded. `ahead` for the banner at the start
+/// ("will not run"), else for the summary result and a refused re-summarise.
+#[must_use]
+pub fn kept_local_no_model(model: &str, ahead: bool) -> String {
+    let lead = if ahead {
+        "The summary will not run"
+    } else {
+        "There is no summary"
+    };
+    format!(
+        "{lead}: this meeting is kept on this computer, so only a summary model here can write it, and {} is not downloaded yet. Download it in Settings, Summaries, then summarise this meeting.",
+        display_name(model)
+    )
+}
+
+/// What the user is told when a summary that would leave this computer is refused for a meeting
+/// kept on it (T12.13).
+pub const KEPT_LOCAL_REFUSED: &str = "This meeting is kept on this computer, so its summary is written only by the summary model here. Nothing was sent.";
+
 /// What the user is told about runtime error `e`.
 #[must_use]
 pub fn runtime_text(e: &RuntimeError) -> String {
+    if matches!(e, RuntimeError::SummaryKeptLocal(_)) {
+        return KEPT_LOCAL_REFUSED.to_owned();
+    }
     let Some(path) = missing_file(e) else {
         return plain(e.to_string());
     };

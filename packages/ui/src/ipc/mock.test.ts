@@ -56,7 +56,7 @@ describe("mock IPC", () => {
       const ipc = createMockIpc({ meetings: [], timer });
       const events: MeetingEvent[] = [];
       await ipc.onMeetingEvent((e) => events.push(e));
-      const id = await ipc.startMeeting("Call", "Pump order");
+      const id = await ipc.startMeeting("Call", "Pump order", false);
       expect((await ipc.listMeetings())[0]).toMatchObject({ id, state: "Recording", title: "Pump order" });
       timer.advance(10_000);
       await ipc.stopMeeting();
@@ -82,8 +82,8 @@ describe("mock IPC", () => {
     const ipc = createMockIpc({ meetings: [], timer });
     const events: MeetingEvent[] = [];
     const stop = await ipc.onMeetingEvent((e) => events.push(e));
-    await ipc.startMeeting("InRoom", null);
-    await expect(ipc.startMeeting("Call", null)).rejects.toMatchObject({ error: { kind: "busy" } });
+    await ipc.startMeeting("InRoom", null, false);
+    await expect(ipc.startMeeting("Call", null, false)).rejects.toMatchObject({ error: { kind: "busy" } });
     timer.advance(10_000);
     expect(events[0]).toMatchObject({ type: "Started", tracks: ["You"] });
     expect(events.filter((e) => e.type === "Levels").every((e) => e.type === "Levels" && e.them_dbfs === null)).toBe(true);
@@ -96,7 +96,7 @@ describe("mock IPC", () => {
 
   it("fails a start with the given error and a stop without a meeting", async () => {
     const error = { kind: "model", message: "model base.en is missing", retryable: false };
-    await expect(createMockIpc({ startError: error }).startMeeting("Call", null)).rejects.toEqual(
+    await expect(createMockIpc({ startError: error }).startMeeting("Call", null, false)).rejects.toEqual(
       new IpcFailure(error),
     );
     await expect(createMockIpc().stopMeeting()).rejects.toMatchObject({ error: { kind: "not_recording" } });
@@ -383,7 +383,7 @@ describe("mock speech helpers (T9.1f)", () => {
     await ipc.renameFolder(id, "orchard");
     expect((await ipc.listFolders())[0].name).toBe("orchard");
 
-    const meeting = await ipc.startMeeting("Call", null);
+    const meeting = await ipc.startMeeting("Call", null, false);
     expect(await refusal(ipc.moveToFolder(meeting, id))).toMatchObject({
       kind: "meeting_recording",
       message: "A meeting can be moved to a folder once it has finished recording.",

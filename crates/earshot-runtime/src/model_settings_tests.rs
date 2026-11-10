@@ -388,7 +388,14 @@ fn settings_host_summary_request_follows_the_settings() {
     let dir = TempDir::new("settings-host");
     let mut db = store(&dir);
     let hw = machine(16 * GIB, Some(16 * GIB));
-    let summary = host::summary_from_settings(&db, CPU, &hw, &NoApiKeys).unwrap();
+    let summary = host::summary_from_settings(
+        &db,
+        CPU,
+        &hw,
+        &NoApiKeys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     let (request, placement) = (summary.request, summary.placement);
     assert!(request.remote.is_none() && !request.skip);
     assert_eq!(request.local_model, None);
@@ -399,7 +406,14 @@ fn settings_host_summary_request_follows_the_settings() {
         ..ModelSettings::default()
     };
     set_model_settings(&mut db, &s).unwrap();
-    let summary = host::summary_from_settings(&db, DESKTOP, &hw, &NoApiKeys).unwrap();
+    let summary = host::summary_from_settings(
+        &db,
+        DESKTOP,
+        &hw,
+        &NoApiKeys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     let (request, placement) = (summary.request, summary.placement);
     assert_eq!(request.local_model.as_deref(), Some(DEFAULT_SUMMARY_MODEL));
     assert!(!placement.gpu, "forced to the processor");

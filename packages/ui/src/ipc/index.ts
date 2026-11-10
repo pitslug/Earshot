@@ -14,6 +14,7 @@ export type {
   CitedText,
   DetailHeader,
   HandoverItem,
+  KeptLocalView,
   ExportDone,
   JobEvent,
   JobKind,

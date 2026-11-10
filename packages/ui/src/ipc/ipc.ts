@@ -20,6 +20,7 @@ import type {
   CitedText,
   DetailHeader,
   HandoverItem,
+  KeptLocalView,
   EndedReason,
   ExportDone,
   GpuView,
@@ -119,6 +120,7 @@ export type {
   CitedText,
   DetailHeader,
   HandoverItem,
+  KeptLocalView,
   EndedReason,
   ExportDone,
   GpuView,
@@ -208,8 +210,9 @@ export interface IpcCommands
    * query finds nothing. Rejects with an `IpcFailure`. */
   searchMeetings(query: string): Promise<SearchResultsView>;
   /** Starts a meeting and resolves with its id once it records. Rejects with an
-   * `IpcFailure` (kind `busy` while another meeting runs, or a pre-flight failure). */
-  startMeeting(mode: CaptureMode, title: string | null): Promise<string>;
+   * `IpcFailure` (kind `busy` while another meeting runs, or a pre-flight failure).
+   * `keepLocal` keeps its summary on this computer (T12.13; asked only when it starts). */
+  startMeeting(mode: CaptureMode, title: string | null, keepLocal: boolean): Promise<string>;
   /** Stops the recording meeting. Rejects with an `IpcFailure` (`not_recording`). */
   stopMeeting(): Promise<void>;
   /** Stops the final pass and the summary of a meeting whose recording is saved; its `Summary`
@@ -263,6 +266,9 @@ export interface IpcCommands
   resummarise(meeting: string): Promise<void>;
   /** Swaps the current summary with the previous one. */
   undoSummary(meeting: string): Promise<void>;
+  /** Lets the summary writer summarise a meeting kept on this computer from now on (T12.13).
+   * Sends nothing: the next summary does. */
+  allowSummaryWriter(meeting: string): Promise<void>;
   /** Exports to the Obsidian vault. Rejects with `no_vault` while none is set. */
   exportMeeting(meeting: string): Promise<ExportDone>;
   /** Deletes the meeting. Rejects with `meeting_busy` while a job holds it. */

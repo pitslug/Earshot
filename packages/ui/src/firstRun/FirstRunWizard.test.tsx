@@ -170,7 +170,7 @@ describe("First run wizard", () => {
     const s = setup();
     await stepHeading(STEPS[0].title);
     await act(async () => {
-      await s.ipc.startMeeting("Call", null);
+      await s.ipc.startMeeting("Call", null, false);
     });
     advance(s.timer, 1);
     await screen.findByRole("button", { name: /^Stop/ });

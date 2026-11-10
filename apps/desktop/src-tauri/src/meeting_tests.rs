@@ -239,6 +239,7 @@ fn request(mode: CaptureMode) -> StartRequest {
     StartRequest {
         mode,
         title: "Design sync".into(),
+        keep_local: false,
     }
 }
 

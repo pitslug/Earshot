@@ -228,6 +228,9 @@ pub struct MeetingDetail {
     /// (T7.4gc), oldest first (PLAN.md 3.9: when and how much, never text; empty for any
     /// other summary and for a record this version cannot read).
     pub handovers: Vec<HandoverItem>,
+    /// The meeting's summary is kept on this computer (T12.13), `None` when it may go to the
+    /// summary writer.
+    pub kept_local: Option<crate::keep_local::KeptLocalView>,
 }
 
 /// One handover to Claude Code or Codex.
@@ -569,7 +572,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         .ok_or_else(not_found)?;
     // Everything else is one snapshot under one store lock, so the shown summary,
     // `can_undo_summary` and the transcript the citations resolve against agree.
-    let (persons, history, view, identities, backend, handovers, audio_kept) = {
+    let (persons, history, view, identities, backend, handovers, audio_kept, kept_local) = {
         let db = services.store();
         let persons = edit::list_persons_in(&db)?;
         let history = match edit::summary_history_in(&**db, meeting) {
@@ -601,8 +604,9 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             .map_err(RuntimeError::from)?
             .iter()
             .any(|f| services.data.resolve(&f.path).is_ok_and(|p| p.exists()));
+        let kept_local = crate::keep_local::kept_local_view(&db, meeting);
         (
-            persons, history, view, identities, backend, handovers, audio_kept,
+            persons, history, view, identities, backend, handovers, audio_kept, kept_local,
         )
     };
     let in_room = !view.tracks.iter().any(|t| t.kind == TrackId::Reference);
@@ -681,6 +685,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
                     .unwrap_or_default(),
             })
             .collect(),
+        kept_local,
     })
 }
 

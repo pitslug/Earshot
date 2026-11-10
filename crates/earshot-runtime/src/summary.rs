@@ -813,7 +813,9 @@ impl SummaryService {
     /// [`RuntimeError::ModelMissing`], [`RuntimeError::LocalSummary`] (load, plan, model,
     /// still invalid, cancelled), [`RuntimeError::Spawn`]. Both:
     /// [`RuntimeError::Conflict`] (module docs), store errors, [`RuntimeError::Internal`]
-    /// if the meeting does not exist. Nothing is written then.
+    /// if the meeting does not exist. Nothing is written then. A service that is not local:
+    /// [`RuntimeError::SummaryKeptLocal`] for a meeting kept on this computer, before anything
+    /// is read or sent.
     pub fn summarize<R: Rng + ?Sized>(
         &self,
         services: &Services,
@@ -821,6 +823,14 @@ impl SummaryService {
         rng: &mut R,
         cancel: &CancelToken,
     ) -> Result<SummaryOutcome, RuntimeError> {
+        // A meeting kept on this computer (T12.13) is summarised only by a local model: any
+        // other service is refused before the transcript is read (`crate::keep_local`).
+        if !matches!(self.backend, Backend::Local { .. })
+            && crate::keep_local::summary_privacy(&services.store(), meeting)
+                == crate::keep_local::SummaryPrivacy::KeptLocal
+        {
+            return Err(RuntimeError::SummaryKeptLocal(meeting));
+        }
         let (view, settings) = load_input(services, meeting)?;
         let input = input_of(&view, &settings);
         // Claude Code and Codex: every handover of this run is stored for the meeting as it
