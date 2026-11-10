@@ -331,8 +331,13 @@ export function AppShell({
   const [compact, setCompact] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
-  // The meeting a Cancel was pressed for; its result ends the view, and a newer meeting differs.
+  // The meeting a Cancel was pressed for, until its result: a newer meeting differs.
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  // An older meeting still finishing behind a newer recording, until its result. The meeting
+  // screen follows the newer one, so its Cancel is offered here.
+  const [behindId, setBehindId] = useState<string | null>(null);
+  // The last meeting the screen followed, kept across the reset a new start makes.
+  const lastMeeting = useRef<{ id: string; finishing: boolean } | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [quitAsked, setQuitAsked] = useState<keyof typeof QUIT_COPY | null>(null);
   const [quitting, setQuitting] = useState(false);
@@ -445,6 +450,8 @@ export function AppShell({
   const live = useLiveMeeting(ipc, timer, (event) => {
     if (RELOAD_ON.includes(event.type)) setReload((n) => n + 1);
     if (event.type === "Started") {
+      const older = lastMeeting.current;
+      if (older !== null && older.finishing && older.id !== event.meeting) setBehindId(older.id);
       setSelectedId(event.meeting);
       // Also a meeting the tray or the shortcut started.
       setView("meeting");
@@ -452,9 +459,16 @@ export function AppShell({
     }
     // An older meeting's end says nothing about the stop button of this one.
     if (event.type === "Ended" && event.meeting === liveMeetingId.current) setStopping(false);
+    if (event.type === "Summary") {
+      setBehindId((id) => (id === event.meeting ? null : id));
+      setCancellingId((id) => (id === event.meeting ? null : id));
+    }
   });
   const meeting = live.meeting;
   liveMeetingId.current = meeting?.meetingId ?? null;
+  if (meeting !== null) {
+    lastMeeting.current = { id: meeting.meetingId, finishing: meeting.phase === "processing" };
+  }
   const active = meeting !== null && meeting.phase !== "done";
   const clockNow = useNow(timer, 1000);
 
@@ -975,6 +989,27 @@ export function AppShell({
             <MessageBarActions>
               <Button size="small" appearance="transparent" onClick={() => setDeleteError(null)}>
                 Dismiss
+              </Button>
+            </MessageBarActions>
+          </MessageBar>
+        )}
+        {behindId !== null && (
+          <MessageBar intent="info" layout="multiline">
+            <MessageBarBody>
+              <MessageBarTitle>Your previous meeting is still finishing</MessageBarTitle>
+              <span aria-live="polite">
+                {cancellingId === behindId
+                  ? "Stopping. This can take a moment if a model is still working or loading."
+                  : "Its final transcript and summary are being made. Cancel keeps the recording; you can re-transcribe it later."}
+              </span>
+            </MessageBarBody>
+            <MessageBarActions>
+              <Button
+                size="small"
+                disabled={cancellingId === behindId}
+                onClick={() => cancelFinishing(behindId)}
+              >
+                Cancel finishing
               </Button>
             </MessageBarActions>
           </MessageBar>

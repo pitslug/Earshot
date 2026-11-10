@@ -342,6 +342,46 @@ describe("a meeting started while the previous one finishes", () => {
       "processing",
     );
   });
+
+  it("offers Cancel for the older meeting finishing behind, and the new recording keeps going", async () => {
+    const s = setup();
+    const pressed: string[] = [];
+    const real = s.ipc.cancelFinishing.bind(s.ipc);
+    s.ipc.cancelFinishing = async (meeting) => {
+      pressed.push(meeting);
+      await real(meeting);
+    };
+    const first = await startMeeting(s);
+    const olderId = (await s.ipc.listMeetings())[0].id;
+    await s.user.click(within(first).getByRole("button", { name: "Stop meeting" }));
+    expect(await screen.findByRole("heading", { name: "Finishing the meeting" })).toBeInTheDocument();
+    await startMeeting(s);
+    expect(screen.getByText("Your previous meeting is still finishing")).toBeInTheDocument();
+    const cancel = screen.getByRole("button", { name: "Cancel finishing" });
+    await s.user.click(cancel);
+    expect(await screen.findByText(/^Stopping\./)).toBeInTheDocument();
+    expect(cancel).toBeDisabled();
+    await s.user.click(cancel);
+    expect(pressed).toEqual([olderId]);
+    // Its result ends the notice; the recording is untouched.
+    advance(s.timer, POST_STEP_MS);
+    await waitFor(() => expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull());
+    expect(screen.queryByRole("button", { name: "Cancel finishing" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop meeting" })).toBeEnabled();
+    const older = (await s.ipc.listMeetings()).find((m) => m.id === olderId);
+    expect(older?.state).toBe("Unprocessed");
+  }, 30_000);
+
+  it("drops the notice when the older meeting finishes by itself", async () => {
+    const s = setup();
+    const first = await startMeeting(s);
+    await s.user.click(within(first).getByRole("button", { name: "Stop meeting" }));
+    await startMeeting(s);
+    expect(screen.getByText("Your previous meeting is still finishing")).toBeInTheDocument();
+    advance(s.timer, POST_STEP_MS * (POST_STEPS.length + 2));
+    await waitFor(() => expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull());
+    expect(screen.getByRole("button", { name: "Stop meeting" })).toBeEnabled();
+  }, 30_000);
 });
 
 describe("provisional words", () => {
