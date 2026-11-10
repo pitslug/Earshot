@@ -469,7 +469,9 @@ function AgentCliCard({
   useEffect(() => {
     if (check.status === "idle") void recheck();
   }, [check.status, recheck]);
-  const changed = otherOpen && typed.trim() !== stored;
+  // An empty name under Other is no choice yet: saving it would store the CLI's default, which
+  // has its own entry in the list.
+  const changed = otherOpen && typed.trim() !== "" && typed.trim() !== stored;
   useSaveOnNext(saveOnNext, async () => !changed || state.save({ writer, ...saveModel(typed) }));
   return (
     <div className={styles.endpoint} role="group" aria-label={group}>

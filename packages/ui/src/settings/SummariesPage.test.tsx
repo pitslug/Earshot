@@ -327,6 +327,18 @@ describe("Settings, Summaries", () => {
     await waitFor(() => expect(asked.n).toBe(2));
   });
 
+  it("keeps Save model off while the Other name is empty", async () => {
+    const s = await open({ summaries: { settings: { writer: "ClaudeCode", claude_model: "sonnet" } } });
+    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    await s.user.selectOptions(within(card).getByRole("combobox", { name: "Model" }), "Other");
+    const other = within(card).getByRole("group", { name: "Other model" });
+    const save = within(other).getByRole("button", { name: "Save model" });
+    expect(save).toBeDisabled();
+    await s.user.type(within(other).getByRole("textbox", { name: /^Model name/ }), "   ");
+    expect(save).toBeDisabled();
+    expect((await s.ipc.summarySettings()).value.claude_model).toBe("sonnet");
+  });
+
   it("chooses Claude Code's effort from a list, applied at once", async () => {
     const s = await open({ machine: "desktop", summaries: { settings: { writer: "ClaudeCode", claude_model: "opus" } } });
     const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
