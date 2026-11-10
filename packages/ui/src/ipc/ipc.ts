@@ -55,7 +55,7 @@ import type {
   ProviderChoice,
   RecommendedView,
   RememberOutcome,
-  RememberResult,
+  SavedVoiceResult,
   RemovedView,
   RowTrack,
   RunsOn,
@@ -157,7 +157,7 @@ export type {
   ProviderChoice,
   RecommendedView,
   RememberOutcome,
-  RememberResult,
+  SavedVoiceResult,
   RemovedView,
   RowTrack,
   RunsOn,
@@ -253,8 +253,14 @@ export interface IpcCommands
   renamePerson(person: string, name: string): Promise<number>;
   /** Every person, by name. */
   listPersons(): Promise<PersonItem[]>;
-  /** "Remember these voices for next time" (opt-in). */
-  rememberVoices(meeting: string, speakers: string[]): Promise<RememberResult[]>;
+  /** "Save" on a voice that needs a name (T12.19): names it, links it to that person and
+   * remembers the voice, in one step. */
+  saveVoice(meeting: string, speaker: string, choice: LinkChoice): Promise<SavedVoiceResult>;
+  /** "Ignore": the voice no longer needs a name and keeps its "Speaker N" label. Rejects with
+   * `not_unnamed` or `no_stored_voice`. */
+  ignoreSpeaker(meeting: string, speaker: string): Promise<void>;
+  /** Undoes "Ignore": the voice needs a name again. */
+  unignoreSpeaker(meeting: string, speaker: string): Promise<void>;
   /** Forgets every voiceprint of a person. */
   forgetPersonVoices(person: string): Promise<number>;
   removePerson(person: string): Promise<void>;

@@ -1138,3 +1138,7 @@ mod mark_me_tests;
 /// T12.16: the title and the transcript text.
 #[path = "edit_text_tests.rs"]
 mod text_tests;
+
+/// T12.19: saving and ignoring a voice.
+#[path = "edit_speakers_tests.rs"]
+mod speakers_tests;

@@ -32,11 +32,13 @@ Reassurance, not a wall of text (D20):
 
 ## Meeting detail (T7.3)
 
-- Header: title, date, duration, capture mode, transcript pass (final or draft), summary model and backend. Buttons: Export to Obsidian, Copy summary (when there is a summary and no new one is being written: plain Markdown, no citations), Re-transcribe, Re-summarise (Summarise when there is none); the header stays in view while the meeting scrolls. Deleting starts from the meeting list: a trash can on hover or keyboard focus, or the right-click menu (Menu key or Shift+F10 from the keyboard), then the confirm dialog.
+- Header: title, date, duration, capture mode, transcript pass (final or draft), summary model and backend. Buttons: Speakers (toggles the Speakers panel, with a badge such as "2 need names" while voices need names), Export to Obsidian, Copy summary (when there is a summary and no new one is being written: plain Markdown, no citations), Re-transcribe, Re-summarise (Summarise when there is none); the header stays in view while the meeting scrolls. Deleting starts from the meeting list: a trash can on hover or keyboard focus, or the right-click menu (Menu key or Shift+F10 from the keyboard), then the confirm dialog.
 - Tabs: Summary, Transcript.
 - Summary tab: TL;DR, Decisions, Actions (owner column + task), each item with its citations as small links that jump to the cited transcript line. Actions are read-only in the app: ticking happens in the exported Obsidian note ("Tick actions in the Obsidian note"). A "Re-summarise" button uses the style saved in Settings (a one-off style was dropped); the new summary replaces the old one and the previous one is kept until the next re-summary, with a "Switch to previous summary" link.
-- A banner when voices need names ("2 voices need names. Names flow into the summary and export.") opening the who-is-who panel.
-- Who-is-who panel (right column): one row per speaker with a play-sample button, name (or a name field for unknown voices), where it came from (mic, matched voiceprint), share of talk time, one sample line, and Merge / Link to person. "Remember these voices for next time" is unticked by default (voiceprints are opt-in). Renames rewrite the speaker rows, so summary, transcript and export all follow.
+- Speakers panel (T12.19): slides in from the right and pushes the summary and transcript aside rather than covering them. It opens by itself when a voice needs a name and is closed otherwise; the header's Speakers button and the panel's Close toggle it. No names banner: the button's badge says how many voices need names.
+  - Need a name: one row per voice that needs a name, with a play-sample button, a name field, where it came from, share of talk time and one sample line. Save (or Enter) names the voice, links it to that person (an existing person with exactly that name, else a new one) and remembers the voice, in one step: saving one voice is the consent to keep its voiceprint (voiceprints stay opt-in, per person; the user's own voice is never saved here). The notice after Save says what was remembered: a model that cannot match voiceprints, too little speech or no stored voice keep the name without a voiceprint, and say so. Ignore stops asking for a name: the voice keeps its "Speaker N" label in the transcript, summary and export, is never remembered or matched as a person, and a re-transcription keeps the choice. Merge and, in a room, "This is me" are here too.
+  - Named (collapsed): the user, linked voices and voices recognised from a voiceprint (marked "Recognised"; such a voice counts as named, so it never opens the panel). A wrong name or match is fixed here: Rename here, Rename person, Link to person, Merge, Forget voice, "This isn't me". Renames rewrite the speaker rows, so summary, transcript and export all follow.
+  - Ignored (collapsed, when any): ignored voices with Stop ignoring, which makes them need a name again.
 - Transcript tab: the transcript grid (time, speaker, text), a cited line highlighted when reached from a citation.
 
 ## Settings (T7.4, T12.5b)
@@ -83,7 +85,7 @@ Next saves what is on the step, typed fields included, so the wizard has no Save
 |---|---|
 | Window | Full app + tray |
 | During the meeting | Signals + landed text |
-| Speaker naming | Who-is-who panel |
+| Speaker naming | Speakers panel |
 | Action items | Obsidian owns ticks |
 | Re-summary | Replace, keep one undo |
 | Look | Quiet native, Fluent UI React v9 |

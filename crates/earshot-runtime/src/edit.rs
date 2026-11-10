@@ -157,6 +157,13 @@ pub enum EditError {
     SummaryItemNotFound,
     /// The summary text is unusable ([`edit_summary`]). Never carries the text.
     InvalidSummaryText(TextProblem),
+    /// The speaker is the user or already has a name (a linked person): only a voice that
+    /// needs a name can be ignored ([`ignore_speaker`], T12.19).
+    NotUnnamed(EntityId),
+    /// The final pass kept no voice of this speaker (no identity entry, or the meeting's
+    /// identity record cannot be read), so the choice to ignore it has nowhere to be kept
+    /// ([`ignore_speaker`]). A re-transcription stores one.
+    NoStoredVoice(EntityId),
 }
 
 /// What is wrong with a title or transcript text.
@@ -253,6 +260,14 @@ impl fmt::Display for EditError {
             Self::InvalidSummaryText(p) => {
                 write!(f, "the text {}", text_problem(*p, MAX_SUMMARY_TEXT_CHARS))
             }
+            Self::NotUnnamed(id) => write!(
+                f,
+                "speaker {id} is you or has a name; only a voice that needs a name can be ignored"
+            ),
+            Self::NoStoredVoice(id) => write!(
+                f,
+                "no voice of speaker {id} is stored, so ignoring it cannot be kept; transcribe the meeting again first"
+            ),
         }
     }
 }
@@ -774,7 +789,8 @@ pub enum PersonChoice {
 /// already linked to under that name writes nothing. The user's person (`is_me`) is the
 /// "Me" row's alone, and the "Me" row links only to it, as the final pass's naming rule
 /// ("nobody else is the user"). Linking to another person clears the speaker's
-/// "remembered" mark ([`remember_voices`]), so its voice can be remembered for the new one.
+/// "remembered" mark ([`remember_voices`]), so its voice can be remembered for the new one,
+/// and ends an ignore ([`ignore_speaker`]).
 ///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting, speaker or person, unusable name,
@@ -785,42 +801,63 @@ pub fn link_speaker(
     speaker: EntityId,
     choice: &PersonChoice,
 ) -> Result<EntityId, RuntimeError> {
-    let new_name = match choice {
+    let new_name = checked_choice(choice)?;
+    write(services, |tx, stamp| {
+        link_in(tx, stamp, meeting, speaker, choice, new_name)
+    })
+}
+
+/// The checked name of a new person in `choice` (`None` for an existing person).
+fn checked_choice(choice: &PersonChoice) -> Result<Option<String>, RuntimeError> {
+    Ok(match choice {
         PersonChoice::New { name } => Some(clean_name(name)?),
         PersonChoice::Existing(_) => None,
-    };
-    write(services, |tx, stamp| {
-        let mut row = live_speaker(&*tx, meeting, speaker)?;
-        let person = match (choice, new_name) {
-            (PersonChoice::Existing(id), _) => live_person(&*tx, *id)?,
-            (PersonChoice::New { .. }, Some(name)) => {
-                let p = Person::new(name, false, stamp);
-                tx.put_person(p.clone()).map_err(voiceprint_err)?;
-                p
-            }
-            (PersonChoice::New { .. }, None) => {
-                return Err(RuntimeError::Internal(
-                    "a new person's name was not checked",
-                ));
-            }
-        };
-        match (row.role == SpeakerRole::Me, person.is_me) {
-            (false, true) => return Err(EditError::NotTheUser(speaker).into()),
-            (true, false) => return Err(EditError::MeIsTheUser(speaker).into()),
-            _ => {}
-        }
-        if row.person_id == Some(person.id) && row.display_name == person.display_name {
-            return Ok(person.id);
-        }
-        if row.person_id != Some(person.id) {
-            update_identity_entry(tx, meeting, speaker, |i| i.enrolled = false)?;
-        }
-        row.person_id = Some(person.id);
-        row.display_name.clone_from(&person.display_name);
-        row.meta.touch(stamp.hlc, stamp.clock);
-        tx.put_speaker(row)?;
-        Ok(person.id)
     })
+}
+
+/// [`link_speaker`] inside `tx` (`new_name`: [`checked_choice`] of `choice`). Linking a voice
+/// to a person also ends an ignore ([`ignore_speaker`]): a named voice is not ignored.
+fn link_in(
+    tx: &mut StoreTx<'_>,
+    stamp: &mut DynStamp<'_, '_>,
+    meeting: EntityId,
+    speaker: EntityId,
+    choice: &PersonChoice,
+    new_name: Option<String>,
+) -> Result<EntityId, RuntimeError> {
+    let mut row = live_speaker(&*tx, meeting, speaker)?;
+    let person = match (choice, new_name) {
+        (PersonChoice::Existing(id), _) => live_person(&*tx, *id)?,
+        (PersonChoice::New { .. }, Some(name)) => {
+            let p = Person::new(name, false, stamp);
+            tx.put_person(p.clone()).map_err(voiceprint_err)?;
+            p
+        }
+        (PersonChoice::New { .. }, None) => {
+            return Err(RuntimeError::Internal(
+                "a new person's name was not checked",
+            ));
+        }
+    };
+    match (row.role == SpeakerRole::Me, person.is_me) {
+        (false, true) => return Err(EditError::NotTheUser(speaker).into()),
+        (true, false) => return Err(EditError::MeIsTheUser(speaker).into()),
+        _ => {}
+    }
+    if row.person_id == Some(person.id) && row.display_name == person.display_name {
+        return Ok(person.id);
+    }
+    if row.person_id != Some(person.id) {
+        update_identity_entry(tx, meeting, speaker, |i| {
+            i.enrolled = false;
+            i.ignored = false;
+        })?;
+    }
+    row.person_id = Some(person.id);
+    row.display_name.clone_from(&person.display_name);
+    row.meta.touch(stamp.hlc, stamp.clock);
+    tx.put_speaker(row)?;
+    Ok(person.id)
 }
 
 /// Whether a meeting with these Track rows (its live ones count) was recorded in the room,
@@ -836,7 +873,7 @@ pub fn records_in_room(tracks: &[Track]) -> bool {
 }
 
 /// Whether [`mark_me`] would accept `row` of a meeting with these `tracks` and live
-/// `speakers`: what the who-is-who panel offers, by the refusals' own rule.
+/// `speakers`: what the Speakers panel offers, by the refusals' own rule.
 #[must_use]
 pub fn can_mark_me(tracks: &[Track], speakers: &[Speaker], row: &Speaker) -> bool {
     records_in_room(tracks)
@@ -899,6 +936,7 @@ pub fn mark_me(
         update_identity_entry(tx, meeting, speaker, |i| {
             i.user_edited = true;
             i.enrolled = false;
+            i.ignored = false;
         })?;
         Ok(me.id)
     })
@@ -943,6 +981,7 @@ pub fn unmark_me(
             i.given_stamp = Some(row.meta.updated_at);
             i.user_edited = false;
             i.enrolled = false;
+            i.ignored = false;
         })?;
         Ok(())
     })
@@ -994,7 +1033,7 @@ pub fn rename_person(
     })
 }
 
-/// A person as the who-is-who panel lists it.
+/// A person as the Speakers panel lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersonInfo {
     /// The person.
@@ -1085,9 +1124,9 @@ pub enum Remembered {
     },
 }
 
-/// Opt-in enrolment ("Remember these voices for next time"): for each of `speakers` of
-/// `meeting`, adds the speaker's centroid from the final pass's identity record to the
-/// voiceprint of the person the speaker is linked to ([`enroll`], exact embedding model of
+/// Opt-in enrolment (in the app since T12.19 only through [`save_voice`], one voice the user
+/// saved): for each of `speakers` of `meeting`, adds the speaker's centroid from the final
+/// pass's identity record to the voiceprint of the person the speaker is linked to ([`enroll`], exact embedding model of
 /// the centroid; the enrolment settings and voiceprint thresholds of
 /// [`PostConfig::default`]). The speech behind a centroid is the total length of the
 /// speaker's live final segments. A centroid is added once: the entry is marked enrolled
@@ -1125,79 +1164,254 @@ pub fn remember_voices_with(
         .filter(|s| seen.insert(*s))
         .collect();
     write(services, |tx, stamp| {
-        live_meeting(&*tx, meeting)?;
-        // Every speaker is checked before anything is enrolled.
-        let mut targets = Vec::new();
-        for &id in &speakers {
-            let row = live_speaker(&*tx, meeting, id)?;
-            if row.role == SpeakerRole::Me {
-                return Err(EditError::MeVoice(id).into());
-            }
-            let linked = row.person_id.ok_or(EditError::NoPerson(id))?;
-            let person = live_person(&*tx, linked)?;
-            if person.is_me {
-                return Err(EditError::MeVoice(id).into());
-            }
-            targets.push((id, person.id));
+        remember_in(tx, stamp, meeting, &speakers, config)
+    })
+}
+
+/// [`remember_voices_with`] inside `tx`, for distinct `speakers`.
+fn remember_in(
+    tx: &mut StoreTx<'_>,
+    stamp: &mut DynStamp<'_, '_>,
+    meeting: EntityId,
+    speakers: &[EntityId],
+    config: &PostConfig,
+) -> Result<Vec<(EntityId, Remembered)>, RuntimeError> {
+    live_meeting(&*tx, meeting)?;
+    // Every speaker is checked before anything is enrolled.
+    let mut targets = Vec::new();
+    for &id in speakers {
+        let row = live_speaker(&*tx, meeting, id)?;
+        if row.role == SpeakerRole::Me {
+            return Err(EditError::MeVoice(id).into());
         }
-        let key = crate::identities::record_key(meeting);
-        let record = match tx
-            .local_value(key.as_str())?
+        let linked = row.person_id.ok_or(EditError::NoPerson(id))?;
+        let person = live_person(&*tx, linked)?;
+        if person.is_me {
+            return Err(EditError::MeVoice(id).into());
+        }
+        targets.push((id, person.id));
+    }
+    let key = crate::identities::record_key(meeting);
+    let record = match tx
+        .local_value(key.as_str())?
+        .map(|b| crate::identities::decode(&b))
+    {
+        Some(StoredIdentities::Record(r)) => r.speakers,
+        None | Some(StoredIdentities::Unreadable(_)) => Vec::new(),
+    };
+    let finals = live_segments(&*tx, meeting, TranscriptPass::Final)?;
+    let mut out = Vec::new();
+    for (id, person) in targets {
+        let Some(entry) = record
+            .iter()
+            .find(|i| i.speaker == id && i.centroid.is_valid())
+        else {
+            out.push((id, Remembered::NoStoredVoice));
+            continue;
+        };
+        if entry.enrolled {
+            out.push((id, Remembered::AlreadyEnrolled));
+            continue;
+        }
+        match config.voiceprint_threshold(&entry.centroid.model) {
+            Ok(_) => {}
+            Err(RuntimeError::Uncalibrated { model, .. }) => {
+                out.push((id, Remembered::Uncalibrated { model }));
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+        let speech: Duration = finals
+            .iter()
+            .filter(|r| r.segment.speaker_id == Some(id))
+            .map(|r| r.segment.end.saturating_sub(r.segment.start))
+            .sum();
+        let result = enroll(
+            tx,
+            person,
+            std::slice::from_ref(&entry.centroid),
+            speech,
+            &config.enrolment,
+            stamp,
+        );
+        out.push((
+            id,
+            match result {
+                Ok(voiceprint) => {
+                    update_identity_entry(tx, meeting, id, |i| i.enrolled = true)?;
+                    Remembered::Enrolled { person, voiceprint }
+                }
+                Err(VoiceprintError::NotEnoughSpeech { needed, got }) => {
+                    Remembered::NotEnoughSpeech { needed, got }
+                }
+                Err(e) => return Err(voiceprint_err(e)),
+            },
+        ));
+    }
+    Ok(out)
+}
+
+/// What [`save_voice`] did: the person the voice is now linked to and what remembering
+/// its voice did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedVoice {
+    /// The person.
+    pub person: EntityId,
+    /// Remembering the voice ([`Remembered::Enrolled`] or why nothing was stored).
+    pub remembered: Remembered,
+}
+
+/// "Save" on a voice that needs a name (T12.19): links speaker `speaker` of `meeting` to a
+/// person ([`link_speaker`]) and remembers its voice for that person ([`remember_voices`]),
+/// in one transaction. The user's choice to save this one voice is the consent the
+/// enrolment needs (it replaced the panel-wide "Remember these voices" tickbox). The link
+/// is kept whatever remembering does: too little speech, no stored voice or an
+/// uncalibrated speaker model store no voiceprint and say so in
+/// [`SavedVoice::remembered`]; a voice already remembered for that person is
+/// [`Remembered::AlreadyEnrolled`].
+///
+/// # Errors
+/// As [`link_speaker`] and [`remember_voices`] ("Me" and the user's person are refused, so
+/// the user's voice is never enrolled here); nothing is written then.
+pub fn save_voice(
+    services: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+    choice: &PersonChoice,
+) -> Result<SavedVoice, RuntimeError> {
+    save_voice_with(services, meeting, speaker, choice, &PostConfig::default())
+}
+
+/// [`save_voice`] with other enrolment settings and thresholds (tests).
+///
+/// # Errors
+/// As [`save_voice`].
+pub fn save_voice_with(
+    services: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+    choice: &PersonChoice,
+    config: &PostConfig,
+) -> Result<SavedVoice, RuntimeError> {
+    let new_name = checked_choice(choice)?;
+    write(services, |tx, stamp| {
+        let person = link_in(tx, stamp, meeting, speaker, choice, new_name)?;
+        let remembered = remember_in(tx, stamp, meeting, &[speaker], config)?
+            .into_iter()
+            .next()
+            .map(|(_, r)| r)
+            .ok_or(RuntimeError::Internal(
+                "remembering one voice gave no result",
+            ))?;
+        Ok(SavedVoice { person, remembered })
+    })
+}
+
+/// The entries of `meeting`'s speaker identity record (empty when there is none or it
+/// cannot be read), from a store the caller has locked.
+///
+/// # Errors
+/// Store errors.
+pub fn identities_in(
+    store: &earshot_store::Store,
+    meeting: EntityId,
+) -> Result<Vec<crate::identities::SpeakerIdentity>, RuntimeError> {
+    Ok(
+        match store
+            .local_value(crate::identities::record_key(meeting).as_str())?
             .map(|b| crate::identities::decode(&b))
         {
             Some(StoredIdentities::Record(r)) => r.speakers,
             None | Some(StoredIdentities::Unreadable(_)) => Vec::new(),
-        };
-        let finals = live_segments(&*tx, meeting, TranscriptPass::Final)?;
-        let mut out = Vec::new();
-        for (id, person) in targets {
-            let Some(entry) = record
-                .iter()
-                .find(|i| i.speaker == id && i.centroid.is_valid())
-            else {
-                out.push((id, Remembered::NoStoredVoice));
-                continue;
-            };
-            if entry.enrolled {
-                out.push((id, Remembered::AlreadyEnrolled));
-                continue;
-            }
-            match config.voiceprint_threshold(&entry.centroid.model) {
-                Ok(_) => {}
-                Err(RuntimeError::Uncalibrated { model, .. }) => {
-                    out.push((id, Remembered::Uncalibrated { model }));
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-            let speech: Duration = finals
-                .iter()
-                .filter(|r| r.segment.speaker_id == Some(id))
-                .map(|r| r.segment.end.saturating_sub(r.segment.start))
-                .sum();
-            let result = enroll(
-                tx,
-                person,
-                std::slice::from_ref(&entry.centroid),
-                speech,
-                &config.enrolment,
-                stamp,
-            );
-            out.push((
-                id,
-                match result {
-                    Ok(voiceprint) => {
-                        update_identity_entry(tx, meeting, id, |i| i.enrolled = true)?;
-                        Remembered::Enrolled { person, voiceprint }
-                    }
-                    Err(VoiceprintError::NotEnoughSpeech { needed, got }) => {
-                        Remembered::NotEnoughSpeech { needed, got }
-                    }
-                    Err(e) => return Err(voiceprint_err(e)),
-                },
-            ));
+        },
+    )
+}
+
+/// Whether the user ignored `row` in its meeting ([`ignore_speaker`]), by its entry among
+/// `identities` ([`identities_in`]). Only a voice that still needs a name counts: "Me" and a
+/// linked voice never do.
+#[must_use]
+pub fn is_ignored(row: &Speaker, identities: &[crate::identities::SpeakerIdentity]) -> bool {
+    row.role != SpeakerRole::Me
+        && row.person_id.is_none()
+        && identities.iter().any(|i| i.speaker == row.id && i.ignored)
+}
+
+/// Whether [`ignore_speaker`] would accept `row` with these `identities`: what the Speakers
+/// panel offers, by the refusals' own rule.
+#[must_use]
+pub fn can_ignore(row: &Speaker, identities: &[crate::identities::SpeakerIdentity]) -> bool {
+    row.role != SpeakerRole::Me
+        && row.person_id.is_none()
+        && identities.iter().any(|i| i.speaker == row.id)
+}
+
+/// "Ignore" (T12.19): the user does not want to name voice `speaker` of `meeting`. It no
+/// longer needs a name, keeps its "Speaker N" label everywhere (the row is not written), and
+/// is never enrolled or named as a person: a later final pass continues it as a user edit
+/// (`crate::post` step 4), keeping it unlinked whatever voiceprint it matches. Kept in the
+/// voice's entry of the meeting's speaker identity record
+/// (`earshot_store::identities::SpeakerIdentity::ignored`), device-locally. Returns whether
+/// anything changed (ignoring an ignored voice writes nothing). Undone by
+/// [`unignore_speaker`]; naming the voice ([`link_speaker`]) also ends it.
+///
+/// # Errors
+/// [`EditError`] (unknown or deleted meeting or speaker, [`EditError::NotUnnamed`] for "Me"
+/// or a linked voice, [`EditError::NoStoredVoice`] for a voice without an entry); store
+/// errors.
+pub fn ignore_speaker(
+    services: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<bool, RuntimeError> {
+    write(services, |tx, _| {
+        let row = live_speaker(&*tx, meeting, speaker)?;
+        if row.role == SpeakerRole::Me || row.person_id.is_some() {
+            return Err(EditError::NotUnnamed(speaker).into());
         }
-        Ok(out)
+        let key = crate::identities::record_key(meeting);
+        let has_entry = matches!(
+            tx.local_value(key.as_str())?.map(|b| crate::identities::decode(&b)),
+            Some(StoredIdentities::Record(r)) if r.speakers.iter().any(|i| i.speaker == speaker)
+        );
+        if !has_entry {
+            return Err(EditError::NoStoredVoice(speaker).into());
+        }
+        update_identity_entry(tx, meeting, speaker, |i| i.ignored = true)
+    })
+}
+
+/// Undoes [`ignore_speaker`]: voice `speaker` of `meeting` needs a name again, and its entry
+/// reads as the pass's own naming again (unless the user also edited the row). Returns
+/// whether anything changed (a voice that is not ignored writes nothing).
+///
+/// # Errors
+/// [`EditError`] (unknown or deleted meeting or speaker); store errors.
+pub fn unignore_speaker(
+    services: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<bool, RuntimeError> {
+    write(services, |tx, _| {
+        let row = live_speaker(&*tx, meeting, speaker)?;
+        update_identity_entry(tx, meeting, speaker, |i| {
+            if !i.ignored {
+                return;
+            }
+            i.ignored = false;
+            // A re-run carried the ignore as an edit (no stamp, `user_edited`). When the row
+            // is still what the pass gave it, nothing else of it was the user's: it reads as
+            // the pass's own naming again (as `unmark_me` leaves it), so a later run may
+            // renumber or name it. A row the user renamed or linked stays an edit.
+            if i.user_edited
+                && i.given_stamp.is_none()
+                && row.display_name == i.given_name
+                && row.person_id == i.given_person
+            {
+                i.user_edited = false;
+                i.given_stamp = Some(row.meta.updated_at);
+            }
+        })
     })
 }
 

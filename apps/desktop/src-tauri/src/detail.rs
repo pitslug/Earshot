@@ -6,7 +6,7 @@
 //! deletion. The store lock is held for each read only; nothing here holds it across FLAC
 //! decoding or vault work (the runtime functions take it themselves).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use earshot_core::asr::Segment;
 use earshot_core::audio::{SampleRate, WavFormat, i16_to_f32, write_wav};
@@ -19,7 +19,7 @@ use earshot_runtime::backends::pass_backend;
 use earshot_runtime::edit::{
     self, EditError, NameProblem, PersonChoice, PersonInfo, Remembered, SummaryField, TextProblem,
 };
-use earshot_runtime::identities::{SpeakerIdentity, StoredIdentities, decode};
+use earshot_runtime::identities::SpeakerIdentity;
 use earshot_runtime::view::MeetingView;
 use earshot_runtime::{RuntimeError, Services, os_seeded_rng};
 use serde::{Deserialize, Serialize};
@@ -165,7 +165,7 @@ pub struct PersonRef {
     pub has_voiceprint: bool,
 }
 
-/// One row of the who-is-who panel.
+/// One row of the Speakers panel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct SpeakerCard {
     /// Speaker id (hyphenated UUID).
@@ -182,8 +182,13 @@ pub struct SpeakerCard {
     pub share_percent: u32,
     /// The start of their longest segment (at most [`SAMPLE_LINE_CHARS`], then "...").
     pub sample_line: String,
-    /// Not the user and not linked to a person: the voice needs a name.
+    /// Not the user, not linked to a person and not ignored: the voice needs a name
+    /// ([`needs_name`]).
     pub needs_name: bool,
+    /// The user chose to ignore this voice in this meeting (T12.19, `edit::is_ignored`).
+    pub ignored: bool,
+    /// The user may ignore this voice (`edit::can_ignore`).
+    pub can_ignore: bool,
     /// The user may say this voice is theirs ("This is me": `edit::can_mark_me`).
     pub can_mark_me: bool,
     /// The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`).
@@ -295,7 +300,7 @@ pub enum LinkChoice {
     },
 }
 
-/// What "remember these voices" did for one speaker.
+/// What remembering a saved voice did (T12.19).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 pub enum RememberOutcome {
     /// Added to the person's voiceprint.
@@ -310,12 +315,24 @@ pub enum RememberOutcome {
     Unsupported,
 }
 
-/// One speaker's result.
+impl RememberOutcome {
+    fn of(r: &Remembered) -> Self {
+        match r {
+            Remembered::Enrolled { .. } => Self::Remembered,
+            Remembered::NotEnoughSpeech { .. } => Self::NotEnoughSpeech,
+            Remembered::NoStoredVoice => Self::NoStoredVoice,
+            Remembered::AlreadyEnrolled => Self::AlreadyRemembered,
+            Remembered::Uncalibrated { .. } => Self::Unsupported,
+        }
+    }
+}
+
+/// What "Save" on a voice did (T12.19).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
-pub struct RememberResult {
-    /// Speaker id.
-    pub speaker: String,
-    /// What happened.
+pub struct SavedVoiceResult {
+    /// The person the voice is linked to (hyphenated UUID).
+    pub person: String,
+    /// What remembering its voice did.
     pub outcome: RememberOutcome,
 }
 
@@ -507,6 +524,16 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "invalid_summary_text",
             "Summary text cannot contain line breaks or tabs.",
         ),
+        // The Speakers panel's Ignore (T12.19).
+        EditError::NotUnnamed(_) => err(
+            "not_unnamed",
+            "Only a voice that needs a name can be ignored.",
+        ),
+        EditError::NoStoredVoice(_) => err(
+            "no_stored_voice",
+            "Earshot kept nothing of this voice to remember the choice by. Re-transcribe the \
+             meeting, then ignore it.",
+        ),
     }
 }
 
@@ -639,6 +666,7 @@ fn speaker_cards(
                     has_voiceprint: p.has_voiceprint,
                 })
             });
+            let ignored = edit::is_ignored(s, identities);
             let kind = if s.role == SpeakerRole::Me {
                 SpeakerKind::Me
             } else {
@@ -655,7 +683,9 @@ fn speaker_cards(
                 id: s.id.to_string(),
                 name: s.display_name.clone(),
                 kind,
-                needs_name: needs_name(s.role, s.person_id.is_some()),
+                needs_name: needs_name(s.role, s.person_id.is_some(), ignored),
+                ignored,
+                can_ignore: edit::can_ignore(s, identities),
                 can_mark_me: edit::can_mark_me(&view.tracks, &view.speakers, s),
                 can_unmark_me: edit::can_unmark_me(&view.tracks, s),
                 person,
@@ -692,14 +722,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         let view = MeetingView::load(&**db, meeting)
             .map_err(RuntimeError::from)?
             .ok_or_else(not_found)?;
-        let identities = match db
-            .local_value(&earshot_store::identities::record_key(meeting))
-            .map_err(RuntimeError::from)?
-            .map(|b| decode(&b))
-        {
-            Some(StoredIdentities::Record(r)) => r.speakers,
-            None | Some(StoredIdentities::Unreadable(_)) => Vec::new(),
-        };
+        let identities = edit::identities_in(&db, meeting)?;
         let backend = match view.pass {
             Some(TranscriptPass::Final) => pass_backend(&db, meeting, TranscriptPass::Final, None)?,
             Some(TranscriptPass::Live) => {
@@ -820,35 +843,31 @@ pub fn link(
     speaker: EntityId,
     choice: &LinkChoice,
 ) -> Result<String, IpcError> {
-    let choice = match choice {
-        LinkChoice::Existing { person } => PersonChoice::Existing(parse_id(person)?),
-        LinkChoice::New { name } => PersonChoice::New { name: name.clone() },
-    };
-    Ok(edit::link_speaker(services, meeting, speaker, &choice)?.to_string())
+    Ok(edit::link_speaker(services, meeting, speaker, &person_choice(choice)?)?.to_string())
 }
 
-/// "Remember these voices for next time" for `speakers`.
+fn person_choice(choice: &LinkChoice) -> Result<PersonChoice, IpcError> {
+    Ok(match choice {
+        LinkChoice::Existing { person } => PersonChoice::Existing(parse_id(person)?),
+        LinkChoice::New { name } => PersonChoice::New { name: name.clone() },
+    })
+}
+
+/// "Save" on a voice (T12.19, `edit::save_voice`): names it, links it and remembers it.
 ///
 /// # Errors
-/// Edit refusals; store and voiceprint errors.
-pub fn remember(
+/// Edit refusals ([`edit_error`]); store and voiceprint errors.
+pub fn save_voice(
     services: &Services,
     meeting: EntityId,
-    speakers: &[EntityId],
-) -> Result<Vec<RememberResult>, IpcError> {
-    Ok(edit::remember_voices(services, meeting, speakers)?
-        .into_iter()
-        .map(|(speaker, r)| RememberResult {
-            speaker: speaker.to_string(),
-            outcome: match r {
-                Remembered::Enrolled { .. } => RememberOutcome::Remembered,
-                Remembered::NotEnoughSpeech { .. } => RememberOutcome::NotEnoughSpeech,
-                Remembered::NoStoredVoice => RememberOutcome::NoStoredVoice,
-                Remembered::AlreadyEnrolled => RememberOutcome::AlreadyRemembered,
-                Remembered::Uncalibrated { .. } => RememberOutcome::Unsupported,
-            },
-        })
-        .collect())
+    speaker: EntityId,
+    choice: &LinkChoice,
+) -> Result<SavedVoiceResult, IpcError> {
+    let saved = edit::save_voice(services, meeting, speaker, &person_choice(choice)?)?;
+    Ok(SavedVoiceResult {
+        person: saved.person.to_string(),
+        outcome: RememberOutcome::of(&saved.remembered),
+    })
 }
 
 /// The bytes of a 16-bit mono WAV file of `samples` at `rate_hz` (the core WAV writer).
@@ -928,22 +947,6 @@ pub fn export(services: &Services, meeting: EntityId) -> Result<ExportDone, IpcE
     Ok(ExportDone {
         note_path: report.path.to_string(),
     })
-}
-
-/// Speaker ids from the UI, without duplicates, in order.
-///
-/// # Errors
-/// `invalid_id`.
-pub fn parse_ids(ids: &[String]) -> Result<Vec<EntityId>, IpcError> {
-    let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
-    for id in ids {
-        let id = parse_id(id)?;
-        if seen.insert(id) {
-            out.push(id);
-        }
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

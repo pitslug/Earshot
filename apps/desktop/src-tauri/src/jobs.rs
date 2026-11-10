@@ -235,6 +235,8 @@ impl JobRunner {
 /// Voices that still need a name after a summary (as the summary-ready notice counts them).
 fn voices_to_name(services: &Services, meeting: EntityId) -> u32 {
     let db = services.store();
+    // An unreadable record ignores nobody (the count can only be higher, never hide a voice).
+    let identities = earshot_runtime::edit::identities_in(&db, meeting).unwrap_or_default();
     MeetingView::load(&**db, meeting)
         .ok()
         .flatten()
@@ -242,7 +244,13 @@ fn voices_to_name(services: &Services, meeting: EntityId) -> u32 {
             let n = v
                 .speakers
                 .iter()
-                .filter(|s| needs_name(s.role, s.person_id.is_some()))
+                .filter(|s| {
+                    needs_name(
+                        s.role,
+                        s.person_id.is_some(),
+                        earshot_runtime::edit::is_ignored(s, &identities),
+                    )
+                })
                 .count();
             u32::try_from(n).unwrap_or(u32::MAX)
         })
