@@ -25,6 +25,9 @@
 //! segments of the AMI dev headsets (fixture set `ami-dev-ihm`) unbiased and with boosting open,
 //! bonus 2, for each meeting's three lists, plus model_eval's non-speech clips;
 //! `--score-ami --report <dir>` judges them (G1-G4 and the verdict) into a word-free report.
+//! T12.15ca ("The gated nudge on meeting speech"): the same with `--gate gated` on both, and
+//! `--prior-report <dir>` to count baseline segments whose hypothesis differs from a committed
+//! report.
 
 #[allow(dead_code)] // shared with asr_eval; only the AMI words parser and kept words are used
 #[path = "../../../earshot-asr-whisper/examples/asr_eval/refs.rs"]
@@ -95,12 +98,18 @@ struct Args {
     mode: Mode,
     workers: usize,
     threads: usize,
+    /// The AMI boost's gate (T12.15c ran `open`, T12.15ca `gated`).
+    gate: Gate,
+    /// A committed AMI report whose baseline hashes `--score-ami` compares with this run's.
+    prior_report: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
     let mut it = std::env::args().skip(1);
     let (mut models, mut fixtures, mut out, mut mode) = (None, None, None, None);
     let mut report = None;
+    let mut prior_report = None;
+    let mut gate = Gate::Open;
     let (mut workers, mut threads) = (4usize, 4usize);
     while let Some(flag) = it.next() {
         let mut value = || {
@@ -112,6 +121,14 @@ fn parse_args() -> Args {
             "--fixtures" => fixtures = Some(PathBuf::from(value())),
             "--out" => out = Some(PathBuf::from(value())),
             "--report" => report = Some(PathBuf::from(value())),
+            "--prior-report" => prior_report = Some(PathBuf::from(value())),
+            "--gate" => {
+                gate = match value().as_str() {
+                    "open" => Gate::Open,
+                    "gated" => Gate::Gated,
+                    other => fail(format!("--gate open|gated, not {other}")),
+                };
+            }
             "--decode" => {
                 mode = Some(match value().as_str() {
                     "parakeet" => Mode::Parakeet,
@@ -139,6 +156,8 @@ fn parse_args() -> Args {
         mode,
         workers: workers.max(1),
         threads: threads.max(1),
+        gate,
+        prior_report,
     }
 }
 
@@ -599,6 +618,7 @@ fn write_counts(report: &Path, name: &str, lines: &[Line], each: &[Counts]) {
         let row = json!({
             "id": l.id,
             "hyp_sha256": sha,
+            "words": lists::tokens(&l.hyp).len(),
             "c": [
                 c.ref_words, c.errors, c.listed_words, c.listed_errors, c.listed_correct,
                 c.unlisted_words, c.unlisted_errors, c.distractor_hits, c.listed_lost,
@@ -881,14 +901,22 @@ fn segment_id(h: &refs::AmiHeadset, k: usize) -> String {
     format!("{}.{}.{k}", h.meeting, h.speaker)
 }
 
-/// The one T12.15c variant over each of a meeting's graphs.
-fn ami_boosts<'g>(graphs: &'g [ContextGraph], blank: usize) -> Vec<Boost<'g>> {
+fn gate_name(gate: Gate) -> &'static str {
+    match gate {
+        Gate::Open => "open",
+        Gate::Gated => "gated",
+    }
+}
+
+/// The one variant of a run (T12.15c open, T12.15ca gated; bonus [`ami::BETA`]) over each of a
+/// meeting's graphs.
+fn ami_boosts<'g>(graphs: &'g [ContextGraph], blank: usize, gate: Gate) -> Vec<Boost<'g>> {
     graphs
         .iter()
         .map(|graph| Boost {
             graph,
             beta: ami::BETA,
-            gate: Gate::Open,
+            gate,
             blank,
             node: 0,
         })
@@ -992,7 +1020,7 @@ fn decode_ami(args: &Args, s: &Setup) {
                         hyp: hypothesis(&t),
                         ms: millis(t0),
                     });
-                    let mut boosts = ami_boosts(&graphs[m], vocab.blank());
+                    let mut boosts = ami_boosts(&graphs[m], vocab.blank(), args.gate);
                     let mut biases: Vec<&mut dyn TokenBias> =
                         boosts.iter_mut().map(|b| b as &mut dyn TokenBias).collect();
                     let t0 = Instant::now();
@@ -1064,7 +1092,7 @@ fn decode_ami(args: &Args, s: &Setup) {
         });
         let mut boosts: Vec<Boost> = graphs
             .iter()
-            .flat_map(|g| ami_boosts(g, vocab.blank()))
+            .flat_map(|g| ami_boosts(g, vocab.blank(), args.gate))
             .collect();
         let mut biases: Vec<&mut dyn TokenBias> =
             boosts.iter_mut().map(|b| b as &mut dyn TokenBias).collect();
@@ -1092,7 +1120,7 @@ fn decode_ami(args: &Args, s: &Setup) {
             "backend": "cpu",
             "evidence": evidence.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner),
             "decoding": "greedy TDT (TranscribeOptions::live), one direct call per oracle segment on the speaker's headset; the baseline through Transcriber::transcribe, the three lists from one transcribe_biased call (one encoding per piece, the call's time shared out evenly)",
-            "variant": { "gate": "open", "beta": ami::BETA },
+            "variant": { "gate": gate_name(args.gate), "beta": ami::BETA },
             "meetings": ami::MEETINGS,
             "segments": items.len(),
             "segment_audio_seconds": audio_seconds,
@@ -1115,22 +1143,78 @@ fn listed_in(hyp: &str, list: &List) -> usize {
         .count()
 }
 
-fn score_ami(args: &Args, s: &Setup) {
+/// The rows of one decode file by id, holding exactly one row for each of `expected`: a
+/// duplicate, missing or unknown id is an error (a stale or hand-edited `--out` never scores).
+fn index_rows(lines: Vec<Line>, expected: &[String]) -> Result<HashMap<String, Line>, String> {
+    let want: HashSet<&str> = expected.iter().map(String::as_str).collect();
+    let mut out = HashMap::with_capacity(lines.len());
+    for l in lines {
+        if !want.contains(l.id.as_str()) {
+            return Err(format!("unknown row {}", l.id));
+        }
+        let id = l.id.clone();
+        if out.insert(id.clone(), l).is_some() {
+            return Err(format!("row {id} appears twice"));
+        }
+    }
+    if let Some(missing) = expected.iter().find(|id| !out.contains_key(id.as_str())) {
+        return Err(format!("row {missing} is missing"));
+    }
+    Ok(out)
+}
+
+/// Per id, the `hyp_sha256` of a committed `counts-*.jsonl`.
+fn committed_hashes(path: &Path) -> HashMap<String, String> {
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| fail(format!("{}: {e}", path.display())));
+    text.lines()
+        .map(|l| {
+            let v: Value = serde_json::from_str(l)
+                .unwrap_or_else(|e| fail(format!("{}: {e}", path.display())));
+            let field = |k: &str| {
+                v[k].as_str()
+                    .unwrap_or_else(|| fail(format!("{}: a row without {k}", path.display())))
+                    .to_owned()
+            };
+            (field("id"), field("hyp_sha256"))
+        })
+        .collect()
+}
+
+fn sha256_hex(text: &str) -> String {
     use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn score_ami(args: &Args, s: &Setup) {
     let report = args
         .report
         .as_deref()
         .unwrap_or_else(|| fail("--score-ami needs --report <dir>"));
     std::fs::create_dir_all(report).unwrap_or_else(|e| fail(format!("{}: {e}", report.display())));
+    let meta_path = args.out.join("ami-meta.json");
+    let meta: Value = serde_json::from_str(
+        &std::fs::read_to_string(&meta_path)
+            .unwrap_or_else(|e| fail(format!("{}: {e}", meta_path.display()))),
+    )
+    .unwrap_or_else(|e| fail(format!("{}: {e}", meta_path.display())));
+    if meta["variant"]["gate"].as_str() != Some(gate_name(args.gate)) {
+        fail(format!(
+            "{} was decoded with gate {}, not {}",
+            meta_path.display(),
+            meta["variant"]["gate"],
+            gate_name(args.gate)
+        ));
+    }
     let meetings = ami::meetings(&args.fixtures, &s.common, &s.pool).unwrap_or_else(|e| fail(e));
-    let read = |name: &str| -> HashMap<String, Line> {
-        read_lines(&args.out, name)
-            .unwrap_or_else(|| fail(format!("{name}.jsonl is missing: run --decode ami first")))
-            .into_iter()
-            .map(|l| (l.id.clone(), l))
-            .collect()
+    let read = |name: &str, expected: &[String]| -> HashMap<String, Line> {
+        let lines = read_lines(&args.out, name)
+            .unwrap_or_else(|| fail(format!("{name}.jsonl is missing: run --decode ami first")));
+        index_rows(lines, expected).unwrap_or_else(|e| fail(format!("{name}.jsonl: {e}")))
     };
-    let base = read("ami-baseline");
     // Every scored unit in order: (meeting, segment id, reference, kind) with the outside
     // words of each speaker as one more unit decoded as nothing.
     let mut units: Vec<(usize, String, String, bool)> = Vec::new();
@@ -1147,6 +1231,26 @@ fn score_ami(args: &Args, s: &Setup) {
             ));
         }
     }
+    let decoded_ids: Vec<String> = units.iter().filter(|u| u.3).map(|u| u.1.clone()).collect();
+    let clips: Vec<String> = ami::silence_clips()
+        .into_iter()
+        .map(|(c, _)| c.to_owned())
+        .collect();
+    let silence_ids: Vec<String> = clips
+        .iter()
+        .flat_map(|c| meetings.iter().map(move |m| format!("{c}.{}", m.name)))
+        .collect();
+    let base = read("ami-baseline", &decoded_ids);
+    // Informational (docs/vocabulary.md, T12.15ca): baseline segments whose hypothesis differs
+    // from a committed report's.
+    let prior = args.prior_report.as_deref().map(|dir| {
+        let hashes = committed_hashes(&dir.join("counts-baseline-ne.jsonl"));
+        let differing = decoded_ids
+            .iter()
+            .filter(|id| hashes.get(id.as_str()) != Some(&sha256_hex(&base[id.as_str()].hyp)))
+            .count();
+        json!({ "segments_compared": decoded_ids.len(), "baseline_segments_differing": differing })
+    });
     let hyp_of = |lines: &HashMap<String, Line>, id: &str, decoded: bool| -> String {
         if decoded {
             lines
@@ -1188,18 +1292,18 @@ fn score_ami(args: &Args, s: &Setup) {
         }
         (total, aligns, out, each)
     };
-    let silence_base = read("ami-silence-baseline");
+    let silence_base = read("ami-silence-baseline", &clips);
     let mut lists_json = Vec::new();
     let mut verdict = None;
     for (l, name) in ami::LISTS.iter().enumerate() {
         let (bc, ba, blines, beach) = score_all(&base, l, None);
         write_counts(report, &format!("baseline-{name}"), &blines, &beach);
-        let lines = read(&format!("ami-{name}"));
+        let lines = read(&format!("ami-{name}"), &decoded_ids);
         let (c, _, vlines, each) = score_all(&lines, l, Some(&ba));
         write_counts(report, name, &vlines, &each);
         let (g1, g2, g3) = guards(&c, &bc);
         // G4: listed tokens written on the non-speech clips, boosted with each meeting's list.
-        let boosted = read(&format!("ami-silence-{name}"));
+        let boosted = read(&format!("ami-silence-{name}"), &silence_ids);
         let mut g4_rows = Vec::new();
         let (mut written, mut written_base) = (0usize, 0usize);
         for (id, line) in &boosted {
@@ -1220,20 +1324,13 @@ fn score_ami(args: &Args, s: &Setup) {
             );
             written += n;
             written_base += nb;
-            let sha: String = Sha256::digest(line.hyp.as_bytes())
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect();
             g4_rows.push(json!({
                 "id": id,
-                "hyp_sha256": sha,
+                "hyp_sha256": sha256_hex(&line.hyp),
                 "words": lists::tokens(&line.hyp).len(),
                 "listed_written": n,
                 "baseline_listed_written": nb,
             }));
-        }
-        if boosted.len() != meetings.len() * 3 {
-            fail(format!("ami-silence-{name}: {} decodes", boosted.len()));
         }
         g4_rows.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
         let g4 = written == 0;
@@ -1268,15 +1365,16 @@ fn score_ami(args: &Args, s: &Setup) {
             "passes": passes,
         }));
     }
-    let meta = args.out.join("ami-meta.json");
-    if meta.is_file() {
-        std::fs::copy(&meta, report.join("ami-meta.json"))
-            .unwrap_or_else(|e| fail(format!("{}: {e}", meta.display())));
-    }
+    std::fs::copy(&meta_path, report.join("ami-meta.json"))
+        .unwrap_or_else(|e| fail(format!("{}: {e}", meta_path.display())));
     let segments = units.iter().filter(|u| u.3).count();
     let verdict = verdict.unwrap_or(false);
     let results = json!({
-        "rule": "docs/vocabulary.md, \"The nudge on meeting speech (T12.15c)\", committed before measuring",
+        "rule": match args.gate {
+            Gate::Open => "docs/vocabulary.md, \"The nudge on meeting speech (T12.15c)\", committed before measuring",
+            Gate::Gated => "docs/vocabulary.md, \"The gated nudge on meeting speech (T12.15ca)\", committed before measuring",
+        },
+        "variant": { "gate": gate_name(args.gate), "beta": ami::BETA },
         "data": {
             "meetings": ami::MEETINGS,
             "segments": segments,
@@ -1288,6 +1386,7 @@ fn score_ami(args: &Args, s: &Setup) {
         "count_fields": COUNT_FIELDS,
         "guards": { "g1_distractors_per_1000": G1_DISTRACTORS, "g2_u_wer_points": G2_UWER },
         "lists": lists_json,
+        "prior_baseline": prior,
         "verdict": if verdict { "pass" } else { "fail" },
     });
     write_json(report, "results.json", &results);
@@ -1310,7 +1409,18 @@ fn score_ami(args: &Args, s: &Setup) {
         )
         .unwrap_or_default()
     );
-    eprintln!("vocab_eval: T12.15c verdict {}", results["verdict"]);
+    eprintln!(
+        "vocab_eval: {} verdict {}",
+        if args.gate == Gate::Gated {
+            "T12.15ca"
+        } else {
+            "T12.15c"
+        },
+        results["verdict"]
+    );
+    if let Some(p) = &results["prior_baseline"].as_object() {
+        eprintln!("vocab_eval: prior baseline {p:?}");
+    }
 }
 
 fn main() {
@@ -1371,6 +1481,27 @@ mod tests {
             unlisted_errors: uw.1,
             ..Counts::default()
         }
+    }
+
+    fn row(id: &str) -> Line {
+        Line {
+            id: id.to_owned(),
+            hyp: String::new(),
+            ms: 0,
+        }
+    }
+
+    #[test]
+    fn vocab_ami_decode_rows_must_match_the_units_exactly() {
+        let want: Vec<String> = vec!["a.A.0".into(), "a.A.1".into()];
+        let ok = index_rows(vec![row("a.A.1"), row("a.A.0")], &want).unwrap();
+        assert_eq!(ok.len(), 2);
+        let dup = index_rows(vec![row("a.A.0"), row("a.A.0"), row("a.A.1")], &want);
+        assert!(dup.unwrap_err().contains("twice"));
+        let extra = index_rows(vec![row("a.A.0"), row("a.A.1"), row("a.A.2")], &want);
+        assert!(extra.unwrap_err().contains("unknown"));
+        let missing = index_rows(vec![row("a.A.0")], &want);
+        assert!(missing.unwrap_err().contains("missing"));
     }
 
     #[test]
