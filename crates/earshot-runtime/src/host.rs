@@ -525,6 +525,7 @@ pub fn summary_from_settings(
         SummaryWriter::ClaudeCode => {
             request.claude_code = Some(crate::claude_code::ClaudeCodeSummaryConfig {
                 model: (!settings.claude_model.is_empty()).then(|| settings.claude_model.clone()),
+                effort: settings.claude_effort,
                 ..Default::default()
             });
         }

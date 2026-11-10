@@ -639,6 +639,11 @@ export type ClaudeCodeStatusView = {
 	message: string,
 	/**  What to do, when something is needed. */
 	fix: string | null,
+	/**
+	 *  Why the effort choice does nothing with this Claude Code (its `--help` lists no
+	 *  `--effort`), `null` when it works or could not be told (T12.18).
+	 */
+	effort_note: string | null,
 };
 
 /**  Codex's state as the Summaries page shows it (T7.4gc). */
@@ -820,6 +825,19 @@ export type DeviceItem = {
 	/**  A microphone that is a Bluetooth headset in hands-free mode (phone quality; T6.24). */
 	hands_free: boolean,
 };
+
+/**  How hard Claude Code works on a summary (T12.18): `--effort low|medium|high|xhigh|max`. */
+export type EffortChoice = 
+/**  `low`. */
+"Low" | 
+/**  `medium`. */
+"Medium" | 
+/**  `high`. */
+"High" | 
+/**  `xhigh`. */
+"ExtraHigh" | 
+/**  `max`. */
+"Max";
 
 /**  Why the recording ended. */
 export type EndedReason = 
@@ -1825,6 +1843,8 @@ export type SummarySettingsValue = {
 	live: boolean,
 	/**  The model Claude Code is asked for ("" for Claude Code's own default). */
 	claude_model: string,
+	/**  The effort Claude Code is asked for (`null` for Claude Code's own default; T12.18). */
+	claude_effort: EffortChoice | null,
 	/**  The model Codex is asked for ("" for Codex's own default). */
 	codex_model: string,
 };

@@ -590,6 +590,7 @@ impl SummaryService {
             )))?,
         };
         let mut cc = ClaudeCodeConfig::new(cli, config.model.clone()).map_err(RuntimeError::Llm)?;
+        cc.effort = config.effort;
         if let Some(timeout) = config.request_timeout {
             cc.request_timeout = timeout;
         }

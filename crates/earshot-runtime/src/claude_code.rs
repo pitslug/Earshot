@@ -61,6 +61,9 @@ pub fn stored_model_name(model: Option<&str>) -> String {
 pub struct ClaudeCodeSummaryConfig {
     /// `--model`; `None`: Claude Code's own default.
     pub model: Option<String>,
+    /// `--effort` (T12.18); `None`: Claude Code's own default. The run passes it only when
+    /// the CLI's `--help` lists the option.
+    pub effort: Option<earshot_llm::claude_code::Effort>,
     /// The CLI; `None`: found when the service is built (`ClaudeCli::find`).
     pub cli: Option<ClaudeCli>,
     /// Deadline of each run (default: `earshot_llm::DEFAULT_REQUEST_TIMEOUT`).
@@ -80,6 +83,9 @@ pub enum ClaudeCodeStatus {
         version: Option<String>,
         /// The sign-in state (`claude auth status`; never a sign-in).
         sign_in: SignIn,
+        /// Whether `claude --help` lists `--effort` (T12.18); `None` when not asked or the
+        /// help could not be read.
+        accepts_effort: Option<bool>,
     },
 }
 
@@ -120,11 +126,13 @@ pub trait ClaudeCodeProbe {
 pub const MEETING_START_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The installed CLI: `ClaudeCli::find`, then `claude auth status --json`, and for the
-/// Summaries page also `claude --version`, each run with `timeout`.
+/// Summaries page also `claude --version` and `claude --help`, each run with `timeout`.
 #[derive(Debug, Clone, Copy)]
 pub struct InstalledClaudeCode {
     /// Also ask `claude --version`.
     pub version: bool,
+    /// Also ask `claude --help` whether it lists `--effort` (T12.18).
+    pub effort: bool,
     /// Deadline of each check.
     pub timeout: Duration,
 }
@@ -136,15 +144,18 @@ impl InstalledClaudeCode {
     pub fn meeting_start() -> Self {
         Self {
             version: false,
+            effort: false,
             timeout: MEETING_START_TIMEOUT,
         }
     }
 
-    /// The Summaries page's status: version and sign-in, within [`STATUS_TIMEOUT`].
+    /// The Summaries page's status: version, sign-in and whether `--effort` is listed, within
+    /// [`STATUS_TIMEOUT`].
     #[must_use]
     pub fn status_page() -> Self {
         Self {
             version: true,
+            effort: true,
             timeout: STATUS_TIMEOUT,
         }
     }
@@ -160,10 +171,15 @@ impl ClaudeCodeProbe for InstalledClaudeCode {
             .then(|| cli.version(self.timeout).ok())
             .flatten();
         let sign_in = cli.sign_in(self.timeout);
+        let accepts_effort = self
+            .effort
+            .then(|| cli.accepts_effort(self.timeout))
+            .flatten();
         ClaudeCodeStatus::Installed {
             cli,
             version,
             sign_in,
+            accepts_effort,
         }
     }
 }
@@ -578,6 +594,7 @@ mod tests {
             },
             version: Some("2.1.290 (Claude Code)".into()),
             sign_in,
+            accepts_effort: Some(true),
         }
     }
 
@@ -596,12 +613,15 @@ mod tests {
         assert!(ClaudeCodeStatus::NotInstalled.cli().is_none());
         assert_eq!(stored_model_name(None), "claude-code");
         assert_eq!(stored_model_name(Some("opus")), "claude-code/opus");
-        // The meeting start asks only the sign-in, briefly; the Summaries page also the version.
+        // The meeting start asks only the sign-in, briefly; the Summaries page also the version
+        // and whether `--effort` is listed (the run asks that itself, T12.18).
         let start = InstalledClaudeCode::meeting_start();
         assert!(!start.version);
+        assert!(!start.effort);
         assert_eq!(start.timeout, Duration::from_secs(5));
         let page = InstalledClaudeCode::status_page();
         assert!(page.version);
+        assert!(page.effort);
         assert_eq!(page.timeout, STATUS_TIMEOUT);
     }
 }
