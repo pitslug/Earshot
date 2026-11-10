@@ -60,6 +60,8 @@ struct Published {
     partials: Vec<LivePartial>,
     mapped: Vec<Mapped>,
     stopped: Option<String>,
+    /// The Dictionary words of the published partials' inputs (the session reads them once).
+    vocabulary: Option<Vec<String>>,
 }
 
 /// The session's summary thread (module docs).
@@ -200,6 +202,7 @@ impl SummaryThread {
             seconds: self.seconds,
             partials: std::mem::take(&mut p.partials),
             stopped: p.stopped.take(),
+            vocabulary: p.vocabulary.take(),
         });
         Finished {
             record,
@@ -258,6 +261,8 @@ fn run(
                     window: job.window,
                     summary,
                 });
+                p.vocabulary
+                    .get_or_insert_with(|| job.input.vocabulary.words().to_vec());
                 None
             }
             Err(e) => Some(e),

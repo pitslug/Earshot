@@ -756,6 +756,7 @@ fn outcome(post: Result<HostPost, RuntimeError>, summary: SummaryResult) -> Host
         network: vec![],
         handovers: vec![],
         handover_record_failures: vec![],
+        claude_effort_unread: false,
     }
 }
 

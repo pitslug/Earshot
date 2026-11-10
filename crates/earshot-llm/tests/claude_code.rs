@@ -18,7 +18,7 @@ use earshot_core::asr::{CancelToken, MeetingTime};
 use earshot_core::identity::{EntityId, ManualClock};
 use earshot_core::prompt::{MeetingInfo, PromptSegment, SummaryInput, Template};
 use earshot_core::summary::validate_summary;
-use earshot_llm::claude_code::{CliSearch, Effort, MAX_CLI_OUTPUT, STATUS_TIMEOUT};
+use earshot_llm::claude_code::{CliSearch, Effort, EffortProbe, MAX_CLI_OUTPUT, STATUS_TIMEOUT};
 use earshot_llm::{
     ClaudeCli, ClaudeCodeClient, ClaudeCodeConfig, ClaudeCodeError, Handover, HandoverOutcome,
     HandoverSink, LlmError, LlmSummarizer, ResponseMode, SignIn, SummaryRun,
@@ -59,6 +59,13 @@ mod fake {
         }
         if args == ["--help"] {
             bump(&dir.join("help-calls"));
+            if let Ok(ms) = std::fs::read_to_string(dir.join("help-sleep")) {
+                std::thread::sleep(std::time::Duration::from_millis(ms.trim().parse().unwrap()));
+            }
+            // `help-fails`: the help cannot be read (exit 1, as a broken install might).
+            if dir.join("help-fails").is_file() {
+                std::process::exit(1);
+            }
             // `help.txt` stands in for another version's help; the default lists `--effort`
             // as Claude Code 2.1.292 does.
             let help = std::fs::read_to_string(dir.join("help.txt")).unwrap_or_else(|_| {
@@ -773,6 +780,93 @@ fn claude_code_effort_is_passed_only_when_the_cli_lists_it() {
     assert_eq!(s.read("help-calls"), "", "the help is not asked");
 }
 
+fn claude_code_effort_help_stops_on_cancel_and_is_asked_again() {
+    let input = meeting(3);
+    let s = Scenario::new("effort-cancel");
+    std::fs::write(s.dir.join("help-sleep"), "60000").unwrap();
+    s.script(None, &format!("reply {}", summary_json(&[1])));
+    let client = s.client(|c| c.effort = Some(Effort::High));
+    let cancel = CancelToken::new();
+    let setter = cancel.clone();
+    let help_calls = s.dir.join("help-calls");
+    let t = std::thread::spawn(move || {
+        // Cancel once the help is being asked.
+        let until = Instant::now() + Duration::from_secs(30);
+        while !help_calls.is_file() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        setter.cancel();
+    });
+    let started = Instant::now();
+    let e = summarise(&client, &input, &cancel).result.unwrap_err();
+    t.join().unwrap();
+    assert!(matches!(e, LlmError::Cancelled), "{e}");
+    // Well inside the help's own 20 s deadline: the cancel stopped it.
+    assert!(
+        started.elapsed() < STATUS_TIMEOUT / 2,
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(s.calls(), 0, "no run after a cancel");
+    assert!(
+        client.handovers().entries().is_empty(),
+        "nothing handed over"
+    );
+    assert_eq!(
+        client.effort_probe(),
+        None,
+        "a cancelled help is not an answer"
+    );
+    // The next summary asks again and passes the effort.
+    std::fs::remove_file(s.dir.join("help-sleep")).unwrap();
+    summarise(&client, &input, &CancelToken::new())
+        .result
+        .unwrap();
+    let args = s.args(1);
+    assert_eq!(
+        args[args.iter().position(|a| a == "--effort").unwrap() + 1],
+        "high"
+    );
+    assert_eq!(s.read("help-calls").trim(), "2");
+    assert_eq!(client.effort_probe(), Some(EffortProbe::Listed));
+    s.assert_temp_root_empty();
+}
+
+fn claude_code_unreadable_help_says_the_run_used_the_default_effort() {
+    let input = meeting(3);
+    let s = Scenario::new("effort-unreadable");
+    std::fs::write(s.dir.join("help-fails"), "").unwrap();
+    s.script(None, &format!("reply {}", summary_json(&[1])));
+    let client = s.client(|c| c.effort = Some(Effort::High));
+    assert_eq!(client.effort_probe(), None, "not asked before a run");
+    summarise(&client, &input, &CancelToken::new())
+        .result
+        .unwrap();
+    assert!(!s.args(1).iter().any(|a| a == "--effort"));
+    assert_eq!(client.effort_probe(), Some(EffortProbe::Unreadable));
+    assert_eq!(
+        client.clone().effort_probe(),
+        Some(EffortProbe::Unreadable),
+        "clones share it"
+    );
+    // An older CLI is told apart from an unreadable help; no effort chosen asks nothing.
+    let s = Scenario::new("effort-not-listed");
+    std::fs::write(s.dir.join("help.txt"), "Options:\n  --model <model>\n").unwrap();
+    s.script(None, &format!("reply {}", summary_json(&[1])));
+    let client = s.client(|c| c.effort = Some(Effort::Low));
+    summarise(&client, &input, &CancelToken::new())
+        .result
+        .unwrap();
+    assert_eq!(client.effort_probe(), Some(EffortProbe::NotListed));
+    let s = Scenario::new("effort-unset");
+    s.script(None, &format!("reply {}", summary_json(&[1])));
+    let client = s.client(|_| {});
+    summarise(&client, &input, &CancelToken::new())
+        .result
+        .unwrap();
+    assert_eq!(client.effort_probe(), None);
+}
+
 fn claude_code_version_and_sign_in_status_come_from_the_cli() {
     let s = Scenario::new("status");
     let cli = s.cli();
@@ -1000,6 +1094,16 @@ const CASES: &[Case] = &[
     (
         "claude_code_effort_is_passed_only_when_the_cli_lists_it",
         claude_code_effort_is_passed_only_when_the_cli_lists_it,
+        false,
+    ),
+    (
+        "claude_code_effort_help_stops_on_cancel_and_is_asked_again",
+        claude_code_effort_help_stops_on_cancel_and_is_asked_again,
+        false,
+    ),
+    (
+        "claude_code_unreadable_help_says_the_run_used_the_default_effort",
+        claude_code_unreadable_help_says_the_run_used_the_default_effort,
         false,
     ),
     (

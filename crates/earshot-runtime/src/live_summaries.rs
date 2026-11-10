@@ -18,7 +18,8 @@
 //! summarised ([`earshot_core::summary::recite`]: final segments on the same track that
 //! overlap its live segments; action owners "Me"/"Them" renamed to the final speaker when
 //! there is one) and reuses it for the window it was made for ([`reusable`]). A partial that
-//! cannot be re-cited, or a record of another model, window length or version, is not used:
+//! cannot be re-cited, or a record of another model, window length, Dictionary word list
+//! (T12.20) or version, is not used:
 //! those windows are mapped again from the final transcript, so the result is never worse
 //! than the ordinary run, only slower. T8.3ja measured the reused partials against the
 //! ordinary run on AMI (`docs/live-summaries.md`).
@@ -159,8 +160,13 @@ impl fmt::Debug for LiveSummaries {
     }
 }
 
-/// The format of the stored record; a record of another version is not reused.
-pub const LIVE_SUMMARY_RECORD_VERSION: u32 = 1;
+/// The format of the stored record; a record of another version is not reused. Version 2
+/// (T12.20) added [`LiveSummaryRecord::vocabulary`].
+pub const LIVE_SUMMARY_RECORD_VERSION: u32 = 2;
+
+/// The versions [`decode`] reads: a version-1 record reads with no word list, which
+/// [`reusable`] refuses.
+const READABLE_VERSIONS: [u32; 2] = [1, LIVE_SUMMARY_RECORD_VERSION];
 
 /// One window's partial summary, citing live segments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -182,6 +188,10 @@ pub struct LiveSummaryRecord {
     pub partials: Vec<LivePartial>,
     /// Why the worker stopped before the end of the meeting; `None` when it ran to the end.
     pub stopped: Option<String>,
+    /// The user's Dictionary words the partials were mapped with ([`crate::vocabulary`]);
+    /// `None` when not known (a version-1 record), which is never reused.
+    #[serde(default)]
+    pub vocabulary: Option<Vec<String>>,
 }
 
 /// A stored record as read back: usable, or why not.
@@ -218,14 +228,20 @@ pub fn decode(bytes: &[u8]) -> StoredLiveSummaries {
         return StoredLiveSummaries::Unreadable("the live summary record is truncated".into());
     };
     let version = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
-    if version != LIVE_SUMMARY_RECORD_VERSION {
+    if !READABLE_VERSIONS.contains(&version) {
         return StoredLiveSummaries::Unreadable(format!(
             "live summary record version {version}, this build reads \
              {LIVE_SUMMARY_RECORD_VERSION}"
         ));
     }
-    match serde_json::from_slice(&bytes[4..]) {
-        Ok(record) => StoredLiveSummaries::Record(Box::new(record)),
+    match serde_json::from_slice::<LiveSummaryRecord>(&bytes[4..]) {
+        Ok(mut record) => {
+            // Version 1 never recorded the words, whatever its JSON holds.
+            if version == 1 {
+                record.vocabulary = None;
+            }
+            StoredLiveSummaries::Record(Box::new(record))
+        }
         Err(e) => StoredLiveSummaries::Unreadable(format!("the live summary record: {e}")),
     }
 }
@@ -267,7 +283,7 @@ pub struct LiveReuse {
     pub recite_failed: usize,
     /// Re-cited, but the transcript has no window of theirs (dropped).
     pub unplaced: usize,
-    /// Why the record was not used at all (another model, window length or version).
+    /// Why the record was not used at all (another model, window length, word list or version).
     pub not_used: Option<String>,
 }
 
@@ -337,6 +353,19 @@ pub fn reusable(
             record.seconds
         ));
         return (done, reuse);
+    }
+    // The partials were mapped with the Dictionary of their meeting's start: a changed list
+    // (or one not recorded) could spell names differently from the rest of the summary.
+    match &record.vocabulary {
+        Some(words) if words.as_slice() == input.vocabulary.words() => {}
+        Some(_) => {
+            reuse.not_used = Some("made with other Dictionary words than this summary uses".into());
+            return (done, reuse);
+        }
+        None => {
+            reuse.not_used = Some("made before Earshot recorded the Dictionary words".into());
+            return (done, reuse);
+        }
     }
     for p in &record.partials {
         let Ok(r) = recite(&p.summary, live, fin) else {

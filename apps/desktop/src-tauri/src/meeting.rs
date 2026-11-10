@@ -719,6 +719,9 @@ fn run(
     for why in &host.handover_record_failures {
         send(crate::meeting_events::handover_record_warning(why));
     }
+    if host.claude_effort_unread {
+        send(crate::meeting_events::claude_effort_unread_warning());
+    }
     if let Some(message) = crate::meeting_events::summary_fallback_note(&host.summary) {
         send(MeetingEvent::Warning {
             key: "summary-processor".into(),

@@ -10,6 +10,15 @@ import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
 import { FORGET_PERSON_EXPLAINED, REMOVE_PERSON_EXPLAINED, PEOPLE_EXPLAINED } from "./PeoplePage";
 import { FORGET_EXPLAINED, NAME_EXPLAINED, READ_ALOUD, RECORD_CONSENT, VOICE_EXPLAINED } from "./PeoplePage";
+import { SpeakersNoticeBar, VOICE_NOTICES } from "./PeoplePage";
+
+/** The UI's sources (tests left out), for the notice-bar scan. */
+const SOURCES = import.meta.glob(["../**/*.tsx", "!../**/*.test.tsx", "!../test/**"], {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+import type { SpeakersNotice, SpeakersPageState } from "./useSpeakers";
 
 interface Setup {
   ipc: Ipc;
@@ -158,6 +167,82 @@ describe("Settings, People", () => {
     await s.user.clear(field);
     await s.user.keyboard("{Enter}");
     await waitFor(async () => expect((await s.ipc.speakers()).voice.name).toBe(""));
+  });
+
+  it("saves the name once when Enter is pressed again while the save is on its way", async () => {
+    const s = await open();
+    const calls: string[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const real = s.ipc.setMyName.bind(s.ipc);
+    s.ipc.setMyName = async (name) => {
+      calls.push(name);
+      await gate;
+      return real(name);
+    };
+    const field = screen.getByRole("textbox", { name: /Your name/ });
+    await s.user.type(field, "Casey Parker");
+    await s.user.keyboard("{Enter}");
+    await s.user.keyboard("{Enter}");
+    await s.user.click(within(screen.getByRole("region", { name: "Your name" })).getByRole("button", { name: "Save" }));
+    expect(calls).toEqual(["Casey Parker"]);
+    release();
+    await waitFor(async () => expect((await s.ipc.speakers()).voice.name).toBe("Casey Parker"));
+    expect(calls).toEqual(["Casey Parker"]);
+  });
+
+  it("shows only a speaker timing notice under the speaker timing", () => {
+    const state = (kind: SpeakersNotice["kind"]) =>
+      ({
+        notice: { kind, title: `Invented ${kind} notice`, message: "Invented reason." },
+        dismiss: () => {},
+      }) as unknown as SpeakersPageState;
+    const voice = render(
+      <EarshotThemeProvider>
+        <SpeakersNoticeBar state={state("voice")} kinds={["timing"]} />
+      </EarshotThemeProvider>,
+    );
+    expect(within(voice.container).queryByText("Invented voice notice")).toBeNull();
+    voice.unmount();
+    const timing = render(
+      <EarshotThemeProvider>
+        <SpeakersNoticeBar state={state("timing")} kinds={["timing"]} />
+      </EarshotThemeProvider>,
+    );
+    expect(within(timing.container).getByText("Invented timing notice")).toBeInTheDocument();
+    timing.unmount();
+    // The voice bar shows a voice notice and never a timing one, so a notice shows once.
+    const underVoice = render(
+      <EarshotThemeProvider>
+        <SpeakersNoticeBar state={state("timing")} kinds={VOICE_NOTICES} />
+      </EarshotThemeProvider>,
+    );
+    expect(within(underVoice.container).queryByText("Invented timing notice")).toBeNull();
+    underVoice.unmount();
+    const voiceUnderVoice = render(
+      <EarshotThemeProvider>
+        <SpeakersNoticeBar state={state("voice")} kinds={VOICE_NOTICES} />
+      </EarshotThemeProvider>,
+    );
+    expect(within(voiceUnderVoice.container).getByText("Invented voice notice")).toBeInTheDocument();
+    voiceUnderVoice.unmount();
+  });
+
+  it("names the notices every speaker notice bar shows, the voice ones apart from the timing", () => {
+    // Each bar sits under one control: a bar that took every kind would show a notice twice.
+    const uses = Object.entries(SOURCES).flatMap(([file, text]) =>
+      [...text.matchAll(/<SpeakersNoticeBar\b[^>]*>/g)].map((m) => `${file}: ${m[0]}`),
+    );
+    expect(uses.length).toBeGreaterThanOrEqual(3);
+    const voice = uses.filter((u) => u.includes("kinds={VOICE_NOTICES}"));
+    const timing = uses.filter((u) => u.includes('kinds={["timing"]}'));
+    expect(voice.length + timing.length, uses.join("\n")).toBe(uses.length);
+    expect(timing).toHaveLength(1);
+    expect(voice.some((u) => u.includes("FirstRunWizard.tsx"))).toBe(true);
+    expect(voice.some((u) => u.includes("PeoplePage.tsx"))).toBe(true);
+    expect(VOICE_NOTICES).toEqual(["voice"]);
   });
 
   it("shows the name already given and says when one is refused", async () => {

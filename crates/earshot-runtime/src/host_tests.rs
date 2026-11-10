@@ -1176,3 +1176,109 @@ fn host_transcription_uses_vulkan_only_when_the_check_kept_it() {
     );
     assert_eq!(choice(Some(BackendKind::Cpu)).order(&[Vulkan, Cpu]), [Cpu]);
 }
+
+/// A Claude Code stand-in whose `--help` fails and whose runs print `stdout`: a batch file run
+/// by `cmd /c call` (T12.20).
+#[cfg(windows)]
+fn claude_help_fails(dir: &TempDir, name: &str, stdout: &str) -> earshot_llm::ClaudeCli {
+    let reply = dir.0.join(format!("{name}.json"));
+    std::fs::write(&reply, stdout).unwrap();
+    let bat = dir.0.join(format!("{name}.bat"));
+    std::fs::write(
+        &bat,
+        format!(
+            "@if \"%1\"==\"--help\" exit /b 1\r\n@type \"{}\"\r\n",
+            reply.display()
+        ),
+    )
+    .unwrap();
+    earshot_llm::ClaudeCli {
+        program: "cmd".into(),
+        leading_args: vec!["/c".into(), "call".into(), bat.into_os_string()],
+    }
+}
+
+#[test]
+#[cfg_attr(not(windows), ignore = "the Claude Code stand-in is cmd.exe")]
+fn host_after_meeting_says_claude_code_used_its_default_effort_only_for_a_stored_summary() {
+    #[cfg(windows)]
+    {
+        let dir = TempDir::new("host");
+        let (svc, _) = services(&dir);
+        let models = ModelDir::new(dir.0.join("models"));
+        let summary = SummaryV1 {
+            title: "Invented planning".into(),
+            tldr: "An invented summary.".into(),
+            enhanced_notes: vec![],
+            decisions: vec![],
+            action_items: vec![],
+            open_questions: vec![],
+            topics: vec![],
+        };
+        let ok = serde_json::json!({
+            "type": "result", "subtype": "success", "is_error": false,
+            "result": serde_json::to_string(&summary).unwrap(), "stop_reason": "end_turn",
+        })
+        .to_string();
+        let service = |name: &str, stdout: &str| {
+            let config = crate::claude_code::ClaudeCodeSummaryConfig {
+                model: None,
+                effort: Some(earshot_llm::claude_code::Effort::High),
+                cli: Some(claude_help_fails(&dir, name, stdout)),
+                request_timeout: None,
+            };
+            SummaryService::claude_code(&config, svc.clock.clone()).unwrap()
+        };
+        let after = |service: &SummaryService, seed: u64, cancel: &CancelToken| {
+            let outcome = recorded(&svc, seed);
+            let a = CancelToken::new();
+            after_meeting_with(
+                &svc,
+                &outcome,
+                &run(&models, Some(service), &a, cancel),
+                fake_post,
+                &mut |_| {},
+            )
+        };
+        // Stored: the summary was written at the default effort, and that is said.
+        let stored = service("ok", &ok);
+        let result = after(&stored, 131, &CancelToken::new());
+        assert!(
+            matches!(result.summary, SummaryResult::Stored { .. }),
+            "{:?}",
+            result.summary
+        );
+        assert!(result.claude_effort_unread);
+        // A failed run with the same unreadable help: no summary, so nothing to say.
+        let failing = service(
+            "fails",
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"invented failure"}"#,
+        );
+        let result = after(&failing, 141, &CancelToken::new());
+        assert!(
+            matches!(result.summary, SummaryResult::Failed { .. }),
+            "{:?}",
+            result.summary
+        );
+        assert!(
+            failing.claude_effort_unread(),
+            "the help was asked and unread"
+        );
+        assert!(!result.claude_effort_unread);
+        // Cancelled, on a service whose help was already found unreadable: nothing either.
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let result = after(&stored, 151, &cancel);
+        assert!(matches!(result.summary, SummaryResult::Cancelled));
+        assert!(stored.claude_effort_unread());
+        assert!(!result.claude_effort_unread);
+        // The rule the re-summary job uses too.
+        assert!(!claude_effort_unread(&stored, &SummaryResult::Cancelled));
+        assert!(!claude_effort_unread(
+            &failing,
+            &SummaryResult::Skipped {
+                reason: SkipReason::NotRequested
+            }
+        ));
+    }
+}

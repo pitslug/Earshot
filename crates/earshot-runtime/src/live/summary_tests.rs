@@ -224,6 +224,11 @@ fn live_summaries_map_each_settled_window_during_the_session_and_record_it() {
     let record = record_of(&svc, meeting).expect("a record");
     assert_eq!(record.model, "fake-live-model");
     assert_eq!(record.seconds, 4);
+    // The words the windows were mapped with, so a later Dictionary change refuses them.
+    assert_eq!(
+        record.vocabulary.as_deref(),
+        Some(&["Quillmarsh".to_owned()][..])
+    );
     assert_eq!(record.partials[0].window, 0);
     let rows = live_segments(&**svc.store(), meeting, TranscriptPass::Live).unwrap();
     let cited = record.partials[0].summary.decisions[0].source_segment_ids[0];

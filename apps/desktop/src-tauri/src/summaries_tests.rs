@@ -1210,3 +1210,90 @@ fn summaries_resummarise_through_codex_not_signed_in_fails_with_the_reason() {
     ));
     assert!(timed_out.retryable, "a timeout can be retried");
 }
+
+#[test]
+fn summaries_settings_follow_the_shared_case_table() {
+    let table = crate::testutil::summary_cases();
+    let cases = table["settings"].as_array().unwrap();
+    assert!(cases.len() >= 28, "the table lost cases");
+    let mut wrong = Vec::new();
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let mut input = table["base"].clone();
+        for (k, v) in case["change"].as_object().unwrap() {
+            input[k] = v.clone();
+        }
+        let value: SummarySettingsValue = serde_json::from_value(input.clone()).unwrap();
+        let dir = TempDir::new("summaries-cases");
+        let svc = services(&dir);
+        let got = set_settings(&svc, &value);
+        match (&got, case["error"].as_str()) {
+            (Err(e), Some(want)) => {
+                if e.kind != "invalid_setting" || e.message != want {
+                    wrong.push(format!("{name}: refused {:?} {:?}", e.kind, e.message));
+                }
+                // Nothing stored.
+                if settings_view(&svc).unwrap().value
+                    != serde_json::from_value(table["base"].clone()).unwrap()
+                {
+                    wrong.push(format!("{name}: a refusal stored something"));
+                }
+            }
+            (Ok(view), None) => {
+                let mut want = input;
+                if let Some(stored) = case.get("stored").and_then(|s| s.as_object()) {
+                    for (k, v) in stored {
+                        want[k] = v.clone();
+                    }
+                }
+                let want: SummarySettingsValue = serde_json::from_value(want).unwrap();
+                if view.value != want {
+                    wrong.push(format!("{name}: stored {:?}", view.value));
+                }
+            }
+            (Err(e), None) => wrong.push(format!("{name}: refused {:?}", e.message)),
+            (Ok(view), Some(_)) => wrong.push(format!("{name}: stored {:?}", view.value)),
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn summaries_messages_match_the_shared_case_table() {
+    let table = crate::testutil::summary_cases();
+    let m = &table["messages"];
+    assert_eq!(m["effort_needs_newer"], EFFORT_NEEDS_NEWER);
+    assert_eq!(m["anthropic_url"], ANTHROPIC_DEFAULT_URL);
+    let dir = TempDir::new("summaries-cases");
+    let svc = services(&dir);
+    let mut claude = value(
+        WriterChoice::ClaudeCode,
+        ProviderChoice::OpenAiCompatible,
+        "",
+        "",
+    );
+    claude.live = false;
+    let view = set_settings(&svc, &claude).unwrap();
+    assert_eq!(
+        view.live_unavailable.as_deref(),
+        m["live_needs_local"].as_str()
+    );
+    let not_installed = claude_code_status(&no_claude());
+    assert_eq!(
+        not_installed.message,
+        m["claude_code_not_installed"]["message"].as_str().unwrap()
+    );
+    assert_eq!(
+        not_installed.fix.as_deref(),
+        m["claude_code_not_installed"]["fix"].as_str()
+    );
+    let codex = codex_status(&no_codex());
+    assert_eq!(
+        codex.message,
+        m["codex_not_installed"]["message"].as_str().unwrap()
+    );
+    assert_eq!(
+        codex.fix.as_deref(),
+        m["codex_not_installed"]["fix"].as_str()
+    );
+}

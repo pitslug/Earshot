@@ -1,7 +1,8 @@
 //! No text the app shows names a Settings page that no longer exists (T12.5b): Models and
 //! Benchmark were dissolved into System, Transcription and Summaries, Speakers became People,
 //! and Obsidian and Storage became Notes and storage. The UI has the same guard
-//! (`packages/ui/src/settings/pageNames.test.ts`); a rule change edits both.
+//! (`packages/ui/src/settings/pageNames.test.ts`); both take the gone pages and the forms from
+//! `fixtures/ui/page_name_cases.json` and run its cases, so a rule change edits that file.
 //!
 //! The scan reads every source of this app and of `earshot-runtime` (whose text reaches the app
 //! through `plain_text` or as a warning), with comments left out and Rust's string line
@@ -9,16 +10,28 @@
 
 use std::path::{Path, PathBuf};
 
-/// The page names that are gone.
-const GONE_PAGES: &[&str] = &["Models", "Benchmark", "Speakers", "Obsidian", "Storage"];
+/// The shared table of gone pages, forms and cases.
+fn table() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../../fixtures/ui/page_name_cases.json")).unwrap()
+}
 
-/// The ways text names a page: "the Models page", "Settings, Models", "see Models".
-fn forms(page: &str) -> [String; 3] {
-    [
-        format!("{page} page"),
-        format!("Settings, {page}"),
-        format!("see {page}"),
-    ]
+fn strings(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// The ways text names a gone page: "the Models page", "Settings, Models", "see Models".
+fn forms() -> Vec<String> {
+    let table = table();
+    let forms = strings(&table["forms"]);
+    strings(&table["gone_pages"])
+        .iter()
+        .flat_map(|page| forms.iter().map(move |f| f.replace("{page}", page)))
+        .collect()
 }
 
 /// Whether `text` holds `form` as whole words.
@@ -31,9 +44,8 @@ fn holds(text: &str, form: &str) -> bool {
 
 /// The gone page names `text` uses, in the forms above.
 fn stale_page_names(text: &str) -> Vec<String> {
-    GONE_PAGES
-        .iter()
-        .flat_map(|page| forms(page))
+    forms()
+        .into_iter()
         .filter(|form| holds(text, form))
         .collect()
 }
@@ -74,18 +86,14 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn page_names_the_rule_finds_a_gone_page_and_passes_the_pages_that_exist() {
-    assert_eq!(
-        stale_page_names("Open Settings, Models to download them."),
-        ["Settings, Models"]
-    );
-    assert_eq!(
-        stale_page_names("Download it on the Models page."),
-        ["Models page"]
-    );
-    assert_eq!(
-        stale_page_names("Qwen 3.5 4B is not downloaded; see Models)"),
-        ["see Models"]
-    );
+    let table = table();
+    let cases = table["cases"].as_array().unwrap();
+    assert_eq!(table["forms"].as_array().unwrap().len(), 3);
+    assert!(cases.len() >= 7, "the table lost cases");
+    for case in cases {
+        let text = case["text"].as_str().unwrap();
+        assert_eq!(stale_page_names(text), strings(&case["found"]), "{text}");
+    }
     for page in [
         "General",
         "Audio",

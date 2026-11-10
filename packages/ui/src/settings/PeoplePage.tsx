@@ -31,11 +31,11 @@ import {
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { type PersonItem, type SpeakerTimingChoice, type VoiceView, useIpc } from "../ipc";
 import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
-import { type SpeakersPageState, sampleRunning, useSpeakers } from "./useSpeakers";
+import { type SpeakersNotice, type SpeakersPageState, sampleRunning, useSpeakers } from "./useSpeakers";
 
 const useStyles = makeStyles({
   page: {
@@ -201,7 +201,17 @@ export function MyNameField({
   const [value, setValue] = useState(name);
   useEffect(() => setValue(name), [name]);
   const changed = value.trim() !== name;
-  const save = async () => !changed || state.setName(value);
+  // The save on its way: Enter, Save or Next while it runs waits for it rather than racing it.
+  const inFlight = useRef<Promise<boolean> | null>(null);
+  const save = async () => {
+    if (inFlight.current !== null) return inFlight.current;
+    if (!changed) return true;
+    const saving = state.setName(value).finally(() => {
+      inFlight.current = null;
+    });
+    inFlight.current = saving;
+    return saving;
+  };
   useSaveOnNext(saveOnNext, save);
   return (
     <div className={styles.nameField}>
@@ -552,9 +562,20 @@ export function SpeakersNotLoaded({ load }: { load: Exclude<SpeakersPageState["l
   );
 }
 
-/** A refusal or failure, until dismissed. */
-export function SpeakersNoticeBar({ state }: { state: SpeakersPageState }) {
+/** The notices about your name and voice: the bar beside those controls shows only these. */
+export const VOICE_NOTICES: SpeakersNotice["kind"][] = ["voice"];
+
+/** A refusal or failure about one of `kinds`, until dismissed. Each bar names the notices of
+ * the controls it sits under, so no notice shows twice. */
+export function SpeakersNoticeBar({
+  state,
+  kinds,
+}: {
+  state: SpeakersPageState;
+  kinds: SpeakersNotice["kind"][];
+}) {
   if (state.notice === null) return null;
+  if (!kinds.includes(state.notice.kind)) return null;
   return (
     <MessageBar intent="error">
       <MessageBarBody>
@@ -586,7 +607,7 @@ export function SpeakerTimingSection() {
         <SpeakersNotLoaded load={load} />
       ) : (
         <>
-          <SpeakersNoticeBar state={state} />
+          <SpeakersNoticeBar state={state} kinds={["timing"]} />
           {load.view.unknown.length > 0 && (
             <MessageBar intent="warning">
               <MessageBarBody>
@@ -637,7 +658,7 @@ export function PeoplePage() {
       <Title2 as="h1" className={styles.heading}>
         People
       </Title2>
-      <SpeakersNoticeBar state={state} />
+      <SpeakersNoticeBar state={state} kinds={VOICE_NOTICES} />
       <Section title={NAME_LABEL}>
         <div className={styles.name}>
           <MyNameField state={state} name={view.voice.name} hideLabel />

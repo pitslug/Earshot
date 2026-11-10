@@ -336,6 +336,67 @@ fn summary_claude_code_is_stored_with_its_handovers_and_no_network() {
 
 #[test]
 #[cfg_attr(not(windows), ignore = "the Claude Code stand-in is cmd.exe")]
+fn summary_claude_code_says_when_an_unreadable_help_left_the_default_effort() {
+    #[cfg(windows)]
+    {
+        let dir = TempDir::new("summary");
+        let (svc, _) = services(&dir);
+        let id = meeting(&svc, "", 1);
+        let summary = SummaryV1 {
+            title: "Invented planning".into(),
+            tldr: "An invented summary.".into(),
+            enhanced_notes: vec![],
+            decisions: vec![],
+            action_items: vec![],
+            open_questions: vec![],
+            topics: vec![],
+        };
+        let reply = claude_code_stand_in(&dir, &summary);
+        // A batch file that fails on `--help` and prints the reply for a run.
+        let bat = dir.0.join("claude-stand-in.bat");
+        let printed = reply.leading_args[2].clone();
+        std::fs::write(
+            &bat,
+            format!(
+                "@if \"%1\"==\"--help\" exit /b 1\r\n@type \"{}\"\r\n",
+                std::path::Path::new(&printed).display()
+            ),
+        )
+        .unwrap();
+        let cli = earshot_llm::ClaudeCli {
+            program: "cmd".into(),
+            leading_args: vec!["/c".into(), "call".into(), bat.into_os_string()],
+        };
+        let run = |effort| {
+            let config = crate::claude_code::ClaudeCodeSummaryConfig {
+                model: None,
+                effort,
+                cli: Some(cli.clone()),
+                request_timeout: None,
+            };
+            let service = SummaryService::claude_code(&config, svc.clock.clone()).unwrap();
+            assert!(
+                !service.claude_effort_unread(),
+                "nothing asked before a run"
+            );
+            service
+                .summarize(
+                    &svc,
+                    id,
+                    &mut ChaCha8Rng::seed_from_u64(4),
+                    &CancelToken::new(),
+                )
+                .unwrap();
+            service.claude_effort_unread()
+        };
+        assert!(run(Some(earshot_llm::claude_code::Effort::High)));
+        // No effort chosen: nothing to say.
+        assert!(!run(None));
+    }
+}
+
+#[test]
+#[cfg_attr(not(windows), ignore = "the Claude Code stand-in is cmd.exe")]
 fn summary_claude_code_failure_is_recorded_too() {
     #[cfg(windows)]
     {
@@ -1928,6 +1989,7 @@ mod local {
                 summary: live_partial(cites),
             }],
             stopped: None,
+            vocabulary: Some(Vec::new()),
         };
         crate::live_summaries::record_live_summaries(&mut svc.store(), id, &record).unwrap();
     }
