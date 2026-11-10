@@ -1517,8 +1517,9 @@ pub struct HostOutcome {
     /// Why storing a handover in the meeting's local record failed (store error text, never
     /// meeting text); the summary's own result is unaffected. Empty when all were stored.
     pub handover_record_failures: Vec<String>,
-    /// Claude Code ran at its own default effort although one was chosen, because its help
-    /// could not be read ([`SummaryService::claude_effort_unread`], T12.20).
+    /// A stored summary was written by Claude Code at its own default effort although one was
+    /// chosen, because its help could not be read ([`claude_effort_unread`], T12.20); false
+    /// for any summary that was not stored.
     pub claude_effort_unread: bool,
 }
 
@@ -1704,6 +1705,9 @@ where
             ),
         }
     };
+    let claude_effort_unread = run
+        .summary
+        .is_some_and(|s| claude_effort_unread(s, &summary));
     HostOutcome {
         missing_tracks,
         post,
@@ -1711,11 +1715,16 @@ where
         network,
         handovers,
         handover_record_failures,
-        // Asked only by a run that went ahead; false for a skipped or cancelled summary.
-        claude_effort_unread: run
-            .summary
-            .is_some_and(SummaryService::claude_effort_unread),
+        claude_effort_unread,
     }
+}
+
+/// Whether to say that `service`'s Claude Code wrote the summary of `result` at its own default
+/// effort (T12.20): only for a stored summary whose run found the help unreadable. The rule of
+/// [`HostOutcome::claude_effort_unread`] and of the app's re-summary job.
+#[must_use]
+pub fn claude_effort_unread(service: &SummaryService, result: &SummaryResult) -> bool {
+    matches!(result, SummaryResult::Stored { .. }) && service.claude_effort_unread()
 }
 
 fn run_post<T, S, E>(
