@@ -562,16 +562,20 @@ export function SpeakersNotLoaded({ load }: { load: Exclude<SpeakersPageState["l
   );
 }
 
-/** A refusal or failure, until dismissed; with `kinds`, only a notice about one of those. */
+/** The notices about your name and voice: the bar beside those controls shows only these. */
+export const VOICE_NOTICES: SpeakersNotice["kind"][] = ["voice"];
+
+/** A refusal or failure about one of `kinds`, until dismissed. Each bar names the notices of
+ * the controls it sits under, so no notice shows twice. */
 export function SpeakersNoticeBar({
   state,
   kinds,
 }: {
   state: SpeakersPageState;
-  kinds?: SpeakersNotice["kind"][];
+  kinds: SpeakersNotice["kind"][];
 }) {
   if (state.notice === null) return null;
-  if (kinds !== undefined && !kinds.includes(state.notice.kind)) return null;
+  if (!kinds.includes(state.notice.kind)) return null;
   return (
     <MessageBar intent="error">
       <MessageBarBody>
@@ -654,7 +658,7 @@ export function PeoplePage() {
       <Title2 as="h1" className={styles.heading}>
         People
       </Title2>
-      <SpeakersNoticeBar state={state} />
+      <SpeakersNoticeBar state={state} kinds={VOICE_NOTICES} />
       <Section title={NAME_LABEL}>
         <div className={styles.name}>
           <MyNameField state={state} name={view.voice.name} hideLabel />

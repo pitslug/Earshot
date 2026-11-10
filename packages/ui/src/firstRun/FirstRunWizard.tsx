@@ -31,7 +31,13 @@ import { AudioCheckSection } from "../settings/AudioCheckSection";
 import { LanguagesPicker, Notices, Recommendation } from "../settings/ModelsParts";
 import { ModelChoices, ModelsNotLoaded, UnknownModelSettings } from "../settings/ModelSections";
 import { ObsidianSection } from "../settings/ObsidianSection";
-import { MyNameField, SpeakersNoticeBar, SpeakersNotLoaded, VoiceSection } from "../settings/PeoplePage";
+import {
+  MyNameField,
+  SpeakersNoticeBar,
+  SpeakersNotLoaded,
+  VOICE_NOTICES,
+  VoiceSection,
+} from "../settings/PeoplePage";
 import { SummaryWriterChoices } from "../settings/SummariesPage";
 import { formatSize } from "../settings/copy";
 import { type SaveOnNext, type SaveStep, saveStep } from "../settings/saveOnNext";
@@ -350,7 +356,7 @@ function AboutMeStep({
   const { voice } = speakers.load.view;
   return (
     <>
-      <SpeakersNoticeBar state={speakers} />
+      <SpeakersNoticeBar state={speakers} kinds={VOICE_NOTICES} />
       <div className={styles.name}>
         <MyNameField state={speakers} name={voice.name} saveOnNext={saveOnNext} />
       </div>
