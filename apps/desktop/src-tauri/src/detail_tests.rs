@@ -379,6 +379,152 @@ fn detail_a_summary_citing_a_replaced_segment_is_stale_and_shows_it_unavailable(
 }
 
 #[test]
+fn detail_an_edited_title_and_line_show_and_mark_an_older_summary_out_of_date() {
+    let dir = TempDir::new("detail-text-edit");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 40);
+    put_summary(&svc, f.meeting, vec![f.segments[2]], vec![], false, 41);
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(!d.summary_stale);
+    assert!(d.transcript.iter().all(|r| !r.edited));
+
+    edit::rename_meeting(&svc, f.meeting, "Supplier review").unwrap();
+    edit::edit_segment(
+        &svc,
+        f.meeting,
+        f.segments[2],
+        "yes, that works for both of us",
+    )
+    .unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.header.title, "Supplier review");
+    let row = &d.transcript[2];
+    assert_eq!(row.segment_id, f.segments[2].to_string());
+    assert_eq!(row.text, "yes, that works for both of us");
+    assert!(row.edited);
+    assert_eq!(d.transcript.iter().filter(|r| r.edited).count(), 1);
+    // The summary still finds the line it cites, but was written from the old words.
+    let c = &d.summary.as_ref().unwrap().decisions[0].citations;
+    assert_eq!(c[0].row, Some(2));
+    assert!(d.summary_stale);
+    // Refusals arrive as user copy.
+    let e: IpcError = edit::edit_segment(&svc, f.meeting, f.segments[2], " ")
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "invalid_text");
+    let e: IpcError = edit::rename_meeting(
+        &svc, f.meeting, "one
+two",
+    )
+    .unwrap_err()
+    .into();
+    assert_eq!(e.kind, "invalid_title");
+}
+
+#[test]
+fn detail_a_summary_edit_shows_at_once_and_can_be_undone() {
+    let dir = TempDir::new("detail-summary-edit");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 42);
+    let id = put_summary(
+        &svc,
+        f.meeting,
+        vec![f.segments[1]],
+        vec![f.segments[3]],
+        false,
+        43,
+    );
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.summary.as_ref().unwrap().id, id.to_string());
+    assert!(!d.can_undo_summary);
+
+    let field = |f: SummaryFieldRef| f.field();
+    edit::edit_summary(
+        &svc,
+        f.meeting,
+        id,
+        field(SummaryFieldRef::Decision { index: 0 }),
+        "Split the pump order in two",
+    )
+    .unwrap();
+    edit::edit_summary(
+        &svc,
+        f.meeting,
+        id,
+        field(SummaryFieldRef::ActionDue { index: 0 }),
+        "",
+    )
+    .unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let s = d.summary.as_ref().unwrap();
+    assert_eq!(s.id, id.to_string(), "edited in place");
+    assert_eq!(s.decisions[0].text, "Split the pump order in two");
+    assert_eq!(s.decisions[0].citations[0].row, Some(1));
+    assert_eq!(s.actions[0].due, None);
+    assert!(
+        d.can_undo_summary,
+        "the text before the edit can be restored"
+    );
+    assert!(
+        !d.summary_stale,
+        "a summary edit leaves the transcript as it was"
+    );
+    edit::undo_summary(&svc, f.meeting).unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(
+        d.summary.as_ref().unwrap().actions[0].due.as_deref(),
+        Some("Friday")
+    );
+
+    // A summary that is no longer current is refused as user copy.
+    let e: IpcError = edit::edit_summary(
+        &svc,
+        f.meeting,
+        id,
+        field(SummaryFieldRef::Tldr),
+        "Anything.",
+    )
+    .unwrap_err()
+    .into();
+    assert_eq!(e.kind, "summary_changed");
+}
+
+#[test]
+fn detail_summary_field_refs_name_the_runtime_fields() {
+    use earshot_runtime::edit::SummaryField as F;
+    let cases = [
+        (SummaryFieldRef::Title, F::Title),
+        (SummaryFieldRef::Tldr, F::Tldr),
+        (SummaryFieldRef::Decision { index: 2 }, F::Decision(2)),
+        (SummaryFieldRef::ActionOwner { index: 1 }, F::ActionOwner(1)),
+        (SummaryFieldRef::ActionTask { index: 1 }, F::ActionTask(1)),
+        (SummaryFieldRef::ActionDue { index: 3 }, F::ActionDue(3)),
+        (
+            SummaryFieldRef::NoteHeading { section: 1 },
+            F::NoteHeading(1),
+        ),
+        (
+            SummaryFieldRef::NoteBullet {
+                section: 1,
+                bullet: 4,
+            },
+            F::NoteBullet(1, 4),
+        ),
+        (
+            SummaryFieldRef::OpenQuestion { index: 0 },
+            F::OpenQuestion(0),
+        ),
+    ];
+    for (r, want) in cases {
+        assert_eq!(r.field(), want);
+    }
+    // The UI sends them tagged by kind.
+    let r: SummaryFieldRef =
+        serde_json::from_str(r#"{"kind":"NoteBullet","section":0,"bullet":2}"#).unwrap();
+    assert_eq!(r.field(), F::NoteBullet(0, 2));
+}
+
+#[test]
 fn detail_can_undo_only_with_a_restorable_previous_summary() {
     let dir = TempDir::new("detail-undo");
     let svc = services(&dir);
@@ -619,6 +765,37 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::FolderNotFound(id), "folder_not_found"),
         (EditError::FolderNameTaken(id), "folder_name_taken"),
         (EditError::MeetingRecording(id), "meeting_recording"),
+        (EditError::InvalidTitle(TextProblem::Empty), "invalid_title"),
+        (
+            EditError::InvalidTitle(TextProblem::TooLong),
+            "invalid_title",
+        ),
+        (
+            EditError::InvalidTitle(TextProblem::ControlCharacter),
+            "invalid_title",
+        ),
+        (EditError::InvalidText(TextProblem::Empty), "invalid_text"),
+        (EditError::InvalidText(TextProblem::TooLong), "invalid_text"),
+        (
+            EditError::InvalidText(TextProblem::ControlCharacter),
+            "invalid_text",
+        ),
+        (EditError::SegmentNotFound(id), "segment_not_found"),
+        (EditError::DraftTranscript(id), "draft_transcript"),
+        (EditError::SummaryNotCurrent(id), "summary_changed"),
+        (EditError::SummaryItemNotFound, "summary_changed"),
+        (
+            EditError::InvalidSummaryText(TextProblem::Empty),
+            "invalid_summary_text",
+        ),
+        (
+            EditError::InvalidSummaryText(TextProblem::TooLong),
+            "invalid_summary_text",
+        ),
+        (
+            EditError::InvalidSummaryText(TextProblem::ControlCharacter),
+            "invalid_summary_text",
+        ),
     ];
     for (e, kind) in all {
         let ipc = IpcError::from(RuntimeError::Edit(e.clone()));

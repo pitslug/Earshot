@@ -640,6 +640,93 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         header: { ...d.header, title: row?.title ?? d.header.title },
       });
     },
+    // T12.16: the rules of `edit::clean_title` and `edit::clean_segment_text`.
+    renameMeeting: async (meeting, title) => {
+      call("renameMeeting", meeting, title);
+      const t = title.trim();
+      if (t.length > 200) fail("invalid_title", "Titles can be up to 200 characters long.");
+      if (/\p{Cc}/u.test(t)) fail("invalid_title", "Titles cannot contain line breaks or tabs.");
+      detailOf(meeting);
+      const row = meetings.find((m) => m.id === meeting);
+      if (row) row.title = t;
+      update(meeting, (d) => ({ ...d, header: { ...d.header, title: t } }));
+    },
+    editSegment: async (meeting, segment, text) => {
+      call("editSegment", meeting, segment, text);
+      const t = text.trim();
+      if (t === "") fail("invalid_text", "Enter the words of this line. A line cannot be left empty.");
+      if (t.length > 5_000) fail("invalid_text", "A line can be up to 5,000 characters long.");
+      if (/\p{Cc}/u.test(t)) fail("invalid_text", "A line cannot contain line breaks or tabs.");
+      const d = detailOf(meeting);
+      if (d.header.transcript === "Draft") {
+        fail("draft_transcript", "The words can be corrected once the final transcript is ready.");
+      }
+      if (!d.transcript.some((r) => r.segment_id === segment)) {
+        fail("segment_not_found", "This line is no longer in the transcript. It may have been transcribed again.");
+      }
+      update(meeting, (d) => {
+        const row = d.transcript.find((r) => r.segment_id === segment);
+        if (!row || row.text === t) return d;
+        return {
+          ...d,
+          transcript: d.transcript.map((r) => (r.segment_id === segment ? { ...r, text: t, edited: true } : r)),
+          summary_stale: d.summary !== null || d.summary_stale,
+        };
+      });
+    },
+    // The rules of `edit::edit_summary`: the current summary only, the text before the edit
+    // becomes the previous summary.
+    editSummary: async (meeting, summary, field, text) => {
+      call("editSummary", meeting, summary, field, text);
+      const t = text.trim();
+      const d = detailOf(meeting);
+      const changed = () =>
+        fail("summary_changed", "The summary changed while you were editing it. Check the new text and edit again.");
+      const s = d.summary;
+      if (s === null || s.id !== summary) return changed();
+      if (t === "" && field.kind !== "ActionDue") {
+        fail("invalid_summary_text", "Enter some words. Only a due date can be left empty.");
+      }
+      if (t.length > (field.kind === "Title" ? 200 : 2_000)) {
+        fail("invalid_summary_text", "This text is too long for the summary.");
+      }
+      if (/\p{Cc}/u.test(t)) fail("invalid_summary_text", "Summary text cannot contain line breaks or tabs.");
+      const next: SummaryView = structuredClone(s);
+      const item = <T,>(list: T[], i: number): T => list[i] ?? changed();
+      switch (field.kind) {
+        case "Title":
+          next.title = t;
+          break;
+        case "Tldr":
+          next.tldr = t;
+          break;
+        case "Decision":
+          item(next.decisions, field.index).text = t;
+          break;
+        case "ActionOwner":
+          item(next.actions, field.index).owner = t;
+          break;
+        case "ActionTask":
+          item(next.actions, field.index).task = t;
+          break;
+        case "ActionDue":
+          item(next.actions, field.index).due = t === "" ? null : t;
+          break;
+        case "NoteHeading":
+          item(next.notes, field.section).heading = t;
+          break;
+        case "NoteBullet":
+          item(item(next.notes, field.section).bullets, field.bullet).text = t;
+          break;
+        case "OpenQuestion":
+          item(next.open_questions, field.index);
+          next.open_questions[field.index] = t;
+          break;
+      }
+      if (JSON.stringify(next) === JSON.stringify(s)) return;
+      previous.set(meeting, s);
+      details.set(meeting, { ...d, summary: next, can_undo_summary: true });
+    },
     renameSpeaker: async (meeting, speaker, name) => {
       call("renameSpeaker", meeting, speaker, name);
       const n = checkName(name);

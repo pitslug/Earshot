@@ -134,7 +134,16 @@
 //!    tombstones, and the identity record is rewritten in the same transaction.
 //!    Tracks not processed keep their final segments and speakers, so a re-run over fewer
 //!    tracks never shrinks another track's transcript, and an existing "Me" speaker row
-//!    (with any name the user gave it) is reused rather than duplicated. Only when [`PostConfig::enroll_me`] is set, the
+//!    (with any name the user gave it) is reused rather than duplicated.
+//!
+//!    **Edited text (T12.16).** A final segment whose text the user edited
+//!    (`SegmentRow::text_edited_at`) is kept on every run, with its id, times, text and
+//!    speaker: the user's words win over a new decode. The new decode gives way to it by
+//!    [`drop_words_under_edits`] (every new word on the same track whose time overlaps the
+//!    edited segment's span is left out) and the run reports
+//!    [`PostWarning::EditedLinesKept`]. The edited segment's speaker row is never made a
+//!    tombstone, though a new voice may still continue it (step 4); its "Speaker N" number
+//!    is not given to anyone else. Only when [`PostConfig::enroll_me`] is set, the
 //!    user's voiceprint is updated from the "Me" centroid ([`enroll_me`]). The live
 //!    transcript is kept.
 //!
@@ -429,6 +438,14 @@ pub enum PostWarning {
         track: TrackId,
         /// The dropped stretches (meeting time).
         spans: Vec<(MeetingTime, MeetingTime)>,
+    },
+    /// Final segments whose text the user edited were kept as they are (module docs, step
+    /// 5, T12.16), and the new transcript's words in their time left out.
+    EditedLinesKept {
+        /// Edited segments kept on the tracks this run processed.
+        lines: usize,
+        /// New words left out because they overlap an edited segment.
+        words_dropped: usize,
     },
     /// Diarisation heard a voice that no transcribed word belongs to (nothing it said was
     /// transcribed, or every word went to another voice): it gets no speaker row.
@@ -1358,14 +1375,23 @@ where
                 .into_iter()
                 .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
                 .collect();
-            let (replaced, kept): (Vec<SegmentRow>, Vec<SegmentRow>) = finals
+            let (on_processed, kept): (Vec<SegmentRow>, Vec<SegmentRow>) = finals
                 .into_iter()
                 .partition(|r| processed.contains(&r.segment.track));
+            // The user's edited text stays (module docs, step 5, T12.16).
+            let (edited, replaced): (Vec<SegmentRow>, Vec<SegmentRow>) = on_processed
+                .into_iter()
+                .partition(|r| r.text_edited_at.is_some());
             let kept_speakers: BTreeSet<EntityId> =
                 kept.iter().filter_map(|r| r.segment.speaker_id).collect();
+            // Speakers of edited segments may still be continued by a new voice, so they
+            // count as replaced, but their rows are never tombstoned.
+            let edited_speakers: BTreeSet<EntityId> =
+                edited.iter().filter_map(|r| r.segment.speaker_id).collect();
             let replaced_speakers: BTreeSet<EntityId> = replaced
                 .iter()
                 .filter_map(|r| r.segment.speaker_id)
+                .chain(edited_speakers.iter().copied())
                 .collect();
             let earlier: Vec<Speaker> = tx
                 .speakers(meeting)?
@@ -1378,7 +1404,7 @@ where
                 .map(|s| (s.id, s.person_id, s.display_name.clone()));
             let mut next_unknown = earlier
                 .iter()
-                .filter(|s| kept_speakers.contains(&s.id))
+                .filter(|s| kept_speakers.contains(&s.id) || edited_speakers.contains(&s.id))
                 .filter_map(|s| speaker_number(&s.display_name))
                 .max()
                 .unwrap_or(0);
@@ -1395,8 +1421,12 @@ where
             // written (T7.3b): a voice that owns no segment (heard, but no word of it was
             // transcribed) gets no row, takes no part in carrying earlier names, and is
             // reported instead.
+            let edited_segments: Vec<Segment> = edited.iter().map(|r| r.segment.clone()).collect();
+            let mut words_under_edits = 0;
             let mut labelled: Vec<(Segment, Option<usize>)> = Vec::new();
             for (kind, segments) in transcripts {
+                let (segments, dropped) = drop_words_under_edits(segments, &edited_segments);
+                words_under_edits += dropped;
                 let turns: Vec<SpeakerTurn> = meeting_diar
                     .turns
                     .iter()
@@ -1409,6 +1439,12 @@ where
                     .collect();
                 let mut next_id = || EntityId::generate(stamp.clock, &mut *stamp.rng);
                 labelled.extend(label_segment_speakers(segments, &turns, &mut next_id));
+            }
+            if !edited.is_empty() {
+                warnings.push(PostWarning::EditedLinesKept {
+                    lines: edited.len(),
+                    words_dropped: words_under_edits,
+                });
             }
             let worded: BTreeSet<usize> = labelled.iter().filter_map(|(_, k)| *k).collect();
             for (k, s) in meeting_diar.speakers.iter().enumerate() {
@@ -1516,7 +1552,11 @@ where
             let mut tombstoned = BTreeSet::new();
             for old in &earlier {
                 let reused = reusable_me.as_ref().is_some_and(|(id, _, _)| *id == old.id);
-                if ours(old) && !reused && !continued_ids.contains(&old.id) {
+                if ours(old)
+                    && !reused
+                    && !continued_ids.contains(&old.id)
+                    && !edited_speakers.contains(&old.id)
+                {
                     let mut old = old.clone();
                     old.meta.mark_deleted(stamp.hlc, stamp.clock);
                     tombstoned.insert(old.id);
@@ -2134,6 +2174,67 @@ fn drop_masked(segments: &[Segment], mask: &[bool]) -> (Vec<Segment>, usize) {
     }
     (out, removed)
 }
+
+/// Whether `w` lies under the span of the edited segment `e` (same track checked by the
+/// caller): their times overlap by more than nothing, or, for an untimed word (`start ==
+/// end`), it starts inside `[e.start, e.end)`. An edited segment with no length covers
+/// nothing.
+fn under_edit(w: &Word, e: &Segment) -> bool {
+    if e.end <= e.start {
+        return false;
+    }
+    if w.end <= w.start {
+        return e.start <= w.start && w.start < e.end;
+    }
+    w.start < e.end && w.end > e.start
+}
+
+/// A new decode giving way to the user's edited segments (T12.16, module docs step 5):
+/// every word of `segments` under the span of an `edited` segment on the same track
+/// ([`under_edit`]) is left out; a segment that loses some words is rebuilt from the rest
+/// (same id, track and speaker, span and text from the words that stay), one that loses all
+/// is dropped. A new segment with no words is judged by its own span, as one word. The rule
+/// is per word, not per segment, because a re-run cuts segments differently: a new segment
+/// that runs past the edited one keeps the words outside it. A word straddling the edited
+/// span's edge goes, because the edited text already covers that stretch of audio. Returns
+/// the segments and how many words were left out.
+pub(crate) fn drop_words_under_edits(
+    segments: Vec<Segment>,
+    edited: &[Segment],
+) -> (Vec<Segment>, usize) {
+    if edited.is_empty() {
+        return (segments, 0);
+    }
+    let mut kept_segments = Vec::with_capacity(segments.len());
+    let mut mask = Vec::new();
+    let mut wordless_dropped = 0;
+    for s in segments {
+        let edits: Vec<&Segment> = edited.iter().filter(|e| e.track == s.track).collect();
+        if s.words.is_empty() {
+            let span = Word {
+                text: String::new(),
+                start: s.start,
+                end: s.end,
+                probability: 0.0,
+            };
+            if edits.iter().any(|e| under_edit(&span, e)) {
+                wordless_dropped += 1;
+            } else {
+                kept_segments.push(s);
+            }
+            continue;
+        }
+        mask.extend(
+            s.words
+                .iter()
+                .map(|w| edits.iter().any(|e| under_edit(w, e))),
+        );
+        kept_segments.push(s);
+    }
+    let (out, removed) = drop_masked(&kept_segments, &mask);
+    (out, removed + wordless_dropped)
+}
+
 /// Whether a meeting that recorded these track kinds was recorded in the room: the mic and
 /// no computer audio. The one rule for the pass and for marking a voice as the user
 /// ([`crate::edit::records_in_room`]). Computer audio alone is the far end, and a mic with

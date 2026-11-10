@@ -100,6 +100,27 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
             ));
         }
     }
+    // T12.16: the user's corrected lines were kept over the new transcript.
+    let edited: usize = warnings
+        .iter()
+        .map(|w| match w {
+            PostWarning::EditedLinesKept { lines, .. } => *lines,
+            _ => 0,
+        })
+        .sum();
+    if edited > 0 {
+        let lines = if edited == 1 {
+            "1 line you corrected was".to_owned()
+        } else {
+            format!("{edited} lines you corrected were")
+        };
+        out.push((
+            "post-edited".to_owned(),
+            format!(
+                "{lines} kept as you wrote them. The new transcript leaves out its own words for those moments."
+            ),
+        ));
+    }
     for w in warnings {
         let shown = match w {
             PostWarning::NotEnoughSpeechForMe { .. } => Some((
@@ -128,7 +149,8 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
             | PostWarning::StretchRecordUnreadable { .. }
             | PostWarning::SpeakerRecordUnreadable { .. }
             | PostWarning::RepetitionDropped { .. }
-            | PostWarning::VoiceWithoutWords { .. } => None,
+            | PostWarning::VoiceWithoutWords { .. }
+            | PostWarning::EditedLinesKept { .. } => None,
         };
         if let Some((key, text)) = shown
             && !out.iter().any(|(k, _)| k == key)
@@ -438,6 +460,27 @@ mod post_warning_tests {
         assert!(copy[0].1.starts_with("3 passages from your microphone"));
         assert!(copy[1].1.contains("1 voice on your microphone"));
         assert!(copy[2].1.contains("2 voices on computer audio"));
+    }
+
+    #[test]
+    fn post_warnings_say_how_many_corrected_lines_a_retranscription_kept() {
+        let kept = |lines| PostWarning::EditedLinesKept {
+            lines,
+            words_dropped: 7,
+        };
+        let copy = post_warning_copy(&[kept(1)]);
+        assert_eq!(copy.len(), 1);
+        assert_eq!(copy[0].0, "post-edited");
+        assert!(
+            copy[0].1.starts_with("1 line you corrected was kept"),
+            "{}",
+            copy[0].1
+        );
+        let copy = post_warning_copy(&[kept(2), kept(1)]);
+        assert_eq!(copy.len(), 1, "one banner");
+        assert!(copy[0].1.starts_with("3 lines you corrected were kept"));
+        assert!(!copy[0].1.contains('\u{2014}'));
+        assert!(!names_developer_tool(&copy[0].1));
     }
 
     #[test]

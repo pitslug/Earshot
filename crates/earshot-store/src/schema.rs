@@ -139,6 +139,15 @@ CREATE TABLE folder (
 ALTER TABLE meeting ADD COLUMN folder_id BLOB;
 ";
 
+/// Migration 3: the user's edit mark on a transcript segment (T12.16,
+/// `SegmentRow::text_edited_at`): the HLC of the last text edit, all three NULL for text as
+/// the recogniser wrote it, which every existing row reads as.
+const V3: &str = "
+ALTER TABLE segment ADD COLUMN edited_wall INTEGER;
+ALTER TABLE segment ADD COLUMN edited_logical INTEGER;
+ALTER TABLE segment ADD COLUMN edited_node BLOB;
+";
+
 /// Tables with sync metadata (the HLC high-water mark is the greatest `updated_*` in them).
 pub(crate) const SYNCED_TABLES: [&str; 9] = [
     "meeting",
@@ -154,7 +163,10 @@ pub(crate) const SYNCED_TABLES: [&str; 9] = [
 
 /// The migrations, in order, with `{META}` expanded.
 pub(crate) fn migrations() -> Vec<String> {
-    [V1, V2].iter().map(|m| m.replace("{META}", META)).collect()
+    [V1, V2, V3]
+        .iter()
+        .map(|m| m.replace("{META}", META))
+        .collect()
 }
 
 #[cfg(test)]
@@ -167,6 +179,7 @@ mod tests {
     const APPLIED: &[&str] = &[
         "a852be73b469315e94109bf9f648c0201399ce286f94a86438e781e695bfdaed",
         "3994bcb0037913aeecece98d816f969dd6d5ba90f0a3a0d55f144403ed633107",
+        "46159521b8052eff5fba4622c74f0f91717db9ec39170deba1757f35e48602d4",
     ];
 
     /// `(type, name, tbl_name, sql)` of every schema object, sorted.
@@ -201,6 +214,28 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, 1);
+    }
+
+    /// The committed schema-2 fixture (`tests/data/schema_v2.sql`, used by
+    /// `tests/segment_edit.rs`) creates exactly the objects migrations 1 and 2 create, so
+    /// the segment edit migration (3) is tested on a real schema-2 database.
+    #[test]
+    fn store_segment_edit_v2_fixture_has_exactly_the_schema_of_migrations_1_and_2() {
+        let fixture = rusqlite::Connection::open_in_memory().unwrap();
+        fixture
+            .execute_batch(include_str!("../tests/data/schema_v2.sql"))
+            .unwrap();
+        let fresh = rusqlite::Connection::open_in_memory().unwrap();
+        for m in &super::migrations()[..2] {
+            fresh.execute_batch(m).unwrap();
+        }
+        let want = objects(&fresh);
+        assert!(want.iter().any(|o| o.1 == "folder"), "{want:?}");
+        assert_eq!(objects(&fixture), want);
+        let version: u32 = fixture
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
     }
 
     /// Every table with sync metadata is in `SYNCED_TABLES` (the HLC resumes from them) and

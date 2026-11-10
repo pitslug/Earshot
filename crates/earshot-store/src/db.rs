@@ -20,7 +20,7 @@ const CHECKPOINT_ATTEMPTS: u32 = 5;
 const CHECKPOINT_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Schema version this build writes (the number of migrations).
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Store errors.
 #[derive(Debug)]

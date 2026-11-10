@@ -345,7 +345,7 @@ fn put_track(c: &Connection, t: &Track) -> Result<(), RepoError> {
 
 // ---- segment ----
 
-const SEGMENT: [&str; 9] = [
+const SEGMENT: [&str; 12] = [
     "meeting_id",
     "track_id",
     "pass",
@@ -355,7 +355,33 @@ const SEGMENT: [&str; 9] = [
     "words",
     "confidence",
     "speaker_id",
+    "edited_wall",
+    "edited_logical",
+    "edited_node",
 ];
+
+/// An optional HLC timestamp from the 3 columns starting at `i` (all NULL: `None`).
+fn get_opt_hlc(r: &Row<'_>, i: usize) -> rusqlite::Result<Option<HlcTimestamp>> {
+    let Some(wall_ms) = get_opt_u64(r, i)? else {
+        return Ok(None);
+    };
+    Ok(Some(HlcTimestamp {
+        wall_ms,
+        logical: r.get(i + 1)?,
+        node: get_device(r, i + 2)?,
+    }))
+}
+
+fn opt_hlc_values(t: Option<HlcTimestamp>) -> Result<[Value; 3], RepoError> {
+    Ok(match t {
+        None => [Value::Null, Value::Null, Value::Null],
+        Some(t) => [
+            int(t.wall_ms)?,
+            Value::Integer(i64::from(t.logical)),
+            device_value(t.node),
+        ],
+    })
+}
 
 fn segment_row(r: &Row<'_>) -> rusqlite::Result<SegmentRow> {
     let words: Vec<Word> = get_json(r, REST + 6)?;
@@ -375,6 +401,7 @@ fn segment_row(r: &Row<'_>) -> rusqlite::Result<SegmentRow> {
             confidence: confidence as f32,
             speaker_id: get_opt_id(r, REST + 8)?,
         },
+        text_edited_at: get_opt_hlc(r, REST + 9)?,
     })
 }
 
@@ -394,21 +421,19 @@ fn put_segment(c: &Connection, row: &SegmentRow) -> Result<(), RepoError> {
     if let Some(sp) = s.speaker_id {
         need_child(c, "speaker", row.meeting_id, sp)?;
     }
-    let v = synced_values(
-        s.id,
-        &row.meta,
-        vec![
-            id_value(row.meeting_id),
-            id_value(s.track),
-            enum_name(&row.pass)?,
-            int(s.start.as_millis())?,
-            int(s.end.as_millis())?,
-            text(&s.text),
-            json(&s.words)?,
-            Value::Real(f64::from(s.confidence)),
-            opt_id(s.speaker_id),
-        ],
-    )?;
+    let mut rest = vec![
+        id_value(row.meeting_id),
+        id_value(s.track),
+        enum_name(&row.pass)?,
+        int(s.start.as_millis())?,
+        int(s.end.as_millis())?,
+        text(&s.text),
+        json(&s.words)?,
+        Value::Real(f64::from(s.confidence)),
+        opt_id(s.speaker_id),
+    ];
+    rest.extend(opt_hlc_values(row.text_edited_at)?);
+    let v = synced_values(s.id, &row.meta, rest)?;
     exec(c, &upsert_sql("segment", &synced_cols(&SEGMENT), "id"), &v)?;
     Ok(())
 }

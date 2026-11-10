@@ -102,3 +102,7 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-onnx/src/parakeet.rs (`Encoder::with`): a poisoned shared-encoder lock is reused, not an error; map it to `OnnxError::Runtime` if sharing ever ships. T12.3b review.
 - crates/earshot-onnx/Cargo.toml:25: ort 2.0.0-rc.15 fixes over 30 UB instances; plan an upgrade task with the re-checks in AGENTS.md. T12.3b.
 - crates/earshot-runtime/src/backends_tests.rs (`shipped_files_naming`): the evaluation-only scans skip `earshot-onnx/src` and `backends.rs` itself. T12.3b and T12.3c reviews.
+- crates/earshot-runtime/src/edit.rs (`edit_summary`): an edit takes undo's one step, so the summary a re-summarise replaced is no longer reachable by undo; and the header still says "Summary by <model>" after an edit. T12.16.
+- crates/earshot-runtime/src/summary.rs:1439: a transcript edit during a summary run makes `store_summary` conflict and the run is discarded; block line edits while a summary job runs, as summary edits already are. T12.16 review.
+- crates/earshot-runtime/src/post/mod.rs:1689: `final_segments` leaves out kept edited rows, and a kept speaker row keeps its old role whatever this run's track policy says. T12.16 review.
+- packages/ui/src/detail/MeetingDetailView.tsx (`Editable`): the due-date editor has no visible label. apps/desktop/src-tauri/src/detail.rs (`edit_error`): `InvalidTitle(Empty)` copy is unreachable. T12.16.

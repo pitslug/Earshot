@@ -1435,7 +1435,8 @@ pub(crate) fn store_summary<R: Rng + ?Sized>(
             ids.sort();
             ids
         };
-        if ids(&now) != ids(view) {
+        // A text edit (T12.16) keeps the ids but changes what was summarised.
+        if ids(&now) != ids(view) || now.edited != view.edited {
             return Err(RuntimeError::Conflict(
                 "the transcript changed during the summary",
             ));

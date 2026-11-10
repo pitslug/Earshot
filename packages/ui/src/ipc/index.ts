@@ -32,6 +32,7 @@ export type {
   SpeakerCard,
   SpeakerKind,
   SpeakerSource,
+  SummaryFieldRef,
   SummaryView,
   TranscriptKind,
   TranscriptRow,

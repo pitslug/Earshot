@@ -21,7 +21,19 @@
 //!   revives the previous one with a fresh stamp, so the two swap and a second undo returns
 //!   to the original. Older summaries stay tombstones. [`MeetingView`] (and so export) keeps
 //!   reading the newest live summary. No schema change.
-//! - [`retranscribe`]: the final pass again from the stored audio, with no live reuse.
+//! - Title and transcript (T12.16): [`rename_meeting`], [`edit_segment`]. An edited segment
+//!   keeps its id and times (summary citations still find it) and loses its per-word times,
+//!   which described the recogniser's words, not the user's (`SegmentRow::text_edited_at`).
+//!   Search and export read the edited text through [`MeetingView`]. A text edit later than
+//!   the summary marks the summary out of date ([`MeetingView::summary_out_of_date`]), and
+//!   nothing is summarised by itself.
+//! - Summary text (T12.16): [`edit_summary`] corrects one field of the current summary in
+//!   place and keeps the text before the edit as the previous summary, so
+//!   [`undo_summary`] undoes the edit. No schema change.
+//! - [`retranscribe`]: the final pass again from the stored audio, with no live reuse. It
+//!   keeps every edited segment and leaves out the new words under it
+//!   (`crate::post::drop_words_under_edits`), saying so in a warning
+//!   (`PostWarning::EditedLinesKept`).
 //! - [`speaker_sample`]: a short stretch of a speaker's audio for the "play" button.
 //!
 //! Merging across tracks is allowed: a `Speaker` row has no track (its segments do), the
@@ -62,11 +74,22 @@ use crate::backends::{Accelerator, EvidenceLoader, ModelDir, post_processor};
 use crate::host::{HostPost, HostStep, ONNX_ACCELERATOR, PostLoad, final_pass};
 use crate::identities::{IdentityRecord, StoredIdentities};
 use crate::post::PostConfig;
-use crate::view::MeetingView;
+use crate::view::{MeetingView, cites_only};
 use crate::{MeetingJob, RuntimeError, Services, os_seeded_rng};
 
 /// The longest name a speaker or person may get, in characters (after trimming).
 pub const MAX_NAME_CHARS: usize = 100;
+
+/// The longest meeting title, in characters (after trimming).
+pub const MAX_TITLE_CHARS: usize = 200;
+
+/// The longest text of one transcript segment the user may write, in characters (after
+/// trimming). A segment is at most about 30 s of speech, a few hundred characters.
+pub const MAX_SEGMENT_CHARS: usize = 5_000;
+
+/// The longest text of one summary field the user may write, in characters (after
+/// trimming); a title follows [`MAX_TITLE_CHARS`].
+pub const MAX_SUMMARY_TEXT_CHARS: usize = 2_000;
 
 /// Why an edit was refused (nothing was written).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +140,34 @@ pub enum EditError {
     /// The meeting (the id) is recording: it can be moved to a folder once it has ended
     /// ([`crate::folders::move_meeting`]).
     MeetingRecording(EntityId),
+    /// The title is unusable ([`rename_meeting`]). Never carries the text: it is content.
+    InvalidTitle(TextProblem),
+    /// The transcript text is unusable ([`edit_segment`]). Never carries the text.
+    InvalidText(TextProblem),
+    /// No such segment in the transcript the meeting shows, or it is deleted (replaced by
+    /// a re-transcription meanwhile).
+    SegmentNotFound(EntityId),
+    /// The meeting (the id) shows only its live draft: the final pass replaces it, so an
+    /// edit would be lost. Its text can be edited once the final transcript exists.
+    DraftTranscript(EntityId),
+    /// The summary (the id) is no longer the meeting's current one ([`edit_summary`]): a
+    /// new summary or an undo replaced it meanwhile.
+    SummaryNotCurrent(EntityId),
+    /// The summary has no such item ([`edit_summary`]; it changed meanwhile).
+    SummaryItemNotFound,
+    /// The summary text is unusable ([`edit_summary`]). Never carries the text.
+    InvalidSummaryText(TextProblem),
+}
+
+/// What is wrong with a title or transcript text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextProblem {
+    /// Nothing but whitespace (transcript text only: an empty title is allowed).
+    Empty,
+    /// Longer than the limit ([`MAX_TITLE_CHARS`], [`MAX_SEGMENT_CHARS`]).
+    TooLong,
+    /// A control character (a line break, a tab).
+    ControlCharacter,
 }
 
 /// What is wrong with a name.
@@ -186,11 +237,281 @@ impl fmt::Display for EditError {
                 f,
                 "meeting {id} is recording; it can be moved to a folder once it has ended"
             ),
+            Self::InvalidTitle(p) => write!(f, "the title {}", text_problem(*p, MAX_TITLE_CHARS)),
+            Self::InvalidText(p) => write!(f, "the text {}", text_problem(*p, MAX_SEGMENT_CHARS)),
+            Self::SegmentNotFound(id) => {
+                write!(f, "segment {id} is not in this meeting's transcript")
+            }
+            Self::DraftTranscript(id) => write!(
+                f,
+                "meeting {id} has only its live draft; edit the text once the final transcript exists"
+            ),
+            Self::SummaryNotCurrent(id) => {
+                write!(f, "summary {id} is no longer the meeting's current summary")
+            }
+            Self::SummaryItemNotFound => f.write_str("the summary has no such item"),
+            Self::InvalidSummaryText(p) => {
+                write!(f, "the text {}", text_problem(*p, MAX_SUMMARY_TEXT_CHARS))
+            }
         }
     }
 }
 
 impl std::error::Error for EditError {}
+
+fn text_problem(p: TextProblem, max: usize) -> String {
+    match p {
+        TextProblem::Empty => "is empty".into(),
+        TextProblem::TooLong => format!("is longer than {max} characters"),
+        TextProblem::ControlCharacter => {
+            "contains a line break or another control character".into()
+        }
+    }
+}
+
+/// `text` trimmed, if it fits in `max` characters with no control character; empty only
+/// when `allow_empty`.
+fn clean_text(text: &str, max: usize, allow_empty: bool) -> Result<String, TextProblem> {
+    let text = text.trim();
+    if text.is_empty() && !allow_empty {
+        return Err(TextProblem::Empty);
+    }
+    if text.chars().count() > max {
+        return Err(TextProblem::TooLong);
+    }
+    if text.chars().any(char::is_control) {
+        return Err(TextProblem::ControlCharacter);
+    }
+    Ok(text.to_owned())
+}
+
+/// `title` trimmed, if it is usable for a meeting: at most [`MAX_TITLE_CHARS`], no control
+/// character. Empty is allowed: the meeting is untitled again, and its next summary may
+/// give it one.
+///
+/// # Errors
+/// [`EditError::InvalidTitle`].
+pub fn clean_title(title: &str) -> Result<String, EditError> {
+    clean_text(title, MAX_TITLE_CHARS, true).map_err(EditError::InvalidTitle)
+}
+
+/// `text` trimmed, if it is usable for a transcript segment: not empty, at most
+/// [`MAX_SEGMENT_CHARS`], no control character.
+///
+/// # Errors
+/// [`EditError::InvalidText`].
+pub fn clean_segment_text(text: &str) -> Result<String, EditError> {
+    clean_text(text, MAX_SEGMENT_CHARS, false).map_err(EditError::InvalidText)
+}
+
+/// Gives meeting `meeting` the title `title` (trimmed, [`clean_title`]), changing only the
+/// title of the row re-read in the transaction. Returns whether the row changed (the
+/// current title writes nothing).
+///
+/// # Errors
+/// [`EditError`] (unknown or deleted meeting, unusable title); store errors.
+pub fn rename_meeting(
+    services: &Services,
+    meeting: EntityId,
+    title: &str,
+) -> Result<bool, RuntimeError> {
+    let title = clean_title(title)?;
+    write(services, |tx, stamp| {
+        let mut row = live_meeting(&*tx, meeting)?;
+        if row.title == title {
+            return Ok(false);
+        }
+        row.title = title;
+        row.meta.touch(stamp.hlc, stamp.clock);
+        tx.put_meeting(row)?;
+        Ok(true)
+    })
+}
+
+/// Replaces the text of segment `segment` of `meeting`'s final transcript with `text`
+/// (trimmed, [`clean_segment_text`]). The segment keeps its id, track, speaker, start and
+/// end, so summary citations and the speaker's audio still find it; its words are dropped
+/// (their times described the recogniser's words) and `SegmentRow::text_edited_at` records
+/// the edit, which a re-transcription keeps and which marks an older summary out of date.
+/// Returns whether the row changed (the current text writes nothing).
+///
+/// Only the final transcript can be edited: a meeting showing its live draft refuses
+/// ([`EditError::DraftTranscript`]), because its final pass would replace the draft. A
+/// final pass running meanwhile cannot lose the edit: it re-reads the rows in its own
+/// transaction, and an edit after it finds the replaced segment gone
+/// ([`EditError::SegmentNotFound`]).
+///
+/// # Errors
+/// [`EditError`] (unknown or deleted meeting or segment, a draft transcript, unusable
+/// text); store errors.
+pub fn edit_segment(
+    services: &Services,
+    meeting: EntityId,
+    segment: EntityId,
+    text: &str,
+) -> Result<bool, RuntimeError> {
+    let text = clean_segment_text(text)?;
+    write(services, |tx, stamp| {
+        live_meeting(&*tx, meeting)?;
+        let rows = tx.segments(meeting)?;
+        let has_final = rows
+            .iter()
+            .any(|r| r.pass == TranscriptPass::Final && !r.meta.deleted);
+        let Some(mut row) = rows
+            .into_iter()
+            .find(|r| r.segment.id == segment && !r.meta.deleted)
+        else {
+            return Err(EditError::SegmentNotFound(segment).into());
+        };
+        if row.pass != TranscriptPass::Final {
+            return Err(if has_final {
+                // A draft row of a meeting that has a final transcript is not shown.
+                EditError::SegmentNotFound(segment)
+            } else {
+                EditError::DraftTranscript(meeting)
+            }
+            .into());
+        }
+        if row.segment.text == text {
+            return Ok(false);
+        }
+        row.segment.text = text;
+        row.segment.words.clear();
+        row.meta.touch(stamp.hlc, stamp.clock);
+        row.text_edited_at = Some(row.meta.updated_at);
+        tx.put_segment(row)?;
+        Ok(true)
+    })
+}
+
+/// A text field of a summary the user may correct (T12.16). Indices count from 0 in the
+/// stored order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryField {
+    /// The summary's title.
+    Title,
+    /// The TL;DR.
+    Tldr,
+    /// A decision's text.
+    Decision(usize),
+    /// Who an action item is for.
+    ActionOwner(usize),
+    /// What an action item is.
+    ActionTask(usize),
+    /// When an action item is due ("" removes it).
+    ActionDue(usize),
+    /// A notes section's heading.
+    NoteHeading(usize),
+    /// A notes bullet: the section, then the bullet.
+    NoteBullet(usize, usize),
+    /// An open question.
+    OpenQuestion(usize),
+}
+
+/// Writes `text` into `field` of `summary`; `Ok(false)` when it already holds it.
+fn set_summary_field(
+    summary: &mut SummaryV1,
+    field: SummaryField,
+    text: String,
+) -> Result<bool, EditError> {
+    let missing = || EditError::SummaryItemNotFound;
+    let slot: &mut String = match field {
+        SummaryField::Title => &mut summary.title,
+        SummaryField::Tldr => &mut summary.tldr,
+        SummaryField::Decision(i) => &mut summary.decisions.get_mut(i).ok_or_else(missing)?.text,
+        SummaryField::ActionOwner(i) => {
+            &mut summary.action_items.get_mut(i).ok_or_else(missing)?.owner
+        }
+        SummaryField::ActionTask(i) => {
+            &mut summary.action_items.get_mut(i).ok_or_else(missing)?.task
+        }
+        SummaryField::ActionDue(i) => {
+            let due = &mut summary.action_items.get_mut(i).ok_or_else(missing)?.due;
+            let new = (!text.is_empty()).then_some(text);
+            if *due == new {
+                return Ok(false);
+            }
+            *due = new;
+            return Ok(true);
+        }
+        SummaryField::NoteHeading(i) => {
+            &mut summary
+                .enhanced_notes
+                .get_mut(i)
+                .ok_or_else(missing)?
+                .heading
+        }
+        SummaryField::NoteBullet(i, j) => {
+            &mut summary
+                .enhanced_notes
+                .get_mut(i)
+                .and_then(|n| n.bullets.get_mut(j))
+                .ok_or_else(missing)?
+                .text
+        }
+        SummaryField::OpenQuestion(i) => summary.open_questions.get_mut(i).ok_or_else(missing)?,
+    };
+    if *slot == text {
+        return Ok(false);
+    }
+    *slot = text;
+    Ok(true)
+}
+
+/// Corrects one text field of `meeting`'s current summary `summary` (T12.16). Citations,
+/// the model and the template stay. The text is trimmed and at most
+/// [`MAX_SUMMARY_TEXT_CHARS`] ([`MAX_TITLE_CHARS`] for the title) with no control
+/// character; it may be empty only for an action's due date (which removes it).
+///
+/// Today's undo covers it: the summary as it was before the edit is kept as a tombstone
+/// copy with a new id (the row's own `created_at`, so its staleness reads as the original's)
+/// and becomes the previous summary, while the current row keeps its id and `created_at`
+/// and is changed in place. "Switch to previous summary" ([`undo_summary`]) therefore
+/// brings back the text before the last edit, and switching again returns to the edit;
+/// each edit keeps one such copy. The previous summary is always the newest tombstone, so
+/// after an edit the summary a re-summarise replaced is no longer reachable by undo (it
+/// stays a tombstone, with its body, until the meeting is deleted). An edit does not make the summary current with the
+/// transcript: [`MeetingView::summary_out_of_date`] still compares the transcript's edits
+/// with the summary's creation. Returns whether anything changed (the same text writes
+/// nothing).
+///
+/// # Errors
+/// [`EditError`] (unknown or deleted meeting, a summary that is not the current one, an
+/// item it does not have, unusable text); store errors.
+pub fn edit_summary(
+    services: &Services,
+    meeting: EntityId,
+    summary: EntityId,
+    field: SummaryField,
+    text: &str,
+) -> Result<bool, RuntimeError> {
+    let text = match field {
+        SummaryField::Title => clean_text(text, MAX_TITLE_CHARS, false),
+        SummaryField::ActionDue(_) => clean_text(text, MAX_SUMMARY_TEXT_CHARS, true),
+        _ => clean_text(text, MAX_SUMMARY_TEXT_CHARS, false),
+    }
+    .map_err(EditError::InvalidSummaryText)?;
+    write(services, |tx, stamp| {
+        live_meeting(&*tx, meeting)?;
+        let current = history(&*tx, meeting)?
+            .current
+            .filter(|s| s.id == summary)
+            .ok_or(EditError::SummaryNotCurrent(summary))?;
+        let mut edited = current.clone();
+        if !set_summary_field(&mut edited.summary, field, text)? {
+            return Ok(false);
+        }
+        // The text before the edit, as the previous summary (doc comment).
+        let mut before = current;
+        before.id = EntityId::generate(stamp.clock, &mut *stamp.rng);
+        before.meta.origin_device_id = stamp.hlc.node();
+        before.meta.mark_deleted(stamp.hlc, stamp.clock);
+        tx.put_summary(before)?;
+        edited.meta.touch(stamp.hlc, stamp.clock);
+        tx.put_summary(edited)?;
+        Ok(true)
+    })
+}
 
 impl From<EditError> for RuntimeError {
     fn from(e: EditError) -> Self {
@@ -953,24 +1274,6 @@ pub struct SummaryHistory {
     pub previous: Option<PreviousSummary>,
 }
 
-/// Whether every segment `summary` cites (notes, decisions, action items) is in `ids`. Only
-/// the citations are checked: the summary passed validation when it was stored.
-fn cites_only(summary: &SummaryV1, ids: &BTreeSet<EntityId>) -> bool {
-    summary
-        .enhanced_notes
-        .iter()
-        .flat_map(|n| &n.bullets)
-        .flat_map(|b| &b.source_segment_ids)
-        .chain(summary.decisions.iter().flat_map(|d| &d.source_segment_ids))
-        .chain(
-            summary
-                .action_items
-                .iter()
-                .flat_map(|a| &a.source_segment_ids),
-        )
-        .all(|id| ids.contains(id))
-}
-
 /// [`summary_history`] from a repository the caller has locked (one snapshot with other
 /// reads).
 ///
@@ -1069,8 +1372,10 @@ pub struct Retranscribed {
     /// The final pass ([`HostPost::NothingToProcess`] when every recording is gone,
     /// [`HostPost::Cancelled`] when cancelled).
     pub post: HostPost,
-    /// The meeting has a summary that cites a segment the current transcript no longer has
-    /// (the same check as [`PreviousSummary::restorable`]): offer to summarise again.
+    /// The meeting's summary no longer matches the transcript
+    /// ([`MeetingView::summary_out_of_date`]: it cites a segment the transcript no longer
+    /// has, the check of [`PreviousSummary::restorable`], or a line was edited after it was
+    /// written): offer to summarise again.
     pub summary_stale: bool,
 }
 
@@ -1078,8 +1383,8 @@ pub struct Retranscribed {
 /// meeting, [`TranscribeOptions::batch`], no live reuse (`PostConfig::reuse_live` off),
 /// production models ([`post_processor`]). Speaker names and Person links the user gave are
 /// carried over by the final pass's identity matching. The existing summary is left as it
-/// is; [`Retranscribed::summary_stale`] says when it cites the replaced transcript (the host
-/// offers to summarise again).
+/// is; [`Retranscribed::summary_stale`] says when it no longer matches (the host offers to
+/// summarise again). Lines the user edited are kept (module docs).
 ///
 /// # Errors
 /// [`EditError::MeetingNotFound`]; [`RuntimeError::MeetingBusy`] (retryable) while the
@@ -1161,10 +1466,7 @@ where
     )?;
     let summary_stale = {
         let db = services.store();
-        MeetingView::load(&**db, meeting)?.is_some_and(|v| {
-            let ids: BTreeSet<EntityId> = v.segments.iter().map(|s| s.id).collect();
-            v.summary.is_some_and(|s| !cites_only(&s.summary, &ids))
-        })
+        MeetingView::load(&**db, meeting)?.is_some_and(|v| v.summary_out_of_date())
     };
     Ok(Retranscribed {
         missing_tracks,

@@ -84,7 +84,7 @@ describe("keeping a meeting on this computer", () => {
     expect(calls.filter((c) => c[0] === "allowSummaryWriter")).toEqual([]);
     expect(screen.getByText("Kept on this computer")).toBeInTheDocument();
     // Allow: the bar goes, and no summary was asked for.
-    await user.click(screen.getByRole("button", { name: "Let Claude Code summarise it" }));
+    await user.click(await screen.findByRole("button", { name: "Let Claude Code summarise it" }));
     dialog = await screen.findByRole("alertdialog");
     await user.click(within(dialog).getByRole("button", { name: "Allow" }));
     await screen.findByRole("heading", { level: 1, name: ITEM.title });

@@ -1647,8 +1647,9 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: T12.15's second half. The words come from the Dictionary and the names of saved people (the owner, 2026-11-10: a saved Kam should win over Cam, Kat over Cat); people's names are used on this computer only and never added to a summary request beyond the meeting's own speakers. Compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data, with the rule written before measuring. A correction pass never changes a word without keeping the original. No shipped change without the owner.
   - accept: the spike's numbers and a recommendation in docs
 
-- [ ] T12.16 Edit a meeting's title, transcript and summary
+- [x] T12.16 Edit a meeting's title, transcript and summary
   - deps: T7.3
+  - status (2026-11-11): merged (T12.16a 08fec3e, T12.16b 0563027), reviewed clear (4 advisories: banner copy fixed at merge, rest in TODO.md); migration 3 adds the segment edit mark; desktop 354, runtime, store and UI pass on the merge (UI timeouts under lane load passed on re-run); batch ci at the end.
   - decision (2026-11-10, the owner): a re-transcribe keeps edited segments and says so in a warning; an edit to the transcript marks the summary out of date (as re-transcribe does), sending nothing by itself.
   - do: the owner: correct a title and fix words in the transcript or summary. Today only speakers can be edited. Edits go through `edit::write`; an edit to a transcript segment keeps its id and times so citations still work, and its word times stay honest about what changed. Decide with the owner what a re-transcribe does to edited text (keep, warn or replace) and whether a changed transcript marks the summary out of date. A replaced summary keeps today's undo. Exports follow the edited text.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
