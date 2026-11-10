@@ -1,9 +1,11 @@
 // The meeting detail screen (docs/ui-design.md "Meeting detail", T7.3, T9.1o): a header that
-// stays in view with Export, Copy summary, Re-transcribe and Re-summarise, Summary and Transcript
-// tabs, and the who-is-who panel. Deleting starts from the meeting list. Every change goes through `useIpc()`;
-// the detail is read again after each one.
+// stays in view with Speakers, Export, Copy summary, Re-transcribe and Re-summarise, Summary and
+// Transcript tabs, and the Speakers panel (T12.19), which slides in beside them. Deleting starts
+// from the meeting list. Every change goes through `useIpc()`; the detail is read again after
+// each one.
 
 import {
+  Badge,
   Body1,
   Body1Strong,
   Button,
@@ -25,7 +27,7 @@ import {
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import {
   type Citation,
@@ -44,17 +46,17 @@ import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
 import { KeptLocal } from "./KeptLocal";
-import { WhoIsWho } from "./WhoIsWho";
+import { SpeakersPanel } from "./SpeakersPanel";
 import {
   COPIED_MS,
   failureText,
   handoverLine,
   headerLine,
-  namesBanner,
   recordingsGone,
-  rememberText,
   rowTime,
+  savedText,
   summaryMarkdown,
+  voicesBadge,
   voicesToName,
 } from "./detail";
 
@@ -129,11 +131,42 @@ const useStyles = makeStyles({
   muted: {
     color: tokens.colorNeutralForeground3,
   },
+  // The transcript and the Speakers panel side by side: the panel's column grows from
+  // nothing when it opens, pushing the transcript aside rather than covering it (T12.19).
   columns: {
     display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr) 240px",
-    columnGap: tokens.spacingHorizontalL,
+    gridTemplateColumns: "minmax(0, 1fr) auto",
     alignItems: "start",
+  },
+  drawer: {
+    width: 0,
+    overflow: "hidden",
+    transitionProperty: "width, margin-left",
+    transitionDuration: tokens.durationNormal,
+    transitionTimingFunction: tokens.curveEasyEase,
+    "@media (prefers-reduced-motion: reduce)": {
+      transitionDuration: "0.01ms",
+    },
+  },
+  drawerOpen: {
+    width: "320px",
+    marginLeft: tokens.spacingHorizontalL,
+  },
+  // The panel itself slides in from the right as its column opens.
+  drawerInner: {
+    width: "320px",
+    animationName: {
+      from: { transform: "translateX(24px)", opacity: 0 },
+      to: { transform: "translateX(0)", opacity: 1 },
+    },
+    animationDuration: tokens.durationNormal,
+    animationTimingFunction: tokens.curveDecelerateMid,
+    "@media (prefers-reduced-motion: reduce)": {
+      animationDuration: "0.01ms",
+    },
+  },
+  badge: {
+    marginLeft: tokens.spacingHorizontalXS,
   },
   main: {
     display: "flex",
@@ -366,6 +399,12 @@ export function MeetingDetailView({
   const [notice, setNotice] = useState<Notice | null>(null);
   const [noAudio, setNoAudio] = useState<Set<string>>(new Set());
   const [editingTitle, setEditingTitle] = useState(false);
+  // The Speakers panel: `null` until the meeting loads, then open by itself only when a
+  // voice needs a name (T12.19); the header's Speakers button toggles it.
+  const [speakersOpen, setSpeakersOpen] = useState<boolean | null>(null);
+  const panelId = useId();
+  const voicesBefore = useRef(0);
+  const speakersButton = useRef<HTMLButtonElement | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
   const nameField = useRef<HTMLInputElement | null>(null);
   const view = useRef<HTMLElement | null>(null);
@@ -376,6 +415,14 @@ export function MeetingDetailView({
     try {
       const [d, p] = await Promise.all([ipc.getMeeting(id), ipc.listPersons()]);
       setDetail(d);
+      // Decided with each detail, in the same render: the first opens it exactly when a voice
+      // needs a name; a later one opens it when more voices need a name than before (a
+      // re-transcription found new ones). Never closed by itself. A voice recognised from a
+      // voiceprint has a name, so it never opens it.
+      const needing = voicesToName(d);
+      const before = voicesBefore.current;
+      voicesBefore.current = needing;
+      setSpeakersOpen((open) => (open === null ? needing > 0 : needing > before ? true : open));
       setPersons(p);
       setLoadError(null);
     } catch (e) {
@@ -400,10 +447,13 @@ export function MeetingDetailView({
     if (ended !== null) void reload();
   }, [ended, reload]);
 
-  // "Name voices": focus the first name field.
+  // "Name voices": open the panel and focus the first name field.
   useEffect(() => {
-    if (nameVoices > 0 && detail !== null) nameField.current?.focus();
-  }, [nameVoices, detail]);
+    if (nameVoices > 0) setSpeakersOpen(true);
+  }, [nameVoices]);
+  useEffect(() => {
+    if (nameVoices > 0 && detail !== null && speakersOpen === true) nameField.current?.focus();
+  }, [nameVoices, detail, speakersOpen]);
 
   // A citation shows its row. Any other tab change opens at the top: the pane's scroll position
   // would otherwise carry over, and the end of a long transcript is past the end of a summary.
@@ -524,6 +574,21 @@ export function MeetingDetailView({
             {detail !== null && <Caption1 className={styles.muted}>{headerLine(detail)}</Caption1>}
           </div>
           <div className={styles.headerButtons}>
+            <Button
+              ref={speakersButton}
+              aria-expanded={speakersOpen === true}
+              aria-controls={speakersOpen === true ? panelId : undefined}
+              aria-label={voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers"}
+              disabled={detail === null}
+              onClick={() => setSpeakersOpen((open) => open !== true)}
+            >
+              Speakers
+              {voices > 0 && (
+                <Badge className={styles.badge} appearance="filled" color="brand" size="small">
+                  {voicesBadge(voices)}
+                </Badge>
+              )}
+            </Button>
             <Button onClick={() => void exportNote()} disabled={detail === null}>
               Export to Obsidian
             </Button>
@@ -612,16 +677,6 @@ export function MeetingDetailView({
         <>
           <div className={styles.columns}>
             <div className={styles.main}>
-              {voices > 0 && (
-                <MessageBar intent="info" layout="multiline">
-                  <MessageBarBody>{namesBanner(voices)}</MessageBarBody>
-                  <MessageBarActions>
-                    <Button size="small" onClick={() => nameField.current?.focus()}>
-                      Name voices
-                    </Button>
-                  </MessageBarActions>
-                </MessageBar>
-              )}
               {tab === "summary" ? (
                 <SummaryTab
                   detail={detail}
@@ -652,44 +707,58 @@ export function MeetingDetailView({
                 />
               )}
             </div>
-            <WhoIsWho
-              detail={detail}
-              persons={persons}
-              noAudio={noAudio}
-              onPlay={(s) => void play(s)}
-              onRename={(s, name) => run(() => ipc.renameSpeaker(id, s, name), "The name was not saved")}
-              onRenamePerson={(person, name) =>
-                run(() => ipc.renamePerson(person, name), "The person was not renamed")
-              }
-              onLink={(s, choice: LinkChoice) =>
-                run(() => ipc.linkSpeaker(id, s, choice), "The speaker was not linked")
-              }
-              onMarkMe={(s) => run(() => ipc.markMe(id, s), "The voice was not marked as you")}
-              onUnmarkMe={(s) => run(() => ipc.unmarkMe(id, s), "The voice was not changed")}
-              onMerge={(keep, merge) =>
-                run(() => ipc.mergeSpeakers(id, keep, merge), "The speakers were not merged")
-              }
-              onForget={(person) =>
-                run(async () => {
-                  await ipc.forgetPersonVoices(person);
-                  setNotice({ key: "edit", intent: "success", text: "The voice was forgotten." });
-                }, "The voice was not forgotten")
-              }
-              onRemember={(speakers) =>
-                run(async () => {
-                  const results = await ipc.rememberVoices(id, speakers);
-                  const saved = results.filter((r) => r.outcome === "Remembered").length;
-                  setNotice({
-                    key: "edit",
-                    intent: saved === results.length ? "success" : "info",
-                    text: rememberText(results, detail.speakers),
-                  });
-                }, "The voices were not saved")
-              }
-              firstNameField={(el) => {
-                nameField.current = el;
-              }}
-            />
+            <div className={mergeClasses(styles.drawer, speakersOpen === true && styles.drawerOpen)}>
+              {speakersOpen === true && (
+                <div className={styles.drawerInner}>
+                  <SpeakersPanel
+                    id={panelId}
+                    detail={detail}
+                    persons={persons}
+                    noAudio={noAudio}
+                    onClose={() => {
+                      setSpeakersOpen(false);
+                      // The Close button leaves with the panel: focus goes back where it opens.
+                      speakersButton.current?.focus();
+                    }}
+                    onPlay={(s) => void play(s)}
+                    onRename={(s, name) => run(() => ipc.renameSpeaker(id, s, name), "The name was not saved")}
+                    onRenamePerson={(person, name) =>
+                      run(() => ipc.renamePerson(person, name), "The person was not renamed")
+                    }
+                    onLink={(s, choice: LinkChoice) =>
+                      run(() => ipc.linkSpeaker(id, s, choice), "The speaker was not linked")
+                    }
+                    onMarkMe={(s) => run(() => ipc.markMe(id, s), "The voice was not marked as you")}
+                    onUnmarkMe={(s) => run(() => ipc.unmarkMe(id, s), "The voice was not changed")}
+                    onMerge={(keep, merge) =>
+                      run(() => ipc.mergeSpeakers(id, keep, merge), "The speakers were not merged")
+                    }
+                    onForget={(person) =>
+                      run(async () => {
+                        await ipc.forgetPersonVoices(person);
+                        setNotice({ key: "edit", intent: "success", text: "The voice was forgotten." });
+                      }, "The voice was not forgotten")
+                    }
+                    onSave={(s, choice, name) =>
+                      run(async () => {
+                        const saved = await ipc.saveVoice(id, s, choice);
+                        const kept = saved.outcome === "Remembered" || saved.outcome === "AlreadyRemembered";
+                        setNotice({
+                          key: "edit",
+                          intent: kept ? "success" : "info",
+                          text: savedText(name, saved.outcome),
+                        });
+                      }, "The voice was not saved")
+                    }
+                    onIgnore={(s) => run(() => ipc.ignoreSpeaker(id, s), "The voice was not ignored")}
+                    onUnignore={(s) => run(() => ipc.unignoreSpeaker(id, s), "The voice was not changed")}
+                    firstNameField={(el) => {
+                      nameField.current = el;
+                    }}
+                  />
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}

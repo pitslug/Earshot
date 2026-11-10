@@ -65,8 +65,14 @@ export function createTauriIpc(): Ipc {
     },
     renamePerson: async (person, name) => unwrap(await commands.renamePerson(person, name)),
     listPersons: async () => unwrap(await commands.listPersons()),
-    rememberVoices: async (meeting, speakers) =>
-      unwrap(await commands.rememberVoices(meeting, speakers)),
+    saveVoice: async (meeting, speaker, choice) =>
+      unwrap(await commands.saveVoice(meeting, speaker, choice)),
+    ignoreSpeaker: async (meeting, speaker) => {
+      unwrap(await commands.ignoreSpeaker(meeting, speaker));
+    },
+    unignoreSpeaker: async (meeting, speaker) => {
+      unwrap(await commands.unignoreSpeaker(meeting, speaker));
+    },
     forgetPersonVoices: async (person) => unwrap(await commands.forgetPersonVoices(person)),
     removePerson: async (person) => {
       unwrap(await commands.removePerson(person));

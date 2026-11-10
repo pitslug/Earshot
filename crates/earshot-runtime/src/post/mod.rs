@@ -116,7 +116,10 @@
 //!    meeting ([`crate::edit::mark_me`], T9.12): it keeps its entry, and while this run named
 //!    no "Me" from the voiceprint it continues like any edit and stays the Me row; its
 //!    diarisation speaker stays a room voice, so it is never enrolled from. A voiceprint "Me"
-//!    takes the one Me row over; an unmatched voice loses the mark with its row.
+//!    takes the one Me row over; an unmatched voice loses the mark with its row. A voice the
+//!    user ignored ([`crate::edit::ignore_speaker`], T12.19) is an edit too: it keeps its row
+//!    and label unlinked whatever voiceprint it now matches, and its new entry stays ignored
+//!    ([`PostSpeaker::ignored`]).
 //!    Earlier speakers found with another embedding model, or an identity record this build
 //!    cannot read, are not carried over ([`PostWarning::SpeakerNamesNotCarried`]). This
 //!    holds for the whole-meeting pass ([`PostConfig::reuse_live`] off) too.
@@ -372,6 +375,9 @@ pub struct PostSpeaker {
     pub display_name: String,
     /// Total speech.
     pub speech: Duration,
+    /// The user ignored this voice in an earlier run, and this run carried the choice
+    /// (T12.19): it does not need a name.
+    pub ignored: bool,
 }
 
 /// Something worth telling the user; processing still succeeded.
@@ -1604,8 +1610,10 @@ where
                             // The user's edit, kept: an edit for the next run too.
                             given_stamp: None,
                             user_edited: true,
-                            // A new centroid: "remember these voices" may add it.
+                            // A new centroid: saving the voice may add it.
                             enrolled: false,
+                            // An ignored voice stays ignored (T12.19).
+                            ignored: identity.ignored,
                         });
                     }
                     row_ids[k] = Some(row.id);
@@ -1616,6 +1624,8 @@ where
                         person: row.person_id,
                         display_name: row.display_name,
                         speech: s.speech,
+                        // Kept only with its entry (a valid centroid), as the detail reads it.
+                        ignored: identity.ignored && s.centroid.is_valid(),
                     });
                     continue;
                 }
@@ -1630,6 +1640,7 @@ where
                         person: *person,
                         display_name: name.clone(),
                         speech: s.speech,
+                        ignored: false,
                     });
                     continue;
                 }
@@ -1680,6 +1691,7 @@ where
                         given_stamp: Some(row.meta.updated_at),
                         user_edited: false,
                         enrolled: false,
+                        ignored: false,
                     });
                 }
                 row_ids[k] = Some(row.id);
@@ -1690,6 +1702,7 @@ where
                     person,
                     display_name,
                     speech: s.speech,
+                    ignored: false,
                 });
             }
 

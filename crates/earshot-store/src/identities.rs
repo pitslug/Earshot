@@ -46,7 +46,8 @@ use serde::{Deserialize, Serialize};
 use crate::{StoreError, StoreTx};
 
 /// The format of the stored record (version 2 adds [`SpeakerIdentity::given_stamp`] and
-/// [`SpeakerIdentity::user_edited`]).
+/// [`SpeakerIdentity::user_edited`]; [`SpeakerIdentity::enrolled`] and
+/// [`SpeakerIdentity::ignored`] joined version 2 with defaults older readers ignore).
 pub const IDENTITY_RECORD_VERSION: u32 = 2;
 
 /// Versions [`decode`] reads: version 1 records (no stamp, no edit flag) read with those
@@ -78,8 +79,8 @@ pub struct SpeakerIdentity {
     /// pass kept): it stays an edit whatever the pass did to the row's role.
     #[serde(default)]
     pub user_edited: bool,
-    /// This centroid was added to the linked person's voiceprint ("remember these voices",
-    /// `earshot_runtime::edit::remember_voices`), so it is not added again. A final pass
+    /// This centroid was added to the linked person's voiceprint (a voice the user saved,
+    /// `earshot_runtime::edit::save_voice`), so it is not added again. A final pass
     /// writes every entry it computes with a new centroid as not enrolled; linking the row to
     /// another person clears it. Added within version 2 with a `false` default (also for
     /// version 1 records): earlier version-2 readers ignore the unknown field (no
@@ -88,16 +89,27 @@ pub struct SpeakerIdentity {
     /// record and the user's names with it.
     #[serde(default)]
     pub enrolled: bool,
+    /// The user chose to ignore this voice in this meeting (T12.19,
+    /// `earshot_runtime::edit::ignore_speaker`): it keeps its "Speaker N" label, no longer
+    /// needs a name, and is never enrolled or named as a person. A user edit of its own (the
+    /// row itself is not written, so un-ignoring leaves the pass's naming as it was), carried
+    /// by a re-run like any edit. Added within version 2 with a `false` default, as
+    /// [`SpeakerIdentity::enrolled`] was: an earlier version-2 reader ignores the field (it
+    /// loses only the choice, never a name), so the version stays 2.
+    #[serde(default)]
+    pub ignored: bool,
 }
 
 impl SpeakerIdentity {
     /// Whether `row` was changed after the pass that wrote this entry (module docs): a
-    /// carried edit, a row written since the pass ([`SpeakerIdentity::given_stamp`]; so a
-    /// rename back to the automatic name is still an edit), or, for entries without a
-    /// stamp, a name or person different from what the pass gave it.
+    /// carried edit, an ignored voice ([`SpeakerIdentity::ignored`]), a row written since the
+    /// pass ([`SpeakerIdentity::given_stamp`]; so a rename back to the automatic name is
+    /// still an edit), or, for entries without a stamp, a name or person different from what
+    /// the pass gave it.
     #[must_use]
     pub fn edited(&self, row: &earshot_core::model::Speaker) -> bool {
         self.user_edited
+            || self.ignored
             || self.given_stamp.is_some_and(|s| row.meta.updated_at != s)
             || row.display_name != self.given_name
             || row.person_id != self.given_person

@@ -13,6 +13,7 @@ import {
   type IpcError,
   IpcFailure,
   type JobEvent,
+  type LinkChoice,
   type LiveTrack,
   type MeetingDetail,
   type MeetingEvent,
@@ -25,6 +26,7 @@ import {
   type SummaryView,
 } from "./ipc";
 import {
+  ignoredVoice,
   linked,
   markedMe,
   merged,
@@ -179,10 +181,9 @@ export interface MockIpcData {
   vault?: string;
   /** What `speakerSample` answers (default: a short silent WAV). */
   sample?: string | null;
-  /** What `rememberVoices` answers per speaker (default `Remembered`). */
+  /** What remembering a voice saved with `saveVoice` did, per speaker (default
+   * `Remembered`). */
   rememberOutcomes?: Record<string, RememberOutcome>;
-  /** Called with every `rememberVoices` request. */
-  onRememberVoices?: (meeting: string, speakers: string[]) => void;
   /** Called with every edit and job request (`["renameSpeaker", meeting, ...]`). */
   onCall?: (call: unknown[]) => void;
   /** Where an update stands when the app opens (default: nothing asked), and a refusal of install. */
@@ -437,6 +438,38 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     if (n === "") fail("invalid_name", "Enter a name.");
     if (n.length > 100) fail("invalid_name", "Names can be up to 100 characters long.");
     return n;
+  };
+  // `linkSpeaker` and the link of `saveVoice` (`label` names the call): refusals before
+  // anything is written, as the runtime's one transaction.
+  const linkIn = (meeting: string, speaker: string, choice: LinkChoice, label: string): string => {
+    call(label, meeting, speaker, choice);
+    const card = speakerOf(detailOf(meeting), speaker);
+    let person: PersonItem;
+    if (choice.kind === "New") {
+      if (card.kind === "Me") fail("me_is_the_user", "Your own row can only be linked to you.");
+      personSeq += 1;
+      person = {
+        id: `9e000000-0000-7000-8000-1000000000${String(personSeq).padStart(2, "0")}`,
+        name: checkName(choice.name),
+        has_voiceprint: false,
+        is_me: false,
+      };
+      persons.push(person);
+      persons.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    } else {
+      person =
+        persons.find((p) => p.id === choice.person) ??
+        fail("person_not_found", "This person no longer exists.");
+      if (person.is_me && card.kind !== "Me") {
+        fail("not_the_user", "Only your own row can be linked to you.");
+      }
+      if (!person.is_me && card.kind === "Me") {
+        fail("me_is_the_user", "Your own row can only be linked to you.");
+      }
+    }
+    const linkedTo = person;
+    update(meeting, (d) => linked(d, speaker, linkedTo));
+    return person.id;
   };
   const startJob = (meeting: string) => {
     detailOf(meeting);
@@ -746,33 +779,47 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       update(meeting, (x) => merged(x, keep, merge));
     },
-    linkSpeaker: async (meeting, speaker, choice) => {
-      call("linkSpeaker", meeting, speaker, choice);
+    linkSpeaker: async (meeting, speaker, choice) => linkIn(meeting, speaker, choice, "linkSpeaker"),
+    saveVoice: async (meeting, speaker, choice) => {
       const card = speakerOf(detailOf(meeting), speaker);
-      let person: PersonItem;
-      if (choice.kind === "New") {
-        personSeq += 1;
-        person = {
-          id: `9e000000-0000-7000-8000-1000000000${String(personSeq).padStart(2, "0")}`,
-          name: checkName(choice.name),
-          has_voiceprint: false,
-          is_me: false,
-        };
-        persons.push(person);
-        persons.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-      } else {
-        person =
-          persons.find((p) => p.id === choice.person) ??
-          fail("person_not_found", "This person no longer exists.");
+      const user = persons.find((p) => p.is_me);
+      // The runtime refuses before anything is written: the user's voice is never saved here.
+      if (card.kind === "Me" && choice.kind === "Existing" && choice.person === user?.id) {
+        call("saveVoice", meeting, speaker, choice);
+        fail("me_voice", "Your own voice is set up in Settings, not from a meeting.");
       }
-      if (person.is_me && card.kind !== "Me") {
-        fail("not_the_user", "Only your own row can be linked to you.");
+      const person = linkIn(meeting, speaker, choice, "saveVoice");
+      const outcome = data.rememberOutcomes?.[speaker] ?? ("Remembered" as const);
+      if (outcome === "Remembered") {
+        const p = persons.find((x) => x.id === person);
+        if (p) p.has_voiceprint = true;
+        update(meeting, (x) => ({
+          ...x,
+          speakers: x.speakers.map((s) =>
+            s.id === speaker && s.person ? { ...s, person: { ...s.person, has_voiceprint: true } } : s,
+          ),
+        }));
       }
-      if (!person.is_me && card.kind === "Me") {
-        fail("me_is_the_user", "Your own row can only be linked to you.");
+      return { person, outcome };
+    },
+    ignoreSpeaker: async (meeting, speaker) => {
+      call("ignoreSpeaker", meeting, speaker);
+      const card = speakerOf(detailOf(meeting), speaker);
+      if (card.kind === "Me" || card.person !== null) {
+        fail("not_unnamed", "Only a voice that needs a name can be ignored.");
       }
-      update(meeting, (d) => linked(d, speaker, person));
-      return person.id;
+      if (!card.can_ignore) {
+        fail(
+          "no_stored_voice",
+          "Earshot kept nothing of this voice to remember the choice by. Re-transcribe the meeting, then ignore it.",
+        );
+      }
+      update(meeting, (x) => ignoredVoice(x, speaker, true));
+    },
+    unignoreSpeaker: async (meeting, speaker) => {
+      call("unignoreSpeaker", meeting, speaker);
+      speakerOf(detailOf(meeting), speaker);
+      update(meeting, (x) => ignoredVoice(x, speaker, false));
     },
     markMe: async (meeting, speaker) => {
       call("markMe", meeting, speaker);
@@ -834,28 +881,6 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       return changed;
     },
     listPersons: async () => persons.map((p) => ({ ...p })),
-    rememberVoices: async (meeting, speakers) => {
-      data.onRememberVoices?.(meeting, speakers);
-      const d = detailOf(meeting);
-      const results = speakers.map((id) => {
-        const s = speakerOf(d, id);
-        if (s.kind === "Me") fail("me_voice", "Your own voice is set up in Settings, not from a meeting.");
-        if (s.person === null) fail("no_person", "Name this voice or link it to a person first.");
-        return { speaker: id, outcome: data.rememberOutcomes?.[id] ?? ("Remembered" as const) };
-      });
-      const saved = results.filter((r) => r.outcome === "Remembered").map((r) => r.speaker);
-      for (const s of d.speakers) {
-        const p = persons.find((x) => x.id === s.person?.id);
-        if (p && saved.includes(s.id)) p.has_voiceprint = true;
-      }
-      update(meeting, (x) => ({
-        ...x,
-        speakers: x.speakers.map((s) =>
-          saved.includes(s.id) && s.person ? { ...s, person: { ...s.person, has_voiceprint: true } } : s,
-        ),
-      }));
-      return results;
-    },
     forgetPersonVoices: async (person) => {
       call("forgetPersonVoices", person);
       const p =
@@ -887,7 +912,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
             let n = 1;
             while (taken.includes(`Speaker ${n}`)) n += 1;
             taken.push(`Speaker ${n}`);
-            return { ...s, name: `Speaker ${n}`, person: null, needs_name: true };
+            return { ...s, name: `Speaker ${n}`, person: null, needs_name: true, can_ignore: true };
           }),
         });
       }
