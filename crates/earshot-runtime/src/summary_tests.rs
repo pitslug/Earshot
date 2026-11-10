@@ -1989,6 +1989,7 @@ mod local {
                 summary: live_partial(cites),
             }],
             stopped: None,
+            vocabulary: Some(Vec::new()),
         };
         crate::live_summaries::record_live_summaries(&mut svc.store(), id, &record).unwrap();
     }
