@@ -19,7 +19,7 @@ use earshot_core::metrics::normalize::normalize_english;
 use earshot_core::metrics::wer::{align_tokens, corpus_wer};
 use earshot_onnx::SessionConfig;
 use earshot_onnx::nemo_mel::NemoMel;
-use earshot_onnx::parakeet::{OnnxNemoMel, ParakeetTdt};
+use earshot_onnx::parakeet::{OnnxNemoMel, ParakeetTdt, TokenBias};
 
 const MAX_ABS_DIFF: f32 = 5e-3;
 const MAX_MEAN_DIFF: f32 = 1e-4;
@@ -279,4 +279,56 @@ fn parakeet_tdt_shared_encoder_gives_the_same_words() {
     let mut plain = ParakeetTdt::load(&dir, &config(), name, true).expect("load");
     let _ = words(&mut plain, &clips[0]);
     assert!(plain.take_encoder_waits().is_empty());
+}
+
+/// A bias that changes nothing (T12.15b): it only counts what it hears.
+#[derive(Default)]
+struct Silent {
+    starts: usize,
+    emitted: usize,
+}
+
+impl TokenBias for Silent {
+    fn start(&mut self) {
+        self.starts += 1;
+    }
+    fn adjust(&mut self, _logits: &mut [f32]) {}
+    fn emitted(&mut self, _token: usize) {
+        self.emitted += 1;
+    }
+}
+
+#[test]
+#[ignore = "needs the ci model set (cargo xtask fetch-models --set ci): cargo test --release -p earshot-onnx --test parakeet -- --include-ignored"]
+fn parakeet_biased_decode_with_a_silent_bias_equals_transcribe() {
+    // The evaluation hook of T12.15b decodes exactly as the shipped path when it changes no
+    // logit: the same words, times and probabilities on every smoke clip.
+    let mut asr = ParakeetTdt::load(
+        &common::fetched(common::PARAKEET_TDT_V2_DIR, "ci"),
+        &config(),
+        "parakeet-tdt-0.6b-v2",
+        true,
+    )
+    .expect("load Parakeet TDT 0.6B v2");
+    let opts = TranscribeOptions::live();
+    let cancel = CancelToken::new();
+    for (id, audio, _) in smoke() {
+        let audio = MonoBuffer::new(PIPELINE_RATE, audio);
+        let plain = asr.transcribe(&audio, &opts, &cancel).expect("transcribe");
+        let (mut first, mut second) = (Silent::default(), Silent::default());
+        let biased = asr
+            .transcribe_biased(&audio, &opts, &cancel, &mut [&mut first, &mut second])
+            .expect("transcribe_biased");
+        assert_eq!(biased, [plain.clone(), plain.clone()], "{id}");
+        for silent in [&first, &second] {
+            assert!(silent.starts >= 1, "{id}");
+            // Every word is at least one emitted token.
+            assert!(silent.emitted >= plain.words().len(), "{id}");
+        }
+        assert!(
+            asr.transcribe_biased(&audio, &opts, &cancel, &mut [])
+                .expect("no biases")
+                .is_empty()
+        );
+    }
 }

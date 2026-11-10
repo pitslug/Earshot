@@ -1642,8 +1642,9 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: T12.15's first half: a device-local word list on its own Settings page, Dictionary (the owner, 2026-11-10), between Summaries and People, checked and bounded like the summary style, given to every summary request; an empty list leaves every prompt byte-identical; no test or doc holds a word from the user's list.
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`
 
-- [ ] T12.15b Your vocabulary in the transcript (spike)
+- [x] T12.15b Your vocabulary in the transcript (spike)
   - deps: T12.15a
+  - status (2026-11-11): rule committed first (6d36616), measured on LibriSpeech dev-clean, merged; reviewed clear (4 advisories in TODO.md). Only the whisper prompt clears the bar (B-WER -20.1%, by 0.1 point); Parakeet boosting reaches -19.1% within the guards, correction passes fail the false-correction guards. No shipped change; the owner decides any follow-up (docs/vocabulary.md).
   - do: T12.15's second half. The words come from the Dictionary and the names of saved people (the owner, 2026-11-10: a saved Kam should win over Cam, Kat over Cat); people's names are used on this computer only and never added to a summary request beyond the meeting's own speakers. Compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data, with the rule written before measuring. A correction pass never changes a word without keeping the original. No shipped change without the owner.
   - accept: the spike's numbers and a recommendation in docs
 
