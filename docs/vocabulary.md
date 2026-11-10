@@ -180,3 +180,140 @@ target\release\examples\vocab_eval.exe --fixtures $env:LOCALAPPDATA\earshot-dev\
 The models come from `cargo xtask fetch-models --set ci` (Parakeet) and the whisper models of
 the desktop set; the fixtures from `cargo xtask fetch-fixtures --set librispeech` and
 `--set ami` (the annotations).
+
+(These are the commands as planned. What is committed differs; see "Deviations" and
+"Reproducing" below.)
+
+## Results (measured 2026-11-11)
+
+Host: the x64 desktop (32 logical cores), CPU only, shared with other lanes compiling and
+testing throughout; WER does not depend on the load, decode times do and decide nothing.
+Backends from evidence: ONNX Runtime placed every Parakeet node on the CPU; whisper.cpp's log
+said CPU on every call (`docs/vocabulary/*-meta.json`). The lists hold 6,881 spoken listed
+words (6,977 reference positions, 12.7% of dev-clean's 54,798 reference words); every other
+listed entry is a distractor.
+
+### Parakeet 0.6B v2: boosting (b) and the correction pass (c), all 2,703 utterances
+
+| Variant | WER % | B-WER % | U-WER % | Listed recall % | Distractor hits (per 1,000 words) | B-WER change | G1 G2 G3 |
+|---|---|---|---|---|---|---|---|
+| baseline | 1.64 | 6.16 | 0.98 | 93.87 | 0 (0.00) | | |
+| boost open 1 | 1.58 | 5.49 | 1.00 | 94.54 | 0 (0.00) | -10.9% | pass pass pass |
+| boost open 2 | 1.51 | 4.99 | 1.00 | 95.06 | 0 (0.00) | -19.1% | pass pass pass |
+| boost open 3 | 1.57 | 4.57 | 1.13 | 95.49 | 1 (0.02) | -25.8% | pass **fail** pass |
+| boost open 4 | 1.96 | 4.77 | 1.55 | 95.53 | 11 (0.20) | -22.6% | pass **fail** **fail** |
+| boost gated 1 | 1.54 | 5.52 | 0.96 | 94.51 | 0 (0.00) | -10.5% | pass pass pass |
+| boost gated 2 | 1.52 | 5.09 | 0.99 | 94.94 | 0 (0.00) | -17.4% | pass pass pass |
+| boost gated 3 | 1.55 | 4.69 | 1.10 | 95.36 | 1 (0.02) | -24.0% | pass **fail** pass |
+| boost gated 4 | 1.79 | 4.69 | 1.37 | 95.36 | 1 (0.02) | -24.0% | pass **fail** **fail** |
+| correct sound | 4.53 | 3.00 | 4.75 | 97.18 | 1,747 (31.88) | -51.4% | **fail** **fail** **fail** |
+| correct sound-rare | 1.46 | 3.01 | 1.24 | 97.03 | 137 (2.50) | -51.2% | **fail** **fail** pass |
+| correct spelling-rare | 1.49 | 3.34 | 1.22 | 96.72 | 99 (1.81) | -45.8% | **fail** **fail** pass |
+
+Changed words against the baseline (listed gained / lost; unlisted gained / lost): boost open 2
+107 / 24 and 55 / 45; boost gated 2 97 / 22 and 49 / 44; boost open 3 151 / 38 and 65 / 92;
+sound-rare 222 / 1 and 0 / 132 (a correction only ever writes a listed word, so it never gains
+an unlisted one). The correction pass made 2,124 (sound), 433 (sound-rare) and 391
+(spelling-rare) replacements, of which 377, 296 and 292 wrote a word said in the utterance.
+
+**Chosen: boost open 2, B-WER -19.1%, under the 20% bar: boosting does not justify a
+follow-up.** No correction variant passes G1 and G2.
+
+### small.en: the prompt (a) and the correction pass (c), 676 utterances
+
+| Variant | WER % | B-WER % | U-WER % | Listed recall % | Distractor hits (per 1,000 words) | B-WER change | G1 G2 G3 |
+|---|---|---|---|---|---|---|---|
+| baseline | 2.83 | 8.57 | 2.01 | 91.48 | 0 (0.00) | | |
+| prompt | 2.52 | 6.85 | 1.90 | 93.21 | 0 (0.00) | -20.1% | pass pass pass |
+| correct sound | 5.47 | 4.55 | 5.60 | 95.57 | 433 (31.24) | -47.0% | **fail** **fail** **fail** |
+| correct sound-rare | 2.60 | 4.95 | 2.26 | 95.11 | 36 (2.60) | -42.3% | **fail** **fail** pass |
+| correct spelling-rare | 2.68 | 5.52 | 2.27 | 94.53 | 30 (2.17) | -35.6% | **fail** **fail** pass |
+
+13,860 reference words, 1,738 listed positions. The prompt changed listed words 57 gained / 27
+lost and unlisted words 28 / 30.
+
+**Chosen: the prompt, B-WER -20.1%: by the rule the whisper prompt justifies a follow-up, with
+0.1 points to spare** (30 fewer listed-word errors out of 1,738 positions).
+
+### What the numbers say
+
+- **The whisper prompt** is the only method over the bar, and only just. It is also the only
+  one with no cost seen here: no distractor written, unlisted words slightly better. It reaches
+  only transcripts written by whisper (small.en on Vulkan machines, large-v3-turbo for other
+  languages); the default English model on the CPU, NVIDIA cards and the NPU is Parakeet. A
+  100-word list is longer than the 224 prompt tokens whisper.cpp keeps, so part of every list
+  was cut; that was in the measurement, as it would be in the app.
+- **Boosting** buys 17-19% fewer listed-word errors with no visible cost at a bonus of 2, and
+  24-26% at 3, where unlisted words start to suffer (92 lost against 65 gained). Greedy search
+  cannot take a bonus back, which is the likely limit; beam search with icefall's retraction is
+  the known way past it and is a much larger change (no beam TDT search exists here).
+- **The correction pass** halves listed-word errors but writes a listed word where it was not
+  said 1.8-2.6 times per 1,000 words in its careful forms: about 16-23 times in a meeting hour
+  with a 100-word list. The literal "a saved Kat wins over Cat" (`sound`) does it about 32
+  times per 1,000 words, about 290 an hour. Most false corrections replace ordinary words that
+  share a key or a close spelling with a listed word; the common words (from meeting speech)
+  protect only what meetings say most. As a suggestion shown beside the word it could still
+  help; as a replacement it does not.
+
+### Recommendation
+
+1. Leave the Parakeet path alone: neither boosting nor a correction pass passes the rule.
+2. The whisper prompt is the one candidate, with a thin margin and a small reach. Before any
+   shipped change a follow-up would re-measure it on AMI dev headset speech with the AMI
+   named-entity annotations as the list (the dev headset audio is a new fixture set), check
+   what a prompt does on non-speech (model_eval's `silence` corpus with a prompt: a prompted
+   whisper can write the prompt back), and decide how a list longer than the prompt is cut.
+3. If the owner wants "Kat over Cat" on Parakeet, the safe form is a suggestion: mark a
+   decoded word that sounds like a saved name and offer the name, keeping the decoded word as
+   written. It needs no decoder change and writes no false text; it is a UI task.
+
+## Deviations from the rule
+
+Each decided before any number of the affected decode was read:
+
+- **Artefacts.** The rule planned to commit each decode's hypotheses. LibriSpeech text holds
+  names of people and places, and one of them matches the private names list that
+  `public-guard` checks, so the committed record is word-free: per decode
+  `docs/vocabulary/counts-<decode>.jsonl` (per utterance: id, SHA-256 of the hypothesis text,
+  and the counts in the order of `results.json`'s `count_fields`), with `results.json` and the
+  two meta files. The hypotheses and the correction pass's replacement records (original word
+  kept beside each) stay in `target/vocab-eval/`, regenerated by the commands below.
+- **One encoding for every boosting variant.** The first Parakeet run decoded each variant
+  with its own encoder call and was on course for over 3 hours beside the other lanes; it was
+  stopped after about 100 utterances and never scored, and `transcribe_biased` now takes every
+  variant's bias and encodes each piece once. Decoding is unchanged; the baseline still goes
+  through `Transcriber::transcribe`.
+- **Whisper ran alone.** The first whisper run shared the CPU with the Parakeet run and made
+  almost no progress in 45 minutes (whisper.cpp's threads spin while they wait, which an
+  oversubscribed CPU turns into a crawl); it was stopped and nothing from it was read. The
+  measured run started after Parakeet had finished and took 42 minutes.
+
+## Reproducing
+
+From the repo root; `target` stands for the cargo target folder (this lane built into
+`C:\eb\lane-vocabasr`). Run the two decodes one after the other, not together.
+
+```powershell
+cargo build --release -p earshot-runtime --example vocab_eval
+```
+
+```powershell
+target\release\examples\vocab_eval.exe --models $env:LOCALAPPDATA\Earshot\models --fixtures $env:LOCALAPPDATA\earshot-dev\fixtures --out target\vocab-eval --decode parakeet --workers 4 --threads 4
+```
+
+```powershell
+target\release\examples\vocab_eval.exe --models $env:LOCALAPPDATA\Earshot\models --fixtures $env:LOCALAPPDATA\earshot-dev\fixtures --out target\vocab-eval --decode whisper --threads 8
+```
+
+```powershell
+target\release\examples\vocab_eval.exe --fixtures $env:LOCALAPPDATA\earshot-dev\fixtures --out target\vocab-eval --report docs\vocabulary --score
+```
+
+`--score` takes seconds and rewrites `docs/vocabulary/`. A rerun's hypotheses can be checked
+against the committed `hyp_sha256` values; multithreaded whisper.cpp CPU decodes are not
+bit-reproducible, so a whisper rerun may differ in a few utterances.
+
+The evaluation-only hook in the shipped decoder, `ParakeetTdt::transcribe_biased`, is pinned to
+decode exactly as `transcribe` when its bias changes nothing: `cargo test -p earshot-onnx
+parakeet` (a stand-in model) and `cargo test --release -p earshot-onnx --test parakeet --
+--include-ignored` (the real model on the smoke clips).

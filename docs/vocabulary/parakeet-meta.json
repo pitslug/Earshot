@@ -1,0 +1,38 @@
+{
+  "backend": "cpu",
+  "betas": [
+    1.0,
+    2.0,
+    3.0,
+    4.0
+  ],
+  "decode_seconds": {
+    "baseline": 3258.342,
+    "boost-gated-1": 554.651,
+    "boost-gated-2": 554.651,
+    "boost-gated-3": 554.651,
+    "boost-gated-4": 554.651,
+    "boost-open-1": 554.651,
+    "boost-open-2": 554.651,
+    "boost-open-3": 554.651,
+    "boost-open-4": 554.651
+  },
+  "decoding": "greedy TDT (TranscribeOptions::live), one direct call per utterance; the baseline through Transcriber::transcribe, every boosting variant from one transcribe_biased call (one encoding per piece, the call's time shared out evenly)",
+  "evidence": {
+    "sessions": [
+      "requested cpu, placed: CPUExecutionProvider=1993",
+      "requested cpu, placed: CPUExecutionProvider=13",
+      "requested cpu, placed: CPUExecutionProvider=10"
+    ],
+    "source": "ONNX Runtime node placement"
+  },
+  "host": {
+    "load": "shared build host: other lanes were compiling and testing during the run; decode times decide nothing",
+    "logical_cores": 32
+  },
+  "listed_forms_not_tokenised": 0,
+  "model": "parakeet-tdt-0.6b-v2",
+  "onnx_threads_per_worker": 4,
+  "wall_seconds": 1966.4947584,
+  "workers": 4
+}

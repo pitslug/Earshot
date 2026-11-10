@@ -659,13 +659,90 @@ impl TdtModel for TdtRun<'_> {
     }
 }
 
-impl Transcriber for ParakeetTdt {
-    fn transcribe(
+/// Evaluation only (T12.15b, docs/vocabulary.md): a change to the token logits of greedy TDT
+/// decoding, for contextual biasing ("hotwords"). Given to
+/// [`ParakeetTdt::transcribe_biased`]; no shipped path uses one.
+pub trait TokenBias {
+    /// A piece of at most [`MAX_CHUNK`] starts: nothing is emitted yet.
+    fn start(&mut self);
+    /// Changes `logits`, the vocabulary's logits of one joint call (blank included, durations
+    /// left out), in place before the best token is taken. The token's recorded probability
+    /// is then the changed one's.
+    fn adjust(&mut self, logits: &mut [f32]);
+    /// The decoder emitted `token` (never blank).
+    fn emitted(&mut self, token: usize);
+}
+
+/// A [`TdtModel`] whose joint logits pass through a [`TokenBias`]: the bias hears the start
+/// of a piece from `initial_state` and every emitted token from `predict` (greedy decoding
+/// adopts every prediction it asks for; its first call, on blank, starts the sequence).
+struct Biased<'a, M: TdtModel> {
+    inner: &'a mut M,
+    bias: &'a mut dyn TokenBias,
+    vocab_len: usize,
+    blank: usize,
+}
+
+impl<M: TdtModel> TdtModel for Biased<'_, M> {
+    type State = M::State;
+
+    fn initial_state(&mut self) -> Result<M::State, AsrError> {
+        self.bias.start();
+        self.inner.initial_state()
+    }
+
+    fn predict(
+        &mut self,
+        token: usize,
+        state: &M::State,
+    ) -> Result<(Vec<f32>, M::State), AsrError> {
+        if token != self.blank {
+            self.bias.emitted(token);
+        }
+        self.inner.predict(token, state)
+    }
+
+    fn joint(&mut self, frame: usize, pred: &[f32]) -> Result<Vec<f32>, AsrError> {
+        let mut logits = self.inner.joint(frame, pred)?;
+        if let Some(tokens) = logits.get_mut(..self.vocab_len) {
+            self.bias.adjust(tokens);
+        }
+        Ok(logits)
+    }
+}
+
+impl ParakeetTdt {
+    /// Evaluation only (T12.15b, docs/vocabulary.md): one [`Transcriber::transcribe`] per
+    /// entry of `biases`, each with its bias changing the vocabulary logits of every joint
+    /// call before greedy TDT picks a token ([`TokenBias`]); every piece is encoded once and
+    /// decoded once per bias. No shipped path calls it; `transcribe` is the same code with no
+    /// bias, and `parakeet_biased_decoding_with_no_change_is_the_plain_decode` (plus the
+    /// ignored `parakeet_biased_decode_with_a_silent_bias_equals_transcribe` on the real
+    /// model) pins that a bias which changes nothing gives the same tokens.
+    ///
+    /// # Errors
+    /// As [`Transcriber::transcribe`].
+    pub fn transcribe_biased(
         &mut self,
         audio: &MonoBuffer,
         options: &TranscribeOptions,
         cancel: &CancelToken,
-    ) -> Result<Transcription, AsrError> {
+        biases: &mut [&mut dyn TokenBias],
+    ) -> Result<Vec<Transcription>, AsrError> {
+        if biases.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.decode(audio, options, cancel, biases)
+    }
+
+    /// One transcription per bias, or one without any when `biases` is empty.
+    fn decode(
+        &mut self,
+        audio: &MonoBuffer,
+        options: &TranscribeOptions,
+        cancel: &CancelToken,
+        biases: &mut [&mut dyn TokenBias],
+    ) -> Result<Vec<Transcription>, AsrError> {
         check_pipeline_rate(audio)?;
         if self.english_only && !english(&options.language) {
             return Err(AsrError::Config(format!(
@@ -675,38 +752,68 @@ impl Transcriber for ParakeetTdt {
         }
         let chunk = PIPELINE_RATE.frames_for(MAX_CHUNK);
         let config = TdtConfig::parakeet(self.vocab.len(), self.vocab.blank());
-        let mut segments = Vec::new();
+        let mut segments: Vec<Vec<RawSegment>> = vec![Vec::new(); biases.len().max(1)];
         for (i, piece) in audio.samples.chunks(chunk).enumerate() {
             if cancel.is_cancelled() {
                 return Err(AsrError::Cancelled);
             }
             let (frames, t, dim) = self.encode(piece).map_err(backend_err)?;
-            let tokens = tdt_greedy(
-                &mut TdtRun {
-                    model: self,
-                    frames: &frames,
-                    dim,
-                },
-                t,
-                &config,
-                cancel,
-            )?;
+            let mut run = TdtRun {
+                model: self,
+                frames: &frames,
+                dim,
+            };
+            let mut decoded = Vec::with_capacity(segments.len());
+            if biases.is_empty() {
+                decoded.push(tdt_greedy(&mut run, t, &config, cancel)?);
+            }
+            for bias in biases.iter_mut() {
+                decoded.push(tdt_greedy(
+                    &mut Biased {
+                        inner: &mut run,
+                        bias: &mut **bias,
+                        vocab_len: config.vocab_len,
+                        blank: config.blank,
+                    },
+                    t,
+                    &config,
+                    cancel,
+                )?);
+            }
             let offset = earshot_core::asr::MeetingTime::from_pipeline_frames(
                 u64::try_from(i * chunk).unwrap_or(u64::MAX),
             );
-            let words: Vec<_> = words_from_tokens(&tokens, &self.vocab, FRAME)
-                .into_iter()
-                .map(|w| w.shifted(offset))
-                .collect();
-            if !words.is_empty() {
-                segments.push(RawSegment::from_words(words));
+            for (tokens, out) in decoded.iter().zip(segments.iter_mut()) {
+                let words: Vec<_> = words_from_tokens(tokens, &self.vocab, FRAME)
+                    .into_iter()
+                    .map(|w| w.shifted(offset))
+                    .collect();
+                if !words.is_empty() {
+                    out.push(RawSegment::from_words(words));
+                }
             }
         }
-        Ok(Transcription {
-            segments,
-            language: self.english_only.then(|| "en".to_owned()),
-            backend: self.info(),
-        })
+        Ok(segments
+            .into_iter()
+            .map(|segments| Transcription {
+                segments,
+                language: self.english_only.then(|| "en".to_owned()),
+                backend: self.info(),
+            })
+            .collect())
+    }
+}
+
+impl Transcriber for ParakeetTdt {
+    fn transcribe(
+        &mut self,
+        audio: &MonoBuffer,
+        options: &TranscribeOptions,
+        cancel: &CancelToken,
+    ) -> Result<Transcription, AsrError> {
+        self.decode(audio, options, cancel, &mut [])?
+            .pop()
+            .ok_or_else(|| AsrError::Backend("no transcription".to_owned()))
     }
 
     fn backend_info(&self) -> BackendInfo {
@@ -848,5 +955,131 @@ mod tests {
         let (empty, valid) = static_features(&mel, &[]).unwrap();
         assert_eq!(valid, 0);
         assert!(empty.iter().all(|v| *v == 0.0));
+    }
+
+    /// A deterministic stand-in for the prediction and joint networks: the state is the
+    /// sum of the emitted token ids, and the logits are a hash of the frame and that state, so
+    /// a decode emits a varied token sequence with every duration.
+    struct Hashed {
+        vocab: usize,
+    }
+
+    impl TdtModel for Hashed {
+        type State = usize;
+
+        fn initial_state(&mut self) -> Result<usize, AsrError> {
+            Ok(0)
+        }
+
+        fn predict(&mut self, token: usize, state: &usize) -> Result<(Vec<f32>, usize), AsrError> {
+            let next = state.wrapping_mul(31).wrapping_add(token + 1);
+            #[allow(clippy::cast_precision_loss)]
+            Ok((vec![next as f32], next))
+        }
+
+        fn joint(&mut self, frame: usize, pred: &[f32]) -> Result<Vec<f32>, AsrError> {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let state = pred[0] as u64;
+            let mut x = (frame as u64)
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                .wrapping_add(state);
+            Ok((0..self.vocab + 5)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    #[allow(clippy::cast_precision_loss)]
+                    let v = (x % 1000) as f32 / 100.0;
+                    v
+                })
+                .collect())
+        }
+    }
+
+    /// Records what it hears and adds `bonus` to `boosted`.
+    struct Recorder {
+        starts: usize,
+        emitted: Vec<usize>,
+        boosted: Option<usize>,
+        bonus: f32,
+    }
+
+    impl TokenBias for Recorder {
+        fn start(&mut self) {
+            self.starts += 1;
+        }
+        fn adjust(&mut self, logits: &mut [f32]) {
+            if let Some(k) = self.boosted {
+                logits[k] += self.bonus;
+            }
+        }
+        fn emitted(&mut self, token: usize) {
+            self.emitted.push(token);
+        }
+    }
+
+    fn decode_with(bias: Option<&mut Recorder>) -> Vec<earshot_core::asr::CtcToken> {
+        let config = TdtConfig::parakeet(8, 7);
+        let mut model = Hashed { vocab: 8 };
+        let cancel = CancelToken::new();
+        match bias {
+            None => tdt_greedy(&mut model, 40, &config, &cancel).unwrap(),
+            Some(bias) => tdt_greedy(
+                &mut Biased {
+                    inner: &mut model,
+                    bias,
+                    vocab_len: config.vocab_len,
+                    blank: config.blank,
+                },
+                40,
+                &config,
+                &cancel,
+            )
+            .unwrap(),
+        }
+    }
+
+    fn recorder(boosted: Option<usize>, bonus: f32) -> Recorder {
+        Recorder {
+            starts: 0,
+            emitted: Vec::new(),
+            boosted,
+            bonus,
+        }
+    }
+
+    #[test]
+    fn parakeet_biased_decoding_with_no_change_is_the_plain_decode() {
+        let plain = decode_with(None);
+        assert!(plain.len() > 5, "the stand-in model emits tokens");
+        let mut quiet = recorder(None, 0.0);
+        let biased = decode_with(Some(&mut quiet));
+        // Every field, the probabilities included, bit for bit.
+        assert_eq!(biased.len(), plain.len());
+        for (a, b) in biased.iter().zip(&plain) {
+            assert_eq!(
+                (a.id, a.first_frame, a.end_frame, a.log_prob.to_bits()),
+                (b.id, b.first_frame, b.end_frame, b.log_prob.to_bits())
+            );
+        }
+        // The bias heard one start and every emitted token, never blank.
+        assert_eq!(quiet.starts, 1);
+        assert_eq!(
+            quiet.emitted,
+            plain.iter().map(|t| t.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parakeet_biased_decoding_follows_the_changed_logits() {
+        // A large bonus on token 3 makes every joint call pick it (up to the symbol limit).
+        let mut loud = recorder(Some(3), 100.0);
+        let biased = decode_with(Some(&mut loud));
+        assert!(!biased.is_empty());
+        assert!(biased.iter().all(|t| t.id == 3));
+        assert_ne!(
+            biased.iter().map(|t| t.id).collect::<Vec<_>>(),
+            decode_with(None).iter().map(|t| t.id).collect::<Vec<_>>()
+        );
     }
 }

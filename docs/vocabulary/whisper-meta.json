@@ -1,0 +1,25 @@
+{
+  "backend": "cpu",
+  "decode_seconds": {
+    "baseline": 1168.857,
+    "prompt": 1336.055
+  },
+  "decoding": "greedy (TranscribeOptions::live), one direct call per utterance",
+  "evidence": {
+    "backend_info": {
+      "device": "cpu",
+      "kind": "cpu",
+      "model": "ggml-small.en"
+    },
+    "source": "whisper.cpp log (EvidenceLoader, re-checked after every call)",
+    "whisper_log": "cpu"
+  },
+  "host": {
+    "load": "shared build host: other lanes were compiling and testing during the run; decode times decide nothing",
+    "logical_cores": 32
+  },
+  "model": "small.en",
+  "threads": 8,
+  "utterances": "every fourth dev-clean utterance in id order (index 0, 4, 8, ...)",
+  "wall_seconds": 2510.006355
+}

@@ -127,3 +127,9 @@ test = true
 [[example]]
 name = "live_lag"
 test = true
+
+# Your words in the transcript (T12.15b, a spike, evaluation only; docs/vocabulary.md); its unit
+# tests pin the lists, boosting graph, correction pass and scoring.
+[[example]]
+name = "vocab_eval"
+test = true
