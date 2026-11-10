@@ -533,3 +533,47 @@ target\release\examples\vocab_eval.exe --fixtures $env:LOCALAPPDATA\earshot-dev\
 ```
 
 The committed record is word-free, as before: `docs/vocabulary/ami-gated/`.
+
+## Results (measured 2026-11-11)
+
+Host: the x64 desktop (32 logical cores), CPU only, otherwise idle at the start (1% load); ONNX
+Runtime placed every node of all three sessions on the CPU
+(`docs/vocabulary/ami-gated/ami-meta.json`). The same 1,418 oracle segments and 12,411
+reference words as T12.15c; the run took 6 minutes (4 workers of 4 threads). The baseline,
+decoded again, matched T12.15c's committed hashes on all 1,418 segments (0 differing), so the
+baseline numbers below are T12.15c's.
+
+| List | Listed positions | Baseline WER / B-WER / U-WER % | Gated WER / B-WER / U-WER % | Listed gained / lost | Unlisted gained / lost | G1 G2 G3 G4 |
+|---|---|---|---|---|---|---|
+| **ne (verdict)** | 60 | 12.63 / 30.00 / 12.54 | 13.08 / 28.33 / 13.00 | 2 / 1 | 54 / 156 | pass **fail** **fail** pass |
+| ne-all | 511 | 12.63 / 15.85 / 12.49 | 12.87 / 13.89 / 12.82 | 10 / 1 | 46 / 144 | pass **fail** **fail** pass |
+| rare | 211 | 12.63 / 18.96 / 12.52 | 13.04 / 18.48 / 12.94 | 4 / 3 | 51 / 154 | pass **fail** **fail** pass |
+
+No list wrote a distractor (G1) and no boosted decode of the non-speech clips wrote a listed
+word (G4).
+
+**Verdict: fail.** The gated boost lowers listed-word B-WER on `ne` from 30.00% to 28.33% (17
+errors at 60 positions against 18), but raises U-WER by 0.46 points (G2, limit 0.1) and WER from
+12.63% to 13.08% (G3). The informational lists fail the same two guards. T12.15d is not started.
+
+### What the numbers say
+
+- The gate did what it was built for: the cost is about a tenth of the open boost's (U-WER +0.46
+  points against +4.3, WER +0.45 against +4.3), and the hypotheses no longer grow: 12,808
+  normalised words on `ne` against the baseline's 12,905 (the per-row `words` field; T12.15c's
+  "13,080 and 13,674" counted words before normalisation, so the two counts are not comparable).
+  350 of the 1,418 segments changed.
+- What remains is substitutions and deletions of unlisted words (156 lost, 54 gained). Not read
+  word by word here; a likely cause [guessing] is that a bonus on a listed word's first piece
+  replaces a non-blank word piece the decoder had already chosen, and a continuation piece
+  without the word-start mark joins two words into one.
+- The gain is small on these meetings: one listed-word error fewer on `ne`, ten on `ne-all`. The
+  named-entity words were mostly right without the boost.
+- Neither form of the bonus passes on meeting speech. Anything further (a smaller bonus, a bonus
+  only on a word's later pieces, beam search with retraction) would be a new rule and a new
+  measurement, and is the owner's call.
+
+### Reproducing
+
+As in "Commands" above (the release example under the lane's target folder `C:\eb\lane-vocab`).
+`--score-ami --gate gated` takes seconds and rewrites `docs/vocabulary/ami-gated/`.
