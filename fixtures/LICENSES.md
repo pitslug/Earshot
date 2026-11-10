@@ -37,6 +37,11 @@ Every fixture artefact is listed in `fixtures/manifest.toml` with its source URL
 - Source and licence: as above (AMI Meeting Corpus, CC BY 4.0, same download host).
 - Files used: the `Mix-Headset` channel of ES2003a, ES2011a, IS1008a, TS3004a and TS3006a, for the word-boundary report in `docs/far-speakers/word-changes.md`. Unmodified. Never committed and never an acceptance set.
 
+## AMI dev-series headsets (set `ami-dev-ihm`, T12.15c)
+
+- Source and licence: as above (AMI Meeting Corpus and AMI manual annotations v1.6.2, CC BY 4.0, same download host and archive); UEMs from AMI-diarization-setup (below, Apache License 2.0, derived from the AMI annotations).
+- Files used: the individual headsets `Headset-0` to `Headset-3` of ES2003a, ES2011a, IS1008a, TS3004a and TS3006a, their oracle segments `segments/<meeting>.<A-D>.segments.xml`, named entities `namedEntities/<meeting>.<A-D>.ne.xml` and the type tree `ontologies/ne-types.xml` from the annotations archive, and `uems/train/<meeting>.uem` (ES2003a, TS3006a) or `uems/dev/<meeting>.uem` (the others) at the commit below, for the vocabulary evaluation in `docs/vocabulary.md`. Unmodified. Never committed and never an acceptance set; text decoded from them stays under `target/`.
+
 ## AMI-diarization-setup references (set `ami`)
 
 - Source: https://github.com/pyannote/AMI-diarization-setup (fork of https://github.com/BUTSpeechFIT/AMI-diarization-setup), pinned to commit `67c2d539286e89f68952d5dcf83912bd9f01dfae`.

@@ -193,8 +193,15 @@ pub fn list_for(index: usize, reference: &str, rare: &BTreeSet<String>, pool: &[
             chosen.push(t.clone());
         }
     }
+    fill(LIST_SEED + index as u64, chosen, &said_set, pool)
+}
+
+/// A list from its spoken tokens `chosen` (distinct, at most [`LIST_LEN`]): distractors drawn
+/// without repeats from `pool` minus `said` until it holds [`LIST_LEN`] words, then shuffled,
+/// with ChaCha8 seeded `seed` (docs/vocabulary.md step 4).
+pub fn fill(seed: u64, mut chosen: Vec<String>, said_set: &HashSet<&str>, pool: &[String]) -> List {
     let spoken = chosen.len();
-    let mut rng = ChaCha8Rng::seed_from_u64(LIST_SEED + index as u64);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut taken: HashSet<String> = chosen.iter().cloned().collect();
     let available = pool
         .iter()

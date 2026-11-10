@@ -7,7 +7,7 @@
 # destinations of fetch-fixtures (no fixture URL redirects, so `redirect_hosts` is empty and any
 # redirect to another host is refused). Licences and attribution: fixtures/LICENSES.md.
 
-sets = ["smoke", "librispeech", "ami", "ami-sum", "ami-dev"]
+sets = ["smoke", "librispeech", "ami", "ami-sum", "ami-dev", "ami-dev-ihm"]
 
 hosts = [
     "www.openslr.org",
@@ -291,6 +291,287 @@ size = 40091692
 licence = "CC-BY-4.0"
 attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
 
+# AMI dev-series headsets (T12.15c, set ami-dev-ihm): the four individual headsets and the UEM
+# of each ami-dev meeting, for the vocabulary evaluation (docs/vocabulary.md); their oracle
+# segments and named entities are pinned members of the annotations archive below. Dev data,
+# never an acceptance set. sha256 and size pinned on first download, 2026-11-11, each
+# headset's size checked against the server's Content-Length.
+
+[[artefact]]
+id = "ami-ES2003a-audio-Headset-0"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2003a/audio/ES2003a.Headset-0.wav"
+path = "ami/audio/ES2003a.Headset-0.wav"
+sha256 = "5a3b066d904bd15f9e8eb7469de8a6f4fe7724d6f746e3011e6e19ab5de2460a"
+size = 36472536
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2003a-audio-Headset-1"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2003a/audio/ES2003a.Headset-1.wav"
+path = "ami/audio/ES2003a.Headset-1.wav"
+sha256 = "1d8f565db1c441c5c4589f53e70056e1341bdea5d7ef4330e339cb8ff10230d7"
+size = 36472536
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2003a-audio-Headset-2"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2003a/audio/ES2003a.Headset-2.wav"
+path = "ami/audio/ES2003a.Headset-2.wav"
+sha256 = "953d8da19677ac3bc67f79bd0e6e292f155957f68040e814d07f0070cb8afdc9"
+size = 36472536
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2003a-audio-Headset-3"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2003a/audio/ES2003a.Headset-3.wav"
+path = "ami/audio/ES2003a.Headset-3.wav"
+sha256 = "ffe0d5dc5162c9d1b461a5ab1880c2507dfb9509a5bc124946ef2337e78a48e1"
+size = 36472536
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2003a-uem"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/67c2d539286e89f68952d5dcf83912bd9f01dfae/uems/train/ES2003a.uem"
+path = "ami/uem/ES2003a.uem"
+sha256 = "6bc9da0d27783f841a89e80af89527ff9a43977bf51694ef98d0ae9f1b591c98"
+size = 28
+licence = "Apache-2.0 AND CC-BY-4.0"
+attribution = "AMI-diarization-setup (Landini et al., BUT Speech@FIT; pyannote fork), UEM derived from the AMI Meeting Corpus manual annotations v1.6.2, https://github.com/pyannote/AMI-diarization-setup"
+
+[[artefact]]
+id = "ami-ES2011a-audio-Headset-0"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2011a/audio/ES2011a.Headset-0.wav"
+path = "ami/audio/ES2011a.Headset-0.wav"
+sha256 = "4950ebec42f08e3caaf8d038d9da9ceeda89ececb6dbc7f0f3bd25802e919fe9"
+size = 35643096
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2011a-audio-Headset-1"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2011a/audio/ES2011a.Headset-1.wav"
+path = "ami/audio/ES2011a.Headset-1.wav"
+sha256 = "b3ccaeb285790058bb9ed598d56f61ff287c35ea4285d18701df227e20358fd1"
+size = 35643096
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2011a-audio-Headset-2"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2011a/audio/ES2011a.Headset-2.wav"
+path = "ami/audio/ES2011a.Headset-2.wav"
+sha256 = "dcc7ad08eda75713281312a17f79cde2bc29fa169746a0b4e402a05f92ccdc78"
+size = 35643096
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2011a-audio-Headset-3"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2011a/audio/ES2011a.Headset-3.wav"
+path = "ami/audio/ES2011a.Headset-3.wav"
+sha256 = "d95da41b5557f52aa985145a5aa446a85396c5cfd40f4464a1bdf6f580678066"
+size = 35643096
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2011a-uem"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/67c2d539286e89f68952d5dcf83912bd9f01dfae/uems/dev/ES2011a.uem"
+path = "ami/uem/ES2011a.uem"
+sha256 = "23a134e8caae6279d95f43dc03f079fcd77e36e1ac29e97b1879be7c8f48a860"
+size = 28
+licence = "Apache-2.0 AND CC-BY-4.0"
+attribution = "AMI-diarization-setup (Landini et al., BUT Speech@FIT; pyannote fork), UEM derived from the AMI Meeting Corpus manual annotations v1.6.2, https://github.com/pyannote/AMI-diarization-setup"
+
+[[artefact]]
+id = "ami-IS1008a-audio-Headset-0"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1008a/audio/IS1008a.Headset-0.wav"
+path = "ami/audio/IS1008a.Headset-0.wav"
+sha256 = "0c7a76c6cf1ef4073810e2792710ba65c516a301202ac348186b107d532a6572"
+size = 30202641
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1008a-audio-Headset-1"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1008a/audio/IS1008a.Headset-1.wav"
+path = "ami/audio/IS1008a.Headset-1.wav"
+sha256 = "36a52cda2bba15625f4be72f4a7a55948bdec02bbb8599d338dcb2b62fe6c4f5"
+size = 30202641
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1008a-audio-Headset-2"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1008a/audio/IS1008a.Headset-2.wav"
+path = "ami/audio/IS1008a.Headset-2.wav"
+sha256 = "9e5a87d306ccd52966bf343b4a9649efe4b05badc0a8a0925feecff559b8c54d"
+size = 30202641
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1008a-audio-Headset-3"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1008a/audio/IS1008a.Headset-3.wav"
+path = "ami/audio/IS1008a.Headset-3.wav"
+sha256 = "a60e45356e8324231ba259bc63046d68aefc17b4a063a6a497736e7cb525642a"
+size = 30202641
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1008a-uem"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/67c2d539286e89f68952d5dcf83912bd9f01dfae/uems/dev/IS1008a.uem"
+path = "ami/uem/IS1008a.uem"
+sha256 = "a7a62b6f8b59261b5c19abb6084a239fc998171c95ae8bec8400e70e8dc66610"
+size = 27
+licence = "Apache-2.0 AND CC-BY-4.0"
+attribution = "AMI-diarization-setup (Landini et al., BUT Speech@FIT; pyannote fork), UEM derived from the AMI Meeting Corpus manual annotations v1.6.2, https://github.com/pyannote/AMI-diarization-setup"
+
+[[artefact]]
+id = "ami-TS3004a-audio-Headset-0"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3004a/audio/TS3004a.Headset-0.wav"
+path = "ami/audio/TS3004a.Headset-0.wav"
+sha256 = "bde78c71e744b535f860964160857b646c3052c1286a4fb2c015fccf8991dcf0"
+size = 43051390
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3004a-audio-Headset-1"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3004a/audio/TS3004a.Headset-1.wav"
+path = "ami/audio/TS3004a.Headset-1.wav"
+sha256 = "8c2d266d587bfb2b52972f86d7221295f5c106d0bab7339f4f216067aa84a1a8"
+size = 43051390
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3004a-audio-Headset-2"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3004a/audio/TS3004a.Headset-2.wav"
+path = "ami/audio/TS3004a.Headset-2.wav"
+sha256 = "afe656746486f1d823d38f45be9cef15bff7f049adc5bc23ec1f41a31c04cb6e"
+size = 43051390
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3004a-audio-Headset-3"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3004a/audio/TS3004a.Headset-3.wav"
+path = "ami/audio/TS3004a.Headset-3.wav"
+sha256 = "083154462be22fb5909fc5f30514a404ee7df136baf6111c2e35ff40f7caef0b"
+size = 43051390
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3004a-uem"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/67c2d539286e89f68952d5dcf83912bd9f01dfae/uems/dev/TS3004a.uem"
+path = "ami/uem/TS3004a.uem"
+sha256 = "582f1eb1871cf7ff2328329d03021d6ac7e6a3dadc48ba52c979876b560e3430"
+size = 28
+licence = "Apache-2.0 AND CC-BY-4.0"
+attribution = "AMI-diarization-setup (Landini et al., BUT Speech@FIT; pyannote fork), UEM derived from the AMI Meeting Corpus manual annotations v1.6.2, https://github.com/pyannote/AMI-diarization-setup"
+
+[[artefact]]
+id = "ami-TS3006a-audio-Headset-0"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3006a/audio/TS3006a.Headset-0.wav"
+path = "ami/audio/TS3006a.Headset-0.wav"
+sha256 = "b6b7fca1c5da918f832b2681c6714cc0f190ddf4de11f9a483f958408a35f3b0"
+size = 40092714
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3006a-audio-Headset-1"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3006a/audio/TS3006a.Headset-1.wav"
+path = "ami/audio/TS3006a.Headset-1.wav"
+sha256 = "a0d96b5235219033ac209129e11957739e013692e838918fb5e89be2f3a93fc9"
+size = 40092714
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3006a-audio-Headset-2"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3006a/audio/TS3006a.Headset-2.wav"
+path = "ami/audio/TS3006a.Headset-2.wav"
+sha256 = "e3913c65deda40cc713e7f9e2bbcd5244961be3eaa681c9dcd3917a029355c8f"
+size = 40092714
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3006a-audio-Headset-3"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3006a/audio/TS3006a.Headset-3.wav"
+path = "ami/audio/TS3006a.Headset-3.wav"
+sha256 = "6c8654bcb6ebed24e6b9cccc815a9c8fa796feea107baf24792f26d313144933"
+size = 40092714
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3006a-uem"
+sets = ["ami-dev-ihm"]
+location = "cache"
+url = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/67c2d539286e89f68952d5dcf83912bd9f01dfae/uems/train/TS3006a.uem"
+path = "ami/uem/TS3006a.uem"
+sha256 = "ffa750ec7faa8666159f05fd16541de0b92f4169f481240b5d84bb1658e17eb1"
+size = 28
+licence = "Apache-2.0 AND CC-BY-4.0"
+attribution = "AMI-diarization-setup (Landini et al., BUT Speech@FIT; pyannote fork), UEM derived from the AMI Meeting Corpus manual annotations v1.6.2, https://github.com/pyannote/AMI-diarization-setup"
+
 # AMI manual annotations v1.6.2 (T2.5): word-level reference transcripts of the two meetings
 # above for asr.wer_ami_ihm. The archive is extracted whole; only the eight words files of
 # IS1009a and ES2004a, their eight oracle segments files and the speaker-to-headset table
@@ -305,7 +586,7 @@ attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinbur
 
 [[artefact]]
 id = "ami-manual-annotations"
-sets = ["ami", "ami-sum"]
+sets = ["ami", "ami-sum", "ami-dev-ihm"]
 location = "cache"
 url = "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip"
 path = "ami/ami_public_manual_1.6.2.zip"
@@ -524,6 +805,131 @@ sha256 = "8ab6cdcf03ed863e839418f31c7380392397a2eed892d73b9bc1b438c7ec520a"
 size = 119064
 
 [[artefact.extract.member]]
+path = "namedEntities/ES2003a.A.ne.xml"
+sha256 = "e3cbfe3e334ec8dc45a388149b9dc8c299525972eb6ef6aaeb454393a72b20c3"
+size = 2604
+
+[[artefact.extract.member]]
+path = "namedEntities/ES2003a.B.ne.xml"
+sha256 = "f07d29107a9a9193715f2a7a85e7ca255ac628fd97e29f87cb4f83cad5e07674"
+size = 5164
+
+[[artefact.extract.member]]
+path = "namedEntities/ES2003a.C.ne.xml"
+sha256 = "86fde03ddef8a8a8f20d56d8ecf9e701278e14150139abaaca54409d5cdc79d1"
+size = 1969
+
+[[artefact.extract.member]]
+path = "namedEntities/ES2003a.D.ne.xml"
+sha256 = "74ada347bfb970a19bca0cadd40c0146bd2e3973890e230534d5ab42a11ff59a"
+size = 1374
+
+[[artefact.extract.member]]
+path = "namedEntities/ES2011a.A.ne.xml"
+sha256 = "39a8defdcd60d6e52801f70357da9fe94727802b75d59483aa5d37668d3d9295"
+size = 6070
+
+[[artefact.extract.member]]
+path = "namedEntities/ES2011a.B.ne.xml"
+sha256 = "93e3dd8314ad9c034a402c4cdcded90a88c0492a4efd75b55545c8927ea2db44"
+size = 1180
+
+[[artefact.extract.member]]
+path = "namedEntities/ES2011a.C.ne.xml"
+sha256 = "1f3d89acacd485eedb3e513db6642f8faebb73bd368048538617be2a06aae540"
+size = 2614
+
+[[artefact.extract.member]]
+path = "namedEntities/ES2011a.D.ne.xml"
+sha256 = "39ba5980af068aebcae24f060406000700133ba51ff52fc0efdd65c86427d0b4"
+size = 3280
+
+[[artefact.extract.member]]
+path = "namedEntities/IS1008a.A.ne.xml"
+sha256 = "3961474b7d25361f2df01d486abc60f326f72aa940382d19364754eb1c860cbe"
+size = 3435
+
+[[artefact.extract.member]]
+path = "namedEntities/IS1008a.B.ne.xml"
+sha256 = "c3c6564c3d43a295da750c9a055114c71c0606b0399b2dc79893f5af5c6b7f23"
+size = 963
+
+[[artefact.extract.member]]
+path = "namedEntities/IS1008a.C.ne.xml"
+sha256 = "af32824a68423ce6a05633442ec96d40ede649828355ba5fd91f347126354ca2"
+size = 1847
+
+[[artefact.extract.member]]
+path = "namedEntities/IS1008a.D.ne.xml"
+sha256 = "ec653fb4070b451647048102a0221d4a24f53229612eefe2ac3235480508b5eb"
+size = 765
+
+[[artefact.extract.member]]
+path = "namedEntities/TS3004a.A.ne.xml"
+sha256 = "1309314d07be9fb0365765b554017560a87b7f9523c9b356da40ec3f0aeedd77"
+size = 7897
+
+[[artefact.extract.member]]
+path = "namedEntities/TS3004a.B.ne.xml"
+sha256 = "c7b5a56cae6791e0f255e9398d162013cc9e70e3dac1b4d4c2b12029770fe326"
+size = 2902
+
+[[artefact.extract.member]]
+path = "namedEntities/TS3004a.C.ne.xml"
+sha256 = "4b52ecedeb49eab7fa9bddc5076c2a4eedd19f8c87d78ff23eea1c86a1933ba5"
+size = 935
+
+[[artefact.extract.member]]
+path = "namedEntities/TS3004a.D.ne.xml"
+sha256 = "6dd742aae0f7844928b8a7251314c8c25ceee15a6b7c87db264e91d36c97e471"
+size = 4986
+
+[[artefact.extract.member]]
+path = "namedEntities/TS3006a.A.ne.xml"
+sha256 = "df5b3128cb00bb79715a4d4523acca2aa8c99cb54463dc2998c22114c48ef3cf"
+size = 8268
+
+[[artefact.extract.member]]
+path = "namedEntities/TS3006a.B.ne.xml"
+sha256 = "40f281f7eed7b15d39ab579f97f293659925260269907f33ddca08d4ff6f3f43"
+size = 2316
+
+[[artefact.extract.member]]
+path = "namedEntities/TS3006a.C.ne.xml"
+sha256 = "b2954ec68bddf5eec54532b22d36697f39ba93008c68dbb09c7d3bfe7fab6e61"
+size = 3110
+
+[[artefact.extract.member]]
+path = "namedEntities/TS3006a.D.ne.xml"
+sha256 = "179a1b10a4b23dc411718e869f0247f385a52e876f3ecc448b9dcfa6c2a9976f"
+size = 5306
+
+[[artefact.extract.member]]
+path = "ontologies/ne-types.xml"
+sha256 = "116e9eb4f0a9a9469e63b29f87a61f2ce4bb07b61af04965494a510822c55da1"
+size = 3061
+
+[[artefact.extract.member]]
+path = "segments/ES2003a.A.segments.xml"
+sha256 = "7071e005078bb634a4b134c83c3cb32f18e1a05f32e09dbea7a55ed29e8240fa"
+size = 3524
+
+[[artefact.extract.member]]
+path = "segments/ES2003a.B.segments.xml"
+sha256 = "0e7f4acd208a51f8254f5b0fced4f083dcd56e874bf6ee63c6e8d94c9969d0d2"
+size = 11129
+
+[[artefact.extract.member]]
+path = "segments/ES2003a.C.segments.xml"
+sha256 = "6eeb8cd7ce16a03f5782d62bbd94fadd19c3a1b3bc71ee69ed38f76ea411ef3b"
+size = 8742
+
+[[artefact.extract.member]]
+path = "segments/ES2003a.D.segments.xml"
+sha256 = "c35aaced78c739ac0f3b4b10907e1f49c6c679ce6825e078902522cf62f4b263"
+size = 5274
+
+[[artefact.extract.member]]
 path = "segments/ES2004a.A.segments.xml"
 sha256 = "fdba87577fb6f36139a0f62d5c249921635b53bec92ed127cdfee959f6a8cb2c"
 size = 10232
@@ -544,6 +950,46 @@ sha256 = "1ecca19454d5c92b92c8c1825935b24262a355778c7138492dbacf10db9aa83d"
 size = 18503
 
 [[artefact.extract.member]]
+path = "segments/ES2011a.A.segments.xml"
+sha256 = "eb1b2d4ed0c66dd74e277ad9a36f6b7009bb611cfa91fb8e8795cdb2f5ada076"
+size = 19377
+
+[[artefact.extract.member]]
+path = "segments/ES2011a.B.segments.xml"
+sha256 = "33107bc562a9bbcaba8fe83b8679907a5bfb2432370ff6e323b44893fb39ff1a"
+size = 8836
+
+[[artefact.extract.member]]
+path = "segments/ES2011a.C.segments.xml"
+sha256 = "98697cdb564e8ee82a3f334d627d48c0b8d1604e617a48f1e9677006e647b119"
+size = 14265
+
+[[artefact.extract.member]]
+path = "segments/ES2011a.D.segments.xml"
+sha256 = "c9409aeb9af716a6b81869d7f860c1e6e73abf126c6ad88e0a96a19834a2c4d0"
+size = 13091
+
+[[artefact.extract.member]]
+path = "segments/IS1008a.A.segments.xml"
+sha256 = "bf92e8f911ede22c68b7f6f97a58d1ab99500960020cf32129d56c63c8239ebf"
+size = 21173
+
+[[artefact.extract.member]]
+path = "segments/IS1008a.B.segments.xml"
+sha256 = "b8c445793c33e36e42c8d1024134d8099c5128d22c1f3c42ce53e7fc5327b7b9"
+size = 5053
+
+[[artefact.extract.member]]
+path = "segments/IS1008a.C.segments.xml"
+sha256 = "7c66449383dd1e29e96ae19f78ef1ff1e78d6a776ef9647181bd6e7ee3df17d3"
+size = 5391
+
+[[artefact.extract.member]]
+path = "segments/IS1008a.D.segments.xml"
+sha256 = "aae03fbeef08d107ef219b11621b4540eb100e42e6f9e116bf33bde90f4d8381"
+size = 6266
+
+[[artefact.extract.member]]
 path = "segments/IS1009a.A.segments.xml"
 sha256 = "86f545f8fb114f4ac515fe364bfac318f2e2bda29f8d3248707baa8fc1a845f3"
 size = 16056
@@ -562,6 +1008,46 @@ size = 10101
 path = "segments/IS1009a.D.segments.xml"
 sha256 = "fa930c99ffa100b5318b957df024915ac770f5f623716815843a4aaca9fad7c9"
 size = 13229
+
+[[artefact.extract.member]]
+path = "segments/TS3004a.A.segments.xml"
+sha256 = "7d898645b5567f3983fb5df25e923276d77e4359bc2e888e493f6f9decc2a141"
+size = 26092
+
+[[artefact.extract.member]]
+path = "segments/TS3004a.B.segments.xml"
+sha256 = "7cd499785eb01f45eca6cd0e58f5df77a4b7fbcb428b990c53c5a92c81fccb9f"
+size = 21426
+
+[[artefact.extract.member]]
+path = "segments/TS3004a.C.segments.xml"
+sha256 = "138d1b6e026a606fe2e9ca608a9bfdd96071f428d90b55b8d92aee39e6f68c96"
+size = 14113
+
+[[artefact.extract.member]]
+path = "segments/TS3004a.D.segments.xml"
+sha256 = "2b9611c5ea168fc181741f5363504cedca11d811cab49848f71d9b7208a34c18"
+size = 23825
+
+[[artefact.extract.member]]
+path = "segments/TS3006a.A.segments.xml"
+sha256 = "24ba51794ef45a4a7c94f2eb2d2b92159126ec4537823711ce811bf788f4b279"
+size = 32140
+
+[[artefact.extract.member]]
+path = "segments/TS3006a.B.segments.xml"
+sha256 = "8150714e59e2b8a481d7e314c0a92c955f4411498dc672cf08829af5b87cd111"
+size = 17652
+
+[[artefact.extract.member]]
+path = "segments/TS3006a.C.segments.xml"
+sha256 = "fd30e3d30dcb57c17d4ec1ff5efd0f7920e6d06137c8cf54205e65d39fae6e9a"
+size = 17993
+
+[[artefact.extract.member]]
+path = "segments/TS3006a.D.segments.xml"
+sha256 = "095893a8041b81e7c6d26ddc049cf7e1ecfbc101fbd1f171f6ad5fc84377b4e0"
+size = 26065
 
 [[artefact.extract.member]]
 path = "words/ES2003a.A.words.xml"

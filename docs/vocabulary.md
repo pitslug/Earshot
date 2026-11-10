@@ -423,3 +423,49 @@ target\release\examples\vocab_eval.exe --fixtures $env:LOCALAPPDATA\earshot-dev\
 The committed record is word-free, as for T12.15b: `docs/vocabulary/ami/results.json`, the meta
 file and per decode `counts-<name>.jsonl` (per segment its id, the SHA-256 of the hypothesis and
 the counts). AMI text holds names, so hypotheses and lists stay in `target/`.
+
+## Results (measured 2026-11-11)
+
+Host: the x64 desktop (32 logical cores), CPU only, shared with other lanes; ONNX Runtime placed
+every node of all three sessions on the CPU (`docs/vocabulary/ami/ami-meta.json`). 1,418 oracle
+segments (5,194 s of headset speech) plus the 20 speakers' outside words; 12,411 reference
+words. The run took 6 minutes (4 workers of 4 threads); decode time decides nothing.
+
+| List | Listed positions | Baseline WER / B-WER / U-WER % | Boosted WER / B-WER / U-WER % | Listed gained / lost | Unlisted gained / lost | G1 G2 G3 G4 |
+|---|---|---|---|---|---|---|
+| **ne (verdict)** | 60 | 12.63 / 30.00 / 12.54 | 16.89 / 30.00 / 16.82 | 2 / 1 | 110 / 214 | pass **fail** **fail** pass |
+| ne-all | 511 | 12.63 / 15.85 / 12.49 | 16.36 / 16.83 / 16.34 | 11 / 4 | 104 / 201 | pass **fail** **fail** pass |
+| rare | 211 | 12.63 / 18.96 / 12.52 | 16.42 / 19.91 / 16.36 | 4 / 4 | 107 / 216 | pass **fail** **fail** pass |
+
+Spoken listed words per meeting (`ne`): 11, 9, 3, 5 and 11, so 39 distinct words at 60
+reference positions; the rest of each list is distractors. No list wrote a distractor (G1), and
+no boosted decode of the three non-speech clips wrote anything at all (G4).
+
+**Verdict: fail.** On meeting speech the boost raises WER from 12.63% to 16.89% (G3) and U-WER
+by 4.3 points (G2, limit 0.1), and listed-word B-WER is not lower (30.00% both: 18 errors at 60
+positions). The informational lists fail the same two guards by the same margin. T12.15d is not
+started.
+
+### What the numbers say
+
+- The cost is insertions, not substitutions: the boosted hypotheses hold 13,674 words against
+  the baseline's 13,080 (+4.5%), and 584 of the 1,418 segments changed. Read in `target/` only,
+  the added words are mostly short backchannels, fillers and single letters, written where the
+  headset hears breath, laughter or a neighbour's speech. The bonus goes to the first piece of
+  every listed word at every step, and many first pieces are short and common; in the open
+  form they compete with blank, so on non-speech sounds inside a segment the decoder leaves
+  blank for them and the language model finishes a short word. Read audiobook speech
+  (T12.15b) has almost none of those sounds, which is why it showed no cost there.
+- The synthetic noise clips (G4) did not provoke it: white noise and dither are not the sounds
+  that do. G4 alone would not have caught this.
+- On these meetings the named-entity words were already mostly right without the boost (70%
+  listed recall for `ne`, 88% for `ne-all`), and the boost moved only a handful of them.
+- Not measured here, and for the owner: T12.15b's gated form (a bonus never turns blank into a
+  word) is the variant built to avoid exactly this cost; it reached B-WER -17.4% on
+  LibriSpeech. Shipping it would need its own rule and this same measurement first.
+
+### Reproducing
+
+As in "Commands" above (the release example under the lane's target folder `C:\eb\lane-vocab`).
+`--score-ami` takes seconds and rewrites `docs/vocabulary/ami/`; a rerun's hypotheses can be
+checked against the committed `hyp_sha256` values.
