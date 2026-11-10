@@ -24,7 +24,7 @@ export type {
   PersonItem,
   PersonRef,
   RememberOutcome,
-  RememberResult,
+  SavedVoiceResult,
   RowTrack,
   SearchMatch,
   SearchResultItem,

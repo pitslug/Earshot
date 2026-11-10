@@ -661,7 +661,7 @@ describe("meeting screen", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
   });
 
-  it("opens the meeting detail at the who-is-who panel from Name voices", async () => {
+  it("opens the meeting detail at the Speakers panel from Name voices", async () => {
     const s = setup();
     const view = await startMeeting(s, "Call", "Pump order");
     advance(s.timer, 10_000);
@@ -669,7 +669,7 @@ describe("meeting screen", () => {
     advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
     await s.user.click(await screen.findByRole("button", { name: "Name voices" }));
     expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
-    const panel = await screen.findByRole("complementary", { name: "Who is who" });
+    const panel = await screen.findByRole("complementary", { name: "Speakers" });
     await waitFor(() =>
       expect(within(panel).getByRole("textbox", { name: "Name of Speaker 2" })).toHaveFocus(),
     );

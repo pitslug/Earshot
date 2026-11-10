@@ -260,7 +260,7 @@ export interface AppShellProps {
   notice?: ReactNode;
   /** Also told when "Settings" opens the Settings screen. */
   onOpenSettings?: () => void;
-  /** Also told when "Name voices" on the summary notice opens the meeting's who-is-who
+  /** Also told when "Name voices" on the summary notice opens the meeting's Speakers
    * panel. */
   onNameVoices?: (meetingId: string) => void;
 }

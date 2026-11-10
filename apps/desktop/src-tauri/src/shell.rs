@@ -53,7 +53,7 @@ pub enum ShellEvent {
     OpenMeeting {
         /// Meeting id.
         meeting: String,
-        /// Open its who-is-who panel too.
+        /// Open its Speakers panel too.
         name_voices: bool,
     },
     /// "Quit Earshot" during a meeting: ask first, then call `quit_app`.
@@ -272,7 +272,7 @@ pub enum ToastClick {
     Window,
     /// Open the window on the meeting.
     Meeting,
-    /// Open the window on the meeting's who-is-who panel.
+    /// Open the window on the meeting's Speakers panel.
     NameVoices,
     /// Stop the recording: the answer to the call-end question, with the window left alone.
     StopRecording,

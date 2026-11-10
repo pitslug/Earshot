@@ -93,6 +93,7 @@ fn in_room_meeting(svc: &Services, seed: u64) -> (EntityId, EntityId, EntityId) 
             given_stamp: Some(row.meta.updated_at),
             user_edited: false,
             enrolled: false,
+            ignored: false,
         });
         rows.push(row.id);
     }

@@ -115,6 +115,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 41,
       sample_line: "Okay, that pushes commissioning past Christmas, which we can't wear.",
       needs_name: false,
+      ignored: false,
+      can_ignore: false,
       can_mark_me: false,
       can_unmark_me: false,
     },
@@ -127,6 +129,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 22,
       sample_line: "If the seals go by air, we would want the vendor to carry that cost.",
       needs_name: false,
+      ignored: false,
+      can_ignore: false,
       can_mark_me: false,
       can_unmark_me: false,
     },
@@ -139,6 +143,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 30,
       sample_line: "We could split the order and air freight the seals, so the first set still...",
       needs_name: true,
+      ignored: false,
+      can_ignore: true,
       can_mark_me: false,
       can_unmark_me: false,
     },
@@ -151,6 +157,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 7,
       sample_line: "I can send the split-order quote this afternoon.",
       needs_name: true,
+      ignored: false,
+      can_ignore: true,
       can_mark_me: false,
       can_unmark_me: false,
     },
@@ -207,6 +215,8 @@ export function sampleInRoomDetail(item: MeetingListItem): MeetingDetail {
       person: null,
       source: "Mic",
       needs_name: true,
+      ignored: false,
+      can_ignore: true,
       can_mark_me: true,
     }),
   );
@@ -263,8 +273,20 @@ export function linked(detail: MeetingDetail, id: string, person: PersonItem): M
             ...s,
             person: { id: person.id, name: person.name, has_voiceprint: person.has_voiceprint },
             needs_name: false,
+            ignored: false,
+            can_ignore: false,
           }
         : s,
+    ),
+  };
+}
+
+/** `detail` after "Ignore" (`ignore` true) or its undo on `id` (T12.19): the label stays. */
+export function ignoredVoice(detail: MeetingDetail, id: string, ignore: boolean): MeetingDetail {
+  return {
+    ...detail,
+    speakers: detail.speakers.map((s) =>
+      s.id === id ? { ...s, ignored: ignore, needs_name: !ignore && s.kind === "Other" && s.person === null } : s,
     ),
   };
 }
@@ -292,7 +314,15 @@ export function unmarkedMe(detail: MeetingDetail, id: string): MeetingDetail {
     ...next,
     speakers: next.speakers.map((s) =>
       s.id === id
-        ? { ...s, kind: "Other", person: null, needs_name: true, can_mark_me: true, can_unmark_me: false }
+        ? {
+            ...s,
+            kind: "Other",
+            person: null,
+            needs_name: true,
+            can_ignore: true,
+            can_mark_me: true,
+            can_unmark_me: false,
+          }
         : { ...s, can_mark_me: true },
     ),
   };

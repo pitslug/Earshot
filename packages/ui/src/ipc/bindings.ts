@@ -76,8 +76,18 @@ export const commands = {
 	renamePerson: (person: string, name: string) => typedError<number, IpcError>(__TAURI_INVOKE("rename_person", { person, name })),
 	/**  Every live person, by name. */
 	listPersons: () => typedError<PersonItem[], IpcError>(__TAURI_INVOKE("list_persons")),
-	/**  "Remember these voices for next time" (opt-in) for `speakers` of `meeting`. */
-	rememberVoices: (meeting: string, speakers: string[]) => typedError<RememberResult[], IpcError>(__TAURI_INVOKE("remember_voices", { meeting, speakers })),
+	/**
+	 *  "Save" on a voice that needs a name (T12.19): names it, links it to that person and
+	 *  remembers the voice, in one step (the user's consent for this one voice).
+	 */
+	saveVoice: (meeting: string, speaker: string, choice: LinkChoice) => typedError<SavedVoiceResult, IpcError>(__TAURI_INVOKE("save_voice", { meeting, speaker, choice })),
+	/**
+	 *  "Ignore" on a voice that needs a name (T12.19): it no longer needs one and keeps its
+	 *  "Speaker N" label.
+	 */
+	ignoreSpeaker: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("ignore_speaker", { meeting, speaker })),
+	/**  Undoes "Ignore": the voice needs a name again. */
+	unignoreSpeaker: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("unignore_speaker", { meeting, speaker })),
 	/**  Forgets every voiceprint of a person; returns how many were forgotten. */
 	forgetPersonVoices: (person: string) => typedError<number, IpcError>(__TAURI_INVOKE("forget_person_voices", { person })),
 	/**  Removes a person: their name and voice, from this computer (the Speakers page). */
@@ -1523,7 +1533,7 @@ export type RecommendedView = {
 	reason: string,
 };
 
-/**  What "remember these voices" did for one speaker. */
+/**  What remembering a saved voice did (T12.19). */
 export type RememberOutcome = 
 /**  Added to the person's voiceprint. */
 "Remembered" | 
@@ -1535,14 +1545,6 @@ export type RememberOutcome =
 "AlreadyRemembered" | 
 /**  The speaker model cannot match voiceprints. */
 "Unsupported";
-
-/**  One speaker's result. */
-export type RememberResult = {
-	/**  Speaker id. */
-	speaker: string,
-	/**  What happened. */
-	outcome: RememberOutcome,
-};
 
 /**  What a removal freed. */
 export type RemovedView = {
@@ -1590,6 +1592,14 @@ export type RunsOn =
 /**  The NPU. */
 "Npu";
 
+/**  What "Save" on a voice did (T12.19). */
+export type SavedVoiceResult = {
+	/**  The person the voice is linked to (hyphenated UUID). */
+	person: string,
+	/**  What remembering its voice did. */
+	outcome: RememberOutcome,
+};
+
 /**  Where a search found a meeting. */
 export type SearchMatch = 
 /**  Its title. */
@@ -1629,7 +1639,7 @@ export type ShellEvent =
 { type: "OpenMeeting"; 
 /**  Meeting id. */
 meeting: string; 
-/**  Open its who-is-who panel too. */
+/**  Open its Speakers panel too. */
 name_voices: boolean } | 
 /**  "Quit Earshot" during a meeting: ask first, then call `quit_app`. */
 { type: "QuitAsked"; 
@@ -1640,7 +1650,7 @@ recording: boolean } |
 /**  Why. */
 message: string };
 
-/**  One row of the who-is-who panel. */
+/**  One row of the Speakers panel. */
 export type SpeakerCard = {
 	/**  Speaker id (hyphenated UUID). */
 	id: string,
@@ -1656,8 +1666,15 @@ export type SpeakerCard = {
 	share_percent: number,
 	/**  The start of their longest segment (at most [`SAMPLE_LINE_CHARS`], then "..."). */
 	sample_line: string,
-	/**  Not the user and not linked to a person: the voice needs a name. */
+	/**
+	 *  Not the user, not linked to a person and not ignored: the voice needs a name
+	 *  ([`needs_name`]).
+	 */
 	needs_name: boolean,
+	/**  The user chose to ignore this voice in this meeting (T12.19, `edit::is_ignored`). */
+	ignored: boolean,
+	/**  The user may ignore this voice (`edit::can_ignore`). */
+	can_ignore: boolean,
 	/**  The user may say this voice is theirs ("This is me": `edit::can_mark_me`). */
 	can_mark_me: boolean,
 	/**  The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`). */

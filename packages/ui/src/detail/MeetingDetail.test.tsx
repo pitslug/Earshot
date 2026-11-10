@@ -19,7 +19,7 @@ import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppShell } from "../shell/AppShell";
-import { COPIED_MS, handoverLine, rememberText, summaryMarkdown } from "./detail";
+import { COPIED_MS, handoverLine, savedText, summaryMarkdown } from "./detail";
 
 const ITEM: MeetingListItem = { ...sampleMeetings()[1], started_at_ms: 2_000 };
 /** An older meeting, so `ITEM` is shown first. */
@@ -48,8 +48,12 @@ async function setup(data: MockIpcData = {}) {
   return { calls, timer, ipc, user };
 }
 
-const panel = () => screen.getByRole("complementary", { name: "Who is who" });
+const panel = () => screen.getByRole("complementary", { name: "Speakers" });
 const speakerRow = (name: string) => within(panel()).getByRole("listitem", { name });
+/** Opens the panel's collapsed list of named voices (T12.19). */
+async function openNamed(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(within(panel()).getByRole("button", { name: /^Named/ }));
+}
 /** The list row of a meeting and its trash can, also while an open modal hides the page from
  * assistive technology. */
 const listRow = (item: MeetingListItem) =>
@@ -88,16 +92,32 @@ beforeEach(() => {
 });
 
 describe("MeetingDetailView", () => {
-  it("shows the header, summary and who-is-who panel with the names banner", async () => {
-    await setup();
+  it("shows the header, summary and the Speakers panel open on the voices that need names", async () => {
+    const { user } = await setup();
     expect(await screen.findByText(/TL;DR/)).toBeInTheDocument();
     expect(screen.getByText(/Final transcript · Summary by Qwen 3.5 9B/)).toBeInTheDocument();
-    expect(screen.getByText("2 voices need names. Names flow into the summary and export.")).toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "Speakers, 2 need names" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveTextContent("2 need names");
+    expect(toggle.getAttribute("aria-controls")).toBe(panel().id);
+    expect(within(panel()).getByText(/Names flow into the summary and export/)).toBeInTheDocument();
     expect(screen.getByText("Tick actions in the Obsidian note.")).toBeInTheDocument();
     const actions = screen.getByRole("table", { name: "Actions" });
     expect(within(actions).getAllByRole("row")[0].textContent).toContain("Casey");
+    // The two voices that need a name, each with Save and Ignore; the named ones are collapsed.
+    const needing = within(panel()).getByRole("region", { name: "Need a name" });
+    expect(within(needing).getAllByRole("listitem").map((r) => r.getAttribute("aria-label"))).toEqual([
+      "Speaker 2",
+      "Speaker 3",
+    ]);
+    expect(within(needing).getAllByRole("button", { name: /^Save / })).toHaveLength(2);
+    expect(within(needing).getAllByRole("button", { name: "Ignore" })).toHaveLength(2);
+    expect(within(panel()).queryByRole("listitem", { name: "Priya Shah" })).toBeNull();
+    await openNamed(user);
     expect(within(panel()).getAllByRole("listitem")).toHaveLength(4);
     expect(within(speakerRow("Priya Shah")).getByText(/Matched voiceprint · 22% of talk time/)).toBeInTheDocument();
+    // The tickbox for every voice is gone: consent is per voice, by Save.
+    expect(within(panel()).queryByRole("checkbox")).toBeNull();
     // Copy rules: no em dashes, no "please", no exclamation marks.
     expect(document.body.textContent ?? "").not.toMatch(/\u2014|please|!/i);
   });
@@ -495,13 +515,15 @@ describe("MeetingDetailView", () => {
 
     await user.click(within(speakerRow("Speaker 2")).getByRole("button", { name: "This is me" }));
     expect(calls).toContainEqual(["markMe", ITEM.id, SAMPLE_SPEAKERS.priya]);
-    // One Me row: the offer leaves every voice, and the user's name shows.
+    // One Me row: the offer leaves every voice, and the user's name shows among the named.
+    await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Speaker 2" })).toBeNull());
+    await openNamed(user);
     const mine = await within(panel()).findByRole("listitem", { name: "Casey" });
     expect(within(mine).getByRole("button", { name: "This isn't me" })).toBeInTheDocument();
     expect(within(panel()).queryByRole("button", { name: "This is me" })).toBeNull();
     expect(within(mine).queryByRole("textbox")).toBeNull();
-    // Nothing starts "remember voices" and no voiceprint call is made.
-    expect(calls.some((c) => c[0] === "rememberVoices")).toBe(false);
+    // Nothing saves a voice and no voiceprint call is made.
+    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
     await user.click(screen.getByRole("tab", { name: "Transcript" }));
     const table = screen.getByRole("table", { name: "Transcript" });
     expect(within(table).getAllByText("Casey").length).toBeGreaterThan(0);
@@ -541,14 +563,19 @@ describe("MeetingDetailView", () => {
     });
   });
 
-  it("names a voice from its name field and the transcript follows", async () => {
+  it("saves a voice from its name field: named, linked and remembered in one step, and the transcript follows", async () => {
     const { user, calls } = await setup();
     const field = await screen.findByRole("textbox", { name: "Name of Speaker 2" });
     await user.type(field, "Sam Lee{Enter}");
     await waitFor(() => expect(within(panel()).queryByRole("textbox", { name: "Name of Speaker 2" })).toBeNull());
-    expect(calls).toContainEqual(["linkSpeaker", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "Sam Lee" }]);
-    expect(calls.filter((c) => c[0] === "linkSpeaker")).toHaveLength(1);
-    expect(screen.getByText("1 voice needs a name. Names flow into the summary and export.")).toBeInTheDocument();
+    expect(calls).toContainEqual(["saveVoice", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "Sam Lee" }]);
+    expect(calls.filter((c) => c[0] === "saveVoice")).toHaveLength(1);
+    expect(calls.some((c) => c[0] === "linkSpeaker")).toBe(false);
+    expect(await screen.findByText("Saved Sam Lee. Later meetings will recognise this voice.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Speakers, 1 needs a name" })).toBeInTheDocument();
+    // It moved to the named voices, where its voice can be forgotten.
+    await openNamed(user);
+    expect(within(speakerRow("Sam Lee")).getByRole("button", { name: "Forget voice" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Transcript" }));
     const rows = within(screen.getByRole("table", { name: "Transcript" })).getAllByRole("row");
     expect(within(rows[0]).getAllByRole("cell")[1].textContent).toBe("Sam Lee");
@@ -557,6 +584,7 @@ describe("MeetingDetailView", () => {
   it("renames a named speaker on Enter", async () => {
     const { user, calls } = await setup();
     await screen.findByText(/TL;DR/);
+    await openNamed(user);
     await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Rename here" }));
     expect(within(panel()).getByText("Renames this speaker in this meeting only.")).toBeInTheDocument();
     const field = within(panel()).getByRole("textbox", { name: "Name of Priya Shah in this meeting" });
@@ -573,36 +601,151 @@ describe("MeetingDetailView", () => {
     await user.click(await screen.findByRole("menuitem", { name: "Into Priya Shah" }));
     await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Speaker 3" })).toBeNull());
     expect(calls).toContainEqual(["mergeSpeakers", ITEM.id, SAMPLE_SPEAKERS.priya, SAMPLE_SPEAKERS.third]);
+    await openNamed(user);
     expect(within(speakerRow("Priya Shah")).getByText(/29% of talk time/)).toBeInTheDocument();
     // The user's own row cannot be merged away.
     expect(within(speakerRow("Me")).getByRole("button", { name: "Merge" })).toHaveAttribute("aria-disabled", "true");
   });
 
-  it("links a voice to a new person", async () => {
+  it("links a wrong match to a new person from the named voices", async () => {
     const { user, calls } = await setup();
     await screen.findByText(/TL;DR/);
-    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Link to person" }));
-    const dialog = await screen.findByRole("dialog", { name: "Link Speaker 3 to a person" });
+    await openNamed(user);
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Link to person" }));
+    const dialog = await screen.findByRole("dialog", { name: "Link Priya Shah to a person" });
     await user.click(within(dialog).getByRole("combobox"));
     await user.click(await screen.findByRole("option", { name: "New person" }));
     await user.type(within(dialog).getByRole("textbox", { name: "New person's name" }), "Ana Diaz");
     await user.click(within(dialog).getByRole("button", { name: "Link" }));
     await waitFor(() => expect(within(panel()).getByRole("listitem", { name: "Ana Diaz" })).toBeInTheDocument());
-    expect(calls).toContainEqual(["linkSpeaker", ITEM.id, SAMPLE_SPEAKERS.third, { kind: "New", name: "Ana Diaz" }]);
+    expect(calls).toContainEqual(["linkSpeaker", ITEM.id, SAMPLE_SPEAKERS.priya, { kind: "New", name: "Ana Diaz" }]);
+    // Linking is not saving: no voice is remembered by it.
+    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
   });
 
-  it("remembers voices only when ticked, and only named voices other than yours", async () => {
-    const remembered: string[][] = [];
-    const { user } = await setup({ onRememberVoices: (_m, s) => remembered.push(s) });
-    await screen.findByText(/TL;DR/);
-    const box = within(panel()).getByRole("checkbox", { name: "Remember these voices for next time" });
-    expect(box).not.toBeChecked();
-    const save = within(panel()).getByRole("button", { name: "Save voices" });
+  it("saves with the Save button, to an existing person by exact name, and never an empty name", async () => {
+    const { user, calls } = await setup();
+    const save = await screen.findByRole("button", { name: "Save Speaker 3" });
     expect(save).toBeDisabled();
-    await user.click(box);
+    await user.type(within(panel()).getByRole("textbox", { name: "Name of Speaker 3" }), "  ");
+    expect(save).toBeDisabled();
+    await user.type(within(panel()).getByRole("textbox", { name: "Name of Speaker 3" }), "tom reid");
     await user.click(save);
-    await waitFor(() => expect(remembered).toEqual([[SAMPLE_SPEAKERS.priya]]));
-    expect(await screen.findByText("1 voice remembered.")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(calls).toContainEqual([
+        "saveVoice",
+        ITEM.id,
+        SAMPLE_SPEAKERS.third,
+        { kind: "Existing", person: "9e000000-0000-7000-8000-000000000003" },
+      ]),
+    );
+    expect(await screen.findByText("Saved Tom Reid. Later meetings will recognise this voice.")).toBeInTheDocument();
+  });
+
+  it("ignores a voice: it stops needing a name, keeps its label and can be named after all", async () => {
+    const { user, calls } = await setup();
+    await screen.findByText(/TL;DR/);
+    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Ignore" }));
+    expect(calls).toContainEqual(["ignoreSpeaker", ITEM.id, SAMPLE_SPEAKERS.third]);
+    expect(await screen.findByRole("button", { name: "Speakers, 1 needs a name" })).toBeInTheDocument();
+    const needing = within(panel()).getByRole("region", { name: "Need a name" });
+    expect(within(needing).queryByRole("listitem", { name: "Speaker 3" })).toBeNull();
+    // Nothing is saved or linked by ignoring.
+    expect(calls.some((c) => c[0] === "saveVoice" || c[0] === "linkSpeaker")).toBe(false);
+    // The label stays in the summary and the transcript.
+    expect(within(screen.getByRole("table", { name: "Actions" })).getByText("Speaker 3")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Transcript" }));
+    const table = screen.getByRole("table", { name: "Transcript" });
+    expect(within(table).getAllByText("Speaker 3").length).toBeGreaterThan(0);
+
+    await user.click(within(panel()).getByRole("button", { name: "Ignored (1)" }));
+    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Stop ignoring" }));
+    expect(calls).toContainEqual(["unignoreSpeaker", ITEM.id, SAMPLE_SPEAKERS.third]);
+    expect(await screen.findByRole("button", { name: "Speakers, 2 need names" })).toBeInTheDocument();
+    expect(within(panel()).queryByRole("button", { name: /^Ignored/ })).toBeNull();
+    expect(within(panel()).getByRole("textbox", { name: "Name of Speaker 3" })).toBeInTheDocument();
+  });
+
+  it("offers no Ignore for a voice with nothing stored, and the mock refuses like the runtime", async () => {
+    const base = sampleDetail(ITEM);
+    const detail = {
+      ...base,
+      speakers: base.speakers.map((s) => (s.id === SAMPLE_SPEAKERS.third ? { ...s, can_ignore: false } : s)),
+    };
+    const { ipc } = await setup({ details: { [ITEM.id]: detail } });
+    await screen.findByText(/TL;DR/);
+    expect(within(speakerRow("Speaker 3")).queryByRole("button", { name: "Ignore" })).toBeNull();
+    expect(within(speakerRow("Speaker 2")).getByRole("button", { name: "Ignore" })).toBeInTheDocument();
+    await expect(ipc.ignoreSpeaker(ITEM.id, SAMPLE_SPEAKERS.third)).rejects.toMatchObject({
+      error: { kind: "no_stored_voice" },
+    });
+    await expect(ipc.ignoreSpeaker(ITEM.id, SAMPLE_SPEAKERS.priya)).rejects.toMatchObject({
+      error: { kind: "not_unnamed", message: "Only a voice that needs a name can be ignored." },
+    });
+    await expect(ipc.saveVoice(ITEM.id, SAMPLE_SPEAKERS.me, { kind: "New", name: "Sky Moss" })).rejects.toMatchObject({
+      error: { kind: "me_is_the_user" },
+    });
+    expect((await ipc.listPersons()).some((p) => p.name === "Sky Moss")).toBe(false);
+  });
+
+  it("stays closed when no voice needs a name, with recognised voices marked, and the header button toggles it", async () => {
+    const base = sampleDetail(ITEM);
+    const detail = {
+      ...base,
+      speakers: base.speakers.map((s) =>
+        s.needs_name
+          ? {
+              ...s,
+              name: "Tom Reid",
+              person: { id: "9e000000-0000-7000-8000-000000000003", name: "Tom Reid", has_voiceprint: true },
+              source: "Voiceprint" as const,
+              needs_name: false,
+              can_ignore: false,
+            }
+          : s,
+      ),
+    };
+    const { user } = await setup({ details: { [ITEM.id]: detail } });
+    await screen.findByText(/TL;DR/);
+    const toggle = screen.getByRole("button", { name: "Speakers" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(panel()).getByText("Every voice in this meeting has a name.")).toBeInTheDocument();
+    await openNamed(user);
+    const recognisedRows = within(panel())
+      .getAllByRole("listitem")
+      .filter((r) => within(r).queryByText("Recognised") !== null);
+    expect(recognisedRows.map((r) => r.getAttribute("aria-label"))).toEqual(["Priya Shah", "Tom Reid", "Tom Reid"]);
+    expect(within(speakerRow("Me")).queryByText("Recognised")).toBeNull();
+
+    await user.click(within(panel()).getByRole("button", { name: "Close Speakers" }));
+    expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    expect(panel()).toBeInTheDocument();
+    await user.click(toggle);
+    expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
+  });
+
+  it("puts the panel beside the summary and transcript, pushing them aside rather than covering them", async () => {
+    await setup();
+    await screen.findByText(/TL;DR/);
+    const aside = panel();
+    const main = screen.getByText(/TL;DR/).closest("div");
+    if (main === null) throw new Error("no summary");
+    // Both live in one grid row: the panel's column is beside the content's, in normal flow.
+    let column: HTMLElement | null = aside;
+    while (column !== null && column.parentElement !== null && !column.parentElement.contains(main)) {
+      column = column.parentElement;
+    }
+    if (column === null || column.parentElement === null) throw new Error("no shared container");
+    expect(getComputedStyle(column.parentElement).display).toBe("grid");
+    for (let el: HTMLElement | null = aside; el !== null && el !== column.parentElement; el = el.parentElement) {
+      expect(["absolute", "fixed"]).not.toContain(getComputedStyle(el).position);
+    }
   });
 
   it("offers the previous summary only after a re-summary", async () => {
@@ -857,16 +1000,18 @@ describe("MeetingDetailView", () => {
     ]);
   });
 
-  it("focuses the first name field from the names banner", async () => {
-    const { user } = await setup();
+  it("has no names banner: the Speakers button says how many voices need names", async () => {
+    await setup();
     await screen.findByText(/TL;DR/);
-    await user.click(screen.getByRole("button", { name: "Name voices" }));
-    expect(within(panel()).getByRole("textbox", { name: "Name of Speaker 2" })).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Name voices" })).toBeNull();
+    expect(screen.queryByText(/voices need names\./)).toBeNull();
+    expect(screen.getByRole("button", { name: "Speakers, 2 need names" })).toBeInTheDocument();
   });
 
   it("says when a sample's audio is no longer kept", async () => {
     const { user } = await setup({ sample: null });
     await screen.findByText(/TL;DR/);
+    await openNamed(user);
     await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Play a sample of Priya Shah" }));
     expect(await within(speakerRow("Priya Shah")).findByText("Audio no longer kept")).toBeInTheDocument();
   });
@@ -876,6 +1021,7 @@ describe("MeetingDetailView", () => {
       details: { [ITEM.id]: { ...sampleDetail(ITEM), audio_kept: false } },
     });
     await screen.findByText(/TL;DR/);
+    await openNamed(user);
     // The rest of the meeting reads as before.
     expect(within(panel()).getAllByText("Audio no longer kept").length).toBe(
       sampleDetail(ITEM).speakers.length,
@@ -890,8 +1036,9 @@ describe("MeetingDetailView", () => {
   });
 
   it("offers re-transcribe and samples while the recordings are kept", async () => {
-    await setup();
+    const { user } = await setup();
     await screen.findByText(/TL;DR/);
+    await openNamed(user);
     expect(within(panel()).queryByText("Audio no longer kept")).toBeNull();
     expect(
       within(speakerRow("Priya Shah")).getByRole("button", { name: "Play a sample of Priya Shah" }),
@@ -904,6 +1051,7 @@ describe("MeetingDetailView", () => {
   it("asks before forgetting a voice", async () => {
     const { user, calls } = await setup();
     await screen.findByText(/TL;DR/);
+    await openNamed(user);
     await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Forget voice" }));
     const dialog = await screen.findByRole("alertdialog");
     expect(within(dialog).getByText("Forget Priya Shah's voice?")).toBeInTheDocument();
@@ -917,22 +1065,23 @@ describe("MeetingDetailView", () => {
 });
 
 describe("MeetingDetailView, review fixes", () => {
-  it("keeps a voice's draft name on blur and names it only on Enter", async () => {
+  it("keeps a voice's draft name on blur and saves it only on Enter or Save", async () => {
     const { user, calls } = await setup();
     const field = await screen.findByRole("textbox", { name: "Name of Speaker 2" });
     await user.type(field, "Sam");
     await user.tab();
-    expect(calls.some((c) => c[0] === "linkSpeaker")).toBe(false);
+    expect(calls.some((c) => c[0] === "saveVoice" || c[0] === "linkSpeaker")).toBe(false);
     expect(within(panel()).getByRole("textbox", { name: "Name of Speaker 2" })).toHaveValue("Sam");
     await user.type(within(panel()).getByRole("textbox", { name: "Name of Speaker 2" }), " Lee{Enter}");
     await waitFor(() =>
-      expect(calls).toContainEqual(["linkSpeaker", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "Sam Lee" }]),
+      expect(calls).toContainEqual(["saveVoice", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "Sam Lee" }]),
     );
   });
 
   it("renames a person in every meeting, apart from renaming the row", async () => {
     const { user, calls } = await setup();
     await screen.findByText(/TL;DR/);
+    await openNamed(user);
     await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Rename person" }));
     expect(within(panel()).getByText("Renames this person in every meeting.")).toBeInTheDocument();
     const field = within(panel()).getByRole("textbox", { name: "New name of Priya Shah in every meeting" });
@@ -945,37 +1094,31 @@ describe("MeetingDetailView, review fixes", () => {
     expect(within(speakerRow("Speaker 3")).queryByRole("button", { name: "Rename person" })).toBeNull();
   });
 
-  it("says why voices were not remembered", async () => {
+  it("says why a saved voice was not remembered", async () => {
     const { user } = await setup({
-      rememberOutcomes: { [SAMPLE_SPEAKERS.priya]: "AlreadyRemembered" },
+      rememberOutcomes: { [SAMPLE_SPEAKERS.second]: "Unsupported" },
     });
-    await screen.findByText(/TL;DR/);
-    await user.click(within(panel()).getByRole("checkbox", { name: "Remember these voices for next time" }));
-    await user.click(within(panel()).getByRole("button", { name: "Save voices" }));
+    await user.type(await screen.findByRole("textbox", { name: "Name of Speaker 2" }), "Jo Park{Enter}");
     expect(
-      await screen.findByText("0 voices remembered. Priya Shah was already remembered from this meeting."),
+      await screen.findByText("Saved Jo Park. The speaker model in use cannot remember voices, so no voiceprint was kept."),
     ).toBeInTheDocument();
+    // Named all the same.
+    expect(screen.getByRole("button", { name: "Speakers, 1 needs a name" })).toBeInTheDocument();
   });
 
-  it("words every remember outcome by name", () => {
-    const speakers = sampleDetail(ITEM).speakers;
-    const r = (speaker: string, outcome: "Remembered" | "AlreadyRemembered" | "NotEnoughSpeech" | "NoStoredVoice" | "Unsupported") => ({ speaker, outcome });
-    expect(
-      rememberText(
-        [
-          r(SAMPLE_SPEAKERS.priya, "Remembered"),
-          r(SAMPLE_SPEAKERS.second, "NotEnoughSpeech"),
-          r(SAMPLE_SPEAKERS.third, "NoStoredVoice"),
-        ],
-        speakers,
-      ),
-    ).toBe(
-      "1 voice remembered. Speaker 2 did not speak long enough to remember. There is no stored voice for Speaker 3 yet: voices are kept once the meeting has been processed.",
+  it("words every remember outcome of a save by name", () => {
+    expect(savedText("Jo Park", "Remembered")).toBe("Saved Jo Park. Later meetings will recognise this voice.");
+    expect(savedText("Jo Park", "AlreadyRemembered")).toBe(
+      "Saved Jo Park. This voice was already remembered from this meeting.",
     );
-    expect(
-      rememberText([r(SAMPLE_SPEAKERS.priya, "Unsupported"), r(SAMPLE_SPEAKERS.second, "Unsupported")], speakers),
-    ).toBe(
-      "0 voices remembered. The speaker model in use cannot remember voices, so Priya Shah and Speaker 2 were not saved.",
+    expect(savedText("Jo Park", "NotEnoughSpeech")).toBe(
+      "Saved Jo Park. They did not speak long enough for their voice to be remembered, so later meetings will not recognise it yet.",
+    );
+    expect(savedText("Jo Park", "NoStoredVoice")).toBe(
+      "Saved Jo Park. There is no stored voice for them yet: voices are kept once the meeting has been processed.",
+    );
+    expect(savedText("Jo Park", "Unsupported")).toBe(
+      "Saved Jo Park. The speaker model in use cannot remember voices, so no voiceprint was kept.",
     );
   });
 

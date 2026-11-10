@@ -19,8 +19,8 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 
 use crate::credentials::{CredentialManager, KeyVault};
 use crate::detail::{
-    self, ExportDone, LinkChoice, MeetingDetail, PersonItem, RememberResult, SummaryFieldRef,
-    parse_id, parse_ids,
+    self, ExportDone, LinkChoice, MeetingDetail, PersonItem, SavedVoiceResult, SummaryFieldRef,
+    parse_id,
 };
 use crate::jobs::{JobEvent, JobKind, JobRunner};
 use crate::meeting::{MeetingDriver, StartRequest};
@@ -57,7 +57,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             unmark_me,
             rename_person,
             list_persons,
-            remember_voices,
+            save_voice,
+            ignore_speaker,
+            unignore_speaker,
             forget_person_voices,
             remove_person,
             speaker_sample,
@@ -735,18 +737,54 @@ async fn list_persons(state: State<'_, AppState>) -> Result<Vec<PersonItem>, Ipc
     blocking(move || detail::persons(&services)).await
 }
 
-/// "Remember these voices for next time" (opt-in) for `speakers` of `meeting`.
+/// "Save" on a voice that needs a name (T12.19): names it, links it to that person and
+/// remembers the voice, in one step (the user's consent for this one voice).
 #[tauri::command]
 #[specta::specta]
-async fn remember_voices(
+async fn save_voice(
     state: State<'_, AppState>,
     meeting: String,
-    speakers: Vec<String>,
-) -> Result<Vec<RememberResult>, IpcError> {
+    speaker: String,
+    choice: LinkChoice,
+) -> Result<SavedVoiceResult, IpcError> {
     let services = state.services()?;
-    let meeting = parse_id(&meeting)?;
-    let speakers = parse_ids(&speakers)?;
-    blocking(move || detail::remember(&services, meeting, &speakers)).await
+    let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || detail::save_voice(&services, meeting, speaker, &choice)).await
+}
+
+/// "Ignore" on a voice that needs a name (T12.19): it no longer needs one and keeps its
+/// "Speaker N" label.
+#[tauri::command]
+#[specta::specta]
+async fn ignore_speaker(
+    state: State<'_, AppState>,
+    meeting: String,
+    speaker: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || {
+        earshot_runtime::edit::ignore_speaker(&services, meeting, speaker)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Undoes "Ignore": the voice needs a name again.
+#[tauri::command]
+#[specta::specta]
+async fn unignore_speaker(
+    state: State<'_, AppState>,
+    meeting: String,
+    speaker: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || {
+        earshot_runtime::edit::unignore_speaker(&services, meeting, speaker)?;
+        Ok(())
+    })
+    .await
 }
 
 /// Removes a person: their name and voice, from this computer (the Speakers page).

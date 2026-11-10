@@ -5,7 +5,6 @@ import {
   type MeetingDetail,
   type PersonItem,
   type RememberOutcome,
-  type RememberResult,
   type SpeakerCard,
   type SummaryView,
 } from "../ipc";
@@ -97,14 +96,28 @@ export function voicesToName(d: MeetingDetail): number {
   return d.speakers.filter((s) => s.needs_name).length;
 }
 
-/** "2 voices need names. Names flow into the summary and export." */
-export function namesBanner(n: number): string {
-  return `${n} ${n === 1 ? "voice needs a name" : "voices need names"}. Names flow into the summary and export.`;
+/** The Speakers button's badge: "1 needs a name", "2 need names". */
+export function voicesBadge(n: number): string {
+  return n === 1 ? "1 needs a name" : `${n} need names`;
 }
 
-/** The speakers "Remember these voices" sends: named (linked to a person) and not the user. */
-export function rememberable(d: MeetingDetail): SpeakerCard[] {
-  return d.speakers.filter((s) => s.kind === "Other" && s.person !== null);
+/** The Speakers panel's three lists (T12.19): voices that need a name, voices with one (the
+ * user, linked and recognised voices) and voices the user ignored, each in meeting order. */
+export function speakerGroups(d: MeetingDetail): {
+  unnamed: SpeakerCard[];
+  named: SpeakerCard[];
+  ignored: SpeakerCard[];
+} {
+  return {
+    unnamed: d.speakers.filter((s) => s.needs_name),
+    named: d.speakers.filter((s) => !s.needs_name && !s.ignored),
+    ignored: d.speakers.filter((s) => !s.needs_name && s.ignored),
+  };
+}
+
+/** A voice the final pass named from a stored voiceprint ("Recognised"). */
+export function recognised(s: SpeakerCard): boolean {
+  return s.source === "Voiceprint";
 }
 
 /** The persons a speaker may be linked to: the user's own person only for the "Me" row, and
@@ -135,36 +148,21 @@ export function failureText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** What "Save voices" did, in plain copy: how many were remembered, then why the others
- * were not, by name. */
-export function rememberText(results: RememberResult[], speakers: SpeakerCard[]): string {
-  const name = (id: string) => speakers.find((s) => s.id === id)?.name ?? "A voice";
-  const names = (outcome: RememberOutcome) =>
-    results.filter((r) => r.outcome === outcome).map((r) => name(r.speaker));
-  const list = (n: string[]) =>
-    n.length <= 1 ? (n[0] ?? "") : `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}`;
-  const verb = (n: string[], one: string, many: string) => (n.length === 1 ? one : many);
-  const saved = names("Remembered").length;
-  const parts = [`${saved} ${saved === 1 ? "voice" : "voices"} remembered.`];
-  const already = names("AlreadyRemembered");
-  if (already.length > 0) {
-    parts.push(`${list(already)} ${verb(already, "was", "were")} already remembered from this meeting.`);
+/** What "Save" on a voice did, in plain copy, by the name it was saved as. Only a
+ * remembered voice is recognised in later meetings; every other outcome says why not. */
+export function savedText(name: string, outcome: RememberOutcome): string {
+  switch (outcome) {
+    case "Remembered":
+      return `Saved ${name}. Later meetings will recognise this voice.`;
+    case "AlreadyRemembered":
+      return `Saved ${name}. This voice was already remembered from this meeting.`;
+    case "NotEnoughSpeech":
+      return `Saved ${name}. They did not speak long enough for their voice to be remembered, so later meetings will not recognise it yet.`;
+    case "NoStoredVoice":
+      return `Saved ${name}. There is no stored voice for them yet: voices are kept once the meeting has been processed.`;
+    case "Unsupported":
+      return `Saved ${name}. The speaker model in use cannot remember voices, so no voiceprint was kept.`;
   }
-  const short = names("NotEnoughSpeech");
-  if (short.length > 0) {
-    parts.push(`${list(short)} did not speak long enough to remember.`);
-  }
-  const none = names("NoStoredVoice");
-  if (none.length > 0) {
-    parts.push(
-      `There is no stored voice for ${list(none)} yet: voices are kept once the meeting has been processed.`,
-    );
-  }
-  const unsupported = names("Unsupported");
-  if (unsupported.length > 0) {
-    parts.push(`The speaker model in use cannot remember voices, so ${list(unsupported)} ${verb(unsupported, "was", "were")} not saved.`);
-  }
-  return parts.join(" ");
 }
 
 /** The meeting's recordings were deleted (audio retention, or by hand): it was recorded and

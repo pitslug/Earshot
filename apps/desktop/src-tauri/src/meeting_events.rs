@@ -866,11 +866,12 @@ impl PostProgressMapper {
     }
 }
 
-/// Whether a speaker still needs a name: not the user and not linked to a person. The one
-/// rule behind the summary-ready count, the meeting detail and a re-summary's count.
+/// Whether a speaker still needs a name: not the user, not linked to a person and not
+/// ignored by the user (T12.19, `earshot_runtime::edit::is_ignored`). The one rule behind
+/// the summary-ready count, the meeting detail and a re-summary's count.
 #[must_use]
-pub fn needs_name(role: SpeakerRole, has_person: bool) -> bool {
-    role != SpeakerRole::Me && !has_person
+pub fn needs_name(role: SpeakerRole, has_person: bool, ignored: bool) -> bool {
+    role != SpeakerRole::Me && !has_person && !ignored
 }
 
 /// Speakers found after the meeting that still need a name ([`needs_name`]).
@@ -878,7 +879,7 @@ pub fn needs_name(role: SpeakerRole, has_person: bool) -> bool {
 pub fn voices_to_name(speakers: &[PostSpeaker]) -> u32 {
     let n = speakers
         .iter()
-        .filter(|s| needs_name(s.role, s.person.is_some()))
+        .filter(|s| needs_name(s.role, s.person.is_some(), s.ignored))
         .count();
     u32::try_from(n).unwrap_or(u32::MAX)
 }

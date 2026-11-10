@@ -122,6 +122,7 @@ mod tests {
                 given_stamp: None,
                 user_edited: true,
                 enrolled: false,
+                ignored: false,
             }],
         };
         let bytes = encode(&record);
@@ -152,6 +153,25 @@ mod tests {
         before_flag.extend(serde_json::to_vec(&json).unwrap());
         assert_eq!(
             decode(&before_flag),
+            StoredIdentities::Record(record.clone())
+        );
+        // The ignore flag (T12.19) likewise: it round-trips, and a version 2 record written
+        // before it existed reads as not ignored.
+        let mut ignored = record.clone();
+        ignored.speakers[0].ignored = true;
+        assert_eq!(
+            decode(&encode(&ignored)),
+            StoredIdentities::Record(ignored.clone())
+        );
+        let mut before_ignore = IDENTITY_RECORD_VERSION.to_le_bytes().to_vec();
+        let mut json = serde_json::to_value(&ignored).unwrap();
+        json["speakers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("ignored");
+        before_ignore.extend(serde_json::to_vec(&json).unwrap());
+        assert_eq!(
+            decode(&before_ignore),
             StoredIdentities::Record(record.clone())
         );
         // A version 1 record (written before the stamp and the edit flag) still reads, with

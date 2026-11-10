@@ -464,6 +464,7 @@ fn store_forget_voiceprints_drops_the_identitys_speaker_centroids_from_every_mee
         given_stamp: Some(s.meta.updated_at),
         user_edited: false,
         enrolled: false,
+        ignored: false,
     };
 
     // Meeting 1: a row the user linked to Ada, one linked to Ada's merged duplicate, and an
