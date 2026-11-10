@@ -940,78 +940,6 @@ fn live_preview_own_voice_beside_cuda_loads_on_the_cpu_and_reports_it() {
     assert!(shown_on(&events, TrackId::Reference));
 }
 
-/// T12.3c: in a meeting transcribed on CUDA with a card too small for a preview session, both
-/// preview sessions load on the CPU (`backends::load_preview_with` and `load_preview_second_with`,
-/// the rule's own decisions), and each track's report says so.
-#[test]
-fn live_preview_beside_a_small_card_loads_both_sessions_on_the_cpu_and_reports_it() {
-    use crate::preview_settings::PreviewChoice;
-    use earshot_hardware::{Gpu, Hardware};
-    let scene = scene_of(27);
-    let far = Arc::new(Seen::default());
-    let own = Arc::new(Seen::default());
-    let small_card = Hardware {
-        total_memory: Some(64 * 1024 * 1024 * 1024),
-        gpus: vec![Gpu {
-            name: "A card".to_owned(),
-            vendor_id: 0x10de,
-            dedicated_memory: Some(crate::backends::PREVIEW_MIN_CARD_MEMORY - 1),
-            driver_version: None,
-            integrated: Some(false),
-            compute_capability: None,
-        }],
-        ..Hardware::default()
-    };
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    let far_load: PreviewLoader = {
-        let (far, asked, hw) = (Arc::clone(&far), Arc::clone(&asked), small_card.clone());
-        Arc::new(move |backend: &BackendInfo| {
-            asked.lock().unwrap().push(("far", backend.kind));
-            crate::backends::load_preview_with(backend, &hw, PreviewChoice::Everyone, |on| {
-                Ok(fake_session_on(&far, on))
-            })
-        })
-    };
-    let own_load: PreviewLoader = {
-        let (own, asked, hw) = (Arc::clone(&own), Arc::clone(&asked), small_card);
-        Arc::new(move |backend: &BackendInfo| {
-            asked.lock().unwrap().push(("own", backend.kind));
-            crate::backends::load_preview_second_with(backend, &hw, PreviewChoice::Everyone, |on| {
-                Ok(fake_session_on(&own, on))
-            })
-        })
-    };
-    let config = LivePreviews {
-        own_voice: Some(own_load),
-        ..previews(far_load)
-    };
-    let dir = TempDir::new();
-    let svc = services(&dir);
-    let session = start_live(
-        fast_source(&scene),
-        svc.clone(),
-        config_with(Some(config)),
-        Some(cuda_factory_of(&scene)),
-        Box::new(ChaCha8Rng::seed_from_u64(347)),
-    )
-    .unwrap();
-    let (events, _) = collect(session);
-    // Both loaders were handed the track's backend, CUDA; the rule moved both to the CPU.
-    let mut asked = asked.lock().unwrap().clone();
-    asked.sort_unstable_by_key(|(slot, _)| *slot);
-    assert_eq!(
-        asked,
-        vec![("far", BackendKind::Cuda), ("own", BackendKind::Cuda)]
-    );
-    for track in [TrackId::Mic, TrackId::Reference] {
-        let report = report_for(&events, track);
-        assert_eq!(report.backend, Some(BackendKind::Cpu), "{report:?}");
-        assert_eq!(report.off, None, "{report:?}");
-        assert!(report.decodes > 0, "{report:?}");
-        assert!(shown_on(&events, track), "{track:?}");
-    }
-}
-
 /// A report says where its session ran, and nothing when no session loaded.
 #[test]
 fn live_preview_report_names_the_loaded_sessions_backend() {
@@ -1400,41 +1328,7 @@ fn live_preview_runs_only_where_it_was_measured_and_fits() {
         Some(PREVIEW_MIN_CARD_MEMORY - 1),
     );
     assert_eq!(previews_refused(BackendKind::Cpu, &card), None);
-    // T12.3c: a card too small (or unknown) moves a CUDA track's previews to the CPU, under the
-    // CPU's memory limit, instead of refusing them.
-    let preview_backend = |kind, machine: &Hardware| {
-        crate::backends::preview_backend(kind, machine, PreviewChoice::Automatic)
-    };
-    assert_eq!(previews_refused(BackendKind::Cuda, &card), None);
-    assert_eq!(
-        preview_backend(BackendKind::Cuda, &card),
-        Ok(BackendKind::Cpu)
-    );
+    assert!(previews_refused(BackendKind::Cuda, &card).is_some());
     let unknown_card = machine(Some(PREVIEW_MIN_MEMORY_CUDA), None);
-    assert_eq!(
-        preview_backend(BackendKind::Cuda, &unknown_card),
-        Ok(BackendKind::Cpu)
-    );
-    let cpu_limit = machine(Some(PREVIEW_MIN_MEMORY), Some(PREVIEW_MIN_CARD_MEMORY - 1));
-    assert_eq!(
-        preview_backend(BackendKind::Cuda, &cpu_limit),
-        Ok(BackendKind::Cpu)
-    );
-    let below_cpu = machine(
-        Some(PREVIEW_MIN_MEMORY - 1),
-        Some(PREVIEW_MIN_CARD_MEMORY - 1),
-    );
-    assert_eq!(
-        previews_refused(BackendKind::Cuda, &below_cpu),
-        previews_refused(BackendKind::Cpu, &below_cpu)
-    );
-    assert!(previews_refused(BackendKind::Cuda, &below_cpu).is_some());
-    assert_eq!(
-        preview_backend(BackendKind::Cuda, &big),
-        Ok(BackendKind::Cuda)
-    );
-    assert_eq!(
-        preview_backend(BackendKind::Cpu, &big),
-        Ok(BackendKind::Cpu)
-    );
+    assert!(previews_refused(BackendKind::Cuda, &unknown_card).is_some());
 }

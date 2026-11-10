@@ -1821,22 +1821,13 @@ fn backends_previews_second_session_beside_cuda_runs_on_the_cpu() {
         assert!(cuda.is_err(), "{:?}", m.total_memory);
         assert_eq!(cuda, cpu, "{:?}", m.total_memory);
     }
-    // A card too small for a session on it runs the second on the CPU as well (T12.3c), with the
-    // CPU's memory rule.
+    // A card too small for the first session refuses both, with the first session's reason.
     let small_card = machine(Some(64 * 1024 * 1024 * 1024), Some(8 * 1024 * 1024 * 1024));
     assert_eq!(
-        second_preview_backend(BackendKind::Cuda, &small_card, everyone),
-        Ok(BackendKind::Cpu)
+        second_preview_backend(BackendKind::Cuda, &small_card, everyone).err(),
+        previews_refused(BackendKind::Cuda, &small_card, everyone)
     );
-    let small_both = machine(
-        Some(PREVIEW_BOTH_MIN_MEMORY - 1),
-        Some(8 * 1024 * 1024 * 1024),
-    );
-    assert_eq!(
-        second_preview_backend(BackendKind::Cuda, &small_both, everyone),
-        second_preview_backend(BackendKind::Cpu, &small_both, everyone)
-    );
-    assert!(second_preview_backend(BackendKind::Cuda, &small_both, everyone).is_err());
+    assert!(previews_refused(BackendKind::Cuda, &small_card, everyone).is_some());
     for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
         assert!(
             second_preview_backend(kind, &big, everyone).is_err(),
@@ -1934,12 +1925,12 @@ fn nvidia_machine(memory: Option<u64>, card: Option<u64>) -> earshot_hardware::H
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
-/// T12.3c: with transcription on CUDA and a card too small (or unknown) for a preview session there,
-/// the first session runs on the CPU under the CPU's memory limit, as on a CPU machine; a card with
-/// room keeps it on CUDA under CUDA's. Every choice and backend refuses exactly where
+/// T12.3c measured CPU previews beside a small card and failed its rule, so with transcription on
+/// CUDA a card too small (or unknown) for a preview session refuses them, whatever the choice; a
+/// card with room keeps them on CUDA. Every choice and backend refuses exactly where
 /// `previews_refused` says, which is the rule's reason.
 #[test]
-fn backends_previews_beside_a_small_card_run_on_the_cpu() {
+fn backends_previews_beside_a_small_card_are_refused() {
     use crate::preview_settings::PreviewChoice;
     let small = Some(PREVIEW_MIN_CARD_MEMORY - 1);
     let choices = [
@@ -1951,8 +1942,10 @@ fn backends_previews_beside_a_small_card_run_on_the_cpu() {
         for card in [small, Some(8 * GIB), None] {
             let m = nvidia_machine(Some(64 * GIB), card);
             assert_eq!(
-                preview_backend(BackendKind::Cuda, &m, choice),
-                Ok(BackendKind::Cpu),
+                preview_backend(BackendKind::Cuda, &m, choice)
+                    .err()
+                    .as_deref(),
+                Some("the graphics card is too small for a third session"),
                 "{choice:?} {card:?}"
             );
         }
@@ -1967,33 +1960,6 @@ fn backends_previews_beside_a_small_card_run_on_the_cpu() {
             Ok(BackendKind::Cpu),
             "{choice:?}"
         );
-    }
-    // The CPU's limit, not CUDA's: at 12 GiB a small card's previews run by default, and below it
-    // they are off by default with the CPU's reason, and "on" or Everyone lift it as on the CPU.
-    let at_cpu_limit = nvidia_machine(Some(PREVIEW_MIN_MEMORY), small);
-    const { assert!(PREVIEW_MIN_MEMORY < PREVIEW_MIN_MEMORY_CUDA) };
-    assert_eq!(
-        preview_backend(BackendKind::Cuda, &at_cpu_limit, PreviewChoice::Automatic),
-        Ok(BackendKind::Cpu)
-    );
-    for memory in [Some(PREVIEW_MIN_MEMORY - 1), None] {
-        let m = nvidia_machine(memory, small);
-        assert_eq!(
-            preview_backend(BackendKind::Cuda, &m, PreviewChoice::Automatic),
-            preview_backend(BackendKind::Cpu, &m, PreviewChoice::Automatic),
-            "{memory:?}"
-        );
-        assert!(
-            preview_backend(BackendKind::Cuda, &m, PreviewChoice::Automatic).is_err(),
-            "{memory:?}"
-        );
-        for choice in [PreviewChoice::On, PreviewChoice::Everyone] {
-            assert_eq!(
-                preview_backend(BackendKind::Cuda, &m, choice),
-                Ok(BackendKind::Cpu),
-                "{memory:?} {choice:?}"
-            );
-        }
     }
     // Off, the NPU and whisper-only backends stay refused whatever the card.
     let m = nvidia_machine(Some(64 * GIB), small);
@@ -2032,8 +1998,7 @@ fn backends_previews_beside_a_small_card_run_on_the_cpu() {
 }
 
 /// T12.3c: the first session's load asks for the backend the rule returns: a CUDA track's preview
-/// beside a small card is loaded on the CPU, beside a card with room on CUDA; a refusal loads
-/// nothing.
+/// beside a card with room is loaded on CUDA; a refusal, a small card included, loads nothing.
 #[test]
 fn backends_previews_first_session_loads_where_the_rule_says() {
     use crate::preview_settings::PreviewChoice;
@@ -2042,11 +2007,8 @@ fn backends_previews_first_session_loads_where_the_rule_says() {
         device: "CUDA0".to_owned(),
         model: "parakeet-tdt-0.6b-v2".to_owned(),
     };
-    for (card, want) in [
-        (Some(PREVIEW_MIN_CARD_MEMORY - 1), BackendKind::Cpu),
-        (None, BackendKind::Cpu),
-        (Some(PREVIEW_MIN_CARD_MEMORY), BackendKind::Cuda),
-    ] {
+    {
+        let (card, want) = (Some(PREVIEW_MIN_CARD_MEMORY), BackendKind::Cuda);
         let m = nvidia_machine(Some(64 * GIB), card);
         let asked = std::sync::Mutex::new(Vec::new());
         let result = load_preview_with(&track, &m, PreviewChoice::On, |on: &BackendInfo| {
@@ -2059,7 +2021,18 @@ fn backends_previews_first_session_loads_where_the_rule_says() {
         assert_eq!(asked[0].kind, want, "{card:?}");
         assert_eq!(asked[0].model, track.model);
     }
-    let small_memory = nvidia_machine(Some(PREVIEW_MIN_MEMORY - 1), None);
+    let small_card = nvidia_machine(Some(64 * GIB), Some(8 * GIB));
+    let refused = load_preview_with(
+        &track,
+        &small_card,
+        PreviewChoice::On,
+        |_| -> Result<(), String> { panic!("a refused session was loaded") },
+    );
+    assert_eq!(
+        refused.err(),
+        previews_refused(BackendKind::Cuda, &small_card, PreviewChoice::On)
+    );
+    let small_memory = nvidia_machine(Some(PREVIEW_MIN_MEMORY - 1), Some(PREVIEW_MIN_CARD_MEMORY));
     let refused = load_preview_with(
         &track,
         &small_memory,
@@ -2080,7 +2053,7 @@ fn backends_preview_on_hardware_load_applies_the_rule_to_the_given_machine() {
     use crate::preview_settings::PreviewChoice;
     let empty = std::env::temp_dir().join(format!("earshot-preview-on-hw-{}", std::process::id()));
     let models = ModelDir::new(&empty);
-    let small = nvidia_machine(Some(64 * GIB), Some(12 * GIB));
+    let small = nvidia_machine(Some(64 * GIB), Some(16 * GIB));
     let cuda = BackendInfo {
         kind: BackendKind::Cuda,
         device: "CUDA0".to_owned(),

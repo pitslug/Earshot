@@ -1222,7 +1222,7 @@ fn main() {
             "forced_past_it": args.force_previews,
             "simulated_card_gib": simulated.as_ref().and_then(simulated_card_gib),
             "app_first": previews_refused(args.backend, &machine, choice),
-            // Where the app would run the first session (T12.3c: the CPU beside a small card).
+            // Where the app would run the first session.
             "app_first_on": preview_backend(args.backend, &machine, choice)
                 .ok()
                 .map(|k| format!("{k:?}")),
@@ -1619,10 +1619,10 @@ mod tests {
         assert_eq!(sim.gpus[2].dedicated_memory, Some(12 * GIB));
         assert_eq!(sim.gpus[0].name, machine.gpus[0].name);
         assert_eq!(simulated_card_gib(&sim), Some(12));
-        // The rule sees a small card: a CUDA track's previews move to the CPU.
+        // The rule sees a small card: a CUDA track's previews are refused.
         assert_eq!(
             preview_backend(BackendKind::Cuda, &sim, PreviewChoice::Automatic),
-            Ok(BackendKind::Cpu)
+            Err("the graphics card is too small for a third session".to_owned())
         );
         assert_eq!(
             preview_backend(BackendKind::Cuda, &machine, PreviewChoice::Automatic),
@@ -1636,7 +1636,7 @@ mod tests {
     }
 
     /// With a simulated card the app's rule runs on that machine: a CUDA track's previews are
-    /// asked for on the CPU (the load fails here for a load reason, on an empty models folder), the
+    /// refused (the card is too small), the
     /// NPU is still refused, and every record names the simulated card and no bypass.
     #[test]
     fn live_lag_simulated_preview_loads_apply_the_apps_rule_to_the_simulated_card() {
@@ -1659,8 +1659,8 @@ mod tests {
             model: "parakeet-tdt-0.6b-v2".to_owned(),
         };
         for load in [&p.load, &own] {
-            let why = load(&cuda).err().expect("no models here");
-            assert!(!why.contains("card") && !why.contains("memory"), "{why}");
+            let why = load(&cuda).err().expect("a small card is refused");
+            assert_eq!(why, "the graphics card is too small for a third session");
             assert_eq!(
                 load(&npu_track()).err().as_deref(),
                 Some("not measured on the NPU yet")
