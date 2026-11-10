@@ -216,14 +216,14 @@ pub fn kept_local_no_model(model: &str, ahead: bool) -> String {
         "There is no summary"
     };
     format!(
-        "{lead}: this meeting is kept on this computer, so only a summary model here can write          it, and {} is not downloaded yet. Download it in Settings, Summaries, then summarise          this meeting.",
+        "{lead}: this meeting is kept on this computer, so only a summary model here can write it, and {} is not downloaded yet. Download it in Settings, Summaries, then summarise this meeting.",
         display_name(model)
     )
 }
 
 /// What the user is told when a summary that would leave this computer is refused for a meeting
 /// kept on it (T12.13).
-pub const KEPT_LOCAL_REFUSED: &str = "This meeting is kept on this computer, so its summary is     written only by the summary model here. Nothing was sent.";
+pub const KEPT_LOCAL_REFUSED: &str = "This meeting is kept on this computer, so its summary is written only by the summary model here. Nothing was sent.";
 
 /// What the user is told about runtime error `e`.
 #[must_use]

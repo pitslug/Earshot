@@ -442,7 +442,7 @@ pub fn no_summary_lines(plan: &SummaryPlan) -> Option<(String, &'static str)> {
         // The CLI never plans this (`kept_local: false` above); told anyway.
         SummaryPlan::KeptLocalNoModel(choice) => Some((
             format!(
-                "summary: none, the meeting is kept on this computer and its local summary model                  is not installed ({})",
+                "summary: none, the meeting is kept on this computer and its local summary model is not installed ({})",
                 choice.model.id
             ),
             "kept on this computer, no local summary model",
