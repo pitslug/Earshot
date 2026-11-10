@@ -253,6 +253,72 @@ Points 1, 2, 3 and 5 pass with room; point 4's mic median is 3.005 s against at 
 
 **The owner's decision, 2026-11-09, after the result:** accepted. The 5 ms over the 3 s limit was judged no real difference, and on a smaller card the mic preview falling back to the CPU is fine. This is a decision made after measuring, not a pass under the rule. The code was merged from `wip/T12.3a`: with transcription on CUDA, Everyone runs the mic preview on the CPU within `PREVIEW_BOTH_MIN_MEMORY`, and the General page says so.
 
+## Previews on the CPU when the card is too small (T12.3c)
+
+With transcription on CUDA and a card under `PREVIEW_MIN_CARD_MEMORY` (14 GiB, or unknown), `previews_refused` refused every preview: a third session on the card does not fit. T12.3c runs the preview sessions on the CPU instead, with the CPU's shared weights (one copy of the encoder for every CPU session), so the card holds what it holds with previews off. The far end's session (and the mic's in the room) and, under Everyone, the user's own as in T12.3a. The CPU's memory limits apply: `PREVIEW_MIN_MEMORY` (12 GiB) for the first session by default, lifted by "Other people only" and Everyone as on the CPU, and `PREVIEW_BOTH_MIN_MEMORY` (12 GiB) for the second. Automatic, no new setting; the page note replaces "too little memory" with where they run. The one rule is `backends::preview_backend` (`previews_refused` is its reason); a card with room keeps CUDA previews as before.
+
+Cards that reach this: transcription stays off CUDA below `TRANSCRIPTION_MIN_CARD_MEMORY` (12 GiB), so a card of 12 GiB up to 14 GiB, or one whose memory cannot be read.
+
+**How the small card is simulated.** The desktop's RTX 5080 has 16 GiB. `live_lag --card-memory-gib 12` (evaluation only) makes the preview rule read a machine whose every non-integrated graphics adapter has 12 GiB of dedicated memory: `earshot_runtime::hardware()` with only `dedicated_memory` replaced, all else as read. 12 GiB is the smallest card that transcribes on CUDA, the case this serves. The previews are then loaded through `backends::load_preview_on_hardware`, the production rule and loader on that machine instead of `crate::hardware()`: a separate named function, kept out of shipped code by `backends_preview_on_hardware_load_is_used_by_no_shipped_code`, never a flag on `load_preview`. Nothing else reads the simulated value: transcription runs on CUDA because `--backend cuda` asks for it, and the card's real memory is untouched, so the card reading in point 5 shows whether any preview session reached the card. The report records the simulated value (`simulated_card_gib`) and what the app would decide on that machine (`preview_refusal`, `app_first_on`).
+
+**The rule, written and committed 2026-11-10 before the code was finished and before any measurement** (judgements, not derived; desktop, RTX 5080, transcription on CUDA, card simulated at 12 GiB in every run, idle host: no other lane, build or ci, not while the owner is in a meeting; bundled and continuous audio, real time). "Other people only" (`on`) and "Everyone" (`everyone`) are each judged against previews off on the same simulated machine (`off`, what a small card got before T12.3c), and each passes only if it passes on both audios:
+
+1. **Where each session ran.** Both tracks' own sessions report CUDA from ONNX Runtime's placement (`live_backends`, `onnx_placement`); every preview session reports the CPU (`preview_sessions[].loaded.kind` and each track's `previews[].backend` `Cpu`); `preview_refusal.app_first` is null and `app_first_on` is `Cpu`. One control run, `on` on bundled without `--card-memory-gib`, must show the far-end preview on CUDA, so it is the simulated card that moved it. Otherwise the run says nothing about this design.
+2. **Stored words are identical.** `stored_sha256` matches `off` for every track.
+3. **The main transcript does not slow.** For each track, real decode rtf (`decodes_mic.rtf`, `decodes_reference.rtf`) at most 1.5 times `off`'s, and `catch_up_after_end_s` at most `off`'s plus 2 s. No audio dropped (`capture_max_lag_s` under 30 s, no preview `audio_dropped`).
+4. **The previews are worth having.** `reference.on_screen_lag_s` median at most 3 s on both audios; under `everyone` also `mic.on_screen_lag_s` median at most 3 s on bundled (continuous has no mic speech) and the far-end median at most `on`'s plus 1 s. No preview turned off (`previews[].off` empty), at most 2 slow pauses per track.
+5. **Memory.** Peak private memory (`host.peak_private_gib`) at most `off`'s plus 3 GiB for `on` and plus 3.5 GiB for `everyone`. The card's peak during the run (`nvidia-smi`, one reading a second) at most `off`'s plus 0.5 GiB for both. In `--memory`, the second CPU preview session adds at most 1 GiB of private memory over the first (the weights are shared).
+
+If both pass, T12.3c ships as built. If `everyone` fails and `on` passes, the second session beside a small card goes back to refused (`second_preview_backend`), and the numbers and the failed point go here. If `on` fails, the first session goes back to refused too, as before T12.3c.
+
+**Asked of the owner whatever the result, fixed before measuring:** the default memory limit. On CUDA a meeting's private memory was 11.7 GiB with previews off (before T9.1ma) and T12.3a's CPU session added 2.5 GiB, so `on` here is expected near 14 GiB of private memory, while `PREVIEW_MIN_MEMORY` (12 GiB) was set from a 5.8 GiB CPU meeting. The code uses the CPU's limit as asked; the measured peak goes to the owner with the question whether "automatic" beside a small card should use `PREVIEW_MIN_MEMORY_CUDA` (20 GiB) instead. A pass under the rule does not settle that.
+
+**Method.** A CUDA build of the example (`--features onnx-cuda`), the models folder holding sets `ci` and `cuda` and the CUDA files the app downloads, cuDNN as for any CUDA run. Each replay is about 150 s (bundled) or 120 s (continuous) of real time. Beside each replay, in a second shell, log the card once a second and stop it with Ctrl+C when the replay ends:
+
+```powershell
+nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -l 1 | Tee-Object -FilePath target\live-lag\t123c-on-bundled-smi.txt
+```
+
+(with the file name of the run beside it). The runs:
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio bundled --previews off --out target\live-lag\t123c-off-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio bundled --previews on --out target\live-lag\t123c-on-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio bundled --previews everyone --out target\live-lag\t123c-everyone-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio continuous --seconds 120 --previews off --out target\live-lag\t123c-off-continuous.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio continuous --seconds 120 --previews on --out target\live-lag\t123c-on-continuous.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio continuous --seconds 120 --previews everyone --out target\live-lag\t123c-everyone-continuous.json
+```
+
+The control for point 1 (no simulation: the far-end preview stays on CUDA):
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --audio bundled --previews on --out target\live-lag\t123c-control-on-bundled.json
+```
+
+Memory and load time per session: the track's own session on CUDA, then the first and second preview sessions where the rule puts them on the simulated machine (the CPU), each followed by three 12 s decodes:
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --memory --out target\live-lag\t123c-memory.json
+```
+
+Reports and `nvidia-smi` logs go to `docs/live-previews/t123c/`, counts and times only.
+
 ## Re-measuring on a quiet host
 
 Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`
