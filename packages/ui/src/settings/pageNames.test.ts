@@ -1,21 +1,21 @@
 // No text the app shows names a Settings page that no longer exists (T12.5b): Models and
 // Benchmark were dissolved into System, Transcription and Summaries, Speakers became People, and
 // Obsidian and Storage became Notes and storage. The Rust side has the same guard
-// (`page_names_tests.rs` in the desktop app); a rule change edits both.
+// (`page_names_tests.rs` in the desktop app); both take the gone pages and the forms from
+// `fixtures/ui/page_name_cases.json` and run its cases, so a rule change edits that file.
 
 import { describe, expect, it } from "vitest";
 
+import table from "../../../../fixtures/ui/page_name_cases.json";
 import { SETTINGS_SECTIONS } from "./SettingsView";
 
-/** The page names that are gone. */
-const GONE_PAGES = ["Models", "Benchmark", "Speakers", "Obsidian", "Storage"] as const;
-
-/** The ways text names a page: "the Models page", "Settings, Models". */
+/** The gone page names `text` uses, in the shared table's forms ("the Models page", "Settings,
+ * Models", "see Models"), as whole words: no letter, digit or underscore right after. */
 function stalePageNames(text: string): string[] {
   const found: string[] = [];
-  for (const page of GONE_PAGES) {
-    for (const form of [`${page} page`, `Settings, ${page}`]) {
-      const at = new RegExp(`${form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+  for (const page of table.gone_pages) {
+    for (const form of table.forms.map((f) => f.replace("{page}", page))) {
+      const at = new RegExp(`${form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`);
       if (at.test(text)) found.push(form);
     }
   }
@@ -45,14 +45,13 @@ const SOURCES = import.meta.glob(
 
 describe("Settings page names", () => {
   it("finds a gone page in text and nothing in the pages that exist", () => {
-    expect(stalePageNames("Open Settings, Models to download them.")).toEqual(["Settings, Models"]);
-    expect(stalePageNames("Download it on the Models page.")).toEqual(["Models page"]);
-    expect(stalePageNames("Choose them on the Speakers page or in Settings, Storage.")).toEqual([
-      "Speakers page",
-      "Settings, Storage",
-    ]);
+    expect(table.forms).toHaveLength(3);
+    expect(table.cases.length).toBeGreaterThanOrEqual(7);
+    for (const c of table.cases) {
+      expect(stalePageNames(c.text), c.text).toEqual(c.found);
+    }
     for (const page of SETTINGS_SECTIONS) {
-      expect(stalePageNames(`Open Settings, ${page}. It is on the ${page} page.`)).toEqual([]);
+      expect(stalePageNames(`Open Settings, ${page}. It is on the ${page} page; see ${page}.`)).toEqual([]);
     }
     // Comments may keep history; shown text may not.
     expect(code("// was on the Models page\nconst x = 1;")).toBe("const x = 1;");
