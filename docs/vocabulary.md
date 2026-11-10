@@ -470,3 +470,66 @@ started.
 As in "Commands" above (the release example under the lane's target folder `C:\eb\lane-vocab`).
 `--score-ami` takes seconds and rewrites `docs/vocabulary/ami/`; a rerun's hypotheses can be
 checked against the committed `hyp_sha256` values.
+
+# The gated nudge on meeting speech (T12.15ca)
+
+T12.15c failed on insertions over breath, laughter and crosstalk. The owner (2026-11-11) asked
+for T12.15b's gated variant, built so that a bonus never turns blank into a word, to be measured
+the same way. Evaluation only; T12.15d ships the gated boost only if the verdict below passes.
+
+## The rule (written before measuring, 2026-11-11)
+
+Everything in this section was fixed and committed before any decode below was run. Nothing
+from T12.15c's results chose anything here beyond the variant, which the owner named.
+
+### What is the same as T12.15c
+
+The data (the five `ami-dev-ihm` meetings, oracle segments, outside words as one more unit per
+speaker), the model (`parakeet-tdt-0.6b-v2`, greedy TDT, `TranscribeOptions::live()`, on the
+CPU), the lists (`ne` the verdict list, `ne-all` and `rare` informational, the same seeds and
+distractors), the metrics, the guards G1-G4 with their limits and the verdict: **passes when
+G1, G2, G3 and G4 all pass for `ne` and its B-WER is strictly below the baseline's**. The tool
+is the same `vocab_eval` example; its list, scoring and guard code is not changed.
+
+### The one variant
+
+Boosting **gated, bonus 2** (`Gate::Gated`, beta 2.0), exactly as T12.15b ran it: when the
+unboosted best token is blank the logits are left alone, otherwise every boosted token of the
+current node gets +2. Nothing is tuned; no other bonus or gate is run.
+
+### The baseline
+
+T12.15c's decodes lived in that lane's `target/` and are gone, so they cannot be shown to be
+byte-identical inputs. The baseline is therefore **decoded again** in the same run as the
+variant, on the same model file (the manifest pin), options and segments, from the same pinned
+audio. The new baseline's per-segment hypothesis hashes are compared with T12.15c's committed
+`docs/vocabulary/ami/counts-baseline-ne.jsonl` and the number of differing segments is reported;
+it decides nothing (ONNX Runtime CPU results can differ with thread scheduling), and the guards
+are judged only against the baseline of this run.
+
+### Tooling changes, made before measuring
+
+- `--gate open|gated` on `--decode ami` and `--score-ami` (default `open`, T12.15c's run);
+  `--score-ami` refuses decodes whose meta file names another gate.
+- Every `counts-*.jsonl` row gains `words`, the hypothesis's word count after normalisation
+  (T12.15c review advisory), so the insertion count is checkable from the committed record.
+- `--score-ami` requires each decode file to hold exactly one row per decoded unit, no
+  duplicate, missing or unknown id (T12.15c review advisory); before, a stale or extra row was
+  ignored silently.
+- `--prior-report <dir>` reports how many baseline hashes differ from a committed report.
+
+### Commands
+
+```powershell
+cargo build --release -p earshot-runtime --example vocab_eval
+```
+
+```powershell
+target\release\examples\vocab_eval.exe --models $env:LOCALAPPDATA\Earshot\models --fixtures $env:LOCALAPPDATA\earshot-dev\fixtures --out target\vocab-eval-ami-gated --decode ami --gate gated --workers 4 --threads 4
+```
+
+```powershell
+target\release\examples\vocab_eval.exe --fixtures $env:LOCALAPPDATA\earshot-dev\fixtures --out target\vocab-eval-ami-gated --report docs\vocabulary\ami-gated --score-ami --gate gated --prior-report docs\vocabulary\ami
+```
+
+The committed record is word-free, as before: `docs/vocabulary/ami-gated/`.
