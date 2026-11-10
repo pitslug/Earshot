@@ -1479,6 +1479,74 @@ pub fn load_preview_on_hardware(
     }
 }
 
+/// A track's own Parakeet TDT session with its encoder made shareable, and a preview session that
+/// borrows that encoder ([`load_preview_sharing_encoder`]).
+pub struct SharedEncoderPair {
+    /// The track's session, loaded as [`load_parakeet`] loads it; its encoder calls now take the
+    /// lock too.
+    pub track: ParakeetTdt,
+    /// The preview's: the track's encoder, its own prediction network and joint on the preview's
+    /// background threads.
+    pub preview: ParakeetTdt,
+    /// The shared encoder, for its backend and user count.
+    pub encoder: earshot_onnx::parakeet::SharedEncoder,
+}
+
+/// Evaluation only (T12.3b, `live_lag --contention shared`): a track's session of the Parakeet TDT
+/// `model` on `accel` (as [`load_parakeet`] with `threads`), and a preview session that borrows its
+/// encoder through a lock ([`earshot_onnx::parakeet::SharedEncoder`]) instead of loading its own
+/// copy, with its own prediction network and joint on background threads as [`load_preview`]
+/// loads them. CUDA only: the CPU already shares weights (T9.1ma) and the NPU cannot (T12.4). The
+/// app, the CLI and [`crate::host`] never call it (pinned by
+/// `backends_preview_sharing_encoder_is_used_by_no_shipped_code`).
+///
+/// # Errors
+/// A backend other than CUDA, a model other than a Parakeet TDT one, a failed load or placement
+/// check, or a preview thread that cannot lower its priority.
+pub fn load_preview_sharing_encoder(
+    models: &ModelDir,
+    model: &str,
+    accel: Accelerator,
+    threads: Option<usize>,
+) -> Result<SharedEncoderPair, String> {
+    if accel != Accelerator::Cuda {
+        return Err("a shared encoder is evaluated on CUDA only".to_owned());
+    }
+    let Ok(AsrModel::Parakeet(parakeet)) = asr_model(model) else {
+        return Err("previews run on Parakeet only".to_owned());
+    };
+    let ParakeetTranscriber::Tdt(track) =
+        load_parakeet(models, parakeet, accel, threads).map_err(|e| e.to_string())?
+    else {
+        return Err("a shared encoder needs a Parakeet TDT model".to_owned());
+    };
+    let (track, encoder) = track.share_encoder();
+    let steps = SessionConfig {
+        intra_threads: Some(onnx_cpu_threads(cores(), 2)),
+        background: Some(earshot_onnx::ThreadStart(
+            crate::priority::lower_preview_pool_thread,
+        )),
+        ..session_config(accel).map_err(|e| e.to_string())?
+    };
+    let preview = ParakeetTdt::load_sharing(
+        &models.root().join(parakeet.dir),
+        &encoder,
+        &steps,
+        parakeet.name,
+        parakeet.english_only,
+    )
+    .map_err(|e| format!("{}: {e}", parakeet.name))?;
+    check_placement(&preview.backends(), accel.backend()).map_err(|e| e.to_string())?;
+    if crate::priority::preview_pool_failed() {
+        return Err("a preview thread could not lower its priority".to_owned());
+    }
+    Ok(SharedEncoderPair {
+        track,
+        preview,
+        encoder,
+    })
+}
+
 fn load_preview_session(
     models: &ModelDir,
     backend: &BackendInfo,

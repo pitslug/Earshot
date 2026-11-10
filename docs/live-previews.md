@@ -355,6 +355,47 @@ Judgements, not derived. Desktop, RTX 5080, Parakeet 0.6B v2 on CUDA, idle host 
 - **Point 5 fails:** sharing saves nothing worth having; nothing changes.
 - **Point 1 or 2 fails:** the run says nothing; find out why before judging.
 
+### The prototype (written after the rule)
+
+- `earshot_onnx::parakeet::SharedEncoder`, `ParakeetTdt::share_encoder` and `ParakeetTdt::load_sharing`: the encoder field of `ParakeetTdt` is its own session or a borrowed one; a model with its own encoder runs exactly the calls it ran before (the encoder call moved into `run_encoder`, unchanged), and a borrowing one takes the lock for each encoder call and counts how long it waited (`take_encoder_waits`).
+- `earshot_runtime::backends::load_preview_sharing_encoder` (evaluation only, CUDA only): the track's session as `load_parakeet` loads it, made shareable, and a preview borrowing its encoder, with its own prediction network and joint on the preview's background threads. No shipped code names any of these (`backends_preview_sharing_encoder_is_used_by_no_shipped_code`).
+- `live_lag --contention alone|own|shared` (CUDA only): loads the set-up, decodes a fixed window with the track and the preview (point 2's second half), warms every piece length up untimed, then decodes the reference track in 15 s pieces three times, 0.5 s apart, while a preview thread decodes a 12 s window moving 1 s at a time and waits the longer of 1 s and its own decode. It reports every real decode (`real_decodes[]`: `pass`, `piece`, `took_s`, `encoder_wait_s`, `words_sha256`), `real_took_s`, `real_encoder_wait_s`, the previews' decode times and waits, every session's placement and `encoder_users`, and this process's memory. Counts, times and hashes only.
+- Checked on the CPU only (no card run in this spike): `parakeet_tdt_shared_encoder_gives_the_same_words` (ignored, `ci` set) shows a borrowing model gives the same words as the one that shared it, alone and with both decoding at once on two threads, and the TDT smoke test still passes with the refactored encoder call.
+
+### Method (not yet run: the coordinator runs it on an idle host)
+
+A CUDA build of the example (`--features onnx-cuda`), the models folder holding sets `ci` and `cuda` and the CUDA files the app downloads, cuDNN as for any CUDA run (the AGENTS.md CUDA 13.4/13.5 rule if building from an agent shell). Beside each run, in a second shell, log the card once a second and stop it with Ctrl+C when the run ends:
+
+```powershell
+nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -l 1 | Tee-Object -FilePath target\live-lag\t123b-shared-1-smi.txt
+```
+
+(with the file name of the run beside it). Each set-up twice, interleaved so drift spreads evenly: alone, own, shared, shared, own, alone (`-1` and `-2` in the file names):
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --contention alone --out target\live-lag\t123b-alone-1.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --contention own --out target\live-lag\t123b-own-1.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --contention shared --out target\live-lag\t123b-shared-1.json
+```
+
+Then the same three in reverse order with `-2`. The added time of each real decode is its `took_s` minus `alone`'s for the same `pass` and `piece` (the same run number):
+
+```powershell
+$a = Get-Content target\live-lag\t123b-alone-1.json | ConvertFrom-Json; $s = Get-Content target\live-lag\t123b-shared-1.json | ConvertFrom-Json; $added = for ($i = 0; $i -lt $a.real_decodes.Count; $i++) { $s.real_decodes[$i].took_s - $a.real_decodes[$i].took_s }; $added | Sort-Object
+```
+
+What to read, by point: 1, `placements` (every entry `CUDAExecutionProvider`) and `encoder_users` 3 in `shared`; 2, `real_decodes[].words_sha256` equal to `alone`'s piece by piece and `fixed_window.preview_matches_track` true; 3, `real_encoder_wait_s.max` and the added times against `own`'s; 4, `previews.took_s.median`; 5, the largest reading in each `nvidia-smi` log, `shared` against `alone`. A point that holds in one run of a pair and not the other is reported as such, not averaged away. Reports and logs go to `docs/live-previews/t123b/`, counts and times only.
+
+### Provisional reading (before any measurement)
+
+Not a result. Point 5 should pass by construction (one encoder instead of two), and point 3 depends on how long one encoder call on a 12 s window takes on the card, which no report here isolates. If the spike passes, the replay task above is what can change a default.
+
 ## Re-measuring on a quiet host
 
 Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`

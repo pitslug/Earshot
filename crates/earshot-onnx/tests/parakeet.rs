@@ -206,3 +206,77 @@ fn parakeet_tdt_models_transcribe_the_smoke_clips() {
         }
     }
 }
+
+/// T12.3b (evaluation only): a model borrowing another's encoder through
+/// `ParakeetTdt::share_encoder` gives the same words as the one that shared it, both count their
+/// lock waits, and two threads decoding at once through the one encoder finish with the same
+/// words they give alone.
+#[test]
+#[ignore = "needs the ci model set (cargo xtask fetch-models --set ci): cargo test --release -p earshot-onnx --test parakeet -- --include-ignored"]
+fn parakeet_tdt_shared_encoder_gives_the_same_words() {
+    let dir = common::fetched(common::PARAKEET_TDT_110M_DIR, "ci");
+    let name = "parakeet-tdt_ctc-110m (TDT)";
+    let own = ParakeetTdt::load(&dir, &config(), name, true).expect("load");
+    let (mut track, encoder) = own.share_encoder();
+    let mut preview =
+        ParakeetTdt::load_sharing(&dir, &encoder, &config(), name, true).expect("load sharing");
+    assert_eq!(encoder.users(), 3, "the handle, the track and the preview");
+    assert_eq!(preview.backends()[0], encoder.backend());
+
+    let opts = TranscribeOptions::live();
+    let cancel = CancelToken::new();
+    let clips: Vec<MonoBuffer> = smoke()
+        .into_iter()
+        .take(4)
+        .map(|(_, a, _)| MonoBuffer::new(PIPELINE_RATE, a))
+        .collect();
+    let words = |asr: &mut ParakeetTdt, clip: &MonoBuffer| {
+        asr.transcribe(clip, &opts, &cancel)
+            .expect("transcribe")
+            .words()
+    };
+    let alone: Vec<_> = clips.iter().map(|c| words(&mut track, c)).collect();
+    assert!(
+        alone.iter().all(|w| !w.is_empty()),
+        "smoke clips have words"
+    );
+    let waits = track.take_encoder_waits();
+    assert_eq!(waits.len(), clips.len(), "one encoder call per short clip");
+    for (clip, want) in clips.iter().zip(&alone) {
+        assert_eq!(&words(&mut preview, clip), want, "the preview's words");
+    }
+    assert_eq!(preview.take_encoder_waits().len(), clips.len());
+
+    // Both at once: each thread gets the words it got alone.
+    let (track_words, preview_words) = std::thread::scope(|s| {
+        let a = s.spawn(|| {
+            (0..3)
+                .flat_map(|_| {
+                    clips
+                        .iter()
+                        .map(|c| words(&mut track, c))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        });
+        let b = s.spawn(|| {
+            (0..3)
+                .flat_map(|_| {
+                    clips
+                        .iter()
+                        .map(|c| words(&mut preview, c))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        });
+        (a.join().expect("track"), b.join().expect("preview"))
+    });
+    let want: Vec<_> = (0..3).flat_map(|_| alone.clone()).collect();
+    assert_eq!(track_words, want);
+    assert_eq!(preview_words, want);
+
+    // An own encoder records no waits.
+    let mut plain = ParakeetTdt::load(&dir, &config(), name, true).expect("load");
+    let _ = words(&mut plain, &clips[0]);
+    assert!(plain.take_encoder_waits().is_empty());
+}
