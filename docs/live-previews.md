@@ -319,6 +319,42 @@ cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -
 
 Reports and `nvidia-smi` logs go to `docs/live-previews/t123c/`, counts and times only.
 
+## One CUDA session for a track's transcription and previews (T12.3b, spike)
+
+ONNX Runtime's CUDA provider gives every session its own copy of the weights on the card (T9.1ma: "CUDA does not share"), so a track's own session and its preview session hold two copies of Parakeet 0.6B's encoder: about 3.7 GiB of graphics memory per preview session (9.1 against 12.8 GiB on the card, above). This spike asks whether one session can serve both. Evaluation only: nothing shipped changes, and what the app does with the answer is the owner's.
+
+### What ort and ONNX Runtime allow (researched 2026-11-10)
+
+- **A newer `ort` does not help.** The newest release is 2.0.0-rc.15 (crates.io, 2026-10-19; rc.14, which Earshot pins, is 2026-10-12). In both, `Session::run`, `run_with_options`, `run_binding` and `run_async` take `&mut self` (rc.14 `src/session/mod.rs`, rc.15 `src/session/run.rs`). The private `run_inner` takes `&self`, and its comment says ONNX Runtime's `Run` "is **not thread safe**" in practice whatever Microsoft says, that CUDA in particular crashes, and that the public functions stay `&mut self` until ONNX Runtime fixes it. `Session` is `Send + Sync`, citing microsoft/onnxruntime issue 114.
+- **ONNX Runtime documents the opposite.** The high-level design page (onnxruntime.ai/docs/reference/high-level-design.html) says "Multiple threads can invoke the Run() method on the same inference session object", and in issue 114 a maintainer says it is safe with no external synchronisation. Later comments there report concurrency bugs with an execution provider (TensorRT) fixed release by release. So the documentation and the binding's author disagree, and the author has the crash reports.
+- **How a CUDA session serves two threads** (ONNX Runtime `main`, read for this spike): `SessionState::AcquireDeviceStreamCollection` takes a stream collection out of a pool under `device_stream_pool_mutex_`, so concurrent `Run` calls get their own CUDA streams unless the provider uses one unified or user stream; the CUDA provider keeps a cuBLAS and cuDNN handle per thread (`PerThreadContext`, from a pool under a mutex), so each thread that runs the session adds its own handles and workspace on the card. Nothing in the provider serialises a whole `Run`; two `Run`s on two streams share the card's compute as two sessions already do.
+- **An upgrade to rc.15 costs more than it buys here.** Its notes list breaking changes Earshot touches: `ExecutionProviderLibrary::unregister` is gone (`earshot_onnx::qnn` calls it after a failed QNN registration), `ThreadManager` must be `Send + Sync` (`StartingThreads`, the background preview threads), and `with_external_initializer_file_in_memory` takes `Arc<[u8]>`. Its library slot is now `util/once_lock.rs` rather than `once_lock_std.rs`, so the rc.14 workaround may be unneeded or wrong. It fixes "over 30 instances of undefined behavior", which is a reason to upgrade on its own, as a separate task.
+
+### What a shared session looks like
+
+**A lock around the encoder alone, and no `unsafe`.** Parakeet TDT is three sessions: the encoder (`encoder.onnx` with the 2.27 GiB `encoder.weights`, run once per 30 s chunk) and the small prediction network and joint (run once per token). Only the encoder is worth sharing. A preview gets its own prediction network and joint and borrows the track's encoder through `Arc<Mutex<OnnxSession>>`; a `MutexGuard` gives `&mut Session`, so `Session::run` is called one thread at a time, exactly as ort asks, with no `unsafe` and nothing for a reviewer of FFI. The cost is the wait: a real decode that wants the encoder while a preview holds it waits for the rest of that one encoder run (a 12 s window), never for the whole preview (its token loop runs on its own sessions, unlocked). The earlier "No" above was for a lock around a whole `Transcriber` call on the CPU, 0.5-1.6 s.
+
+What it changes besides memory: the preview's encoder runs on the track's session, so its ONNX Runtime threads are the track's (normal priority), not the background ones; on CUDA they mostly wait for the card. The prediction network and joint stay on the preview's own background sessions. The CPU already shares weights (T9.1ma) and the NPU cannot (T12.4), so this is for CUDA only.
+
+**Truly concurrent `Run` on one session** would need ort-sys's raw `Run` through `unsafe`, against the binding author's crash reports, and would gain little: two streams on one card already share its compute today. Not prototyped.
+
+### The rule, written and committed 2026-11-10 before any code or measurement
+
+Judgements, not derived. Desktop, RTX 5080, Parakeet 0.6B v2 on CUDA, idle host (no other lane, build or ci; not while the owner is in a meeting). The measurement is `live_lag --contention` (below): a track's real decodes on one thread and previews at the app's cadence on another, under three set-ups on the same audio: `alone` (the track's session, no previews), `own` (today: the preview on its own CUDA session, loaded as the app loads it) and `shared` (the preview borrowing the track's encoder). A real decode's added time is its wall time minus the same piece's time in `alone`. The spike passes only if every point holds:
+
+1. **Where it ran.** Every session reports CUDA from ONNX Runtime's placement, and in `shared` the preview reports that it borrowed the track's encoder. Otherwise the run says nothing about this design.
+2. **The same words.** Every real decode's words (text and times) in `own` and `shared` match `alone`'s piece by piece, and the shared preview's decode of a fixed window matches the track session's decode of it.
+3. **No preview delays a real decode by more than a stated bound.** In `shared`: the longest a real decode waited for the encoder lock at most 250 ms; the median added time at most `own`'s median plus 30 ms; the largest added time at most `own`'s largest plus 250 ms. Why 250 ms: a whole preview decode of a 12 s window takes 0.1-0.18 s on CUDA (preview rtf 0.008-0.015, above) and the encoder is part of it, so 250 ms is one encoder run with room; it is a quarter of the 1 s preview interval, under 2% of the settled text's 14 s median lag, and an eighth of the +2 s catch-up that T12.3a and T12.3c allowed. Why 30 ms: about a fifth of a 15 s real decode on CUDA (0.165 s at rtf 0.011), where run-to-run noise sits.
+4. **Previews stay worth having.** In `shared`, the median preview decode at most 1 s (the interval) and at most 1.5 times `own`'s.
+5. **Card memory is saved.** The card's peak (`nvidia-smi`, once a second) in `shared` at most `alone`'s plus 0.75 GiB, against about 3.7 GiB for `own` today. The 0.75 GiB covers the preview's prediction network and joint and a second thread's cuBLAS and cuDNN workspace (a judgement).
+
+**What the result means** (the owner decides; nothing ships from the spike):
+
+- **All pass:** one session per track is possible. A follow-up task wires it into the live session (evaluation first) and is judged by a replay rule like T12.3c's (stored words identical, real decode rtf at most 1.5 times, catch-up at most +2 s, on-screen median at most 3 s, the card's peak). If that passes, the owner chooses between default on (CUDA previews borrow the track's encoder; `PREVIEW_MIN_CARD_MEMORY` re-judged, so 12-14 GiB cards keep previews on the card instead of T12.3c's CPU, and Everyone's mic preview could go back to CUDA instead of T12.3a's CPU), a setting, or default off.
+- **Memory passes but point 3 or 4 fails:** default off, no setting proposed: T12.3a and T12.3c already keep previews off the card where it is short.
+- **Point 5 fails:** sharing saves nothing worth having; nothing changes.
+- **Point 1 or 2 fails:** the run says nothing; find out why before judging.
+
 ## Re-measuring on a quiet host
 
 Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`
