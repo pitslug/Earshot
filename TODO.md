@@ -106,3 +106,7 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-runtime/src/summary.rs:1439: a transcript edit during a summary run makes `store_summary` conflict and the run is discarded; block line edits while a summary job runs, as summary edits already are. T12.16 review.
 - crates/earshot-runtime/src/post/mod.rs:1689: `final_segments` leaves out kept edited rows, and a kept speaker row keeps its old role whatever this run's track policy says. T12.16 review.
 - packages/ui/src/detail/MeetingDetailView.tsx (`Editable`): the due-date editor has no visible label. apps/desktop/src-tauri/src/detail.rs (`edit_error`): `InvalidTitle(Empty)` copy is unreachable. T12.16.
+- crates/earshot-llm/src/claude_code.rs:765: an unreadable `--help` silently drops the chosen effort for that summary; report it through the run. T12.18 review.
+- crates/earshot-llm/src/claude_code.rs:799: the `--help` child ignores the cancel token, so a cancelled summary can wait up to 20 s. T12.18 review.
+- packages/ui/src/settings/SummariesPage.tsx:538: Save model is enabled with an empty Other name, which stores the CLI's default. T12.18 review.
+- packages/ui/src/ipc/mockSummaries.ts:53: `EFFORT_NEEDS_NEWER` copied from Rust with no pin; crates/earshot-llm/src/codex.rs:139 `DISABLED_FEATURES` pinned to 0.155.1, not rechecked on 0.166.0; the CLI cannot pass an effort; the stored model name does not record the effort. T12.18.

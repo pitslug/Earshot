@@ -50,6 +50,11 @@ export const MAX_VOCABULARY_WORD_CHARS = 40;
 /** The longest Dictionary in all (`earshot_core::prompt::MAX_VOCABULARY_CHARS`). */
 export const MAX_VOCABULARY_CHARS = 1000;
 
+/** What the page says when the installed Claude Code has no `--effort` (the app's copy,
+ * `summaries::EFFORT_NEEDS_NEWER`, T12.18). */
+export const CLAUDE_CODE_EFFORT_NEEDS_NEWER =
+  "Choosing the effort needs a newer Claude Code. This one runs at its own default effort; update Claude Code to choose it.";
+
 /** Claude Code's status on each sample machine (the app's copy, `summaries::claude_code_status`). */
 export const CLAUDE_CODE_STATUS: Record<SampleMachine, ClaudeCodeStatusView> = {
   desktop: {
@@ -57,12 +62,14 @@ export const CLAUDE_CODE_STATUS: Record<SampleMachine, ClaudeCodeStatusView> = {
     version: "2.1.290 (Claude Code)",
     message: "Claude Code 2.1.290 is installed and signed in.",
     fix: null,
+    effort_note: null,
   },
   surface: {
     state: "NotSignedIn",
     version: "2.1.290 (Claude Code)",
     message: "Claude Code 2.1.290 is installed but not signed in.",
     fix: "Open Claude Code and sign in (in a terminal, run claude, then /login), then check again.",
+    effort_note: null,
   },
 };
 
@@ -72,6 +79,7 @@ export const CLAUDE_CODE_NOT_INSTALLED: ClaudeCodeStatusView = {
   version: null,
   message: "Claude Code is not installed on this computer.",
   fix: "Install Claude Code and sign in to it, then check again.",
+  effort_note: null,
 };
 
 /** Codex's status when it is not installed (the app's copy, `summaries::codex_status`). */
@@ -267,6 +275,7 @@ export function createSummariesMock(
     model: "",
     live: false,
     claude_model: "",
+    claude_effort: null,
     codex_model: "",
     ...data.settings,
   };

@@ -77,6 +77,7 @@ export type {
   ClaudeCodeStatusView,
   CodexState,
   CodexStatusView,
+  EffortChoice,
   ProviderChoice,
   SummarySettingsValue,
   SummarySettingsView,

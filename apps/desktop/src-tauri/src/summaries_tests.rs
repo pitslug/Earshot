@@ -34,6 +34,7 @@ fn value(
         model: model.into(),
         live: false,
         claude_model: String::new(),
+        claude_effort: None,
         codex_model: String::new(),
     }
 }
@@ -57,8 +58,13 @@ fn codex_installed(sign_in: CodexSignIn) -> FixedCodex {
     })
 }
 
-/// Claude Code installed with `sign_in`.
+/// Claude Code installed with `sign_in`, its help listing `--effort`.
 fn claude_installed(sign_in: SignIn) -> FixedClaudeCode {
+    claude_installed_with(sign_in, Some(true))
+}
+
+/// Claude Code installed with `sign_in`; `accepts_effort` as its help answered.
+fn claude_installed_with(sign_in: SignIn, accepts_effort: Option<bool>) -> FixedClaudeCode {
     FixedClaudeCode(ClaudeCodeStatus::Installed {
         cli: earshot_runtime::claude_code::ClaudeCli {
             program: "C:\\fake\\claude.exe".into(),
@@ -66,6 +72,7 @@ fn claude_installed(sign_in: SignIn) -> FixedClaudeCode {
         },
         version: Some("2.1.290 (Claude Code)".into()),
         sign_in,
+        accepts_effort,
     })
 }
 
@@ -87,6 +94,7 @@ fn summaries_settings_default_and_round_trip() {
             model: String::new(),
             live: false,
             claude_model: String::new(),
+            claude_effort: None,
             codex_model: String::new(),
         }
     );
@@ -756,6 +764,66 @@ fn summaries_claude_code_choice_round_trips_with_its_model() {
         "opus",
         "nothing stored"
     );
+}
+
+#[test]
+fn summaries_claude_code_effort_round_trips_as_a_choice() {
+    let dir = TempDir::new("summaries-claude-code-effort");
+    let svc = services(&dir);
+    claude_code(&svc, "opus");
+    assert_eq!(settings_view(&svc).unwrap().value.claude_effort, None);
+    for (choice, word) in [
+        (EffortChoice::Low, "Low"),
+        (EffortChoice::Medium, "Medium"),
+        (EffortChoice::High, "High"),
+        (EffortChoice::ExtraHigh, "ExtraHigh"),
+        (EffortChoice::Max, "Max"),
+    ] {
+        let mut v = settings_view(&svc).unwrap().value;
+        v.claude_effort = Some(choice);
+        let stored = set_settings(&svc, &v).unwrap();
+        assert_eq!(stored.value.claude_effort, Some(choice));
+        assert_eq!(settings_view(&svc).unwrap(), stored);
+        assert!(
+            json(&stored).contains(&format!("\"claude_effort\":\"{word}\"")),
+            "{}",
+            json(&stored)
+        );
+        // The model is kept; the effort changes nothing else.
+        assert_eq!(stored.value.claude_model, "opus");
+    }
+    let mut v = settings_view(&svc).unwrap().value;
+    v.claude_effort = None;
+    assert_eq!(set_settings(&svc, &v).unwrap().value.claude_effort, None);
+    // A stored word this version does not know reads as the default, reported.
+    svc.store()
+        .set_local_value("settings/summary-claude-code-effort", b"ultra")
+        .unwrap();
+    let v = settings_view(&svc).unwrap();
+    assert_eq!(v.value.claude_effort, None);
+    assert_eq!(v.unknown.len(), 1, "{:?}", v.unknown);
+}
+
+#[test]
+fn summaries_claude_code_status_says_when_effort_needs_a_newer_claude_code() {
+    let signed_in = || SignIn::SignedIn {
+        method: Some("claude.ai".into()),
+    };
+    let s = claude_code_status(&claude_installed_with(signed_in(), Some(true)));
+    assert_eq!(s.effort_note, None);
+    // The help could not be read: nothing is claimed.
+    let s = claude_code_status(&claude_installed_with(signed_in(), None));
+    assert_eq!(s.effort_note, None);
+    let s = claude_code_status(&FixedClaudeCode(ClaudeCodeStatus::NotInstalled));
+    assert_eq!(s.effort_note, None);
+    // An older Claude Code: the page says effort needs a newer one.
+    let s = claude_code_status(&claude_installed_with(signed_in(), Some(false)));
+    let note = s.effort_note.expect("a note");
+    assert!(note.contains("newer Claude Code"), "{note}");
+    assert!(!note.contains('\u{2014}'), "{note}");
+    assert!(note.ends_with('.'), "{note}");
+    // The sign-in state reads as before.
+    assert_eq!(s.state, ClaudeCodeState::SignedIn);
 }
 
 #[test]

@@ -204,10 +204,17 @@ describe("Settings", () => {
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     checkPage();
     await s.user.click(screen.getByRole("radio", { name: /^Claude \(through Claude Code\)/ }));
-    await screen.findByRole("group", { name: "Claude through Claude Code" });
+    const claude = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    checkPage();
+    // The model and effort lists apply at once; only Other's typed name has a Save button.
+    await s.user.selectOptions(within(claude).getByRole("combobox", { name: "Model" }), "Other");
+    within(claude).getByRole("button", { name: "Save model" });
     checkPage();
     await s.user.click(screen.getByRole("radio", { name: /^OpenAI \(through Codex\)/ }));
-    await screen.findByRole("group", { name: "OpenAI through Codex" });
+    const codex = await screen.findByRole("group", { name: "OpenAI through Codex" });
+    checkPage();
+    await s.user.selectOptions(within(codex).getByRole("combobox", { name: "Model" }), "Other");
+    within(codex).getByRole("button", { name: "Save model" });
     checkPage();
     expect([...seen].sort()).toEqual(["Add", "Save", "Save key", "Save model", "Use this endpoint"]);
   });

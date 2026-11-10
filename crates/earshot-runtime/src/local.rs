@@ -149,6 +149,8 @@ pub(crate) enum DeviceRecord {
     SummaryClaudeCodeModel,
     /// `settings/summary-codex-model`: the model Codex is asked for (T7.4gc).
     SummaryCodexModel,
+    /// `settings/summary-claude-code-effort`: the effort Claude Code is asked for (T12.18).
+    SummaryClaudeCodeEffort,
     /// `settings/audio-retention`: how long recordings are kept (T7.4k).
     AudioRetention,
     /// `settings/obsidian-vault`: the Obsidian vault folder (T7.4h).
@@ -205,6 +207,7 @@ impl DeviceRecord {
         DeviceRecord::SummaryEndpointModel,
         DeviceRecord::SummaryClaudeCodeModel,
         DeviceRecord::SummaryCodexModel,
+        DeviceRecord::SummaryClaudeCodeEffort,
         DeviceRecord::AudioRetention,
         DeviceRecord::ObsidianVault,
         DeviceRecord::ObsidianFolder,
@@ -246,6 +249,9 @@ impl DeviceRecord {
                     crate::summary_settings::SUMMARY_CLAUDE_CODE_MODEL_KEY
                 }
                 DeviceRecord::SummaryCodexModel => crate::summary_settings::SUMMARY_CODEX_MODEL_KEY,
+                DeviceRecord::SummaryClaudeCodeEffort => {
+                    crate::summary_settings::SUMMARY_CLAUDE_CODE_EFFORT_KEY
+                }
                 DeviceRecord::AudioRetention => crate::retention::AUDIO_RETENTION_KEY,
                 DeviceRecord::ObsidianVault => crate::export_settings::VAULT_KEY,
                 DeviceRecord::ObsidianFolder => crate::export_settings::FOLDER_KEY,

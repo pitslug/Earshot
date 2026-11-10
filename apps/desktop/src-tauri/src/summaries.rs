@@ -12,8 +12,8 @@ use earshot_runtime::claude_code::{ClaudeCodeProbe, ClaudeCodeStatus, SignIn};
 use earshot_runtime::codex::{CodexProbe, CodexSignIn, CodexStatus};
 use earshot_runtime::host::LIVE_SUMMARIES_NEED_LOCAL;
 use earshot_runtime::summary_settings::{
-    ANTHROPIC_DEFAULT_URL, ApiKeyError, EndpointProvider, SummarySettings, SummarySettingsError,
-    SummaryWriter, set_summary_settings, summary_settings,
+    ANTHROPIC_DEFAULT_URL, ApiKeyError, Effort, EndpointProvider, SummarySettings,
+    SummarySettingsError, SummaryWriter, set_summary_settings, summary_settings,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -83,6 +83,43 @@ impl ProviderChoice {
     }
 }
 
+/// How hard Claude Code works on a summary (T12.18): `--effort low|medium|high|xhigh|max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum EffortChoice {
+    /// `low`.
+    Low,
+    /// `medium`.
+    Medium,
+    /// `high`.
+    High,
+    /// `xhigh`.
+    ExtraHigh,
+    /// `max`.
+    Max,
+}
+
+impl EffortChoice {
+    fn of(e: Effort) -> Self {
+        match e {
+            Effort::Low => Self::Low,
+            Effort::Medium => Self::Medium,
+            Effort::High => Self::High,
+            Effort::ExtraHigh => Self::ExtraHigh,
+            Effort::Max => Self::Max,
+        }
+    }
+
+    fn effort(self) -> Effort {
+        match self {
+            Self::Low => Effort::Low,
+            Self::Medium => Effort::Medium,
+            Self::High => Effort::High,
+            Self::ExtraHigh => Effort::ExtraHigh,
+            Self::Max => Effort::Max,
+        }
+    }
+}
+
 /// The Summaries page settings as the UI sends and reads them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SummarySettingsValue {
@@ -98,6 +135,8 @@ pub struct SummarySettingsValue {
     pub live: bool,
     /// The model Claude Code is asked for ("" for Claude Code's own default).
     pub claude_model: String,
+    /// The effort Claude Code is asked for (`null` for Claude Code's own default; T12.18).
+    pub claude_effort: Option<EffortChoice>,
     /// The model Codex is asked for ("" for Codex's own default).
     pub codex_model: String,
 }
@@ -111,6 +150,7 @@ impl SummarySettingsValue {
             model: s.model.clone(),
             live: s.live,
             claude_model: s.claude_model.clone(),
+            claude_effort: s.claude_effort.map(EffortChoice::of),
             codex_model: s.codex_model.clone(),
         }
     }
@@ -123,6 +163,7 @@ impl SummarySettingsValue {
             model: self.model.clone(),
             live: self.live,
             claude_model: self.claude_model.clone(),
+            claude_effort: self.claude_effort.map(EffortChoice::effort),
             codex_model: self.codex_model.clone(),
         }
     }
@@ -272,17 +313,26 @@ pub struct ClaudeCodeStatusView {
     pub message: String,
     /// What to do, when something is needed.
     pub fix: Option<String>,
+    /// Why the effort choice does nothing with this Claude Code (its `--help` lists no
+    /// `--effort`), `null` when it works or could not be told (T12.18).
+    pub effort_note: Option<String>,
 }
 
+/// What the page says when the installed Claude Code has no `--effort` (T12.18).
+pub const EFFORT_NEEDS_NEWER: &str = "Choosing the effort needs a newer Claude Code. This one runs at its own default effort; update Claude Code to choose it.";
+
 /// The status `probe` reports, as the page shows it. Runs child processes (`claude
-/// --version`, `claude auth status`; never a sign-in): call it off the UI thread and without
-/// the store lock.
+/// --version`, `claude auth status`, `claude --help`; never a sign-in): call it off the UI
+/// thread and without the store lock.
 #[must_use]
 pub fn claude_code_status(probe: &dyn ClaudeCodeProbe) -> ClaudeCodeStatusView {
-    let (state, version) = match probe.status() {
-        ClaudeCodeStatus::NotInstalled => (ClaudeCodeState::NotInstalled, None),
+    let (state, version, accepts_effort) = match probe.status() {
+        ClaudeCodeStatus::NotInstalled => (ClaudeCodeState::NotInstalled, None, None),
         ClaudeCodeStatus::Installed {
-            version, sign_in, ..
+            version,
+            sign_in,
+            accepts_effort,
+            ..
         } => (
             match sign_in {
                 SignIn::SignedIn { .. } => ClaudeCodeState::SignedIn,
@@ -290,6 +340,7 @@ pub fn claude_code_status(probe: &dyn ClaudeCodeProbe) -> ClaudeCodeStatusView {
                 SignIn::Unknown(_) => ClaudeCodeState::Unknown,
             },
             version,
+            accepts_effort,
         ),
     };
     let name = match version.as_deref().and_then(|v| v.split_whitespace().next()) {
@@ -318,6 +369,7 @@ pub fn claude_code_status(probe: &dyn ClaudeCodeProbe) -> ClaudeCodeStatusView {
         version,
         message,
         fix: fix.map(str::to_owned),
+        effort_note: (accepts_effort == Some(false)).then(|| EFFORT_NEEDS_NEWER.to_owned()),
     }
 }
 
