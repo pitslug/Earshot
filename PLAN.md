@@ -1619,6 +1619,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.13 Keep a meeting's summary on this computer
   - deps: T7.4g
+  - decision (2026-11-10, the owner): the switch is set only when a meeting starts, never later and never during it; a local meeting may later be switched to the remote writer (local -> remote, with a confirm, nothing sent until Re-summarise), never the other way, so no remote summary ever exists on a kept-local meeting.
   - do: the owner: a "keep this local" switch when a meeting starts and during it, because the summary writer is one global setting and some meetings should never leave the computer. It is stored per meeting, device-locally, and read wherever a summary starts (after the meeting and on re-summarise), with no network client built for such a meeting. Without a local summary model it skips the summary with a banner and never falls back to a remote writer; a record that cannot be read counts as local. Decide with the owner whether switching it off later is allowed, and how an existing remote summary reads when it is switched on. Reviewer required: privacy.
   - accept: `cargo test -p earshot-runtime summary`; `cargo test -p earshot-desktop --bin earshot meeting`; `cmd /c pnpm --filter @earshot/ui test`; a test that a kept-local meeting opens no connection with a remote writer set (audit log empty); screenshot light and dark
 
@@ -1634,6 +1635,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.16 Edit a meeting's title, transcript and summary
   - deps: T7.3
+  - decision (2026-11-10, the owner): a re-transcribe keeps edited segments and says so in a warning; an edit to the transcript marks the summary out of date (as re-transcribe does), sending nothing by itself.
   - do: the owner: correct a title and fix words in the transcript or summary. Today only speakers can be edited. Edits go through `edit::write`; an edit to a transcript segment keeps its id and times so citations still work, and its word times stay honest about what changed. Decide with the owner what a re-transcribe does to edited text (keep, warn or replace) and whether a changed transcript marks the summary out of date. A replaced summary keeps today's undo. Exports follow the edited text.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
 
