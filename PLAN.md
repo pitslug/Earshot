@@ -1540,15 +1540,20 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner, 2026-11-08: when transcription runs on CUDA and the card cannot take the mic track's preview session (`previews_refused_second`), Everyone runs that session on the CPU with shared weights (T9.1md) instead of falling back to other people only, within the CPU memory limit (`PREVIEW_BOTH_MIN_MEMORY`). Automatic, no new setting; the General page note says where it runs. Write the rule for "the main transcript does not slow" before measuring and commit it, then measure on the desktop with `live_lag --memory`.
   - accept: `cargo test -p earshot-runtime preview`; `cargo test -p earshot-desktop --bin earshot preview`; the rule and measurements in docs/live-previews.md
 
-- [ ] T12.3b One CUDA session for a track's transcription and previews (spike)
+- [x] T12.3b One CUDA session for a track's transcription and previews (spike)
   - deps: T12.3
-  - status (2026-11-10): rule committed first (ca9f310); evaluation-only prototype merged (one encoder shared through a Mutex, no unsafe; ort rc.15 does not help), reviewed clear. Left: the measurement on an idle desktop (`live_lag --contention`), then the owner's choice.
+  - status (2026-11-11): rule committed first (ca9f310); evaluation-only prototype merged (one encoder shared through a Mutex, no unsafe; ort rc.15 does not help), reviewed clear; measured on an idle desktop, all five points pass in both runs (lock wait at most 43 ms, card 0.59 GiB over alone, about 3.1 GiB less than a separate preview session). Under the rule a replay follow-up comes next (T12.3d); no shipped change.
   - do: the owner, 2026-11-08: ONNX Runtime's CUDA provider gives every session its own copy of the weights on the card. Find whether one session can serve both: first whether a newer `ort` lets `Session::run` take `&self`, else scope a minimal unsafe wrapper over the C API's `Run` (reviewer required). Write the rule (no preview delays a real decode by more than a stated bound) before measuring; measure card memory and how long real decodes wait. The result decides default on, default off or a setting (the owner). No shipped change without the owner.
   - accept: the rule, findings and numbers in docs/live-previews.md
 
-- [ ] T12.3c Provisional words on the CPU when the graphics card is too small
+- [ ] T12.3d Shared CUDA encoder on whole meetings (follow-up to T12.3b)
+  - deps: T12.3b
+  - do: T12.3b's shared encoder passed its rule on contention runs (docs/live-previews.md). Measure it on whole replays the way T12.3c was (bundled and continuous, off / on / everyone, stored words, main rtf and catch-up, on-screen lag, private and card memory), with a rule written and committed before measuring, on an idle desktop. Evaluation only: the result goes to the owner, who chooses default on (perhaps lowering `PREVIEW_MIN_CARD_MEMORY`), a setting or default off.
+  - accept: the rule and measurements in docs/live-previews.md
+
+- [x] T12.3c Provisional words on the CPU when the graphics card is too small (rule failed point 4: Other people only 3.03 s against 3 s; refused again, as the rule says; owner to decide whether to accept)
   - deps: T12.3a
-  - status (2026-11-10): rule committed first (36e7055), code merged and reviewed clear; tests pass in the lane. Left: the rule's measurements on an idle desktop, then the owner's answer on the automatic memory limit beside a small card (12 GiB CPU vs 20 GiB CUDA). Not done until measured.
+  - status (2026-11-11): measured on an idle desktop (docs/live-previews.md, T12.3c Result): points 1, 2, 3 and 5 pass; point 4 fails (far-end on-screen median 3.03 s for Other people only and 3.53 s for Everyone on bundled audio, against 3 s). Under the rule the first session beside a small card is refused again; the tooling stays. Open for the owner: accept the 30 ms miss (as T12.3a's 5 ms was), and the 12 vs 20 GiB limit.
   - do: the owner, 2026-11-09: with transcription on CUDA and a card under `PREVIEW_MIN_CARD_MEMORY`, `previews_refused` refuses every preview today. Run the preview sessions on the CPU with shared weights instead (the far end's, and under Everyone your own as in T12.3a), within the CPU memory limits (`PREVIEW_MIN_MEMORY`, `PREVIEW_BOTH_MIN_MEMORY`), and say so on the General page (replacing `NOTE_CARD`). Automatic, no new setting. Write the rule (where each session ran, identical stored words, the main transcript does not slow, on-screen lag, memory) and commit it before measuring; measure on the desktop with `live_lag --memory`, with the card limit simulated through the hardware the rule reads.
   - accept: `cargo test -p earshot-runtime preview`; `cargo test -p earshot-desktop --bin earshot preview`; the rule and measurements in docs/live-previews.md
 

@@ -11,9 +11,7 @@ use earshot_hardware::Hardware;
 use earshot_store::Store;
 
 use crate::RuntimeError;
-use crate::backends::{
-    Accelerator, PREVIEW_MIN_MEMORY, preview_backend, previews_refused, second_preview_backend,
-};
+use crate::backends::{Accelerator, PREVIEW_MIN_MEMORY, previews_refused, second_preview_backend};
 use crate::local::DeviceRecord;
 use earshot_core::asr::BackendKind;
 
@@ -96,10 +94,8 @@ pub const NOTE_ON_BELOW_LIMIT: &str =
     "This computer has less than 12 GB of memory, so meetings may run slower with this on.";
 /// No session can run them: the NPU.
 pub const NOTE_NPU: &str = "Not available on this computer's NPU yet.";
-/// Transcription on the graphics card, which has no room for their session: they run on the
-/// processor (T12.3c).
-pub const NOTE_CARD_PROCESSOR: &str =
-    "Your graphics card has too little memory for provisional words, so they run on the processor.";
+/// No session can run them: the card.
+pub const NOTE_CARD: &str = "Your graphics card has too little memory for this.";
 /// Everyone chosen, and no room for the second session.
 pub const NOTE_EVERYONE_MEMORY: &str = "This computer shows them for the other people only: it needs more memory to run them for you too.";
 /// Everyone chosen with transcription on the graphics card: the user's own words run on the
@@ -114,51 +110,42 @@ pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardwar
         Accelerator::Cuda => BackendKind::Cuda,
         Accelerator::Cpu | Accelerator::Vulkan => BackendKind::Cpu,
     };
-    // Refused even when asked for: nothing a user's choice could change. Of the backends a lead
-    // maps to, only the NPU's refusal is one a choice cannot lift.
-    let Ok(first) = preview_backend(backend, hardware, PreviewChoice::On) else {
+    // Refused even when asked for: nothing a user's choice could change.
+    if previews_refused(backend, hardware, PreviewChoice::On).is_some() {
+        let note = if backend == BackendKind::Qnn {
+            NOTE_NPU
+        } else {
+            NOTE_CARD
+        };
         return PreviewPage {
             shown: PreviewSetting::Off,
             can_change: false,
-            note: Some(NOTE_NPU),
+            note: Some(note),
         };
-    };
-    // T12.3c: a card too small for their session moves them to the processor.
-    let card_note = (first != backend).then_some(NOTE_CARD_PROCESSOR);
+    }
     let below_limit = hardware.total_memory.is_none_or(|m| m < PREVIEW_MIN_MEMORY);
     let (shown, note) = match choice {
         PreviewChoice::Off => (PreviewSetting::Off, None),
         PreviewChoice::On => (
             PreviewSetting::OtherPeople,
-            if below_limit {
-                Some(NOTE_ON_BELOW_LIMIT)
-            } else {
-                card_note
-            },
+            below_limit.then_some(NOTE_ON_BELOW_LIMIT),
         ),
         PreviewChoice::Everyone => {
             let note = match second_preview_backend(backend, hardware, choice) {
-                Ok(_) if card_note.is_some() => card_note,
                 Ok(second) if second != backend => Some(NOTE_EVERYONE_PROCESSOR),
                 Ok(_) => below_limit.then_some(NOTE_ON_BELOW_LIMIT),
                 Err(_) => Some(NOTE_EVERYONE_MEMORY),
             };
             (PreviewSetting::Everyone, note)
         }
-        PreviewChoice::Automatic => {
+        PreviewChoice::Automatic => (
             if previews_refused(backend, hardware, choice).is_none() {
-                (
-                    PreviewSetting::OtherPeople,
-                    if below_limit {
-                        Some(NOTE_DEFAULT_OFF)
-                    } else {
-                        card_note
-                    },
-                )
+                PreviewSetting::OtherPeople
             } else {
-                (PreviewSetting::Off, below_limit.then_some(NOTE_DEFAULT_OFF))
-            }
-        }
+                PreviewSetting::Off
+            },
+            below_limit.then_some(NOTE_DEFAULT_OFF),
+        ),
     };
     PreviewPage {
         shown,
@@ -255,98 +242,21 @@ mod tests {
     }
 
     #[test]
-    fn preview_on_cannot_override_the_npu_or_a_model_without_them() {
+    fn preview_on_cannot_override_the_npu_the_card_or_a_model_without_them() {
         let big = machine(Some(64 * GIB), Some(16 * GIB));
+        let small_card = machine(Some(64 * GIB), Some(8 * GIB));
         assert!(previews_refused(BackendKind::Qnn, &big, PreviewChoice::On).is_some());
         assert!(previews_refused(BackendKind::Vulkan, &big, PreviewChoice::On).is_some());
+        assert!(previews_refused(BackendKind::Cuda, &small_card, PreviewChoice::On).is_some());
         let npu = preview_page(PreviewChoice::On, Accelerator::Qnn, &big);
         assert_eq!(
             (npu.shown, npu.can_change, npu.note),
             (PreviewSetting::Off, false, Some(NOTE_NPU))
         );
-    }
-
-    /// T12.3c: a graphics card too small for a preview session no longer turns them off: they run
-    /// on the processor, and the page says so for every choice that shows them.
-    #[test]
-    fn preview_beside_a_small_card_runs_on_the_processor_and_says_so() {
-        for card in [Some(8 * GIB), Some(PREVIEW_MIN_CARD_MEMORY - 1), None] {
-            let m = machine(Some(64 * GIB), card);
-            assert_eq!(
-                previews_refused(BackendKind::Cuda, &m, PreviewChoice::On),
-                None
-            );
-            for choice in [
-                PreviewChoice::Automatic,
-                PreviewChoice::On,
-                PreviewChoice::Everyone,
-            ] {
-                let page = preview_page(choice, Accelerator::Cuda, &m);
-                assert!(page.can_change, "{choice:?} {card:?}");
-                assert_eq!(page.note, Some(NOTE_CARD_PROCESSOR), "{choice:?} {card:?}");
-                assert_ne!(page.shown, PreviewSetting::Off, "{choice:?} {card:?}");
-            }
-            assert_eq!(
-                preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &m).shown,
-                PreviewSetting::Everyone
-            );
-            assert_eq!(
-                preview_page(PreviewChoice::Off, Accelerator::Cuda, &m),
-                PreviewPage {
-                    shown: PreviewSetting::Off,
-                    can_change: true,
-                    note: None
-                }
-            );
-        }
-        // A card with room keeps them on the card: no note.
-        let big = machine(Some(64 * GIB), Some(PREVIEW_MIN_CARD_MEMORY));
+        let card = preview_page(PreviewChoice::On, Accelerator::Cuda, &small_card);
         assert_eq!(
-            preview_page(PreviewChoice::On, Accelerator::Cuda, &big).note,
-            None
-        );
-    }
-
-    /// T12.3c: beside a small card the CPU's memory limit applies, with the CPU's notes.
-    #[test]
-    fn preview_beside_a_small_card_keeps_the_cpus_memory_notes() {
-        let small_card = Some(8 * GIB);
-        let below = machine(Some(PREVIEW_MIN_MEMORY - 1), small_card);
-        assert_eq!(
-            preview_page(PreviewChoice::Automatic, Accelerator::Cuda, &below),
-            PreviewPage {
-                shown: PreviewSetting::Off,
-                can_change: true,
-                note: Some(NOTE_DEFAULT_OFF)
-            }
-        );
-        assert_eq!(
-            preview_page(PreviewChoice::On, Accelerator::Cuda, &below),
-            PreviewPage {
-                shown: PreviewSetting::OtherPeople,
-                can_change: true,
-                note: Some(NOTE_ON_BELOW_LIMIT)
-            }
-        );
-        let no_room_for_both = machine(Some(PREVIEW_BOTH_MIN_MEMORY - 1), small_card);
-        assert_eq!(
-            preview_page(
-                PreviewChoice::Everyone,
-                Accelerator::Cuda,
-                &no_room_for_both
-            )
-            .note,
-            Some(NOTE_EVERYONE_MEMORY)
-        );
-        // At the CPU's limit (below CUDA's) they run by default.
-        let at_limit = machine(Some(PREVIEW_MIN_MEMORY), small_card);
-        assert_eq!(
-            preview_page(PreviewChoice::Automatic, Accelerator::Cuda, &at_limit),
-            PreviewPage {
-                shown: PreviewSetting::OtherPeople,
-                can_change: true,
-                note: Some(NOTE_CARD_PROCESSOR)
-            }
+            (card.shown, card.can_change, card.note),
+            (PreviewSetting::Off, false, Some(NOTE_CARD))
         );
     }
 
@@ -482,8 +392,9 @@ mod tests {
     }
 
     #[test]
-    fn preview_everyone_cannot_override_the_npu() {
+    fn preview_everyone_cannot_override_the_npu_or_the_card() {
         let big = machine(Some(64 * GIB), Some(16 * GIB));
+        let small_card = machine(Some(64 * GIB), Some(8 * GIB));
         let npu = preview_page(PreviewChoice::Everyone, Accelerator::Qnn, &big);
         assert_eq!(
             npu,
@@ -491,6 +402,15 @@ mod tests {
                 shown: PreviewSetting::Off,
                 can_change: false,
                 note: Some(NOTE_NPU)
+            }
+        );
+        let card = preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &small_card);
+        assert_eq!(
+            card,
+            PreviewPage {
+                shown: PreviewSetting::Off,
+                can_change: false,
+                note: Some(NOTE_CARD)
             }
         );
     }
@@ -501,7 +421,7 @@ mod tests {
             NOTE_DEFAULT_OFF,
             NOTE_ON_BELOW_LIMIT,
             NOTE_NPU,
-            NOTE_CARD_PROCESSOR,
+            NOTE_CARD,
             NOTE_EVERYONE_MEMORY,
             NOTE_EVERYONE_PROCESSOR,
         ] {
