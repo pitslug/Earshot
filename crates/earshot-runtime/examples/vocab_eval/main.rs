@@ -20,11 +20,17 @@
 //! hypothesis, counts). `<out>` holds text and stays out of the repo (`target/`): LibriSpeech text
 //! can hold any name. Nothing here is shipped code: the one hook it needs,
 //! `ParakeetTdt::transcribe_biased`, is unused by every shipped path.
+//!
+//! T12.15c (docs/vocabulary.md "The nudge on meeting speech"): `--decode ami` decodes the oracle
+//! segments of the AMI dev headsets (fixture set `ami-dev-ihm`) unbiased and with boosting open,
+//! bonus 2, for each meeting's three lists, plus model_eval's non-speech clips;
+//! `--score-ami --report <dir>` judges them (G1-G4 and the verdict) into a word-free report.
 
 #[allow(dead_code)] // shared with asr_eval; only the AMI words parser and kept words are used
 #[path = "../../../earshot-asr-whisper/examples/asr_eval/refs.rs"]
 mod refs;
 
+mod ami;
 mod boost;
 mod correct;
 mod lists;
@@ -75,6 +81,9 @@ enum Mode {
     Parakeet,
     Whisper,
     Score,
+    /// T12.15c: AMI dev headsets and the non-speech clips, baseline and the boost.
+    Ami,
+    ScoreAmi,
 }
 
 struct Args {
@@ -107,17 +116,19 @@ fn parse_args() -> Args {
                 mode = Some(match value().as_str() {
                     "parakeet" => Mode::Parakeet,
                     "whisper" => Mode::Whisper,
-                    other => fail(format!("--decode parakeet|whisper, not {other}")),
+                    "ami" => Mode::Ami,
+                    other => fail(format!("--decode parakeet|whisper|ami, not {other}")),
                 });
             }
             "--score" => mode = Some(Mode::Score),
+            "--score-ami" => mode = Some(Mode::ScoreAmi),
             "--workers" => workers = value().parse().unwrap_or_else(|e| fail(e)),
             "--threads" => threads = value().parse().unwrap_or_else(|e| fail(e)),
             other => fail(format!("unknown argument {other}")),
         }
     }
-    let mode = mode.unwrap_or_else(|| fail("--decode <engine> or --score"));
-    if mode != Mode::Score && models.is_none() {
+    let mode = mode.unwrap_or_else(|| fail("--decode <engine>, --score or --score-ami"));
+    if !matches!(mode, Mode::Score | Mode::ScoreAmi) && models.is_none() {
         fail("--models is needed to decode");
     }
     Args {
@@ -199,6 +210,7 @@ struct Setup {
     utterances: Vec<Utterance>,
     lists: Vec<List>,
     common: HashSet<String>,
+    pool: Vec<String>,
     pool_len: usize,
 }
 
@@ -218,6 +230,7 @@ fn setup(fixtures: &Path) -> Setup {
         lists,
         common,
         pool_len: pool.len(),
+        pool,
     }
 }
 
@@ -863,6 +876,443 @@ fn run_score(args: &Args, s: &Setup) {
     }
 }
 
+/// One decoded segment's id: `<meeting>.<speaker>.<segment>`.
+fn segment_id(h: &refs::AmiHeadset, k: usize) -> String {
+    format!("{}.{}.{k}", h.meeting, h.speaker)
+}
+
+/// The one T12.15c variant over each of a meeting's graphs.
+fn ami_boosts<'g>(graphs: &'g [ContextGraph], blank: usize) -> Vec<Boost<'g>> {
+    graphs
+        .iter()
+        .map(|graph| Boost {
+            graph,
+            beta: ami::BETA,
+            gate: Gate::Open,
+            blank,
+            node: 0,
+        })
+        .collect()
+}
+
+fn decode_ami(args: &Args, s: &Setup) {
+    let models = args.models.as_ref().unwrap_or_else(|| fail("--models"));
+    let meetings = ami::meetings(&args.fixtures, &s.common, &s.pool).unwrap_or_else(|e| fail(e));
+    init_onnx(models, Accelerator::Cpu).unwrap_or_else(|e| fail(format!("ONNX Runtime: {e}")));
+    let dir = models.root().join(PARAKEET_DIR);
+    let tokens_txt = std::fs::read_to_string(dir.join("tokens.txt")).unwrap_or_else(|e| {
+        fail(format!(
+            "{}: {e}; run `cargo xtask fetch-models --set ci`",
+            dir.display()
+        ))
+    });
+    let vocab = Vocab::parse(&tokens_txt).unwrap_or_else(|e| fail(e));
+    let pieces = boost::pieces(&vocab);
+    let mut untokenised = 0;
+    let graphs: Vec<Vec<ContextGraph>> = meetings
+        .iter()
+        .map(|m| {
+            m.lists
+                .iter()
+                .map(|l| {
+                    let (g, missed) = graph_of(l, &pieces);
+                    untokenised += missed;
+                    g
+                })
+                .collect()
+        })
+        .collect();
+    // (meeting, headset, segment), in meeting, headset and segment order.
+    let items: Vec<(usize, usize, usize)> = meetings
+        .iter()
+        .enumerate()
+        .flat_map(|(m, mt)| {
+            mt.headsets
+                .iter()
+                .enumerate()
+                .flat_map(move |(h, hs)| (0..hs.ranges.len()).map(move |k| (m, h, k)))
+        })
+        .collect();
+    let audio_seconds: f64 = meetings
+        .iter()
+        .flat_map(|m| &m.headsets)
+        .flat_map(|h| &h.ranges)
+        .map(|r| r.len() as f64 / f64::from(PIPELINE_RATE.hz()))
+        .sum();
+    let mut names = vec!["baseline".to_owned()];
+    names.extend(ami::LISTS.iter().map(|l| (*l).to_owned()));
+    let next = AtomicUsize::new(0);
+    let results: Mutex<BTreeMap<(usize, usize), Line>> = Mutex::new(BTreeMap::new());
+    let evidence: Mutex<Option<Value>> = Mutex::new(None);
+    let load = || {
+        let asr = ParakeetTdt::load(&dir, &SessionConfig::cpu(args.threads), PARAKEET, true)
+            .unwrap_or_else(|e| {
+                fail(format!(
+                    "{PARAKEET}: {e}; run `cargo xtask fetch-models --set ci`"
+                ))
+            });
+        let backends = asr.backends();
+        if backends.iter().any(|b| b.kind() != Some(BackendKind::Cpu)) {
+            fail(format!("{PARAKEET} is not wholly on the CPU"));
+        }
+        evidence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(|| {
+                json!({
+                    "source": "ONNX Runtime node placement",
+                    "sessions": backends.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                })
+            });
+        asr
+    };
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        for _ in 0..args.workers {
+            scope.spawn(|| {
+                let mut asr = load();
+                let opts = TranscribeOptions::live();
+                let cancel = CancelToken::new();
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&(m, h, k)) = items.get(i) else {
+                        break;
+                    };
+                    let hs = &meetings[m].headsets[h];
+                    let id = segment_id(hs, k);
+                    let audio =
+                        MonoBuffer::new(PIPELINE_RATE, hs.audio[hs.ranges[k].clone()].to_vec());
+                    let mut lines = Vec::new();
+                    let t0 = Instant::now();
+                    let t = asr
+                        .transcribe(&audio, &opts, &cancel)
+                        .unwrap_or_else(|e| fail(format!("{id}: {e}")));
+                    lines.push(Line {
+                        id: id.clone(),
+                        hyp: hypothesis(&t),
+                        ms: millis(t0),
+                    });
+                    let mut boosts = ami_boosts(&graphs[m], vocab.blank());
+                    let mut biases: Vec<&mut dyn TokenBias> =
+                        boosts.iter_mut().map(|b| b as &mut dyn TokenBias).collect();
+                    let t0 = Instant::now();
+                    let ts = asr
+                        .transcribe_biased(&audio, &opts, &cancel, &mut biases)
+                        .unwrap_or_else(|e| fail(format!("{id}: {e}")));
+                    let ms = millis(t0) / ami::LISTS.len() as u64;
+                    for t in &ts {
+                        lines.push(Line {
+                            id: id.clone(),
+                            hyp: hypothesis(t),
+                            ms,
+                        });
+                    }
+                    let mut r = results
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    for (n, l) in lines.into_iter().enumerate() {
+                        r.insert((n, i), l);
+                    }
+                    let done = r.len() / names.len();
+                    if done.is_multiple_of(200) {
+                        eprintln!(
+                            "vocab_eval: ami {done}/{} segments after {:.0} s",
+                            items.len(),
+                            started.elapsed().as_secs_f64()
+                        );
+                    }
+                }
+            });
+        }
+    });
+    let results = results
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut totals = serde_json::Map::new();
+    for (n, name) in names.iter().enumerate() {
+        let lines: Vec<Line> = results
+            .range((n, 0)..(n + 1, 0))
+            .map(|(_, l)| l.clone())
+            .collect();
+        if lines.len() != items.len() {
+            fail(format!(
+                "{name}: {} of {} segments",
+                lines.len(),
+                items.len()
+            ));
+        }
+        totals.insert(
+            name.clone(),
+            json!(lines.iter().map(|l| l.ms).sum::<u64>() as f64 / 1000.0),
+        );
+        write_lines(&args.out, &format!("ami-{name}"), &lines);
+    }
+    // G4: every clip unbiased and with each meeting's every list, one encoding per clip.
+    let mut asr = load();
+    let opts = TranscribeOptions::live();
+    let cancel = CancelToken::new();
+    let mut silence: Vec<Vec<Line>> = vec![Vec::new(); 1 + ami::LISTS.len()];
+    for (clip, samples) in ami::silence_clips() {
+        let audio = MonoBuffer::new(PIPELINE_RATE, samples);
+        let t = asr
+            .transcribe(&audio, &opts, &cancel)
+            .unwrap_or_else(|e| fail(format!("{clip}: {e}")));
+        silence[0].push(Line {
+            id: clip.to_owned(),
+            hyp: hypothesis(&t),
+            ms: 0,
+        });
+        let mut boosts: Vec<Boost> = graphs
+            .iter()
+            .flat_map(|g| ami_boosts(g, vocab.blank()))
+            .collect();
+        let mut biases: Vec<&mut dyn TokenBias> =
+            boosts.iter_mut().map(|b| b as &mut dyn TokenBias).collect();
+        let ts = asr
+            .transcribe_biased(&audio, &opts, &cancel, &mut biases)
+            .unwrap_or_else(|e| fail(format!("{clip}: {e}")));
+        for (j, t) in ts.iter().enumerate() {
+            let (m, l) = (j / ami::LISTS.len(), j % ami::LISTS.len());
+            silence[1 + l].push(Line {
+                id: format!("{clip}.{}", meetings[m].name),
+                hyp: hypothesis(t),
+                ms: 0,
+            });
+        }
+    }
+    write_lines(&args.out, "ami-silence-baseline", &silence[0]);
+    for (l, name) in ami::LISTS.iter().enumerate() {
+        write_lines(&args.out, &format!("ami-silence-{name}"), &silence[1 + l]);
+    }
+    write_json(
+        &args.out,
+        "ami-meta.json",
+        &json!({
+            "model": PARAKEET,
+            "backend": "cpu",
+            "evidence": evidence.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner),
+            "decoding": "greedy TDT (TranscribeOptions::live), one direct call per oracle segment on the speaker's headset; the baseline through Transcriber::transcribe, the three lists from one transcribe_biased call (one encoding per piece, the call's time shared out evenly)",
+            "variant": { "gate": "open", "beta": ami::BETA },
+            "meetings": ami::MEETINGS,
+            "segments": items.len(),
+            "segment_audio_seconds": audio_seconds,
+            "workers": args.workers,
+            "onnx_threads_per_worker": args.threads,
+            "listed_forms_not_tokenised": untokenised,
+            "decode_seconds": totals,
+            "wall_seconds": started.elapsed().as_secs_f64(),
+            "host": host_note(),
+        }),
+    );
+}
+
+/// Listed tokens a decode of non-speech wrote.
+fn listed_in(hyp: &str, list: &List) -> usize {
+    let set: HashSet<&str> = list.tokens.iter().map(String::as_str).collect();
+    lists::tokens(hyp)
+        .iter()
+        .filter(|t| set.contains(t.as_str()))
+        .count()
+}
+
+fn score_ami(args: &Args, s: &Setup) {
+    use sha2::{Digest, Sha256};
+    let report = args
+        .report
+        .as_deref()
+        .unwrap_or_else(|| fail("--score-ami needs --report <dir>"));
+    std::fs::create_dir_all(report).unwrap_or_else(|e| fail(format!("{}: {e}", report.display())));
+    let meetings = ami::meetings(&args.fixtures, &s.common, &s.pool).unwrap_or_else(|e| fail(e));
+    let read = |name: &str| -> HashMap<String, Line> {
+        read_lines(&args.out, name)
+            .unwrap_or_else(|| fail(format!("{name}.jsonl is missing: run --decode ami first")))
+            .into_iter()
+            .map(|l| (l.id.clone(), l))
+            .collect()
+    };
+    let base = read("ami-baseline");
+    // Every scored unit in order: (meeting, segment id, reference, kind) with the outside
+    // words of each speaker as one more unit decoded as nothing.
+    let mut units: Vec<(usize, String, String, bool)> = Vec::new();
+    for (m, mt) in meetings.iter().enumerate() {
+        for h in &mt.headsets {
+            for (k, r) in h.plan.references.iter().enumerate() {
+                units.push((m, segment_id(h, k), r.clone(), true));
+            }
+            units.push((
+                m,
+                format!("{}.{}.outside", h.meeting, h.speaker),
+                h.plan.outside.join(" "),
+                false,
+            ));
+        }
+    }
+    let hyp_of = |lines: &HashMap<String, Line>, id: &str, decoded: bool| -> String {
+        if decoded {
+            lines
+                .get(id)
+                .unwrap_or_else(|| fail(format!("segment {id} was not decoded")))
+                .hyp
+                .clone()
+        } else {
+            String::new()
+        }
+    };
+    let score_all = |lines: &HashMap<String, Line>,
+                     l: usize,
+                     baseline: Option<&[Alignment]>|
+     -> (Counts, Vec<Alignment>, Vec<Line>, Vec<Counts>) {
+        let mut total = Counts::default();
+        let (mut aligns, mut out, mut each) = (Vec::new(), Vec::new(), Vec::new());
+        for (n, (m, id, reference, decoded)) in units.iter().enumerate() {
+            let hyp = hyp_of(lines, id, *decoded);
+            let listed: HashSet<&str> = meetings[*m].lists[l]
+                .tokens
+                .iter()
+                .map(String::as_str)
+                .collect();
+            let said: HashSet<&str> = meetings[*m].said.iter().map(String::as_str).collect();
+            let r = lists::tokens(reference);
+            let h = lists::tokens(&hyp);
+            let r: Vec<&str> = r.iter().map(String::as_str).collect();
+            let h: Vec<&str> = h.iter().map(String::as_str).collect();
+            let (c, a) = score::score_in(&r, &h, &listed, &said, baseline.map(|b| &b[n]));
+            total += c;
+            each.push(c);
+            aligns.push(a);
+            out.push(Line {
+                id: id.clone(),
+                hyp,
+                ms: 0,
+            });
+        }
+        (total, aligns, out, each)
+    };
+    let silence_base = read("ami-silence-baseline");
+    let mut lists_json = Vec::new();
+    let mut verdict = None;
+    for (l, name) in ami::LISTS.iter().enumerate() {
+        let (bc, ba, blines, beach) = score_all(&base, l, None);
+        write_counts(report, &format!("baseline-{name}"), &blines, &beach);
+        let lines = read(&format!("ami-{name}"));
+        let (c, _, vlines, each) = score_all(&lines, l, Some(&ba));
+        write_counts(report, name, &vlines, &each);
+        let (g1, g2, g3) = guards(&c, &bc);
+        // G4: listed tokens written on the non-speech clips, boosted with each meeting's list.
+        let boosted = read(&format!("ami-silence-{name}"));
+        let mut g4_rows = Vec::new();
+        let (mut written, mut written_base) = (0usize, 0usize);
+        for (id, line) in &boosted {
+            let (clip, meeting) = id
+                .split_once('.')
+                .unwrap_or_else(|| fail(format!("bad silence id {id}")));
+            let mt = meetings
+                .iter()
+                .find(|m| m.name == meeting)
+                .unwrap_or_else(|| fail(format!("unknown meeting in {id}")));
+            let n = listed_in(&line.hyp, &mt.lists[l]);
+            let nb = listed_in(
+                &silence_base
+                    .get(clip)
+                    .unwrap_or_else(|| fail(format!("silence baseline {clip} missing")))
+                    .hyp,
+                &mt.lists[l],
+            );
+            written += n;
+            written_base += nb;
+            let sha: String = Sha256::digest(line.hyp.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            g4_rows.push(json!({
+                "id": id,
+                "hyp_sha256": sha,
+                "words": lists::tokens(&line.hyp).len(),
+                "listed_written": n,
+                "baseline_listed_written": nb,
+            }));
+        }
+        if boosted.len() != meetings.len() * 3 {
+            fail(format!("ami-silence-{name}: {} decodes", boosted.len()));
+        }
+        g4_rows.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        let g4 = written == 0;
+        let lower = match (c.b_wer(), bc.b_wer()) {
+            (Some(v), Some(b)) => v < b,
+            _ => false,
+        };
+        let passes = g1 && g2 && g3 && g4 && lower;
+        if l == 0 {
+            verdict = Some(passes);
+        }
+        let reduction = match (bc.b_wer(), c.b_wer()) {
+            (Some(b), Some(v)) if b > 0.0 => Some((b - v) / b),
+            _ => None,
+        };
+        let spoken: Vec<usize> = meetings.iter().map(|m| m.lists[l].spoken).collect();
+        lists_json.push(json!({
+            "list": name,
+            "role": if l == 0 { "verdict" } else { "informational" },
+            "spoken_listed_types_per_meeting": spoken,
+            "baseline": counts_json(&bc),
+            "boost": counts_json(&c),
+            "b_wer_reduction": reduction,
+            "g1_distractors": g1,
+            "g2_unlisted": g2,
+            "g3_wer": g3,
+            "g4_non_speech": g4,
+            "g4_listed_written": written,
+            "g4_baseline_listed_written": written_base,
+            "g4_decodes": g4_rows,
+            "b_wer_below_baseline": lower,
+            "passes": passes,
+        }));
+    }
+    let meta = args.out.join("ami-meta.json");
+    if meta.is_file() {
+        std::fs::copy(&meta, report.join("ami-meta.json"))
+            .unwrap_or_else(|e| fail(format!("{}: {e}", meta.display())));
+    }
+    let segments = units.iter().filter(|u| u.3).count();
+    let verdict = verdict.unwrap_or(false);
+    let results = json!({
+        "rule": "docs/vocabulary.md, \"The nudge on meeting speech (T12.15c)\", committed before measuring",
+        "data": {
+            "meetings": ami::MEETINGS,
+            "segments": segments,
+            "outside_units": units.len() - segments,
+            "common_words": s.common.len(),
+            "distractor_pool": s.pool.len(),
+            "list_length": lists::LIST_LEN,
+        },
+        "count_fields": COUNT_FIELDS,
+        "guards": { "g1_distractors_per_1000": G1_DISTRACTORS, "g2_u_wer_points": G2_UWER },
+        "lists": lists_json,
+        "verdict": if verdict { "pass" } else { "fail" },
+    });
+    write_json(report, "results.json", &results);
+    eprintln!(
+        "{}",
+        serde_json::to_string_pretty(
+            &results["lists"]
+                .as_array()
+                .map(|a| a
+                    .iter()
+                    .map(|l| {
+                        let mut l = l.clone();
+                        if let Some(o) = l.as_object_mut() {
+                            o.remove("g4_decodes");
+                        }
+                        l
+                    })
+                    .collect::<Vec<_>>())
+                .unwrap_or_default()
+        )
+        .unwrap_or_default()
+    );
+    eprintln!("vocab_eval: T12.15c verdict {}", results["verdict"]);
+}
+
 fn main() {
     let args = parse_args();
     std::fs::create_dir_all(&args.out)
@@ -879,6 +1329,8 @@ fn main() {
         Mode::Parakeet => decode_parakeet(&args, &s),
         Mode::Whisper => decode_whisper(&args, &s),
         Mode::Score => run_score(&args, &s),
+        Mode::Ami => decode_ami(&args, &s),
+        Mode::ScoreAmi => score_ami(&args, &s),
     }
 }
 

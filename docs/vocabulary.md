@@ -317,3 +317,156 @@ The evaluation-only hook in the shipped decoder, `ParakeetTdt::transcribe_biased
 decode exactly as `transcribe` when its bias changes nothing: `cargo test -p earshot-onnx
 parakeet` (a stand-in model) and `cargo test --release -p earshot-onnx --test parakeet --
 --include-ignored` (the real model on the smoke clips).
+
+# The nudge on meeting speech (T12.15c)
+
+The owner (2026-11-11) chose to ship boosting "open, bonus 2" (above: B-WER -19.1% within G1-G3)
+for 0.3, waiving the 20% bar, once it has been re-measured on meeting speech. This section is
+that measurement. Evaluation only; T12.15d ships the change only if the verdict below passes.
+
+## The rule (written before measuring, 2026-11-11)
+
+Everything in this section was fixed and committed before any decode below was run. The
+annotations were read beforehand only to count how many named-entity words each meeting has
+(about 40 distinct non-common ones over the five meetings; that count chose nothing below). The
+tool is the same `vocab_eval` example (`--decode ami`, `--score-ami`).
+
+### Data
+
+AMI dev meeting speech only: the individual headsets (IHM) of the five meetings of fixture set
+`ami-dev` (ES2003a, ES2011a, IS1008a, TS3004a, TS3006a: the first meeting of each series of the
+scenario-only dev partition), pinned as the new fixture set `ami-dev-ihm` (20 headset
+recordings and the five meetings' UEMs from AMI-diarization-setup at the commit the `ami` set
+uses, `uems/train/` for ES2003a and TS3006a, `uems/dev/` for the others), with the meetings'
+oracle segments and named-entity annotations as newly pinned members of the v1.6.2 annotations
+archive. Decoded exactly as `asr.wer_ami_ihm` decodes the test meetings (`refs::load_ami` with
+`AmiMic::Ihm`: each speaker's segments clipped to the UEM, one direct call per segment on the
+speaker's own headset, reference the speaker's words starting inside it, the speaker's UEM
+words outside every segment counted as deletions). No test meeting is read.
+
+### The model and the one variant
+
+`parakeet-tdt-0.6b-v2`, greedy TDT (`TranscribeOptions::live()`), on the CPU. Baseline through
+`Transcriber::transcribe`; the boost through `transcribe_biased` with boosting **open, bonus 2**
+exactly as T12.15b ran it (same `ContextGraph`, tokenising, title-case and lower-case paths).
+Nothing is tuned; no other bonus or gate is run.
+
+### Lists
+
+One list per meeting, used for every segment of that meeting (a user has one list, not one per
+sentence). Tokens are `normalize_english` tokens split on spaces; "common words" are T12.15b's
+5,000 (AMI meetings outside the ten dev and test series); "the meeting's words" are every word
+of its four speakers' words files, all times.
+
+- **`ne` (the verdict list).** The meeting's named entities (`namedEntities/<meeting>.<X>.ne.xml`,
+  speakers A-D in order, entities in file order), every type except those under TIMEX and NUMEX
+  (times, dates, durations, money, measures, percentages and numbers: not what a user types
+  into a Dictionary, and the normaliser turns them into digits). Each entity's words (its child
+  range in the speaker's words file, punctuation and unfinished fragments left out, as
+  `refs::parse_ami_words` reads them) give their tokens; a token is listed when it is made only
+  of a-z and apostrophes and is not a common word: a name, place, product or uncommon term, what
+  a user would add. Distinct, in that order, at most 100.
+- **Distractors** fill each list to 100 words: drawn without repeats from T12.15b's pool (the
+  rare tokens of LibriSpeech dev-clean) minus every token of the meeting's words, then the list
+  shuffled, with ChaCha8 seeded `0x7121_5b00 + 100_000 + k` for meeting k (0-4 in the order
+  above), the draws and shuffle of T12.15b's step 4.
+- **Informational lists**, run in the same decode and judged by the same guards, deciding
+  nothing: **`ne-all`**, `ne` without the common-word filter (role names, colours and objects
+  that the meeting says often); and **`rare`**, T12.15b's rare-word rule adapted per meeting:
+  the meeting's tokens (its speakers' UEM words in start order) made only of a-z and
+  apostrophes, not common, and in no other of the five meetings' words, distinct, at most 100.
+
+### Metrics and guards
+
+As T12.15b, per segment, summed: WER, B-WER, U-WER, listed recall, distractor hits per 1,000
+reference words and changed words against the baseline, with one change forced by the meeting
+list: a **distractor** is a listed token not among the meeting's words (T12.15b took the
+utterance's reference), so a listed word said elsewhere in the meeting and written in a segment
+where it was not said counts as a B-WER insertion, not as a distractor hit. The outside words of
+each speaker are one more segment with an empty hypothesis in every decode.
+
+- G1, G2, G3: exactly T12.15b's (distractor hits per 1,000 words at most 0.5 above the
+  baseline's, U-WER at most 0.1 points above, WER not above), against the baseline on the same
+  segments.
+- **G4 (non-speech)**: model_eval's `silence` clips (30 s each: dither at -90 dBFS, white noise at
+  -60 and -40 dBFS; same generator and seed `0x6e0_15e`), each decoded directly, without VAD,
+  once unbiased and once boosted with each meeting's `ne` list (15 boosted decodes). G4 passes
+  when no boosted decode writes a token of its list. The informational lists run on the same
+  clips and are reported.
+
+### Verdict
+
+**Passes when G1, G2, G3 and G4 all pass for `ne` and its B-WER is below the baseline's**
+(strictly). It is judged on whatever number of listed positions the five meetings hold; that
+number, the listed words gained and lost, and the informational lists are reported beside it.
+Decode time is recorded with the host load and decides nothing (every list is decoded from one
+encoding per segment, so a variant's time is the call's shared out).
+
+### Commands
+
+```powershell
+cargo xtask fetch-fixtures --set ami-dev-ihm
+```
+
+```powershell
+cargo build --release -p earshot-runtime --example vocab_eval
+```
+
+```powershell
+target\release\examples\vocab_eval.exe --models $env:LOCALAPPDATA\Earshot\models --fixtures $env:LOCALAPPDATA\earshot-dev\fixtures --out target\vocab-eval-ami --decode ami --workers 4 --threads 4
+```
+
+```powershell
+target\release\examples\vocab_eval.exe --fixtures $env:LOCALAPPDATA\earshot-dev\fixtures --out target\vocab-eval-ami --report docs\vocabulary\ami --score-ami
+```
+
+The committed record is word-free, as for T12.15b: `docs/vocabulary/ami/results.json`, the meta
+file and per decode `counts-<name>.jsonl` (per segment its id, the SHA-256 of the hypothesis and
+the counts). AMI text holds names, so hypotheses and lists stay in `target/`.
+
+## Results (measured 2026-11-11)
+
+Host: the x64 desktop (32 logical cores), CPU only, shared with other lanes; ONNX Runtime placed
+every node of all three sessions on the CPU (`docs/vocabulary/ami/ami-meta.json`). 1,418 oracle
+segments (5,194 s of headset speech) plus the 20 speakers' outside words (all 20 empty: the oracle segments cover every UEM
+word of these meetings, so that step weighed nothing); 12,411 reference
+words. The run took 6 minutes (4 workers of 4 threads); decode time decides nothing.
+
+| List | Listed positions | Baseline WER / B-WER / U-WER % | Boosted WER / B-WER / U-WER % | Listed gained / lost | Unlisted gained / lost | G1 G2 G3 G4 |
+|---|---|---|---|---|---|---|
+| **ne (verdict)** | 60 | 12.63 / 30.00 / 12.54 | 16.89 / 30.00 / 16.82 | 2 / 1 | 110 / 214 | pass **fail** **fail** pass |
+| ne-all | 511 | 12.63 / 15.85 / 12.49 | 16.36 / 16.83 / 16.34 | 11 / 4 | 104 / 201 | pass **fail** **fail** pass |
+| rare | 211 | 12.63 / 18.96 / 12.52 | 16.42 / 19.91 / 16.36 | 4 / 4 | 107 / 216 | pass **fail** **fail** pass |
+
+Spoken listed words per meeting (`ne`): 11, 9, 3, 5 and 11, so 39 distinct words at 60
+reference positions; the rest of each list is distractors. No list wrote a distractor (G1), and
+no boosted decode of the three non-speech clips wrote anything at all (G4).
+
+**Verdict: fail.** On meeting speech the boost raises WER from 12.63% to 16.89% (G3) and U-WER
+by 4.3 points (G2, limit 0.1), and listed-word B-WER is not lower (30.00% both: 18 errors at 60
+positions). The informational lists fail the same two guards by the same margin. T12.15d is not
+started.
+
+### What the numbers say
+
+- The cost is insertions, not substitutions: the boosted hypotheses hold 13,674 words against
+  the baseline's 13,080 (+4.5%), and 584 of the 1,418 segments changed. Read in `target/` only,
+  the added words are mostly short backchannels, fillers and single letters, written where the
+  headset hears breath, laughter or a neighbour's speech. The bonus goes to the first piece of
+  every listed word at every step, and many first pieces are short and common; in the open
+  form they compete with blank, so on non-speech sounds inside a segment the decoder leaves
+  blank for them and the language model finishes a short word. Read audiobook speech
+  (T12.15b) has almost none of those sounds, which is why it showed no cost there.
+- The synthetic noise clips (G4) did not provoke it: white noise and dither are not the sounds
+  that do. G4 alone would not have caught this.
+- On these meetings the named-entity words were already mostly right without the boost (70%
+  listed recall for `ne`, 88% for `ne-all`), and the boost moved only a handful of them.
+- Not measured here, and for the owner: T12.15b's gated form (a bonus never turns blank into a
+  word) is the variant built to avoid exactly this cost; it reached B-WER -17.4% on
+  LibriSpeech. Shipping it would need its own rule and this same measurement first.
+
+### Reproducing
+
+As in "Commands" above (the release example under the lane's target folder `C:\eb\lane-vocab`).
+`--score-ami` takes seconds and rewrites `docs/vocabulary/ami/`; a rerun's hypotheses can be
+checked against the committed `hyp_sha256` values.

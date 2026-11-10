@@ -149,8 +149,21 @@ pub fn score(
     listed: &HashSet<&str>,
     baseline: Option<&Alignment>,
 ) -> (Counts, Alignment) {
-    let a = align(reference, hypothesis);
     let said: HashSet<&str> = reference.iter().copied().collect();
+    score_in(reference, hypothesis, listed, &said, baseline)
+}
+
+/// [`score`] with the distractors taken against `said` (a listed token not in it is a
+/// distractor) instead of the reference: a meeting's list is judged against every word of
+/// the meeting (T12.15c).
+pub fn score_in(
+    reference: &[&str],
+    hypothesis: &[&str],
+    listed: &HashSet<&str>,
+    said: &HashSet<&str>,
+    baseline: Option<&Alignment>,
+) -> (Counts, Alignment) {
+    let a = align(reference, hypothesis);
     let mut c = Counts {
         ref_words: reference.len(),
         ..Counts::default()
@@ -256,5 +269,24 @@ mod tests {
         assert_eq!(sum.ref_words, 8);
         assert_eq!(sum.b_wer(), Some(25.0));
         assert_eq!(Counts::default().wer(), None);
+    }
+
+    #[test]
+    fn vocab_meeting_scores_take_distractors_against_the_whole_meeting() {
+        let listed: HashSet<&str> = ["bozzle", "ursus"].into();
+        let said: HashSet<&str> = ["old", "met", "bozzle"].into();
+        // bozzle is said elsewhere in the meeting: an inserted listed word, not a distractor.
+        let (c, _) = score_in(
+            &w("old met"),
+            &w("old bozzle met ursus"),
+            &listed,
+            &said,
+            None,
+        );
+        assert_eq!(c.distractor_hits, 1);
+        assert_eq!((c.listed_errors, c.errors), (2, 2));
+        // With the reference alone both would be distractors.
+        let (d, _) = score(&w("old met"), &w("old bozzle met ursus"), &listed, None);
+        assert_eq!(d.distractor_hits, 2);
     }
 }
