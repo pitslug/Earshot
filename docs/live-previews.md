@@ -336,6 +336,8 @@ By point: 1 passes (both tracks' sessions on CUDA, every preview session on the 
 
 **Decision under the rule:** `on` fails, so beside a small card the first session goes back to refused, as before T12.3c (commit "T12.3c: refuse previews beside a small card again"); the evaluation tooling stays. `on` missed by 30 ms on one audio, as T12.3a missed by 5 ms; whether to accept it, and the 12 vs 20 GiB question above, is the owner's.
 
+**The owner's decision, 2026-11-11:** accepted, as T12.3a's 5 ms was; T12.3c ships as built (the refusal commit reverted), with the 12 GiB limit as built.
+
 ## One CUDA session for a track's transcription and previews (T12.3b, spike)
 
 ONNX Runtime's CUDA provider gives every session its own copy of the weights on the card (T9.1ma: "CUDA does not share"), so a track's own session and its preview session hold two copies of Parakeet 0.6B's encoder: about 3.7 GiB of graphics memory per preview session (9.1 against 12.8 GiB on the card, above). This spike asks whether one session can serve both. Evaluation only: nothing shipped changes, and what the app does with the answer is the owner's.

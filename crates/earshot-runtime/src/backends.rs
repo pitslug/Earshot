@@ -1236,15 +1236,16 @@ pub const PREVIEW_MIN_MEMORY_CUDA: u64 = 20 * 1024 * 1024 * 1024;
 /// A graphics card with less dedicated memory than this (or of unknown memory) runs no preview
 /// session on CUDA: a third session took a meeting's use of the card from 7.8 to 11.5 GiB (measured,
 /// docs/live-previews.md). A judgement: the 11.5 and room for the rest of the desktop. Below it a
-/// CUDA track's previews are refused (T12.3c measured running them on the CPU and failed its rule).
+/// CUDA track's previews run on the CPU instead (T12.3c, [`preview_backend`]).
 pub const PREVIEW_MIN_CARD_MEMORY: u64 = 14 * 1024 * 1024 * 1024;
 
 /// Where this computer runs the previews' session for a track on `backend` (the far end in a call,
 /// the mic in the room), or why it runs none. The one rule (`live::preview` docs): the user's
 /// "off"; the NPU is off until the Surface numbers exist; whisper, on any backend, holds decoder
 /// state and sampled retries a preview must not touch and would need a second model that nothing
-/// here has measured; a CUDA track whose card has no room for a third session
-/// ([`PREVIEW_MIN_CARD_MEMORY`]). T12.3c tried the CPU there and failed its rule. The user's "on" or
+/// here has measured. A CUDA track whose card has no room for a third session
+/// ([`PREVIEW_MIN_CARD_MEMORY`]) runs it on the CPU with the CPU's shared weights and the CPU's
+/// memory limit (T12.3c), so the card holds no more than with previews off. The user's "on" or
 /// "everyone" lifts only the system memory limit.
 ///
 /// # Errors
@@ -1263,9 +1264,10 @@ pub fn preview_backend(
         BackendKind::Cuda => {
             let card = crate::model_settings::graphics_memory(hardware);
             if card.is_none_or(|m| m < PREVIEW_MIN_CARD_MEMORY) {
-                return Err("the graphics card is too small for a third session".to_owned());
+                (BackendKind::Cpu, PREVIEW_MIN_MEMORY)
+            } else {
+                (BackendKind::Cuda, PREVIEW_MIN_MEMORY_CUDA)
             }
-            (BackendKind::Cuda, PREVIEW_MIN_MEMORY_CUDA)
         }
         BackendKind::Qnn => return Err("not measured on the NPU yet".to_owned()),
         BackendKind::Vulkan | BackendKind::Fake => {
@@ -1301,7 +1303,8 @@ pub const PREVIEW_BOTH_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 /// chose everyone, only where the first session runs ([`previews_refused`]), and only with
 /// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there. It always runs on the CPU, with the CPU's shared
 /// weights: beside the CPU's own sessions, and beside CUDA too (T12.3a), so that the card holds no
-/// more sessions than with "Other people only".
+/// more sessions than with "Other people only"; beside a card too small for the first, with the
+/// first on the CPU too (T12.3c).
 ///
 /// # Errors
 /// The reason no second session runs.
@@ -1342,7 +1345,8 @@ pub fn previews_refused_second(
 
 /// The previews' own session of the model of a track that runs on `backend` (T9.1m): background
 /// threads, the thread budget of a live track, and nothing shared with the track. It loads where
-/// [`preview_backend`] says: the track's backend. An `Err` says why this meeting has no previews ([`crate::live::PreviewLoader`]).
+/// [`preview_backend`] says: the track's backend, or the CPU beside a card too small for it
+/// (T12.3c). An `Err` says why this meeting has no previews ([`crate::live::PreviewLoader`]).
 ///
 /// # Errors
 /// A whisper model (it holds decoder state and sampled retries, and is not measured here); the
