@@ -20,11 +20,12 @@ export const commands = {
 	searchMeetings: (query: string) => typedError<SearchResultsView, IpcError>(__TAURI_INVOKE("search_meetings", { query })),
 	/**
 	 *  Starts a meeting in `mode` with an optional title and returns its id once it records.
+	 *  `keep_local` keeps its summary on this computer (T12.13; asked only here).
 	 *  Every check (models, summary setup, ONNX Runtime) runs first; a failure records nothing.
 	 *  The meeting's progress arrives as `MeetingEvent`s. Fails with `busy` while another
 	 *  meeting records or is processed.
 	 */
-	startMeeting: (mode: CaptureMode, title: string | null) => typedError<string, IpcError>(__TAURI_INVOKE("start_meeting", { mode, title })),
+	startMeeting: (mode: CaptureMode, title: string | null, keepLocal: boolean) => typedError<string, IpcError>(__TAURI_INVOKE("start_meeting", { mode, title, keepLocal })),
 	/**
 	 *  Stops the recording meeting; the recording is finalised and the work after the meeting
 	 *  runs (`MeetingEvent::PostProgress`, then `Summary`). Fails with `not_recording` when no
@@ -93,6 +94,11 @@ export const commands = {
 	 *  holds it).
 	 */
 	deleteMeeting: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("delete_meeting", { meeting })),
+	/**
+	 *  "Allow": the meeting kept on this computer may be summarised by the summary writer from now
+	 *  on (the UI asks first). Nothing is sent until the user re-summarises.
+	 */
+	allowSummaryWriter: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("allow_summary_writer", { meeting })),
 	/**  Every live folder, by name. */
 	listFolders: () => typedError<FolderListItem[], IpcError>(__TAURI_INVOKE("list_folders")),
 	/**  Creates a folder; returns its id. Refuses an unusable name or one another folder has. */
@@ -1002,6 +1008,16 @@ export type JobKind =
 /**  The summary again. */
 "Resummarise";
 
+/**  A meeting whose summary is kept on this computer. */
+export type KeptLocalView = {
+	/**
+	 *  The writer the Summaries page names when it would send the meeting elsewhere ("Claude
+	 *  Code", "Codex", "your own server"): what "Allow" lets summarise it. `None` while the
+	 *  writer is this computer or no summary, when allowing would change nothing today.
+	 */
+	writer: string | null,
+};
+
 /**  Who a speaker is linked to. */
 export type LinkChoice = 
 /**  An existing person. */
@@ -1049,6 +1065,11 @@ export type MeetingDetail = {
 	 *  other summary and for a record this version cannot read).
 	 */
 	handovers: HandoverItem[],
+	/**
+	 *  The meeting's summary is kept on this computer (T12.13), `None` when it may go to the
+	 *  summary writer.
+	 */
+	kept_local: KeptLocalView | null,
 };
 
 /**

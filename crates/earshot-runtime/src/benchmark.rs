@@ -277,6 +277,7 @@ pub fn read_settings(
             build,
             hardware,
             &crate::summary_settings::NoApiKeys,
+            crate::keep_local::SummaryPrivacy::Writer,
         )?,
         speaker_timing: crate::speaker_timing::speaker_timing(store)?.timing(),
         check: crate::model_bench::stored_check(store)?,
@@ -544,11 +545,12 @@ fn skip_of(reason: &SkipReason, skip: Option<&BenchSkip>) -> Result<BenchSkip, R
         SkipReason::NotRequested => skip.cloned().ok_or(RuntimeError::Internal(
             "the benchmark summary was prepared and did not run",
         )),
-        SkipReason::NotInstalled { model, .. } | SkipReason::ChosenNotInstalled { model } => {
-            Ok(BenchSkip::NotInstalled {
-                model: (*model).to_owned(),
-            })
-        }
+        // The benchmark's meeting is never kept local; were it, its model is what is missing.
+        SkipReason::NotInstalled { model, .. }
+        | SkipReason::ChosenNotInstalled { model }
+        | SkipReason::KeptLocalNoModel { model } => Ok(BenchSkip::NotInstalled {
+            model: (*model).to_owned(),
+        }),
         SkipReason::NoApiKey(_) => Ok(BenchSkip::NotOnThisComputer {
             writer: SummaryWriter::OwnEndpoint.as_str().to_owned(),
         }),

@@ -100,9 +100,14 @@ fn summary_style_a_refused_stored_value_is_a_meeting_note() {
         ..Hardware::default()
     };
     let cpu = [crate::backends::Accelerator::Cpu];
-    let setup =
-        crate::host::summary_from_settings(&s, &cpu, &hw, &crate::summary_settings::NoApiKeys)
-            .unwrap();
+    let setup = crate::host::summary_from_settings(
+        &s,
+        &cpu,
+        &hw,
+        &crate::summary_settings::NoApiKeys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(
         setup.notes.iter().any(|n| n.contains(SUMMARY_STYLE_KEY)),
         "{:?}",
@@ -110,9 +115,14 @@ fn summary_style_a_refused_stored_value_is_a_meeting_note() {
     );
     // A readable style is no note.
     set_summary_style(&mut s, "Short.").unwrap();
-    let setup =
-        crate::host::summary_from_settings(&s, &cpu, &hw, &crate::summary_settings::NoApiKeys)
-            .unwrap();
+    let setup = crate::host::summary_from_settings(
+        &s,
+        &cpu,
+        &hw,
+        &crate::summary_settings::NoApiKeys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(
         !setup.notes.iter().any(|n| n.contains(SUMMARY_STYLE_KEY)),
         "{:?}",

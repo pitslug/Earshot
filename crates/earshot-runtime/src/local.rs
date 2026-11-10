@@ -67,6 +67,9 @@ meeting_records! {
     /// `audio-retention/<meeting>`: when the meeting's audio retention time started (T7.4k;
     /// format in `earshot_store::encode_retention_clock`, [`crate::retention`]).
     AudioRetention => "audio-retention/", meeting at 0;
+    /// `summary-kept-local/<meeting>`: the meeting's summary stays on this computer (T12.13;
+    /// presence is the answer, [`crate::keep_local`]).
+    KeptLocal => "summary-kept-local/", meeting at 0;
 }
 
 impl MeetingRecord {

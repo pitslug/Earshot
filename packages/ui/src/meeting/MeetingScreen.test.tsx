@@ -233,7 +233,7 @@ describe("cancelling while a meeting finishes", () => {
     const ipc = createMockIpc({ meetings: [], timer });
     const events: MeetingEvent[] = [];
     await ipc.onMeetingEvent((e) => events.push(e));
-    const id = await ipc.startMeeting("Call", "Invented");
+    const id = await ipc.startMeeting("Call", "Invented", false);
     await ipc.stopMeeting();
     timer.advance((POST_STEPS.length + 1) * POST_STEP_MS);
     await ipc.cancelFinishing(id);
@@ -276,7 +276,7 @@ describe("a meeting started while the previous one finishes", () => {
     await startMeeting(s);
     const listed = await s.ipc.listMeetings();
     expect(listed.map((m) => m.state).sort()).toEqual(["Processing", "Recording"]);
-    await expect(s.ipc.startMeeting("Call", null)).rejects.toMatchObject({ error: { kind: "busy" } });
+    await expect(s.ipc.startMeeting("Call", null, false)).rejects.toMatchObject({ error: { kind: "busy" } });
   }, 30_000);
 
   it("has a banner for each state of the transcript, and none while it keeps up", () => {

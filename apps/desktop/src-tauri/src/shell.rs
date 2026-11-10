@@ -750,6 +750,8 @@ impl Shell {
                     StartRequest {
                         mode,
                         title: String::new(),
+                        // Asked only on the new-meeting screen (T12.13).
+                        keep_local: false,
                     },
                 )
             });

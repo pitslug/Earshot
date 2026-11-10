@@ -317,6 +317,10 @@ pub struct LiveConfig {
     /// Show provisional words of the unfinished stretch (`preview` module docs; default `None`:
     /// words appear when their stretch lands).
     pub previews: Option<LivePreviews>,
+    /// Keep the meeting's summary on this computer (T12.13, [`crate::keep_local`]; default
+    /// off): the record is written in the transaction that creates the meeting's rows, so the
+    /// meeting never exists without it.
+    pub keep_summary_local: bool,
 }
 
 /// How a live session transcribes.
@@ -366,6 +370,7 @@ impl Default for LiveConfig {
             voice_activity: VoiceActivityConfig::default(),
             hold: None,
             previews: None,
+            keep_summary_local: false,
         }
     }
 }
@@ -996,12 +1001,17 @@ where
     // Commit the rows last, then start the thread (which announces Started).
     let committed = {
         let (m, t) = (meeting.clone(), tracks.clone());
+        let keep_local = cfg.keep_summary_local;
         services
             .store()
             .transaction(|tx| -> Result<(), RuntimeError> {
+                let id = m.id;
                 tx.put_meeting(m)?;
                 for track in t {
                     tx.put_track(track)?;
+                }
+                if keep_local {
+                    crate::keep_local::mark_kept_local_tx(tx, id)?;
                 }
                 Ok(())
             })

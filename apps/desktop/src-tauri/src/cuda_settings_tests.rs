@@ -1322,6 +1322,7 @@ fn cuda_settings_meeting_preflight_beside_a_hung_trial() {
     let request = StartRequest {
         mode: CaptureMode::Call,
         title: String::new(),
+        keep_local: false,
     };
     let ticket = Arc::new(earshot_runtime::meeting_queue::MeetingQueue::new().enter());
     drop(

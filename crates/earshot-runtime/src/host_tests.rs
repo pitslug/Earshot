@@ -234,6 +234,75 @@ fn host_after_meeting_runs_the_final_pass_then_the_summary() {
 }
 
 #[test]
+fn host_after_meeting_summary_of_a_kept_local_meeting_never_reaches_the_endpoint() {
+    let dir = TempDir::new("host");
+    let (svc, _) = services(&dir);
+    let outcome = recorded(&svc, 121);
+    crate::local::set(
+        &mut svc.store(),
+        &crate::keep_local::record_key(outcome.meeting),
+        &crate::keep_local::encode(),
+    )
+    .unwrap();
+    let server = MockServer::start(vec![reply("Release planning")]).unwrap();
+    // A remote service that should never have been built for this meeting (the plan makes
+    // none, `keep_local_tests`): the summary step itself still refuses it.
+    let service = SummaryService::new(
+        &SummaryConfig::new(server.endpoint().as_str(), "test-model"),
+        svc.clock.clone(),
+    )
+    .unwrap();
+    let models = ModelDir::new(dir.0.join("models"));
+    let (a, b) = (CancelToken::new(), CancelToken::new());
+    let result = after_meeting_with(
+        &svc,
+        &outcome,
+        &AfterMeeting {
+            post: false,
+            ..run(&models, Some(&service), &a, &b)
+        },
+        || -> Result<Fakes, RuntimeError> { panic!("the post pass must not load") },
+        &mut |_| {},
+    );
+    assert!(
+        matches!(
+            &result.summary,
+            SummaryResult::Failed {
+                error: RuntimeError::SummaryKeptLocal(m),
+                retryable: false
+            } if *m == outcome.meeting
+        ),
+        "{:?}",
+        result.summary
+    );
+    assert!(result.network.is_empty() && result.handovers.is_empty());
+    assert!(server.requests().is_empty());
+    assert!(svc.store().summaries(outcome.meeting).unwrap().is_empty());
+
+    // The plan the app makes for it: no service at all, skipped with its own reason.
+    let skipped = after_meeting_with(
+        &svc,
+        &outcome,
+        &AfterMeeting {
+            post: false,
+            no_summary: SkipReason::KeptLocalNoModel {
+                model: "qwen3.5-4b-q4_k_m",
+            },
+            ..run(&models, None, &a, &b)
+        },
+        || -> Result<Fakes, RuntimeError> { panic!("the post pass must not load") },
+        &mut |_| {},
+    );
+    assert!(matches!(
+        skipped.summary,
+        SummaryResult::Skipped {
+            reason: SkipReason::KeptLocalNoModel { .. }
+        }
+    ));
+    assert!(skipped.network.is_empty() && skipped.handovers.is_empty());
+}
+
+#[test]
 fn host_after_meeting_without_post_or_summary_does_nothing() {
     let dir = TempDir::new("host");
     let (svc, _) = services(&dir);

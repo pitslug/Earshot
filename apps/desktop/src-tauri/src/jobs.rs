@@ -431,11 +431,12 @@ impl JobWork for HostJobs {
 /// for this summary, so an endpoint whose API key cannot be read fails the job with the
 /// `api_key` message (a meeting's own summary is skipped instead), and Claude Code that is
 /// not installed or not signed in fails it with that reason (`claude_code`), and Codex
-/// likewise (`codex`, T7.4gc).
+/// likewise (`codex`, T7.4gc). A meeting kept on this computer (T12.13) is summarised only by
+/// the local summary model, and fails `summary_kept_local` without it.
 ///
 /// # Errors
 /// As `meeting::summary_setup`; `api_key` without the endpoint's key; `claude_code`;
-/// `codex`.
+/// `codex`; `summary_kept_local`.
 pub(crate) fn summarise_with(
     svc: &Services,
     meeting: EntityId,
@@ -448,11 +449,17 @@ pub(crate) fn summarise_with(
     use earshot_core::asr::CancelToken;
     use earshot_runtime::host::{self, SkipReason};
 
-    let setup = crate::meeting::summary_setup(svc, models, keys, claude, codex)?;
+    // A meeting kept on this computer (T12.13) is read here, before anything is set up: a
+    // record that cannot be read keeps it here (`keep_local::summary_privacy`).
+    let privacy = earshot_runtime::keep_local::summary_privacy(&svc.store(), meeting);
+    let setup = crate::meeting::summary_setup(svc, models, keys, claude, codex, privacy)?;
     if let Some(e) = setup.chosen_missing {
         return Err(e);
     }
     match setup.no_summary {
+        SkipReason::KeptLocalNoModel { model } => {
+            return Err(crate::meeting_events::kept_local_error(model));
+        }
         SkipReason::NoApiKey(e) => {
             return Err(IpcError::from(earshot_runtime::RuntimeError::ApiKey(e)));
         }

@@ -62,6 +62,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             undo_summary,
             export_meeting,
             delete_meeting,
+            crate::keep_local::allow_summary_writer,
             crate::folders::list_folders,
             crate::folders::create_folder,
             crate::folders::rename_folder,
@@ -234,6 +235,7 @@ fn runtime_kind(e: &RuntimeError) -> &'static str {
         RuntimeError::MeetingBusy(_) => "meeting_busy",
         RuntimeError::Edit(_) => "edit",
         RuntimeError::ApiKey(_) => "api_key",
+        RuntimeError::SummaryKeptLocal(_) => "summary_kept_local",
     }
 }
 
@@ -492,6 +494,7 @@ async fn search_meetings(
 }
 
 /// Starts a meeting in `mode` with an optional title and returns its id once it records.
+/// `keep_local` keeps its summary on this computer (T12.13; asked only here).
 /// Every check (models, summary setup, ONNX Runtime) runs first; a failure records nothing.
 /// The meeting's progress arrives as `MeetingEvent`s. Fails with `busy` while another
 /// meeting records or is processed.
@@ -502,12 +505,14 @@ async fn start_meeting(
     driver: State<'_, MeetingDriver>,
     mode: CaptureMode,
     title: Option<String>,
+    keep_local: bool,
 ) -> Result<String, IpcError> {
     let services = state.services()?;
     let driver = driver.inner().clone();
     let request = StartRequest {
         mode,
         title: title.map(|t| t.trim().to_owned()).unwrap_or_default(),
+        keep_local,
     };
     tauri::async_runtime::spawn_blocking(move || driver.start(&services, request))
         .await

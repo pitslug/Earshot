@@ -22,7 +22,8 @@ export function createTauriIpc(): Ipc {
     appInfo: () => commands.appInfo(),
     listMeetings: async () => unwrap(await commands.listMeetings()),
     searchMeetings: async (query) => unwrap(await commands.searchMeetings(query)),
-    startMeeting: async (mode, title) => unwrap(await commands.startMeeting(mode, title)),
+    startMeeting: async (mode, title, keepLocal) =>
+      unwrap(await commands.startMeeting(mode, title, keepLocal)),
     stopMeeting: async () => {
       unwrap(await commands.stopMeeting());
     },
@@ -68,6 +69,9 @@ export function createTauriIpc(): Ipc {
     },
     resummarise: async (meeting) => {
       unwrap(await commands.resummarise(meeting));
+    },
+    allowSummaryWriter: async (meeting) => {
+      unwrap(await commands.allowSummaryWriter(meeting));
     },
     undoSummary: async (meeting) => {
       unwrap(await commands.undoSummary(meeting));

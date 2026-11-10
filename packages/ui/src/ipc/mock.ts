@@ -165,6 +165,8 @@ export interface MockIpcData {
   onSetCompact?: (compact: boolean) => void;
   /** Called when the app is asked to quit. */
   onQuit?: () => void;
+  /** Meetings whose summary is kept on this computer (T12.13), by id. */
+  keptLocal?: string[];
   /** Meeting details by id (default: `sampleDetail` of each meeting). */
   details?: Record<string, MeetingDetail>;
   /** Finished meetings without a detail of their own were recorded in the room, with no
@@ -398,6 +400,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   let afterOlder: (() => void) | null = null;
   let speakingNow: Record<LiveTrack, boolean> | null = null;
 
+  // Meetings kept on this computer (T12.13); "Allow" takes one out.
+  const keptLocal = new Set(data.keptLocal ?? []);
   const detailOf = (id: string): MeetingDetail => {
     const row = meetings.find((m) => m.id === id);
     if (!row) return fail("meeting_not_found", "This meeting no longer exists.");
@@ -407,6 +411,20 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       details.set(id, d);
     }
     return d;
+  };
+  // The writer "Allow" would let summarise a kept meeting, as `keep_local::remote_writer_name`.
+  const remoteWriter = async (): Promise<string | null> => {
+    const { writer } = (await summariesMock.summarySettings()).value;
+    switch (writer) {
+      case "ClaudeCode":
+        return "Claude Code";
+      case "Codex":
+        return "Codex";
+      case "OwnEndpoint":
+        return "your own server";
+      default:
+        return null;
+    }
   };
   const update = (id: string, f: (d: MeetingDetail) => MeetingDetail) => {
     details.set(id, f(detailOf(id)));
@@ -469,7 +487,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
             .map((m) => ({ ...m })),
     searchMeetings: async (query) =>
       searchSample(meetings, (row) => details.get(row.id) ?? sampleDetail(row), query),
-    startMeeting: async (mode, title) => {
+    startMeeting: async (mode, title, keepLocal) => {
       if (data.startError) throw new IpcFailure(data.startError);
       if (live) fail("busy", "a meeting is already recording", true);
       const held = processing;
@@ -483,6 +501,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         folder_id: null,
       };
       meetings.push(row);
+      if (keepLocal) keptLocal.add(row.id);
       const { cancel, speaking, tracks } = record(row, mode, held);
       if (data.callEndOfferAfterMs !== undefined && mode === "Call") {
         cancel.push(
@@ -612,9 +631,11 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     getMeeting: async (meeting) => {
       const row = meetings.find((m) => m.id === meeting);
       const d = detailOf(meeting);
+      const kept_local = keptLocal.has(meeting) ? { writer: await remoteWriter() } : null;
       // The header follows the list row (title from a summary, state).
       return structuredClone({
         ...d,
+        kept_local,
         state: row?.state ?? d.state,
         header: { ...d.header, title: row?.title ?? d.header.title },
       });
@@ -812,6 +833,11 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         },
         (steps.length + 1) * POST_STEP_MS,
       );
+    },
+    allowSummaryWriter: async (meeting) => {
+      call("allowSummaryWriter", meeting);
+      detailOf(meeting);
+      keptLocal.delete(meeting);
     },
     resummarise: async (meeting) => {
       call("resummarise", meeting);

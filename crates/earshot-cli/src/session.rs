@@ -396,6 +396,10 @@ pub fn summary_plan(
         no_key: None,
         claude_code: claude_code_config(opts)?,
         codex: codex_config(opts)?,
+        // The CLI summarises only the meeting it has just recorded, never one kept on this
+        // computer (T12.13: asked only on the app's new-meeting screen); `SummaryService`
+        // refuses a remote service for a kept meeting anyway.
+        kept_local: false,
     };
     host::summary_plan(&request, memory, gpu, models).map_err(|e| match e {
         SummaryPlanError::UnknownModel(e) => anyhow::anyhow!(
@@ -434,6 +438,14 @@ pub fn no_summary_lines(plan: &SummaryPlan) -> Option<(String, &'static str)> {
         SummaryPlan::CodexUnavailable(e) => Some((
             format!("summary: none ({e}; sign in to Codex with `codex login`, or install it)"),
             "Codex cannot run",
+        )),
+        // The CLI never plans this (`kept_local: false` above); told anyway.
+        SummaryPlan::KeptLocalNoModel(choice) => Some((
+            format!(
+                "summary: none, the meeting is kept on this computer and its local summary model                  is not installed ({})",
+                choice.model.id
+            ),
+            "kept on this computer, no local summary model",
         )),
         SummaryPlan::Remote(_)
         | SummaryPlan::Local(_)

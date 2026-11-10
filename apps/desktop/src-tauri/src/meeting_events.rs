@@ -914,6 +914,9 @@ pub fn skip_copy(reason: &SkipReason) -> String {
         SkipReason::NoApiKey(e) => no_key_copy(e, false),
         SkipReason::ClaudeCodeUnavailable(e) => claude_code_copy(e, false),
         SkipReason::CodexUnavailable(e) => codex_copy(e, false),
+        SkipReason::KeptLocalNoModel { model } => {
+            crate::plain_text::kept_local_no_model(model, false)
+        }
     }
 }
 
@@ -1011,6 +1014,32 @@ pub fn chosen_model_banner(reason: &SkipReason) -> Option<MeetingEvent> {
             ),
         }),
         _ => None,
+    }
+}
+
+/// The banner at the start of a meeting kept on this computer (T12.13) whose summary will not
+/// run because no summary model here is downloaded (key `summary-kept-local`), `None` for any
+/// other skip.
+#[must_use]
+pub fn kept_local_banner(reason: &SkipReason) -> Option<MeetingEvent> {
+    match reason {
+        SkipReason::KeptLocalNoModel { model } => Some(MeetingEvent::Warning {
+            key: "summary-kept-local".into(),
+            kind: WarningKind::Backend,
+            message: crate::plain_text::kept_local_no_model(model, true),
+        }),
+        _ => None,
+    }
+}
+
+/// What an explicit summary of a meeting kept on this computer (T12.13) fails with when no
+/// summary model here is downloaded (kind `summary_kept_local`); never another writer.
+#[must_use]
+pub fn kept_local_error(model: &str) -> crate::ipc::IpcError {
+    crate::ipc::IpcError {
+        kind: "summary_kept_local".into(),
+        message: crate::plain_text::kept_local_no_model(model, false),
+        retryable: false,
     }
 }
 

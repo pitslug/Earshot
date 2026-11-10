@@ -259,7 +259,15 @@ fn summaries_settings_responses_never_carry_the_key() {
     }
     // The meeting's setup reads it and keeps it out of everything it reports.
     let models = earshot_runtime::backends::ModelDir::new(dir.0.join("models"));
-    let setup = summary_setup(&svc, &models, &vault, &no_claude(), &no_codex()).unwrap();
+    let setup = summary_setup(
+        &svc,
+        &models,
+        &vault,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     let prepared = setup.summary.as_ref().expect("a remote service");
     assert!(prepared.local.is_none());
     assert!(!format!("{prepared:?}").contains(SECRET));
@@ -283,7 +291,15 @@ fn summaries_meeting_setup_follows_who_writes_the_summary() {
         ),
     )
     .unwrap();
-    let s = summary_setup(&svc, &models, &vault, &no_claude(), &no_codex()).unwrap();
+    let s = summary_setup(
+        &svc,
+        &models,
+        &vault,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(s.summary.is_none());
     assert_eq!(s.no_summary, SkipReason::NotRequested);
     assert!(!s.local_chosen);
@@ -298,7 +314,15 @@ fn summaries_meeting_setup_follows_who_writes_the_summary() {
         ),
     )
     .unwrap();
-    let s = summary_setup(&svc, &models, &vault, &no_claude(), &no_codex()).unwrap();
+    let s = summary_setup(
+        &svc,
+        &models,
+        &vault,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(s.summary.is_none());
     assert!(
         matches!(s.no_summary, SkipReason::NotInstalled { .. }),
@@ -317,7 +341,15 @@ fn summaries_meeting_setup_follows_who_writes_the_summary() {
         ),
     )
     .unwrap();
-    let s = summary_setup(&svc, &models, &vault, &no_claude(), &no_codex()).unwrap();
+    let s = summary_setup(
+        &svc,
+        &models,
+        &vault,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     let prepared = s.summary.expect("remote");
     assert!(prepared.local.is_none());
     assert_eq!(prepared.service.model(), "qwen");
@@ -338,12 +370,28 @@ fn summaries_meeting_setup_follows_who_writes_the_summary() {
         ),
     )
     .unwrap();
-    let s = summary_setup(&svc, &models, &vault, &no_claude(), &no_codex()).unwrap();
+    let s = summary_setup(
+        &svc,
+        &models,
+        &vault,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(s.summary.is_none());
     assert_eq!(s.no_summary, SkipReason::NoApiKey(ApiKeyError::Missing));
     // With one: a remote service.
     set_api_key(&vault, SECRET).unwrap();
-    let s = summary_setup(&svc, &models, &vault, &no_claude(), &no_codex()).unwrap();
+    let s = summary_setup(
+        &svc,
+        &models,
+        &vault,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(
         s.summary.expect("remote").service.model(),
         "claude-sonnet-4-5"
@@ -358,7 +406,15 @@ fn summaries_live_switch_is_honoured_only_on_this_computer() {
     let vault = MemoryVault::default();
     let order = [earshot_runtime::backends::Accelerator::Cpu];
     // Off: nothing, nothing said.
-    let s = summary_setup(&svc, &models, &vault, &no_claude(), &no_codex()).unwrap();
+    let s = summary_setup(
+        &svc,
+        &models,
+        &vault,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(matches!(live_summaries(&s, &order), (None, None)));
     // On with a local choice whose model is not installed: off for this meeting, told.
     set_settings(
@@ -374,7 +430,15 @@ fn summaries_live_switch_is_honoured_only_on_this_computer() {
         },
     )
     .unwrap();
-    let s = summary_setup(&svc, &models, &vault, &no_claude(), &no_codex()).unwrap();
+    let s = summary_setup(
+        &svc,
+        &models,
+        &vault,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     let (l, note) = live_summaries(&s, &order);
     assert!(l.is_none());
     assert_eq!(
@@ -398,7 +462,15 @@ fn summaries_live_switch_is_honoured_only_on_this_computer() {
         },
     )
     .unwrap();
-    let s = summary_setup(&svc, &models, &vault, &no_claude(), &no_codex()).unwrap();
+    let s = summary_setup(
+        &svc,
+        &models,
+        &vault,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(s.live);
     assert!(matches!(live_summaries(&s, &order), (None, None)));
 }
@@ -440,7 +512,15 @@ fn summaries_no_api_key_skips_the_meetings_summary_with_a_banner() {
         reads: Cell::new(0),
     };
     // The setup succeeds, so the meeting starts.
-    let s = summary_setup(&svc, &models, &keys, &no_claude(), &no_codex()).unwrap();
+    let s = summary_setup(
+        &svc,
+        &models,
+        &keys,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(keys.reads.get(), 1, "the key store is read once");
     assert!(s.summary.is_none());
     assert_eq!(s.no_summary, SkipReason::NoApiKey(ApiKeyError::Missing));
@@ -475,7 +555,15 @@ fn summaries_no_api_key_skips_the_meetings_summary_with_a_banner() {
         answer: Err(ApiKeyError::Store("access denied".into())),
         reads: Cell::new(0),
     };
-    let s = summary_setup(&svc, &models, &broken, &no_claude(), &no_codex()).unwrap();
+    let s = summary_setup(
+        &svc,
+        &models,
+        &broken,
+        &no_claude(),
+        &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(broken.reads.get(), 1);
     let Some(MeetingEvent::Warning { message, .. }) = no_key_banner(&s.no_summary) else {
         panic!("{:?}", s.no_summary);
@@ -527,6 +615,7 @@ fn summaries_a_chosen_summary_model_not_downloaded_skips_the_summary_naming_that
         &MemoryVault::default(),
         &no_claude(),
         &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
     )
     .map_err(|e| e.message)
     .expect("a chosen model that is not there never refuses the meeting");
@@ -715,6 +804,7 @@ fn summaries_claude_code_not_signed_in_skips_the_meetings_summary_with_a_banner(
         &keys,
         &claude_installed(SignIn::SignedIn { method: None }),
         &no_codex(),
+        earshot_runtime::host::SummaryPrivacy::Writer,
     )
     .unwrap();
     let prepared = s.summary.expect("a Claude Code service");
@@ -739,7 +829,15 @@ fn summaries_claude_code_not_signed_in_skips_the_meetings_summary_with_a_banner(
              Install Claude Code and sign in, then re-summarise this meeting.",
         ),
     ] {
-        let s = summary_setup(&svc, &models, &keys, &probe, &no_codex()).unwrap();
+        let s = summary_setup(
+            &svc,
+            &models,
+            &keys,
+            &probe,
+            &no_codex(),
+            earshot_runtime::host::SummaryPrivacy::Writer,
+        )
+        .unwrap();
         assert!(s.summary.is_none());
         assert!(matches!(s.no_summary, SkipReason::ClaudeCodeUnavailable(_)));
         assert_eq!(
@@ -925,6 +1023,7 @@ fn summaries_codex_not_signed_in_skips_the_meetings_summary_with_a_banner() {
         &keys,
         &no_claude(),
         &codex_installed(CodexSignIn::SignedIn { method: None }),
+        earshot_runtime::host::SummaryPrivacy::Writer,
     )
     .unwrap();
     let prepared = s.summary.expect("a Codex service");
@@ -956,6 +1055,7 @@ fn summaries_codex_not_signed_in_skips_the_meetings_summary_with_a_banner() {
             &keys,
             &claude_installed(SignIn::SignedIn { method: None }),
             &probe,
+            earshot_runtime::host::SummaryPrivacy::Writer,
         )
         .unwrap();
         assert!(s.summary.is_none(), "never Claude Code instead");

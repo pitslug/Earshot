@@ -561,6 +561,7 @@ fn benchmark_summary_never_prepares_a_summary_written_elsewhere() {
             &[Accelerator::Cpu],
             &hw,
             &crate::summary_settings::NoApiKeys,
+            crate::keep_local::SummaryPrivacy::Writer,
         )
         .unwrap();
         prepare_bench_summary(&settings, &models, Arc::clone(&svc.clock), &[]).unwrap()
@@ -624,6 +625,7 @@ fn benchmark_live_summaries_written_elsewhere_are_recorded_as_not_run() {
         &[Accelerator::Cpu],
         &hw,
         &crate::summary_settings::NoApiKeys,
+        crate::keep_local::SummaryPrivacy::Writer,
     )
     .unwrap();
     assert!(read.live, "the setting is on");

@@ -27,6 +27,7 @@ mod general;
 mod headless;
 mod ipc;
 mod jobs;
+mod keep_local;
 mod llama_probe;
 mod meeting;
 mod meeting_events;
