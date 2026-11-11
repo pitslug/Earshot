@@ -228,7 +228,7 @@ pub fn result_view(r: &BenchmarkRecord) -> BenchmarkResultView {
             RecordSummary::Skipped { reason } => match reason {
                 BenchSkip::NotRequested => "None (Summaries is set to no summary)".into(),
                 BenchSkip::NotInstalled { model } => format!(
-                    "None ({} is not downloaded; see Models)",
+                    "None ({} is not downloaded; see Summaries)",
                     display_name(model)
                 ),
                 BenchSkip::NotOnThisComputer { .. } => "Not run: summaries are written \
@@ -322,8 +322,8 @@ pub fn result_view(r: &BenchmarkRecord) -> BenchmarkResultView {
             seconds_text(*ready_ms)
         ),
         (RecordSummary::Skipped { .. }, true) => "Live transcription kept up.".into(),
-        (_, false) => "Live transcription fell behind. A lighter model, or another part on the \
-            Models page, may keep up."
+        (_, false) => "Live transcription fell behind. A lighter model on the Transcription page, \
+            or another part on the System page, may keep up."
             .into(),
     };
     BenchmarkResultView {
@@ -553,10 +553,11 @@ pub const STORE_FAILED: &str =
 
 /// A model is not downloaded.
 pub const MODEL_MISSING: &str = "A model these settings use is not downloaded. Download it on the \
-    Models page, then run the benchmark again.";
+    System, Transcription or Summaries page, then run the benchmark again.";
 /// The settings cannot run here.
 pub const CANNOT_RUN_HERE: &str = "These settings cannot run on this computer. Choose another \
-    model or part on the Models page, then run the benchmark again.";
+    model on the Transcription or Summaries page, or another part on the System page, then run \
+    the benchmark again.";
 /// Transcribing failed.
 pub const TRANSCRIPTION_FAILED: &str =
     "Transcribing the benchmark meeting failed. Run the benchmark again.";

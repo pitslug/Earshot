@@ -4,7 +4,9 @@
 use earshot_core::asr::Segment;
 use earshot_core::capture::TrackId;
 use earshot_core::diar::SpeakerRole;
-use earshot_core::identity::EntityId;
+use std::collections::{BTreeMap, BTreeSet};
+
+use earshot_core::identity::{EntityId, HlcTimestamp};
 use earshot_core::model::{
     Meeting, MeetingRepo, Note, RepoError, Speaker, Summary, Track, TranscriptPass, live_segments,
 };
@@ -34,6 +36,9 @@ pub struct MeetingView {
     pub segments: Vec<Segment>,
     /// Which pass `segments` came from (`None` without any transcript).
     pub pass: Option<TranscriptPass>,
+    /// The segments of `segments` whose text the user edited (T12.16), with when
+    /// (`SegmentRow::text_edited_at`).
+    pub edited: BTreeMap<EntityId, HlcTimestamp>,
     /// The user's notes in meeting order.
     pub notes: Vec<Note>,
     /// The current summary: the most recently updated live one.
@@ -63,10 +68,15 @@ impl MeetingView {
             .collect();
         let mut pass = None;
         let mut segments = Vec::new();
+        let mut edited = BTreeMap::new();
         for p in [TranscriptPass::Final, TranscriptPass::Live] {
             let rows = live_segments(repo, meeting, p)?;
             if !rows.is_empty() {
                 pass = Some(p);
+                edited = rows
+                    .iter()
+                    .filter_map(|r| r.text_edited_at.map(|t| (r.segment.id, t)))
+                    .collect();
                 segments = rows.into_iter().map(|r| r.segment).collect();
                 break;
             }
@@ -84,9 +94,26 @@ impl MeetingView {
             speakers,
             segments,
             pass,
+            edited,
             notes,
             summary,
         }))
+    }
+
+    /// Whether the current summary no longer matches the transcript, so the host offers to
+    /// summarise again (nothing is sent by itself): it cites a segment the transcript no
+    /// longer has (a re-transcription replaced it), or the user edited a segment's text after
+    /// the summary was written (T12.16: an edit later than the summary's creation; a summary
+    /// restored by an undo keeps its creation time, so an older one stays out of date).
+    /// `false` without a summary.
+    #[must_use]
+    pub fn summary_out_of_date(&self) -> bool {
+        let Some(summary) = &self.summary else {
+            return false;
+        };
+        let ids: BTreeSet<EntityId> = self.segments.iter().map(|s| s.id).collect();
+        !cites_only(&summary.summary, &ids)
+            || self.edited.values().any(|at| *at > summary.meta.created_at)
     }
 
     /// The name shown for `segment`: its speaker's display name after diarisation,
@@ -237,6 +264,25 @@ pub fn format_local(unix_ms: u64, utc_offset_minutes: i32) -> String {
         minute_of_day / 60,
         minute_of_day % 60
     )
+}
+
+/// Whether every segment `summary` cites (note bullets, decisions, action items) is in `ids`.
+/// Only the citations are checked: the summary passed validation when it was stored.
+#[must_use]
+pub fn cites_only(summary: &earshot_core::summary::SummaryV1, ids: &BTreeSet<EntityId>) -> bool {
+    summary
+        .enhanced_notes
+        .iter()
+        .flat_map(|n| &n.bullets)
+        .flat_map(|b| &b.source_segment_ids)
+        .chain(summary.decisions.iter().flat_map(|d| &d.source_segment_ids))
+        .chain(
+            summary
+                .action_items
+                .iter()
+                .flat_map(|a| &a.source_segment_ids),
+        )
+        .all(|id| ids.contains(id))
 }
 
 #[cfg(test)]

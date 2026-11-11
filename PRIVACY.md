@@ -39,7 +39,7 @@ That provider's own terms then apply to the text. Earshot never falls back to a 
 A voiceprint is biometric data, so:
 
 - Saving your own voice is optional, from a sample you record on purpose. The sample itself is held in memory and is never written to disk.
-- "Remember these voices for next time" is off until you tick it.
+- Another person's voice is remembered only when you name it with Save in a meeting's Speakers panel, one voice at a time. Your own voice is never saved there, and a voice you ignore is never remembered.
 - Each meeting's record holds a numeric voice summary per speaker, so names you gave survive a re-transcription. It can't be played back as audio, and it goes when the meeting is deleted.
 - You can forget your own voice, or anyone's, in Settings, Speakers. Voiceprints stay on this computer, and deleting a meeting does not remove them.
 

@@ -29,6 +29,8 @@ struct Seen {
     /// Segments before the window in the input.
     before: usize,
     title: Option<String>,
+    /// The user's own words the window carried (T12.15a).
+    vocabulary: Vec<String>,
     /// The thread's OS priority (Windows).
     priority: Option<i32>,
 }
@@ -81,6 +83,7 @@ impl MapChunk for FakeMapper {
                 .collect(),
             before: last.start,
             title: input.meeting.title.clone(),
+            vocabulary: input.vocabulary.words().to_vec(),
             priority,
         });
         assert!(self.behaviour != Behaviour::Panics, "the model crashed");
@@ -146,6 +149,8 @@ fn live_summaries_map_each_settled_window_during_the_session_and_record_it() {
     w.extend(words("b", 9000, 5));
     let audio = speech(&w, 12_000, 201);
     let mapper = FakeMapper::new(4, Behaviour::Answer);
+    // The user's own words reach every window (T12.15a; an invented word).
+    crate::vocabulary::set_vocabulary(&mut svc.store(), &["Quillmarsh"]).unwrap();
     let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // Released by the publish, not the call: a window whose `map` has returned is dropped if
     // the end cancels the thread before it publishes.
@@ -200,6 +205,10 @@ fn live_summaries_map_each_settled_window_during_the_session_and_record_it() {
     // The live transcript as the meeting reads during it: "Me", no title.
     let a: Vec<String> = texts(&w[..5]);
     assert_eq!(seen[0].title, None);
+    assert!(
+        seen.iter().all(|s| s.vocabulary == ["Quillmarsh"]),
+        "{seen:?}"
+    );
     assert_eq!(seen[0].before, 0);
     assert!(seen[0].lines.iter().all(|(who, _)| who == "Me"));
     let text: Vec<String> = seen[0]
@@ -215,6 +224,11 @@ fn live_summaries_map_each_settled_window_during_the_session_and_record_it() {
     let record = record_of(&svc, meeting).expect("a record");
     assert_eq!(record.model, "fake-live-model");
     assert_eq!(record.seconds, 4);
+    // The words the windows were mapped with, so a later Dictionary change refuses them.
+    assert_eq!(
+        record.vocabulary.as_deref(),
+        Some(&["Quillmarsh".to_owned()][..])
+    );
     assert_eq!(record.partials[0].window, 0);
     let rows = live_segments(&**svc.store(), meeting, TranscriptPass::Live).unwrap();
     let cited = record.partials[0].summary.decisions[0].source_segment_ids[0];
@@ -579,6 +593,7 @@ fn live_summaries_thread_runs_below_normal_priority() {
         template: earshot_core::prompt::Template::General,
         prompt_variant: earshot_core::prompt::PromptVariant::Current,
         style: Default::default(),
+        vocabulary: Default::default(),
         user_name: None,
     };
     thread.send(Job {

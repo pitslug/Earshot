@@ -89,6 +89,7 @@ impl Rows {
             meeting_id: meeting,
             pass: TranscriptPass::Live,
             segment: seg,
+            text_edited_at: None,
         }
     }
 
@@ -281,7 +282,9 @@ pub fn meeting_repo<R: MeetingRepo>(make: impl Fn() -> R) {
         "speaker",
         "segment with another meeting's speaker",
     );
-    let s_late = f.segment(m, reference.id, 5_000);
+    let mut s_late = f.segment(m, reference.id, 5_000);
+    // The user's edit mark (T12.16) round-trips.
+    s_late.text_edited_at = Some(s_late.meta.updated_at);
     let mut s_early = f.segment(m, mic.id, 1_000);
     s_early.segment.speaker_id = Some(sp1.id);
     s_early.pass = TranscriptPass::Final;

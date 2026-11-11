@@ -19,6 +19,7 @@
 //! exists as the reference for [`NemoMel`] in the tests.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use earshot_core::asr::{
@@ -375,7 +376,7 @@ impl OnnxNemoMel {
 /// and is not reported back (`Transcription::language` is `None`).
 #[derive(Debug)]
 pub struct ParakeetTdt {
-    encoder: OnnxSession,
+    encoder: Encoder,
     decoder: OnnxSession,
     joiner: OnnxSession,
     mel: NemoMel,
@@ -388,6 +389,71 @@ pub struct ParakeetTdt {
     english_only: bool,
     /// `Some(STATIC_FRAMES)` for an encoder with a fixed input shape (converted for the NPU).
     static_frames: Option<usize>,
+    /// How long each encoder call waited for a [`SharedEncoder`]'s lock (empty with its own).
+    encoder_waits: Vec<Duration>,
+}
+
+/// The encoder session of a [`ParakeetTdt`]: its own, or one it borrows ([`SharedEncoder`]).
+#[derive(Debug)]
+enum Encoder {
+    Own(OnnxSession),
+    Shared(SharedEncoder),
+}
+
+/// A Parakeet TDT encoder session that several [`ParakeetTdt`]s use one call at a time
+/// (T12.3b, evaluation only: no shipped code shares an encoder). Made by
+/// [`ParakeetTdt::share_encoder`]; a model built on it with [`ParakeetTdt::load_sharing`] has
+/// its own prediction network and joint and borrows only the encoder, the session that holds
+/// the weights.
+///
+/// The lock is a plain [`Mutex`]: `ort::Session::run` takes `&mut self` (ort 2.0.0-rc.14,
+/// `src/session/mod.rs`: ONNX Runtime's `Run` is not thread safe in practice, whatever its
+/// documentation says), and a guard is exactly that, so sharing needs no `unsafe`. A caller
+/// waits for at most the rest of one encoder call (one chunk of at most [`MAX_CHUNK`]), never
+/// for another model's token loop, which runs on that model's own sessions.
+#[derive(Debug, Clone)]
+pub struct SharedEncoder {
+    session: Arc<Mutex<OnnxSession>>,
+    /// The session's backend, read once (a reference into the lock cannot be handed out).
+    backend: SessionBackend,
+}
+
+impl SharedEncoder {
+    /// The provider requested and where ONNX Runtime placed the encoder's nodes.
+    #[must_use]
+    pub fn backend(&self) -> &SessionBackend {
+        &self.backend
+    }
+
+    /// How many models use the session now (the one that shared it included).
+    #[must_use]
+    pub fn users(&self) -> usize {
+        Arc::strong_count(&self.session)
+    }
+}
+
+impl Encoder {
+    fn backend(&self) -> &SessionBackend {
+        match self {
+            Self::Own(s) => s.backend(),
+            Self::Shared(s) => &s.backend,
+        }
+    }
+
+    /// Runs `f` on the session, after the lock for a shared one; returns how long the lock took.
+    fn with<R>(&mut self, f: impl FnOnce(&mut OnnxSession) -> R) -> (R, Option<Duration>) {
+        match self {
+            Self::Own(s) => (f(s), None),
+            Self::Shared(s) => {
+                let asked = std::time::Instant::now();
+                // A poisoned lock means another model panicked inside a run: the session itself
+                // keeps no state between calls, so the next call may use it.
+                let mut guard = s.session.lock().unwrap_or_else(PoisonError::into_inner);
+                let waited = asked.elapsed();
+                (f(&mut guard), Some(waited))
+            }
+        }
+    }
 }
 
 impl ParakeetTdt {
@@ -432,10 +498,61 @@ impl ParakeetTdt {
                 tokens.display()
             ))
         })?;
-        // Checked before the encoder loads, as always; `with_encoder` parses it again (cheap).
-        Vocab::parse(&text).map_err(|e| OnnxError::Model(e.to_string()))?;
+        let vocab = Vocab::parse(&text).map_err(|e| OnnxError::Model(e.to_string()))?;
         let encoder = OnnxSession::load(&dir.join("encoder.onnx"), encoder_config)?;
-        Self::with_encoder(dir, &text, encoder, step_config, name, english_only)
+        Self::assemble(
+            dir,
+            Encoder::Own(encoder),
+            vocab,
+            step_config,
+            name,
+            english_only,
+        )
+    }
+
+    /// This model with its encoder session made shareable, and the handle other models borrow
+    /// it through ([`ParakeetTdt::load_sharing`]). Evaluation only (T12.3b): every encoder call
+    /// of this model then takes the lock too, and its waits are counted
+    /// ([`ParakeetTdt::take_encoder_waits`]). A model whose encoder is shared already returns
+    /// the same handle.
+    #[must_use]
+    pub fn share_encoder(mut self) -> (Self, SharedEncoder) {
+        let shared = match self.encoder {
+            Encoder::Shared(s) => s,
+            Encoder::Own(session) => SharedEncoder {
+                backend: session.backend().clone(),
+                session: Arc::new(Mutex::new(session)),
+            },
+        };
+        self.encoder = Encoder::Shared(shared.clone());
+        (self, shared)
+    }
+
+    /// A model of the same export in `dir` that borrows `encoder` (from
+    /// [`ParakeetTdt::share_encoder`]) and loads its own prediction network and joint on
+    /// `step_config`. Evaluation only (T12.3b).
+    ///
+    /// # Errors
+    /// As [`ParakeetTdt::load_split`].
+    pub fn load_sharing(
+        dir: &Path,
+        encoder: &SharedEncoder,
+        step_config: &SessionConfig,
+        name: &str,
+        english_only: bool,
+    ) -> Result<Self, OnnxError> {
+        let tokens = dir.join("tokens.txt");
+        let text = std::fs::read_to_string(&tokens)
+            .map_err(|e| OnnxError::Model(format!("{}: {e}", tokens.display())))?;
+        let vocab = Vocab::parse(&text).map_err(|e| OnnxError::Model(e.to_string()))?;
+        Self::assemble(
+            dir,
+            Encoder::Shared(encoder.clone()),
+            vocab,
+            step_config,
+            name,
+            english_only,
+        )
     }
 
     /// [`ParakeetTdt::load_split`] with an encoder session the caller loaded: on the NPU, one
@@ -455,25 +572,44 @@ impl ParakeetTdt {
         let tokens = dir.join("tokens.txt");
         let text = std::fs::read_to_string(&tokens)
             .map_err(|e| OnnxError::Model(format!("{}: {e}", tokens.display())))?;
-        Self::with_encoder(dir, &text, encoder, step_config, name, english_only)
+        let vocab = Vocab::parse(&text).map_err(|e| OnnxError::Model(e.to_string()))?;
+        Self::assemble(
+            dir,
+            Encoder::Own(encoder),
+            vocab,
+            step_config,
+            name,
+            english_only,
+        )
     }
 
-    fn with_encoder(
+    /// How long each encoder call since the last take waited for a shared encoder's lock, in
+    /// call order (empty for a model with its own encoder). Evaluation only (T12.3b).
+    pub fn take_encoder_waits(&mut self) -> Vec<Duration> {
+        std::mem::take(&mut self.encoder_waits)
+    }
+
+    /// The rest of [`ParakeetTdt::load_split`] once the encoder exists: the step sessions, the
+    /// signatures and the metadata checks.
+    fn assemble(
         dir: &Path,
-        text: &str,
-        encoder: OnnxSession,
+        mut encoder: Encoder,
+        vocab: Vocab,
         step_config: &SessionConfig,
         name: &str,
         english_only: bool,
     ) -> Result<Self, OnnxError> {
-        let vocab = Vocab::parse(text).map_err(|e| OnnxError::Model(e.to_string()))?;
         let decoder = OnnxSession::load(&dir.join("decoder.onnx"), step_config)?;
         let joiner = OnnxSession::load(&dir.join("joiner.onnx"), step_config)?;
-        encoder.expect_signature(
-            "Parakeet TDT encoder",
-            &["audio_signal", "length"],
-            &["outputs", "encoded_lengths"],
-        )?;
+        let (read, _) = encoder.with(|e| -> Result<_, OnnxError> {
+            e.expect_signature(
+                "Parakeet TDT encoder",
+                &["audio_signal", "length"],
+                &["outputs", "encoded_lengths"],
+            )?;
+            Ok((e.custom_metadata()?, e.input_shape("audio_signal")))
+        });
+        let (meta, audio_shape) = read?;
         joiner.expect_signature(
             "Parakeet TDT joiner",
             &["encoder_outputs", "decoder_outputs"],
@@ -488,7 +624,6 @@ impl ParakeetTdt {
                 "Parakeet TDT decoder: inputs {decoder_inputs:?}, outputs {decoder_outputs:?}"
             )));
         }
-        let meta = encoder.custom_metadata()?;
         let get = |key: &str| -> Result<usize, OnnxError> {
             meta.get(key)
                 .and_then(|v| v.parse().ok())
@@ -510,7 +645,7 @@ impl ParakeetTdt {
                 .parse()
                 .map_err(|e| OnnxError::Signature(format!("Parakeet TDT: feat_dim: {e}")))?,
         };
-        let static_frames = static_input(encoder.input_shape("audio_signal"), n_mels)?;
+        let static_frames = static_input(audio_shape, n_mels)?;
         Ok(Self {
             encoder,
             decoder,
@@ -524,6 +659,7 @@ impl ParakeetTdt {
             name: name.to_owned(),
             english_only,
             static_frames,
+            encoder_waits: Vec::new(),
         })
     }
 
@@ -566,36 +702,50 @@ impl ParakeetTdt {
             .map_err(runtime_err)?;
         let length = Tensor::from_array(([1usize], vec![i64::try_from(valid).unwrap_or(0)]))
             .map_err(runtime_err)?;
-        let outputs = self
+        let (encoded, waited) = self
             .encoder
-            .session
-            .run(ort::inputs!["audio_signal" => audio, "length" => length])
-            .map_err(runtime_err)?;
-        let (shape, values) = outputs["outputs"]
-            .try_extract_tensor::<f32>()
-            .map_err(runtime_err)?;
-        let dims: Vec<usize> = shape
-            .iter()
-            .map(|d| usize::try_from(*d).unwrap_or(0))
-            .collect();
-        let [1, d, t] = dims[..] else {
-            return Err(OnnxError::Signature(format!("TDT encoder output {dims:?}")));
-        };
-        let (_, lens) = outputs["encoded_lengths"]
-            .try_extract_tensor::<i64>()
-            .map_err(runtime_err)?;
-        let valid_t = lens
-            .first()
-            .map_or(t, |v| usize::try_from(*v).unwrap_or(0).min(t));
-        // [D][T] -> [T][D] for per-frame joint calls.
-        let mut out = vec![0.0f32; valid_t * d];
-        for f in 0..valid_t {
-            for k in 0..d {
-                out[f * d + k] = values[k * t + f];
-            }
+            .with(|encoder| run_encoder(encoder, audio, length));
+        if let Some(waited) = waited {
+            self.encoder_waits.push(waited);
         }
-        Ok((out, valid_t, d))
+        encoded
     }
+}
+
+/// One encoder call on `encoder`: `(values [T'][D], T', D)`.
+fn run_encoder(
+    encoder: &mut OnnxSession,
+    audio: Tensor<f32>,
+    length: Tensor<i64>,
+) -> Result<(Vec<f32>, usize, usize), OnnxError> {
+    let outputs = encoder
+        .session
+        .run(ort::inputs!["audio_signal" => audio, "length" => length])
+        .map_err(runtime_err)?;
+    let (shape, values) = outputs["outputs"]
+        .try_extract_tensor::<f32>()
+        .map_err(runtime_err)?;
+    let dims: Vec<usize> = shape
+        .iter()
+        .map(|d| usize::try_from(*d).unwrap_or(0))
+        .collect();
+    let [1, d, t] = dims[..] else {
+        return Err(OnnxError::Signature(format!("TDT encoder output {dims:?}")));
+    };
+    let (_, lens) = outputs["encoded_lengths"]
+        .try_extract_tensor::<i64>()
+        .map_err(runtime_err)?;
+    let valid_t = lens
+        .first()
+        .map_or(t, |v| usize::try_from(*v).unwrap_or(0).min(t));
+    // [D][T] -> [T][D] for per-frame joint calls.
+    let mut out = vec![0.0f32; valid_t * d];
+    for f in 0..valid_t {
+        for k in 0..d {
+            out[f * d + k] = values[k * t + f];
+        }
+    }
+    Ok((out, valid_t, d))
 }
 
 /// One chunk's encoder frames plus the model, as a core [`TdtModel`].
@@ -692,13 +842,90 @@ impl TdtModel for TdtRun<'_> {
     }
 }
 
-impl Transcriber for ParakeetTdt {
-    fn transcribe(
+/// Evaluation only (T12.15b, docs/vocabulary.md): a change to the token logits of greedy TDT
+/// decoding, for contextual biasing ("hotwords"). Given to
+/// [`ParakeetTdt::transcribe_biased`]; no shipped path uses one.
+pub trait TokenBias {
+    /// A piece of at most [`MAX_CHUNK`] starts: nothing is emitted yet.
+    fn start(&mut self);
+    /// Changes `logits`, the vocabulary's logits of one joint call (blank included, durations
+    /// left out), in place before the best token is taken. The token's recorded probability
+    /// is then the changed one's.
+    fn adjust(&mut self, logits: &mut [f32]);
+    /// The decoder emitted `token` (never blank).
+    fn emitted(&mut self, token: usize);
+}
+
+/// A [`TdtModel`] whose joint logits pass through a [`TokenBias`]: the bias hears the start
+/// of a piece from `initial_state` and every emitted token from `predict` (greedy decoding
+/// adopts every prediction it asks for; its first call, on blank, starts the sequence).
+struct Biased<'a, M: TdtModel> {
+    inner: &'a mut M,
+    bias: &'a mut dyn TokenBias,
+    vocab_len: usize,
+    blank: usize,
+}
+
+impl<M: TdtModel> TdtModel for Biased<'_, M> {
+    type State = M::State;
+
+    fn initial_state(&mut self) -> Result<M::State, AsrError> {
+        self.bias.start();
+        self.inner.initial_state()
+    }
+
+    fn predict(
+        &mut self,
+        token: usize,
+        state: &M::State,
+    ) -> Result<(Vec<f32>, M::State), AsrError> {
+        if token != self.blank {
+            self.bias.emitted(token);
+        }
+        self.inner.predict(token, state)
+    }
+
+    fn joint(&mut self, frame: usize, pred: &[f32]) -> Result<Vec<f32>, AsrError> {
+        let mut logits = self.inner.joint(frame, pred)?;
+        if let Some(tokens) = logits.get_mut(..self.vocab_len) {
+            self.bias.adjust(tokens);
+        }
+        Ok(logits)
+    }
+}
+
+impl ParakeetTdt {
+    /// Evaluation only (T12.15b, docs/vocabulary.md): one [`Transcriber::transcribe`] per
+    /// entry of `biases`, each with its bias changing the vocabulary logits of every joint
+    /// call before greedy TDT picks a token ([`TokenBias`]); every piece is encoded once and
+    /// decoded once per bias. No shipped path calls it; `transcribe` is the same code with no
+    /// bias, and `parakeet_biased_decoding_with_no_change_is_the_plain_decode` (plus the
+    /// ignored `parakeet_biased_decode_with_a_silent_bias_equals_transcribe` on the real
+    /// model) pins that a bias which changes nothing gives the same tokens.
+    ///
+    /// # Errors
+    /// As [`Transcriber::transcribe`].
+    pub fn transcribe_biased(
         &mut self,
         audio: &MonoBuffer,
         options: &TranscribeOptions,
         cancel: &CancelToken,
-    ) -> Result<Transcription, AsrError> {
+        biases: &mut [&mut dyn TokenBias],
+    ) -> Result<Vec<Transcription>, AsrError> {
+        if biases.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.decode(audio, options, cancel, biases)
+    }
+
+    /// One transcription per bias, or one without any when `biases` is empty.
+    fn decode(
+        &mut self,
+        audio: &MonoBuffer,
+        options: &TranscribeOptions,
+        cancel: &CancelToken,
+        biases: &mut [&mut dyn TokenBias],
+    ) -> Result<Vec<Transcription>, AsrError> {
         check_pipeline_rate(audio)?;
         if self.english_only && !english(&options.language) {
             return Err(AsrError::Config(format!(
@@ -708,38 +935,68 @@ impl Transcriber for ParakeetTdt {
         }
         let chunk = PIPELINE_RATE.frames_for(MAX_CHUNK);
         let config = TdtConfig::parakeet(self.vocab.len(), self.vocab.blank());
-        let mut segments = Vec::new();
+        let mut segments: Vec<Vec<RawSegment>> = vec![Vec::new(); biases.len().max(1)];
         for (i, piece) in audio.samples.chunks(chunk).enumerate() {
             if cancel.is_cancelled() {
                 return Err(AsrError::Cancelled);
             }
             let (frames, t, dim) = self.encode(piece).map_err(backend_err)?;
-            let tokens = tdt_greedy(
-                &mut TdtRun {
-                    model: self,
-                    frames: &frames,
-                    dim,
-                },
-                t,
-                &config,
-                cancel,
-            )?;
+            let mut run = TdtRun {
+                model: self,
+                frames: &frames,
+                dim,
+            };
+            let mut decoded = Vec::with_capacity(segments.len());
+            if biases.is_empty() {
+                decoded.push(tdt_greedy(&mut run, t, &config, cancel)?);
+            }
+            for bias in biases.iter_mut() {
+                decoded.push(tdt_greedy(
+                    &mut Biased {
+                        inner: &mut run,
+                        bias: &mut **bias,
+                        vocab_len: config.vocab_len,
+                        blank: config.blank,
+                    },
+                    t,
+                    &config,
+                    cancel,
+                )?);
+            }
             let offset = earshot_core::asr::MeetingTime::from_pipeline_frames(
                 u64::try_from(i * chunk).unwrap_or(u64::MAX),
             );
-            let words: Vec<_> = words_from_tokens(&tokens, &self.vocab, FRAME)
-                .into_iter()
-                .map(|w| w.shifted(offset))
-                .collect();
-            if !words.is_empty() {
-                segments.push(RawSegment::from_words(words));
+            for (tokens, out) in decoded.iter().zip(segments.iter_mut()) {
+                let words: Vec<_> = words_from_tokens(tokens, &self.vocab, FRAME)
+                    .into_iter()
+                    .map(|w| w.shifted(offset))
+                    .collect();
+                if !words.is_empty() {
+                    out.push(RawSegment::from_words(words));
+                }
             }
         }
-        Ok(Transcription {
-            segments,
-            language: self.english_only.then(|| "en".to_owned()),
-            backend: self.info(),
-        })
+        Ok(segments
+            .into_iter()
+            .map(|segments| Transcription {
+                segments,
+                language: self.english_only.then(|| "en".to_owned()),
+                backend: self.info(),
+            })
+            .collect())
+    }
+}
+
+impl Transcriber for ParakeetTdt {
+    fn transcribe(
+        &mut self,
+        audio: &MonoBuffer,
+        options: &TranscribeOptions,
+        cancel: &CancelToken,
+    ) -> Result<Transcription, AsrError> {
+        self.decode(audio, options, cancel, &mut [])?
+            .pop()
+            .ok_or_else(|| AsrError::Backend("no transcription".to_owned()))
     }
 
     fn backend_info(&self) -> BackendInfo {
@@ -881,5 +1138,131 @@ mod tests {
         let (empty, valid) = static_features(&mel, &[]).unwrap();
         assert_eq!(valid, 0);
         assert!(empty.iter().all(|v| *v == 0.0));
+    }
+
+    /// A deterministic stand-in for the prediction and joint networks: the state is the
+    /// sum of the emitted token ids, and the logits are a hash of the frame and that state, so
+    /// a decode emits a varied token sequence with every duration.
+    struct Hashed {
+        vocab: usize,
+    }
+
+    impl TdtModel for Hashed {
+        type State = usize;
+
+        fn initial_state(&mut self) -> Result<usize, AsrError> {
+            Ok(0)
+        }
+
+        fn predict(&mut self, token: usize, state: &usize) -> Result<(Vec<f32>, usize), AsrError> {
+            let next = state.wrapping_mul(31).wrapping_add(token + 1);
+            #[allow(clippy::cast_precision_loss)]
+            Ok((vec![next as f32], next))
+        }
+
+        fn joint(&mut self, frame: usize, pred: &[f32]) -> Result<Vec<f32>, AsrError> {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let state = pred[0] as u64;
+            let mut x = (frame as u64)
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                .wrapping_add(state);
+            Ok((0..self.vocab + 5)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    #[allow(clippy::cast_precision_loss)]
+                    let v = (x % 1000) as f32 / 100.0;
+                    v
+                })
+                .collect())
+        }
+    }
+
+    /// Records what it hears and adds `bonus` to `boosted`.
+    struct Recorder {
+        starts: usize,
+        emitted: Vec<usize>,
+        boosted: Option<usize>,
+        bonus: f32,
+    }
+
+    impl TokenBias for Recorder {
+        fn start(&mut self) {
+            self.starts += 1;
+        }
+        fn adjust(&mut self, logits: &mut [f32]) {
+            if let Some(k) = self.boosted {
+                logits[k] += self.bonus;
+            }
+        }
+        fn emitted(&mut self, token: usize) {
+            self.emitted.push(token);
+        }
+    }
+
+    fn decode_with(bias: Option<&mut Recorder>) -> Vec<earshot_core::asr::CtcToken> {
+        let config = TdtConfig::parakeet(8, 7);
+        let mut model = Hashed { vocab: 8 };
+        let cancel = CancelToken::new();
+        match bias {
+            None => tdt_greedy(&mut model, 40, &config, &cancel).unwrap(),
+            Some(bias) => tdt_greedy(
+                &mut Biased {
+                    inner: &mut model,
+                    bias,
+                    vocab_len: config.vocab_len,
+                    blank: config.blank,
+                },
+                40,
+                &config,
+                &cancel,
+            )
+            .unwrap(),
+        }
+    }
+
+    fn recorder(boosted: Option<usize>, bonus: f32) -> Recorder {
+        Recorder {
+            starts: 0,
+            emitted: Vec::new(),
+            boosted,
+            bonus,
+        }
+    }
+
+    #[test]
+    fn parakeet_biased_decoding_with_no_change_is_the_plain_decode() {
+        let plain = decode_with(None);
+        assert!(plain.len() > 5, "the stand-in model emits tokens");
+        let mut quiet = recorder(None, 0.0);
+        let biased = decode_with(Some(&mut quiet));
+        // Every field, the probabilities included, bit for bit.
+        assert_eq!(biased.len(), plain.len());
+        for (a, b) in biased.iter().zip(&plain) {
+            assert_eq!(
+                (a.id, a.first_frame, a.end_frame, a.log_prob.to_bits()),
+                (b.id, b.first_frame, b.end_frame, b.log_prob.to_bits())
+            );
+        }
+        // The bias heard one start and every emitted token, never blank.
+        assert_eq!(quiet.starts, 1);
+        assert_eq!(
+            quiet.emitted,
+            plain.iter().map(|t| t.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parakeet_biased_decoding_follows_the_changed_logits() {
+        // A large bonus on token 3 makes every joint call pick it (up to the symbol limit).
+        let mut loud = recorder(Some(3), 100.0);
+        let biased = decode_with(Some(&mut loud));
+        assert!(!biased.is_empty());
+        assert!(biased.iter().all(|t| t.id == 3));
+        assert_ne!(
+            biased.iter().map(|t| t.id).collect::<Vec<_>>(),
+            decode_with(None).iter().map(|t| t.id).collect::<Vec<_>>()
+        );
     }
 }

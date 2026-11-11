@@ -1,0 +1,609 @@
+{
+  "count_fields": [
+    "ref_words",
+    "errors",
+    "listed_words",
+    "listed_errors",
+    "listed_correct",
+    "unlisted_words",
+    "unlisted_errors",
+    "distractor_hits",
+    "listed_lost",
+    "listed_gained",
+    "unlisted_lost",
+    "unlisted_gained"
+  ],
+  "data": {
+    "common_words": 5000,
+    "list_length": 100,
+    "rare_pool": 5114,
+    "spoken_listed_positions": 6977,
+    "spoken_listed_types": 6881,
+    "utterances": 2703,
+    "whisper_utterances": 676
+  },
+  "guards": {
+    "g1_distractors_per_1000": 0.5,
+    "g2_u_wer_points": 0.1,
+    "justify_reduction": 0.2
+  },
+  "justified": [
+    {
+      "b_wer_reduction": 0.20134228187919465,
+      "method": "whisper prompt",
+      "variant": "prompt"
+    }
+  ],
+  "methods": [
+    {
+      "baseline": {
+        "b_wer_percent": 6.1631073527304,
+        "counts": {
+          "distractor_hits": 0,
+          "errors": 897,
+          "listed_correct": 6549,
+          "listed_errors": 430,
+          "listed_gained": 0,
+          "listed_lost": 0,
+          "listed_words": 6977,
+          "ref_words": 54798,
+          "unlisted_errors": 467,
+          "unlisted_gained": 0,
+          "unlisted_lost": 0,
+          "unlisted_words": 47821
+        },
+        "distractor_hits_per_1000_words": 0.0,
+        "listed_recall_percent": 93.8655582628637,
+        "u_wer_percent": 0.9765584157587671,
+        "wer_percent": 1.636921055512975
+      },
+      "chosen": "boost-open-2",
+      "chosen_b_wer_reduction": 0.1906976744186047,
+      "justifies_follow_up": false,
+      "method": "b: boosting (parakeet)",
+      "variants": [
+        {
+          "b_wer_reduction": 0.10930232558139526,
+          "extra": null,
+          "g1_distractors": true,
+          "g2_unlisted": true,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 5.4894653862691705,
+            "counts": {
+              "distractor_hits": 0,
+              "errors": 863,
+              "listed_correct": 6596,
+              "listed_errors": 383,
+              "listed_gained": 59,
+              "listed_lost": 12,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 480,
+              "unlisted_gained": 29,
+              "unlisted_lost": 21,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 0.0,
+            "listed_recall_percent": 94.53920022932492,
+            "u_wer_percent": 1.0037431254051568,
+            "wer_percent": 1.5748749954377896
+          },
+          "variant": "boost-open-1"
+        },
+        {
+          "b_wer_reduction": 0.1906976744186047,
+          "extra": null,
+          "g1_distractors": true,
+          "g2_unlisted": true,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 4.987817113372509,
+            "counts": {
+              "distractor_hits": 0,
+              "errors": 827,
+              "listed_correct": 6632,
+              "listed_errors": 348,
+              "listed_gained": 107,
+              "listed_lost": 24,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 479,
+              "unlisted_gained": 55,
+              "unlisted_lost": 45,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 0.0,
+            "listed_recall_percent": 95.05518131001864,
+            "u_wer_percent": 1.001651993893896,
+            "wer_percent": 1.5091791671228878
+          },
+          "variant": "boost-open-2"
+        },
+        {
+          "b_wer_reduction": 0.2581395348837209,
+          "extra": null,
+          "g1_distractors": true,
+          "g2_unlisted": false,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 4.572165687258134,
+            "counts": {
+              "distractor_hits": 1,
+              "errors": 860,
+              "listed_correct": 6662,
+              "listed_errors": 319,
+              "listed_gained": 151,
+              "listed_lost": 38,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 541,
+              "unlisted_gained": 65,
+              "unlisted_lost": 92,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 0.01824884119858389,
+            "listed_recall_percent": 95.48516554393005,
+            "u_wer_percent": 1.1313021475920622,
+            "wer_percent": 1.5694003430782146
+          },
+          "variant": "boost-open-3"
+        },
+        {
+          "b_wer_reduction": 0.2255813953488372,
+          "extra": null,
+          "g1_distractors": true,
+          "g2_unlisted": false,
+          "g3_wer": false,
+          "metrics": {
+            "b_wer_percent": 4.772824996416798,
+            "counts": {
+              "distractor_hits": 11,
+              "errors": 1073,
+              "listed_correct": 6665,
+              "listed_errors": 333,
+              "listed_gained": 176,
+              "listed_lost": 60,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 740,
+              "unlisted_gained": 78,
+              "unlisted_lost": 199,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 0.2007372531844228,
+            "listed_recall_percent": 95.52816396732119,
+            "u_wer_percent": 1.54743731833295,
+            "wer_percent": 1.9581006606080513
+          },
+          "variant": "boost-open-4"
+        },
+        {
+          "b_wer_reduction": 0.10465116279069757,
+          "extra": null,
+          "g1_distractors": true,
+          "g2_unlisted": true,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 5.518131001863265,
+            "counts": {
+              "distractor_hits": 0,
+              "errors": 846,
+              "listed_correct": 6594,
+              "listed_errors": 385,
+              "listed_gained": 56,
+              "listed_lost": 11,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 461,
+              "unlisted_gained": 27,
+              "unlisted_lost": 21,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 0.0,
+            "listed_recall_percent": 94.51053461373083,
+            "u_wer_percent": 0.9640116266912027,
+            "wer_percent": 1.543851965400197
+          },
+          "variant": "boost-gated-1"
+        },
+        {
+          "b_wer_reduction": 0.17441860465116277,
+          "extra": null,
+          "g1_distractors": true,
+          "g2_unlisted": true,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 5.088146767951842,
+            "counts": {
+              "distractor_hits": 0,
+              "errors": 830,
+              "listed_correct": 6624,
+              "listed_errors": 355,
+              "listed_gained": 97,
+              "listed_lost": 22,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 475,
+              "unlisted_gained": 49,
+              "unlisted_lost": 44,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 0.0,
+            "listed_recall_percent": 94.94051884764225,
+            "u_wer_percent": 0.993287467848853,
+            "wer_percent": 1.5146538194824628
+          },
+          "variant": "boost-gated-2"
+        },
+        {
+          "b_wer_reduction": 0.23953488372093026,
+          "extra": null,
+          "g1_distractors": true,
+          "g2_unlisted": false,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 4.686828149634513,
+            "counts": {
+              "distractor_hits": 1,
+              "errors": 852,
+              "listed_correct": 6653,
+              "listed_errors": 327,
+              "listed_gained": 140,
+              "listed_lost": 36,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 525,
+              "unlisted_gained": 59,
+              "unlisted_lost": 89,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 0.01824884119858389,
+            "listed_recall_percent": 95.35617027375663,
+            "u_wer_percent": 1.0978440434118901,
+            "wer_percent": 1.5548012701193474
+          },
+          "variant": "boost-gated-3"
+        },
+        {
+          "b_wer_reduction": 0.23953488372093026,
+          "extra": null,
+          "g1_distractors": true,
+          "g2_unlisted": false,
+          "g3_wer": false,
+          "metrics": {
+            "b_wer_percent": 4.686828149634513,
+            "counts": {
+              "distractor_hits": 1,
+              "errors": 980,
+              "listed_correct": 6653,
+              "listed_errors": 327,
+              "listed_gained": 164,
+              "listed_lost": 60,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 653,
+              "unlisted_gained": 73,
+              "unlisted_lost": 194,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 0.01824884119858389,
+            "listed_recall_percent": 95.35617027375663,
+            "u_wer_percent": 1.3655088768532653,
+            "wer_percent": 1.7883864374612213
+          },
+          "variant": "boost-gated-4"
+        }
+      ]
+    },
+    {
+      "baseline": {
+        "b_wer_percent": 6.1631073527304,
+        "counts": {
+          "distractor_hits": 0,
+          "errors": 897,
+          "listed_correct": 6549,
+          "listed_errors": 430,
+          "listed_gained": 0,
+          "listed_lost": 0,
+          "listed_words": 6977,
+          "ref_words": 54798,
+          "unlisted_errors": 467,
+          "unlisted_gained": 0,
+          "unlisted_lost": 0,
+          "unlisted_words": 47821
+        },
+        "distractor_hits_per_1000_words": 0.0,
+        "listed_recall_percent": 93.8655582628637,
+        "u_wer_percent": 0.9765584157587671,
+        "wer_percent": 1.636921055512975
+      },
+      "chosen": null,
+      "chosen_b_wer_reduction": null,
+      "justifies_follow_up": false,
+      "method": "c: correction (parakeet)",
+      "variants": [
+        {
+          "b_wer_reduction": 0.513953488372093,
+          "extra": {
+            "replacements": 2124,
+            "replacements_with_a_word_said_in_the_utterance": 377
+          },
+          "g1_distractors": false,
+          "g2_unlisted": false,
+          "g3_wer": false,
+          "metrics": {
+            "b_wer_percent": 2.9955568295829154,
+            "counts": {
+              "distractor_hits": 1747,
+              "errors": 2482,
+              "listed_correct": 6780,
+              "listed_errors": 209,
+              "listed_gained": 232,
+              "listed_lost": 1,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 2273,
+              "unlisted_gained": 0,
+              "unlisted_lost": 1818,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 31.880725573926057,
+            "listed_recall_percent": 97.17643686398165,
+            "u_wer_percent": 4.75314192509567,
+            "wer_percent": 4.529362385488522
+          },
+          "variant": "sound"
+        },
+        {
+          "b_wer_reduction": 0.5116279069767441,
+          "extra": {
+            "replacements": 433,
+            "replacements_with_a_word_said_in_the_utterance": 296
+          },
+          "g1_distractors": false,
+          "g2_unlisted": false,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 3.009889637379963,
+            "counts": {
+              "distractor_hits": 137,
+              "errors": 802,
+              "listed_correct": 6770,
+              "listed_errors": 210,
+              "listed_gained": 222,
+              "listed_lost": 1,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 592,
+              "unlisted_gained": 0,
+              "unlisted_lost": 132,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 2.500091244205993,
+            "listed_recall_percent": 97.03310878601118,
+            "u_wer_percent": 1.2379498546663599,
+            "wer_percent": 1.463557064126428
+          },
+          "variant": "sound-rare"
+        },
+        {
+          "b_wer_reduction": 0.45813953488372094,
+          "extra": {
+            "replacements": 391,
+            "replacements_with_a_word_said_in_the_utterance": 292
+          },
+          "g1_distractors": false,
+          "g2_unlisted": false,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 3.3395442167120537,
+            "counts": {
+              "distractor_hits": 99,
+              "errors": 816,
+              "listed_correct": 6748,
+              "listed_errors": 233,
+              "listed_gained": 199,
+              "listed_lost": 0,
+              "listed_words": 6977,
+              "ref_words": 54798,
+              "unlisted_errors": 583,
+              "unlisted_gained": 0,
+              "unlisted_lost": 123,
+              "unlisted_words": 47821
+            },
+            "distractor_hits_per_1000_words": 1.806635278659805,
+            "listed_recall_percent": 96.71778701447613,
+            "u_wer_percent": 1.2191296710650132,
+            "wer_percent": 1.4891054418044454
+          },
+          "variant": "spelling-rare"
+        }
+      ]
+    },
+    {
+      "baseline": {
+        "b_wer_percent": 8.57307249712313,
+        "counts": {
+          "distractor_hits": 0,
+          "errors": 392,
+          "listed_correct": 1590,
+          "listed_errors": 149,
+          "listed_gained": 0,
+          "listed_lost": 0,
+          "listed_words": 1738,
+          "ref_words": 13860,
+          "unlisted_errors": 243,
+          "unlisted_gained": 0,
+          "unlisted_lost": 0,
+          "unlisted_words": 12122
+        },
+        "distractor_hits_per_1000_words": 0.0,
+        "listed_recall_percent": 91.48446490218642,
+        "u_wer_percent": 2.0046196997195183,
+        "wer_percent": 2.8282828282828283
+      },
+      "chosen": "prompt",
+      "chosen_b_wer_reduction": 0.20134228187919465,
+      "justifies_follow_up": true,
+      "method": "a: whisper prompt (small.en)",
+      "variants": [
+        {
+          "b_wer_reduction": 0.20134228187919465,
+          "extra": null,
+          "g1_distractors": true,
+          "g2_unlisted": true,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 6.846950517836594,
+            "counts": {
+              "distractor_hits": 0,
+              "errors": 349,
+              "listed_correct": 1620,
+              "listed_errors": 119,
+              "listed_gained": 57,
+              "listed_lost": 27,
+              "listed_words": 1738,
+              "ref_words": 13860,
+              "unlisted_errors": 230,
+              "unlisted_gained": 28,
+              "unlisted_lost": 30,
+              "unlisted_words": 12122
+            },
+            "distractor_hits_per_1000_words": 0.0,
+            "listed_recall_percent": 93.21058688147296,
+            "u_wer_percent": 1.8973766705164163,
+            "wer_percent": 2.518037518037518
+          },
+          "variant": "prompt"
+        }
+      ]
+    },
+    {
+      "baseline": {
+        "b_wer_percent": 8.57307249712313,
+        "counts": {
+          "distractor_hits": 0,
+          "errors": 392,
+          "listed_correct": 1590,
+          "listed_errors": 149,
+          "listed_gained": 0,
+          "listed_lost": 0,
+          "listed_words": 1738,
+          "ref_words": 13860,
+          "unlisted_errors": 243,
+          "unlisted_gained": 0,
+          "unlisted_lost": 0,
+          "unlisted_words": 12122
+        },
+        "distractor_hits_per_1000_words": 0.0,
+        "listed_recall_percent": 91.48446490218642,
+        "u_wer_percent": 2.0046196997195183,
+        "wer_percent": 2.8282828282828283
+      },
+      "chosen": null,
+      "chosen_b_wer_reduction": null,
+      "justifies_follow_up": false,
+      "method": "c: correction (small.en)",
+      "variants": [
+        {
+          "b_wer_reduction": 0.46979865771812074,
+          "extra": {
+            "replacements": 528,
+            "replacements_with_a_word_said_in_the_utterance": 95
+          },
+          "g1_distractors": false,
+          "g2_unlisted": false,
+          "g3_wer": false,
+          "metrics": {
+            "b_wer_percent": 4.545454545454546,
+            "counts": {
+              "distractor_hits": 433,
+              "errors": 758,
+              "listed_correct": 1661,
+              "listed_errors": 79,
+              "listed_gained": 71,
+              "listed_lost": 0,
+              "listed_words": 1738,
+              "ref_words": 13860,
+              "unlisted_errors": 679,
+              "unlisted_gained": 0,
+              "unlisted_lost": 446,
+              "unlisted_words": 12122
+            },
+            "distractor_hits_per_1000_words": 31.24098124098124,
+            "listed_recall_percent": 95.56962025316456,
+            "u_wer_percent": 5.601385909915855,
+            "wer_percent": 5.468975468975469
+          },
+          "variant": "sound"
+        },
+        {
+          "b_wer_reduction": 0.4228187919463088,
+          "extra": {
+            "replacements": 105,
+            "replacements_with_a_word_said_in_the_utterance": 69
+          },
+          "g1_distractors": false,
+          "g2_unlisted": false,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 4.9482163406214035,
+            "counts": {
+              "distractor_hits": 36,
+              "errors": 360,
+              "listed_correct": 1653,
+              "listed_errors": 86,
+              "listed_gained": 63,
+              "listed_lost": 0,
+              "listed_words": 1738,
+              "ref_words": 13860,
+              "unlisted_errors": 274,
+              "unlisted_gained": 0,
+              "unlisted_lost": 35,
+              "unlisted_words": 12122
+            },
+            "distractor_hits_per_1000_words": 2.5974025974025974,
+            "listed_recall_percent": 95.10932105868815,
+            "u_wer_percent": 2.2603530770499916,
+            "wer_percent": 2.5974025974025974
+          },
+          "variant": "sound-rare"
+        },
+        {
+          "b_wer_reduction": 0.35570469798657717,
+          "extra": {
+            "replacements": 95,
+            "replacements_with_a_word_said_in_the_utterance": 65
+          },
+          "g1_distractors": false,
+          "g2_unlisted": false,
+          "g3_wer": true,
+          "metrics": {
+            "b_wer_percent": 5.523590333716916,
+            "counts": {
+              "distractor_hits": 30,
+              "errors": 371,
+              "listed_correct": 1643,
+              "listed_errors": 96,
+              "listed_gained": 53,
+              "listed_lost": 0,
+              "listed_words": 1738,
+              "ref_words": 13860,
+              "unlisted_errors": 275,
+              "unlisted_gained": 0,
+              "unlisted_lost": 36,
+              "unlisted_words": 12122
+            },
+            "distractor_hits_per_1000_words": 2.1645021645021645,
+            "listed_recall_percent": 94.53394706559264,
+            "u_wer_percent": 2.268602540834846,
+            "wer_percent": 2.676767676767677
+          },
+          "variant": "spelling-rare"
+        }
+      ]
+    }
+  ],
+  "rule": "docs/vocabulary.md, committed before measuring"
+}

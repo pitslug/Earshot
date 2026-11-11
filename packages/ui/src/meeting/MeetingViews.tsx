@@ -11,6 +11,7 @@ import {
   Button,
   Caption1,
   Card,
+  Checkbox,
   Field,
   Input,
   MessageBar,
@@ -260,17 +261,24 @@ const useStyles = makeStyles({
   },
 });
 
+/** What "Keep this meeting on this computer" means, under the box. */
+export const KEEP_LOCAL_HINT =
+  "Its summary is written by the summary model on this computer or not at all, never sent " +
+  "elsewhere. This can only be chosen now.";
+
 /** The longest title the start view accepts. */
 export const MAX_TITLE = 120;
 
 export interface NewMeetingViewProps {
-  /** Starts the meeting; rejects with the reason it could not start. */
-  onStart(mode: CaptureMode, title: string | null): Promise<void>;
+  /** Starts the meeting; rejects with the reason it could not start. `keepLocal` keeps its
+   * summary on this computer (T12.13). */
+  onStart(mode: CaptureMode, title: string | null, keepLocal: boolean): Promise<void>;
   onCancel(): void;
 }
 
-/** "New meeting": what to record (preselected from the Audio page's capture mode, T7.4i)
- * and an optional title. */
+/** "New meeting": what to record (preselected from the Audio page's capture mode, T7.4i),
+ * an optional title, and whether its summary stays on this computer (T12.13: asked only here,
+ * off by default). */
 export function NewMeetingView({ onStart, onCancel }: NewMeetingViewProps) {
   const styles = useStyles();
   const ipc = useIpc();
@@ -292,6 +300,7 @@ export function NewMeetingView({ onStart, onCancel }: NewMeetingViewProps) {
     };
   }, [ipc]);
   const [title, setTitle] = useState("");
+  const [keepLocal, setKeepLocal] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const tooLong = title.trim().length > MAX_TITLE;
@@ -302,7 +311,7 @@ export function NewMeetingView({ onStart, onCancel }: NewMeetingViewProps) {
     setStarting(true);
     setError(null);
     const trimmed = title.trim();
-    onStart(mode, trimmed === "" ? null : trimmed).catch((e: unknown) => {
+    onStart(mode, trimmed === "" ? null : trimmed, keepLocal).catch((e: unknown) => {
       setStarting(false);
       setError(e instanceof Error ? e.message : String(e));
     });
@@ -346,6 +355,13 @@ export function NewMeetingView({ onStart, onCancel }: NewMeetingViewProps) {
             value={title}
             onChange={(_, d) => setTitle(d.value)}
             placeholder="Untitled meeting"
+          />
+        </Field>
+        <Field hint={KEEP_LOCAL_HINT}>
+          <Checkbox
+            checked={keepLocal}
+            onChange={(_, d) => setKeepLocal(d.checked === true)}
+            label="Keep this meeting on this computer"
           />
         </Field>
         <div className={styles.buttons}>

@@ -32,24 +32,48 @@ Reassurance, not a wall of text (D20):
 
 ## Meeting detail (T7.3)
 
-- Header: title, date, duration, capture mode, transcript pass (final or draft), summary model and backend. Buttons: Export to Obsidian, Copy summary (when there is a summary and no new one is being written: plain Markdown, no citations), Re-transcribe, Re-summarise (Summarise when there is none); the header stays in view while the meeting scrolls. Deleting starts from the meeting list: a trash can on hover or keyboard focus, or the right-click menu (Menu key or Shift+F10 from the keyboard), then the confirm dialog.
+- Header: title, date, duration, capture mode, transcript pass (final or draft), summary model and backend. Buttons: Speakers (toggles the Speakers panel, with a badge such as "2 need names" while voices need names), Export to Obsidian, Copy summary (when there is a summary and no new one is being written: plain Markdown, no citations), Re-transcribe, Re-summarise (Summarise when there is none); the header stays in view while the meeting scrolls. Deleting starts from the meeting list: a trash can on hover or keyboard focus, or the right-click menu (Menu key or Shift+F10 from the keyboard), then the confirm dialog.
 - Tabs: Summary, Transcript.
 - Summary tab: TL;DR, Decisions, Actions (owner column + task), each item with its citations as small links that jump to the cited transcript line. Actions are read-only in the app: ticking happens in the exported Obsidian note ("Tick actions in the Obsidian note"). A "Re-summarise" button uses the style saved in Settings (a one-off style was dropped); the new summary replaces the old one and the previous one is kept until the next re-summary, with a "Switch to previous summary" link.
-- A banner when voices need names ("2 voices need names. Names flow into the summary and export.") opening the who-is-who panel.
-- Who-is-who panel (right column): one row per speaker with a play-sample button, name (or a name field for unknown voices), where it came from (mic, matched voiceprint), share of talk time, one sample line, and Merge / Link to person. "Remember these voices for next time" is unticked by default (voiceprints are opt-in). Renames rewrite the speaker rows, so summary, transcript and export all follow.
+- Speakers panel (T12.19): slides in from the right and pushes the summary and transcript aside rather than covering them. It opens by itself when a voice needs a name and is closed otherwise; the header's Speakers button and the panel's Close toggle it. No names banner: the button's badge says how many voices need names.
+  - Need a name: one row per voice that needs a name, with a play-sample button, a name field, where it came from, share of talk time and one sample line. Save (or Enter) names the voice, links it to that person (an existing person with exactly that name, else a new one) and remembers the voice, in one step: saving one voice is the consent to keep its voiceprint (voiceprints stay opt-in, per person; the user's own voice is never saved here). The notice after Save says what was remembered: a model that cannot match voiceprints, too little speech or no stored voice keep the name without a voiceprint, and say so. Ignore stops asking for a name: the voice keeps its "Speaker N" label in the transcript, summary and export, is never remembered or matched as a person, and a re-transcription keeps the choice. Merge and, in a room, "This is me" are here too.
+  - Named (collapsed): the user, linked voices and voices recognised from a voiceprint (marked "Recognised"; such a voice counts as named, so it never opens the panel). A wrong name or match is fixed here: Rename here, Rename person, Link to person, Merge, Forget voice, "This isn't me". Renames rewrite the speaker rows, so summary, transcript and export all follow.
+  - Ignored (collapsed, when any): ignored voices with Stop ignoring, which makes them need a name again.
 - Transcript tab: the transcript grid (time, speaker, text), a cited line highlighted when reached from a citation.
 
-## Settings (T7.4)
+## Settings (T7.4, T12.5b)
 
-Sections: General, Audio (devices, capture mode, audio check), Summaries (local model shown / own endpoint with URL, provider and key fields and the remote-endpoint warning / no summary; style text), Models (backend order and model check, downloads with size and progress), Benchmark (T7.4c: the current settings run against a bundled 2.5-minute meeting replayed in real time; transcript lag during it, final transcript and summary times after it, next to the model check's verdict; nothing stored as a meeting, no network), Speakers (detection timing, your voice: record or forget), Obsidian (vault folder and subfolder, validated on save), Storage (audio retention, the T7.4 list, default 7 days).
+Eight pages, in this order, as agreed in docs/settings-design.md; Settings opens on General:
+
+1. General: start with Windows, closing to the tray, the keyboard shortcut, theme, updates, and the setup guide.
+2. Audio: devices, whether a new meeting is a call or in the room, audio check.
+3. System: the hardware, the recommendation, the speech helpers, where each task runs, the model check, NVIDIA's CUDA libraries where offered, and the benchmark (T7.4c: the current settings run against a bundled 2.5-minute meeting replayed in real time; transcript lag during it, final transcript and summary times after it, next to the model check's verdict; nothing stored as a meeting, no network).
+4. Transcription: meeting languages first (they decide the recommendation), the transcription models with downloads, size and progress (and their NPU versions on ARM64), whose words show while someone is talking, and when speakers are found.
+5. Summaries: who writes the summary, with the summary model under "On this computer", your own endpoint with URL, provider and key fields and the remote-endpoint warning, Claude Code and Codex with their sign-in check and a model list (Claude Code's default, Fable, Opus, Sonnet, Haiku for Claude Code; Codex's default for Codex; Other for a typed name, the one part with a Save button) and, for Claude Code, an effort list (its default, Low to Max, passed only when the installed Claude Code lists `--effort`), or no summary; summarising during the meeting; the style text.
+6. Dictionary (T12.15a): your own words (names, acronyms, company and site names), a list with a Delete on each word and an Add field; every summary request carries them so the summary spells them your way, and transcripts will use them later. Adding or deleting a word applies at once; a word already in the list (in any case) is not added twice.
+7. People: your name, your voice (record or forget), and the people Earshot knows.
+8. Notes and storage: the Obsidian vault folder and subfolder (validated on save), how long recordings are kept (the T7.4 list, default 7 days), and where the crash logs are.
+
+The save rule (T12.5c), on every page and in the wizard: a choice (radio, switch, dropdown, checkbox) applies as soon as it changes; typed text is saved only by its Save button (or Enter in a one-line field; on Dictionary the button is Add), and in the wizard by Next. Leaving a field saves nothing. No choice sits inside a part that a Save button saves, with one exception: the provider of your own endpoint is saved with the address and model typed beside it, because a provider alone is not an endpoint. A folder picked with "Choose folder..." fills the vault field, which is typed text and saves with Save.
+
+Wording (T12.5c): plain words in headings, labels and tags; a developer term (ONNX Runtime, Vulkan) only in detail text, never in a heading or label. A heading and the field under it never repeat the same words: the field keeps them as its accessible name only. "Keeps up" always says what with: live speech on this computer. Model names come only from the app's display names. Privacy wording (what is sent where, what is kept) changes only with the owner.
+
+Settings holds one model state for System, Transcription and Summaries, so a download or the model check carries on across pages; the first-run wizard holds its own, and the two are never shown together.
 
 The benchmark never runs beside a meeting, a meeting job, the model check, the voice sample or the audio check, and none of them starts while it runs.
 
-While the "your voice" sample is being recorded and saved (Speakers), a meeting cannot start and the model check cannot run; the sample in turn cannot start during a meeting or the model check.
+While the "your voice" sample is being recorded and saved (People), a meeting cannot start and the model check cannot run; the sample in turn cannot start during a meeting or the model check.
 
-## First run (T9.1d)
+## First run (T9.1d, T12.5a)
 
-Four steps, each skippable, progress bar on top: 1 Obsidian vault, 2 Models (picked for this computer, size from the manifest, download now / later / never for optional ones), 3 Summaries (local / own endpoint / none), 4 Audio check and your voice (optional).
+Four short steps with a progress bar on top, as agreed in docs/settings-design.md:
+
+1. Summaries: on this computer (preselected), Claude through Claude Code, OpenAI through Codex, or no summary, each with its line saying what is sent where; your own endpoint under "Other".
+2. Download: meeting languages, then one line and one button with the total size for this computer: speech helpers, the recommended transcription model, and a summary model only if step 1 chose this computer. "Choose different models" opens the full list. Downloads carry on in the background.
+3. About me: your name, then the voice sample with its own Skip. While the speech helpers are not there, the record button is off with a line saying why, and it turns on when they arrive.
+4. Optional extras: Obsidian and the audio check as two rows, each opening when pressed. Then Finish.
+
+Next saves what is on the step, typed fields included, so the wizard has no Save buttons; a refused save stays on the step and says why. Back leaves what was typed unsaved. Back and Next are the way through, with Skip setup at the top. Finishing or skipping with no transcription model says on the next screen that meetings need one and that it is in Settings, Transcription; it stops nothing. Nothing downloads, records or plays a sound, and neither the model check nor the audio check runs, until its button is pressed. The one thing that runs by itself: when the Claude Code or Codex choice is shown on the Summaries step, its card asks that agent CLI whether it is installed and signed in, which sends no meeting content.
 
 ## Later (not M7)
 
@@ -61,7 +85,7 @@ Four steps, each skippable, progress bar on top: 1 Obsidian vault, 2 Models (pic
 |---|---|
 | Window | Full app + tray |
 | During the meeting | Signals + landed text |
-| Speaker naming | Who-is-who panel |
+| Speaker naming | Speakers panel |
 | Action items | Obsidian owns ticks |
 | Re-summary | Replace, keep one undo |
 | Look | Quiet native, Fluent UI React v9 |

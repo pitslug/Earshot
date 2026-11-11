@@ -27,18 +27,22 @@ mod general;
 mod headless;
 mod ipc;
 mod jobs;
+mod keep_local;
 mod llama_probe;
 mod meeting;
 mod meeting_events;
 mod model_jobs;
 mod models;
 mod obsidian;
+#[cfg(test)]
+mod page_names_tests;
 mod plain_text;
 mod shell;
 mod speaker_settings;
 mod storage_settings;
 mod summaries;
 mod summary_style;
+mod summary_vocabulary;
 #[cfg(test)]
 mod testutil;
 #[cfg(windows)]

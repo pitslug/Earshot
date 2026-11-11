@@ -71,6 +71,7 @@ fn fin() -> (Vec<TimedSegment>, SummaryInput) {
         template: Template::General,
         prompt_variant: PromptVariant::Current,
         style: Default::default(),
+        vocabulary: Default::default(),
         user_name: None,
     };
     (fin, input)
@@ -82,6 +83,7 @@ fn record(partials: Vec<LivePartial>) -> StoredLiveSummaries {
         seconds: 3,
         partials,
         stopped: None,
+        vocabulary: Some(Vec::new()),
     }))
 }
 
@@ -121,6 +123,7 @@ fn live_summary_record_round_trips_and_refuses_other_versions() {
             summary: partial("ship", &[id(1)], "Me"),
         }],
         stopped: Some("why".into()),
+        vocabulary: Some(vec!["Quillmarsh".into()]),
     };
     let bytes = encode(&r).unwrap();
     assert_eq!(
@@ -142,6 +145,77 @@ fn live_summary_record_round_trips_and_refuses_other_versions() {
         decode(&damaged),
         StoredLiveSummaries::Unreadable(_)
     ));
+}
+
+#[test]
+fn live_summary_record_of_version_1_reads_without_a_word_list() {
+    // A version-1 record, from before the word list was kept: readable, and its words unknown.
+    let v1 = serde_json::json!({
+        "model": "qwen", "seconds": 600, "stopped": null,
+        "partials": [{ "window": 0, "summary": partial("ship", &[id(1)], "Me") }],
+    });
+    let mut bytes = 1u32.to_le_bytes().to_vec();
+    bytes.extend(serde_json::to_vec(&v1).unwrap());
+    let StoredLiveSummaries::Record(r) = decode(&bytes) else {
+        panic!("a version-1 record is readable");
+    };
+    assert_eq!(r.vocabulary, None);
+    assert_eq!(r.partials.len(), 1);
+    // Written now: version 2, with the list.
+    let mut now = (*r).clone();
+    now.vocabulary = Some(vec!["Quillmarsh".into()]);
+    let bytes = encode(&now).unwrap();
+    assert_eq!(bytes[..4], 2u32.to_le_bytes());
+    assert_eq!(decode(&bytes), StoredLiveSummaries::Record(Box::new(now)));
+}
+
+#[test]
+fn live_summary_partials_made_with_other_words_are_redone() {
+    let (fin, mut input) = fin();
+    let ranges = earshot_core::prompt::time_chunks(&input, 3).unwrap();
+    let live = vec![timed(1, 0, 900, 2_000, "Me")];
+    let with = |vocabulary: Option<Vec<String>>| {
+        StoredLiveSummaries::Record(Box::new(LiveSummaryRecord {
+            vocabulary,
+            ..match record(vec![LivePartial {
+                window: 0,
+                summary: partial("x", &[id(1)], "Me"),
+            }]) {
+                StoredLiveSummaries::Record(r) => *r,
+                StoredLiveSummaries::Unreadable(_) => unreachable!(),
+            }
+        }))
+    };
+    // Made with a word the summary no longer has (the Dictionary changed since): redone.
+    let (done, reuse) = reusable(
+        &with(Some(vec!["Quillmarsh".into()])),
+        "m",
+        3,
+        &live,
+        &fin,
+        &input,
+        &ranges,
+    );
+    assert!(done.iter().all(Option::is_none));
+    assert_eq!(reuse.recorded, 1);
+    assert!(reuse.not_used.unwrap().contains("Dictionary"));
+    // A record from before the list was kept: its words are unknown, so redone too.
+    let (done, reuse) = reusable(&with(None), "m", 3, &live, &fin, &input, &ranges);
+    assert!(done.iter().all(Option::is_none));
+    assert!(reuse.not_used.unwrap().contains("Dictionary"));
+    // The same words, in the same order: reused.
+    input.vocabulary = earshot_core::prompt::Vocabulary::new(["Quillmarsh"]).unwrap();
+    let (done, reuse) = reusable(
+        &with(Some(vec!["Quillmarsh".into()])),
+        "m",
+        3,
+        &live,
+        &fin,
+        &input,
+        &ranges,
+    );
+    assert!(done[0].is_some(), "{reuse:?}");
+    assert_eq!(reuse.reused, 1);
 }
 
 #[test]

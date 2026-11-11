@@ -67,6 +67,22 @@ pub struct StartRequest {
     pub mode: CaptureMode,
     /// The title (empty: the summary may give one).
     pub title: String,
+    /// Keep the meeting's summary on this computer (T12.13): asked only here, when the
+    /// meeting starts; tray and shortcut starts leave it off.
+    pub keep_local: bool,
+}
+
+impl StartRequest {
+    /// Where this meeting's summary may be written: the pre-flight's summary setup and the
+    /// live session's record both follow it (T12.13).
+    #[must_use]
+    pub fn summary_privacy(&self) -> host::SummaryPrivacy {
+        if self.keep_local {
+            host::SummaryPrivacy::KeptLocal
+        } else {
+            host::SummaryPrivacy::Writer
+        }
+    }
 }
 
 /// Starts the live session (runs on the meeting thread).
@@ -703,6 +719,9 @@ fn run(
     for why in &host.handover_record_failures {
         send(crate::meeting_events::handover_record_warning(why));
     }
+    if host.claude_effort_unread {
+        send(crate::meeting_events::claude_effort_unread_warning());
+    }
     if let Some(message) = crate::meeting_events::summary_fallback_note(&host.summary) {
         send(MeetingEvent::Warning {
             key: "summary-processor".into(),
@@ -776,6 +795,11 @@ pub(crate) fn summary_setup_error(e: SummarySetupError) -> IpcError {
 /// that `codex` reports so (`host::check_codex`): `SkipReason::CodexUnavailable`; and a summary
 /// model chosen by name and not installed (the owner, T9.1q): `SkipReason::ChosenNotInstalled`.
 ///
+/// `privacy` is the meeting's (T12.13): for a meeting kept on this computer a remote writer
+/// becomes the local summary model and no key, endpoint, Claude Code or Codex is read or
+/// probed; without that model `no_summary` is `SkipReason::KeptLocalNoModel`
+/// (`meeting_events::kept_local_banner`).
+///
 /// # Errors
 /// An unknown requested model; llama.cpp's or CUDA's DLLs missing; a service that cannot be
 /// built.
@@ -785,6 +809,7 @@ pub(crate) fn summary_setup(
     keys: &dyn ApiKeyStore,
     claude: &dyn ClaudeCodeProbe,
     codex: &dyn CodexProbe,
+    privacy: host::SummaryPrivacy,
 ) -> Result<SummarySetup, IpcError> {
     let settings = {
         let db = svc.store();
@@ -793,6 +818,7 @@ pub(crate) fn summary_setup(
             &earshot_runtime::backends::accelerator_order(),
             &earshot_runtime::hardware(),
             keys,
+            privacy,
         )?
     };
     let plan = match host::summary_plan(
@@ -1085,6 +1111,7 @@ mod production {
                 &crate::credentials::CredentialManager::anthropic(),
                 &earshot_runtime::claude_code::InstalledClaudeCode::meeting_start(),
                 &earshot_runtime::codex::InstalledCodex::meeting_start(),
+                request.summary_privacy(),
             )?;
             let (live_summaries, live_note) = super::live_summaries(&summary_setup, &setup.order);
             // A setting never costs a recording: one that cannot be read is automatic.
@@ -1113,6 +1140,8 @@ mod production {
             notices.extend(crate::meeting_events::codex_banner(&no_summary));
             // A summary model chosen by name and not downloaded: the same rule.
             notices.extend(crate::meeting_events::chosen_model_banner(&no_summary));
+            // Kept on this computer without a local summary model (T12.13).
+            notices.extend(crate::meeting_events::kept_local_banner(&no_summary));
             let (timing, _) = {
                 let mut db = svc.store();
                 host::choose_speaker_timing(&mut db, None, false)?
@@ -1136,6 +1165,7 @@ mod production {
                 live_summaries,
                 hold: Some(hold),
                 previews: Some(host::live_previews(&models, previews)),
+                keep_summary_local: request.summary_privacy() == host::SummaryPrivacy::KeptLocal,
                 ..LiveConfig::default()
             };
             let factory = meeting_models.live_factory();

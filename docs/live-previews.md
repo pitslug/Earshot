@@ -317,6 +317,182 @@ Points 1, 2, 3 and 5 pass with room; point 4's mic median is 3.005 s against at 
 
 **The owner's decision, 2026-11-09, after the result:** accepted. The 5 ms over the 3 s limit was judged no real difference, and on a smaller card the mic preview falling back to the CPU is fine. This is a decision made after measuring, not a pass under the rule. The code was merged from `wip/T12.3a`: with transcription on CUDA, Everyone runs the mic preview on the CPU within `PREVIEW_BOTH_MIN_MEMORY`, and the General page says so.
 
+## Previews on the CPU when the card is too small (T12.3c)
+
+With transcription on CUDA and a card under `PREVIEW_MIN_CARD_MEMORY` (14 GiB, or unknown), `previews_refused` refused every preview: a third session on the card does not fit. T12.3c runs the preview sessions on the CPU instead, with the CPU's shared weights (one copy of the encoder for every CPU session), so the card holds what it holds with previews off. The far end's session (and the mic's in the room) and, under Everyone, the user's own as in T12.3a. The CPU's memory limits apply: `PREVIEW_MIN_MEMORY` (12 GiB) for the first session by default, lifted by "Other people only" and Everyone as on the CPU, and `PREVIEW_BOTH_MIN_MEMORY` (12 GiB) for the second. Automatic, no new setting; the page note replaces "too little memory" with where they run. The one rule is `backends::preview_backend` (`previews_refused` is its reason); a card with room keeps CUDA previews as before.
+
+Cards that reach this: transcription stays off CUDA below `TRANSCRIPTION_MIN_CARD_MEMORY` (12 GiB), so a card of 12 GiB up to 14 GiB, or one whose memory cannot be read.
+
+**How the small card is simulated.** The desktop's RTX 5080 has 16 GiB. `live_lag --card-memory-gib 12` (evaluation only) makes the preview rule read a machine whose every non-integrated graphics adapter has 12 GiB of dedicated memory: `earshot_runtime::hardware()` with only `dedicated_memory` replaced, all else as read. 12 GiB is the smallest card that transcribes on CUDA, the case this serves. The previews are then loaded through `backends::load_preview_on_hardware`, the production rule and loader on that machine instead of `crate::hardware()`: a separate named function, kept out of shipped code by `backends_preview_on_hardware_load_is_used_by_no_shipped_code`, never a flag on `load_preview`. Nothing else reads the simulated value: transcription runs on CUDA because `--backend cuda` asks for it, and the card's real memory is untouched, so the card reading in point 5 shows whether any preview session reached the card. The report records the simulated value (`simulated_card_gib`) and what the app would decide on that machine (`preview_refusal`, `app_first_on`).
+
+**The rule, written and committed 2026-11-10 before the code was finished and before any measurement** (judgements, not derived; desktop, RTX 5080, transcription on CUDA, card simulated at 12 GiB in every run, idle host: no other lane, build or ci, not while the owner is in a meeting; bundled and continuous audio, real time). "Other people only" (`on`) and "Everyone" (`everyone`) are each judged against previews off on the same simulated machine (`off`, what a small card got before T12.3c), and each passes only if it passes on both audios:
+
+1. **Where each session ran.** Both tracks' own sessions report CUDA from ONNX Runtime's placement (`live_backends`, `onnx_placement`); every preview session reports the CPU (`preview_sessions[].loaded.kind` and each track's `previews[].backend` `Cpu`); `preview_refusal.app_first` is null and `app_first_on` is `Cpu`. One control run, `on` on bundled without `--card-memory-gib`, must show the far-end preview on CUDA, so it is the simulated card that moved it. Otherwise the run says nothing about this design.
+2. **Stored words are identical.** `stored_sha256` matches `off` for every track.
+3. **The main transcript does not slow.** For each track, real decode rtf (`decodes_mic.rtf`, `decodes_reference.rtf`) at most 1.5 times `off`'s, and `catch_up_after_end_s` at most `off`'s plus 2 s. No audio dropped (`capture_max_lag_s` under 30 s, no preview `audio_dropped`).
+4. **The previews are worth having.** `reference.on_screen_lag_s` median at most 3 s on both audios; under `everyone` also `mic.on_screen_lag_s` median at most 3 s on bundled (continuous has no mic speech) and the far-end median at most `on`'s plus 1 s. No preview turned off (`previews[].off` empty), at most 2 slow pauses per track.
+5. **Memory.** Peak private memory (`host.peak_private_gib`) at most `off`'s plus 3 GiB for `on` and plus 3.5 GiB for `everyone`. The card's peak during the run (`nvidia-smi`, one reading a second) at most `off`'s plus 0.5 GiB for both. In `--memory`, the second CPU preview session adds at most 1 GiB of private memory over the first (the weights are shared).
+
+If both pass, T12.3c ships as built. If `everyone` fails and `on` passes, the second session beside a small card goes back to refused (`second_preview_backend`), and the numbers and the failed point go here. If `on` fails, the first session goes back to refused too, as before T12.3c.
+
+**Asked of the owner whatever the result, fixed before measuring:** the default memory limit. On CUDA a meeting's private memory was 11.7 GiB with previews off (before T9.1ma) and T12.3a's CPU session added 2.5 GiB, so `on` here is expected near 14 GiB of private memory, while `PREVIEW_MIN_MEMORY` (12 GiB) was set from a 5.8 GiB CPU meeting. The code uses the CPU's limit as asked; the measured peak goes to the owner with the question whether "automatic" beside a small card should use `PREVIEW_MIN_MEMORY_CUDA` (20 GiB) instead. A pass under the rule does not settle that.
+
+**Method.** A CUDA build of the example (`--features onnx-cuda`), the models folder holding sets `ci` and `cuda` and the CUDA files the app downloads, cuDNN as for any CUDA run. Each replay is about 150 s (bundled) or 120 s (continuous) of real time. Beside each replay, in a second shell, log the card once a second and stop it with Ctrl+C when the replay ends:
+
+```powershell
+nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -l 1 | Tee-Object -FilePath target\live-lag\t123c-on-bundled-smi.txt
+```
+
+(with the file name of the run beside it). The runs:
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio bundled --previews off --out target\live-lag\t123c-off-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio bundled --previews on --out target\live-lag\t123c-on-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio bundled --previews everyone --out target\live-lag\t123c-everyone-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio continuous --seconds 120 --previews off --out target\live-lag\t123c-off-continuous.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio continuous --seconds 120 --previews on --out target\live-lag\t123c-on-continuous.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --audio continuous --seconds 120 --previews everyone --out target\live-lag\t123c-everyone-continuous.json
+```
+
+The control for point 1 (no simulation: the far-end preview stays on CUDA):
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --audio bundled --previews on --out target\live-lag\t123c-control-on-bundled.json
+```
+
+Memory and load time per session: the track's own session on CUDA, then the first and second preview sessions where the rule puts them on the simulated machine (the CPU), each followed by three 12 s decodes:
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --card-memory-gib 12 --memory --out target\live-lag\t123c-memory.json
+```
+
+Reports and `nvidia-smi` logs go to `docs/live-previews/t123c/`, counts and times only.
+
+### Result (measured 2026-11-11, idle desktop, one run per condition)
+
+Reports and card logs: `docs/live-previews/t123c/`. Off is previews off on the simulated 12 GiB card.
+
+| Condition | Stored words | Main rtf vs off | Catch-up (s) | Far-end on-screen median (s) | Own on-screen median (s) | Private peak (GiB) | Card peak (GiB) |
+|---|---|---|---|---|---|---|---|
+| off, bundled | | | 0.47 | | | 11.71 | 9.09 |
+| on, bundled | same | mic 0.89x, ref 0.99x | 0.38 | **3.03** | | 14.25 (+2.54) | 9.09 (+0.00) |
+| everyone, bundled | same | mic 0.88x, ref 1.03x | 0.43 | **3.53** | **3.30** | 14.54 (+2.83) | 9.11 (+0.01) |
+| off, continuous | | | 0.50 | | | 11.11 | 8.70 |
+| on, continuous | same | ref 0.99x | 0.42 | 2.43 | | 13.65 (+2.54) | 8.70 (+0.00) |
+| everyone, continuous | same | ref 1.01x | 0.46 | 2.48 | | 13.79 (+2.68) | 8.71 (+0.01) |
+
+By point: 1 passes (both tracks' sessions on CUDA, every preview session on the CPU, `app_first_on` Cpu; the control without the simulation put the far-end preview on CUDA). 2 passes (stored words identical). 3 passes (rtf at most 1.03 times off's, catch-up under off's, capture lag at most 0.03 s, nothing dropped). 4 **fails**: on bundled audio the far-end on-screen median is 3.03 s for `on` and 3.53 s for `everyone`, and the user's own 3.30 s, against 3 s; no preview turned off and no slow pauses. 5 passes (private memory +2.54 and +2.83 GiB, card +0.01 GiB, the second CPU session +0.26 GiB in `--memory`).
+
+**Decision under the rule:** `on` fails, so beside a small card the first session goes back to refused, as before T12.3c (commit "T12.3c: refuse previews beside a small card again"); the evaluation tooling stays. `on` missed by 30 ms on one audio, as T12.3a missed by 5 ms; whether to accept it, and the 12 vs 20 GiB question above, is the owner's.
+
+**The owner's decision, 2026-11-11:** accepted, as T12.3a's 5 ms was; T12.3c ships as built (the refusal commit reverted), with the 12 GiB limit as built.
+
+## One CUDA session for a track's transcription and previews (T12.3b, spike)
+
+ONNX Runtime's CUDA provider gives every session its own copy of the weights on the card (T9.1ma: "CUDA does not share"), so a track's own session and its preview session hold two copies of Parakeet 0.6B's encoder: about 3.7 GiB of graphics memory per preview session (9.1 against 12.8 GiB on the card, above). This spike asks whether one session can serve both. Evaluation only: nothing shipped changes, and what the app does with the answer is the owner's.
+
+### What ort and ONNX Runtime allow (researched 2026-11-10)
+
+- **A newer `ort` does not help.** The newest release is 2.0.0-rc.15 (crates.io, 2026-10-19; rc.14, which Earshot pins, is 2026-10-12). In both, `Session::run`, `run_with_options`, `run_binding` and `run_async` take `&mut self` (rc.14 `src/session/mod.rs`, rc.15 `src/session/run.rs`). The private `run_inner` takes `&self`, and its comment says ONNX Runtime's `Run` "is **not thread safe**" in practice whatever Microsoft says, that CUDA in particular crashes, and that the public functions stay `&mut self` until ONNX Runtime fixes it. `Session` is `Send + Sync`, citing microsoft/onnxruntime issue 114.
+- **ONNX Runtime documents the opposite.** The high-level design page (onnxruntime.ai/docs/reference/high-level-design.html) says "Multiple threads can invoke the Run() method on the same inference session object", and in issue 114 a maintainer says it is safe with no external synchronisation. Later comments there report concurrency bugs with an execution provider (TensorRT) fixed release by release. So the documentation and the binding's author disagree, and the author has the crash reports.
+- **How a CUDA session serves two threads** (ONNX Runtime `main`, read for this spike): `SessionState::AcquireDeviceStreamCollection` takes a stream collection out of a pool under `device_stream_pool_mutex_`, so concurrent `Run` calls get their own CUDA streams unless the provider uses one unified or user stream; the CUDA provider keeps a cuBLAS and cuDNN handle per thread (`PerThreadContext`, from a pool under a mutex), so each thread that runs the session adds its own handles and workspace on the card. Nothing in the provider serialises a whole `Run`; two `Run`s on two streams share the card's compute as two sessions already do.
+- **An upgrade to rc.15 costs more than it buys here.** Its notes list breaking changes Earshot touches: `ExecutionProviderLibrary::unregister` is gone (`earshot_onnx::qnn` calls it after a failed QNN registration), `ThreadManager` must be `Send + Sync` (`StartingThreads`, the background preview threads), and `with_external_initializer_file_in_memory` takes `Arc<[u8]>`. Its library slot is now `util/once_lock.rs` rather than `once_lock_std.rs`, so the rc.14 workaround may be unneeded or wrong. It fixes "over 30 instances of undefined behavior", which is a reason to upgrade on its own, as a separate task.
+
+### What a shared session looks like
+
+**A lock around the encoder alone, and no `unsafe`.** Parakeet TDT is three sessions: the encoder (`encoder.onnx` with the 2.27 GiB `encoder.weights`, run once per 30 s chunk) and the small prediction network and joint (run once per token). Only the encoder is worth sharing. A preview gets its own prediction network and joint and borrows the track's encoder through `Arc<Mutex<OnnxSession>>`; a `MutexGuard` gives `&mut Session`, so `Session::run` is called one thread at a time, exactly as ort asks, with no `unsafe` and nothing for a reviewer of FFI. The cost is the wait: a real decode that wants the encoder while a preview holds it waits for the rest of that one encoder run (a 12 s window), never for the whole preview (its token loop runs on its own sessions, unlocked). The earlier "No" above was for a lock around a whole `Transcriber` call on the CPU, 0.5-1.6 s.
+
+What it changes besides memory: the preview's encoder runs on the track's session, so its ONNX Runtime threads are the track's (normal priority), not the background ones; on CUDA they mostly wait for the card. The prediction network and joint stay on the preview's own background sessions. The CPU already shares weights (T9.1ma) and the NPU cannot (T12.4), so this is for CUDA only.
+
+**Truly concurrent `Run` on one session** would need ort-sys's raw `Run` through `unsafe`, against the binding author's crash reports, and would gain little: two streams on one card already share its compute today. Not prototyped.
+
+### The rule, written and committed 2026-11-10 before any code or measurement
+
+Judgements, not derived. Desktop, RTX 5080, Parakeet 0.6B v2 on CUDA, idle host (no other lane, build or ci; not while the owner is in a meeting). The measurement is `live_lag --contention` (below): a track's real decodes on one thread and previews at the app's cadence on another, under three set-ups on the same audio: `alone` (the track's session, no previews), `own` (today: the preview on its own CUDA session, loaded as the app loads it) and `shared` (the preview borrowing the track's encoder). A real decode's added time is its wall time minus the same piece's time in `alone`. The spike passes only if every point holds:
+
+1. **Where it ran.** Every session reports CUDA from ONNX Runtime's placement, and in `shared` the preview reports that it borrowed the track's encoder. Otherwise the run says nothing about this design.
+2. **The same words.** Every real decode's words (text and times) in `own` and `shared` match `alone`'s piece by piece, and the shared preview's decode of a fixed window matches the track session's decode of it.
+3. **No preview delays a real decode by more than a stated bound.** In `shared`: the longest a real decode waited for the encoder lock at most 250 ms; the median added time at most `own`'s median plus 30 ms; the largest added time at most `own`'s largest plus 250 ms. Why 250 ms: a whole preview decode of a 12 s window takes 0.1-0.18 s on CUDA (preview rtf 0.008-0.015, above) and the encoder is part of it, so 250 ms is one encoder run with room; it is a quarter of the 1 s preview interval, under 2% of the settled text's 14 s median lag, and an eighth of the +2 s catch-up that T12.3a and T12.3c allowed. Why 30 ms: about a fifth of a 15 s real decode on CUDA (0.165 s at rtf 0.011), where run-to-run noise sits.
+4. **Previews stay worth having.** In `shared`, the median preview decode at most 1 s (the interval) and at most 1.5 times `own`'s.
+5. **Card memory is saved.** The card's peak (`nvidia-smi`, once a second) in `shared` at most `alone`'s plus 0.75 GiB, against about 3.7 GiB for `own` today. The 0.75 GiB covers the preview's prediction network and joint and a second thread's cuBLAS and cuDNN workspace (a judgement).
+
+**What the result means** (the owner decides; nothing ships from the spike):
+
+- **All pass:** one session per track is possible. A follow-up task wires it into the live session (evaluation first) and is judged by a replay rule like T12.3c's (stored words identical, real decode rtf at most 1.5 times, catch-up at most +2 s, on-screen median at most 3 s, the card's peak). If that passes, the owner chooses between default on (CUDA previews borrow the track's encoder; `PREVIEW_MIN_CARD_MEMORY` re-judged, so 12-14 GiB cards keep previews on the card instead of T12.3c's CPU, and Everyone's mic preview could go back to CUDA instead of T12.3a's CPU), a setting, or default off.
+- **Memory passes but point 3 or 4 fails:** default off, no setting proposed: T12.3a and T12.3c already keep previews off the card where it is short.
+- **Point 5 fails:** sharing saves nothing worth having; nothing changes.
+- **Point 1 or 2 fails:** the run says nothing; find out why before judging.
+
+### The prototype (written after the rule)
+
+- `earshot_onnx::parakeet::SharedEncoder`, `ParakeetTdt::share_encoder` and `ParakeetTdt::load_sharing`: the encoder field of `ParakeetTdt` is its own session or a borrowed one; a model with its own encoder runs exactly the calls it ran before (the encoder call moved into `run_encoder`, unchanged), and a borrowing one takes the lock for each encoder call and counts how long it waited (`take_encoder_waits`).
+- `earshot_runtime::backends::load_preview_sharing_encoder` (evaluation only, CUDA only): the track's session as `load_parakeet` loads it, made shareable, and a preview borrowing its encoder, with its own prediction network and joint on the preview's background threads. No shipped code names any of these (`backends_preview_sharing_encoder_is_used_by_no_shipped_code`).
+- `live_lag --contention alone|own|shared` (CUDA only): loads the set-up, decodes a fixed window with the track and the preview (point 2's second half), warms every piece length up untimed, then decodes the reference track in 15 s pieces three times, 0.5 s apart, while a preview thread decodes a 12 s window moving 1 s at a time and waits the longer of 1 s and its own decode. It reports every real decode (`real_decodes[]`: `pass`, `piece`, `took_s`, `encoder_wait_s`, `words_sha256`), `real_took_s`, `real_encoder_wait_s`, the previews' decode times and waits, every session's placement and `encoder_users`, and this process's memory. Counts, times and hashes only.
+- Checked on the CPU only (no card run in this spike): `parakeet_tdt_shared_encoder_gives_the_same_words` (ignored, `ci` set) shows a borrowing model gives the same words as the one that shared it, alone and with both decoding at once on two threads, and the TDT smoke test still passes with the refactored encoder call.
+
+### Method
+
+A CUDA build of the example (`--features onnx-cuda`), the models folder holding sets `ci` and `cuda` and the CUDA files the app downloads, cuDNN as for any CUDA run (the AGENTS.md CUDA 13.4/13.5 rule if building from an agent shell). Beside each run, in a second shell, log the card once a second and stop it with Ctrl+C when the run ends:
+
+```powershell
+nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -l 1 | Tee-Object -FilePath target\live-lag\t123b-shared-1-smi.txt
+```
+
+(with the file name of the run beside it). Each set-up twice, interleaved so drift spreads evenly: alone, own, shared, shared, own, alone (`-1` and `-2` in the file names):
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --contention alone --out target\live-lag\t123b-alone-1.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --contention own --out target\live-lag\t123b-own-1.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- . --backend cuda --contention shared --out target\live-lag\t123b-shared-1.json
+```
+
+Then the same three in reverse order with `-2`. The added time of each real decode is its `took_s` minus `alone`'s for the same `pass` and `piece` (the same run number):
+
+```powershell
+$a = Get-Content target\live-lag\t123b-alone-1.json | ConvertFrom-Json; $s = Get-Content target\live-lag\t123b-shared-1.json | ConvertFrom-Json; $added = for ($i = 0; $i -lt $a.real_decodes.Count; $i++) { $s.real_decodes[$i].took_s - $a.real_decodes[$i].took_s }; $added | Sort-Object
+```
+
+What to read, by point: 1, `placements` (every entry `CUDAExecutionProvider`) and `encoder_users` 3 in `shared`; 2, `real_decodes[].words_sha256` equal to `alone`'s piece by piece and `fixed_window.preview_matches_track` true; 3, `real_encoder_wait_s.max` and the added times against `own`'s; 4, `previews.took_s.median`; 5, the largest reading in each `nvidia-smi` log, `shared` against `alone`. A point that holds in one run of a pair and not the other is reported as such, not averaged away. Reports and logs go to `docs/live-previews/t123b/`, counts and times only.
+
+### Provisional reading (before any measurement)
+
+Not a result. Point 5 should pass by construction (one encoder instead of two), and point 3 depends on how long one encoder call on a 12 s window takes on the card, which no report here isolates. If the spike passes, the replay task above is what can change a default.
+
+### Result (measured 2026-11-11, idle desktop, two interleaved runs)
+
+Reports and card logs: `docs/live-previews/t123b/`. Added time is a real decode's `took_s` minus `alone`'s for the same pass and piece.
+
+| Run | Same words | Longest lock wait (ms) | Added median (ms) | Added largest (ms) | Preview median (s) | Card peak (GiB) |
+|---|---|---|---|---|---|---|
+| alone 1 / 2 | | | | | | 5.18 / 5.17 |
+| own 1 / 2 | yes / yes | | -0.3 / -0.7 | 156 / 172 | 0.072 / 0.067 | 8.90 / 8.90 |
+| shared 1 / 2 | yes / yes | 40 / 43 | 21.4 / 12.8 | 111 / 91 | 0.097 / 0.097 | 5.77 / 5.76 |
+
+By point, both runs: 1 passes (every session placed on CUDA, ONNX Runtime's usual CPU shape nodes aside; `encoder_users` 3). 2 passes (every real decode's words equal `alone`'s; the fixed window's preview matches the track). 3 passes (wait at most 43 ms against 250; added median within `own`'s plus 30 ms; largest under `own`'s plus 250 ms). 4 passes (preview median 0.097 s, under 1 s and under 1.5 times `own`'s 0.067-0.072). 5 passes (card peak 0.59 GiB over `alone`, against the 0.75 bound; about 3.1 GiB less than `own`).
+
+**Under the rule:** all pass, so the next step is a follow-up replay task (a T12.3c-style rule on whole meetings) before the owner chooses default on, a setting or default off. No shipped change.
+
 ## Re-measuring on a quiet host
 
 Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`

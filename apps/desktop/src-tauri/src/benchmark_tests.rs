@@ -391,7 +391,7 @@ fn benchmark_result_words() {
     assert_eq!(none.headline, "Live transcription kept up.");
     assert_eq!(
         none.settings[1].value,
-        "None (Qwen 3.5 4B is not downloaded; see Models)"
+        "None (Qwen 3.5 4B is not downloaded; see Summaries)"
     );
     // No em dashes or manifest ids in what the page shows.
     for text in [&v, &slow, &none]

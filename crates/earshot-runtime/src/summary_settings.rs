@@ -12,6 +12,10 @@
 //! - **The Claude Code model** (`settings/summary-claude-code-model`): what `--model` asks for
 //!   (an alias such as `opus` or a full id), empty for Claude Code's own default; checked with
 //!   [`earshot_llm::claude_code::check_model`].
+//! - **The Claude Code effort** (`settings/summary-claude-code-effort`, T12.18): what
+//!   `--effort` asks for, one word of [`Effort`] (`low` to `max`), empty for Claude Code's own
+//!   default. The run passes it only when the installed CLI's `claude --help` lists the option.
+//!   A stored word this build does not know reads as the default, reported.
 //! - **The Codex model** (`settings/summary-codex-model`): what `-m` asks for (for example
 //!   `gpt-5.6-luna`), empty for Codex's own default; checked with
 //!   [`earshot_llm::codex::check_model`].
@@ -43,6 +47,7 @@ use crate::live_summaries::{LIVE_SUMMARIES_KEY, StoredSwitch, live_summaries_set
 use crate::local::DeviceRecord;
 pub use crate::model_settings::UnknownSetting;
 use crate::summary::{SummaryConfig, summary_allowlist};
+pub use earshot_llm::claude_code::Effort;
 pub use earshot_llm::{ANTHROPIC_DEFAULT_URL, ApiKey};
 
 #[cfg(test)]
@@ -61,6 +66,8 @@ pub const SUMMARY_ENDPOINT_MODEL_KEY: &str = "settings/summary-endpoint-model";
 pub const SUMMARY_CLAUDE_CODE_MODEL_KEY: &str = "settings/summary-claude-code-model";
 /// `local_state` key of the model Codex is asked for (T7.4gc).
 pub const SUMMARY_CODEX_MODEL_KEY: &str = "settings/summary-codex-model";
+/// `local_state` key of the effort Claude Code is asked for (T12.18).
+pub const SUMMARY_CLAUDE_CODE_EFFORT_KEY: &str = "settings/summary-claude-code-effort";
 
 /// Longest model name accepted (bytes).
 pub const MAX_MODEL_NAME: usize = 200;
@@ -159,6 +166,8 @@ pub struct SummarySettings {
     pub live: bool,
     /// The model Claude Code is asked for (trimmed), empty for Claude Code's own default.
     pub claude_model: String,
+    /// The effort Claude Code is asked for, `None` for Claude Code's own default (T12.18).
+    pub claude_effort: Option<Effort>,
     /// The model Codex is asked for (trimmed), empty for Codex's own default (T7.4gc).
     pub codex_model: String,
 }
@@ -443,6 +452,15 @@ pub fn summary_settings(
             }),
         }
     }
+    if let Some(t) = text(SUMMARY_CLAUDE_CODE_EFFORT_KEY)?.filter(|t| !t.is_empty()) {
+        match Effort::parse(&t) {
+            Some(e) => out.claude_effort = Some(e),
+            None => unknown.push(UnknownSetting {
+                key: SUMMARY_CLAUDE_CODE_EFFORT_KEY,
+                stored: t,
+            }),
+        }
+    }
     if let Some(t) = text(SUMMARY_CODEX_MODEL_KEY)? {
         match earshot_llm::codex::check_model(&t) {
             Ok(()) => out.codex_model = t,
@@ -493,7 +511,7 @@ pub fn set_summary_settings(
     settings: &SummarySettings,
 ) -> Result<SummarySettings, SummarySettingsError> {
     let s = validate(settings)?;
-    let values: [(DeviceRecord, &str); 7] = [
+    let values: [(DeviceRecord, &str); 8] = [
         (DeviceRecord::SummaryWriter, s.writer.as_str()),
         (DeviceRecord::SummaryProvider, s.provider.as_str()),
         (DeviceRecord::SummaryEndpoint, s.url.as_str()),
@@ -503,6 +521,10 @@ pub fn set_summary_settings(
             s.claude_model.as_str(),
         ),
         (DeviceRecord::SummaryCodexModel, s.codex_model.as_str()),
+        (
+            DeviceRecord::SummaryClaudeCodeEffort,
+            s.claude_effort.map_or("", Effort::as_str),
+        ),
         (
             DeviceRecord::LiveSummaries,
             if s.live { "on" } else { "off" },

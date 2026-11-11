@@ -20,11 +20,12 @@ export const commands = {
 	searchMeetings: (query: string) => typedError<SearchResultsView, IpcError>(__TAURI_INVOKE("search_meetings", { query })),
 	/**
 	 *  Starts a meeting in `mode` with an optional title and returns its id once it records.
+	 *  `keep_local` keeps its summary on this computer (T12.13; asked only here).
 	 *  Every check (models, summary setup, ONNX Runtime) runs first; a failure records nothing.
 	 *  The meeting's progress arrives as `MeetingEvent`s. Fails with `busy` while another
 	 *  meeting records or is processed.
 	 */
-	startMeeting: (mode: CaptureMode, title: string | null) => typedError<string, IpcError>(__TAURI_INVOKE("start_meeting", { mode, title })),
+	startMeeting: (mode: CaptureMode, title: string | null, keepLocal: boolean) => typedError<string, IpcError>(__TAURI_INVOKE("start_meeting", { mode, title, keepLocal })),
 	/**
 	 *  Stops the recording meeting; the recording is finalised and the work after the meeting
 	 *  runs (`MeetingEvent::PostProgress`, then `Summary`). Fails with `not_recording` when no
@@ -52,6 +53,15 @@ export const commands = {
 "dark" | null) => typedError<null, IpcError>(__TAURI_INVOKE("set_window_theme", { theme })),
 	/**  Everything the meeting detail screen shows of `meeting`. */
 	getMeeting: (meeting: string) => typedError<MeetingDetail, IpcError>(__TAURI_INVOKE("get_meeting", { meeting })),
+	/**  Gives `meeting` a new title (empty: untitled). */
+	renameMeeting: (meeting: string, title: string) => typedError<null, IpcError>(__TAURI_INVOKE("rename_meeting", { meeting, title })),
+	/**  Replaces the text of one line of `meeting`'s final transcript (T12.16). */
+	editSegment: (meeting: string, segment: string, text: string) => typedError<null, IpcError>(__TAURI_INVOKE("edit_segment", { meeting, segment, text })),
+	/**
+	 *  Corrects one text of `meeting`'s current summary `summary` (T12.16); the text before the
+	 *  edit becomes the previous summary.
+	 */
+	editSummary: (meeting: string, summary: string, field: SummaryFieldRef, text: string) => typedError<null, IpcError>(__TAURI_INVOKE("edit_summary", { meeting, summary, field, text })),
 	/**  Renames a speaker of `meeting`. */
 	renameSpeaker: (meeting: string, speaker: string, name: string) => typedError<null, IpcError>(__TAURI_INVOKE("rename_speaker", { meeting, speaker, name })),
 	/**  Merges speaker `merge` into `keep`. */
@@ -66,8 +76,18 @@ export const commands = {
 	renamePerson: (person: string, name: string) => typedError<number, IpcError>(__TAURI_INVOKE("rename_person", { person, name })),
 	/**  Every live person, by name. */
 	listPersons: () => typedError<PersonItem[], IpcError>(__TAURI_INVOKE("list_persons")),
-	/**  "Remember these voices for next time" (opt-in) for `speakers` of `meeting`. */
-	rememberVoices: (meeting: string, speakers: string[]) => typedError<RememberResult[], IpcError>(__TAURI_INVOKE("remember_voices", { meeting, speakers })),
+	/**
+	 *  "Save" on a voice that needs a name (T12.19): names it, links it to that person and
+	 *  remembers the voice, in one step (the user's consent for this one voice).
+	 */
+	saveVoice: (meeting: string, speaker: string, choice: LinkChoice) => typedError<SavedVoiceResult, IpcError>(__TAURI_INVOKE("save_voice", { meeting, speaker, choice })),
+	/**
+	 *  "Ignore" on a voice that needs a name (T12.19): it no longer needs one and keeps its
+	 *  "Speaker N" label.
+	 */
+	ignoreSpeaker: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("ignore_speaker", { meeting, speaker })),
+	/**  Undoes "Ignore": the voice needs a name again. */
+	unignoreSpeaker: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("unignore_speaker", { meeting, speaker })),
 	/**  Forgets every voiceprint of a person; returns how many were forgotten. */
 	forgetPersonVoices: (person: string) => typedError<number, IpcError>(__TAURI_INVOKE("forget_person_voices", { person })),
 	/**  Removes a person: their name and voice, from this computer (the Speakers page). */
@@ -93,6 +113,11 @@ export const commands = {
 	 *  holds it).
 	 */
 	deleteMeeting: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("delete_meeting", { meeting })),
+	/**
+	 *  "Allow": the meeting kept on this computer may be summarised by the summary writer from now
+	 *  on (the UI asks first). Nothing is sent until the user re-summarises.
+	 */
+	allowSummaryWriter: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("allow_summary_writer", { meeting })),
 	/**  Every live folder, by name. */
 	listFolders: () => typedError<FolderListItem[], IpcError>(__TAURI_INVOKE("list_folders")),
 	/**  Creates a folder; returns its id. Refuses an unusable name or one another folder has. */
@@ -274,15 +299,17 @@ export const commands = {
 	summaryStyle: () => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("summary_style")),
 	/**  Checks and stores the summary style ("" for none; `invalid_setting`: nothing stored). */
 	setSummaryStyle: (style: string) => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("set_summary_style", { style })),
-	/**  Whether the app opens on the first-run wizard, and its "never" answers. */
+	/**  The user's own words for summaries (and a stored list this version refuses). */
+	summaryVocabulary: () => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("summary_vocabulary")),
+	/**
+	 *  Checks and stores the user's own words (empty for none; `invalid_setting`: nothing
+	 *  stored).
+	 */
+	setSummaryVocabulary: (words: string[]) => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("set_summary_vocabulary", { words })),
+	/**  Whether the app opens on the first-run wizard. */
 	firstRunState: () => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("first_run_state")),
 	/**  Marks the first-run wizard done, whichever steps were skipped. */
 	finishFirstRun: () => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("finish_first_run")),
-	/**
-	 *  Records or clears the wizard's "never" for an optional model (`unknown_model`: nothing
-	 *  stored). It stops no download and removes no file.
-	 */
-	setModelDeclined: (model: string, declined: boolean) => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("set_model_declined", { model, declined })),
 	/**  The CUDA section of the Models page. */
 	cudaSettings: () => typedError<CudaView, IpcError>(__TAURI_INVOKE("cuda_settings")),
 	/**  Stores the two settings; they apply at the next start. `invalid_setting`: nothing stored. */
@@ -622,6 +649,11 @@ export type ClaudeCodeStatusView = {
 	message: string,
 	/**  What to do, when something is needed. */
 	fix: string | null,
+	/**
+	 *  Why the effort choice does nothing with this Claude Code (its `--help` lists no
+	 *  `--effort`), `null` when it works or could not be told (T12.18).
+	 */
+	effort_note: string | null,
 };
 
 /**  Codex's state as the Summaries page shows it (T7.4gc). */
@@ -804,6 +836,19 @@ export type DeviceItem = {
 	hands_free: boolean,
 };
 
+/**  How hard Claude Code works on a summary (T12.18): `--effort low|medium|high|xhigh|max`. */
+export type EffortChoice = 
+/**  `low`. */
+"Low" | 
+/**  `medium`. */
+"Medium" | 
+/**  `high`. */
+"High" | 
+/**  `xhigh`. */
+"ExtraHigh" | 
+/**  `max`. */
+"Max";
+
 /**  Why the recording ended. */
 export type EndedReason = 
 /**  Stopped on request. */
@@ -823,8 +868,6 @@ export type ExportDone = {
 export type FirstRunView = {
 	/**  The app opens on the wizard. */
 	show: boolean,
-	/**  The optional models the user said "never" to. */
-	declined_models: string[],
 };
 
 /**  What deleting a folder did: counts only. */
@@ -1009,6 +1052,16 @@ export type JobKind =
 /**  The summary again. */
 "Resummarise";
 
+/**  A meeting whose summary is kept on this computer. */
+export type KeptLocalView = {
+	/**
+	 *  The writer the Summaries page names when it would send the meeting elsewhere ("Claude
+	 *  Code", "Codex", "your own server"): what "Allow" lets summarise it. `None` while the
+	 *  writer is this computer or no summary, when allowing would change nothing today.
+	 */
+	writer: string | null,
+};
+
 /**  Who a speaker is linked to. */
 export type LinkChoice = 
 /**  An existing person. */
@@ -1043,7 +1096,11 @@ export type MeetingDetail = {
 	speakers: SpeakerCard[],
 	/**  The previous summary can be restored ("Switch to previous summary"). */
 	can_undo_summary: boolean,
-	/**  The current summary cites segments the transcript no longer has. */
+	/**
+	 *  The current summary no longer matches the transcript
+	 *  (`MeetingView::summary_out_of_date`): it cites segments the transcript no longer has,
+	 *  or the user edited the transcript's text after it was written (T12.16).
+	 */
 	summary_stale: boolean,
 	/**
 	 *  At least one track's recording is still kept: re-transcription and speaker samples
@@ -1056,6 +1113,11 @@ export type MeetingDetail = {
 	 *  other summary and for a record this version cannot read).
 	 */
 	handovers: HandoverItem[],
+	/**
+	 *  The meeting's summary is kept on this computer (T12.13), `None` when it may go to the
+	 *  summary writer.
+	 */
+	kept_local: KeptLocalView | null,
 };
 
 /**
@@ -1489,7 +1551,7 @@ export type RecommendedView = {
 	reason: string,
 };
 
-/**  What "remember these voices" did for one speaker. */
+/**  What remembering a saved voice did (T12.19). */
 export type RememberOutcome = 
 /**  Added to the person's voiceprint. */
 "Remembered" | 
@@ -1501,14 +1563,6 @@ export type RememberOutcome =
 "AlreadyRemembered" | 
 /**  The speaker model cannot match voiceprints. */
 "Unsupported";
-
-/**  One speaker's result. */
-export type RememberResult = {
-	/**  Speaker id. */
-	speaker: string,
-	/**  What happened. */
-	outcome: RememberOutcome,
-};
 
 /**  What a removal freed. */
 export type RemovedView = {
@@ -1556,6 +1610,14 @@ export type RunsOn =
 /**  The NPU. */
 "Npu";
 
+/**  What "Save" on a voice did (T12.19). */
+export type SavedVoiceResult = {
+	/**  The person the voice is linked to (hyphenated UUID). */
+	person: string,
+	/**  What remembering its voice did. */
+	outcome: RememberOutcome,
+};
+
 /**  Where a search found a meeting. */
 export type SearchMatch = 
 /**  Its title. */
@@ -1595,7 +1657,7 @@ export type ShellEvent =
 { type: "OpenMeeting"; 
 /**  Meeting id. */
 meeting: string; 
-/**  Open its who-is-who panel too. */
+/**  Open its Speakers panel too. */
 name_voices: boolean } | 
 /**  "Quit Earshot" during a meeting: ask first, then call `quit_app`. */
 { type: "QuitAsked"; 
@@ -1606,7 +1668,7 @@ recording: boolean } |
 /**  Why. */
 message: string };
 
-/**  One row of the who-is-who panel. */
+/**  One row of the Speakers panel. */
 export type SpeakerCard = {
 	/**  Speaker id (hyphenated UUID). */
 	id: string,
@@ -1622,8 +1684,15 @@ export type SpeakerCard = {
 	share_percent: number,
 	/**  The start of their longest segment (at most [`SAMPLE_LINE_CHARS`], then "..."). */
 	sample_line: string,
-	/**  Not the user and not linked to a person: the voice needs a name. */
+	/**
+	 *  Not the user, not linked to a person and not ignored: the voice needs a name
+	 *  ([`needs_name`]).
+	 */
 	needs_name: boolean,
+	/**  The user chose to ignore this voice in this meeting (T12.19, `edit::is_ignored`). */
+	ignored: boolean,
+	/**  The user may ignore this voice (`edit::can_ignore`). */
+	can_ignore: boolean,
 	/**  The user may say this voice is theirs ("This is me": `edit::can_mark_me`). */
 	can_mark_me: boolean,
 	/**  The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`). */
@@ -1737,6 +1806,46 @@ retryable: boolean } |
  */
 { kind: "PostCancelled" };
 
+/**
+ *  Which text of a summary an edit changes (T12.16; `edit::SummaryField`). Indices count
+ *  from 0 in the order the summary shows.
+ */
+export type SummaryFieldRef = 
+/**  The title. */
+{ kind: "Title" } | 
+/**  The TL;DR. */
+{ kind: "Tldr" } | 
+/**  A decision. */
+{ kind: "Decision"; 
+/**  Which. */
+index: number } | 
+/**  Who an action is for. */
+{ kind: "ActionOwner"; 
+/**  Which action. */
+index: number } | 
+/**  What an action is. */
+{ kind: "ActionTask"; 
+/**  Which action. */
+index: number } | 
+/**  When an action is due ("" removes it). */
+{ kind: "ActionDue"; 
+/**  Which action. */
+index: number } | 
+/**  A notes heading. */
+{ kind: "NoteHeading"; 
+/**  Which section. */
+section: number } | 
+/**  A notes bullet. */
+{ kind: "NoteBullet"; 
+/**  Which section. */
+section: number; 
+/**  Which bullet of it. */
+bullet: number } | 
+/**  An open question. */
+{ kind: "OpenQuestion"; 
+/**  Which. */
+index: number };
+
 /**  The Summaries page settings as the UI sends and reads them. */
 export type SummarySettingsValue = {
 	/**  Who writes the summary. */
@@ -1751,6 +1860,8 @@ export type SummarySettingsValue = {
 	live: boolean,
 	/**  The model Claude Code is asked for ("" for Claude Code's own default). */
 	claude_model: string,
+	/**  The effort Claude Code is asked for (`null` for Claude Code's own default; T12.18). */
+	claude_effort: EffortChoice | null,
 	/**  The model Codex is asked for ("" for Codex's own default). */
 	codex_model: string,
 };
@@ -1786,6 +1897,8 @@ export type SummaryStyleView = {
 
 /**  The current summary. */
 export type SummaryView = {
+	/**  Its id (hyphenated UUID): edits name the summary they change (T12.16). */
+	id: string,
 	/**  Its title. */
 	title: string,
 	/**  TL;DR. */
@@ -1798,6 +1911,20 @@ export type SummaryView = {
 	notes: NotesView[],
 	/**  Open questions (may be empty). */
 	open_questions: string[],
+};
+
+/**  The stored words with what the page says about them. */
+export type SummaryVocabularyView = {
+	/**  The words in use, in the user's order (empty for none, the default). */
+	words: string[],
+	/**  One line when the stored list is one this version refuses (none is used). */
+	unknown: string[],
+	/**  The most words accepted. */
+	max_words: number,
+	/**  The longest word accepted, in characters. */
+	max_word_chars: number,
+	/**  The longest list accepted, in characters over every word. */
+	max_chars: number,
 };
 
 /**  NVIDIA's terms for a part. */
@@ -1831,6 +1958,11 @@ export type TranscriptRow = {
 	track: RowTrack,
 	/**  The text. */
 	text: string,
+	/**
+	 *  The user edited the text (T12.16): it is kept by a re-transcription, and it has no
+	 *  per-word times.
+	 */
+	edited: boolean,
 };
 
 /**  Where the live transcript is, for the banner at the top of the meeting's transcript. */

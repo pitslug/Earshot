@@ -37,6 +37,7 @@ fn endpoint(provider: EndpointProvider, url: &str, model: &str) -> SummarySettin
         model: model.into(),
         live: false,
         claude_model: String::new(),
+        claude_effort: None,
         codex_model: String::new(),
     }
 }
@@ -357,7 +358,14 @@ fn summary_settings_host_no_summary_skips_without_reading_a_key() {
     )
     .unwrap();
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(s.request.skip && s.request.remote.is_none());
     assert_eq!(s.writer, SummaryWriter::NoSummary);
     assert_eq!(keys.reads.get(), 0);
@@ -383,7 +391,14 @@ fn summary_settings_host_on_this_computer_is_the_local_model() {
     )
     .unwrap();
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(!s.request.skip && s.request.remote.is_none());
     assert_eq!(s.request.local_model, None, "the memory rule picks");
     assert_eq!(s.writer, SummaryWriter::OnThisComputer);
@@ -408,7 +423,14 @@ fn summary_settings_host_openai_endpoint_allowlists_exactly_the_endpoint() {
     )
     .unwrap();
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(
         keys.reads.get(),
         0,
@@ -462,7 +484,14 @@ fn summary_settings_host_anthropic_reads_the_key_at_use_time() {
     .unwrap();
     // With a key: the remote config carries it, the allowlist is the endpoint alone.
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(keys.reads.get(), 1);
     let config = s.request.remote.as_ref().expect("remote");
     assert_eq!(config.provider, earshot_llm::Provider::Anthropic);
@@ -480,7 +509,14 @@ fn summary_settings_host_anthropic_reads_the_key_at_use_time() {
     // the reason, never a local model or another provider. The key store is read once.
     let models = crate::backends::ModelDir::new(dir.0.join("models"));
     let none = FakeKeys::new(Ok(None));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &none).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &none,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(none.reads.get(), 1);
     assert!(s.request.remote.is_none() && s.request.local_model.is_none());
     assert_eq!(s.request.no_key, Some(ApiKeyError::Missing));
@@ -502,7 +538,14 @@ fn summary_settings_host_anthropic_reads_the_key_at_use_time() {
     );
     // A store failure is the reason as it is.
     let broken = FakeKeys::new(Err(ApiKeyError::Store("access denied".into())));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &broken).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &broken,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(broken.reads.get(), 1);
     assert_eq!(
         s.request.no_key,
@@ -524,7 +567,14 @@ fn summary_settings_host_notes_are_the_unknown_values_and_local_placement_only()
     // A "where it runs" note that only matters on this computer.
     db.set_local_value(crate::model_settings::SUMMARY_PART_KEY, b"gpu")
         .unwrap();
-    let s = host::summary_from_settings(&db, CPU, &machine(), &NoApiKeys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &NoApiKeys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(s.notes.len(), 1, "{:?}", s.notes);
     assert!(s.placement.note.is_some());
     set_summary_settings(
@@ -536,7 +586,14 @@ fn summary_settings_host_notes_are_the_unknown_values_and_local_placement_only()
     )
     .unwrap();
     db.set_local_value(SUMMARY_PROVIDER_KEY, b"gemini").unwrap();
-    let s = host::summary_from_settings(&db, CPU, &machine(), &NoApiKeys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &NoApiKeys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert!(s.placement.note.is_none());
     assert_eq!(s.notes.len(), 1, "{:?}", s.notes);
     assert!(s.notes[0].contains(SUMMARY_PROVIDER_KEY), "{:?}", s.notes);
@@ -601,6 +658,56 @@ fn summary_settings_claude_code_model_round_trips_and_is_checked() {
     assert_eq!(unknown[0].key, SUMMARY_CLAUDE_CODE_MODEL_KEY);
 }
 
+#[test]
+fn summary_settings_claude_code_effort_round_trips_and_an_unknown_one_reads_as_the_default() {
+    use earshot_llm::claude_code::Effort;
+    let dir = TempDir::new("summary-settings-claude-effort");
+    let mut db = store(&dir);
+    // Absent: Claude Code's own default.
+    assert_eq!(summary_settings(&db).unwrap().0.claude_effort, None);
+    for (effort, word) in [
+        (Effort::Low, "low"),
+        (Effort::Medium, "medium"),
+        (Effort::High, "high"),
+        (Effort::ExtraHigh, "xhigh"),
+        (Effort::Max, "max"),
+    ] {
+        let s = SummarySettings {
+            writer: SummaryWriter::ClaudeCode,
+            claude_effort: Some(effort),
+            ..SummarySettings::default()
+        };
+        let saved = set_summary_settings(&mut db, &s).unwrap();
+        assert_eq!(saved.claude_effort, Some(effort));
+        assert_eq!(
+            stored(&db, SUMMARY_CLAUDE_CODE_EFFORT_KEY).as_deref(),
+            Some(word)
+        );
+        assert_eq!(summary_settings(&db).unwrap(), (saved, Vec::new()));
+    }
+    // The default is stored as an empty value, read back as the default with nothing reported.
+    let default = SummarySettings {
+        writer: SummaryWriter::ClaudeCode,
+        ..SummarySettings::default()
+    };
+    set_summary_settings(&mut db, &default).unwrap();
+    assert_eq!(
+        stored(&db, SUMMARY_CLAUDE_CODE_EFFORT_KEY).as_deref(),
+        Some("")
+    );
+    assert_eq!(summary_settings(&db).unwrap(), (default, Vec::new()));
+    // A stored word this version does not know reads as the default, reported by its key.
+    for unknown_word in ["ultra", "High", "--model", "x high"] {
+        db.set_local_value(SUMMARY_CLAUDE_CODE_EFFORT_KEY, unknown_word.as_bytes())
+            .unwrap();
+        let (read, unknown) = summary_settings(&db).unwrap();
+        assert_eq!(read.claude_effort, None, "{unknown_word}");
+        assert_eq!(read.writer, SummaryWriter::ClaudeCode);
+        assert_eq!(unknown.len(), 1, "{unknown_word}");
+        assert_eq!(unknown[0].key, SUMMARY_CLAUDE_CODE_EFFORT_KEY);
+    }
+}
+
 /// A Claude Code probe with a fixed answer that counts its calls.
 struct CountingProbe {
     status: crate::claude_code::ClaudeCodeStatus,
@@ -629,6 +736,7 @@ fn installed(sign_in: earshot_llm::SignIn) -> crate::claude_code::ClaudeCodeStat
         },
         version: Some("2.1.290 (Claude Code)".into()),
         sign_in,
+        accepts_effort: None,
     }
 }
 
@@ -643,6 +751,7 @@ fn summary_settings_host_claude_code_is_checked_and_never_falls_back() {
         &SummarySettings {
             writer: SummaryWriter::ClaudeCode,
             claude_model: "sonnet".into(),
+            claude_effort: Some(earshot_llm::claude_code::Effort::High),
             // A filled-in endpoint is kept but not used.
             ..endpoint(
                 EndpointProvider::Anthropic,
@@ -653,12 +762,24 @@ fn summary_settings_host_claude_code_is_checked_and_never_falls_back() {
     )
     .unwrap();
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(keys.reads.get(), 0, "no API key is read for Claude Code");
     assert!(s.request.remote.is_none() && s.request.local_model.is_none());
     assert!(!s.request.skip && s.request.no_key.is_none());
     let config = s.request.claude_code.clone().expect("claude code");
     assert_eq!(config.model.as_deref(), Some("sonnet"));
+    assert_eq!(
+        config.effort,
+        Some(earshot_llm::claude_code::Effort::High),
+        "the effort goes to the run, which passes it only when the CLI lists it"
+    );
     let models = crate::backends::ModelDir::new(dir.0.join("models"));
     let plan = || host::summary_plan(&s.request, None, false, &models).unwrap();
     assert!(matches!(plan(), host::SummaryPlan::ClaudeCode(_)));
@@ -834,7 +955,14 @@ fn summary_settings_host_codex_is_checked_and_never_falls_back() {
     )
     .unwrap();
     let keys = FakeKeys::new(Ok(Some(SECRET)));
-    let s = host::summary_from_settings(&db, CPU, &machine(), &keys).unwrap();
+    let s = host::summary_from_settings(
+        &db,
+        CPU,
+        &machine(),
+        &keys,
+        crate::keep_local::SummaryPrivacy::Writer,
+    )
+    .unwrap();
     assert_eq!(keys.reads.get(), 0, "no API key is read for Codex");
     assert!(s.request.remote.is_none() && s.request.local_model.is_none());
     assert!(s.request.claude_code.is_none(), "never Claude Code instead");

@@ -17,8 +17,8 @@
 //!
 //! `claude --print --output-format json --tools "" --setting-sources ""
 //! --strict-mcp-config --disable-slash-commands --no-session-persistence --safe-mode
-//! --system-prompt <fixed text> [--model <model>]` (every flag checked against
-//! `claude --help` of Claude Code 2.1.290):
+//! --system-prompt <fixed text> [--model <model>] [--effort <level>]` (every flag checked
+//! against `claude --help` of Claude Code 2.1.290; `--effort` against 2.1.292, T12.18):
 //! - no tools at all (`--tools ""`), no MCP servers (`--strict-mcp-config` without
 //!   `--mcp-config`), no skills (`--disable-slash-commands`), no user, project or local
 //!   settings files (`--setting-sources ""`: hooks, plugins, permissions and `env` of the
@@ -34,7 +34,11 @@
 //!   reads the OAuth sign-in this provider runs on.
 //! - `--no-session-persistence`: Claude Code keeps no transcript of the run on disk.
 //! - The prompt goes only on standard input ([`stdin_text`]); the command line holds only
-//!   fixed text and the model name ([`check_model`]). Claude Code's own system prompt is
+//!   fixed text, the model name ([`check_model`]) and an [`Effort`] word from a fixed list.
+//!   `--effort` is passed only when the installed CLI's `claude --help` lists it
+//!   ([`help_lists_effort`], asked once per client, stopped by the run's cancel token): an
+//!   older CLI or an unreadable help runs without it, at its own default effort, and
+//!   [`ClaudeCodeClient::effort_probe`] tells the two apart. Claude Code's own system prompt is
 //!   replaced by [`SYSTEM_PROMPT`] (fixed; the summary rules travel on standard input).
 //! - The working folder is a new, empty temporary folder, deleted afterwards.
 //! - `CLAUDECODE` (the marker of a session started from inside Claude Code) and
@@ -458,17 +462,32 @@ impl ClaudeCli {
 
     /// A quick CLI query (`--version`, `auth status`) in an empty temporary folder.
     fn query(&self, args: &[&str], timeout: Duration) -> Result<ChildOutput, ClaudeCodeError> {
+        self.query_until(args, timeout, &|| false)
+            .map_err(|e| e.unwrap_or(ClaudeCodeError::OutputIncomplete))
+    }
+
+    /// [`Self::query`], stopped as soon as `cancelled` says so: `Err(None)` then.
+    fn query_until(
+        &self,
+        args: &[&str],
+        timeout: Duration,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ChildOutput, Option<ClaudeCodeError>> {
         let dir = TempFolder::new(&std::env::temp_dir(), TEMP_PREFIX)
-            .map_err(|e| ClaudeCodeError::Start(e.to_string()))?;
+            .map_err(|e| Some(ClaudeCodeError::Start(e.to_string())))?;
         let spec = self.spec(
             args.iter().map(OsString::from).collect(),
             dir.path(),
             Vec::new(),
             timeout,
         );
-        let out = earshot_proc::run(&spec, &|| false).map_err(child_error)?;
+        let out = match earshot_proc::run(&spec, cancelled) {
+            Ok(out) => out,
+            Err(ChildError::Cancelled) => return Err(None),
+            Err(e) => return Err(Some(child_error(e))),
+        };
         out.require_complete()
-            .map_err(|_| ClaudeCodeError::OutputIncomplete)
+            .map_err(|_| Some(ClaudeCodeError::OutputIncomplete))
     }
 
     /// The CLI's version (`claude --version`, first line, for example
@@ -488,6 +507,36 @@ impl ClaudeCli {
         }
         // A version line is short; anything else is not shown.
         Ok(line.chars().take(80).collect())
+    }
+
+    /// Whether the CLI takes `--effort` (`claude --help` lists it, [`help_lists_effort`]);
+    /// `None` when the help could not be read (exit code not 0, cut off, not started).
+    #[must_use]
+    pub fn accepts_effort(&self, timeout: Duration) -> Option<bool> {
+        match self.effort_probe(timeout, &|| false)? {
+            EffortProbe::Listed => Some(true),
+            EffortProbe::NotListed => Some(false),
+            EffortProbe::Unreadable => None,
+        }
+    }
+
+    /// What `claude --help` says of `--effort`, stopped as soon as `cancelled` says so (`None`
+    /// then: no answer).
+    #[must_use]
+    pub fn effort_probe(
+        &self,
+        timeout: Duration,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<EffortProbe> {
+        match self.query_until(&["--help"], timeout, cancelled) {
+            Err(None) => None,
+            Err(Some(_)) => Some(EffortProbe::Unreadable),
+            Ok(out) if !out.status.success() => Some(EffortProbe::Unreadable),
+            Ok(out) if help_lists_effort(&String::from_utf8_lossy(&out.stdout)) => {
+                Some(EffortProbe::Listed)
+            }
+            Ok(_) => Some(EffortProbe::NotListed),
+        }
     }
 
     /// Whether the CLI is signed in (`claude auth status --json`, which never signs in).
@@ -551,10 +600,89 @@ fn child_error(e: ChildError) -> ClaudeCodeError {
     }
 }
 
+/// How hard Claude Code works on a reply (`--effort <level>`, T12.18): one of the fixed words
+/// `claude --help` lists for Claude Code 2.1.292 (`low, medium, high, xhigh, max`), never free
+/// text. A real run on this host (2026-11-10, 2.1.292, signed in) answered with each of the
+/// five and no warning; an unknown word is ignored by the CLI with a warning, so only these
+/// are ever passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effort {
+    /// `low`.
+    Low,
+    /// `medium`.
+    Medium,
+    /// `high`.
+    High,
+    /// `xhigh` ("Extra high" on the page).
+    ExtraHigh,
+    /// `max`.
+    Max,
+}
+
+impl Effort {
+    /// Every level, lowest first.
+    pub const ALL: [Self; 5] = [
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::ExtraHigh,
+        Self::Max,
+    ];
+
+    /// The word passed to `--effort` (and stored): `low`, `medium`, `high`, `xhigh`, `max`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::ExtraHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+
+    /// Reads [`Effort::as_str`] exactly.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.as_str() == word)
+    }
+}
+
+/// What the installed CLI's `claude --help` said of `--effort` (T12.18, T12.20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffortProbe {
+    /// It lists `--effort`: a chosen effort is passed.
+    Listed,
+    /// It does not (an older Claude Code): runs go at its own default effort.
+    NotListed,
+    /// The help could not be read (did not start, failed, timed out or was cut off): runs go at
+    /// its own default effort, so an older CLI never sees an option it would refuse.
+    Unreadable,
+}
+
+/// Whether `claude --help` output lists the `--effort` option: a line that starts (after its
+/// indent) with `--effort` followed by a space, `<` or the end of the line. Older Claude Code
+/// versions have no such line; a run there omits the flag (an unknown option fails the run).
+#[must_use]
+pub fn help_lists_effort(help: &str) -> bool {
+    help.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix("--effort")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '<', '\t']))
+    })
+}
+
 /// The arguments of a summary run after the CLI's leading ones (module docs): `model`
 /// `None` uses the CLI's default.
 #[must_use]
 pub fn run_args(model: Option<&str>) -> Vec<OsString> {
+    run_args_with(model, None)
+}
+
+/// [`run_args`] with `--effort <level>` after `--model` when `effort` is given (only for a
+/// CLI whose `--help` lists it: [`ClaudeCodeClient`] checks once).
+#[must_use]
+pub fn run_args_with(model: Option<&str>, effort: Option<Effort>) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "--print",
         "--output-format",
@@ -576,6 +704,10 @@ pub fn run_args(model: Option<&str>) -> Vec<OsString> {
     if let Some(m) = model {
         args.push("--model".into());
         args.push(m.into());
+    }
+    if let Some(e) = effort {
+        args.push("--effort".into());
+        args.push(e.as_str().into());
     }
     args
 }
@@ -609,6 +741,9 @@ pub struct ClaudeCodeConfig {
     pub cli: ClaudeCli,
     /// `--model` (checked with [`check_model`]); `None`: the CLI's default.
     pub model: Option<String>,
+    /// `--effort` (T12.18); `None`: the CLI's default. Passed only when the CLI's `--help`
+    /// lists the option, asked once per client before its first run.
+    pub effort: Option<Effort>,
     /// Deadline of each run.
     pub request_timeout: Duration,
     /// Context budget for the request plan.
@@ -634,6 +769,7 @@ impl ClaudeCodeConfig {
         Ok(Self {
             cli,
             model,
+            effort: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             budget: CLAUDE_CODE_BUDGET,
             temp_root: std::env::temp_dir(),
@@ -649,6 +785,9 @@ pub struct ClaudeCodeClient {
     clock: Arc<dyn Clock + Send + Sync>,
     log: HandoverLog,
     sink: Arc<Mutex<Option<Arc<dyn HandoverSink>>>>,
+    /// What the CLI's help said of `--effort`, asked once (only when an effort is set); a help
+    /// stopped by a cancel leaves it unasked.
+    effort_probe: Arc<Mutex<Option<EffortProbe>>>,
 }
 
 impl fmt::Debug for ClaudeCodeClient {
@@ -667,7 +806,52 @@ impl ClaudeCodeClient {
             clock,
             log: HandoverLog::new(),
             sink: Arc::new(Mutex::new(None)),
+            effort_probe: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// The effort to pass: the configured one when the CLI's `--help` lists `--effort`
+    /// (asked once per client and its clones, within [`STATUS_TIMEOUT`]; a help that cannot be
+    /// read counts as not listed, so an older CLI never sees an option it would refuse, and
+    /// [`Self::effort_probe`] says so). The help stops on `cancel` and is then asked again by
+    /// the next run.
+    ///
+    /// # Errors
+    /// [`LlmError::Cancelled`] when `cancel` stopped the help.
+    fn effort(&self, cancel: &CancelToken) -> Result<Option<Effort>, LlmError> {
+        let Some(effort) = self.config.effort else {
+            return Ok(None);
+        };
+        // Held across the help so clones ask once; a run waits at most the help's deadline.
+        let mut probe = self
+            .effort_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let answer = match *probe {
+            Some(p) => p,
+            None => {
+                let p = self
+                    .config
+                    .cli
+                    .effort_probe(STATUS_TIMEOUT, &|| cancel.is_cancelled())
+                    .ok_or(LlmError::Cancelled)?;
+                *probe = Some(p);
+                p
+            }
+        };
+        Ok((answer == EffortProbe::Listed).then_some(effort))
+    }
+
+    /// What the CLI's help said of `--effort` for the chosen effort: `None` when no effort is
+    /// chosen or no run has asked yet. [`EffortProbe::Unreadable`] means the runs went at
+    /// Claude Code's own default effort without the help saying the CLI is too old (T12.20).
+    #[must_use]
+    pub fn effort_probe(&self) -> Option<EffortProbe> {
+        self.config.effort?;
+        *self
+            .effort_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Sets (or clears) where handovers are reported as they happen; shared by clones.
@@ -698,12 +882,13 @@ impl ClaudeCodeClient {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
+        let effort = self.effort(cancel)?;
         let text = stdin_text(messages);
         let characters = text.chars().count();
         let dir = TempFolder::new(&self.config.temp_root, TEMP_PREFIX)
             .map_err(|e| ClaudeCodeError::Start(format!("no working folder: {e}")))?;
         let spec = self.config.cli.spec(
-            run_args(self.config.model.as_deref()),
+            run_args_with(self.config.model.as_deref(), effort),
             dir.path(),
             text.into_bytes(),
             self.config.request_timeout,
@@ -912,6 +1097,59 @@ mod tests {
         }
         assert!(!s.iter().any(|a| a == "--bare" || a == "--mcp-config"));
         assert!(!run_args(None).iter().any(|a| a == "--model"));
+        assert!(
+            !s.iter().any(|a| a == "--effort"),
+            "no --effort without one asked"
+        );
+    }
+
+    #[test]
+    fn claude_code_run_args_pass_the_effort_as_a_fixed_word() {
+        for (effort, word) in [
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::ExtraHigh, "xhigh"),
+            (Effort::Max, "max"),
+        ] {
+            let s: Vec<String> = run_args_with(Some("opus"), Some(effort))
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let at = s.iter().position(|a| a == "--effort").unwrap();
+            assert_eq!(s[at + 1], word);
+            assert_eq!(s.iter().filter(|a| *a == "--effort").count(), 1);
+            // Everything else is the run without an effort, in order.
+            let mut without = s.clone();
+            without.drain(at..at + 2);
+            let plain: Vec<String> = run_args(Some("opus"))
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(without, plain);
+            assert_eq!(Effort::parse(word), Some(effort));
+            assert_eq!(effort.as_str(), word);
+        }
+        assert_eq!(Effort::ALL.len(), 5);
+        for bad in ["", "Low", "extra-high", "xhigh ", "--model", "ultra"] {
+            assert_eq!(Effort::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn claude_code_help_lists_effort_only_as_an_option() {
+        // `claude --help` of Claude Code 2.1.292 (this host, 2026-11-10), the lines around it.
+        let new = "Options:\n  --disable-slash-commands              Disable all skills\n  \
+                   --effort <level>                      Effort level for the current session\n                                        \
+                   (low, medium, high, xhigh, max)\n  --model <model>                       Model for the current session.\n";
+        assert!(help_lists_effort(new));
+        let old = "Options:\n  --model <model>   Model for the current session (the effort of the \
+                   default model)\n  --print   Print response and exit\n";
+        assert!(!help_lists_effort(old));
+        assert!(!help_lists_effort("  --effort-level <x>  something else\n"));
+        assert!(!help_lists_effort("  Use --effort to change it\n"));
+        assert!(help_lists_effort("--effort\n"));
+        assert!(!help_lists_effort(""));
     }
 
     #[test]

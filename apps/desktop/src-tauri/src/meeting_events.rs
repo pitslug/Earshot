@@ -866,11 +866,12 @@ impl PostProgressMapper {
     }
 }
 
-/// Whether a speaker still needs a name: not the user and not linked to a person. The one
-/// rule behind the summary-ready count, the meeting detail and a re-summary's count.
+/// Whether a speaker still needs a name: not the user, not linked to a person and not
+/// ignored by the user (T12.19, `earshot_runtime::edit::is_ignored`). The one rule behind
+/// the summary-ready count, the meeting detail and a re-summary's count.
 #[must_use]
-pub fn needs_name(role: SpeakerRole, has_person: bool) -> bool {
-    role != SpeakerRole::Me && !has_person
+pub fn needs_name(role: SpeakerRole, has_person: bool, ignored: bool) -> bool {
+    role != SpeakerRole::Me && !has_person && !ignored
 }
 
 /// Speakers found after the meeting that still need a name ([`needs_name`]).
@@ -878,7 +879,7 @@ pub fn needs_name(role: SpeakerRole, has_person: bool) -> bool {
 pub fn voices_to_name(speakers: &[PostSpeaker]) -> u32 {
     let n = speakers
         .iter()
-        .filter(|s| needs_name(s.role, s.person.is_some()))
+        .filter(|s| needs_name(s.role, s.person.is_some(), s.ignored))
         .count();
     u32::try_from(n).unwrap_or(u32::MAX)
 }
@@ -906,7 +907,7 @@ pub fn skip_copy(reason: &SkipReason) -> String {
         // `why` is the runtime's developer text, for the CLI.
         SkipReason::NotInstalled { .. } => {
             "No summary model is installed on this computer. You can download one in Settings, \
-             Models."
+             Summaries."
                 .into()
         }
         SkipReason::ChosenNotInstalled { model } => crate::plain_text::chosen_summary_model(model),
@@ -914,6 +915,9 @@ pub fn skip_copy(reason: &SkipReason) -> String {
         SkipReason::NoApiKey(e) => no_key_copy(e, false),
         SkipReason::ClaudeCodeUnavailable(e) => claude_code_copy(e, false),
         SkipReason::CodexUnavailable(e) => codex_copy(e, false),
+        SkipReason::KeptLocalNoModel { model } => {
+            crate::plain_text::kept_local_no_model(model, false)
+        }
     }
 }
 
@@ -947,6 +951,21 @@ pub fn handover_record_warning(why: &str) -> MeetingEvent {
         key: "summary-handover-record".into(),
         kind: WarningKind::Backend,
         message: handover_record_copy(why),
+    }
+}
+
+/// Claude Code wrote the summary at its own default effort although one was chosen: its help
+/// could not be read, so Earshot could not tell whether it takes the choice (T12.20). Shown as
+/// banner `summary-effort` after a meeting and as a re-summary job's warning.
+pub const CLAUDE_EFFORT_UNREAD: &str = "Claude Code wrote this summary at its own default effort: Earshot could not read whether this Claude Code takes the effort you chose.";
+
+/// The banner of [`CLAUDE_EFFORT_UNREAD`].
+#[must_use]
+pub fn claude_effort_unread_warning() -> MeetingEvent {
+    MeetingEvent::Warning {
+        key: "summary-effort".into(),
+        kind: WarningKind::Backend,
+        message: CLAUDE_EFFORT_UNREAD.into(),
     }
 }
 
@@ -1011,6 +1030,32 @@ pub fn chosen_model_banner(reason: &SkipReason) -> Option<MeetingEvent> {
             ),
         }),
         _ => None,
+    }
+}
+
+/// The banner at the start of a meeting kept on this computer (T12.13) whose summary will not
+/// run because no summary model here is downloaded (key `summary-kept-local`), `None` for any
+/// other skip.
+#[must_use]
+pub fn kept_local_banner(reason: &SkipReason) -> Option<MeetingEvent> {
+    match reason {
+        SkipReason::KeptLocalNoModel { model } => Some(MeetingEvent::Warning {
+            key: "summary-kept-local".into(),
+            kind: WarningKind::Backend,
+            message: crate::plain_text::kept_local_no_model(model, true),
+        }),
+        _ => None,
+    }
+}
+
+/// What an explicit summary of a meeting kept on this computer (T12.13) fails with when no
+/// summary model here is downloaded (kind `summary_kept_local`); never another writer.
+#[must_use]
+pub fn kept_local_error(model: &str) -> crate::ipc::IpcError {
+    crate::ipc::IpcError {
+        kind: "summary_kept_local".into(),
+        message: crate::plain_text::kept_local_no_model(model, false),
+        retryable: false,
     }
 }
 

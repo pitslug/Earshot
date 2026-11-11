@@ -508,6 +508,50 @@ fn live_session_ends_when_the_source_ends_without_an_end_marker() {
 }
 
 #[test]
+fn live_session_summary_kept_local_is_recorded_with_the_meeting() {
+    // T12.13: the meeting row and its "kept on this computer" record come in one transaction.
+    for keep in [true, false] {
+        let dir = TempDir::new();
+        let svc = services(&dir);
+        let mut source = ScriptSource::new(
+            CaptureSession::new(ORIGIN, TrackInfo::new(R16), None),
+            (0..5)
+                .map(|i| {
+                    frames(
+                        TrackId::Mic,
+                        noise(40 + i, 160, 0.01),
+                        ORIGIN.after_frames(i * 160, R16),
+                    )
+                })
+                .collect(),
+        );
+        // The session ends when the script does (only the rows matter here).
+        source.end_silently = true;
+        let session = start_live(
+            source,
+            svc.clone(),
+            LiveConfig {
+                keep_summary_local: keep,
+                ..config(earshot_core::model::ClockDomain::Replay)
+            },
+            None,
+            Box::new(ChaCha8Rng::seed_from_u64(26)),
+        )
+        .unwrap();
+        let (_, outcome) = collect(session);
+        let want = if keep {
+            crate::keep_local::SummaryPrivacy::KeptLocal
+        } else {
+            crate::keep_local::SummaryPrivacy::Writer
+        };
+        assert_eq!(
+            crate::keep_local::summary_privacy(&svc.store(), outcome.meeting),
+            want
+        );
+    }
+}
+
+#[test]
 fn live_session_counts_repeated_capture_errors_instead_of_flooding() {
     let dir = TempDir::new();
     let svc = services(&dir);

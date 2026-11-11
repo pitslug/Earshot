@@ -1821,13 +1821,22 @@ fn backends_previews_second_session_beside_cuda_runs_on_the_cpu() {
         assert!(cuda.is_err(), "{:?}", m.total_memory);
         assert_eq!(cuda, cpu, "{:?}", m.total_memory);
     }
-    // A card too small for the first session refuses both, with the first session's reason.
+    // A card too small for a session on it runs the second on the CPU as well (T12.3c), with the
+    // CPU's memory rule.
     let small_card = machine(Some(64 * 1024 * 1024 * 1024), Some(8 * 1024 * 1024 * 1024));
     assert_eq!(
-        second_preview_backend(BackendKind::Cuda, &small_card, everyone).err(),
-        previews_refused(BackendKind::Cuda, &small_card, everyone)
+        second_preview_backend(BackendKind::Cuda, &small_card, everyone),
+        Ok(BackendKind::Cpu)
     );
-    assert!(previews_refused(BackendKind::Cuda, &small_card, everyone).is_some());
+    let small_both = machine(
+        Some(PREVIEW_BOTH_MIN_MEMORY - 1),
+        Some(8 * 1024 * 1024 * 1024),
+    );
+    assert_eq!(
+        second_preview_backend(BackendKind::Cuda, &small_both, everyone),
+        second_preview_backend(BackendKind::Cpu, &small_both, everyone)
+    );
+    assert!(second_preview_backend(BackendKind::Cuda, &small_both, everyone).is_err());
     for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
         assert!(
             second_preview_backend(kind, &big, everyone).is_err(),
@@ -1894,12 +1903,234 @@ fn backends_previews_second_session_on_a_cuda_track_is_loaded_on_the_cpu() {
         total_memory: Some(PREVIEW_BOTH_MIN_MEMORY - 1),
         ..big.clone()
     };
-    let refused = load_preview_second_with(&track, &small, PreviewChoice::Everyone, |_| {
-        panic!("a refused session was loaded")
-    });
+    let refused = load_preview_second_with(
+        &track,
+        &small,
+        PreviewChoice::Everyone,
+        |_| -> Result<Box<dyn Transcriber + Send>, String> {
+            panic!("a refused session was loaded")
+        },
+    );
     assert_eq!(
         refused.err(),
         previews_refused_second(BackendKind::Cuda, &small, PreviewChoice::Everyone)
+    );
+}
+
+fn nvidia_machine(memory: Option<u64>, card: Option<u64>) -> earshot_hardware::Hardware {
+    earshot_hardware::Hardware {
+        total_memory: memory,
+        gpus: vec![earshot_hardware::Gpu {
+            name: "A card".to_owned(),
+            vendor_id: 0x10de,
+            dedicated_memory: card,
+            driver_version: None,
+            integrated: Some(false),
+            compute_capability: None,
+        }],
+        ..earshot_hardware::Hardware::default()
+    }
+}
+
+const GIB: u64 = 1024 * 1024 * 1024;
+
+/// T12.3c: with transcription on CUDA and a card too small (or unknown) for a preview session there,
+/// the first session runs on the CPU under the CPU's memory limit, as on a CPU machine; a card with
+/// room keeps it on CUDA under CUDA's. Every choice and backend refuses exactly where
+/// `previews_refused` says, which is the rule's reason.
+#[test]
+fn backends_previews_beside_a_small_card_run_on_the_cpu() {
+    use crate::preview_settings::PreviewChoice;
+    let small = Some(PREVIEW_MIN_CARD_MEMORY - 1);
+    let choices = [
+        PreviewChoice::Automatic,
+        PreviewChoice::On,
+        PreviewChoice::Everyone,
+    ];
+    for choice in choices {
+        for card in [small, Some(8 * GIB), None] {
+            let m = nvidia_machine(Some(64 * GIB), card);
+            assert_eq!(
+                preview_backend(BackendKind::Cuda, &m, choice),
+                Ok(BackendKind::Cpu),
+                "{choice:?} {card:?}"
+            );
+        }
+        let big = nvidia_machine(Some(64 * GIB), Some(PREVIEW_MIN_CARD_MEMORY));
+        assert_eq!(
+            preview_backend(BackendKind::Cuda, &big, choice),
+            Ok(BackendKind::Cuda),
+            "{choice:?}"
+        );
+        assert_eq!(
+            preview_backend(BackendKind::Cpu, &big, choice),
+            Ok(BackendKind::Cpu),
+            "{choice:?}"
+        );
+    }
+    // The CPU's limit, not CUDA's: at 12 GiB a small card's previews run by default, and below it
+    // they are off by default with the CPU's reason, and "on" or Everyone lift it as on the CPU.
+    let at_cpu_limit = nvidia_machine(Some(PREVIEW_MIN_MEMORY), small);
+    const { assert!(PREVIEW_MIN_MEMORY < PREVIEW_MIN_MEMORY_CUDA) };
+    assert_eq!(
+        preview_backend(BackendKind::Cuda, &at_cpu_limit, PreviewChoice::Automatic),
+        Ok(BackendKind::Cpu)
+    );
+    for memory in [Some(PREVIEW_MIN_MEMORY - 1), None] {
+        let m = nvidia_machine(memory, small);
+        assert_eq!(
+            preview_backend(BackendKind::Cuda, &m, PreviewChoice::Automatic),
+            preview_backend(BackendKind::Cpu, &m, PreviewChoice::Automatic),
+            "{memory:?}"
+        );
+        assert!(
+            preview_backend(BackendKind::Cuda, &m, PreviewChoice::Automatic).is_err(),
+            "{memory:?}"
+        );
+        for choice in [PreviewChoice::On, PreviewChoice::Everyone] {
+            assert_eq!(
+                preview_backend(BackendKind::Cuda, &m, choice),
+                Ok(BackendKind::Cpu),
+                "{memory:?} {choice:?}"
+            );
+        }
+    }
+    // Off, the NPU and whisper-only backends stay refused whatever the card.
+    let m = nvidia_machine(Some(64 * GIB), small);
+    assert!(preview_backend(BackendKind::Cuda, &m, PreviewChoice::Off).is_err());
+    for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
+        assert!(
+            preview_backend(kind, &m, PreviewChoice::On).is_err(),
+            "{kind:?}"
+        );
+    }
+    // `previews_refused` is the same rule, read as a reason.
+    for kind in [
+        BackendKind::Cpu,
+        BackendKind::Cuda,
+        BackendKind::Qnn,
+        BackendKind::Vulkan,
+    ] {
+        for card in [small, Some(PREVIEW_MIN_CARD_MEMORY), None] {
+            for memory in [Some(PREVIEW_MIN_MEMORY - 1), Some(64 * GIB), None] {
+                let m = nvidia_machine(memory, card);
+                for choice in [
+                    PreviewChoice::Off,
+                    PreviewChoice::Automatic,
+                    PreviewChoice::On,
+                    PreviewChoice::Everyone,
+                ] {
+                    assert_eq!(
+                        previews_refused(kind, &m, choice),
+                        preview_backend(kind, &m, choice).err(),
+                        "{kind:?} {card:?} {memory:?} {choice:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// T12.3c: the first session's load asks for the backend the rule returns: a CUDA track's preview
+/// beside a small card is loaded on the CPU, beside a card with room on CUDA; a refusal loads
+/// nothing.
+#[test]
+fn backends_previews_first_session_loads_where_the_rule_says() {
+    use crate::preview_settings::PreviewChoice;
+    let track = BackendInfo {
+        kind: BackendKind::Cuda,
+        device: "CUDA0".to_owned(),
+        model: "parakeet-tdt-0.6b-v2".to_owned(),
+    };
+    for (card, want) in [
+        (Some(PREVIEW_MIN_CARD_MEMORY - 1), BackendKind::Cpu),
+        (None, BackendKind::Cpu),
+        (Some(PREVIEW_MIN_CARD_MEMORY), BackendKind::Cuda),
+    ] {
+        let m = nvidia_machine(Some(64 * GIB), card);
+        let asked = std::sync::Mutex::new(Vec::new());
+        let result = load_preview_with(&track, &m, PreviewChoice::On, |on: &BackendInfo| {
+            asked.lock().unwrap().push(on.clone());
+            Err::<(), _>("a fake load".to_owned())
+        });
+        assert_eq!(result.err().as_deref(), Some("a fake load"), "{card:?}");
+        let asked = asked.into_inner().unwrap();
+        assert_eq!(asked.len(), 1, "{card:?}");
+        assert_eq!(asked[0].kind, want, "{card:?}");
+        assert_eq!(asked[0].model, track.model);
+    }
+    let small_memory = nvidia_machine(Some(PREVIEW_MIN_MEMORY - 1), None);
+    let refused = load_preview_with(
+        &track,
+        &small_memory,
+        PreviewChoice::Automatic,
+        |_| -> Result<(), String> { panic!("a refused session was loaded") },
+    );
+    assert_eq!(
+        refused.err(),
+        previews_refused(BackendKind::Cuda, &small_memory, PreviewChoice::Automatic)
+    );
+}
+
+/// T12.3c: the evaluation load on a given machine applies the whole rule, refusals included, to that
+/// machine: it refuses what the rule refuses there and otherwise goes on to load (failing here on an
+/// empty models folder for a load reason).
+#[test]
+fn backends_preview_on_hardware_load_applies_the_rule_to_the_given_machine() {
+    use crate::preview_settings::PreviewChoice;
+    let empty = std::env::temp_dir().join(format!("earshot-preview-on-hw-{}", std::process::id()));
+    let models = ModelDir::new(&empty);
+    let small = nvidia_machine(Some(64 * GIB), Some(12 * GIB));
+    let cuda = BackendInfo {
+        kind: BackendKind::Cuda,
+        device: "CUDA0".to_owned(),
+        model: "parakeet-tdt-0.6b-v2".to_owned(),
+    };
+    for slot in [PreviewSlot::First, PreviewSlot::OwnVoice] {
+        let Err(why) =
+            load_preview_on_hardware(&models, &cuda, PreviewChoice::Everyone, slot, &small)
+        else {
+            panic!("{slot:?}: an empty models folder loaded a preview");
+        };
+        assert!(
+            !why.contains("not measured")
+                && !why.contains("memory")
+                && !why.contains("Settings")
+                && !why.contains("card"),
+            "{slot:?}: refused instead of loading: {why}"
+        );
+        let off = load_preview_on_hardware(&models, &cuda, PreviewChoice::Off, slot, &small);
+        let want = match slot {
+            PreviewSlot::First => previews_refused(BackendKind::Cuda, &small, PreviewChoice::Off),
+            PreviewSlot::OwnVoice => {
+                previews_refused_second(BackendKind::Cuda, &small, PreviewChoice::Off)
+            }
+        };
+        assert!(want.is_some());
+        assert_eq!(off.err(), want, "{slot:?}");
+        let npu = BackendInfo {
+            kind: BackendKind::Qnn,
+            ..cuda.clone()
+        };
+        let refused =
+            load_preview_on_hardware(&models, &npu, PreviewChoice::Everyone, slot, &small);
+        assert_eq!(
+            refused.err().as_deref(),
+            Some("not measured on the NPU yet"),
+            "{slot:?}"
+        );
+    }
+    // "Other people only" has no second session, on any machine.
+    let second = load_preview_on_hardware(
+        &models,
+        &cuda,
+        PreviewChoice::On,
+        PreviewSlot::OwnVoice,
+        &small,
+    );
+    assert_eq!(
+        second.err(),
+        previews_refused_second(BackendKind::Cuda, &small, PreviewChoice::On)
     );
 }
 
@@ -2000,20 +2231,45 @@ fn backends_preview_unrefused_load_skips_only_the_refusal() {
 /// T12.4: nothing shipped calls the evaluation load; only examples may.
 #[test]
 fn backends_preview_unrefused_load_is_used_by_no_shipped_code() {
-    fn scan(dir: &Path, found: &mut Vec<PathBuf>) {
+    let found = shipped_files_naming(concat!("load_preview_", "unrefused"));
+    assert!(found.is_empty(), "shipped code calls it: {found:?}");
+}
+
+/// T12.3c: nothing shipped calls the evaluation load on a given machine; only examples may.
+#[test]
+fn backends_preview_on_hardware_load_is_used_by_no_shipped_code() {
+    let found = shipped_files_naming(concat!("load_preview_", "on_hardware"));
+    assert!(found.is_empty(), "shipped code calls it: {found:?}");
+}
+
+/// T12.3b: nothing shipped shares a Parakeet encoder between sessions; only examples may.
+#[test]
+fn backends_preview_sharing_encoder_is_used_by_no_shipped_code() {
+    for name in [
+        concat!("load_preview_", "sharing_encoder"),
+        concat!("share_", "encoder"),
+        concat!("load_", "sharing("),
+    ] {
+        let found = shipped_files_naming(name);
+        assert!(found.is_empty(), "shipped code calls {name}: {found:?}");
+    }
+}
+
+/// The shipped source files (runtime, CLI, desktop) other than `backends.rs` and its tests that
+/// contain `name`.
+fn shipped_files_naming(name: &str) -> Vec<PathBuf> {
+    fn scan(dir: &Path, name: &str, found: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                scan(&path, found);
+                scan(&path, name, found);
             } else if path.extension().is_some_and(|e| e == "rs") {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 let text = std::fs::read_to_string(&path).unwrap_or_default();
-                if text.contains(concat!("load_preview_", "unrefused"))
-                    && !matches!(name, "backends.rs" | "backends_tests.rs")
-                {
+                if text.contains(name) && !matches!(file, "backends.rs" | "backends_tests.rs") {
                     found.push(path);
                 }
             }
@@ -2029,7 +2285,148 @@ fn backends_preview_unrefused_load_is_used_by_no_shipped_code() {
     for dir in dirs {
         let dir = repo.join(dir);
         assert!(dir.is_dir(), "{} is not a folder", dir.display());
-        scan(&dir, &mut found);
+        scan(&dir, name, &mut found);
     }
-    assert!(found.is_empty(), "shipped code calls it: {found:?}");
+    found
+}
+
+/// T12.12b's stress run on the Surface: many meetings in one process with the session life of a
+/// meeting (two tracks' own sessions and a preview loaded on their own threads, the preview turned
+/// off and on again in some, a final pass, everything closed at the end), on the real models
+/// folder (its compiled folder made first, as the app's helper does: `earshot-cli transcribe
+/// <clip> --model <model> --backend qnn`). Every decode must give the first one's words. Counts and
+/// times only; `EARSHOT_STRESS_MEETINGS` (default 25) and `EARSHOT_STRESS_MODEL` (default
+/// parakeet-tdt-0.6b-v2).
+#[cfg(all(feature = "qnn", target_arch = "aarch64"))]
+#[test]
+#[ignore = "needs the Surface's NPU, model sets qnn and qnn-models and a compiled folder (see the doc comment), in the ARM64 build environment `cargo xtask build` sets: cargo test --release -p earshot-runtime --features qnn --lib npu_compiled_stress -- --ignored --nocapture"]
+fn npu_compiled_stress_many_meetings_in_one_process() {
+    use crate::backends::{
+        Accelerator, AsrModel, ModelDir, asr_model, init_onnx, load_parakeet,
+        load_preview_unrefused,
+    };
+    use crate::npu_compiled::{How, last_load};
+    use earshot_core::asr::{
+        BackendInfo, BackendKind, CancelToken, TranscribeOptions, Transcriber,
+    };
+    use earshot_core::audio::{MonoBuffer, PIPELINE_RATE};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let meetings: usize = std::env::var("EARSHOT_STRESS_MEETINGS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(25);
+    let name: &'static str = Box::leak(
+        std::env::var("EARSHOT_STRESS_MODEL")
+            .unwrap_or_else(|_| "parakeet-tdt-0.6b-v2".to_owned())
+            .into_boxed_str(),
+    );
+    let models = ModelDir::from_env(&earshot_store::DataDir::from_local_app_data().unwrap());
+    init_onnx(&models, Accelerator::Qnn).unwrap();
+    let Ok(AsrModel::Parakeet(model)) = asr_model(name) else {
+        panic!("{name} is a Parakeet model");
+    };
+    let clip = earshot_store::read_flac(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/smoke/121-121726-0002.flac"),
+    )
+    .unwrap()
+    .1;
+    let audio = Arc::new(MonoBuffer::new(PIPELINE_RATE, clip));
+    let text = move |t: &mut dyn Transcriber, audio: &MonoBuffer| -> String {
+        let out = t
+            .transcribe(audio, &TranscribeOptions::live(), &CancelToken::new())
+            .unwrap();
+        assert_eq!(out.backend.kind, BackendKind::Qnn);
+        out.segments
+            .iter()
+            .flat_map(|s| s.timed_words())
+            .map(|w| format!("{}@{}-{}", w.text, w.start.as_millis(), w.end.as_millis()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let reference = {
+        let mut t = load_parakeet(&models, model, Accelerator::Qnn, Some(2)).unwrap();
+        text(&mut t, &audio)
+    };
+    assert!(!reference.is_empty());
+    let preview_backend = BackendInfo {
+        kind: BackendKind::Qnn,
+        device: "npu".to_owned(),
+        model: name.to_owned(),
+    };
+    let started = Instant::now();
+    for meeting in 0..meetings {
+        let t0 = Instant::now();
+        // Every live session of the meeting is open at once before any decodes, as in a call.
+        let live = if meeting % 4 == 3 { 2 } else { 3 };
+        let open = Arc::new(std::sync::Barrier::new(live));
+        let tracks: Vec<_> = (0..2)
+            .map(|_| {
+                let (models, audio, reference, open) = (
+                    models.clone(),
+                    Arc::clone(&audio),
+                    reference.clone(),
+                    Arc::clone(&open),
+                );
+                std::thread::spawn(move || {
+                    let mut t = load_parakeet(&models, model, Accelerator::Qnn, Some(2)).unwrap();
+                    open.wait();
+                    for _ in 0..3 {
+                        assert_eq!(text(&mut t, &audio), reference);
+                    }
+                })
+            })
+            .collect();
+        // The preview: on in every meeting but every fourth; turned off after one decode and on
+        // again in every third.
+        let preview = (meeting % 4 != 3).then(|| {
+            let (models, audio, reference, backend) = (
+                models.clone(),
+                Arc::clone(&audio),
+                reference.clone(),
+                preview_backend.clone(),
+            );
+            let open = Arc::clone(&open);
+            std::thread::spawn(move || {
+                let mut p = load_preview_unrefused(&models, &backend)
+                    .unwrap()
+                    .transcriber;
+                open.wait();
+                assert_eq!(text(p.as_mut(), &audio), reference);
+                if meeting % 3 == 0 {
+                    drop(p);
+                    p = load_preview_unrefused(&models, &backend)
+                        .unwrap()
+                        .transcriber;
+                }
+                assert_eq!(text(p.as_mut(), &audio), reference);
+            })
+        });
+        for t in tracks {
+            t.join().expect("a track thread");
+        }
+        if let Some(p) = preview {
+            p.join().expect("the preview thread");
+        }
+        // The final pass, after every live session closed.
+        let mut post = load_parakeet(&models, model, Accelerator::Qnn, None).unwrap();
+        assert_eq!(text(&mut post, &audio), reference);
+        drop(post);
+        println!(
+            "meeting {meeting}: {:.1} s, idle NPU sessions {}, last load {:?}",
+            t0.elapsed().as_secs_f64(),
+            earshot_onnx::idle_qnn_sessions(),
+            last_load()
+        );
+        assert!(
+            matches!(last_load(), Some(How::Compiled)),
+            "every load is compiled: {:?}",
+            last_load()
+        );
+    }
+    println!(
+        "{meetings} meetings in {:.0} s without a crash",
+        started.elapsed().as_secs_f64()
+    );
 }

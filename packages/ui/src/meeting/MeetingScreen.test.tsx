@@ -233,7 +233,7 @@ describe("cancelling while a meeting finishes", () => {
     const ipc = createMockIpc({ meetings: [], timer });
     const events: MeetingEvent[] = [];
     await ipc.onMeetingEvent((e) => events.push(e));
-    const id = await ipc.startMeeting("Call", "Invented");
+    const id = await ipc.startMeeting("Call", "Invented", false);
     await ipc.stopMeeting();
     timer.advance((POST_STEPS.length + 1) * POST_STEP_MS);
     await ipc.cancelFinishing(id);
@@ -276,7 +276,7 @@ describe("a meeting started while the previous one finishes", () => {
     await startMeeting(s);
     const listed = await s.ipc.listMeetings();
     expect(listed.map((m) => m.state).sort()).toEqual(["Processing", "Recording"]);
-    await expect(s.ipc.startMeeting("Call", null)).rejects.toMatchObject({ error: { kind: "busy" } });
+    await expect(s.ipc.startMeeting("Call", null, false)).rejects.toMatchObject({ error: { kind: "busy" } });
   }, 30_000);
 
   it("has a banner for each state of the transcript, and none while it keeps up", () => {
@@ -342,6 +342,46 @@ describe("a meeting started while the previous one finishes", () => {
       "processing",
     );
   });
+
+  it("offers Cancel for the older meeting finishing behind, and the new recording keeps going", async () => {
+    const s = setup();
+    const pressed: string[] = [];
+    const real = s.ipc.cancelFinishing.bind(s.ipc);
+    s.ipc.cancelFinishing = async (meeting) => {
+      pressed.push(meeting);
+      await real(meeting);
+    };
+    const first = await startMeeting(s);
+    const olderId = (await s.ipc.listMeetings())[0].id;
+    await s.user.click(within(first).getByRole("button", { name: "Stop meeting" }));
+    expect(await screen.findByRole("heading", { name: "Finishing the meeting" })).toBeInTheDocument();
+    await startMeeting(s);
+    expect(screen.getByText("Your previous meeting is still finishing")).toBeInTheDocument();
+    const cancel = screen.getByRole("button", { name: "Cancel finishing" });
+    await s.user.click(cancel);
+    expect(await screen.findByText(/^Stopping\./)).toBeInTheDocument();
+    expect(cancel).toBeDisabled();
+    await s.user.click(cancel);
+    expect(pressed).toEqual([olderId]);
+    // Its result ends the notice; the recording is untouched.
+    advance(s.timer, POST_STEP_MS);
+    await waitFor(() => expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull());
+    expect(screen.queryByRole("button", { name: "Cancel finishing" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop meeting" })).toBeEnabled();
+    const older = (await s.ipc.listMeetings()).find((m) => m.id === olderId);
+    expect(older?.state).toBe("Unprocessed");
+  }, 30_000);
+
+  it("drops the notice when the older meeting finishes by itself", async () => {
+    const s = setup();
+    const first = await startMeeting(s);
+    await s.user.click(within(first).getByRole("button", { name: "Stop meeting" }));
+    await startMeeting(s);
+    expect(screen.getByText("Your previous meeting is still finishing")).toBeInTheDocument();
+    advance(s.timer, POST_STEP_MS * (POST_STEPS.length + 2));
+    await waitFor(() => expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull());
+    expect(screen.getByRole("button", { name: "Stop meeting" })).toBeEnabled();
+  }, 30_000);
 });
 
 describe("provisional words", () => {
@@ -457,7 +497,7 @@ describe("meeting screen", () => {
     const s = setup({
       startError: {
         kind: "model",
-        message: "Earshot needs a download that is not on this computer yet. Open Settings, Models.",
+        message: "Earshot needs a transcription model that is not on this computer yet. Open Settings, Transcription to download one.",
         retryable: false,
       },
     });
@@ -465,7 +505,7 @@ describe("meeting screen", () => {
     await s.user.click(within(main).getByRole("button", { name: "New meeting" }));
     await s.user.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByText("The meeting could not start")).toBeInTheDocument();
-    expect(screen.getByText(/Open Settings, Models/)).toBeInTheDocument();
+    expect(screen.getByText(/Open Settings, Transcription/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
   });
 
@@ -661,7 +701,7 @@ describe("meeting screen", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
   });
 
-  it("opens the meeting detail at the who-is-who panel from Name voices", async () => {
+  it("opens the meeting detail at the Speakers panel from Name voices", async () => {
     const s = setup();
     const view = await startMeeting(s, "Call", "Pump order");
     advance(s.timer, 10_000);
@@ -669,7 +709,7 @@ describe("meeting screen", () => {
     advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
     await s.user.click(await screen.findByRole("button", { name: "Name voices" }));
     expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
-    const panel = await screen.findByRole("complementary", { name: "Who is who" });
+    const panel = await screen.findByRole("complementary", { name: "Speakers" });
     await waitFor(() =>
       expect(within(panel).getByRole("textbox", { name: "Name of Speaker 2" })).toHaveFocus(),
     );

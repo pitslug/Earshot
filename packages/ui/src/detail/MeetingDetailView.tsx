@@ -1,14 +1,17 @@
 // The meeting detail screen (docs/ui-design.md "Meeting detail", T7.3, T9.1o): a header that
-// stays in view with Export, Copy summary, Re-transcribe and Re-summarise, Summary and Transcript
-// tabs, and the who-is-who panel. Deleting starts from the meeting list. Every change goes through `useIpc()`;
-// the detail is read again after each one.
+// stays in view with Speakers, Export, Copy summary, Re-transcribe and Re-summarise, Summary and
+// Transcript tabs, and the Speakers panel (T12.19), which slides in beside them. Deleting starts
+// from the meeting list. Every change goes through `useIpc()`; the detail is read again after
+// each one.
 
 import {
+  Badge,
   Body1,
   Body1Strong,
   Button,
   Caption1,
   CompoundButton,
+  Input,
   Link,
   MessageBar,
   MessageBarActions,
@@ -18,12 +21,13 @@ import {
   Subtitle2,
   Tab,
   TabList,
+  Textarea,
   Title2,
   makeStyles,
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import {
   type Citation,
@@ -33,6 +37,7 @@ import {
   type MeetingDetail,
   type MeetingListItem,
   type PersonItem,
+  type SummaryFieldRef,
   type SummaryView,
   useIpc,
 } from "../ipc";
@@ -40,17 +45,18 @@ import { stepLabel } from "../meeting/liveMeeting";
 import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
-import { WhoIsWho } from "./WhoIsWho";
+import { KeptLocal } from "./KeptLocal";
+import { SpeakersPanel } from "./SpeakersPanel";
 import {
   COPIED_MS,
   failureText,
   handoverLine,
   headerLine,
-  namesBanner,
   recordingsGone,
-  rememberText,
   rowTime,
+  savedText,
   summaryMarkdown,
+  voicesBadge,
   voicesToName,
 } from "./detail";
 
@@ -92,6 +98,25 @@ const useStyles = makeStyles({
     margin: 0,
     overflowWrap: "anywhere",
   },
+  titleLine: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: tokens.spacingHorizontalS,
+    minWidth: 0,
+  },
+  // The title and transcript editors (T12.16): the field, then Save and Cancel.
+  editor: {
+    display: "flex",
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+    gap: tokens.spacingHorizontalS,
+    minWidth: 0,
+  },
+  field: {
+    flexGrow: 1,
+    minWidth: "200px",
+  },
   headerButtons: {
     display: "flex",
     flexWrap: "wrap",
@@ -106,11 +131,42 @@ const useStyles = makeStyles({
   muted: {
     color: tokens.colorNeutralForeground3,
   },
+  // The transcript and the Speakers panel side by side: the panel's column grows from
+  // nothing when it opens, pushing the transcript aside rather than covering it (T12.19).
   columns: {
     display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr) 240px",
-    columnGap: tokens.spacingHorizontalL,
+    gridTemplateColumns: "minmax(0, 1fr) auto",
     alignItems: "start",
+  },
+  drawer: {
+    width: 0,
+    overflow: "hidden",
+    transitionProperty: "width, margin-left",
+    transitionDuration: tokens.durationNormal,
+    transitionTimingFunction: tokens.curveEasyEase,
+    "@media (prefers-reduced-motion: reduce)": {
+      transitionDuration: "0.01ms",
+    },
+  },
+  drawerOpen: {
+    width: "320px",
+    marginLeft: tokens.spacingHorizontalL,
+  },
+  // The panel itself slides in from the right as its column opens.
+  drawerInner: {
+    width: "320px",
+    animationName: {
+      from: { transform: "translateX(24px)", opacity: 0 },
+      to: { transform: "translateX(0)", opacity: 1 },
+    },
+    animationDuration: tokens.durationNormal,
+    animationTimingFunction: tokens.curveDecelerateMid,
+    "@media (prefers-reduced-motion: reduce)": {
+      animationDuration: "0.01ms",
+    },
+  },
+  badge: {
+    marginLeft: tokens.spacingHorizontalXS,
   },
   main: {
     display: "flex",
@@ -163,7 +219,7 @@ const useStyles = makeStyles({
   },
   row: {
     display: "grid",
-    gridTemplateColumns: "56px 120px minmax(0, 1fr)",
+    gridTemplateColumns: "56px 120px minmax(0, 1fr) auto",
     columnGap: tokens.spacingHorizontalM,
     alignItems: "baseline",
     paddingTop: tokens.spacingVerticalXS,
@@ -171,6 +227,44 @@ const useStyles = makeStyles({
     paddingLeft: tokens.spacingHorizontalS,
     paddingRight: tokens.spacingHorizontalS,
     borderRadius: tokens.borderRadiusMedium,
+    // The Edit button shows on hover and whenever the row holds focus (T12.16).
+    ":hover .earshot-line-edit": { opacity: 1 },
+    ":focus-within .earshot-line-edit": { opacity: 1 },
+  },
+  lineEdit: {
+    opacity: 0,
+  },
+  // A summary text with its Edit buttons at the end (T12.16). Hidden, a button takes no width,
+  // so the text and citations read as before; hover or focus shows it.
+  editable: {
+    ":hover .earshot-inline-edit": {
+      opacity: 1,
+      maxWidth: "none",
+      minWidth: "auto",
+      paddingLeft: tokens.spacingHorizontalS,
+      paddingRight: tokens.spacingHorizontalS,
+    },
+    ":focus-within .earshot-inline-edit": {
+      opacity: 1,
+      maxWidth: "none",
+      minWidth: "auto",
+      paddingLeft: tokens.spacingHorizontalS,
+      paddingRight: tokens.spacingHorizontalS,
+    },
+  },
+  inlineEdit: {
+    opacity: 0,
+    maxWidth: 0,
+    minWidth: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+    marginLeft: tokens.spacingHorizontalXS,
+  },
+  editedMark: {
+    marginLeft: tokens.spacingHorizontalXS,
+    color: tokens.colorNeutralForeground3,
   },
   rowCited: {
     backgroundColor: tokens.colorBrandBackground2,
@@ -304,6 +398,13 @@ export function MeetingDetailView({
   const [cited, setCited] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [noAudio, setNoAudio] = useState<Set<string>>(new Set());
+  const [editingTitle, setEditingTitle] = useState(false);
+  // The Speakers panel: `null` until the meeting loads, then open by itself only when a
+  // voice needs a name (T12.19); the header's Speakers button toggles it.
+  const [speakersOpen, setSpeakersOpen] = useState<boolean | null>(null);
+  const panelId = useId();
+  const voicesBefore = useRef(0);
+  const speakersButton = useRef<HTMLButtonElement | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
   const nameField = useRef<HTMLInputElement | null>(null);
   const view = useRef<HTMLElement | null>(null);
@@ -314,6 +415,14 @@ export function MeetingDetailView({
     try {
       const [d, p] = await Promise.all([ipc.getMeeting(id), ipc.listPersons()]);
       setDetail(d);
+      // Decided with each detail, in the same render: the first opens it exactly when a voice
+      // needs a name; a later one opens it when more voices need a name than before (a
+      // re-transcription found new ones). Never closed by itself. A voice recognised from a
+      // voiceprint has a name, so it never opens it.
+      const needing = voicesToName(d);
+      const before = voicesBefore.current;
+      voicesBefore.current = needing;
+      setSpeakersOpen((open) => (open === null ? needing > 0 : needing > before ? true : open));
       setPersons(p);
       setLoadError(null);
     } catch (e) {
@@ -338,10 +447,13 @@ export function MeetingDetailView({
     if (ended !== null) void reload();
   }, [ended, reload]);
 
-  // "Name voices": focus the first name field.
+  // "Name voices": open the panel and focus the first name field.
   useEffect(() => {
-    if (nameVoices > 0 && detail !== null) nameField.current?.focus();
-  }, [nameVoices, detail]);
+    if (nameVoices > 0) setSpeakersOpen(true);
+  }, [nameVoices]);
+  useEffect(() => {
+    if (nameVoices > 0 && detail !== null && speakersOpen === true) nameField.current?.focus();
+  }, [nameVoices, detail, speakersOpen]);
 
   // A citation shows its row. Any other tab change opens at the top: the pane's scroll position
   // would otherwise carry over, and the end of a long transcript is past the end of a summary.
@@ -359,6 +471,20 @@ export function MeetingDetailView({
     } catch (e) {
       setNotice({ key: "edit", intent: "error", title: failTitle, text: failureText(e) });
     }
+  };
+
+  /** Saves a typed edit (T12.16); false when it was refused, so the editor stays open. */
+  const save = async (f: () => Promise<unknown>, failTitle: string): Promise<boolean> => {
+    try {
+      await f();
+    } catch (e) {
+      setNotice({ key: "edit", intent: "error", title: failTitle, text: failureText(e) });
+      return false;
+    }
+    setNotice((n) => (n?.key === "edit" ? null : n));
+    await reload();
+    onChanged();
+    return true;
   };
 
   const openCitation = (c: Citation) => {
@@ -421,12 +547,48 @@ export function MeetingDetailView({
       <div className={styles.pinned}>
         <div className={styles.header}>
           <div className={styles.headerText}>
-            <Title2 as="h1" className={styles.heading}>
-              {title}
-            </Title2>
+            {editingTitle && detail !== null ? (
+              <TextEditor
+                label="Meeting title"
+                initial={detail.header.title}
+                multiline={false}
+                onSave={async (text) => {
+                  if (await save(() => ipc.renameMeeting(id, text), "The title was not saved")) {
+                    setEditingTitle(false);
+                  }
+                }}
+                onCancel={() => setEditingTitle(false)}
+              />
+            ) : (
+              <div className={styles.titleLine}>
+                <Title2 as="h1" className={styles.heading}>
+                  {title}
+                </Title2>
+                {detail !== null && (
+                  <Button size="small" appearance="subtle" onClick={() => setEditingTitle(true)}>
+                    Rename
+                  </Button>
+                )}
+              </div>
+            )}
             {detail !== null && <Caption1 className={styles.muted}>{headerLine(detail)}</Caption1>}
           </div>
           <div className={styles.headerButtons}>
+            <Button
+              ref={speakersButton}
+              aria-expanded={speakersOpen === true}
+              aria-controls={speakersOpen === true ? panelId : undefined}
+              aria-label={voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers"}
+              disabled={detail === null}
+              onClick={() => setSpeakersOpen((open) => open !== true)}
+            >
+              Speakers
+              {voices > 0 && (
+                <Badge className={styles.badge} appearance="filled" color="brand" size="small">
+                  {voicesBadge(voices)}
+                </Badge>
+              )}
+            </Button>
             <Button onClick={() => void exportNote()} disabled={detail === null}>
               Export to Obsidian
             </Button>
@@ -515,27 +677,29 @@ export function MeetingDetailView({
         <>
           <div className={styles.columns}>
             <div className={styles.main}>
-              {voices > 0 && (
-                <MessageBar intent="info" layout="multiline">
-                  <MessageBarBody>{namesBanner(voices)}</MessageBarBody>
-                  <MessageBarActions>
-                    <Button size="small" onClick={() => nameField.current?.focus()}>
-                      Name voices
-                    </Button>
-                  </MessageBarActions>
-                </MessageBar>
-              )}
               {tab === "summary" ? (
                 <SummaryTab
                   detail={detail}
                   onCite={openCitation}
+                  onEdit={
+                    writingSummary
+                      ? undefined
+                      : (summary, field, text) =>
+                          save(() => ipc.editSummary(id, summary, field, text), "The summary was not changed")
+                  }
                   onResummarise={() => void startJob("resummarise")}
                   onUndo={() => void run(() => ipc.undoSummary(id), "The previous summary could not be restored")}
+                  onAllowWriter={() =>
+                    void run(() => ipc.allowSummaryWriter(id), "The meeting could not be changed")
+                  }
                 />
               ) : (
                 <TranscriptTab
                   detail={detail}
                   cited={cited}
+                  onEdit={(segment, text) =>
+                    save(() => ipc.editSegment(id, segment, text), "The line was not saved")
+                  }
                   rowRef={(segment, el) => {
                     if (el) rows.current.set(segment, el);
                     else rows.current.delete(segment);
@@ -543,44 +707,58 @@ export function MeetingDetailView({
                 />
               )}
             </div>
-            <WhoIsWho
-              detail={detail}
-              persons={persons}
-              noAudio={noAudio}
-              onPlay={(s) => void play(s)}
-              onRename={(s, name) => run(() => ipc.renameSpeaker(id, s, name), "The name was not saved")}
-              onRenamePerson={(person, name) =>
-                run(() => ipc.renamePerson(person, name), "The person was not renamed")
-              }
-              onLink={(s, choice: LinkChoice) =>
-                run(() => ipc.linkSpeaker(id, s, choice), "The speaker was not linked")
-              }
-              onMarkMe={(s) => run(() => ipc.markMe(id, s), "The voice was not marked as you")}
-              onUnmarkMe={(s) => run(() => ipc.unmarkMe(id, s), "The voice was not changed")}
-              onMerge={(keep, merge) =>
-                run(() => ipc.mergeSpeakers(id, keep, merge), "The speakers were not merged")
-              }
-              onForget={(person) =>
-                run(async () => {
-                  await ipc.forgetPersonVoices(person);
-                  setNotice({ key: "edit", intent: "success", text: "The voice was forgotten." });
-                }, "The voice was not forgotten")
-              }
-              onRemember={(speakers) =>
-                run(async () => {
-                  const results = await ipc.rememberVoices(id, speakers);
-                  const saved = results.filter((r) => r.outcome === "Remembered").length;
-                  setNotice({
-                    key: "edit",
-                    intent: saved === results.length ? "success" : "info",
-                    text: rememberText(results, detail.speakers),
-                  });
-                }, "The voices were not saved")
-              }
-              firstNameField={(el) => {
-                nameField.current = el;
-              }}
-            />
+            <div className={mergeClasses(styles.drawer, speakersOpen === true && styles.drawerOpen)}>
+              {speakersOpen === true && (
+                <div className={styles.drawerInner}>
+                  <SpeakersPanel
+                    id={panelId}
+                    detail={detail}
+                    persons={persons}
+                    noAudio={noAudio}
+                    onClose={() => {
+                      setSpeakersOpen(false);
+                      // The Close button leaves with the panel: focus goes back where it opens.
+                      speakersButton.current?.focus();
+                    }}
+                    onPlay={(s) => void play(s)}
+                    onRename={(s, name) => run(() => ipc.renameSpeaker(id, s, name), "The name was not saved")}
+                    onRenamePerson={(person, name) =>
+                      run(() => ipc.renamePerson(person, name), "The person was not renamed")
+                    }
+                    onLink={(s, choice: LinkChoice) =>
+                      run(() => ipc.linkSpeaker(id, s, choice), "The speaker was not linked")
+                    }
+                    onMarkMe={(s) => run(() => ipc.markMe(id, s), "The voice was not marked as you")}
+                    onUnmarkMe={(s) => run(() => ipc.unmarkMe(id, s), "The voice was not changed")}
+                    onMerge={(keep, merge) =>
+                      run(() => ipc.mergeSpeakers(id, keep, merge), "The speakers were not merged")
+                    }
+                    onForget={(person) =>
+                      run(async () => {
+                        await ipc.forgetPersonVoices(person);
+                        setNotice({ key: "edit", intent: "success", text: "The voice was forgotten." });
+                      }, "The voice was not forgotten")
+                    }
+                    onSave={(s, choice, name) =>
+                      run(async () => {
+                        const saved = await ipc.saveVoice(id, s, choice);
+                        const kept = saved.outcome === "Remembered" || saved.outcome === "AlreadyRemembered";
+                        setNotice({
+                          key: "edit",
+                          intent: kept ? "success" : "info",
+                          text: savedText(name, saved.outcome),
+                        });
+                      }, "The voice was not saved")
+                    }
+                    onIgnore={(s) => run(() => ipc.ignoreSpeaker(id, s), "The voice was not ignored")}
+                    onUnignore={(s) => run(() => ipc.unignoreSpeaker(id, s), "The voice was not changed")}
+                    firstNameField={(el) => {
+                      nameField.current = el;
+                    }}
+                  />
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}
@@ -655,15 +833,76 @@ function Citations({ citations, onCite }: { citations: Citation[]; onCite(c: Cit
   );
 }
 
-function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Citation): void }) {
+/** One text of a summary the user may correct (T12.16). */
+interface EditField {
+  /** Names the field: "Edit {label}" and the editor's label. */
+  label: string;
+  /** The button's own text. */
+  button: string;
+  text: string;
+  onSave(text: string): Promise<boolean>;
+}
+
+/** Summary content with Edit buttons at its end, shown on hover and focus; a field being
+ * edited replaces the content with its editor. With no fields it is the content alone. */
+function Editable({ fields, children }: { fields: EditField[]; children: ReactNode }) {
   const styles = useStyles();
+  const [editing, setEditing] = useState<EditField | null>(null);
+  if (editing !== null) {
+    return (
+      <TextEditor
+        label={editing.label}
+        initial={editing.text}
+        multiline
+        onSave={async (t) => {
+          if (await editing.onSave(t)) setEditing(null);
+        }}
+        onCancel={() => setEditing(null)}
+      />
+    );
+  }
+  return (
+    <span className={styles.editable}>
+      {children}
+      {fields.map((f) => (
+        <Button
+          key={f.label}
+          size="small"
+          appearance="subtle"
+          className={mergeClasses(styles.inlineEdit, "earshot-inline-edit")}
+          aria-label={`Edit ${f.label}`}
+          onClick={() => setEditing(f)}
+        >
+          {f.button}
+        </Button>
+      ))}
+    </span>
+  );
+}
+
+function SummaryBody({
+  summary,
+  onCite,
+  onEdit,
+}: {
+  summary: SummaryView;
+  onCite(c: Citation): void;
+  /** Saves one text; false when it was refused. Absent: read only. */
+  onEdit?: (field: SummaryFieldRef, text: string) => Promise<boolean>;
+}) {
+  const styles = useStyles();
+  /** The field as an Edit button, or none when read only. */
+  const edit = (field: SummaryFieldRef, label: string, text: string, button = "Edit"): EditField[] =>
+    onEdit === undefined ? [] : [{ label, button, text, onSave: (t) => onEdit(field, t) }];
   return (
     <>
       <div className={styles.section}>
         <Subtitle2 as="h2" className={styles.sectionHeading}>
           TL;DR
         </Subtitle2>
-        <Body1>{summary.tldr}</Body1>
+        <Body1>
+          <Editable fields={edit({ kind: "Tldr" }, "TL;DR", summary.tldr)}>{summary.tldr}</Editable>
+        </Body1>
       </div>
       {summary.decisions.length > 0 && (
         <div className={styles.section}>
@@ -673,8 +912,10 @@ function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Cita
           <ul className={styles.list} aria-label="Decisions">
             {summary.decisions.map((d, i) => (
               <li key={i}>
-                <Body1>{d.text}</Body1>
-                <Citations citations={d.citations} onCite={onCite} />
+                <Editable fields={edit({ kind: "Decision", index: i }, `decision ${i + 1}`, d.text)}>
+                  <Body1>{d.text}</Body1>
+                  <Citations citations={d.citations} onCite={onCite} />
+                </Editable>
               </li>
             ))}
           </ul>
@@ -689,14 +930,27 @@ function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Cita
             {summary.actions.map((a, i) => (
               <div role="row" key={i} style={{ display: "contents" }}>
                 <Body1Strong role="cell" className={styles.owner}>
-                  {a.owner}
+                  <Editable
+                    fields={edit({ kind: "ActionOwner", index: i }, `who does action ${i + 1}`, a.owner)}
+                  >
+                    {a.owner}
+                  </Editable>
                 </Body1Strong>
                 <span role="cell">
-                  <Body1>
-                    {a.task}
-                    {a.due !== null && ` (by ${a.due})`}
-                  </Body1>
-                  <Citations citations={a.citations} onCite={onCite} />
+                  <Editable
+                    fields={[
+                      ...edit({ kind: "ActionTask", index: i }, `action ${i + 1}`, a.task),
+                      ...(a.due === null
+                        ? []
+                        : edit({ kind: "ActionDue", index: i }, `when action ${i + 1} is due`, a.due, "Edit date")),
+                    ]}
+                  >
+                    <Body1>
+                      {a.task}
+                      {a.due !== null && ` (by ${a.due})`}
+                    </Body1>
+                    <Citations citations={a.citations} onCite={onCite} />
+                  </Editable>
                 </span>
               </div>
             ))}
@@ -707,13 +961,23 @@ function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Cita
       {summary.notes.map((n, i) => (
         <div className={styles.section} key={`notes-${i}`}>
           <Subtitle2 as="h2" className={styles.sectionHeading}>
-            {n.heading}
+            <Editable fields={edit({ kind: "NoteHeading", section: i }, `heading ${n.heading}`, n.heading)}>
+              {n.heading}
+            </Editable>
           </Subtitle2>
           <ul className={styles.list}>
             {n.bullets.map((b, j) => (
               <li key={j}>
-                <Body1>{b.text}</Body1>
-                <Citations citations={b.citations} onCite={onCite} />
+                <Editable
+                  fields={edit(
+                    { kind: "NoteBullet", section: i, bullet: j },
+                    `note ${j + 1} under ${n.heading}`,
+                    b.text,
+                  )}
+                >
+                  <Body1>{b.text}</Body1>
+                  <Citations citations={b.citations} onCite={onCite} />
+                </Editable>
               </li>
             ))}
           </ul>
@@ -727,7 +991,9 @@ function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Cita
           <ul className={styles.list}>
             {summary.open_questions.map((q, i) => (
               <li key={i}>
-                <Body1>{q}</Body1>
+                <Editable fields={edit({ kind: "OpenQuestion", index: i }, `open question ${i + 1}`, q)}>
+                  <Body1>{q}</Body1>
+                </Editable>
               </li>
             ))}
           </ul>
@@ -740,13 +1006,19 @@ function SummaryBody({ summary, onCite }: { summary: SummaryView; onCite(c: Cita
 function SummaryTab({
   detail,
   onCite,
+  onEdit,
   onResummarise,
   onUndo,
+  onAllowWriter,
 }: {
   detail: MeetingDetail;
   onCite(c: Citation): void;
+  /** Saves one text of summary `summary`; false when refused. Absent while a new summary is
+   * being written. */
+  onEdit?: (summary: string, field: SummaryFieldRef, text: string) => Promise<boolean>;
   onResummarise(): void;
   onUndo(): void;
+  onAllowWriter(): void;
 }) {
   const styles = useStyles();
   const s = detail.summary;
@@ -765,6 +1037,7 @@ function SummaryTab({
           </MessageBarActions>
         </MessageBar>
       )}
+      <KeptLocal keptLocal={detail.kept_local} onAllow={onAllowWriter} />
       {handoverLine(detail) !== null && <Caption1 className={styles.muted}>{handoverLine(detail)}</Caption1>}
       {s === null ? (
         <Body1 className={styles.muted}>
@@ -775,7 +1048,11 @@ function SummaryTab({
               : "This meeting has no summary yet."}
         </Body1>
       ) : (
-        <SummaryBody summary={s} onCite={onCite} />
+        <SummaryBody
+          summary={s}
+          onCite={onCite}
+          onEdit={onEdit === undefined ? undefined : (field, text) => onEdit(s.id, field, text)}
+        />
       )}
       {detail.can_undo_summary && (
         <div className={styles.summaryButtons}>
@@ -786,22 +1063,97 @@ function SummaryTab({
   );
 }
 
+/** A typed text with Save and Cancel (T12.16): Enter saves, Escape cancels. A title or a
+ * transcript line holds no line break, so Enter never adds one. */
+function TextEditor({
+  label,
+  initial,
+  multiline,
+  onSave,
+  onCancel,
+}: {
+  label: string;
+  initial: string;
+  multiline: boolean;
+  onSave(text: string): Promise<void>;
+  onCancel(): void;
+}) {
+  const styles = useStyles();
+  const [text, setText] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await onSave(text);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void submit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      onCancel();
+    }
+  };
+  return (
+    <div className={styles.editor}>
+      {multiline ? (
+        <Textarea
+          className={styles.field}
+          aria-label={label}
+          value={text}
+          resize="vertical"
+          autoFocus
+          onChange={(_, d) => setText(d.value)}
+          onKeyDown={onKeyDown}
+        />
+      ) : (
+        <Input
+          className={styles.field}
+          aria-label={label}
+          value={text}
+          autoFocus
+          onChange={(_, d) => setText(d.value)}
+          onKeyDown={onKeyDown}
+        />
+      )}
+      <Button appearance="primary" disabled={saving} onClick={() => void submit()}>
+        Save
+      </Button>
+      <Button disabled={saving} onClick={onCancel}>
+        Cancel
+      </Button>
+    </div>
+  );
+}
+
 function TranscriptTab({
   detail,
   cited,
+  onEdit,
   rowRef,
 }: {
   detail: MeetingDetail;
   cited: string | null;
+  /** Saves a line's new text; false when it was refused. */
+  onEdit(segment: string, text: string): Promise<boolean>;
   rowRef(segment: string, el: HTMLDivElement | null): void;
 }) {
   const styles = useStyles();
+  const [editing, setEditing] = useState<string | null>(null);
+  // Only the final transcript can be corrected: the final pass replaces a draft.
+  const canEdit = detail.header.transcript === "Final";
   if (detail.transcript.length === 0) {
     return <Body1 className={styles.muted}>No speech was transcribed in this meeting.</Body1>;
   }
   return (
     <div role="table" aria-label="Transcript" className={styles.transcript}>
-      {detail.transcript.map((r) => (
+      {detail.transcript.map((r, i) => (
         <div
           role="row"
           key={r.segment_id}
@@ -815,9 +1167,38 @@ function TranscriptTab({
           <Body1Strong role="cell" className={styles.speaker}>
             {r.speaker}
           </Body1Strong>
-          <Body1 role="cell" className={styles.text}>
-            {r.text}
-          </Body1>
+          {editing === r.segment_id ? (
+            <div role="cell" className={styles.text}>
+              <TextEditor
+                label={`Line ${i + 1}`}
+                initial={r.text}
+                multiline
+                onSave={async (text) => {
+                  if (await onEdit(r.segment_id, text)) setEditing(null);
+                }}
+                onCancel={() => setEditing(null)}
+              />
+            </div>
+          ) : (
+            <Body1 role="cell" className={styles.text}>
+              {r.text}
+              {r.edited && <Caption1 className={styles.editedMark}>(edited)</Caption1>}
+            </Body1>
+          )}
+          {/* Not a cell: a row's cells are its time, speaker and words. */}
+          <span>
+            {canEdit && editing !== r.segment_id && (
+              <Button
+                size="small"
+                appearance="subtle"
+                className={mergeClasses(styles.lineEdit, "earshot-line-edit")}
+                aria-label={`Edit line ${i + 1}`}
+                onClick={() => setEditing(r.segment_id)}
+              >
+                Edit
+              </Button>
+            )}
+          </span>
         </div>
       ))}
     </div>

@@ -1134,3 +1134,11 @@ fn view_of(db: &crate::Db, meeting: EntityId) -> MeetingView {
 /// T9.12: "This is me" and "This isn't me".
 #[path = "edit_mark_me_tests.rs"]
 mod mark_me_tests;
+
+/// T12.16: the title and the transcript text.
+#[path = "edit_text_tests.rs"]
+mod text_tests;
+
+/// T12.19: saving and ignoring a voice.
+#[path = "edit_speakers_tests.rs"]
+mod speakers_tests;

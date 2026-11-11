@@ -8,7 +8,7 @@ import { AppShell } from "../shell/AppShell";
 import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
-import { SETTINGS_SECTIONS } from "./SettingsView";
+import { SETTINGS_SECTIONS, type SettingsSection } from "./SettingsView";
 import { formatSize } from "./copy";
 
 interface Setup {
@@ -30,10 +30,32 @@ function setup(data: MockIpcData = {}, wrap: (ipc: Ipc) => Ipc = (i) => i): Setu
   return { timer, ipc, user: userEvent.setup() };
 }
 
-async function openModels(s: Setup) {
+/** Opens Settings, which starts on General. */
+async function openSettings(s: Setup) {
   await s.user.click(await screen.findByRole("button", { name: "Settings" }));
-  await screen.findByRole("heading", { level: 1, name: "Models" });
-  await screen.findByRole("list", { name: "This is your hardware" });
+  await screen.findByRole("heading", { level: 1, name: "General" });
+}
+
+/** Goes to `section` and waits for its model parts. */
+async function goTo(s: Setup, section: SettingsSection) {
+  const nav = screen.getByRole("navigation", { name: "Settings sections" });
+  await s.user.click(within(nav).getByRole("button", { name: section }));
+  await screen.findByRole("heading", { level: 1, name: section });
+  if (section === "System") await screen.findByRole("list", { name: "This is your hardware" });
+  if (section === "Transcription") await screen.findByRole("radiogroup", { name: "Transcription model" });
+  if (section === "Summaries") await screen.findByRole("radiogroup", { name: "Summary model" });
+}
+
+async function openPage(s: Setup, section: SettingsSection) {
+  await openSettings(s);
+  await goTo(s, section);
+}
+
+/** The section headings of the page shown. */
+function sections(): string[] {
+  return within(screen.getByRole("main"))
+    .getAllByRole("heading", { level: 2 })
+    .map((h) => h.textContent ?? "");
 }
 
 function advance(timer: ManualTimer, ms: number) {
@@ -56,38 +78,187 @@ beforeEach(() => {
 });
 
 describe("Settings", () => {
-  it("opens from the shell, switches sections and goes back to the meetings", async () => {
+  it("opens on General, lists the eight pages in order, switches and goes back to the meetings", async () => {
     const s = setup();
-    await openModels(s);
+    await openSettings(s);
+    expect(SETTINGS_SECTIONS).toEqual([
+      "General",
+      "Audio",
+      "System",
+      "Transcription",
+      "Summaries",
+      "Dictionary",
+      "People",
+      "Notes and storage",
+    ]);
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const items = within(nav)
       .getAllByRole("button")
       .map((b) => b.textContent);
     expect(items).toEqual(["Back to meetings", ...SETTINGS_SECTIONS]);
-    expect(within(nav).getByRole("button", { name: "Models" })).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getByRole("button", { name: "General" })).toHaveAttribute("aria-current", "page");
 
     await s.user.click(within(nav).getByRole("button", { name: "Audio" }));
     expect(await screen.findByRole("heading", { level: 1, name: "Audio" })).toBeInTheDocument();
     expect(await screen.findByRole("combobox", { name: "Microphone" })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: "Audio" })).toHaveAttribute("aria-current", "page");
 
-    await s.user.click(within(nav).getByRole("button", { name: "Storage" }));
-    expect(await screen.findByRole("heading", { level: 1, name: "Storage" })).toBeInTheDocument();
+    await s.user.click(within(nav).getByRole("button", { name: "Notes and storage" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Notes and storage" })).toBeInTheDocument();
     expect(await screen.findByRole("combobox", { name: "Keep recordings for" })).toBeInTheDocument();
-    expect(within(nav).getByRole("button", { name: "Storage" })).toHaveAttribute("aria-current", "page");
-    expect(within(nav).getByRole("button", { name: "Models" })).not.toHaveAttribute("aria-current");
+    expect(within(nav).getByRole("button", { name: "Notes and storage" })).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getByRole("button", { name: "General" })).not.toHaveAttribute("aria-current");
 
-    await s.user.click(within(nav).getByRole("button", { name: "Models" }));
-    expect(await screen.findByRole("heading", { level: 1, name: "Models" })).toBeInTheDocument();
+    await goTo(s, "System");
 
     await s.user.click(within(nav).getByRole("button", { name: "Back to meetings" }));
     expect(await screen.findByRole("heading", { name: "Record your first meeting" })).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
   });
 
+  it("puts each part on the page the design gives it", async () => {
+    const expected: Record<"surface" | "desktop", Partial<Record<SettingsSection, string[]>>> = {
+      surface: {
+        General: ["Start", "Keyboard shortcut", "Theme", "Updates", "Setup guide"],
+        System: [
+          "This is your hardware",
+          "What every meeting needs",
+          "Where it runs",
+          "Model check",
+          "How fast Earshot is on this computer",
+        ],
+        Transcription: [
+          "Meeting languages",
+          "Transcription model",
+          "NPU versions",
+          "During a meeting",
+          "When speakers are found",
+        ],
+        Summaries: ["Who writes the summary", "During the meeting", "Summary style"],
+        Dictionary: ["Your words"],
+        People: ["Your name", "Your voice", "People"],
+        "Notes and storage": ["Obsidian", "Recordings", "Crash logs"],
+      },
+      desktop: {
+        System: [
+          "This is your hardware",
+          "What every meeting needs",
+          "Where it runs",
+          "Model check",
+          "NVIDIA CUDA libraries",
+          "How fast Earshot is on this computer",
+        ],
+        Transcription: ["Meeting languages", "Transcription model", "During a meeting", "When speakers are found"],
+      },
+    };
+    for (const machine of ["surface", "desktop"] as const) {
+      const s = setup({ machine });
+      await openSettings(s);
+      for (const [section, headings] of Object.entries(expected[machine]) as [SettingsSection, string[]][]) {
+        await goTo(s, section);
+        await waitFor(() => expect(sections()).toEqual(headings));
+      }
+      // The Recommendation leads the System page, after the hardware.
+      await goTo(s, "System");
+      expect(screen.getByRole("region", { name: "Recommendation" })).toBeInTheDocument();
+      // The summary models sit under "On this computer".
+      await goTo(s, "Summaries");
+      const local = screen.getByRole("group", { name: "Which model writes the summary" });
+      expect(within(local).getByRole("radiogroup", { name: "Summary model" })).toBeInTheDocument();
+      cleanup();
+    }
+  });
+
+  it("keeps choices out of every part a Save button saves: a choice applies at once, typed text needs Save", async () => {
+    // The one exception: the endpoint's provider is saved with the address and model typed beside
+    // it, because a provider alone is not an endpoint (docs/ui-design.md "Settings").
+    const allowed = (el: Element) =>
+      el instanceof HTMLSelectElement &&
+      document.getElementById(el.getAttribute("aria-labelledby") ?? "")?.textContent === "Provider";
+    const seen = new Set<string>();
+    const checkPage = () => {
+      const saves = within(screen.getByRole("main")).queryAllByRole("button", { name: /^(Save|Use this endpoint|Add$)/ });
+      for (const button of saves) {
+        const part = button.closest("form, [role='group'], section");
+        expect(part).not.toBeNull();
+        const choices = [
+          ...(part as Element).querySelectorAll("input[type='radio'], input[type='checkbox'], select, [role='combobox']"),
+        ].filter((el) => !allowed(el));
+        expect(choices, `choices beside "${button.textContent}"`).toEqual([]);
+        seen.add(button.textContent ?? "");
+      }
+    };
+    const s = setup({ machine: "desktop" });
+    await openSettings(s);
+    for (const section of SETTINGS_SECTIONS) {
+      await goTo(s, section);
+      if (section === "People") await screen.findByRole("textbox", { name: "Your name" });
+      if (section === "Dictionary") await screen.findByRole("textbox", { name: "Add a word" });
+      if (section === "Notes and storage") await screen.findByRole("textbox", { name: "Vault folder" });
+      checkPage();
+    }
+    // The writers' own parts on Summaries: the endpoint (with the Anthropic key) and the two CLIs.
+    await goTo(s, "Summaries");
+    await s.user.click(screen.getByRole("radio", { name: /^Your own server/ }));
+    const form = screen.getByRole("group", { name: "Your own server" });
+    await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
+    checkPage();
+    await s.user.click(screen.getByRole("radio", { name: /^Claude \(through Claude Code\)/ }));
+    const claude = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    checkPage();
+    // The model and effort lists apply at once; only Other's typed name has a Save button.
+    await s.user.selectOptions(within(claude).getByRole("combobox", { name: "Model" }), "Other");
+    within(claude).getByRole("button", { name: "Save model" });
+    checkPage();
+    await s.user.click(screen.getByRole("radio", { name: /^OpenAI \(through Codex\)/ }));
+    const codex = await screen.findByRole("group", { name: "OpenAI through Codex" });
+    checkPage();
+    await s.user.selectOptions(within(codex).getByRole("combobox", { name: "Model" }), "Other");
+    within(codex).getByRole("button", { name: "Save model" });
+    checkPage();
+    expect([...seen].sort()).toEqual(["Add", "Save", "Save key", "Save model", "Use this endpoint"]);
+  });
+
+  it("holds one subscription to model job events across its pages, and the setup guide its own", async () => {
+    let live = 0;
+    let most = 0;
+    const s = setup({ machine: "surface" }, (ipc) => ({
+      ...ipc,
+      onModelJobEvent: async (handler) => {
+        const stop = await ipc.onModelJobEvent(handler);
+        live += 1;
+        most = Math.max(most, live);
+        return () => {
+          live -= 1;
+          stop();
+        };
+      },
+    }));
+    await openSettings(s);
+    await waitFor(() => expect(live).toBe(1));
+    for (const section of ["System", "Transcription", "Summaries", "People", "General"] as const) {
+      await goTo(s, section);
+      expect(live).toBe(1);
+    }
+    // A download started on one page goes on showing on another.
+    await goTo(s, "Transcription");
+    await s.user.click(screen.getByRole("button", { name: "Download Whisper large-v3-turbo (1.6 GB)" }));
+    advance(s.timer, 3 * MODEL_STEP_MS);
+    await goTo(s, "System");
+    await goTo(s, "Transcription");
+    await waitFor(() => expect(card("large-v3-turbo")).toHaveTextContent("487 MB of 1.6 GB"));
+    // The setup guide replaces Settings: its own subscription, never beside this one.
+    await goTo(s, "General");
+    await s.user.click(screen.getByRole("button", { name: "Open the setup guide" }));
+    await screen.findByRole("heading", { level: 1, name: "Summaries" });
+    await waitFor(() => expect(live).toBe(1));
+    expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
+    expect(most).toBe(1);
+  });
+
   it("shows the Surface-like hardware and what runs on each part", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "System");
     const cpu = hwRow("Processor");
     expect(cpu).toHaveTextContent("Snapdragon(R) X2 Elite - X2E88100 - Qualcomm(R) Oryon(TM) CPU");
     expect(cpu).toHaveTextContent("12 cores");
@@ -112,7 +283,7 @@ describe("Settings", () => {
 
   it("shows the desktop-like hardware and what runs on each part", async () => {
     const s = setup({ machine: "desktop" });
-    await openModels(s);
+    await openPage(s, "System");
     const cpu = hwRow("Processor");
     expect(cpu).toHaveTextContent("AMD Ryzen 9 9950X3D 16-Core Processor");
     expect(cpu).toHaveTextContent("16 cores, 32 threads");
@@ -134,11 +305,12 @@ describe("Settings", () => {
 
   it("moves the hardware rows with a model choice and a where-it-runs override", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "Transcription");
     await s.user.click(screen.getByRole("radio", { name: /^Parakeet 0\.6B v3/ }));
+    await waitFor(() => expect(screen.getByRole("radio", { name: /^Parakeet 0\.6B v3/ })).toBeChecked());
+    await goTo(s, "System");
     await waitFor(() => expect(hwRow("NPU")).toHaveTextContent("Not used"));
     expect(hwRow("Processor")).toHaveTextContent("Speaker detection, Transcription, Summaries");
-    expect(screen.getByRole("radio", { name: /^Parakeet 0\.6B v3/ })).toBeChecked();
 
     // Forcing the NPU for a model without an NPU version: it runs on the processor, with the note.
     await s.user.selectOptions(screen.getByRole("combobox", { name: "Transcription" }), "Npu");
@@ -148,17 +320,20 @@ describe("Settings", () => {
     expect(hwRow("NPU")).toHaveTextContent("Not used");
 
     // Back to a model with an NPU version: the NPU row follows.
+    await goTo(s, "Transcription");
     await s.user.click(screen.getByRole("radio", { name: /^Parakeet 0\.6B v2/ }));
+    await waitFor(() => expect(screen.getByRole("radio", { name: /^Parakeet 0\.6B v2/ })).toBeChecked());
+    await goTo(s, "System");
     await waitFor(() => expect(hwRow("NPU")).toHaveTextContent("Transcription"));
     expect(screen.queryByText(/has no NPU version/)).toBeNull();
   });
 
   it("moves summaries to the processor when chosen on the desktop", async () => {
     const s = setup({ machine: "desktop" });
-    await openModels(s);
+    await openPage(s, "System");
     const select = screen.getByRole("combobox", { name: "Summaries" });
     expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "Automatic (graphics card, then processor)",
+      "Automatic (graphics card or processor)",
       "Graphics card",
       "Processor",
     ]);
@@ -170,9 +345,32 @@ describe("Settings", () => {
     expect(await s.ipc.modelSettings()).toMatchObject({ value: { summary_part: "Processor" } });
   });
 
+  it("reads the models again when the writer changes on the Summaries page", async () => {
+    const s = setup({ machine: "desktop" });
+    await openPage(s, "System");
+    expect(hwRow("Graphics")).toHaveTextContent("Transcription, Summaries");
+    await goTo(s, "Summaries");
+    await s.user.click(screen.getByRole("radio", { name: /^No summary/ }));
+    await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("NoSummary"));
+    // No summary: the model choices under "On this computer" go.
+    expect(screen.queryByRole("group", { name: "Which model writes the summary" })).toBeNull();
+    await goTo(s, "System");
+    await waitFor(() => expect(hwRow("Graphics")).not.toHaveTextContent("Summaries"));
+  });
+
+  it("chooses the summary model under On this computer", async () => {
+    const s = setup({ machine: "desktop" });
+    await openPage(s, "Summaries");
+    const local = within(screen.getByRole("group", { name: "Which model writes the summary" }));
+    expect(local.getByRole("radio", { name: /^Qwen 3\.5 9B/ })).toBeChecked();
+    await s.user.click(local.getByRole("radio", { name: /^Qwen 3\.5 4B/ }));
+    await waitFor(async () => expect((await s.ipc.modelSettings()).value.summary).toBe("qwen3.5-4b-q4_k_m"));
+    await waitFor(() => expect(local.getByRole("radio", { name: /^Qwen 3\.5 4B/ })).toBeChecked());
+  });
+
   it("offers the speech helpers on a clean install, follows the download and never offers Remove", async () => {
     const s = setup({ cleanInstall: true });
-    await openModels(s);
+    await openPage(s, "System");
     const section = within(await screen.findByRole("region", { name: "What every meeting needs" }));
     const size = (await s.ipc.models()).helpers.size;
     expect(section.getByText("Speech helpers")).toBeInTheDocument();
@@ -190,11 +388,11 @@ describe("Settings", () => {
 
   it("offers the four transcription choices with their copy", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "Transcription");
     const group = screen.getByRole("radiogroup", { name: "Transcription model" });
     const radios = within(group).getAllByRole("radio");
     expect(radios.map((r) => (r as HTMLInputElement).labels?.[0]?.textContent)).toEqual([
-      "Parakeet 0.6B v2RecommendedKeeps up",
+      "Parakeet 0.6B v2RecommendedKeeps up with live speech on this computer",
       "Parakeet 110MLighter",
       "Parakeet 0.6B v3Multilingual: European",
       "Whisper large-v3-turboMultilingual: every language",
@@ -208,29 +406,32 @@ describe("Settings", () => {
       "English and 24 other European languages. Runs on the processor here (no NPU version).",
     );
     expect(card("large-v3-turbo")).toHaveTextContent(
-      "About 100 languages, including Asian languages. Less accurate and slower than Parakeet: use it only for languages Parakeet v3 does not cover. Runs on the processor here (no NPU version).",
+      "About 100 languages, including Asian languages. Less accurate and slower than Parakeet 0.6B v3: use it only for languages Parakeet 0.6B v3 does not cover. Runs on the processor here (no NPU version).",
     );
     expect(card("large-v3-turbo")).toHaveTextContent("Download 1.6 GB");
     expect(card("parakeet-tdt-0.6b-v2")).toHaveTextContent("Installed");
-    // Summaries: the shipped models, recommended first, no verdict without a stored one.
-    const sums = within(screen.getByRole("radiogroup", { name: "Summary model" })).getAllByRole("radio");
+    // Summaries: the shipped models, recommended first, no verdict without a stored one, under
+    // "On this computer" on the Summaries page.
+    await goTo(s, "Summaries");
+    const local = within(screen.getByRole("group", { name: "Which model writes the summary" }));
+    const sums = within(local.getByRole("radiogroup", { name: "Summary model" })).getAllByRole("radio");
     expect(sums.map((r) => (r as HTMLInputElement).labels?.[0]?.textContent)).toEqual([
       "Qwen 3.5 4BRecommended",
       "Qwen 3.5 9BMore thorough",
     ]);
     expect(card("qwen3.5-4b-q4_k_m")).toHaveTextContent("Runs on the processor.");
     expect(card("qwen3.5-9b-q4_k_m")).toHaveTextContent("Slower. More thorough summaries.");
-    expect(card("qwen3.5-9b-q4_k_m")).not.toHaveTextContent("Too slow here");
-    expect(screen.getByText("Your own endpoint or no summary: Settings, Summaries.")).toBeInTheDocument();
+    expect(card("qwen3.5-9b-q4_k_m")).not.toHaveTextContent("Too slow for live speech on this computer");
   });
 
   it("uses the desktop copy for the lighter model and the faster summary model", async () => {
     const s = setup({ machine: "desktop" });
-    await openModels(s);
+    await openPage(s, "Transcription");
     expect(card("parakeet-tdt-110m")).toHaveTextContent(
       "For when the graphics card is busy with other work, or when space is tight. A little less accurate. Runs on the graphics card.",
     );
     expect(card("large-v3-turbo")).toHaveTextContent("Runs on the graphics card.");
+    await goTo(s, "Summaries");
     const sums = within(screen.getByRole("radiogroup", { name: "Summary model" })).getAllByRole("radio");
     expect(sums.map((r) => (r as HTMLInputElement).labels?.[0]?.textContent)).toEqual([
       "Qwen 3.5 9BRecommended",
@@ -250,10 +451,10 @@ describe("Settings", () => {
         return { ...v, transcription: v.transcription.map(patch) };
       },
     }));
-    await openModels(s);
-    expect(card("parakeet-tdt-0.6b-v3")).toHaveTextContent("Too slow here");
+    await openPage(s, "Transcription");
+    expect(card("parakeet-tdt-0.6b-v3")).toHaveTextContent("Too slow for live speech on this computer");
     expect(card("parakeet-tdt-0.6b-v3")).toHaveTextContent("You can still use it.");
-    expect(card("large-v3-turbo")).toHaveTextContent("Did not work here");
+    expect(card("large-v3-turbo")).toHaveTextContent("Did not work on this computer");
     expect(card("parakeet-tdt-110m")).not.toHaveTextContent(/Keeps up|Too slow|Did not work/);
     const slow = screen.getByRole("radio", { name: /^Parakeet 0\.6B v3/ });
     expect(slow).toBeEnabled();
@@ -263,7 +464,7 @@ describe("Settings", () => {
 
   it("downloads a model with progress, pauses keeping what arrived, and resumes to installed", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "Transcription");
     await s.user.click(screen.getByRole("button", { name: "Download Whisper large-v3-turbo (1.6 GB)" }));
     advance(s.timer, 3 * MODEL_STEP_MS);
     const whisper = card("large-v3-turbo");
@@ -289,9 +490,11 @@ describe("Settings", () => {
 
   it("removes a model that is not kept, showing the space freed; kept ones have no Remove", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "Summaries");
     // The chosen model, the fallback and the summary model are kept.
-    for (const m of ["parakeet-tdt-0.6b-v2", "parakeet-tdt-110m", "qwen3.5-4b-q4_k_m"]) {
+    expect(within(card("qwen3.5-4b-q4_k_m")).queryByRole("button", { name: /^Remove/ })).toBeNull();
+    await goTo(s, "Transcription");
+    for (const m of ["parakeet-tdt-0.6b-v2", "parakeet-tdt-110m"]) {
       expect(within(card(m)).queryByRole("button", { name: /^Remove/ })).toBeNull();
     }
     await s.user.click(screen.getByRole("radio", { name: /^Parakeet 0\.6B v3/ }));
@@ -306,7 +509,7 @@ describe("Settings", () => {
 
   it("lists the NPU versions on an ARM64 build and runs a model on the NPU only while its version is there", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "Transcription");
     const section = within(await screen.findByRole("region", { name: "NPU versions" }));
     expect(section.getByText("Parakeet 0.6B v2 (NPU version)")).toBeInTheDocument();
     expect(section.getByText("Parakeet 110M (NPU version)")).toBeInTheDocument();
@@ -337,7 +540,7 @@ describe("Settings", () => {
 
   it("lists no NPU versions on an x64 build", async () => {
     const s = setup({ machine: "desktop" });
-    await openModels(s);
+    await openPage(s, "Transcription");
     expect(screen.queryByRole("region", { name: "NPU versions" })).toBeNull();
     expect((await s.ipc.models()).npu).toEqual([]);
   });
@@ -354,7 +557,7 @@ describe("Settings", () => {
           }),
         ),
     }));
-    await openModels(s);
+    await openPage(s, "Transcription");
     await s.user.click(screen.getByRole("radio", { name: /^Parakeet 0\.6B v3/ }));
     await s.user.click(
       await within(card("parakeet-tdt-0.6b-v2")).findByRole("button", { name: /^Remove Parakeet 0\.6B v2/ }),
@@ -367,11 +570,11 @@ describe("Settings", () => {
 
   it("runs the check with its progress and shows the result", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "System");
     const line = screen.getByRole("status", { name: "Model check" });
-    expect(line).toHaveTextContent("Keeps up");
+    expect(line).toHaveTextContent("Keeps up with live speech on this computer");
     expect(line).toHaveTextContent(
-      "Last check: Parakeet 0.6B v2 on the NPU. When it falls behind: Parakeet 110M.",
+      "Last check: Parakeet 0.6B v2 on the NPU. If a meeting falls behind, Earshot switches to Parakeet 110M.",
     );
     await s.user.click(within(line).getByRole("button", { name: "Check again" }));
     expect(screen.getByRole("status", { name: "Model check" })).toHaveTextContent("Starting the check");
@@ -383,12 +586,12 @@ describe("Settings", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument(),
     );
-    expect(screen.getByRole("status", { name: "Model check" })).toHaveTextContent("Keeps up");
+    expect(screen.getByRole("status", { name: "Model check" })).toHaveTextContent("Keeps up with live speech on this computer");
   });
 
   it("cancels a running check and says why it stopped", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "System");
     await s.user.click(screen.getByRole("button", { name: "Check again" }));
     advance(s.timer, MODEL_STEP_MS);
     await s.user.click(
@@ -406,11 +609,12 @@ describe("Settings", () => {
     const warning =
       "The Cuda library of ONNX Runtime is unavailable, so the model check tests Parakeet models on the processor only.";
     const s = setup({ machine: "desktop", modelCheckWarning: warning });
-    await openModels(s);
+    await openPage(s, "System");
     await s.user.click(screen.getByRole("button", { name: "Check again" }));
     advance(s.timer, 0);
     expect(await screen.findByText(warning)).toBeInTheDocument();
-    expect(screen.getByText("Model check")).toBeInTheDocument();
+    // The notice is titled; the section heading of the same words is left out.
+    expect(screen.getByText("Model check", { ignore: "h2, script, style" })).toBeInTheDocument();
     await s.user.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText(warning)).toBeNull();
   });
@@ -423,7 +627,7 @@ describe("Settings", () => {
           new IpcFailure({ kind: "busy", message: "A meeting is running; check after it.", retryable: true }),
         ),
     }));
-    await openModels(s);
+    await openPage(s, "System");
     await s.user.click(screen.getByRole("button", { name: "Check again" }));
     expect(await screen.findByText("The check could not start")).toBeInTheDocument();
     expect(screen.getByText("A meeting is running; check after it.")).toBeInTheDocument();
@@ -432,7 +636,7 @@ describe("Settings", () => {
 
   it("shows a refused setting and keeps what was stored", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "Transcription");
     await s.user.click(screen.getByRole("radio", { name: /^Parakeet 110M/ }));
     await waitFor(() => expect(screen.getByRole("radio", { name: /^Parakeet 110M/ })).toBeChecked());
     // German with an English-only model: the app refuses.
@@ -447,15 +651,18 @@ describe("Settings", () => {
 
   it("saves meeting languages and follows the new recommendation", async () => {
     const s = setup({ machine: "desktop" });
-    await openModels(s);
+    await openPage(s, "Transcription");
+    // The languages come first on the page: they decide the recommendation.
+    expect(sections()[0]).toBe("Meeting languages");
     await s.user.click(screen.getByRole("combobox", { name: "Meeting languages" }));
     await s.user.click(await screen.findByRole("menuitemcheckbox", { name: "German" }));
+    await waitFor(async () => expect((await s.ipc.modelSettings()).value.languages).toEqual(["en", "de"]));
+    await goTo(s, "System");
     await waitFor(() =>
       expect(screen.getByRole("region", { name: "Recommendation" })).toHaveTextContent(
         "Transcription with Parakeet 0.6B v3 on the graphics card",
       ),
     );
-    expect((await s.ipc.modelSettings()).value.languages).toEqual(["en", "de"]);
   });
 
   it("shows a busy refusal of a setting", async () => {
@@ -464,7 +671,7 @@ describe("Settings", () => {
       setModelSettings: () =>
         Promise.reject(new IpcFailure({ kind: "busy", message: "A meeting is running.", retryable: true })),
     }));
-    await openModels(s);
+    await openPage(s, "Transcription");
     await s.user.click(screen.getByRole("radio", { name: /^Parakeet 110M/ }));
     expect(await screen.findByText("The setting was not saved")).toBeInTheDocument();
     expect(screen.getByText("A meeting is running.")).toBeInTheDocument();
@@ -473,11 +680,13 @@ describe("Settings", () => {
 
   it("starts the check after a transcription model's download and shows it running", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "Transcription");
     await s.user.click(screen.getByRole("button", { name: "Download Parakeet 0.6B v3 (2.5 GB)" }));
     advance(s.timer, 10 * MODEL_STEP_MS);
     await waitFor(() => expect(card("parakeet-tdt-0.6b-v3")).toHaveTextContent("Installed"));
     advance(s.timer, MODEL_STEP_MS);
+    // The check is on the System page, which hears it from the state Settings holds.
+    await goTo(s, "System");
     expect(screen.getByRole("status", { name: "Model check" })).toHaveTextContent(
       "Checking Parakeet 0.6B v2 on the NPU",
     );
@@ -490,9 +699,10 @@ describe("Settings", () => {
 
   it("refuses the check while a transcription model downloads", async () => {
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "Transcription");
     await s.user.click(screen.getByRole("button", { name: "Download Parakeet 0.6B v3 (2.5 GB)" }));
     advance(s.timer, 2 * MODEL_STEP_MS);
+    await goTo(s, "System");
     await s.user.click(screen.getByRole("button", { name: "Check again" }));
     expect(await screen.findByText("The check could not start")).toBeInTheDocument();
     expect(screen.getByText(DOWNLOADING_MESSAGE)).toBeInTheDocument();
@@ -502,7 +712,7 @@ describe("Settings", () => {
     // Two transcription downloads: the first to end cannot start the check while the
     // second still writes; the last one starts it.
     const s = setup({ machine: "surface" });
-    await openModels(s);
+    await openPage(s, "Transcription");
     await s.user.click(screen.getByRole("button", { name: "Download Parakeet 0.6B v3 (2.5 GB)" }));
     advance(s.timer, 5 * MODEL_STEP_MS);
     await s.user.click(screen.getByRole("button", { name: "Download Whisper large-v3-turbo (1.6 GB)" }));
@@ -512,6 +722,7 @@ describe("Settings", () => {
     ).toBeInTheDocument();
     expect(screen.getAllByText("Parakeet 0.6B v3").length).toBeGreaterThan(0);
     advance(s.timer, 6 * MODEL_STEP_MS);
+    await goTo(s, "System");
     await waitFor(() =>
       expect(screen.getByRole("status", { name: "Model check" })).toHaveTextContent("Checking"),
     );
@@ -529,12 +740,18 @@ describe("Settings", () => {
     expect(idIn("base.en is too slow")).toBe("base.en");
     for (const machine of ["surface", "desktop"] as const) {
       const s = setup({ machine });
-      await openModels(s);
+      await openPage(s, "Transcription");
       const texts = [document.body.textContent ?? ""];
+      await goTo(s, "Summaries");
+      texts.push(document.body.textContent ?? "");
       // Force the notes: a model without an NPU version on the NPU, summaries on the card.
+      await goTo(s, "Transcription");
       await s.user.click(screen.getByRole("radio", { name: /^Parakeet 0\.6B v3/ }));
-      await s.user.selectOptions(screen.getByRole("combobox", { name: "Transcription" }), machine === "surface" ? "Npu" : "Processor");
       await waitFor(() => expect(screen.getByRole("radio", { name: /^Parakeet 0\.6B v3/ })).toBeChecked());
+      texts.push(document.body.textContent ?? "");
+      await goTo(s, "System");
+      texts.push(document.body.textContent ?? "");
+      await s.user.selectOptions(screen.getByRole("combobox", { name: "Transcription" }), machine === "surface" ? "Npu" : "Processor");
       if (machine === "surface") await screen.findByText(/has no NPU version/);
       texts.push(document.body.textContent ?? "");
       await s.user.click(screen.getByRole("button", { name: "Check again" }));
@@ -542,6 +759,8 @@ describe("Settings", () => {
       texts.push(document.body.textContent ?? "");
       advance(s.timer, 2 * MODEL_STEP_MS);
       await waitFor(() => expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument());
+      texts.push(document.body.textContent ?? "");
+      await goTo(s, "Transcription");
       texts.push(document.body.textContent ?? "");
       for (const t of texts) expect(idIn(t)).toBeNull();
       cleanup();
@@ -551,12 +770,10 @@ describe("Settings", () => {
   it("has no em dash, please or exclamation mark in any section", async () => {
     for (const machine of ["surface", "desktop"] as const) {
       const s = setup({ machine });
-      await openModels(s);
+      await openSettings(s);
       const texts = [document.body.textContent ?? ""];
-      const nav = screen.getByRole("navigation", { name: "Settings sections" });
       for (const section of SETTINGS_SECTIONS) {
-        await s.user.click(within(nav).getByRole("button", { name: section }));
-        if (section === "Models") await screen.findByRole("list", { name: "This is your hardware" });
+        await goTo(s, section);
         texts.push(document.body.textContent ?? "");
       }
       for (const t of texts) expect(t).not.toMatch(/—|please|!/i);

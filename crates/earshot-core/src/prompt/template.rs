@@ -16,6 +16,10 @@ pub(super) const REDUCE: &str = include_str!("templates/reduce.md");
 /// The user's style block (T7.4b), appended after everything else in the system message of
 /// a final request; `{{style}}` is replaced by the neutralised style lines.
 pub(super) const STYLE: &str = include_str!("templates/style.md");
+/// The user's own words block (T12.15a), in the system message of every request after any
+/// map or merge instruction and before the style; `{{words}}` is replaced by the prefixed
+/// words, one per line.
+pub(super) const VOCABULARY: &str = include_str!("templates/vocabulary.md");
 /// The rule that says how the user appears in the transcript (T9.1h).
 pub(super) const USER_NAME: &str = include_str!("templates/user.md");
 

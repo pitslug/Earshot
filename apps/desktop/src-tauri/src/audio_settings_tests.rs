@@ -191,6 +191,7 @@ fn audio_settings_reach_the_meeting_capture() {
     let request = |mode| StartRequest {
         mode,
         title: String::new(),
+        keep_local: false,
     };
     // Nothing chosen: the default devices, and a call records the whole output (T6.14a).
     let c = meeting_capture(&svc, &request(CaptureMode::Call)).unwrap();

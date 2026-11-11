@@ -16,8 +16,8 @@
 //!   every path, failure and cancel included ([`Scratch`]). The replay is paced in real time
 //!   ([`crate::replay::Paced`], as `earshot-cli replay --realtime`); the live session runs with the meeting's
 //!   live transcription ([`host::live_factory`]), speaker timing and live summaries, then the
-//!   final pass and the summary ([`host::after_meeting`]) with the user's summary style copied
-//!   into the throwaway store. Nothing is written to the user's store except the result
+//!   final pass and the summary ([`host::after_meeting`]) with the user's summary style and word list
+//!   copied into the throwaway store. Nothing is written to the user's store except the result
 //!   ([`record_benchmark`]). A run that made a network request or handed text to another
 //!   program is an internal error (second line of defence).
 //! - **Measurements** ([`BenchmarkRecord`]): the largest and median transcript lag while the
@@ -48,7 +48,7 @@ use earshot_core::audio::{MonoBuffer, PIPELINE_RATE};
 use earshot_core::capture::{DeviceTime, ReplayBuilder, TrackId};
 use earshot_core::model::{ClockDomain, TranscriptPass};
 use earshot_core::pipeline::PipelineError;
-use earshot_core::prompt::SummaryStyle;
+use earshot_core::prompt::{SummaryStyle, Vocabulary};
 use earshot_store::{DataDir, Store};
 use serde::{Deserialize, Serialize};
 
@@ -256,6 +256,9 @@ pub struct BenchmarkSettings {
     pub check: Option<crate::model_bench::StoredCheck>,
     /// The user's summary style (a refused stored one is empty, with a note in `summary`).
     pub style: SummaryStyle,
+    /// The user's word list (T12.15a; a refused stored one is empty, with a note in
+    /// `summary`).
+    pub vocabulary: Vocabulary,
 }
 
 /// Reads the settings of a benchmark from the user's `store` (nothing is changed): the
@@ -277,10 +280,12 @@ pub fn read_settings(
             build,
             hardware,
             &crate::summary_settings::NoApiKeys,
+            crate::keep_local::SummaryPrivacy::Writer,
         )?,
         speaker_timing: crate::speaker_timing::speaker_timing(store)?.timing(),
         check: crate::model_bench::stored_check(store)?,
         style: crate::summary_style::summary_style(store)?.0,
+        vocabulary: crate::vocabulary::vocabulary(store)?.0,
     })
 }
 
@@ -311,6 +316,8 @@ pub struct BenchmarkSetup {
     pub check: Option<crate::model_bench::StoredCheck>,
     /// The user's summary style.
     pub style: SummaryStyle,
+    /// The user's word list (T12.15a).
+    pub vocabulary: Vocabulary,
     /// What the user is told with the result (a "where it runs" choice not used, an unknown
     /// stored value, a refused style, a library that could not load).
     pub notes: Vec<String>,
@@ -342,6 +349,7 @@ pub fn benchmark_setup(
         live_summaries: settings.summary.live,
         check: settings.check,
         style: settings.style,
+        vocabulary: settings.vocabulary,
         notes,
     })
 }
@@ -468,6 +476,8 @@ pub struct BenchmarkRun<'a> {
     pub live_summaries: LiveSummariesRun,
     /// The user's summary style, copied into the throwaway store.
     pub style: SummaryStyle,
+    /// The user's word list (T12.15a), copied into the throwaway store.
+    pub vocabulary: Vocabulary,
     /// Timings and pacing.
     pub clock: Arc<dyn PaceClock>,
     /// Replay in real time (production); off, the replay goes as fast as the session takes
@@ -544,11 +554,12 @@ fn skip_of(reason: &SkipReason, skip: Option<&BenchSkip>) -> Result<BenchSkip, R
         SkipReason::NotRequested => skip.cloned().ok_or(RuntimeError::Internal(
             "the benchmark summary was prepared and did not run",
         )),
-        SkipReason::NotInstalled { model, .. } | SkipReason::ChosenNotInstalled { model } => {
-            Ok(BenchSkip::NotInstalled {
-                model: (*model).to_owned(),
-            })
-        }
+        // The benchmark's meeting is never kept local; were it, its model is what is missing.
+        SkipReason::NotInstalled { model, .. }
+        | SkipReason::ChosenNotInstalled { model }
+        | SkipReason::KeptLocalNoModel { model } => Ok(BenchSkip::NotInstalled {
+            model: (*model).to_owned(),
+        }),
         SkipReason::NoApiKey(_) => Ok(BenchSkip::NotOnThisComputer {
             writer: SummaryWriter::OwnEndpoint.as_str().to_owned(),
         }),
@@ -589,6 +600,8 @@ fn run_in(
     let svc = Services::new(store, data, run.services_clock)?;
     crate::summary_style::set_summary_style(&mut svc.store(), run.style.as_str())
         .map_err(|_| RuntimeError::Internal("the summary style cannot be copied"))?;
+    crate::vocabulary::set_vocabulary(&mut svc.store(), run.vocabulary.words())
+        .map_err(|_| RuntimeError::Internal("the word list cannot be copied"))?;
     let total = run.meeting.duration();
     let source = ReplayBuilder::new(
         ORIGIN,
@@ -1032,6 +1045,7 @@ pub fn run_from_settings(
             after,
             live_summaries: live_run,
             style: setup.style.clone(),
+            vocabulary: setup.vocabulary.clone(),
             clock: Arc::new(WallClock::new()),
             realtime: true,
             services_clock: Arc::clone(&user.clock),

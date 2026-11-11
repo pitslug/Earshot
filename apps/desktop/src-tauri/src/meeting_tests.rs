@@ -105,6 +105,8 @@ struct FakePrepare {
     seed: std::sync::atomic::AtomicU64,
     /// Handed to the next meeting.
     call_signal: Mutex<Option<CallSignal>>,
+    /// The summary step reports Claude Code at its default effort (an unreadable help).
+    effort_unread: std::sync::atomic::AtomicBool,
 }
 
 impl FakePrepare {
@@ -114,6 +116,7 @@ impl FakePrepare {
             after_saw: Arc::default(),
             seed: 100.into(),
             call_signal: Mutex::new(None),
+            effort_unread: false.into(),
         })
     }
 }
@@ -169,6 +172,7 @@ impl Prepare for FakePrepare {
             ),
         });
         let saw = Arc::clone(&self.after_saw);
+        let effort_unread = self.effort_unread.load(Ordering::Relaxed);
         let after: AfterFn = Box::new(move |_svc, outcome, _cancel, progress| {
             *saw.lock().unwrap() = Some(outcome.meeting.to_string());
             assert!(script != Script::AfterPanics, "a post-meeting bug");
@@ -204,6 +208,7 @@ impl Prepare for FakePrepare {
                 network: vec![],
                 handovers: vec![],
                 handover_record_failures: vec![],
+                claude_effort_unread: effort_unread,
             }
         });
         Ok(Prepared {
@@ -239,6 +244,7 @@ fn request(mode: CaptureMode) -> StartRequest {
     StartRequest {
         mode,
         title: "Design sync".into(),
+        keep_local: false,
     }
 }
 
@@ -814,6 +820,48 @@ fn meeting_summary_setup_errors_name_the_missing_dlls_in_one_sentence() {
 }
 
 #[test]
+fn meeting_driver_says_when_claude_code_ran_at_its_default_effort() {
+    let dir = TempDir::new("driver-effort");
+    let svc = services(&dir);
+    let prepare = FakePrepare::new(Script::Ends);
+    prepare.effort_unread.store(true, Ordering::Relaxed);
+    let (d, rx) = driver(prepare);
+    d.start(&svc, request(CaptureMode::Call)).unwrap();
+    let events = until_summary(&rx);
+    d.join();
+    let ended = position(&events, |e| matches!(e, MeetingEvent::Ended { .. }));
+    let note = position(
+        &events,
+        |e| matches!(e, MeetingEvent::Warning { key, .. } if key == "summary-effort"),
+    );
+    assert!(
+        note > ended,
+        "after the recording, so the screen shows it: {events:?}"
+    );
+    assert_eq!(
+        events[note],
+        MeetingEvent::Warning {
+            key: "summary-effort".into(),
+            kind: WarningKind::Backend,
+            message: crate::meeting_events::CLAUDE_EFFORT_UNREAD.into(),
+        }
+    );
+    // Without it, no such banner (a store of its own: the fake's ids repeat per driver).
+    let dir = TempDir::new("driver-effort-none");
+    let svc = services(&dir);
+    let (d, rx) = driver(FakePrepare::new(Script::Ends));
+    d.start(&svc, request(CaptureMode::Call)).unwrap();
+    let events = until_summary(&rx);
+    d.join();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, MeetingEvent::Warning { key, .. } if key == "summary-effort")),
+        "{events:?}"
+    );
+}
+
+#[test]
 fn meeting_driver_shows_a_setup_note_after_started() {
     let dir = TempDir::new("driver-note");
     let svc = services(&dir);
@@ -983,6 +1031,7 @@ impl Prepare for QueuePrepare {
                 network: vec![],
                 handovers: vec![],
                 handover_record_failures: vec!["a store error".into()],
+                claude_effort_unread: false,
             }
         });
         Ok(Prepared {
@@ -1237,6 +1286,7 @@ fn outcome_of(post: Result<HostPost, RuntimeError>, summary: SummaryResult) -> H
         network: vec![],
         handovers: vec![],
         handover_record_failures: vec![],
+        claude_effort_unread: false,
     }
 }
 

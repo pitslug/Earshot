@@ -26,7 +26,7 @@ export interface CudaState {
 }
 
 /** Loads the CUDA section and follows its events. `onStartChecked` hears the start finish, which
- * changes what the rest of the Models page shows. */
+ * changes what the model parts of Settings show. */
 export function useCuda(onStartChecked?: () => Promise<void>): CudaState {
   const ipc = useIpc();
   const [view, setView] = useState<CudaView | null>(null);

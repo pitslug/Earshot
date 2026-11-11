@@ -686,19 +686,30 @@ fn speaker(role: SpeakerRole, person: Option<EntityId>) -> PostSpeaker {
         person,
         display_name: "Speaker 1".into(),
         speech: Duration::from_secs(30),
+        ignored: false,
     }
 }
 
 #[test]
-fn meeting_events_voices_to_name_skip_me_and_known_people() {
+fn meeting_events_voices_to_name_skip_me_known_and_ignored_people() {
+    let ignored = PostSpeaker {
+        ignored: true,
+        ..speaker(SpeakerRole::Remote, None)
+    };
     let speakers = [
         speaker(SpeakerRole::Me, None),
         speaker(SpeakerRole::Remote, None),
         speaker(SpeakerRole::Remote, Some(id(30))),
         speaker(SpeakerRole::Room, None),
+        ignored,
     ];
     assert_eq!(voices_to_name(&speakers), 2);
     assert_eq!(voices_to_name(&[]), 0);
+    // The one rule: only an unnamed voice nobody ignored needs a name.
+    assert!(needs_name(SpeakerRole::Room, false, false));
+    assert!(!needs_name(SpeakerRole::Room, false, true));
+    assert!(!needs_name(SpeakerRole::Remote, true, false));
+    assert!(!needs_name(SpeakerRole::Me, false, false));
 }
 
 #[test]
@@ -745,6 +756,7 @@ fn outcome(post: Result<HostPost, RuntimeError>, summary: SummaryResult) -> Host
         network: vec![],
         handovers: vec![],
         handover_record_failures: vec![],
+        claude_effort_unread: false,
     }
 }
 
@@ -775,7 +787,7 @@ fn meeting_events_summary_results_map_with_plain_copy() {
         panic!("{missing:?}");
     };
     assert!(reason.starts_with("No summary model is installed"));
-    assert!(reason.contains("Settings, Models"));
+    assert!(reason.contains("Settings, Summaries"));
     assert!(!reason.contains("fetch-models"), "{reason}");
     let failed = summary_event(&outcome(
         Ok(HostPost::Skipped),

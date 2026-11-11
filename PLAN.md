@@ -1540,13 +1540,21 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner, 2026-11-08: when transcription runs on CUDA and the card cannot take the mic track's preview session (`previews_refused_second`), Everyone runs that session on the CPU with shared weights (T9.1md) instead of falling back to other people only, within the CPU memory limit (`PREVIEW_BOTH_MIN_MEMORY`). Automatic, no new setting; the General page note says where it runs. Write the rule for "the main transcript does not slow" before measuring and commit it, then measure on the desktop with `live_lag --memory`.
   - accept: `cargo test -p earshot-runtime preview`; `cargo test -p earshot-desktop --bin earshot preview`; the rule and measurements in docs/live-previews.md
 
-- [ ] T12.3b One CUDA session for a track's transcription and previews (spike)
+- [x] T12.3b One CUDA session for a track's transcription and previews (spike)
   - deps: T12.3
+  - status (2026-11-11): rule committed first (ca9f310); evaluation-only prototype merged (one encoder shared through a Mutex, no unsafe; ort rc.15 does not help), reviewed clear; measured on an idle desktop, all five points pass in both runs (lock wait at most 43 ms, card 0.59 GiB over alone, about 3.1 GiB less than a separate preview session). Under the rule a replay follow-up comes next (T12.3d); no shipped change.
   - do: the owner, 2026-11-08: ONNX Runtime's CUDA provider gives every session its own copy of the weights on the card. Find whether one session can serve both: first whether a newer `ort` lets `Session::run` take `&self`, else scope a minimal unsafe wrapper over the C API's `Run` (reviewer required). Write the rule (no preview delays a real decode by more than a stated bound) before measuring; measure card memory and how long real decodes wait. The result decides default on, default off or a setting (the owner). No shipped change without the owner.
   - accept: the rule, findings and numbers in docs/live-previews.md
 
-- [ ] T12.3c Provisional words on the CPU when the graphics card is too small
+- [ ] T12.3d Shared CUDA encoder on whole meetings (follow-up to T12.3b)
+  - deps: T12.3b
+  - do: T12.3b's shared encoder passed its rule on contention runs (docs/live-previews.md). Measure it on whole replays the way T12.3c was (bundled and continuous, off / on / everyone, stored words, main rtf and catch-up, on-screen lag, private and card memory), with a rule written and committed before measuring, on an idle desktop. Evaluation only: the result goes to the owner, who chooses default on (perhaps lowering `PREVIEW_MIN_CARD_MEMORY`), a setting or default off.
+  - accept: the rule and measurements in docs/live-previews.md
+
+- [x] T12.3c Provisional words on the CPU when the graphics card is too small (rule failed point 4 by 30 ms; accepted by the owner 2026-11-11)
   - deps: T12.3a
+  - status (2026-11-11): measured on an idle desktop (docs/live-previews.md, T12.3c Result): points 1, 2, 3 and 5 pass; point 4 fails (far-end on-screen median 3.03 s for Other people only and 3.53 s for Everyone on bundled audio, against 3 s). Under the rule the first session beside a small card is refused again; the tooling stays. Open for the owner: accept the 30 ms miss (as T12.3a's 5 ms was), and the 12 vs 20 GiB limit.
+  - decision (2026-11-11, the owner): accept the miss ("still a hell of a lot better than 30-60 s"), as T12.3a's 5 ms was; the CPU session beside a small card is restored (revert of 7591d46 plus the T12.3c `preview_settings.rs`). The 12 vs 20 GiB limit stays as built.
   - do: the owner, 2026-11-09: with transcription on CUDA and a card under `PREVIEW_MIN_CARD_MEMORY`, `previews_refused` refuses every preview today. Run the preview sessions on the CPU with shared weights instead (the far end's, and under Everyone your own as in T12.3a), within the CPU memory limits (`PREVIEW_MIN_MEMORY`, `PREVIEW_BOTH_MIN_MEMORY`), and say so on the General page (replacing `NOTE_CARD`). Automatic, no new setting. Write the rule (where each session ran, identical stored words, the main transcript does not slow, on-screen lag, memory) and commit it before measuring; measure on the desktop with `live_lag --memory`, with the card limit simulated through the hardware the rule reads.
   - accept: `cargo test -p earshot-runtime preview`; `cargo test -p earshot-desktop --bin earshot preview`; the rule and measurements in docs/live-previews.md
 
@@ -1555,10 +1563,28 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner, 2026-11-08: the NPU is the part made for this, and `previews_refused` turns previews off there only because nothing was measured. On the Surface, measure a meeting with previews on QNN against off with `live_lag` (speech-to-screen, the main transcript's lag and rtf, memory), on replays and a real meeting; write the rule for "the main transcript does not slow" before measuring and commit it. If it holds, the NPU leaves `previews_refused`; if not, the numbers and the reason go in docs/live-previews.md. Not while the owner is in a meeting. Added by the owner the same day: measure Everyone too (previews on both tracks, three NPU sessions with the main transcription), and whether the NPU sessions of a meeting can share one copy of the model (ONNX Runtime's EP context sharing between sessions of one process) and what that saves in memory and load time. The measurement tooling (`live_lag --backend qnn`, an evaluation-only way past the refusal) is built on the desktop first; production refusals change only after the measurement.
   - accept: `cargo test -p earshot-runtime preview`; the rule, the measurements and the decision in docs/live-previews.md
 
-- [ ] T12.5 Settings and first-run tidy (was T9.15)
+- [x] T12.5 Settings and first-run tidy (was T9.15) (design agreed 2026-11-10; built by T12.5a to T12.5c)
   - deps: T9.1d, T7.4f
   - do: the owner, 2026-11-08: Settings and the first-run wizard grew one task at a time and are confusing. A design session with the owner first: walk through every page and step as they are, then agree the structure (what goes where, what first run asks and what it leaves to defaults, wording) in docs/settings-design.md before any code. Then split into build tasks with their own accept commands. Behaviour and stored settings stay as they are unless the design changes them.
   - accept: docs/settings-design.md agreed by the owner; the build tasks added to this plan
+
+- [x] T12.5a First run as designed
+  - deps: T12.5
+  - status (2026-11-10): built, reviewed and merged (8915be7); tests pass in the batch ci; the owner checked the screens on the preview and approved them.
+  - do: docs/settings-design.md "First run": Summaries (with Claude and ChatGPT, this computer preselected, own endpoint under Other), Download (languages first, one button sized to the summary choice, the full list on request), About me (name, voice sample with a Skip; the sample waits for the speech helpers and says so, starting nothing by itself), Optional extras (Obsidian, audio check). Next saves the step. Finishing or skipping with no transcription model says meetings need one. Later and Never go: stop writing the record, and an old record still reads. The wizard stays a view of `AppShell` built from the Settings parts. Update docs/ui-design.md "First run" and AGENTS.md's first-run bullet.
+  - accept: `cargo test -p earshot-runtime first_run`; `cargo test -p earshot-desktop bindings`; `cmd /c pnpm --filter @earshot/ui test`; screenshot of each step, light and dark, on `?firstRun=1` with `clean=1`, on both mock machines; the owner checks it on screen
+
+- [x] T12.5b Settings pages as designed
+  - deps: T12.5
+  - status (2026-11-10): built, reviewed and merged (492e70c); tests pass in the batch ci, including the page-name guards; the owner checked the screens on the preview and approved them.
+  - do: docs/settings-design.md "Settings": General, Audio, System, Transcription, Summaries, People, Notes and storage, in that order, opening on General. Models and Benchmark dissolve into System, Transcription and Summaries; Speakers, Obsidian and Storage move as listed. Stored settings and IPC do not change. `useModels` stays the only subscriber to `ModelJobEvent`, so it moves above the pages that share it. Text that names a page follows the move, on both sides of IPC (`speaker_settings::failure_copy`, `plain_text`, the wizard). Update docs/ui-design.md "Settings" and the AGENTS.md bullets that name these pages.
+  - accept: `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; a test that no user-facing string names a page that no longer exists; screenshot of each page, light and dark, on both mock machines; the owner checks it on screen
+
+- [x] T12.5c Settings wording and the save rule
+  - deps: T12.5a, T12.5b
+  - status (2026-11-10): merged (df0674f), reviewed clear; UI tests 389 pass; the old and new text listed for the owner in chat. Privacy wording unchanged; "Your own endpoint" -> "Your own server" proposed, not made.
+  - do: docs/settings-design.md: plain words ("Many languages" for Multilingual, what "Keeps up" means, ONNX Runtime only in detail text), and the save rule: a choice applies at once, typed text needs Save, on every page. Privacy wording does not change without the owner.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot`; the old and new text listed for the owner
 
 - [ ] T12.6 Shared models for an "everyone" install (was T9.6)
   - deps: T9.1p
@@ -1571,13 +1597,16 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: explore NPU summaries beyond T8.3h's documentation review. Spike outside the shipped crates: choose a published QNN (Hexagon) build of an instruct model small enough for the Surface (Qualcomm AI Hub or ONNX Runtime GenAI, licence checked), add it and any runtime to `models/manifest.toml` (an evaluation set, pinned with SHA-256); find how to run ONNX Runtime GenAI with its telemetry off and prove it with an ETW check like `cargo xtask qnn-etw` before any meeting text goes in (AMI public text first); measure prompt and reply tokens/s and the real context limit; run `sum-eval` quality on the dev meetings with chunks resized to fit. Report what shipping would take (Rust binding, structured output or grammar, a Qwen 3.5-class NPU conversion, chunk redesign). No shipped change without the owner.
   - accept: `docs/npu-summaries.md` NPU section with measurements, the telemetry check output and a recommendation; sum-eval results logged
 
-- [ ] T12.8 How many voices are in the far-end recordings (was T6.9c)
+- [x] T12.8 How many voices are in the far-end recordings (was T6.9c)
   - deps: T6.9
+  - status (2026-11-10): two voices, confirmed by the owner's listen (one asks, the other answers, matching where the harness put them); T6.9's first finding stands and no embedding-side task is added.
   - do: Confirm the voice count of the private test recording. If one voice, T6.9's first finding is wrong and an embedding-side fix task is added.
   - accept: the answer recorded
 
-- [ ] T12.9 Calibrate clustering with AMI dev meetings in the data (was T6.9d)
+- [x] T12.9 Calibrate clustering with AMI dev meetings in the data (was T6.9d)
   - deps: T6.9b
+  - decision (2026-11-10): the owner keeps 0.68: the gain is three short over-splits, 0.72 sits one step below a merge, and a split is easy to fix in the app while a merge is not. The accept commands are for a move and were not run.
+  - status (2026-11-10): measured with the owner's agreement (`cluster_sweep`, docs/far-speakers/ami-dev-calibration.md, the rule committed first). The rule picks 0.72 on its count branch (C 4 -> 1, AMI DER 0.1014 -> 0.0992), one grid step below a merge cliff at 0.73; the lane's judgement is 0.70 if anything. The threshold stays 0.68. Left: the owner's decision; a move then runs this task's accept commands and changes the two pinning tests in the same commit.
   - do: proposed by T6.9b: clean LibriSpeech scenes favour a higher threshold while real meetings already under-count at 0.68. A new rule, committed before measuring, with AMI dev mixes (set `ami-dev`) and long scenes on disjoint audio. Only with the owner's agreement.
   - accept: `cargo test --release -p earshot-onnx diar_calibration -- --include-ignored`; `cargo xtask accept m3`; `cargo xtask accept m6`
 
@@ -1588,6 +1617,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.11 Short echo fragments under "Me" in the final transcript
   - deps: none
+  - status (2026-11-10): round 2 (isolated echo islands after the speaker check) removed no word on leak-dev or rumble, so no code change (docs/echo-fragments.md). Open: the GATE-02 shape does not occur in the dev simulator, so a further rule needs new dev scenarios, defined before measuring.
   - do: found at GATE-02 (2026-11-08): in a call where the user said nothing, the final transcript kept one 2-word mic segment under "Me", 0.7 s long and wholly inside far-end speech. `asr::dedupe_echo` matches runs of 3+ words by design, and the speaker check names the only mic voice "Me". Find a rule that removes such fragments without costing near-end words in talk-over: write it before measuring, design and tune only on `asr_eval --leak-dev` (and `--rumble`), keep `ECHO_NEAR_RECALL_FLOOR_PERCENT` and `asr.echo_leak` holding. No change if no rule passes.
   - accept: `cargo test -p earshot-core asr`; `cargo test -p earshot-runtime post`; `cargo xtask accept m2`; the rule and leak-dev numbers in docs
 
@@ -1606,9 +1636,11 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: found by T12.12 (2026-11-11): a compiled QNN context model gives the same words, times and probabilities, loads in about a second instead of about 30 s, and costs about 0.13 GiB per extra session instead of about 2.6 GiB. Only with the owner's go-ahead (a shipped change). Compile once per model on the computer (the first NPU use or after the conversion's download), into `parakeet-qnn/<model>/compiled/`, removed with the model; record the binary's SHA-256 and verify it before every load; recompile on any change to the conversion's files, the QNN plugin or `QnnHtp*` pins, `ep_compatibility_info` or the NPU driver version; any refusal falls back to today's load (saving memory never costs a meeting), shown once as a note. The evaluation-only loaders T12.12 added are replaced, not called. Then run T12.4's rule again, unchanged, for both preview settings.
   - accept: `cargo test -p earshot-onnx`; `cargo test -p earshot-runtime backends`; a test that a damaged or stale compiled model falls back to today's load; T12.4's rule re-run on the Surface with `live_lag` and the decision in docs/live-previews.md
 
-- [ ] T12.13 Keep a meeting's summary on this computer
+- [x] T12.13 Keep a meeting's summary on this computer
   - deps: T7.4g
-  - do: the owner: a "keep this local" switch when a meeting starts and during it, because the summary writer is one global setting and some meetings should never leave the computer. It is stored per meeting, device-locally, and read wherever a summary starts (after the meeting and on re-summarise), with no network client built for such a meeting. Without a local summary model it skips the summary with a banner and never falls back to a remote writer; a record that cannot be read counts as local. Decide with the owner whether switching it off later is allowed, and how an existing remote summary reads when it is switched on. Reviewer required: privacy.
+  - status (2026-11-10): merged, privacy review clear (3 advisories: copy fixed, the rest in TODO.md and LOG); runtime 835, desktop meeting 101, UI 405 pass on the merge; batch ci at the end of the night.
+  - decision (2026-11-10, the owner): the switch is set only when a meeting starts, never later and never during it; a local meeting may later be switched to the remote writer (local -> remote, with a confirm, nothing sent until Re-summarise), never the other way, so no remote summary ever exists on a kept-local meeting.
+  - do: the owner: a "keep this local" switch when a meeting starts (start only, by the decision below), because the summary writer is one global setting and some meetings should never leave the computer. It is stored per meeting, device-locally, and read wherever a summary starts (after the meeting and on re-summarise), with no network client built for such a meeting. Without a local summary model it skips the summary with a banner and never falls back to a remote writer; a record that cannot be read counts as local. Decide with the owner whether switching it off later is allowed, and how an existing remote summary reads when it is switched on. Reviewer required: privacy.
   - accept: `cargo test -p earshot-runtime summary`; `cargo test -p earshot-desktop --bin earshot meeting`; `cmd /c pnpm --filter @earshot/ui test`; a test that a kept-local meeting opens no connection with a remote writer set (audit log empty); screenshot light and dark
 
 - [x] T12.14 Keep the Summary and Transcript tabs in view
@@ -1616,17 +1648,71 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner: the tabs scroll away with the page, and the page's scroll position carries across a tab change, so opening Summary from the end of a long transcript lands at the end of the summary. Pin the tabs under the sticky meeting header, open Summary at its top, and keep a citation scrolling to its row in the transcript.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot of a long meeting, light and dark
 
-- [ ] T12.15 Your vocabulary
+- [ ] T12.15 Your vocabulary (split 2026-11-10 into T12.15a and T12.15b)
   - deps: T7.4b
   - do: the owner: a section in Settings for the user's own words (acronyms, company and site names), so they come out right. First, a device-local list, checked and bounded like the summary style, given to every summary request. Then a spike on the transcript, because Parakeet takes no prompt and Whisper does: compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data. A correction pass must never change a word without keeping the original. No test or doc holds a word from the user's list. An empty list leaves every prompt byte-identical.
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; the spike's numbers and a recommendation in docs
 
-- [ ] T12.16 Edit a meeting's title, transcript and summary
+- [x] T12.15a Your vocabulary in summaries
+  - deps: T7.4b
+  - status (2026-11-10): merged (lane abe5b9f), reviewed clear (3 advisories in TODO.md); core prompt 77, runtime summary 156, desktop 346, UI 401 pass in the lane; batch ci at the end of the night.
+  - do: T12.15's first half: a device-local word list on its own Settings page, Dictionary (the owner, 2026-11-10), between Summaries and People, checked and bounded like the summary style, given to every summary request; an empty list leaves every prompt byte-identical; no test or doc holds a word from the user's list.
+  - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`
+
+- [x] T12.15b Your vocabulary in the transcript (spike)
+  - deps: T12.15a
+  - status (2026-11-11): rule committed first (6d36616), measured on LibriSpeech dev-clean, merged; reviewed clear (4 advisories in TODO.md). Only the whisper prompt clears the bar (B-WER -20.1%, by 0.1 point); Parakeet boosting reaches -19.1% within the guards, correction passes fail the false-correction guards. No shipped change; the owner decides any follow-up (docs/vocabulary.md).
+  - do: T12.15's second half. The words come from the Dictionary and the names of saved people (the owner, 2026-11-10: a saved Kam should win over Cam, Kat over Cat); people's names are used on this computer only and never added to a summary request beyond the meeting's own speakers. Compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data, with the rule written before measuring. A correction pass never changes a word without keeping the original. No shipped change without the owner.
+  - accept: the spike's numbers and a recommendation in docs
+
+- [x] T12.15c Your words in the transcript: Parakeet's nudge on meeting speech (failed: not shipped)
+  - deps: T12.15b
+  - status (2026-11-11): rule committed first (a607b95), measured on 5 AMI dev meetings (859ddf8), merged, reviewed clear (3 advisories: one folded into the doc, two in TODO.md). Fails G2 and G3: WER 12.63% -> 16.89%, U-WER +4.3 points, listed B-WER unchanged (30.00%), G4 passes. The boost inserts short fillers and letters over breath, laughter and crosstalk, which read speech lacks. T12.15d is not started. Open for the owner: measure T12.15b's gated variant (never turns blank into a word; -17.4% on LibriSpeech) under its own rule on this data, or go to T12.15e.
+  - decision (2026-11-11, the owner): ship T12.15b's chosen boost (open, bonus 2: B-WER -19.1% within every guard) in the next release; the 20% bar is waived. It is re-measured on meeting speech first.
+  - do: evaluation, rule written and committed before measuring (docs/vocabulary.md, new section). The variant is fixed: boost open 2, nothing tuned. Data: AMI dev meeting speech only (headset audio of the `ami-dev` meetings, a new fixture set pinned in `fixtures/manifest.toml`, oracle segments as `asr.wer_ami_ihm` decodes them), never a test meeting. Lists: per meeting, the AMI named-entity annotations of that meeting if v1.6.2 holds them, else T12.15b's rare-word rule; filled with distractors to 100 words. Guards G1-G3 as in T12.15b against the Parakeet baseline on the same segments, plus G4: on non-speech (model_eval's `silence` corpus) the boost writes no listed word. Passes when every guard passes and listed-word B-WER is lower than the baseline's. Decode time recorded with the host load, deciding nothing.
+  - accept: the numbers and the verdict in docs/vocabulary.md; `cargo test -p xtask fixtures`
+
+- [ ] T12.15d Your words in the transcript: ship the nudge (blocked: T12.15c failed)
+  - deps: T12.15c
+  - do: only if T12.15c passes. Parakeet decodes with the boost (open, bonus 2) in every production decode: live stretches, the final pass, re-transcribe and provisional words, on every backend that runs Parakeet; whisper is unchanged (its prompt is not shipped). The list: the Dictionary's words, then the words of saved people's names (the owner, 2026-11-10: a saved Kam wins over Cam), deduplicated without case, at most `MAX_VOCABULARY_WORDS` (the measured size); title-case and lower-case paths as in T12.15b. People's names stay on this computer: they never join a summary request. Read once per live session at its start and by each final pass; the stretch record keeps the list's digest so a stretch decoded with another list is decoded again (record version bump, `post::reusable`); an empty list decodes byte-identically to today (pinned). The Dictionary page says transcripts now use the words (Parakeet only). The boost leaves T12.15b's evaluation-only scan tests' intent intact: `transcribe_biased` stays evaluation only, production goes through one shipped constructor.
+  - accept: `cargo test -p earshot-onnx parakeet`; `cargo test -p earshot-runtime post`; `cargo test -p earshot-runtime live`; `cmd /c pnpm --filter @earshot/ui test`; `cargo xtask accept m2` unchanged
+
+- [ ] T12.15e Your words in the transcript: suggestions beside words
+  - deps: T12.15d
+  - do: the owner, 2026-11-11 (option b): after the nudge, a decoded word that sounds like a listed word is marked with the listed word as a suggestion, accepted with a click (an edit through `edit::edit_segment`); nothing changes until accepted. A quiet design first (T12.15b's careful matcher suggested about 70 times an hour on audiobook speech, a third wrong): measure how many remain after the nudge on T12.15c's data, then agree the design with the owner.
+  - accept: agreed with the owner
+
+- [x] T12.16 Edit a meeting's title, transcript and summary
   - deps: T7.3
+  - status (2026-11-11): merged (T12.16a 08fec3e, T12.16b 0563027), reviewed clear (4 advisories: banner copy fixed at merge, rest in TODO.md); migration 3 adds the segment edit mark; desktop 354, runtime, store and UI pass on the merge (UI timeouts under lane load passed on re-run); batch ci at the end.
+  - decision (2026-11-10, the owner): a re-transcribe keeps edited segments and says so in a warning; an edit to the transcript marks the summary out of date (as re-transcribe does), sending nothing by itself.
   - do: the owner: correct a title and fix words in the transcript or summary. Today only speakers can be edited. Edits go through `edit::write`; an edit to a transcript segment keeps its id and times so citations still work, and its word times stay honest about what changed. Decide with the owner what a re-transcribe does to edited text (keep, warn or replace) and whether a changed transcript marks the summary out of date. A replaced summary keeps today's undo. Exports follow the edited text.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
 
-- [x] T12.17 Summaries on the Surface's Adreno GPU, reopened (spike)
+- [ ] T12.17 A few summary templates, shorter by default
+  - deps: T7.4b
+  - do: the owner, 2026-11-10: summaries are too long; decisions and actions are the priority, not minutiae. Offer a few templated prompts on Summaries, built on the summary style setting so every decision and action stays required. Not before the next local model is evaluated (Qwen 4 if it comes in the 9B and 4B sizes), because a local model's rules are judged on that model. Rule written before measuring, on the owner's meetings and AMI dev, with the 12-item cap (`SummaryLimits::max_items`) re-examined in the same evaluation.
+  - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; the rule and numbers in docs/summary-eval.md, with no private measurement committed
+
+- [x] T12.18 Choose the Claude and Codex model and effort from a list
+  - status (2026-11-11): merged (lane 4b26020), reviewed clear (5 advisories in TODO.md, three folded into T12.20); Codex effort left out: no real run could confirm `model_reasoning_effort` (the account's workspace was refused). llm, runtime summary 171, desktop 356, UI pass (load timeouts passed alone); batch ci at the end.
+  - deps: T7.4ga, T7.4gc, T12.15a
+  - do: the owner, 2026-11-10: typing a model name is not intuitive. On the Summaries page, Claude Code's model becomes a dropdown (Claude Code's default, Fable, Opus, Sonnet, Haiku: the CLI's aliases for the latest model, so the list does not go stale) with Other for a typed name, and an effort dropdown (Claude Code's default, Low, Medium, High, Extra high, Max), passed as `--effort` only when the installed CLI's `--help` lists it. Codex: a model dropdown with Codex's default and Other; effort only if a real run confirms `model_reasoning_effort` on the installed CLI, from its own capture. Both are choices, so they apply at once (save rule) and the Save model button goes. Effort is a fixed value from a list, never free text, on the command line; the stored values are device-local, an unknown stored value reads as the default and is reported. The first-run Summaries step uses the same parts.
+  - accept: `cargo test -p earshot-llm claude_code`; `cargo test -p earshot-llm codex`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
+
+- [x] T12.19 The Speakers panel slides out, with Ignore
+  - deps: T12.16
+  - status (2026-11-11): merged (6580a95, review fixes 1ac5f8d), privacy-focused review clear (7 advisories: 4 fixed in the lane, 3 in TODO.md); runtime edit 54, post 106, desktop 358, UI 423 pass on the lane's merge with main; batch ci at the end.
+  - do: the owner, 2026-11-10: the "Remember these voices for next time" tickbox for all speakers goes; each unnamed voice gets its own Save (name it, link it to that person and remember the voice, in one step, the per-person consent replacing the tickbox). A saved voice moves out of the needs-a-name list into a collapsed list of named voices in the same panel, where a wrong name or a wrong match can still be fixed or forgotten; a voice recognised in a later meeting is named there, counts as named and so never opens the panel, and is marked as recognised. "Who is who" becomes "Speakers", a panel that slides in from the right and pushes the transcript aside rather than covering it. Closed by default when no voice needs a name, open by itself when one does; a Speakers button in the meeting header toggles it, with a badge such as "2 need names". Each unnamed voice gets Ignore: an ignored voice no longer counts as needing a name (so it never opens the panel), keeps its "Speaker N" label in the transcript, summary and export, is never enrolled or matched as a person, and can be un-ignored from the panel. Ignore is a per-meeting user edit through `edit::write`, carried across a re-transcribe like other user edits (`identities::match_previous`), and `meeting_events::needs_name` stays the one rule, now excluding ignored voices. Text naming "Who is who" follows the rename.
+  - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot of the panel open and closed, light and dark
+
+- [x] T12.20 UI review follow-ups from TODO.md
+  - status (2026-11-11): merged; all ten items fixed with failing-first tests (plus two from the T12.18 and T12.15a reviews), review blocked once (effort banner on a failed run) and fixed; UI 437, desktop 363, runtime summary 175, llm pass; batch ci at the end.
+  - deps: T12.16, T12.13, T12.18
+  - do: the owner, 2026-11-10: clear the UI advisories in TODO.md that need no decision: AppShell's missing Cancel for a meeting finishing behind a newer recording (`cancellingId`), `mockSummaries.ts` refusal messages pinned against Rust, NPU versions in the first-run `ModelChoices`, the wizard's savers stopping at the first refusal, the TypeScript page-name guard matching the Rust one's forms, PeoplePage's Enter racing a save in flight, and `SpeakerTimingSection` showing voice notices. Each closed line leaves TODO.md in the same commit; anything that turns out to need the owner stays with a note.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot`
+
+- [x] T12.21 Summaries on the Surface's Adreno GPU, reopened (spike) (committed as T12.17 before main's T12.17 arrived)
   - deps: T8.3i
   - result (2026-11-11, closed by the owner on driver 32.0.163.2): llama.cpp master plus the draft Adreno fix gives right answers with integer dot product off, generation level with the CPU, prompt about 4 times slower, so T8.3h's rule cannot pass. The driver rerun was dropped (32.0.181.0 has an unconfirmed report of an LLM slowdown on OpenCL). Reopen on the triggers in docs/npu-summaries.md.
   - do: the owner, 2026-11-11: look again for a way to run local summaries on the Adreno X2-85. T8.3i closed Vulkan on three faults (integer dot product NaN, flash attention hanging past 768 cache positions, Qwen 3.5's recurrent ops giving gibberish) and on speed: even the working plain-transformer path was 3-4 times slower than the CPU, with the time in elementwise ops on the feed-forward intermediate. In order, stopping when one path passes: (1) upstream llama.cpp fixes after `llama-cpp-sys-2` 0.1.160 for Adreno Vulkan and for those ops, and Qualcomm driver updates after 32.0.163.2; (2) `vk_probe` with the 4B and an 800-word prompt on the current pin and driver, then on the newest `llama-cpp-sys-2` in the probe only (a pin upgrade touches the CUDA set and is the owner's call); (3) with the owner's go-ahead for the Khronos headers as a new download source, llama.cpp's OpenCL backend, Qualcomm's own route, with Q4_0 copies of the summary models in an evaluation set. A path that gives the right answer on the probe is measured under T8.3h's rule unchanged (Vulkan or OpenCL load with every layer offloaded, three valid dev summaries, at most 0.67 of the CPU 4B's wall time). A driver update on the Surface is proposed to the owner, not done. No shipped change without the owner; not while the owner is in a meeting.

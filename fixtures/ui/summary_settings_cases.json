@@ -1,0 +1,547 @@
+{
+ "about": "The Summaries and Dictionary refusals and messages (T12.20): apps/desktop/src-tauri (summaries_tests.rs, summary_vocabulary_tests.rs, summary_style_tests.rs) runs every case through the app's own IPC functions, and packages/ui/src/ipc/mockSummaries.test.ts runs them through the mock, so the mock's copy of the Rust rules cannot drift. A settings case is `base` with `change` applied; `error` is the exact message (null when stored), `stored` the fields that differ from the input. Every name and word is invented. Generated once; edit by hand afterwards.",
+ "messages": {
+  "effort_needs_newer": "Choosing the effort needs a newer Claude Code. This one runs at its own default effort; update Claude Code to choose it.",
+  "live_needs_local": "Summarising during the meeting needs a local summary model.",
+  "anthropic_url": "https://api.anthropic.com",
+  "claude_code_not_installed": {
+   "message": "Claude Code is not installed on this computer.",
+   "fix": "Install Claude Code and sign in to it, then check again."
+  },
+  "codex_not_installed": {
+   "message": "Codex is not installed on this computer.",
+   "fix": "Install the Codex CLI (in a terminal, run npm install -g @openai/codex) and sign in to it, then check again."
+  }
+ },
+ "limits": {
+  "max_style_chars": 1000,
+  "max_vocabulary_words": 100,
+  "max_vocabulary_word_chars": 40,
+  "max_vocabulary_chars": 1000
+ },
+ "base": {
+  "writer": "OnThisComputer",
+  "provider": "OpenAiCompatible",
+  "url": "",
+  "model": "",
+  "live": false,
+  "claude_model": "",
+  "claude_effort": null,
+  "codex_model": ""
+ },
+ "settings": [
+  {
+   "name": "an own endpoint on this computer",
+   "change": {
+    "writer": "OwnEndpoint",
+    "url": " http://127.0.0.1:8080/v1 ",
+    "model": " qwen "
+   },
+   "error": null,
+   "stored": {
+    "url": "http://127.0.0.1:8080/v1",
+    "model": "qwen"
+   }
+  },
+  {
+   "name": "an own endpoint on the local network",
+   "change": {
+    "writer": "OwnEndpoint",
+    "url": "http://192.168.1.20:8080/v1",
+    "model": "m"
+   },
+   "error": null
+  },
+  {
+   "name": "Anthropic at its API root",
+   "change": {
+    "writer": "OwnEndpoint",
+    "provider": "Anthropic",
+    "url": "https://api.anthropic.com",
+    "model": "claude-sonnet"
+   },
+   "error": null
+  },
+  {
+   "name": "an own endpoint with no address",
+   "change": {
+    "writer": "OwnEndpoint",
+    "model": "m"
+   },
+   "error": "Enter the endpoint's address."
+  },
+  {
+   "name": "an own endpoint with no model",
+   "change": {
+    "writer": "OwnEndpoint",
+    "url": "http://127.0.0.1:8080/v1"
+   },
+   "error": "Enter the model name the endpoint expects."
+  },
+  {
+   "name": "an address that is not a URL",
+   "change": {
+    "url": "not a url"
+   },
+   "error": "This address cannot be used: not a valid URL: relative URL without a base."
+  },
+  {
+   "name": "an address with another scheme",
+   "change": {
+    "url": "ftp://127.0.0.1/v1"
+   },
+   "error": "This address cannot be used: scheme `ftp` is not allowed (use http or https)."
+  },
+  {
+   "name": "an address with a user name",
+   "change": {
+    "url": "https://user:secret@example.invalid/v1"
+   },
+   "error": "This address cannot be used: the URL must not contain a user name or password."
+  },
+  {
+   "name": "an address with a query",
+   "change": {
+    "url": "https://example.invalid/v1?x=1"
+   },
+   "error": "This address cannot be used: it must not contain a query (?) or a fragment (#)."
+  },
+  {
+   "name": "an address with a fragment",
+   "change": {
+    "url": "https://example.invalid/v1#top"
+   },
+   "error": "This address cannot be used: it must not contain a query (?) or a fragment (#)."
+  },
+  {
+   "name": "an Anthropic address with a path",
+   "change": {
+    "provider": "Anthropic",
+    "url": "https://api.anthropic.com/v1"
+   },
+   "error": "This address cannot be used: use the address without a path, for example https://api.anthropic.com."
+  },
+  {
+   "name": "an address ending in /chat/completions",
+   "change": {
+    "url": "http://127.0.0.1:8080/v1/chat/completions"
+   },
+   "error": "This address cannot be used: use the address without /chat/completions, for example http://127.0.0.1:8080/v1."
+  },
+  {
+   "name": "plain http to another computer",
+   "change": {
+    "url": "http://example.invalid/v1"
+   },
+   "error": "This address cannot be used: plain http is only allowed to this computer or the local network; use https."
+  },
+  {
+   "name": "an address too long",
+   "change": {
+    "url": "https://example.invalid/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "error": "This address cannot be used: it is longer than 2048 characters."
+  },
+  {
+   "name": "a model name too long",
+   "change": {
+    "model": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+   },
+   "error": "The model name must be at most 200 characters, without line breaks."
+  },
+  {
+   "name": "a model name with a line break",
+   "change": {
+    "model": "a\nb"
+   },
+   "error": "The model name must be at most 200 characters, without line breaks."
+  },
+  {
+   "name": "a model name with a tab inside",
+   "change": {
+    "model": "a\tb"
+   },
+   "error": "The model name must be at most 200 characters, without line breaks."
+  },
+  {
+   "name": "a Claude Code alias, trimmed",
+   "change": {
+    "claude_model": " opus "
+   },
+   "error": null,
+   "stored": {
+    "claude_model": "opus"
+   }
+  },
+  {
+   "name": "a Claude Code name starting with a hyphen",
+   "change": {
+    "claude_model": "--tools"
+   },
+   "error": "This Claude Code model name cannot be used: it must not start with a hyphen."
+  },
+  {
+   "name": "a Claude Code name with a space",
+   "change": {
+    "claude_model": "claude opus"
+   },
+   "error": "This Claude Code model name cannot be used: use only letters, digits, hyphens, dots, colons and square brackets."
+  },
+  {
+   "name": "a Claude Code name too long",
+   "change": {
+    "claude_model": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+   },
+   "error": "This Claude Code model name cannot be used: it is longer than 200 characters."
+  },
+  {
+   "name": "a Claude Code name of 101 two-byte letters",
+   "change": {
+    "claude_model": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9"
+   },
+   "error": "This Claude Code model name cannot be used: it is longer than 200 characters."
+  },
+  {
+   "name": "a Codex name, trimmed",
+   "change": {
+    "codex_model": " gpt-5.1-codex "
+   },
+   "error": null,
+   "stored": {
+    "codex_model": "gpt-5.1-codex"
+   }
+  },
+  {
+   "name": "a Codex name starting with a hyphen",
+   "change": {
+    "codex_model": "-x"
+   },
+   "error": "This Codex model name cannot be used: it must start with a letter or digit."
+  },
+  {
+   "name": "a Codex name with a space",
+   "change": {
+    "codex_model": "gpt 5"
+   },
+   "error": "This Codex model name cannot be used: use only letters, digits, hyphens, dots and underscores."
+  },
+  {
+   "name": "a Codex name too long",
+   "change": {
+    "codex_model": "ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+   },
+   "error": "This Codex model name cannot be used: it is longer than 64 characters."
+  },
+  {
+   "name": "a Codex name of 40 two-byte letters",
+   "change": {
+    "codex_model": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9"
+   },
+   "error": "This Codex model name cannot be used: it is longer than 64 characters."
+  },
+  {
+   "name": "the model checked before the address",
+   "change": {
+    "model": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+    "url": "not a url"
+   },
+   "error": "The model name must be at most 200 characters, without line breaks."
+  }
+ ],
+ "vocabulary": [
+  {
+   "name": "trimmed, joined, empty and repeated words dropped",
+   "words": [
+    " Quillmarsh ",
+    "",
+    "QXR-7",
+    "qxr-7",
+    "two \u00a0  words"
+   ],
+   "stored": [
+    "Quillmarsh",
+    "QXR-7",
+    "two words"
+   ],
+   "error": null
+  },
+  {
+   "name": "a tab refuses the list",
+   "words": [
+    "Quillmarsh",
+    "a\tb"
+   ],
+   "stored": null,
+   "error": "A word can hold only text, with no line breaks or tabs."
+  },
+  {
+   "name": "a line break refuses the list",
+   "words": [
+    "a\nb"
+   ],
+   "stored": null,
+   "error": "A word can hold only text, with no line breaks or tabs."
+  },
+  {
+   "name": "a byte order mark is not white space",
+   "words": [
+    "\ufeffQuillmarsh"
+   ],
+   "stored": [
+    "\ufeffQuillmarsh"
+   ],
+   "error": null
+  },
+  {
+   "name": "a zero-width space is not white space",
+   "words": [
+    "Quill\u200bmarsh"
+   ],
+   "stored": [
+    "Quill\u200bmarsh"
+   ],
+   "error": null
+  },
+  {
+   "name": "a line separator splits like a space",
+   "words": [
+    "Quill\u2028marsh"
+   ],
+   "stored": [
+    "Quill marsh"
+   ],
+   "error": null
+  },
+  {
+   "name": "the first spelling of a repeat wins",
+   "words": [
+    "qUILLmarsh",
+    "Quillmarsh"
+   ],
+   "stored": [
+    "qUILLmarsh"
+   ],
+   "error": null
+  },
+  {
+   "name": "a word of 40 characters",
+   "words": [
+    "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+   ],
+   "stored": [
+    "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+   ],
+   "error": null
+  },
+  {
+   "name": "a word too long",
+   "words": [
+    "QXR-7",
+    "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+   ],
+   "stored": null,
+   "error": "A word can have at most 40 characters; this one has 41."
+  },
+  {
+   "name": "a word counted in characters",
+   "words": [
+    "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9"
+   ],
+   "stored": [
+    "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9"
+   ],
+   "error": null
+  },
+  {
+   "name": "too many words",
+   "words": [
+    "word1",
+    "word2",
+    "word3",
+    "word4",
+    "word5",
+    "word6",
+    "word7",
+    "word8",
+    "word9",
+    "word10",
+    "word11",
+    "word12",
+    "word13",
+    "word14",
+    "word15",
+    "word16",
+    "word17",
+    "word18",
+    "word19",
+    "word20",
+    "word21",
+    "word22",
+    "word23",
+    "word24",
+    "word25",
+    "word26",
+    "word27",
+    "word28",
+    "word29",
+    "word30",
+    "word31",
+    "word32",
+    "word33",
+    "word34",
+    "word35",
+    "word36",
+    "word37",
+    "word38",
+    "word39",
+    "word40",
+    "word41",
+    "word42",
+    "word43",
+    "word44",
+    "word45",
+    "word46",
+    "word47",
+    "word48",
+    "word49",
+    "word50",
+    "word51",
+    "word52",
+    "word53",
+    "word54",
+    "word55",
+    "word56",
+    "word57",
+    "word58",
+    "word59",
+    "word60",
+    "word61",
+    "word62",
+    "word63",
+    "word64",
+    "word65",
+    "word66",
+    "word67",
+    "word68",
+    "word69",
+    "word70",
+    "word71",
+    "word72",
+    "word73",
+    "word74",
+    "word75",
+    "word76",
+    "word77",
+    "word78",
+    "word79",
+    "word80",
+    "word81",
+    "word82",
+    "word83",
+    "word84",
+    "word85",
+    "word86",
+    "word87",
+    "word88",
+    "word89",
+    "word90",
+    "word91",
+    "word92",
+    "word93",
+    "word94",
+    "word95",
+    "word96",
+    "word97",
+    "word98",
+    "word99",
+    "word100",
+    "word101"
+   ],
+   "stored": null,
+   "error": "The list can hold at most 100 words; this one has 101."
+  },
+  {
+   "name": "too many characters in all",
+   "words": [
+    "01qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "02qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "03qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "04qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "05qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "06qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "07qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "08qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "09qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "10qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "11qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "12qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "13qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "14qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "15qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "16qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "17qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "18qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "19qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "20qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "21qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "22qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "23qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "24qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "25qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "26qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+   ],
+   "stored": null,
+   "error": "The list can have at most 1000 characters in all; this one has 1040."
+  },
+  {
+   "name": "no words",
+   "words": [],
+   "stored": [],
+   "error": null
+  }
+ ],
+ "style": [
+  {
+   "name": "trimmed, with CR LF as LF",
+   "text": "  Be brief.\r\nUse lists.\tPlease.  \n",
+   "stored": "Be brief.\nUse lists.\tPlease.",
+   "error": null
+  },
+  {
+   "name": "a lone CR becomes LF",
+   "text": "One.\rTwo.",
+   "stored": "One.\nTwo.",
+   "error": null
+  },
+  {
+   "name": "a bell refuses it",
+   "text": "Be brief.\u0007",
+   "stored": null,
+   "error": "The summary style can hold only text, line breaks and tabs."
+  },
+  {
+   "name": "a byte order mark is not trimmed",
+   "text": "\ufeffBe brief.",
+   "stored": "\ufeffBe brief.",
+   "error": null
+  },
+  {
+   "name": "at the limit",
+   "text": "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+   "stored": "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+   "error": null
+  },
+  {
+   "name": "too long",
+   "text": "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+   "stored": null,
+   "error": "The summary style can be at most 1000 characters; this one has 1001."
+  },
+  {
+   "name": "empty",
+   "text": "   ",
+   "stored": "",
+   "error": null
+  }
+ ]
+}

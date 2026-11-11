@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { type Ipc, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
 import {
+  CLAUDE_CODE_EFFORT_NEEDS_NEWER,
   CLAUDE_CODE_NOT_INSTALLED,
   CLAUDE_CODE_STATUS,
   CODEX_NOT_INSTALLED,
@@ -52,6 +53,7 @@ async function open(data: MockIpcData = {}): Promise<Setup> {
 }
 
 const radio = (name: RegExp) => screen.getByRole("radio", { name });
+const optionTexts = (select: HTMLElement) => [...select.querySelectorAll("option")].map((o) => o.textContent);
 const live = () => screen.getByRole("switch", { name: "Summarise during the meeting" });
 
 function pageText(): string {
@@ -71,7 +73,7 @@ describe("Settings, Summaries", () => {
       const detail = `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
       expect(await screen.findByText(detail)).toBeInTheDocument();
       expect(screen.getByText("Nothing leaves this computer.")).toBeInTheDocument();
-      expect(screen.queryByRole("group", { name: "Your own endpoint" })).toBeNull();
+      expect(screen.queryByRole("group", { name: "Your own server" })).toBeNull();
       expect(live()).not.toBeChecked();
       expect(live()).toBeEnabled();
       expect(screen.getByText(LIVE_DESCRIPTION)).toBeInTheDocument();
@@ -100,8 +102,8 @@ describe("Settings, Summaries", () => {
 
   it("uses a local network endpoint only once saved, without the remote warning", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own endpoint/));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(radio(/^Your own server/));
+    const form = screen.getByRole("group", { name: "Your own server" });
     // Nothing is stored until the endpoint is saved.
     expect((await s.ipc.summarySettings()).value.writer).toBe("OnThisComputer");
     await s.user.type(within(form).getByLabelText("Address"), "http://192.168.1.20:8080/v1");
@@ -118,14 +120,14 @@ describe("Settings, Summaries", () => {
     // Back to this computer and to the endpoint again: the stored one is used at once.
     await s.user.click(radio(/^On this computer/));
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("OnThisComputer"));
-    await s.user.click(radio(/^Your own endpoint/));
+    await s.user.click(radio(/^Your own server/));
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("OwnEndpoint"));
   });
 
   it("shows a refused endpoint as a message and stores nothing", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own endpoint/));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(radio(/^Your own server/));
+    const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.type(within(form).getByLabelText("Address"), "http://llm.example.com/v1");
     await s.user.type(within(form).getByLabelText("Model"), "m");
     await s.user.click(within(form).getByRole("button", { name: "Use this endpoint" }));
@@ -148,8 +150,8 @@ describe("Settings, Summaries", () => {
 
   it("refuses an address holding the path the client appends", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own endpoint/));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(radio(/^Your own server/));
+    const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     await s.user.type(within(form).getByLabelText("Address"), "/v1");
     await s.user.type(within(form).getByLabelText("Model"), "claude-opus-5-5");
@@ -174,8 +176,8 @@ describe("Settings, Summaries", () => {
 
   it("keeps the Anthropic key write-only: save shows Key saved, remove brings the field back", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own endpoint/));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(radio(/^Your own server/));
+    const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     expect(within(form).getByLabelText("Address")).toHaveValue(MOCK_ANTHROPIC_URL);
     // A placeholder only: nothing is filled in or stored for the model.
@@ -210,7 +212,7 @@ describe("Settings, Summaries", () => {
         settings: { writer: "OwnEndpoint", provider: "Anthropic", url: MOCK_ANTHROPIC_URL, model: "claude" },
       },
     });
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.type(within(form).getByLabelText("API key"), "two words");
     await s.user.click(within(form).getByRole("button", { name: "Save key" }));
     expect(await screen.findByText("The API key was not saved")).toBeInTheDocument();
@@ -235,7 +237,7 @@ describe("Settings, Summaries", () => {
         apiKeySaved: true,
       },
     });
-    expect(radio(/^Your own endpoint/)).toBeChecked();
+    expect(radio(/^Your own server/)).toBeChecked();
     expect(await screen.findByText("Key saved")).toBeInTheDocument();
     expect(screen.getByText(remoteWarning("api.anthropic.com"))).toBeInTheDocument();
     expect(live()).toBeDisabled();
@@ -245,8 +247,8 @@ describe("Settings, Summaries", () => {
     const texts: string[] = [];
     const s = await open();
     texts.push(pageText());
-    await s.user.click(radio(/^Your own endpoint/));
-    const form = screen.getByRole("group", { name: "Your own endpoint" });
+    await s.user.click(radio(/^Your own server/));
+    const form = screen.getByRole("group", { name: "Your own server" });
     texts.push(pageText());
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     await s.user.type(within(form).getByLabelText("Model"), "claude");
@@ -279,23 +281,116 @@ describe("Settings, Summaries", () => {
     expect(await within(card).findByText("Claude Code 2.1.290 is installed and signed in.")).toBeInTheDocument();
     expect(asked.n).toBe(1);
     expect(live()).toBeDisabled();
-    // The model: optional, placeholder opus, saved with its button.
-    const model = within(card).getByLabelText("Model");
-    expect(model).toHaveAttribute("placeholder", CLAUDE_MODEL_PLACEHOLDER);
-    expect(model).toHaveValue("");
-    await s.user.type(model, "sonnet");
-    await s.user.click(within(card).getByRole("button", { name: "Save model" }));
-    await waitFor(async () => expect((await s.ipc.summarySettings()).value.claude_model).toBe("sonnet"));
-    expect(await within(card).findByText("Saved.")).toBeInTheDocument();
+    // The model: a list of Claude Code's aliases (they follow the latest model), applied at
+    // once with no Save button.
+    const model = within(card).getByRole("combobox", { name: "Model" });
+    expect(optionTexts(model)).toEqual(["Claude Code's default", "Fable", "Opus", "Sonnet", "Haiku", "Other"]);
+    expect(model).toHaveDisplayValue("Claude Code's default");
+    expect(within(card).queryByRole("button", { name: "Save model" })).toBeNull();
+    expect(within(card).queryByRole("textbox")).toBeNull();
+    for (const [label, alias] of [
+      ["Fable", "fable"],
+      ["Opus", "opus"],
+      ["Haiku", "haiku"],
+      ["Sonnet", "sonnet"],
+    ] as const) {
+      await s.user.selectOptions(model, label);
+      await waitFor(async () => expect((await s.ipc.summarySettings()).value.claude_model).toBe(alias));
+    }
+    expect(within(card).queryByRole("button", { name: "Save model" })).toBeNull();
+    // Other: a typed name, saved with its button; choosing Other alone stores nothing.
+    await s.user.selectOptions(model, "Other");
+    const other = within(card).getByRole("group", { name: "Other model" });
+    const name = within(other).getByRole("textbox", { name: /^Model name/ });
+    expect(name).toHaveAttribute("placeholder", CLAUDE_MODEL_PLACEHOLDER);
+    expect(name).toHaveValue("");
+    expect((await s.ipc.summarySettings()).value.claude_model).toBe("sonnet");
+    await s.user.type(name, "claude-opus-4-1-20250805");
+    await s.user.click(within(other).getByRole("button", { name: "Save model" }));
+    await waitFor(async () =>
+      expect((await s.ipc.summarySettings()).value.claude_model).toBe("claude-opus-4-1-20250805"),
+    );
+    expect(await within(other).findByText("Saved.")).toBeInTheDocument();
+    expect(model).toHaveDisplayValue("Other");
     // A name Claude Code cannot take is refused with the reason; nothing is stored.
-    await s.user.clear(model);
-    await s.user.type(model, "--tools");
-    await s.user.click(within(card).getByRole("button", { name: "Save model" }));
+    await s.user.clear(name);
+    await s.user.type(name, "--tools");
+    await s.user.click(within(other).getByRole("button", { name: "Save model" }));
     expect(await screen.findByText("This setting was not saved")).toBeInTheDocument();
     expect(pageText()).toContain("must not start with a hyphen");
-    expect((await s.ipc.summarySettings()).value.claude_model).toBe("sonnet");
+    expect((await s.ipc.summarySettings()).value.claude_model).toBe("claude-opus-4-1-20250805");
+    // Back to Claude Code's default at once; the typed name goes away.
+    await s.user.selectOptions(model, "Claude Code's default");
+    await waitFor(async () => expect((await s.ipc.summarySettings()).value.claude_model).toBe(""));
+    expect(within(card).queryByRole("group", { name: "Other model" })).toBeNull();
     await s.user.click(within(card).getByRole("button", { name: "Check again" }));
     await waitFor(() => expect(asked.n).toBe(2));
+  });
+
+  it("keeps Save model off while the Other name is empty", async () => {
+    const s = await open({ summaries: { settings: { writer: "ClaudeCode", claude_model: "sonnet" } } });
+    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    await s.user.selectOptions(within(card).getByRole("combobox", { name: "Model" }), "Other");
+    const other = within(card).getByRole("group", { name: "Other model" });
+    const save = within(other).getByRole("button", { name: "Save model" });
+    expect(save).toBeDisabled();
+    await s.user.type(within(other).getByRole("textbox", { name: /^Model name/ }), "   ");
+    expect(save).toBeDisabled();
+    expect((await s.ipc.summarySettings()).value.claude_model).toBe("sonnet");
+  });
+
+  it("chooses Claude Code's effort from a list, applied at once", async () => {
+    const s = await open({ machine: "desktop", summaries: { settings: { writer: "ClaudeCode", claude_model: "opus" } } });
+    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    await within(card).findByText(CLAUDE_CODE_STATUS.desktop.message);
+    const effort = within(card).getByRole("combobox", { name: "Effort" });
+    expect(optionTexts(effort)).toEqual(["Claude Code's default", "Low", "Medium", "High", "Extra high", "Max"]);
+    expect(effort).toHaveDisplayValue("Claude Code's default");
+    for (const [label, choice] of [
+      ["Low", "Low"],
+      ["Medium", "Medium"],
+      ["High", "High"],
+      ["Max", "Max"],
+      ["Extra high", "ExtraHigh"],
+    ] as const) {
+      await s.user.selectOptions(effort, label);
+      await waitFor(async () => expect((await s.ipc.summarySettings()).value.claude_effort).toBe(choice));
+    }
+    // The model is kept; no Save button is needed for either list.
+    expect((await s.ipc.summarySettings()).value.claude_model).toBe("opus");
+    expect(within(card).queryByRole("button", { name: /^Save/ })).toBeNull();
+    expect(within(card).queryByText(CLAUDE_CODE_EFFORT_NEEDS_NEWER)).toBeNull();
+    await s.user.selectOptions(effort, "Claude Code's default");
+    await waitFor(async () => expect((await s.ipc.summarySettings()).value.claude_effort).toBeNull());
+  });
+
+  it("says effort needs a newer Claude Code when the installed one has none", async () => {
+    await open({
+      summaries: {
+        settings: { writer: "ClaudeCode", claude_effort: "High" },
+        claudeCode: { ...CLAUDE_CODE_STATUS.desktop, effort_note: CLAUDE_CODE_EFFORT_NEEDS_NEWER },
+      },
+    });
+    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    expect(await within(card).findByText(CLAUDE_CODE_EFFORT_NEEDS_NEWER)).toBeInTheDocument();
+    // The choice is kept for when Claude Code is updated.
+    expect(within(card).getByRole("combobox", { name: "Effort" })).toHaveDisplayValue("High");
+  });
+
+  it("shows a stored model that is not in the list under Other", async () => {
+    await open({ summaries: { settings: { writer: "ClaudeCode", claude_model: "claude-opus-4-1-20250805" } } });
+    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    expect(within(card).getByRole("combobox", { name: "Model" })).toHaveDisplayValue("Other");
+    const other = within(card).getByRole("group", { name: "Other model" });
+    expect(within(other).getByRole("textbox", { name: /^Model name/ })).toHaveValue("claude-opus-4-1-20250805");
+    expect(within(other).getByText("Saved.")).toBeInTheDocument();
+    cleanup();
+    await open({ summaries: { settings: { writer: "Codex", codex_model: "gpt-5.6-luna" } } });
+    const codex = await screen.findByRole("group", { name: "OpenAI through Codex" });
+    expect(within(codex).getByRole("combobox", { name: "Model" })).toHaveDisplayValue("Other");
+    expect(
+      within(within(codex).getByRole("group", { name: "Other model" })).getByRole("textbox", { name: /^Model name/ }),
+    ).toHaveValue("gpt-5.6-luna");
   });
 
   it("says how to sign in to Claude Code or install it", async () => {
@@ -337,22 +432,33 @@ describe("Settings, Summaries", () => {
     expect(asked.claude).toBe(0);
     expect(screen.queryByRole("group", { name: "Claude through Claude Code" })).toBeNull();
     expect(live()).toBeDisabled();
-    // The model: optional, with a placeholder, saved with its button.
-    const model = within(card).getByLabelText("Model");
-    expect(model).toHaveAttribute("placeholder", CODEX_MODEL_PLACEHOLDER);
-    expect(model).toHaveValue("");
-    await s.user.type(model, "gpt-5.6-luna");
-    await s.user.click(within(card).getByRole("button", { name: "Save model" }));
+    // The model: Codex's default or Other, with no effort list (not confirmed on Codex).
+    const model = within(card).getByRole("combobox", { name: "Model" });
+    expect(optionTexts(model)).toEqual(["Codex's default", "Other"]);
+    expect(model).toHaveDisplayValue("Codex's default");
+    expect(within(card).queryByRole("combobox", { name: "Effort" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Save model" })).toBeNull();
+    // Other: a typed name with a placeholder, saved with its button.
+    await s.user.selectOptions(model, "Other");
+    const other = within(card).getByRole("group", { name: "Other model" });
+    const name = within(other).getByRole("textbox", { name: /^Model name/ });
+    expect(name).toHaveAttribute("placeholder", CODEX_MODEL_PLACEHOLDER);
+    expect(name).toHaveValue("");
+    await s.user.type(name, "gpt-5.6-luna");
+    await s.user.click(within(other).getByRole("button", { name: "Save model" }));
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.codex_model).toBe("gpt-5.6-luna"));
-    expect(await within(card).findByText("Saved.")).toBeInTheDocument();
+    expect(await within(other).findByText("Saved.")).toBeInTheDocument();
     expect((await s.ipc.summarySettings()).value.claude_model).toBe("");
     // A name Codex cannot take is refused with the reason; nothing is stored.
-    await s.user.clear(model);
-    await s.user.type(model, "-s");
-    await s.user.click(within(card).getByRole("button", { name: "Save model" }));
+    await s.user.clear(name);
+    await s.user.type(name, "-s");
+    await s.user.click(within(other).getByRole("button", { name: "Save model" }));
     expect(await screen.findByText("This setting was not saved")).toBeInTheDocument();
     expect(pageText()).toContain("must start with a letter or digit");
     expect((await s.ipc.summarySettings()).value.codex_model).toBe("gpt-5.6-luna");
+    // Codex's default applies at once.
+    await s.user.selectOptions(model, "Codex's default");
+    await waitFor(async () => expect((await s.ipc.summarySettings()).value.codex_model).toBe(""));
     await s.user.click(within(card).getByRole("button", { name: "Check again" }));
     await waitFor(() => expect(asked.codex).toBe(2));
   });

@@ -19,7 +19,8 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 
 use crate::credentials::{CredentialManager, KeyVault};
 use crate::detail::{
-    self, ExportDone, LinkChoice, MeetingDetail, PersonItem, RememberResult, parse_id, parse_ids,
+    self, ExportDone, LinkChoice, MeetingDetail, PersonItem, SavedVoiceResult, SummaryFieldRef,
+    parse_id,
 };
 use crate::jobs::{JobEvent, JobKind, JobRunner};
 use crate::meeting::{MeetingDriver, StartRequest};
@@ -46,6 +47,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             set_compact,
             set_window_theme,
             get_meeting,
+            rename_meeting,
+            edit_segment,
+            edit_summary,
             rename_speaker,
             merge_speakers,
             link_speaker,
@@ -53,7 +57,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             unmark_me,
             rename_person,
             list_persons,
-            remember_voices,
+            save_voice,
+            ignore_speaker,
+            unignore_speaker,
             forget_person_voices,
             remove_person,
             speaker_sample,
@@ -62,6 +68,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             undo_summary,
             export_meeting,
             delete_meeting,
+            crate::keep_local::allow_summary_writer,
             crate::folders::list_folders,
             crate::folders::create_folder,
             crate::folders::rename_folder,
@@ -118,9 +125,10 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::benchmark::cancel_benchmark,
             crate::summary_style::summary_style,
             crate::summary_style::set_summary_style,
+            crate::summary_vocabulary::summary_vocabulary,
+            crate::summary_vocabulary::set_summary_vocabulary,
             crate::first_run::first_run_state,
             crate::first_run::finish_first_run,
-            crate::first_run::set_model_declined,
             crate::cuda_settings::cuda_settings,
             crate::cuda_settings::set_cuda_settings,
             crate::cuda_settings::start_cuda_download,
@@ -235,6 +243,7 @@ fn runtime_kind(e: &RuntimeError) -> &'static str {
         RuntimeError::MeetingBusy(_) => "meeting_busy",
         RuntimeError::Edit(_) => "edit",
         RuntimeError::ApiKey(_) => "api_key",
+        RuntimeError::SummaryKeptLocal(_) => "summary_kept_local",
     }
 }
 
@@ -493,6 +502,7 @@ async fn search_meetings(
 }
 
 /// Starts a meeting in `mode` with an optional title and returns its id once it records.
+/// `keep_local` keeps its summary on this computer (T12.13; asked only here).
 /// Every check (models, summary setup, ONNX Runtime) runs first; a failure records nothing.
 /// The meeting's progress arrives as `MeetingEvent`s. Fails with `busy` while another
 /// meeting records or is processed.
@@ -503,12 +513,14 @@ async fn start_meeting(
     driver: State<'_, MeetingDriver>,
     mode: CaptureMode,
     title: Option<String>,
+    keep_local: bool,
 ) -> Result<String, IpcError> {
     let services = state.services()?;
     let driver = driver.inner().clone();
     let request = StartRequest {
         mode,
         title: title.map(|t| t.trim().to_owned()).unwrap_or_default(),
+        keep_local,
     };
     tauri::async_runtime::spawn_blocking(move || driver.start(&services, request))
         .await
@@ -574,6 +586,61 @@ async fn rename_speaker(
     let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
     blocking(move || {
         earshot_runtime::edit::rename_speaker(&services, meeting, speaker, &name)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Gives `meeting` a new title (empty: untitled).
+#[tauri::command]
+#[specta::specta]
+async fn rename_meeting(
+    state: State<'_, AppState>,
+    meeting: String,
+    title: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let meeting = parse_id(&meeting)?;
+    blocking(move || {
+        earshot_runtime::edit::rename_meeting(&services, meeting, &title)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Replaces the text of one line of `meeting`'s final transcript (T12.16).
+#[tauri::command]
+#[specta::specta]
+async fn edit_segment(
+    state: State<'_, AppState>,
+    meeting: String,
+    segment: String,
+    text: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
+    blocking(move || {
+        earshot_runtime::edit::edit_segment(&services, meeting, segment, &text)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Corrects one text of `meeting`'s current summary `summary` (T12.16); the text before the
+/// edit becomes the previous summary.
+#[tauri::command]
+#[specta::specta]
+async fn edit_summary(
+    state: State<'_, AppState>,
+    meeting: String,
+    summary: String,
+    field: SummaryFieldRef,
+    text: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, summary) = (parse_id(&meeting)?, parse_id(&summary)?);
+    blocking(move || {
+        earshot_runtime::edit::edit_summary(&services, meeting, summary, field.field(), &text)?;
         Ok(())
     })
     .await
@@ -670,18 +737,54 @@ async fn list_persons(state: State<'_, AppState>) -> Result<Vec<PersonItem>, Ipc
     blocking(move || detail::persons(&services)).await
 }
 
-/// "Remember these voices for next time" (opt-in) for `speakers` of `meeting`.
+/// "Save" on a voice that needs a name (T12.19): names it, links it to that person and
+/// remembers the voice, in one step (the user's consent for this one voice).
 #[tauri::command]
 #[specta::specta]
-async fn remember_voices(
+async fn save_voice(
     state: State<'_, AppState>,
     meeting: String,
-    speakers: Vec<String>,
-) -> Result<Vec<RememberResult>, IpcError> {
+    speaker: String,
+    choice: LinkChoice,
+) -> Result<SavedVoiceResult, IpcError> {
     let services = state.services()?;
-    let meeting = parse_id(&meeting)?;
-    let speakers = parse_ids(&speakers)?;
-    blocking(move || detail::remember(&services, meeting, &speakers)).await
+    let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || detail::save_voice(&services, meeting, speaker, &choice)).await
+}
+
+/// "Ignore" on a voice that needs a name (T12.19): it no longer needs one and keeps its
+/// "Speaker N" label.
+#[tauri::command]
+#[specta::specta]
+async fn ignore_speaker(
+    state: State<'_, AppState>,
+    meeting: String,
+    speaker: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || {
+        earshot_runtime::edit::ignore_speaker(&services, meeting, speaker)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Undoes "Ignore": the voice needs a name again.
+#[tauri::command]
+#[specta::specta]
+async fn unignore_speaker(
+    state: State<'_, AppState>,
+    meeting: String,
+    speaker: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || {
+        earshot_runtime::edit::unignore_speaker(&services, meeting, speaker)?;
+        Ok(())
+    })
+    .await
 }
 
 /// Removes a person: their name and voice, from this computer (the Speakers page).

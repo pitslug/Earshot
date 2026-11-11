@@ -131,6 +131,7 @@ fn call_meeting(svc: &Services, seed: u64) -> Fixture {
             given_stamp: Some(priya_row.meta.updated_at),
             user_edited: false,
             enrolled: false,
+            ignored: false,
         }],
     };
     // Test set-up only: production writes this record through the runtime's registry.
@@ -379,6 +380,152 @@ fn detail_a_summary_citing_a_replaced_segment_is_stale_and_shows_it_unavailable(
 }
 
 #[test]
+fn detail_an_edited_title_and_line_show_and_mark_an_older_summary_out_of_date() {
+    let dir = TempDir::new("detail-text-edit");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 40);
+    put_summary(&svc, f.meeting, vec![f.segments[2]], vec![], false, 41);
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(!d.summary_stale);
+    assert!(d.transcript.iter().all(|r| !r.edited));
+
+    edit::rename_meeting(&svc, f.meeting, "Supplier review").unwrap();
+    edit::edit_segment(
+        &svc,
+        f.meeting,
+        f.segments[2],
+        "yes, that works for both of us",
+    )
+    .unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.header.title, "Supplier review");
+    let row = &d.transcript[2];
+    assert_eq!(row.segment_id, f.segments[2].to_string());
+    assert_eq!(row.text, "yes, that works for both of us");
+    assert!(row.edited);
+    assert_eq!(d.transcript.iter().filter(|r| r.edited).count(), 1);
+    // The summary still finds the line it cites, but was written from the old words.
+    let c = &d.summary.as_ref().unwrap().decisions[0].citations;
+    assert_eq!(c[0].row, Some(2));
+    assert!(d.summary_stale);
+    // Refusals arrive as user copy.
+    let e: IpcError = edit::edit_segment(&svc, f.meeting, f.segments[2], " ")
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "invalid_text");
+    let e: IpcError = edit::rename_meeting(
+        &svc, f.meeting, "one
+two",
+    )
+    .unwrap_err()
+    .into();
+    assert_eq!(e.kind, "invalid_title");
+}
+
+#[test]
+fn detail_a_summary_edit_shows_at_once_and_can_be_undone() {
+    let dir = TempDir::new("detail-summary-edit");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 42);
+    let id = put_summary(
+        &svc,
+        f.meeting,
+        vec![f.segments[1]],
+        vec![f.segments[3]],
+        false,
+        43,
+    );
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.summary.as_ref().unwrap().id, id.to_string());
+    assert!(!d.can_undo_summary);
+
+    let field = |f: SummaryFieldRef| f.field();
+    edit::edit_summary(
+        &svc,
+        f.meeting,
+        id,
+        field(SummaryFieldRef::Decision { index: 0 }),
+        "Split the pump order in two",
+    )
+    .unwrap();
+    edit::edit_summary(
+        &svc,
+        f.meeting,
+        id,
+        field(SummaryFieldRef::ActionDue { index: 0 }),
+        "",
+    )
+    .unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let s = d.summary.as_ref().unwrap();
+    assert_eq!(s.id, id.to_string(), "edited in place");
+    assert_eq!(s.decisions[0].text, "Split the pump order in two");
+    assert_eq!(s.decisions[0].citations[0].row, Some(1));
+    assert_eq!(s.actions[0].due, None);
+    assert!(
+        d.can_undo_summary,
+        "the text before the edit can be restored"
+    );
+    assert!(
+        !d.summary_stale,
+        "a summary edit leaves the transcript as it was"
+    );
+    edit::undo_summary(&svc, f.meeting).unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(
+        d.summary.as_ref().unwrap().actions[0].due.as_deref(),
+        Some("Friday")
+    );
+
+    // A summary that is no longer current is refused as user copy.
+    let e: IpcError = edit::edit_summary(
+        &svc,
+        f.meeting,
+        id,
+        field(SummaryFieldRef::Tldr),
+        "Anything.",
+    )
+    .unwrap_err()
+    .into();
+    assert_eq!(e.kind, "summary_changed");
+}
+
+#[test]
+fn detail_summary_field_refs_name_the_runtime_fields() {
+    use earshot_runtime::edit::SummaryField as F;
+    let cases = [
+        (SummaryFieldRef::Title, F::Title),
+        (SummaryFieldRef::Tldr, F::Tldr),
+        (SummaryFieldRef::Decision { index: 2 }, F::Decision(2)),
+        (SummaryFieldRef::ActionOwner { index: 1 }, F::ActionOwner(1)),
+        (SummaryFieldRef::ActionTask { index: 1 }, F::ActionTask(1)),
+        (SummaryFieldRef::ActionDue { index: 3 }, F::ActionDue(3)),
+        (
+            SummaryFieldRef::NoteHeading { section: 1 },
+            F::NoteHeading(1),
+        ),
+        (
+            SummaryFieldRef::NoteBullet {
+                section: 1,
+                bullet: 4,
+            },
+            F::NoteBullet(1, 4),
+        ),
+        (
+            SummaryFieldRef::OpenQuestion { index: 0 },
+            F::OpenQuestion(0),
+        ),
+    ];
+    for (r, want) in cases {
+        assert_eq!(r.field(), want);
+    }
+    // The UI sends them tagged by kind.
+    let r: SummaryFieldRef =
+        serde_json::from_str(r#"{"kind":"NoteBullet","section":0,"bullet":2}"#).unwrap();
+    assert_eq!(r.field(), F::NoteBullet(0, 2));
+}
+
+#[test]
 fn detail_can_undo_only_with_a_restorable_previous_summary() {
     let dir = TempDir::new("detail-undo");
     let svc = services(&dir);
@@ -562,7 +709,15 @@ fn detail_offers_this_is_me_only_in_a_room_with_no_me_row() {
         e.message,
         "One voice in this meeting is already you. Choose \"This isn't me\" on it first."
     );
-    let e = remember(&svc, m, &[voice]).unwrap_err();
+    let e = save_voice(
+        &svc,
+        m,
+        voice,
+        &LinkChoice::Existing {
+            person: mine.person.as_ref().unwrap().id.clone(),
+        },
+    )
+    .unwrap_err();
     assert_eq!(e.kind, "me_voice");
 
     // The user's name reaches the card and the transcript.
@@ -619,6 +774,39 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::FolderNotFound(id), "folder_not_found"),
         (EditError::FolderNameTaken(id), "folder_name_taken"),
         (EditError::MeetingRecording(id), "meeting_recording"),
+        (EditError::InvalidTitle(TextProblem::Empty), "invalid_title"),
+        (
+            EditError::InvalidTitle(TextProblem::TooLong),
+            "invalid_title",
+        ),
+        (
+            EditError::InvalidTitle(TextProblem::ControlCharacter),
+            "invalid_title",
+        ),
+        (EditError::InvalidText(TextProblem::Empty), "invalid_text"),
+        (EditError::InvalidText(TextProblem::TooLong), "invalid_text"),
+        (
+            EditError::InvalidText(TextProblem::ControlCharacter),
+            "invalid_text",
+        ),
+        (EditError::SegmentNotFound(id), "segment_not_found"),
+        (EditError::DraftTranscript(id), "draft_transcript"),
+        (EditError::SummaryNotCurrent(id), "summary_changed"),
+        (EditError::SummaryItemNotFound, "summary_changed"),
+        (
+            EditError::InvalidSummaryText(TextProblem::Empty),
+            "invalid_summary_text",
+        ),
+        (
+            EditError::InvalidSummaryText(TextProblem::TooLong),
+            "invalid_summary_text",
+        ),
+        (
+            EditError::InvalidSummaryText(TextProblem::ControlCharacter),
+            "invalid_summary_text",
+        ),
+        (EditError::NotUnnamed(id), "not_unnamed"),
+        (EditError::NoStoredVoice(id), "no_stored_voice"),
     ];
     for (e, kind) in all {
         let ipc = IpcError::from(RuntimeError::Edit(e.clone()));
@@ -707,15 +895,145 @@ fn detail_edits_go_through_the_runtime_and_refusals_arrive_as_user_copy() {
         .unwrap_err()
         .into();
     assert_eq!(e.kind, "merge_away_me");
-    // Remembering an unlinked voice is refused before anything is stored.
-    let e = remember(&svc, g.meeting, &[g.me]).unwrap_err();
-    assert_eq!(e.kind, "me_voice");
+    // Saving the user's row as someone else is refused before anything is stored.
+    let e = save_voice(
+        &svc,
+        g.meeting,
+        g.me,
+        &LinkChoice::New {
+            name: "Sky Moss".into(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(e.kind, "me_is_the_user");
+    assert!(!persons(&svc).unwrap().iter().any(|p| p.name == "Sky Moss"));
     // The bad id from the UI.
     assert_eq!(parse_id("not an id").unwrap_err().kind, "invalid_id");
+}
+
+/// Gives `speaker` an entry in `meeting`'s identity record, as a final pass that kept its
+/// voice would (test set-up only).
+fn give_identity(svc: &Services, meeting: EntityId, speaker: EntityId) {
+    let key = earshot_store::identities::record_key(meeting);
+    let mut db = svc.store();
+    let mut record = match db
+        .local_value(&key)
+        .unwrap()
+        .map(|b| earshot_runtime::identities::decode(&b))
+    {
+        Some(earshot_runtime::identities::StoredIdentities::Record(r)) => r,
+        other => panic!("{other:?}"),
+    };
+    let row = db
+        .speakers(meeting)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == speaker)
+        .unwrap();
+    record
+        .speakers
+        .push(earshot_runtime::identities::SpeakerIdentity {
+            speaker,
+            track: TrackId::Reference,
+            centroid: earshot_core::diar::Embedding::new(
+                EmbeddingModelId::new("test-embedder"),
+                vec![0.0, 1.0],
+            ),
+            given_name: row.display_name.clone(),
+            given_person: None,
+            given_stamp: Some(row.meta.updated_at),
+            user_edited: false,
+            enrolled: false,
+            ignored: false,
+        });
+    db.set_local_value(&key, &encode(&record)).unwrap();
+}
+
+#[test]
+fn detail_an_ignored_voice_keeps_its_label_and_no_longer_needs_a_name() {
+    let dir = TempDir::new("detail-ignore");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 60);
+    // Without a stored voice the choice has nowhere to live: not offered, and refused.
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(!card(&d, f.unnamed).can_ignore);
+    let e: IpcError = edit::ignore_speaker(&svc, f.meeting, f.unnamed)
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "no_stored_voice");
+
+    give_identity(&svc, f.meeting, f.unnamed);
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let c = card(&d, f.unnamed);
+    assert!(c.can_ignore && !c.ignored && c.needs_name);
+    // "Me" and a named voice are not offered Ignore.
+    assert!(!card(&d, f.me).can_ignore);
+    assert!(!card(&d, f.priya).can_ignore);
+
+    edit::ignore_speaker(&svc, f.meeting, f.unnamed).unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let c = card(&d, f.unnamed);
+    assert!(c.ignored && !c.needs_name);
+    assert_eq!(c.name, "Speaker 2");
+    assert_eq!(d.transcript[1].speaker, "Speaker 2", "the label stays");
+    assert!(d.speakers.iter().all(|s| !s.needs_name));
+
+    edit::unignore_speaker(&svc, f.meeting, f.unnamed).unwrap();
+    let c = card(&meeting_detail(&svc, f.meeting).unwrap(), f.unnamed).clone();
+    assert!(!c.ignored && c.needs_name);
+}
+
+#[test]
+fn detail_save_voice_names_links_and_says_what_remembering_did() {
+    let dir = TempDir::new("detail-save");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 61);
+    give_identity(&svc, f.meeting, f.unnamed);
+    edit::ignore_speaker(&svc, f.meeting, f.unnamed).unwrap();
+    let saved = save_voice(
+        &svc,
+        f.meeting,
+        f.unnamed,
+        &LinkChoice::New {
+            name: "Jordan Ellis".into(),
+        },
+    )
+    .unwrap();
+    // The test embedder has no calibrated threshold: named and linked, nothing stored.
+    assert_eq!(saved.outcome, RememberOutcome::Unsupported);
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let c = card(&d, f.unnamed);
+    assert_eq!(c.name, "Jordan Ellis");
+    assert_eq!(c.person.as_ref().unwrap().id, saved.person);
+    assert!(!c.person.as_ref().unwrap().has_voiceprint);
+    assert!(!c.needs_name && !c.ignored, "naming ends the ignore");
+    // A voice the final pass kept nothing of: still named, and the result says so.
+    let g = call_meeting(&svc, 62);
+    let none = save_voice(
+        &svc,
+        g.meeting,
+        g.unnamed,
+        &LinkChoice::Existing {
+            person: saved.person.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(none.outcome, RememberOutcome::NoStoredVoice);
     assert_eq!(
-        parse_ids(&[g.me.to_string(), g.me.to_string()]).unwrap(),
-        [g.me]
+        card(&meeting_detail(&svc, g.meeting).unwrap(), g.unnamed).name,
+        "Jordan Ellis"
     );
+    // A bad id from the UI.
+    let e = save_voice(
+        &svc,
+        g.meeting,
+        g.unnamed,
+        &LinkChoice::Existing {
+            person: "nobody".into(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(e.kind, "invalid_id");
 }
 
 #[test]

@@ -85,7 +85,7 @@ Switches that changed nothing for the NaN:
 
 So the Vulkan path stays closed. Re-test it only if a later `llama-cpp-sys-2` release notes Adreno Vulkan fixes: `vk_probe` with the 4B and an 800-word prompt is a five-minute check. Qualcomm's own route for Adreno is llama.cpp's OpenCL backend ([Qualcomm developer blog](https://www.qualcomm.com/developer/blog/2024/11/introducing-new-opn-cl-gpu-backend-llama-cpp-for-qualcomm-adreno-gpu)). It lists the Adreno X1-85 as supported and recommends Q4_0 weights, but needs the Khronos OpenCL headers, a new download source and the owner's call. Our Q4_K_M models would need Q4_0 copies to run at its best.
 
-## Vulkan reopened (T12.17, 2026-11-11, first pass)
+## Vulkan reopened (T12.21, committed as T12.17; 2026-11-11, first pass)
 
 Upstream since 0.1.160, both from Qualcomm engineers:
 
@@ -122,7 +122,7 @@ Documentation only so far; nothing downloaded or run.
   - GenieX QAIRT, 4096 context: about 26 tokens/s reply, time to first token 0.07 s (short prompt) to 2.2 s (a 4,096-token prompt), so about 1,900 prompt tokens/s;
   - Genie, 4096 context: about 30 tokens/s, 0.07 to 2.2 s.
 
-  Against the CPU 4B on this Surface (about 110 prompt and 21 reply tokens/s, T12.17's numbers), that would be about 17 times faster on the prompt and 1.3 times on the reply. The page says Genie support "will be deprecated soon"; GenieX is the community successor.
+  Against the CPU 4B on this Surface (about 110 prompt and 21 reply tokens/s, T12.21's numbers), that would be about 17 times faster on the prompt and 1.3 times on the reply. The page says Genie support "will be deprecated soon"; GenieX is the community successor.
 - **The runtime is not ONNX Runtime.** Genie's `genie-t2t-run` comes from the QAIRT SDK; GenieX ships as an unsigned Windows ARM64 installer or `pip install geniex`, with a QAIRT plugin bundling runtime libraries v2.50.40. Their licence terms and any telemetry are not documented in what was read. Earshot already loads QNN SDK 2.51 libraries for transcription (plugin v2.7.0).
 - **ONNX Runtime GenAI on QNN:** Microsoft publishes QNN builds such as Phi-4 mini and Phi-4 reasoning; community reports put NPU builds at a fixed context of about 4,096 tokens (static graphs). No Qwen 3.5-class NPU build was found from either vendor (Qualcomm has Qwen 3.5 only at 0.8B, as a llama.cpp GGUF).
 - **What any NPU path costs:** a model change (Qwen3 4B or Phi-4 mini instead of Qwen 3.5), chunks that fit 4,096 tokens with the reply (today's chunks are 600 s, about 1,500-2,500 transcript tokens, so they may fit with a smaller reply budget), a new quality evaluation on the dev meetings, a telemetry check of the runtime before any meeting text goes in, and an FFI crate.

@@ -1,0 +1,14 @@
+{
+  "about": "Settings page names that are gone (T12.5b) and the ways shown text names a page. The UI guard (packages/ui/src/settings/pageNames.test.ts) and the desktop guard (apps/desktop/src-tauri/src/page_names_tests.rs) both take the pages and forms from here and run every case; a rule change edits this file. {page} stands for a gone page; a form matches as whole words (no letter, digit or underscore right after it).",
+  "gone_pages": ["Models", "Benchmark", "Speakers", "Obsidian", "Storage"],
+  "forms": ["{page} page", "Settings, {page}", "see {page}"],
+  "cases": [
+    { "text": "Open Settings, Models to download them.", "found": ["Settings, Models"] },
+    { "text": "Download it on the Models page.", "found": ["Models page"] },
+    { "text": "Qwen 3.5 4B is not downloaded; see Models)", "found": ["see Models"] },
+    { "text": "Choose them on the Speakers page or in Settings, Storage.", "found": ["Speakers page", "Settings, Storage"] },
+    { "text": "Settings, Modelsville", "found": [] },
+    { "text": "see Benchmark_old", "found": [] },
+    { "text": "Open Settings, People. It is on the People page; see People.", "found": [] }
+  ]
+}

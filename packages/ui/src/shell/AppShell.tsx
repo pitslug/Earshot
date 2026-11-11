@@ -56,7 +56,7 @@ import {
 } from "../meeting/MeetingViews";
 import { failureText } from "../detail/detail";
 import { type JobView, MeetingDetailView, isTerminal } from "../detail/MeetingDetailView";
-import { FirstRunWizard } from "../firstRun/FirstRunWizard";
+import { FirstRunWizard, NO_MODEL_NOTE } from "../firstRun/FirstRunWizard";
 import { useLiveMeeting, useNow } from "../meeting/hooks";
 import { type SettingsSection, SettingsView } from "../settings/SettingsView";
 import { useThemeChoice } from "../theme/EarshotThemeProvider";
@@ -260,7 +260,7 @@ export interface AppShellProps {
   notice?: ReactNode;
   /** Also told when "Settings" opens the Settings screen. */
   onOpenSettings?: () => void;
-  /** Also told when "Name voices" on the summary notice opens the meeting's who-is-who
+  /** Also told when "Name voices" on the summary notice opens the meeting's Speakers
    * panel. */
   onNameVoices?: (meetingId: string) => void;
 }
@@ -326,11 +326,18 @@ export function AppShell({
   const [firstRunKnown, setFirstRunKnown] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
   const [setupFromSettings, setSetupFromSettings] = useState(false);
+  // The wizard ended with no transcription model: said once it is gone, until dismissed.
+  const [noModelNote, setNoModelNote] = useState(false);
   const [compact, setCompact] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
-  // The meeting a Cancel was pressed for; its result ends the view, and a newer meeting differs.
+  // The meeting a Cancel was pressed for, until its result: a newer meeting differs.
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  // An older meeting still finishing behind a newer recording, until its result. The meeting
+  // screen follows the newer one, so its Cancel is offered here.
+  const [behindId, setBehindId] = useState<string | null>(null);
+  // The last meeting the screen followed, kept across the reset a new start makes.
+  const lastMeeting = useRef<{ id: string; finishing: boolean } | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [quitAsked, setQuitAsked] = useState<keyof typeof QUIT_COPY | null>(null);
   const [quitting, setQuitting] = useState(false);
@@ -443,6 +450,8 @@ export function AppShell({
   const live = useLiveMeeting(ipc, timer, (event) => {
     if (RELOAD_ON.includes(event.type)) setReload((n) => n + 1);
     if (event.type === "Started") {
+      const older = lastMeeting.current;
+      if (older !== null && older.finishing && older.id !== event.meeting) setBehindId(older.id);
       setSelectedId(event.meeting);
       // Also a meeting the tray or the shortcut started.
       setView("meeting");
@@ -450,9 +459,16 @@ export function AppShell({
     }
     // An older meeting's end says nothing about the stop button of this one.
     if (event.type === "Ended" && event.meeting === liveMeetingId.current) setStopping(false);
+    if (event.type === "Summary") {
+      setBehindId((id) => (id === event.meeting ? null : id));
+      setCancellingId((id) => (id === event.meeting ? null : id));
+    }
   });
   const meeting = live.meeting;
   liveMeetingId.current = meeting?.meetingId ?? null;
+  if (meeting !== null) {
+    lastMeeting.current = { id: meeting.meetingId, finishing: meeting.phase === "processing" };
+  }
   const active = meeting !== null && meeting.phase !== "done";
   const clockNow = useNow(timer, 1000);
 
@@ -526,10 +542,10 @@ export function AppShell({
 
   // Only a recording meeting keeps the next one out; one that is finishing goes on behind it.
   const newMeeting = () => setView(meeting?.phase === "recording" ? "meeting" : "start");
-  const start = async (mode: CaptureMode, title: string | null) => {
+  const start = async (mode: CaptureMode, title: string | null, keepLocal: boolean) => {
     live.reset();
     setStopError(null);
-    const id = await ipc.startMeeting(mode, title);
+    const id = await ipc.startMeeting(mode, title, keepLocal);
     setSelectedId(id);
     setView("meeting");
   };
@@ -780,8 +796,9 @@ export function AppShell({
         )}
         <div className={styles.wizardBody}>
           <FirstRunWizard
-            onDone={() => {
+            onDone={(noModel) => {
               refresh();
+              setNoModelNote(noModel);
               setView(setupFromSettings ? "settings" : active ? "meeting" : "detail");
             }}
           />
@@ -791,18 +808,38 @@ export function AppShell({
     );
   }
 
+  const noModelBar = noModelNote && (
+    <MessageBar intent="warning" layout="multiline">
+      <MessageBarBody>{NO_MODEL_NOTE}</MessageBarBody>
+      <MessageBarActions>
+        <Button size="small" appearance="transparent" onClick={() => setNoModelNote(false)}>
+          Dismiss
+        </Button>
+      </MessageBarActions>
+    </MessageBar>
+  );
+
   if (view === "settings") {
-    return (
+    const settings = (
+      <SettingsView
+        initialSection={settingsSection}
+        onBack={() => setView(active ? "meeting" : "detail")}
+        onOpenSetup={() => {
+          setSetupFromSettings(true);
+          setSettingsSection("General");
+          setView("first-run");
+        }}
+      />
+    );
+    return noModelNote ? (
+      <div className={styles.wizardFrame}>
+        {noModelBar}
+        <div className={styles.wizardBody}>{settings}</div>
+        {quitDialog}
+      </div>
+    ) : (
       <>
-        <SettingsView
-          initialSection={settingsSection}
-          onBack={() => setView(active ? "meeting" : "detail")}
-          onOpenSetup={() => {
-            setSetupFromSettings(true);
-            setSettingsSection("General");
-            setView("first-run");
-          }}
-        />
+        {settings}
         {quitDialog}
       </>
     );
@@ -913,6 +950,7 @@ export function AppShell({
             {notice}
           </Badge>
         )}
+        {noModelBar}
         {startError !== null && (
           <MessageBar intent="error">
             <MessageBarBody>
@@ -951,6 +989,27 @@ export function AppShell({
             <MessageBarActions>
               <Button size="small" appearance="transparent" onClick={() => setDeleteError(null)}>
                 Dismiss
+              </Button>
+            </MessageBarActions>
+          </MessageBar>
+        )}
+        {behindId !== null && (
+          <MessageBar intent="info" layout="multiline">
+            <MessageBarBody>
+              <MessageBarTitle>Your previous meeting is still finishing</MessageBarTitle>
+              <span aria-live="polite">
+                {cancellingId === behindId
+                  ? "Stopping. This can take a moment if a model is still working or loading."
+                  : "Its final transcript and summary are being made. Cancel keeps the recording; you can re-transcribe it later."}
+              </span>
+            </MessageBarBody>
+            <MessageBarActions>
+              <Button
+                size="small"
+                disabled={cancellingId === behindId}
+                onClick={() => cancelFinishing(behindId)}
+              >
+                Cancel finishing
               </Button>
             </MessageBarActions>
           </MessageBar>

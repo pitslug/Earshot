@@ -3,7 +3,10 @@
 // that, as in the app, is never returned. The same on both sample machines (the model in use
 // comes from the Models mock) except Claude Code's status (T7.4ga): signed in on the desktop,
 // installed but not signed in on the Surface; and Codex's (T7.4gc): installed and signed in
-// with ChatGPT on the desktop, not installed on the Surface.
+// with ChatGPT on the desktop, not installed on the Surface. The rules, messages and limits
+// copied from Rust are pinned by `fixtures/ui/summary_settings_cases.json`, which this mock's
+// tests and the app's own run (T12.20): a Rust change that alters one fails both until the table
+// and this copy follow.
 
 import {
   type ClaudeCodeStatusView,
@@ -14,6 +17,7 @@ import {
 } from "./ipc";
 import type { SampleMachine } from "./mockModels";
 import type { SummaryStyleView } from "./summaryStyle";
+import type { SummaryVocabularyView } from "./summaryVocabulary";
 
 /** The Anthropic API address the app offers. */
 export const MOCK_ANTHROPIC_URL = "https://api.anthropic.com";
@@ -35,10 +39,24 @@ export interface SummariesMockData {
   codex?: CodexStatusView;
   /** The stored summary style (T7.4b; default: none). */
   style?: string;
+  /** The stored Dictionary words (T12.15a; default: none). */
+  vocabulary?: string[];
 }
 
 /** The longest summary style the app accepts (`earshot_core::prompt::MAX_STYLE_CHARS`). */
 export const MAX_STYLE_CHARS = 1000;
+
+/** The most Dictionary words the app accepts (`earshot_core::prompt::MAX_VOCABULARY_WORDS`). */
+export const MAX_VOCABULARY_WORDS = 100;
+/** The longest Dictionary word (`earshot_core::prompt::MAX_VOCABULARY_WORD_CHARS`). */
+export const MAX_VOCABULARY_WORD_CHARS = 40;
+/** The longest Dictionary in all (`earshot_core::prompt::MAX_VOCABULARY_CHARS`). */
+export const MAX_VOCABULARY_CHARS = 1000;
+
+/** What the page says when the installed Claude Code has no `--effort` (the app's copy,
+ * `summaries::EFFORT_NEEDS_NEWER`, T12.18). */
+export const CLAUDE_CODE_EFFORT_NEEDS_NEWER =
+  "Choosing the effort needs a newer Claude Code. This one runs at its own default effort; update Claude Code to choose it.";
 
 /** Claude Code's status on each sample machine (the app's copy, `summaries::claude_code_status`). */
 export const CLAUDE_CODE_STATUS: Record<SampleMachine, ClaudeCodeStatusView> = {
@@ -47,12 +65,14 @@ export const CLAUDE_CODE_STATUS: Record<SampleMachine, ClaudeCodeStatusView> = {
     version: "2.1.290 (Claude Code)",
     message: "Claude Code 2.1.290 is installed and signed in.",
     fix: null,
+    effort_note: null,
   },
   surface: {
     state: "NotSignedIn",
     version: "2.1.290 (Claude Code)",
     message: "Claude Code 2.1.290 is installed but not signed in.",
     fix: "Open Claude Code and sign in (in a terminal, run claude, then /login), then check again.",
+    effort_note: null,
   },
 };
 
@@ -62,6 +82,7 @@ export const CLAUDE_CODE_NOT_INSTALLED: ClaudeCodeStatusView = {
   version: null,
   message: "Claude Code is not installed on this computer.",
   fix: "Install Claude Code and sign in to it, then check again.",
+  effort_note: null,
 };
 
 /** Codex's status when it is not installed (the app's copy, `summaries::codex_status`). */
@@ -94,6 +115,41 @@ export interface SummariesMock {
   codexStatus(): Promise<CodexStatusView>;
   summaryStyle(): Promise<SummaryStyleView>;
   setSummaryStyle(style: string): Promise<SummaryStyleView>;
+  summaryVocabulary(): Promise<SummaryVocabularyView>;
+  setSummaryVocabulary(words: string[]): Promise<SummaryVocabularyView>;
+}
+
+/** The words as stored, with the app's rules and messages (`Vocabulary::new`): a control
+ * character refuses the list; each word is trimmed with inner white space joined, empty ones
+ * and repeats in another case are dropped (the first spelling wins), then the limits apply. */
+function checkVocabulary(words: string[]): string[] {
+  const kept: string[] = [];
+  const folded = new Set<string>();
+  let total = 0;
+  for (const raw of words) {
+    if (/\p{Cc}/u.test(raw)) fail("invalid_setting", "A word can hold only text, with no line breaks or tabs.");
+    const word = raw
+      .split(/\p{White_Space}+/u)
+      .filter((p) => p !== "")
+      .join(" ");
+    if (word === "") continue;
+    const n = [...word].length;
+    if (n > MAX_VOCABULARY_WORD_CHARS) {
+      fail("invalid_setting", `A word can have at most ${MAX_VOCABULARY_WORD_CHARS} characters; this one has ${n}.`);
+    }
+    const key = word.toLowerCase();
+    if (folded.has(key)) continue;
+    folded.add(key);
+    total += n;
+    kept.push(word);
+  }
+  if (kept.length > MAX_VOCABULARY_WORDS) {
+    fail("invalid_setting", `The list can hold at most ${MAX_VOCABULARY_WORDS} words; this one has ${kept.length}.`);
+  }
+  if (total > MAX_VOCABULARY_CHARS) {
+    fail("invalid_setting", `The list can have at most ${MAX_VOCABULARY_CHARS} characters in all; this one has ${total}.`);
+  }
+  return kept;
 }
 
 /** The style as stored, with the app's rules and messages (`SummaryStyle::new`): control
@@ -103,13 +159,27 @@ function checkStyle(text: string): string {
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(text)) {
     fail("invalid_setting", "The summary style can hold only text, line breaks and tabs.");
   }
-  const style = text.replace(/\r\n?/g, "\n").trim();
+  const style = rustTrim(text.replace(/\r\n?/g, "\n"));
   const n = [...style].length;
   if (n > MAX_STYLE_CHARS) {
     fail("invalid_setting", `The summary style can be at most ${MAX_STYLE_CHARS} characters; this one has ${n}.`);
   }
   return style;
 }
+
+/** `text` trimmed as Rust's `str::trim` does: Unicode White_Space only. JavaScript's `trim` and
+ * `\s` also take U+FEFF, which Rust keeps. */
+function rustTrim(text: string): string {
+  return text.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+}
+
+/** The length Rust's `str::len` gives: UTF-8 bytes, which its name limits count. */
+function utf8Length(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/** The longest endpoint address (`earshot_runtime::summary_settings`'s `MAX_URL`), in bytes. */
+const MAX_URL = 2048;
 
 const fail = (kind: string, message: string): never => {
   throw new IpcFailure({ kind, message, retryable: false });
@@ -137,6 +207,7 @@ function parse(url: string): URL | null {
 
 function checkUrl(url: string, provider: SummarySettingsValue["provider"]): void {
   const bad = (why: string): never => fail("invalid_setting", `This address cannot be used: ${why}.`);
+  if (utf8Length(url) > MAX_URL) bad(`it is longer than ${MAX_URL} characters`);
   const u = parse(url);
   if (u === null) bad("not a valid URL: relative URL without a base");
   const parsed = u as URL;
@@ -159,13 +230,13 @@ function checkUrl(url: string, provider: SummarySettingsValue["provider"]): void
 }
 
 function validate(s: SummarySettingsValue): SummarySettingsValue {
-  const url = s.url.trim();
-  const model = s.model.trim();
-  if (model.length > 200 || /[\u0000-\u001f\u007f]/.test(model)) {
+  const url = rustTrim(s.url);
+  const model = rustTrim(s.model);
+  if (utf8Length(model) > 200 || /\p{Cc}/u.test(model)) {
     fail("invalid_setting", "The model name must be at most 200 characters, without line breaks.");
   }
-  const claude_model = s.claude_model.trim();
-  if (claude_model.length > 200) {
+  const claude_model = rustTrim(s.claude_model);
+  if (utf8Length(claude_model) > 200) {
     fail("invalid_setting", "This Claude Code model name cannot be used: it is longer than 200 characters.");
   }
   if (claude_model.startsWith("-")) {
@@ -179,8 +250,8 @@ function validate(s: SummarySettingsValue): SummarySettingsValue {
   }
   // Codex (`earshot_llm::codex::check_model`): a letter or digit, then up to 63 of
   // letters, digits and `._-`.
-  const codex_model = s.codex_model.trim();
-  if (codex_model.length > 64) {
+  const codex_model = rustTrim(s.codex_model);
+  if (utf8Length(codex_model) > 64) {
     fail("invalid_setting", "This Codex model name cannot be used: it is longer than 64 characters.");
   }
   if (codex_model !== "" && !/^[A-Za-z0-9]/.test(codex_model)) {
@@ -225,12 +296,21 @@ export function createSummariesMock(
     model: "",
     live: false,
     claude_model: "",
+    claude_effort: null,
     codex_model: "",
     ...data.settings,
   };
   let keySaved = data.apiKeySaved ?? false;
   let style = data.style ?? "";
   const styleView = (): SummaryStyleView => ({ style, unknown: [], max_chars: MAX_STYLE_CHARS });
+  let vocabulary = checkVocabulary(data.vocabulary ?? []);
+  const vocabularyView = (): SummaryVocabularyView => ({
+    words: [...vocabulary],
+    unknown: [],
+    max_words: MAX_VOCABULARY_WORDS,
+    max_word_chars: MAX_VOCABULARY_WORD_CHARS,
+    max_chars: MAX_VOCABULARY_CHARS,
+  });
   const store = () => {
     if (data.keyStoreError !== undefined) {
       fail("api_key", `Windows Credential Manager failed: ${data.keyStoreError}.`);
@@ -265,6 +345,11 @@ export function createSummariesMock(
     setSummaryStyle: async (text) => {
       style = checkStyle(text);
       return styleView();
+    },
+    summaryVocabulary: async () => vocabularyView(),
+    setSummaryVocabulary: async (words) => {
+      vocabulary = checkVocabulary(words);
+      return vocabularyView();
     },
   };
 }

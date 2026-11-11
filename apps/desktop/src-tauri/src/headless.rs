@@ -625,6 +625,7 @@ fn run(args: &Args, out: &mut dyn Write) -> Result<(), String> {
             StartRequest {
                 mode: CaptureMode::Call,
                 title: String::new(),
+                keep_local: false,
             },
         )
         .map_err(|e| ipc_text(&e))?;

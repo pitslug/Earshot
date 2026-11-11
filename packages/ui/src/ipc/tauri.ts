@@ -22,7 +22,8 @@ export function createTauriIpc(): Ipc {
     appInfo: () => commands.appInfo(),
     listMeetings: async () => unwrap(await commands.listMeetings()),
     searchMeetings: async (query) => unwrap(await commands.searchMeetings(query)),
-    startMeeting: async (mode, title) => unwrap(await commands.startMeeting(mode, title)),
+    startMeeting: async (mode, title, keepLocal) =>
+      unwrap(await commands.startMeeting(mode, title, keepLocal)),
     stopMeeting: async () => {
       unwrap(await commands.stopMeeting());
     },
@@ -39,6 +40,15 @@ export function createTauriIpc(): Ipc {
       unwrap(await commands.setWindowTheme(theme));
     },
     getMeeting: async (meeting) => unwrap(await commands.getMeeting(meeting)),
+    renameMeeting: async (meeting, title) => {
+      unwrap(await commands.renameMeeting(meeting, title));
+    },
+    editSegment: async (meeting, segment, text) => {
+      unwrap(await commands.editSegment(meeting, segment, text));
+    },
+    editSummary: async (meeting, summary, field, text) => {
+      unwrap(await commands.editSummary(meeting, summary, field, text));
+    },
     renameSpeaker: async (meeting, speaker, name) => {
       unwrap(await commands.renameSpeaker(meeting, speaker, name));
     },
@@ -55,8 +65,14 @@ export function createTauriIpc(): Ipc {
     },
     renamePerson: async (person, name) => unwrap(await commands.renamePerson(person, name)),
     listPersons: async () => unwrap(await commands.listPersons()),
-    rememberVoices: async (meeting, speakers) =>
-      unwrap(await commands.rememberVoices(meeting, speakers)),
+    saveVoice: async (meeting, speaker, choice) =>
+      unwrap(await commands.saveVoice(meeting, speaker, choice)),
+    ignoreSpeaker: async (meeting, speaker) => {
+      unwrap(await commands.ignoreSpeaker(meeting, speaker));
+    },
+    unignoreSpeaker: async (meeting, speaker) => {
+      unwrap(await commands.unignoreSpeaker(meeting, speaker));
+    },
     forgetPersonVoices: async (person) => unwrap(await commands.forgetPersonVoices(person)),
     removePerson: async (person) => {
       unwrap(await commands.removePerson(person));
@@ -68,6 +84,9 @@ export function createTauriIpc(): Ipc {
     },
     resummarise: async (meeting) => {
       unwrap(await commands.resummarise(meeting));
+    },
+    allowSummaryWriter: async (meeting) => {
+      unwrap(await commands.allowSummaryWriter(meeting));
     },
     undoSummary: async (meeting) => {
       unwrap(await commands.undoSummary(meeting));
@@ -117,9 +136,10 @@ export function createTauriIpc(): Ipc {
     setStorageSettings: async (retention) => unwrap(await commands.setStorageSettings(retention)),
     firstRunState: async () => unwrap(await commands.firstRunState()),
     finishFirstRun: async () => unwrap(await commands.finishFirstRun()),
-    setModelDeclined: async (model, declined) => unwrap(await commands.setModelDeclined(model, declined)),
     summaryStyle: async () => unwrap(await commands.summaryStyle()),
     setSummaryStyle: async (style) => unwrap(await commands.setSummaryStyle(style)),
+    summaryVocabulary: async () => unwrap(await commands.summaryVocabulary()),
+    setSummaryVocabulary: async (words) => unwrap(await commands.setSummaryVocabulary(words)),
     audioSettings: async () => unwrap(await commands.audioSettings()),
     setAudioSettings: async (settings) => unwrap(await commands.setAudioSettings(settings)),
     defaultCaptureMode: async () => unwrap(await commands.defaultCaptureMode()),

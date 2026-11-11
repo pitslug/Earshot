@@ -13,6 +13,7 @@ import {
   type IpcError,
   IpcFailure,
   type JobEvent,
+  type LinkChoice,
   type LiveTrack,
   type MeetingDetail,
   type MeetingEvent,
@@ -25,6 +26,7 @@ import {
   type SummaryView,
 } from "./ipc";
 import {
+  ignoredVoice,
   linked,
   markedMe,
   merged,
@@ -165,6 +167,8 @@ export interface MockIpcData {
   onSetCompact?: (compact: boolean) => void;
   /** Called when the app is asked to quit. */
   onQuit?: () => void;
+  /** Meetings whose summary is kept on this computer (T12.13), by id. */
+  keptLocal?: string[];
   /** Meeting details by id (default: `sampleDetail` of each meeting). */
   details?: Record<string, MeetingDetail>;
   /** Finished meetings without a detail of their own were recorded in the room, with no
@@ -177,10 +181,9 @@ export interface MockIpcData {
   vault?: string;
   /** What `speakerSample` answers (default: a short silent WAV). */
   sample?: string | null;
-  /** What `rememberVoices` answers per speaker (default `Remembered`). */
+  /** What remembering a voice saved with `saveVoice` did, per speaker (default
+   * `Remembered`). */
   rememberOutcomes?: Record<string, RememberOutcome>;
-  /** Called with every `rememberVoices` request. */
-  onRememberVoices?: (meeting: string, speakers: string[]) => void;
   /** Called with every edit and job request (`["renameSpeaker", meeting, ...]`). */
   onCall?: (call: unknown[]) => void;
   /** Where an update stands when the app opens (default: nothing asked), and a refusal of install. */
@@ -191,6 +194,8 @@ export interface MockIpcData {
   modelCheckWarning?: string;
   /** A machine straight after installing: no speech helpers yet. */
   cleanInstall?: boolean;
+  /** No model is on this machine and there is no stored check. */
+  noModels?: boolean;
   /** The Summaries page's stored settings and API key (default: on this computer, no key). */
   summaries?: SummariesMockData;
   /** The Storage page's stored choice and kept recordings (default: 7 days, three). */
@@ -283,7 +288,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   // The running meeting: its row and the timers to cancel at stop.
   let live: { row: MeetingListItem; cancel: (() => void)[] } | null = null;
   let processing = false;
-  const modelsMock = createModelsMock(data.machine ?? "surface", timer, data.modelCheckWarning, data.cleanInstall);
+  const modelsMock = createModelsMock(
+    data.machine ?? "surface",
+    timer,
+    data.modelCheckWarning,
+    data.cleanInstall,
+    data.noModels,
+  );
   const summariesMock = createSummariesMock(data.summaries, data.machine ?? "surface");
   const { exportTarget, ...settingsMock } = createSettingsMock(
     { vault: data.vault, ...data.settings },
@@ -390,6 +401,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   let afterOlder: (() => void) | null = null;
   let speakingNow: Record<LiveTrack, boolean> | null = null;
 
+  // Meetings kept on this computer (T12.13); "Allow" takes one out.
+  const keptLocal = new Set(data.keptLocal ?? []);
   const detailOf = (id: string): MeetingDetail => {
     const row = meetings.find((m) => m.id === id);
     if (!row) return fail("meeting_not_found", "This meeting no longer exists.");
@@ -399,6 +412,20 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       details.set(id, d);
     }
     return d;
+  };
+  // The writer "Allow" would let summarise a kept meeting, as `keep_local::remote_writer_name`.
+  const remoteWriter = async (): Promise<string | null> => {
+    const { writer } = (await summariesMock.summarySettings()).value;
+    switch (writer) {
+      case "ClaudeCode":
+        return "Claude Code";
+      case "Codex":
+        return "Codex";
+      case "OwnEndpoint":
+        return "your own server";
+      default:
+        return null;
+    }
   };
   const update = (id: string, f: (d: MeetingDetail) => MeetingDetail) => {
     details.set(id, f(detailOf(id)));
@@ -411,6 +438,38 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     if (n === "") fail("invalid_name", "Enter a name.");
     if (n.length > 100) fail("invalid_name", "Names can be up to 100 characters long.");
     return n;
+  };
+  // `linkSpeaker` and the link of `saveVoice` (`label` names the call): refusals before
+  // anything is written, as the runtime's one transaction.
+  const linkIn = (meeting: string, speaker: string, choice: LinkChoice, label: string): string => {
+    call(label, meeting, speaker, choice);
+    const card = speakerOf(detailOf(meeting), speaker);
+    let person: PersonItem;
+    if (choice.kind === "New") {
+      if (card.kind === "Me") fail("me_is_the_user", "Your own row can only be linked to you.");
+      personSeq += 1;
+      person = {
+        id: `9e000000-0000-7000-8000-1000000000${String(personSeq).padStart(2, "0")}`,
+        name: checkName(choice.name),
+        has_voiceprint: false,
+        is_me: false,
+      };
+      persons.push(person);
+      persons.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    } else {
+      person =
+        persons.find((p) => p.id === choice.person) ??
+        fail("person_not_found", "This person no longer exists.");
+      if (person.is_me && card.kind !== "Me") {
+        fail("not_the_user", "Only your own row can be linked to you.");
+      }
+      if (!person.is_me && card.kind === "Me") {
+        fail("me_is_the_user", "Your own row can only be linked to you.");
+      }
+    }
+    const linkedTo = person;
+    update(meeting, (d) => linked(d, speaker, linkedTo));
+    return person.id;
   };
   const startJob = (meeting: string) => {
     detailOf(meeting);
@@ -461,7 +520,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
             .map((m) => ({ ...m })),
     searchMeetings: async (query) =>
       searchSample(meetings, (row) => details.get(row.id) ?? sampleDetail(row), query),
-    startMeeting: async (mode, title) => {
+    startMeeting: async (mode, title, keepLocal) => {
       if (data.startError) throw new IpcFailure(data.startError);
       if (live) fail("busy", "a meeting is already recording", true);
       const held = processing;
@@ -475,6 +534,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         folder_id: null,
       };
       meetings.push(row);
+      if (keepLocal) keptLocal.add(row.id);
       const { cancel, speaking, tracks } = record(row, mode, held);
       if (data.callEndOfferAfterMs !== undefined && mode === "Call") {
         cancel.push(
@@ -604,12 +664,101 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     getMeeting: async (meeting) => {
       const row = meetings.find((m) => m.id === meeting);
       const d = detailOf(meeting);
+      const kept_local = keptLocal.has(meeting) ? { writer: await remoteWriter() } : null;
       // The header follows the list row (title from a summary, state).
       return structuredClone({
         ...d,
+        kept_local,
         state: row?.state ?? d.state,
         header: { ...d.header, title: row?.title ?? d.header.title },
       });
+    },
+    // T12.16: the rules of `edit::clean_title` and `edit::clean_segment_text`.
+    renameMeeting: async (meeting, title) => {
+      call("renameMeeting", meeting, title);
+      const t = title.trim();
+      if (t.length > 200) fail("invalid_title", "Titles can be up to 200 characters long.");
+      if (/\p{Cc}/u.test(t)) fail("invalid_title", "Titles cannot contain line breaks or tabs.");
+      detailOf(meeting);
+      const row = meetings.find((m) => m.id === meeting);
+      if (row) row.title = t;
+      update(meeting, (d) => ({ ...d, header: { ...d.header, title: t } }));
+    },
+    editSegment: async (meeting, segment, text) => {
+      call("editSegment", meeting, segment, text);
+      const t = text.trim();
+      if (t === "") fail("invalid_text", "Enter the words of this line. A line cannot be left empty.");
+      if (t.length > 5_000) fail("invalid_text", "A line can be up to 5,000 characters long.");
+      if (/\p{Cc}/u.test(t)) fail("invalid_text", "A line cannot contain line breaks or tabs.");
+      const d = detailOf(meeting);
+      if (d.header.transcript === "Draft") {
+        fail("draft_transcript", "The words can be corrected once the final transcript is ready.");
+      }
+      if (!d.transcript.some((r) => r.segment_id === segment)) {
+        fail("segment_not_found", "This line is no longer in the transcript. It may have been transcribed again.");
+      }
+      update(meeting, (d) => {
+        const row = d.transcript.find((r) => r.segment_id === segment);
+        if (!row || row.text === t) return d;
+        return {
+          ...d,
+          transcript: d.transcript.map((r) => (r.segment_id === segment ? { ...r, text: t, edited: true } : r)),
+          summary_stale: d.summary !== null || d.summary_stale,
+        };
+      });
+    },
+    // The rules of `edit::edit_summary`: the current summary only, the text before the edit
+    // becomes the previous summary.
+    editSummary: async (meeting, summary, field, text) => {
+      call("editSummary", meeting, summary, field, text);
+      const t = text.trim();
+      const d = detailOf(meeting);
+      const changed = () =>
+        fail("summary_changed", "The summary changed while you were editing it. Check the new text and edit again.");
+      const s = d.summary;
+      if (s === null || s.id !== summary) return changed();
+      if (t === "" && field.kind !== "ActionDue") {
+        fail("invalid_summary_text", "Enter some words. Only a due date can be left empty.");
+      }
+      if (t.length > (field.kind === "Title" ? 200 : 2_000)) {
+        fail("invalid_summary_text", "This text is too long for the summary.");
+      }
+      if (/\p{Cc}/u.test(t)) fail("invalid_summary_text", "Summary text cannot contain line breaks or tabs.");
+      const next: SummaryView = structuredClone(s);
+      const item = <T,>(list: T[], i: number): T => list[i] ?? changed();
+      switch (field.kind) {
+        case "Title":
+          next.title = t;
+          break;
+        case "Tldr":
+          next.tldr = t;
+          break;
+        case "Decision":
+          item(next.decisions, field.index).text = t;
+          break;
+        case "ActionOwner":
+          item(next.actions, field.index).owner = t;
+          break;
+        case "ActionTask":
+          item(next.actions, field.index).task = t;
+          break;
+        case "ActionDue":
+          item(next.actions, field.index).due = t === "" ? null : t;
+          break;
+        case "NoteHeading":
+          item(next.notes, field.section).heading = t;
+          break;
+        case "NoteBullet":
+          item(item(next.notes, field.section).bullets, field.bullet).text = t;
+          break;
+        case "OpenQuestion":
+          item(next.open_questions, field.index);
+          next.open_questions[field.index] = t;
+          break;
+      }
+      if (JSON.stringify(next) === JSON.stringify(s)) return;
+      previous.set(meeting, s);
+      details.set(meeting, { ...d, summary: next, can_undo_summary: true });
     },
     renameSpeaker: async (meeting, speaker, name) => {
       call("renameSpeaker", meeting, speaker, name);
@@ -630,33 +779,47 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       update(meeting, (x) => merged(x, keep, merge));
     },
-    linkSpeaker: async (meeting, speaker, choice) => {
-      call("linkSpeaker", meeting, speaker, choice);
+    linkSpeaker: async (meeting, speaker, choice) => linkIn(meeting, speaker, choice, "linkSpeaker"),
+    saveVoice: async (meeting, speaker, choice) => {
       const card = speakerOf(detailOf(meeting), speaker);
-      let person: PersonItem;
-      if (choice.kind === "New") {
-        personSeq += 1;
-        person = {
-          id: `9e000000-0000-7000-8000-1000000000${String(personSeq).padStart(2, "0")}`,
-          name: checkName(choice.name),
-          has_voiceprint: false,
-          is_me: false,
-        };
-        persons.push(person);
-        persons.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-      } else {
-        person =
-          persons.find((p) => p.id === choice.person) ??
-          fail("person_not_found", "This person no longer exists.");
+      const user = persons.find((p) => p.is_me);
+      // The runtime refuses before anything is written: the user's voice is never saved here.
+      if (card.kind === "Me" && choice.kind === "Existing" && choice.person === user?.id) {
+        call("saveVoice", meeting, speaker, choice);
+        fail("me_voice", "Your own voice is set up in Settings, not from a meeting.");
       }
-      if (person.is_me && card.kind !== "Me") {
-        fail("not_the_user", "Only your own row can be linked to you.");
+      const person = linkIn(meeting, speaker, choice, "saveVoice");
+      const outcome = data.rememberOutcomes?.[speaker] ?? ("Remembered" as const);
+      if (outcome === "Remembered") {
+        const p = persons.find((x) => x.id === person);
+        if (p) p.has_voiceprint = true;
+        update(meeting, (x) => ({
+          ...x,
+          speakers: x.speakers.map((s) =>
+            s.id === speaker && s.person ? { ...s, person: { ...s.person, has_voiceprint: true } } : s,
+          ),
+        }));
       }
-      if (!person.is_me && card.kind === "Me") {
-        fail("me_is_the_user", "Your own row can only be linked to you.");
+      return { person, outcome };
+    },
+    ignoreSpeaker: async (meeting, speaker) => {
+      call("ignoreSpeaker", meeting, speaker);
+      const card = speakerOf(detailOf(meeting), speaker);
+      if (card.kind === "Me" || card.person !== null) {
+        fail("not_unnamed", "Only a voice that needs a name can be ignored.");
       }
-      update(meeting, (d) => linked(d, speaker, person));
-      return person.id;
+      if (!card.can_ignore) {
+        fail(
+          "no_stored_voice",
+          "Earshot kept nothing of this voice to remember the choice by. Re-transcribe the meeting, then ignore it.",
+        );
+      }
+      update(meeting, (x) => ignoredVoice(x, speaker, true));
+    },
+    unignoreSpeaker: async (meeting, speaker) => {
+      call("unignoreSpeaker", meeting, speaker);
+      speakerOf(detailOf(meeting), speaker);
+      update(meeting, (x) => ignoredVoice(x, speaker, false));
     },
     markMe: async (meeting, speaker) => {
       call("markMe", meeting, speaker);
@@ -718,28 +881,6 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       return changed;
     },
     listPersons: async () => persons.map((p) => ({ ...p })),
-    rememberVoices: async (meeting, speakers) => {
-      data.onRememberVoices?.(meeting, speakers);
-      const d = detailOf(meeting);
-      const results = speakers.map((id) => {
-        const s = speakerOf(d, id);
-        if (s.kind === "Me") fail("me_voice", "Your own voice is set up in Settings, not from a meeting.");
-        if (s.person === null) fail("no_person", "Name this voice or link it to a person first.");
-        return { speaker: id, outcome: data.rememberOutcomes?.[id] ?? ("Remembered" as const) };
-      });
-      const saved = results.filter((r) => r.outcome === "Remembered").map((r) => r.speaker);
-      for (const s of d.speakers) {
-        const p = persons.find((x) => x.id === s.person?.id);
-        if (p && saved.includes(s.id)) p.has_voiceprint = true;
-      }
-      update(meeting, (x) => ({
-        ...x,
-        speakers: x.speakers.map((s) =>
-          saved.includes(s.id) && s.person ? { ...s, person: { ...s.person, has_voiceprint: true } } : s,
-        ),
-      }));
-      return results;
-    },
     forgetPersonVoices: async (person) => {
       call("forgetPersonVoices", person);
       const p =
@@ -771,7 +912,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
             let n = 1;
             while (taken.includes(`Speaker ${n}`)) n += 1;
             taken.push(`Speaker ${n}`);
-            return { ...s, name: `Speaker ${n}`, person: null, needs_name: true };
+            return { ...s, name: `Speaker ${n}`, person: null, needs_name: true, can_ignore: true };
           }),
         });
       }
@@ -804,6 +945,11 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         },
         (steps.length + 1) * POST_STEP_MS,
       );
+    },
+    allowSummaryWriter: async (meeting) => {
+      call("allowSummaryWriter", meeting);
+      detailOf(meeting);
+      keptLocal.delete(meeting);
     },
     resummarise: async (meeting) => {
       call("resummarise", meeting);

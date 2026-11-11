@@ -235,6 +235,8 @@ impl JobRunner {
 /// Voices that still need a name after a summary (as the summary-ready notice counts them).
 fn voices_to_name(services: &Services, meeting: EntityId) -> u32 {
     let db = services.store();
+    // An unreadable record ignores nobody (the count can only be higher, never hide a voice).
+    let identities = earshot_runtime::edit::identities_in(&db, meeting).unwrap_or_default();
     MeetingView::load(&**db, meeting)
         .ok()
         .flatten()
@@ -242,7 +244,13 @@ fn voices_to_name(services: &Services, meeting: EntityId) -> u32 {
             let n = v
                 .speakers
                 .iter()
-                .filter(|s| needs_name(s.role, s.person_id.is_some()))
+                .filter(|s| {
+                    needs_name(
+                        s.role,
+                        s.person_id.is_some(),
+                        earshot_runtime::edit::is_ignored(s, &identities),
+                    )
+                })
                 .count();
             u32::try_from(n).unwrap_or(u32::MAX)
         })
@@ -431,11 +439,12 @@ impl JobWork for HostJobs {
 /// for this summary, so an endpoint whose API key cannot be read fails the job with the
 /// `api_key` message (a meeting's own summary is skipped instead), and Claude Code that is
 /// not installed or not signed in fails it with that reason (`claude_code`), and Codex
-/// likewise (`codex`, T7.4gc).
+/// likewise (`codex`, T7.4gc). A meeting kept on this computer (T12.13) is summarised only by
+/// the local summary model, and fails `summary_kept_local` without it.
 ///
 /// # Errors
 /// As `meeting::summary_setup`; `api_key` without the endpoint's key; `claude_code`;
-/// `codex`.
+/// `codex`; `summary_kept_local`.
 pub(crate) fn summarise_with(
     svc: &Services,
     meeting: EntityId,
@@ -448,11 +457,17 @@ pub(crate) fn summarise_with(
     use earshot_core::asr::CancelToken;
     use earshot_runtime::host::{self, SkipReason};
 
-    let setup = crate::meeting::summary_setup(svc, models, keys, claude, codex)?;
+    // A meeting kept on this computer (T12.13) is read here, before anything is set up: a
+    // record that cannot be read keeps it here (`keep_local::summary_privacy`).
+    let privacy = earshot_runtime::keep_local::summary_privacy(&svc.store(), meeting);
+    let setup = crate::meeting::summary_setup(svc, models, keys, claude, codex, privacy)?;
     if let Some(e) = setup.chosen_missing {
         return Err(e);
     }
     match setup.no_summary {
+        SkipReason::KeptLocalNoModel { model } => {
+            return Err(crate::meeting_events::kept_local_error(model));
+        }
         SkipReason::NoApiKey(e) => {
             return Err(IpcError::from(earshot_runtime::RuntimeError::ApiKey(e)));
         }
@@ -474,6 +489,9 @@ pub(crate) fn summarise_with(
             let result = host::run_summary(svc, meeting, &s.service, &CancelToken::new());
             for why in s.service.handover_record_failures() {
                 warn(crate::meeting_events::handover_record_copy(&why));
+            }
+            if host::claude_effort_unread(&s.service, &result) {
+                warn(crate::meeting_events::CLAUDE_EFFORT_UNREAD.into());
             }
             result
         }

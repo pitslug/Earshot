@@ -577,6 +577,7 @@ fn reference_input_timed(
             template: Template::General,
             prompt_variant: PromptVariant::Current,
             style: Default::default(),
+            vocabulary: Default::default(),
             user_name: None,
         },
         words,

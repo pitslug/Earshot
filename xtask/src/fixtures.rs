@@ -1253,18 +1253,40 @@ pub fn ami_sum_meetings(split: &str) -> Vec<String> {
         .collect()
 }
 
+/// AMI dev meeting speech (T12.15c, set `ami-dev-ihm`): the meetings of set `ami-dev` (the
+/// first meeting of each dev series of the scenario-only partition) and the AMI-diarization-setup
+/// folder their UEM is in (`uems/<folder>/<meeting>.uem`). Dev data only, never an acceptance
+/// input.
+pub const AMI_DEV_MEETINGS: [(&str, &str); 5] = [
+    ("ES2003a", "train"),
+    ("ES2011a", "dev"),
+    ("IS1008a", "dev"),
+    ("TS3004a", "dev"),
+    ("TS3006a", "train"),
+];
+/// The named-entity type tree of the annotations archive (T12.15c).
+pub const AMI_NE_TYPES: &str = "ontologies/ne-types.xml";
+
 /// Pinned members of the annotations archive, relative to [`AMI_ANNOTATIONS_DIR`]: the
 /// words files (`words/<meeting>.<speaker>.words.xml`) of every participant of
 /// [`AMI_MEETINGS`] and of both summary splits ([`ami_sum_meetings`]), the oracle segments
-/// (`segments/<meeting>.<speaker>.segments.xml`, T2.5b) of [`AMI_MEETINGS`] only (the
-/// summary evaluation builds turns from the words), the abstractive summaries
-/// (`abstractive/<meeting>.abssumm.xml`) of the summary splits, and [`AMI_MEETINGS_XML`].
+/// (`segments/<meeting>.<speaker>.segments.xml`, T2.5b) of [`AMI_MEETINGS`] and
+/// [`AMI_DEV_MEETINGS`] (the summary evaluation builds turns from the words), the named
+/// entities (`namedEntities/<meeting>.<speaker>.ne.xml`) of [`AMI_DEV_MEETINGS`] with
+/// [`AMI_NE_TYPES`] (T12.15c), the abstractive summaries (`abstractive/<meeting>.abssumm.xml`)
+/// of the summary splits, and [`AMI_MEETINGS_XML`].
 pub fn ami_annotation_members() -> Vec<String> {
-    let mut v = vec![AMI_MEETINGS_XML.to_owned()];
+    let mut v = vec![AMI_MEETINGS_XML.to_owned(), AMI_NE_TYPES.to_owned()];
     let mut meetings: Vec<String> = AMI_MEETINGS.iter().map(|m| (*m).to_owned()).collect();
     for meeting in AMI_MEETINGS {
         for spk in AMI_SPEAKERS {
             v.push(format!("segments/{meeting}.{spk}.segments.xml"));
+        }
+    }
+    for (meeting, _) in AMI_DEV_MEETINGS {
+        for spk in AMI_SPEAKERS {
+            v.push(format!("segments/{meeting}.{spk}.segments.xml"));
+            v.push(format!("namedEntities/{meeting}.{spk}.ne.xml"));
         }
     }
     for split in ["dev", "test"] {
@@ -1356,6 +1378,106 @@ pub fn check_ami_sum_manifest(m: &Manifest) -> Result<usize> {
         );
     }
     Ok(set.len())
+}
+
+/// `(cache path, url, licence)` of the four headset (IHM) recordings and the UEM of one AMI
+/// dev meeting (T12.15c, set `ami-dev-ihm`), the UEM from `uems/<folder>/` at
+/// [`AMI_SETUP_COMMIT`].
+pub fn ami_dev_ihm_expected(meeting: &str, folder: &str) -> Vec<(String, String, String)> {
+    let mut v: Vec<(String, String, String)> = ami_sum_audio_expected(meeting)
+        .into_iter()
+        .map(|(p, u)| (p, u, "CC-BY-4.0".to_owned()))
+        .collect();
+    v.push((
+        format!("ami/uem/{meeting}.uem"),
+        format!(
+            "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/{AMI_SETUP_COMMIT}/uems/{folder}/{meeting}.uem"
+        ),
+        "Apache-2.0 AND CC-BY-4.0".to_owned(),
+    ));
+    v
+}
+
+/// Checks that the `ami-dev-ihm` set holds exactly the annotations archive (with every
+/// [`ami_annotation_members`] pinned) and the headsets and UEM of every
+/// [`AMI_DEV_MEETINGS`] meeting, from the official hosts, with their licences. Returns the
+/// number of artefacts.
+pub fn check_ami_dev_ihm_manifest(m: &Manifest) -> Result<usize> {
+    let set: Vec<&manifest::Artefact> = m
+        .artefacts
+        .iter()
+        .filter(|a| a.sets.iter().any(|s| s == "ami-dev-ihm"))
+        .collect();
+    let annotations = set
+        .iter()
+        .find(|a| a.path == AMI_ANNOTATIONS_PATH)
+        .with_context(|| format!("ami-dev-ihm artefact {AMI_ANNOTATIONS_PATH} missing"))?;
+    check_ami_annotations(annotations)?;
+    let want: Vec<(String, String, String)> = AMI_DEV_MEETINGS
+        .iter()
+        .flat_map(|(meeting, folder)| ami_dev_ihm_expected(meeting, folder))
+        .collect();
+    ensure!(
+        set.len() == want.len() + 1,
+        "ami-dev-ihm set has {} artefacts, expected {}",
+        set.len(),
+        want.len() + 1
+    );
+    for (path, url, licence) in &want {
+        let a = set
+            .iter()
+            .find(|a| &a.path == path)
+            .with_context(|| format!("ami-dev-ihm artefact {path} missing"))?;
+        ensure!(&a.url == url, "ami-dev-ihm {path}: url {} != {url}", a.url);
+        ensure!(
+            a.location == manifest::Location::Cache,
+            "ami-dev-ihm {path} must be cached"
+        );
+        ensure!(
+            &a.licence == licence,
+            "ami-dev-ihm {path}: licence {}",
+            a.licence
+        );
+    }
+    Ok(set.len())
+}
+
+/// Checks the fetched dev meeting files: every speaker's oracle segments are on the headset
+/// `meetings.xml` names, every named-entity file is one, every UEM is the meeting's and every
+/// headset a 16 kHz WAV.
+fn check_ami_dev_ihm_files(cache: &Path) -> Result<()> {
+    let p = download::jail_join(cache, &format!("{AMI_ANNOTATIONS_DIR}/{AMI_MEETINGS_XML}"))?;
+    let xml = read_latin1(&p)?;
+    for (meeting, folder) in AMI_DEV_MEETINGS {
+        for (channel, spk) in
+            ami_headset_speakers(&xml, meeting).with_context(|| p.display().to_string())?
+        {
+            let s = download::jail_join(
+                cache,
+                &format!("{AMI_ANNOTATIONS_DIR}/segments/{meeting}.{spk}.segments.xml"),
+            )?;
+            check_ami_segments(&read_latin1(&s)?, channel)
+                .with_context(|| s.display().to_string())?;
+            let ne = download::jail_join(
+                cache,
+                &format!("{AMI_ANNOTATIONS_DIR}/namedEntities/{meeting}.{spk}.ne.xml"),
+            )?;
+            ensure!(
+                read_latin1(&ne)?.contains(&format!("nite:id=\"{meeting}.{spk}.ne\"")),
+                "{} is not the named entities of {meeting} speaker {spk}",
+                ne.display()
+            );
+        }
+        for (path, _, _) in ami_dev_ihm_expected(meeting, folder) {
+            let f = download::jail_join(cache, &path)?;
+            if path.ends_with(".uem") {
+                check_uem(meeting, &fs::read_to_string(&f)?)?;
+            } else {
+                check_wav_16k(&f)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// An ISO-8859-1 file decoded byte for byte.
@@ -1772,6 +1894,10 @@ pub fn run(repo: &Path, sets: &[String], verify: bool, pin_lists: bool) -> Resul
         check_ami_sum_manifest(&m)?;
         check_ami_sum_files(&cache)?;
     }
+    if wants("ami-dev-ihm") {
+        check_ami_dev_ihm_manifest(&m)?;
+        check_ami_dev_ihm_files(&cache)?;
+    }
     if wants("librispeech") {
         if verify {
             verify_librispeech(repo, &cache, &m)?;
@@ -2182,15 +2308,69 @@ mod tests {
                 );
             }
         }
-        // Segments only for the two m2 meetings (summaries use words; some summary meetings'
-        // segments have negative spans, ES2011c.C); plus meetings.xml.
+        // Segments only for the two m2 meetings and the five dev meetings of T12.15c (summaries
+        // use words; some summary meetings' segments have negative spans, ES2011c.C); named
+        // entities only for the dev meetings; plus meetings.xml and the entity types.
         for m in AMI_MEETINGS {
             for spk in AMI_SPEAKERS {
                 assert!(members.contains(&format!("segments/{m}.{spk}.segments.xml")));
             }
         }
         assert!(!members.iter().any(|m| m.starts_with("segments/ES2011c")));
-        assert_eq!(members.len(), 1 + 40 * 5 + 2 * 4);
+        assert_eq!(members.len(), 2 + 40 * 5 + 2 * 4 + 5 * 4 * 2);
+    }
+
+    #[test]
+    fn fixtures_ami_dev_ihm_manifest_pins_the_dev_headsets_segments_and_entities() {
+        let m = Manifest::load(&manifest_path(&crate::repo_root())).unwrap();
+        // The annotations archive plus four headsets and a UEM for each of five meetings.
+        assert_eq!(check_ami_dev_ihm_manifest(&m).unwrap(), 1 + 5 * 5);
+        let members = ami_annotation_members();
+        assert!(members.contains(&AMI_NE_TYPES.to_owned()));
+        let dev = ami_sum_meetings("dev");
+        let test = ami_sum_meetings("test");
+        for (meeting, _) in AMI_DEV_MEETINGS {
+            // Dev data: never a test meeting.
+            assert!(dev.iter().any(|d| d == meeting), "{meeting}");
+            assert!(!test.iter().any(|t| t == meeting), "{meeting}");
+            for spk in AMI_SPEAKERS {
+                for member in [
+                    format!("segments/{meeting}.{spk}.segments.xml"),
+                    format!("namedEntities/{meeting}.{spk}.ne.xml"),
+                    format!("words/{meeting}.{spk}.words.xml"),
+                ] {
+                    assert!(members.contains(&member), "{member}");
+                }
+            }
+        }
+        // The dev meetings of set ami-dev, whose mixes are pinned there.
+        for (meeting, _) in AMI_DEV_MEETINGS {
+            assert!(m.artefacts.iter().any(|a| {
+                a.sets.iter().any(|s| s == "ami-dev")
+                    && a.path == format!("ami/audio/{meeting}.Mix-Headset.wav")
+            }));
+        }
+    }
+
+    #[test]
+    fn fixtures_ami_dev_ihm_manifest_check_rejects_a_missing_or_moved_artefact() {
+        let text = fs::read_to_string(manifest_path(&crate::repo_root())).unwrap();
+        let mut missing = Manifest::parse(&text).unwrap();
+        let at = missing
+            .artefacts
+            .iter()
+            .position(|a| a.path == "ami/audio/TS3006a.Headset-2.wav")
+            .unwrap();
+        missing.artefacts.remove(at);
+        assert!(check_ami_dev_ihm_manifest(&missing).is_err());
+        let mut moved = Manifest::parse(&text).unwrap();
+        let a = moved
+            .artefacts
+            .iter_mut()
+            .find(|a| a.path == "ami/uem/ES2003a.uem")
+            .unwrap();
+        a.url = a.url.replace("/uems/train/", "/uems/dev/");
+        assert!(check_ami_dev_ihm_manifest(&moved).is_err());
     }
 
     #[test]

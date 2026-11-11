@@ -41,6 +41,7 @@ use crate::backends::{
     Accelerator, CAMPPLUS, EvidenceLoader, ModelDir, SEGMENTATION, SILERO, asr_model, init_onnx,
     live_asr_factory, onnx_library, order_from, post_processor, with_live_speakers,
 };
+pub use crate::keep_local::SummaryPrivacy;
 use crate::live::{LiveAsrFactory, LiveConfig, LiveOutcome, LiveSession};
 use crate::model_bench::{check_fingerprint, hardware_facts, stored_check};
 use crate::post::{
@@ -514,7 +515,8 @@ pub struct SettingsSummary {
     /// Where a local summary runs (pass its `gpu` to [`summary_plan`] and
     /// [`prepare_summary_on`]); its note is in `notes` only when the summary is local.
     pub placement: crate::model_settings::SummaryPlacement,
-    /// Who writes the summary.
+    /// Who writes the summary: the Summaries page's writer, or this computer for a meeting
+    /// kept local whose writer would send it elsewhere ([`SummaryRequest::kept_local`]).
     pub writer: crate::summary_settings::SummaryWriter,
     /// Whether "summarise during the meeting" is on (honoured only with a local summary,
     /// [`live_summaries_for`]).
@@ -535,6 +537,10 @@ pub struct SettingsSummary {
 /// [`SummaryRequest::no_key`] (the plan is [`SummaryPlan::NoApiKey`]: no summary, with the
 /// reason), never a local model or another provider.
 ///
+/// A meeting kept on this computer (`privacy` [`SummaryPrivacy::KeptLocal`], T12.13) never
+/// gets a remote writer: an endpoint, Claude Code or Codex becomes the local summary model
+/// ([`SummaryRequest::kept_local`]; no API key is read), and "no summary" stays no summary.
+///
 /// # Errors
 /// Store errors; a stored summary model that is not shipped.
 pub fn summary_from_settings(
@@ -542,6 +548,7 @@ pub fn summary_from_settings(
     order: &[Accelerator],
     hardware: &earshot_hardware::Hardware,
     keys: &dyn crate::summary_settings::ApiKeyStore,
+    privacy: SummaryPrivacy,
 ) -> Result<SettingsSummary, RuntimeError> {
     use crate::summary_settings::{ApiKeyError, EndpointProvider, SummaryWriter, summary_settings};
     let (settings, unknown) = summary_settings(store)?;
@@ -550,12 +557,24 @@ pub fn summary_from_settings(
         graphics_memory: crate::model_settings::graphics_memory(hardware),
         ..SummaryRequest::default()
     };
-    match settings.writer {
+    // The one place a kept-local meeting's writer is decided (T12.13).
+    let remote = !matches!(
+        settings.writer,
+        SummaryWriter::OnThisComputer | SummaryWriter::NoSummary
+    );
+    let writer = if privacy == SummaryPrivacy::KeptLocal && remote {
+        request.kept_local = true;
+        SummaryWriter::OnThisComputer
+    } else {
+        settings.writer
+    };
+    match writer {
         SummaryWriter::OnThisComputer => request.local_model = placement.requested.clone(),
         SummaryWriter::NoSummary => request.skip = true,
         SummaryWriter::ClaudeCode => {
             request.claude_code = Some(crate::claude_code::ClaudeCodeSummaryConfig {
                 model: (!settings.claude_model.is_empty()).then(|| settings.claude_model.clone()),
+                effort: settings.claude_effort,
                 ..Default::default()
             });
         }
@@ -578,22 +597,25 @@ pub fn summary_from_settings(
             },
         },
     }
-    if settings.writer != SummaryWriter::OnThisComputer {
+    if writer != SummaryWriter::OnThisComputer {
         placement.note = None;
     }
     let mut notes: Vec<String> = placement.note.clone().into_iter().collect();
     notes.extend(unknown.iter().map(ToString::to_string));
-    // The style itself is read again when the summary is written
-    // (`SummaryService::summarize`); here only a refused stored style is reported.
-    if settings.writer != SummaryWriter::NoSummary
-        && let (_, Some(refused)) = crate::summary_style::summary_style(store)?
-    {
-        notes.push(refused.to_string());
+    // The style and the user's own words are read again when the summary is written
+    // (`SummaryService::summarize`); here only a refused stored value is reported.
+    if writer != SummaryWriter::NoSummary {
+        if let (_, Some(refused)) = crate::summary_style::summary_style(store)? {
+            notes.push(refused.to_string());
+        }
+        if let (_, Some(refused)) = crate::vocabulary::vocabulary(store)? {
+            notes.push(refused.to_string());
+        }
     }
     Ok(SettingsSummary {
         request,
         placement,
-        writer: settings.writer,
+        writer,
         live: settings.live,
         notes,
     })
@@ -929,6 +951,11 @@ pub struct SummaryRequest {
     /// OpenAI through the user's Codex CLI (T7.4gc): used whenever given (no endpoint and no
     /// Claude Code is then given).
     pub codex: Option<crate::codex::CodexSummaryConfig>,
+    /// The meeting is kept on this computer and its writer would have sent it elsewhere
+    /// (T12.13, [`summary_from_settings`]): only the local model runs; without it the plan is
+    /// [`SummaryPlan::KeptLocalNoModel`]. Any endpoint, Claude Code, Codex or key problem in
+    /// the request is ignored.
+    pub kept_local: bool,
 }
 
 /// What the summary step will do (decided before the session starts).
@@ -955,6 +982,9 @@ pub enum SummaryPlan {
     /// Codex was chosen but cannot run (not installed, not signed in): no summary, with why
     /// ([`check_codex`]); never another provider.
     CodexUnavailable(earshot_llm::CodexError),
+    /// The meeting is kept on this computer ([`SummaryRequest::kept_local`]) and its local
+    /// summary model is not installed: no summary, never the remote writer.
+    KeptLocalNoModel(SummaryModelChoice),
 }
 
 /// Why a [`SummaryRequest`] cannot be planned.
@@ -980,17 +1010,20 @@ pub fn summary_plan(
     gpu: bool,
     models: &ModelDir,
 ) -> Result<SummaryPlan, SummaryPlanError> {
-    if let Some(e) = &request.no_key {
-        return Ok(SummaryPlan::NoApiKey(e.clone()));
-    }
-    if let Some(config) = &request.remote {
-        return Ok(SummaryPlan::Remote(config.clone()));
-    }
-    if let Some(config) = &request.claude_code {
-        return Ok(SummaryPlan::ClaudeCode(config.clone()));
-    }
-    if let Some(config) = &request.codex {
-        return Ok(SummaryPlan::Codex(config.clone()));
+    // A kept-local request never plans a remote writer, whatever else it carries (T12.13).
+    if !request.kept_local {
+        if let Some(e) = &request.no_key {
+            return Ok(SummaryPlan::NoApiKey(e.clone()));
+        }
+        if let Some(config) = &request.remote {
+            return Ok(SummaryPlan::Remote(config.clone()));
+        }
+        if let Some(config) = &request.claude_code {
+            return Ok(SummaryPlan::ClaudeCode(config.clone()));
+        }
+        if let Some(config) = &request.codex {
+            return Ok(SummaryPlan::Codex(config.clone()));
+        }
     }
     if request.skip {
         return Ok(SummaryPlan::Skip);
@@ -1004,6 +1037,7 @@ pub fn summary_plan(
     .map_err(SummaryPlanError::UnknownModel)?;
     match installed(models, choice.model) {
         Ok(_) => Ok(SummaryPlan::Local(choice)),
+        Err(_) if request.kept_local => Ok(SummaryPlan::KeptLocalNoModel(choice)),
         Err(e) if request.local_model.is_some() => Err(SummaryPlanError::NotInstalled(e)),
         Err(e) => Ok(SummaryPlan::NotInstalled(choice, e.to_string())),
     }
@@ -1189,7 +1223,8 @@ pub fn prepare_summary_on(
         | SummaryPlan::NotInstalled(..)
         | SummaryPlan::NoApiKey(_)
         | SummaryPlan::ClaudeCodeUnavailable(_)
-        | SummaryPlan::CodexUnavailable(_) => Ok(None),
+        | SummaryPlan::CodexUnavailable(_)
+        | SummaryPlan::KeptLocalNoModel(_) => Ok(None),
         SummaryPlan::Remote(config) => Ok(Some(PreparedSummary {
             service: SummaryService::new(config, clock).map_err(SummarySetupError::Runtime)?,
             local: None,
@@ -1294,8 +1329,9 @@ pub fn live_factory(
 }
 
 /// Provisional words for a meeting's session (T9.1m): the model's own session, loaded on the preview
-/// thread for the backend the track turned out to run on. Whether this computer has them is decided
-/// there (`backends::previews_refused`), and never costs the meeting anything. With
+/// thread for the backend the track turned out to run on. Whether and where this computer has them is
+/// decided there (`backends::preview_backend`: the track's backend, or the CPU beside a graphics card
+/// too small for them, T12.3c), and never costs the meeting anything. With
 /// [`PreviewChoice::Everyone`](crate::preview_settings::PreviewChoice::Everyone) the user's own
 /// track in a call gets a second session of its own, where `backends::second_preview_backend`
 /// says (T9.14; the CPU, also beside CUDA: T12.3a).
@@ -1458,6 +1494,12 @@ pub enum SkipReason {
     /// Codex was chosen but is not installed or not signed in
     /// ([`SummaryPlan::CodexUnavailable`]).
     CodexUnavailable(earshot_llm::CodexError),
+    /// The meeting is kept on this computer and no local summary model is installed
+    /// ([`SummaryPlan::KeptLocalNoModel`]); the remote writer is never used instead.
+    KeptLocalNoModel {
+        /// The local model it would have used.
+        model: &'static str,
+    },
 }
 
 /// Where a stored summary was made.
@@ -1524,6 +1566,10 @@ pub struct HostOutcome {
     /// Why storing a handover in the meeting's local record failed (store error text, never
     /// meeting text); the summary's own result is unaffected. Empty when all were stored.
     pub handover_record_failures: Vec<String>,
+    /// A stored summary was written by Claude Code at its own default effort although one was
+    /// chosen, because its help could not be read ([`claude_effort_unread`], T12.20); false
+    /// for any summary that was not stored.
+    pub claude_effort_unread: bool,
 }
 
 impl HostOutcome {
@@ -1539,6 +1585,7 @@ impl HostOutcome {
             network: Vec::new(),
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
+            claude_effort_unread: false,
         }
     }
 
@@ -1555,6 +1602,7 @@ impl HostOutcome {
             network: Vec::new(),
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
+            claude_effort_unread: false,
         }
     }
 }
@@ -1594,6 +1642,9 @@ pub fn skip_reason(plan: &SummaryPlan) -> Option<SkipReason> {
         SummaryPlan::NoApiKey(e) => Some(SkipReason::NoApiKey(e.clone())),
         SummaryPlan::ClaudeCodeUnavailable(e) => Some(SkipReason::ClaudeCodeUnavailable(e.clone())),
         SummaryPlan::CodexUnavailable(e) => Some(SkipReason::CodexUnavailable(e.clone())),
+        SummaryPlan::KeptLocalNoModel(choice) => Some(SkipReason::KeptLocalNoModel {
+            model: choice.model.id,
+        }),
         SummaryPlan::Remote(_)
         | SummaryPlan::Local(_)
         | SummaryPlan::ClaudeCode(_)
@@ -1703,6 +1754,9 @@ where
             ),
         }
     };
+    let claude_effort_unread = run
+        .summary
+        .is_some_and(|s| claude_effort_unread(s, &summary));
     HostOutcome {
         missing_tracks,
         post,
@@ -1710,7 +1764,16 @@ where
         network,
         handovers,
         handover_record_failures,
+        claude_effort_unread,
     }
+}
+
+/// Whether to say that `service`'s Claude Code wrote the summary of `result` at its own default
+/// effort (T12.20): only for a stored summary whose run found the help unreadable. The rule of
+/// [`HostOutcome::claude_effort_unread`] and of the app's re-summary job.
+#[must_use]
+pub fn claude_effort_unread(service: &SummaryService, result: &SummaryResult) -> bool {
+    matches!(result, SummaryResult::Stored { .. }) && service.claude_effort_unread()
 }
 
 fn run_post<T, S, E>(

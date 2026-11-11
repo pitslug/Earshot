@@ -52,8 +52,12 @@ function cite(...rows: number[]): Citation[] {
   return rows.map((row) => ({ segment_id: segmentId(row + 1), row }));
 }
 
+/** The id of a mock summary (`n` from 1). */
+const summaryId = (n: number) => `5a000000-0000-7000-8000-${String(n).padStart(12, "0")}`;
+
 function sampleSummary(): SummaryView {
   return {
+    id: summaryId(1),
     title: "Vendor review: pumps",
     tldr:
       "The second pump set slips to 11 weeks. The team agreed to split the order and air freight the seals to hold commissioning before Christmas.",
@@ -94,6 +98,7 @@ export function transcriptOf(lines: typeof LINES, speakers: SpeakerCard[]): Tran
       speaker: card?.name ?? NAMES[who],
       track: who === "me" ? "You" : "Them",
       text,
+      edited: false,
     };
   });
 }
@@ -110,6 +115,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 41,
       sample_line: "Okay, that pushes commissioning past Christmas, which we can't wear.",
       needs_name: false,
+      ignored: false,
+      can_ignore: false,
       can_mark_me: false,
       can_unmark_me: false,
     },
@@ -122,6 +129,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 22,
       sample_line: "If the seals go by air, we would want the vendor to carry that cost.",
       needs_name: false,
+      ignored: false,
+      can_ignore: false,
       can_mark_me: false,
       can_unmark_me: false,
     },
@@ -134,6 +143,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 30,
       sample_line: "We could split the order and air freight the seals, so the first set still...",
       needs_name: true,
+      ignored: false,
+      can_ignore: true,
       can_mark_me: false,
       can_unmark_me: false,
     },
@@ -146,6 +157,8 @@ function sampleSpeakers(): SpeakerCard[] {
       share_percent: 7,
       sample_line: "I can send the split-order quote this afternoon.",
       needs_name: true,
+      ignored: false,
+      can_ignore: true,
       can_mark_me: false,
       can_unmark_me: false,
     },
@@ -187,6 +200,7 @@ export function sampleDetail(item: MeetingListItem): MeetingDetail {
     summary_stale: false,
     audio_kept: true,
     handovers: [],
+    kept_local: null,
   };
 }
 
@@ -201,6 +215,8 @@ export function sampleInRoomDetail(item: MeetingListItem): MeetingDetail {
       person: null,
       source: "Mic",
       needs_name: true,
+      ignored: false,
+      can_ignore: true,
       can_mark_me: true,
     }),
   );
@@ -216,6 +232,7 @@ export function sampleInRoomDetail(item: MeetingListItem): MeetingDetail {
 export function resummarised(previous: SummaryView): SummaryView {
   return {
     ...previous,
+    id: summaryId(Number(previous.id.slice(-12)) + 1),
     tldr: `${previous.tldr} The client hears the new date by Friday.`,
   };
 }
@@ -256,8 +273,20 @@ export function linked(detail: MeetingDetail, id: string, person: PersonItem): M
             ...s,
             person: { id: person.id, name: person.name, has_voiceprint: person.has_voiceprint },
             needs_name: false,
+            ignored: false,
+            can_ignore: false,
           }
         : s,
+    ),
+  };
+}
+
+/** `detail` after "Ignore" (`ignore` true) or its undo on `id` (T12.19): the label stays. */
+export function ignoredVoice(detail: MeetingDetail, id: string, ignore: boolean): MeetingDetail {
+  return {
+    ...detail,
+    speakers: detail.speakers.map((s) =>
+      s.id === id ? { ...s, ignored: ignore, needs_name: !ignore && s.kind === "Other" && s.person === null } : s,
     ),
   };
 }
@@ -285,7 +314,15 @@ export function unmarkedMe(detail: MeetingDetail, id: string): MeetingDetail {
     ...next,
     speakers: next.speakers.map((s) =>
       s.id === id
-        ? { ...s, kind: "Other", person: null, needs_name: true, can_mark_me: true, can_unmark_me: false }
+        ? {
+            ...s,
+            kind: "Other",
+            person: null,
+            needs_name: true,
+            can_ignore: true,
+            can_mark_me: true,
+            can_unmark_me: false,
+          }
         : { ...s, can_mark_me: true },
     ),
   };

@@ -115,7 +115,9 @@ use earshot_core::pipeline::{
     FinalPassRequest, Levels, LiveAsr, LiveTrack, Pipeline, PipelineConfig, PipelineEnd,
     PipelineError, PipelineEvent, PipelineStats,
 };
-use earshot_core::prompt::{MeetingInfo, PromptSegment, SummaryInput, Template, time_chunks};
+use earshot_core::prompt::{
+    MeetingInfo, PromptSegment, SummaryInput, Template, Vocabulary, time_chunks,
+};
 use earshot_store::{AudioProvenance, FlacTrackWriter};
 
 use crate::live_summaries::{LiveSummaries, LiveSummaryRecord};
@@ -317,6 +319,10 @@ pub struct LiveConfig {
     /// Show provisional words of the unfinished stretch (`preview` module docs; default `None`:
     /// words appear when their stretch lands).
     pub previews: Option<LivePreviews>,
+    /// Keep the meeting's summary on this computer (T12.13, [`crate::keep_local`]; default
+    /// off): the record is written in the transaction that creates the meeting's rows, so the
+    /// meeting never exists without it.
+    pub keep_summary_local: bool,
 }
 
 /// How a live session transcribes.
@@ -366,6 +372,7 @@ impl Default for LiveConfig {
             voice_activity: VoiceActivityConfig::default(),
             hold: None,
             previews: None,
+            keep_summary_local: false,
         }
     }
 }
@@ -851,8 +858,15 @@ where
         .then(|| FarEndWatch::new(&cfg.voice_activity));
 
     // The rows, built but not yet committed (ids are needed for live ASR and the files).
-    let (meeting, tracks) = {
+    let (meeting, tracks, summary_vocabulary) = {
         let mut db = services.store();
+        // The user's own words for the summary windows (T12.15a), read once at the start;
+        // a setting never costs a recording, so one that cannot be read is no words.
+        let summary_vocabulary = if cfg.live_summaries.is_some() {
+            crate::vocabulary::vocabulary(&db).map_or_else(|_| Vocabulary::default(), |(v, _)| v)
+        } else {
+            Vocabulary::default()
+        };
         let (_, hlc) = db.parts();
         let mut stamp = Stamp {
             clock: &*clock,
@@ -873,7 +887,7 @@ where
                 Track::new(meeting.id, id, device, cfg.clock_domain, &mut stamp)
             })
             .collect();
-        (meeting, tracks)
+        (meeting, tracks, summary_vocabulary)
     };
     // Held by the session thread until it ends: the meeting cannot be deleted meanwhile.
     let lease = services.lease_meeting_for(meeting.id, crate::MeetingJob::Recording)?;
@@ -996,12 +1010,17 @@ where
     // Commit the rows last, then start the thread (which announces Started).
     let committed = {
         let (m, t) = (meeting.clone(), tracks.clone());
+        let keep_local = cfg.keep_summary_local;
         services
             .store()
             .transaction(|tx| -> Result<(), RuntimeError> {
+                let id = m.id;
                 tx.put_meeting(m)?;
                 for track in t {
                     tx.put_track(track)?;
+                }
+                if keep_local {
+                    crate::keep_local::mark_kept_local_tx(tx, id)?;
                 }
                 Ok(())
             })
@@ -1091,6 +1110,7 @@ where
         capture_ended: None,
         summaries_off,
         summary_rows: Vec::new(),
+        summary_vocabulary,
         next_window: 0,
         summary_record: None,
         start_warnings,
@@ -1211,6 +1231,8 @@ struct Session<S> {
     /// The live rows stored so far, as the map worker reads them (kept only with a map
     /// worker).
     summary_rows: Vec<PromptSegment>,
+    /// The user's own words, given to every summary window (T12.15a; read at the start).
+    summary_vocabulary: Vocabulary,
     /// The next window not yet sent to the map worker.
     next_window: u64,
     /// What the map worker left, written at the end.
@@ -1657,8 +1679,10 @@ where
                 notes: Vec::new(),
                 template: self.policy.template,
                 prompt_variant: earshot_core::prompt::PromptVariant::Current,
-                // Map windows never carry the user's style (T7.4b).
+                // Map windows never carry the user's style (T7.4b), but do carry the user's
+                // own words: spelling help belongs wherever the transcript is (T12.15a).
                 style: Default::default(),
+                vocabulary: self.summary_vocabulary.clone(),
                 user_name: None,
             };
             let Ok(ranges) = time_chunks(&input, thread.seconds()) else {

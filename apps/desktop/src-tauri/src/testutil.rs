@@ -51,3 +51,12 @@ pub fn newer_database(dir: &TempDir) -> DataDir {
     std::fs::write(&db, bytes).unwrap();
     data
 }
+
+/// The shared table of Summaries and Dictionary refusals and messages (T12.20,
+/// `fixtures/ui/summary_settings_cases.json`), which the UI mock's tests run too.
+pub fn summary_cases() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/summary_settings_cases.json"
+    ))
+    .unwrap()
+}

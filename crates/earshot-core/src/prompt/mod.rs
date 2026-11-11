@@ -16,6 +16,9 @@
 //! - [`SummaryStyle`]: the user's style (T7.4b), one block at the end of the system message
 //!   of the request that writes the summary the user sees (the single request and the last
 //!   merge, [`MergeLevel::Last`]), after the fixed rules; never in a map request.
+//! - [`Vocabulary`]: the user's own words (T12.15a), spelling help for names and acronyms,
+//!   one block in the system message of every request (single, map, every merge), after
+//!   any map or merge instruction and before the style.
 //! - [`repair_message`]: the follow-up that feeds validator errors back to the model.
 //! - [`estimate_tokens`]: a pessimistic token estimate without a tokenizer.
 //!
@@ -33,6 +36,7 @@ mod chunks;
 mod style;
 mod template;
 mod tokens;
+mod vocabulary;
 
 pub use builder::{
     ChatMessage, ContextBudget, MapChunk, MeetingInfo, MergeLevel, Prompt, PromptError, PromptPlan,
@@ -46,6 +50,10 @@ pub use chunks::{TimeChunkError, time_chunks};
 pub use style::{MAX_STYLE_CHARS, STYLE_LINE_PREFIX, StyleError, SummaryStyle};
 pub use template::{PromptVariant, Template, UnknownPromptVariant, UnknownTemplate};
 pub use tokens::{TOKENS_PER_MESSAGE, TOKENS_PER_REQUEST, estimate_tokens};
+pub use vocabulary::{
+    MAX_VOCABULARY_CHARS, MAX_VOCABULARY_WORD_CHARS, MAX_VOCABULARY_WORDS, VOCABULARY_LINE_PREFIX,
+    Vocabulary, VocabularyError,
+};
 
 #[cfg(test)]
 mod tests;
