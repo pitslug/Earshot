@@ -20,7 +20,8 @@
 //! crash report exclusion list on a real uninstall (T9.11).
 //!
 //! What an install holds: the exe (the benchmark meeting is compiled into it), llama.cpp's DLLs,
-//! the exe's public symbols for crash logs ([`APP_SYMBOLS`]) and the meeting's attribution. Nothing
+//! the exe's public symbols for crash logs ([`APP_SYMBOLS`]) and one notice crediting the meeting
+//! and the common words compiled into the exe ([`install_notice`], T12.15ee). Nothing
 //! in it names the build user ([`paths`]). No model, no ONNX Runtime (it lives in the models folder), no
 //! CUDA library, no QNN library on x64 ([`refused_in_install`]), no updater. The ARM64 install also
 //! holds Qualcomm's QNN execution provider and the libraries the manifest pins for it, with their
@@ -75,8 +76,24 @@ pub const NO_PROXY_VARS: &[&str] = &["NO_PROXY", "no_proxy"];
 const NO_ROUTE: &str = "http://127.0.0.1:9";
 /// The attribution of the benchmark meeting, relative to the repo root.
 const MEETING_NOTICE: &str = "apps/desktop/src-tauri/resources/benchmark/NOTICE.md";
-/// Where that attribution sits in an install.
+/// Where the install's notice sits: the meeting's attribution, then the common words'
+/// ([`install_notice`]).
 const MEETING_NOTICE_IN_INSTALL: &str = "resources/benchmark/NOTICE.md";
+/// The install's notice as the bundle writes it beside the exe, before the bundler copies it to
+/// [`MEETING_NOTICE_IN_INSTALL`].
+pub const INSTALL_NOTICE_BUILT: &str = "earshot-notice.md";
+/// The heading of the common words' attribution in the install's notice (T12.15ee).
+pub const COMMON_WORDS_HEADING: &str = "## Common words";
+/// The licence the common words' attribution must name.
+pub const COMMON_WORDS_LICENCE_URL: &str = "https://creativecommons.org/licenses/by/4.0/";
+/// What the install's notice must hold, checked by `bundle-check` ([`notice_missing_credits`]).
+const NOTICE_CREDITS: &[&str] = &[
+    "# Benchmark meeting",
+    COMMON_WORDS_HEADING,
+    "AMI Meeting Corpus manual annotations v1.6.2",
+    "most frequent",
+    COMMON_WORDS_LICENCE_URL,
+];
 /// The app's executable.
 pub const APP_EXE: &str = "earshot.exe";
 /// The uninstaller's hook (`bundle.windows.nsis.installerHooks`), relative to the repo root.
@@ -441,6 +458,93 @@ pub fn nsis_hooks_path(root: &Path) -> PathBuf {
     let mut path = root.to_path_buf();
     path.extend(Path::new(NSIS_HOOKS).iter());
     path
+}
+
+/// The common words' attribution, from the `.NOTICE` beside the list in `earshot-core`
+/// (`cargo xtask common-words` writes it): its source, licence and changes lines unchanged.
+///
+/// # Errors
+/// A core notice without one of those lines.
+pub fn common_words_credit(core_notice: &str) -> Result<String> {
+    let field = |name: &str| -> Result<&str> {
+        core_notice
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .with_context(|| format!("the common words' notice has no {name:?} line"))
+    };
+    let (source, licence, changes) = (field("Source:")?, field("Licence:")?, field("Changes:")?);
+    let n = crate::common_words::COMMON_WORDS;
+    Ok(format!(
+        "\n{COMMON_WORDS_HEADING}\n\
+         \n\
+         The app holds a list of the {},{:03} most frequent words of the AMI Meeting Corpus \
+         annotations, derived from them by counting words and keeping the most frequent. It is \
+         compiled into `{APP_EXE}` and used to suggest your Dictionary's words beside a \
+         transcript's words.\n\
+         \n\
+         - Source: {source}\n\
+         - Licence: {licence}\n\
+         - Changes: {changes}\n",
+        n / 1000,
+        n % 1000
+    ))
+}
+
+/// The install's notice: the benchmark meeting's notice, then [`common_words_credit`].
+///
+/// # Errors
+/// As [`common_words_credit`].
+pub fn install_notice(meeting_notice: &str, core_notice: &str) -> Result<String> {
+    Ok(format!(
+        "{meeting_notice}{}",
+        common_words_credit(core_notice)?
+    ))
+}
+
+/// [`install_notice`] from this checkout's files.
+///
+/// # Errors
+/// An unreadable notice, or as [`install_notice`].
+pub fn install_notice_text(root: &Path) -> Result<String> {
+    let read =
+        |p: PathBuf| std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()));
+    let meeting = read(root.join(MEETING_NOTICE))?;
+    let core = read(
+        root.join(crate::common_words::OUT_DIR)
+            .join(crate::common_words::NOTICE_FILE),
+    )?;
+    install_notice(&meeting, &core)
+}
+
+/// The credits the install's notice `text` lacks ([`NOTICE_CREDITS`]).
+#[must_use]
+pub fn notice_missing_credits(text: &str) -> Vec<&'static str> {
+    NOTICE_CREDITS
+        .iter()
+        .copied()
+        .filter(|c| !text.contains(c))
+        .collect()
+}
+
+/// `bundle-check`'s verdict on an installed notice: every credit present and the text what this
+/// checkout assembles (`expected`), with the detail to print.
+#[must_use]
+pub fn notice_check(installed: &str, expected: &str) -> (bool, String) {
+    let missing = notice_missing_credits(installed);
+    let same = installed == expected;
+    (
+        missing.is_empty() && same,
+        format!(
+            "missing: {missing:?}, {}",
+            if same {
+                "same text as this checkout assembles"
+            } else {
+                "differs from what this checkout assembles"
+            }
+        ),
+    )
 }
 
 /// The settings laid over `tauri.conf.json` for one bundle run. Every path is a whole one: the CLI
@@ -890,10 +994,13 @@ pub fn run(
     {
         check_binary(name, &read_pe(&exe_dir.join(name))?, &triple, features)?;
     }
+    let notice = exe_dir.join(INSTALL_NOTICE_BUILT);
+    std::fs::write(&notice, install_notice_text(root)?)
+        .with_context(|| format!("write {}", notice.display()))?;
     let config = dir.join(format!("earshot-bundle-{triple}.json"));
     let overlay = bundle_config(
         exe_dir,
-        &root.join(MEETING_NOTICE),
+        &notice,
         &nsis_hooks_path(root),
         wanted,
         &triple,
@@ -1290,6 +1397,7 @@ fn check_install(
     reference: &Reference,
     target: &str,
     qnn: &[QnnPin],
+    notice: &str,
 ) -> Result<()> {
     let mut found = Vec::new();
     for file in files_under(dir)? {
@@ -1333,6 +1441,17 @@ fn check_install(
                 .map_or("built for this target, every import held", String::as_str),
         );
     }
+    let installed =
+        std::fs::read_to_string(dir.join(MEETING_NOTICE_IN_INSTALL)).unwrap_or_default();
+    let (credited, detail) = notice_check(&installed, notice);
+    verdict(
+        all,
+        &format!(
+            "nsis: {MEETING_NOTICE_IN_INSTALL} credits the benchmark meeting and the common words"
+        ),
+        credited,
+        &detail,
+    );
     if target == ARM64_WINDOWS {
         for (pin, result) in qnn_pin_results(dir, qnn) {
             let detail = match &result {
@@ -1637,6 +1756,7 @@ pub fn check(
     } else {
         Vec::new()
     };
+    let notice = install_notice_text(root)?;
     let digest = sha256_file(&nsis)?;
     println!("{}", installer_digest_line(&nsis, &digest));
     let without_build = if exe_dir.is_none() {
@@ -1671,7 +1791,7 @@ pub fn check(
         product,
         vendor,
     };
-    let result = check_saved(root, &nsis, &reference, triple, &qnn, &names);
+    let result = check_saved(root, &nsis, &reference, triple, &qnn, &notice, &names);
     let restored = guard.finish();
     let mut all = with_restore_error(result, restored.as_ref().err())?;
     match restored {
@@ -1719,6 +1839,7 @@ fn check_saved(
     reference: &Reference,
     triple: &str,
     qnn: &[QnnPin],
+    notice: &str,
     names: &Installed,
 ) -> Result<bool> {
     let work = root.join("target").join("bundle-check");
@@ -1741,7 +1862,7 @@ fn check_saved(
             Err(e) => format!("{e:#}"),
         },
     );
-    check_install(&mut all, &install, reference, triple, qnn)?;
+    check_install(&mut all, &install, reference, triple, qnn, notice)?;
 
     // The names the guard saved are the ones the installer really used.
     let product_key = format!(r"HKCU\Software\{}\{}", names.vendor, names.product);

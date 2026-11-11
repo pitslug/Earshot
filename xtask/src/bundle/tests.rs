@@ -1141,3 +1141,71 @@ fn bundle_check_judges_qnn_files_and_the_notice_against_pins() {
     assert_eq!(notice_missing_names(&cut), ["QnnHtpPrepare.dll"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// T12.15ee: the install's notice credits the common words compiled into the exe, from the core
+/// `.NOTICE` beside the list, after the benchmark meeting's own notice.
+#[test]
+fn build_bundle_install_notice_credits_the_common_words() {
+    let root = crate::repo_root();
+    let text = install_notice_text(&root).unwrap();
+    let meeting = std::fs::read_to_string(root.join(MEETING_NOTICE)).unwrap();
+    assert!(
+        text.starts_with(&meeting),
+        "the meeting's notice comes first, unchanged"
+    );
+    let core = std::fs::read_to_string(
+        root.join(crate::common_words::OUT_DIR)
+            .join(crate::common_words::NOTICE_FILE),
+    )
+    .unwrap();
+    // One source: the source, licence and changes are the core NOTICE's own lines.
+    for field in ["Source:", "Licence:", "Changes:"] {
+        let line = core
+            .lines()
+            .find_map(|l| l.strip_prefix(field))
+            .unwrap()
+            .trim();
+        assert!(text.contains(line), "{field} {line}");
+    }
+    assert!(text.contains("5,000 most frequent words"), "{text}");
+    assert!(notice_missing_credits(&text).is_empty(), "{text}");
+    assert!(!text.contains('\u{2014}'), "no em dash");
+    assert!(text.is_ascii());
+}
+
+#[test]
+fn bundle_check_refuses_a_notice_without_the_common_words() {
+    let root = crate::repo_root();
+    let text = install_notice_text(&root).unwrap();
+    let meeting = std::fs::read_to_string(root.join(MEETING_NOTICE)).unwrap();
+    // The meeting's notice alone, as installs before T12.15ee held it, fails.
+    let missing = notice_missing_credits(&meeting);
+    assert!(missing.contains(&COMMON_WORDS_HEADING), "{missing:?}");
+    assert!(!notice_check(&meeting, &text).0);
+    // So does a section with its licence cut, and an empty or missing file.
+    let cut = text.replace(COMMON_WORDS_LICENCE_URL, "");
+    assert!(!notice_check(&cut, &text).0);
+    assert!(!notice_check("", &text).0);
+    // The bundle's own text passes.
+    let (pass, detail) = notice_check(&text, &text);
+    assert!(pass, "{detail}");
+    // A notice that differs from what this checkout assembles fails even with every credit.
+    assert!(!notice_check(&format!("{text}\nmore"), &text).0);
+}
+
+#[test]
+fn bundle_check_the_common_words_credit_needs_every_field_of_the_core_notice() {
+    let core = "Source:   S\nLicence: L\nChanges: C\n";
+    let credit = common_words_credit(core).unwrap();
+    assert!(credit.contains("- Source: S\n"), "{credit}");
+    assert!(credit.contains("- Licence: L\n"), "{credit}");
+    assert!(credit.contains("- Changes: C\n"), "{credit}");
+    for drop in ["Source:", "Licence:", "Changes:"] {
+        let without: String = core
+            .lines()
+            .filter(|l| !l.starts_with(drop))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert!(common_words_credit(&without).is_err(), "{drop}");
+    }
+}
