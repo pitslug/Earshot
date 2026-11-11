@@ -41,7 +41,7 @@ describe("Dictionary", () => {
     expect(screen.getByText(DICTIONARY_INTRO)).toBeInTheDocument();
     expect(DICTIONARY_INTRO).toMatch(/summaries/i);
     expect(DICTIONARY_INTRO).toMatch(/names and acronyms|names, acronyms/);
-    expect(DICTIONARY_INTRO).toMatch(/transcripts will use them later/);
+    expect(DICTIONARY_INTRO).toMatch(/transcripts suggest them where they hear something similar/);
     expect(await screen.findByText("No words yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
   });

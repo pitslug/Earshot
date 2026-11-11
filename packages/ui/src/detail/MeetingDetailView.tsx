@@ -27,7 +27,7 @@ import {
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type KeyboardEvent, type MouseEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import {
   type Citation,
@@ -47,6 +47,7 @@ import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
 import { KeptLocal } from "./KeptLocal";
 import { SpeakersPanel } from "./SpeakersPanel";
+import { LineText, type WordActions } from "./WordMarks";
 import {
   COPIED_MS,
   failureText,
@@ -278,6 +279,10 @@ const useStyles = makeStyles({
   },
   text: {
     overflowWrap: "anywhere",
+  },
+  // A final line: a click on its words starts a line edit (T12.15e).
+  textEditable: {
+    cursor: "text",
   },
 });
 
@@ -700,6 +705,13 @@ export function MeetingDetailView({
                   onEdit={(segment, text) =>
                     save(() => ipc.editSegment(id, segment, text), "The line was not saved")
                   }
+                  wordActions={(segment) => ({
+                    onUse: (token, word) =>
+                      void save(() => ipc.useWord(id, segment, token, word), "The word was not changed"),
+                    onPutBack: (token) =>
+                      void save(() => ipc.putBackWord(id, segment, token), "The word was not put back"),
+                    onKeep: (token) => void save(() => ipc.keepWord(id, segment, token), "The word was not kept"),
+                  })}
                   rowRef={(segment, el) => {
                     if (el) rows.current.set(segment, el);
                     else rows.current.delete(segment);
@@ -1136,12 +1148,15 @@ function TranscriptTab({
   detail,
   cited,
   onEdit,
+  wordActions,
   rowRef,
 }: {
   detail: MeetingDetail;
   cited: string | null;
   /** Saves a line's new text; false when it was refused. */
   onEdit(segment: string, text: string): Promise<boolean>;
+  /** What the marks of a line's suggested and changed words do (T12.15e). */
+  wordActions(segment: string): WordActions;
   rowRef(segment: string, el: HTMLDivElement | null): void;
 }) {
   const styles = useStyles();
@@ -1180,8 +1195,33 @@ function TranscriptTab({
               />
             </div>
           ) : (
-            <Body1 role="cell" className={styles.text}>
-              {r.text}
+            <Body1
+              role="cell"
+              className={mergeClasses(styles.text, canEdit && styles.textEditable)}
+              // A click on the words starts a line edit (T12.15e); a click on a word's mark, or
+              // inside its popover (portalled, so outside this element), does not, and neither
+              // does a click that ends a text selection.
+              onClick={
+                canEdit
+                  ? (e: MouseEvent<HTMLElement>) => {
+                      if (!(e.target instanceof Node) || !e.currentTarget.contains(e.target)) return;
+                      if (e.target instanceof Element && e.target.closest("[data-word-mark]")) return;
+                      const selection = window.getSelection?.();
+                      if (selection !== null && selection !== undefined && !selection.isCollapsed) return;
+                      setEditing(r.segment_id);
+                    }
+                  : undefined
+              }
+            >
+              {canEdit ? (
+                <LineText
+                  row={r}
+                  wordList={detail.word_list}
+                  actions={wordActions(r.segment_id)}
+                />
+              ) : (
+                r.text
+              )}
               {r.edited && <Caption1 className={styles.editedMark}>(edited)</Caption1>}
             </Body1>
           )}

@@ -77,7 +77,7 @@ const useStyles = makeStyles({
 
 /** What the page is for, first on the page. */
 export const DICTIONARY_INTRO =
-  "Words Earshot should spell your way: names, acronyms, and company or site names. Summaries use them to spell these right, and transcripts will use them later. They are sent with the meeting to whatever writes your summary.";
+  "Words Earshot should spell your way: names, acronyms, and company or site names. Summaries use them to spell these right, and transcripts suggest them where they hear something similar. They are sent with the meeting to whatever writes your summary.";
 
 /** The Add field's label. */
 export const ADD_LABEL = "Add a word";
