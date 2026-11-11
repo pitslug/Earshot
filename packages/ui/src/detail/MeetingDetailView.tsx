@@ -27,10 +27,21 @@ import {
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 
 import {
   type Citation,
+  type DictionaryWordAdded,
+  type TranscriptRow,
   type JobEvent,
   type JobKind,
   type LinkChoice,
@@ -47,7 +58,17 @@ import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
 import { KeptLocal } from "./KeptLocal";
 import { SpeakersPanel } from "./SpeakersPanel";
-import { LineText, type WordActions } from "./WordMarks";
+import {
+  DictionaryBar,
+  type DictionaryNote,
+  DictionaryNoteLine,
+  type MenuTarget,
+  WordMenu,
+  otherLinesSuggesting,
+  pointTarget,
+} from "./DictionaryWords";
+import { dictionaryWord, inDictionary } from "./dictionaryWord";
+import { LineText, WORD_ATTRIBUTE, type WordActions } from "./WordMarks";
 import {
   COPIED_MS,
   failureText,
@@ -279,6 +300,10 @@ const useStyles = makeStyles({
   },
   text: {
     overflowWrap: "anywhere",
+  },
+  // The Dictionary bar and note under a line (T12.15f), under its words.
+  lineDictionary: {
+    gridColumn: "3 / 5",
   },
 });
 
@@ -698,9 +723,31 @@ export function MeetingDetailView({
                 <TranscriptTab
                   detail={detail}
                   cited={cited}
-                  onEdit={(segment, text) =>
-                    save(() => ipc.editSegment(id, segment, text), "The line was not saved")
-                  }
+                  onEdit={async (segment, text) => {
+                    let offer: string[] = [];
+                    const saved = await save(async () => {
+                      offer = await ipc.editSegment(id, segment, text);
+                    }, "The line was not saved");
+                    return saved ? offer : null;
+                  }}
+                  onAddWord={async (token) => {
+                    try {
+                      const added = await ipc.addDictionaryWord(token);
+                      await reload();
+                      return added;
+                    } catch (e) {
+                      return { error: failureText(e) };
+                    }
+                  }}
+                  onRemoveWord={async (word) => {
+                    try {
+                      await ipc.removeDictionaryWord(word);
+                      await reload();
+                      return null;
+                    } catch (e) {
+                      return { error: failureText(e) };
+                    }
+                  }}
                   wordActions={(segment) => ({
                     onUse: (token, word) =>
                       void save(() => ipc.useWord(id, segment, token, word), "The word was not changed"),
@@ -1145,25 +1192,126 @@ function TranscriptTab({
   cited,
   onEdit,
   wordActions,
+  onAddWord,
+  onRemoveWord,
   rowRef,
 }: {
   detail: MeetingDetail;
   cited: string | null;
-  /** Saves a line's new text; false when it was refused. */
-  onEdit(segment: string, text: string): Promise<boolean>;
+  /** Saves a line's new text; the words the Dictionary bar offers, or `null` when it was
+   * refused. */
+  onEdit(segment: string, text: string): Promise<string[] | null>;
   /** What the marks of a line's suggested and changed words do (T12.15e). */
   wordActions(segment: string): WordActions;
+  /** "Add to Dictionary" (T12.15f); the detail is read again before it resolves. */
+  onAddWord(token: string): Promise<DictionaryWordAdded | { error: string }>;
+  /** "Remove from Dictionary" and "Undo" (T12.15f); the detail is read again before it
+   * resolves. */
+  onRemoveWord(word: string): Promise<{ error: string } | null>;
   rowRef(segment: string, el: HTMLDivElement | null): void;
 }) {
   const styles = useStyles();
   const [editing, setEditing] = useState<string | null>(null);
+  // T12.15f: the bar under a line just edited, the note after a Dictionary action and the word
+  // menu. The bar and the note stay until the user moves on (another edit, a Dictionary action
+  // on another line, Not now).
+  const [offer, setOffer] = useState<{ segment: string; words: string[] } | null>(null);
+  const [note, setNote] = useState<DictionaryNote | null>(null);
+  const [menu, setMenu] = useState<{
+    segment: string;
+    words: string[];
+    target: MenuTarget;
+    back: HTMLElement | null;
+  } | null>(null);
+  // Where focus goes once the detail shows an action's result (the clicked button may be gone).
+  const [focusNext, setFocusNext] = useState<{ undo: true } | { word: string } | null>(null);
+  const undoRef = useRef<HTMLButtonElement | null>(null);
+  const tableRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focusNext === null) return;
+    if ("undo" in focusNext) undoRef.current?.focus();
+    else
+      tableRef.current
+        ?.querySelector<HTMLElement>(`[data-offered-word="${CSS.escape(focusNext.word)}"]`)
+        ?.focus();
+    setFocusNext(null);
+  }, [focusNext]);
+
   // Only the final transcript can be corrected: the final pass replaces a draft.
   const canEdit = detail.header.transcript === "Final";
   if (detail.transcript.length === 0) {
     return <Body1 className={styles.muted}>No speech was transcribed in this meeting.</Body1>;
   }
+
+  /** Moving on to another line closes what was open under an earlier one. */
+  const moveTo = (segment: string) => {
+    if (offer !== null && offer.segment !== segment) setOffer(null);
+    if (note !== null && note.segment !== segment) setNote(null);
+  };
+  const add = async (segment: string, word: string, fromBar: boolean) => {
+    moveTo(segment);
+    const r = await onAddWord(word);
+    if ("error" in r) setNote({ segment, kind: "error", text: r.error });
+    else {
+      setNote({ segment, kind: r.added ? "added" : "already", word: r.word });
+      if (fromBar && r.added) setFocusNext({ undo: true });
+    }
+  };
+  const remove = async (segment: string, word: string) => {
+    moveTo(segment);
+    const r = await onRemoveWord(word);
+    setNote(r === null ? { segment, kind: "removed", word } : { segment, kind: "error", text: r.error });
+  };
+  const toggle = (segment: string, word: string) =>
+    void (inDictionary(detail.dictionary, word) ? remove(segment, word) : add(segment, word, false));
+  const undo = async (segment: string, word: string) => {
+    const r = await onRemoveWord(word);
+    if (r === null) {
+      setNote(null);
+      if (offer?.segment === segment && offer.words.includes(word)) setFocusNext({ word });
+    } else setNote({ segment, kind: "error", text: r.error });
+  };
+  /** The words of line `r` a menu offers, each once (case ignored), in line order. */
+  const wordsOf = (r: TranscriptRow): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of r.text.split(/\p{White_Space}+/u)) {
+      const w = dictionaryWord(t);
+      if (w === null || seen.has(w.toLowerCase())) continue;
+      seen.add(w.toLowerCase());
+      out.push(w);
+    }
+    return out;
+  };
+  // Opening a menu moves nothing: what is open under another line goes only when the menu's
+  // action runs (`add`, `remove`), so the line under the pointer stays where it is.
+  const openMenu = (segment: string, words: string[], target: MenuTarget, back: HTMLElement | null) =>
+    setMenu({ segment, words, target, back });
+  /** A right-click on a word of a final line opens its menu at the pointer. */
+  const onRowContextMenu = (r: TranscriptRow) => (e: MouseEvent<HTMLDivElement>) => {
+    // A popover is portalled, but React still delivers its events here.
+    if (!canEdit || editing === r.segment_id || !e.currentTarget.contains(e.target as Node)) return;
+    const el = (e.target as Element).closest<HTMLElement>(`[${WORD_ATTRIBUTE}]`);
+    const word = el?.getAttribute(WORD_ATTRIBUTE);
+    if (!el || !word) return;
+    e.preventDefault();
+    openMenu(r.segment_id, [word], pointTarget(e.clientX, e.clientY), el.tagName === "BUTTON" ? el : null);
+  };
+  /** The Menu key or Shift+F10: on a marked word, that word's menu; anywhere else in the row
+   * (its Edit button), a menu of every word of the line. */
+  const onRowKeyDown = (r: TranscriptRow) => (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
+    if (!canEdit || editing === r.segment_id || !e.currentTarget.contains(e.target as Node)) return;
+    const el = e.target as HTMLElement;
+    const word = el.getAttribute(WORD_ATTRIBUTE);
+    const words = word ? [word] : wordsOf(r);
+    if (words.length === 0) return;
+    e.preventDefault();
+    openMenu(r.segment_id, words, el, el);
+  };
+
   return (
-    <div role="table" aria-label="Transcript" className={styles.transcript}>
+    <div role="table" aria-label="Transcript" className={styles.transcript} ref={tableRef}>
       {detail.transcript.map((r, i) => (
         <div
           role="row"
@@ -1171,6 +1319,8 @@ function TranscriptTab({
           ref={(el) => rowRef(r.segment_id, el)}
           aria-current={r.segment_id === cited ? "true" : undefined}
           className={mergeClasses(styles.row, r.segment_id === cited && styles.rowCited)}
+          onContextMenu={onRowContextMenu(r)}
+          onKeyDown={onRowKeyDown(r)}
         >
           <Caption1 role="cell" className={styles.time}>
             {rowTime(r.start_ms)}
@@ -1185,7 +1335,10 @@ function TranscriptTab({
                 initial={r.text}
                 multiline
                 onSave={async (text) => {
-                  if (await onEdit(r.segment_id, text)) setEditing(null);
+                  const offered = await onEdit(r.segment_id, text);
+                  if (offered === null) return;
+                  setEditing(null);
+                  setOffer(offered.length > 0 ? { segment: r.segment_id, words: offered } : null);
                 }}
                 onCancel={() => setEditing(null)}
               />
@@ -1197,6 +1350,15 @@ function TranscriptTab({
                   row={r}
                   wordList={detail.word_list}
                   actions={wordActions(r.segment_id)}
+                  dictionary={{
+                    entries: detail.dictionary,
+                    onToggle: (w) => toggle(r.segment_id, w),
+                  }}
+                  tinted={
+                    offer?.segment === r.segment_id
+                      ? offer.words.filter((w) => !inDictionary(detail.dictionary, w))
+                      : undefined
+                  }
                 />
               ) : (
                 r.text
@@ -1212,14 +1374,58 @@ function TranscriptTab({
                 appearance="subtle"
                 className={mergeClasses(styles.lineEdit, "earshot-line-edit")}
                 aria-label={`Edit line ${i + 1}`}
-                onClick={() => setEditing(r.segment_id)}
+                onClick={() => {
+                  setEditing(r.segment_id);
+                  setOffer(null);
+                  setNote(null);
+                }}
               >
                 Edit
               </Button>
             )}
           </span>
+          {canEdit &&
+            editing !== r.segment_id &&
+            (offer?.segment === r.segment_id || note?.segment === r.segment_id) && (
+              <div className={styles.lineDictionary}>
+                {offer?.segment === r.segment_id && (
+                  <DictionaryBar
+                    words={offer.words}
+                    dictionary={detail.dictionary}
+                    onAdd={(w) => void add(r.segment_id, w, true)}
+                    onClose={() => {
+                      setOffer(null);
+                      setNote(null);
+                    }}
+                  />
+                )}
+                {note?.segment === r.segment_id && (
+                  <DictionaryNoteLine
+                    note={note}
+                    others={
+                      note.kind === "added" ? otherLinesSuggesting(detail.transcript, r.segment_id, note.word) : 0
+                    }
+                    undoRef={undoRef}
+                    onUndo={() => note.kind === "added" && void undo(r.segment_id, note.word)}
+                  />
+                )}
+              </div>
+            )}
         </div>
       ))}
+      <WordMenu
+        words={menu?.words ?? []}
+        dictionary={detail.dictionary}
+        target={menu?.target ?? null}
+        onToggle={(w) => {
+          if (menu !== null) toggle(menu.segment, w);
+        }}
+        onClose={() => {
+          const back = menu?.back;
+          setMenu(null);
+          back?.focus();
+        }}
+      />
     </div>
   );
 }

@@ -21,6 +21,7 @@ use earshot_runtime::edit::{
 };
 use earshot_runtime::identities::SpeakerIdentity;
 use earshot_runtime::view::MeetingView;
+use earshot_runtime::vocabulary;
 use earshot_runtime::word_choices;
 use earshot_runtime::{RuntimeError, Services, os_seeded_rng};
 use serde::{Deserialize, Serialize};
@@ -277,6 +278,10 @@ pub struct MeetingDetail {
     /// The word list (the Dictionary's words, then saved people's names; T12.15e) for "another
     /// word" on a changed word; empty for a draft transcript. It stays on this computer.
     pub word_list: Vec<String>,
+    /// The Dictionary's entries as stored (T12.15f), so a word of the transcript offers "Remove
+    /// from Dictionary" when it is one (case ignored) and "Add to Dictionary" otherwise; empty
+    /// for a draft transcript, which offers neither.
+    pub dictionary: Vec<String>,
 }
 
 /// One handover to Claude Code or Codex.
@@ -756,7 +761,18 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         .ok_or_else(not_found)?;
     // Everything else is one snapshot under one store lock, so the shown summary,
     // `can_undo_summary` and the transcript the citations resolve against agree.
-    let (persons, history, view, identities, backend, handovers, audio_kept, kept_local, words) = {
+    let (
+        persons,
+        history,
+        view,
+        identities,
+        backend,
+        handovers,
+        audio_kept,
+        kept_local,
+        words,
+        dictionary,
+    ) = {
         let db = services.store();
         let persons = edit::list_persons_in(&db)?;
         let history = match edit::summary_history_in(&**db, meeting) {
@@ -783,8 +799,15 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             .any(|f| services.data.resolve(&f.path).is_ok_and(|p| p.exists()));
         let kept_local = crate::keep_local::kept_local_view(&db, meeting);
         let words = word_choices::word_marks(&db, &view)?;
+        let dictionary = if view.pass == Some(TranscriptPass::Final) {
+            // A stored list this version refuses reads as no words, as everywhere else.
+            Vec::from(vocabulary::vocabulary(&db)?.0)
+        } else {
+            Vec::new()
+        };
         (
             persons, history, view, identities, backend, handovers, audio_kept, kept_local, words,
+            dictionary,
         )
     };
     let in_room = !view.tracks.iter().any(|t| t.kind == TrackId::Reference);
@@ -886,7 +909,61 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             .collect(),
         kept_local,
         word_list: words.list,
+        dictionary,
     })
+}
+
+/// What adding a word from the transcript did (T12.15f).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct DictionaryWordAdded {
+    /// The word as the Dictionary holds it ("Undo" removes exactly this).
+    pub word: String,
+    /// False when the Dictionary already had it (case ignored): nothing changed, nothing to
+    /// undo.
+    pub added: bool,
+}
+
+/// Adds the word of a transcript token to the Dictionary (`vocabulary::add_word`: the token's
+/// core, at the end of the list).
+///
+/// # Errors
+/// `invalid_setting` with the Dictionary page's own message (a full list, a word too long, a
+/// token that is not a word): nothing stored; store errors.
+pub fn add_dictionary_word(
+    services: &Services,
+    token: &str,
+) -> Result<DictionaryWordAdded, IpcError> {
+    let added = vocabulary::add_word(&mut services.store(), token)
+        .map_err(crate::summary_vocabulary::refusal)?;
+    Ok(DictionaryWordAdded {
+        word: added.word,
+        added: added.added,
+    })
+}
+
+/// Removes the Dictionary entry that is `word` (case ignored; "Remove from Dictionary" and
+/// "Undo" after an add). Returns whether an entry went.
+///
+/// # Errors
+/// Store errors.
+pub fn remove_dictionary_word(services: &Services, word: &str) -> Result<bool, IpcError> {
+    vocabulary::remove_word(&mut services.store(), word).map_err(crate::summary_vocabulary::refusal)
+}
+
+/// Saves a line edit (`edit::edit_segment_offering`) and returns the words the bar under the
+/// line offers to add to the Dictionary (T12.15f); nothing is added.
+///
+/// # Errors
+/// As `edit::edit_segment`, through [`edit_error`].
+pub fn edit_line(
+    services: &Services,
+    meeting: EntityId,
+    segment: EntityId,
+    text: &str,
+) -> Result<Vec<String>, IpcError> {
+    Ok(edit::edit_segment_offering(
+        services, meeting, segment, text,
+    )?)
 }
 
 /// A token index for the UI (a line holds at most a few thousand tokens).

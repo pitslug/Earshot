@@ -456,6 +456,111 @@ fn detail_suggested_and_changed_words_and_the_word_list() {
 }
 
 #[test]
+fn detail_dictionary_words_from_the_transcript_add_undo_and_remove() {
+    let dir = TempDir::new("detail-dictionary");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 43);
+    earshot_runtime::vocabulary::set_vocabulary(&mut svc.store(), &["QXR-7"]).unwrap();
+    edit::edit_segment(&svc, f.meeting, f.segments[3], "then ask sorbeck, friday").unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.dictionary, ["QXR-7"]);
+    assert!(d.transcript[3].suggestions.is_empty());
+
+    // A saved line edit offers the new uncommon words; nothing is added by it.
+    let offer = edit_line(
+        &svc,
+        f.meeting,
+        f.segments[2],
+        "Quillmarsh and Zorbek, friday",
+    )
+    .unwrap();
+    assert_eq!(offer, ["Quillmarsh", "Zorbek"]);
+    assert_eq!(
+        meeting_detail(&svc, f.meeting).unwrap().dictionary,
+        ["QXR-7"]
+    );
+
+    // "Add to Dictionary" on "Zorbek," adds the word without its punctuation, and the word is
+    // then suggested on the other line.
+    let added = add_dictionary_word(&svc, "Zorbek,").unwrap();
+    assert_eq!(
+        added,
+        DictionaryWordAdded {
+            word: "Zorbek".into(),
+            added: true
+        }
+    );
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.dictionary, ["QXR-7", "Zorbek"]);
+    assert_eq!(
+        d.transcript[3].suggestions,
+        [WordSuggestionView {
+            token: 2,
+            decoded: "sorbeck".into(),
+            listed: "Zorbek".into(),
+        }]
+    );
+    // Already there (case ignored): nothing to undo.
+    assert!(!add_dictionary_word(&svc, "zorbek").unwrap().added);
+
+    // Undo removes exactly that word; the suggestion goes with it.
+    assert!(remove_dictionary_word(&svc, "Zorbek").unwrap());
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.dictionary, ["QXR-7"]);
+    assert!(d.transcript[3].suggestions.is_empty());
+    assert!(!remove_dictionary_word(&svc, "Zorbek").unwrap());
+    // "Remove from Dictionary" on a listed word, case ignored.
+    assert!(remove_dictionary_word(&svc, "qxr-7").unwrap());
+    assert!(
+        meeting_detail(&svc, f.meeting)
+            .unwrap()
+            .dictionary
+            .is_empty()
+    );
+
+    // Refusals are the Dictionary page's own sentences, and store nothing.
+    let full: Vec<String> = (0..100).map(|i| format!("w{i}")).collect();
+    earshot_runtime::vocabulary::set_vocabulary(&mut svc.store(), &full).unwrap();
+    let e = add_dictionary_word(&svc, "Quillmarsh").unwrap_err();
+    assert_eq!(e.kind, "invalid_setting");
+    assert_eq!(
+        e.message,
+        "The list can hold at most 100 words; this one has 101."
+    );
+    let e = add_dictionary_word(&svc, "--").unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str()),
+        (
+            "invalid_setting",
+            "Only a word can be added to the dictionary."
+        )
+    );
+    assert_eq!(meeting_detail(&svc, f.meeting).unwrap().dictionary, full);
+
+    // A draft transcript shows no Dictionary.
+    {
+        let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let rows = db.segments(f.meeting).unwrap();
+        let (store, hlc) = db.parts();
+        for mut r in rows {
+            r.pass = TranscriptPass::Live;
+            r.meta.touch(hlc, &*clock);
+            store.put_segment(r).unwrap();
+        }
+    }
+    assert!(
+        meeting_detail(&svc, f.meeting)
+            .unwrap()
+            .dictionary
+            .is_empty()
+    );
+    // A line edit of a draft is refused as before.
+    let e = edit_line(&svc, f.meeting, f.segments[2], "anything").unwrap_err();
+    assert_eq!(e.kind, "draft_transcript");
+}
+
+#[test]
 fn detail_an_edited_title_and_line_show_and_mark_an_older_summary_out_of_date() {
     let dir = TempDir::new("detail-text-edit");
     let svc = services(&dir);

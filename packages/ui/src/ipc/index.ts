@@ -36,6 +36,7 @@ export type {
   SummaryView,
   TranscriptKind,
   TranscriptRow,
+  DictionaryWordAdded,
   AppInfo,
   CaptureMode,
   CommandName,

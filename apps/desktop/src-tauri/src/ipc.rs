@@ -52,6 +52,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             use_word,
             put_back_word,
             keep_word,
+            add_dictionary_word,
+            remove_dictionary_word,
             edit_summary,
             rename_speaker,
             merge_speakers,
@@ -611,7 +613,8 @@ async fn rename_meeting(
     .await
 }
 
-/// Replaces the text of one line of `meeting`'s final transcript (T12.16).
+/// Replaces the text of one line of `meeting`'s final transcript (T12.16); returns the words
+/// the bar under the line offers to add to the Dictionary (T12.15f, nothing added).
 #[tauri::command]
 #[specta::specta]
 async fn edit_segment(
@@ -619,14 +622,34 @@ async fn edit_segment(
     meeting: String,
     segment: String,
     text: String,
-) -> Result<(), IpcError> {
+) -> Result<Vec<String>, IpcError> {
     let services = state.services()?;
     let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
-    blocking(move || {
-        earshot_runtime::edit::edit_segment(&services, meeting, segment, &text)?;
-        Ok(())
-    })
-    .await
+    blocking(move || crate::detail::edit_line(&services, meeting, segment, &text)).await
+}
+
+/// "Add to Dictionary" on a word of the transcript (T12.15f): the word of `token` joins the
+/// Dictionary (`invalid_setting` with the Dictionary page's message: nothing stored).
+#[tauri::command]
+#[specta::specta]
+async fn add_dictionary_word(
+    state: State<'_, AppState>,
+    token: String,
+) -> Result<crate::detail::DictionaryWordAdded, IpcError> {
+    let services = state.services()?;
+    blocking(move || crate::detail::add_dictionary_word(&services, &token)).await
+}
+
+/// "Remove from Dictionary", and "Undo" after an add (T12.15f): the Dictionary entry that is
+/// `word` (case ignored) goes; false when there is none.
+#[tauri::command]
+#[specta::specta]
+async fn remove_dictionary_word(
+    state: State<'_, AppState>,
+    word: String,
+) -> Result<bool, IpcError> {
+    let services = state.services()?;
+    blocking(move || crate::detail::remove_dictionary_word(&services, &word)).await
 }
 
 /// "Use it", or another word from the list (T12.15e): word `token` of a final transcript line

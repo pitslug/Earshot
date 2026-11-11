@@ -26,7 +26,8 @@ import {
   type SummaryView,
   type TranscriptRow,
 } from "./ipc";
-import { marksAfterEdit, splitPunctuation, tokensOf, withWord, wordListOf } from "./mockWords";
+import { dictionaryWord } from "../detail/dictionaryWord";
+import { marksAfterEdit, splitPunctuation, tokensOf, withWord, wordListOf, wordsToOffer } from "./mockWords";
 import {
   ignoredVoice,
   linked,
@@ -691,11 +692,15 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       const d = detailOf(meeting);
       const kept_local = keptLocal.has(meeting) ? { writer: await remoteWriter() } : null;
       // The header follows the list row (title from a summary, state).
-      const word_list = d.header.transcript === "Final" ? await wordList() : [];
+      const final = d.header.transcript === "Final";
+      const word_list = final ? await wordList() : [];
+      // T12.15f: the Dictionary's entries, for Add or Remove on a word.
+      const dictionary = final ? (await summariesMock.summaryVocabulary()).words : [];
       return structuredClone({
         ...d,
         kept_local,
         word_list,
+        dictionary,
         state: row?.state ?? d.state,
         header: { ...d.header, title: row?.title ?? d.header.title },
       });
@@ -724,6 +729,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       if (!d.transcript.some((r) => r.segment_id === segment)) {
         fail("segment_not_found", "This line is no longer in the transcript. It may have been transcribed again.");
       }
+      // T12.15f: what the bar under the line offers (`vocabulary::words_to_offer`).
+      const before = d.transcript.find((r) => r.segment_id === segment)?.text ?? t;
+      const offer = before === t ? [] : wordsToOffer(before, t, await wordList());
       update(meeting, (d) => {
         const row = d.transcript.find((r) => r.segment_id === segment);
         if (!row || row.text === t) return d;
@@ -736,6 +744,30 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
           segment,
         );
       });
+      return offer;
+    },
+    // T12.15f: `vocabulary::add_word` and `remove_word`, through the Dictionary page's own
+    // checks and messages (`setSummaryVocabulary`).
+    addDictionaryWord: async (token) => {
+      call("addDictionaryWord", token);
+      const word = dictionaryWord(token) ?? fail("invalid_setting", "Only a word can be added to the dictionary.");
+      const words = (await summariesMock.summaryVocabulary()).words;
+      const there = words.find((w) => w.toLowerCase() === word.toLowerCase());
+      if (there !== undefined) return { word: there, added: false };
+      await summariesMock.setSummaryVocabulary([...words, word]);
+      return { word, added: true };
+    },
+    removeDictionaryWord: async (word) => {
+      call("removeDictionaryWord", word);
+      const wanted = word
+        .split(/\p{White_Space}+/u)
+        .filter((p) => p !== "")
+        .join(" ")
+        .toLowerCase();
+      const words = (await summariesMock.summaryVocabulary()).words;
+      if (wanted === "" || !words.some((w) => w.toLowerCase() === wanted)) return false;
+      await summariesMock.setSummaryVocabulary(words.filter((w) => w.toLowerCase() !== wanted));
+      return true;
     },
     // T12.15e: the rules of `edit::use_word`, `put_back_word` and `keep_word` (mockWords.ts).
     useWord: async (meeting, segment, token, word) => {
