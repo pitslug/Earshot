@@ -678,17 +678,33 @@ impl OnnxSession {
         if config.provider == Provider::Cpu
             && model.is_file()
             && let Some(weights) = crate::shared_weights::for_model(model)
-            && let Ok(session) = Self::load_with(model, config, Some(weights))
+            && let Ok(session) = Self::load_with(model, config, Some(weights), &[])
         {
             return Ok(session);
         }
-        Self::load_with(model, config, None)
+        Self::load_with(model, config, None, &[])
+    }
+
+    /// Evaluation only (T12.12): [`OnnxSession::load`] without weight sharing and with extra
+    /// ONNX Runtime session config entries (for example `ep.context_enable`, which makes the
+    /// QNN plugin write a compiled context model). No shipped code calls this.
+    ///
+    /// # Errors
+    /// As [`OnnxSession::load`], plus a refused config entry.
+    #[doc(hidden)]
+    pub fn load_with_session_entries(
+        model: &Path,
+        config: &SessionConfig,
+        entries: &[(&str, &str)],
+    ) -> Result<Self, OnnxError> {
+        Self::load_with(model, config, None, entries)
     }
 
     fn load_with(
         model: &Path,
         config: &SessionConfig,
         shared_weights: Option<Arc<crate::shared_weights::Weights>>,
+        entries: &[(&str, &str)],
     ) -> Result<Self, OnnxError> {
         if !model.is_file() {
             return Err(OnnxError::Model(format!(
@@ -715,6 +731,9 @@ impl OnnxSession {
             .map_err(runtime_err)?;
         if let Some(n) = config.intra_threads {
             builder = builder.with_intra_threads(n).map_err(runtime_err)?;
+        }
+        for (key, value) in entries {
+            builder = builder.with_config_entry(key, value).map_err(runtime_err)?;
         }
         if let Some(weights) = &shared_weights {
             for (name, value) in weights.initializers() {

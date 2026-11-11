@@ -432,8 +432,40 @@ impl ParakeetTdt {
                 tokens.display()
             ))
         })?;
-        let vocab = Vocab::parse(&text).map_err(|e| OnnxError::Model(e.to_string()))?;
+        // Checked before the encoder loads, as always; `with_encoder` parses it again (cheap).
+        Vocab::parse(&text).map_err(|e| OnnxError::Model(e.to_string()))?;
         let encoder = OnnxSession::load(&dir.join("encoder.onnx"), encoder_config)?;
+        Self::with_encoder(dir, &text, encoder, step_config, name, english_only)
+    }
+
+    /// Evaluation only (T12.12): [`ParakeetTdt::load_split`] with an encoder session the caller
+    /// loaded (for example from a compiled QNN context model). No shipped code calls this.
+    ///
+    /// # Errors
+    /// As [`ParakeetTdt::load_split`].
+    #[doc(hidden)]
+    pub fn load_with_encoder(
+        dir: &Path,
+        encoder: OnnxSession,
+        step_config: &SessionConfig,
+        name: &str,
+        english_only: bool,
+    ) -> Result<Self, OnnxError> {
+        let tokens = dir.join("tokens.txt");
+        let text = std::fs::read_to_string(&tokens)
+            .map_err(|e| OnnxError::Model(format!("{}: {e}", tokens.display())))?;
+        Self::with_encoder(dir, &text, encoder, step_config, name, english_only)
+    }
+
+    fn with_encoder(
+        dir: &Path,
+        text: &str,
+        encoder: OnnxSession,
+        step_config: &SessionConfig,
+        name: &str,
+        english_only: bool,
+    ) -> Result<Self, OnnxError> {
+        let vocab = Vocab::parse(text).map_err(|e| OnnxError::Model(e.to_string()))?;
         let decoder = OnnxSession::load(&dir.join("decoder.onnx"), step_config)?;
         let joiner = OnnxSession::load(&dir.join("joiner.onnx"), step_config)?;
         encoder.expect_signature(

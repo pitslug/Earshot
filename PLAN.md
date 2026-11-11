@@ -1590,10 +1590,15 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: found at GATE-02 (2026-11-08): in a call where the user said nothing, the final transcript kept one 2-word mic segment under "Me", 0.7 s long and wholly inside far-end speech. `asr::dedupe_echo` matches runs of 3+ words by design, and the speaker check names the only mic voice "Me". Find a rule that removes such fragments without costing near-end words in talk-over: write it before measuring, design and tune only on `asr_eval --leak-dev` (and `--rumble`), keep `ECHO_NEAR_RECALL_FLOOR_PERCENT` and `asr.echo_leak` holding. No change if no rule passes.
   - accept: `cargo test -p earshot-core asr`; `cargo test -p earshot-runtime post`; `cargo xtask accept m2`; the rule and leak-dev numbers in docs
 
-- [ ] T12.12 NPU sessions from precompiled models (spike)
+- [x] T12.12 NPU sessions from precompiled models (spike)
   - deps: T12.4
   - do: found by T12.4 (2026-11-09): each NPU session compiles the Parakeet conversion at load (29-31 s) and costs about 2.0 GiB of private memory, nothing shared, so a call on the 16 GB Surface (idling above 60% memory use) leaves about 1.1 GiB available. Measure ONNX Runtime's EP context models for the QNN plugin (`ep.context_enable`, a compiled context binary made once and loaded by later sessions): load time and private memory per session with `live_lag --memory`, whether the QDQ initializers then stay in memory, and whether `ep.share_ep_contexts` or the plugin's weight sharing then lets sessions share. Where a compiled binary would live, how it is pinned and verified like other model files, and what invalidates it (driver, plugin, model version) go in the findings. Evaluation only; no shipped change without the owner. If a session drops well below 2 GiB, T12.4's rule is run again.
   - accept: findings, `--memory` reports and a recommendation in docs/live-previews.md
+
+- [ ] T12.12a Load the NPU encoder from a context model compiled on this computer
+  - deps: T12.12
+  - do: found by T12.12 (2026-11-11): a compiled QNN context model gives the same words, times and probabilities, loads in about a second instead of about 30 s, and costs about 0.13 GiB per extra session instead of about 2.6 GiB. Only with the owner's go-ahead (a shipped change). Compile once per model on the computer (the first NPU use or after the conversion's download), into `parakeet-qnn/<model>/compiled/`, removed with the model; record the binary's SHA-256 and verify it before every load; recompile on any change to the conversion's files, the QNN plugin or `QnnHtp*` pins, `ep_compatibility_info` or the NPU driver version; any refusal falls back to today's load (saving memory never costs a meeting), shown once as a note. The evaluation-only loaders T12.12 added are replaced, not called. Then run T12.4's rule again, unchanged, for both preview settings.
+  - accept: `cargo test -p earshot-onnx`; `cargo test -p earshot-runtime backends`; a test that a damaged or stale compiled model falls back to today's load; T12.4's rule re-run on the Surface with `live_lag` and the decision in docs/live-previews.md
 
 - [ ] T12.13 Keep a meeting's summary on this computer
   - deps: T7.4g

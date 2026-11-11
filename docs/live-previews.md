@@ -211,7 +211,7 @@ What to read:
 - **Everyone fails** points 3 (catch-up +3.3 and +3.5 s against at most +2 s) and 4 (far-end median 5.7 s on the meeting, and on continuous speech only 55 words shown against 186: four sessions contend for one NPU). It stays refused on the NPU.
 - **Other people only passes points 1 to 4 and fails point 5**: with the three sessions a call needs, 1.06 GiB was free against at least 4 GiB. The run started with only 6.04 GiB free of 16, so the Surface was holding about 10 GiB elsewhere; the rule's "nothing else running" was not met for memory. The owner then reported that the Surface idles above 60% memory use with nothing open (`system_free_gib` reads `Win32_OperatingSystem.FreePhysicalMemory`, Windows' available memory), so 6 GiB is its real starting point and a re-run would not change the answer.
 
-**Decision (2026-11-09): both settings stay refused on the NPU** (`previews_refused` and `previews_refused_second` unchanged). Even with previews off, a call's two NPU sessions leave about 1.1 GiB available on the Surface before the summary model loads. Precompiled NPU models (T12.12) are the lead for less memory per session; if a session drops well below 2 GiB, this is re-judged under the same rule.
+**Decision (2026-11-09): both settings stay refused on the NPU** (`previews_refused` and `previews_refused_second` unchanged). Even with previews off, a call's two NPU sessions leave about 1.1 GiB available on the Surface before the summary model loads. Precompiled NPU models (T12.12) are the lead for less memory per session; if a session drops well below 2 GiB, this is re-judged under the same rule. (T12.12 found about 0.13 GiB per extra session from a compiled context model: re-judge once the app loads that way, T12.12a.)
 
 **Sharing one copy of the model between NPU sessions: not measurable with how Earshot loads, so there is no `--share-npu`.** ONNX Runtime's key is `ep.share_ep_contexts` (`kOrtSessionOptionShareEpContexts`, "Share EP related resources across sessions", in `include/onnxruntime/core/session/onnxruntime_session_options_config_keys.h`, beside `ep.stop_share_ep_contexts` and `ep.context_enable`). In the QNN plugin Earshot loads (onnxruntime-qnn tag `v2.7.0`, `onnxruntime/core/providers/qnn/qnn_execution_provider.cc` and `shared_context.h`):
 
@@ -220,6 +220,40 @@ What to read:
 3. The plugin's own `htp_share_resource_optimization=1` provider option shares the `QnnBackendManager` (backend handle and VTCM backup buffers) between sessions, not the weights; its exact provider-option key through the plugin interface is not confirmed here.
 
 So the NPU sessions of an Everyone meeting (two tracks' own and two previews) each hold their own compiled graph; `--memory` measures what that costs. Making them share would need a different design (one session serving several tracks, or a context binary with one graph per session) and is a separate task.
+
+## NPU sessions from compiled context models (T12.12, 2026-11-11)
+
+**Question:** can a compiled QNN context model (`ep.context_enable=1`: the plugin writes an ONNX model with one `EPContext` node pointing at a compiled context binary) bring an NPU session below T12.4's 2.0 GiB and 29-31 s? Evaluation only: `OnnxSession::load_with_session_entries` and `ParakeetTdt::load_with_encoder` (both `#[doc(hidden)]`, kept out of shipped code by `earshot-onnx/tests/eval_only.rs`) and the probe `crates/earshot-onnx/examples/qnn_context_probe.rs`:
+
+```powershell
+cargo run --release -p earshot-onnx --features qnn --example qnn_context_probe -- <models>\parakeet-qnn\parakeet-tdt-0.6b-v2 target\t1212\v2 compile
+```
+
+then `qdq`, `ctx` or `ctx-share` instead of `compile`, with `--sessions N` and the smoke FLACs, each mode in its own process. Surface, mains, plugin v2.7.0 (QNN SDK 2.51.0). Free memory at the start was only 2.2-3.9 GiB of 15.5 (the Claude app, AdGuard and Defender held about 6 GiB), so free memory was read beside each load and fewer of today's sessions were loaded.
+
+**Compiling** takes as long as one of today's loads (0.6B v2 31.7 s, 110M 17.4 s) and writes `encoder_ctx.onnx` (a few KiB, the Parakeet metadata kept, so the loader's checks pass unchanged) and `encoder_ctx_qnn.bin` (0.6B v2 600 MiB, 110M 119 MiB). The model records `ep_sdk_version` `v2.51.0...` and `ep_compatibility_info.QNNExecutionProvider` `v2:6:2.51.0:5.51.0:81:0:0:0`.
+
+| Parakeet 0.6B v2 | Load | Private memory after | Free memory dropped by |
+|---|---|---|---|
+| Today (`qdq`), session 1 | 28.9 s | 2.17 GiB | 2.64 GiB |
+| Context model, session 1 | 0.7 s | 0.07 GiB | 0.63 GiB |
+| Context model, sessions 2 and 3 | 0.2 s each | +0.03-0.05 GiB each | 0.12-0.14 GiB each |
+| Context model with `ep.share_ep_contexts=1` | 0.8 / 0.3 / 0.2 s | the same | the same |
+
+Parakeet 110M: today 17.2 s and about 0.8-1.0 GiB of private memory per session; from the context model 0.5 s then 0.1 s, 0.06 GiB then +0.02 GiB.
+
+- **Same output.** On all 20 smoke clips (162 words) the context model's words equal today's in text, times and probability to six decimals, for both models, and every session of a mode equals its first. Decode time per clip is unchanged (0.15-0.17 s). Every session kept the NPU partition (`check_qnn_partition` Ok).
+- **Where the memory went.** Today the plugin compiles the QDQ graph at each load and keeps the QDQ initializers and the compiled graph in the process. From a context model it maps the binary: about 0.6 GiB of the machine's memory for the first session (the binary's size), then about 0.13 GiB per extra session.
+- **`ep.share_ep_contexts` does nothing here**, as T12.4 read from the plugin source: each session still takes its own graph from the binary.
+
+**What a shipped version needs** (not done; a shipped change is the owner's call):
+
+- **Where it comes from:** compiled on the user's own computer, once per model, the first time the NPU conversion is used, or after its download. It costs one ordinary load (about 30 s), with no new download source and nothing published per chip. It is our own file, so the file a load reads must be checked like any model file: record its SHA-256 when written, and verify it before every load.
+- **What invalidates it:** a different `encoder.onnx` or `encoder.weights` (manifest digests), a different QNN plugin or `QnnHtp*.dll` (the pins in `QNN_ARM64`), or a different `ep_compatibility_info` (SDK and chip), plus the NPU driver version for safety. Any mismatch, or a load the plugin refuses, falls back to today's load and compiles again: saving memory never costs a meeting.
+- **Where it lives:** beside the conversion (`parakeet-qnn/<model>/compiled/`), removed with the model, and never a recording's data.
+- **What it changes:** a call's two NPU sessions would hold about 0.8 GiB of the machine's memory instead of about 5.3 GiB, and load in about a second instead of a minute. That is "well below 2 GiB", so T12.4's rule (both settings, unchanged) is to be run again once the app loads this way.
+
+**Recommendation:** load the NPU encoder from a context model compiled on the computer (task T12.12a, with the owner's go-ahead), then re-run T12.4's rule. The memory gain matters even with previews off: today a call on the Surface leaves about 1 GiB free before the summary model loads.
 
 ## Your own words on the CPU beside CUDA (T12.3a)
 
