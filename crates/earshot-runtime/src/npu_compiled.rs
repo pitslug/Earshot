@@ -102,11 +102,12 @@ impl CompileKey {
     }
 
     /// The key of the NPU conversion in `dir` on this computer, now: its `conversion.json` pins of
-    /// `encoder.onnx` and `encoder.weights`, the QNN package of this architecture, the ONNX Runtime
-    /// library loaded and the NPUs `earshot_hardware` reads.
+    /// `encoder.onnx` and `encoder.weights`, the QNN package of this architecture, the pin of the
+    /// ONNX Runtime library QNN runs in, and the NPUs `earshot_hardware` reads. Nothing needs to be
+    /// loaded for it.
     ///
     /// # Errors
-    /// An unreadable `conversion.json` or one without those pins; ONNX Runtime not loaded.
+    /// An unreadable `conversion.json` or one without those pins.
     pub fn for_conversion(dir: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(dir.join("conversion.json"))
             .map_err(|e| format!("conversion.json: {e}"))?;
@@ -119,11 +120,11 @@ impl CompileKey {
                 .ok_or_else(|| format!("conversion.json has no SHA-256 for {file}"))
         };
         let (onnx, weights) = (pin("encoder.onnx")?, pin("encoder.weights")?);
-        let runtime = earshot_onnx::loaded_library_sha256().ok_or("ONNX Runtime is not loaded")?;
         Ok(Self::from_parts(
             &[("encoder.onnx", &onnx), ("encoder.weights", &weights)],
             &earshot_onnx::qnn::QNN_HOST,
-            runtime,
+            // QNN always runs in this library (`backends::init_onnx`), checked against this pin.
+            earshot_onnx::ORT_CPU_DYLIB_SHA256,
             &crate::hardware().npus,
         ))
     }
@@ -449,15 +450,10 @@ pub fn load<S, E: std::fmt::Display>(
             }
         },
         Compile::Helper(helper) => {
-            let made = helper(&tmp.join(CONTEXT_MODEL))
-                .and_then(|()| write_record(&tmp, key))
-                .and_then(|()| publish(&tmp, &dest));
-            if let Err(e) = made {
-                let _ = std::fs::remove_dir_all(&tmp);
+            if let Err(e) = made_by_helper(&root, &tmp, &dest, key, helper) {
                 let why = failed(refused, e);
                 return ordinary().map(|s| (s, How::Ordinary { why }));
             }
-            sweep(&root, &dest);
             // What another process wrote is checked like any compiled folder before it loads.
             match verify(&dest, key).and_then(|model| compiled(&model).map_err(|e| e.to_string())) {
                 Ok(s) => Ok((s, How::CompiledByHelper { refused })),
@@ -468,6 +464,74 @@ pub fn load<S, E: std::fmt::Display>(
             }
         }
     }
+}
+
+/// Has `helper` write into the empty `tmp`, records it for `key` and publishes it at `dest`, then
+/// sweeps `root`; on any failure removes `tmp`.
+fn made_by_helper(
+    root: &Path,
+    tmp: &Path,
+    dest: &Path,
+    key: &CompileKey,
+    helper: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let made = helper(&tmp.join(CONTEXT_MODEL))
+        .and_then(|()| write_record(tmp, key))
+        .and_then(|()| publish(tmp, dest));
+    match made {
+        Ok(()) => {
+            sweep(root, dest);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(tmp);
+            Err(e)
+        }
+    }
+}
+
+/// What [`prepare`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prepared {
+    /// A current, intact compiled folder was there already.
+    AlreadyCompiled,
+    /// The helper compiled it now (`replaced`: why a folder for the key was not usable).
+    Compiled {
+        /// Why a folder for this key was put aside (`None`: there was none).
+        replaced: Option<String>,
+    },
+}
+
+/// Compiles the NPU conversion in `conversion` for `key` ahead of any load (T12.12b, the app's
+/// start-up), with `helper` only: this process loads nothing. Under the same lock as [`load`], so
+/// a load that starts meanwhile waits and then finds it compiled. A folder already there is checked
+/// like a load checks it, without the plugin's answer (which needs the plugin loaded); a load still
+/// asks the plugin.
+///
+/// # Errors
+/// Why nothing usable was compiled; a load then compiles as it would have.
+pub fn prepare(
+    conversion: &Path,
+    key: &CompileKey,
+    helper: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<Prepared, String> {
+    let _one = LOADS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let root = conversion.join(COMPILED_DIR);
+    let dest = root.join(key.folder_name());
+    let mut replaced = None;
+    if dest.exists() {
+        match verify(&dest, key) {
+            Ok(_) => return Ok(Prepared::AlreadyCompiled),
+            Err(why) => replaced = Some(why),
+        }
+        put_aside(&root, &dest).map_err(|e| format!("the folder cannot be replaced ({e})"))?;
+    }
+    let tmp = unique(&root, ".tmp");
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("no folder to compile into ({e})"))?;
+    made_by_helper(&root, &tmp, &dest, key, helper)?;
+    Ok(Prepared::Compiled { replaced })
 }
 
 /// The hidden mode of an exe that compiles for [`load`] ([`use_this_exe`], [`child_main`]).

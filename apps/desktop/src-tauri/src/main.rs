@@ -139,6 +139,19 @@ fn main() {
             );
             let cuda_latch = Arc::clone(&cuda_start);
             app.manage(cuda_start);
+            // The NPU model a meeting would load, compiled in the helper now (T12.12b), so the
+            // first meeting usually loads it in a second. Nothing loads in this process.
+            #[cfg(target_arch = "aarch64")]
+            if let Ok(services) = state.services() {
+                let models = earshot_runtime::host::model_dir(&services.data);
+                let _ = std::thread::Builder::new()
+                    .name("earshot-npu-prepare".into())
+                    .spawn(move || {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            earshot_runtime::host::prepare_npu_model(&services, &models)
+                        }));
+                    });
+            }
             // Audio retention runs now and periodically (T7.4k).
             let retention = storage_settings::RetentionStatus::default();
             if let Ok(services) = state.services() {

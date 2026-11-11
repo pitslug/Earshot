@@ -564,6 +564,56 @@ fn link_tree(from: &Path, to: &Path) {
     }
 }
 
+/// The app's start-up compile: helper only, then a load finds it compiled; a second start does
+/// nothing; a damaged folder is compiled again; a failed helper leaves nothing behind.
+#[test]
+fn npu_compiled_prepare_compiles_ahead_so_the_first_load_is_compiled() {
+    let dir = TempDir::new("npu-prepare");
+    let calls = Cell::new(0);
+    let helper = |model: &Path| {
+        calls.set(calls.get() + 1);
+        write_fake_compile(model);
+        Ok(())
+    };
+    assert_eq!(
+        prepare(&dir.0, &key(), helper),
+        Ok(Prepared::Compiled { replaced: None })
+    );
+    assert_eq!(
+        prepare(&dir.0, &key(), helper),
+        Ok(Prepared::AlreadyCompiled)
+    );
+    assert_eq!(calls.get(), 1, "a second start compiles nothing");
+    let load_calls = Calls::default();
+    assert_eq!(
+        run(&dir.0, &key(), &load_calls, true, true, true),
+        ("compiled", How::Compiled)
+    );
+    assert_eq!(load_calls.compile.get(), 0);
+
+    std::fs::write(folder(&dir.0, &key()).join(BINARY), vec![9u8; 4096]).unwrap();
+    match prepare(&dir.0, &key(), helper) {
+        Ok(Prepared::Compiled {
+            replaced: Some(why),
+        }) => assert!(why.contains(BINARY), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
+fn npu_compiled_prepare_with_a_failed_helper_leaves_nothing() {
+    let dir = TempDir::new("npu-prepare-fails");
+    let r = prepare(&dir.0, &key(), |_| {
+        Err("the helper ended with exit code: 1".to_owned())
+    });
+    assert!(r.unwrap_err().contains("exit code"));
+    assert!(names(&dir.0.join(COMPILED_DIR)).is_empty());
+    // A load then compiles as it would have.
+    let calls = Calls::default();
+    run(&dir.0, &key(), &calls, true, true, true);
+    assert_eq!(calls.compile.get(), 1);
+}
 /// The real thing on the Surface's NPU: the first load compiles and keeps the context model, the
 /// next loads it (the folder untouched), both give exactly the words, times and probabilities of
 /// the load before T12.12a, and a damaged binary falls back to the ordinary load, compiles again

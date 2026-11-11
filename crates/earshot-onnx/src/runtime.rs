@@ -502,10 +502,9 @@ impl fmt::Display for SessionBackend {
     }
 }
 
-/// The loaded ONNX Runtime: the library path, its pin and the process-wide environment.
+/// The loaded ONNX Runtime: the library path and the process-wide environment.
 struct Loaded {
     library: PathBuf,
-    sha256: String,
     env: Environment,
 }
 
@@ -625,7 +624,6 @@ pub fn init(library: &Path, expected_sha256: &str) -> Result<&'static Environmen
     Ok(&RUNTIME
         .get_or_init(|| Loaded {
             library: canonical,
-            sha256: actual.to_ascii_lowercase(),
             env,
         })
         .env)
@@ -645,12 +643,6 @@ pub fn preload_library(path: &Path) -> Result<(), OnnxError> {
 #[must_use]
 pub fn loaded_library() -> Option<&'static Path> {
     RUNTIME.get().map(|l| l.library.as_path())
-}
-
-/// The lower-case SHA-256 of the library [`init`] loaded (checked against its pin then), if any.
-#[must_use]
-pub fn loaded_library_sha256() -> Option<&'static str> {
-    RUNTIME.get().map(|l| l.sha256.as_str())
 }
 
 /// The process-wide ONNX Runtime environment (telemetry off).
