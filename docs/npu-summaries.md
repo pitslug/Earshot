@@ -85,6 +85,33 @@ Switches that changed nothing for the NaN:
 
 So the Vulkan path stays closed. Re-test it only if a later `llama-cpp-sys-2` release notes Adreno Vulkan fixes: `vk_probe` with the 4B and an 800-word prompt is a five-minute check. Qualcomm's own route for Adreno is llama.cpp's OpenCL backend ([Qualcomm developer blog](https://www.qualcomm.com/developer/blog/2024/11/introducing-new-opn-cl-gpu-backend-llama-cpp-for-qualcomm-adreno-gpu)). It lists the Adreno X1-85 as supported and recommends Q4_0 weights, but needs the Khronos OpenCL headers, a new download source and the owner's call. Our Q4_K_M models would need Q4_0 copies to run at its best.
 
+## Vulkan reopened (T12.17, 2026-11-11, first pass)
+
+Upstream since 0.1.160, both from Qualcomm engineers:
+
+- [llama.cpp#30829](https://github.com/ggml-org/llama.cpp/pull/30829), merged 2026-11-10: scalar flash attention capped at 8 rows for heads above 128 on Adreno, because 16 rows spilled registers and one dispatch passed the Windows GPU timeout. Qwen 3.5 has 256-wide heads.
+- [llama.cpp#30821](https://github.com/ggml-org/llama.cpp/pull/30821), a draft: the Adreno compiler miscompiles `unpack8()`/`pack32()` on 8-bit vectors (q8_1 quantisation for integer-dot matmuls, K-quant mat-vec, flash attention dequantisation). It replaces them with shifts on Qualcomm. Qualcomm says a driver fix will follow, with no date.
+- Neither is in a crate release: `llama-cpp-sys-2` 0.1.161 (2026-11-03) updates nothing in llama.cpp.
+
+**Probe.** llama.cpp master `aa75ff3` plus #30821 cherry-picked, built for ARM64 Vulkan with clang-cl and Ninja, OpenMP off, in a throwaway folder (nothing from it is committed). The tools are llama.cpp's own (`test-backend-ops`, `llama-completion`, `llama-bench`), not Earshot's code. Qwen 3.5 4B Q4_K_M; Adreno X2-85, driver 32.0.163.2, mains power. Long prompt: an invented 1,287-token meeting.
+
+- **Op tests on Vulkan0 against the CPU:** `GATED_DELTA_NET` 43/43, `SSM_CONV` 60/60, `SSM_SCAN` 12/12 and `MUL_MAT` 2,521/2,521 pass. The full `FLASH_ATTN_EXT` suite did not finish in 25 minutes (inconclusive).
+- **Fault 3 is gone.** The GPU answers the short prompt as the CPU does, and summarises the long prompt sensibly.
+- **Faults 1 and 2 now show as one switch.** With the integer dot product path on, the prompt runs at about 4 tokens/s, and the long prompt with flash attention on gave no output in 900 s. With `GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1`, flash attention completes the long prompt correctly.
+- **Speed, integer dot off, 4B (tokens/s):**
+
+| | GPU | CPU, 6 threads |
+|---|---|---|
+| pp512 (`llama-bench`) | 30.7 | 119.4 |
+| tg32 (`llama-bench`) | 20.3 | 21.1 |
+| 1,287-token prompt | 28.1 | 105.7 |
+| reply after it | 18.5 | 19.9 |
+
+  Generation, 3-4 times slower than the CPU in T8.3i, is now level with it. Prompt processing is about 4 times slower, and summaries are mostly prompt.
+- `GGML_VK_PERF_LOGGER`'s per-op times are not usable on this driver: one matmul shape ranged from 83 us to 285 ms within a run, and one reading implied 66 TFLOPS.
+
+**Verdict so far:** right answers with one switch, but under T8.3h's rule (at most 0.67 of the CPU's wall time) a prompt-dominated summary cannot pass at a quarter of the CPU's prompt speed. The full `sum-eval` was not run because no crate release carries these changes. Left: the same runs on a newer Adreno driver (Qualcomm's 2026.10.1 package), which the owner installs.
+
 ## Recommendation
 
 - **Keep summaries on the CPU with the 4B on the Surface** (T8.3f, merged 2026-11-03). Do not pursue llama.cpp on the Adreno through Vulkan: T8.3i found three driver or shader faults, one with no workaround for Qwen 3.5, and a correct path that is 3-4 times slower than the CPU.
