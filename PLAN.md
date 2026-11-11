@@ -1720,6 +1720,12 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner's design in T12.15e: the dotted underline, the popover with Use it and Keep, the quiet mark on a changed word and its popover (Changed from, Put back, another word from the list), keyboard reachable (Tab, Enter, Escape returns focus to the word), a click on the word never starts a line edit and a click elsewhere on the line still does. The Dictionary page says transcripts now suggest its words. Screenshots of the Vite preview in light and dark.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
 
+- [ ] T12.15f Add words to the Dictionary from the transcript
+  - deps: T12.15ed, T12.16
+  - decision (2026-11-12, the owner): both parts. Never automatic: a word joins the Dictionary only from a click on that word.
+  - do: (1) after a saved line edit, a bar under the line, "Add to Dictionary:", with one button per changed token (compared by white-space token with the line's text before the edit), leaving out common words (`earshot_core::vocabulary::common_words`, the matcher's own rule), words already listed (case ignored, as `Vocabulary::new` dedupes) and tokens that are not words; it closes when the user moves on, and ignoring it adds nothing. (2) the word popover opens on any word of a Final transcript (right-click and Shift+F10 or the context-menu key; a marked word's own popover gains the same action) with "Add to Dictionary". Both add through `vocabulary::set_vocabulary` (append to the stored list in one write, so the 100-word and 1,000-character limits and their refusal messages are the Dictionary page's own, shown in place); the token's core is added, without surrounding punctuation. After an add the meeting detail reloads, so the new word is suggested on other lines. Nothing changes transcript text. UI mock and its tests; the Dictionary page needs no change.
+  - accept: `cargo test -p earshot-desktop --bin earshot detail`; `cargo test -p earshot-runtime vocabulary`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
+
 - [x] T12.16 Edit a meeting's title, transcript and summary
   - deps: T7.3
   - status (2026-11-11): merged (T12.16a 08fec3e, T12.16b 0563027), reviewed clear (4 advisories: banner copy fixed at merge, rest in TODO.md); migration 3 adds the segment edit mark; desktop 354, runtime, store and UI pass on the merge (UI timeouts under lane load passed on re-run); batch ci at the end.
