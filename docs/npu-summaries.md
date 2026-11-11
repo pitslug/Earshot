@@ -125,6 +125,42 @@ Documentation only so far; nothing downloaded or run.
 - **ONNX Runtime GenAI on QNN:** Microsoft publishes QNN builds such as Phi-4 mini and Phi-4 reasoning; community reports put NPU builds at a fixed context of about 4,096 tokens (static graphs). No Qwen 3.5-class NPU build was found from either vendor (Qualcomm has Qwen 3.5 only at 0.8B, as a llama.cpp GGUF).
 - **What any NPU path costs:** a model change (Qwen3 4B or Phi-4 mini instead of Qwen 3.5), chunks that fit 4,096 tokens with the reply (today's chunks are 600 s, about 1,500-2,500 transcript tokens, so they may fit with a smaller reply budget), a new quality evaluation on the dev meetings, a telemetry check of the runtime before any meeting text goes in, and an FFI crate.
 
+## NPU summaries, further (T12.7, 2026-11-11): measured on the Surface
+
+Qualcomm's Qwen3-4B for the X2 Elite NPU (w4a16, Genie format, 4,096-token context) on the QAIRT Community SDK 2.50.40, both pinned in `xtask/npu-llm-eval.toml` (set `npu-llm-eval`, fetched and verified by `cargo xtask fetch-models --set npu-llm-eval`). That manifest is kept apart from `models/manifest.toml`, whose `hosts` are the app's download allowlist (pinned by `models::tests::npu_llm_eval_manifest_stays_out_of_the_app`). The SDK's licence is the Qualcomm AI Stack License, as for the `qnn` set. Scripts used are under `target/t127` (not committed); every prompt was invented or public AMI text.
+
+**Telemetry and network: pass.**
+
+- During a run of `genie-t2t-run` on an invented meeting, the process opened no TCP connection or UDP endpoint (polled every 0.5 s).
+- It registered 67 ETW providers (`logman query providers -pid`). All of them were traced at every level with the three telemetry keywords while Genie decoded an invented 1,298-token meeting carrying four made-up marker words. Genie generated 302 tokens. Of 17,793 events of its process, no event's data (EventData, UserData, binary payloads as UTF-8 and UTF-16) held a marker word or any prompt word of seven letters or more.
+- Only one event carried a telemetry keyword: `Microsoft.Windows.Graphics.D3D12Loader` `ProcessInfo`, system information. About 17,000 events came from one unnamed provider, `{d3bbf1c4-63b7-4707-b668-de8ad1888708}`, with no keyword (probably Qualcomm's driver tracing).
+- The check fails closed: it needs Genie's own profile to show the whole prompt decoded. A first attempt under Windows PowerShell 5.1 started Genie without its arguments and was discarded.
+
+**Speed (`genie-t2t-run --profile`, mains):**
+
+| | NPU, Qwen3-4B w4a16 | CPU, Qwen 3.5 4B Q4_K_M (6 threads) |
+|---|---|---|
+| Load | 60-99 s per process start (3 GB of context binaries) | about 10 s |
+| Prompt, 1,264 tokens | 1,144 tokens/s (first token 1.1 s) | about 106 tokens/s |
+| Reply | 21 tokens/s | about 20 tokens/s |
+
+The reply, which dominates a summary's time on both, is no faster on the NPU. Only the prompt is (about 11 times).
+
+**Quality: not measurable yet.** `genie-service` (the SDK's OpenAI-compatible server, bound to `127.0.0.1` only) let `sum-eval --remote` drive the NPU through Earshot's own OpenAI-compatible summarizer, with the CPU 4B beside it on the same `--context 4096 --max-output 1024` plan, on ES2003a:
+
+- **The CPU 4B failed to plan:** 11 map requests, then "the model's context window is too small: about 4240 tokens needed, 4096 available" for the merge. Earshot's plan (system prompt and schema, a reply of at least `REPLY_MIN_TOKENS`, `REPAIR_MAX_TOKENS` of headroom) does not fit a 4,096-token window.
+- **On the NPU,** the first map reply was JSON of the right shape but broke Earshot's rules (17 citations on one bullet, at most 3, and an extra field). The repair request (original plus reply plus errors) overflowed Genie's cache ("KV$ exceeded budget, but longcontext is not enabled"). After that every request returned 0 tokens until the service was restarted. The same first request on a fresh service again gave the same reply in 18.7 s.
+- **Service notes:** it rejects `temperature` 0 (Earshot sends 0.2). Greedy decoding came from `top-k` 1 in the Genie config. At its default log level it writes every prompt in full to its log, which a shipped use would have to turn off.
+
+**What shipping would take,** beyond T12.7's list:
+
+- a request plan for a 4,096-token window, repairs included;
+- a way to keep the model loaded across a meeting's requests (one load is 60-99 s);
+- recovery from a cache overflow without a restart;
+- the native Genie API through an FFI crate instead of the service.
+
+Because only prompt processing is faster, the gain is bounded: a summary request that prints 400 tokens still takes about 20 s on either.
+
 ## Recommendation
 
 - **Keep summaries on the CPU with the 4B on the Surface** (T8.3f, merged 2026-11-03). Do not pursue llama.cpp on the Adreno through Vulkan: T8.3i found three driver or shader faults, one with no workaround for Qwen 3.5, and a correct path that is 3-4 times slower than the CPU.
@@ -137,5 +173,7 @@ Documentation only so far; nothing downloaded or run.
   - a new quality evaluation.
 
   Revisit when an NPU build of a Qwen 3.5-class model with a longer context is published.
+
+  T12.7 (2026-11-11, closed by the owner at this point) measured Qualcomm's Qwen3-4B there. Its telemetry check passed, and it reads prompts about 11 times faster than the CPU 4B but writes replies no faster, so a summary gains far less than 11 times. Its quality was not measured, because Earshot's request plan does not fit its 4,096-token window. Taking it further needs, first, an evaluation-only request plan for a 4,096-token window (repairs included), then `sum-eval` on the dev meetings, and only then the shipping items listed above.
 - **A cheaper way to shorten the wait** without new hardware paths: summarise each 10-minute chunk (the map steps) during the meeting, so that only the last chunk and the reduce step run at hang-up. On the Surface CPU 4B that is about 290 s per meeting of about 30 minutes (the "at hang-up" column of `docs/summary-eval/surface-cpu-2026-11-03.md`), against 553 s for all the work after the meeting. The cost is CPU load while recording, so it needs a check against the live transcription budget. Not planned; for the owner.
 

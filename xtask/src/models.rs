@@ -23,6 +23,21 @@ pub fn manifest_path(repo: &Path) -> PathBuf {
     repo.join("models").join("manifest.toml")
 }
 
+/// The NPU summary spike's set (T12.7), kept in its own manifest.
+pub const NPU_LLM_EVAL_SET: &str = "npu-llm-eval";
+/// Its manifest: outside `models/manifest.toml`, whose hosts become the app's allowlist.
+pub const NPU_LLM_EVAL_MANIFEST: &str = "xtask/npu-llm-eval.toml";
+
+/// The manifest that holds `sets`: [`NPU_LLM_EVAL_MANIFEST`] for exactly that set, else
+/// `models/manifest.toml`.
+fn manifest_for(repo: &Path, sets: &[String]) -> PathBuf {
+    if sets == [NPU_LLM_EVAL_SET] {
+        repo.join(NPU_LLM_EVAL_MANIFEST)
+    } else {
+        manifest_path(repo)
+    }
+}
+
 /// `arts` narrowed to the artefacts named in `ids` (all of `arts` when `ids` is empty).
 ///
 /// # Errors
@@ -42,7 +57,7 @@ pub fn only<'a>(arts: Vec<&'a Artefact>, ids: &[String]) -> Result<Vec<&'a Artef
 
 /// `cargo xtask fetch-models`: the artefacts of `sets`, or only those named in `ids`.
 pub fn run(repo: &Path, sets: &[String], ids: &[String], verify: bool) -> Result<()> {
-    let m = Manifest::load(&manifest_path(repo))?;
+    let m = Manifest::load(&manifest_for(repo, sets))?;
     let arts = only(m.select(sets)?, ids)?;
     anyhow::ensure!(
         arts.iter().all(|a| a.location == Location::Cache),
@@ -69,6 +84,49 @@ mod tests {
             .iter()
             .map(|a| a.id.clone())
             .collect()
+    }
+
+    #[test]
+    fn npu_llm_eval_manifest_stays_out_of_the_app() {
+        let root = crate::repo_root();
+        let eval = Manifest::load(&root.join(NPU_LLM_EVAL_MANIFEST)).unwrap();
+        assert_eq!(eval.sets, [NPU_LLM_EVAL_SET]);
+        assert_eq!(
+            manifest_for(&root, &[NPU_LLM_EVAL_SET.to_string()]),
+            root.join(NPU_LLM_EVAL_MANIFEST)
+        );
+        assert_eq!(
+            manifest_for(&root, &[NPU_LLM_EVAL_SET.to_string(), "ci".to_string()]),
+            manifest_path(&root)
+        );
+        let app = load();
+        // The embedded manifest's hosts are the app's download allowlist: none of the
+        // spike's hosts, and no artefact of its set, may appear there.
+        for host in eval.hosts.iter().chain(&eval.redirect_hosts) {
+            assert!(
+                !app.hosts.contains(host) && !app.redirect_hosts.contains(host),
+                "{host} is in models/manifest.toml"
+            );
+        }
+        assert!(!app.sets.iter().any(|s| s == NPU_LLM_EVAL_SET));
+        for a in &eval.artefacts {
+            assert_eq!(a.sets, [NPU_LLM_EVAL_SET], "{}", a.id);
+            assert_eq!(a.location, Location::Cache, "{}", a.id);
+            assert!(a.extract.is_none(), "{}", a.id);
+            // The Qualcomm AI Stack License (development use and benchmarking), as for the
+            // `qnn` set's libraries, only in this evaluation set (the owner, 2026-11-11).
+            assert!(
+                ["Apache-2.0", "LicenseRef-Qualcomm-AI-Stack"].contains(&a.licence.as_str()),
+                "{}: unexpected licence {}",
+                a.id,
+                a.licence
+            );
+            assert!(
+                !app.artefacts.iter().any(|b| b.id == a.id),
+                "{} is also in models/manifest.toml",
+                a.id
+            );
+        }
     }
 
     #[test]
