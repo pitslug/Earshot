@@ -1,6 +1,7 @@
 //! In-app updates (T9.1b, D24): asks one host for a signed version file, and downloads the
 //! installer it names. A request happens only when the user presses the button or has turned
-//! automatic checks on, and asks for nothing but that file.
+//! automatic checks on, and asks for nothing but that file. Automatic checks run at the start and
+//! on the user's [`UpdateSchedule`] (T12.22), measured from the last finished check ([`next_due`]).
 //!
 //! - **One destination.** [`UpdateSource::releases`] is fixed at build time: this repo's GitHub
 //!   releases, with their download host for redirects. Nothing read from the network can name a
@@ -62,7 +63,8 @@ pub const fn installer_args() -> [&'static str; 3] {
     ["/P", "/UPDATE", "/R"]
 }
 
-/// Whether Earshot checks by itself when it starts. Off unless the user turned it on.
+/// Whether Earshot checks by itself, when it starts and on its schedule ([`UpdateSchedule`]). Off
+/// unless the user turned it on: this is the one consent, so off means no automatic request.
 ///
 /// # Errors
 /// Store errors.
@@ -77,6 +79,171 @@ pub fn auto_check(store: &Store) -> Result<bool, RuntimeError> {
 pub fn set_auto_check(store: &mut Store, on: bool) -> Result<(), RuntimeError> {
     let value: &[u8] = if on { b"on" } else { b"off" };
     crate::local::set(store, &DeviceRecord::UpdateCheck.key(), value).map_err(RuntimeError::from)
+}
+
+/// The local-state key of how often automatic checks run (T12.22).
+pub const SCHEDULE_KEY: &str = "settings/update-schedule";
+/// The local-state key of when the last check finished, in Unix milliseconds as decimal text.
+pub const LAST_CHECK_KEY: &str = "update-last-check";
+/// The local-state key of the last version a notification was shown for.
+pub const NOTIFIED_KEY: &str = "update-notified";
+
+/// How often Earshot checks by itself while it runs, when automatic checks are on. Off means no
+/// request at all, whatever this says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UpdateSchedule {
+    /// Every hour.
+    Hourly,
+    /// Every 4 hours.
+    FourHours,
+    /// Every 12 hours.
+    TwelveHours,
+    /// Every day: the default.
+    #[default]
+    Daily,
+    /// Every week.
+    Weekly,
+}
+
+impl UpdateSchedule {
+    /// Every choice, in the order the page lists them.
+    pub const ALL: [UpdateSchedule; 5] = [
+        UpdateSchedule::Hourly,
+        UpdateSchedule::FourHours,
+        UpdateSchedule::TwelveHours,
+        UpdateSchedule::Daily,
+        UpdateSchedule::Weekly,
+    ];
+
+    /// The time between checks.
+    #[must_use]
+    pub const fn interval(self) -> Duration {
+        const HOUR: u64 = 60 * 60;
+        Duration::from_secs(match self {
+            UpdateSchedule::Hourly => HOUR,
+            UpdateSchedule::FourHours => 4 * HOUR,
+            UpdateSchedule::TwelveHours => 12 * HOUR,
+            UpdateSchedule::Daily => 24 * HOUR,
+            UpdateSchedule::Weekly => 7 * 24 * HOUR,
+        })
+    }
+
+    /// What is stored.
+    #[must_use]
+    pub const fn stored(self) -> &'static str {
+        match self {
+            UpdateSchedule::Hourly => "hourly",
+            UpdateSchedule::FourHours => "4-hours",
+            UpdateSchedule::TwelveHours => "12-hours",
+            UpdateSchedule::Daily => "daily",
+            UpdateSchedule::Weekly => "weekly",
+        }
+    }
+
+    /// The choice stored as `text`, if this version knows it.
+    #[must_use]
+    pub fn from_stored(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.stored() == text)
+    }
+}
+
+/// The stored schedule, and the stored text when this version does not know it (read as the
+/// default, [`UpdateSchedule::Daily`]).
+///
+/// # Errors
+/// Store errors.
+pub fn update_schedule(store: &Store) -> Result<(UpdateSchedule, Option<String>), RuntimeError> {
+    let Some(bytes) = store.local_value(SCHEDULE_KEY)? else {
+        return Ok((UpdateSchedule::default(), None));
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(match UpdateSchedule::from_stored(&text) {
+        Some(schedule) => (schedule, None),
+        None => (UpdateSchedule::default(), Some(text.into_owned())),
+    })
+}
+
+/// Stores how often automatic checks run.
+///
+/// # Errors
+/// Store errors.
+pub fn set_update_schedule(
+    store: &mut Store,
+    schedule: UpdateSchedule,
+) -> Result<(), RuntimeError> {
+    crate::local::set(
+        store,
+        &DeviceRecord::UpdateSchedule.key(),
+        schedule.stored().as_bytes(),
+    )
+    .map_err(RuntimeError::from)
+}
+
+/// When the last check finished, in Unix milliseconds; `None` if never, or if what is stored
+/// cannot be read (the next due check then runs and stores a good value).
+///
+/// # Errors
+/// Store errors.
+pub fn last_check(store: &Store) -> Result<Option<u64>, RuntimeError> {
+    Ok(store
+        .local_value(LAST_CHECK_KEY)?
+        .and_then(|b| std::str::from_utf8(&b).ok()?.parse().ok()))
+}
+
+/// Stores that a check finished at `unix_ms`, whatever it found: a failed check counts too, so a
+/// computer with no connection asks once per interval, not at every wake of the schedule.
+///
+/// # Errors
+/// Store errors.
+pub fn record_check(store: &mut Store, unix_ms: u64) -> Result<(), RuntimeError> {
+    crate::local::set(
+        store,
+        &DeviceRecord::UpdateLastCheck.key(),
+        unix_ms.to_string().as_bytes(),
+    )
+    .map_err(RuntimeError::from)
+}
+
+/// The last version a notification was shown for.
+///
+/// # Errors
+/// Store errors.
+pub fn notified_version(store: &Store) -> Result<Option<String>, RuntimeError> {
+    Ok(store
+        .local_value(NOTIFIED_KEY)?
+        .map(|b| String::from_utf8_lossy(&b).into_owned()))
+}
+
+/// Stores that a notification was shown for `version`, so it is not shown again.
+///
+/// # Errors
+/// Store errors.
+pub fn set_notified_version(store: &mut Store, version: &str) -> Result<(), RuntimeError> {
+    crate::local::set(
+        store,
+        &DeviceRecord::UpdateNotified.key(),
+        version.as_bytes(),
+    )
+    .map_err(RuntimeError::from)
+}
+
+/// When the next automatic check is due, in Unix milliseconds, `interval` after the last finished
+/// check (`last`) as read at `now`. Clock-free, so every case is tested without waiting:
+///
+/// - never checked: due now;
+/// - the wall clock moved back (`last` after `now`): never more than one interval from `now`. A
+///   caller that asks again later stores `now` as the last check first ([`record_check`]), or the
+///   check would move one interval further away at each ask;
+/// - the wall clock moved forward, or the computer woke from sleep: an overdue check is due now,
+///   once. The check stores a new `last`, so the next one is a whole interval later: no burst for
+///   the intervals that were slept through.
+#[must_use]
+pub fn next_due(last: Option<u64>, interval: Duration, now: u64) -> u64 {
+    let Some(last) = last else {
+        return now;
+    };
+    let step = u64::try_from(interval.as_millis()).unwrap_or(u64::MAX);
+    last.saturating_add(step).min(now.saturating_add(step))
 }
 
 /// Why an update did not happen.

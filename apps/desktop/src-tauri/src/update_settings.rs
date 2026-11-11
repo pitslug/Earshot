@@ -7,15 +7,29 @@
 //! the page only as [`failure_copy`]. Installing goes through [`WorkGate::enter_restart`], so it is
 //! refused during a meeting, a meeting job, the model check, the voice sample and the audio check,
 //! and while a model download is writing.
+//!
+//! Automatic checks (T12.22) run at the start and on the user's schedule, on one thread
+//! ([`SCHEDULE_THREAD`], [`spawn_schedule`]) that wakes at most every [`SCHEDULE_STEP`], reads the
+//! switch, the schedule and the last check again, and starts the same quiet check as the start
+//! when [`earshot_runtime::update::next_due`] says so. Off means no request. Every finished check,
+//! the button's too, is stored as the last one ([`after_check`]); an automatic check that finds a
+//! version not yet notified shows one notification when the window is not watched. No check
+//! starts while an update installs: [`UpdateJobs::install`] closes the jobs to checks before it
+//! takes [`WorkGate::enter_restart`], for good once the installer started.
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use earshot_core::asr::CancelToken;
-use earshot_runtime::SharedClock;
-use earshot_runtime::update::{CheckResult, UpdateError, UpdateOffer, UpdateSource, Updater};
-use serde::Serialize;
+use earshot_core::identity::Clock;
+use earshot_runtime::update::{
+    CheckResult, UpdateError, UpdateOffer, UpdateSchedule, UpdateSource, Updater,
+};
+use earshot_runtime::{RuntimeError, Services, SharedClock};
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, State};
 
@@ -76,9 +90,71 @@ pub struct UpdateView {
     pub current: String,
     /// Where the update stands.
     pub phase: UpdatePhase,
-    /// Whether Earshot checks by itself when it starts.
+    /// Whether Earshot checks by itself: when it starts and on its schedule.
     pub auto_check: bool,
+    /// How often it checks while it runs (with `auto_check` on).
+    pub schedule: ScheduleChoice,
+    /// A stored schedule this version does not know, read as daily.
+    pub schedule_unknown: Option<String>,
 }
+
+/// How often automatic checks run, as the page names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleChoice {
+    /// Every hour.
+    Hourly,
+    /// Every 4 hours.
+    FourHours,
+    /// Every 12 hours.
+    TwelveHours,
+    /// Every day.
+    Daily,
+    /// Every week.
+    Weekly,
+}
+
+impl From<UpdateSchedule> for ScheduleChoice {
+    fn from(s: UpdateSchedule) -> Self {
+        match s {
+            UpdateSchedule::Hourly => Self::Hourly,
+            UpdateSchedule::FourHours => Self::FourHours,
+            UpdateSchedule::TwelveHours => Self::TwelveHours,
+            UpdateSchedule::Daily => Self::Daily,
+            UpdateSchedule::Weekly => Self::Weekly,
+        }
+    }
+}
+
+impl From<ScheduleChoice> for UpdateSchedule {
+    fn from(s: ScheduleChoice) -> Self {
+        match s {
+            ScheduleChoice::Hourly => Self::Hourly,
+            ScheduleChoice::FourHours => Self::FourHours,
+            ScheduleChoice::TwelveHours => Self::TwelveHours,
+            ScheduleChoice::Daily => Self::Daily,
+            ScheduleChoice::Weekly => Self::Weekly,
+        }
+    }
+}
+
+/// How a check ended, for [`after_check`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckEnd {
+    /// Nobody pressed the button: the check at the start or on the schedule.
+    pub automatic: bool,
+    /// The newer version it found.
+    pub found: Option<String>,
+}
+
+/// Told about every check that ran, whatever it found or whether it failed.
+pub type CheckRecorder = Arc<dyn Fn(&CheckEnd) + Send + Sync>;
+
+/// The schedule thread's name.
+pub const SCHEDULE_THREAD: &str = "earshot-update-schedule";
+/// The longest the schedule sleeps before it reads the settings and the clock again, so a
+/// changed setting applies without a restart and a wake from sleep is noticed within it.
+pub const SCHEDULE_STEP: Duration = Duration::from_secs(5 * 60);
 
 /// No release key in this build.
 pub const NOT_SET_UP: &str = "Updates aren't set up in this build.";
@@ -227,8 +303,11 @@ pub type UpdateSink = Arc<dyn Fn(UpdateEvent) + Send + Sync>;
 struct Inner {
     work: Arc<dyn UpdateWork>,
     sink: UpdateSink,
+    recorder: CheckRecorder,
     phase: Mutex<UpdatePhase>,
     cancel: Mutex<Option<CancelToken>>,
+    /// An install is starting, or started: no check from then on.
+    installing: AtomicBool,
 }
 
 impl Inner {
@@ -244,14 +323,21 @@ impl Inner {
         (self.sink)(UpdateEvent { phase });
     }
 
+    /// Tells the recorder; its panic costs only the record, never the check's phase.
+    fn recorded(&self, end: &CheckEnd) {
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| (self.recorder)(end)));
+    }
+
     /// Moves to `next` if no step is running, as one decision: two presses start one thread.
     fn claim(&self, next: UpdatePhase) -> Result<UpdatePhase, IpcError> {
         let mut phase = self.phase.lock().unwrap_or_else(PoisonError::into_inner);
-        if matches!(
-            *phase,
-            // Ready too: the offer behind it is what an install will run, so no check replaces it.
-            UpdatePhase::Checking | UpdatePhase::Downloading { .. } | UpdatePhase::Ready { .. }
-        ) {
+        if self.installing.load(Ordering::SeqCst)
+            || matches!(
+                *phase,
+                // Ready too: the offer behind it is what an install will run, so no check replaces it.
+                UpdatePhase::Checking | UpdatePhase::Downloading { .. } | UpdatePhase::Ready { .. }
+            )
+        {
             return Err(IpcError {
                 kind: "busy".into(),
                 message: ALREADY_RUNNING.into(),
@@ -270,14 +356,28 @@ impl Inner {
 pub struct UpdateJobs(Arc<Inner>);
 
 impl UpdateJobs {
-    /// Jobs over `work`, reporting to `sink`.
+    /// Jobs over `work`, reporting to `sink`, with no recorder (tests; the app records its
+    /// checks through [`Self::with_recorder`]).
+    #[cfg(test)]
     #[must_use]
     pub fn new(work: Arc<dyn UpdateWork>, sink: UpdateSink) -> Self {
+        Self::with_recorder(work, sink, Arc::new(|_: &CheckEnd| {}))
+    }
+
+    /// Jobs over `work`, reporting to `sink`, and telling `recorder` how every check ended.
+    #[must_use]
+    pub fn with_recorder(
+        work: Arc<dyn UpdateWork>,
+        sink: UpdateSink,
+        recorder: CheckRecorder,
+    ) -> Self {
         Self(Arc::new(Inner {
             work,
             sink,
+            recorder,
             phase: Mutex::new(UpdatePhase::Idle),
             cancel: Mutex::new(None),
+            installing: AtomicBool::new(false),
         }))
     }
 
@@ -310,22 +410,44 @@ impl UpdateJobs {
             })
     }
 
-    /// Starts a check. `quiet` is the automatic one: a failure says nothing, because nobody asked.
+    /// Starts a check. `quiet` is the automatic one: a failure says nothing, because nobody asked,
+    /// and an offer the page already shows stays. The recorder hears how every check that ran
+    /// ended, a panicking one too.
     ///
     /// # Errors
-    /// `busy` while a step runs.
+    /// `busy` while a step runs or an install starts.
     pub fn start_check(&self, quiet: bool) -> Result<std::thread::JoinHandle<()>, IpcError> {
-        self.0.claim(UpdatePhase::Checking)?;
+        let before = self.0.claim(UpdatePhase::Checking)?;
         Ok(self.spawn(move |inner| {
-            let next = match inner.work.check() {
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| inner.work.check()));
+            let end = CheckEnd {
+                automatic: quiet,
+                found: match &result {
+                    Ok(Ok(Some((version, _)))) => Some(version.clone()),
+                    _ => None,
+                },
+            };
+            let result = match result {
+                Ok(result) => result,
+                Err(panic) => {
+                    inner.recorded(&end);
+                    std::panic::resume_unwind(panic);
+                }
+            };
+            let next = match result {
                 Ok(None) => UpdatePhase::UpToDate,
                 Ok(Some((version, size))) => UpdatePhase::Available { version, size },
-                Err(_) if quiet => UpdatePhase::Idle,
+                Err(_) if quiet => match before {
+                    // The work keeps the offer behind it when a check fails.
+                    UpdatePhase::Available { .. } => before,
+                    _ => UpdatePhase::Idle,
+                },
                 Err(e) => UpdatePhase::Failed {
                     message: failure_copy(&e).into(),
                 },
             };
             inner.set(next);
+            inner.recorded(&end);
         }))
     }
 
@@ -389,24 +511,36 @@ impl UpdateJobs {
     /// # Errors
     /// `update_not_ready`, `busy`; a failed start reaches the page as a phase too.
     pub fn install(&self, gate: &WorkGate, downloading: bool) -> Result<(), IpcError> {
-        if !matches!(self.0.phase(), UpdatePhase::Ready { .. }) {
-            return Err(IpcError::new("update_not_ready", NOT_READY));
+        {
+            // One decision with the check's claim: from here no check starts (T12.22).
+            let phase = self.0.phase.lock().unwrap_or_else(PoisonError::into_inner);
+            if !matches!(*phase, UpdatePhase::Ready { .. }) {
+                return Err(IpcError::new("update_not_ready", NOT_READY));
+            }
+            self.0.installing.store(true, Ordering::SeqCst);
         }
+        let reopen = || self.0.installing.store(false, Ordering::SeqCst);
         let busy = |message: &str| IpcError {
             kind: "busy".into(),
             message: message.into(),
             retryable: true,
         };
         if downloading {
+            reopen();
             return Err(busy(DOWNLOADS_RUNNING));
         }
-        let pass = gate.enter_restart().map_err(|_| busy(WORK_RUNNING))?;
+        let pass = gate.enter_restart().map_err(|_| {
+            reopen();
+            busy(WORK_RUNNING)
+        })?;
         match self.0.work.launch() {
             Ok(()) => {
+                // Both stay closed until the process ends.
                 std::mem::forget(pass);
                 Ok(())
             }
             Err(e) => {
+                reopen();
                 let message = match e {
                     UpdateError::InstallerChanged => INSTALLER_CHANGED,
                     _ => COULD_NOT_START,
@@ -423,16 +557,140 @@ impl UpdateJobs {
 fn view(state: &AppState, jobs: &UpdateJobs) -> Result<UpdateView, IpcError> {
     // A database saved by a newer Earshot cannot be opened, and installing the newer version is
     // the way out (T9.5c): the check by hand stays on offer, with the automatic one off.
-    let auto_check = match state.services() {
-        Ok(services) => earshot_runtime::update::auto_check(&services.store())?,
-        Err(e) if e.kind == crate::ipc::NEWER_DATA_KIND => false,
+    let (auto_check, (schedule, schedule_unknown)) = match state.services() {
+        Ok(services) => {
+            let store = services.store();
+            (
+                earshot_runtime::update::auto_check(&store)?,
+                earshot_runtime::update::update_schedule(&store)?,
+            )
+        }
+        Err(e) if e.kind == crate::ipc::NEWER_DATA_KIND => {
+            (false, (UpdateSchedule::default(), None))
+        }
         Err(e) => return Err(e),
     };
     Ok(UpdateView {
         current: env!("CARGO_PKG_VERSION").into(),
         phase: jobs.phase(),
         auto_check,
+        schedule: schedule.into(),
+        schedule_unknown,
     })
+}
+
+/// What a finished check leaves behind (the recorder of the app's [`UpdateJobs`]): the time it
+/// ended, as the last check, whatever it found; and for an automatic check that found a version
+/// no notification was shown for, `notify(version)`, which says whether it showed one (only when
+/// the window is not watched). A shown version is stored, so each version is notified once.
+///
+/// # Errors
+/// Store errors.
+pub fn after_check(
+    services: &Services,
+    end: &CheckEnd,
+    now_ms: u64,
+    notify: impl FnOnce(&str) -> bool,
+) -> Result<(), RuntimeError> {
+    let notified = {
+        let mut store = services.store();
+        earshot_runtime::update::record_check(&mut store, now_ms)?;
+        earshot_runtime::update::notified_version(&store)?
+    };
+    let Some(version) = end.found.as_deref().filter(|_| end.automatic) else {
+        return Ok(());
+    };
+    // The store lock is free while the notification is asked for.
+    if notified.as_deref() != Some(version) && notify(version) {
+        earshot_runtime::update::set_notified_version(&mut services.store(), version)?;
+    }
+    Ok(())
+}
+
+/// One wake of the schedule at `now_ms`: starts a quiet check when automatic checks are on and
+/// one is due, waits for it, and returns how long to sleep before the next wake (at most
+/// [`SCHEDULE_STEP`]). `ran` is when this thread last started a check, so a check whose end could
+/// not be stored is not repeated before its interval.
+///
+/// # Errors
+/// Store errors: the caller sleeps a whole step.
+pub fn schedule_tick(
+    services: &Services,
+    jobs: &UpdateJobs,
+    now_ms: u64,
+    ran: &mut Option<u64>,
+) -> Result<Duration, RuntimeError> {
+    let (on, (schedule, _), last) = {
+        let mut store = services.store();
+        let mut last = earshot_runtime::update::last_check(&store)?;
+        // The wall clock moved back past the last check: count from now, once, or each wake
+        // would put the check one interval further away.
+        if last.is_some_and(|l| l > now_ms) {
+            earshot_runtime::update::record_check(&mut store, now_ms)?;
+            last = Some(now_ms);
+        }
+        (
+            earshot_runtime::update::auto_check(&store)?,
+            earshot_runtime::update::update_schedule(&store)?,
+            last,
+        )
+    };
+    // Off is no request at all, whatever the schedule says.
+    if !on {
+        return Ok(SCHEDULE_STEP);
+    }
+    // The same for this thread's own memory of its last check.
+    if ran.is_some_and(|r| r > now_ms) {
+        *ran = Some(now_ms);
+    }
+    let last = match (last, *ran) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    let due = earshot_runtime::update::next_due(last, schedule.interval(), now_ms);
+    if due > now_ms {
+        return Ok(Duration::from_millis(due - now_ms).min(SCHEDULE_STEP));
+    }
+    // Busy (a check or download running, an update ready or installing): nothing now; the next
+    // wake reads again.
+    if let Ok(check) = jobs.start_check(true) {
+        *ran = Some(now_ms);
+        let _ = check.join();
+    }
+    Ok(SCHEDULE_STEP)
+}
+
+/// Runs [`schedule_tick`] until `wait` says stop: `wait(d)` sleeps up to `d` and returns whether
+/// to go on. It sleeps first, because the check at the start covers the start. A panic or a
+/// store error costs one step, never the thread.
+pub fn schedule_loop(
+    services: &Services,
+    jobs: &UpdateJobs,
+    clock: &dyn Clock,
+    mut wait: impl FnMut(Duration) -> bool,
+) {
+    let mut ran = None;
+    let mut sleep = SCHEDULE_STEP;
+    while wait(sleep) {
+        sleep = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            schedule_tick(services, jobs, clock.now_unix_ms(), &mut ran)
+        }))
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(SCHEDULE_STEP);
+    }
+}
+
+/// Starts the schedule on its own thread ([`SCHEDULE_THREAD`]) for the life of the app.
+pub fn spawn_schedule(services: Services, jobs: UpdateJobs, clock: SharedClock) {
+    let _ = std::thread::Builder::new()
+        .name(SCHEDULE_THREAD.into())
+        .spawn(move || {
+            schedule_loop(&services, &jobs, clock.as_ref(), |d| {
+                std::thread::sleep(d);
+                true
+            });
+        });
 }
 
 /// What the Updates section shows.
@@ -467,7 +725,7 @@ pub async fn cancel_update(jobs: State<'_, UpdateJobs>) -> Result<(), IpcError> 
     Ok(())
 }
 
-/// Turns the check at each start on or off.
+/// Turns automatic checks (at each start and on the schedule) on or off.
 #[tauri::command]
 #[specta::specta]
 pub async fn set_update_auto_check(
@@ -477,6 +735,19 @@ pub async fn set_update_auto_check(
 ) -> Result<UpdateView, IpcError> {
     let services = state.services()?;
     earshot_runtime::update::set_auto_check(&mut services.store(), on)?;
+    view(state.inner(), jobs.inner())
+}
+
+/// Stores how often automatic checks run; the schedule reads it at its next wake.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_update_schedule(
+    state: State<'_, AppState>,
+    jobs: State<'_, UpdateJobs>,
+    schedule: ScheduleChoice,
+) -> Result<UpdateView, IpcError> {
+    let services = state.services()?;
+    earshot_runtime::update::set_update_schedule(&mut services.store(), schedule.into())?;
     view(state.inner(), jobs.inner())
 }
 

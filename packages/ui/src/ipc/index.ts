@@ -63,6 +63,7 @@ export type {
   UpdateEvent,
   UpdatePhase,
   UpdateView,
+  ScheduleChoice,
   ModelSettingsValue,
   ModelSettingsView,
   ModelUse,

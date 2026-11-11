@@ -186,8 +186,15 @@ pub(crate) enum DeviceRecord {
     CudaTranscription,
     /// `settings/provisional-words`: whether a meeting shows provisional words (T9.1mb).
     Previews,
-    /// `settings/update-check`: whether Earshot checks for updates when it starts (T9.1b).
+    /// `settings/update-check`: whether Earshot checks for updates by itself: when it starts
+    /// (T9.1b) and on its schedule (T12.22).
     UpdateCheck,
+    /// `settings/update-schedule`: how often automatic update checks run (T12.22).
+    UpdateSchedule,
+    /// `update-last-check`: when the last update check finished (T12.22).
+    UpdateLastCheck,
+    /// `update-notified`: the last version an update notification was shown for (T12.22).
+    UpdateNotified,
     /// `settings/vocabulary`: the user's own words for summaries (T12.15a).
     Vocabulary,
 }
@@ -227,6 +234,9 @@ impl DeviceRecord {
         DeviceRecord::CudaTranscription,
         DeviceRecord::Previews,
         DeviceRecord::UpdateCheck,
+        DeviceRecord::UpdateSchedule,
+        DeviceRecord::UpdateLastCheck,
+        DeviceRecord::UpdateNotified,
         DeviceRecord::Vocabulary,
     ];
 
@@ -271,6 +281,9 @@ impl DeviceRecord {
                 DeviceRecord::CudaTranscription => crate::cuda_switch::CUDA_TRANSCRIPTION_KEY,
                 DeviceRecord::Previews => crate::preview_settings::PREVIEWS_KEY,
                 DeviceRecord::UpdateCheck => crate::update::AUTO_CHECK_KEY,
+                DeviceRecord::UpdateSchedule => crate::update::SCHEDULE_KEY,
+                DeviceRecord::UpdateLastCheck => crate::update::LAST_CHECK_KEY,
+                DeviceRecord::UpdateNotified => crate::update::NOTIFIED_KEY,
                 DeviceRecord::Vocabulary => crate::vocabulary::VOCABULARY_KEY,
             }
             .to_owned(),

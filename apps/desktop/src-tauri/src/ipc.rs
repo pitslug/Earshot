@@ -112,6 +112,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::update_settings::download_update,
             crate::update_settings::cancel_update,
             crate::update_settings::set_update_auto_check,
+            crate::update_settings::set_update_schedule,
             crate::update_settings::install_update,
             crate::general::set_start_with_windows,
             crate::general::previews_settings,

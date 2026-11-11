@@ -6,7 +6,7 @@ A Windows meeting recorder that keeps your conversations on your own computer. I
 
 Earshot is early software. **[Download the installer](https://github.com/pitslug/Earshot/releases/latest)** from Releases: `x64` for most Windows PCs, `arm64` for Snapdragon PCs such as the Surface Pro. Or build it from source (below).
 
-From 0.2.0, Earshot updates itself from Settings, General: press **Check for updates**, or turn on "Check for updates when Earshot starts" (off by default). 0.1.x has no in-app update, so install the next version by hand.
+From 0.2.0, Earshot updates itself from Settings, General: press **Check for updates**, or turn on "Check for updates automatically" (off by default), which checks when Earshot starts and then on a schedule you pick. 0.1.x has no in-app update, so install the next version by hand.
 
 The installers are not code-signed with a certificate, and the project does not plan to buy one. In-app updates are signed with the project's own key instead, which Earshot checks before it runs anything. What Windows does with an unsigned installer:
 

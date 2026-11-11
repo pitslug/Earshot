@@ -166,7 +166,7 @@ fn main() {
                 );
             }
             // In-app updates (T9.1b): what an earlier update left goes first; a check only if the
-            // user turned automatic checks on.
+            // user turned automatic checks on, at the start and then on their schedule (T12.22).
             let handle = app.handle().clone();
             let update_sink: update_settings::UpdateSink =
                 Arc::new(move |e: update_settings::UpdateEvent| {
@@ -176,18 +176,41 @@ fn main() {
             if let Some(dir) = &update_dir {
                 earshot_runtime::update::remove_leftovers(dir);
             }
-            let update_jobs = update_settings::UpdateJobs::new(
+            let update_clock: earshot_runtime::SharedClock = Arc::new(earshot_runtime::SystemClock);
+            let handle = app.handle().clone();
+            let record_services = state.services().ok();
+            let record_clock = Arc::clone(&update_clock);
+            let update_recorder: update_settings::CheckRecorder =
+                Arc::new(move |end: &update_settings::CheckEnd| {
+                    if let Some(services) = &record_services {
+                        let _ = update_settings::after_check(
+                            services,
+                            end,
+                            earshot_core::identity::Clock::now_unix_ms(record_clock.as_ref()),
+                            |version| {
+                                handle
+                                    .try_state::<Arc<shell::Shell>>()
+                                    .is_some_and(|shell| shell.on_update_found(version))
+                            },
+                        );
+                    }
+                });
+            let update_jobs = update_settings::UpdateJobs::with_recorder(
                 Arc::new(update_settings::HostUpdates::new(
                     update_dir,
-                    Arc::new(earshot_runtime::SystemClock),
+                    Arc::clone(&update_clock),
                 )),
                 update_sink,
+                update_recorder,
             );
             let check_now = state.services().is_ok_and(|services| {
                 earshot_runtime::update::auto_check(&services.store()).unwrap_or(false)
             });
             if check_now {
                 let _ = update_jobs.start_check(true);
+            }
+            if let Ok(services) = state.services() {
+                update_settings::spawn_schedule(services, update_jobs.clone(), update_clock);
             }
             app.manage(update_jobs);
             app.manage(state);
