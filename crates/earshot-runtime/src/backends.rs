@@ -1498,6 +1498,22 @@ fn load_parakeet_qnn(
                 .map_err(onnx)?,
         )
     };
+    let compile: npu_compiled::Compile<'_, ParakeetTranscriber, AsrError> =
+        match npu_compiled::helper() {
+            Some(exe) => npu_compiled::Compile::Helper(Box::new(move |context: &Path| {
+                npu_compiled::helper_compile(exe, models.root(), model.name, context)
+            })),
+            None => npu_compiled::Compile::InProcess(Box::new(|context: &Path| {
+                with_encoder(
+                    earshot_onnx::OnnxSession::load_writing_context(
+                        &dir.join("encoder.onnx"),
+                        encoder,
+                        context,
+                    )
+                    .map_err(onnx)?,
+                )
+            })),
+        };
     let (t, how) = match CompileKey::for_conversion(&dir) {
         Ok(key) => npu_compiled::load(
             &dir,
@@ -1507,25 +1523,38 @@ fn load_parakeet_qnn(
                 Ok(fit) => Err(format!("the NPU answers {fit:?}")),
                 Err(e) => Err(e.to_string()),
             },
-            |context| {
+            |context: &Path| {
                 with_encoder(earshot_onnx::OnnxSession::load(context, encoder).map_err(onnx)?)
             },
-            |context| {
-                with_encoder(
-                    earshot_onnx::OnnxSession::load_writing_context(
-                        &dir.join("encoder.onnx"),
-                        encoder,
-                        context,
-                    )
-                    .map_err(onnx)?,
-                )
-            },
+            compile,
             ordinary,
         )?,
         Err(why) => (ordinary()?, How::Ordinary { why }),
     };
     npu_compiled::record(&how);
     Ok(t)
+}
+
+/// The work of the [`crate::npu_compiled`] helper process (T12.12b): initialises ONNX Runtime with
+/// the QNN plugin from `models`, as [`load_parakeet`] on QNN does, and loads the NPU conversion of
+/// Parakeet model `name`'s encoder writing its context model at `out`. The session is left to the
+/// process's end, as every QNN session is.
+///
+/// # Errors
+/// An unknown or non-Parakeet model, a missing or damaged conversion, ONNX Runtime or the plugin
+/// not loading, or a compile that fails.
+pub fn compile_npu_model(models: &ModelDir, name: &str, out: &Path) -> Result<(), RuntimeError> {
+    let Ok(AsrModel::Parakeet(model)) = asr_model(name) else {
+        return Err(RuntimeError::Asr(AsrError::Backend(format!(
+            "{name} is no Parakeet model"
+        ))));
+    };
+    init_onnx(models, Accelerator::Qnn)?;
+    let dir = require_qnn_model(models, model).map_err(RuntimeError::Asr)?;
+    let config = session_config(Accelerator::Qnn)?;
+    earshot_onnx::OnnxSession::load_writing_context(&dir.join("encoder.onnx"), &config, out)
+        .map(drop)
+        .map_err(RuntimeError::Onnx)
 }
 
 /// The checks of every NPU load ([`load_parakeet_qnn`]): a static encoder and the documented

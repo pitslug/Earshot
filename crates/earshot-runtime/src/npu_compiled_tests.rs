@@ -63,22 +63,155 @@ fn run(
                 Err("the plugin refused the context model".to_owned())
             }
         },
-        |model| {
+        Compile::InProcess(Box::new(|model: &Path| {
             calls.compile.set(calls.compile.get() + 1);
             if !compile_ok {
                 return Err("the plugin could not write".to_owned());
             }
-            let folder = model.parent().unwrap();
-            std::fs::write(model, b"context model").unwrap();
-            std::fs::write(folder.join(BINARY), vec![7u8; 4096]).unwrap();
+            write_fake_compile(model);
             Ok("ordinary, writing")
-        },
+        })),
         || {
             calls.ordinary.set(calls.ordinary.get() + 1);
             Ok::<_, String>("ordinary")
         },
     )
     .unwrap()
+}
+
+/// What the plugin writes, faked: the context model and its binary.
+fn write_fake_compile(model: &Path) {
+    let folder = model.parent().unwrap();
+    std::fs::write(model, b"context model").unwrap();
+    std::fs::write(folder.join(BINARY), vec![7u8; 4096]).unwrap();
+}
+
+/// [`run`] with a helper process that writes when `helper_ok`.
+fn run_helper(
+    conversion: &Path,
+    key: &CompileKey,
+    calls: &Calls,
+    helper_ok: bool,
+    compiled_ok: bool,
+) -> (&'static str, How) {
+    load(
+        conversion,
+        key,
+        |_| Ok(true),
+        |model| {
+            calls.compiled.set(calls.compiled.get() + 1);
+            assert!(model.is_file());
+            if compiled_ok {
+                Ok("compiled")
+            } else {
+                Err("the plugin refused the context model".to_owned())
+            }
+        },
+        Compile::Helper(Box::new(|model: &Path| {
+            calls.compile.set(calls.compile.get() + 1);
+            if !helper_ok {
+                return Err("the helper ended with exit code: 1".to_owned());
+            }
+            write_fake_compile(model);
+            Ok(())
+        })),
+        || {
+            calls.ordinary.set(calls.ordinary.get() + 1);
+            Ok::<_, String>("ordinary")
+        },
+    )
+    .unwrap()
+}
+
+/// With a helper this process only ever loads compiled models: a first compile is the helper's,
+/// then the compiled load, and the next load uses the folder.
+#[test]
+fn npu_compiled_a_helper_compiles_and_this_process_loads_only_compiled_models() {
+    let dir = TempDir::new("npu-helper");
+    let calls = Calls::default();
+    let (s, how) = run_helper(&dir.0, &key(), &calls, true, true);
+    assert_eq!(s, "compiled");
+    assert_eq!(how, How::CompiledByHelper { refused: None });
+    assert!(!how.is_refusal());
+    assert_eq!(
+        (
+            calls.compile.get(),
+            calls.compiled.get(),
+            calls.ordinary.get()
+        ),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        names(&folder(&dir.0, &key())),
+        [RECORD, CONTEXT_MODEL, BINARY]
+    );
+    let calls = Calls::default();
+    assert_eq!(
+        run_helper(&dir.0, &key(), &calls, true, true),
+        ("compiled", How::Compiled)
+    );
+    assert_eq!(calls.compile.get(), 0);
+}
+
+#[test]
+fn npu_compiled_a_failed_helper_or_its_refused_model_is_the_ordinary_load() {
+    for (helper_ok, compiled_ok) in [(false, true), (true, false)] {
+        let dir = TempDir::new("npu-helper-fails");
+        let calls = Calls::default();
+        let (s, how) = run_helper(&dir.0, &key(), &calls, helper_ok, compiled_ok);
+        assert_eq!(s, "ordinary");
+        assert!(how.is_refusal(), "{how:?}");
+        assert!(matches!(how, How::Ordinary { .. }), "{how:?}");
+        assert_eq!(calls.ordinary.get(), 1);
+        assert!(
+            !names(&dir.0.join(COMPILED_DIR))
+                .iter()
+                .any(|n| n.starts_with(".tmp")),
+            "no temp folder left"
+        );
+    }
+}
+
+/// A damaged folder with a helper: put aside, the helper compiles again, and the load is compiled.
+#[test]
+fn npu_compiled_a_damaged_folder_with_a_helper_is_compiled_again_there() {
+    let dir = TempDir::new("npu-helper-damaged");
+    run_helper(&dir.0, &key(), &Calls::default(), true, true);
+    std::fs::write(folder(&dir.0, &key()).join(BINARY), vec![8u8; 4096]).unwrap();
+    let calls = Calls::default();
+    let (s, how) = run_helper(&dir.0, &key(), &calls, true, true);
+    assert_eq!(s, "compiled");
+    match &how {
+        How::CompiledByHelper { refused: Some(why) } => assert!(why.contains(BINARY), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(how.is_refusal());
+}
+
+#[test]
+fn npu_compiled_child_mode_answers_only_its_flag() {
+    use std::ffi::OsString;
+    let exe = OsString::from("earshot.exe");
+    assert_eq!(child_main(std::slice::from_ref(&exe)), None);
+    assert_eq!(child_main(&[exe.clone(), "--summary-child".into()]), None);
+    // Its own flag with arguments it does not take: refused, nothing loaded.
+    assert_eq!(
+        child_main(&[exe.clone(), COMPILE_FLAG.into(), "--out".into()]),
+        Some(1)
+    );
+    assert_eq!(
+        child_main(&[
+            exe,
+            COMPILE_FLAG.into(),
+            "--model".into(),
+            "a".into(),
+            "--models".into(),
+            "b".into(),
+            "--out".into(),
+            "c".into()
+        ]),
+        Some(1)
+    );
 }
 
 fn folder(conversion: &Path, key: &CompileKey) -> PathBuf {
@@ -274,7 +407,7 @@ fn npu_compiled_only_the_ordinary_loads_failure_fails() {
         &key(),
         |_| Ok(true),
         |_| Err("no".to_owned()),
-        |_| Err("no".to_owned()),
+        Compile::InProcess(Box::new(|_: &Path| Err("no".to_owned()))),
         || Err("the model is not on the NPU".to_owned()),
     );
     assert_eq!(r.unwrap_err(), "the model is not on the NPU");
@@ -303,14 +436,14 @@ fn npu_compiled_losing_the_publish_race_is_no_failure() {
         &key(),
         |_| Ok(true),
         |_| Ok::<_, String>("compiled"),
-        |model| {
+        Compile::InProcess(Box::new(|model: &Path| {
             std::fs::write(model, b"ours").unwrap();
             // Meanwhile the other process finished.
             std::fs::create_dir_all(&dest).unwrap();
             std::fs::write(dest.join(CONTEXT_MODEL), b"theirs").unwrap();
             std::fs::write(dest.join(RECORD), b"{}").unwrap();
             Ok("ordinary, writing")
-        },
+        })),
         || Ok("ordinary"),
     )
     .unwrap();
@@ -536,21 +669,66 @@ fn npu_compiled_real_npu_compiles_once_then_loads_the_same_words() {
     assert_eq!(take_note(), None);
     drop((first, second));
 
-    // Damage the binary: one byte, same size.
-    let binary = names(&folder)
+    // The sequences that crashed before T12.12b: close, then load compiled, again and again. Every
+    // close now keeps the session, and the next load takes it back.
+    for round in 0..5 {
+        let mut again = load(&format!("round {round} (from the pool)"));
+        assert_eq!(words(&mut again), reference);
+        drop(again);
+        assert!(earshot_onnx::idle_qnn_sessions() >= 1);
+    }
+
+    // A damaged binary. The one this process loaded is mapped and cannot be written while it runs,
+    // so the damage is done to a fresh copy under a second models folder.
+    let tmp2 = TempDir::new("npu-real-damaged");
+    link_tree(&real.root().join(&conversion), &tmp2.0.join(&conversion));
+    let folder2 = tmp2
+        .0
+        .join(&conversion)
+        .join(COMPILED_DIR)
+        .join(&names_after_first[0]);
+    std::fs::create_dir_all(&folder2).unwrap();
+    for name in names(&folder) {
+        std::fs::copy(folder.join(&name), folder2.join(&name)).unwrap();
+    }
+    let binary = names(&folder2)
         .into_iter()
         .find(|n| n.ends_with(".bin"))
         .expect("a context binary");
-    let mut bytes = std::fs::read(folder.join(&binary)).unwrap();
+    let mut bytes = std::fs::read(folder2.join(&binary)).unwrap();
     let damaged_byte = bytes.len() / 2;
     bytes[damaged_byte] ^= 1;
-    std::fs::write(folder.join(&binary), &bytes).unwrap();
-    let mut third = load("third (damaged, compiles again)");
+    std::fs::write(folder2.join(&binary), &bytes).unwrap();
+    let models2 = ModelDir::new(&tmp2.0);
+    let load2 = |what: &str| {
+        let started = Instant::now();
+        let t = load_parakeet(&models2, model, Accelerator::Qnn, Some(2)).unwrap();
+        println!(
+            "{what}: loaded in {:.1} s, {:?}",
+            started.elapsed().as_secs_f64(),
+            last_load()
+        );
+        t
+    };
+    let mut third = load2("damaged copy (compiles again)");
     assert_eq!(words(&mut third), reference, "after the fallback");
     assert_eq!(take_note(), Some(NOTE), "the refusal is noted");
-    let rebuilt = std::fs::read(folder.join(&binary)).unwrap();
-    assert_ne!(rebuilt, bytes, "compiled again");
+    assert!(
+        matches!(
+            last_load(),
+            Some(How::Compiling {
+                refused: Some(_),
+                kept: Ok(())
+            })
+        ),
+        "{:?}",
+        last_load()
+    );
     drop(third);
-    let mut fourth = load("fourth (compiled again)");
+    let mut fourth = load2("damaged copy, compiled again");
     assert_eq!(words(&mut fourth), reference);
+    assert_eq!(last_load(), Some(How::Compiled));
+    // Pooled sessions keep their files mapped to the end of the process, so the temp folders stay
+    // behind (hard links and a compiled copy, under %TEMP%).
+    std::mem::forget((tmp, tmp2));
 }

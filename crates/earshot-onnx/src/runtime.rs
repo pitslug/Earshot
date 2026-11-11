@@ -15,6 +15,12 @@
 //!   log for the session (`"All nodes placed on [CPUExecutionProvider]"`,
 //!   `"Node(s) placed on [CUDAExecutionProvider]"`), captured with a per-session logger, not
 //!   inferred from what was requested. See [`Placement`].
+//! - **A QNN session is never closed** (T12.12b). QNN plugin v2.7.0 ends the process (0xC0000005)
+//!   when it loads an EP context model after any QNN session of the process was closed, unless an
+//!   ordinary QNN load came after that close (measured, docs/live-previews.md). So dropping a QNN
+//!   [`OnnxSession`] puts its ONNX Runtime session in an idle pool, keyed by the model file and
+//!   the [`SessionConfig`], and a later QNN load of the same takes it from there instead of
+//!   loading ([`idle_qnn_sessions`]). The pool lives as long as the process.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -660,10 +666,72 @@ pub fn environment() -> Result<&'static Environment, OnnxError> {
 
 /// An ONNX Runtime session plus the backend that actually runs it.
 pub struct OnnxSession {
-    pub(crate) session: Session,
+    pub(crate) session: Held,
     backend: SessionBackend,
     /// The weights this session uses instead of its own copy, kept alive with it.
     shared_weights: Option<Arc<crate::shared_weights::Weights>>,
+    /// A QNN session's pool key: the absolute model path and its settings (module docs).
+    keep: Option<(PathBuf, SessionConfig)>,
+}
+
+/// The ONNX Runtime session of an [`OnnxSession`]: always there, except while its drop moves a QNN
+/// session to the idle pool.
+pub(crate) struct Held(Option<Session>);
+
+impl std::ops::Deref for Held {
+    type Target = Session;
+
+    fn deref(&self) -> &Session {
+        self.0
+            .as_ref()
+            .expect("the session is only taken while it is dropped")
+    }
+}
+
+impl std::ops::DerefMut for Held {
+    fn deref_mut(&mut self) -> &mut Session {
+        self.0
+            .as_mut()
+            .expect("the session is only taken while it is dropped")
+    }
+}
+
+/// A QNN session no [`OnnxSession`] holds (module docs).
+struct Idle {
+    model: PathBuf,
+    config: SessionConfig,
+    session: Session,
+    backend: SessionBackend,
+}
+
+/// The idle QNN sessions of this process.
+static IDLE_QNN: Mutex<Vec<Idle>> = Mutex::new(Vec::new());
+
+fn idle_qnn() -> std::sync::MutexGuard<'static, Vec<Idle>> {
+    IDLE_QNN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// How many QNN sessions this process keeps without anyone using them (module docs).
+#[must_use]
+pub fn idle_qnn_sessions() -> usize {
+    idle_qnn().len()
+}
+
+impl Drop for OnnxSession {
+    fn drop(&mut self) {
+        if let Some((model, config)) = self.keep.take()
+            && let Some(session) = self.session.0.take()
+        {
+            idle_qnn().push(Idle {
+                model,
+                config,
+                session,
+                backend: self.backend.clone(),
+            });
+        }
+    }
 }
 
 impl fmt::Debug for OnnxSession {
@@ -732,6 +800,33 @@ impl OnnxSession {
                 "{} not found; run `cargo xtask fetch-models --set ci`",
                 model.display()
             )));
+        }
+        // A QNN session is kept under its absolute model path (module docs). A load that writes a
+        // context model is never served from the pool: it must compile.
+        let keep = match config.provider {
+            Provider::Qnn => Some((
+                std::path::absolute(model)
+                    .map_err(|e| OnnxError::Model(format!("{}: {e}", model.display())))?,
+                config.clone(),
+            )),
+            _ => None,
+        };
+        if let Some((path, settings)) = &keep
+            && entries.is_empty()
+        {
+            let mut idle = idle_qnn();
+            if let Some(i) = idle
+                .iter()
+                .position(|s| s.model == *path && s.config == *settings)
+            {
+                let found = idle.swap_remove(i);
+                return Ok(OnnxSession {
+                    session: Held(Some(found.session)),
+                    backend: found.backend,
+                    shared_weights: None,
+                    keep,
+                });
+            }
         }
         let env = environment()?;
         let dispatch = config.provider.dispatch()?;
@@ -819,12 +914,13 @@ impl OnnxSession {
         })?;
         let placement = placement.lock().map(|p| p.clone()).unwrap_or_default();
         Ok(OnnxSession {
-            session,
+            session: Held(Some(session)),
             backend: SessionBackend {
                 requested: config.provider,
                 placement,
             },
             shared_weights,
+            keep,
         })
     }
 

@@ -693,6 +693,12 @@ fn memory_report(models: &ModelDir, model: &str, accel: Accelerator, audio: &[f3
 }
 
 fn main() {
+    // NPU compiles in a helper, as in the app (T12.12b).
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if let Some(code) = earshot_runtime::npu_compiled::child_main(&raw) {
+        std::process::exit(code);
+    }
+    earshot_runtime::npu_compiled::use_this_exe();
     let args = parse_args();
     let models = args.models.clone().map_or_else(
         || {

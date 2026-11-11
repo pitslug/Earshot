@@ -83,6 +83,11 @@ fn main() {
         std::process::exit(code);
     }
     earshot_runtime::summary_child::use_this_exe();
+    // And an NPU compile (T12.12b): the app itself never closes the session that compiled.
+    if let Some(code) = earshot_runtime::npu_compiled::child_main(&args) {
+        std::process::exit(code);
+    }
+    earshot_runtime::npu_compiled::use_this_exe();
     // So does the replay mode of `accept m7`: no window or webview exists in it.
     if let Some(code) = headless::main_if_asked(&args) {
         std::process::exit(code);
