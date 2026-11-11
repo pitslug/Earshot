@@ -110,7 +110,9 @@ Upstream since 0.1.160, both from Qualcomm engineers:
   Generation, 3-4 times slower than the CPU in T8.3i, is now level with it. Prompt processing is about 4 times slower, and summaries are mostly prompt.
 - `GGML_VK_PERF_LOGGER`'s per-op times are not usable on this driver: one matmul shape ranged from 83 us to 285 ms within a run, and one reading implied 66 TFLOPS.
 
-**Verdict so far:** right answers with one switch, but under T8.3h's rule (at most 0.67 of the CPU's wall time) a prompt-dominated summary cannot pass at a quarter of the CPU's prompt speed. The full `sum-eval` was not run because no crate release carries these changes. Left: the same runs on a newer Adreno driver (Qualcomm's 2026.10.1 package), which the owner installs.
+**Verdict (closed by the owner, 2026-11-11):** right answers with one switch, but under T8.3h's rule (at most 0.67 of the CPU's wall time) a prompt-dominated summary cannot pass at a quarter of the CPU's prompt speed. The full `sum-eval` was not run because no crate release carries these changes. The planned rerun on a newer driver was dropped: the newer X2 driver, 32.0.181.0, has one user report (not confirmed by Qualcomm) of an 87% drop in llama.cpp generation speed on the OpenCL backend, and a driver would need about a 6x prompt gain to pass.
+
+**Reopen when** a `llama-cpp-sys-2` release carries #30829 and #30821 (or their successors) and Qualcomm ships a driver with the 8-bit vector compiler fix. Then run the probe again: `test-backend-ops` for `MUL_MAT` and the recurrent ops, then the 4B on a short and a 1,300-token prompt, with integer dot product on and off, against `llama-bench` on the CPU.
 
 ## NPU summaries, further (T12.7, 2026-11-11): what is published now
 
