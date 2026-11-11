@@ -129,3 +129,8 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - apps/desktop/src-tauri/src/update_settings.rs:598: the clock-back rewrite of `update-last-check` runs with the switch off; move it after the `!on` return (T12.22 review).
 - apps/desktop/src-tauri/src/update_settings.rs:393: a panicking automatic check shows `Failed` on the page, against "an automatic check that fails says nothing" (pre-existing, now repeated by the schedule) (T12.22 review).
 - packages/ui/src/ipc/ipc.ts:292: `setUpdateAutoCheck` doc still says "Turns the check at each start on or off" (T12.22 review).
+- packages/ui/src/detail/MeetingDetailView.tsx:636: a right-click menu on a plain word returns focus to the page body on close; pass the line's Edit button as the return target (T12.15f review).
+- packages/ui/src/detail/DictionaryWords.tsx:84: "Not now" and Escape in the add bar drop focus to the page body; focus the line's Edit button (T12.15f review).
+- packages/ui/src/ipc/mockWords.ts: `wordsToOffer` mirrors `vocabulary::words_to_offer` with no shared case table; add `fixtures/ui/words_to_offer_cases.json` run by both suites (T12.15f review).
+- packages/ui/src/ipc/mock.ts:753: the "Only a word can be added to the dictionary." refusal is not in `fixtures/ui/summary_settings_cases.json` (T12.15f review).
+- crates/earshot-runtime/src/vocabulary.rs:515: a word in single quotes is added with its quotes ('Zorbek'), the matcher keeping apostrophes; ask the owner whether to strip leading and trailing single quotes (T12.15f review).

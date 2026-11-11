@@ -3,7 +3,9 @@
 // suggestion keeps a quiet solid one. Each is a real button in the Tab order whose popover
 // offers the choices; nothing changes until one is chosen. The rules (which tokens, what
 // a choice writes) are the runtime's (`word_choices`, `edit::use_word`): this file only
-// draws the marks the detail carries.
+// draws the marks the detail carries. Since T12.15f every other word of a final line is its
+// own element carrying `WORD_ATTRIBUTE`, so a right-click finds its word, and a mark's popover
+// also offers "Add to Dictionary" or "Remove from Dictionary" (`DictionaryWords.tsx`).
 
 import {
   Body1,
@@ -22,6 +24,7 @@ import {
 import { Fragment, type ReactNode, useState } from "react";
 
 import type { TranscriptRow } from "../ipc";
+import { dictionaryWord, inDictionary, splitToken } from "./dictionaryWord";
 
 const useStyles = makeStyles({
   // A button that reads as the word it marks.
@@ -66,6 +69,12 @@ const useStyles = makeStyles({
     gap: tokens.spacingHorizontalS,
     flexWrap: "wrap",
   },
+  // A word the Dictionary bar offers, while the bar is open (T12.15f, the owner: a soft
+  // purple or green, never yellow).
+  tinted: {
+    backgroundColor: tokens.colorPaletteLavenderBackground2,
+    borderRadius: tokens.borderRadiusSmall,
+  },
 });
 
 /** What the marks of a line do; each resolves once the detail was read again. */
@@ -78,20 +87,38 @@ export interface WordActions {
   onKeep(token: number): void;
 }
 
+/** The Dictionary as a line's words see it (T12.15f). */
+export interface DictionaryState {
+  /** The Dictionary's entries (`MeetingDetail.dictionary`). */
+  entries: string[];
+  /** "Add to Dictionary", or "Remove from Dictionary" for an entry, on word `word`. */
+  onToggle(word: string): void;
+}
+
+/** The attribute that names a word of a final line (T12.15f): a right-click on an element
+ * carrying it, or the Menu key or Shift+F10 on a mark, opens that word's Dictionary menu. */
+export const WORD_ATTRIBUTE = "data-dictionary-word";
+
 /** The text of a transcript line with its marks. `text` is split on runs of white space
  * exactly as the runtime numbers tokens; a mark wraps only the word inside its token, so the
  * punctuation around it stays plain text. A mark whose word is not in its token (a stale
- * detail) is not drawn. */
+ * detail) is not drawn. Every other word (`dictionaryWord`) is a plain span carrying
+ * [`WORD_ATTRIBUTE`], tinted while it is in `tinted` (the words the bar under a just-edited
+ * line offers, T12.15f). */
 export function LineText({
   row,
   wordList,
   actions,
+  dictionary,
+  tinted = [],
 }: {
   row: TranscriptRow;
   wordList: string[];
   actions: WordActions;
+  dictionary: DictionaryState;
+  tinted?: string[];
 }): ReactNode {
-  if (row.suggestions.length === 0 && row.changed_words.length === 0) return row.text;
+  const styles = useStyles();
   let token = -1;
   return row.text.split(/(\p{White_Space}+)/u).map((piece, i) => {
     if (piece === "" || /^\p{White_Space}+$/u.test(piece)) return piece;
@@ -101,7 +128,24 @@ export function LineText({
     const changed = row.changed_words.find((c) => c.token === t);
     const word = changed?.written ?? suggestion?.decoded;
     const at = word === undefined ? -1 : piece.indexOf(word);
-    if (word === undefined || at < 0) return piece;
+    if (word === undefined || at < 0) {
+      const plain = dictionaryWord(piece);
+      if (plain === null) return piece;
+      const [pre, core, post] = splitToken(piece);
+      return (
+        <Fragment key={i}>
+          {pre}
+          <span
+            {...{ [WORD_ATTRIBUTE]: plain }}
+            className={tinted.includes(plain) ? styles.tinted : undefined}
+          >
+            {core}
+          </span>
+          {post}
+        </Fragment>
+      );
+    }
+    const listed = inDictionary(dictionary.entries, word);
     return (
       // Keyed by position, so a suggestion that becomes a changed word keeps its button and
       // the focus on it.
@@ -113,6 +157,8 @@ export function LineText({
             word={word}
             decoded={changed.decoded}
             wordList={wordList}
+            listed={listed}
+            onDictionary={() => dictionary.onToggle(word)}
             onUse={(w) => actions.onUse(t, w)}
             onPutBack={() => actions.onPutBack(t)}
           />
@@ -120,7 +166,9 @@ export function LineText({
           <WordMark
             kind="suggestion"
             word={word}
-            listed={suggestion?.listed ?? ""}
+            suggested={suggestion?.listed ?? ""}
+            listed={listed}
+            onDictionary={() => dictionary.onToggle(word)}
             onUse={(w) => actions.onUse(t, w)}
             onKeep={() => actions.onKeep(t)}
           />
@@ -131,16 +179,25 @@ export function LineText({
   });
 }
 
-type MarkProps =
-  | { kind: "suggestion"; word: string; listed: string; onUse(word: string): void; onKeep(): void }
-  | {
-      kind: "changed";
-      word: string;
-      decoded: string;
-      wordList: string[];
-      onUse(word: string): void;
-      onPutBack(): void;
-    };
+/** What both kinds of mark share: the word and its Dictionary action (T12.15f). */
+interface MarkBase {
+  word: string;
+  /** The word is a Dictionary entry: the popover offers Remove rather than Add. */
+  listed: boolean;
+  onDictionary(): void;
+}
+
+type MarkProps = MarkBase &
+  (
+    | { kind: "suggestion"; suggested: string; onUse(word: string): void; onKeep(): void }
+    | {
+        kind: "changed";
+        decoded: string;
+        wordList: string[];
+        onUse(word: string): void;
+        onPutBack(): void;
+      }
+  );
 
 function WordMark(props: MarkProps) {
   const styles = useStyles();
@@ -151,6 +208,12 @@ function WordMark(props: MarkProps) {
     setOpen(false);
     f();
   };
+  // T12.15f: the same action as the word's menu.
+  const dictionaryButton = (
+    <Button size="small" appearance="subtle" onClick={() => choose(props.onDictionary)}>
+      {props.listed ? "Remove from Dictionary" : "Add to Dictionary"}
+    </Button>
+  );
   const wanted = query.trim().toLowerCase();
   const others =
     props.kind === "changed"
@@ -171,6 +234,7 @@ function WordMark(props: MarkProps) {
         <button
           type="button"
           data-word-mark={props.kind}
+          {...{ [WORD_ATTRIBUTE]: props.word }}
           aria-label={name}
           className={mergeClasses(styles.mark, props.kind === "suggestion" ? styles.suggestion : styles.changed)}
           // The word is not the line: a click here never starts a line edit.
@@ -183,15 +247,16 @@ function WordMark(props: MarkProps) {
         {props.kind === "suggestion" ? (
           <div className={styles.surface}>
             <Body1>
-              Your dictionary has <Body1Strong>{props.listed}</Body1Strong>
+              Your dictionary has <Body1Strong>{props.suggested}</Body1Strong>
             </Body1>
             <div className={styles.buttons}>
-              <Button appearance="primary" size="small" onClick={() => choose(() => props.onUse(props.listed))}>
+              <Button appearance="primary" size="small" onClick={() => choose(() => props.onUse(props.suggested))}>
                 Use it
               </Button>
               <Button size="small" onClick={() => choose(props.onKeep)}>
                 Keep
               </Button>
+              {dictionaryButton}
             </div>
           </div>
         ) : (
@@ -203,6 +268,7 @@ function WordMark(props: MarkProps) {
               <Button size="small" onClick={() => choose(props.onPutBack)}>
                 Put back {props.decoded}
               </Button>
+              {dictionaryButton}
             </div>
             {props.wordList.some((w) => w !== props.word) && (
               <Field label="Another word" size="small">

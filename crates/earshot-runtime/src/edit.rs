@@ -395,6 +395,33 @@ pub fn edit_segment(
     })
 }
 
+/// [`edit_segment`], returning the words the bar under the line offers to add to the
+/// Dictionary (T12.15f, `crate::vocabulary::words_to_offer`: the words the edit wrote that are
+/// neither common nor on the word list), compared with the line's text in the same
+/// transaction as the write. An edit that changes nothing offers nothing. Nothing is added
+/// here: a word joins the Dictionary only from a click on it (`crate::vocabulary::add_word`).
+///
+/// # Errors
+/// As [`edit_segment`].
+pub fn edit_segment_offering(
+    services: &Services,
+    meeting: EntityId,
+    segment: EntityId,
+    text: &str,
+) -> Result<Vec<String>, RuntimeError> {
+    let text = clean_segment_text(text)?;
+    write(services, |tx, stamp| {
+        let (row, _) = final_line(tx, meeting, segment)?;
+        let before = row.segment.text.clone();
+        let after = text.clone();
+        if !put_line_text(tx, stamp, row, text)? {
+            return Ok(Vec::new());
+        }
+        let listed = word_choices::word_list_tx(tx)?;
+        Ok(crate::vocabulary::words_to_offer(&before, &after, &listed))
+    })
+}
+
 /// The live final-transcript row `segment` of the live meeting `meeting`, with every live
 /// final line's id and text (for word choices), by [`edit_segment`]'s refusals.
 fn final_line(

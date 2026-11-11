@@ -267,7 +267,12 @@ describe("MeetingDetailView", () => {
       await user.type(field, "So the lead time on the second pump set is now about eleven weeks.");
       await user.click(screen.getByRole("button", { name: "Save" }));
 
-      const row = (await screen.findByText(/now about eleven weeks/)).closest('[role="row"]');
+      // The words cell (each word of a final line is its own element since T12.15f).
+      const row = (
+        await screen.findByText(
+          (_, el) => el?.getAttribute("role") === "cell" && /now about eleven weeks/.test(el.textContent ?? ""),
+        )
+      ).closest('[role="row"]');
       if (!(row instanceof HTMLElement)) throw new Error("no row");
       expect(within(row).getByText("(edited)")).toBeInTheDocument();
       expect(screen.queryByRole("textbox", { name: "Line 1" })).not.toBeInTheDocument();
@@ -1361,5 +1366,221 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
     expect(draft.transcript[7].suggestions).not.toEqual([]);
     expect(screen.getByText(LINE8_TEXT)).toBeInTheDocument();
     expect(marks()).toEqual([]);
+  });
+});
+
+describe("MeetingDetailView, words to the Dictionary (T12.15f)", () => {
+  const LINE1 = sampleDetail(ITEM).transcript[0].segment_id;
+  const LINE1_EDITED = "So the lead time on the Quillmarsh pump set is now looking like eleven weeks.";
+  const word = (w: string) => document.querySelector<HTMLElement>(`[data-dictionary-word="${w}"]`);
+  const bar = () => screen.queryByRole("group", { name: "Add to Dictionary" });
+
+  async function transcript(data: MockIpcData = {}) {
+    const s = await setup(data);
+    await s.user.click(await screen.findByRole("tab", { name: "Transcript" }));
+    return s;
+  }
+
+  async function editLine1(user: ReturnType<typeof userEvent.setup>, text = LINE1_EDITED) {
+    await user.click(screen.getByRole("button", { name: "Edit line 1" }));
+    const field = screen.getByRole("textbox", { name: "Line 1" });
+    await user.clear(field);
+    await user.type(field, text);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Line 1" })).not.toBeInTheDocument());
+  }
+
+  it("offers the words an edit wrote, tinted in the line, and adds one only on a click", async () => {
+    const { user, calls, ipc } = await transcript();
+    await editLine1(user);
+    const offered = await within(bar()!).findByRole("button", { name: 'Add "Quillmarsh" to Dictionary' });
+    // Only the written word: every other word was in the line before.
+    expect(within(bar()!).getAllByRole("button").map((b) => b.textContent)).toEqual(["Quillmarsh", "Not now"]);
+    expect(word("Quillmarsh")?.className).not.toBe("");
+    expect(word("pump")?.className ?? "").toBe("");
+    // Nothing was added by the edit itself.
+    expect(calls.some((c) => c[0] === "addDictionaryWord")).toBe(false);
+    expect((await ipc.summaryVocabulary()).words).toEqual([]);
+
+    await user.click(offered);
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent('Added "Quillmarsh".');
+    expect(calls).toContainEqual(["addDictionaryWord", "Quillmarsh"]);
+    expect((await ipc.summaryVocabulary()).words).toEqual(["Quillmarsh"]);
+    // The bar has no word left to offer, and the listed word loses its tint; Undo has the focus.
+    expect(bar()).toBeNull();
+    expect(word("Quillmarsh")?.className ?? "").toBe("");
+    const undo = within(status).getByRole("button", { name: "Undo" });
+    await waitFor(() => expect(undo).toHaveFocus());
+    // The line's text is unchanged by the add.
+    expect(word("Quillmarsh")?.closest('[role="cell"]')?.textContent).toBe(`${LINE1_EDITED}(edited)`);
+  });
+
+  it("Undo removes exactly the word added and offers it again", async () => {
+    const { user, calls, ipc } = await transcript({ summaries: { vocabulary: ["QXR-7"] } });
+    await editLine1(user);
+    await user.click(await screen.findByRole("button", { name: 'Add "Quillmarsh" to Dictionary' }));
+    await user.click(within(await screen.findByRole("status")).getByRole("button", { name: "Undo" }));
+
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    expect(calls).toContainEqual(["removeDictionaryWord", "Quillmarsh"]);
+    expect((await ipc.summaryVocabulary()).words).toEqual(["QXR-7"]);
+    const again = await screen.findByRole("button", { name: 'Add "Quillmarsh" to Dictionary' });
+    await waitFor(() => expect(again).toHaveFocus());
+  });
+
+  it("says how many other lines now carry a suggestion of the word", async () => {
+    const base = sampleDetail(ITEM);
+    const detail = {
+      ...base,
+      transcript: base.transcript.map((r, i) =>
+        i === 3 ? { ...r, suggestions: [{ token: 0, decoded: "Agreed", listed: "Quillmarsh" }] } : r,
+      ),
+    };
+    const { user } = await transcript({ details: { [ITEM.id]: detail } });
+    await editLine1(user);
+    await user.click(await screen.findByRole("button", { name: 'Add "Quillmarsh" to Dictionary' }));
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent('Added "Quillmarsh".');
+    expect(status).toHaveTextContent("1 other line now has a suggestion.");
+  });
+
+  it("closes the bar when the user moves on, and ignoring it adds nothing", async () => {
+    const { user, calls } = await transcript();
+    await editLine1(user);
+    expect(await screen.findByRole("group", { name: "Add to Dictionary" })).toBeInTheDocument();
+    await user.click(within(bar()!).getByRole("button", { name: "Not now" }));
+    expect(bar()).toBeNull();
+    expect(word("Quillmarsh")?.className ?? "").toBe("");
+
+    // Again, then another line's edit: the bar goes.
+    await editLine1(user, "So the lead time on the Velmora pump set is now looking like eleven weeks.");
+    expect(await screen.findByRole("button", { name: 'Add "Velmora" to Dictionary' })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit line 2" }));
+    expect(bar()).toBeNull();
+    // Escape inside the bar closes it too.
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await editLine1(user, "So the lead time on the Tarnwick pump set is now looking like eleven weeks.");
+    const button = await screen.findByRole("button", { name: 'Add "Tarnwick" to Dictionary' });
+    button.focus();
+    await user.keyboard("{Escape}");
+    expect(bar()).toBeNull();
+    expect(calls.some((c) => c[0] === "addDictionaryWord")).toBe(false);
+  });
+
+  it("keeps the bar while another line's menu is open, and closes it when that menu adds a word", async () => {
+    const { user } = await transcript();
+    await editLine1(user);
+    await screen.findByRole("group", { name: "Add to Dictionary" });
+    fireEvent.contextMenu(word("commissioning")!, { clientX: 40, clientY: 40 });
+    const item = await screen.findByRole("menuitem", { name: 'Add "commissioning" to Dictionary' });
+    expect(bar()).not.toBeNull();
+    await user.click(item);
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent('Added "commissioning".');
+    expect(status.closest('[role="row"]')).toBe(word("commissioning")!.closest('[role="row"]'));
+    expect(bar()).toBeNull();
+  });
+
+  it("offers no bar when the edit wrote only common or listed words", async () => {
+    const { user, calls } = await transcript({ summaries: { vocabulary: ["Quillmarsh"] } });
+    await editLine1(user);
+    await editLine1(user, "So the lead time on the Quillmarsh pump set is now looking like eleven weeks, we think.");
+    expect(calls.filter((c) => c[0] === "editSegment")).toHaveLength(2);
+    expect(bar()).toBeNull();
+  });
+
+  it("opens a word's menu on right-click: Add for a new word, Remove for a listed one, no Edit line", async () => {
+    const { user, calls, ipc } = await transcript({ summaries: { vocabulary: ["Pump"] } });
+    fireEvent.contextMenu(word("lead")!, { clientX: 40, clientY: 40 });
+    const add = await screen.findByRole("menuitem", { name: 'Add "lead" to Dictionary' });
+    expect(screen.getAllByRole("menuitem")).toEqual([add]);
+    expect(screen.queryByRole("menuitem", { name: /Edit/ })).toBeNull();
+    await user.click(add);
+    expect(await screen.findByRole("status")).toHaveTextContent('Added "lead".');
+    expect(calls).toContainEqual(["addDictionaryWord", "lead"]);
+
+    // "pump" is listed as "Pump": case ignored.
+    fireEvent.contextMenu(word("pump")!, { clientX: 40, clientY: 40 });
+    await user.click(await screen.findByRole("menuitem", { name: 'Remove "pump" from Dictionary' }));
+    expect(await screen.findByText('Removed "pump" from your Dictionary.')).toBeInTheDocument();
+    expect(calls).toContainEqual(["removeDictionaryWord", "pump"]);
+    expect((await ipc.summaryVocabulary()).words).toEqual(["lead"]);
+    // Nothing changed the line.
+    expect(calls.some((c) => c[0] === "editSegment")).toBe(false);
+  });
+
+  it("opens the menu from the keyboard: a marked word's own, or every word of the line from Edit", async () => {
+    const { user, calls } = await transcript();
+    const mark = screen.getByRole("button", { name: "Suggestion for Reed" });
+    mark.focus();
+    await user.keyboard("{Shift>}{F10}{/Shift}");
+    const item = await screen.findByRole("menuitem", { name: 'Add "Reed" to Dictionary' });
+    expect(screen.getAllByRole("menuitem")).toEqual([item]);
+    await waitFor(() => expect(item).toHaveFocus());
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
+    await waitFor(() => expect(mark).toHaveFocus());
+
+    screen.getByRole("button", { name: "Edit line 8" }).focus();
+    await user.keyboard("{ContextMenu}");
+    await screen.findAllByRole("menuitem");
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(
+      ["Fine", "by", "us", "I'll", "send", "it", "to", "Tom", "Reed", "in", "writing"].map(
+        (w) => `Add "${w}" to Dictionary`,
+      ),
+    );
+    await user.click(screen.getByRole("menuitem", { name: 'Add "Tom" to Dictionary' }));
+    await waitFor(() => expect(calls).toContainEqual(["addDictionaryWord", "Tom"]));
+    // The menu opened no line edit.
+    expect(screen.queryByRole("textbox", { name: "Line 8" })).not.toBeInTheDocument();
+  });
+
+  it("gives a marked word's popover the same action, and the popover's clicks open no menu", async () => {
+    const { user, calls } = await transcript({ summaries: { vocabulary: ["reed"] } });
+    // "Reed" is listed: the popover offers Remove.
+    await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));
+    const dialog = await screen.findByRole("dialog", { name: "Suggestion for Reed" });
+    fireEvent.contextMenu(within(dialog).getByRole("button", { name: "Keep" }));
+    expect(screen.queryByRole("menuitem")).toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: "Remove from Dictionary" }));
+    await waitFor(() => expect(calls).toContainEqual(["removeDictionaryWord", "Reed"]));
+    await user.click(await screen.findByRole("button", { name: "Suggestion for Reed" }));
+    const again = await screen.findByRole("dialog", { name: "Suggestion for Reed" });
+    await user.click(within(again).getByRole("button", { name: "Add to Dictionary" }));
+    await waitFor(() => expect(calls).toContainEqual(["addDictionaryWord", "Reed"]));
+  });
+
+  it("shows a refusal in place, in the Dictionary page's own words", async () => {
+    const full = Array.from({ length: 100 }, (_, i) => `w${i}`);
+    const { user, ipc } = await transcript({ summaries: { vocabulary: full } });
+    fireEvent.contextMenu(word("lead")!, { clientX: 40, clientY: 40 });
+    await user.click(await screen.findByRole("menuitem", { name: 'Add "lead" to Dictionary' }));
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("The list can hold at most 100 words; this one has 101.");
+    expect(within(status).queryByRole("button", { name: "Undo" })).toBeNull();
+    expect((await ipc.summaryVocabulary()).words).toEqual(full);
+    // In place: under the line, not the page's notice.
+    expect(status.closest('[role="row"]')).toBe(word("lead")!.closest('[role="row"]'));
+  });
+
+  it("offers nothing on a draft transcript", async () => {
+    const base = sampleDetail(ITEM);
+    const draft = { ...base, header: { ...base.header, transcript: "Draft" as const } };
+    await transcript({ details: { [ITEM.id]: draft } });
+    expect(word("lead")).toBeNull();
+    fireEvent.contextMenu(screen.getByText(base.transcript[0].text));
+    expect(screen.queryByRole("menuitem")).toBeNull();
+  });
+
+  it("the mock's offer follows words_to_offer", async () => {
+    const ipc = createMockIpc({ meetings: [ITEM], summaries: { vocabulary: ["Zorbek"] } });
+    const offer = await ipc.editSegment(
+      ITEM.id,
+      LINE1,
+      "So the lead time on the Quillmarsh (zorbek) pump set is now about 11 weeks, quillmarsh.",
+    );
+    expect(offer).toEqual(["Quillmarsh"]);
+    expect(await ipc.editSegment(ITEM.id, LINE1, "So the lead time on the Quillmarsh (zorbek) pump set is now about 11 weeks, quillmarsh.")).toEqual([]);
   });
 });

@@ -1,0 +1,19 @@
+{
+  "about": "Which word a transcript token adds to the Dictionary (T12.15f): the token's core (no surrounding punctuation, the word matcher's split_punctuation) when it holds a letter, else none. crates/earshot-runtime (vocabulary_tests.rs) runs every case through `vocabulary::dictionary_word`, and packages/ui/src/detail/dictionaryWord.test.ts through the UI's `dictionaryWord`, so the UI cannot offer a word the app would refuse. Every word is invented.",
+  "cases": [
+    { "token": "Quillmarsh", "word": "Quillmarsh" },
+    { "token": "Quillmarsh,", "word": "Quillmarsh" },
+    { "token": "(QXR-7)", "word": "QXR-7" },
+    { "token": "\"Velmora.\"", "word": "Velmora" },
+    { "token": "\u201cVelmora\u201d", "word": "Velmora" },
+    { "token": "don't", "word": "don't" },
+    { "token": "'Zorbek'", "word": "'Zorbek'" },
+    { "token": "3D", "word": "3D" },
+    { "token": "\u00d8rsby.", "word": "\u00d8rsby" },
+    { "token": "42", "word": null },
+    { "token": "4.2", "word": null },
+    { "token": "--", "word": null },
+    { "token": "...", "word": null },
+    { "token": "\u2014", "word": null }
+  ]
+}

@@ -55,8 +55,11 @@ export const commands = {
 	getMeeting: (meeting: string) => typedError<MeetingDetail, IpcError>(__TAURI_INVOKE("get_meeting", { meeting })),
 	/**  Gives `meeting` a new title (empty: untitled). */
 	renameMeeting: (meeting: string, title: string) => typedError<null, IpcError>(__TAURI_INVOKE("rename_meeting", { meeting, title })),
-	/**  Replaces the text of one line of `meeting`'s final transcript (T12.16). */
-	editSegment: (meeting: string, segment: string, text: string) => typedError<null, IpcError>(__TAURI_INVOKE("edit_segment", { meeting, segment, text })),
+	/**
+	 *  Replaces the text of one line of `meeting`'s final transcript (T12.16); returns the words
+	 *  the bar under the line offers to add to the Dictionary (T12.15f, nothing added).
+	 */
+	editSegment: (meeting: string, segment: string, text: string) => typedError<string[], IpcError>(__TAURI_INVOKE("edit_segment", { meeting, segment, text })),
 	/**
 	 *  "Use it", or another word from the list (T12.15e): word `token` of a final transcript line
 	 *  becomes `word`, which must be on the word list.
@@ -66,6 +69,16 @@ export const commands = {
 	putBackWord: (meeting: string, segment: string, token: number) => typedError<null, IpcError>(__TAURI_INVOKE("put_back_word", { meeting, segment, token })),
 	/**  "Keep" (T12.15e): word `token` of a line stays and is not suggested again. */
 	keepWord: (meeting: string, segment: string, token: number) => typedError<null, IpcError>(__TAURI_INVOKE("keep_word", { meeting, segment, token })),
+	/**
+	 *  "Add to Dictionary" on a word of the transcript (T12.15f): the word of `token` joins the
+	 *  Dictionary (`invalid_setting` with the Dictionary page's message: nothing stored).
+	 */
+	addDictionaryWord: (token: string) => typedError<DictionaryWordAdded, IpcError>(__TAURI_INVOKE("add_dictionary_word", { token })),
+	/**
+	 *  "Remove from Dictionary", and "Undo" after an add (T12.15f): the Dictionary entry that is
+	 *  `word` (case ignored) goes; false when there is none.
+	 */
+	removeDictionaryWord: (word: string) => typedError<boolean, IpcError>(__TAURI_INVOKE("remove_dictionary_word", { word })),
 	/**
 	 *  Corrects one text of `meeting`'s current summary `summary` (T12.16); the text before the
 	 *  edit becomes the previous summary.
@@ -857,6 +870,17 @@ export type DeviceItem = {
 	hands_free: boolean,
 };
 
+/**  What adding a word from the transcript did (T12.15f). */
+export type DictionaryWordAdded = {
+	/**  The word as the Dictionary holds it ("Undo" removes exactly this). */
+	word: string,
+	/**
+	 *  False when the Dictionary already had it (case ignored): nothing changed, nothing to
+	 *  undo.
+	 */
+	added: boolean,
+};
+
 /**  How hard Claude Code works on a summary (T12.18): `--effort low|medium|high|xhigh|max`. */
 export type EffortChoice = 
 /**  `low`. */
@@ -1144,6 +1168,12 @@ export type MeetingDetail = {
 	 *  word" on a changed word; empty for a draft transcript. It stays on this computer.
 	 */
 	word_list: string[],
+	/**
+	 *  The Dictionary's entries as stored (T12.15f), so a word of the transcript offers "Remove
+	 *  from Dictionary" when it is one (case ignored) and "Add to Dictionary" otherwise; empty
+	 *  for a draft transcript, which offers neither.
+	 */
+	dictionary: string[],
 };
 
 /**

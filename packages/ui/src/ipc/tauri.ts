@@ -43,9 +43,7 @@ export function createTauriIpc(): Ipc {
     renameMeeting: async (meeting, title) => {
       unwrap(await commands.renameMeeting(meeting, title));
     },
-    editSegment: async (meeting, segment, text) => {
-      unwrap(await commands.editSegment(meeting, segment, text));
-    },
+    editSegment: async (meeting, segment, text) => unwrap(await commands.editSegment(meeting, segment, text)),
     useWord: async (meeting, segment, token, word) => {
       unwrap(await commands.useWord(meeting, segment, token, word));
     },
@@ -55,6 +53,8 @@ export function createTauriIpc(): Ipc {
     keepWord: async (meeting, segment, token) => {
       unwrap(await commands.keepWord(meeting, segment, token));
     },
+    addDictionaryWord: async (token) => unwrap(await commands.addDictionaryWord(token)),
+    removeDictionaryWord: async (word) => unwrap(await commands.removeDictionaryWord(word)),
     editSummary: async (meeting, summary, field, text) => {
       unwrap(await commands.editSummary(meeting, summary, field, text));
     },

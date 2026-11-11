@@ -2,6 +2,7 @@
 // `earshot_runtime::word_choices` and `edit::use_word`, so a rule change edits both. The
 // sound matcher itself is not mirrored: the sample's suggestions are fixed data.
 
+import { dictionaryWord } from "../detail/dictionaryWord";
 import type { MeetingDetail, PersonItem } from "./ipc";
 
 /** The white-space tokens of `text` (Rust `split_whitespace`: Unicode White_Space). */
@@ -90,4 +91,32 @@ export function marksAfterEdit(detail: MeetingDetail, segment: string): MeetingD
       };
     }),
   };
+}
+
+/** The mock's common words (T12.15f): a short fixture in place of the matcher's 5,000 AMI
+ * words (`earshot_core::vocabulary::suggest::is_common`), which the mock does not carry. */
+export const MOCK_COMMON_WORDS = new Set(
+  (
+    "a about an and are as at be but by can do for from go had has have he her i i'll if in is it " +
+    "its it's me my no not of ok okay on or our so that that's the their them then there they " +
+    "think this to up us was we what when which who will with would yes you your"
+  ).split(" "),
+);
+
+/** `vocabulary::words_to_offer`: each token of `after` whose word (`dictionaryWord`) is not the
+ * core of a token of `before`, leaving out common words (`MOCK_COMMON_WORDS`), words on
+ * `listed` (case ignored) and repeats in another case; in line order. */
+export function wordsToOffer(before: string, after: string, listed: string[]): string[] {
+  const was = new Set(tokensOf(before).map((t) => splitPunctuation(t)[1]));
+  const onList = new Set(listed.map((w) => w.toLowerCase()));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of tokensOf(after)) {
+    const w = dictionaryWord(t);
+    if (w === null || was.has(w) || MOCK_COMMON_WORDS.has(w.toLowerCase()) || onList.has(w.toLowerCase())) continue;
+    if (seen.has(w.toLowerCase())) continue;
+    seen.add(w.toLowerCase());
+    out.push(w);
+  }
+  return out;
 }

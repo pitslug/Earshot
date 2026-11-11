@@ -79,14 +79,20 @@ pub fn set_words(services: &Services, words: &[String]) -> Result<SummaryVocabul
         let mut db = services.store();
         vocabulary::set_vocabulary(&mut db, words)
     };
-    match stored {
-        Ok(v) => Ok(view(v.words(), Vec::new())),
-        Err(SetVocabularyError::Store(e)) => Err(e.into()),
-        Err(SetVocabularyError::Refused(e)) => Err(IpcError {
+    stored.map(|v| view(v.words(), Vec::new())).map_err(refusal)
+}
+
+/// A Dictionary write's error for the UI: a refusal is `invalid_setting` with the rule in plain
+/// words (the page's own message, also when a word is added from the transcript, T12.15f);
+/// store errors as usual.
+pub fn refusal(e: SetVocabularyError) -> IpcError {
+    match e {
+        SetVocabularyError::Store(e) => e.into(),
+        SetVocabularyError::Refused(_) | SetVocabularyError::NotAWord => IpcError {
             kind: "invalid_setting".into(),
             message: sentence(&e.to_string()),
             retryable: false,
-        }),
+        },
     }
 }
 

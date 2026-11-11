@@ -435,3 +435,58 @@ fn edit_word_list_never_reaches_a_summary_request() {
         assert!(!body.contains("Oskarine") && !body.contains("Vantrel"));
     }
 }
+
+#[test]
+fn edit_segment_offering_vocabulary_offers_the_new_unlisted_words_and_adds_nothing() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let (m, id) = suggesting(&svc, 914);
+    let alice = speaker(&svc, m, "Alice");
+    link_speaker(
+        &svc,
+        m,
+        alice.id,
+        &PersonChoice::New {
+            name: "Vantrel Oskarine".into(),
+        },
+    )
+    .unwrap();
+    // "ask sorbeck, then ship" -> Zorbek (Dictionary) and Oskarine (a saved name) are listed,
+    // "the" is common, "Quillmarsh" and "Brevmoor" are new.
+    let offer = edit_segment_offering(
+        &svc,
+        m,
+        id,
+        "  ask Zorbek, then ship the Quillmarsh kit to Oskarine (Brevmoor). ",
+    )
+    .unwrap();
+    assert_eq!(offer, ["Quillmarsh", "Brevmoor"]);
+    assert_eq!(
+        text_of(&svc, m, id),
+        "ask Zorbek, then ship the Quillmarsh kit to Oskarine (Brevmoor)."
+    );
+    // Nothing joined the Dictionary.
+    assert_eq!(
+        crate::vocabulary::vocabulary(&svc.store())
+            .unwrap()
+            .0
+            .words(),
+        ["Zorbek"]
+    );
+    // The same text again writes nothing and offers nothing.
+    assert!(
+        edit_segment_offering(
+            &svc,
+            m,
+            id,
+            "ask Zorbek, then ship the Quillmarsh kit to Oskarine (Brevmoor)."
+        )
+        .unwrap()
+        .is_empty()
+    );
+    // The refusals are edit_segment's.
+    assert_eq!(
+        refused(edit_segment_offering(&svc, m, id, "  ")),
+        refused(edit_segment(&svc, m, id, "  "))
+    );
+}

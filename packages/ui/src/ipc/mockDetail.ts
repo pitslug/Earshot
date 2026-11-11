@@ -211,6 +211,7 @@ export function sampleDetail(item: MeetingListItem): MeetingDetail {
     kept_local: null,
     // Filled from the Dictionary and the persons when the mock serves the detail.
     word_list: [],
+    dictionary: [],
   };
 }
 

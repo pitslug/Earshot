@@ -79,6 +79,7 @@ import type {
   TranscriptKind,
   TranscriptRow,
   ChangedWordView,
+  DictionaryWordAdded,
   WordSuggestionView,
   Verdict,
   WarningKind,
@@ -184,6 +185,7 @@ export type {
   TranscriptKind,
   TranscriptRow,
   ChangedWordView,
+  DictionaryWordAdded,
   WordSuggestionView,
   Verdict,
   WarningKind,
@@ -239,8 +241,10 @@ export interface IpcCommands
   /** Gives the meeting a new title ("" makes it untitled). Rejects with `invalid_title`. */
   renameMeeting(meeting: string, title: string): Promise<void>;
   /** Replaces the text of one line of the final transcript; the line keeps its id and times.
+   * Resolves with the words the bar under the line offers to add to the Dictionary
+   * (T12.15f: words the edit wrote, neither common nor on the word list; nothing is added).
    * Rejects with `invalid_text`, `segment_not_found` or `draft_transcript`. */
-  editSegment(meeting: string, segment: string, text: string): Promise<void>;
+  editSegment(meeting: string, segment: string, text: string): Promise<string[]>;
   /** "Use it", or another word from `MeetingDetail.word_list` (T12.15e): word `token` of a
    * final line becomes `word`, its punctuation kept; the line is marked edited. Rejects with
    * `word_not_listed`, `word_not_found`, `segment_not_found` or `draft_transcript`. */
@@ -252,6 +256,13 @@ export interface IpcCommands
    * line is not changed. Rejects with `word_not_found`, `segment_not_found` or
    * `draft_transcript`. */
   keepWord(meeting: string, segment: string, token: number): Promise<void>;
+  /** "Add to Dictionary" on a word of the transcript (T12.15f): the word of `token` (without
+   * its punctuation) joins the Dictionary; `added` is false when it was already there (case
+   * ignored). Rejects with `invalid_setting` and the Dictionary page's own message. */
+  addDictionaryWord(token: string): Promise<DictionaryWordAdded>;
+  /** "Remove from Dictionary", and "Undo" after an add (T12.15f): the entry that is `word`
+   * (case ignored) goes; false when there is none. */
+  removeDictionaryWord(word: string): Promise<boolean>;
   /** Corrects one text of the current summary `summary` (T12.16); the text before the edit
    * becomes the previous summary. Rejects with `invalid_summary_text` or `summary_changed`. */
   editSummary(meeting: string, summary: string, field: SummaryFieldRef, text: string): Promise<void>;
