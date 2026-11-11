@@ -496,9 +496,10 @@ impl fmt::Display for SessionBackend {
     }
 }
 
-/// The loaded ONNX Runtime: the library path and the process-wide environment.
+/// The loaded ONNX Runtime: the library path, its pin and the process-wide environment.
 struct Loaded {
     library: PathBuf,
+    sha256: String,
     env: Environment,
 }
 
@@ -618,6 +619,7 @@ pub fn init(library: &Path, expected_sha256: &str) -> Result<&'static Environmen
     Ok(&RUNTIME
         .get_or_init(|| Loaded {
             library: canonical,
+            sha256: actual.to_ascii_lowercase(),
             env,
         })
         .env)
@@ -637,6 +639,12 @@ pub fn preload_library(path: &Path) -> Result<(), OnnxError> {
 #[must_use]
 pub fn loaded_library() -> Option<&'static Path> {
     RUNTIME.get().map(|l| l.library.as_path())
+}
+
+/// The lower-case SHA-256 of the library [`init`] loaded (checked against its pin then), if any.
+#[must_use]
+pub fn loaded_library_sha256() -> Option<&'static str> {
+    RUNTIME.get().map(|l| l.sha256.as_str())
 }
 
 /// The process-wide ONNX Runtime environment (telemetry off).
@@ -685,19 +693,32 @@ impl OnnxSession {
         Self::load_with(model, config, None, &[])
     }
 
-    /// Evaluation only (T12.12): [`OnnxSession::load`] without weight sharing and with extra
-    /// ONNX Runtime session config entries (for example `ep.context_enable`, which makes the
-    /// QNN plugin write a compiled context model). No shipped code calls this.
+    /// [`OnnxSession::load`] that also has the execution provider write what it compiled as an
+    /// EP context model at `context_model` (ONNX Runtime's `ep.context_enable=1`,
+    /// `ep.context_file_path`, `ep.context_embed_mode=0`; T12.12a): an ONNX file holding one
+    /// `EPContext` node and the model's metadata, beside a context binary the provider names after
+    /// it (the QNN plugin: `<stem>_qnn.bin`) and that the node names relative to it, so the folder
+    /// can be moved whole. A later session loads `context_model` with [`OnnxSession::load`] and
+    /// skips the compile. The session returned runs as an ordinary one. No weight sharing.
     ///
     /// # Errors
-    /// As [`OnnxSession::load`], plus a refused config entry.
-    #[doc(hidden)]
-    pub fn load_with_session_entries(
+    /// As [`OnnxSession::load`]; a provider that cannot write the context model fails the load.
+    pub fn load_writing_context(
         model: &Path,
         config: &SessionConfig,
-        entries: &[(&str, &str)],
+        context_model: &Path,
     ) -> Result<Self, OnnxError> {
-        Self::load_with(model, config, None, entries)
+        let path = context_model.display().to_string();
+        Self::load_with(
+            model,
+            config,
+            None,
+            &[
+                ("ep.context_enable", "1"),
+                ("ep.context_file_path", &path),
+                ("ep.context_embed_mode", "0"),
+            ],
+        )
     }
 
     fn load_with(

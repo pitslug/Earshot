@@ -223,7 +223,7 @@ So the NPU sessions of an Everyone meeting (two tracks' own and two previews) ea
 
 ## NPU sessions from compiled context models (T12.12, 2026-11-11)
 
-**Question:** can a compiled QNN context model (`ep.context_enable=1`: the plugin writes an ONNX model with one `EPContext` node pointing at a compiled context binary) bring an NPU session below T12.4's 2.0 GiB and 29-31 s? Evaluation only: `OnnxSession::load_with_session_entries` and `ParakeetTdt::load_with_encoder` (both `#[doc(hidden)]`, kept out of shipped code by `earshot-onnx/tests/eval_only.rs`) and the probe `crates/earshot-onnx/examples/qnn_context_probe.rs`:
+**Question:** can a compiled QNN context model (`ep.context_enable=1`: the plugin writes an ONNX model with one `EPContext` node pointing at a compiled context binary) bring an NPU session below T12.4's 2.0 GiB and 29-31 s? Measured with evaluation-only loaders (since T12.12a the shipped `OnnxSession::load_writing_context` and `ParakeetTdt::load_with_encoder`) and the probe `crates/earshot-onnx/examples/qnn_context_probe.rs` (its `ctx-share` mode was removed with them):
 
 ```powershell
 cargo run --release -p earshot-onnx --features qnn --example qnn_context_probe -- <models>\parakeet-qnn\parakeet-tdt-0.6b-v2 target\t1212\v2 compile
@@ -246,7 +246,7 @@ Parakeet 110M: today 17.2 s and about 0.8-1.0 GiB of private memory per session;
 - **Where the memory went.** Today the plugin compiles the QDQ graph at each load and keeps the QDQ initializers and the compiled graph in the process. From a context model it maps the binary: about 0.6 GiB of the machine's memory for the first session (the binary's size), then about 0.13 GiB per extra session.
 - **`ep.share_ep_contexts` does nothing here**, as T12.4 read from the plugin source: each session still takes its own graph from the binary.
 
-**What a shipped version needs** (not done; a shipped change is the owner's call):
+**What a shipped version needs** (the brief for T12.12a; what was built is in the next section):
 
 - **Where it comes from:** compiled on the user's own computer, once per model, the first time the NPU conversion is used, or after its download. It costs one ordinary load (about 30 s), with no new download source and nothing published per chip. It is our own file, so the file a load reads must be checked like any model file: record its SHA-256 when written, and verify it before every load.
 - **What invalidates it:** a different `encoder.onnx` or `encoder.weights` (manifest digests), a different QNN plugin or `QnnHtp*.dll` (the pins in `QNN_ARM64`), or a different `ep_compatibility_info` (SDK and chip), plus the NPU driver version for safety. Any mismatch, or a load the plugin refuses, falls back to today's load and compiles again: saving memory never costs a meeting.
@@ -254,6 +254,24 @@ Parakeet 110M: today 17.2 s and about 0.8-1.0 GiB of private memory per session;
 - **What it changes:** a call's two NPU sessions would hold about 0.8 GiB of the machine's memory instead of about 5.3 GiB, and load in about a second instead of a minute. That is "well below 2 GiB", so T12.4's rule (both settings, unchanged) is to be run again once the app loads this way.
 
 **Recommendation:** load the NPU encoder from a context model compiled on the computer (task T12.12a, with the owner's go-ahead), then re-run T12.4's rule. The memory gain matters even with previews off: today a call on the Surface leaves about 1 GiB free before the summary model loads.
+
+## Loading compiled NPU models in the app (T12.12a, stopped 2026-11-11)
+
+Built on `wip/T12.12a` (`earshot_runtime::npu_compiled`, the AGENTS.md bullet there), not merged. On the Surface the first load compiled and kept the context model (25 s), the next loaded it in 1.2 s with exactly the words, times and probabilities of the ordinary load, and a damaged binary was refused, compiled again and noted. Two findings:
+
+- **Plugin v2.7.0's own compatibility check always answers "prefer recompilation"** for its own compiles: it writes the VTCM size as 0 ("unset") into `ep_compatibility_info` (`v2:6:2.51.0:5.51.0:81:0:0:0`) and calls only an equal VTCM optimal (`cache_compatibility/qnn_cache_compatibility_manager.cc`). Only "unsupported" can be a reason to compile again.
+- **A blocker: loading a context model crashes the process (0xC0000005) once any QNN session has been dropped**, unless an ordinary (compiling) QNN load came after that drop. Measured in single processes with Parakeet 110M:
+
+| Sequence in one process | Result |
+|---|---|
+| context model, a second beside it | fine |
+| context model, drop it, context model | crash |
+| context model kept, a second dropped, a third | crash |
+| ordinary load, drop it, context model | crash |
+| context model, drop it, ordinary load kept, context model beside it | fine |
+| the same crashing sequences with `QnnSystem.dll` or `QnnHtp.dll` held loaded, or `disable_file_mapped_weights=1` | crash |
+
+In the app every meeting drops its NPU sessions at the end, so the next meeting's first compiled load would end the process, recording included. T12.12 never saw it because each probe ran its loads in a fresh process without drops. A workaround (an ordinary load whenever a QNN session was dropped since the last one) rests on six sequences and a wrong guess costs a meeting, so it waits for the owner; the alternative is a fixed plugin release.
 
 ## Your own words on the CPU beside CUDA (T12.3a)
 

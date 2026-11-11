@@ -54,6 +54,7 @@ pub mod model_bench;
 pub mod model_check;
 pub mod model_settings;
 pub mod my_voice;
+pub mod npu_compiled;
 pub mod post;
 pub mod power;
 pub mod preview_settings;

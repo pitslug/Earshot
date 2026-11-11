@@ -1,16 +1,17 @@
-//! T12.12 (evaluation only): compiled QNN context models for the Parakeet NPU encoder.
+//! T12.12: compiled QNN context models for the Parakeet NPU encoder (the app loads them since
+//! T12.12a, `earshot_runtime::npu_compiled`; this probe measures them by hand).
 //!
-//! `compile` loads the NPU conversion's `encoder.onnx` once with `ep.context_enable=1`, so the
-//! QNN plugin writes `<work>/encoder_ctx.onnx` and its context binary. `qdq`, `ctx` and
-//! `ctx-share` then load `--sessions` whole Parakeet models one after another, the encoder
-//! from the conversion (`qdq`, today's load), from the context model (`ctx`), or from it with
-//! `ep.share_ep_contexts=1` (`ctx-share`), and print each load's time, this process's private
+//! `compile` loads the NPU conversion's `encoder.onnx` once with
+//! [`OnnxSession::load_writing_context`], so the QNN plugin writes `<work>/encoder_ctx.onnx` and
+//! its context binary. `qdq` and `ctx` then load `--sessions` whole Parakeet models one after
+//! another, the encoder from the conversion (`qdq`, the load before T12.12a) or from the context
+//! model (`ctx`), and print each load's time, this process's private
 //! memory and the machine's free memory, then transcribe the FLAC files on every session and
 //! say whether each session's words equal the first `qdq`-style reference printed. Counts and
 //! times only, plus the words of the public smoke clips.
 //!
 //! `cargo run --release -p earshot-onnx --features qnn --example qnn_context_probe --
-//! <model dir> <work dir> compile|qdq|ctx|ctx-share [--sessions N] [<file.flac>...]`
+//! <model dir> <work dir> compile|qdq|ctx [--sessions N] [<file.flac>...]`
 //! (ARM64, models folder with sets `qnn` and `qnn-models`). Run each mode in its own process.
 
 use std::path::{Path, PathBuf};
@@ -41,7 +42,7 @@ fn main() {
         args.drain(i..i + 2);
     }
     let [dir, work, mode, files @ ..] = &args[..] else {
-        panic!("usage: <model dir> <work dir> compile|qdq|ctx|ctx-share [--sessions N] [flac...]");
+        panic!("usage: <model dir> <work dir> compile|qdq|ctx [--sessions N] [flac...]");
     };
     let (dir, work) = (PathBuf::from(dir), PathBuf::from(work));
     std::fs::create_dir_all(&work).expect("work dir");
@@ -62,16 +63,9 @@ fn main() {
         let out = work.join(CTX_MODEL);
         let out_text = out.display().to_string();
         let started = Instant::now();
-        let session = OnnxSession::load_with_session_entries(
-            &dir.join("encoder.onnx"),
-            &qnn,
-            &[
-                ("ep.context_enable", "1"),
-                ("ep.context_file_path", &out_text),
-                ("ep.context_embed_mode", "0"),
-            ],
-        )
-        .expect("compile");
+        let session = OnnxSession::load_writing_context(&dir.join("encoder.onnx"), &qnn, &out)
+            .expect("compile");
+        println!("writing {out_text}");
         println!(
             "compiled in {:.1} s; {}",
             started.elapsed().as_secs_f64(),
@@ -88,11 +82,9 @@ fn main() {
         }
         return;
     }
-    let entries: &[(&str, &str)] = match mode.as_str() {
-        "ctx-share" => &[("ep.share_ep_contexts", "1")],
-        "qdq" | "ctx" => &[],
-        other => panic!("unknown mode {other}"),
-    };
+    if !matches!(mode.as_str(), "qdq" | "ctx") {
+        panic!("unknown mode {mode}");
+    }
     let audio: Vec<(String, MonoBuffer)> = files
         .iter()
         .map(|f| {
@@ -107,7 +99,7 @@ fn main() {
         let encoder = if mode == "qdq" {
             OnnxSession::load(&dir.join("encoder.onnx"), &qnn)
         } else {
-            OnnxSession::load_with_session_entries(&work.join(CTX_MODEL), &qnn, entries)
+            OnnxSession::load(&work.join(CTX_MODEL), &qnn)
         }
         .unwrap_or_else(|e| panic!("session {n}: {e}"));
         let t =

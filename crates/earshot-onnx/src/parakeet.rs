@@ -438,12 +438,13 @@ impl ParakeetTdt {
         Self::with_encoder(dir, &text, encoder, step_config, name, english_only)
     }
 
-    /// Evaluation only (T12.12): [`ParakeetTdt::load_split`] with an encoder session the caller
-    /// loaded (for example from a compiled QNN context model). No shipped code calls this.
+    /// [`ParakeetTdt::load_split`] with an encoder session the caller loaded: on the NPU, one
+    /// loaded from a context model compiled on this computer, or one that wrote it
+    /// ([`OnnxSession::load_writing_context`], T12.12a). The context model keeps the export's
+    /// metadata, so every check of [`ParakeetTdt::load_split`] runs unchanged.
     ///
     /// # Errors
     /// As [`ParakeetTdt::load_split`].
-    #[doc(hidden)]
     pub fn load_with_encoder(
         dir: &Path,
         encoder: OnnxSession,

@@ -192,7 +192,19 @@ impl MeetingModels {
                     factory.insert(live_factory(&me.models, &r.model, &r.order, clock, false))
                 }
             };
-            f(track, entity)
+            let loaded = f(track, entity);
+            // An NPU load that could not use its compiled model (T12.12a), once per process. One
+            // made by a final pass or a preview shows at the next track load.
+            if let Some(message) = crate::npu_compiled::take_note() {
+                me.notes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(crate::live::RuntimeWarning::HostNote {
+                        key: "npu-compiled".to_owned(),
+                        message: message.to_owned(),
+                    });
+            }
+            loaded
         })
     }
 

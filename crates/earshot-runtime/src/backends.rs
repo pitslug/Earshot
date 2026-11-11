@@ -1466,21 +1466,75 @@ fn load_parakeet_with(
     Ok(t)
 }
 
-/// [`load_parakeet`] on QNN: the NPU conversion with its documented partition.
+/// [`load_parakeet`] on QNN: the NPU conversion with its documented partition, the encoder from
+/// a context model compiled on this computer when there is a current one, else compiled now and
+/// kept for the next load ([`crate::npu_compiled`], T12.12a). However the encoder loads, the same
+/// checks run; a load that could not use the compiled model is recorded for the meeting's note.
 fn load_parakeet_qnn(
     models: &ModelDir,
     model: &ParakeetModel,
     encoder: &SessionConfig,
     threads: Option<usize>,
 ) -> Result<ParakeetTranscriber, AsrError> {
+    use crate::npu_compiled::{self, CompileKey, How};
     let dir = require_qnn_model(models, model)?;
     let steps = SessionConfig {
         intra_threads: threads,
         ..SessionConfig::default()
     };
     let onnx = |e: earshot_onnx::OnnxError| AsrError::Backend(format!("{}: {e}", model.name));
-    let t = ParakeetTdt::load_split(&dir, encoder, &steps, model.name, model.english_only)
-        .map_err(onnx)?;
+    let finish = |t: ParakeetTdt| -> Result<ParakeetTranscriber, AsrError> {
+        checked_qnn_parakeet(&dir, model, t)
+    };
+    let ordinary = || {
+        finish(
+            ParakeetTdt::load_split(&dir, encoder, &steps, model.name, model.english_only)
+                .map_err(onnx)?,
+        )
+    };
+    let with_encoder = |session: earshot_onnx::OnnxSession| {
+        finish(
+            ParakeetTdt::load_with_encoder(&dir, session, &steps, model.name, model.english_only)
+                .map_err(onnx)?,
+        )
+    };
+    let (t, how) = match CompileKey::for_conversion(&dir) {
+        Ok(key) => npu_compiled::load(
+            &dir,
+            &key,
+            |context| match earshot_onnx::qnn::compiled_model_fit(context) {
+                Ok(fit) if fit.usable() => Ok(true),
+                Ok(fit) => Err(format!("the NPU answers {fit:?}")),
+                Err(e) => Err(e.to_string()),
+            },
+            |context| {
+                with_encoder(earshot_onnx::OnnxSession::load(context, encoder).map_err(onnx)?)
+            },
+            |context| {
+                with_encoder(
+                    earshot_onnx::OnnxSession::load_writing_context(
+                        &dir.join("encoder.onnx"),
+                        encoder,
+                        context,
+                    )
+                    .map_err(onnx)?,
+                )
+            },
+            ordinary,
+        )?,
+        Err(why) => (ordinary()?, How::Ordinary { why }),
+    };
+    npu_compiled::record(&how);
+    Ok(t)
+}
+
+/// The checks of every NPU load ([`load_parakeet_qnn`]): a static encoder and the documented
+/// partition ([`check_qnn_parakeet`]).
+fn checked_qnn_parakeet(
+    dir: &Path,
+    model: &ParakeetModel,
+    t: ParakeetTdt,
+) -> Result<ParakeetTranscriber, AsrError> {
     if !t.is_static() {
         return Err(AsrError::Backend(format!(
             "{}: the encoder in {} has a dynamic input shape; the HTP backend needs the static \
