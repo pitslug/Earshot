@@ -1565,7 +1565,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: discussed with the owner, after release and only if a real user asks. `%ProgramData%\Earshot\models`, readable by all and writable only with admin, because the folder holds DLLs another user would run. Meetings, voiceprints and settings stay per user. Every file a shared load reads is checked, and its cost measured.
   - accept: written if it is taken up
 
-- [ ] T12.7 Summaries on the Surface NPU, further (was T8.3k)
+- [~] T12.7 Summaries on the Surface NPU, further (was T8.3k)
   - deps: T8.3h
   - do: explore NPU summaries beyond T8.3h's documentation review. Spike outside the shipped crates: choose a published QNN (Hexagon) build of an instruct model small enough for the Surface (Qualcomm AI Hub or ONNX Runtime GenAI, licence checked), add it and any runtime to `models/manifest.toml` (an evaluation set, pinned with SHA-256); find how to run ONNX Runtime GenAI with its telemetry off and prove it with an ETW check like `cargo xtask qnn-etw` before any meeting text goes in (AMI public text first); measure prompt and reply tokens/s and the real context limit; run `sum-eval` quality on the dev meetings with chunks resized to fit. Report what shipping would take (Rust binding, structured output or grammar, a Qwen 3.5-class NPU conversion, chunk redesign). No shipped change without the owner.
   - accept: `docs/npu-summaries.md` NPU section with measurements, the telemetry check output and a recommendation; sum-eval results logged

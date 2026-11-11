@@ -112,6 +112,19 @@ Upstream since 0.1.160, both from Qualcomm engineers:
 
 **Verdict so far:** right answers with one switch, but under T8.3h's rule (at most 0.67 of the CPU's wall time) a prompt-dominated summary cannot pass at a quarter of the CPU's prompt speed. The full `sum-eval` was not run because no crate release carries these changes. Left: the same runs on a newer Adreno driver (Qualcomm's 2026.10.1 package), which the owner installs.
 
+## NPU summaries, further (T12.7, 2026-11-11): what is published now
+
+Documentation only so far; nothing downloaded or run.
+
+- **Qualcomm's Qwen3-4B for the X2 Elite** ([qualcomm/Qwen3-4B](https://huggingface.co/qualcomm/Qwen3-4B), Apache-2.0 for the model; the compiled bundles' own terms are not stated). w4a16 bundles for Genie and GenieX (QAIRT 2.50) are on Qualcomm's own download host, with contexts of 512 to 4096 tokens (GenieX) or 4096 (Genie). Its X2 Elite rows, as published and not measured here:
+  - GenieX QAIRT, 4096 context: about 26 tokens/s reply, time to first token 0.07 s (short prompt) to 2.2 s (a 4,096-token prompt), so about 1,900 prompt tokens/s;
+  - Genie, 4096 context: about 30 tokens/s, 0.07 to 2.2 s.
+
+  Against the CPU 4B on this Surface (about 110 prompt and 21 reply tokens/s, T12.17's numbers), that would be about 17 times faster on the prompt and 1.3 times on the reply. The page says Genie support "will be deprecated soon"; GenieX is the community successor.
+- **The runtime is not ONNX Runtime.** Genie's `genie-t2t-run` comes from the QAIRT SDK; GenieX ships as an unsigned Windows ARM64 installer or `pip install geniex`, with a QAIRT plugin bundling runtime libraries v2.50.40. Their licence terms and any telemetry are not documented in what was read. Earshot already loads QNN SDK 2.51 libraries for transcription (plugin v2.7.0).
+- **ONNX Runtime GenAI on QNN:** Microsoft publishes QNN builds such as Phi-4 mini and Phi-4 reasoning; community reports put NPU builds at a fixed context of about 4,096 tokens (static graphs). No Qwen 3.5-class NPU build was found from either vendor (Qualcomm has Qwen 3.5 only at 0.8B, as a llama.cpp GGUF).
+- **What any NPU path costs:** a model change (Qwen3 4B or Phi-4 mini instead of Qwen 3.5), chunks that fit 4,096 tokens with the reply (today's chunks are 600 s, about 1,500-2,500 transcript tokens, so they may fit with a smaller reply budget), a new quality evaluation on the dev meetings, a telemetry check of the runtime before any meeting text goes in, and an FFI crate.
+
 ## Recommendation
 
 - **Keep summaries on the CPU with the 4B on the Surface** (T8.3f, merged 2026-11-03). Do not pursue llama.cpp on the Adreno through Vulkan: T8.3i found three driver or shader faults, one with no workaround for Qwen 3.5, and a correct path that is 3-4 times slower than the CPU.
