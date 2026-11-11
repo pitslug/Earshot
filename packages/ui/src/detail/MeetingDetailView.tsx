@@ -27,7 +27,7 @@ import {
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { type KeyboardEvent, type MouseEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import {
   type Citation,
@@ -279,10 +279,6 @@ const useStyles = makeStyles({
   },
   text: {
     overflowWrap: "anywhere",
-  },
-  // A final line: a click on its words starts a line edit (T12.15e).
-  textEditable: {
-    cursor: "text",
   },
 });
 
@@ -1195,24 +1191,7 @@ function TranscriptTab({
               />
             </div>
           ) : (
-            <Body1
-              role="cell"
-              className={mergeClasses(styles.text, canEdit && styles.textEditable)}
-              // A click on the words starts a line edit (T12.15e); a click on a word's mark, or
-              // inside its popover (portalled, so outside this element), does not, and neither
-              // does a click that ends a text selection.
-              onClick={
-                canEdit
-                  ? (e: MouseEvent<HTMLElement>) => {
-                      if (!(e.target instanceof Node) || !e.currentTarget.contains(e.target)) return;
-                      if (e.target instanceof Element && e.target.closest("[data-word-mark]")) return;
-                      const selection = window.getSelection?.();
-                      if (selection !== null && selection !== undefined && !selection.isCollapsed) return;
-                      setEditing(r.segment_id);
-                    }
-                  : undefined
-              }
-            >
+            <Body1 role="cell" className={styles.text}>
               {canEdit ? (
                 <LineText
                   row={r}

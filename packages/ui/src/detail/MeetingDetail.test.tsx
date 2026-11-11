@@ -1315,7 +1315,7 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
     expect(screen.queryByRole("textbox", { name: "Line 8" })).not.toBeInTheDocument();
   });
 
-  it("never starts a line edit from the word, while a click elsewhere on the line does", async () => {
+  it("opens the popover and never a line edit from the word; line edits start only from Edit", async () => {
     const { user } = await transcript();
     await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));
     expect(await screen.findByRole("dialog", { name: "Suggestion for Reed" })).toBeInTheDocument();
@@ -1323,7 +1323,11 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 
+    // A click on the line's text opens no editor, as before.
     await user.click(lineCell());
+    expect(screen.queryByRole("textbox", { name: "Line 8" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit line 8" }));
     const field = screen.getByRole("textbox", { name: "Line 8" });
     expect(field).toHaveValue(LINE8_TEXT);
     // While the line is edited its marks are not shown.
