@@ -12,16 +12,18 @@ import {
   DialogContent,
   DialogSurface,
   DialogTitle,
+  Field,
   MessageBar,
   MessageBarBody,
   ProgressBar,
+  Select,
   Switch,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
 import { useEffect, useState } from "react";
 
-import { IpcFailure, type UpdatePhase, type UpdateView, useIpc } from "../ipc";
+import { IpcFailure, type ScheduleChoice, type UpdatePhase, type UpdateView, useIpc } from "../ipc";
 import { formatSize } from "./copy";
 import { errorText } from "./useModels";
 
@@ -38,6 +40,9 @@ const useStyles = makeStyles({
   action: {
     alignSelf: "flex-start",
   },
+  field: {
+    maxWidth: "320px",
+  },
   muted: {
     color: tokens.colorNeutralForeground3,
   },
@@ -46,6 +51,31 @@ const useStyles = makeStyles({
 /** What the section says about a check. */
 export const UPDATES_EXPLAINED =
   "A check asks GitHub for one small file. GitHub sees your IP address and the request, and nothing about your meetings. Every update is verified with a key built into Earshot before it runs.";
+
+/** The automatic switch: the one consent for checks nobody pressed a button for. */
+export const AUTO_CHECK_LABEL = "Check for updates automatically";
+
+/** How often automatic checks run, in the order the list shows them (T12.22). */
+export const SCHEDULE_OPTIONS: readonly { value: ScheduleChoice; label: string }[] = [
+  { value: "hourly", label: "Every hour" },
+  { value: "four_hours", label: "Every 4 hours" },
+  { value: "twelve_hours", label: "Every 12 hours" },
+  { value: "daily", label: "Every day" },
+  { value: "weekly", label: "Every week" },
+];
+
+/** Under the list with automatic checks on. */
+export const SCHEDULE_EXPLAINED =
+  "Earshot checks when it starts, then this often while it runs, counted from the last check.";
+
+/** Under the list with automatic checks off: the list still applies at once, for later. */
+export const SCHEDULE_OFF_EXPLAINED =
+  "Automatic checks are off, so Earshot asks nothing until you press Check for updates.";
+
+/** A stored schedule this version does not know. */
+export function scheduleUnknownText(stored: string): string {
+  return `The stored schedule (${JSON.stringify(stored)}) is not known to this version; every day is used.`;
+}
 
 /** What the section says before it restarts the app. */
 export const RESTART_EXPLAINED =
@@ -94,6 +124,12 @@ export function UpdatesSection() {
   const setAuto = (on: boolean) =>
     run(async () => {
       setView(await ipc.setUpdateAutoCheck(on));
+    });
+
+  // A choice applies at once (the save rule): the schedule reads it at its next wake.
+  const setSchedule = (schedule: ScheduleChoice) =>
+    run(async () => {
+      setView(await ipc.setUpdateSchedule(schedule));
     });
 
   const phase: UpdatePhase = view?.phase ?? { state: "Idle" };
@@ -168,11 +204,32 @@ export function UpdatesSection() {
         </MessageBar>
       )}
       <Switch
-        label="Check for updates when Earshot starts"
+        label={AUTO_CHECK_LABEL}
         checked={view?.auto_check === true}
         disabled={busy || view === null}
         onChange={(_, d) => void setAuto(d.checked)}
       />
+      <Field label="How often" className={styles.field}>
+        <Select
+          value={view?.schedule ?? "daily"}
+          disabled={busy || view === null}
+          onChange={(_, d) => void setSchedule(d.value as ScheduleChoice)}
+        >
+          {SCHEDULE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Caption1 className={styles.muted}>
+        {view?.auto_check === true ? SCHEDULE_EXPLAINED : SCHEDULE_OFF_EXPLAINED}
+      </Caption1>
+      {view?.schedule_unknown != null && (
+        <MessageBar intent="warning">
+          <MessageBarBody>{scheduleUnknownText(view.schedule_unknown)}</MessageBarBody>
+        </MessageBar>
+      )}
       <Caption1 className={styles.muted}>{UPDATES_EXPLAINED}</Caption1>
       <Dialog modalType="alert" open={confirming} onOpenChange={(_, d) => setConfirming(d.open)}>
         <DialogSurface>

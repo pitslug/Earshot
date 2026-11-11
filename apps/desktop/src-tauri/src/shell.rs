@@ -405,6 +405,19 @@ pub fn job_toast(event: &crate::jobs::JobEvent) -> Option<(Toast, String)> {
     }
 }
 
+/// The notification that an automatic check found `version` (T12.22): fixed copy and the version
+/// number, which is all the check knows.
+#[must_use]
+pub fn update_toast(version: &str) -> Toast {
+    Toast {
+        title: "An update is available".into(),
+        body: format!("Earshot {version} can be downloaded from Settings, General."),
+        click: ToastClick::Window,
+        buttons: Vec::new(),
+        stays: false,
+    }
+}
+
 /// The notification when a meeting started with no window on screen: someone is being
 /// recorded, and a tray icon alone can be hidden in the overflow.
 #[must_use]
@@ -833,6 +846,16 @@ impl Shell {
         {
             self.notify(&toast, Some(meeting));
         }
+    }
+
+    /// An automatic update check found `version`: notifies when the window is not being looked
+    /// at, and says whether it did (the page shows the offer either way).
+    pub fn on_update_found(self: &Arc<Self>, version: &str) -> bool {
+        if self.window_watched() {
+            return false;
+        }
+        self.notify(&update_toast(version), None);
+        true
     }
 
     fn refresh_tray(&self) {

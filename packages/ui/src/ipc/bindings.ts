@@ -254,8 +254,10 @@ export const commands = {
 	downloadUpdate: () => typedError<null, IpcError>(__TAURI_INVOKE("download_update")),
 	/**  Stops a download. */
 	cancelUpdate: () => typedError<null, IpcError>(__TAURI_INVOKE("cancel_update")),
-	/**  Turns the check at each start on or off. */
+	/**  Turns automatic checks (at each start and on the schedule) on or off. */
 	setUpdateAutoCheck: (on: boolean) => typedError<UpdateView, IpcError>(__TAURI_INVOKE("set_update_auto_check", { on })),
+	/**  Stores how often automatic checks run; the schedule reads it at its next wake. */
+	setUpdateSchedule: (schedule: ScheduleChoice) => typedError<UpdateView, IpcError>(__TAURI_INVOKE("set_update_schedule", { schedule })),
 	/**  Starts the verified installer and exits; the installer starts the new version when it ends. */
 	installUpdate: () => typedError<null, IpcError>(__TAURI_INVOKE("install_update")),
 	/**  Turns "start Earshot with Windows" on or off (`autostart` when Windows refuses). */
@@ -1642,6 +1644,19 @@ export type SavedVoiceResult = {
 	outcome: RememberOutcome,
 };
 
+/**  How often automatic checks run, as the page names it. */
+export type ScheduleChoice = 
+/**  Every hour. */
+"hourly" | 
+/**  Every 4 hours. */
+"four_hours" | 
+/**  Every 12 hours. */
+"twelve_hours" | 
+/**  Every day. */
+"daily" | 
+/**  Every week. */
+"weekly";
+
 /**  Where a search found a meeting. */
 export type SearchMatch = 
 /**  Its title. */
@@ -2052,8 +2067,12 @@ export type UpdateView = {
 	current: string,
 	/**  Where the update stands. */
 	phase: UpdatePhase,
-	/**  Whether Earshot checks by itself when it starts. */
+	/**  Whether Earshot checks by itself: when it starts and on its schedule. */
 	auto_check: boolean,
+	/**  How often it checks while it runs (with `auto_check` on). */
+	schedule: ScheduleChoice,
+	/**  A stored schedule this version does not know, read as daily. */
+	schedule_unknown: string | null,
 };
 
 /**  What a check found for a model where it would run. */

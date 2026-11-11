@@ -10,6 +10,8 @@ import {
   type Ipc,
   type UpdateEvent,
   type UpdatePhase,
+  type UpdateView,
+  type ScheduleChoice,
   type IpcError,
   IpcFailure,
   type JobEvent,
@@ -189,7 +191,16 @@ export interface MockIpcData {
   /** Called with every edit and job request (`["renameSpeaker", meeting, ...]`). */
   onCall?: (call: unknown[]) => void;
   /** Where an update stands when the app opens (default: nothing asked), and a refusal of install. */
-  update?: { phase?: UpdatePhase; failInstall?: string };
+  update?: {
+    phase?: UpdatePhase;
+    failInstall?: string;
+    /** Automatic checks on (default off). */
+    autoCheck?: boolean;
+    /** The stored schedule (default daily). */
+    schedule?: ScheduleChoice;
+    /** A stored schedule this version does not know. */
+    scheduleUnknown?: string;
+  };
   /** The sample computer of the Models page (default: the Surface-like one). */
   machine?: SampleMachine;
   /** The model check first warns with this (an accelerator's library could not load). */
@@ -269,7 +280,17 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const jobListeners = new Set<(event: JobEvent) => void>();
   const updateListeners = new Set<(event: UpdateEvent) => void>();
   let updatePhase: UpdatePhase = data.update?.phase ?? { state: "Idle" };
-  let updateAuto = false;
+  let updateAuto = data.update?.autoCheck ?? false;
+  let updateSchedule: ScheduleChoice = data.update?.schedule ?? "daily";
+  // A stored schedule the app does not know reads as daily and is reported.
+  let updateScheduleUnknown: string | null = data.update?.scheduleUnknown ?? null;
+  const updateView = (): UpdateView => ({
+    current: appInfo.version,
+    phase: updatePhase,
+    auto_check: updateAuto,
+    schedule: updateScheduleUnknown === null ? updateSchedule : "daily",
+    schedule_unknown: updateScheduleUnknown,
+  });
   const emitUpdate = (phase: UpdatePhase) => {
     updatePhase = phase;
     for (const l of [...updateListeners]) l({ phase });
@@ -659,11 +680,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       updateListeners.add(handler);
       return () => updateListeners.delete(handler);
     },
-    updateStatus: async () => ({
-      current: appInfo.version,
-      phase: updatePhase,
-      auto_check: updateAuto,
-    }),
+    updateStatus: async () => updateView(),
     checkForUpdate: async () => {
       call("checkForUpdate");
       emitUpdate({ state: "Available", version: UPDATE_VERSION, size: UPDATE_SIZE });
@@ -678,7 +695,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     setUpdateAutoCheck: async (on) => {
       updateAuto = on;
-      return { current: appInfo.version, phase: updatePhase, auto_check: updateAuto };
+      return updateView();
+    },
+    // Stores the choice only, as the app does: no check starts from here.
+    setUpdateSchedule: async (schedule) => {
+      updateSchedule = schedule;
+      updateScheduleUnknown = null;
+      return updateView();
     },
     installUpdate: async () => {
       call("installUpdate");

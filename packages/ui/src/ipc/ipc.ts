@@ -42,6 +42,7 @@ import type {
   UpdateEvent,
   UpdatePhase,
   UpdateView,
+  ScheduleChoice,
   ModelSettingsValue,
   ModelSettingsView,
   ModelUse,
@@ -146,6 +147,7 @@ export type {
   UpdateEvent,
   UpdatePhase,
   UpdateView,
+  ScheduleChoice,
   ModelSettingsValue,
   ModelSettingsView,
   ModelUse,
@@ -289,6 +291,8 @@ export interface IpcCommands
   cancelUpdate(): Promise<void>;
   /** Turns the check at each start on or off. */
   setUpdateAutoCheck(on: boolean): Promise<UpdateView>;
+  /** Stores how often automatic checks run; applies at the schedule's next wake. */
+  setUpdateSchedule(schedule: ScheduleChoice): Promise<UpdateView>;
   /** Starts the verified installer and exits. Rejects with `busy` or `update_not_ready`. */
   installUpdate(): Promise<void>;
   /** A speaker's sample as a base64 WAV file; `null` when the audio is no longer kept. */

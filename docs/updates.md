@@ -4,7 +4,7 @@ How a release reaches an installed Earshot (T9.1b, PLAN D24).
 
 ## What the app does
 
-Nothing happens until the user presses **Check for updates** in Settings, General, or has turned on "Check for updates when Earshot starts". Then:
+Nothing happens until the user presses **Check for updates** in Settings, General, or has turned on "Check for updates automatically". That switch is the one consent: with it on, Earshot checks when it starts and then on the schedule picked under it (every hour, 4 hours, 12 hours, day or week; every day by default), counted from the last finished check, which is kept across restarts (T12.22). A computer that slept through several intervals checks once on waking, not once per interval. With it off, the schedule asks nothing. An automatic check that finds a new version shows it on the General page and, when the window is not in front, one notification per version. Then:
 
 1. **Check.** It asks `https://github.com/pitslug/Earshot/releases/latest/download/earshot-update-<arch>.json` for one small file. Only `github.com` and, on a redirect, `release-assets.githubusercontent.com` can be contacted.
 2. **Verify.** The file's Ed25519 signature is checked against the public key built into the app before anything in it is read. A release must also be newer than the running version, for this architecture, with an installer name that follows from its version. Nothing in the file can name a host or a path.

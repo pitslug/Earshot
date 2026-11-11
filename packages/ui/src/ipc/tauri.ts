@@ -203,6 +203,7 @@ export function createTauriIpc(): Ipc {
       unwrap(await commands.cancelUpdate());
     },
     setUpdateAutoCheck: async (on) => unwrap(await commands.setUpdateAutoCheck(on)),
+    setUpdateSchedule: async (schedule) => unwrap(await commands.setUpdateSchedule(schedule)),
     installUpdate: async () => {
       unwrap(await commands.installUpdate());
     },

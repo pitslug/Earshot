@@ -125,3 +125,7 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - packages/ui/src/detail/WordMarks.tsx:153: after Keep the mark leaves the DOM and keyboard focus falls to the page; move it to the line's Edit button, and assert focus stays on the mark after Use it (T12.15ed review).
 - packages/ui/src/detail/WordMarks.tsx:168: the mark's `stopPropagation` guards a line click handler that no longer exists; drop it or reword its comment (T12.15ed review).
 - packages/ui/src/detail/WordMarks.tsx:151: "Another word" leaves out the current word case-sensitively while the list is deduplicated without case (T12.15ed review).
+- apps/desktop/src-tauri/src/update_settings.rs:310: `Inner.installing` is redundant with the `Ready` phase (no test tells them apart); drop it and credit `Ready` in the module doc, or add a test only it can pass (T12.22 review).
+- apps/desktop/src-tauri/src/update_settings.rs:598: the clock-back rewrite of `update-last-check` runs with the switch off; move it after the `!on` return (T12.22 review).
+- apps/desktop/src-tauri/src/update_settings.rs:393: a panicking automatic check shows `Failed` on the page, against "an automatic check that fails says nothing" (pre-existing, now repeated by the schedule) (T12.22 review).
+- packages/ui/src/ipc/ipc.ts:292: `setUpdateAutoCheck` doc still says "Turns the check at each start on or off" (T12.22 review).

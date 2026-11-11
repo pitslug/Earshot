@@ -411,3 +411,122 @@ fn update_auto_check_is_off_until_turned_on() {
     drop(store);
     let _ = std::fs::remove_dir_all(&data);
 }
+
+const HOUR_MS: u64 = 60 * 60 * 1000;
+/// A wall-clock reading well away from 0 and from overflow.
+const NOW: u64 = 1_800_000_000_000;
+
+#[test]
+fn update_schedule_due_rule_never_checked_is_due_now() {
+    for s in UpdateSchedule::ALL {
+        assert_eq!(next_due(None, s.interval(), NOW), NOW, "{s:?}");
+    }
+}
+
+#[test]
+fn update_schedule_due_rule_counts_from_the_last_finished_check() {
+    let day = UpdateSchedule::Daily.interval();
+    assert_eq!(next_due(Some(NOW), day, NOW), NOW + 24 * HOUR_MS);
+    assert_eq!(next_due(Some(NOW - HOUR_MS), day, NOW), NOW + 23 * HOUR_MS);
+    // Exactly one interval later: due.
+    assert_eq!(next_due(Some(NOW - 24 * HOUR_MS), day, NOW), NOW);
+    assert_eq!(
+        next_due(Some(NOW), UpdateSchedule::Hourly.interval(), NOW),
+        NOW + HOUR_MS
+    );
+}
+
+#[test]
+fn update_schedule_due_rule_clock_moved_back_never_waits_more_than_one_interval() {
+    let day = UpdateSchedule::Daily.interval();
+    // The last check is stamped a year ahead of the clock now: one interval from now, not a year.
+    let ahead = NOW + 365 * 24 * HOUR_MS;
+    assert_eq!(next_due(Some(ahead), day, NOW), NOW + 24 * HOUR_MS);
+    // A little ahead: within one interval of now, and not due yet.
+    let due = next_due(Some(NOW + HOUR_MS), day, NOW);
+    assert!(due <= NOW + 24 * HOUR_MS && due > NOW, "{due}");
+}
+
+#[test]
+fn update_schedule_due_rule_clock_forward_or_wake_from_sleep_checks_once_not_in_a_burst() {
+    let hour = UpdateSchedule::Hourly.interval();
+    // Asleep for 10 hours, or the clock jumped 10 hours: overdue, so due now.
+    let woke = NOW + 10 * HOUR_MS;
+    assert!(next_due(Some(NOW), hour, woke) <= woke);
+    // The schedule runs that one check, which stores its end: the next is a whole hour later,
+    // not the nine intervals that were slept through.
+    let after = woke + 2_000;
+    assert_eq!(next_due(Some(after), hour, after), after + HOUR_MS);
+    for t in [after, after + 1, after + HOUR_MS / 2, after + HOUR_MS - 1] {
+        assert!(next_due(Some(after), hour, t) > t, "not due again at {t}");
+    }
+}
+
+#[test]
+fn update_schedule_due_rule_saturates_instead_of_wrapping() {
+    let week = UpdateSchedule::Weekly.interval();
+    let week_ms = u64::try_from(week.as_millis()).unwrap();
+    assert_eq!(next_due(Some(u64::MAX), week, u64::MAX), u64::MAX);
+    assert_eq!(next_due(Some(u64::MAX - 1), week, 0), week_ms);
+}
+
+#[test]
+fn update_schedule_intervals_are_the_choices_offered() {
+    let hours: Vec<u64> = UpdateSchedule::ALL
+        .iter()
+        .map(|s| s.interval().as_secs() / 3600)
+        .collect();
+    assert_eq!(hours, [1, 4, 12, 24, 168]);
+    for s in UpdateSchedule::ALL {
+        assert_eq!(UpdateSchedule::from_stored(s.stored()), Some(s));
+    }
+    assert_eq!(UpdateSchedule::default(), UpdateSchedule::Daily);
+}
+
+fn store_in(name: &str) -> (PathBuf, Store) {
+    let data = temp(name);
+    let db = DataDir::new(data.join("Earshot"));
+    db.create().unwrap();
+    let store = Store::open(&db.db_path()).unwrap();
+    (data, store)
+}
+
+#[test]
+fn update_schedule_is_daily_until_chosen_and_an_unknown_value_is_reported() {
+    let (data, mut store) = store_in("schedule");
+    assert_eq!(
+        update_schedule(&store).unwrap(),
+        (UpdateSchedule::Daily, None)
+    );
+    for s in UpdateSchedule::ALL {
+        set_update_schedule(&mut store, s).unwrap();
+        assert_eq!(update_schedule(&store).unwrap(), (s, None));
+    }
+    store.set_local_value(SCHEDULE_KEY, b"fortnightly").unwrap();
+    assert_eq!(
+        update_schedule(&store).unwrap(),
+        (UpdateSchedule::Daily, Some("fortnightly".to_owned()))
+    );
+    drop(store);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn update_last_check_and_notified_version_are_kept() {
+    let (data, mut store) = store_in("last-check");
+    assert_eq!(last_check(&store).unwrap(), None);
+    record_check(&mut store, NOW).unwrap();
+    assert_eq!(last_check(&store).unwrap(), Some(NOW));
+    store.set_local_value(LAST_CHECK_KEY, b"soon").unwrap();
+    assert_eq!(
+        last_check(&store).unwrap(),
+        None,
+        "unreadable reads as never"
+    );
+
+    assert_eq!(notified_version(&store).unwrap(), None);
+    set_notified_version(&mut store, "1.2.3").unwrap();
+    assert_eq!(notified_version(&store).unwrap().as_deref(), Some("1.2.3"));
+    drop(store);
+    let _ = std::fs::remove_dir_all(&data);
+}
