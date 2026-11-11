@@ -122,3 +122,6 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-runtime/src/word_choices.rs:21: stale choices (transcript words) stay in `word-choices/<meeting>` after a re-transcription until the next word write or deletion; drop them in the final pass's write transaction as `live-stretches/*` are (T12.15ec review).
 - crates/earshot-runtime/src/edit.rs `keep_word`: the IPC command accepts Keep on any word token, not only a suggested one (T12.15ec review).
 - packages/ui/src/ipc/mockWords.ts:60 `withWord` joins tokens with one space where Rust keeps the line's white space (T12.15ec review).
+- packages/ui/src/detail/WordMarks.tsx:153: after Keep the mark leaves the DOM and keyboard focus falls to the page; move it to the line's Edit button, and assert focus stays on the mark after Use it (T12.15ed review).
+- packages/ui/src/detail/WordMarks.tsx:168: the mark's `stopPropagation` guards a line click handler that no longer exists; drop it or reword its comment (T12.15ed review).
+- packages/ui/src/detail/WordMarks.tsx:151: "Another word" leaves out the current word case-sensitively while the list is deduplicated without case (T12.15ed review).

@@ -13,6 +13,7 @@ import {
   createMockIpc,
   sampleDetail,
   sampleMeetings,
+  samplePersons,
 } from "../ipc";
 import { IpcProvider } from "../ipc/context";
 import { installMatchMedia } from "../test/matchMedia";
@@ -1217,5 +1218,148 @@ describe("handoverLine", () => {
       ],
     });
     expect(codex).toBe("Handed to Codex: 5,400 characters at 14:02");
+  });
+});
+
+describe("MeetingDetailView, suggested words (T12.15e)", () => {
+  /** The sample line with the suggestion: "Reed" sounds like the saved person Tom Reid. */
+  const LINE8 = sampleDetail(ITEM).transcript[7].segment_id;
+  const LINE8_TEXT = "Fine by us. I'll send it to Tom Reed in writing.";
+  const marks = () => screen.queryAllByRole("button", { name: /^(Suggestion for|Changed word) / });
+  /** The words cell of the last line. */
+  const lineCell = () => {
+    const rows = within(screen.getByRole("table", { name: "Transcript" })).getAllByRole("row");
+    return within(rows[7]).getAllByRole("cell")[2];
+  };
+
+  async function transcript(data: MockIpcData = {}) {
+    const s = await setup(data);
+    await s.user.click(await screen.findByRole("tab", { name: "Transcript" }));
+    return s;
+  }
+
+  it("underlines the suggested word only, and Tab reaches it", async () => {
+    const { user } = await transcript();
+    const mark = screen.getByRole("button", { name: "Suggestion for Reed" });
+    expect(marks()).toEqual([mark]);
+    // The word alone is the control; the line reads as before.
+    expect(mark).toHaveTextContent(/^Reed$/);
+    expect(mark).toHaveAttribute("data-word-mark", "suggestion");
+    expect(lineCell().textContent).toBe(LINE8_TEXT);
+    screen.getByRole("button", { name: "Edit line 7" }).focus();
+    await user.tab();
+    expect(mark).toHaveFocus();
+  });
+
+  it("opens with Enter, and Use it changes the word and leaves a changed mark", async () => {
+    const { user, calls } = await transcript();
+    screen.getByRole("button", { name: "Suggestion for Reed" }).focus();
+    await user.keyboard("{Enter}");
+    const dialog = await screen.findByRole("dialog", { name: "Suggestion for Reed" });
+    expect(dialog).toHaveTextContent("Your dictionary has Reid");
+    await user.click(within(dialog).getByRole("button", { name: "Use it" }));
+
+    await waitFor(() =>
+      expect(lineCell().textContent).toBe("Fine by us. I'll send it to Tom Reid in writing.(edited)"),
+    );
+    expect(calls).toContainEqual(["useWord", ITEM.id, LINE8, 8, "Reid"]);
+    const changed = screen.getByRole("button", { name: "Changed word Reid" });
+    expect(changed).toHaveAttribute("data-word-mark", "changed");
+    expect(marks()).toEqual([changed]);
+    expect(screen.queryByRole("textbox", { name: "Line 8" })).not.toBeInTheDocument();
+  });
+
+  it("puts a changed word back from its own mark", async () => {
+    const { user, calls } = await transcript();
+    await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Use it" }));
+    await user.click(await screen.findByRole("button", { name: "Changed word Reid" }));
+    const dialog = await screen.findByRole("dialog", { name: "Changed word Reid" });
+    expect(dialog).toHaveTextContent("Changed from Reed");
+    await user.click(within(dialog).getByRole("button", { name: "Put back Reed" }));
+
+    await waitFor(() => expect(lineCell().textContent).toBe(`${LINE8_TEXT}(edited)`));
+    expect(calls).toContainEqual(["putBackWord", ITEM.id, LINE8, 8]);
+    expect(screen.queryByRole("button", { name: "Changed word Reid" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Line 8" })).not.toBeInTheDocument();
+  });
+
+  it("writes another word chosen from the list", async () => {
+    const { user, calls } = await transcript({ summaries: { vocabulary: ["Reidar", "Quillan"] } });
+    await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Use it" }));
+    await user.click(await screen.findByRole("button", { name: "Changed word Reid" }));
+    const dialog = await screen.findByRole("dialog", { name: "Changed word Reid" });
+    const list = within(dialog).getByRole("combobox", { name: "Another word" });
+    await user.type(list, "reida");
+    // The typed text narrows the list.
+    expect(await screen.findByRole("option", { name: "Reidar" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Quillan" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: "Reidar" }));
+
+    await waitFor(() =>
+      expect(lineCell().textContent).toBe("Fine by us. I'll send it to Tom Reidar in writing.(edited)"),
+    );
+    expect(calls).toContainEqual(["useWord", ITEM.id, LINE8, 8, "Reidar"]);
+    expect(screen.getByRole("button", { name: "Changed word Reidar" })).toBeInTheDocument();
+  });
+
+  it("keeps the word with Keep: the mark goes and the line is unchanged", async () => {
+    const { user, calls } = await transcript();
+    await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Keep" }));
+
+    await waitFor(() => expect(marks()).toEqual([]));
+    expect(calls).toContainEqual(["keepWord", ITEM.id, LINE8, 8]);
+    expect(lineCell().textContent).toBe(LINE8_TEXT);
+    expect(screen.queryByRole("textbox", { name: "Line 8" })).not.toBeInTheDocument();
+  });
+
+  it("opens the popover and never a line edit from the word; line edits start only from Edit", async () => {
+    const { user } = await transcript();
+    await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));
+    expect(await screen.findByRole("dialog", { name: "Suggestion for Reed" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Line 8" })).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    // A click on the line's text opens no editor, as before.
+    await user.click(lineCell());
+    expect(screen.queryByRole("textbox", { name: "Line 8" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit line 8" }));
+    const field = screen.getByRole("textbox", { name: "Line 8" });
+    expect(field).toHaveValue(LINE8_TEXT);
+    // While the line is edited its marks are not shown.
+    expect(marks()).toEqual([]);
+  });
+
+  it("closes with Escape and gives focus back to the word", async () => {
+    const { user } = await transcript();
+    const mark = screen.getByRole("button", { name: "Suggestion for Reed" });
+    await user.click(mark);
+    await screen.findByRole("dialog", { name: "Suggestion for Reed" });
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(mark).toHaveFocus();
+  });
+
+  it("shows a refusal as a line edit's refusal is shown", async () => {
+    // Without the saved person the word is no longer on the list.
+    const { user } = await transcript({ persons: samplePersons().filter((p) => p.name !== "Tom Reid") });
+    await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Use it" }));
+    expect(await screen.findByText("The word was not changed")).toBeInTheDocument();
+    expect(screen.getByText(/not in your dictionary or among the people you saved/)).toBeInTheDocument();
+    expect(lineCell().textContent).toBe(LINE8_TEXT);
+  });
+
+  it("shows no marks on a draft transcript", async () => {
+    const base = sampleDetail(ITEM);
+    const draft = { ...base, header: { ...base.header, transcript: "Draft" as const } };
+    await transcript({ details: { [ITEM.id]: draft } });
+    expect(draft.transcript[7].suggestions).not.toEqual([]);
+    expect(screen.getByText(LINE8_TEXT)).toBeInTheDocument();
+    expect(marks()).toEqual([]);
   });
 });

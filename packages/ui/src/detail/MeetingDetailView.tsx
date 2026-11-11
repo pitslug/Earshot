@@ -47,6 +47,7 @@ import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
 import { KeptLocal } from "./KeptLocal";
 import { SpeakersPanel } from "./SpeakersPanel";
+import { LineText, type WordActions } from "./WordMarks";
 import {
   COPIED_MS,
   failureText,
@@ -700,6 +701,13 @@ export function MeetingDetailView({
                   onEdit={(segment, text) =>
                     save(() => ipc.editSegment(id, segment, text), "The line was not saved")
                   }
+                  wordActions={(segment) => ({
+                    onUse: (token, word) =>
+                      void save(() => ipc.useWord(id, segment, token, word), "The word was not changed"),
+                    onPutBack: (token) =>
+                      void save(() => ipc.putBackWord(id, segment, token), "The word was not put back"),
+                    onKeep: (token) => void save(() => ipc.keepWord(id, segment, token), "The word was not kept"),
+                  })}
                   rowRef={(segment, el) => {
                     if (el) rows.current.set(segment, el);
                     else rows.current.delete(segment);
@@ -1136,12 +1144,15 @@ function TranscriptTab({
   detail,
   cited,
   onEdit,
+  wordActions,
   rowRef,
 }: {
   detail: MeetingDetail;
   cited: string | null;
   /** Saves a line's new text; false when it was refused. */
   onEdit(segment: string, text: string): Promise<boolean>;
+  /** What the marks of a line's suggested and changed words do (T12.15e). */
+  wordActions(segment: string): WordActions;
   rowRef(segment: string, el: HTMLDivElement | null): void;
 }) {
   const styles = useStyles();
@@ -1181,7 +1192,15 @@ function TranscriptTab({
             </div>
           ) : (
             <Body1 role="cell" className={styles.text}>
-              {r.text}
+              {canEdit ? (
+                <LineText
+                  row={r}
+                  wordList={detail.word_list}
+                  actions={wordActions(r.segment_id)}
+                />
+              ) : (
+                r.text
+              )}
               {r.edited && <Caption1 className={styles.editedMark}>(edited)</Caption1>}
             </Body1>
           )}
