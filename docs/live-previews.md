@@ -271,7 +271,15 @@ Built on `wip/T12.12a` (`earshot_runtime::npu_compiled`, the AGENTS.md bullet th
 | context model, drop it, ordinary load kept, context model beside it | fine |
 | the same crashing sequences with `QnnSystem.dll` or `QnnHtp.dll` held loaded, or `disable_file_mapped_weights=1` | crash |
 
-In the app every meeting drops its NPU sessions at the end, so the next meeting's first compiled load would end the process, recording included. T12.12 never saw it because each probe ran its loads in a fresh process without drops. A workaround (an ordinary load whenever a QNN session was dropped since the last one) rests on six sequences and a wrong guess costs a meeting, so it waits for the owner; the alternative is a fixed plugin release.
+In the app every meeting drops its NPU sessions at the end, so the next meeting's first compiled load would end the process, recording included. T12.12 never saw it because each probe ran its loads in a fresh process without drops.
+
+**The way round it (T12.12b, the owner's go-ahead 2026-11-11): never close a QNN session.** Every crashing sequence above has a close; none without one crashed. So a dropped QNN session goes to an idle pool for the life of the process, keyed by model file and session settings, and the next load of the same takes it back (about 1.4 s, most of it checking the files and loading the CPU step sessions). The compile, an ordinary load whose session would otherwise be closed, runs in a helper: the app's, the CLI's and `live_lag`'s own exe in the hidden `--npu-compile` mode, which writes the context model and exits. Measured on the Surface:
+
+- Real-NPU test (110M, compiling in process as tests do): compile 25 s, compiled load 1.2-1.8 s, five close-and-reload rounds from the pool without a crash, a damaged copy refused, compiled again and noted; words, times and probabilities equal to the ordinary load every time.
+- CLI with the helper: the first `transcribe` on the NPU 29.9 s whole run for 110M (56 s for 0.6B v2), the second 2.8 s (7.3 s), the same words.
+- Stress run (`npu_compiled_stress_many_meetings_in_one_process`, 0.6B v2): 25 meetings in one process, each with both tracks' sessions and the preview open at once (the preview closed and loaded again in every third, off in every fourth), a final-pass session after them, everything closed at the end: no crash in 250 s, every load from the compiled model, every decode equal to the first. The pool held 4 sessions (two tracks, the preview, the final pass, which use different settings) and did not grow. An earlier run without the meeting's sessions held open together (they could take turns) also passed, 25 meetings in 489 s.
+
+What it costs: the pool holds every session a meeting used while Earshot stays open (in the tray too), and their files stay mapped, so a compiled folder in use cannot be replaced until Earshot closes. A plugin release that fixes the crash would let the pool go.
 
 ## Your own words on the CPU beside CUDA (T12.3a)
 

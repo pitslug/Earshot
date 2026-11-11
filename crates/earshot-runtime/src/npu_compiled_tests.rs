@@ -732,3 +732,199 @@ fn npu_compiled_real_npu_compiles_once_then_loads_the_same_words() {
     // behind (hard links and a compiled copy, under %TEMP%).
     std::mem::forget((tmp, tmp2));
 }
+
+/// T12.12b's stress run on the Surface: many meetings in one process with the session life of a
+/// meeting (two tracks' own sessions and a preview loaded on their own threads, the preview turned
+/// off and on again in some, a final pass, everything closed at the end), on the real models
+/// folder (its compiled folder made first, as the app's helper does: `earshot-cli transcribe
+/// <clip> --model <model> --backend qnn`). Every decode must give the first one's words. Counts and
+/// times only; `EARSHOT_STRESS_MEETINGS` (default 25) and `EARSHOT_STRESS_MODEL` (default
+/// parakeet-tdt-0.6b-v2).
+#[cfg(all(feature = "qnn", target_arch = "aarch64"))]
+#[test]
+#[ignore = "needs the Surface's NPU, model sets qnn and qnn-models and a compiled folder (see the doc comment), in the ARM64 build environment `cargo xtask build` sets: cargo test --release -p earshot-runtime --features qnn --lib npu_compiled_stress -- --ignored --nocapture"]
+fn npu_compiled_stress_many_meetings_in_one_process() {
+    use crate::backends::{
+        Accelerator, AsrModel, ModelDir, asr_model, init_onnx, load_parakeet,
+        load_preview_unrefused,
+    };
+    use earshot_core::asr::{
+        BackendInfo, BackendKind, CancelToken, TranscribeOptions, Transcriber,
+    };
+    use earshot_core::audio::{MonoBuffer, PIPELINE_RATE};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let meetings: usize = std::env::var("EARSHOT_STRESS_MEETINGS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(25);
+    let name: &'static str = Box::leak(
+        std::env::var("EARSHOT_STRESS_MODEL")
+            .unwrap_or_else(|_| "parakeet-tdt-0.6b-v2".to_owned())
+            .into_boxed_str(),
+    );
+    let models = ModelDir::from_env(&earshot_store::DataDir::from_local_app_data().unwrap());
+    init_onnx(&models, Accelerator::Qnn).unwrap();
+    let Ok(AsrModel::Parakeet(model)) = asr_model(name) else {
+        panic!("{name} is a Parakeet model");
+    };
+    let clip = earshot_store::read_flac(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/smoke/121-121726-0002.flac"),
+    )
+    .unwrap()
+    .1;
+    let audio = Arc::new(MonoBuffer::new(PIPELINE_RATE, clip));
+    let text = move |t: &mut dyn Transcriber, audio: &MonoBuffer| -> String {
+        let out = t
+            .transcribe(audio, &TranscribeOptions::live(), &CancelToken::new())
+            .unwrap();
+        assert_eq!(out.backend.kind, BackendKind::Qnn);
+        out.segments
+            .iter()
+            .flat_map(|s| s.timed_words())
+            .map(|w| format!("{}@{}-{}", w.text, w.start.as_millis(), w.end.as_millis()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let reference = {
+        let mut t = load_parakeet(&models, model, Accelerator::Qnn, Some(2)).unwrap();
+        text(&mut t, &audio)
+    };
+    assert!(!reference.is_empty());
+    let preview_backend = BackendInfo {
+        kind: BackendKind::Qnn,
+        device: "npu".to_owned(),
+        model: name.to_owned(),
+    };
+    let started = Instant::now();
+    for meeting in 0..meetings {
+        let t0 = Instant::now();
+        // Every live session of the meeting is open at once before any decodes, as in a call.
+        let live = if meeting % 4 == 3 { 2 } else { 3 };
+        let open = Arc::new(std::sync::Barrier::new(live));
+        let tracks: Vec<_> = (0..2)
+            .map(|_| {
+                let (models, audio, reference, open) = (
+                    models.clone(),
+                    Arc::clone(&audio),
+                    reference.clone(),
+                    Arc::clone(&open),
+                );
+                std::thread::spawn(move || {
+                    let mut t = load_parakeet(&models, model, Accelerator::Qnn, Some(2)).unwrap();
+                    open.wait();
+                    for _ in 0..3 {
+                        assert_eq!(text(&mut t, &audio), reference);
+                    }
+                })
+            })
+            .collect();
+        // The preview: on in every meeting but every fourth; turned off after one decode and on
+        // again in every third.
+        let preview = (meeting % 4 != 3).then(|| {
+            let (models, audio, reference, backend) = (
+                models.clone(),
+                Arc::clone(&audio),
+                reference.clone(),
+                preview_backend.clone(),
+            );
+            let open = Arc::clone(&open);
+            std::thread::spawn(move || {
+                let mut p = load_preview_unrefused(&models, &backend)
+                    .unwrap()
+                    .transcriber;
+                open.wait();
+                assert_eq!(text(p.as_mut(), &audio), reference);
+                if meeting % 3 == 0 {
+                    drop(p);
+                    p = load_preview_unrefused(&models, &backend)
+                        .unwrap()
+                        .transcriber;
+                }
+                assert_eq!(text(p.as_mut(), &audio), reference);
+            })
+        });
+        for t in tracks {
+            t.join().expect("a track thread");
+        }
+        if let Some(p) = preview {
+            p.join().expect("the preview thread");
+        }
+        // The final pass, after every live session closed.
+        let mut post = load_parakeet(&models, model, Accelerator::Qnn, None).unwrap();
+        assert_eq!(text(&mut post, &audio), reference);
+        drop(post);
+        println!(
+            "meeting {meeting}: {:.1} s, idle NPU sessions {}, last load {:?}",
+            t0.elapsed().as_secs_f64(),
+            earshot_onnx::idle_qnn_sessions(),
+            last_load()
+        );
+        assert!(
+            matches!(last_load(), Some(How::Compiled)),
+            "every load is compiled: {:?}",
+            last_load()
+        );
+    }
+    println!(
+        "{meetings} meetings in {:.0} s without a crash",
+        started.elapsed().as_secs_f64()
+    );
+}
+
+/// T12.12b's idle battery check: holds `EARSHOT_IDLE_SESSIONS` loaded NPU sessions (0: the plugin
+/// registered and none loaded) of `EARSHOT_STRESS_MODEL` doing nothing for `EARSHOT_IDLE_SECONDS`
+/// (default 600), sampling Windows' battery discharge rate (`root\wmi` `BatteryStatus`,
+/// milliwatts) every 15 s, and prints the mean. Run unplugged, with the screen on and nothing else
+/// open, once with 0 and once with 2.
+#[cfg(all(feature = "qnn", target_arch = "aarch64"))]
+#[test]
+#[ignore = "needs the Surface unplugged, model sets qnn and qnn-models and a compiled folder: set EARSHOT_IDLE_SESSIONS=0, then 2, and run cargo test --release -p earshot-runtime --features qnn --lib npu_compiled_idle_battery -- --ignored --nocapture"]
+fn npu_compiled_idle_battery() {
+    use crate::backends::{Accelerator, AsrModel, ModelDir, asr_model, init_onnx, load_parakeet};
+    let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_owned());
+    let sessions: usize = env("EARSHOT_IDLE_SESSIONS", "0").parse().unwrap();
+    let seconds: u64 = env("EARSHOT_IDLE_SECONDS", "600").parse().unwrap();
+    let name = env("EARSHOT_STRESS_MODEL", "parakeet-tdt-0.6b-v2");
+    let models = ModelDir::from_env(&earshot_store::DataDir::from_local_app_data().unwrap());
+    init_onnx(&models, Accelerator::Qnn).unwrap();
+    let Ok(AsrModel::Parakeet(model)) = asr_model(&name) else {
+        panic!("{name} is a Parakeet model");
+    };
+    let held: Vec<_> = (0..sessions)
+        .map(|_| load_parakeet(&models, model, Accelerator::Qnn, Some(2)).unwrap())
+        .collect();
+    let rate = || -> Option<f64> {
+        let out = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$b = Get-CimInstance -Namespace root\\wmi -ClassName BatteryStatus | \
+                 Select-Object -First 1; if ($b.PowerOnline) { 'online' } else { $b.DischargeRate }",
+            ])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        assert_ne!(text, "online", "the Surface must run on its battery");
+        text.parse().ok()
+    };
+    // Let the loads settle before measuring.
+    std::thread::sleep(std::time::Duration::from_secs(60));
+    let mut samples = Vec::new();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    while std::time::Instant::now() < end {
+        if let Some(r) = rate() {
+            samples.push(r);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(15));
+    }
+    let mean = samples.iter().sum::<f64>() / samples.len().max(1) as f64;
+    println!(
+        "{sessions} idle NPU sessions of {name}: mean discharge {mean:.0} mW over {} samples \
+         ({seconds} s)",
+        samples.len()
+    );
+    drop(held);
+}
