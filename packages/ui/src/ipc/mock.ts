@@ -24,7 +24,9 @@ import {
   type RememberOutcome,
   type SummaryEvent,
   type SummaryView,
+  type TranscriptRow,
 } from "./ipc";
+import { marksAfterEdit, splitPunctuation, tokensOf, withWord, wordListOf } from "./mockWords";
 import {
   ignoredVoice,
   linked,
@@ -430,6 +432,29 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const update = (id: string, f: (d: MeetingDetail) => MeetingDetail) => {
     details.set(id, f(detailOf(id)));
   };
+  // T12.15e: the word list, as `word_choices::word_list` builds it.
+  const wordList = async () => wordListOf((await summariesMock.summaryVocabulary()).words, persons);
+  // Suggestions a "Use it" took, so "Put back" shows them again (the mock runs no matcher).
+  const usedSuggestions = new Map<string, TranscriptRow["suggestions"][number]>();
+  // A final line, by `edit::final_line`'s refusals.
+  const lineOf = (meeting: string, segment: string): TranscriptRow => {
+    const d = detailOf(meeting);
+    if (d.header.transcript === "Draft") {
+      fail("draft_transcript", "The words can be corrected once the final transcript is ready.");
+    }
+    return (
+      d.transcript.find((r) => r.segment_id === segment) ??
+      fail("segment_not_found", "This line is no longer in the transcript. It may have been transcribed again.")
+    );
+  };
+  // A line and the core of its token `token`, by `edit::word_at`'s refusal.
+  const wordAt = (meeting: string, segment: string, token: number): [TranscriptRow, string] => {
+    const row = lineOf(meeting, segment);
+    const t = tokensOf(row.text)[token];
+    const core = t === undefined ? "" : splitPunctuation(t)[1];
+    if (core === "") fail("word_not_found", "This word is no longer in the line. The line may have been edited.");
+    return [row, core];
+  };
   const speakerOf = (d: MeetingDetail, speaker: string) =>
     d.speakers.find((s) => s.id === speaker) ??
     fail("speaker_not_found", "This speaker is no longer in the meeting.");
@@ -666,9 +691,11 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       const d = detailOf(meeting);
       const kept_local = keptLocal.has(meeting) ? { writer: await remoteWriter() } : null;
       // The header follows the list row (title from a summary, state).
+      const word_list = d.header.transcript === "Final" ? await wordList() : [];
       return structuredClone({
         ...d,
         kept_local,
+        word_list,
         state: row?.state ?? d.state,
         header: { ...d.header, title: row?.title ?? d.header.title },
       });
@@ -700,12 +727,67 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       update(meeting, (d) => {
         const row = d.transcript.find((r) => r.segment_id === segment);
         if (!row || row.text === t) return d;
+        return marksAfterEdit(
+          {
+            ...d,
+            transcript: d.transcript.map((r) => (r.segment_id === segment ? { ...r, text: t, edited: true } : r)),
+            summary_stale: d.summary !== null || d.summary_stale,
+          },
+          segment,
+        );
+      });
+    },
+    // T12.15e: the rules of `edit::use_word`, `put_back_word` and `keep_word` (mockWords.ts).
+    useWord: async (meeting, segment, token, word) => {
+      call("useWord", meeting, segment, token, word);
+      const [row, current] = wordAt(meeting, segment, token);
+      const wanted = word.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "").toLowerCase();
+      const listed =
+        (await wordList()).find((w) => w.toLowerCase() === wanted) ??
+        fail("word_not_listed", "That word is not in your dictionary or among the people you saved.");
+      const earlier = row.changed_words.find((c) => c.token === token);
+      const decoded = earlier?.decoded ?? current;
+      if (earlier === undefined && listed !== decoded) {
+        const suggestion = row.suggestions.find((s) => s.token === token);
+        if (suggestion) usedSuggestions.set(`${meeting}/${segment}/${token}`, suggestion);
+      }
+      update(meeting, (d) => {
+        const next = withWord(d, segment, token, listed, decoded);
+        const changed = next.transcript.find((r) => r.segment_id === segment)?.text !== row.text;
+        return changed ? { ...next, summary_stale: d.summary !== null || d.summary_stale } : next;
+      });
+    },
+    putBackWord: async (meeting, segment, token) => {
+      call("putBackWord", meeting, segment, token);
+      const row = lineOf(meeting, segment);
+      const choice =
+        row.changed_words.find((c) => c.token === token) ??
+        fail("no_word_choice", "There is nothing to put back for this word. The line may have been edited.");
+      const key = `${meeting}/${segment}/${token}`;
+      const suggestion = usedSuggestions.get(key);
+      usedSuggestions.delete(key);
+      update(meeting, (d) => {
+        const next = withWord(d, segment, token, choice.decoded, choice.decoded);
         return {
-          ...d,
-          transcript: d.transcript.map((r) => (r.segment_id === segment ? { ...r, text: t, edited: true } : r)),
+          ...next,
           summary_stale: d.summary !== null || d.summary_stale,
+          transcript: next.transcript.map((r) =>
+            r.segment_id === segment && suggestion
+              ? { ...r, suggestions: [...r.suggestions, suggestion].sort((a, b) => a.token - b.token) }
+              : r,
+          ),
         };
       });
+    },
+    keepWord: async (meeting, segment, token) => {
+      call("keepWord", meeting, segment, token);
+      wordAt(meeting, segment, token);
+      update(meeting, (d) => ({
+        ...d,
+        transcript: d.transcript.map((r) =>
+          r.segment_id === segment ? { ...r, suggestions: r.suggestions.filter((s) => s.token !== token) } : r,
+        ),
+      }));
     },
     // The rules of `edit::edit_summary`: the current summary only, the text before the edit
     // becomes the previous summary.

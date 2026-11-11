@@ -49,6 +49,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             get_meeting,
             rename_meeting,
             edit_segment,
+            use_word,
+            put_back_word,
+            keep_word,
             edit_summary,
             rename_speaker,
             merge_speakers,
@@ -621,6 +624,78 @@ async fn edit_segment(
     let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
     blocking(move || {
         earshot_runtime::edit::edit_segment(&services, meeting, segment, &text)?;
+        Ok(())
+    })
+    .await
+}
+
+/// "Use it", or another word from the list (T12.15e): word `token` of a final transcript line
+/// becomes `word`, which must be on the word list.
+#[tauri::command]
+#[specta::specta]
+async fn use_word(
+    state: State<'_, AppState>,
+    meeting: String,
+    segment: String,
+    token: u32,
+    word: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
+    blocking(move || {
+        earshot_runtime::edit::use_word(
+            &services,
+            meeting,
+            segment,
+            usize::try_from(token).unwrap_or(usize::MAX),
+            &word,
+        )?;
+        Ok(())
+    })
+    .await
+}
+
+/// "Put back" (T12.15e): word `token` of a line reads the decoded word again.
+#[tauri::command]
+#[specta::specta]
+async fn put_back_word(
+    state: State<'_, AppState>,
+    meeting: String,
+    segment: String,
+    token: u32,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
+    blocking(move || {
+        earshot_runtime::edit::put_back_word(
+            &services,
+            meeting,
+            segment,
+            usize::try_from(token).unwrap_or(usize::MAX),
+        )?;
+        Ok(())
+    })
+    .await
+}
+
+/// "Keep" (T12.15e): word `token` of a line stays and is not suggested again.
+#[tauri::command]
+#[specta::specta]
+async fn keep_word(
+    state: State<'_, AppState>,
+    meeting: String,
+    segment: String,
+    token: u32,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
+    blocking(move || {
+        earshot_runtime::edit::keep_word(
+            &services,
+            meeting,
+            segment,
+            usize::try_from(token).unwrap_or(usize::MAX),
+        )?;
         Ok(())
     })
     .await

@@ -76,6 +76,7 @@ pub mod summary_style;
 pub mod update;
 pub mod view;
 pub mod vocabulary;
+pub mod word_choices;
 
 #[cfg(test)]
 mod testutil;

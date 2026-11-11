@@ -56,23 +56,29 @@ impl std::error::Error for SetVocabularyError {}
 /// # Errors
 /// Store errors.
 pub fn vocabulary(store: &Store) -> Result<(Vocabulary, Option<UnknownSetting>), RuntimeError> {
-    let Some(bytes) = store.local_value(VOCABULARY_KEY)? else {
-        return Ok((Vocabulary::default(), None));
+    Ok(vocabulary_of(store.local_value(VOCABULARY_KEY)?.as_deref()))
+}
+
+/// [`vocabulary`] from the stored bytes (`None`: nothing stored), so a store transaction can
+/// read the words too (`crate::word_choices`).
+pub(crate) fn vocabulary_of(bytes: Option<&[u8]>) -> (Vocabulary, Option<UnknownSetting>) {
+    let Some(bytes) = bytes else {
+        return (Vocabulary::default(), None);
     };
     let refused = |why: String| {
-        Ok((
+        (
             Vocabulary::default(),
             Some(UnknownSetting {
                 key: VOCABULARY_KEY,
                 stored: format!("a word list this version refuses: {why}"),
             }),
-        ))
+        )
     };
     // Parsed as plain strings first, so the reason names the rule broken (the core check),
     // never a word.
-    match serde_json::from_slice::<Vec<String>>(&bytes) {
+    match serde_json::from_slice::<Vec<String>>(bytes) {
         Ok(words) => match Vocabulary::new(&words) {
-            Ok(v) => Ok((v, None)),
+            Ok(v) => (v, None),
             Err(e) => refused(e.to_string()),
         },
         Err(_) => refused("it is not a list of words".into()),

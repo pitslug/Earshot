@@ -46,6 +46,15 @@ export function createTauriIpc(): Ipc {
     editSegment: async (meeting, segment, text) => {
       unwrap(await commands.editSegment(meeting, segment, text));
     },
+    useWord: async (meeting, segment, token, word) => {
+      unwrap(await commands.useWord(meeting, segment, token, word));
+    },
+    putBackWord: async (meeting, segment, token) => {
+      unwrap(await commands.putBackWord(meeting, segment, token));
+    },
+    keepWord: async (meeting, segment, token) => {
+      unwrap(await commands.keepWord(meeting, segment, token));
+    },
     editSummary: async (meeting, summary, field, text) => {
       unwrap(await commands.editSummary(meeting, summary, field, text));
     },

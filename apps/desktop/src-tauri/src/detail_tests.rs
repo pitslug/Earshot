@@ -380,6 +380,82 @@ fn detail_a_summary_citing_a_replaced_segment_is_stale_and_shows_it_unavailable(
 }
 
 #[test]
+fn detail_suggested_and_changed_words_and_the_word_list() {
+    let dir = TempDir::new("detail-words");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 42);
+    earshot_runtime::vocabulary::set_vocabulary(&mut svc.store(), &["Zorbek", "priya"]).unwrap();
+    edit::edit_segment(&svc, f.meeting, f.segments[3], "then ask sorbeck, friday").unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    // The Dictionary, then saved people's name words without a repeat in another case.
+    assert_eq!(d.word_list, ["Zorbek", "priya", "Shah"]);
+    let row = &d.transcript[3];
+    assert_eq!(
+        row.suggestions,
+        [WordSuggestionView {
+            token: 2,
+            decoded: "sorbeck".into(),
+            listed: "Zorbek".into(),
+        }]
+    );
+    assert!(row.changed_words.is_empty());
+    assert!(
+        d.transcript[..3]
+            .iter()
+            .all(|r| r.suggestions.is_empty() && r.changed_words.is_empty())
+    );
+
+    edit::use_word(&svc, f.meeting, f.segments[3], 2, "Zorbek").unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let row = &d.transcript[3];
+    assert_eq!(row.text, "then ask Zorbek, friday");
+    assert!(row.suggestions.is_empty());
+    assert_eq!(
+        row.changed_words,
+        [ChangedWordView {
+            token: 2,
+            decoded: "sorbeck".into(),
+            written: "Zorbek".into(),
+        }]
+    );
+    // Refusals arrive as user copy that names no word.
+    let e: IpcError = edit::use_word(&svc, f.meeting, f.segments[3], 2, "Glimmerax")
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "word_not_listed");
+    assert!(!e.message.contains("Glimmerax"));
+    let e: IpcError = edit::put_back_word(&svc, f.meeting, f.segments[3], 1)
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "no_word_choice");
+    edit::put_back_word(&svc, f.meeting, f.segments[3], 2).unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.transcript[3].text, "then ask sorbeck, friday");
+    assert_eq!(d.transcript[3].suggestions.len(), 1);
+
+    // A draft shows no marks and no list.
+    {
+        let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let rows = db.segments(f.meeting).unwrap();
+        let (store, hlc) = db.parts();
+        for mut r in rows {
+            r.pass = TranscriptPass::Live;
+            r.meta.touch(hlc, &*clock);
+            store.put_segment(r).unwrap();
+        }
+    }
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert_eq!(d.header.transcript, Some(TranscriptKind::Draft));
+    assert!(d.word_list.is_empty());
+    assert!(
+        d.transcript
+            .iter()
+            .all(|r| r.suggestions.is_empty() && r.changed_words.is_empty())
+    );
+}
+
+#[test]
 fn detail_an_edited_title_and_line_show_and_mark_an_older_summary_out_of_date() {
     let dir = TempDir::new("detail-text-edit");
     let svc = services(&dir);
@@ -807,6 +883,9 @@ fn detail_edit_refusals_become_plain_user_copy() {
         ),
         (EditError::NotUnnamed(id), "not_unnamed"),
         (EditError::NoStoredVoice(id), "no_stored_voice"),
+        (EditError::WordNotFound(id), "word_not_found"),
+        (EditError::WordNotListed, "word_not_listed"),
+        (EditError::NoWordChoice(id), "no_word_choice"),
     ];
     for (e, kind) in all {
         let ipc = IpcError::from(RuntimeError::Edit(e.clone()));
