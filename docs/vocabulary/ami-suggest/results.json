@@ -1,0 +1,490 @@
+{
+  "bar": {
+    "marks_in_the_transcript": true,
+    "matchers": [
+      {
+        "matcher": "sound-rare",
+        "passes": true
+      },
+      {
+        "matcher": "spelling-rare",
+        "passes": true
+      }
+    ],
+    "passing_matchers": [
+      "sound-rare",
+      "spelling-rare"
+    ],
+    "rule": "one matcher on ne: wrong per meeting hour <= 5 and right > wrong",
+    "wrong_per_hour_limit": 5.0
+  },
+  "data": {
+    "common_words": 5000,
+    "list_length": 100,
+    "meeting_hours": 1.609897413333333,
+    "meetings": [
+      "ES2003a",
+      "ES2011a",
+      "IS1008a",
+      "TS3004a",
+      "TS3006a"
+    ],
+    "segments": 1418,
+    "uem_seconds": [
+      1139.765375,
+      1113.845375,
+      943.833313,
+      1345.322625,
+      1252.864
+    ]
+  },
+  "decode": {
+    "baseline_only": true,
+    "model": "parakeet-tdt-0.6b-v2"
+  },
+  "prior_baseline": {
+    "baseline_segments_differing": 0,
+    "report": "docs/vocabulary/ami/counts-baseline-ne.jsonl",
+    "segments_compared": 1418
+  },
+  "row_fields": [
+    "id",
+    "hyp_sha256",
+    "suggestions",
+    "right",
+    "wrong",
+    "no_effect",
+    "distractor"
+  ],
+  "rule": "docs/vocabulary.md, \"Suggestions on meeting speech (T12.15ea)\", committed before measuring",
+  "runs": [
+    {
+      "bar_passes": true,
+      "counts": {
+        "distractor": 0,
+        "no_effect": 0,
+        "right": 5,
+        "suggestions": 5,
+        "wrong": 0
+      },
+      "list": "ne",
+      "matcher": "sound-rare",
+      "per_meeting": [
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 2,
+            "suggestions": 2,
+            "wrong": 0
+          },
+          "meeting": "ES2003a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "ES2011a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "IS1008a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 0,
+            "suggestions": 0,
+            "wrong": 0
+          },
+          "meeting": "TS3004a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "TS3006a"
+        }
+      ],
+      "per_meeting_hour": {
+        "distractor": 0.0,
+        "no_effect": 0.0,
+        "right": 3.1057879580335337,
+        "suggestions": 3.1057879580335337,
+        "wrong": 0.0
+      },
+      "role": "decides"
+    },
+    {
+      "counts": {
+        "distractor": 0,
+        "no_effect": 5,
+        "right": 11,
+        "suggestions": 16,
+        "wrong": 0
+      },
+      "list": "ne-all",
+      "matcher": "sound-rare",
+      "per_meeting": [
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 1,
+            "right": 2,
+            "suggestions": 3,
+            "wrong": 0
+          },
+          "meeting": "ES2003a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 3,
+            "right": 3,
+            "suggestions": 6,
+            "wrong": 0
+          },
+          "meeting": "ES2011a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 5,
+            "suggestions": 5,
+            "wrong": 0
+          },
+          "meeting": "IS1008a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 1,
+            "right": 0,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "TS3004a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "TS3006a"
+        }
+      ],
+      "per_meeting_hour": {
+        "distractor": 0.0,
+        "no_effect": 3.1057879580335337,
+        "right": 6.832733507673774,
+        "suggestions": 9.938521465707307,
+        "wrong": 0.0
+      },
+      "role": "informational"
+    },
+    {
+      "counts": {
+        "distractor": 0,
+        "no_effect": 2,
+        "right": 6,
+        "suggestions": 8,
+        "wrong": 0
+      },
+      "list": "rare",
+      "matcher": "sound-rare",
+      "per_meeting": [
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 2,
+            "suggestions": 2,
+            "wrong": 0
+          },
+          "meeting": "ES2003a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "ES2011a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "IS1008a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 0,
+            "suggestions": 0,
+            "wrong": 0
+          },
+          "meeting": "TS3004a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 2,
+            "right": 2,
+            "suggestions": 4,
+            "wrong": 0
+          },
+          "meeting": "TS3006a"
+        }
+      ],
+      "per_meeting_hour": {
+        "distractor": 0.0,
+        "no_effect": 1.2423151832134134,
+        "right": 3.72694554964024,
+        "suggestions": 4.9692607328536536,
+        "wrong": 0.0
+      },
+      "role": "informational"
+    },
+    {
+      "bar_passes": true,
+      "counts": {
+        "distractor": 0,
+        "no_effect": 2,
+        "right": 4,
+        "suggestions": 7,
+        "wrong": 1
+      },
+      "list": "ne",
+      "matcher": "spelling-rare",
+      "per_meeting": [
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 2,
+            "right": 0,
+            "suggestions": 3,
+            "wrong": 1
+          },
+          "meeting": "ES2003a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 0,
+            "suggestions": 0,
+            "wrong": 0
+          },
+          "meeting": "ES2011a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 2,
+            "suggestions": 2,
+            "wrong": 0
+          },
+          "meeting": "IS1008a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "TS3004a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "TS3006a"
+        }
+      ],
+      "per_meeting_hour": {
+        "distractor": 0.0,
+        "no_effect": 1.2423151832134134,
+        "right": 2.4846303664268268,
+        "suggestions": 4.348103141246947,
+        "wrong": 0.6211575916067067
+      },
+      "role": "decides"
+    },
+    {
+      "counts": {
+        "distractor": 0,
+        "no_effect": 2,
+        "right": 5,
+        "suggestions": 11,
+        "wrong": 4
+      },
+      "list": "ne-all",
+      "matcher": "spelling-rare",
+      "per_meeting": [
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 2,
+            "right": 0,
+            "suggestions": 4,
+            "wrong": 2
+          },
+          "meeting": "ES2003a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 3,
+            "wrong": 2
+          },
+          "meeting": "ES2011a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 2,
+            "suggestions": 2,
+            "wrong": 0
+          },
+          "meeting": "IS1008a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "TS3004a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "TS3006a"
+        }
+      ],
+      "per_meeting_hour": {
+        "distractor": 0.0,
+        "no_effect": 1.2423151832134134,
+        "right": 3.1057879580335337,
+        "suggestions": 6.832733507673774,
+        "wrong": 2.4846303664268268
+      },
+      "role": "informational"
+    },
+    {
+      "counts": {
+        "distractor": 0,
+        "no_effect": 0,
+        "right": 6,
+        "suggestions": 8,
+        "wrong": 2
+      },
+      "list": "rare",
+      "matcher": "spelling-rare",
+      "per_meeting": [
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "ES2003a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 0,
+            "suggestions": 0,
+            "wrong": 0
+          },
+          "meeting": "ES2011a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 2,
+            "suggestions": 2,
+            "wrong": 0
+          },
+          "meeting": "IS1008a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 1,
+            "suggestions": 1,
+            "wrong": 0
+          },
+          "meeting": "TS3004a"
+        },
+        {
+          "counts": {
+            "distractor": 0,
+            "no_effect": 0,
+            "right": 2,
+            "suggestions": 4,
+            "wrong": 2
+          },
+          "meeting": "TS3006a"
+        }
+      ],
+      "per_meeting_hour": {
+        "distractor": 0.0,
+        "no_effect": 0.0,
+        "right": 3.72694554964024,
+        "suggestions": 4.9692607328536536,
+        "wrong": 1.2423151832134134
+      },
+      "role": "informational"
+    }
+  ]
+}
