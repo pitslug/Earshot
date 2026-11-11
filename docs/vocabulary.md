@@ -577,5 +577,58 @@ errors at 60 positions against 18), but raises U-WER by 0.46 points (G2, limit 0
 ### Reproducing
 
 As in "Commands" above (the release example under the lane's target folder `C:\eb\lane-vocab`).
-`--score-ami --gate gated --prior-report docsocabularymi` takes seconds and rewrites
+`--score-ami --gate gated --prior-report docs\vocabulary\ami` takes seconds and rewrites
 `docs/vocabulary/ami-gated/` (without `--prior-report`, `prior_baseline` is null).
+
+# Suggestions on meeting speech (T12.15ea)
+
+Neither nudge passed on meeting speech (T12.15c, T12.15ca), so a suggestion would sit on the
+plain decode. The owner (2026-11-11) chose to design suggestions beside words (T12.15e): a
+decoded word that sounds like a listed word is marked and the listed word offered, accepted with
+a click, nothing changed until then. This section counts how often T12.15b's careful matchers
+would make such a suggestion in a meeting and how many would be right. It ships nothing.
+
+## The rule (written before measuring, 2026-11-11)
+
+Everything in this section was fixed and committed before any decode below was run.
+
+### Data and transcripts
+
+T12.15c's data: the five `ami-dev-ihm` meetings, oracle segments, `parakeet-tdt-0.6b-v2`,
+greedy TDT, `TranscribeOptions::live()`, on the CPU. Only the baseline is decoded (no boost),
+again, because the earlier hypotheses were left in a deleted worktree. Its per-segment hashes
+are compared with `docs/vocabulary/ami/counts-baseline-ne.jsonl`; any differing segment is
+reported, and if more than 0 differ the run stops and nothing below is read (T12.15ca matched
+all 1,418, so a difference means something changed).
+
+### Matchers and lists
+
+T12.15b's two careful matchers, `correct.rs` unchanged: **`sound-rare`** (same sound key, at
+least two key characters, the decoded word not common, exactly one listed match) and
+**`spelling-rare`** (decoded word not common, Levenshtein distance at most a quarter of the
+listed word's length, at least 1, listed words of four letters or more, exactly one match).
+Each is applied to each segment's baseline hypothesis with the meeting's lists from T12.15c
+(title-case forms, as T12.15b passed them): **`ne`** (100 words: the meeting's named entities
+plus distractors) decides; **`ne-all`** and **`rare`** are reported beside it.
+
+### What is counted
+
+Each suggestion is judged alone: the hypothesis with that one word replaced is scored against
+the segment's reference with the same normalisation and edit distance as WER.
+
+- **right**: the segment's word errors fall;
+- **wrong**: they rise;
+- **no effect**: they stay the same (for example both words wrong).
+
+Reported per matcher and list: suggestions, right, wrong, no effect, how many offer a distractor
+(a listed word not among the meeting's words), and each per **meeting hour**. A meeting hour is
+the five meetings' UEM spans summed. Hypotheses, suggestions and lists stay in `target/`; the
+committed record is counts and hashes only, as before.
+
+### What the numbers decide
+
+A judgement, fixed before measuring: a suggestion may be marked **in the transcript itself**
+only if one matcher on `ne` makes **at most 5 wrong suggestions per meeting hour** and more
+right than wrong. Otherwise the design keeps suggestions out of the running text (for example a
+short list the user opens), or drops them. This rule decides which designs go to the owner; the
+owner chooses the design (T12.15e).
