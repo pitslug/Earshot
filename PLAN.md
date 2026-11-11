@@ -1673,9 +1673,14 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: only if T12.15ca passes; the shipped variant is the gated one (bonus 2), not T12.15c's open one. Parakeet decodes with the boost (open, bonus 2) in every production decode: live stretches, the final pass, re-transcribe and provisional words, on every backend that runs Parakeet; whisper is unchanged (its prompt is not shipped). The list: the Dictionary's words, then the words of saved people's names (the owner, 2026-11-10: a saved Kam wins over Cam), deduplicated without case, at most `MAX_VOCABULARY_WORDS` (the measured size); title-case and lower-case paths as in T12.15b. People's names stay on this computer: they never join a summary request. Read once per live session at its start and by each final pass; the stretch record keeps the list's digest so a stretch decoded with another list is decoded again (record version bump, `post::reusable`); an empty list decodes byte-identically to today (pinned). The Dictionary page says transcripts now use the words (Parakeet only). The boost leaves T12.15b's evaluation-only scan tests' intent intact: `transcribe_biased` stays evaluation only, production goes through one shipped constructor.
   - accept: `cargo test -p earshot-onnx parakeet`; `cargo test -p earshot-runtime post`; `cargo test -p earshot-runtime live`; `cmd /c pnpm --filter @earshot/ui test`; `cargo xtask accept m2` unchanged
 
+- [ ] T12.15ea Your words in the transcript: count suggestions on meeting speech
+  - deps: T12.15ca
+  - do: evaluation, rule written and committed before measuring (docs/vocabulary.md, "Suggestions on meeting speech"): T12.15b's `sound-rare` and `spelling-rare` matchers, unchanged, on the plain Parakeet decode of T12.15c's five AMI dev meetings and lists; each suggestion judged alone (right, wrong, no effect) and counted per meeting hour; the committed record word-free.
+  - accept: the numbers in docs/vocabulary.md; `cargo test -p earshot-runtime --example vocab_eval`
+
 - [ ] T12.15e Your words in the transcript: suggestions beside words
-  - deps: T12.15d
-  - do: the owner, 2026-11-11 (option b): after the nudge, a decoded word that sounds like a listed word is marked with the listed word as a suggestion, accepted with a click (an edit through `edit::edit_segment`); nothing changes until accepted. A quiet design first (T12.15b's careful matcher suggested about 70 times an hour on audiobook speech, a third wrong): measure how many remain after the nudge on T12.15c's data, then agree the design with the owner.
+  - deps: T12.15ea
+  - do: the owner, 2026-11-11 (option b; the nudge did not ship, so suggestions sit on the plain decode): a decoded word that sounds like a listed word is marked with the listed word as a suggestion, accepted with a click (an edit through `edit::edit_segment`); nothing changes until accepted. A quiet design first (T12.15b's careful matcher suggested about 70 times an hour on audiobook speech, a third wrong): T12.15ea counts them on T12.15c's data, then the design is agreed with the owner.
   - accept: agreed with the owner
 
 - [x] T12.16 Edit a meeting's title, transcript and summary
