@@ -1,0 +1,35 @@
+{
+  "backend": "cpu",
+  "baseline_only": true,
+  "decode_seconds": {
+    "baseline": 632.53
+  },
+  "decoding": "greedy TDT (TranscribeOptions::live), one direct call per oracle segment on the speaker's headset; the baseline through Transcriber::transcribe, the three lists from one transcribe_biased call (one encoding per piece, the call's time shared out evenly)",
+  "evidence": {
+    "sessions": [
+      "requested cpu, placed: CPUExecutionProvider=1993",
+      "requested cpu, placed: CPUExecutionProvider=13",
+      "requested cpu, placed: CPUExecutionProvider=10"
+    ],
+    "source": "ONNX Runtime node placement"
+  },
+  "host": {
+    "load": "shared build host: other lanes were compiling and testing during the run; decode times decide nothing",
+    "logical_cores": 32
+  },
+  "listed_forms_not_tokenised": 0,
+  "meetings": [
+    "ES2003a",
+    "ES2011a",
+    "IS1008a",
+    "TS3004a",
+    "TS3006a"
+  ],
+  "model": "parakeet-tdt-0.6b-v2",
+  "onnx_threads_per_worker": 4,
+  "segment_audio_seconds": 5194.444,
+  "segments": 1418,
+  "variant": null,
+  "wall_seconds": 166.1511976,
+  "workers": 4
+}

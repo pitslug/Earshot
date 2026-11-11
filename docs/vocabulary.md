@@ -632,3 +632,68 @@ only if one matcher on `ne` makes **at most 5 wrong suggestions per meeting hour
 right than wrong. Otherwise the design keeps suggestions out of the running text (for example a
 short list the user opens), or drops them. This rule decides which designs go to the owner; the
 owner chooses the design (T12.15e).
+
+## Results (measured 2026-11-11)
+
+Host: the x64 desktop (32 logical cores), CPU only, idle at the start (0% load; the `host.load`
+line in `ami-meta.json` is fixed text in the tool, not a measurement); ONNX Runtime placed every
+node on the CPU (`docs/vocabulary/ami-suggest/ami-meta.json`). The baseline-only decode of the
+1,418 oracle segments (5,194 s of headset speech) took 166 s (4 workers of 4 threads). Its
+hashes matched T12.15c's committed `counts-baseline-ne.jsonl` on all 1,418 segments (0
+differing), so the run went on. The five meetings' UEM spans sum to 5,795.6 s: **1.610 meeting
+hours**.
+
+Counts, with each per meeting hour in brackets:
+
+| Matcher | List | Suggestions | Right | Wrong | No effect | Distractor |
+|---|---|---|---|---|---|---|
+| sound-rare | **ne** | 5 (3.1) | 5 (3.1) | 0 (0.0) | 0 (0.0) | 0 (0.0) |
+| sound-rare | ne-all | 16 (9.9) | 11 (6.8) | 0 (0.0) | 5 (3.1) | 0 (0.0) |
+| sound-rare | rare | 8 (5.0) | 6 (3.7) | 0 (0.0) | 2 (1.2) | 0 (0.0) |
+| spelling-rare | **ne** | 7 (4.3) | 4 (2.5) | 1 (0.6) | 2 (1.2) | 0 (0.0) |
+| spelling-rare | ne-all | 11 (6.8) | 5 (3.1) | 4 (2.5) | 2 (1.2) | 0 (0.0) |
+| spelling-rare | rare | 8 (5.0) | 6 (3.7) | 2 (1.2) | 0 (0.0) | 0 (0.0) |
+
+**The bar: passes for both matchers on `ne`.** sound-rare: 0 wrong per meeting hour, 5 right
+against 0 wrong; spelling-rare: 0.6 wrong per meeting hour, 4 right against 1 wrong. By the
+rule, suggestions may be marked in the transcript itself; the design is the owner's choice
+(T12.15e).
+
+### What the numbers say
+
+- Suggestions are rare: 3 to 4 an hour on `ne`, at most 10 an hour on any list. The baseline
+  already gets most named-entity words right (T12.15c: 18 errors at 60 listed positions), so
+  there is little to suggest, and the matchers fix only a few of those 18.
+- No suggestion on any list offered a distractor: the "exactly one match" and "not a common
+  word" conditions kept every unrelated listed word away.
+- Read in `target/` only: every wrong suggestion (1 on `ne`, 4 on `ne-all`, 2 on `rare`) is
+  spelling-rare offering the singular or plural form of a decoded word that already had the
+  right form, because the list held the other one. The no-effect suggestions are a word already
+  wrong in the baseline (the same inflection case) and, for sound-rare, short unfinished
+  fragments matched to a short listed word.
+- The counts are small (12 suggestions on `ne` over both matchers), so the bar is passed on few
+  events: a longer or different set of meetings could move it. sound-rare made no wrong
+  suggestion on any list here.
+
+### Reproducing
+
+Built with the lane's target folder (`C:\eb\lane-vocab`); `<main>` is the main
+checkout's absolute path, so the decode's hypotheses survive the lane's worktree.
+
+```powershell
+cargo build --release -p earshot-runtime --example vocab_eval --target-dir C:\eb\lane-vocab
+```
+
+```powershell
+C:\eb\lane-vocab\release\examples\vocab_eval.exe --models $env:LOCALAPPDATA\Earshot\models --fixtures $env:LOCALAPPDATA\earshot-dev\fixtures --out <main>\target\vocab-eval-ami-suggest --decode ami --baseline-only --workers 4 --threads 4
+```
+
+```powershell
+C:\eb\lane-vocab\release\examples\vocab_eval.exe --fixtures $env:LOCALAPPDATA\earshot-dev\fixtures --out <main>\target\vocab-eval-ami-suggest --report docs\vocabulary\ami-suggest --suggest-ami --prior-report docs\vocabulary\ami
+```
+
+`--suggest-ami` takes seconds, stops if any baseline hash differs from
+`docs/vocabulary/ami/counts-baseline-ne.jsonl`, and rewrites `docs/vocabulary/ami-suggest/`
+(`results.json`, `ami-meta.json` and `suggestions-<matcher>-<list>.jsonl`: per segment its id,
+the SHA-256 of the baseline hypothesis and the counts). The suggestions with their words are in
+`<out>/suggest-<matcher>-<list>.jsonl`.
