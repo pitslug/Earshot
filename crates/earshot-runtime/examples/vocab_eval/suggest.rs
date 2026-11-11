@@ -216,10 +216,9 @@ mod tests {
 
     #[test]
     fn vocab_suggest_judges_what_the_matcher_writes() {
-        let common: HashSet<String> = ["met", "the"].map(str::to_owned).into();
         let said: HashSet<String> = ["bozzle", "met", "the"].map(str::to_owned).into();
         let words = s(&["Bozle", "met", "the"]);
-        let (corrected, changes) = correct(&words, &s(&["Bozzle"]), Variant::SpellingRare, &common);
+        let (corrected, changes) = correct(&words, &s(&["Bozzle"]), Variant::SpellingRare);
         let judged = judge("bozzle met the", &words, &corrected, &changes, &said);
         assert_eq!(judged.len(), 1);
         assert_eq!(judged[0].effect, Verdict::Right);
