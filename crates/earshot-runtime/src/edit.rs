@@ -27,6 +27,9 @@
 //!   Search and export read the edited text through [`MeetingView`]. A text edit later than
 //!   the summary marks the summary out of date ([`MeetingView::summary_out_of_date`]), and
 //!   nothing is summarised by itself.
+//! - Suggested words (T12.15e): [`use_word`], [`put_back_word`], [`keep_word`] change one
+//!   token of a final line through [`edit_segment`]'s rules and record the choice in
+//!   `crate::word_choices`, in one transaction.
 //! - Summary text (T12.16): [`edit_summary`] corrects one field of the current summary in
 //!   place and keeps the text before the edit as the previous summary, so
 //!   [`undo_summary`] undoes the edit. No schema change.
@@ -48,7 +51,7 @@
 //! final pass matches identities on the same track only), so the echo cluster of the example
 //! returns as a new mic speaker; merge it again after re-transcribing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,11 +62,12 @@ use earshot_core::capture::TrackId;
 use earshot_core::diar::{EmbeddingModelId, SpeakerEmbedder, SpeakerRole, SpeakerSegmenter};
 use earshot_core::identity::{Clock, EntityId};
 use earshot_core::model::{
-    AudioFileRepo, Meeting, MeetingRepo, Speaker, Stamp, Summary, Track, TranscriptPass,
-    live_segments,
+    AudioFileRepo, Meeting, MeetingRepo, SegmentRow, Speaker, Stamp, Summary, Track,
+    TranscriptPass, live_segments,
 };
 use earshot_core::pipeline::{FinalPassRequest, FinalPassTrack};
 use earshot_core::summary::SummaryV1;
+use earshot_core::vocabulary::suggest::split_punctuation;
 use earshot_core::voiceprint::{
     Person, VoiceprintError, VoiceprintRepo, enroll, identity_of, me_person, resolve_person,
 };
@@ -75,6 +79,7 @@ use crate::host::{HostPost, HostStep, ONNX_ACCELERATOR, PostLoad, final_pass};
 use crate::identities::{IdentityRecord, StoredIdentities};
 use crate::post::PostConfig;
 use crate::view::{MeetingView, cites_only};
+use crate::word_choices::{self, Choice, WordChoice};
 use crate::{MeetingJob, RuntimeError, Services, os_seeded_rng};
 
 /// The longest name a speaker or person may get, in characters (after trimming).
@@ -164,6 +169,14 @@ pub enum EditError {
     /// identity record cannot be read), so the choice to ignore it has nowhere to be kept
     /// ([`ignore_speaker`]). A re-transcription stores one.
     NoStoredVoice(EntityId),
+    /// The line (the id) has no word at that position: it changed meanwhile ([`use_word`],
+    /// [`put_back_word`], [`keep_word`]).
+    WordNotFound(EntityId),
+    /// The word is not on the word list ([`use_word`]). Never carries the word.
+    WordNotListed,
+    /// The word at that position of the line (the id) was not changed from a suggestion, or
+    /// the line changed since: there is nothing to put back ([`put_back_word`]).
+    NoWordChoice(EntityId),
 }
 
 /// What is wrong with a title or transcript text.
@@ -268,6 +281,16 @@ impl fmt::Display for EditError {
                 f,
                 "no voice of speaker {id} is stored, so ignoring it cannot be kept; transcribe the meeting again first"
             ),
+            Self::WordNotFound(id) => {
+                write!(f, "segment {id} has no word at that position")
+            }
+            Self::WordNotListed => f.write_str("the word is not on the word list"),
+            Self::NoWordChoice(id) => {
+                write!(
+                    f,
+                    "segment {id} has no changed word at that position to put back"
+                )
+            }
         }
     }
 }
@@ -367,34 +390,249 @@ pub fn edit_segment(
 ) -> Result<bool, RuntimeError> {
     let text = clean_segment_text(text)?;
     write(services, |tx, stamp| {
-        live_meeting(&*tx, meeting)?;
-        let rows = tx.segments(meeting)?;
-        let has_final = rows
-            .iter()
-            .any(|r| r.pass == TranscriptPass::Final && !r.meta.deleted);
-        let Some(mut row) = rows
-            .into_iter()
-            .find(|r| r.segment.id == segment && !r.meta.deleted)
-        else {
-            return Err(EditError::SegmentNotFound(segment).into());
-        };
-        if row.pass != TranscriptPass::Final {
-            return Err(if has_final {
-                // A draft row of a meeting that has a final transcript is not shown.
-                EditError::SegmentNotFound(segment)
-            } else {
-                EditError::DraftTranscript(meeting)
-            }
-            .into());
+        let (row, _) = final_line(tx, meeting, segment)?;
+        put_line_text(tx, stamp, row, text)
+    })
+}
+
+/// The live final-transcript row `segment` of the live meeting `meeting`, with every live
+/// final line's id and text (for word choices), by [`edit_segment`]'s refusals.
+fn final_line(
+    tx: &StoreTx<'_>,
+    meeting: EntityId,
+    segment: EntityId,
+) -> Result<(SegmentRow, BTreeMap<EntityId, String>), RuntimeError> {
+    live_meeting(tx, meeting)?;
+    let rows = tx.segments(meeting)?;
+    let lines: BTreeMap<EntityId, String> = rows
+        .iter()
+        .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
+        .map(|r| (r.segment.id, r.segment.text.clone()))
+        .collect();
+    let Some(row) = rows
+        .into_iter()
+        .find(|r| r.segment.id == segment && !r.meta.deleted)
+    else {
+        return Err(EditError::SegmentNotFound(segment).into());
+    };
+    if row.pass != TranscriptPass::Final {
+        return Err(if lines.is_empty() {
+            EditError::DraftTranscript(meeting)
+        } else {
+            // A draft row of a meeting that has a final transcript is not shown.
+            EditError::SegmentNotFound(segment)
         }
-        if row.segment.text == text {
+        .into());
+    }
+    Ok((row, lines))
+}
+
+/// Writes `text` (already cleaned) into `row` as a user edit ([`edit_segment`]); returns
+/// whether the row changed.
+fn put_line_text(
+    tx: &mut StoreTx<'_>,
+    stamp: &mut DynStamp<'_, '_>,
+    mut row: SegmentRow,
+    text: String,
+) -> Result<bool, RuntimeError> {
+    if row.segment.text == text {
+        return Ok(false);
+    }
+    row.segment.text = text;
+    row.segment.words.clear();
+    row.meta.touch(stamp.hlc, stamp.clock);
+    row.text_edited_at = Some(row.meta.updated_at);
+    tx.put_segment(row)?;
+    Ok(true)
+}
+
+/// The byte range of every white-space token of `text`, in order (the tokens of
+/// `str::split_whitespace`, which the word matcher counts).
+fn token_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, c) in text.char_indices() {
+        match (c.is_whitespace(), start) {
+            (true, Some(s)) => {
+                out.push(s..i);
+                start = None;
+            }
+            (false, None) => start = Some(i),
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        out.push(s..text.len());
+    }
+    out
+}
+
+/// Token `token` of `row` (its byte range and text), if it holds a word.
+fn word_at(
+    row: &SegmentRow,
+    token: usize,
+) -> Result<(std::ops::Range<usize>, String), RuntimeError> {
+    let text = &row.segment.text;
+    token_ranges(text)
+        .into_iter()
+        .nth(token)
+        .map(|r| (r.clone(), text[r].to_owned()))
+        .filter(|(_, t)| !split_punctuation(t).1.is_empty())
+        .ok_or_else(|| EditError::WordNotFound(row.segment.id).into())
+}
+
+/// The meeting's word choices that still hold for `lines` (`crate::word_choices`).
+fn holding_choices(
+    tx: &StoreTx<'_>,
+    meeting: EntityId,
+    lines: &BTreeMap<EntityId, String>,
+) -> Result<Vec<WordChoice>, RuntimeError> {
+    let lines: BTreeMap<EntityId, &str> = lines.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    Ok(tx
+        .local_value(word_choices::record_key(meeting).as_str())?
+        .map(|b| word_choices::decode(&b))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| c.holds(&lines))
+        .collect())
+}
+
+/// Stores `choices` as the meeting's word choices; none erases the record.
+fn put_choices(
+    tx: &mut StoreTx<'_>,
+    meeting: EntityId,
+    choices: &[WordChoice],
+) -> Result<(), RuntimeError> {
+    let key = word_choices::record_key(meeting);
+    if choices.is_empty() {
+        tx.delete_local_value(key.as_str())?;
+    } else {
+        crate::local::set_tx(tx, &key, &word_choices::encode(choices)?)?;
+    }
+    Ok(())
+}
+
+/// "Use it", or another listed word (T12.15e): token `token` (counted among the white-space
+/// tokens) of line `segment` of `meeting`'s final transcript becomes `word`, its punctuation
+/// kept, and the choice is recorded (`crate::word_choices`), in one transaction. `word` must
+/// be on the word list ([`word_choices::word_list`], any case; the listed form is written).
+/// The line is edited by [`edit_segment`]'s rules: final transcript only, marked edited
+/// (kept by a re-transcription), and a summary older than the edit is out of date. A token
+/// changed before keeps the word the recogniser wrote, so "Put back" still restores it, and
+/// choosing that word again drops the choice as [`put_back_word`] does. Returns whether the
+/// line's text changed.
+///
+/// # Errors
+/// [`EditError`] ([`edit_segment`]'s refusals, [`EditError::WordNotFound`] for a token that
+/// is not there or holds no word, [`EditError::WordNotListed`]); store errors.
+pub fn use_word(
+    services: &Services,
+    meeting: EntityId,
+    segment: EntityId,
+    token: usize,
+    word: &str,
+) -> Result<bool, RuntimeError> {
+    write(services, |tx, stamp| {
+        let (row, lines) = final_line(tx, meeting, segment)?;
+        let (range, current) = word_at(&row, token)?;
+        let wanted = word.trim().to_lowercase();
+        let listed = word_choices::word_list_tx(tx)?
+            .into_iter()
+            .find(|w| w.to_lowercase() == wanted)
+            .ok_or(EditError::WordNotListed)?;
+        let mut choices = holding_choices(tx, meeting, &lines)?;
+        let earlier = choices
+            .iter()
+            .position(|c| c.segment == segment && c.token == token)
+            .map(|i| choices.remove(i));
+        let decoded = match earlier {
+            Some(WordChoice {
+                decoded,
+                choice: Choice::Changed { .. },
+                ..
+            }) => decoded,
+            _ => current.clone(),
+        };
+        let (pre, _, post) = split_punctuation(&current);
+        let written = format!("{pre}{listed}{post}");
+        if written != decoded {
+            choices.push(WordChoice {
+                segment,
+                token,
+                decoded,
+                choice: Choice::Changed {
+                    written: written.clone(),
+                },
+            });
+        }
+        let mut text = row.segment.text.clone();
+        text.replace_range(range, &written);
+        let text = clean_segment_text(&text)?;
+        put_choices(tx, meeting, &choices)?;
+        put_line_text(tx, stamp, row, text)
+    })
+}
+
+/// "Put back" (T12.15e): token `token` of line `segment` reads the word the recogniser wrote
+/// again and its choice is dropped, in one transaction. The line stays marked edited (its
+/// word times went with the change). Returns whether the line's text changed.
+///
+/// # Errors
+/// [`EditError`] ([`edit_segment`]'s refusals, [`EditError::NoWordChoice`] when the token
+/// has no changed word that still reads as recorded); store errors.
+pub fn put_back_word(
+    services: &Services,
+    meeting: EntityId,
+    segment: EntityId,
+    token: usize,
+) -> Result<bool, RuntimeError> {
+    write(services, |tx, stamp| {
+        let (row, lines) = final_line(tx, meeting, segment)?;
+        let mut choices = holding_choices(tx, meeting, &lines)?;
+        let Some(i) = choices.iter().position(|c| {
+            c.segment == segment && c.token == token && matches!(c.choice, Choice::Changed { .. })
+        }) else {
+            return Err(EditError::NoWordChoice(segment).into());
+        };
+        let choice = choices.remove(i);
+        let (range, _) = word_at(&row, token)?;
+        let mut text = row.segment.text.clone();
+        text.replace_range(range, &choice.decoded);
+        let text = clean_segment_text(&text)?;
+        put_choices(tx, meeting, &choices)?;
+        put_line_text(tx, stamp, row, text)
+    })
+}
+
+/// "Keep" (T12.15e): token `token` of line `segment` stays as decoded and is not suggested
+/// again in this meeting (`crate::word_choices`); the line is not written. Returns whether a
+/// choice was recorded (a token whose choice still holds records nothing).
+///
+/// # Errors
+/// [`EditError`] ([`edit_segment`]'s refusals, [`EditError::WordNotFound`]); store errors.
+pub fn keep_word(
+    services: &Services,
+    meeting: EntityId,
+    segment: EntityId,
+    token: usize,
+) -> Result<bool, RuntimeError> {
+    write(services, |tx, _| {
+        let (row, lines) = final_line(tx, meeting, segment)?;
+        let (_, current) = word_at(&row, token)?;
+        let mut choices = holding_choices(tx, meeting, &lines)?;
+        if choices
+            .iter()
+            .any(|c| c.segment == segment && c.token == token)
+        {
             return Ok(false);
         }
-        row.segment.text = text;
-        row.segment.words.clear();
-        row.meta.touch(stamp.hlc, stamp.clock);
-        row.text_edited_at = Some(row.meta.updated_at);
-        tx.put_segment(row)?;
+        choices.push(WordChoice {
+            segment,
+            token,
+            decoded: current,
+            choice: Choice::Kept,
+        });
+        put_choices(tx, meeting, &choices)?;
         Ok(true)
     })
 }

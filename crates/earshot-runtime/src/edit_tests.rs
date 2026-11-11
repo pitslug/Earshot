@@ -1142,3 +1142,7 @@ mod text_tests;
 /// T12.19: saving and ignoring a voice.
 #[path = "edit_speakers_tests.rs"]
 mod speakers_tests;
+
+/// T12.15ec: suggestions beside words.
+#[path = "edit_words_tests.rs"]
+mod words_tests;

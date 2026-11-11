@@ -21,6 +21,7 @@ use earshot_runtime::edit::{
 };
 use earshot_runtime::identities::SpeakerIdentity;
 use earshot_runtime::view::MeetingView;
+use earshot_runtime::word_choices;
 use earshot_runtime::{RuntimeError, Services, os_seeded_rng};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -132,6 +133,34 @@ pub struct TranscriptRow {
     /// The user edited the text (T12.16): it is kept by a re-transcription, and it has no
     /// per-word times.
     pub edited: bool,
+    /// Words the word list suggests a listed word for (T12.15e), in token order; empty in a
+    /// draft.
+    pub suggestions: Vec<WordSuggestionView>,
+    /// Words changed from a suggestion (T12.15e), in token order; empty in a draft.
+    pub changed_words: Vec<ChangedWordView>,
+}
+
+/// A word of a transcript line with a listed word that sounds like it
+/// (`earshot_runtime::word_choices`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct WordSuggestionView {
+    /// Index among the line's white-space tokens (the text split on runs of white space).
+    pub token: u32,
+    /// The word as decoded, without the punctuation around it.
+    pub decoded: String,
+    /// The listed word offered in its place.
+    pub listed: String,
+}
+
+/// A word of a transcript line the user changed from a suggestion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ChangedWordView {
+    /// Index among the line's white-space tokens.
+    pub token: u32,
+    /// The word as decoded ("Put back" restores it), without the punctuation around it.
+    pub decoded: String,
+    /// The word as written now, without the punctuation around it.
+    pub written: String,
 }
 
 /// Whether a speaker is the user.
@@ -245,6 +274,9 @@ pub struct MeetingDetail {
     /// The meeting's summary is kept on this computer (T12.13), `None` when it may go to the
     /// summary writer.
     pub kept_local: Option<crate::keep_local::KeptLocalView>,
+    /// The word list (the Dictionary's words, then saved people's names; T12.15e) for "another
+    /// word" on a changed word; empty for a draft transcript. It stays on this computer.
+    pub word_list: Vec<String>,
 }
 
 /// One handover to Claude Code or Codex.
@@ -534,6 +566,19 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "Earshot kept nothing of this voice to remember the choice by. Re-transcribe the \
              meeting, then ignore it.",
         ),
+        // Suggested words (T12.15e).
+        EditError::WordNotFound(_) => err(
+            "word_not_found",
+            "This word is no longer in the line. The line may have been edited.",
+        ),
+        EditError::WordNotListed => err(
+            "word_not_listed",
+            "That word is not in your dictionary or among the people you saved.",
+        ),
+        EditError::NoWordChoice(_) => err(
+            "no_word_choice",
+            "There is nothing to put back for this word. The line may have been edited.",
+        ),
     }
 }
 
@@ -711,7 +756,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         .ok_or_else(not_found)?;
     // Everything else is one snapshot under one store lock, so the shown summary,
     // `can_undo_summary` and the transcript the citations resolve against agree.
-    let (persons, history, view, identities, backend, handovers, audio_kept, kept_local) = {
+    let (persons, history, view, identities, backend, handovers, audio_kept, kept_local, words) = {
         let db = services.store();
         let persons = edit::list_persons_in(&db)?;
         let history = match edit::summary_history_in(&**db, meeting) {
@@ -737,8 +782,9 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             .iter()
             .any(|f| services.data.resolve(&f.path).is_ok_and(|p| p.exists()));
         let kept_local = crate::keep_local::kept_local_view(&db, meeting);
+        let words = word_choices::word_marks(&db, &view)?;
         (
-            persons, history, view, identities, backend, handovers, audio_kept, kept_local,
+            persons, history, view, identities, backend, handovers, audio_kept, kept_local, words,
         )
     };
     let in_room = !view.tracks.iter().any(|t| t.kind == TrackId::Reference);
@@ -763,6 +809,26 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             track: track_of(s),
             text: s.text.clone(),
             edited: view.edited.contains_key(&s.id),
+            suggestions: words.lines.get(&s.id).map_or_else(Vec::new, |l| {
+                l.suggestions
+                    .iter()
+                    .map(|w| WordSuggestionView {
+                        token: token_index(w.token),
+                        decoded: w.decoded.clone(),
+                        listed: w.listed.clone(),
+                    })
+                    .collect()
+            }),
+            changed_words: words.lines.get(&s.id).map_or_else(Vec::new, |l| {
+                l.changed
+                    .iter()
+                    .map(|w| ChangedWordView {
+                        token: token_index(w.token),
+                        decoded: w.decoded.clone(),
+                        written: w.written.clone(),
+                    })
+                    .collect()
+            }),
         })
         .collect();
     let rows: BTreeMap<EntityId, u32> = view
@@ -819,7 +885,13 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             })
             .collect(),
         kept_local,
+        word_list: words.list,
     })
+}
+
+/// A token index for the UI (a line holds at most a few thousand tokens).
+fn token_index(token: usize) -> u32 {
+    u32::try_from(token).unwrap_or(u32::MAX)
 }
 
 /// Every live person, for "Link to person".

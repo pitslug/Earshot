@@ -70,6 +70,9 @@ meeting_records! {
     /// `summary-kept-local/<meeting>`: the meeting's summary stays on this computer (T12.13;
     /// presence is the answer, [`crate::keep_local`]).
     KeptLocal => "summary-kept-local/", meeting at 0;
+    /// `word-choices/<meeting>`: the user's choices on suggested words (content, T12.15ec;
+    /// [`crate::word_choices`]).
+    WordChoices => "word-choices/", meeting at 0;
 }
 
 impl MeetingRecord {

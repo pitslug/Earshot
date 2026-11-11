@@ -77,6 +77,8 @@ import type {
   SummaryView,
   TranscriptKind,
   TranscriptRow,
+  ChangedWordView,
+  WordSuggestionView,
   Verdict,
   WarningKind,
   WriterChoice,
@@ -179,6 +181,8 @@ export type {
   SummaryView,
   TranscriptKind,
   TranscriptRow,
+  ChangedWordView,
+  WordSuggestionView,
   Verdict,
   WarningKind,
   WriterChoice,
@@ -235,6 +239,17 @@ export interface IpcCommands
   /** Replaces the text of one line of the final transcript; the line keeps its id and times.
    * Rejects with `invalid_text`, `segment_not_found` or `draft_transcript`. */
   editSegment(meeting: string, segment: string, text: string): Promise<void>;
+  /** "Use it", or another word from `MeetingDetail.word_list` (T12.15e): word `token` of a
+   * final line becomes `word`, its punctuation kept; the line is marked edited. Rejects with
+   * `word_not_listed`, `word_not_found`, `segment_not_found` or `draft_transcript`. */
+  useWord(meeting: string, segment: string, token: number, word: string): Promise<void>;
+  /** "Put back" (T12.15e): a changed word reads as decoded again. Rejects with
+   * `no_word_choice`, `segment_not_found` or `draft_transcript`. */
+  putBackWord(meeting: string, segment: string, token: number): Promise<void>;
+  /** "Keep" (T12.15e): the suggestion goes and does not come back for this meeting; the
+   * line is not changed. Rejects with `word_not_found`, `segment_not_found` or
+   * `draft_transcript`. */
+  keepWord(meeting: string, segment: string, token: number): Promise<void>;
   /** Corrects one text of the current summary `summary` (T12.16); the text before the edit
    * becomes the previous summary. Rejects with `invalid_summary_text` or `summary_changed`. */
   editSummary(meeting: string, summary: string, field: SummaryFieldRef, text: string): Promise<void>;

@@ -45,8 +45,14 @@ const LINES: [speaker: keyof typeof SAMPLE_SPEAKERS, at: number, text: string][]
   ["me", 760_000, "Agreed. I'll confirm the revised commissioning date with the client by Friday."],
   ["third", 771_000, "I can send the split-order quote this afternoon."],
   ["priya", 779_000, "Then the air freight is at the vendor's cost. That's decided."],
-  ["second", 786_000, "Fine by us. I'll put it in writing."],
+  ["second", 786_000, "Fine by us. I'll send it to Tom Reed in writing."],
 ];
+
+/** The fixed suggestions of the sample's final transcript (T12.15e): "Reed" sounds like the
+ * saved person Tom Reid. The mock does not run the sound matcher. */
+const SAMPLE_SUGGESTIONS: Record<string, TranscriptRow["suggestions"]> = {
+  [segmentId(8)]: [{ token: 8, decoded: "Reed", listed: "Reid" }],
+};
 
 function cite(...rows: number[]): Citation[] {
   return rows.map((row) => ({ segment_id: segmentId(row + 1), row }));
@@ -99,6 +105,8 @@ export function transcriptOf(lines: typeof LINES, speakers: SpeakerCard[]): Tran
       track: who === "me" ? "You" : "Them",
       text,
       edited: false,
+      suggestions: [],
+      changed_words: [],
     };
   });
 }
@@ -179,7 +187,7 @@ export function sampleDetail(item: MeetingListItem): MeetingDetail {
   const transcript = transcriptOf(LINES, speakers).map((r) =>
     draft
       ? { ...r, speaker: r.track === "You" ? "Me" : "Them", speaker_id: r.track === "You" ? SAMPLE_SPEAKERS.me : null }
-      : r,
+      : { ...r, suggestions: SAMPLE_SUGGESTIONS[r.segment_id] ?? [] },
   );
   return {
     id: item.id,
@@ -201,6 +209,8 @@ export function sampleDetail(item: MeetingListItem): MeetingDetail {
     audio_kept: true,
     handovers: [],
     kept_local: null,
+    // Filled from the Dictionary and the persons when the mock serves the detail.
+    word_list: [],
   };
 }
 

@@ -58,6 +58,15 @@ export const commands = {
 	/**  Replaces the text of one line of `meeting`'s final transcript (T12.16). */
 	editSegment: (meeting: string, segment: string, text: string) => typedError<null, IpcError>(__TAURI_INVOKE("edit_segment", { meeting, segment, text })),
 	/**
+	 *  "Use it", or another word from the list (T12.15e): word `token` of a final transcript line
+	 *  becomes `word`, which must be on the word list.
+	 */
+	useWord: (meeting: string, segment: string, token: number, word: string) => typedError<null, IpcError>(__TAURI_INVOKE("use_word", { meeting, segment, token, word })),
+	/**  "Put back" (T12.15e): word `token` of a line reads the decoded word again. */
+	putBackWord: (meeting: string, segment: string, token: number) => typedError<null, IpcError>(__TAURI_INVOKE("put_back_word", { meeting, segment, token })),
+	/**  "Keep" (T12.15e): word `token` of a line stays and is not suggested again. */
+	keepWord: (meeting: string, segment: string, token: number) => typedError<null, IpcError>(__TAURI_INVOKE("keep_word", { meeting, segment, token })),
+	/**
 	 *  Corrects one text of `meeting`'s current summary `summary` (T12.16); the text before the
 	 *  edit becomes the previous summary.
 	 */
@@ -566,6 +575,16 @@ export type CaptureMode =
 "Call" | 
 /**  In the room: the mic only. */
 "InRoom";
+
+/**  A word of a transcript line the user changed from a suggestion. */
+export type ChangedWordView = {
+	/**  Index among the line's white-space tokens. */
+	token: number,
+	/**  The word as decoded ("Put back" restores it), without the punctuation around it. */
+	decoded: string,
+	/**  The word as written now, without the punctuation around it. */
+	written: string,
+};
 
 /**  The stored model check. */
 export type CheckView = {
@@ -1118,6 +1137,11 @@ export type MeetingDetail = {
 	 *  summary writer.
 	 */
 	kept_local: KeptLocalView | null,
+	/**
+	 *  The word list (the Dictionary's words, then saved people's names; T12.15e) for "another
+	 *  word" on a changed word; empty for a draft transcript. It stays on this computer.
+	 */
+	word_list: string[],
 };
 
 /**
@@ -1963,6 +1987,13 @@ export type TranscriptRow = {
 	 *  per-word times.
 	 */
 	edited: boolean,
+	/**
+	 *  Words the word list suggests a listed word for (T12.15e), in token order; empty in a
+	 *  draft.
+	 */
+	suggestions: WordSuggestionView[],
+	/**  Words changed from a suggestion (T12.15e), in token order; empty in a draft. */
+	changed_words: ChangedWordView[],
 };
 
 /**  Where the live transcript is, for the banner at the top of the meeting's transcript. */
@@ -2119,6 +2150,19 @@ export type WindowTheme =
 "light" | 
 /**  Dark. */
 "dark";
+
+/**
+ *  A word of a transcript line with a listed word that sounds like it
+ *  (`earshot_runtime::word_choices`).
+ */
+export type WordSuggestionView = {
+	/**  Index among the line's white-space tokens (the text split on runs of white space). */
+	token: number,
+	/**  The word as decoded, without the punctuation around it. */
+	decoded: string,
+	/**  The listed word offered in its place. */
+	listed: string,
+};
 
 /**  Who writes the summary. */
 export type WriterChoice = 

@@ -118,3 +118,7 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - xtask/src/bundle/tests.rs:1186 `bundle_check_refuses_a_notice_without_the_common_words`: only the heading case reaches `notice_missing_credits`; assert the exact missing credit for the cut-licence case too (T12.15ee review).
 - xtask/src/bundle.rs:997: the overlay's notice source (`INSTALL_NOTICE_BUILT`) is set only in `run()`, untested; pin it with a helper used by `run()` and a test (T12.15ee review).
 - xtask/src/bundle.rs:1759: an unreadable checkout notice is a hard error in `bundle-check`, before the installer digest lines (T12.15ee review).
+- crates/earshot-runtime/src/word_choices.rs:124 `list_of` sorts people with ASCII case folding, the mock `wordListOf` (packages/ui/src/ipc/mockWords.ts:28) with full Unicode lower case; pick one rule for both (T12.15ec review).
+- crates/earshot-runtime/src/word_choices.rs:21: stale choices (transcript words) stay in `word-choices/<meeting>` after a re-transcription until the next word write or deletion; drop them in the final pass's write transaction as `live-stretches/*` are (T12.15ec review).
+- crates/earshot-runtime/src/edit.rs `keep_word`: the IPC command accepts Keep on any word token, not only a suggested one (T12.15ec review).
+- packages/ui/src/ipc/mockWords.ts:60 `withWord` joins tokens with one space where Rust keeps the line's white space (T12.15ec review).

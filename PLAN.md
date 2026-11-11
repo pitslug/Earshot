@@ -1708,12 +1708,13 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the common words (CC BY 4.0, AMI) are compiled into the shipped exe, but the install's only third-party notice names the benchmark meeting. Add the common words' attribution (source, licence, what was derived) to the installed `NOTICE.md`, and make `bundle-check` require it.
   - accept: `cargo test -p xtask bundle`
 
-- [ ] T12.15ec Suggestions beside words: stored choices and the meeting detail
+- [x] T12.15ec Suggestions beside words: stored choices and the meeting detail
   - deps: T12.15eb
+  - status (2026-11-12): merged, reviewed clear (4 advisories in TODO.md). `earshot_runtime::word_choices` (list, record `word-choices/<meeting>`, marks), `edit::use_word` / `put_back_word` / `keep_word`, `MeetingDetail.word_list`, `TranscriptRow.suggestions` / `changed_words`. The user's set name is listed; the default "Me" is not. Put back restores the text but the line stays marked edited (its word times were dropped).
   - do: the list is built once, in the runtime (Dictionary words, then the words of saved people's names, deduplicated without case). `detail::meeting_detail` carries, per Final segment, its suggestions (token index, decoded word, listed word) and its changed words (token index, decoded word, written word); nothing for a draft. Choices live in device-local `word-choices/<meeting>` (`MeetingRecord`, transcript text so content: erased by meeting deletion, version outside the payload, an unreadable record is no choices), each keyed by segment id, token index and the decoded word; a choice whose segment is gone or whose token no longer reads as recorded is ignored. `edit::use_word` (Use it and choose another word: the token replaced through `edit_segment`'s rules and the choice recorded in the same `edit::write` transaction), `edit::put_back_word` (the decoded word restored, the choice dropped) and `edit::keep_word` (recorded, no text change). A kept or changed token is never suggested again; a re-transcribe keeps edited rows (T12.16), so changed words survive it. IPC commands and bindings, mock and its tests.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-runtime detail`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`
 
-- [ ] T12.15ed Suggestions beside words: the marks in the transcript
+- [~] T12.15ed Suggestions beside words: the marks in the transcript
   - deps: T12.15ec
   - do: the owner's design in T12.15e: the dotted underline, the popover with Use it and Keep, the quiet mark on a changed word and its popover (Changed from, Put back, another word from the list), keyboard reachable (Tab, Enter, Escape returns focus to the word), a click on the word never starts a line edit and a click elsewhere on the line still does. The Dictionary page says transcripts now suggest its words. Screenshots of the Vite preview in light and dark.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
