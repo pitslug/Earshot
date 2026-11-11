@@ -1,0 +1,47 @@
+# NPU summary candidates for the T12.7 spike (evaluation on the Surface only, never ci, desktop or
+# shipped). Fetched with `cargo xtask fetch-models --set npu-llm-eval` into the models folder. This
+# file is separate from `models/manifest.toml` because that one is embedded in the app and its
+# `hosts` become the app's download allowlist: Qualcomm's hosts below must never reach it
+# (`models::tests::npu_llm_eval_manifest_stays_out_of_the_app`).
+#
+# Neither publisher gives a digest: size and sha256 are those of the files downloaded on
+# 2026-11-11 (the owner's go-ahead the same day). No `extract`: the probe unpacks what it needs
+# (the SDK is 5.9 GiB unpacked, and xtask's zip reader fails on the bundle, TODO.md).
+#
+# Licences (read 2026-11-11):
+# - Qwen3-4B for the Snapdragon X2 Elite NPU: Apache-2.0 on the model card (qai-hub-models
+#   v0.66.0, w4a16, Genie format, 4,096-token context, compiled with QAIRT 2.50); the compiled
+#   bundle states no terms of its own.
+# - The Qualcomm AI Runtime Community SDK 2.50.40 (`genie-t2t-run`, Genie and the QNN HTP
+#   libraries): its LICENSE.pdf is the Qualcomm AI Stack License (use to develop applications and
+#   for benchmarking; distribution only in object code inside an application), the licence of the
+#   Qualcomm libraries in `models/manifest.toml`'s `qnn` set.
+
+sets = ["npu-llm-eval"]
+
+hosts = ["qaihub-public-assets.s3.us-west-2.amazonaws.com", "softwarecenter.qualcomm.com"]
+
+# Observed 2026-11-11: softwarecenter.qualcomm.com/api/download/... answers 301 to this host.
+redirect_hosts = ["apigwx-aws.qualcomm.com"]
+
+[[artefact]]
+id = "qwen3-4b-genie-w4a16-x2-elite"
+sets = ["npu-llm-eval"]
+location = "cache"
+url = "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/qwen3_4b/releases/v0.66.0/qwen3_4b-genie-w4a16-qualcomm_snapdragon_x2_elite.zip"
+path = "archives/qwen3_4b-genie-w4a16-qualcomm_snapdragon_x2_elite.zip"
+sha256 = "3448ce76a97e3848edeb118e96c09baeef108704e47a789fafd65ade684d8ace"
+size = 2539003026
+licence = "Apache-2.0"
+attribution = "Qwen3-4B (Alibaba Cloud Qwen team, Apache-2.0, https://huggingface.co/Qwen/Qwen3-4B), compiled for the Snapdragon X2 Elite NPU by Qualcomm AI Hub, https://huggingface.co/qualcomm/Qwen3-4B"
+
+[[artefact]]
+id = "qairt-community-2.50.40"
+sets = ["npu-llm-eval"]
+location = "cache"
+url = "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.40.260831/v2.50.40.260831.zip"
+path = "archives/qairt-v2.50.40.260831.zip"
+sha256 = "e821833cff67b0c55a413c920658cf9132a92e06309b6c26900149fd1a8809da"
+size = 2601717527
+licence = "LicenseRef-Qualcomm-AI-Stack"
+attribution = "Qualcomm AI Runtime (QAIRT) Community SDK 2.50.40.260831, Qualcomm Technologies, Inc., Qualcomm AI Stack License, https://softwarecenter.qualcomm.com/catalog/item/Qualcomm_AI_Runtime_Community"

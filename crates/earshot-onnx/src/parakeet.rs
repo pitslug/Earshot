@@ -555,6 +555,34 @@ impl ParakeetTdt {
         )
     }
 
+    /// [`ParakeetTdt::load_split`] with an encoder session the caller loaded: on the NPU, one
+    /// loaded from a context model compiled on this computer, or one that wrote it
+    /// ([`OnnxSession::load_writing_context`], T12.12a). The context model keeps the export's
+    /// metadata, so every check of [`ParakeetTdt::load_split`] runs unchanged.
+    ///
+    /// # Errors
+    /// As [`ParakeetTdt::load_split`].
+    pub fn load_with_encoder(
+        dir: &Path,
+        encoder: OnnxSession,
+        step_config: &SessionConfig,
+        name: &str,
+        english_only: bool,
+    ) -> Result<Self, OnnxError> {
+        let tokens = dir.join("tokens.txt");
+        let text = std::fs::read_to_string(&tokens)
+            .map_err(|e| OnnxError::Model(format!("{}: {e}", tokens.display())))?;
+        let vocab = Vocab::parse(&text).map_err(|e| OnnxError::Model(e.to_string()))?;
+        Self::assemble(
+            dir,
+            Encoder::Own(encoder),
+            vocab,
+            step_config,
+            name,
+            english_only,
+        )
+    }
+
     /// How long each encoder call since the last take waited for a shared encoder's lock, in
     /// call order (empty for a model with its own encoder). Evaluation only (T12.3b).
     pub fn take_encoder_waits(&mut self) -> Vec<Duration> {

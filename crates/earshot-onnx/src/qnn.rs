@@ -336,9 +336,99 @@ pub(crate) fn with_qnn_device(
         .map_err(|e| failed(e.to_string()))
 }
 
+/// What the registered QNN device says of a context model compiled earlier (T12.12a): ONNX
+/// Runtime's `GetModelCompatibilityForEpDevices` over the `ep_compatibility_info` the plugin
+/// wrote into the model's metadata (the plugin's SDK and the chip it compiled for).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompiledFit {
+    /// The device runs it as compiled.
+    Optimal,
+    /// The device runs it, but a new compile would run better.
+    PreferRecompile,
+    /// The device cannot run it.
+    Unsupported,
+    /// The plugin gives no answer (it does not implement the check).
+    NotApplicable,
+    /// The model carries no compatibility information for the QNN EP.
+    NoInfo,
+}
+
+impl CompiledFit {
+    /// Whether a load should use the compiled model as it is: anything but
+    /// [`CompiledFit::Unsupported`]. [`CompiledFit::PreferRecompile`] is usable because plugin
+    /// v2.7.0 always answers it for its own compiles: it writes the VTCM size as 0 ("unset") into
+    /// the information (`v2:6:2.51.0:5.51.0:81:0:0:0` on the Surface) and calls only an equal VTCM
+    /// optimal (`cache_compatibility/qnn_cache_compatibility_manager.cc`), so a new compile cannot
+    /// change the answer (measured 2026-11-11, T12.12a). The caller's own record of what it
+    /// compiled with (SDK, plugin, driver) decides the rest.
+    #[must_use]
+    pub fn usable(self) -> bool {
+        self != CompiledFit::Unsupported
+    }
+}
+
+/// Names the QNN EP to ort's compatibility API, whose metadata key is
+/// `ep_compatibility_info.<NAME>`. Never registered on a session (the plugin is appended as a
+/// device, [`with_qnn_device`]).
+struct QnnEpName;
+
+impl ort::ep::ExecutionProvider for QnnEpName {
+    const NAME: &'static str = QNN_REGISTRATION;
+
+    fn register(&self, _: &mut ort::session::builder::SessionBuilder) -> ort::Result<()> {
+        Err(ort::Error::new(
+            "names the QNN EP for compatibility information only",
+        ))
+    }
+}
+
+/// [`CompiledFit`] of the context model at `context_model` on the device [`register_qnn`] chose.
+///
+/// # Errors
+/// [`OnnxError::ProviderFailed`] when the plugin is not registered or its device is gone;
+/// [`OnnxError::Model`] when ONNX Runtime cannot read the model or answer.
+pub fn compiled_model_fit(context_model: &Path) -> Result<CompiledFit, OnnxError> {
+    use ort::device::DeviceCompatibility as D;
+    let device = registered_qnn().ok_or_else(|| {
+        failed("the QNN plugin is not registered; call earshot_onnx::qnn::register_qnn first")
+    })?;
+    let env = environment()?;
+    let want = match device.hardware {
+        QnnHardware::Npu => DeviceType::NPU,
+        QnnHardware::Simulator => DeviceType::CPU,
+    };
+    let model_err = |e: ort::Error| OnnxError::Model(format!("{}: {e}", context_model.display()));
+    let Some(info) =
+        ort::device::CompatibilityInfo::<QnnEpName>::from_compiled_model_file(context_model)
+            .map_err(model_err)?
+    else {
+        return Ok(CompiledFit::NoInfo);
+    };
+    let ep_device = env
+        .devices()
+        .find(|d| d.ep().ok() == Some(QNN_REGISTRATION) && d.hardware_device().ty() == want)
+        .ok_or_else(|| failed("the registered QNN device has disappeared"))?;
+    Ok(match ep_device.compatibility(&info).map_err(model_err)? {
+        D::SupportedOptimal => CompiledFit::Optimal,
+        D::SupportedPreferRecompilation => CompiledFit::PreferRecompile,
+        D::Unsupported => CompiledFit::Unsupported,
+        _ => CompiledFit::NotApplicable,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qnn_compiled_fit_refuses_only_an_unsupported_model() {
+        assert!(CompiledFit::Optimal.usable());
+        assert!(CompiledFit::NotApplicable.usable());
+        assert!(CompiledFit::NoInfo.usable());
+        // Plugin v2.7.0's answer for its own compiles (it leaves the VTCM size unset).
+        assert!(CompiledFit::PreferRecompile.usable());
+        assert!(!CompiledFit::Unsupported.usable());
+    }
 
     #[test]
     fn qnn_device_on_arm_is_only_the_npu() {

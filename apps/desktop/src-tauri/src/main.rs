@@ -87,6 +87,11 @@ fn main() {
         std::process::exit(code);
     }
     earshot_runtime::summary_child::use_this_exe();
+    // And an NPU compile (T12.12b): the app itself never closes the session that compiled.
+    if let Some(code) = earshot_runtime::npu_compiled::child_main(&args) {
+        std::process::exit(code);
+    }
+    earshot_runtime::npu_compiled::use_this_exe();
     // So does the replay mode of `accept m7`: no window or webview exists in it.
     if let Some(code) = headless::main_if_asked(&args) {
         std::process::exit(code);
@@ -138,6 +143,19 @@ fn main() {
             );
             let cuda_latch = Arc::clone(&cuda_start);
             app.manage(cuda_start);
+            // The NPU model a meeting would load, compiled in the helper now (T12.12b), so the
+            // first meeting usually loads it in a second. Nothing loads in this process.
+            #[cfg(target_arch = "aarch64")]
+            if let Ok(services) = state.services() {
+                let models = earshot_runtime::host::model_dir(&services.data);
+                let _ = std::thread::Builder::new()
+                    .name("earshot-npu-prepare".into())
+                    .spawn(move || {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            earshot_runtime::host::prepare_npu_model(&services, &models)
+                        }));
+                    });
+            }
             // Audio retention runs now and periodically (T7.4k).
             let retention = storage_settings::RetentionStatus::default();
             if let Ok(services) = state.services() {

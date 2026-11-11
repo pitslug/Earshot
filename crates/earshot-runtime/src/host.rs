@@ -193,7 +193,19 @@ impl MeetingModels {
                     factory.insert(live_factory(&me.models, &r.model, &r.order, clock, false))
                 }
             };
-            f(track, entity)
+            let loaded = f(track, entity);
+            // An NPU load that could not use its compiled model (T12.12a), once per process. One
+            // made by a final pass or a preview shows at the next track load.
+            if let Some(message) = crate::npu_compiled::take_note() {
+                me.notes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(crate::live::RuntimeWarning::HostNote {
+                        key: "npu-compiled".to_owned(),
+                        message: message.to_owned(),
+                    });
+            }
+            loaded
         })
     }
 
@@ -350,6 +362,43 @@ pub enum TranscriptionSource {
     Recommended(String),
     /// [`FALLBACK_MODEL`]: no current check and the recommendation is not installed (why).
     Fallback(&'static str),
+}
+
+/// Compiles, in the helper process ([`crate::npu_compiled`]), the NPU model a meeting would load now
+/// (T12.12b): the model and order [`transcription_setup`] gives on [`settled_order`], when the
+/// order holds the NPU (which it does only with the model's NPU version installed). For the app's
+/// start-up, on a thread of its own: it loads nothing in this process, and a meeting starting
+/// meanwhile waits for it and then loads the compiled model.
+///
+/// # Errors
+/// `Ok(None)` when no meeting would load on the NPU or no helper is registered; an `Err` says why
+/// nothing was compiled (a meeting's load then compiles as before).
+pub fn prepare_npu_model(
+    services: &Services,
+    models: &ModelDir,
+) -> Result<Option<crate::npu_compiled::Prepared>, RuntimeError> {
+    let Some(exe) = crate::npu_compiled::helper() else {
+        return Ok(None);
+    };
+    let setup = {
+        let db = services.store();
+        transcription_setup(&db, models, &settled_order(), &crate::hardware())?
+    };
+    if !setup.order.contains(&Accelerator::Qnn) {
+        return Ok(None);
+    }
+    let name = setup.choice.model;
+    let Ok(crate::backends::AsrModel::Parakeet(model)) = crate::backends::asr_model(&name) else {
+        return Ok(None);
+    };
+    let dir = crate::backends::require_qnn_model(models, model).map_err(RuntimeError::Asr)?;
+    let key = crate::npu_compiled::CompileKey::for_conversion(&dir)
+        .map_err(|e| RuntimeError::Asr(earshot_core::asr::AsrError::Backend(e)))?;
+    crate::npu_compiled::prepare(&dir, &key, |out| {
+        crate::npu_compiled::helper_compile(exe, models.root(), &name, out)
+    })
+    .map(Some)
+    .map_err(|e| RuntimeError::Asr(earshot_core::asr::AsrError::Backend(e)))
 }
 
 /// The transcription of an app run, from the Models page settings
