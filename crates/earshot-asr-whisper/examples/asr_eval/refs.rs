@@ -376,6 +376,26 @@ pub fn parse_ami_words(xml: &str) -> Result<Vec<AmiWord>, String> {
     Ok(words)
 }
 
+/// `xml` with `starttime="0"` given to every `<w>` that has no start time, so
+/// [`parse_ami_words`] reads its text (a few words of the training meetings and of some
+/// named-entity spans have none; users that need no times: the common words of T12.15b,
+/// `cargo xtask common-words`, and vocab_eval's named entities).
+pub fn with_start_times(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    while let Some(at) = rest.find("<w ") {
+        out.push_str(&rest[..at]);
+        let tag_end = rest[at..].find('>').map_or(rest.len(), |e| at + e);
+        out.push_str("<w ");
+        if !rest[at..tag_end].contains(" starttime=\"") {
+            out.push_str("starttime=\"0\" ");
+        }
+        rest = &rest[at + 3..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Decodes ISO-8859-1 bytes.
 pub fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| char::from(b)).collect()

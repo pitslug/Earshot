@@ -17,6 +17,7 @@ pub mod pipeline;
 pub mod prompt;
 pub mod sim;
 pub mod summary;
+pub mod vocabulary;
 pub mod voiceprint;
 
 #[cfg(test)]

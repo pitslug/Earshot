@@ -86,7 +86,7 @@ pub fn words_by_number(xml: &str) -> Result<BTreeMap<u64, String>, String> {
         let id = attr(tag, "nite:id").ok_or_else(|| format!("word without id: {tag}"))?;
         let n = word_number(id)?;
         // The reference reader's own rule, one word at a time.
-        let kept = refs::parse_ami_words(&lists::with_start_times(element))?;
+        let kept = refs::parse_ami_words(&refs::with_start_times(element))?;
         if let Some(w) = kept.into_iter().next() {
             out.insert(n, w.text);
         }

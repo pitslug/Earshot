@@ -28,7 +28,7 @@ pub mod timing;
 /// references of both are one rule.
 #[allow(dead_code, clippy::pedantic)]
 #[path = "../../../crates/earshot-asr-whisper/examples/asr_eval/refs.rs"]
-mod ami_refs;
+pub(crate) mod ami_refs;
 #[path = "../../../crates/earshot-asr-whisper/examples/asr_eval/gate12_private.rs"]
 pub(crate) mod gate12_private;
 

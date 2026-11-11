@@ -11,6 +11,7 @@ pub mod bench_meeting;
 pub mod build;
 pub mod bundle;
 pub mod ci;
+pub mod common_words;
 pub mod doctor;
 pub mod download;
 pub mod echo_nl;

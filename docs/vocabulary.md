@@ -56,7 +56,9 @@ their common list comes from the LibriSpeech training text, which is not fetched
    words file, read by `refs::parse_ami_words` (the `asr.wer_ami_ihm` reader: punctuation
    and unfinished fragments left out, `&#39;` read as an apostrophe, the underscores of
    spelled letters such as `T_V_` removed), except that a word without a start time still
-   counts. Ties at the cut go by text order.
+   counts. Ties at the cut go by text order. Since T12.15eb the list is made by
+   `cargo xtask common-words` (`--check` regenerates it byte for byte) and embedded in core
+   as `crates/earshot-core/src/vocabulary/data/common_words.txt`, which `vocab_eval` reads.
 3. **Rare token**: a normalised dev-clean reference token made only of the letters a-z and
    apostrophes, not a common word, and present in at most 2 of dev-clean's 97 chapters (a
    word used across many books, such as "lady", is ordinary English for the model; character
@@ -697,3 +699,8 @@ C:\eb\lane-vocab\release\examples\vocab_eval.exe --fixtures $env:LOCALAPPDATA\ea
 (`results.json`, `ami-meta.json` and `suggestions-<matcher>-<list>.jsonl`: per segment its id,
 the SHA-256 of the baseline hypothesis and the counts). The suggestions with their words are in
 `<out>/suggest-<matcher>-<list>.jsonl`.
+
+Since T12.15eb `sound-rare` is `earshot_core::vocabulary::suggest` (the shipped matcher) and
+`vocab_eval` calls it; `spelling-rare` stays in the example. Re-running `--suggest-ami` on the
+same baseline hypotheses after the move gave every file above, and every
+`<out>/suggest-<matcher>-<list>.jsonl`, byte for byte.

@@ -338,6 +338,14 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// Generate the common words the transcript's word suggestions never touch (T12.15eb)
+    /// from the AMI annotations; with --check, compare a fresh generation with the committed
+    /// files.
+    CommonWords {
+        /// Compare with the committed files instead of writing them.
+        #[arg(long)]
+        check: bool,
+    },
     /// Make the release key for in-app updates, once (T9.1b): prints its public half.
     UpdateKey {
         /// Where the key goes: outside the repo, never over an existing file.
@@ -595,6 +603,7 @@ fn main() -> ExitCode {
         } => xtask::update::run_sign(&root, &key, target.as_deref(), target_dir.as_deref())
             .map(|_| true),
         Cmd::BenchMeeting { check } => xtask::bench_meeting::run(&root, check).map(|()| true),
+        Cmd::CommonWords { check } => xtask::common_words::run(&root, check).map(|()| true),
         Cmd::EchoNl { dir, verbose } => {
             xtask::echo_nl::run(&root, dir.as_deref(), verbose).map(|()| true)
         }
@@ -1008,6 +1017,7 @@ mod tests {
                 "echo-nl",
                 "aec-heldout-baseline",
                 "bench-meeting",
+                "common-words",
                 "update-key",
                 "sign-update",
                 "t613"

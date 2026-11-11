@@ -1,0 +1,13 @@
+common_words.txt - data derived from a third-party corpus
+
+Source:   AMI Meeting Corpus manual annotations v1.6.2 (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/
+Fetched:  https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip
+Archive:  SHA-256 b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d (fixtures/manifest.toml, `ami/ami_public_manual_1.6.2.zip`)
+SHA-256:  1776b4a476c59092adf7b4dbffbb1294baaf160ece1859edfd8f77d907e86801
+Entries:  5000 tokens, one per line, most frequent first
+Made by:  cargo xtask common-words (xtask/src/common_words.rs); --check regenerates it
+Used by:  crates/earshot-core/src/vocabulary/suggest.rs (include_str!)
+
+Changes: the 5000 most frequent tokens of every words file (words/<meeting>.<speaker>.words.xml) outside the series ES2003, ES2011, IS1008, TS3004, TS3006, ES2004, ES2014, IS1009, TS3003, TS3007, after the WER normaliser; ties in byte order. Only the tokens are kept, never their counts or the text they came from.
+
+Licence: Creative Commons Attribution 4.0 International (CC BY 4.0), https://creativecommons.org/licenses/by/4.0/ (corpus licence: https://groups.inf.ed.ac.uk/ami/corpus/license.shtml).
