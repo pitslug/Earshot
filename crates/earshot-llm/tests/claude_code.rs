@@ -140,11 +140,13 @@ mod fake {
     /// `<exe> --fake-claude <dir> <args...>` (module docs of the test).
     pub fn main(dir: &Path, args: &[String]) -> ! {
         if args == ["--version"] {
+            record_env(&dir.join("version.env"));
             println!("9.9.9 (Claude Code)");
             std::process::exit(0);
         }
         if args == ["--help"] {
             bump(&dir.join("help-calls"));
+            record_env(&dir.join("help.env"));
             if let Ok(ms) = std::fs::read_to_string(dir.join("help-sleep")) {
                 std::thread::sleep(std::time::Duration::from_millis(ms.trim().parse().unwrap()));
             }
@@ -250,6 +252,15 @@ Options:
 
 // ---------------------------------------------------------------------------------------
 // Helpers.
+
+/// Every name of [`MUST_CLEAR`] unset in a recorded environment, and the rest kept.
+fn assert_cleared(env: &str) {
+    let lines: Vec<&str> = env.lines().collect();
+    assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
+    for k in MUST_CLEAR {
+        assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
+    }
+}
 
 /// A scenario folder (and the temp root of the runs) removed at the end.
 struct Scenario {
@@ -470,12 +481,8 @@ fn claude_code_valid_reply_is_a_summary_after_one_run() {
     // variable that could send the prompt to another address, provider, account or proxy
     // (T9.25); the rest is kept (the sign-in is found through it).
     let env = s.read("call-1.env");
-    let lines: Vec<&str> = env.lines().collect();
-    assert!(lines.contains(&"DISABLE_TELEMETRY=1"), "{env}");
-    assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
-    for k in MUST_CLEAR {
-        assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
-    }
+    assert!(env.lines().any(|l| l == "DISABLE_TELEMETRY=1"), "{env}");
+    assert_cleared(&env);
 
     // The handover record: when and how much, never the text.
     let log = client.handovers().entries();
@@ -958,6 +965,8 @@ fn claude_code_unreadable_help_says_the_run_used_the_default_effort() {
         .result
         .unwrap();
     assert_eq!(client.effort_probe(), Some(EffortProbe::NotListed));
+    // The effort probe runs with the summary run's environment (T9.25, T12.30).
+    assert_cleared(&s.read("help.env"));
     let s = Scenario::new("effort-unset");
     s.script(None, &format!("reply {}", summary_json(&[1])));
     let client = s.client(|_| {});
@@ -971,6 +980,7 @@ fn claude_code_version_and_sign_in_status_come_from_the_cli() {
     let s = Scenario::new("status");
     let cli = s.cli();
     assert_eq!(cli.version(STATUS_TIMEOUT).unwrap(), "9.9.9 (Claude Code)");
+    assert_cleared(&s.read("version.env"));
     assert_eq!(
         cli.sign_in(STATUS_TIMEOUT),
         SignIn::SignedIn {
@@ -981,15 +991,11 @@ fn claude_code_version_and_sign_in_status_come_from_the_cli() {
     assert_eq!(cli.sign_in(STATUS_TIMEOUT), SignIn::NotSignedIn);
     // The sign-in check sees the summary run's environment (T9.25): a sign-in that exists
     // only in a cleared variable reads as not signed in, never as one the run lacks.
-    let env = s.read("auth.env");
-    let lines: Vec<&str> = env.lines().collect();
-    assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
-    for k in MUST_CLEAR {
-        assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
-    }
+    assert_cleared(&s.read("auth.env"));
     std::fs::write(s.dir.join("auth.json"), "garbage").unwrap();
     assert!(matches!(cli.sign_in(STATUS_TIMEOUT), SignIn::Unknown(_)));
     assert_eq!(cli.accepts_effort(STATUS_TIMEOUT), Some(true));
+    assert_cleared(&s.read("help.env"));
     std::fs::write(
         s.dir.join("help.txt"),
         "Options:
