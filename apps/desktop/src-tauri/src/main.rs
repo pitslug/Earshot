@@ -39,6 +39,8 @@ mod page_names_tests;
 mod plain_text;
 mod recovery;
 mod shell;
+#[cfg(windows)]
+mod shutdown_win;
 mod speaker_settings;
 mod storage_settings;
 mod summaries;
@@ -327,6 +329,15 @@ fn main() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("the Earshot window could not start");
+        .build(tauri::generate_context!())
+        .expect("the Earshot window could not start")
+        .run(|app, event| {
+            // The last event before the process ends, also when Windows restarts, shuts down or
+            // signs out (tao turns `WM_ENDSESSION` into it, then exits): a recording is saved
+            // first (T9.19). If `WM_ENDSESSION` arrives while tao is already inside its event
+            // handler, tao exits without this event; start-up recovery (T9.18) is the backstop.
+            if let tauri::RunEvent::Exit = event {
+                shell::save_before_exit(app);
+            }
+        });
 }

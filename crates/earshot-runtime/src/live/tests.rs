@@ -3685,3 +3685,116 @@ fn live_call_output_refused_is_said_once_and_leaves_the_device_state_alone() {
         "{events:?}"
     );
 }
+
+/// A source that panics on its `panic_at`th pump (a bug on the session thread, T9.19).
+struct PanicSource<S> {
+    inner: S,
+    pumps: u64,
+    panic_at: u64,
+}
+
+impl<S: AudioSource> AudioSource for PanicSource<S> {
+    type Error = S::Error;
+
+    fn session(&self) -> &CaptureSession {
+        self.inner.session()
+    }
+
+    fn pump(&mut self, sink: &mut dyn CaptureSink) -> Result<SourceStatus, Self::Error> {
+        self.pumps += 1;
+        assert!(
+            self.pumps != self.panic_at,
+            "an invented bug on the session thread"
+        );
+        self.inner.pump(sink)
+    }
+
+    fn stop(&mut self) {
+        self.inner.stop();
+    }
+}
+
+#[test]
+fn live_recording_a_panic_on_the_session_thread_saves_the_recording_and_ends_once() {
+    // T9.19: the same replay with and without the panic. With it, every track's file is
+    // finished as far as it got (a readable FLAC with its row, the start of the control's audio),
+    // the meeting has its duration, and RecordingSaved then Ended (reason Failed) come exactly
+    // once, Ended last; `wait` reports the panic.
+    let control = faulted_meeting(12_000, &[], 300);
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let talk = words("a", 500, 27);
+    let far = words("r", 700, 27);
+    let replay = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, speech(&talk, 12_000, 300)))
+        .reference(MonoBuffer::new(R16, speech(&far, 12_000, 301)))
+        .build()
+        .unwrap();
+    let mut session = start_live(
+        PanicSource {
+            inner: replay,
+            pumps: 0,
+            panic_at: 200,
+        },
+        svc.clone(),
+        config(earshot_core::model::ClockDomain::Replay),
+        None,
+        Box::new(ChaCha8Rng::seed_from_u64(302)),
+    )
+    .unwrap();
+    let meeting = session.meeting();
+    let events_rx = session.take_events().unwrap();
+    let result = session.wait();
+    assert!(matches!(result, Err(RuntimeError::Poisoned)), "{result:?}");
+    let events: Vec<RuntimeEvent> = events_rx.try_iter().collect();
+    let saved = events
+        .iter()
+        .filter(|e| matches!(e, RuntimeEvent::RecordingSaved { .. }))
+        .count();
+    let ended: Vec<&LiveOutcome> = events
+        .iter()
+        .filter_map(|e| match e {
+            RuntimeEvent::Ended(o) => Some(o),
+            _ => None,
+        })
+        .collect();
+    assert_eq!((saved, ended.len()), (1, 1), "{events:?}");
+    assert!(matches!(events.last(), Some(RuntimeEvent::Ended(_))));
+    assert!(matches!(
+        events
+            .iter()
+            .find(|e| matches!(e, RuntimeEvent::RecordingSaved { .. })),
+        Some(RuntimeEvent::RecordingSaved {
+            reason: EndReason::Failed,
+            ..
+        })
+    ));
+    assert_eq!(ended[0].reason, EndReason::Failed);
+    let store = svc.store();
+    let rows = store.audio_files(meeting).unwrap();
+    assert_eq!(rows.len(), 2, "both tracks finished");
+    let tracks = store.tracks(meeting).unwrap();
+    for f in &rows {
+        let kind = tracks.iter().find(|t| t.id == f.track_id).unwrap().kind;
+        let (_, samples) = read_flac(&svc.data.resolve(&f.path).unwrap()).unwrap();
+        let whole = control.flacs[slot(kind)].clone().unwrap();
+        assert!(
+            !samples.is_empty() && samples.len() < whole.len(),
+            "{kind:?}"
+        );
+        assert_eq!(
+            samples,
+            whole[..samples.len()],
+            "{kind:?}: the audio before the panic"
+        );
+    }
+    let m = store.meeting(meeting).unwrap().unwrap();
+    assert_eq!(m.duration_ms, Some(ended[0].end.as_millis()));
+    assert!(m.duration_ms.unwrap() > 0);
+    drop(store);
+    // Nothing left for start-up recovery.
+    assert!(
+        !std::fs::read_dir(svc.data.root().join("audio").join(meeting.to_string()))
+            .unwrap()
+            .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".part"))
+    );
+}

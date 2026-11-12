@@ -1157,11 +1157,26 @@ where
         speaking: [false, false],
         recording_stopped: [false, false],
         stop_self: false,
+        recording_saved: false,
     };
     let flag = Arc::clone(&stop);
     let spawned = std::thread::Builder::new()
         .name("earshot-session".into())
-        .spawn(move || session.run(&flag));
+        .spawn(move || {
+            // A bug on this thread must not cost the recording (T9.19): the writers are finished
+            // as far as they got and the meeting ends Failed, `RecordingSaved` and `Ended` each
+            // sent once; `wait` still reports the panic.
+            let mut session = session;
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.run(&flag))) {
+                Ok(result) => result,
+                Err(_) => {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        session.after_panic();
+                    }));
+                    Err(RuntimeError::Poisoned)
+                }
+            }
+        });
     let thread = match spawned {
         Ok(thread) => thread,
         Err(e) => {
@@ -1325,6 +1340,9 @@ struct Session<S> {
     recording_stopped: [bool; 2],
     /// Every track stopped recording, so the session stops the meeting itself.
     stop_self: bool,
+    /// [`RuntimeEvent::RecordingSaved`] was sent (T9.19: a panic after it does not send it
+    /// again).
+    recording_saved: bool,
 }
 
 impl<S> Session<S>
@@ -1341,7 +1359,7 @@ where
         self.emit(RuntimeEvent::Warning(warning));
     }
 
-    fn run(mut self, stop: &AtomicBool) -> Result<LiveOutcome, RuntimeError> {
+    fn run(&mut self, stop: &AtomicBool) -> Result<LiveOutcome, RuntimeError> {
         self.emit(RuntimeEvent::Started {
             meeting: self.meeting_id,
             tracks: self.tracks.iter().map(|t| (t.kind, t.id)).collect(),
@@ -2128,10 +2146,79 @@ where
             self.problems
                 .push(RuntimeWarning::RecordingGap { total: lost });
         }
+        self.recording_saved = true;
         self.emit(RuntimeEvent::RecordingSaved {
             reason: ended.reason,
             problems: self.problems.clone(),
         });
+    }
+
+    /// What is left to do after a panic on the session thread (T9.19), whatever the session was
+    /// doing: capture is stopped, every track still recording is finished as far as it got
+    /// (T9.17's path) and the meeting gets its duration, [`RuntimeEvent::RecordingSaved`] goes
+    /// out unless it already did, then [`RuntimeEvent::Ended`] with [`EndReason::Failed`]. Live
+    /// work is abandoned (no records for the final pass: it transcribes the tracks whole). Never
+    /// called on a normal end.
+    fn after_panic(&mut self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.source.stop()));
+        // Where the recording got to: the pipeline's own end when it had one, else the longest
+        // track taken by its writer.
+        let taken = self
+            .writers
+            .iter()
+            .flatten()
+            .map(FlacTrackWriter::frames_taken)
+            .max()
+            .unwrap_or(0);
+        let end = self
+            .capture_end
+            .map_or_else(|| MeetingTime::from_pipeline_frames(taken), |e| e.end);
+        let failed = PipelineEnd {
+            end,
+            reason: EndReason::Failed,
+        };
+        if !self.recording_saved {
+            self.capture_end = Some(failed);
+            // A track whose file a panic left unfinished (in its finish) is said so: start-up
+            // recovery saves it at the next start (T9.18).
+            for t in self.tracks.iter().map(|t| t.kind).collect::<Vec<_>>() {
+                let finished = self.audio_files.iter().any(|(k, _)| *k == t);
+                if self.writers[slot(t)].is_none() && !finished && !self.recording_stopped[slot(t)]
+                {
+                    self.problems.push(RuntimeWarning::Recording {
+                        track: t,
+                        error: "the recording was not finished; it is saved at the next start"
+                            .to_owned(),
+                    });
+                }
+            }
+            self.save_recording();
+        }
+        let final_pass = self.final_pass.clone().unwrap_or_else(|| FinalPassRequest {
+            end,
+            tracks: self
+                .tracks
+                .iter()
+                .map(|t| earshot_core::pipeline::FinalPassTrack {
+                    track: t.kind,
+                    track_entity: Some(t.id),
+                    options: earshot_core::asr::TranscribeOptions::batch(),
+                })
+                .collect(),
+        });
+        let outcome = LiveOutcome {
+            meeting: self.meeting_id,
+            tracks: self.tracks.iter().map(|t| (t.kind, t.id)).collect(),
+            end,
+            reason: EndReason::Failed,
+            final_pass,
+            audio_files: std::mem::take(&mut self.audio_files),
+            unavailable_at_end: Vec::new(),
+            problems: std::mem::take(&mut self.problems),
+            echo_words_removed: self.echo.removed(),
+            echo_locks: self.echo.locks().to_vec(),
+        };
+        self.emit(RuntimeEvent::Ended(outcome));
     }
 
     /// What is left at the end of the session, once the live work has finished: the records for

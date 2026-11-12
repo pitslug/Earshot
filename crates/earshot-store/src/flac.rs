@@ -177,6 +177,17 @@ impl FlacTrackWriter {
         self.failed.is_some()
     }
 
+    /// Samples the writer took: what a finish keeps when no write failed (the whole frames plus
+    /// the samples of the frame being filled), else [`FlacTrackWriter::whole_frames`].
+    #[must_use]
+    pub fn frames_taken(&self) -> u64 {
+        if self.failed.is_some() {
+            self.whole_frames()
+        } else {
+            self.whole_frames() + self.pending.len() as u64
+        }
+    }
+
     /// Samples in the file's whole frames: what a finish keeps after a failed write.
     #[must_use]
     pub fn whole_frames(&self) -> u64 {

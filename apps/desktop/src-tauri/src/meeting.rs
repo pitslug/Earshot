@@ -391,6 +391,16 @@ impl MeetingDriver {
         }
     }
 
+    /// [`MeetingDriver::stop_and_wait`] for at most `limit` (T9.19: Windows waits only a few
+    /// seconds for an app at a restart). Returns whether the recording is saved; when not, the
+    /// stop stays requested and start-up recovery (T9.18) saves what was written.
+    pub fn stop_and_wait_for(&self, limit: Duration) -> bool {
+        let _ = self.stop();
+        wait_until(limit, Instant::now, std::thread::sleep, || {
+            self.phase() != DriverPhase::Recording
+        })
+    }
+
     /// Waits for every meeting's thread to finish.
     pub fn join(&self) {
         let (newest, finishing) = {
@@ -406,6 +416,28 @@ impl MeetingDriver {
         if let Some(r) = newest {
             let _ = r.thread.join();
         }
+    }
+}
+
+/// Polls `done` every [`STOP_POLL`] (through `sleep`) until it holds or `limit` has passed on
+/// `now`; whether it held. `done` is asked once more at the deadline, so a check that comes true
+/// during the last sleep counts.
+fn wait_until(
+    limit: Duration,
+    mut now: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+    mut done: impl FnMut() -> bool,
+) -> bool {
+    let start = now();
+    loop {
+        if done() {
+            return true;
+        }
+        let elapsed = now().saturating_duration_since(start);
+        if elapsed >= limit {
+            return false;
+        }
+        sleep(STOP_POLL.min(limit - elapsed));
     }
 }
 
