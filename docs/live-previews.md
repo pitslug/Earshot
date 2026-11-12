@@ -493,6 +493,52 @@ By point, both runs: 1 passes (every session placed on CUDA, ONNX Runtime's usua
 
 **Under the rule:** all pass, so the next step is a follow-up replay task (a T12.3c-style rule on whole meetings) before the owner chooses default on, a setting or default off. No shipped change.
 
+## Provisional words from a streaming model (T12.23, spike, evaluation only)
+
+Today's previews decode the last 12 s of a stretch again every second with a second copy of the transcription model. A cache-aware streaming model reads each new piece of audio once. This spike measures one: NVIDIA Nemotron Speech Streaming 0.6B English (cache-aware FastConformer RNNT), sherpa-onnx's 560 ms int8 export (manifest set `stream-eval`, 662 MB). The NVIDIA Open Model License is agreed by the owner for evaluation only (2026-11-12): nothing ships, and no shipped crate names the model (`backends_nemotron_preview_load_is_used_by_no_shipped_code`).
+
+**The decoder.** `earshot_onnx::nemotron` ports sherpa-onnx v2.0.1's streaming NeMo transducer step for step: kaldi-native-fbank's features with sherpa-onnx's NeMo options, 65 feature frames per chunk moving 56 (560 ms), the encoder's three cache tensors carried between chunks, greedy RNNT with the LSTM state and the last prediction carried over. Checked by `cargo test -p earshot-onnx --example nemotron_probe -- --include-ignored` against sherpa-onnx's own Python package (2.0.1, hash-pinned wheels in a throwaway venv) on the 20 smoke clips:
+
+- **Text:** the same text and every token the same on all 20 clips (306 tokens), whole and pushed in uneven pieces as a live session pushes it.
+- **Token times:** 31 of 306 differ, by up to 3 encoder frames (240 ms). The reference itself moves times as much: the same package run on Earshot's pinned ONNX Runtime 1.31.0 instead of its own 1.28.2 changes 24 of 286 token times by up to 3 frames, and one comma. Given kaldi-native-fbank's own features (`nemotron_probe --decode-features`), the port gives sherpa-onnx-on-1.31.0's tokens and times exactly on every clip; the port's front end differs from kaldi-native-fbank's by float rounding in the FFT (at most 2.6e-4 in a log-mel value), which is what moves a few times.
+
+**In a live session.** `LivePreviews::stream` (evaluation only, `None` in the app) gives each previewed track a streaming model instead of window decodes. The track's preview thread feeds it every packet of the track's pipeline audio once (quantised as the FLAC stores it), at below-normal priority on background ONNX Runtime threads, and shows the words it has finished; everything else is today's: which tracks have previews ("Other people only": the far end in a call; "Everyone": the mic too), when they start and stop, what settled text removes, the events, the report. A word is shown once a whole chunk (7 encoder frames, 560 ms) has been decoded after its last token with nothing added, because a later token could still continue it; so a shown word never changes. A gap in the audio (dropped packets) starts the model over. The model runs on the CPU whatever the track's backend, with `--stream-threads` threads.
+
+### The rule, written and committed 2026-11-13 before any measurement
+
+Judgements, not derived. Idle host only (no other lane, build, ci or measurement; not while the owner is in a meeting; plugged in). Parakeet 0.6B v2 transcribes the tracks as in the app. "Streaming" is a run with `--stream nemotron`; "window" is today's previews with the same choice on the same machine and backend; "off" is previews off. Each of "Other people only" (`on`) and "Everyone" (`everyone`) passes only if every point holds on both `bundled` and `continuous`:
+
+1. **Where it ran.** Every streaming session's three ONNX Runtime sessions are on `CPUExecutionProvider` (`preview_sessions[].placement`), each previewed track's `previews[].backend` is `Cpu`, and both tracks' own sessions are where `--backend` asked (`live_backends`, `onnx_placement`). Otherwise the run says nothing about this design.
+2. **Stored words are identical.** `stored_sha256` equals "off"'s for every track.
+3. **The main transcript does not slow** (T12.4's point 3). For each track, real decode rtf at most 1.5 times "off"'s and `catch_up_after_end_s` at most "off"'s plus 2 s; no audio dropped (`previews[].audio_dropped` 0), no preview turned off (`previews[].off` empty) and at most 2 slow pauses per track.
+4. **The words come sooner, or no later.** On each previewed track, `on_screen_lag_s` median at most 3 s and at most window's median plus 0.5 s, and its p95 at most window's p95.
+5. **The words are as good.** On each previewed track, `previews.changed / (previews.kept + previews.changed)` at most 10% and at most twice window's; `previews.vanished` is reported beside it. (The streaming model is not the model that settles the text, so some changes are its own word choices rather than mistakes; the bound allows for that.)
+6. **It costs less.** Process CPU time (`host.process_cpu_s`) at most window's, and peak private memory (`host.peak_private_gib`) at most window's. Where window previews are refused (on the Surface, "Everyone" on the NPU), cost is judged against "off" with T12.12c's limits instead: peak private memory at most 1 GiB over "off" for `on` and 1.5 GiB for `everyone`, process CPU time reported; points 4 and 5 then use their absolute bounds only (median at most 3 s, changed at most 10%).
+
+**Desktop**: transcription on the CPU, `--stream-threads 2` (sherpa-onnx's default; fixed before measuring). **Surface**: transcription on the NPU (`--backend qnn`), the streaming model on 2, 3 and 4 threads, each count judged on its own; the smallest count that passes is the one to recommend. Window previews on the NPU are those of T12.12c.
+
+**What the result means** (the owner decides; nothing ships from the spike). If `on` passes on the Surface: a follow-up task to ship streaming previews needs the model's licence decided for shipping (today evaluation only), `preview.rs` fed by the stream (the seam exists), the memory limits in `previews_refused` re-derived, a download of about 660 MB, and an answer for whisper users (the streaming model is English only and independent of the transcription model, so it could serve them too). If it passes only on the desktop: report it; the Surface is what decides. If it fails point 4 or 5: the window previews stay. A fixed-chunk NPU conversion of the encoder (PLAN step 4) is considered only if the CPU result fails on the Surface for cost (point 3 or 6) while points 4 and 5 hold.
+
+### Method
+
+The models folder needs sets `ci` and `stream-eval` (and on the Surface `qnn` and `qnn-models`): `cargo xtask fetch-models --set stream-eval`. Each run is about 150 s (`bundled`) or 120 s (`continuous`) of real time. Reports go to `docs/live-previews/t1223/`, counts and times only. Desktop, CPU (run "off" and "window" too unless an idle-host report of the same commit exists):
+
+```powershell
+cargo run --release -p earshot-runtime --example live_lag -- . --audio bundled --previews off --out target\live-lag\t1223-off-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --example live_lag -- . --audio bundled --previews on --out target\live-lag\t1223-window-on-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --example live_lag -- . --audio bundled --previews on --stream nemotron --stream-threads 2 --out target\live-lag\t1223-stream-on-bundled.json
+```
+
+Then the last two with `--previews everyone` (`-everyone-` in the file names), and all of them with `--audio continuous --seconds 120` (`-continuous`). Surface: add `--features qnn` after `-p earshot-runtime` and `--backend qnn` after `.`, and run the streaming runs with `--stream-threads 2`, `3` and `4` (`-t2`, `-t3`, `-t4` in the file names).
+
+What to read, by point: 1, `preview_sessions[]` (`slot`, `stream`, `placement`) and `previews[].backend`; 2, `reference.stored_sha256` and `mic.stored_sha256`; 3, `decodes_mic.rtf`, `decodes_reference.rtf`, `catch_up_after_end_s`, `previews[]` (`audio_dropped`, `off`, `slow_pauses`); 4, `reference.on_screen_lag_s` and under `everyone` `mic.on_screen_lag_s`; 5, `reference.previews` and `mic.previews` (`kept`, `changed`, `vanished`); 6, `host.process_cpu_s` and `host.peak_private_gib`. A point that holds on one audio and not the other fails.
+
 ## Re-measuring on a quiet host
 
 Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`
