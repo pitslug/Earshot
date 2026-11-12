@@ -346,6 +346,14 @@ cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --
 
 Read: in the first two, `preview_sessions[0].loaded.kind` is `Qnn` with `refusal_bypassed` false, and `preview_refusal.app_first` is null; in the third, the `own_voice` entry has `not_loaded` saying it is not for your own voice on the NPU yet, and the far end's still loads on QNN. Then one real call: words of the other side on screen within about 3 s.
 
+**The Surface check without `--force-previews`, 2026-11-13** (this branch built natively, `--backend qnn`, mains; reports `qnn4-*.json` here, counts and times only; one run each, other user apps open):
+
+- `--previews on`, `bundled`: the far-end preview loaded on QNN through the app's own loader (`preview_sessions[0]`: `loaded.kind` Qnn, `refusal_bypassed` false; `preview_refusal.app_first` null, `app_first_on` Qnn). Far-end words on screen median 2.3 s, p95 7.8 s (settled 14.1 / 37.0 s); 190 kept, 9 changed, 1 vanished; no slow pause, nothing dropped; track rtf 0.021 / 0.021, catch-up 0.41 s, peak private 2.71 GiB.
+- `--previews on`, `continuous --seconds 120`: loaded on QNN the same way; on screen median 1.8 s, p95 3.5 s (settled 36.9 / 49.6 s); 211 kept, 7 changed, 0 vanished; catch-up 0.48 s.
+- `--previews everyone`, `bundled`: the far end loaded on QNN as above; the mic preview was not loaded, `not_loaded` and `preview_refusal.app_own_voice` both the own-voice reason ("not for your own voice on the NPU yet: some words shown there vanished again, and why is not understood"); mic words reached the screen only as settled text (15.5 / 32.3 s).
+
+So the automated part of step 5 holds. The real call with words on screen within about 3 s is still the owner's.
+
 ## Your own words on the CPU beside CUDA (T12.3a)
 
 With transcription on CUDA, Everyone refuses the mic track's preview session ("not measured on the graphics card yet"): a fourth session on the card costs about 3.7 GiB of graphics memory. T12.3a runs that one session on the CPU instead, with the CPU's shared weights, so the card holds no more than today.
