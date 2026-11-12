@@ -666,7 +666,7 @@ pub fn recover_part(path: &Path, sample_rate: u32) -> Result<PartRecovery, Store
 ///
 /// # Errors
 /// I/O or decoding errors, a file that is not 16-bit mono, or one whose header does not give
-/// its sample count.
+/// its sample count (a file that is only its header has 0 frames).
 pub fn describe_flac(path: &Path) -> Result<FinishedFlac, StoreError> {
     let r = claxon::FlacReader::open(path).map_err(|e| audio_err("open flac", e))?;
     let info = r.streaminfo();
@@ -678,15 +678,19 @@ pub fn describe_flac(path: &Path) -> Result<FinishedFlac, StoreError> {
             info.bits_per_sample
         )));
     }
-    let frames = info
-        .samples
-        .ok_or_else(|| audio_err("sample count", "not in the header"))?;
+    let size_bytes = std::fs::metadata(path)?.len();
+    // A count of 0 reads as "unknown"; a file that is only its header holds no frame.
+    let frames = match info.samples {
+        Some(n) => n,
+        None if size_bytes == HEADER_LEN as u64 => 0,
+        None => return Err(audio_err("sample count", "not in the header")),
+    };
     drop(r);
     Ok(FinishedFlac {
         path: path.to_owned(),
         sample_rate: info.sample_rate,
         frames,
-        size_bytes: std::fs::metadata(path)?.len(),
+        size_bytes,
         cut_short: false,
     })
 }

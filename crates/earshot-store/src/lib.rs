@@ -28,8 +28,8 @@ pub use audio::{
     RETENTION_CLOCK_PREFIX, RETENTION_CLOCK_VERSION, RemovedAudio, RetentionClock, RetentionPolicy,
     RetentionReport, TrackFileRecovery, WithStore, decode_retention_clock, due_audio,
     encode_retention_clock, finalize_track_audio_outside_lock, load_meeting_audio,
-    recover_track_file, remove_audio, retention_clock, retention_clock_key, run_retention,
-    sweep_orphan_audio,
+    recover_track_file, remove_audio, remove_stale_part, retention_clock, retention_clock_key,
+    run_retention, sweep_orphan_audio,
 };
 pub use db::{SCHEMA_VERSION, Store, StoreError, StoreTx};
 pub use delete::{MeetingDeletion, PersonRemoval, first_free_speaker_name};

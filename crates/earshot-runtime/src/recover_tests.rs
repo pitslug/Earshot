@@ -215,3 +215,112 @@ fn recover_then_retranscribe_gives_a_final_transcript() {
     assert!(!finals.is_empty());
     assert_eq!(activity(&svc, m), MeetingActivity::Ready);
 }
+
+/// Sets `meeting`'s duration as the end of a session does.
+fn set_duration(svc: &Services, meeting: EntityId, ms: u64) {
+    let clock = Arc::clone(&svc.clock);
+    let mut db = svc.store();
+    let mut m = db.meeting(meeting).unwrap().unwrap();
+    let (store, hlc) = db.parts();
+    m.duration_ms = Some(ms);
+    m.meta.touch(hlc, &*clock);
+    store.put_meeting(m).unwrap();
+}
+
+#[test]
+fn recover_finishes_a_leftover_track_of_a_meeting_that_has_its_duration() {
+    // The session saved the recording (duration set, the mic's row written) but the loopback's
+    // file was left unfinished (its finish panicked, or its rename failed): the next start
+    // finishes it and writes its row, and the duration the session set is kept.
+    let dir = TempDir::new("recover");
+    let (svc, _) = services(&dir);
+    let (mic, them) = (quiet(4096 * 4), quiet(4096 * 3 + 7));
+    let m = crashed(
+        &svc,
+        &[(TrackId::Mic, &mic), (TrackId::Reference, &them)],
+        8,
+    );
+    // Only the loopback is left: finish the mic as the session did.
+    let first = recover_interrupted(&svc);
+    assert_eq!(first.recovered.len(), 1);
+    let _ = take_notices(&svc).unwrap();
+    let mic_row = svc
+        .store()
+        .audio_files(m)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.path.ends_with("mic.flac"))
+        .unwrap();
+    {
+        let mut db = svc.store();
+        let tx_rows: Vec<_> = db.audio_files(m).unwrap();
+        for row in tx_rows.into_iter().filter(|f| f.id != mic_row.id) {
+            let path = svc.data.resolve(&row.path).unwrap();
+            let mut part = path.clone().into_os_string();
+            part.push(".part");
+            std::fs::rename(&path, &part).unwrap();
+            db.delete_audio_file(row.id).unwrap();
+        }
+    }
+    set_duration(&svc, m, 9_999);
+    assert!(part(&svc, m, TrackId::Reference).exists());
+
+    let report = recover_interrupted(&svc);
+    assert_eq!(report.leftovers_finished, [m], "{report:?}");
+    assert!(report.recovered.is_empty() && report.failed.is_empty());
+    let rows = svc.store().audio_files(m).unwrap();
+    assert_eq!(rows.len(), 2);
+    let them_row = rows
+        .iter()
+        .find(|f| f.path.ends_with("loopback.flac"))
+        .unwrap();
+    assert_eq!(them_row.frames, 4096 * 3);
+    assert!(!part(&svc, m, TrackId::Reference).exists());
+    assert_eq!(
+        svc.store().meeting(m).unwrap().unwrap().duration_ms,
+        Some(9_999),
+        "the session's duration is kept"
+    );
+    assert!(take_notices(&svc).unwrap().is_empty(), "no recovery notice");
+    // A second start finds nothing to do.
+    assert_eq!(recover_interrupted(&svc), RecoveryReport::default());
+}
+
+#[test]
+fn recover_never_adopts_an_empty_finished_file() {
+    // A finished file with no frame and no row: never given a row (it would leave the
+    // meeting Interrupted with a row), so each start ends the same way.
+    let dir = TempDir::new("recover");
+    let (svc, _) = services(&dir);
+    let m = crashed(&svc, &[(TrackId::Mic, &[])], 9);
+    let _ = std::fs::remove_file(part(&svc, m, TrackId::Mic));
+    svc.data
+        .track_writer(m, TrackId::Mic, 16_000)
+        .unwrap()
+        .finish()
+        .unwrap();
+    for _ in 0..2 {
+        let report = recover_interrupted(&svc);
+        assert_eq!(report.nothing_saved, [m], "{report:?}");
+        assert!(report.recovered.is_empty() && report.failed.is_empty());
+        assert!(svc.store().audio_files(m).unwrap().is_empty());
+        assert_eq!(activity(&svc, m), MeetingActivity::Interrupted);
+    }
+}
+
+#[test]
+fn recover_removes_a_stale_part_beside_a_finished_file_with_its_row() {
+    let dir = TempDir::new("recover");
+    let (svc, _) = services(&dir);
+    let mic = quiet(4096 * 2);
+    let m = crashed(&svc, &[(TrackId::Mic, &mic)], 10);
+    // The part is turned into a finished file without a row, and a stale part sits beside it.
+    let stale = std::fs::read(part(&svc, m, TrackId::Mic)).unwrap();
+    assert_eq!(recover_interrupted(&svc).recovered.len(), 1);
+    std::fs::write(part(&svc, m, TrackId::Mic), &stale).unwrap();
+    let report = recover_interrupted(&svc);
+    assert_eq!(report.leftovers_finished, [m], "{report:?}");
+    assert!(!part(&svc, m, TrackId::Mic).exists());
+    assert_eq!(svc.store().audio_files(m).unwrap().len(), 1);
+    assert_eq!(recover_interrupted(&svc), RecoveryReport::default());
+}

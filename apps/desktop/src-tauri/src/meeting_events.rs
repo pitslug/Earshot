@@ -810,12 +810,17 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
             WarningKind::Audio,
             format!("Audio capture reported a problem: {message} (repeated {times} more times)"),
         ),
-        RuntimeWarning::Recording { track, error } => {
+        // Fixed copy (T9.23): the error can name a local file. Its file is left for start-up
+        // recovery (T9.18), which finishes it at the next start.
+        RuntimeWarning::Recording { track, error: _ } => {
             let t = LiveTrack::of(*track);
             warning(
                 format!("recording:{}", t.key()),
                 WarningKind::Recording,
-                format!("The recording of {} failed: {error}", t.device()),
+                format!(
+                    "Earshot could not finish saving the recording of {}. What was recorded is                      kept and finished the next time Earshot starts.",
+                    t.device()
+                ),
             )
         }
         // The same key as the failure above: a file that could not even be finished replaces it.

@@ -124,6 +124,35 @@ pub fn recover_track_file(
     })
 }
 
+/// Removes a `.part` left beside a track's finished file (T9.18), once that file is known
+/// complete: `row` is the track's `AudioFile` row and the finished file's header says exactly
+/// what the row says (frames, rate, size). Otherwise nothing is touched. Whether anything was
+/// removed. No store access: the caller passes the row it read.
+///
+/// # Errors
+/// [`StoreError::Corrupt`] for a row path outside the data folder; I/O errors from the removal
+/// (another process holding the `.part` open).
+pub fn remove_stale_part(data: &DataDir, row: &AudioFile) -> Result<bool, StoreError> {
+    let path = data.resolve(&row.path)?;
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    let part = std::path::PathBuf::from(part);
+    if !part.exists() || !path.is_file() {
+        return Ok(false);
+    }
+    let Ok(file) = describe_flac(&path) else {
+        return Ok(false);
+    };
+    if file.frames != row.frames
+        || file.sample_rate != row.sample_rate_hz
+        || file.size_bytes != row.size_bytes
+    {
+        return Ok(false);
+    }
+    std::fs::remove_file(&part)?;
+    Ok(true)
+}
+
 impl Store {
     /// Writes the `AudioFile` row of a file [`recover_track_file`] finished (T9.18), by the
     /// rules of [`Store::finalize_track_audio`]: the file is at the track's layout path and

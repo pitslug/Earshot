@@ -316,7 +316,8 @@ fn meeting_events_voice_activity_and_end_reasons_map_one_to_one() {
         now,
     );
     assert!(
-        matches!(&out[0], MeetingEvent::Warning { kind: WarningKind::Recording, message, .. } if message.contains("disk full"))
+        matches!(&out[0], MeetingEvent::Warning { kind: WarningKind::Recording, message, .. }
+            if message.contains("could not finish saving the recording") && !message.contains("disk full"))
     );
     assert_eq!(
         out.len(),
@@ -985,7 +986,8 @@ fn meeting_queue_events_a_failed_save_is_told_with_the_save() {
         Instant::now(),
     );
     assert!(
-        matches!(&out[0], MeetingEvent::Warning { kind: WarningKind::Recording, message, .. } if message.contains("disk full"))
+        matches!(&out[0], MeetingEvent::Warning { kind: WarningKind::Recording, message, .. }
+            if message.contains("could not finish saving the recording") && !message.contains("disk full"))
     );
     assert!(matches!(out[1], MeetingEvent::Ended { .. }));
 }
@@ -1096,4 +1098,31 @@ fn call_output_refused_says_what_is_still_recorded() {
         message,
         "The call plays on Headset, which Earshot could not open."
     );
+}
+
+#[test]
+fn meeting_events_a_failed_recording_save_shows_fixed_copy_and_no_path() {
+    // The error can be a store error naming a local file: never shown (T9.23).
+    let error = r"rename C:\Users\someone\AppData\Local\Earshot\audio\0190\loopback.flac.part: \
+                  Access is denied. (os error 5)";
+    for track in [TrackId::Mic, TrackId::Reference] {
+        let (key, kind, message) = banner(&RuntimeWarning::Recording {
+            track,
+            error: error.into(),
+        });
+        assert_copy(&message);
+        assert_eq!(kind, WarningKind::Recording);
+        assert!(key.starts_with("recording:"), "{key}");
+        for leak in [
+            "C:\\",
+            "Users",
+            "someone",
+            ".part",
+            "os error",
+            "Access is denied",
+        ] {
+            assert!(!message.contains(leak), "{leak} in {message}");
+        }
+        assert!(message.contains("next time Earshot starts"), "{message}");
+    }
 }

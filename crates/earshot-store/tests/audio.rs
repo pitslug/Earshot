@@ -983,6 +983,61 @@ fn audio_recovery_writes_no_row_for_a_deleted_meeting_or_a_file_elsewhere() {
     assert!(w.store.audio_files(m.id).unwrap().is_empty());
 }
 
+#[test]
+fn audio_recovery_removes_a_stale_part_only_beside_a_complete_file_with_its_row() {
+    let mut w = World::new("audio-recover-stale");
+    let (m, tracks) = w.meeting_with(&[TrackId::Mic]);
+    let row = w.record(&m, &tracks[0], &sine(4096 * 3));
+    let finished = w.data.resolve(&row.path).unwrap();
+    let before = std::fs::read(&finished).unwrap();
+    let part = part_of(&finished);
+    std::fs::write(&part, &before[..100]).unwrap();
+    // A row that does not describe the file on disk: the file is not known complete.
+    let mut other = row.clone();
+    other.frames += 1;
+    assert!(!earshot_store::remove_stale_part(&w.data, &other).unwrap());
+    assert!(part.exists());
+    let mut other = row.clone();
+    other.size_bytes += 1;
+    assert!(!earshot_store::remove_stale_part(&w.data, &other).unwrap());
+    assert!(part.exists());
+    // The file and its row agree: the stale part goes, the file is untouched.
+    assert!(earshot_store::remove_stale_part(&w.data, &row).unwrap());
+    assert!(!part.exists());
+    assert_eq!(std::fs::read(&finished).unwrap(), before);
+    assert!(!earshot_store::remove_stale_part(&w.data, &row).unwrap());
+    // No finished file: a part is never removed.
+    let (m2, tracks2) = w.meeting_with(&[TrackId::Mic]);
+    let mut wm = w.data.track_writer(m2.id, TrackId::Mic, 16_000).unwrap();
+    wm.write(&sine(4096 * 2)).unwrap();
+    drop(wm);
+    let mut ghost = row.clone();
+    ghost.meeting_id = m2.id;
+    ghost.track_id = tracks2[0].id;
+    ghost.path = DataDir::audio_rel(m2.id, TrackId::Mic);
+    assert!(!earshot_store::remove_stale_part(&w.data, &ghost).unwrap());
+    assert!(part_of(&w.data.resolve(&ghost.path).unwrap()).exists());
+}
+
+#[test]
+fn flac_describe_an_empty_finished_file_says_it_has_no_frame() {
+    let mut w = World::new("audio-describe-empty");
+    let (m, _) = w.meeting_with(&[TrackId::Mic]);
+    let done = w
+        .data
+        .track_writer(m.id, TrackId::Mic, 16_000)
+        .unwrap()
+        .finish()
+        .unwrap();
+    let got = earshot_store::describe_flac(&done.path).unwrap();
+    assert_eq!((got.frames, got.size_bytes), (0, done.size_bytes));
+    // Anything after the header with no count is still refused.
+    let mut bytes = std::fs::read(&done.path).unwrap();
+    bytes.extend_from_slice(&[0; 8]);
+    std::fs::write(&done.path, &bytes).unwrap();
+    assert!(earshot_store::describe_flac(&done.path).is_err());
+}
+
 fn make_old(path: &std::path::Path) {
     let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
     f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_millis(30 * DAY_MS))

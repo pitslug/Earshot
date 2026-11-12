@@ -4090,3 +4090,66 @@ fn live_recording_a_panic_on_the_session_thread_saves_the_recording_and_ends_onc
             .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".part"))
     );
 }
+
+#[test]
+fn live_recording_a_panic_in_a_tracks_finish_is_recovered_at_the_next_start() {
+    // T9.19 with T9.18: the session thread panics inside the loopback's finish, after the
+    // recording ended and before RecordingSaved. The session still saves the mic, sets the
+    // duration and says the loopback is saved at the next start; that start's recovery
+    // finishes the loopback's file and writes its row.
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    super::finalize_panics::set(&svc.data, TrackId::Reference);
+    let talk = words("a", 500, 27);
+    let far = words("r", 700, 27);
+    let replay = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, speech(&talk, 12_000, 310)))
+        .reference(MonoBuffer::new(R16, speech(&far, 12_000, 311)))
+        .build()
+        .unwrap();
+    let mut session = start_live(
+        replay,
+        svc.clone(),
+        config(earshot_core::model::ClockDomain::Replay),
+        None,
+        Box::new(ChaCha8Rng::seed_from_u64(312)),
+    )
+    .unwrap();
+    let meeting = session.meeting();
+    let events_rx = session.take_events().unwrap();
+    let result = session.wait();
+    assert!(matches!(result, Err(RuntimeError::Poisoned)), "{result:?}");
+    let events: Vec<RuntimeEvent> = events_rx.try_iter().collect();
+    let told = events.iter().any(|e| {
+        matches!(e, RuntimeEvent::RecordingSaved { problems, .. }
+            if problems.iter().any(|p| matches!(p,
+                RuntimeWarning::Recording { track: TrackId::Reference, .. })))
+    });
+    assert!(told, "{events:?}");
+    let duration = svc.store().meeting(meeting).unwrap().unwrap().duration_ms;
+    assert!(duration.is_some_and(|d| d > 0), "{duration:?}");
+    let rows = svc.store().audio_files(meeting).unwrap();
+    assert_eq!(rows.len(), 1, "only the mic was finished");
+
+    let report = crate::recover::recover_interrupted(&svc);
+    assert_eq!(report.leftovers_finished, [meeting], "{report:?}");
+    let store = svc.store();
+    let rows = store.audio_files(meeting).unwrap();
+    assert_eq!(rows.len(), 2, "the loopback has its row");
+    let tracks = store.tracks(meeting).unwrap();
+    for f in &rows {
+        let (_, samples) = read_flac(&svc.data.resolve(&f.path).unwrap()).unwrap();
+        assert!(!samples.is_empty());
+        assert_eq!(f.frames, samples.len() as u64);
+        assert!(tracks.iter().any(|t| t.id == f.track_id));
+    }
+    assert_eq!(
+        store.meeting(meeting).unwrap().unwrap().duration_ms,
+        duration
+    );
+    drop(store);
+    assert!(
+        !std::fs::read_dir(svc.data.root().join("audio").join(meeting.to_string()))
+            .unwrap()
+            .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".part"))
+    );
+}

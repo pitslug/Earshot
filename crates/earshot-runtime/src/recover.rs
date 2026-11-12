@@ -7,14 +7,24 @@
 //! `<track>.flac.part` files whose header is still the zeroed placeholder (or, when the end of
 //! the session got as far as finishing a file but not its row, a finished file without a row).
 //!
+//! A session that ended can also leave one track's file unfinished: its finish panicked
+//! (T9.19) or failed (T9.17's rename or row), and the meeting still got its duration.
+//!
 //! [`recover_interrupted`] runs once at the app's start, after the model folder's own
-//! recovery and before audio retention's first run. For every meeting that is live (not
-//! deleted), has Track rows, has no duration and that no job of this process holds (a live
-//! session of this process is never touched), it:
+//! recovery and before audio retention's first run. Its candidates are the live (not deleted)
+//! meetings with live Track rows that either have no duration or have a live track with
+//! something left on disk: no `AudioFile` row and a `.part` or finished file at its layout
+//! path, or a row and a `.part` beside its file. A meeting a job of this process holds (a live
+//! session of this process first of all) is never touched. For each it:
 //! - finishes each track's file with the whole frames it holds
 //!   ([`earshot_store::recover_track_file`], no store lock held) and writes its `AudioFile`
 //!   row ([`earshot_store::Store::adopt_track_audio`]);
-//! - when at least one track now has a file, sets the duration from the shortest track and
+//! - removes a `.part` left beside a finished file once the file and its row agree
+//!   ([`earshot_store::remove_stale_part`]); an empty finished file is never given a row;
+//! - for a meeting that already has its duration, stops there: the duration is kept and no
+//!   notice is stored (the session told the user when it ended);
+//! - otherwise, when at least one track now has a file, sets the duration from the shortest
+//!   track and
 //!   stores a notice (`recovered-recording/<meeting>`, [`MeetingRecord::RecoveredRecording`]:
 //!   `version u32 LE | saved ms u64 LE`, no content) for the app to show once
 //!   ([`take_notices`]). The meeting then reads Unprocessed: the user can re-transcribe it.
@@ -51,8 +61,12 @@ pub struct RecoveredMeeting {
 pub struct RecoveryReport {
     /// Meetings whose audio is back, with their new duration.
     pub recovered: Vec<RecoveredMeeting>,
-    /// Interrupted meetings with no whole frame of audio on any track (left Interrupted).
+    /// Interrupted meetings with no whole frame of audio on any track (left Interrupted), and
+    /// meetings with a duration whose leftover files hold nothing to finish.
     pub nothing_saved: Vec<EntityId>,
+    /// Meetings that already had their duration whose leftover track files were finished or
+    /// tidied (rows written, stale `.part` files removed); their duration is unchanged.
+    pub leftovers_finished: Vec<EntityId>,
     /// Interrupted meetings held by a job of this process, or whose audio another process
     /// holds open: not touched.
     pub skipped: Vec<EntityId>,
@@ -107,6 +121,7 @@ pub fn recover_interrupted(services: &Services) -> RecoveryReport {
                 .recovered
                 .push(RecoveredMeeting { meeting, saved_ms }),
             Ok(Outcome::NothingSaved) => report.nothing_saved.push(meeting),
+            Ok(Outcome::LeftoversFinished) => report.leftovers_finished.push(meeting),
             Ok(Outcome::InUse | Outcome::Changed) => report.skipped.push(meeting),
             Err(e) => report.failed.push((meeting, e.to_string())),
         }
@@ -114,29 +129,65 @@ pub fn recover_interrupted(services: &Services) -> RecoveryReport {
     report
 }
 
-/// Live meetings with Track rows and no duration, with their tracks.
+/// The candidates (module docs), with their live tracks. The store is read under one lock;
+/// the files are looked at with it free.
 fn interrupted_meetings(services: &Services) -> Result<Vec<(EntityId, Vec<Track>)>, RuntimeError> {
-    let db = services.store();
-    let mut out = Vec::new();
-    for m in db.meetings()? {
-        if m.meta.deleted || m.duration_ms.is_some() {
-            continue;
+    let mut listed = Vec::new();
+    {
+        let db = services.store();
+        for m in db.meetings()? {
+            if m.meta.deleted {
+                continue;
+            }
+            let tracks: Vec<Track> = db
+                .tracks(m.id)?
+                .into_iter()
+                .filter(|t| !t.meta.deleted)
+                .collect();
+            if tracks.is_empty() {
+                continue;
+            }
+            let rows = db.audio_files(m.id)?;
+            let with_row: Vec<bool> = tracks
+                .iter()
+                .map(|t| rows.iter().any(|f| f.track_id == t.id))
+                .collect();
+            listed.push((m.id, m.duration_ms.is_none(), tracks, with_row));
         }
-        let tracks: Vec<Track> = db
-            .tracks(m.id)?
-            .into_iter()
-            .filter(|t| !t.meta.deleted)
-            .collect();
-        if !tracks.is_empty() {
-            out.push((m.id, tracks));
+    }
+    let mut out = Vec::new();
+    for (meeting, no_duration, tracks, with_row) in listed {
+        let left = no_duration
+            || tracks
+                .iter()
+                .zip(&with_row)
+                .any(|(t, &row)| leftover_on_disk(services, meeting, t.kind, row));
+        if left {
+            out.push((meeting, tracks));
         }
     }
     Ok(out)
 }
 
+/// Whether `kind`'s layout path holds something to finish or tidy: a `.part`, or a finished file
+/// without its row. An unresolvable path counts as nothing (recovery would refuse it too).
+fn leftover_on_disk(services: &Services, meeting: EntityId, kind: TrackId, has_row: bool) -> bool {
+    let Ok(path) = services
+        .data
+        .resolve(&earshot_store::DataDir::audio_rel(meeting, kind))
+    else {
+        return false;
+    };
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    std::path::Path::new(&part).exists() || (!has_row && path.exists())
+}
+
 enum Outcome {
     Recovered(u64),
     NothingSaved,
+    /// A meeting with its duration whose leftovers were finished or tidied.
+    LeftoversFinished,
     InUse,
     /// The meeting was deleted or got its duration while it was recovered.
     Changed,
@@ -149,13 +200,15 @@ fn recover_meeting(
 ) -> Result<Outcome, RuntimeError> {
     let has_reference = tracks.iter().any(|t| t.kind == TrackId::Reference);
     let mut in_use = false;
+    let mut changed = false;
     for track in tracks {
-        let has_row = services
+        let row = services
             .store()
             .audio_files(meeting)?
-            .iter()
-            .any(|f| f.track_id == track.id);
-        if has_row {
+            .into_iter()
+            .find(|f| f.track_id == track.id);
+        if let Some(row) = row {
+            changed |= earshot_store::remove_stale_part(&services.data, &row)?;
             continue;
         }
         // File work runs with the store free (it can decode a long recording).
@@ -168,7 +221,9 @@ fn recover_meeting(
         if found == TrackFileRecovery::InUse {
             in_use = true;
         }
-        let Some(file) = found.finished() else {
+        // An empty finished file is never given a row: the meeting would read Interrupted
+        // with a row, and nothing in it can be transcribed.
+        let Some(file) = found.finished().filter(|f| f.frames > 0) else {
             continue;
         };
         let provenance = AudioProvenance {
@@ -178,7 +233,7 @@ fn recover_meeting(
         };
         let mut rng = crate::services::os_seeded_rng();
         let clock = std::sync::Arc::clone(&services.clock);
-        services.store().adopt_track_audio(
+        let row = services.store().adopt_track_audio(
             file,
             &services.data,
             track,
@@ -186,12 +241,28 @@ fn recover_meeting(
             &*clock,
             &mut *rng,
         )?;
+        changed = true;
+        // A finished file found beside a `.part`: the part is stale once the row exists.
+        earshot_store::remove_stale_part(&services.data, &row)?;
     }
     if in_use {
         return Ok(Outcome::InUse);
     }
     let clock = std::sync::Arc::clone(&services.clock);
     let mut db = services.store();
+    // A meeting the session saved keeps its duration: only its leftovers were for us.
+    match db.meeting(meeting)? {
+        None => return Ok(Outcome::Changed),
+        Some(m) if m.meta.deleted => return Ok(Outcome::Changed),
+        Some(m) if m.duration_ms.is_some() => {
+            return Ok(if changed {
+                Outcome::LeftoversFinished
+            } else {
+                Outcome::NothingSaved
+            });
+        }
+        Some(_) => {}
+    }
     let saved_ms = db
         .audio_files(meeting)?
         .iter()

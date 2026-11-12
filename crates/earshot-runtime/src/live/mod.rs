@@ -2035,6 +2035,8 @@ where
         writer: FlacTrackWriter,
     ) -> Option<Result<earshot_core::model::AudioFile, earshot_store::StoreError>> {
         let row = self.tracks.iter().find(|t| t.kind == track)?.clone();
+        #[cfg(test)]
+        finalize_panics::check(&self.services.data, track);
         let provenance = AudioProvenance {
             pipeline_version: PIPELINE_VERSION.to_owned(),
             aec_version: (track == TrackId::Mic && self.capture.reference.is_some())
@@ -2381,6 +2383,39 @@ where
             echo_words_removed: self.echo.removed(),
             echo_locks: self.echo.locks().to_vec(),
         })
+    }
+}
+
+/// Panics injected by tests into a track's finish (T9.19 with T9.18), keyed by the data
+/// directory so tests running at once never see each other's.
+#[cfg(test)]
+pub(crate) mod finalize_panics {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    use earshot_core::capture::TrackId;
+    use earshot_store::DataDir;
+
+    static PANICS: Mutex<Vec<(PathBuf, TrackId)>> = Mutex::new(Vec::new());
+
+    /// The next session on `data` panics in `track`'s finish, its writer dropped unfinished.
+    pub(crate) fn set(data: &DataDir, track: TrackId) {
+        PANICS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((data.root().to_owned(), track));
+    }
+
+    pub(super) fn check(data: &DataDir, track: TrackId) {
+        let hit = {
+            let mut p = PANICS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            p.iter()
+                .position(|(root, t)| root == data.root() && *t == track)
+                .map(|i| p.remove(i))
+        };
+        assert!(hit.is_none(), "an invented bug in a track's finish");
     }
 }
 
