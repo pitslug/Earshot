@@ -1,0 +1,195 @@
+{
+  "machine_load_percent": 23.0,
+  "model": "parakeet-tdt-0.6b-v2",
+  "new_lengths": [
+    {
+      "first_s": 0.2058784,
+      "length_s": 11.0,
+      "second_s": 0.2032681
+    },
+    {
+      "first_s": 0.2130027,
+      "length_s": 11.27,
+      "second_s": 0.2034814
+    },
+    {
+      "first_s": 0.2145252,
+      "length_s": 11.54,
+      "second_s": 0.1975261
+    },
+    {
+      "first_s": 0.2008476,
+      "length_s": 11.81,
+      "second_s": 0.2164944
+    },
+    {
+      "first_s": 0.2091362,
+      "length_s": 12.08,
+      "second_s": 0.1932111
+    },
+    {
+      "first_s": 0.2113475,
+      "length_s": 12.35,
+      "second_s": 0.2105964
+    }
+  ],
+  "simulated_card_gib": null,
+  "stages": [
+    {
+      "memory": {
+        "peak_working_set_gib": 0.04552459716796875,
+        "private_gib": 0.043704986572265625,
+        "system_free_gib": 4.903034210205078
+      },
+      "stage": "no session"
+    },
+    {
+      "backend": {
+        "device": "qnn:npu",
+        "kind": "Qnn"
+      },
+      "load_s": 3.8158241,
+      "memory": {
+        "peak_working_set_gib": 0.6948127746582031,
+        "private_gib": 0.09181976318359375,
+        "system_free_gib": 4.598056793212891
+      },
+      "placement": [
+        "requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1",
+        "requested cpu, placed: CPUExecutionProvider=13",
+        "requested cpu, placed: CPUExecutionProvider=10"
+      ],
+      "preview_session": false,
+      "refusal_bypassed": false,
+      "role": "a track's own session",
+      "simulated_card_gib": null,
+      "stage": "session 1 loaded"
+    },
+    {
+      "memory": {
+        "peak_working_set_gib": 0.6997222900390625,
+        "private_gib": 0.10401535034179688,
+        "system_free_gib": 4.589775085449219
+      },
+      "stage": "session 1, 3 decodes of 12 s",
+      "took_s": [
+        0.1909773,
+        0.1842536,
+        0.1916273
+      ]
+    },
+    {
+      "backend": {
+        "device": "qnn:npu",
+        "kind": "Qnn"
+      },
+      "load_s": 2.9239413,
+      "memory": {
+        "peak_working_set_gib": 1.3230171203613281,
+        "private_gib": 0.14188385009765625,
+        "system_free_gib": 4.068996429443359
+      },
+      "placement": [
+        "requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1",
+        "requested cpu, placed: CPUExecutionProvider=13",
+        "requested cpu, placed: CPUExecutionProvider=10"
+      ],
+      "preview_session": true,
+      "refusal_bypassed": true,
+      "role": "first preview session (on, everyone)",
+      "simulated_card_gib": null,
+      "stage": "session 2 loaded"
+    },
+    {
+      "memory": {
+        "peak_working_set_gib": 1.3263435363769531,
+        "private_gib": 0.14554214477539062,
+        "system_free_gib": 3.7534027099609375
+      },
+      "stage": "session 2, 3 decodes of 12 s",
+      "took_s": [
+        0.2291947,
+        0.2269883,
+        0.2739099
+      ]
+    },
+    {
+      "backend": {
+        "device": "qnn:npu",
+        "kind": "Qnn"
+      },
+      "load_s": 3.2454726,
+      "memory": {
+        "peak_working_set_gib": 1.9513740539550781,
+        "private_gib": 0.18207931518554688,
+        "system_free_gib": 2.1611480712890625
+      },
+      "placement": [
+        "requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1",
+        "requested cpu, placed: CPUExecutionProvider=13",
+        "requested cpu, placed: CPUExecutionProvider=10"
+      ],
+      "preview_session": true,
+      "refusal_bypassed": true,
+      "role": "second preview session (everyone only)",
+      "simulated_card_gib": null,
+      "stage": "session 3 loaded"
+    },
+    {
+      "memory": {
+        "peak_working_set_gib": 1.9554100036621094,
+        "private_gib": 0.19527435302734375,
+        "system_free_gib": 2.29437255859375
+      },
+      "stage": "session 3, 3 decodes of 12 s",
+      "took_s": [
+        0.2077181,
+        0.2127168,
+        0.2114017
+      ]
+    }
+  ],
+  "threads": 3,
+  "window_lengths": [
+    {
+      "length_s": 3.0,
+      "took_s": [
+        0.149276,
+        0.1608738,
+        0.16151
+      ]
+    },
+    {
+      "length_s": 6.0,
+      "took_s": [
+        0.1851942,
+        0.1786384,
+        0.1773772
+      ]
+    },
+    {
+      "length_s": 9.0,
+      "took_s": [
+        0.213157,
+        0.2116372,
+        0.2075997
+      ]
+    },
+    {
+      "length_s": 12.0,
+      "took_s": [
+        0.2131428,
+        0.2093658,
+        0.2109547
+      ]
+    },
+    {
+      "length_s": 15.0,
+      "took_s": [
+        0.2233494,
+        0.2162544,
+        0.2034802
+      ]
+    }
+  ]
+}

@@ -12,10 +12,10 @@
 //!     --backend cuda --contention alone|own|shared [--audio bundled|continuous] [--out <file.json>]
 //! ```
 //!
-//! `--backend qnn` needs an ARM64 build with `--features qnn` (the NPU, T12.4). The app refuses
-//! previews there (`backends::previews_refused`); `--force-previews` (evaluation only) loads the
-//! preview sessions through `backends::load_preview_unrefused` instead, which skips only that
-//! refusal. The report's `preview_refusal` says what the app would decide on this machine and
+//! `--backend qnn` needs an ARM64 build with `--features qnn` (the NPU, T12.4). Since T12.12c the
+//! app runs the far end's previews there and refuses the user's own voice
+//! (`backends::previews_refused_second`); `--force-previews` (evaluation only) loads the preview
+//! sessions through `backends::load_preview_unrefused` instead, which skips only the refusals. The report's `preview_refusal` says what the app would decide on this machine and
 //! whether this run went past it; `preview_sessions` lists every preview load with the backend
 //! the loaded session reports and, when forced, each ONNX Runtime session's placement (from ONNX
 //! Runtime's placement log, already checked by the load), never the request. `--memory` loads a
@@ -51,7 +51,10 @@
 //! With previews the report adds, per word that settled, when it first reached the screen in either
 //! form (`on_screen_lag_s`), each preview word's own lag, how many preview words differed from the
 //! settled text they became (`changed`) and how many left before settled text reached them
-//! (`vanished`). Two runs store the same words when their `stored_sha256` match.
+//! (`vanished`). Two runs store the same words when their `stored_sha256` match. `vanished_kinds`
+//! (T12.12c) counts what became of the vanished words: settled on their own track nearby before
+//! they left or after, settled on the other track nearby (speech of the other side the live echo
+//! filter removed or never kept), or never settled; beside it the live echo filter's `echo_words_removed` and its `echo_locks`.
 //!
 //! The report names the backend the session announced and the host's load: the percentage of the
 //! whole machine in use, read about every 30 s, and this process's own CPU time and memory. A
@@ -567,6 +570,55 @@ fn timed(
 }
 
 /// `words` as (normalised text, start ms, end ms): held in memory only, to compare; never printed.
+/// How near in time a settled word must start to a vanished preview word holding the same word to
+/// count as it ([`vanished_kinds`]). A judgement fixed before the T12.12c run: the live echo
+/// filter matches far-end words at the canceller's delay plus or minus 1 s, and preview word times
+/// move by up to `COVERED_SLACK` between decodes.
+const VANISHED_NEAR_MS: u64 = 2000;
+
+/// What became of the preview words that left with no settled text at them (T12.12c step 4),
+/// counted only. `gone_at[i]` is how many of the track's settled words had arrived when `gone[i]`
+/// left. `own_settled_before`: the track's own settled text already held the same word within
+/// [`VANISHED_NEAR_MS`] when it left (a second copy of a settled word, gone); `own_settled_after`:
+/// it arrived later (the word left before its settled text came); `other_track_settled_nearby`:
+/// neither, but the other track's settled text holds it (speech of the other side that the track's
+/// live echo filter removed, or never kept); `never_settled`: none of these. Empty tokens are not
+/// counted.
+fn vanished_kinds(
+    gone: &[(String, u64)],
+    gone_at: &[usize],
+    own: &[(String, u64)],
+    other: &[(String, u64)],
+) -> Value {
+    let near = |list: &[(String, u64)], text: &str, start: u64| {
+        list.iter()
+            .any(|(t, s)| t == text && s.abs_diff(start) <= VANISHED_NEAR_MS)
+    };
+    let (mut before, mut after, mut far_end, mut never) = (0u64, 0u64, 0u64, 0u64);
+    for ((text, start), at) in gone.iter().zip(gone_at) {
+        if text.is_empty() {
+            continue;
+        }
+        let at = (*at).min(own.len());
+        if near(&own[..at], text, *start) {
+            before += 1;
+        } else if near(&own[at..], text, *start) {
+            after += 1;
+        } else if near(other, text, *start) {
+            far_end += 1;
+        } else {
+            never += 1;
+        }
+    }
+    json!({
+        "own_settled_before": before,
+        "own_settled_after": after,
+        "other_track_settled_nearby": far_end,
+        "never_settled": never,
+        "near_ms": VANISHED_NEAR_MS,
+    })
+}
+
 fn named_words(words: &[earshot_core::asr::Word]) -> Vec<(String, u64, u64)> {
     words
         .iter()
@@ -637,6 +689,8 @@ struct PreviewLags {
     changed: u64,
     /// Preview words that left with no settled text at them.
     vanished: u64,
+    /// Those words (normalised text, start ms), kept in memory for [`vanished_kinds`] only.
+    gone: Vec<(String, u64)>,
     /// Sends.
     updates: u64,
 }
@@ -656,13 +710,15 @@ impl PreviewLags {
                 next.push((text.clone(), *start, lag));
             }
         }
-        let gone = self
+        let gone: Vec<(String, u64)> = self
             .shown
             .iter()
             .filter(|(t, s, _)| !words.iter().any(|(wt, ws, _)| wt == t && ws == s))
-            .count();
+            .map(|(t, s, _)| (t.clone(), *s))
+            .collect();
         // What a final took away has been counted by `settled`.
-        self.vanished += gone as u64;
+        self.vanished += gone.len() as u64;
+        self.gone.extend(gone);
         self.shown = next;
     }
 
@@ -709,6 +765,10 @@ struct TrackLags {
     on_screen_s: Vec<f64>,
     /// Hashes every stored word's text and times, in order.
     stored: Sha256,
+    /// Every settled word (normalised text, start ms), kept in memory for [`vanished_kinds`] only.
+    settled: Vec<(String, u64)>,
+    /// Per vanished preview word, how many settled words had arrived when it left.
+    gone_at: Vec<usize>,
     previews: PreviewLags,
 }
 
@@ -1316,6 +1376,7 @@ fn main() {
                 lag.add(at, &words);
                 let named = named_words(&segment.words);
                 for (text, start, end) in &named {
+                    lag.settled.push((text.clone(), *start));
                     lag.stored.update(text.as_bytes());
                     lag.stored.update(start.to_le_bytes());
                     lag.stored.update(end.to_le_bytes());
@@ -1332,7 +1393,10 @@ fn main() {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .map_or(Duration::ZERO, |s| s.elapsed());
-                lags[index(track)].previews.update(at, &named_words(&words));
+                let lag = &mut lags[index(track)];
+                lag.previews.update(at, &named_words(&words));
+                let (settled, gone) = (lag.settled.len(), lag.previews.gone.len());
+                lag.gone_at.resize(gone, settled);
             }
             Ok(RuntimeEvent::LivePreviewReport(r)) => {
                 preview_reports.push(json!({
@@ -1406,6 +1470,23 @@ fn main() {
         "preview_sessions": *preview_sessions.lock().unwrap_or_else(PoisonError::into_inner),
         "mic": lags[0].json(),
         "reference": lags[1].json(),
+        // T12.12c step 4: what became of the vanished preview words, counts only.
+        "vanished_kinds": {
+            "mic": vanished_kinds(
+                &lags[0].previews.gone,
+                &lags[0].gone_at,
+                &lags[0].settled,
+                &lags[1].settled,
+            ),
+            "reference": vanished_kinds(
+                &lags[1].previews.gone,
+                &lags[1].gone_at,
+                &lags[1].settled,
+                &lags[0].settled,
+            ),
+        },
+        "echo_words_removed": outcome.echo_words_removed,
+        "echo_locks": outcome.echo_locks.len(),
         "decodes_mic": decodes(&logs[0]),
         "decodes_reference": decodes(&logs[1]),
         "host": {
@@ -1495,9 +1576,12 @@ mod tests {
         ModelDir::new(std::env::temp_dir().join(format!("live-lag-preview-{}", std::process::id())))
     }
 
-    /// Without `--force-previews` the app's loaders run unchanged: the NPU is refused, recorded.
+    /// Without `--force-previews` the app's loaders run unchanged (T12.12c): on the NPU the far end's
+    /// goes on to load (and fails here for a load reason, on an empty models folder) and the user's
+    /// own voice is refused with its reason, recorded.
     #[test]
     fn live_lag_preview_loads_are_the_apps_unless_forced() {
+        use earshot_runtime::backends::OWN_VOICE_NPU_REFUSED;
         let log = Arc::new(Mutex::new(Vec::new()));
         let p = previews_for(
             &empty_models(),
@@ -1506,20 +1590,21 @@ mod tests {
             &log,
         );
         let own = p.own_voice.clone().expect("everyone has a second loader");
-        for load in [p.load, own] {
-            assert_eq!(
-                load(&npu_track()).err().as_deref(),
-                Some("not measured on the NPU yet")
-            );
-        }
+        let why = (p.load)(&npu_track()).err().expect("no models here");
+        assert_ne!(why, OWN_VOICE_NPU_REFUSED);
+        assert!(!why.contains("not measured"), "{why}");
+        assert_eq!(
+            own(&npu_track()).err().as_deref(),
+            Some(OWN_VOICE_NPU_REFUSED)
+        );
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2);
         for (record, slot) in log.iter().zip(["first", "own_voice"]) {
             assert_eq!(record["slot"], slot);
             assert_eq!(record["refusal_bypassed"], false);
-            assert_eq!(record["not_loaded"], "not measured on the NPU yet");
             assert_eq!(record["requested"]["kind"], "Qnn");
         }
+        assert_eq!(log[1]["not_loaded"], OWN_VOICE_NPU_REFUSED);
         let on = previews_for(
             &empty_models(),
             PreviewChoice::Automatic,
@@ -1642,8 +1727,9 @@ mod tests {
     }
 
     /// With a simulated card the app's rule runs on that machine: a CUDA track's previews are
-    /// asked for on the CPU (the load fails here for a load reason, on an empty models folder), the
-    /// NPU is still refused, and every record names the simulated card and no bypass.
+    /// asked for on the CPU (the load fails here for a load reason, on an empty models folder), on
+    /// the NPU the user's own voice is still refused (T12.12c), and every record names the
+    /// simulated card and no bypass.
     #[test]
     fn live_lag_simulated_preview_loads_apply_the_apps_rule_to_the_simulated_card() {
         let machine = earshot_hardware::Hardware {
@@ -1667,11 +1753,16 @@ mod tests {
         for load in [&p.load, &own] {
             let why = load(&cuda).err().expect("no models here");
             assert!(!why.contains("card") && !why.contains("memory"), "{why}");
-            assert_eq!(
-                load(&npu_track()).err().as_deref(),
-                Some("not measured on the NPU yet")
-            );
         }
+        let why = (p.load)(&npu_track()).err().expect("no models here");
+        assert!(
+            !why.contains("not measured") && !why.contains("memory"),
+            "{why}"
+        );
+        assert_eq!(
+            own(&npu_track()).err().as_deref(),
+            Some(earshot_runtime::backends::OWN_VOICE_NPU_REFUSED)
+        );
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 4);
         assert!(log.iter().all(|r| r["refusal_bypassed"] == false));
@@ -1721,6 +1812,48 @@ mod tests {
             assert!(parse(&a).is_err(), "{extra:?}");
         }
         assert_eq!(parse(&[]).unwrap().contention, None);
+    }
+
+    /// T12.12c: a vanished word counts against the track's own settled text first, then the other
+    /// track's, each within the window both ways; anything else never settled.
+    #[test]
+    fn live_lag_vanished_kinds_count_own_then_other_track_then_never() {
+        let w = |t: &str, s: u64| (t.to_owned(), s);
+        let gone = vec![
+            w("yes", 10_000),
+            w("right", 20_000),
+            w("budget", 30_000),
+            w("", 40_000),
+            w("yes", 50_000),
+        ];
+        let own = vec![
+            w("yes", 10_000 + VANISHED_NEAR_MS),
+            w("right", 25_000),
+            w("yes", 50_000 - VANISHED_NEAR_MS),
+        ];
+        let other = vec![
+            w("right", 20_000 - VANISHED_NEAR_MS),
+            w("budget", 30_000 + VANISHED_NEAR_MS + 1),
+            w("yes", 10_000),
+        ];
+        // The first "yes" left after one settled word had arrived, the second before the third.
+        let k = vanished_kinds(&gone, &[1, 1, 1, 1, 2], &own, &other);
+        assert_eq!(k["own_settled_before"], 1, "{k}");
+        assert_eq!(k["own_settled_after"], 1, "{k}");
+        assert_eq!(k["other_track_settled_nearby"], 1, "{k}");
+        assert_eq!(k["never_settled"], 1, "{k}");
+        let k = vanished_kinds(&gone, &[0; 5], &own, &other);
+        assert_eq!(k["own_settled_before"], 0, "{k}");
+        assert_eq!(k["own_settled_after"], 2, "{k}");
+        // Each preview word that left is remembered, the ones a final covered are not.
+        let mut p = PreviewLags::default();
+        p.update(
+            Duration::from_secs(5),
+            &[("a".into(), 1000, 1200), ("b".into(), 1300, 1500)],
+        );
+        p.update(Duration::from_secs(6), &[("a".into(), 1000, 1200)]);
+        assert_eq!(p.vanished, 1);
+        assert_eq!(p.gone, vec![("b".to_owned(), 1300)]);
     }
 
     #[test]

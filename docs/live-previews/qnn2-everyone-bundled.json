@@ -1,0 +1,239 @@
+{
+  "audio": "bundled",
+  "capture_max_lag_s": 0.014,
+  "catch_up_after_end_s": 0.4063016,
+  "decodes_mic": {
+    "audio_s": 100.63999999999999,
+    "calls": 11,
+    "rtf": 0.022791632551669314,
+    "took_s": {
+      "max": 0.3014416,
+      "median": 0.1810007,
+      "n": 11,
+      "p95": 0.3014416
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 95.13600000000001,
+    "calls": 10,
+    "rtf": 0.021019547805247223,
+    "took_s": {
+      "max": 0.2604316,
+      "median": 0.2081808,
+      "n": 10,
+      "p95": 0.2604316
+    }
+  },
+  "host": {
+    "logical_cores": 12,
+    "machine_load_percent": {
+      "max": 37.0,
+      "median": 29.0,
+      "n": 4,
+      "p95": 37.0
+    },
+    "peak_private_gib": 2.7631797790527344,
+    "peak_working_set_gib": 4.465950012207031,
+    "process_cpu_s": 62.796875
+  },
+  "length_s": 150.0,
+  "live_backends": [
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "mic": {
+    "first_word_lag_s": {
+      "max": 37.47343649999999,
+      "median": 7.054295399999997,
+      "n": 11,
+      "p95": 37.47343649999999
+    },
+    "last_word_lag_s": {
+      "max": 16.673436499999994,
+      "median": 2.2855459000000025,
+      "n": 11,
+      "p95": 16.673436499999994
+    },
+    "on_screen_lag_s": {
+      "max": 23.772455599999986,
+      "median": 2.4665138000000013,
+      "n": 244,
+      "p95": 20.9934365
+    },
+    "previews": {
+      "changed": 5,
+      "kept": 179,
+      "updates": 67,
+      "vanished": 52,
+      "word_lag_s": {
+        "max": 8.0861734,
+        "median": 2.1447576999999995,
+        "n": 236,
+        "p95": 4.649782299999998
+      }
+    },
+    "stored_sha256": "6d099ad857c667baf8080bf43a4de9cce88d36d0d20b1cedab21d623b02cb7dd",
+    "stretch_length_s": {
+      "max": 23.36,
+      "median": 4.96,
+      "n": 11,
+      "p95": 23.36
+    },
+    "stretches": 11,
+    "word_lag_s": {
+      "max": 37.47343649999999,
+      "median": 15.485545899999991,
+      "n": 244,
+      "p95": 32.2734365
+    },
+    "words": 244
+  },
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10"
+  ],
+  "preview_refusal": {
+    "app_first": "not measured on the NPU yet",
+    "app_first_on": null,
+    "app_own_voice": "not measured on the NPU yet",
+    "app_own_voice_on": null,
+    "forced_past_it": true,
+    "simulated_card_gib": null
+  },
+  "preview_sessions": [
+    {
+      "loaded": {
+        "device": "qnn:npu",
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2",
+        "placement": [
+          "requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1",
+          "requested cpu, placed: CPUExecutionProvider=13",
+          "requested cpu, placed: CPUExecutionProvider=10"
+        ]
+      },
+      "refusal_bypassed": true,
+      "requested": {
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2"
+      },
+      "slot": "first"
+    },
+    {
+      "loaded": {
+        "device": "qnn:npu",
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2",
+        "placement": [
+          "requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1",
+          "requested cpu, placed: CPUExecutionProvider=13",
+          "requested cpu, placed: CPUExecutionProvider=10"
+        ]
+      },
+      "refusal_bypassed": true,
+      "requested": {
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2"
+      },
+      "slot": "own_voice"
+    }
+  ],
+  "previews": [
+    {
+      "audio_dropped": 0,
+      "audio_s": 728.1759999999999,
+      "backend": "Qnn",
+      "cancelled": 1,
+      "decode_s": 18.233714699999997,
+      "decodes": 93,
+      "decodes_adding_nothing": 35,
+      "load_s": 4.923581,
+      "off": null,
+      "rtf": 0.02504025771242117,
+      "skipped_busy": 0,
+      "slow_pauses": 0,
+      "slowest_s": 0.2934245,
+      "track": "Mic",
+      "words_shown": 236
+    },
+    {
+      "audio_dropped": 0,
+      "audio_s": 635.936,
+      "backend": "Qnn",
+      "cancelled": 1,
+      "decode_s": 15.365831000000005,
+      "decodes": 78,
+      "decodes_adding_nothing": 39,
+      "load_s": 3.2104882,
+      "off": null,
+      "rtf": 0.02416254308609672,
+      "skipped_busy": 1,
+      "slow_pauses": 0,
+      "slowest_s": 0.3469507,
+      "track": "Reference",
+      "words_shown": 201
+    }
+  ],
+  "reference": {
+    "first_word_lag_s": {
+      "max": 41.9536447,
+      "median": 14.990943300000026,
+      "n": 8,
+      "p95": 41.9536447
+    },
+    "last_word_lag_s": {
+      "max": 25.3936447,
+      "median": 3.393757199999996,
+      "n": 8,
+      "p95": 25.3936447
+    },
+    "on_screen_lag_s": {
+      "max": 41.713644699999996,
+      "median": 2.3422027000000014,
+      "n": 213,
+      "p95": 10.4700168
+    },
+    "previews": {
+      "changed": 8,
+      "kept": 186,
+      "updates": 46,
+      "vanished": 7,
+      "word_lag_s": {
+        "max": 10.6300168,
+        "median": 2.3161832000000118,
+        "n": 201,
+        "p95": 8.9500168
+      }
+    },
+    "stored_sha256": "344ffab8e28dc4bbe1632f17b252d0d939d10ce1efad56c676db50c89efed77d",
+    "stretch_length_s": {
+      "max": 20.16,
+      "median": 14.64,
+      "n": 8,
+      "p95": 20.16
+    },
+    "stretches": 8,
+    "word_lag_s": {
+      "max": 41.9536447,
+      "median": 14.110943300000002,
+      "n": 213,
+      "p95": 36.9936447
+    },
+    "words": 213
+  },
+  "requested_backend": "Qnn",
+  "simulated_card_gib": null,
+  "speakers": true,
+  "stopped_with": "Finished",
+  "warnings": 0
+}
