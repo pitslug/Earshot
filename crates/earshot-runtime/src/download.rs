@@ -21,9 +21,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use earshot_core::asr::CancelToken;
-use earshot_net::{
-    Allowlist, AuditLog, NetClient, NetConfig, NetError, NetRequest, Url, UrlError, redact,
-};
+/// What [`Downloader::new`] and [`Downloader::fetch`] take.
+pub use earshot_net::{Allowlist, Url};
+use earshot_net::{AuditLog, NetClient, NetConfig, NetError, NetRequest, UrlError, redact};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -172,6 +172,20 @@ impl DownloadError {
         matches!(
             self,
             Self::ContentRange { .. } | Self::Interrupted { .. } | Self::Cancelled { .. }
+        )
+    }
+
+    /// Whether no server answered at all: the connection, its TLS or the wait for a response
+    /// failed before any response arrived (T9.23). On a network that only lets traffic out
+    /// through a proxy every download ends here, because `earshot-net` never uses one.
+    #[must_use]
+    pub fn reached_no_server(&self) -> bool {
+        matches!(
+            self,
+            Self::Request {
+                error: NetError::Transport(_),
+                ..
+            }
         )
     }
 }

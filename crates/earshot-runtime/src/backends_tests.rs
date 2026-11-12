@@ -2430,3 +2430,19 @@ fn npu_compiled_stress_many_meetings_in_one_process() {
         started.elapsed().as_secs_f64()
     );
 }
+
+/// T9.23: on a processor without the native builds' baseline whisper.cpp is never asked for its
+/// devices (that starts ggml's AVX2 CPU backend), so Vulkan stays out of the order.
+#[test]
+fn backends_order_never_asks_whisper_on_a_processor_without_the_baseline() {
+    let order = accelerator_order_with(true, false, || {
+        panic!("whisper.cpp asked on a processor without AVX2")
+    });
+    assert!(!order.contains(&Accelerator::Vulkan), "{order:?}");
+    assert_eq!(order.last(), Some(&Accelerator::Cpu), "{order:?}");
+    // With the baseline, a Vulkan build asks and follows the answer; another build never asks.
+    assert!(accelerator_order_with(true, true, || true).contains(&Accelerator::Vulkan));
+    assert!(!accelerator_order_with(true, true, || false).contains(&Accelerator::Vulkan));
+    let order = accelerator_order_with(false, true, || panic!("asked in a build without Vulkan"));
+    assert!(!order.contains(&Accelerator::Vulkan), "{order:?}");
+}

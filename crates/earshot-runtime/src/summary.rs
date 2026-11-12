@@ -395,6 +395,7 @@ pub(crate) struct LlamaLoader;
 
 impl LoadLocal for LlamaLoader {
     fn load(&self, config: &LocalSummaryConfig) -> Result<LoadedModel, RuntimeError> {
+        crate::cpu::require_native_builds()?;
         if !config.model_path.is_file() {
             return Err(RuntimeError::ModelMissing {
                 path: config.model_path.clone(),

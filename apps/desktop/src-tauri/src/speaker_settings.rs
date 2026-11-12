@@ -484,7 +484,13 @@ pub const OTHER_FAILED: &str = "Your voice could not be saved. Try again.";
 #[must_use]
 pub fn failure_copy(e: &RuntimeError) -> String {
     match e {
-        RuntimeError::Capture(_) => MIC_FAILED,
+        RuntimeError::Capture(_)
+        | RuntimeError::CaptureStart {
+            problem: earshot_runtime::CaptureProblem::Other,
+            ..
+        } => MIC_FAILED,
+        // Why the microphone could not start, and what to do (T9.23).
+        RuntimeError::CaptureStart { problem, .. } => crate::plain_text::capture_copy(*problem),
         RuntimeError::ModelMissing { .. }
         | RuntimeError::ModelIncomplete { .. }
         | RuntimeError::UnknownModel(_)
@@ -515,7 +521,7 @@ impl VoiceWork for HostVoiceWork {
         use earshot_capture_wasapi::wasapi::WasapiSource;
         use earshot_capture_wasapi::{CaptureMode, MicRole};
         let mut source = WasapiSource::start(MicRole::default(), &CaptureMode::InRoom)
-            .map_err(|e| RuntimeError::Capture(e.to_string()))?;
+            .map_err(|e| earshot_runtime::capture_start_error(&e))?;
         my_voice::record_sample(
             &mut source,
             SAMPLE_LENGTH,

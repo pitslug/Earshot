@@ -859,9 +859,34 @@ fn meeting_events_summary_results_map_with_plain_copy() {
             retryable: true,
         },
     ));
-    assert!(
-        matches!(&failed, SummaryEvent::Failed { retryable: true, message } if message.starts_with("The summary failed: "))
+    // Fixed copy by the error's kind, never its text (T9.23).
+    assert_eq!(
+        failed,
+        SummaryEvent::Failed {
+            message: crate::plain_text::TRY_AGAIN_SOON.into(),
+            retryable: true,
+        }
     );
+    // A failed final pass offers Re-transcribe, with the reason as fixed copy.
+    let post_failed = summary_event(&outcome(
+        Err(RuntimeError::Asr(earshot_core::asr::AsrError::Backend(
+            "zq-decoder words".into(),
+        ))),
+        SummaryResult::Cancelled,
+    ));
+    let SummaryEvent::PostFailed { message, retryable } = &post_failed else {
+        panic!("{post_failed:?}");
+    };
+    assert!(!retryable);
+    assert!(
+        message.starts_with("The transcript could not be finished."),
+        "{message}"
+    );
+    assert!(
+        message.ends_with(crate::plain_text::TRANSCRIPTION_FAILED),
+        "{message}"
+    );
+    assert!(!message.contains("zq-"), "{message}");
     assert_eq!(
         summary_event(&outcome(Ok(HostPost::Skipped), SummaryResult::Cancelled)),
         SummaryEvent::Cancelled
@@ -874,7 +899,8 @@ fn meeting_events_summary_results_map_with_plain_copy() {
         SummaryEvent::PostCancelled,
         "the meeting reads as not processed, not as a cancelled summary"
     );
-    // A failed cleanup is a failure with the cleanup's error, not a skip.
+    // A failed final pass is its own result, with the reason as fixed copy, not a skip
+    // (T9.23: the screen offers Re-transcribe).
     let post_failed = summary_event(&outcome(
         Err(RuntimeError::NoTracks),
         SummaryResult::Skipped {
@@ -883,10 +909,11 @@ fn meeting_events_summary_results_map_with_plain_copy() {
     ));
     assert_eq!(
         post_failed,
-        SummaryEvent::Failed {
+        SummaryEvent::PostFailed {
             message: format!(
-                "The cleanup after the meeting failed: {}",
-                RuntimeError::NoTracks
+                "The transcript could not be finished. The recording and the draft transcript \
+                 are saved. {}",
+                crate::plain_text::NO_AUDIO
             ),
             retryable: false,
         }

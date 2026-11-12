@@ -135,3 +135,7 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-runtime/src/vocabulary.rs:515: a word in single quotes is added with its quotes ('Zorbek'), the matcher keeping apostrophes; ask the owner whether to strip leading and trailing single quotes (T12.15f review).
 - crates/earshot-runtime/src/meeting_queue.rs (`wait_for_the_library_choice`): sleep-polls the CUDA choice; call `cuda::wait_for_onnx_unless` instead.
 - crates/earshot-runtime/src/live/mod.rs (`stall` docs): `CancelToken::polls` counts every clone; nothing but the scan test keeps a second poller out (T9.22a review).
+- apps/desktop/src-tauri/src/audio_check.rs `failure_copy`: `RuntimeError::Capture(m)` still passes the runtime's text through, and crates/earshot-runtime/src/audio_check.rs builds one with `{e:?}` (T9.23 review).
+- apps/desktop/src-tauri/src/models.rs `internal`, `remove_error` and `settings_error` still show catalogue and settings errors' own text (T9.23 review).
+- README.md "What you need": the proxy sentence covers downloads; in-app update checks use the same client and are not mentioned (T9.23 review).
+- crates/earshot-capture-wasapi/src/problem.rs: `DeviceGone { what: "output" }` reads as `NoMicrophone`; reachable only past `WasapiSource::fallbacks` (T9.23 review).

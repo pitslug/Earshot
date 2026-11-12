@@ -31,6 +31,7 @@ pub mod format;
 pub mod live;
 pub mod observer;
 pub mod power;
+pub mod problem;
 pub mod recording;
 pub mod session;
 pub mod timeline;
@@ -56,6 +57,7 @@ pub use live::{
 };
 pub use observer::{ReopenOutcome, TrackObserver, reopen_is_reported};
 pub use power::PowerSupply;
+pub use problem::{StartProblem, start_problem};
 pub use recording::{
     DeviceChange, DeviceDescription, HandsFreeChange, LoopbackMode, LoopbackSource, MicRole,
     NotifyingTrack, RawRecording, RecordingTrack, TimestampsFile, TrackRecording, TrackReport,

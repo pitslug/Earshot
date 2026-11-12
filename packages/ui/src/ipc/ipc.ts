@@ -454,6 +454,11 @@ export const everyCommandIsInIpc: [Missing] extends [never] ? true : never = tru
  * (`ipc::NEWER_DATA_KIND` in Rust): the app shows its own screen for it. */
 export const NEWER_DATA_KIND = "newer_data";
 
+/** The error kind every command fails with when the data folder could not be opened at the
+ * start (`ipc::DATA_FOLDER_KIND` in Rust, T9.23): the app shows its own screen, whose Try
+ * again restarts Earshot. */
+export const DATA_FOLDER_KIND = "data_folder";
+
 /** A failed IPC call: carries the app's `IpcError`. */
 export class IpcFailure extends Error {
   readonly error: IpcError;

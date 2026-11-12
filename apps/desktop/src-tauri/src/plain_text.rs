@@ -15,9 +15,12 @@
 //! ([`Catalogue::model_of_file`]); otherwise it points at the System and Transcription pages,
 //! which list what is missing. Telling someone to fetch the wrong thing is worse than telling them where to look.
 
-use earshot_runtime::RuntimeError;
+use earshot_runtime::NetError;
 use earshot_runtime::catalogue::{Catalogue, ModelKind, display_name};
+use earshot_runtime::claude_code::LlmError;
 use earshot_runtime::post::PostWarning;
+use earshot_runtime::{CaptureProblem, RuntimeError};
+use earshot_store::StoreError;
 
 use crate::cuda_settings::CudaEvent;
 use crate::jobs::JobEvent;
@@ -247,14 +250,217 @@ pub fn kept_local_no_model(model: &str, ahead: bool) -> String {
 /// kept on it (T12.13).
 pub const KEPT_LOCAL_REFUSED: &str = "This meeting is kept on this computer, so its summary is written only by the summary model here. Nothing was sent.";
 
-/// What the user is told about runtime error `e`.
+/// No microphone is connected (T9.23).
+pub const NO_MICROPHONE: &str = "Earshot found no microphone. Connect one, or check that it is \
+     switched on in Windows' Sound settings, then try again.";
+/// No speakers or headphones are connected, so the other side of a call cannot be recorded.
+pub const NO_OUTPUT: &str = "Earshot found no speakers or headphones, so it cannot record the \
+     other side of a call. Connect them and try again, or record a meeting in the room.";
+/// Windows' microphone privacy switch is off for desktop apps.
+pub const MICROPHONE_ACCESS_OFF: &str = "Windows is not letting Earshot use the microphone. Open \
+     Windows Settings, Privacy and security, Microphone, turn on \"Let desktop apps access your \
+     microphone\", then try again.";
+/// Another app holds the device for itself.
+pub const DEVICE_IN_USE: &str = "Another app is using the microphone or speakers on its own. \
+     Close that app or change its sound settings, then try again.";
+/// Capture failed for another reason.
+pub const CAPTURE_FAILED: &str = "Earshot could not use the microphone or the computer's sound. \
+     Check that they are connected, then try again. If it keeps failing, restart Earshot.";
+/// The processor lacks the instructions whisper.cpp and llama.cpp need (T9.23).
+pub const PROCESSOR_TOO_OLD: &str = "This computer's processor lacks instructions (AVX2) that \
+     Whisper models and summaries made on this computer need. Choose another transcription \
+     model in Settings, Transcription, and another way to summarise in Settings, Summaries.";
+/// The database could not be read or written.
+pub const DATA_FAILED: &str = "Earshot could not read or save its data on this computer. Check \
+     that the disk has free space, then try again.";
+/// The database was busy, or something changed meanwhile.
+pub const TRY_AGAIN_SOON: &str = "Earshot was busy with this meeting. Try again in a moment.";
+/// A meeting is being worked on.
+pub const MEETING_BUSY: &str = "This meeting is being recorded, finished, exported or deleted. \
+     Try again when that has finished.";
+/// Something inside Earshot went wrong (a bug, not an input problem).
+pub const INTERNAL: &str = "Something went wrong inside Earshot. Restart Earshot and try again.";
+/// The audio could not be set up for a recording.
+pub const PIPELINE_FAILED: &str = "Earshot could not process the sound from this device. Try \
+     again, or choose another microphone in Settings, Audio.";
+/// Transcription failed.
+pub const TRANSCRIPTION_FAILED: &str = "The transcription did not finish. Try again; if it keeps \
+     failing, choose another transcription model in Settings, Transcription.";
+/// Diarisation or the voice models failed.
+pub const VOICES_FAILED: &str = "Earshot could not tell the voices in this meeting apart. Try \
+     again; if it keeps failing, download the speech helpers again in Settings, System.";
+/// Remembered voices could not be read or saved.
+pub const VOICEPRINTS_FAILED: &str = "Earshot could not read or save remembered voices. Try again.";
+/// Nothing was recorded to process.
+pub const NO_AUDIO: &str = "This meeting has no recorded sound to transcribe.";
+/// This version cannot use a model it found, or a model named in its settings.
+pub const NOT_THIS_VERSION: &str = "This version of Earshot cannot use a model it needs here. \
+     Choose another in Settings, or update Earshot.";
+/// No way of running the model worked.
+pub const NO_BACKEND: &str = "Earshot could not run the transcription model on this computer. \
+     Restart Earshot and try again; if it keeps failing, choose another model in Settings, \
+     Transcription.";
+/// The speech helpers (ONNX Runtime) failed.
+pub const HELPERS_FAILED: &str = "The speech helpers could not run. Restart Earshot and try \
+     again; if it keeps failing, download them again in Settings, System.";
+/// The summary address cannot be used.
+pub const ENDPOINT_UNUSABLE: &str = "The summary address in Settings, Summaries cannot be used. \
+     Check it there, then try again.";
+/// The summary address is plain http on the internet.
+pub const ENDPOINT_NOT_HTTPS: &str = "Earshot sends summaries to an address on the internet only \
+     over https. Change the address in Settings, Summaries.";
+/// The network client could not be set up.
+pub const NETWORK_SETUP_FAILED: &str =
+    "Earshot could not set up its network connection. Restart Earshot and try again.";
+/// The note could not be written to the vault.
+pub const EXPORT_FAILED: &str = "Earshot could not write the note to your Obsidian vault. Check \
+     the vault in Settings, Notes and storage, then try again.";
+/// The summary service could not be reached.
+pub const SUMMARY_UNREACHABLE: &str = "The summary could not be written: Earshot could not reach \
+     the summary service. Check the network and the address in Settings, Summaries, then try \
+     again.";
+/// The summary service refused the key.
+pub const SUMMARY_AUTH: &str = "The summary could not be written: the summary service refused \
+     the API key. Check it in Settings, Summaries, then try again.";
+/// The summary service answered with an error.
+pub const SUMMARY_SERVICE_ERROR: &str = "The summary could not be written: the summary service \
+     answered with an error. Try again later.";
+/// The model's reply could not be used.
+pub const SUMMARY_UNUSABLE: &str = "The summary could not be written: the model's reply could not \
+     be used. Try again, or choose another way to summarise in Settings, Summaries.";
+/// The meeting does not fit the model.
+pub const SUMMARY_TOO_LONG: &str = "The summary could not be written: this meeting is too long \
+     for the summary model. Choose another way to summarise in Settings, Summaries.";
+/// The model declined.
+pub const SUMMARY_REFUSED: &str =
+    "The summary could not be written: the model declined to summarise this meeting.";
+/// The summary was cancelled.
+pub const SUMMARY_CANCELLED: &str = "The summary was cancelled.";
+/// The local summary model failed.
+pub const LOCAL_SUMMARY_FAILED: &str = "The summary model on this computer could not finish. \
+     Try again; if it keeps failing, choose another summary model in Settings, Summaries.";
+
+/// The copy for a capture that could not start, by its problem.
+#[must_use]
+pub fn capture_copy(problem: CaptureProblem) -> &'static str {
+    match problem {
+        CaptureProblem::NoMicrophone => NO_MICROPHONE,
+        CaptureProblem::NoOutput => NO_OUTPUT,
+        CaptureProblem::MicrophoneAccessOff => MICROPHONE_ACCESS_OFF,
+        CaptureProblem::DeviceInUse => DEVICE_IN_USE,
+        CaptureProblem::Other => CAPTURE_FAILED,
+    }
+}
+
+fn store_copy(e: &StoreError) -> &'static str {
+    match e {
+        StoreError::SchemaTooNew { .. } => crate::ipc::NEWER_DATA_COPY,
+        e if e.is_retryable() => TRY_AGAIN_SOON,
+        StoreError::Vault(_) | StoreError::Export(_) | StoreError::UnusableNotePath(_) => {
+            EXPORT_FAILED
+        }
+        _ => DATA_FAILED,
+    }
+}
+
+fn summary_copy(e: &LlmError) -> String {
+    match e {
+        LlmError::ClaudeCode(cc) => crate::meeting_events::claude_code_copy(cc, false),
+        LlmError::Codex(cx) => crate::meeting_events::codex_copy(cx, false),
+        LlmError::Endpoint(_) | LlmError::Net(NetError::NotAllowed { .. }) => {
+            ENDPOINT_UNUSABLE.to_owned()
+        }
+        LlmError::Net(_) => SUMMARY_UNREACHABLE.to_owned(),
+        LlmError::Http {
+            status: 401 | 403, ..
+        } => SUMMARY_AUTH.to_owned(),
+        LlmError::Http { .. } => SUMMARY_SERVICE_ERROR.to_owned(),
+        LlmError::FormatRejected { .. } | LlmError::BadResponse(_) | LlmError::Invalid { .. } => {
+            SUMMARY_UNUSABLE.to_owned()
+        }
+        LlmError::Prompt(_) => SUMMARY_TOO_LONG.to_owned(),
+        LlmError::Refused { .. } => SUMMARY_REFUSED.to_owned(),
+        LlmError::Cancelled => SUMMARY_CANCELLED.to_owned(),
+    }
+}
+
+/// [`INTERNAL`], or [`MODELS_NEEDED`] when the runtime's fixed words name a developer command
+/// (a missing NPU conversion is reported that way).
+fn internal_copy(words: &'static str) -> &'static str {
+    if names_developer_tool(words) {
+        MODELS_NEEDED
+    } else {
+        INTERNAL
+    }
+}
+
+/// What the user is told about runtime error `e`: fixed copy chosen by the error's kind,
+/// never its text (T9.23). Exhaustive on purpose, so a new variant must be given its copy;
+/// `plain_text_every_runtime_error_maps_to_fixed_copy` holds one of each.
 #[must_use]
 pub fn runtime_text(e: &RuntimeError) -> String {
-    if matches!(e, RuntimeError::SummaryKeptLocal(_)) {
-        return KEPT_LOCAL_REFUSED.to_owned();
+    match e {
+        RuntimeError::SummaryKeptLocal(_) => KEPT_LOCAL_REFUSED.to_owned(),
+        RuntimeError::ModelMissing { .. } | RuntimeError::ModelIncomplete { .. } => {
+            missing_model_copy(e)
+        }
+        RuntimeError::Store(s) => store_copy(s).to_owned(),
+        RuntimeError::Repo(_) => DATA_FAILED.to_owned(),
+        RuntimeError::Pipeline(_) => PIPELINE_FAILED.to_owned(),
+        RuntimeError::Poisoned | RuntimeError::Spawn(_) => INTERNAL.to_owned(),
+        RuntimeError::Internal(words) | RuntimeError::Unavailable(words) => {
+            internal_copy(words).to_owned()
+        }
+        RuntimeError::Asr(_) => TRANSCRIPTION_FAILED.to_owned(),
+        RuntimeError::Diar(_) => VOICES_FAILED.to_owned(),
+        RuntimeError::Voiceprint(_) => VOICEPRINTS_FAILED.to_owned(),
+        RuntimeError::NoTracks => NO_AUDIO.to_owned(),
+        RuntimeError::Uncalibrated { .. } | RuntimeError::UnknownModel(_) => {
+            NOT_THIS_VERSION.to_owned()
+        }
+        RuntimeError::Llm(l) => summary_copy(l),
+        RuntimeError::LocalSummary(l) if l.is_cancelled() => SUMMARY_CANCELLED.to_owned(),
+        RuntimeError::LocalSummary(_) => LOCAL_SUMMARY_FAILED.to_owned(),
+        RuntimeError::Net(_) => NETWORK_SETUP_FAILED.to_owned(),
+        RuntimeError::Endpoint(_) => ENDPOINT_UNUSABLE.to_owned(),
+        RuntimeError::EndpointDenied(_) => ENDPOINT_NOT_HTTPS.to_owned(),
+        RuntimeError::Export(_) => EXPORT_FAILED.to_owned(),
+        RuntimeError::Conflict(_) => TRY_AGAIN_SOON.to_owned(),
+        RuntimeError::NoBackend(_) => NO_BACKEND.to_owned(),
+        RuntimeError::Onnx(_) => HELPERS_FAILED.to_owned(),
+        RuntimeError::Capture(_) => CAPTURE_FAILED.to_owned(),
+        RuntimeError::CaptureStart { problem, .. } => capture_copy(*problem).to_owned(),
+        RuntimeError::ProcessorTooOld => PROCESSOR_TOO_OLD.to_owned(),
+        RuntimeError::MeetingBusy(_) => MEETING_BUSY.to_owned(),
+        RuntimeError::Edit(edit) => crate::detail::edit_error(edit).message,
+        RuntimeError::ApiKey(k) => api_key_copy(k).to_owned(),
     }
+}
+
+/// The copy for an API key that could not be used, by kind; the credential store's own words
+/// are Windows' text and never shown.
+fn api_key_copy(e: &earshot_runtime::summary_settings::ApiKeyError) -> &'static str {
+    use earshot_runtime::summary_settings::ApiKeyError;
+    match e {
+        ApiKeyError::Missing => {
+            "Summaries go to Anthropic, but no API key is saved. Add it in Settings, Summaries, or choose another way to summarise."
+        }
+        ApiKeyError::Unsupported => {
+            "Keeping an API key needs Windows Credential Manager, which this computer does not have. Choose another way to summarise in Settings, Summaries."
+        }
+        ApiKeyError::Invalid(_) => {
+            "This API key cannot be saved. Copy it again without spaces or line breaks."
+        }
+        ApiKeyError::Store(_) => {
+            "Windows Credential Manager could not be read. Check the key in Settings, Summaries, then try again."
+        }
+    }
+}
+
+/// The copy for a missing or incomplete model file, by what the file is.
+fn missing_model_copy(e: &RuntimeError) -> String {
     let Some(path) = missing_file(e) else {
-        return plain(e.to_string());
+        return MODELS_NEEDED.to_owned();
     };
     let owner = Catalogue::embedded()
         .ok()
@@ -306,6 +512,13 @@ fn plain_summary(result: SummaryEvent) -> SummaryEvent {
             reason: plain(reason),
         },
         SummaryEvent::Failed { message, retryable } => SummaryEvent::Failed {
+            message: plain(message),
+            retryable,
+        },
+        SummaryEvent::RecordingFailed { message } => SummaryEvent::RecordingFailed {
+            message: plain(message),
+        },
+        SummaryEvent::PostFailed { message, retryable } => SummaryEvent::PostFailed {
             message: plain(message),
             retryable,
         },
@@ -664,12 +877,9 @@ mod tests {
         assert_eq!(IpcError::from(onnx).message, MODELS_NEEDED);
         let unknown = RuntimeError::UnknownModel("old".into());
         no_developer_text(&IpcError::from(unknown).message);
-        // Nothing else changes.
+        // Every other error is fixed copy too, never its own text (T9.23).
         let other = RuntimeError::Capture("the microphone is busy".into());
-        assert_eq!(
-            IpcError::from(other).message,
-            "capture: the microphone is busy"
-        );
+        assert_eq!(IpcError::from(other).message, CAPTURE_FAILED);
     }
 
     #[test]
@@ -689,7 +899,11 @@ mod tests {
                 reason: dev.clone(),
             },
             SummaryEvent::Failed {
-                message: format!("The cleanup after the meeting failed: {dev}"),
+                message: format!("The summary failed: {dev}"),
+                retryable: false,
+            },
+            SummaryEvent::PostFailed {
+                message: format!("The transcript could not be finished: {dev}"),
                 retryable: false,
             },
         ] {
@@ -811,5 +1025,317 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+/// T9.23: raw error text never reaches a window. One error of every `RuntimeError` variant,
+/// built twice with different words in every text field: the copy is the same both times (so it
+/// comes from the kind, never the text), names no developer command or model id and holds none
+/// of the words. `variant_index` is exhaustive, so a new variant fails to compile until it is
+/// given an index here and a sample below.
+#[cfg(test)]
+mod every_variant_tests {
+    use std::path::PathBuf;
+
+    use earshot_core::asr::{AsrError, BackendKind};
+    use earshot_core::diar::{DiarError, EmbeddingModelId};
+    use earshot_core::export::ExportError;
+    use earshot_core::identity::EntityId;
+    use earshot_core::model::RepoError;
+    use earshot_core::pipeline::PipelineError;
+    use earshot_core::voiceprint::VoiceprintError;
+    use earshot_runtime::claude_code::LlmError;
+    use earshot_runtime::edit::EditError;
+    use earshot_runtime::summary::LocalSummaryError;
+    use earshot_runtime::summary_settings::ApiKeyError;
+    use earshot_runtime::{
+        Calibration, CaptureProblem, DenyReason, NetError, OnnxError, RuntimeError, UrlError,
+    };
+    use earshot_store::StoreError;
+
+    use super::*;
+    use crate::ipc::IpcError;
+
+    const VARIANTS: usize = 31;
+
+    fn variant_index(e: &RuntimeError) -> usize {
+        match e {
+            RuntimeError::Store(_) => 0,
+            RuntimeError::Repo(_) => 1,
+            RuntimeError::Pipeline(_) => 2,
+            RuntimeError::Poisoned => 3,
+            RuntimeError::Spawn(_) => 4,
+            RuntimeError::Internal(_) => 5,
+            RuntimeError::Asr(_) => 6,
+            RuntimeError::Diar(_) => 7,
+            RuntimeError::Voiceprint(_) => 8,
+            RuntimeError::NoTracks => 9,
+            RuntimeError::Uncalibrated { .. } => 10,
+            RuntimeError::Llm(_) => 11,
+            RuntimeError::LocalSummary(_) => 12,
+            RuntimeError::Net(_) => 13,
+            RuntimeError::Endpoint(_) => 14,
+            RuntimeError::EndpointDenied(_) => 15,
+            RuntimeError::Export(_) => 16,
+            RuntimeError::Conflict(_) => 17,
+            RuntimeError::ModelMissing { .. } => 18,
+            RuntimeError::ModelIncomplete { .. } => 19,
+            RuntimeError::UnknownModel(_) => 20,
+            RuntimeError::NoBackend(_) => 21,
+            RuntimeError::Unavailable(_) => 22,
+            RuntimeError::Onnx(_) => 23,
+            RuntimeError::Capture(_) => 24,
+            RuntimeError::CaptureStart { .. } => 25,
+            RuntimeError::ProcessorTooOld => 26,
+            RuntimeError::MeetingBusy(_) => 27,
+            RuntimeError::Edit(_) => 28,
+            RuntimeError::ApiKey(_) => 29,
+            RuntimeError::SummaryKeptLocal(_) => 30,
+        }
+    }
+
+    /// One error of every variant, every text field holding `words`.
+    fn samples(words: &'static str, id: EntityId) -> Vec<RuntimeError> {
+        let path = || PathBuf::from(format!("models/{words}/{words}.bin"));
+        vec![
+            RuntimeError::Store(StoreError::Corrupt(words.into())),
+            RuntimeError::Repo(RepoError::Storage(words.into())),
+            RuntimeError::Pipeline(PipelineError::InvalidConfig(words.into())),
+            RuntimeError::Poisoned,
+            RuntimeError::Spawn(std::io::Error::other(words)),
+            RuntimeError::Internal(words),
+            RuntimeError::Asr(AsrError::Backend(words.into())),
+            RuntimeError::Diar(DiarError::Backend(words.into())),
+            RuntimeError::Voiceprint(VoiceprintError::Repo(words.into())),
+            RuntimeError::NoTracks,
+            RuntimeError::Uncalibrated {
+                purpose: Calibration::Clustering,
+                model: EmbeddingModelId::new(words),
+            },
+            RuntimeError::Llm(LlmError::Http {
+                status: 500,
+                message: words.into(),
+            }),
+            RuntimeError::LocalSummary(LocalSummaryError::ChildRun(words.into())),
+            RuntimeError::Net(NetError::Build(words.into())),
+            RuntimeError::Endpoint(UrlError::Parse(words.into())),
+            RuntimeError::EndpointDenied(DenyReason::InsecureScheme),
+            RuntimeError::Export(ExportError::Markers(words)),
+            RuntimeError::Conflict(words),
+            RuntimeError::ModelMissing {
+                path: path(),
+                fetch_set: Some("ci"),
+            },
+            RuntimeError::ModelIncomplete {
+                path: path(),
+                expected: 2,
+                found: 1,
+                fetch_set: "ci",
+            },
+            RuntimeError::UnknownModel(words.into()),
+            RuntimeError::NoBackend(vec![(BackendKind::Cpu, AsrError::Backend(words.into()))]),
+            RuntimeError::Unavailable(words),
+            RuntimeError::Onnx(OnnxError::Runtime(words.into())),
+            RuntimeError::Capture(words.into()),
+            RuntimeError::CaptureStart {
+                problem: CaptureProblem::MicrophoneAccessOff,
+                detail: words.into(),
+            },
+            RuntimeError::ProcessorTooOld,
+            RuntimeError::MeetingBusy(id),
+            RuntimeError::Edit(EditError::MeetingNotFound(id)),
+            RuntimeError::ApiKey(ApiKeyError::Store(words.into())),
+            RuntimeError::SummaryKeptLocal(id),
+        ]
+    }
+
+    #[test]
+    fn plain_text_every_runtime_error_maps_to_fixed_copy() {
+        let id = EntityId::from_bytes([9; 16]);
+        let (a, b) = (samples("zq-first-words", id), samples("zq-other-words", id));
+        let mut seen: Vec<usize> = a.iter().map(variant_index).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen,
+            (0..VARIANTS).collect::<Vec<_>>(),
+            "one sample of each variant"
+        );
+        assert_eq!(a.len(), VARIANTS);
+        for (x, y) in a.iter().zip(&b) {
+            let copy = runtime_text(x);
+            assert_eq!(copy, runtime_text(y), "the copy follows the text of {x:?}");
+            assert!(!copy.contains("zq-"), "{x:?}: {copy}");
+            assert!(!copy.contains(&id.to_string()), "{x:?}: {copy}");
+            assert_ne!(copy, x.to_string(), "{x:?}");
+            assert!(!copy.is_empty(), "{x:?}");
+            assert!(!names_developer_tool(&copy), "{x:?}: {copy}");
+            assert!(!copy.contains('\u{2014}'), "{x:?}: {copy}");
+            assert_eq!(
+                earshot_runtime::catalogue::manifest_id_in(&copy),
+                None,
+                "{x:?}"
+            );
+            // Lower-case Display words of the runtime never lead the copy.
+            assert!(copy.starts_with(char::is_uppercase), "{x:?}: {copy}");
+            // The window gets the same words through the IPC error.
+            let ipc = IpcError::from(runtime_error_again(x));
+            assert_eq!(ipc.message, copy, "{x:?}");
+        }
+    }
+
+    /// `RuntimeError` is not `Clone`: the same sample again, by index.
+    fn runtime_error_again(e: &RuntimeError) -> RuntimeError {
+        let id = EntityId::from_bytes([9; 16]);
+        samples("zq-first-words", id)
+            .into_iter()
+            .find(|s| variant_index(s) == variant_index(e))
+            .unwrap()
+    }
+
+    /// Every fixed copy T9.23 adds or routes, as written in a window: no doubled space (a line
+    /// continuation lost in a string literal leaves a run of spaces), no em dash, a full stop.
+    #[test]
+    fn plain_text_no_fixed_copy_holds_a_run_of_spaces() {
+        use earshot_runtime::summary_settings::ApiKeyError as K;
+        let id = EntityId::from_bytes([9; 16]);
+        let mut copies: Vec<String> = [
+            MODELS_NEEDED,
+            HELPERS_NEEDED,
+            TRANSCRIPTION_NEEDED,
+            TRANSCRIPTION_AND_HELPERS_NEEDED,
+            SUMMARY_MODEL_NEEDED,
+            KEPT_LOCAL_REFUSED,
+            NO_MICROPHONE,
+            NO_OUTPUT,
+            MICROPHONE_ACCESS_OFF,
+            DEVICE_IN_USE,
+            CAPTURE_FAILED,
+            PROCESSOR_TOO_OLD,
+            DATA_FAILED,
+            TRY_AGAIN_SOON,
+            MEETING_BUSY,
+            INTERNAL,
+            PIPELINE_FAILED,
+            TRANSCRIPTION_FAILED,
+            VOICES_FAILED,
+            VOICEPRINTS_FAILED,
+            NO_AUDIO,
+            NOT_THIS_VERSION,
+            NO_BACKEND,
+            HELPERS_FAILED,
+            ENDPOINT_UNUSABLE,
+            ENDPOINT_NOT_HTTPS,
+            NETWORK_SETUP_FAILED,
+            EXPORT_FAILED,
+            SUMMARY_UNREACHABLE,
+            SUMMARY_AUTH,
+            SUMMARY_SERVICE_ERROR,
+            SUMMARY_UNUSABLE,
+            SUMMARY_TOO_LONG,
+            SUMMARY_REFUSED,
+            SUMMARY_CANCELLED,
+            LOCAL_SUMMARY_FAILED,
+            crate::ipc::DATA_FOLDER_COPY,
+            crate::ipc::NEWER_DATA_COPY,
+            crate::model_jobs::NO_SERVER_ANSWERED,
+            crate::meeting::SAVED_BUT_LIVE_FAILED,
+            crate::meeting::MEETING_PANIC_MESSAGE,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        copies.extend(samples("zq-first-words", id).iter().map(runtime_text));
+        for k in [
+            K::Missing,
+            K::Unsupported,
+            K::Invalid("x"),
+            K::Store("x".into()),
+        ] {
+            copies.push(runtime_text(&RuntimeError::ApiKey(k)));
+        }
+        copies.push(crate::meeting_events::post_failed_copy(
+            &RuntimeError::NoTracks,
+        ));
+        for copy in &copies {
+            assert!(!copy.contains("  "), "a run of spaces in: {copy:?}");
+            assert!(!copy.contains('\n'), "a line break in: {copy:?}");
+            assert!(!copy.contains('\u{2014}'), "{copy:?}");
+            assert!(copy.ends_with('.'), "{copy:?}");
+        }
+    }
+
+    #[test]
+    fn plain_text_a_capture_that_cannot_start_says_why_and_what_to_do() {
+        let copy = |problem| {
+            runtime_text(&RuntimeError::CaptureStart {
+                problem,
+                detail: "IAudioClient::Initialize: Access is denied. (0x80070005)".into(),
+            })
+        };
+        assert_eq!(
+            copy(CaptureProblem::MicrophoneAccessOff),
+            MICROPHONE_ACCESS_OFF
+        );
+        assert!(MICROPHONE_ACCESS_OFF.contains("Privacy and security, Microphone"));
+        assert_eq!(copy(CaptureProblem::NoMicrophone), NO_MICROPHONE);
+        assert_eq!(copy(CaptureProblem::NoOutput), NO_OUTPUT);
+        assert_eq!(copy(CaptureProblem::DeviceInUse), DEVICE_IN_USE);
+        assert_eq!(copy(CaptureProblem::Other), CAPTURE_FAILED);
+        for text in [
+            NO_MICROPHONE,
+            NO_OUTPUT,
+            MICROPHONE_ACCESS_OFF,
+            DEVICE_IN_USE,
+            CAPTURE_FAILED,
+        ] {
+            assert!(!text.contains("0x"), "{text}");
+            assert!(text.contains("try again") || text.contains("Try"), "{text}");
+        }
+    }
+
+    #[test]
+    fn plain_text_summary_failures_say_what_to_do_by_kind() {
+        let http = |status| {
+            runtime_text(&RuntimeError::Llm(LlmError::Http {
+                status,
+                message: "server words".into(),
+            }))
+        };
+        assert_eq!(http(401), SUMMARY_AUTH);
+        assert_eq!(http(403), SUMMARY_AUTH);
+        assert_eq!(http(503), SUMMARY_SERVICE_ERROR);
+        assert_eq!(
+            runtime_text(&RuntimeError::Llm(LlmError::Cancelled)),
+            SUMMARY_CANCELLED
+        );
+        assert_eq!(
+            runtime_text(&RuntimeError::Llm(LlmError::Net(
+                NetError::TooManyRedirects
+            ))),
+            SUMMARY_UNREACHABLE
+        );
+        assert_eq!(
+            runtime_text(&RuntimeError::Llm(LlmError::Net(NetError::NotAllowed {
+                url: "http://x/".into(),
+                reason: DenyReason::HostNotAllowed,
+            }))),
+            ENDPOINT_UNUSABLE
+        );
+        // A busy store says try again; one saved by a newer Earshot says update.
+        assert_eq!(
+            runtime_text(&RuntimeError::Store(StoreError::Busy("locked".into()))),
+            TRY_AGAIN_SOON
+        );
+        assert_eq!(
+            runtime_text(&RuntimeError::Store(StoreError::SchemaTooNew {
+                found: 9,
+                supported: 1
+            })),
+            crate::ipc::NEWER_DATA_COPY
+        );
+        // A processor without AVX2 names the pages with something that still works.
+        assert!(PROCESSOR_TOO_OLD.contains("Settings, Transcription"));
+        assert!(PROCESSOR_TOO_OLD.contains("Settings, Summaries"));
     }
 }

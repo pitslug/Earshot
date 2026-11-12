@@ -21,7 +21,11 @@ use earshot_core::model::RepoError;
 use earshot_core::pipeline::PipelineError;
 use earshot_core::voiceprint::VoiceprintError;
 use earshot_llm::LlmError;
-use earshot_net::{DenyReason, NetError, UrlError};
+/// The network errors inside [`RuntimeError`] (and a summary's [`LlmError::Net`]), for hosts
+/// that choose their copy by kind.
+pub use earshot_net::{DenyReason, NetError, UrlError};
+/// The ONNX Runtime error inside [`RuntimeError::Onnx`].
+pub use earshot_onnx::OnnxError;
 use earshot_store::StoreError;
 
 pub mod archive;
@@ -33,6 +37,7 @@ pub mod call_end;
 pub mod catalogue;
 pub mod claude_code;
 pub mod codex;
+pub mod cpu;
 pub mod cuda;
 pub mod cuda_switch;
 pub mod delete;
@@ -171,6 +176,17 @@ pub enum RuntimeError {
     Onnx(earshot_onnx::OnnxError),
     /// Audio capture could not start.
     Capture(String),
+    /// A WASAPI capture could not start (T9.23): what it means for the user, read from the
+    /// Windows error code ([`capture_start_error`]), and the capture's own text for the CLI.
+    CaptureStart {
+        /// What the user can do about it.
+        problem: CaptureProblem,
+        /// The capture error's text (developer words; never shown in a window).
+        detail: String,
+    },
+    /// This processor lacks the instructions the whisper.cpp and llama.cpp builds need
+    /// ([`cpu`], T9.23): refused instead of an illegal-instruction crash.
+    ProcessorTooOld,
     /// A live session, final pass or export is working on the meeting, or it is being
     /// deleted: the deletion (or the job) is refused. Retry when it has finished.
     MeetingBusy(earshot_core::identity::EntityId),
@@ -267,6 +283,11 @@ impl fmt::Display for RuntimeError {
             Self::Unavailable(m) => write!(f, "unavailable: {m}"),
             Self::Onnx(e) => write!(f, "onnx runtime: {e}"),
             Self::Capture(m) => write!(f, "capture: {m}"),
+            Self::CaptureStart { detail, .. } => write!(f, "capture: {detail}"),
+            Self::ProcessorTooOld => write!(
+                f,
+                "this processor lacks AVX2 or FMA, which the whisper.cpp and llama.cpp builds need"
+            ),
             Self::MeetingBusy(m) => write!(
                 f,
                 "meeting {m} is being recorded, processed, exported or deleted; try again when it has finished"
@@ -282,6 +303,47 @@ impl fmt::Display for RuntimeError {
 }
 
 impl std::error::Error for RuntimeError {}
+
+/// Why a capture could not start, as far as the user can act on it (T9.23); the app's copy is
+/// chosen from this, never from the error's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureProblem {
+    /// No microphone is connected.
+    NoMicrophone,
+    /// No speakers or headphones are connected.
+    NoOutput,
+    /// Windows' microphone privacy switch refuses desktop apps.
+    MicrophoneAccessOff,
+    /// Another app holds the device for itself.
+    DeviceInUse,
+    /// Anything else.
+    Other,
+}
+
+#[cfg(windows)]
+impl From<earshot_capture_wasapi::StartProblem> for CaptureProblem {
+    fn from(p: earshot_capture_wasapi::StartProblem) -> Self {
+        use earshot_capture_wasapi::StartProblem as S;
+        match p {
+            S::NoMicrophone => Self::NoMicrophone,
+            S::NoOutput => Self::NoOutput,
+            S::MicrophoneAccessOff => Self::MicrophoneAccessOff,
+            S::DeviceInUse => Self::DeviceInUse,
+            S::Other => Self::Other,
+        }
+    }
+}
+
+/// The runtime error of a WASAPI capture that could not start: [`RuntimeError::CaptureStart`]
+/// with the problem its Windows error code means.
+#[cfg(windows)]
+#[must_use]
+pub fn capture_start_error(e: &earshot_capture_wasapi::wasapi::CaptureError) -> RuntimeError {
+    RuntimeError::CaptureStart {
+        problem: e.start_problem().into(),
+        detail: e.to_string(),
+    }
+}
 
 impl From<StoreError> for RuntimeError {
     fn from(e: StoreError) -> Self {

@@ -217,10 +217,10 @@ fn busy(message: &str) -> IpcError {
     }
 }
 
-fn spawn_error(e: &std::io::Error) -> IpcError {
+fn spawn_error(_: &std::io::Error) -> IpcError {
     IpcError {
         kind: "internal".into(),
-        message: format!("cannot start the model job thread: {e}"),
+        message: crate::plain_text::INTERNAL.into(),
         retryable: false,
     }
 }
@@ -577,6 +577,9 @@ pub fn download_failure_copy(e: &ModelDownloadError) -> String {
                 )
             }
             D::Manifest(_) | D::Host { .. } | D::Setup(_) => NOT_THIS_VERSION.to_owned(),
+            // No server answered at all: on a work network that needs a proxy every download
+            // ends here, and Earshot never uses one (PLAN 3.9), so say so (T9.23).
+            e @ D::Request { .. } if e.reached_no_server() => NO_SERVER_ANSWERED.to_owned(),
             D::Request { .. }
             | D::ContentRange { .. }
             | D::Interrupted { .. }
@@ -588,6 +591,13 @@ pub fn download_failure_copy(e: &ModelDownloadError) -> String {
         },
     }
 }
+
+/// A download that reached no server (T9.23): the network may need a proxy, which Earshot does
+/// not use. The README says the same.
+pub const NO_SERVER_ANSWERED: &str = "The download could not reach its server. Check that this \
+     computer is online, then try again. If this is a work network that reaches the internet \
+     only through a proxy, that may be why: Earshot does not use a proxy. Try the download on \
+     another network.";
 
 /// What the user is told when the check did not start after a download (`why`: the
 /// refusal's own text).
