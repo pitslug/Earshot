@@ -1,0 +1,246 @@
+{
+  "audio": "continuous",
+  "capture_max_lag_s": 0.037,
+  "catch_up_after_end_s": 0.4956103,
+  "decodes_mic": {
+    "audio_s": -0.0,
+    "calls": 0,
+    "rtf": null,
+    "took_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 120.0,
+    "calls": 6,
+    "rtf": 0.012138943333333334,
+    "took_s": {
+      "max": 0.2763591,
+      "median": 0.2407419,
+      "n": 6,
+      "p95": 0.2763591
+    }
+  },
+  "host": {
+    "logical_cores": 12,
+    "machine_load_percent": {
+      "max": 40.0,
+      "median": 11.0,
+      "n": 3,
+      "p95": 40.0
+    },
+    "peak_private_gib": 3.9234542846679688,
+    "peak_working_set_gib": 4.516132354736328,
+    "process_cpu_s": 104.375
+  },
+  "length_s": 120.0,
+  "live_backends": [
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "mic": {
+    "first_word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "last_word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "on_screen_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stretch_length_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "stretches": 0,
+    "word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "words": 0
+  },
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10"
+  ],
+  "preview_refusal": {
+    "app_first": "not measured on the NPU yet",
+    "app_first_on": null,
+    "app_own_voice": "not measured on the NPU yet",
+    "app_own_voice_on": null,
+    "forced_past_it": false,
+    "simulated_card_gib": null,
+    "streaming_model_instead": true
+  },
+  "preview_sessions": [
+    {
+      "app_rule": "not applied (a streaming model, evaluation only)",
+      "loaded": {
+        "device": "cpu",
+        "kind": "Cpu",
+        "model": "nemotron-streaming-0.6b-560ms-int8",
+        "placement": [
+          "requested cpu, placed: CPUExecutionProvider=3083",
+          "requested cpu, placed: CPUExecutionProvider=14",
+          "requested cpu, placed: CPUExecutionProvider=9"
+        ]
+      },
+      "stream": "nemotron",
+      "threads": 3,
+      "track_backend": {
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2"
+      }
+    },
+    {
+      "app_rule": "not applied (a streaming model, evaluation only)",
+      "loaded": {
+        "device": "cpu",
+        "kind": "Cpu",
+        "model": "nemotron-streaming-0.6b-560ms-int8",
+        "placement": [
+          "requested cpu, placed: CPUExecutionProvider=3083",
+          "requested cpu, placed: CPUExecutionProvider=14",
+          "requested cpu, placed: CPUExecutionProvider=9"
+        ]
+      },
+      "stream": "nemotron",
+      "threads": 3,
+      "track_backend": {
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2"
+      }
+    }
+  ],
+  "previews": [
+    {
+      "audio_dropped": 0,
+      "audio_s": 119.95199999999299,
+      "backend": "Cpu",
+      "cancelled": 0,
+      "decode_s": 17.898208099999994,
+      "decodes": 214,
+      "decodes_adding_nothing": 0,
+      "load_s": 3.0518512,
+      "off": null,
+      "rtf": 0.149211418734169,
+      "skipped_busy": 0,
+      "slow_pauses": 0,
+      "slowest_s": 0.4090913,
+      "track": "Mic",
+      "words_shown": 0
+    },
+    {
+      "audio_dropped": 0,
+      "audio_s": 119.95999999999293,
+      "backend": "Cpu",
+      "cancelled": 0,
+      "decode_s": 18.2722498,
+      "decodes": 214,
+      "decodes_adding_nothing": 0,
+      "load_s": 3.0520911,
+      "off": null,
+      "rtf": 0.15231952150717804,
+      "skipped_busy": 0,
+      "slow_pauses": 0,
+      "slowest_s": 0.4105549,
+      "track": "Reference",
+      "words_shown": 236
+    }
+  ],
+  "reference": {
+    "first_word_lag_s": {
+      "max": 54.732743600000006,
+      "median": 48.676133699999994,
+      "n": 6,
+      "p95": 54.732743600000006
+    },
+    "last_word_lag_s": {
+      "max": 30.858166600000004,
+      "median": 30.812743600000005,
+      "n": 6,
+      "p95": 30.858166600000004
+    },
+    "on_screen_lag_s": {
+      "max": 49.37274360000001,
+      "median": 0.8528678000000003,
+      "n": 230,
+      "p95": 1.9321498999999989
+    },
+    "previews": {
+      "changed": 6,
+      "kept": 220,
+      "updates": 150,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": 2.747269700000004,
+        "median": 0.7835960999999969,
+        "n": 226,
+        "p95": 1.2633499000000086
+      }
+    },
+    "stored_sha256": "81282c4c616d62cb3058788ef1b6349b6d39b23493e2cbd37c35565a5f1c77a9",
+    "stretch_length_s": {
+      "max": 26.0,
+      "median": 21.12,
+      "n": 6,
+      "p95": 26.0
+    },
+    "stretches": 6,
+    "word_lag_s": {
+      "max": 54.732743600000006,
+      "median": 36.8927436,
+      "n": 230,
+      "p95": 49.6581666
+    },
+    "words": 230
+  },
+  "requested_backend": "Qnn",
+  "simulated_card_gib": null,
+  "speakers": true,
+  "stopped_with": "Finished",
+  "stream": {
+    "model": "nemotron",
+    "threads": 3
+  },
+  "warnings": 0
+}
