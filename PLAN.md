@@ -1650,11 +1650,6 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: docs/settings-design.md: plain words ("Many languages" for Multilingual, what "Keeps up" means, ONNX Runtime only in detail text), and the save rule: a choice applies at once, typed text needs Save, on every page. Privacy wording does not change without the owner.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot`; the old and new text listed for the owner
 
-- [ ] T12.6 Shared models for an "everyone" install (was T9.6)
-  - deps: T9.1p
-  - do: discussed with the owner, after release and only if a real user asks. `%ProgramData%\Earshot\models`, readable by all and writable only with admin, because the folder holds DLLs another user would run. Meetings, voiceprints and settings stay per user. Every file a shared load reads is checked, and its cost measured.
-  - accept: written if it is taken up
-
 - [x] T12.7 Summaries on the Surface NPU, further (was T8.3k)
   - deps: T8.3h
   - result (2026-11-11, closed by the owner before quality was measured): Qualcomm's Qwen3-4B on Genie passes the telemetry check and reads prompts about 11 times faster than the CPU 4B, with replies no faster. Earshot's request plan does not fit its 4,096-token window, so `sum-eval` quality was not measured (docs/npu-summaries.md).
@@ -1679,7 +1674,8 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner, 2026-11-08: every summary evaluation ran Qwen 3.5 with thinking off (the empty `<think>` prefix); measure thinking on. An evaluation-only option in `sum_eval` (its own format key in both `examples/sum_eval/main.rs` and `xtask::sum_eval`) whose grammar allows a bounded `<think>` section before the summary JSON (`earshot_llm_local::grammar`, a token cap on the thinking so it cannot use the reply budget; production grammar byte-identical). Write the rule before measuring and commit it: thinking on earns a follow-up task only if the blinded meaning judge finds missed decisions plus missed action items fall by at least a margin fixed in the rule, with no rise in invalid summaries; time per meeting reported beside it. Run on the desktop GPU, dev split only, 9B and 4B, off against on. No production change without the owner; not while the owner is in a meeting.
   - accept: `cargo test -p earshot-llm-local grammar`; `cargo test -p xtask sum_eval`; the rule, tables (judged and timing) and a recommendation in docs/summary-eval.md
 
-- [ ] T12.11 Short echo fragments under "Me" in the final transcript
+- [x] T12.11 Short echo fragments under "Me" in the final transcript
+  - decided (the owner, 2026-11-13): closed with no change; two rounds of rules removed nothing on the dev sets.
   - deps: none
   - status (2026-11-10): round 2 (isolated echo islands after the speaker check) removed no word on leak-dev or rumble, so no code change (docs/echo-fragments.md). Open: the GATE-02 shape does not occur in the dev simulator, so a further rule needs new dev scenarios, defined before measuring.
   - do: found at GATE-02 (2026-11-08): in a call where the user said nothing, the final transcript kept one 2-word mic segment under "Me", 0.7 s long and wholly inside far-end speech. `asr::dedupe_echo` matches runs of 3+ words by design, and the speaker check names the only mic voice "Me". Find a rule that removes such fragments without costing near-end words in talk-over: write it before measuring, design and tune only on `asr_eval --leak-dev` (and `--rumble`), keep `ECHO_NEAR_RECALL_FLOOR_PERCENT` and `asr.echo_leak` holding. No change if no rule passes.
@@ -1720,7 +1716,8 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner: the tabs scroll away with the page, and the page's scroll position carries across a tab change, so opening Summary from the end of a long transcript lands at the end of the summary. Pin the tabs under the sticky meeting header, open Summary at its top, and keep a citation scrolling to its row in the transcript.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; screenshot of a long meeting, light and dark
 
-- [ ] T12.15 Your vocabulary (split 2026-11-10 into T12.15a and T12.15b)
+- [x] T12.15 Your vocabulary (split 2026-11-10 into T12.15a and T12.15b)
+  - decided (the owner, 2026-11-13): closed as a parent; its parts are T12.15a onwards, and the open one is T12.15d.
   - deps: T7.4b
   - do: the owner: a section in Settings for the user's own words (acronyms, company and site names), so they come out right. First, a device-local list, checked and bounded like the summary style, given to every summary request. Then a spike on the transcript, because Parakeet takes no prompt and Whisper does: compare a whisper prompt, hotword boosting in the transducer's search and a correction pass after decoding, measuring false corrections as well as gains on dev data. A correction pass must never change a word without keeping the original. No test or doc holds a word from the user's list. An empty list leaves every prompt byte-identical.
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; the spike's numbers and a recommendation in docs
@@ -1857,7 +1854,8 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: stop first for the owner on the licence (NVIDIA Open Model License: evaluation only until agreed, as Nemotron Nano was) and on the download source. Then, outside the shipped crates: (1) pin one ONNX export in an evaluation manifest set with SHA-256; read its graph inputs and write a minimal streaming decoder in an `earshot-onnx` example (mel ring buffer, encoder cache tensors carried between chunks, greedy RNNT with the LSTM state), checked against the reference implementation's text on the smoke clips. (2) Rule written and committed before measuring, in docs/live-previews.md: on `bundled` and `continuous`, one streaming session per track, Other people only and Everyone, judged against today's previews: on-screen lag median and p95, words shown that the settled text later changed, process CPU time, peak private memory, stored words identical (`stored_sha256`), main decode rtf and catch-up within T12.4's point 3. (3) Measure on the desktop CPU, then the Surface CPU with transcription on the NPU (the streaming model on 2 to 4 CPU threads at below-normal priority), through `live_lag` with an evaluation-only loader and a scan test that no shipped code names it. (4) Only if the CPU result fails on the Surface: a fixed-chunk QNN conversion of the encoder (its static chunk shape suits the NPU), with `cargo xtask qnn-etw` before any meeting audio. Report what shipping would take: `preview.rs` fed by a stream instead of window decodes, the memory limits in `previews_refused` re-derived, model download size, whisper users. No shipped change without the owner.
   - accept: `cargo test -p earshot-onnx --example <probe>`; the rule, the reports and a recommendation in docs/live-previews.md
 
-- [ ] T12.24 Shorter speech stretches for Parakeet (measurement)
+- [x] T12.24 Shorter speech stretches for Parakeet (measurement)
+  - decided (the owner, 2026-11-13): Parakeet keeps `max_piece` 30 s as it is; closed as measured, no idle re-run.
   - deps: T6.13b
   - status (2026-11-13): measured on the Surface (lane/stretches, merged): under the committed rule no shorter value passes. 20 and 15 s pass every accuracy and cost point but fail point 6 (the bundled median barely moves; the p95 tail falls 12-25 s); 10 s fails AMI (+1.3) and the streams (+0.21). Open before anyone acts on it: the eight lag runs were taken at 19-44% machine load, once per value, against the rule's idle setup; repeat them idle. The doc labels 15 s as the value the numbers favour if the owner redefines point 6 as a tail criterion.
   - why (pre-1.0 review, 2026-11-12): settled text arrives a median 14-15 s and p95 38-50 s after the words on meeting audio, and docs/live-previews.md shows the wait is the stretch, not the decode. `PieceConfig::max_piece` is 30 s because that is one Whisper window; Parakeet has no such window, and a piece settles only once nothing after it can still merge into it (`merge_gap`, `max_piece`).
