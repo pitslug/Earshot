@@ -7,6 +7,8 @@ Two machines work this batch: the desktop (coordinator) and the Surface (measure
 - T9.17: when every track has failed to write, the meeting stops itself and notifies.
 - T9.25: clear the variables that redirect Claude Code and Codex. The notice option is not built.
 - T12.23: the NVIDIA Open Model License is agreed for evaluation only. Nothing ships.
+- T12.12c: T12.4's point 5 is amended to what previews add over off (1 GiB for "Other people only", 1.5 GiB for "Everyone"), decided after the measurement. "Other people only" is allowed on the NPU; "Everyone" stays refused there.
+- T12.23 still runs: the streaming model may use less memory or give a better result, even though previews now pass on the NPU.
 - T12.25 and T12.26 are parked until T12.27 has judged Granite. Do not start them.
 - T9.18 and T9.19 are built tonight but stay on `lane/recovery`, unmerged, until the owner's hand checks.
 - No ci per merge. One `cargo xtask ci` on main at the very end. Read its exit before committing or pushing anything that depends on it.
@@ -54,6 +56,10 @@ From main. Only the two fixes in T9.24a. T9.24 itself waits for the Surface prof
 
 From main. Clear `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, the Bedrock and Vertex switches and the proxy variables for Claude Code, and the equivalent set for Codex, taken from each CLI's own documentation or `--help`, not from memory. Prefer the known install folders over PATH. Update PRIVACY.md. Reviewer required (privacy).
 
+### Lane `lane/npu-previews` (ships): T12.12c
+
+From main, started as soon as one of the small lanes (`lane/cli-env`, `lane/ui-light`) has finished, so no more than 6 run at once. The owner amended T12.4's point 5 after seeing the numbers; the doc must say so. The reports are at `%USERPROFILE%\OneDrive\live-lag\qnn2-*.json` and `qnn3-memory.json` on the desktop: copy them unmodified. Only "Other people only" is allowed on the NPU; "Everyone" stays refused. Push the branch when the code and tests pass, so the Surface can run it without `--force-previews`. Lane-merge reviewer reads the refusal tests.
+
 ### Lane `lane/granite` (evaluation only): T12.27
 
 - Pins already looked up on 2026-11-12, to be verified again by the lane against Hugging Face before use: `ibm-granite/granite-4.1-3b-GGUF` commit `ab4701481089b58a082ef63cc1cee738887293ff`, file `granite-4.1-3b-Q4_K_M.gguf`, 2099501664 bytes, LFS SHA-256 `662b0626cd58f443baea23559b469df6576a81d349649c59413b36a9fb32eb29`; `ibm-granite/granite-4.1-8b-GGUF` commit `865b82c2e7970d82e3731278c88c57ae7138359c`, file `granite-4.1-8b-Q4_K_M.gguf`, 5347914400 bytes, LFS SHA-256 `ed902ac9eb6adce5a90c6a08c8ea201b50e23fdc5976d1cd0362006afac5309e`. Licence Apache-2.0 per the repo tags; confirm from the model card. Neither GGUF repo has a LICENSE file: record where the licence text was read.
@@ -70,7 +76,7 @@ From main. Clear `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KE
 
 ### End of the night on the desktop
 
-1. Merge the finished lanes one at a time with `git merge --no-ff`: `lane/recording`, `lane/copy`, `lane/ui-light`, `lane/cli-env`, then the evaluation lanes that passed their accepts (`lane/granite`, `lane/nemotron`, and `lane/stretches` from the Surface if it is on origin). A reviewer reads each lane's combined diff before its merge, with the test and harness code. Update PLAN.md and the private log in each merge commit. An unfinished lane is not merged: it stays as its branch and is reported.
+1. Merge the finished lanes one at a time with `git merge --no-ff`: `lane/recording`, `lane/copy`, `lane/ui-light`, `lane/cli-env`, `lane/npu-previews`, then the evaluation lanes that passed their accepts (`lane/granite`, `lane/nemotron`, and `lane/stretches` from the Surface if it is on origin). A reviewer reads each lane's combined diff before its merge, with the test and harness code. Update PLAN.md and the private log in each merge commit. An unfinished lane is not merged: it stays as its branch and is reported.
 2. Never merge `lane/recovery`.
 3. Take the idle-machine timings now (Nemotron on the desktop CPU).
 4. One `cargo xtask ci` on main. Read the result. On a failure, fix and run again; never push on a red or unread ci.
@@ -100,7 +106,8 @@ Queue, in order. Finish or park each before the next.
 2. **T12.27 Surface timing.** When `origin/lane/granite` has the manifest pins: on a new branch `lane/granite-surface` from it, fetch the 3B and time it against the 4B on the CPU with the same dev meeting and settings, CPU-only build. Timing only: no quality claim from the Surface. Push.
 3. **T9.24 before-profile.** On `lane/ui-profile` from the brief's branch: the React profiler on the Vite preview with a 3-hour mock meeting and a 300-meeting mock store, as T9.24 says. Numbers only, no fixes. If the profiler cannot be driven from the session, write the exact steps for the owner and move on. Push.
 4. **T12.23 Surface run.** When `origin/lane/nemotron` can run in `live_lag`: on `lane/nemotron-surface` from it, the rule's Surface measurements with Parakeet on the NPU and the streaming model on 2 to 4 below-normal CPU threads. No NPU conversion tonight. Push.
-5. Write `docs/overnight/surface.md` on the last branch pushed: every number, every command, what was skipped and why.
+5. **T12.12c check.** When `origin/lane/npu-previews` exists: on `lane/npu-previews-surface` from it, run `live_lag --backend qnn --audio bundled --previews on` and the same with `--audio continuous --seconds 120`, both without `--force-previews`. The preview must load on QNN with `refusal_bypassed` false, and `--previews everyone` must still refuse the mic preview with its reason. Push the reports.
+6. Write `docs/overnight/surface.md` on the last branch pushed: every number, every command, what was skipped and why.
 
 The ARM64 installer check (`cargo xtask bundle-check --installer ...`) must run from the owner's own PowerShell, so it is a morning step for the owner, not for the session.
 
