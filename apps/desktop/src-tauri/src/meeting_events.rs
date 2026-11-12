@@ -828,13 +828,14 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
             track,
             at,
             disk_full,
-            error,
+            error: _,
         } => {
             let t = LiveTrack::of(*track);
+            // Fixed copy by kind (T9.23): the error can name a local file.
             let why = if *disk_full {
-                "the disk is full".to_owned()
+                "the disk is full"
             } else {
-                format!("saving it failed: {error}")
+                "Earshot could not save it"
             };
             warning(
                 format!("recording:{}", t.key()),

@@ -507,8 +507,12 @@ fn meeting_events_a_stopped_recording_says_when_and_why_in_plain_words() {
     assert_eq!(key, "recording:them");
     assert!(message.contains("at 1:02:05"), "{message}");
     assert!(
-        message.contains("os error 112"),
-        "any other failure says what it was"
+        message.contains("because Earshot could not save it."),
+        "any other failure is said in fixed copy: {message}"
+    );
+    assert!(
+        !message.contains("os error 112"),
+        "no error text: {message}"
     );
     // A file that could not even be finished replaces that banner.
     let (failed_key, _, _) = banner(&RuntimeWarning::Recording {
