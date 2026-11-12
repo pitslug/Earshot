@@ -2255,6 +2255,22 @@ fn backends_preview_sharing_encoder_is_used_by_no_shipped_code() {
     }
 }
 
+/// T12.23: nothing shipped loads the streaming model (licence agreed for evaluation only); only
+/// examples may. Its one [`crate::live::StreamingPreview`] is private to `backends.rs` and made
+/// only by that loader, so nothing shipped can give a live session a streaming preview either.
+#[test]
+fn backends_nemotron_preview_load_is_used_by_no_shipped_code() {
+    for name in [
+        concat!("load_nemotron_", "preview"),
+        concat!("nemotron", "::"),
+        concat!("earshot_onnx::", "nemotron"),
+        concat!("NEMOTRON_", "STREAM"),
+    ] {
+        let found = shipped_files_naming(name);
+        assert!(found.is_empty(), "shipped code names {name}: {found:?}");
+    }
+}
+
 /// The shipped source files (runtime, CLI, desktop) other than `backends.rs` and its tests that
 /// contain `name`.
 fn shipped_files_naming(name: &str) -> Vec<PathBuf> {

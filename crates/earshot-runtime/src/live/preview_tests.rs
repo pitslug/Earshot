@@ -195,6 +195,7 @@ fn previews(load: PreviewLoader) -> LivePreviews {
         fell_behind: Duration::from_secs(3600),
         background: false,
         own_voice: None,
+        stream: None,
     }
 }
 
@@ -1436,5 +1437,150 @@ fn live_preview_runs_only_where_it_was_measured_and_fits() {
     assert_eq!(
         preview_backend(BackendKind::Cpu, &big),
         Ok(BackendKind::Cpu)
+    );
+}
+
+/// What the fake streaming model was given.
+#[derive(Default)]
+struct Heard {
+    /// Samples pushed since the start, over every restart.
+    samples: AtomicUsize,
+    restarts: AtomicUsize,
+}
+
+/// A streaming model that finishes a `MARKER` word every half second of audio it is given.
+struct FakeStream {
+    heard: Arc<Heard>,
+    /// Samples since the last restart.
+    position: usize,
+    words: Vec<Word>,
+}
+
+impl crate::live::StreamingPreview for FakeStream {
+    fn backend_info(&self) -> BackendInfo {
+        BackendInfo {
+            kind: BackendKind::Fake,
+            device: "fake".to_owned(),
+            model: "fake-stream".to_owned(),
+        }
+    }
+
+    fn restart(&mut self) {
+        self.heard.restarts.fetch_add(1, Ordering::SeqCst);
+        self.position = 0;
+        self.words.clear();
+    }
+
+    fn push(&mut self, samples: &[earshot_core::audio::Sample]) -> Result<u64, String> {
+        self.heard
+            .samples
+            .fetch_add(samples.len(), Ordering::SeqCst);
+        let before = self.position / 8000;
+        self.position += samples.len();
+        let after = self.position / 8000;
+        for k in before..after {
+            let ms = k as u64 * 500;
+            self.words
+                .push(Word::new(format!("{MARKER}{k}"), ms, ms + 100, 0.9));
+        }
+        Ok((after - before) as u64)
+    }
+
+    fn finished_words(&self) -> Vec<Word> {
+        self.words.clone()
+    }
+
+    fn forget_before(&mut self, time: MeetingTime) {
+        self.words.retain(|w| w.start >= time);
+    }
+}
+
+fn stream_loader(heard: &Arc<Heard>) -> crate::live::StreamLoader {
+    let heard = Arc::clone(heard);
+    Arc::new(move |_| {
+        Ok(Box::new(FakeStream {
+            heard: Arc::clone(&heard),
+            position: 0,
+            words: Vec::new(),
+        }) as Box<dyn crate::live::StreamingPreview + Send>)
+    })
+}
+
+/// T12.23 (evaluation only): a streaming preview is display-only like a window one. The words
+/// stored are the same with and without it, its words reach the screen, every sample goes to it
+/// once with no restart, and the window session is never loaded.
+#[test]
+fn live_preview_stream_shows_words_hears_each_sample_once_and_stores_the_same() {
+    let scene = scene_of(27);
+    let (without, ..) = run_with(&scene, None, 341);
+    let seen = Arc::new(Seen::default());
+    let heard = Arc::new(Heard::default());
+    let config = LivePreviews {
+        stream: Some(stream_loader(&heard)),
+        ..previews(loader(&seen, marker_words))
+    };
+    let (with, events, ..) = run_with(&scene, Some(config), 341);
+    assert_eq!(with, without);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.off, None);
+    assert_eq!(report.track, Some(TrackId::Reference));
+    assert_eq!(report.backend, Some(BackendKind::Fake));
+    assert!(report.decodes > 1 && report.words_shown > 1, "{report:?}");
+    assert!(shown_on(&events, TrackId::Reference), "{report:?}");
+    assert!(!shown_on(&events, TrackId::Mic));
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 0, "no window decode");
+    let pushed = heard.samples.load(Ordering::SeqCst);
+    assert_eq!(heard.restarts.load(Ordering::SeqCst), 0);
+    assert!(pushed > 0 && pushed <= scene.them.len(), "{pushed}");
+    #[allow(clippy::cast_precision_loss)]
+    let pushed_s = pushed as f64 / 16_000.0;
+    assert!((report.audio_s - pushed_s).abs() < 1e-6, "{report:?}");
+}
+
+/// T12.23: no show of a streaming preview holds a word settled text already covered, the last
+/// show is empty, and no preview word reaches the store. (Words the model finished in silence
+/// after a stretch's last word leave once the worker has decoded past them, which can be before
+/// settled text reaches them: `live_lag` counts those as `vanished` for the real model.)
+#[test]
+fn live_preview_stream_words_leave_when_settled_and_never_reach_the_store() {
+    let scene = scene_of(40);
+    let seen = Arc::new(Seen::default());
+    let heard = Arc::new(Heard::default());
+    let config = LivePreviews {
+        stream: Some(stream_loader(&heard)),
+        ..previews(loader(&seen, marker_words))
+    };
+    let (with, events, ..) = run_with(&scene, Some(config), 343);
+    assert!(
+        with.words
+            .iter()
+            .all(|(_, text, ..)| !text.contains(MARKER)),
+        "a preview word was stored"
+    );
+    assert!(shown_on(&events, TrackId::Reference));
+    let mut settled = MeetingTime::ZERO;
+    for event in &events {
+        match event {
+            RuntimeEvent::Transcript {
+                track: TrackId::Reference,
+                event: TranscriptEvent::Final(s),
+            } => settled = settled.max(s.end),
+            RuntimeEvent::LivePreview { words, .. } => {
+                assert!(
+                    words.iter().all(|w| w.start + COVERED_SLACK >= settled),
+                    "a shown word behind settled text at {settled:?}: {words:?}"
+                );
+            }
+            _ => {}
+        }
+    }
+    let last = previews_of(&events)
+        .into_iter()
+        .rev()
+        .find(|(t, _)| *t == TrackId::Reference)
+        .expect("a show");
+    assert!(
+        last.1.is_empty(),
+        "previews end with nothing shown: {last:?}"
     );
 }

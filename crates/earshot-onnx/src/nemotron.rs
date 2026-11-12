@@ -734,10 +734,42 @@ impl NemotronStreaming {
         Ok(())
     }
 
-    /// The stream's words so far, times from the stream's start.
+    /// The stream's words so far (since [`NemotronStreaming::forget_before`]), times from the
+    /// stream's start.
     #[must_use]
     pub fn words(&self, stream: &NemotronStream) -> Vec<Word> {
         words_from_tokens(&stream.tokens, &self.vocab, ENCODER_FRAME)
+    }
+
+    /// The stream's words that can no longer change: all but the last, which is kept back until
+    /// `settle` encoder frames were decoded after its last token with nothing added (a later
+    /// token could still continue it).
+    #[must_use]
+    pub fn finished_words(&self, stream: &NemotronStream, settle: usize) -> Vec<Word> {
+        let mut words = self.words(stream);
+        let last_frame = stream.tokens.last().map(|t| t.end_frame);
+        if last_frame.is_some_and(|end| stream.frame_offset < end + settle) {
+            words.pop();
+        }
+        words
+    }
+
+    /// Forgets the tokens of words that start before encoder frame `frame`, keeping the last word
+    /// whole whatever its start (it may still grow).
+    pub fn forget_before(&self, stream: &mut NemotronStream, frame: usize) {
+        let starts_word = |t: &CtcToken| {
+            self.vocab
+                .token(t.id)
+                .is_some_and(|s| s.starts_with(earshot_core::asr::WORD_START))
+        };
+        let last_start = stream.tokens.iter().rposition(starts_word);
+        let keep_from = stream
+            .tokens
+            .iter()
+            .position(|t| starts_word(t) && t.first_frame >= frame)
+            .or(last_start)
+            .unwrap_or(0);
+        stream.tokens.drain(..keep_from);
     }
 }
 

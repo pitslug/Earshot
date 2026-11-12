@@ -1479,6 +1479,117 @@ pub fn load_preview_on_hardware(
     }
 }
 
+/// The streaming model of T12.23 under the models directory (manifest set `stream-eval`).
+pub const NEMOTRON_STREAM_DIR: &str = "nemotron/streaming-0.6b-560ms-int8";
+
+/// Its files, as [`earshot_onnx::nemotron::NemotronStreaming::load`] reads them.
+const NEMOTRON_STREAM_FILES: [&str; 4] = [
+    "encoder.int8.onnx",
+    "decoder.int8.onnx",
+    "joiner.int8.onnx",
+    "tokens.txt",
+];
+
+/// A streaming preview loaded by [`load_nemotron_preview`], with the evidence of where it runs.
+pub struct EvaluatedStream {
+    /// The model and its stream, for [`crate::live::LivePreviews::stream`].
+    pub stream: Box<dyn crate::live::StreamingPreview + Send>,
+    /// Each ONNX Runtime session's requested provider and node placement, from ONNX Runtime's own
+    /// placement log (the load has passed [`check_placement`] for the CPU), never from the request.
+    pub placement: Vec<String>,
+}
+
+/// Nemotron Speech Streaming as a [`crate::live::StreamingPreview`]: one stream, restarted on a
+/// gap; a word is shown once a whole chunk passed after its last token with nothing added.
+struct NemotronPreview {
+    model: earshot_onnx::nemotron::NemotronStreaming,
+    stream: earshot_onnx::nemotron::NemotronStream,
+    /// Encoder frames per chunk (the export's `chunk_shift` over the subsampling).
+    settle: usize,
+}
+
+impl crate::live::StreamingPreview for NemotronPreview {
+    fn backend_info(&self) -> BackendInfo {
+        self.model.info()
+    }
+
+    fn restart(&mut self) {
+        self.stream = self.model.stream();
+    }
+
+    fn push(&mut self, samples: &[f32]) -> Result<u64, String> {
+        self.stream.accept(samples);
+        let mut steps = 0;
+        while self.model.is_ready(&self.stream) {
+            self.model
+                .decode_chunk(&mut self.stream)
+                .map_err(|e| e.to_string())?;
+            steps += 1;
+        }
+        Ok(steps)
+    }
+
+    fn finished_words(&self) -> Vec<earshot_core::asr::Word> {
+        self.model.finished_words(&self.stream, self.settle)
+    }
+
+    fn forget_before(&mut self, time: earshot_core::asr::MeetingTime) {
+        let frame_ms = u64::try_from(earshot_onnx::nemotron::ENCODER_FRAME.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        let frame = time.as_millis() / frame_ms;
+        self.model.forget_before(
+            &mut self.stream,
+            usize::try_from(frame).unwrap_or(usize::MAX),
+        );
+    }
+}
+
+/// Evaluation only (T12.23, `live_lag --stream nemotron`): NVIDIA Nemotron Speech Streaming 0.6B
+/// (sherpa-onnx's 560 ms int8 export, licence agreed for evaluation only) as a track's streaming
+/// preview, on the CPU with `threads` ONNX Runtime threads on background threads, whatever the
+/// track runs on. The app, the CLI and [`crate::host`] never call it (pinned by
+/// `backends_nemotron_preview_load_is_used_by_no_shipped_code`).
+///
+/// # Errors
+/// A missing file (with the fetch command), a failed load or placement check, or a preview thread
+/// that cannot lower its priority.
+pub fn load_nemotron_preview(models: &ModelDir, threads: usize) -> Result<EvaluatedStream, String> {
+    let dir = models.root().join(NEMOTRON_STREAM_DIR);
+    for f in NEMOTRON_STREAM_FILES {
+        if !dir.join(f).is_file() {
+            return Err(format!(
+                "{} not found; run `cargo xtask fetch-models --set stream-eval`",
+                dir.join(f).display()
+            ));
+        }
+    }
+    let config = SessionConfig {
+        intra_threads: Some(threads),
+        background: Some(earshot_onnx::ThreadStart(
+            crate::priority::lower_preview_pool_thread,
+        )),
+        ..session_config(Accelerator::Cpu).map_err(|e| e.to_string())?
+    };
+    let model = earshot_onnx::nemotron::NemotronStreaming::load(&dir, &config)
+        .map_err(|e| format!("Nemotron streaming: {e}"))?;
+    check_placement(&model.backends(), Accelerator::Cpu.backend()).map_err(|e| e.to_string())?;
+    if crate::priority::preview_pool_failed() {
+        return Err("a preview thread could not lower its priority".to_owned());
+    }
+    let placement = model.backends().iter().map(ToString::to_string).collect();
+    let settle = model.chunk().1 / earshot_onnx::nemotron::SUBSAMPLING;
+    let stream = model.stream();
+    Ok(EvaluatedStream {
+        stream: Box::new(NemotronPreview {
+            model,
+            stream,
+            settle,
+        }),
+        placement,
+    })
+}
+
 /// A track's own Parakeet TDT session with its encoder made shareable, and a preview session that
 /// borrows that encoder ([`load_preview_sharing_encoder`]).
 pub struct SharedEncoderPair {

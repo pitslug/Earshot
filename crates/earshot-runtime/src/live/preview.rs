@@ -34,6 +34,12 @@
 //! (`Transcriber::may_skip_speech`) shows nothing new and takes nothing away. Words the real decode
 //! covers leave as it lands; ones it does not hold are gone with them.
 //!
+//! **A streaming model instead (evaluation only, T12.23).** With [`LivePreviews::stream`] set, a
+//! track's thread feeds every packet of its audio, once, to a [`StreamingPreview`] and shows the
+//! words it finished, rather than decoding windows: nothing else changes (when previews start and
+//! stop, what settled text removes, the events and the report). The app never sets it; only
+//! evaluation loaders build one (docs/live-previews.md).
+//!
 //! **When it is off.** On battery; during a hold and its catch-up (T9.1l); for a track that falls
 //! behind; for a chunker session, which has partials; for a backend the loader refuses. Each is
 //! reported in [`PreviewReport::off`], and none affects recording or stored transcripts. Previews
@@ -88,6 +94,31 @@ const AUDIO_QUEUE: usize = 4096;
 pub type PreviewLoader =
     Arc<dyn Fn(&BackendInfo) -> Result<Box<dyn Transcriber + Send>, String> + Send + Sync>;
 
+/// Evaluation only (T12.23): a streaming model fed a track's audio once, as it comes
+/// ([`LivePreviews::stream`]).
+pub trait StreamingPreview {
+    /// Where the model runs, as it reports itself.
+    fn backend_info(&self) -> BackendInfo;
+    /// Forgets everything heard: the audio that follows does not follow what came before.
+    fn restart(&mut self);
+    /// Adds 16 kHz samples that follow the last ones and decodes all the model can; returns how
+    /// many model steps that took (0: not enough audio for one yet).
+    ///
+    /// # Errors
+    /// Why the model cannot go on.
+    fn push(&mut self, samples: &[Sample]) -> Result<u64, String>;
+    /// The words heard since the last restart that can no longer change, times from the
+    /// restart, without those before [`StreamingPreview::forget_before`]'s time.
+    fn finished_words(&self) -> Vec<Word>;
+    /// Words starting before `time` (from the restart) are no longer needed.
+    fn forget_before(&mut self, time: MeetingTime);
+}
+
+/// Loads a track's streaming model (its own session) for the backend the track runs on
+/// ([`LivePreviews::stream`]). An `Err` says why this meeting has no previews.
+pub type StreamLoader =
+    Arc<dyn Fn(&BackendInfo) -> Result<Box<dyn StreamingPreview + Send>, String> + Send + Sync>;
+
 /// Previews of a session (module docs); [`super::LiveConfig::previews`].
 #[derive(Clone)]
 pub struct LivePreviews {
@@ -113,6 +144,10 @@ pub struct LivePreviews {
     /// Whether the thread runs below normal priority (always true in production; tests of what
     /// previews compute set false, so that a host whose cores are all busy still gives them time).
     pub background: bool,
+    /// Evaluation only (T12.23, module docs): each previewed track's words come from a streaming
+    /// model this loads, instead of window decodes of `load`'s or `own_voice`'s session; those
+    /// still say which tracks have previews. `None` in the app.
+    pub stream: Option<StreamLoader>,
 }
 
 impl LivePreviews {
@@ -128,6 +163,7 @@ impl LivePreviews {
             slow_pause: Duration::from_secs(30),
             fell_behind: CAUGHT_UP_BACKLOG,
             background: true,
+            stream: None,
         }
     }
 }
@@ -139,6 +175,7 @@ impl std::fmt::Debug for LivePreviews {
             .field("window", &self.window)
             .field("background", &self.background)
             .field("own_voice", &self.own_voice.is_some())
+            .field("stream", &self.stream.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -152,6 +189,11 @@ impl PartialEq for LivePreviews {
             && match (&self.own_voice, &other.own_voice) {
                 (None, None) => true,
                 (Some(a), Some(b)) => same(a, b),
+                _ => false,
+            }
+            && match (&self.stream, &other.stream) {
+                (None, None) => true,
+                (Some(a), Some(b)) => std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b)),
                 _ => false,
             }
     }
@@ -314,6 +356,9 @@ impl PreviewWork {
         if self.previews.background {
             crate::priority::lower_current_thread()?;
         }
+        if let Some(load) = &self.previews.stream {
+            return self.stream_until_stopped(load);
+        }
         let loading = Instant::now();
         let mut transcriber = (self.previews.load)(&self.backend)?;
         let ran = transcriber.backend_info().kind;
@@ -419,6 +464,117 @@ impl PreviewWork {
                 let _ = self.out.send(FromPreview::Words(words.shown().to_vec()));
             } else {
                 self.add(|r| r.decodes_adding_nothing += 1);
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluation only (T12.23, module docs): every packet of the track's audio goes to the
+    /// streaming model once, and the words it finished are shown until settled text covers them.
+    /// A gap in the audio (dropped packets) starts the model over at the next packet.
+    fn stream_until_stopped(&self, load: &StreamLoader) -> Result<(), String> {
+        let loading = Instant::now();
+        let mut model = load(&self.backend)?;
+        let ran = model.backend_info().kind;
+        self.add(|r| {
+            r.load_s = loading.elapsed().as_secs_f64();
+            r.backend = Some(ran);
+        });
+        // Pipeline frame of the model's time zero, and of the end of what it was given.
+        let mut origin: Option<u64> = None;
+        let mut end = 0u64;
+        let mut pending: Vec<Sample> = Vec::new();
+        let mut shown: Vec<Word> = Vec::new();
+        let mut slow = 0u32;
+        let mut paused_until: Option<Instant> = None;
+        let wait = Duration::from_millis(20);
+        while !self.stop.load(Ordering::Acquire) {
+            match self.inbox.recv_timeout(wait) {
+                Ok(message) => {
+                    let mut next = Some(message);
+                    while let Some(message) = next.take() {
+                        if let ToPreview::Audio(at, samples) = message {
+                            if origin.is_none() || at != end {
+                                // Restart at the packet: what is pending belonged to the old run.
+                                if origin.is_some() {
+                                    model.restart();
+                                }
+                                pending.clear();
+                                origin = Some(at);
+                            }
+                            end = at + samples.len() as u64;
+                            pending.extend_from_slice(&samples);
+                        }
+                        next = self.inbox.try_recv().ok();
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            }
+            if let Some(until) = paused_until {
+                if Instant::now() < until {
+                    // Paused: the audio of the pause is not heard; the model starts over after it.
+                    pending.clear();
+                    if origin.take().is_some() {
+                        model.restart();
+                    }
+                    continue;
+                }
+                paused_until = None;
+            }
+            let Some(zero) = origin else { continue };
+            let zero_time = MeetingTime::from_pipeline_frames(zero);
+            let frontier = MeetingTime::from_pipeline_frames(self.frontier.load(Ordering::SeqCst));
+            if !pending.is_empty() {
+                let audio = quantise_pcm16(&pending);
+                pending.clear();
+                let began = Instant::now();
+                let steps = model.push(&audio)?;
+                let took = began.elapsed();
+                if steps > 0 {
+                    self.add(|r| {
+                        r.decodes += steps;
+                        r.decode_s += took.as_secs_f64();
+                        r.slowest_s = r.slowest_s.max(took.as_secs_f64());
+                    });
+                    slow = if took > self.previews.slow {
+                        slow + 1
+                    } else {
+                        0
+                    };
+                    if slow >= SLOW_PREVIEWS {
+                        slow = 0;
+                        self.add(|r| r.slow_pauses += 1);
+                        paused_until = Some(Instant::now() + self.previews.slow_pause);
+                    }
+                }
+                self.add(|r| r.audio_s += PIPELINE_RATE.duration_of(audio.len()).as_secs_f64());
+            }
+            // The model's words in meeting time, without what settled text covers.
+            let relative = MeetingTime::from_millis(
+                frontier.as_millis().saturating_sub(zero_time.as_millis()),
+            );
+            model.forget_before(relative.saturating_sub_duration(COVERED_SLACK));
+            let now: Vec<Word> = model
+                .finished_words()
+                .into_iter()
+                .map(|w| Word {
+                    start: w.start + zero_time,
+                    end: w.end + zero_time,
+                    ..w
+                })
+                .filter(|w| w.start + COVERED_SLACK >= frontier)
+                .collect();
+            if now != shown {
+                let added = now
+                    .iter()
+                    .filter(|w| !shown.iter().any(|s| s.start == w.start && s.text == w.text))
+                    .count();
+                if added > 0 {
+                    self.add(|r| r.words_shown += added as u64);
+                }
+                shown = now;
+                let _ = self.out.send(FromPreview::Words(shown.clone()));
             }
         }
         Ok(())
