@@ -928,6 +928,23 @@ publisher_checksum = "hf-lfs-sha256:16a9369d0805f80b7377d25d87f937a90c05dc04ad79
 licence = "Apache-2.0"
 attribution = "Granite 4.2 8B (IBM), Apache-2.0, https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF"
 
+# official GGUF from IBM, pinned to commit c40945d71cd90f249a56985e8155551a9188dc30 (T12.27,
+# 2026-11-12: size and sha256 equal the file's LFS oid at that commit, HF API). Licence
+# Apache-2.0 from the card metadata of the GGUF repo at that commit and of the base model
+# ibm-granite/granite-4.2-3b (commit 4e9c275e232f10211ec88644d106a1f6a1b60e06), whose card links
+# the Apache 2.0 text; neither repo holds a LICENSE file.
+[[artefact]]
+id = "granite-4.2-3b-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/ibm-granite/granite-4.2-3b-GGUF/resolve/c40945d71cd90f249a56985e8155551a9188dc30/granite-4.2-3b-Q4_K_M.gguf"
+path = "llm/granite-4.2-3b-q4_k_m.gguf"
+sha256 = "e0406663965846ae22a403456eb826ccce5f450840491f71952f18a7cb78e7d5"
+size = 2244011552
+publisher_checksum = "hf-lfs-sha256:e0406663965846ae22a403456eb826ccce5f450840491f71952f18a7cb78e7d5"
+licence = "Apache-2.0"
+attribution = "Granite 4.2 3B (IBM), Apache-2.0, https://huggingface.co/ibm-granite/granite-4.2-3b-GGUF"
+
 # official QAT GGUF from Google (quantisation-aware trained, Q4_0: a different quantisation type
 # from the other candidates' Q4_K_M; the owner), text weights only (the vision
 # projector is not fetched), pinned to commit 29d097773436b69ff9feafd636ab4cf873786537.
@@ -955,6 +972,25 @@ size = 16740812704
 publisher_checksum = "hf-lfs-sha256:84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806"
 licence = "Apache-2.0"
 attribution = "Qwen3.5-27B (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3.5-27B; GGUF conversion by Unsloth"
+
+# T12.27 screen (evaluation only, desktop GPU only): community GGUF (bartowski, imatrix
+# quantisation) of Ornith AI's Ornith-1.5-9B (Qwen 3.5 architecture), text weights only (the
+# vision projector is not fetched), pinned to commit 1fc60d6805eaa18bbed4088391db9336eb9581c4;
+# size and sha256 equal the file's LFS oid at that commit (HF API, 2026-11-12). Licence MIT
+# from the card metadata of the GGUF repo and of ornith-ai/Ornith-1.5-9B (commit
+# 489cb97981b8654bcfcf30ce1f94ed1b62e07b53); both cards link a LICENSE file in the base repo
+# that does not exist (HTTP 404, 2026-11-12), so the MIT text was not read from the publisher.
+[[artefact]]
+id = "ornith-1.5-9b-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/bartowski/Ornith-1.5-9B-GGUF/resolve/1fc60d6805eaa18bbed4088391db9336eb9581c4/Ornith-1.5-9B-Q4_K_M.gguf"
+path = "llm/ornith-1.5-9b-q4_k_m.gguf"
+sha256 = "886e98b1d7f6e7d7f277a261d692f1a38edd08e24d28c5f9bcf689169ed4b266"
+size = 5910782848
+publisher_checksum = "hf-lfs-sha256:886e98b1d7f6e7d7f277a261d692f1a38edd08e24d28c5f9bcf689169ed4b266"
+licence = "MIT"
+attribution = "Ornith-1.5-9B (Ornith AI), MIT, https://huggingface.co/ornith-ai/Ornith-1.5-9B; GGUF conversion by bartowski"
 
 # T6.20d larger-model screen (evaluation only, unlikely to ship): community
 # GGUF (Unsloth) of the Qwen team's mixture-of-experts model (30B total, 3B active; the Qwen

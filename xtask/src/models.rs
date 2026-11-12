@@ -292,6 +292,8 @@ mod tests {
             "qwen3.5-27b-q4_k_m",
             "qwen3-30b-a3b-instruct-2507-q4_k_m",
             "qwen3.5-2b-q4_k_m",
+            "granite-4.2-3b-q4_k_m",
+            "ornith-1.5-9b-q4_k_m",
         ]
         .map(String::from)
         .into();
