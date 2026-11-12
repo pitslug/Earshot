@@ -27,6 +27,77 @@ use serde_json::json;
 
 const T0: u64 = 1_790_000_000_000;
 
+/// Variables `main` sets in this process and the CLI must not see (T7.4ga's markers, and
+/// T9.25: every variable Claude Code documents for another address, provider, credential,
+/// header, proxy or telemetry export). Written out here, not read from the crate, so a name dropped from the
+/// crate's list fails the test.
+const MUST_CLEAR: [&str; 61] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_SIMPLE",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+    "ANTHROPIC_AWS_BASE_URL",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_MANTLE_AUTH",
+    "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_PROFILE",
+    "ANTHROPIC_FEDERATION_RULE_ID",
+    "ANTHROPIC_ORGANIZATION_ID",
+    "ANTHROPIC_WORKSPACE_ID",
+    "ANTHROPIC_AWS_API_KEY",
+    "ANTHROPIC_AWS_WORKSPACE_ID",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+    "CLAUDE_CODE_OAUTH_SCOPES",
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+    "ENABLE_ENHANCED_TELEMETRY_BETA",
+    "ENABLE_BETA_TRACING_DETAILED",
+    "BETA_TRACING_ENDPOINT",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_LOGS_EXPORTER",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_ASSISTANT_RESPONSES",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_TOOL_CONTENT",
+    "OTEL_LOG_RAW_API_BODIES",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+];
+
+/// A variable `main` sets that the CLI must still see (the rest of the environment stays).
+const KEPT: &str = "EARSHOT_FAKE_KEPT";
+
 // ---------------------------------------------------------------------------------------
 // The fake CLI.
 
@@ -49,6 +120,21 @@ mod fake {
         std::fs::write(pid_file, std::process::id().to_string()).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(120));
         std::process::exit(0)
+    }
+
+    /// Writes `NAME=value` (or `NAME=<unset>`) for each variable the tests check.
+    fn record_env(path: &Path) {
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| "<unset>".into());
+        std::fs::write(
+            path,
+            ["DISABLE_TELEMETRY", super::KEPT]
+                .iter()
+                .chain(super::MUST_CLEAR.iter())
+                .map(|k| format!("{k}={}", env(k)))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
     }
 
     /// `<exe> --fake-claude <dir> <args...>` (module docs of the test).
@@ -83,6 +169,7 @@ Options:
         }
         if args.len() >= 2 && args[0] == "auth" && args[1] == "status" {
             bump(&dir.join("auth-calls"));
+            record_env(&dir.join("auth.env"));
             if let Ok(ms) = std::fs::read_to_string(dir.join("auth-sleep")) {
                 std::thread::sleep(std::time::Duration::from_millis(ms.trim().parse().unwrap()));
             }
@@ -101,17 +188,7 @@ Options:
         let cwd = std::env::current_dir().unwrap();
         let entries = std::fs::read_dir(&cwd).unwrap().count();
         std::fs::write(call("cwd"), format!("{}\n{entries}", cwd.display())).unwrap();
-        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| "<unset>".into());
-        std::fs::write(
-            call("env"),
-            format!(
-                "DISABLE_TELEMETRY={}\nCLAUDECODE={}\nCLAUDE_CODE_SIMPLE={}",
-                env("DISABLE_TELEMETRY"),
-                env("CLAUDECODE"),
-                env("CLAUDE_CODE_SIMPLE")
-            ),
-        )
-        .unwrap();
+        record_env(&call("env"));
         std::fs::write(call("pid"), std::process::id().to_string()).unwrap();
         let script = std::fs::read_to_string(dir.join(format!("script-{n}")))
             .or_else(|_| std::fs::read_to_string(dir.join("script")))
@@ -389,11 +466,16 @@ fn claude_code_valid_reply_is_a_summary_after_one_run() {
     assert_eq!(entries, "0");
     s.assert_temp_root_empty();
 
-    // The environment: telemetry off, nested-session and bare-mode markers removed.
+    // The environment: telemetry off, nested-session and bare-mode markers removed, and no
+    // variable that could send the prompt to another address, provider, account or proxy
+    // (T9.25); the rest is kept (the sign-in is found through it).
     let env = s.read("call-1.env");
-    assert!(env.contains("DISABLE_TELEMETRY=1"), "{env}");
-    assert!(env.contains("CLAUDECODE=<unset>"), "{env}");
-    assert!(env.contains("CLAUDE_CODE_SIMPLE=<unset>"), "{env}");
+    let lines: Vec<&str> = env.lines().collect();
+    assert!(lines.contains(&"DISABLE_TELEMETRY=1"), "{env}");
+    assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
+    for k in MUST_CLEAR {
+        assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
+    }
 
     // The handover record: when and how much, never the text.
     let log = client.handovers().entries();
@@ -628,8 +710,7 @@ fn claude_code_cli_search_resolves_npm_shims_and_prefers_the_exe() {
             leading_args: Vec::new(),
         })
     );
-    // A native claude.exe in an earlier folder wins; the native installer's folder is
-    // searched after PATH.
+    // Among PATH folders, a native claude.exe in an earlier folder wins.
     let native = s.dir.join("native");
     touch(&native.join("claude.exe"));
     assert_eq!(
@@ -638,11 +719,30 @@ fn claude_code_cli_search_resolves_npm_shims_and_prefers_the_exe() {
             .program,
         native.join("claude.exe")
     );
+    // The known install folders come before PATH, even when PATH has a claude.exe too
+    // (T9.25): the native installer's folder first, then npm's.
     let home = s.dir.join("home");
     touch(&home.join(".local").join("bin").join("claude.exe"));
+    let app_data = s.dir.join("appdata");
+    touch(&app_data.join("npm").join("claude.cmd"));
+    touch(
+        &package(&app_data.join("npm"))
+            .join("bin")
+            .join("claude.exe"),
+    );
+    let with_npm = CliSearch {
+        app_data: Some(app_data.clone()),
+        ..search(&[&native])
+    };
+    assert_eq!(
+        ClaudeCli::find_with(&with_npm).unwrap().program,
+        package(&app_data.join("npm"))
+            .join("bin")
+            .join("claude.exe")
+    );
     let with_home = CliSearch {
         home: Some(home.clone()),
-        ..search(&[&s.dir.join("nothing")])
+        ..with_npm
     };
     assert_eq!(
         ClaudeCli::find_with(&with_home).unwrap().program,
@@ -879,6 +979,14 @@ fn claude_code_version_and_sign_in_status_come_from_the_cli() {
     );
     std::fs::write(s.dir.join("auth.json"), r#"{"loggedIn": false}"#).unwrap();
     assert_eq!(cli.sign_in(STATUS_TIMEOUT), SignIn::NotSignedIn);
+    // The sign-in check sees the summary run's environment (T9.25): a sign-in that exists
+    // only in a cleared variable reads as not signed in, never as one the run lacks.
+    let env = s.read("auth.env");
+    let lines: Vec<&str> = env.lines().collect();
+    assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
+    for k in MUST_CLEAR {
+        assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
+    }
     std::fs::write(s.dir.join("auth.json"), "garbage").unwrap();
     assert!(matches!(cli.sign_in(STATUS_TIMEOUT), SignIn::Unknown(_)));
     assert_eq!(cli.accepts_effort(STATUS_TIMEOUT), Some(true));
@@ -1138,13 +1246,15 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("--fake-sleep") {
         fake::sleeper(&args[2]);
     }
-    // The markers the provider must remove from the CLI's environment. Set before any
-    // thread starts.
+    // The variables the provider must remove from the CLI's environment, and one it must
+    // keep. Set before any thread starts.
     // SAFETY: single-threaded here (no case has started); nothing reads the environment
     // concurrently.
     unsafe {
-        std::env::set_var("CLAUDECODE", "1");
-        std::env::set_var("CLAUDE_CODE_SIMPLE", "1");
+        for k in MUST_CLEAR {
+            std::env::set_var(k, "http://127.0.0.1:9/earshot-test");
+        }
+        std::env::set_var(KEPT, "1");
     }
     let mut filters = Vec::new();
     let (mut ignored, mut include_ignored, mut list) = (false, false, false);
