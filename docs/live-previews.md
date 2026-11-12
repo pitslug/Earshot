@@ -628,3 +628,83 @@ cargo run --release -p earshot-runtime --example live_lag -- . --memory --out ta
 Each report holds counts and times only. `host.machine_load_percent` says what the run saw, and matching
 `stored_sha256` between an on and an off run says the same words were stored. On CUDA, read the card's
 peak with `nvidia-smi --query-gpu=memory.used --format=csv,noheader` during the run.
+
+## Shorter speech stretches for Parakeet (T12.24)
+
+Settled text arrives a median 14-15 s and p95 38-50 s after the words on meeting audio, and the wait is the stretch, not the decode. `PieceConfig::max_piece` is 30 s because that is one Whisper window; Parakeet has no such window. This measures whether a shorter `max_piece` gives settled text sooner without costing accuracy. Evaluation only: no shipped default changes here, and Whisper keeps 30 s whatever the result.
+
+**The rule, written and committed 2026-11-12 before any measurement** (judgements, not derived).
+
+Setup:
+
+- Parakeet TDT 0.6B v2 only. `max_piece` 30 s (today) against 20, 15 and 10 s, every other `PieceConfig` field at its default, the live stretches and the final pass using the same value (D20). The value is set only through the evaluation-only `--max-piece <s>` of `live_lag`, `m2_prod` and `stretch_eval`; without it each runs production's `PieceConfig::default()` unchanged.
+- The Surface (Snapdragon X2 Elite, 16 GB), on mains. Timings (lag, rtf) only on an otherwise idle machine; accuracy runs may share it.
+
+Measurements:
+
+- **Lag** (timing): `live_lag --backend qnn --previews off --max-piece <s>` on `bundled` and on `continuous --seconds 120`. Read `reference.word_lag_s` (median, p95) on both, `mic.word_lag_s` on `bundled`, `catch_up_after_end_s` and the decode rtf of each track.
+- **Streams** (accuracy): `m2_prod --backend cpu --metric asr.stream_determinism --max-piece <s>`: the pinned LibriSpeech test-clean utterances in about 60 s streams, each decoded by the production live stretches and by the final pass without reuse. Words differing between the two, and the live and final WER.
+- **AMI dev** (accuracy and rtf): `stretch_eval --backend cpu|qnn` over the five AMI dev mixes (`ES2003a`, `ES2011a`, `IS1008a`, `TS3004a`, `TS3006a`, fixture set `ami-dev`, dev data, never an acceptance input), each whole recording decoded once per value by the final-pass transcriber (`final_pass_asr`) with Silero and `transcribe_in_pieces` on 16-bit-quantised audio, keeping the words production keeps. The reference is every participant's words (`refs::ami_reference` over the whole recording, ordered by start time), so the WER counts overlapping speech and crosstalk the same way for every value: it compares values with each other and is not comparable with `asr.wer_ami_ihm`. These are the Mix-Headset recordings rather than single headsets because a mix decoded in pieces exercises piece cuts on meeting speech without counting one headset's crosstalk as insertions. Corpus WER over summed counts.
+- **Cuts** (AMI dev, counted separately): a cut is a boundary between consecutive pieces of `plan_pieces` (the same VAD and plan the decode used) with no gap between them, so speech was split rather than paused. For each cut: the reference and hypothesis words starting within 2 s either side, scored as one more `WerCounts` (cut-window WER, summed over cuts), and a word doubled when the last kept word of the earlier piece and the first of the later piece are equal after Whisper normalisation and both lie within 1 s of the cut. Reported per value: cuts, cut-window WER, doubled words, and doubled words per 10 minutes of audio.
+- **Decode rtf**: AMI dev decode wall time over audio length, CPU and NPU, from idle-machine `stretch_eval` runs.
+
+A shorter value passes only if every point holds against 30 s on the same data:
+
+1. **D20 holds**: 0 words differ between live and final on the streams, at every value.
+2. **AMI dev WER** rises by at most 0.5 points (absolute), on the CPU and on the NPU each against its own 30 s run.
+3. **Streams final-pass WER** rises by at most 0.2 points.
+4. **Cuts**: at most 1 doubled word per 10 minutes of AMI dev audio.
+5. **NPU cost**: AMI dev decode rtf on the NPU at most 0.1 (every piece is a full 30 s static encoder run there, so more pieces cost more; 0.1 leaves room for two tracks and previews).
+6. **It is worth having**: `reference.word_lag_s` median on `bundled` at least 2 s lower than at 30 s, and its p95 on `continuous` at least 5 s lower.
+
+The recommendation is the passing value with the lowest `bundled` reference median lag (a tie goes to the longer value). If none passes, Parakeet keeps 30 s. A measurement that contradicts this rule is reported as it is; the rule is not changed after measuring. A passing value becomes Parakeet's default only through a follow-up task (a `PieceConfig` per model, `STRETCH_RECORD_VERSION` handling, `accept m2` re-run).
+
+**Result, 2026-11-13** (the Surface, mains; the rule above unchanged; reports in `live-previews/t1224/`, counts and times only, the stream reports with their reference and hypothesis text removed). Every live session ran both tracks on QNN; every `stretch_eval` decode ran on its requested backend. One run per value. The lag runs saw 20-44% machine load from other open apps (`host.machine_load_percent` in each report), so read small lag differences with care.
+
+Settled-text lag, `live_lag --backend qnn --previews off` (median / p95, seconds):
+
+| `max_piece` | bundled reference | bundled mic | continuous reference | catch-up (bundled) | decode rtf mic / ref (bundled) |
+|---|---|---|---|---|---|
+| 30 (today) | 14.1 / 37.0 | 15.4 / 32.3 | 36.9 / 49.7 | 0.42 s | 0.022 / 0.021 |
+| 20 | 13.8 / 33.7 | 15.3 / 26.5 | 27.3 / 37.1 | 0.42 s | 0.025 / 0.024 |
+| 15 | 14.1 / 22.4 | 15.5 / 24.4 | 19.9 / 25.2 | 0.58 s | 0.026 / 0.028 |
+| 10 | 11.7 / 18.0 | 12.1 / 20.9 | 13.9 / 18.1 | 0.40 s | 0.034 / 0.030 |
+
+Accuracy and cost (AMI dev mixes: 5 meetings, 5,796 s, 12,413 reference words; streams: 26 LibriSpeech test-clean streams, 1,796 s, 4,681 words):
+
+| `max_piece` | AMI dev WER CPU / NPU | cuts | cut-window WER CPU / NPU | doubled CPU / NPU (per 10 min) | decode rtf CPU / NPU | streams final WER | live vs final words differing |
+|---|---|---|---|---|---|---|---|
+| 30 | 17.70% / 17.86% | 121 | 24.13% / 24.31% | 2 / 3 (0.21 / 0.31) | 0.0359 / 0.0150 | 1.624% | 0 of 4,677 |
+| 20 | 18.09% / 18.01% | 209 | 21.83% / 21.25% | 3 / 5 (0.31 / 0.52) | 0.0370 / 0.0172 | 1.666% | 0 of 4,674 |
+| 15 | 18.12% / 18.22% | 307 | 21.63% / 21.41% | 2 / 2 (0.21 / 0.21) | 0.0398 / 0.0202 | 1.688% | 0 of 4,678 |
+| 10 | 18.98% / 19.17% | 467 | 22.70% / 22.70% | 7 / 6 (0.72 / 0.62) | 0.0431 / 0.0247 | 1.837% | 0 of 4,677 |
+
+Under the rule, against 30 s:
+
+- **20 s**: points 1-5 pass (AMI +0.39 CPU, +0.15 NPU; streams +0.04; doubled at most 0.52 per 10 min; NPU rtf 0.017). Point 6 fails: the bundled reference median falls 0.3 s, not 2 s (the continuous p95 falls 12.6 s).
+- **15 s**: points 1-5 pass (AMI +0.42 CPU, +0.36 NPU; streams +0.06; NPU rtf 0.020). Point 6 fails: the bundled median is unchanged (the continuous p95 falls 24.5 s).
+- **10 s**: point 6 passes (bundled median -2.4 s, continuous p95 -31.6 s), but point 2 fails (AMI +1.28 CPU, +1.31 NPU against 0.5) and point 3 fails (streams +0.21 against 0.2).
+
+**No value passes, so under the rule Parakeet keeps 30 s.** What the numbers say beside the verdict (not a decision): on meeting audio with natural pauses (`bundled`) the median wait is set by the pauses, not by `max_piece`, so only the tail moves (p95 37.0 -> 22.4 s at 15 s); the gain is large only for someone who never pauses (`continuous`). D20 held at every value (0 words differ). Cut-window WER is lower at 20 and 15 s than at 30 s because 30 s cuts only the longest unbroken stretches, where recognition is already hardest. If the owner wants the tail shortened, 15 s is the value the numbers favour (every accuracy and cost point passes, p95 lag on both audios down 12-25 s); that would need the rule's point 6 changed to a tail criterion by the owner, labelled as decided after the measurement.
+
+Reproduce (each from the repo root on the Surface, idle for the timed ones):
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio bundled --previews off --max-piece 15 --out target\overnight\t1224\lag-qnn-bundled-15.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio continuous --seconds 120 --previews off --max-piece 15 --out target\overnight\t1224\lag-qnn-continuous-15.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example stretch_eval -- . --backend qnn --out target\overnight\t1224\ami-dev-qnn.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example stretch_eval -- . --backend cpu --out target\overnight\t1224\ami-dev-cpu.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example m2_prod -- . --backend cpu --models $env:LOCALAPPDATA\Earshot\models --fixtures $env:LOCALAPPDATA\earshot-dev\fixtures --metric asr.stream_determinism --max-piece 15
+```

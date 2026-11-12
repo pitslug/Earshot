@@ -5,8 +5,8 @@
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root>
 //!     [--audio bundled|continuous] [--backend cpu|cuda|qnn] [--models <dir>] [--speakers on|off]
 //!     [--seconds <n>] [--previews off|on|everyone] [--force-previews] [--card-memory-gib <n>]
-//!     [--window <s>] [--interval <s>] [--stream nemotron] [--stream-threads <n>]
-//!     [--out <file.json>]
+//!     [--window <s>] [--interval <s>] [--max-piece <s>] [--stream nemotron]
+//!     [--stream-threads <n>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root> --memory
 //!     [--backend cpu|cuda|qnn] [--card-memory-gib <n>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- <repo-root>
@@ -68,6 +68,10 @@
 //! The report names the backend the session announced and the host's load: the percentage of the
 //! whole machine in use, read about every 30 s, and this process's own CPU time and memory. A
 //! number measured with a loaded host is reported as such, never as an idle-host result.
+//!
+//! `--max-piece <s>` (evaluation only, T12.24) runs the live stretches with `PieceConfig::max_piece`
+//! at `s` seconds and every other field at its default; the report records it (`max_piece_s`,
+//! `pieces`). Without it the session runs `LiveConfig::default()`'s stretches unchanged.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -75,7 +79,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use earshot_core::asr::{
-    AsrError, BackendInfo, BackendKind, CancelToken, TranscribeOptions, Transcriber,
+    AsrError, BackendInfo, BackendKind, CancelToken, PieceConfig, TranscribeOptions, Transcriber,
     TranscriptEvent, Transcription,
 };
 use earshot_core::audio::{MonoBuffer, PIPELINE_RATE};
@@ -87,7 +91,8 @@ use earshot_runtime::backends::{
     previews_refused_second, second_preview_backend,
 };
 use earshot_runtime::live::{
-    LiveAsrFactory, LiveConfig, LivePreviews, PreviewLoader, RuntimeEvent, StreamLoader, start_live,
+    LiveAsrFactory, LiveConfig, LivePreviews, LiveTranscription, PreviewLoader, RuntimeEvent,
+    StreamLoader, start_live,
 };
 use earshot_runtime::preview_settings::PreviewChoice;
 use earshot_runtime::replay::{PaceClock, PaceState, Paced, WallClock};
@@ -137,6 +142,9 @@ struct Args {
     stream: Option<String>,
     /// Its ONNX Runtime threads (on background threads, the CPU).
     stream_threads: usize,
+    /// Evaluation only (T12.24): the live stretches' `PieceConfig::max_piece` in seconds, every
+    /// other field at its default ([`stretch_pieces`]); `None` is production's config unchanged.
+    max_piece: Option<u64>,
 }
 
 fn parse_args() -> Args {
@@ -165,6 +173,7 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         contention: None,
         stream: None,
         stream_threads: 2,
+        max_piece: None,
     };
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -184,6 +193,11 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 args.seconds = value()?.parse().map_err(|e| format!("--seconds: {e}"))?;
             }
             "--out" => args.out = Some(PathBuf::from(value()?)),
+            "--max-piece" => {
+                let s: u64 = value()?.parse().map_err(|e| format!("--max-piece: {e}"))?;
+                stretch_pieces(Some(s))?;
+                args.max_piece = Some(s);
+            }
             "--memory" => args.memory = true,
             "--previews" => {
                 args.previews = match value()?.as_str() {
@@ -271,7 +285,26 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 .to_owned(),
         );
     }
+    if args.max_piece.is_some() && (args.memory || args.contention.is_some()) {
+        return Err(
+            "--max-piece applies to a replay: not with --memory or --contention".to_owned(),
+        );
+    }
     Ok(args)
+}
+
+/// The live stretches' piece config (T12.24, evaluation only): production's
+/// `PieceConfig::default()` with `max_piece` set to `seconds` when given.
+///
+/// # Errors
+/// A value the config refuses (`PieceConfig::validate`: 1-30 s).
+fn stretch_pieces(seconds: Option<u64>) -> Result<PieceConfig, String> {
+    let mut pieces = PieceConfig::default();
+    if let Some(s) = seconds {
+        pieces.max_piece = Duration::from_secs(s);
+    }
+    pieces.validate().map_err(|e| format!("--max-piece: {e}"))?;
+    Ok(pieces)
 }
 
 /// Bytes in a GiB.
@@ -1417,6 +1450,9 @@ fn main() {
         title: "live_lag".into(),
         clock_domain: ClockDomain::Replay,
         previews,
+        transcription: LiveTranscription::Stretches(
+            stretch_pieces(args.max_piece).unwrap_or_else(|e| fail(e)),
+        ),
         ..LiveConfig::default()
     };
     let mut session = start_live(paced, services, config, Some(factory), os_seeded_rng())
@@ -1555,6 +1591,8 @@ fn main() {
         "length_s": length.as_secs_f64(),
         "requested_backend": format!("{:?}", args.backend),
         "simulated_card_gib": simulated.as_ref().and_then(simulated_card_gib),
+        "max_piece_s": args.max_piece,
+        "pieces": format!("{:?}", stretch_pieces(args.max_piece).unwrap_or_else(|e| fail(e))),
         "live_backends": backends,
         "onnx_placement": *evidence.lock().unwrap_or_else(PoisonError::into_inner),
         "speakers": args.speakers,
@@ -1627,6 +1665,27 @@ mod tests {
                 .chain(args.iter().copied())
                 .map(str::to_owned),
         )
+    }
+
+    #[test]
+    fn live_lag_stretch_pieces_are_production_unless_max_piece_is_given() {
+        assert_eq!(
+            LiveConfig::default().transcription,
+            LiveTranscription::Stretches(stretch_pieces(None).unwrap())
+        );
+        let p = stretch_pieces(Some(15)).unwrap();
+        assert_eq!(p.max_piece, Duration::from_secs(15));
+        assert_eq!(
+            PieceConfig {
+                max_piece: PieceConfig::default().max_piece,
+                ..p
+            },
+            PieceConfig::default()
+        );
+        assert_eq!(parse(&["--max-piece", "10"]).unwrap().max_piece, Some(10));
+        assert!(parse(&["--max-piece", "31"]).is_err());
+        assert!(parse(&["--max-piece", "0"]).is_err());
+        assert_eq!(parse(&[]).unwrap().max_piece, None);
     }
 
     #[test]

@@ -151,3 +151,6 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - apps/desktop/src-tauri/src/general.rs:362 + preview_settings.rs:118-156: the previews page judges by `accelerator_order().first()`, not where the chosen model runs (an NPU machine with a Parakeet model without its NPU version shows the NPU note while both previews run on the CPU); pre-existing (T12.12c review).
 - crates/earshot-runtime/src/backends.rs:1608: `preview` is derived from `background` in `load_parakeet_with`; a future non-preview background QNN load would silently lose the ordinary load (T12.12c review).
 - docs/live-previews.md T12.12c step-4 table: say the far end had `never_settled: 1` in every t1212c run and that run 1's 53 vanished words were far-end before it turned off (T12.12c review).
+- crates/earshot-runtime/examples/m2_prod/main.rs:726: the streams metric's `definition` names `LiveConfig::default()`/`PieceConfig::default()` even under `--max-piece`; build it from the config in effect (T12.24 review).
+- crates/earshot-runtime/examples/m2_prod: add a counts-only output; docs/live-previews/t1224/streams-*.json had their text fields removed by hand (T12.24 review).
+- crates/earshot-runtime/examples/stretch_eval.rs: record host load as live_lag does, so its rtf figures carry their own idle evidence (T12.24 review).

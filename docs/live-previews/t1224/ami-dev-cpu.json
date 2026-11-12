@@ -1,0 +1,703 @@
+{
+  "backend_info": {
+    "device": "cpu",
+    "kind": "cpu",
+    "model": "parakeet-tdt-0.6b-v2"
+  },
+  "base_pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4, recover_speech: Some(2s) }",
+  "cut_window_ms": 2000,
+  "doubled_within_ms": 1000,
+  "evidence": "ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1992; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+  "load_s": 2.7686668,
+  "model": "parakeet-tdt-0.6b-v2",
+  "options": {
+    "decoding": {
+      "fallback": {
+        "increment": 0.20000000298023224,
+        "logprob_threshold": -1.0,
+        "repetition_threshold": 2.4000000953674316
+      },
+      "strategy": {
+        "strategy": "greedy"
+      },
+      "temperature": 0.0
+    },
+    "language": {
+      "code": "en"
+    },
+    "prompt": null
+  },
+  "per_meeting": [
+    {
+      "audio_s": 1139.765375,
+      "meeting": "ES2003a",
+      "values": [
+        {
+          "audio_s": 1139.765375,
+          "cut_window": {
+            "deletions": 11,
+            "insertions": 15,
+            "ref_words": 125,
+            "substitutions": 5
+          },
+          "cut_window_wer_percent": 24.8,
+          "cuts": 16,
+          "decode_s": 31.9962901,
+          "doubled": 0,
+          "doubled_per_10_min": 0.0,
+          "dropped_pieces": 0,
+          "max_piece_s": 30,
+          "pieces": 44,
+          "retried": 0,
+          "rtf": 0.02807269882189569,
+          "uncovered": 1,
+          "wer": {
+            "deletions": 76,
+            "insertions": 83,
+            "ref_words": 1991,
+            "substitutions": 92
+          },
+          "wer_percent": 12.606730286288299
+        },
+        {
+          "audio_s": 1139.765375,
+          "cut_window": {
+            "deletions": 15,
+            "insertions": 25,
+            "ref_words": 262,
+            "substitutions": 16
+          },
+          "cut_window_wer_percent": 21.374045801526716,
+          "cuts": 30,
+          "decode_s": 33.3921443,
+          "doubled": 0,
+          "doubled_per_10_min": 0.0,
+          "dropped_pieces": 0,
+          "max_piece_s": 20,
+          "pieces": 58,
+          "retried": 0,
+          "rtf": 0.029297384384922204,
+          "uncovered": 1,
+          "wer": {
+            "deletions": 76,
+            "insertions": 81,
+            "ref_words": 1991,
+            "substitutions": 96
+          },
+          "wer_percent": 12.70718232044199
+        },
+        {
+          "audio_s": 1139.765375,
+          "cut_window": {
+            "deletions": 23,
+            "insertions": 29,
+            "ref_words": 470,
+            "substitutions": 35
+          },
+          "cut_window_wer_percent": 18.51063829787234,
+          "cuts": 48,
+          "decode_s": 36.5682065,
+          "doubled": 0,
+          "doubled_per_10_min": 0.0,
+          "dropped_pieces": 0,
+          "max_piece_s": 15,
+          "pieces": 76,
+          "retried": 0,
+          "rtf": 0.032083977371219936,
+          "uncovered": 2,
+          "wer": {
+            "deletions": 71,
+            "insertions": 76,
+            "ref_words": 1991,
+            "substitutions": 107
+          },
+          "wer_percent": 12.757408337518836
+        },
+        {
+          "audio_s": 1139.765375,
+          "cut_window": {
+            "deletions": 46,
+            "insertions": 44,
+            "ref_words": 715,
+            "substitutions": 39
+          },
+          "cut_window_wer_percent": 18.041958041958043,
+          "cuts": 74,
+          "decode_s": 38.4055688,
+          "doubled": 2,
+          "doubled_per_10_min": 1.0528482671269077,
+          "dropped_pieces": 0,
+          "max_piece_s": 10,
+          "pieces": 102,
+          "retried": 0,
+          "rtf": 0.033696030465919354,
+          "uncovered": 1,
+          "wer": {
+            "deletions": 74,
+            "insertions": 86,
+            "ref_words": 1991,
+            "substitutions": 107
+          },
+          "wer_percent": 13.41034655951783
+        }
+      ]
+    },
+    {
+      "audio_s": 1113.845375,
+      "meeting": "ES2011a",
+      "values": [
+        {
+          "audio_s": 1113.845375,
+          "cut_window": {
+            "deletions": 39,
+            "insertions": 8,
+            "ref_words": 232,
+            "substitutions": 10
+          },
+          "cut_window_wer_percent": 24.568965517241377,
+          "cuts": 23,
+          "decode_s": 39.9524719,
+          "doubled": 0,
+          "doubled_per_10_min": 0.0,
+          "dropped_pieces": 0,
+          "max_piece_s": 30,
+          "pieces": 61,
+          "retried": 0,
+          "rtf": 0.035868957035441296,
+          "uncovered": 6,
+          "wer": {
+            "deletions": 283,
+            "insertions": 57,
+            "ref_words": 2467,
+            "substitutions": 125
+          },
+          "wer_percent": 18.848804215646535
+        },
+        {
+          "audio_s": 1113.845375,
+          "cut_window": {
+            "deletions": 44,
+            "insertions": 15,
+            "ref_words": 389,
+            "substitutions": 22
+          },
+          "cut_window_wer_percent": 20.822622107969153,
+          "cuts": 37,
+          "decode_s": 40.6404459,
+          "doubled": 0,
+          "doubled_per_10_min": 0.0,
+          "dropped_pieces": 0,
+          "max_piece_s": 20,
+          "pieces": 75,
+          "retried": 0,
+          "rtf": 0.03648661368280135,
+          "uncovered": 3,
+          "wer": {
+            "deletions": 284,
+            "insertions": 57,
+            "ref_words": 2467,
+            "substitutions": 127
+          },
+          "wer_percent": 18.97040940413458
+        },
+        {
+          "audio_s": 1113.845375,
+          "cut_window": {
+            "deletions": 66,
+            "insertions": 26,
+            "ref_words": 570,
+            "substitutions": 22
+          },
+          "cut_window_wer_percent": 20.0,
+          "cuts": 57,
+          "decode_s": 43.0211435,
+          "doubled": 0,
+          "doubled_per_10_min": 0.0,
+          "dropped_pieces": 0,
+          "max_piece_s": 15,
+          "pieces": 95,
+          "retried": 0,
+          "rtf": 0.0386239818071696,
+          "uncovered": 5,
+          "wer": {
+            "deletions": 291,
+            "insertions": 53,
+            "ref_words": 2467,
+            "substitutions": 136
+          },
+          "wer_percent": 19.456830158086742
+        },
+        {
+          "audio_s": 1113.845375,
+          "cut_window": {
+            "deletions": 162,
+            "insertions": 27,
+            "ref_words": 957,
+            "substitutions": 45
+          },
+          "cut_window_wer_percent": 24.45141065830721,
+          "cuts": 87,
+          "decode_s": 45.9983731,
+          "doubled": 1,
+          "doubled_per_10_min": 0.5386744098120441,
+          "dropped_pieces": 0,
+          "max_piece_s": 10,
+          "pieces": 125,
+          "retried": 0,
+          "rtf": 0.04129691080326118,
+          "uncovered": 3,
+          "wer": {
+            "deletions": 326,
+            "insertions": 49,
+            "ref_words": 2467,
+            "substitutions": 130
+          },
+          "wer_percent": 20.470206728820433
+        }
+      ]
+    },
+    {
+      "audio_s": 943.8333125,
+      "meeting": "IS1008a",
+      "values": [
+        {
+          "audio_s": 943.8333125,
+          "cut_window": {
+            "deletions": 18,
+            "insertions": 7,
+            "ref_words": 262,
+            "substitutions": 6
+          },
+          "cut_window_wer_percent": 11.83206106870229,
+          "cuts": 27,
+          "decode_s": 34.6903278,
+          "doubled": 2,
+          "doubled_per_10_min": 1.271410941007658,
+          "dropped_pieces": 0,
+          "max_piece_s": 30,
+          "pieces": 43,
+          "retried": 0,
+          "rtf": 0.0367547185933851,
+          "uncovered": 1,
+          "wer": {
+            "deletions": 116,
+            "insertions": 16,
+            "ref_words": 2397,
+            "substitutions": 59
+          },
+          "wer_percent": 7.968293700458908
+        },
+        {
+          "audio_s": 943.8333125,
+          "cut_window": {
+            "deletions": 42,
+            "insertions": 8,
+            "ref_words": 504,
+            "substitutions": 7
+          },
+          "cut_window_wer_percent": 11.30952380952381,
+          "cuts": 46,
+          "decode_s": 35.9959535,
+          "doubled": 1,
+          "doubled_per_10_min": 0.635705470503829,
+          "dropped_pieces": 0,
+          "max_piece_s": 20,
+          "pieces": 62,
+          "retried": 0,
+          "rtf": 0.03813804092658575,
+          "uncovered": 1,
+          "wer": {
+            "deletions": 120,
+            "insertions": 17,
+            "ref_words": 2397,
+            "substitutions": 49
+          },
+          "wer_percent": 7.759699624530664
+        },
+        {
+          "audio_s": 943.8333125,
+          "cut_window": {
+            "deletions": 62,
+            "insertions": 16,
+            "ref_words": 703,
+            "substitutions": 17
+          },
+          "cut_window_wer_percent": 13.513513513513514,
+          "cuts": 65,
+          "decode_s": 41.9673239,
+          "doubled": 1,
+          "doubled_per_10_min": 0.635705470503829,
+          "dropped_pieces": 0,
+          "max_piece_s": 15,
+          "pieces": 81,
+          "retried": 0,
+          "rtf": 0.044464762309393474,
+          "uncovered": 2,
+          "wer": {
+            "deletions": 123,
+            "insertions": 20,
+            "ref_words": 2397,
+            "substitutions": 62
+          },
+          "wer_percent": 8.552357113057989
+        },
+        {
+          "audio_s": 943.8333125,
+          "cut_window": {
+            "deletions": 85,
+            "insertions": 24,
+            "ref_words": 1061,
+            "substitutions": 31
+          },
+          "cut_window_wer_percent": 13.195098963242224,
+          "cuts": 96,
+          "decode_s": 43.5625553,
+          "doubled": 1,
+          "doubled_per_10_min": 0.635705470503829,
+          "dropped_pieces": 0,
+          "max_piece_s": 10,
+          "pieces": 112,
+          "retried": 0,
+          "rtf": 0.04615492452222595,
+          "uncovered": 3,
+          "wer": {
+            "deletions": 128,
+            "insertions": 18,
+            "ref_words": 2397,
+            "substitutions": 69
+          },
+          "wer_percent": 8.969545264914476
+        }
+      ]
+    },
+    {
+      "audio_s": 1345.322625,
+      "meeting": "TS3004a",
+      "values": [
+        {
+          "audio_s": 1345.322625,
+          "cut_window": {
+            "deletions": 48,
+            "insertions": 18,
+            "ref_words": 268,
+            "substitutions": 15
+          },
+          "cut_window_wer_percent": 30.223880597014922,
+          "cuts": 26,
+          "decode_s": 50.2224032,
+          "doubled": 0,
+          "doubled_per_10_min": 0.0,
+          "dropped_pieces": 0,
+          "max_piece_s": 30,
+          "pieces": 78,
+          "retried": 0,
+          "rtf": 0.03733112211652577,
+          "uncovered": 10,
+          "wer": {
+            "deletions": 464,
+            "insertions": 96,
+            "ref_words": 2932,
+            "substitutions": 159
+          },
+          "wer_percent": 24.522510231923604
+        },
+        {
+          "audio_s": 1345.322625,
+          "cut_window": {
+            "deletions": 69,
+            "insertions": 29,
+            "ref_words": 424,
+            "substitutions": 25
+          },
+          "cut_window_wer_percent": 29.009433962264154,
+          "cuts": 44,
+          "decode_s": 51.4724965,
+          "doubled": 2,
+          "doubled_per_10_min": 0.8919793495630834,
+          "dropped_pieces": 0,
+          "max_piece_s": 20,
+          "pieces": 96,
+          "retried": 0,
+          "rtf": 0.03826033662371507,
+          "uncovered": 11,
+          "wer": {
+            "deletions": 479,
+            "insertions": 102,
+            "ref_words": 2932,
+            "substitutions": 162
+          },
+          "wer_percent": 25.34106412005457
+        },
+        {
+          "audio_s": 1345.322625,
+          "cut_window": {
+            "deletions": 111,
+            "insertions": 34,
+            "ref_words": 683,
+            "substitutions": 37
+          },
+          "cut_window_wer_percent": 26.647144948755493,
+          "cuts": 65,
+          "decode_s": 53.8199844,
+          "doubled": 1,
+          "doubled_per_10_min": 0.4459896747815417,
+          "dropped_pieces": 0,
+          "max_piece_s": 15,
+          "pieces": 117,
+          "retried": 0,
+          "rtf": 0.040005262232172746,
+          "uncovered": 10,
+          "wer": {
+            "deletions": 476,
+            "insertions": 84,
+            "ref_words": 2932,
+            "substitutions": 168
+          },
+          "wer_percent": 24.829467939972716
+        },
+        {
+          "audio_s": 1345.322625,
+          "cut_window": {
+            "deletions": 208,
+            "insertions": 51,
+            "ref_words": 1066,
+            "substitutions": 65
+          },
+          "cut_window_wer_percent": 30.393996247654787,
+          "cuts": 101,
+          "decode_s": 62.7071727,
+          "doubled": 2,
+          "doubled_per_10_min": 0.8919793495630834,
+          "dropped_pieces": 0,
+          "max_piece_s": 10,
+          "pieces": 153,
+          "retried": 0,
+          "rtf": 0.046611252598238284,
+          "uncovered": 17,
+          "wer": {
+            "deletions": 507,
+            "insertions": 89,
+            "ref_words": 2932,
+            "substitutions": 174
+          },
+          "wer_percent": 26.26193724420191
+        }
+      ]
+    },
+    {
+      "audio_s": 1252.864,
+      "meeting": "TS3006a",
+      "values": [
+        {
+          "audio_s": 1252.864,
+          "cut_window": {
+            "deletions": 57,
+            "insertions": 10,
+            "ref_words": 269,
+            "substitutions": 12
+          },
+          "cut_window_wer_percent": 29.36802973977695,
+          "cuts": 29,
+          "decode_s": 51.2352374,
+          "doubled": 0,
+          "doubled_per_10_min": 0.0,
+          "dropped_pieces": 0,
+          "max_piece_s": 30,
+          "pieces": 67,
+          "retried": 0,
+          "rtf": 0.04089449245887822,
+          "uncovered": 15,
+          "wer": {
+            "deletions": 401,
+            "insertions": 52,
+            "ref_words": 2626,
+            "substitutions": 118
+          },
+          "wer_percent": 21.74409748667174
+        },
+        {
+          "audio_s": 1252.864,
+          "cut_window": {
+            "deletions": 91,
+            "insertions": 24,
+            "ref_words": 496,
+            "substitutions": 21
+          },
+          "cut_window_wer_percent": 27.419354838709676,
+          "cuts": 52,
+          "decode_s": 52.7363032,
+          "doubled": 0,
+          "doubled_per_10_min": 0.0,
+          "dropped_pieces": 0,
+          "max_piece_s": 20,
+          "pieces": 90,
+          "retried": 0,
+          "rtf": 0.042092599994891705,
+          "uncovered": 13,
+          "wer": {
+            "deletions": 410,
+            "insertions": 55,
+            "ref_words": 2626,
+            "substitutions": 130
+          },
+          "wer_percent": 22.658035034272658
+        },
+        {
+          "audio_s": 1252.864,
+          "cut_window": {
+            "deletions": 137,
+            "insertions": 17,
+            "ref_words": 699,
+            "substitutions": 44
+          },
+          "cut_window_wer_percent": 28.32618025751073,
+          "cuts": 72,
+          "decode_s": 55.3782713,
+          "doubled": 0,
+          "doubled_per_10_min": 0.0,
+          "dropped_pieces": 0,
+          "max_piece_s": 15,
+          "pieces": 110,
+          "retried": 0,
+          "rtf": 0.044201342923094605,
+          "uncovered": 14,
+          "wer": {
+            "deletions": 390,
+            "insertions": 55,
+            "ref_words": 2626,
+            "substitutions": 137
+          },
+          "wer_percent": 22.162985529322164
+        },
+        {
+          "audio_s": 1252.864,
+          "cut_window": {
+            "deletions": 199,
+            "insertions": 23,
+            "ref_words": 1074,
+            "substitutions": 57
+          },
+          "cut_window_wer_percent": 25.977653631284912,
+          "cuts": 109,
+          "decode_s": 59.182576,
+          "doubled": 1,
+          "doubled_per_10_min": 0.4789027380465877,
+          "dropped_pieces": 0,
+          "max_piece_s": 10,
+          "pieces": 147,
+          "retried": 0,
+          "rtf": 0.047237829485083774,
+          "uncovered": 15,
+          "wer": {
+            "deletions": 405,
+            "insertions": 58,
+            "ref_words": 2626,
+            "substitutions": 136
+          },
+          "wer_percent": 22.81035795887281
+        }
+      ]
+    }
+  ],
+  "pooled": [
+    {
+      "audio_s": 5795.630687499999,
+      "cut_window": {
+        "deletions": 173,
+        "insertions": 58,
+        "ref_words": 1156,
+        "substitutions": 48
+      },
+      "cut_window_wer_percent": 24.134948096885815,
+      "cuts": 121,
+      "decode_s": 208.0967304,
+      "doubled": 2,
+      "doubled_per_10_min": 0.2070525305534317,
+      "max_piece_s": 30,
+      "pieces": 293,
+      "rtf": 0.035905795524346036,
+      "wer": {
+        "deletions": 1340,
+        "insertions": 304,
+        "ref_words": 12413,
+        "substitutions": 553
+      },
+      "wer_percent": 17.699186336904855
+    },
+    {
+      "audio_s": 5795.630687499999,
+      "cut_window": {
+        "deletions": 261,
+        "insertions": 101,
+        "ref_words": 2075,
+        "substitutions": 91
+      },
+      "cut_window_wer_percent": 21.831325301204817,
+      "cuts": 209,
+      "decode_s": 214.23734340000001,
+      "doubled": 3,
+      "doubled_per_10_min": 0.3105787958301476,
+      "max_piece_s": 20,
+      "pieces": 381,
+      "rtf": 0.03696532007501212,
+      "wer": {
+        "deletions": 1369,
+        "insertions": 312,
+        "ref_words": 12413,
+        "substitutions": 564
+      },
+      "wer_percent": 18.08587770885362
+    },
+    {
+      "audio_s": 5795.630687499999,
+      "cut_window": {
+        "deletions": 399,
+        "insertions": 122,
+        "ref_words": 3125,
+        "substitutions": 155
+      },
+      "cut_window_wer_percent": 21.632,
+      "cuts": 307,
+      "decode_s": 230.7549296,
+      "doubled": 2,
+      "doubled_per_10_min": 0.2070525305534317,
+      "max_piece_s": 15,
+      "pieces": 479,
+      "rtf": 0.03981532675946582,
+      "wer": {
+        "deletions": 1351,
+        "insertions": 288,
+        "ref_words": 12413,
+        "substitutions": 610
+      },
+      "wer_percent": 18.118101989849354
+    },
+    {
+      "audio_s": 5795.630687499999,
+      "cut_window": {
+        "deletions": 700,
+        "insertions": 169,
+        "ref_words": 4873,
+        "substitutions": 237
+      },
+      "cut_window_wer_percent": 22.69649086804843,
+      "cuts": 467,
+      "decode_s": 249.85624589999998,
+      "doubled": 7,
+      "doubled_per_10_min": 0.724683856937011,
+      "max_piece_s": 10,
+      "pieces": 639,
+      "rtf": 0.04311113999014624,
+      "wer": {
+        "deletions": 1440,
+        "insertions": 300,
+        "ref_words": 12413,
+        "substitutions": 616
+      },
+      "wer_percent": 18.980101506485138
+    }
+  ],
+  "requested_backend": "Cpu",
+  "set": "AMI dev Mix-Headset, whole recordings, every participant's words (refs::ami_reference)",
+  "task": "T12.24"
+}

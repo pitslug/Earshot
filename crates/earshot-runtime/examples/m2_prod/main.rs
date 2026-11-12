@@ -6,6 +6,7 @@
 //! ```text
 //! cargo build --release -p earshot-runtime [--features cuda] --example m2_prod
 //! m2_prod <repo-root> --backend cpu|cuda --models <dir> --fixtures <dir> [--metric <id>]...
+//!     [--max-piece <s>]
 //! ```
 //!
 //! Prints one JSON object on stdout (`default_model`, `loads`, `metrics`, `informational`);
@@ -171,6 +172,9 @@ struct Args {
     models: ModelDir,
     fixtures: PathBuf,
     only: Vec<String>,
+    /// Evaluation only (T12.24): `PieceConfig::max_piece` in seconds for the live stretches and
+    /// the final pass alike; `None` (always, for `accept m2`) is production's config.
+    max_piece: Option<u64>,
 }
 
 fn parse_args() -> Args {
@@ -180,6 +184,7 @@ fn parse_args() -> Args {
             .unwrap_or_else(|| fail("usage: m2_prod <repo-root> ...")),
     );
     let (mut backend, mut models, mut fixtures, mut only) = (None, None, None, Vec::new());
+    let mut max_piece = None;
     while let Some(flag) = it.next() {
         let mut value = || {
             it.next()
@@ -195,6 +200,12 @@ fn parse_args() -> Args {
             }
             "--models" => models = Some(ModelDir::new(value())),
             "--fixtures" => fixtures = Some(PathBuf::from(value())),
+            "--max-piece" => {
+                let s: u64 = value()
+                    .parse()
+                    .unwrap_or_else(|e| fail(format!("--max-piece: {e}")));
+                max_piece = Some(s);
+            }
             "--metric" => {
                 let id = value();
                 if !METRICS.contains(&id.as_str()) && !INFORMATIONAL.contains(&id.as_str()) {
@@ -211,6 +222,7 @@ fn parse_args() -> Args {
         models: models.unwrap_or_else(|| fail("--models is required")),
         fixtures: fixtures.unwrap_or_else(|| fail("--fixtures is required")),
         only,
+        max_piece,
     }
 }
 
@@ -318,6 +330,26 @@ impl LiveSetup {
     }
 }
 
+/// `pieces` with `max_piece` set to `seconds` when given (T12.24, evaluation only); a value
+/// the config refuses ends the run.
+fn pieces_with_max(mut pieces: PieceConfig, seconds: Option<u64>) -> PieceConfig {
+    if let Some(s) = seconds {
+        pieces.max_piece = Duration::from_secs(s);
+        pieces
+            .validate()
+            .unwrap_or_else(|e| fail(format!("--max-piece: {e}")));
+    }
+    pieces
+}
+
+impl LiveSetup {
+    /// The same setup with the stretches' `max_piece` overridden (`--max-piece`).
+    fn with_max_piece(mut self, seconds: Option<u64>) -> Self {
+        self.pieces = pieces_with_max(self.pieces, seconds);
+        self
+    }
+}
+
 /// Everything loaded once: the live factory, the final-pass transcriber and its VAD.
 struct Prod {
     name: &'static str,
@@ -326,6 +358,8 @@ struct Prod {
     live: LiveSetup,
     final_t: AnyTranscriber<VerifiedWhisper>,
     final_vad: SileroVad,
+    /// The final pass's piece config: `PieceConfig::default()` unless `--max-piece`.
+    final_pieces: PieceConfig,
     /// The options a live stretch track hands the final pass (`LiveTrack::final_pass`).
     final_options: TranscribeOptions,
     /// The live transcription's decoding options (`asr.config.options`).
@@ -405,9 +439,10 @@ fn load(args: &Args) -> Prod {
         name,
         backend: args.backend,
         factory,
-        live: LiveSetup::production(),
+        live: LiveSetup::production().with_max_piece(args.max_piece),
         final_t: choice.transcriber,
         final_vad,
+        final_pieces: pieces_with_max(PieceConfig::default(), args.max_piece),
         final_options: TranscribeOptions::live(),
         live_options: TranscribeOptions::live(),
         loads: Vec::new(),
@@ -486,7 +521,7 @@ fn final_words(prod: &mut Prod, audio: &[f32]) -> (Vec<Word>, Duration) {
         &mut prod.final_vad,
         &buffer,
         &prod.final_options,
-        &PieceConfig::default(),
+        &prod.final_pieces,
         &CancelToken::new(),
     )
     .unwrap_or_else(|e| fail(format!("final pass: {e}")));
@@ -702,6 +737,7 @@ fn stream_determinism(args: &Args, prod: &mut Prod) -> Value {
         "live_options": prod.live_options,
         "final_options": prod.final_options,
         "pieces": format!("{:?}", prod.live.pieces),
+        "final_piece_config": format!("{:?}", prod.final_pieces),
         "fallback_note": FALLBACK_NOTE,
         "live": live.json(),
         "final_pass": fin.json(),
@@ -955,6 +991,7 @@ fn main() {
     );
     let out = json!({
         "selected_backend": backend_name(args.backend),
+        "max_piece_override_s": args.max_piece,
         "default_model": {"name": prod.name, "rule": rule},
         "loads": prod.loads,
         "metrics": metrics,
@@ -1022,6 +1059,27 @@ mod tests {
         // A word starting after the last window is counted, never dropped silently.
         assert_eq!(unscored(&words, &windows), 1);
         assert_eq!(unscored(&words, &[]), words.len());
+    }
+
+    #[test]
+    fn m2_prod_max_piece_changes_only_max_piece_and_none_is_production() {
+        assert_eq!(
+            pieces_with_max(PieceConfig::default(), None),
+            PieceConfig::default()
+        );
+        let p = pieces_with_max(PieceConfig::default(), Some(15));
+        assert_eq!(p.max_piece, Duration::from_secs(15));
+        assert_eq!(
+            PieceConfig {
+                max_piece: PieceConfig::default().max_piece,
+                ..p
+            },
+            PieceConfig::default()
+        );
+        assert_eq!(
+            LiveSetup::production().with_max_piece(None).pieces,
+            LiveSetup::production().pieces
+        );
     }
 
     #[test]
