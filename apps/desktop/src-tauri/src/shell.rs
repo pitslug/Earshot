@@ -405,6 +405,20 @@ pub fn finished_toast(result: &SummaryEvent) -> Option<Toast> {
             buttons: vec![("Open", ToastClick::Meeting)],
             stays: false,
         }),
+        SummaryEvent::RecordingFailed { .. } => Some(Toast {
+            title: "The recording stopped".into(),
+            body: "Open the meeting to see why.".into(),
+            click: ToastClick::Meeting,
+            buttons: vec![("Open", ToastClick::Meeting)],
+            stays: false,
+        }),
+        SummaryEvent::PostFailed { .. } => Some(Toast {
+            title: "The transcript was not finished".into(),
+            body: "Open the meeting to see why and to re-transcribe it.".into(),
+            click: ToastClick::Meeting,
+            buttons: vec![("Open", ToastClick::Meeting)],
+            stays: false,
+        }),
         SummaryEvent::Skipped { .. } | SummaryEvent::Cancelled | SummaryEvent::PostCancelled => {
             None
         }
@@ -466,8 +480,8 @@ pub fn listening_toast() -> Toast {
 /// stopped because no track could record, whose own notification already said it
 /// ([`call_end_stopped_toast`], [`recording_stopped_toast`]). Fixed copy, never meeting content.
 #[must_use]
-pub fn ended_toast(reason: EndedReason, stopped_by_call_end: bool) -> Option<Toast> {
-    if stopped_by_call_end {
+pub fn ended_toast(reason: EndedReason, already_told: bool) -> Option<Toast> {
+    if already_told {
         return None;
     }
     let (title, body) = match reason {
@@ -643,7 +657,7 @@ pub struct Shell {
     call_end_open: AtomicBool,
     /// The call-end offer stopped this recording, or every track stopped recording (T9.17): its own
     /// notification said so, and [`ended_toast`] says nothing more.
-    call_end_stopped: AtomicBool,
+    end_already_told: AtomicBool,
     #[cfg(windows)]
     toasts: crate::toast_win::Toaster,
 }
@@ -659,7 +673,7 @@ impl Shell {
             latch: Mutex::new(KeyLatch::default()),
             has_tray: AtomicBool::new(false),
             call_end_open: AtomicBool::new(false),
-            call_end_stopped: AtomicBool::new(false),
+            end_already_told: AtomicBool::new(false),
             #[cfg(windows)]
             toasts: crate::toast_win::Toaster::default(),
         }
@@ -874,25 +888,25 @@ impl Shell {
         // Once per meeting (the banner comes again with the saved recording's problems); its own
         // notification says the recording ended, so the end's is not shown after it.
         if let Some(toast) = always_shown_toast(event)
-            && !self.call_end_stopped.swap(true, Ordering::SeqCst)
+            && !self.end_already_told.swap(true, Ordering::SeqCst)
         {
             self.notify(&toast, None);
         }
         match event {
-            MeetingEvent::Started { .. } => self.call_end_stopped.store(false, Ordering::SeqCst),
+            MeetingEvent::Started { .. } => self.end_already_told.store(false, Ordering::SeqCst),
             MeetingEvent::CallEndOffer { open: true } if !self.window_watched() => {
                 self.notify(&call_end_toast(), None);
             }
             MeetingEvent::CallEndStopped => {
-                self.call_end_stopped.store(true, Ordering::SeqCst);
+                self.end_already_told.store(true, Ordering::SeqCst);
                 if !self.window_watched() {
                     self.notify(&call_end_stopped_toast(), None);
                 }
             }
             MeetingEvent::Ended { reason, .. } => {
-                let by_call_end = self.call_end_stopped.swap(false, Ordering::SeqCst);
+                let already_told = self.end_already_told.swap(false, Ordering::SeqCst);
                 if !self.window_watched()
-                    && let Some(toast) = ended_toast(*reason, by_call_end)
+                    && let Some(toast) = ended_toast(*reason, already_told)
                 {
                     self.notify(&toast, None);
                 }

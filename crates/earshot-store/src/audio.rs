@@ -53,39 +53,9 @@ impl Store {
         clock: &C,
         rng: &mut R,
     ) -> Result<AudioFile, StoreError> {
-        let rel = DataDir::audio_rel(track.meeting_id, track.kind);
-        if writer.path() != data.resolve(&rel)? {
-            return Err(StoreError::Corrupt(format!(
-                "writer at {} is not the layout path {rel}",
-                writer.path().display()
-            )));
-        }
-        if !self
-            .tracks(track.meeting_id)?
-            .iter()
-            .any(|t| t.id == track.id)
-        {
-            return Err(StoreError::Repo(RepoError::MissingParent {
-                entity: "track",
-                id: track.id,
-            }));
-        }
-        let done = writer.finish()?;
-        let file = AudioFile {
-            id: EntityId::generate(clock, rng),
-            meeting_id: track.meeting_id,
-            track_id: track.id,
-            path: rel,
-            format: AudioFormat::Flac,
-            sample_rate_hz: done.sample_rate,
-            frames: done.frames,
-            size_bytes: done.size_bytes,
-            pipeline_version: provenance.pipeline_version,
-            aec_version: provenance.aec_version,
-            created_unix_ms: clock.now_unix_ms(),
-        };
-        self.put_audio_file(file.clone())?;
-        Ok(file)
+        finalize_track_audio_outside_lock(writer, data, track, provenance, clock, rng, &mut |f| {
+            f(self)
+        })
     }
 }
 
@@ -222,6 +192,65 @@ impl Store {
         self.put_audio_file(row.clone())?;
         Ok(row)
     }
+}
+
+/// Runs one store step for [`finalize_track_audio_outside_lock`]: the caller takes its lock,
+/// calls the step on the store and releases the lock.
+pub type WithStore<'a> =
+    dyn FnMut(&mut dyn FnMut(&mut Store) -> Result<(), StoreError>) -> Result<(), StoreError> + 'a;
+
+/// [`Store::finalize_track_audio`] for a caller whose store sits behind a lock (T9.17): the store
+/// is reached only through `with_store`, once for the meeting and track check and once for the
+/// row, so the file work between them (encoding the rest, header, sync, rename) runs without the
+/// lock. The same rules: the check comes first (a missing track leaves the `.part` unfinished and
+/// writes no row), and the row only after the rename.
+///
+/// # Errors
+/// As [`Store::finalize_track_audio`].
+pub fn finalize_track_audio_outside_lock<C: Clock + ?Sized, R: Rng + ?Sized>(
+    writer: FlacTrackWriter,
+    data: &DataDir,
+    track: &Track,
+    provenance: AudioProvenance,
+    clock: &C,
+    rng: &mut R,
+    with_store: &mut WithStore<'_>,
+) -> Result<AudioFile, StoreError> {
+    let rel = DataDir::audio_rel(track.meeting_id, track.kind);
+    if writer.path() != data.resolve(&rel)? {
+        return Err(StoreError::Corrupt(format!(
+            "writer at {} is not the layout path {rel}",
+            writer.path().display()
+        )));
+    }
+    let mut present = false;
+    with_store(&mut |s| {
+        present = s.tracks(track.meeting_id)?.iter().any(|t| t.id == track.id);
+        Ok(())
+    })?;
+    if !present {
+        return Err(StoreError::Repo(RepoError::MissingParent {
+            entity: "track",
+            id: track.id,
+        }));
+    }
+    let done = writer.finish()?;
+    let file = AudioFile {
+        id: EntityId::generate(clock, rng),
+        meeting_id: track.meeting_id,
+        track_id: track.id,
+        path: rel,
+        format: AudioFormat::Flac,
+        sample_rate_hz: done.sample_rate,
+        frames: done.frames,
+        size_bytes: done.size_bytes,
+        pipeline_version: provenance.pipeline_version,
+        aec_version: provenance.aec_version,
+        created_unix_ms: clock.now_unix_ms(),
+    };
+    let row = file.clone();
+    with_store(&mut |s| s.put_audio_file(row.clone()).map_err(StoreError::from))?;
+    Ok(file)
 }
 
 /// One hour in milliseconds.

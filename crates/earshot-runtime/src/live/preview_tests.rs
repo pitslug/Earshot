@@ -12,7 +12,9 @@ use earshot_llm_replay::mock::{MockResponse, MockServer};
 
 use super::queue_tests::{Scene, by_kind, factory_of, held_config, held_gates, scene_of};
 use super::*;
-use crate::live::preview::{COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PreviewWords};
+use crate::live::preview::{
+    COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PreviewWords, StreamFeed,
+};
 use crate::live::{LivePreviews, PreviewLoader, PreviewReport};
 use crate::power::{PowerProbe, PowerSource, PowerSupply};
 use crate::replay::{PaceClock, PaceState, Paced};
@@ -108,31 +110,37 @@ impl earshot_core::asr::Transcriber for FakePreview {
     }
 }
 
-/// A track's real transcriber reporting CUDA, as a meeting transcribed on the graphics card does.
-struct OnCuda(Box<dyn earshot_core::asr::Transcriber + Send>);
+/// A track's real transcriber reporting `.0`, as a meeting transcribed on the graphics card (CUDA)
+/// or the NPU (QNN) does.
+struct OnBackend(BackendKind, Box<dyn earshot_core::asr::Transcriber + Send>);
 
-impl earshot_core::asr::Transcriber for OnCuda {
+impl earshot_core::asr::Transcriber for OnBackend {
     fn transcribe(
         &mut self,
         audio: &MonoBuffer,
         options: &TranscribeOptions,
         cancel: &CancelToken,
     ) -> Result<Transcription, AsrError> {
-        let mut t = self.0.transcribe(audio, options, cancel)?;
+        let mut t = self.1.transcribe(audio, options, cancel)?;
         t.backend = self.backend_info();
         Ok(t)
     }
 
     fn backend_info(&self) -> BackendInfo {
         BackendInfo {
-            kind: BackendKind::Cuda,
-            ..self.0.backend_info()
+            kind: self.0,
+            ..self.1.backend_info()
         }
     }
 }
 
 /// [`factory_of`], with both tracks' transcribers reporting CUDA.
 fn cuda_factory_of(scene: &Scene) -> LiveAsrFactory {
+    factory_on(scene, BackendKind::Cuda)
+}
+
+/// [`factory_of`], with both tracks' transcribers reporting `kind`.
+fn factory_on(scene: &Scene, kind: BackendKind) -> LiveAsrFactory {
     let mut inner = factory_of(scene, Arc::default());
     Box::new(move |track, entity| {
         let mut asr = inner(track, entity)?;
@@ -141,7 +149,7 @@ fn cuda_factory_of(scene: &Scene) -> LiveAsrFactory {
                 &mut asr.asr.transcriber,
                 Box::new(super::queue_tests::ContentWords),
             );
-            asr.asr.transcriber = Box::new(OnCuda(real));
+            asr.asr.transcriber = Box::new(OnBackend(kind, real));
         }
         Ok(asr)
     })
@@ -195,6 +203,7 @@ fn previews(load: PreviewLoader) -> LivePreviews {
         fell_behind: Duration::from_secs(3600),
         background: false,
         own_voice: None,
+        stream: None,
     }
 }
 
@@ -1260,24 +1269,63 @@ impl<S: AudioSource> AudioSource for WaitingSource<S> {
 fn live_preview_stays_off_during_a_hold_and_its_catch_up() {
     let scene = scene_of(27);
     let seen = Arc::new(Seen::default());
+    let load = loader(&seen, marker_words);
+    assert_previews_wait_for_the_hold(&scene, factory_of(&scene, Arc::default()), load, &seen, 321);
+}
+
+/// T12.12c: the same on the NPU, through the app's rule on an NPU machine: nothing is loaded or
+/// decoded for held audio, and the far end's previews start, on the NPU, once it is up to date.
+#[test]
+fn live_preview_on_the_npu_stays_off_during_a_hold_and_its_catch_up() {
+    use crate::preview_settings::PreviewChoice;
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let load = npu_rule_loader(
+        &seen,
+        &asked,
+        npu_machine(Some(15 * GIB)),
+        PreviewChoice::On,
+    );
+    let events = assert_previews_wait_for_the_hold(
+        &scene,
+        factory_on(&scene, BackendKind::Qnn),
+        load,
+        &seen,
+        353,
+    );
+    assert_eq!(*asked.lock().unwrap(), vec![BackendKind::Qnn]);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.backend, Some(BackendKind::Qnn), "{report:?}");
+}
+
+/// Runs `scene` held until its first `Held`, checks no preview model was called for held audio and
+/// that words show only after the transcript is up to date; returns every event.
+fn assert_previews_wait_for_the_hold(
+    scene: &Scene,
+    factory: LiveAsrFactory,
+    load: PreviewLoader,
+    seen: &Arc<Seen>,
+    seed: u64,
+) -> Vec<RuntimeEvent> {
     let gates = held_gates();
     let dir = TempDir::new();
     let svc = services(&dir);
     let go = Arc::new(AtomicBool::new(true));
     let source = WaitingSource {
-        inner: fast_source(&scene),
+        inner: fast_source(scene),
         go: Arc::clone(&go),
     };
     let config = LiveConfig {
-        previews: Some(previews(loader(&seen, marker_words))),
+        previews: Some(previews(load)),
         ..held_config(gates.clone())
     };
     let mut session = start_live(
         source,
         svc.clone(),
         config,
-        Some(factory_of(&scene, Arc::default())),
-        Box::new(ChaCha8Rng::seed_from_u64(321)),
+        Some(factory),
+        Box::new(ChaCha8Rng::seed_from_u64(seed)),
     )
     .unwrap();
     let events = session.take_events().unwrap();
@@ -1321,6 +1369,7 @@ fn live_preview_stays_off_during_a_hold_and_its_catch_up() {
         "shown at {shown}, caught up at {up_to_date}"
     );
     assert!(report_of(&all).expect("a report").decodes > 0);
+    all
 }
 
 /// A track that falls behind stops its previews.
@@ -1382,7 +1431,10 @@ fn live_preview_runs_only_where_it_was_measured_and_fits() {
     let big = machine(Some(PREVIEW_MIN_MEMORY_CUDA), Some(PREVIEW_MIN_CARD_MEMORY));
     assert_eq!(previews_refused(BackendKind::Cpu, &big), None);
     assert_eq!(previews_refused(BackendKind::Cuda, &big), None);
-    for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
+    // T12.12c: the NPU runs them (its rule's tests are in `backends_tests`); whisper-only backends
+    // do not.
+    assert_eq!(previews_refused(BackendKind::Qnn, &big), None);
+    for kind in [BackendKind::Vulkan, BackendKind::Fake] {
         assert!(previews_refused(kind, &big).is_some(), "{kind:?}");
     }
     let small = machine(Some(PREVIEW_MIN_MEMORY - 1), Some(PREVIEW_MIN_CARD_MEMORY));
@@ -1436,5 +1488,498 @@ fn live_preview_runs_only_where_it_was_measured_and_fits() {
     assert_eq!(
         preview_backend(BackendKind::Cpu, &big),
         Ok(BackendKind::Cpu)
+    );
+}
+
+const GIB: u64 = 1024 * 1024 * 1024;
+
+/// An NPU machine (the Surface's kind): `memory` of system memory, an NPU, no graphics card.
+fn npu_machine(memory: Option<u64>) -> earshot_hardware::Hardware {
+    earshot_hardware::Hardware {
+        total_memory: memory,
+        npus: vec![earshot_hardware::Npu {
+            name: "A test NPU".to_owned(),
+            driver_version: Some("1.0.0.0".to_owned()),
+        }],
+        ..earshot_hardware::Hardware::default()
+    }
+}
+
+/// A first-session loader deciding through the app's rule (`backends::load_preview_with`) on
+/// `machine`, recording the backend each load is asked for, loading a [`fake_session_on`].
+fn npu_rule_loader(
+    seen: &Arc<Seen>,
+    asked: &Arc<Mutex<Vec<BackendKind>>>,
+    machine: earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> PreviewLoader {
+    let (seen, asked) = (Arc::clone(seen), Arc::clone(asked));
+    Arc::new(move |backend: &BackendInfo| {
+        crate::backends::load_preview_with(backend, &machine, choice, |on| {
+            asked.lock().unwrap().push(on.kind);
+            Ok(fake_session_on(&seen, on))
+        })
+    })
+}
+
+/// [`npu_rule_loader`] for the user's own voice (`backends::load_preview_second_with`).
+fn npu_rule_own_voice(
+    seen: &Arc<Seen>,
+    asked: &Arc<Mutex<Vec<BackendKind>>>,
+    machine: earshot_hardware::Hardware,
+) -> PreviewLoader {
+    use crate::preview_settings::PreviewChoice;
+    let (seen, asked) = (Arc::clone(seen), Arc::clone(asked));
+    Arc::new(move |backend: &BackendInfo| {
+        crate::backends::load_preview_second_with(
+            backend,
+            &machine,
+            PreviewChoice::Everyone,
+            |on| {
+                asked.lock().unwrap().push(on.kind);
+                Ok(fake_session_on(&seen, on))
+            },
+        )
+    })
+}
+
+/// One meeting with both tracks on the NPU and `previews`; its events, what it stored, and the same
+/// meeting's store without previews.
+fn npu_run(
+    scene: &Scene,
+    previews: LivePreviews,
+    power: Option<PowerSupply>,
+    seed: u64,
+) -> (Vec<RuntimeEvent>, Stored, Stored) {
+    let run = |previews: Option<LivePreviews>| {
+        let dir = TempDir::new();
+        let svc = services(&dir);
+        let mut config = config_with(previews);
+        if let Some(supply) = power {
+            config.power = PowerProbe::new(Fixed(supply));
+        }
+        let session = start_live(
+            fast_source(scene),
+            svc.clone(),
+            config,
+            Some(factory_on(scene, BackendKind::Qnn)),
+            Box::new(ChaCha8Rng::seed_from_u64(seed)),
+        )
+        .unwrap();
+        let meeting = session.meeting();
+        let (events, _) = collect(session);
+        (events, stored(&svc, meeting))
+    };
+    let (events, with) = run(Some(previews));
+    let (_, without) = run(None);
+    (events, with, without)
+}
+
+/// T12.12c: a meeting on the NPU of a machine above the limit shows the far end's provisional words
+/// from a session on the NPU, refuses the user's own voice with its reason under Everyone, and
+/// stores exactly what it stores without previews.
+#[test]
+fn live_preview_on_the_npu_runs_for_the_far_end_and_refuses_your_own_voice() {
+    let scene = scene_of(27);
+    let (far, own) = (Arc::new(Seen::default()), Arc::new(Seen::default()));
+    let (far_asked, own_asked) = (
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let surface = npu_machine(Some(15 * GIB));
+    let config = LivePreviews {
+        own_voice: Some(npu_rule_own_voice(&own, &own_asked, surface.clone())),
+        ..previews(npu_rule_loader(
+            &far,
+            &far_asked,
+            surface,
+            crate::preview_settings::PreviewChoice::Everyone,
+        ))
+    };
+    let (events, with, without) = npu_run(&scene, config, None, 351);
+    assert_eq!(*far_asked.lock().unwrap(), vec![BackendKind::Qnn]);
+    assert!(own_asked.lock().unwrap().is_empty(), "own voice loaded");
+    assert_eq!(own.calls.load(Ordering::SeqCst), 0);
+    let far_report = report_for(&events, TrackId::Reference);
+    assert_eq!(far_report.backend, Some(BackendKind::Qnn), "{far_report:?}");
+    assert_eq!(far_report.off, None, "{far_report:?}");
+    assert!(far_report.decodes > 0, "{far_report:?}");
+    assert!(shown_on(&events, TrackId::Reference));
+    let mic = report_for(&events, TrackId::Mic);
+    assert_eq!(
+        mic.off.as_deref(),
+        Some(crate::backends::OWN_VOICE_NPU_REFUSED),
+        "{mic:?}"
+    );
+    assert_eq!(mic.backend, None, "{mic:?}");
+    assert!(!shown_on(&events, TrackId::Mic));
+    assert!(warnings(&events).is_empty(), "{:?}", warnings(&events));
+    assert_eq!(with, without);
+}
+
+/// T12.12c: below the NPU's limit a meeting has no previews by default, and loads nothing.
+#[test]
+fn live_preview_on_the_npu_below_the_limit_is_off_by_default_and_loads_nothing() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let small = npu_machine(Some(crate::backends::PREVIEW_MIN_MEMORY_NPU - 1));
+    let load = npu_rule_loader(
+        &seen,
+        &asked,
+        small,
+        crate::preview_settings::PreviewChoice::Automatic,
+    );
+    let (events, with, without) = npu_run(&scene, previews(load), None, 355);
+    assert!(asked.lock().unwrap().is_empty());
+    let report = report_of(&events).expect("a report");
+    assert_eq!(
+        report.off.as_deref(),
+        Some("not enough memory for a second session of the model"),
+        "{report:?}"
+    );
+    assert!(previews_of(&events).is_empty());
+    assert_eq!(with, without);
+}
+
+/// T12.12c: on battery a meeting on the NPU has no previews, and nothing is loaded for them.
+#[test]
+fn live_preview_on_the_npu_is_off_on_battery_and_loads_nothing() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let load = npu_rule_loader(
+        &seen,
+        &asked,
+        npu_machine(Some(15 * GIB)),
+        crate::preview_settings::PreviewChoice::On,
+    );
+    let (events, with, without) = npu_run(&scene, previews(load), Some(PowerSupply::Battery), 357);
+    assert!(asked.lock().unwrap().is_empty());
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 0);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.off.as_deref(), Some(ON_BATTERY_REASON));
+    assert!(previews_of(&events).is_empty());
+    assert_eq!(with, without);
+}
+
+/// T12.12c: a Parakeet model whose NPU version is not installed: the app's real loader, asked for
+/// the NPU, fails to load (no NPU files here) and the meeting goes on without previews, storing what
+/// it stores without them. A failed preview load is never a failed meeting.
+#[test]
+fn live_preview_on_the_npu_without_the_npu_version_costs_the_meeting_nothing() {
+    let scene = scene_of(27);
+    let empty = TempDir::new();
+    let models = crate::backends::ModelDir::new(&empty.0);
+    let load: PreviewLoader = Arc::new(move |backend: &BackendInfo| {
+        crate::backends::load_preview(&models, backend, crate::preview_settings::PreviewChoice::On)
+    });
+    let (events, with, without) = npu_run(&scene, previews(load), None, 359);
+    let report = report_of(&events).expect("a report");
+    let why = report.off.clone().expect("no previews");
+    assert!(
+        !why.contains("memory") && !why.contains("Settings") && !why.contains("battery"),
+        "refused instead of failing to load: {why}"
+    );
+    assert_eq!(report.backend, None, "{report:?}");
+    assert!(previews_of(&events).is_empty());
+    assert!(warnings(&events).is_empty(), "{:?}", warnings(&events));
+    assert_eq!(with, without);
+}
+
+/// What the fake streaming model was given.
+#[derive(Default)]
+struct Heard {
+    /// Samples pushed since the start, over every restart.
+    samples: AtomicUsize,
+    restarts: AtomicUsize,
+}
+
+/// A streaming model that finishes a `MARKER` word at the end of every half second of audio it
+/// is given (word `k` from `500k + 400` to `500k + 500` ms).
+struct FakeStream {
+    heard: Arc<Heard>,
+    /// Samples since the last restart.
+    position: usize,
+    words: Vec<Word>,
+    /// Each push that finishes a word takes at least this long.
+    slow: Duration,
+}
+
+impl crate::live::StreamingPreview for FakeStream {
+    fn backend_info(&self) -> BackendInfo {
+        BackendInfo {
+            kind: BackendKind::Fake,
+            device: "fake".to_owned(),
+            model: "fake-stream".to_owned(),
+        }
+    }
+
+    fn restart(&mut self) {
+        self.heard.restarts.fetch_add(1, Ordering::SeqCst);
+        self.position = 0;
+        self.words.clear();
+    }
+
+    fn push(&mut self, samples: &[earshot_core::audio::Sample]) -> Result<u64, String> {
+        self.heard
+            .samples
+            .fetch_add(samples.len(), Ordering::SeqCst);
+        let before = self.position / 8000;
+        self.position += samples.len();
+        let after = self.position / 8000;
+        if after > before {
+            std::thread::sleep(self.slow);
+        }
+        // Each word ends where the half second that finished it ends: at the newest audio.
+        for k in before..after {
+            let end = (k as u64 + 1) * 500;
+            self.words
+                .push(Word::new(format!("{MARKER}{k}"), end - 100, end, 0.9));
+        }
+        Ok((after - before) as u64)
+    }
+
+    fn finished_words(&self) -> Vec<Word> {
+        self.words.clone()
+    }
+
+    fn forget_before(&mut self, time: MeetingTime) {
+        self.words.retain(|w| w.start >= time);
+    }
+}
+
+fn fake_stream(heard: &Arc<Heard>) -> FakeStream {
+    FakeStream {
+        heard: Arc::clone(heard),
+        position: 0,
+        words: Vec::new(),
+        slow: Duration::ZERO,
+    }
+}
+
+fn stream_loader(heard: &Arc<Heard>) -> crate::live::StreamLoader {
+    slow_stream_loader(heard, Duration::ZERO)
+}
+
+fn slow_stream_loader(heard: &Arc<Heard>, slow: Duration) -> crate::live::StreamLoader {
+    let heard = Arc::clone(heard);
+    Arc::new(move |_| {
+        Ok(Box::new(FakeStream {
+            heard: Arc::clone(&heard),
+            position: 0,
+            words: Vec::new(),
+            slow,
+        }) as Box<dyn crate::live::StreamingPreview + Send>)
+    })
+}
+
+/// T12.23 (evaluation only): a streaming preview is display-only like a window one. The words
+/// stored are the same with and without it, its words reach the screen, every sample goes to it
+/// once with no restart, and the window session is never loaded.
+#[test]
+fn live_preview_stream_shows_words_hears_each_sample_once_and_stores_the_same() {
+    let scene = scene_of(27);
+    let (without, ..) = run_with(&scene, None, 341);
+    let seen = Arc::new(Seen::default());
+    let heard = Arc::new(Heard::default());
+    let config = LivePreviews {
+        stream: Some(stream_loader(&heard)),
+        ..previews(loader(&seen, marker_words))
+    };
+    let (with, events, ..) = run_with(&scene, Some(config), 341);
+    assert_eq!(with, without);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.off, None);
+    assert_eq!(report.track, Some(TrackId::Reference));
+    assert_eq!(report.backend, Some(BackendKind::Fake));
+    assert!(report.decodes > 1 && report.words_shown > 1, "{report:?}");
+    assert!(shown_on(&events, TrackId::Reference), "{report:?}");
+    assert!(!shown_on(&events, TrackId::Mic));
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 0, "no window decode");
+    let pushed = heard.samples.load(Ordering::SeqCst);
+    assert_eq!(heard.restarts.load(Ordering::SeqCst), 0);
+    assert!(pushed > 0 && pushed <= scene.them.len(), "{pushed}");
+    #[allow(clippy::cast_precision_loss)]
+    let pushed_s = pushed as f64 / 16_000.0;
+    assert!((report.audio_s - pushed_s).abs() < 1e-6, "{report:?}");
+}
+
+/// T12.23: no show of a streaming preview holds a word settled text already covered, the last
+/// show is empty, and no preview word reaches the store. (Words the model finished in silence
+/// after a stretch's last word leave once the worker has decoded past them, which can be before
+/// settled text reaches them: `live_lag` counts those as `vanished` for the real model.)
+#[test]
+fn live_preview_stream_words_leave_when_settled_and_never_reach_the_store() {
+    let scene = scene_of(40);
+    let seen = Arc::new(Seen::default());
+    let heard = Arc::new(Heard::default());
+    let config = LivePreviews {
+        stream: Some(stream_loader(&heard)),
+        ..previews(loader(&seen, marker_words))
+    };
+    let (with, events, ..) = run_with(&scene, Some(config), 343);
+    assert!(
+        with.words
+            .iter()
+            .all(|(_, text, ..)| !text.contains(MARKER)),
+        "a preview word was stored"
+    );
+    assert!(shown_on(&events, TrackId::Reference));
+    let mut settled = MeetingTime::ZERO;
+    for event in &events {
+        match event {
+            RuntimeEvent::Transcript {
+                track: TrackId::Reference,
+                event: TranscriptEvent::Final(s),
+            } => settled = settled.max(s.end),
+            RuntimeEvent::LivePreview { words, .. } => {
+                assert!(
+                    words.iter().all(|w| w.start + COVERED_SLACK >= settled),
+                    "a shown word behind settled text at {settled:?}: {words:?}"
+                );
+            }
+            _ => {}
+        }
+    }
+    let last = previews_of(&events)
+        .into_iter()
+        .rev()
+        .find(|(t, _)| *t == TrackId::Reference)
+        .expect("a show");
+    assert!(
+        last.1.is_empty(),
+        "previews end with nothing shown: {last:?}"
+    );
+}
+
+fn texts_at(words: &[Word]) -> Vec<(String, u64)> {
+    words
+        .iter()
+        .map(|w| (w.text.clone(), w.start.as_millis()))
+        .collect()
+}
+
+/// T12.23 (review finding): a paused streaming preview still lets settled text take covered
+/// words away, and starts its model over once; the words it had finished stay until covered.
+#[test]
+fn live_preview_stream_covered_words_leave_during_a_pause() {
+    let heard = Arc::new(Heard::default());
+    let mut feed = StreamFeed::new(Box::new(fake_stream(&heard)));
+    feed.audio(0, &vec![0.0; 16_000]);
+    let audio = feed.take_pending().expect("audio");
+    assert_eq!(feed.push(&audio).unwrap(), 2);
+    let (shown, added) = feed.show(MeetingTime::ZERO).expect("words");
+    assert_eq!(added, 2);
+    assert_eq!(
+        texts_at(&shown),
+        [(format!("{MARKER}0"), 400), (format!("{MARKER}1"), 900)]
+    );
+    feed.pause();
+    feed.pause();
+    assert_eq!(heard.restarts.load(Ordering::SeqCst), 1, "starts over once");
+    assert_eq!(feed.take_pending(), None);
+    assert_eq!(feed.show(MeetingTime::ZERO), None, "nothing changed yet");
+    let (shown, added) = feed.show(MeetingTime::from_millis(800)).expect("a change");
+    assert_eq!(added, 0);
+    assert_eq!(texts_at(&shown), [(format!("{MARKER}1"), 900)]);
+    let (shown, _) = feed
+        .show(MeetingTime::from_millis(1_100))
+        .expect("a change");
+    assert!(shown.is_empty());
+}
+
+/// T12.23 (review finding): audio after a gap starts the model over at the packet after it; what
+/// was pending before the gap is dropped, the finished words stay, and no word spans the gap.
+#[test]
+fn live_preview_stream_a_gap_starts_the_model_over() {
+    let heard = Arc::new(Heard::default());
+    let mut feed = StreamFeed::new(Box::new(fake_stream(&heard)));
+    feed.audio(0, &vec![0.0; 12_000]);
+    let audio = feed.take_pending().unwrap();
+    feed.push(&audio).unwrap();
+    // Pending, never pushed: lost with the gap.
+    feed.audio(12_000, &vec![0.0; 1_000]);
+    // Frames 13,000 to 14,000 never arrive.
+    feed.audio(14_000, &vec![0.0; 2_000]);
+    assert_eq!(heard.restarts.load(Ordering::SeqCst), 1);
+    assert_eq!(feed.take_pending().map(|a| a.len()), Some(2_000));
+    feed.push(&vec![0.0; 2_000]).unwrap();
+    feed.audio(16_000, &vec![0.0; 14_000]);
+    let audio = feed.take_pending().unwrap();
+    feed.push(&audio).unwrap();
+    assert_eq!(heard.restarts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        heard.samples.load(Ordering::SeqCst),
+        12_000 + 2_000 + 14_000
+    );
+    let (shown, _) = feed.show(MeetingTime::ZERO).expect("words");
+    // Frame 14,000 is 875 ms: the new run's words are timed from there.
+    assert_eq!(
+        texts_at(&shown),
+        [
+            (format!("{MARKER}0"), 400),
+            (format!("{MARKER}0"), 1_275),
+            (format!("{MARKER}1"), 1_775)
+        ]
+    );
+    let (gap_start, gap_end) = (MeetingTime::from_millis(750), MeetingTime::from_millis(875));
+    assert!(
+        shown
+            .iter()
+            .all(|w| w.end <= gap_start || w.start >= gap_end),
+        "a word spans the gap: {shown:?}"
+    );
+}
+
+/// T12.23 (review finding): in a session, previews paused for slowness (here for the rest of the
+/// meeting, after their first words) still take covered words off the screen. At the end of the
+/// live transcript the screen holds no word that settled text covered before its last final (the
+/// last one may not have reached the thread yet). Without the fix the last words shown before
+/// the pause stayed (checked by making the paused loop skip the show: this test then fails).
+#[test]
+fn live_preview_stream_paused_for_slowness_still_clears_covered_words() {
+    let scene = scene_of(60);
+    let seen = Arc::new(Seen::default());
+    let heard = Arc::new(Heard::default());
+    let config = LivePreviews {
+        stream: Some(slow_stream_loader(&heard, Duration::from_millis(20))),
+        slow: Duration::from_millis(4),
+        slow_pause: Duration::from_secs(600),
+        ..previews(loader(&seen, marker_words))
+    };
+    let (_, events, ..) = run_with(&scene, Some(config), 345);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.slow_pauses, 1, "{report:?}");
+    let mut ends = Vec::new();
+    let mut last: Vec<Word> = Vec::new();
+    let mut was_shown = false;
+    for event in &events {
+        match event {
+            RuntimeEvent::LiveTranscriptFinished { .. } => break,
+            RuntimeEvent::Transcript {
+                track: TrackId::Reference,
+                event: TranscriptEvent::Final(s),
+            } => ends.push(s.end),
+            RuntimeEvent::LivePreview {
+                track: TrackId::Reference,
+                words,
+            } => {
+                was_shown |= !words.is_empty();
+                last.clone_from(words);
+            }
+            _ => {}
+        }
+    }
+    assert!(was_shown, "{report:?}");
+    ends.pop();
+    let settled = ends.into_iter().max().expect("finals before the last");
+    assert!(
+        settled > MeetingTime::from_millis(5_000),
+        "the meeting settled too little to judge: {settled:?}"
+    );
+    assert!(
+        last.iter().all(|w| w.start + COVERED_SLACK >= settled),
+        "covered words still shown at the end, settled to {settled:?}: {last:?}"
     );
 }

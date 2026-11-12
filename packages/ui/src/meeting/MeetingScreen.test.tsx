@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   CATCH_UP_MS,
   type Ipc,
+  IpcFailure,
   IpcProvider,
   type MeetingEvent,
   type MockIpcData,
@@ -733,5 +734,95 @@ describe("meeting screen", () => {
     advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
     expect(await screen.findByText("Summary failed")).toBeInTheDocument();
     expect(screen.getByText(/Trying again may work/)).toBeInTheDocument();
+  });
+
+  // T9.23: the way forward is on the spot, and the meeting's page then shows the job.
+  it("offers Re-summarise on a failed summary and starts it there", async () => {
+    const calls: unknown[][] = [];
+    const s = setup({
+      summary: { kind: "Failed", message: "The summary could not be written.", retryable: false },
+      onCall: (c) => calls.push(c),
+    });
+    const view = await startMeeting(s, "Call", "Pump order");
+    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
+    advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
+    expect(await screen.findByText("Summary failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
+    await s.user.click(screen.getByRole("button", { name: "Re-summarise" }));
+    await waitFor(() => expect(calls.some((c) => c[0] === "resummarise")).toBe(true));
+    expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+  });
+
+  it("offers Re-transcribe when the transcript was not finished", async () => {
+    const calls: unknown[][] = [];
+    const s = setup({
+      summary: {
+        kind: "PostFailed",
+        message: "The transcript could not be finished. The recording and the draft transcript are saved.",
+        retryable: false,
+      },
+      onCall: (c) => calls.push(c),
+    });
+    const view = await startMeeting(s, "Call", "Pump order");
+    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
+    advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
+    expect(await screen.findByText("Transcript not finished")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Meeting saved" })).toBeInTheDocument();
+    expect(screen.getByText(/The recording and the draft transcript are saved/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Re-summarise" })).toBeNull();
+    await s.user.click(screen.getByRole("button", { name: "Re-transcribe" }));
+    await waitFor(() => expect(calls.some((c) => c[0] === "retranscribe")).toBe(true));
+    expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+  });
+
+  it("says why when Re-transcribe cannot start, and stays on the meeting's screen", async () => {
+    const s = setup({
+      summary: {
+        kind: "PostFailed",
+        message: "The transcript could not be finished.",
+        retryable: false,
+      },
+    });
+    s.ipc.retranscribe = () =>
+      Promise.reject(
+        new IpcFailure({ kind: "meeting_busy", message: "This meeting is being recorded, finished, exported or deleted. Try again when that has finished.", retryable: true }),
+      );
+    const view = await startMeeting(s);
+    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
+    advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
+    await s.user.click(await screen.findByRole("button", { name: "Re-transcribe" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("This meeting is being recorded");
+    expect(screen.getByText("Transcript not finished")).toBeInTheDocument();
+  });
+
+  it("offers only Open when the recording itself did not finish", async () => {
+    const s = setup({
+      summary: {
+        kind: "RecordingFailed",
+        message: "The recording could not be finished. Something went wrong inside Earshot. Restart Earshot and try again.",
+      },
+    });
+    const view = await startMeeting(s);
+    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
+    advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
+    expect(await screen.findByText("Recording not finished")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Meeting stopped" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Re-summarise" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Re-transcribe" })).toBeNull();
+    expect(screen.queryByText(/transcript are saved/)).toBeNull();
+  });
+
+  it("offers Re-transcribe after a cancelled finish", async () => {
+    const calls: unknown[][] = [];
+    const s = setup({ onCall: (c) => calls.push(c) });
+    const view = await startMeeting(s);
+    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
+    advance(s.timer, POST_STEP_MS);
+    await s.user.click(await screen.findByRole("button", { name: "Cancel" }));
+    advance(s.timer, POST_STEP_MS * 2);
+    expect(await screen.findByText("Transcript not finished")).toBeInTheDocument();
+    await s.user.click(screen.getByRole("button", { name: "Re-transcribe" }));
+    await waitFor(() => expect(calls.some((c) => c[0] === "retranscribe")).toBe(true));
   });
 });

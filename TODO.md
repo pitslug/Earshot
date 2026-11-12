@@ -13,7 +13,7 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - Remaining dev-wide / held-out misses after T1.6c: false linear-stage divergence resets in quiet passages (a relevance gate fixed stereo 84/174 but slowed delay-jump recovery 2.5 -> 6.6 s), applied delay drifting from the true delay under clock drift (drift erle_linear 8.5 dB dev-wide, 10.5 held-out), double-talk SI-SDR limited by postfilter near-end distortion (held-out 9.95 mono, 5.50 stereo vs 10) (T1.6c lane) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d).
 - The skipped-speech recovery lives in the shared piece protocol behind `may_skip_speech`; the deeper fix is inside `ParakeetTdt::transcribe` (detect a chunk that stayed on blank over speech and re-decode its tail) so every caller (chunker live path, single calls) is covered (the worst case is now documented in pieces.rs) (T2.5d review; kept here by the owner: step 5 covers the defaults) - crates/earshot-onnx/src/parakeet.rs:632
 - xtask/src/ui.rs: a ui-step timeout kills only cmd; pnpm/node children can outlive it (needs a job object in proc).
-- crates/earshot-runtime/src/live/mod.rs (`finish_workers`): Cancel on "Finishing the meeting" waits for the live catch-up, up to the decode of `STRETCH_MAX_BACKLOG`; a wedged final-pass model call holds "Stopping" with no limit (no watchdog).
+- `host::after_meeting`: a wedged final-pass model call or local summary load holds the meeting with no limit (T9.22b).
 - apps/desktop/src-tauri/src/meeting.rs:679: the two early-cancel paths rely on the ticket's drop rather than `final_pass_done`; calling it once after `host` is known would be simpler.
 - apps/desktop/src-tauri/src/meeting.rs: `HostPrepare` (real WASAPI pre-flight and capture) is only compiled, never run: first hand run in `tauri dev` on the desktop (GATE-02 at the latest).
 - crates/earshot-runtime/src/edit.rs: re-transcription uses the default language (TranscribeOptions::batch()); store a per-meeting language when multilingual models ship.
@@ -48,8 +48,7 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-runtime/examples/m2_prod/main.rs:642: `asr.stream_determinism` compares after normalisation, as decided, so a flap the normaliser maps away passes; report the raw-token count beside it in the per-stream JSON.
 - crates/earshot-llm-local/examples/sum_eval/facts.rs:65: the first judge prompt (66.3%, kappa 0.34) is recorded nowhere, so that row cannot be reproduced; paste it into docs/summary-eval.md.
 - acceptance/results/m2.json records `7bafff9-dirty`: re-run `cargo xtask accept m2` on a clean tree for a clean stamp, on an idle host.
-- apps/desktop/src-tauri/src/meeting.rs:645: `ticket.wait_turn` has no cancel and the queue is strictly first in, first out: a hung older meeting leaves a newer one `Waiting` until Quit (nothing is lost; it is `Unprocessed` after a restart). Add a per-ticket ceiling or a way to skip the queue.
-- apps/desktop/src-tauri/src/meeting.rs:795: `meeting_models.resolve()` after `Ended` waits for the CUDA start with no cancel, which an unfinished `verify_part` could hold; poll with the post token when the app gets a cancel control.
+- a hung final pass or summary of an older meeting leaves a newer one `Waiting` until Quit (T9.22b); `wait_turn` itself has a cancel.
 - crates/earshot-runtime/src/live/hold.rs:163: held audio is kept as f32 twice, about 230 MB at the cap; stretch tracks could hold i16.
 - crates/earshot-runtime/src/live/echo.rs: a mic worker that crashed freezes the prune point for reference words, so they grow for the rest of that meeting.
 - packages/ui mock: the preview still lands script lines during a hold.
@@ -134,3 +133,24 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - packages/ui/src/ipc/mockWords.ts: `wordsToOffer` mirrors `vocabulary::words_to_offer` with no shared case table; add `fixtures/ui/words_to_offer_cases.json` run by both suites (T12.15f review).
 - packages/ui/src/ipc/mock.ts:753: the "Only a word can be added to the dictionary." refusal is not in `fixtures/ui/summary_settings_cases.json` (T12.15f review).
 - crates/earshot-runtime/src/vocabulary.rs:515: a word in single quotes is added with its quotes ('Zorbek'), the matcher keeping apostrophes; ask the owner whether to strip leading and trailing single quotes (T12.15f review).
+- crates/earshot-runtime/src/meeting_queue.rs (`wait_for_the_library_choice`): sleep-polls the CUDA choice; call `cuda::wait_for_onnx_unless` instead.
+- crates/earshot-runtime/src/live/mod.rs (`stall` docs): `CancelToken::polls` counts every clone; nothing but the scan test keeps a second poller out (T9.22a review).
+- apps/desktop/src-tauri/src/audio_check.rs `failure_copy`: `RuntimeError::Capture(m)` still passes the runtime's text through, and crates/earshot-runtime/src/audio_check.rs builds one with `{e:?}` (T9.23 review).
+- apps/desktop/src-tauri/src/models.rs `internal`, `remove_error` and `settings_error` still show catalogue and settings errors' own text (T9.23 review).
+- README.md "What you need": the proxy sentence covers downloads; in-app update checks use the same client and are not mentioned (T9.23 review).
+- crates/earshot-capture-wasapi/src/problem.rs: `DeviceGone { what: "output" }` reads as `NoMicrophone`; reachable only past `WasapiSource::fallbacks` (T9.23 review).
+- apps/desktop/src-tauri/src/cuda_settings.rs:1062 and update_settings.rs:287: CUDA part and update installer downloads still send progress per network chunk; throttle them in one shared place (`Downloader::fetch` or `Catalogue::download`) rather than per caller (T9.24a review).
+- crates/earshot-runtime/src/host.rs:727: no test drives `host::download_model` and counts its reports, so dropping the throttle wrap passes every test; add a loopback test serving many small chunks (T9.24a review).
+- crates/earshot-store/src/repo.rs:426 `has_live_segment`: no index on `pass`/`deleted`, so a long live-only meeting still reads its segment headers (T9.24a review).
+- crates/earshot-llm/tests/claude_code.rs:146: the fake's `--help` branch does not record the environment, so the effort probe's clearing is covered only by the shared spec (T9.25 review).
+- crates/earshot-llm/src/codex.rs:183: `CODEX_REFRESH_TOKEN_URL_OVERRIDE` (in codex.exe 0.166.0, undocumented) is not cleared under the docs-only rule; owner to decide (T9.25).
+- crates/earshot-llm (T9.25 design question for the owner): an allow list (`env_clear` plus what the CLI needs) instead of the vendor deny lists; needs an `env_clear` flag in earshot-proc.
+- crates/earshot-runtime/src/backends.rs:1657: an NPU preview's prediction-network and joint sessions are not background sessions (normal priority, outside `preview_pool_failed`); the qnn2 numbers were measured this way, so changing it needs a re-measure (T12.12c review; owner to decide).
+- crates/earshot-runtime/src/backends.rs:1730: a preview may run the helper compile mid-meeting when the track fell back to the ordinary load (about 30 s of NPU and CPU beside the track, holding `npu_compiled::LOADS`); never measured (T12.12c review).
+- crates/earshot-runtime/src/backends.rs:1699: `npu_compiled::record` runs for preview loads, so a preview's refused compile consumes the once-per-process `npu-compiled` banner and overwrites `last_load()` (T12.12c review).
+- apps/desktop/src-tauri/src/general.rs:362 + preview_settings.rs:118-156: the previews page judges by `accelerator_order().first()`, not where the chosen model runs (an NPU machine with a Parakeet model without its NPU version shows the NPU note while both previews run on the CPU); pre-existing (T12.12c review).
+- crates/earshot-runtime/src/backends.rs:1608: `preview` is derived from `background` in `load_parakeet_with`; a future non-preview background QNN load would silently lose the ordinary load (T12.12c review).
+- docs/live-previews.md T12.12c step-4 table: say the far end had `never_settled: 1` in every t1212c run and that run 1's 53 vanished words were far-end before it turned off (T12.12c review).
+- crates/earshot-runtime/examples/m2_prod/main.rs:726: the streams metric's `definition` names `LiveConfig::default()`/`PieceConfig::default()` even under `--max-piece`; build it from the config in effect (T12.24 review).
+- crates/earshot-runtime/examples/m2_prod: add a counts-only output; docs/live-previews/t1224/streams-*.json had their text fields removed by hand (T12.24 review).
+- crates/earshot-runtime/examples/stretch_eval.rs: record host load as live_lag does, so its rtf figures carry their own idle evidence (T12.24 review).

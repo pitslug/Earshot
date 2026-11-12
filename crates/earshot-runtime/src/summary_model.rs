@@ -271,13 +271,26 @@ pub fn llama_order(order: &[Accelerator]) -> Vec<Accelerator> {
 }
 
 /// [`summary_gpu`] for this build and machine: asks llama.cpp whether it has a GPU backend
-/// (this loads llama.cpp's library) and reads [`crate::backends::accelerator_order`].
+/// (this loads llama.cpp's library) and reads [`crate::backends::accelerator_order`]. On a
+/// processor without the native builds' baseline ([`crate::cpu`]) llama.cpp is never asked,
+/// because its first call starts ggml's AVX2 CPU backend (T9.23): no GPU.
 #[must_use]
 pub fn summary_gpu_here() -> bool {
-    summary_gpu(
-        earshot_llm_local::supports_gpu(),
-        &llama_order(&crate::backends::accelerator_order()),
+    summary_gpu_here_with(
+        crate::cpu::runs_native_builds(),
+        earshot_llm_local::supports_gpu,
+        crate::backends::accelerator_order,
     )
+}
+
+/// [`summary_gpu_here`] with whether this processor runs the native builds and the two
+/// questions, which are asked only when it does.
+pub(crate) fn summary_gpu_here_with(
+    native: bool,
+    llama_gpu: impl FnOnce() -> bool,
+    order: impl FnOnce() -> Vec<Accelerator>,
+) -> bool {
+    native && summary_gpu(llama_gpu(), &llama_order(&order()))
 }
 
 /// The installed file of `model` in `models`, checked against the manifest size.

@@ -2,7 +2,14 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { type Ipc, IpcFailure, IpcProvider, type MeetingListItem, createMockIpc } from "../ipc";
+import {
+  DATA_FOLDER_COPY,
+  type Ipc,
+  IpcFailure,
+  IpcProvider,
+  type MeetingListItem,
+  createMockIpc,
+} from "../ipc";
 import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { AppShell } from "./AppShell";
@@ -95,6 +102,38 @@ describe("AppShell", () => {
     renderShell(failing);
     expect(await screen.findByText("Meetings could not be loaded")).toBeInTheDocument();
     expect(screen.getByText("store: disk full")).toBeInTheDocument();
+  });
+
+  // T9.23: a data folder that could not be opened has its own screen, whose Try again restarts.
+  it("shows the data folder screen with Try again, which restarts Earshot", async () => {
+    let restarts = 0;
+    const ipc: Ipc = {
+      ...createMockIpc({ dataFolderFails: true }),
+      restartApp: async () => {
+        restarts += 1;
+      },
+    };
+    renderShell(ipc);
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Earshot could not open its data" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(DATA_FOLDER_COPY)).toBeInTheDocument();
+    expect(screen.queryByText("Meetings could not be loaded")).toBeNull();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }));
+    expect(restarts).toBe(1);
+    expect(document.body.textContent ?? "").not.toMatch(/\u2014|please|!/i);
+  });
+
+  it("says why when Try again cannot restart", async () => {
+    const ipc: Ipc = {
+      ...createMockIpc({ dataFolderFails: true }),
+      restartApp: () =>
+        Promise.reject(new IpcFailure({ kind: "busy", message: "A download is running.", retryable: true })),
+    };
+    renderShell(ipc);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("A download is running.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
   });
 
   it("shows a notice when given one", async () => {

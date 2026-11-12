@@ -309,7 +309,7 @@ impl Services {
         &self,
         meeting: EntityId,
     ) -> Result<Option<MeetingActivity>, RuntimeError> {
-        use earshot_core::model::{MeetingRepo, TranscriptPass, live_segments};
+        use earshot_core::model::{MeetingRepo, TranscriptPass};
         let jobs: BTreeSet<MeetingJob> = self
             .activity()
             .leased
@@ -328,7 +328,7 @@ impl Services {
             MeetingActivity::Waiting
         } else if m.duration_ms.is_none() {
             MeetingActivity::Interrupted
-        } else if !live_segments(&**db, meeting, TranscriptPass::Final)?.is_empty()
+        } else if db.has_live_segment(meeting, TranscriptPass::Final)?
             || crate::backends::pass_backend(&db, meeting, TranscriptPass::Final, None)?.is_some()
         {
             MeetingActivity::Ready

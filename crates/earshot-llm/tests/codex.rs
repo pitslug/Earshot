@@ -32,6 +32,31 @@ const T0: u64 = 1_790_000_000_000;
 /// The environment variable naming a Codex CLI for the real run only.
 const TEST_CLI_ENV: &str = "EARSHOT_TEST_CODEX_CLI";
 
+/// Variables `main` sets in this process and the CLI must not see (T7.4gc, and T9.25: every
+/// address, credential and proxy variable). Written out here, not read from the crate, so a
+/// name dropped from the crate's list fails the test.
+const MUST_CLEAR: [&str; 16] = [
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN",
+    "OPENAI_FEDERATION_RULE_ID",
+    "OPENAI_IDENTITY_TOKEN_FILE",
+    "OPENAI_WORKLOAD_IDENTITY_CONTEXT",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "all_proxy",
+    "no_proxy",
+];
+
+/// A variable `main` sets that the CLI must still see (the rest of the environment stays).
+const KEPT: &str = "EARSHOT_FAKE_KEPT";
+
 // ---------------------------------------------------------------------------------------
 // The fake CLI.
 
@@ -60,6 +85,20 @@ mod fake {
         writeln!(out, "{v}").unwrap();
     }
 
+    /// Writes `NAME=value` (or `NAME=<unset>`) for each variable the tests check.
+    fn record_env(path: &Path) {
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| "<unset>".into());
+        std::fs::write(
+            path,
+            std::iter::once(&super::KEPT)
+                .chain(super::MUST_CLEAR.iter())
+                .map(|k| format!("{k}={}", env(k)))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+    }
+
     /// `<exe> --fake-codex <dir> <args...>` (module docs of the test).
     pub fn main(dir: &Path, args: &[String]) -> ! {
         if args == ["--version"] {
@@ -68,6 +107,7 @@ mod fake {
         }
         if args == ["login", "status"] {
             bump(&dir.join("status-calls"));
+            record_env(&dir.join("status.env"));
             if let Ok(ms) = std::fs::read_to_string(dir.join("status-sleep")) {
                 std::thread::sleep(std::time::Duration::from_millis(ms.trim().parse().unwrap()));
             }
@@ -90,19 +130,7 @@ mod fake {
         let entries = std::fs::read_dir(&cwd).unwrap().count();
         std::fs::write(call("cwd"), format!("{}\n{entries}", cwd.display())).unwrap();
         std::fs::write(call("pid"), std::process::id().to_string()).unwrap();
-        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| "<unset>".into());
-        std::fs::write(
-            call("env"),
-            [
-                "OPENAI_BASE_URL",
-                "OPENAI_API_BASE",
-                "OPENAI_API_KEY",
-                "EARSHOT_FAKE_KEPT",
-            ]
-            .map(|k| format!("{k}={}", env(k)))
-            .join("\n"),
-        )
-        .unwrap();
+        record_env(&call("env"));
         let mut stdin = String::new();
         std::io::stdin().read_to_string(&mut stdin).unwrap();
         std::fs::write(call("stdin"), &stdin).unwrap();
@@ -445,10 +473,15 @@ fn codex_valid_reply_is_a_summary_after_one_run() {
     // The environment: no variable that could send the prompt elsewhere or bill another
     // account; the rest is kept (the sign-in is found through it).
     let env = s.read("call-1.env");
-    for k in CLEARED_ENV {
-        assert!(env.contains(&format!("{k}=<unset>")), "{env}");
+    let lines: Vec<&str> = env.lines().collect();
+    for k in MUST_CLEAR {
+        assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
     }
-    assert!(env.contains("EARSHOT_FAKE_KEPT=1"), "{env}");
+    assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
+    // The crate's list holds every name this test requires (and may hold more).
+    for k in MUST_CLEAR {
+        assert!(CLEARED_ENV.contains(&k), "{k}");
+    }
     assert_args_hold_no_meeting_text(&s, &input);
 
     // The prompt went on standard input: the preamble, the rules and the meeting.
@@ -732,7 +765,7 @@ fn codex_cli_search_resolves_npm_shims_to_the_native_exe() {
         CodexCli::find_with(&search(&[&npm])),
         Some(CodexCli::at(native(&nested)))
     );
-    // A native codex.exe in an earlier folder wins.
+    // Among PATH folders, a native codex.exe in an earlier folder wins.
     let direct = s.dir.join("direct");
     touch(&direct.join("codex.exe"));
     assert_eq!(
@@ -741,7 +774,8 @@ fn codex_cli_search_resolves_npm_shims_to_the_native_exe() {
             .program,
         direct.join("codex.exe")
     );
-    // npm's global folder is searched after PATH.
+    // The known install folders come before PATH, even when PATH has a codex.exe too
+    // (T9.25): npm's global folder before PATH...
     let app_data = s.dir.join("appdata");
     touch(&app_data.join("npm").join("codex.cmd"));
     touch(&native(
@@ -749,11 +783,28 @@ fn codex_cli_search_resolves_npm_shims_to_the_native_exe() {
     ));
     let with_app_data = CliSearch {
         app_data: Some(app_data.clone()),
-        ..search(&[&s.dir.join("nothing")])
+        ..search(&[&direct])
     };
     assert_eq!(
         CodexCli::find_with(&with_app_data).unwrap().program,
         native(&app_data.join("npm").join("node_modules").join("@openai"))
+    );
+    // ...and the standalone installer's folder before both.
+    let local = s.dir.join("local");
+    let standalone = local
+        .join("Programs")
+        .join("OpenAI")
+        .join("Codex")
+        .join("bin")
+        .join("codex.exe");
+    touch(&standalone);
+    let with_standalone = CliSearch {
+        local_app_data: Some(local.clone()),
+        ..with_app_data
+    };
+    assert_eq!(
+        CodexCli::find_with(&with_standalone).unwrap().program,
+        standalone
     );
 }
 
@@ -837,6 +888,14 @@ fn codex_version_and_sign_in_status_come_from_the_cli() {
     );
     s.flag("signed-out");
     assert_eq!(cli.sign_in(STATUS_TIMEOUT), CodexSignIn::NotSignedIn);
+    // The sign-in check sees the summary run's environment (T9.25): a sign-in that exists
+    // only in a cleared variable reads as not signed in, never as one the run lacks.
+    let env = s.read("status.env");
+    let lines: Vec<&str> = env.lines().collect();
+    assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
+    for k in MUST_CLEAR {
+        assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
+    }
     std::fs::remove_file(s.dir.join("signed-out")).unwrap();
     s.flag("status-garbage");
     assert!(matches!(
@@ -1094,10 +1153,10 @@ fn main() {
     // SAFETY: single-threaded here (no case has started); nothing reads the environment
     // concurrently.
     unsafe {
-        std::env::set_var("OPENAI_BASE_URL", "http://127.0.0.1:9/v1");
-        std::env::set_var("OPENAI_API_BASE", "http://127.0.0.1:9/v1");
-        std::env::set_var("OPENAI_API_KEY", "sk-not-a-real-key");
-        std::env::set_var("EARSHOT_FAKE_KEPT", "1");
+        for k in MUST_CLEAR {
+            std::env::set_var(k, "http://127.0.0.1:9/earshot-test");
+        }
+        std::env::set_var(KEPT, "1");
     }
     let mut filters = Vec::new();
     let (mut ignored, mut include_ignored, mut list) = (false, false, false);

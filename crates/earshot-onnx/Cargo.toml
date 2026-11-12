@@ -35,6 +35,14 @@ rand_core = { version = "0.10.1", default-features = false }
 # Reads acceptance/aec_scenarios.toml (same version and features as xtask, so no feature widening).
 toml = "1"
 serde = { version = "1", features = ["derive"] }
+# Reads the nemotron_probe example's reference file (already in the graph through earshot-core).
+serde_json = "1.0.154"
+
+# Evaluation only (T12.23): the Nemotron streaming port against sherpa-onnx's own text. Its tests
+# that need the stream-eval model are ignored with the command in their reason.
+[[example]]
+name = "nemotron_probe"
+test = true
 
 [lints]
 workspace = true

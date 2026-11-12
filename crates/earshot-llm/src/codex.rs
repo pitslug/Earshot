@@ -6,9 +6,13 @@
 //!
 //! # Finding the CLI ([`CodexCli::find`])
 //!
-//! Earshot does not ship Codex: it looks for the user's own. `codex.exe` (or `codex` off
-//! Windows) in an absolute `PATH` directory, then npm's global folders (`%APPDATA%\npm`,
-//! `%LOCALAPPDATA%\npm`). An npm `codex.cmd` shim is never run (it would route the arguments
+//! Earshot does not ship Codex: it looks for the user's own. `codex.exe` in the standalone
+//! installer's default folder `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` (`$defaultVisibleBinDir`
+//! in openai/codex `scripts/install/install.ps1`, read 2026-11-12; a junction to the current
+//! release), then npm's global folders (`%APPDATA%\npm`, `%LOCALAPPDATA%\npm`), then an
+//! absolute `PATH` directory (`codex` off Windows, where only `PATH` is searched): the known
+//! install folders come first, so a `codex` earlier on `PATH` is not run when a real install
+//! exists (T9.25). An npm `codex.cmd` shim is never run (it would route the arguments
 //! through `cmd.exe`): it is resolved to the native `codex.exe` of the platform package npm
 //! installed beside it, `node_modules\@openai\codex\node_modules\@openai\codex-win32-<arch>\
 //! vendor\<triple>\bin\codex.exe` (a global install) or the hoisted
@@ -16,7 +20,8 @@
 //! another desktop app's publish script locates for codex-cli 0.155.1; `<arch>`/`<triple>` are
 //! `x64`/`x86_64-pc-windows-msvc`, and by the same naming `arm64`/`aarch64-pc-windows-msvc` on
 //! ARM64, which is not measured). Relative `PATH` entries are skipped. Codex documents no
-//! other Windows install folder, so none is guessed.
+//! other Windows install folder, so none is guessed (a `CODEX_INSTALL_DIR` install is found
+//! through `PATH`, which the installer updates).
 //!
 //! # One run ([`CodexClient::complete`])
 //!
@@ -58,11 +63,16 @@
 //!   keeps no prompt history either (belt and braces: after a real run there was no
 //!   `history.jsonl` and no session file; a bad value of this key is refused by 0.155.1, so
 //!   the key exists, while an unknown `-c` key would be ignored silently).
-//! - The child's environment loses `OPENAI_BASE_URL`, `OPENAI_API_BASE` and
-//!   `OPENAI_API_KEY` ([`CLEARED_ENV`]), so no variable of the user's can send the prompt to
-//!   another endpoint or bill another account. On a ChatGPT sign-in 0.155.1 ignored the two
-//!   base URLs (measured 2026-11-04: both pointed at a closed loopback port, the run still
-//!   answered), so this changes nothing for that sign-in.
+//! - The child's environment loses every variable that names another address, a credential
+//!   other than the stored ChatGPT sign-in, or a proxy ([`CLEARED_ENV`]: `OPENAI_BASE_URL`,
+//!   `OPENAI_API_BASE`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, workload
+//!   identity federation, `HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`; T9.25), so no variable of
+//!   the user's can send the prompt to another endpoint or bill another account. On a ChatGPT
+//!   sign-in 0.155.1 ignored the two base URLs (measured 2026-11-04: both pointed at a closed
+//!   loopback port, the run still answered). A user signed in only through such a variable
+//!   reads as not signed in, so the summary is skipped with a banner. `CODEX_HOME` (where the
+//!   sign-in lives) and the CA variables (`CODEX_CA_CERTIFICATE`, `SSL_CERT_FILE`: they name
+//!   no address) are kept.
 //! - Codex keeps its own coding-agent instructions (exec has no flag to replace them), so
 //!   the stdin text starts with [`PREAMBLE`] (fixed) before the request parts.
 //! - The working folder is a new, empty temporary folder, deleted afterwards. Nothing is
@@ -163,8 +173,45 @@ pub const DISABLED_FEATURES: [&str; 21] = [
 /// Prefix of the working folders.
 const TEMP_PREFIX: &str = "earshot-codex";
 
-/// Variables removed from the CLI's environment (module docs).
-pub const CLEARED_ENV: [&str; 3] = ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_API_KEY"];
+/// Variables removed from the CLI's environment (module docs; T9.25, the owner's decision of
+/// 2026-11-12: the CLI talks only to its signed-in default, never to an address, account or
+/// proxy a variable of the user's names, as [`crate::claude_code::CLEARED_ENV`]). Where each
+/// name comes from is beside it (read 2026-11-12; every name is also present as text in the
+/// codex-cli 0.166.0 `codex.exe`, checked 2026-11-12). Codex has no variable that switches the
+/// provider: `model_provider` and `model_providers` are config keys, and
+/// `--ignore-user-config` leaves the user's `config.toml` unread.
+pub const CLEARED_ENV: [&str; 16] = [
+    // Another address for the built-in OpenAI provider (T7.4gc, measured on 0.155.1; the
+    // config reference names the matching key `openai_base_url`).
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    // Credentials other than the stored ChatGPT sign-in: `OPENAI_API_KEY` (T7.4gc; the
+    // advanced config page's `env_key = "OPENAI_API_KEY"`), and the rest from the
+    // environment variables page
+    // <https://learn.chatgpt.com/docs/config-file/environment-variables> (formerly
+    // developers.openai.com/codex/environment-variables): an API key or access token for a
+    // non-interactive run, and workload identity federation.
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN",
+    "OPENAI_FEDERATION_RULE_ID",
+    "OPENAI_IDENTITY_TOKEN_FILE",
+    "OPENAI_WORKLOAD_IDENTITY_CONTEXT",
+    // Proxies. Codex's documentation names none (its config reference says an upstream proxy
+    // is taken "from the environment"); these are the names reqwest, the HTTP client Codex is
+    // built on, reads: the crate docs' Proxies section (<https://docs.rs/reqwest>: `HTTP_PROXY`,
+    // `HTTPS_PROXY`, `ALL_PROXY` and their lower-case forms) and `NoProxy::from_env`
+    // (`NO_PROXY`, then `no_proxy`). Windows names ignore case; the lower-case entries are for
+    // other systems.
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "all_proxy",
+    "no_proxy",
+];
 
 /// Top-level event types of `codex exec --json` (every one seen in the captures: this host
 /// 2026-11-04 and an earlier app's fixtures, codex-cli 0.155.1; `item.updated` from an earlier app's event
@@ -414,27 +461,24 @@ fn npm_platform() -> (&'static str, &'static str) {
 }
 
 impl CodexCli {
-    /// The directories searched, in order (module docs): absolute `PATH` entries, then npm's
-    /// global folders on Windows.
+    /// The directories searched, in order (module docs): on Windows the standalone
+    /// installer's default folder and npm's global folders, then the absolute `PATH` entries.
     #[must_use]
     pub fn search_dirs(search: &CliSearch) -> Vec<PathBuf> {
-        let mut dirs: Vec<PathBuf> = search
-            .path
-            .as_ref()
-            .map(|p| {
-                std::env::split_paths(p)
-                    .filter(|d| d.is_absolute())
-                    .collect()
-            })
-            .unwrap_or_default();
-        if cfg!(windows) {
-            for d in [&search.app_data, &search.local_app_data]
-                .into_iter()
-                .flatten()
-            {
-                dirs.push(d.join("npm"));
-            }
+        let mut dirs = Vec::new();
+        if cfg!(windows)
+            && let Some(local) = &search.local_app_data
+        {
+            dirs.push(
+                local
+                    .join("Programs")
+                    .join("OpenAI")
+                    .join("Codex")
+                    .join("bin"),
+            );
         }
+        dirs.extend(search.npm_dirs());
+        dirs.extend(search.path_dirs());
         dirs
     }
 
@@ -1306,12 +1350,14 @@ not json at all"#,
             app_data: Some(PathBuf::from("C:\\appdata")),
             local_app_data: Some(PathBuf::from("C:\\local")),
         };
+        // The known install folders first, then PATH (T9.25).
         assert_eq!(
             CodexCli::search_dirs(&search),
             [
-                PathBuf::from("C:\\abs"),
+                PathBuf::from("C:\\local\\Programs\\OpenAI\\Codex\\bin"),
                 PathBuf::from("C:\\appdata\\npm"),
                 PathBuf::from("C:\\local\\npm"),
+                PathBuf::from("C:\\abs"),
             ]
         );
     }

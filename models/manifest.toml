@@ -35,6 +35,8 @@
 # `[[artefact.extract.member]]` files of an archive, so a file it must keep (a licence) is a
 # member. qnn-models = Earshot's own NPU conversions of the NPU ladder's Parakeet models (T8.4g),
 # which the ARM64 app offers as downloads on its Models page (never x64, never ci or desktop).
+# stream-eval = streaming transcription models for the live-preview evaluation (T12.23), under
+# licences agreed for evaluation only; never shipped, never in any other set.
 #
 # Checksum provenance (`publisher_checksum`):
 # - whisper.cpp: sha256 equals the Hugging Face LFS oid of the file at the pinned commit.
@@ -44,7 +46,7 @@
 #   author's mirror (csukuangfj/...).
 # - ONNX Runtime: the sha256 digest GitHub publishes for the release asset.
 
-sets = ["ci", "desktop", "choice", "cuda", "eval", "arm64", "qnn", "qnn-x64", "llm-eval", "summary", "helpers-x64", "helpers-arm64", "cuda-libraries", "qnn-models"]
+sets = ["ci", "desktop", "choice", "cuda", "eval", "arm64", "qnn", "qnn-x64", "llm-eval", "summary", "helpers-x64", "helpers-arm64", "cuda-libraries", "qnn-models", "stream-eval"]
 
 hosts = [
     "huggingface.co",
@@ -720,6 +722,64 @@ publisher_checksum = "git-blob-sha1:fc43e1c723e262df60b70e1919614417162d1fe2"
 licence = "CC-BY-4.0"
 attribution = "NVIDIA Parakeet TDT 0.6B v3 (NVIDIA), CC-BY-4.0, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3; converted to ONNX by the k2-fsa sherpa-onnx project"
 
+# NVIDIA Nemotron Speech Streaming 0.6B English (cache-aware FastConformer RNNT), the 560 ms
+# chunk export quantised to int8 by the k2-fsa sherpa-onnx project
+# (sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25; published to the
+# csukuangfj2 Hugging Face account by sherpa-onnx's own workflow
+# .github/workflows/export-nemotron-speech-streaming-en-0.6b.yaml at v2.0.1), pinned to commit
+# 52056fdc070914a48dcd68b31b44d6a6f5b85902. Licence: NVIDIA Open Model License (model card),
+# agreed by the owner for evaluation only (T12.23, 2026-11-12): set stream-eval only, never
+# ci, desktop, choice or any shipped set; nothing ships from here. Read only by the
+# earshot-onnx `nemotron_probe` example and earshot-runtime's evaluation-only live_lag loader.
+
+[[artefact]]
+id = "nemotron-streaming-0.6b-560ms-int8-encoder"
+sets = ["stream-eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/resolve/52056fdc070914a48dcd68b31b44d6a6f5b85902/encoder.int8.onnx"
+path = "nemotron/streaming-0.6b-560ms-int8/encoder.int8.onnx"
+sha256 = "7d932213491ad355c6e5576705dc3494731a52af87d7a1b954559340147909d8"
+size = 652916849
+publisher_checksum = "hf-lfs-sha256:7d932213491ad355c6e5576705dc3494731a52af87d7a1b954559340147909d8"
+licence = "LicenseRef-NVIDIA-Open-Model-License"
+attribution = "NVIDIA Nemotron Speech Streaming 0.6B English (NVIDIA), NVIDIA Open Model License, https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b; 560 ms chunk, exported to ONNX and quantised to int8 by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "nemotron-streaming-0.6b-560ms-int8-decoder"
+sets = ["stream-eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/resolve/52056fdc070914a48dcd68b31b44d6a6f5b85902/decoder.int8.onnx"
+path = "nemotron/streaming-0.6b-560ms-int8/decoder.int8.onnx"
+sha256 = "0be9702c2f427a2b6bb241d298e0d3836a558de1f5b9fd3018f1cce6e2b3fa98"
+size = 7257753
+publisher_checksum = "hf-lfs-sha256:0be9702c2f427a2b6bb241d298e0d3836a558de1f5b9fd3018f1cce6e2b3fa98"
+licence = "LicenseRef-NVIDIA-Open-Model-License"
+attribution = "NVIDIA Nemotron Speech Streaming 0.6B English (NVIDIA), NVIDIA Open Model License, https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b; 560 ms chunk, exported to ONNX and quantised to int8 by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "nemotron-streaming-0.6b-560ms-int8-joiner"
+sets = ["stream-eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/resolve/52056fdc070914a48dcd68b31b44d6a6f5b85902/joiner.int8.onnx"
+path = "nemotron/streaming-0.6b-560ms-int8/joiner.int8.onnx"
+sha256 = "a35eac38a22ebceb04d230ed7afe0d68f446ba6914a036b97f14fece95967e23"
+size = 1735862
+publisher_checksum = "hf-lfs-sha256:a35eac38a22ebceb04d230ed7afe0d68f446ba6914a036b97f14fece95967e23"
+licence = "LicenseRef-NVIDIA-Open-Model-License"
+attribution = "NVIDIA Nemotron Speech Streaming 0.6B English (NVIDIA), NVIDIA Open Model License, https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b; 560 ms chunk, exported to ONNX and quantised to int8 by the k2-fsa sherpa-onnx project"
+
+[[artefact]]
+id = "nemotron-streaming-0.6b-560ms-int8-tokens"
+sets = ["stream-eval"]
+location = "cache"
+url = "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/resolve/52056fdc070914a48dcd68b31b44d6a6f5b85902/tokens.txt"
+path = "nemotron/streaming-0.6b-560ms-int8/tokens.txt"
+sha256 = "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff"
+size = 8952
+publisher_checksum = "git-blob-sha1:50918f5e313e1cf846cf77dfd5b4489c9c7f0b76"
+licence = "LicenseRef-NVIDIA-Open-Model-License"
+attribution = "NVIDIA Nemotron Speech Streaming 0.6B English (NVIDIA), NVIDIA Open Model License, https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b; 560 ms chunk, exported to ONNX and quantised to int8 by the k2-fsa sherpa-onnx project"
+
 # Qwen2.5 1.5B Instruct, Q4_K_M GGUF, from Qwen/Qwen2.5-1.5B-Instruct-GGUF on Hugging Face,
 # pinned to commit 91cad51170dc346986eccefdc2dd33a9da36ead9. Licence: Apache-2.0 (model card).
 # The local LLM spike model (T6.19), now only the small baseline of the summary evaluation
@@ -868,6 +928,23 @@ publisher_checksum = "hf-lfs-sha256:16a9369d0805f80b7377d25d87f937a90c05dc04ad79
 licence = "Apache-2.0"
 attribution = "Granite 4.2 8B (IBM), Apache-2.0, https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF"
 
+# official GGUF from IBM, pinned to commit c40945d71cd90f249a56985e8155551a9188dc30 (T12.27,
+# 2026-11-12: size and sha256 equal the file's LFS oid at that commit, HF API). Licence
+# Apache-2.0 from the card metadata of the GGUF repo at that commit and of the base model
+# ibm-granite/granite-4.2-3b (commit 4e9c275e232f10211ec88644d106a1f6a1b60e06), whose card links
+# the Apache 2.0 text; neither repo holds a LICENSE file.
+[[artefact]]
+id = "granite-4.2-3b-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/ibm-granite/granite-4.2-3b-GGUF/resolve/c40945d71cd90f249a56985e8155551a9188dc30/granite-4.2-3b-Q4_K_M.gguf"
+path = "llm/granite-4.2-3b-q4_k_m.gguf"
+sha256 = "e0406663965846ae22a403456eb826ccce5f450840491f71952f18a7cb78e7d5"
+size = 2244011552
+publisher_checksum = "hf-lfs-sha256:e0406663965846ae22a403456eb826ccce5f450840491f71952f18a7cb78e7d5"
+licence = "Apache-2.0"
+attribution = "Granite 4.2 3B (IBM), Apache-2.0, https://huggingface.co/ibm-granite/granite-4.2-3b-GGUF"
+
 # official QAT GGUF from Google (quantisation-aware trained, Q4_0: a different quantisation type
 # from the other candidates' Q4_K_M; the owner), text weights only (the vision
 # projector is not fetched), pinned to commit 29d097773436b69ff9feafd636ab4cf873786537.
@@ -895,6 +972,25 @@ size = 16740812704
 publisher_checksum = "hf-lfs-sha256:84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806"
 licence = "Apache-2.0"
 attribution = "Qwen3.5-27B (Alibaba Cloud Qwen team), Apache-2.0, https://huggingface.co/Qwen/Qwen3.5-27B; GGUF conversion by Unsloth"
+
+# T12.27 screen (evaluation only, desktop GPU only): community GGUF (bartowski, imatrix
+# quantisation) of Ornith AI's Ornith-1.5-9B (Qwen 3.5 architecture), text weights only (the
+# vision projector is not fetched), pinned to commit 1fc60d6805eaa18bbed4088391db9336eb9581c4;
+# size and sha256 equal the file's LFS oid at that commit (HF API, 2026-11-12). Licence MIT
+# from the card metadata of the GGUF repo and of ornith-ai/Ornith-1.5-9B (commit
+# 489cb97981b8654bcfcf30ce1f94ed1b62e07b53); both cards link a LICENSE file in the base repo
+# that does not exist (HTTP 404, 2026-11-12), so the MIT text was not read from the publisher.
+[[artefact]]
+id = "ornith-1.5-9b-q4_k_m"
+sets = ["llm-eval"]
+location = "cache"
+url = "https://huggingface.co/bartowski/Ornith-1.5-9B-GGUF/resolve/1fc60d6805eaa18bbed4088391db9336eb9581c4/Ornith-1.5-9B-Q4_K_M.gguf"
+path = "llm/ornith-1.5-9b-q4_k_m.gguf"
+sha256 = "886e98b1d7f6e7d7f277a261d692f1a38edd08e24d28c5f9bcf689169ed4b266"
+size = 5910782848
+publisher_checksum = "hf-lfs-sha256:886e98b1d7f6e7d7f277a261d692f1a38edd08e24d28c5f9bcf689169ed4b266"
+licence = "MIT"
+attribution = "Ornith-1.5-9B (Ornith AI), MIT, https://huggingface.co/ornith-ai/Ornith-1.5-9B; GGUF conversion by bartowski"
 
 # T6.20d larger-model screen (evaluation only, unlikely to ship): community
 # GGUF (Unsloth) of the Qwen team's mixture-of-experts model (30B total, 3B active; the Qwen

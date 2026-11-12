@@ -7,7 +7,7 @@
 
 use core::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -176,8 +176,18 @@ pub struct BackendInfo {
 
 /// Cooperative cancellation flag shared between the thread running a decode and the
 /// thread that wants it stopped. Cloning shares the flag.
+///
+/// Every [`CancelToken::is_cancelled`] counts as a sign of life ([`CancelToken::polls`], T9.22):
+/// a decode that keeps polling is working, however slowly, and one stuck in a call that never
+/// returns stops polling, which is what a watchdog that must never cut a slow decode looks for.
 #[derive(Debug, Clone, Default)]
-pub struct CancelToken(Arc<AtomicBool>);
+pub struct CancelToken(Arc<TokenState>);
+
+#[derive(Debug, Default)]
+struct TokenState {
+    cancelled: AtomicBool,
+    polls: AtomicU64,
+}
 
 impl CancelToken {
     /// A token that is not cancelled.
@@ -188,13 +198,21 @@ impl CancelToken {
 
     /// Requests cancellation. Idempotent.
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.0.cancelled.store(true, Ordering::SeqCst);
     }
 
-    /// Whether cancellation was requested.
+    /// Whether cancellation was requested (counted as a poll).
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.polls.fetch_add(1, Ordering::Relaxed);
+        self.0.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// How many times [`CancelToken::is_cancelled`] was called on any clone: it grows while
+    /// whoever holds the token is still working.
+    #[must_use]
+    pub fn polls(&self) -> u64 {
+        self.0.polls.load(Ordering::Relaxed)
     }
 }
 

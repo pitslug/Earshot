@@ -105,6 +105,12 @@ earshot-proc = { path = "../earshot-proc" }
 name = "m2_prod"
 test = true
 
+# Shorter speech stretches for Parakeet (T12.24, evaluation only; docs/live-previews.md); its
+# unit tests pin the cut and doubled-word counts.
+[[example]]
+name = "stretch_eval"
+test = true
+
 # The word-boundary report (T6.9a); its unit tests pin the rule and the scoring.
 [[example]]
 name = "word_changes"

@@ -18,12 +18,12 @@ use std::fs::{self, File, OpenOptions};
 use std::future::Future;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use earshot_core::asr::CancelToken;
-use earshot_net::{
-    Allowlist, AuditLog, NetClient, NetConfig, NetError, NetRequest, Url, UrlError, redact,
-};
+/// What [`Downloader::new`] and [`Downloader::fetch`] take.
+pub use earshot_net::{Allowlist, Url};
+use earshot_net::{AuditLog, NetClient, NetConfig, NetError, NetRequest, UrlError, redact};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -55,6 +55,83 @@ const CANCEL_POLL: Duration = Duration::from_millis(100);
 #[must_use]
 pub fn transfer_deadline(total: u64) -> Duration {
     BODY_DEADLINE_BASE + Duration::from_secs(total.div_ceil(MIN_BODY_RATE))
+}
+
+/// Least time between two progress reports of one download (T9.24a): at most 4 a second,
+/// so a fast connection does not send the window an event per network chunk.
+pub const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Thins one download's `progress(done, total)` reports to at most one per
+/// [`PROGRESS_INTERVAL`]. The first report and a complete one (`done >= total`) are sent at
+/// once, a report equal to the last one sent is dropped, and the last report held back is
+/// handed out by [`ProgressThrottle::finish`], so whatever the download ends with is shown.
+/// Time comes in as an argument, so the rule is tested without a clock.
+#[derive(Debug, Default)]
+pub struct ProgressThrottle {
+    /// When the last report was sent, and what it said.
+    sent: Option<(Instant, u64, u64)>,
+    /// The latest report not sent.
+    held: Option<(u64, u64)>,
+}
+
+impl ProgressThrottle {
+    /// A throttle that has sent nothing.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The report `(done, total)` made at `now`: `Some` when it is to be sent now, `None`
+    /// when it is held back (or repeats the last one sent).
+    pub fn offer(&mut self, now: Instant, done: u64, total: u64) -> Option<(u64, u64)> {
+        let send = match self.sent {
+            None => true,
+            Some((_, d, t)) if (d, t) == (done, total) => {
+                self.held = None;
+                return None;
+            }
+            Some((at, _, _)) => {
+                done >= total || now.saturating_duration_since(at) >= PROGRESS_INTERVAL
+            }
+        };
+        if send {
+            self.sent = Some((now, done, total));
+            self.held = None;
+            Some((done, total))
+        } else {
+            self.held = Some((done, total));
+            None
+        }
+    }
+
+    /// The last report held back, once: sent when the download ends.
+    pub fn finish(&mut self) -> Option<(u64, u64)> {
+        let held = self.held.take()?;
+        if let Some((_, d, t)) = &mut self.sent {
+            (*d, *t) = held;
+        }
+        Some(held)
+    }
+}
+
+/// Runs `run` with a progress callback that passes `progress` at most one report per
+/// [`PROGRESS_INTERVAL`] ([`ProgressThrottle`], time from `now`), then sends the last report
+/// held back before returning `run`'s result, whatever it is (done, failed or cancelled).
+pub fn with_throttled_progress<T>(
+    progress: &mut dyn FnMut(u64, u64),
+    now: &dyn Fn() -> Instant,
+    run: impl FnOnce(&mut dyn FnMut(u64, u64)) -> T,
+) -> T {
+    let mut throttle = ProgressThrottle::new();
+    let out = run(&mut |done, total| {
+        if let Some((done, total)) = throttle.offer(now(), done, total) {
+            progress(done, total);
+        }
+    });
+    if let Some((done, total)) = throttle.finish() {
+        progress(done, total);
+    }
+    out
 }
 
 /// What a verified file must look like.
@@ -172,6 +249,20 @@ impl DownloadError {
         matches!(
             self,
             Self::ContentRange { .. } | Self::Interrupted { .. } | Self::Cancelled { .. }
+        )
+    }
+
+    /// Whether no server answered at all: the connection, its TLS or the wait for a response
+    /// failed before any response arrived (T9.23). On a network that only lets traffic out
+    /// through a proxy every download ends here, because `earshot-net` never uses one.
+    #[must_use]
+    pub fn reached_no_server(&self) -> bool {
+        matches!(
+            self,
+            Self::Request {
+                error: NetError::Transport(_),
+                ..
+            }
         )
     }
 }

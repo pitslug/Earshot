@@ -40,6 +40,7 @@ import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 
 
 import {
   type CaptureMode,
+  DATA_FOLDER_KIND,
   type FolderListItem,
   IpcFailure,
   type JobKind,
@@ -67,6 +68,7 @@ import { ALL_MEETINGS_KEY, type FolderEdit, FolderGroup, NEW_FOLDER_KEY } from "
 import { folderDeletionCopy, meetingCount, meetingsInFolder } from "./folderRules";
 import { type DayGroup, displayTitle, groupByDay, recoveredText, secondaryLine } from "./meetings";
 import { openMenuFromKeyboard } from "./menuKeys";
+import { DataFolderScreen } from "./DataFolderScreen";
 import { NewerDataScreen } from "./NewerDataScreen";
 
 const useStyles = makeStyles({
@@ -271,6 +273,8 @@ type Load =
   | { status: "failed"; message: string }
   // The database was saved by a newer Earshot: nothing can be read until it is installed.
   | { status: "newer" }
+  // The data folder could not be opened at the start (T9.23): Try again restarts Earshot.
+  | { status: "dataFolder"; message: string }
   | { status: "loaded"; meetings: MeetingListItem[]; folders: FolderListItem[] };
 
 /** A problem with a folder change, shown above the meeting pane until dismissed. */
@@ -332,6 +336,9 @@ export function AppShell({
   const [compact, setCompact] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
+  // Re-transcribe or Re-summarise asked for on the finished meeting's screen (T9.23).
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   // The meeting a Cancel was pressed for, until its result: a newer meeting differs.
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   // An older meeting still finishing behind a newer recording, until its result. The meeting
@@ -513,6 +520,10 @@ export function AppShell({
           setLoad({ status: "newer" });
           return;
         }
+        if (error instanceof IpcFailure && error.error.kind === DATA_FOLDER_KIND) {
+          setLoad({ status: "dataFolder", message: error.error.message });
+          return;
+        }
         const message =
           error instanceof IpcFailure || error instanceof Error ? error.message : String(error);
         setLoad({ status: "failed", message });
@@ -560,6 +571,7 @@ export function AppShell({
   const newMeeting = () => setView(meeting?.phase === "recording" ? "meeting" : "start");
   const start = async (mode: CaptureMode, title: string | null, keepLocal: boolean) => {
     live.reset();
+    setRetryError(null);
     setStopError(null);
     const id = await ipc.startMeeting(mode, title, keepLocal);
     setSelectedId(id);
@@ -593,6 +605,23 @@ export function AppShell({
   const pickResult = (id: string) => {
     if (meetings.some((m) => m.id === id)) select(id);
     else refresh();
+  };
+  // The job starts here and the meeting's page shows its progress, as its own buttons do.
+  const startAfterMeetingJob = async (id: string, job: JobKind) => {
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      if (job === "Retranscribe") await ipc.retranscribe(id);
+      else await ipc.resummarise(id);
+      jobSeq.current += 1;
+      const seq = jobSeq.current;
+      setJobs((all) => ({ ...all, [id]: { job, last: null, seq } }));
+      open(id);
+    } catch (e: unknown) {
+      setRetryError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRetrying(false);
+    }
   };
   const openNames = (id: string) => {
     open(id);
@@ -880,6 +909,15 @@ export function AppShell({
     );
   }
 
+  if (load.status === "dataFolder") {
+    return (
+      <>
+        <DataFolderScreen message={load.message} onTryAgain={() => ipc.restartApp()} />
+        {quitDialog}
+      </>
+    );
+  }
+
   const showMeeting = view === "meeting";
   return (
     <div className={styles.root}>
@@ -1077,6 +1115,10 @@ export function AppShell({
             onDismissBanner={live.dismissBanner}
             onCancel={() => cancelFinishing(meeting.meetingId)}
             cancelling={cancellingId === meeting.meetingId}
+            onRetranscribe={(id) => void startAfterMeetingJob(id, "Retranscribe")}
+            onResummarise={(id) => void startAfterMeetingJob(id, "Resummarise")}
+            retrying={retrying}
+            retryError={retryError}
           />
         )}
         {view === "detail" && (
@@ -1335,7 +1377,7 @@ function Detail({
     return <Spinner label="Loading meetings" />;
   }
   // The whole window shows the newer-data screen instead.
-  if (load.status === "newer") return null;
+  if (load.status === "newer" || load.status === "dataFolder") return null;
   if (load.status === "failed") {
     return (
       <MessageBar intent="error">

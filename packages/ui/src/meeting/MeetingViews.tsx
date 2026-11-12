@@ -747,11 +747,20 @@ export interface AfterMeetingViewProps {
   onCancel(): void;
   /** True from the press until the meeting's result: a model call may have to end first. */
   cancelling?: boolean;
+  /** Re-transcribes the meeting, offered when its transcript was not finished (T9.23). */
+  onRetranscribe(meetingId: string): void;
+  /** Writes the summary again, offered when it failed (T9.23). */
+  onResummarise(meetingId: string): void;
+  /** True while a re-transcription or re-summary asked for here is starting. */
+  retrying?: boolean;
+  /** Why the one asked for here did not start, in the app's words. */
+  retryError?: string | null;
 }
 
 function afterMeetingHeading(s: LiveMeeting["summary"]): string {
   if (s === null) return "Finishing the meeting";
-  return s.kind === "PostCancelled" ? "Meeting saved" : "Meeting finished";
+  if (s.kind === "RecordingFailed") return "Meeting stopped";
+  return s.kind === "PostCancelled" || s.kind === "PostFailed" ? "Meeting saved" : "Meeting finished";
 }
 
 /** After the stop: the post-meeting steps, then the summary result. */
@@ -762,6 +771,10 @@ export function AfterMeetingView({
   onDismissBanner,
   onCancel,
   cancelling = false,
+  onRetranscribe,
+  onResummarise,
+  retrying = false,
+  retryError = null,
 }: AfterMeetingViewProps) {
   const styles = useStyles();
   const p = meeting.progress;
@@ -805,7 +818,21 @@ export function AfterMeetingView({
         </div>
       )}
       <Banners banners={afterMeetingBanners(meeting)} onDismiss={onDismissBanner} />
-      {s !== null && <SummaryNotice meeting={meeting} onOpen={onOpen} onNameVoices={onNameVoices} />}
+      {s !== null && (
+        <SummaryNotice
+          meeting={meeting}
+          onOpen={onOpen}
+          onNameVoices={onNameVoices}
+          onRetranscribe={onRetranscribe}
+          onResummarise={onResummarise}
+          retrying={retrying}
+        />
+      )}
+      {retryError !== null && (
+        <MessageBar intent="error" layout="multiline" role="alert">
+          <MessageBarBody>{retryError}</MessageBarBody>
+        </MessageBar>
+      )}
     </section>
   );
 }
@@ -814,11 +841,43 @@ function SummaryNotice({
   meeting,
   onOpen,
   onNameVoices,
-}: Pick<AfterMeetingViewProps, "meeting" | "onOpen" | "onNameVoices">) {
+  onRetranscribe,
+  onResummarise,
+  retrying,
+}: Pick<
+  AfterMeetingViewProps,
+  "meeting" | "onOpen" | "onNameVoices" | "onRetranscribe" | "onResummarise" | "retrying"
+>) {
   const s = meeting.summary;
   if (s === null) return null;
   const open = (
     <Button appearance="primary" size="small" onClick={() => onOpen(meeting.meetingId)}>
+      Open
+    </Button>
+  );
+  // The way forward on the spot (T9.23): the job starts and the meeting's page shows it.
+  const retranscribe = (
+    <Button
+      appearance="primary"
+      size="small"
+      disabled={retrying}
+      onClick={() => onRetranscribe(meeting.meetingId)}
+    >
+      Re-transcribe
+    </Button>
+  );
+  const resummarise = (
+    <Button
+      appearance="primary"
+      size="small"
+      disabled={retrying}
+      onClick={() => onResummarise(meeting.meetingId)}
+    >
+      Re-summarise
+    </Button>
+  );
+  const openSecondary = (
+    <Button size="small" onClick={() => onOpen(meeting.meetingId)}>
       Open
     </Button>
   );
@@ -857,10 +916,38 @@ function SummaryNotice({
             <MessageBarTitle>Summary failed</MessageBarTitle>
             {s.message}{" "}
             {s.retryable
-              ? "Trying again may work: summarise again from the meeting."
+              ? "Trying again may work: re-summarise the meeting."
               : "The recording and transcript are saved."}
           </MessageBarBody>
+          <MessageBarActions>
+            {resummarise}
+            {openSecondary}
+          </MessageBarActions>
+        </MessageBar>
+      );
+    // The recording itself did not finish: nothing to re-summarise, and the copy claims nothing
+    // about what was kept beyond its own words (T9.23).
+    case "RecordingFailed":
+      return (
+        <MessageBar intent="error" layout="multiline" role="status">
+          <MessageBarBody>
+            <MessageBarTitle>Recording not finished</MessageBarTitle>
+            {s.message}
+          </MessageBarBody>
           <MessageBarActions>{open}</MessageBarActions>
+        </MessageBar>
+      );
+    case "PostFailed":
+      return (
+        <MessageBar intent="error" layout="multiline" role="status">
+          <MessageBarBody>
+            <MessageBarTitle>Transcript not finished</MessageBarTitle>
+            {s.message}
+          </MessageBarBody>
+          <MessageBarActions>
+            {retranscribe}
+            {openSecondary}
+          </MessageBarActions>
         </MessageBar>
       );
     case "Cancelled":
@@ -878,10 +965,13 @@ function SummaryNotice({
         <MessageBar intent="info" layout="multiline" role="status">
           <MessageBarBody>
             <MessageBarTitle>Transcript not finished</MessageBarTitle>
-            The recording and any draft transcript are saved. Re-transcribe the meeting from its page
-            to get the full transcript.
+            The recording and any draft transcript are saved. Re-transcribe the meeting to get the
+            full transcript.
           </MessageBarBody>
-          <MessageBarActions>{open}</MessageBarActions>
+          <MessageBarActions>
+            {retranscribe}
+            {openSecondary}
+          </MessageBarActions>
         </MessageBar>
       );
   }

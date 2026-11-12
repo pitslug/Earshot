@@ -31,6 +31,7 @@ pub mod format;
 pub mod live;
 pub mod observer;
 pub mod power;
+pub mod problem;
 pub mod recording;
 pub mod session;
 pub mod timeline;
@@ -52,10 +53,11 @@ pub use format::{
 };
 pub use live::{
     ChannelSink, ChannelSource, EmitterTrack, LIVE_QUEUE_CAP, LiveError, LiveMsg, QueueGauge,
-    TrackEmitter, queue_limit,
+    STOP_WAIT, TrackEmitter, queue_limit,
 };
 pub use observer::{ReopenOutcome, TrackObserver, reopen_is_reported};
 pub use power::PowerSupply;
+pub use problem::{StartProblem, start_problem};
 pub use recording::{
     DeviceChange, DeviceDescription, HandsFreeChange, LoopbackMode, LoopbackSource, MicRole,
     NotifyingTrack, RawRecording, RecordingTrack, TimestampsFile, TrackRecording, TrackReport,

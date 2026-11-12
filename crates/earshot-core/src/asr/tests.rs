@@ -322,6 +322,22 @@ fn asr_cancel_token_is_shared_by_clones() {
 }
 
 #[test]
+fn asr_cancel_token_counts_every_poll_on_any_clone() {
+    // T9.22: the polls are a decode's sign of life for a watchdog.
+    let a = CancelToken::new();
+    let b = a.clone();
+    assert_eq!(a.polls(), 0);
+    let _ = b.is_cancelled();
+    let _ = a.is_cancelled();
+    assert_eq!(b.polls(), 2);
+    // Cancelling and reading the count are not polls.
+    a.cancel();
+    assert_eq!(a.polls(), 2);
+    // A token of its own counts its own.
+    assert_eq!(CancelToken::new().polls(), 0);
+}
+
+#[test]
 fn asr_raw_segment_interpolates_missing_word_times() {
     let raw = RawSegment {
         start: MeetingTime::from_millis(1000),

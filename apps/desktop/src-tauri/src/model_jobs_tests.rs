@@ -906,3 +906,54 @@ fn model_job_the_helpers_arriving_start_the_check_a_waiting_model_needs() {
         "{events:?}"
     );
 }
+
+/// T9.23: a download that reaches no server says it may be a network that needs a proxy, which
+/// Earshot does not use; one a server answered never says so.
+#[test]
+fn model_job_a_download_that_reaches_no_server_mentions_a_proxy_network() {
+    use earshot_core::asr::CancelToken;
+    use earshot_core::identity::ManualClock;
+    use earshot_runtime::download::{Allowlist, Downloader, Expected, Url};
+    // A port that was free a moment ago: the connection is refused.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let url = Url::parse(&format!("http://127.0.0.1:{port}/file.bin")).unwrap();
+    let mut list = Allowlist::new();
+    list.allow_url(&url).unwrap();
+    let d = Downloader::new(list, Arc::new(ManualClock::new(0))).unwrap();
+    let dir = TempDir::new("model-jobs-noserver");
+    let sha = "0".repeat(64);
+    let error = d
+        .fetch(
+            &url,
+            &dir.0.join("f.bin"),
+            &Expected {
+                sha256: &sha,
+                size: 4,
+            },
+            &CancelToken::new(),
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+    assert!(error.reached_no_server(), "{error:?}");
+    let copy = download_failure_copy(&ModelDownloadError::Download {
+        artefact: "x".into(),
+        error,
+    });
+    assert_eq!(copy, NO_SERVER_ANSWERED);
+    assert!(copy.contains("proxy"), "{copy}");
+    assert!(!copy.contains("127.0.0.1"), "{copy}");
+    assert!(!crate::plain_text::names_developer_tool(&copy));
+    // A server that answered is not a proxy problem.
+    let answered = download_failure_copy(&ModelDownloadError::Download {
+        artefact: "x".into(),
+        error: earshot_runtime::download::DownloadError::Status {
+            url: "x".into(),
+            status: 502,
+        },
+    });
+    assert!(!answered.contains("proxy"), "{answered}");
+}

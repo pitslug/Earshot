@@ -207,6 +207,11 @@ pub enum EndpointWarning {
         /// The output still recorded; `None` when the track has no stream at the moment.
         used: Option<String>,
     },
+    /// The capture thread did not end within its bound after a stop (a device or the audio
+    /// service stopped answering, T9.20), so the source ended without it: everything it had
+    /// delivered is kept and nothing after it is recorded. Sent as a `Note` right before the
+    /// source's substitute end.
+    StoppedAnswering,
 }
 
 /// Why a source ended.

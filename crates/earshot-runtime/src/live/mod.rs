@@ -104,7 +104,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use earshot_core::asr::{AsrError, BackendInfo, BackendKind, MeetingTime, TranscriptEvent};
+use earshot_core::asr::{
+    AsrError, BackendInfo, BackendKind, CancelToken, MeetingTime, TranscriptEvent,
+};
 use earshot_core::capture::{
     AudioSource, CaptureSession, CaptureSink, Discontinuity, DiscontinuityKind, EndOfStream,
     EndReason, EndpointWarning, SourceStatus, TrackId,
@@ -149,7 +151,7 @@ pub use hold::{
 };
 use hold::{HoldState, held_entry};
 use preview::PreviewState;
-pub use preview::{LivePreviews, PreviewLoader, PreviewReport};
+pub use preview::{LivePreviews, PreviewLoader, PreviewReport, StreamLoader, StreamingPreview};
 pub use speaker_thread::SPEAKER_MAX_BUFFER;
 use speaker_thread::{SpeakerThread, SpeakerTrack};
 use summary_thread::{Job, SummaryThread};
@@ -326,6 +328,16 @@ pub struct LiveConfig {
     /// off): the record is written in the transaction that creates the meeting's rows, so the
     /// meeting never exists without it.
     pub keep_summary_local: bool,
+    /// At the end, a track's live catch-up with no sign of life for this long (its decoded
+    /// frontier, its decode's cancel-token polls and its messages all unchanged) is given up
+    /// (T9.22, `worker::StallWatch`): the decode is asked to stop, its thread is left, never
+    /// joined, and [`RuntimeWarning::LiveCatchUpStalled`] says so. Default 2 minutes, a judgement.
+    /// The rule it rests on: no single call between two polls of the decode's token may take this
+    /// long. Whisper polls inside its graph compute (the abort callback), Parakeet only once per
+    /// piece and per chunk (an ONNX encoder run is one call, seconds at most), the piece loop once
+    /// per piece and per VAD frame. A backend or a piece length that breaks that rule must poll more
+    /// often or raise this bound, never let a slow decode be cut.
+    pub catch_up_stall: Duration,
 }
 
 /// How a live session transcribes.
@@ -376,6 +388,7 @@ impl Default for LiveConfig {
             hold: None,
             previews: None,
             keep_summary_local: false,
+            catch_up_stall: Duration::from_secs(120),
         }
     }
 }
@@ -527,7 +540,9 @@ pub enum RuntimeEvent {
     },
     /// Every live transcription worker has finished its queue: the live transcript is
     /// complete (sent once at the end, before the speaker and live-summary threads are
-    /// waited for; T7.4c measures catch-up to it).
+    /// waited for; T7.4c measures catch-up to it). Also sent after a catch-up that was cancelled or
+    /// given up (T9.22), when the transcript is not complete: then the outcome's problems hold
+    /// [`RuntimeWarning::LiveCatchUpStalled`] or the host cancelled it, and the time is no catch-up.
     LiveTranscriptFinished {
         /// How long after the capture source ended, measured by the session when it sends
         /// this, so it does not depend on when a host reads the event.
@@ -592,6 +607,18 @@ pub enum RuntimeWarning {
     EveryRecordingStopped {
         /// The last failure was a full disk.
         disk_full: bool,
+    },
+    /// The audio device (or Windows' audio service) stopped answering when capture was asked
+    /// to stop, so the source ended without it and the recording was saved with everything
+    /// captured before (T9.20, [`EndpointWarning::StoppedAnswering`]). At most once.
+    DeviceStoppedAnswering,
+    /// At the end a track's live catch-up showed no sign of life for
+    /// [`LiveConfig::catch_up_stall`], so it was given up (T9.22): the recording is saved and the
+    /// track's live transcript stops where it got to. Hosts leave the meeting unprocessed: whatever
+    /// hung may hang the final pass too.
+    LiveCatchUpStalled {
+        /// Track.
+        track: TrackId,
     },
     /// Storing a row failed (a live segment, or the meeting's duration at the end).
     Persistence(String),
@@ -723,6 +750,8 @@ pub struct LiveSession {
     meeting: EntityId,
     events: Option<Receiver<RuntimeEvent>>,
     stop: Arc<AtomicBool>,
+    /// Cancels the live catch-up after the recording ([`LiveSession::cancel_catch_up`]).
+    catch_up: CancelToken,
     thread: Option<JoinHandle<Result<LiveOutcome, RuntimeError>>>,
 }
 
@@ -745,6 +774,14 @@ impl LiveSession {
     /// returns the outcome. Repeating it has no further effect.
     pub fn request_stop(&self) {
         self.stop.store(true, Ordering::Release);
+    }
+
+    /// Stops the live transcript's catch-up after the recording (T9.22): every worker's decode is
+    /// asked to stop and the session finishes without waiting for it, so `Ended` comes at once. The
+    /// recording is unaffected; call it once the recording is saved (before, it ends the catch-up
+    /// before it begins). Repeating it has no further effect.
+    pub fn cancel_catch_up(&self) {
+        self.catch_up.cancel();
     }
 
     /// Requests the end of capture and waits until the recording is finalised. Do not
@@ -1101,6 +1138,7 @@ where
 
     let (tx, rx) = channel();
     let stop = Arc::new(AtomicBool::new(false));
+    let catch_up = CancelToken::new();
     let meeting_id = meeting.id;
     let session = Session {
         source,
@@ -1158,6 +1196,7 @@ where
         recording_stopped: [false, false],
         stop_self: false,
         recording_saved: false,
+        catch_up: catch_up.clone(),
     };
     let flag = Arc::clone(&stop);
     let spawned = std::thread::Builder::new()
@@ -1189,6 +1228,7 @@ where
         meeting: meeting_id,
         events: Some(rx),
         stop,
+        catch_up,
         thread: Some(thread),
     })
 }
@@ -1343,6 +1383,8 @@ struct Session<S> {
     /// [`RuntimeEvent::RecordingSaved`] was sent (T9.19: a panic after it does not send it
     /// again).
     recording_saved: bool,
+    /// The live catch-up's cancel ([`LiveSession::cancel_catch_up`]).
+    catch_up: CancelToken,
 }
 
 impl<S> Session<S>
@@ -1828,7 +1870,18 @@ where
             .collect();
         for w in workers {
             let track = w.track();
-            let (events, switches) = w.finish();
+            let (events, switches, end) =
+                w.finish_watched(self.policy.catch_up_stall, &self.catch_up);
+            match end {
+                worker::CatchUpEnd::Finished => {}
+                worker::CatchUpEnd::Cancelled => self.stop_stretches(track, "catch-up cancelled"),
+                worker::CatchUpEnd::Stalled => {
+                    self.stop_stretches(track, "catch-up stalled");
+                    let w = RuntimeWarning::LiveCatchUpStalled { track };
+                    self.warn(w.clone());
+                    self.problems.push(w);
+                }
+            }
             for p in switches {
                 self.emit(RuntimeEvent::LivePartials {
                     track,
@@ -1904,6 +1957,14 @@ where
         }
     }
 
+    /// Marks `track`'s stretch record as stopped (the final pass transcribes what it did not
+    /// decode).
+    fn stop_stretches(&mut self, track: TrackId, why: &str) {
+        if let Some((_, r)) = self.stretch_records.iter_mut().find(|(t, _)| *t == track) {
+            r.stopped.get_or_insert_with(|| why.to_owned());
+        }
+    }
+
     fn record(&mut self, track: TrackId, samples: &[f32]) {
         let Some(writer) = self.writers[slot(track)].as_mut() else {
             return;
@@ -1924,7 +1985,15 @@ where
         self.recording_stopped[slot(track)] = true;
         let at = MeetingTime::from_pipeline_frames(writer.whole_frames());
         let disk_full = error.is_disk_full();
-        let finished = self.finalize(track, writer);
+        // Nothing whole was written: there is no audio to keep, and an empty file would only
+        // read as a recording to re-transcribe. The `.part` holds no frame, so removing it loses
+        // nothing (a failed removal leaves it to the orphan sweep).
+        let finished = if writer.whole_frames() == 0 {
+            let _ = writer.abort();
+            None
+        } else {
+            self.finalize(track, writer)
+        };
         let stopped = RuntimeWarning::RecordingStopped {
             track,
             at,
@@ -1958,7 +2027,8 @@ where
     }
 
     /// Finishes `writer` (whole, or as far as it got after a failed write) into `track`'s
-    /// `AudioFile` row; `None` when the session has no such track.
+    /// `AudioFile` row; `None` when the session has no such track. The store is locked only for
+    /// the track check and the row: the file work (header, sync, rename) runs without it.
     fn finalize(
         &mut self,
         track: TrackId,
@@ -1971,14 +2041,15 @@ where
                 .then(|| AEC_VERSION.to_owned()),
         };
         let clock = Arc::clone(&self.services.clock);
-        let mut db = self.services.store();
-        Some(db.finalize_track_audio(
+        let services = self.services.clone();
+        Some(earshot_store::finalize_track_audio_outside_lock(
             writer,
             &self.services.data,
             &row,
             provenance,
             &*clock,
             &mut *self.rng,
+            &mut |f| f(&mut services.store()),
         ))
     }
 
@@ -2013,6 +2084,14 @@ where
                 wanted: wanted.clone(),
                 used: used.clone(),
             });
+            return;
+        }
+        if let DiscontinuityKind::Note {
+            warning: EndpointWarning::StoppedAnswering,
+        } = kind
+        {
+            self.warn(RuntimeWarning::DeviceStoppedAnswering);
+            self.problems.push(RuntimeWarning::DeviceStoppedAnswering);
             return;
         }
         let DiscontinuityKind::DeviceChanged {

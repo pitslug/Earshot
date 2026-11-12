@@ -126,6 +126,87 @@ fn list_meetings_states_follow_the_runtime_activity() {
     );
 }
 
+/// Adds a mic track to `meeting` and one segment of `pass` on it, tombstoned when `gone`.
+fn segment(svc: &Services, meeting: EntityId, pass: TranscriptPass, gone: bool, seed: u64) {
+    use earshot_core::asr::{MeetingTime, Segment, Word};
+    use earshot_core::capture::TrackId;
+    use earshot_core::model::{ClockDomain, MeetingRepo, SegmentRow, Track};
+    let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let track = Track::new(meeting, TrackId::Mic, None, ClockDomain::Replay, &mut stamp);
+    store.put_track(track.clone()).unwrap();
+    let s = Segment::from_words(
+        EntityId::generate(stamp.clock, &mut *stamp.rng),
+        track.id,
+        vec![Word::new("hello", 0, 400, 0.9)],
+        MeetingTime::ZERO,
+    );
+    let mut row = SegmentRow::new(meeting, pass, s, &mut *stamp.hlc, stamp.clock);
+    if gone {
+        row.meta.mark_deleted(&mut *stamp.hlc, stamp.clock);
+    }
+    store.put_segment(row).unwrap();
+}
+
+#[test]
+fn list_meetings_final_transcript_answer_equals_loading_the_segments() {
+    // T9.24a: the list asks the store whether a live Final segment exists instead of loading
+    // every segment. Its states must equal the rule it replaced (`live_segments` of the Final
+    // pass non-empty, or the final pass recorded as run).
+    let dir = TempDir::new("final-exists");
+    let svc = services(&dir);
+    let fin = meeting(&svc, "Final", T0 + 6_000, Some(60_000), 31);
+    segment(&svc, fin, TranscriptPass::Final, false, 41);
+    let draft = meeting(&svc, "Draft", T0 + 5_000, Some(60_000), 32);
+    segment(&svc, draft, TranscriptPass::Live, false, 42);
+    let empty = meeting(&svc, "Empty", T0 + 4_000, Some(60_000), 33);
+    let tomb = meeting(&svc, "Tombstoned final", T0 + 3_000, Some(60_000), 34);
+    segment(&svc, tomb, TranscriptPass::Final, true, 43);
+    let both = meeting(&svc, "Draft and final", T0 + 2_000, Some(60_000), 35);
+    segment(&svc, both, TranscriptPass::Live, false, 44);
+    segment(&svc, both, TranscriptPass::Final, false, 45);
+    let silent = meeting(&svc, "Final pass, no speech", T0 + 1_000, Some(60_000), 36);
+    final_pass_ran(&svc, silent);
+
+    let list = meeting_list(&svc).unwrap();
+    let states: Vec<(&str, MeetingState)> =
+        list.iter().map(|m| (m.title.as_str(), m.state)).collect();
+    assert_eq!(
+        states,
+        [
+            ("Final", MeetingState::Ready),
+            ("Draft", MeetingState::Unprocessed),
+            ("Empty", MeetingState::Unprocessed),
+            ("Tombstoned final", MeetingState::Unprocessed),
+            ("Draft and final", MeetingState::Ready),
+            ("Final pass, no speech", MeetingState::Ready),
+        ]
+    );
+    // The replaced rule, computed from the loaded segments, gives the same answer.
+    let db = svc.store();
+    for (item, id) in list.iter().zip([fin, draft, empty, tomb, both, silent]) {
+        let old_ready = !earshot_core::model::live_segments(&**db, id, TranscriptPass::Final)
+            .unwrap()
+            .is_empty()
+            || earshot_runtime::backends::pass_backend(&db, id, TranscriptPass::Final, None)
+                .unwrap()
+                .is_some();
+        let old = if old_ready {
+            MeetingState::Ready
+        } else {
+            MeetingState::Unprocessed
+        };
+        assert_eq!(item.state, old, "{}", item.title);
+    }
+}
+
 #[test]
 fn list_meetings_of_an_empty_store_is_empty() {
     let dir = TempDir::new("empty");
@@ -188,7 +269,9 @@ fn ipc_error_keeps_the_runtime_errors_retryability() {
     let busy = IpcError::from(RuntimeError::MeetingBusy(id));
     assert_eq!(busy.kind, "meeting_busy");
     assert!(busy.retryable);
-    assert_eq!(busy.message, RuntimeError::MeetingBusy(id).to_string());
+    // Fixed copy, never the runtime's own text (which names the meeting's id).
+    assert_eq!(busy.message, crate::plain_text::MEETING_BUSY);
+    assert!(!busy.message.contains(&id.to_string()));
     let conflict = IpcError::from(RuntimeError::Conflict("changed"));
     assert!(conflict.retryable);
     let fixed = IpcError::from(RuntimeError::NoTracks);
@@ -199,6 +282,28 @@ fn ipc_error_keeps_the_runtime_errors_retryability() {
     let e = IpcError::from(busy_store());
     assert_eq!(e.kind, "store");
     assert!(e.retryable);
+}
+
+#[test]
+fn app_state_a_data_folder_that_cannot_be_opened_is_its_own_kind_without_its_text() {
+    let dir = TempDir::new("state-blocked");
+    // A file where the folder should be: neither the folder nor the database can be made.
+    let blocked = dir.0.join("blocked");
+    std::fs::write(&blocked, b"not a folder").unwrap();
+    let state = AppState::open(DataDir::new(blocked.clone()));
+    let e = state.services().unwrap_err();
+    assert_eq!(e.kind, DATA_FOLDER_KIND);
+    assert_eq!(e.message, DATA_FOLDER_COPY);
+    assert!(!e.message.contains("blocked"), "{}", e.message);
+    // The folder is still known, for the pages that show it.
+    assert_eq!(state.data_dir().map(DataDir::root), Some(blocked.as_path()));
+    // A database saved by a newer Earshot keeps its own screen.
+    let newer = data_folder_error(Some(&RuntimeError::Store(StoreError::SchemaTooNew {
+        found: 99,
+        supported: 1,
+    })));
+    assert_eq!(newer.kind, NEWER_DATA_KIND);
+    assert_eq!(data_folder_error(None).kind, DATA_FOLDER_KIND);
 }
 
 /// A window that records what was done to it.

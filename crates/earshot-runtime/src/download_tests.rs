@@ -709,3 +709,121 @@ fn download_content_range_start_parses_the_first_byte() {
     assert_eq!(content_range_start("items 1-2/3"), None);
     assert_eq!(content_range_start(""), None);
 }
+
+#[test]
+fn download_to_a_port_nobody_listens_on_reached_no_server() {
+    // A port that was free a moment ago: the connection is refused, as on a network that
+    // only lets traffic out through a proxy (T9.23).
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let d = downloader(local(&[port]));
+    let dir = TempDir::new("dl-noserver");
+    let b = body();
+    let sum = sha(&b);
+    let exp = Expected {
+        sha256: &sum,
+        size: b.len() as u64,
+    };
+    let url = Url::parse(&format!("http://127.0.0.1:{port}/file.bin")).unwrap();
+    let err = fetch(&d, &url, &dir.0.join("f"), &exp).0.unwrap_err();
+    assert!(err.reached_no_server(), "{err:?}");
+    // A server that answered, even with an error, is not this case.
+    let refused = DownloadError::Status {
+        url: "x".into(),
+        status: 502,
+    };
+    assert!(!refused.reached_no_server());
+    let blocked = DownloadError::Request {
+        url: "x".into(),
+        error: NetError::TooManyRedirects,
+    };
+    assert!(!blocked.reached_no_server());
+}
+
+// Progress throttle (T9.24a). Time is passed in: a base `Instant` plus offsets, no waiting.
+
+/// The reports `throttle` sends for `(offset ms, done)` steps of a `total`-byte download,
+/// then what `finish` hands out.
+fn throttled(steps: &[(u64, u64)], total: u64) -> (Vec<u64>, Option<u64>) {
+    let base = Instant::now();
+    let mut throttle = ProgressThrottle::new();
+    let sent = steps
+        .iter()
+        .filter_map(|&(ms, done)| {
+            throttle
+                .offer(base + Duration::from_millis(ms), done, total)
+                .map(|(d, t)| {
+                    assert_eq!(t, total);
+                    d
+                })
+        })
+        .collect();
+    (sent, throttle.finish().map(|(d, _)| d))
+}
+
+#[test]
+fn download_progress_chunks_within_100_ms_give_at_most_one_report() {
+    assert!(
+        PROGRESS_INTERVAL >= Duration::from_millis(250),
+        "at most 4 a second"
+    );
+    // 1000 network chunks of 1 KiB in the first 100 ms: one report (the first), the latest
+    // held back for the end.
+    let steps: Vec<(u64, u64)> = (0..1000).map(|i| (i / 10, (i + 1) * 1024)).collect();
+    let (sent, last) = throttled(&steps, 10 << 20);
+    assert_eq!(sent, [1024]);
+    assert_eq!(last, Some(1000 * 1024));
+}
+
+#[test]
+fn download_progress_is_sent_at_most_once_per_interval() {
+    let interval = u64::try_from(PROGRESS_INTERVAL.as_millis()).unwrap();
+    // One chunk a millisecond for 10 s.
+    let steps: Vec<(u64, u64)> = (0..10_000).map(|ms| (ms, ms + 1)).collect();
+    let (sent, last) = throttled(&steps, 1 << 30);
+    assert_eq!(sent.len() as u64, 10_000 / interval);
+    // Each report is the first chunk at or after a full interval since the one before it.
+    for pair in sent.windows(2) {
+        assert_eq!(pair[1] - pair[0], interval);
+    }
+    assert_eq!(last, Some(10_000));
+    // Just short of the interval is held; exactly the interval is sent.
+    let (sent, _) = throttled(&[(0, 1), (interval - 1, 2), (interval, 3)], 10);
+    assert_eq!(sent, [1, 3]);
+}
+
+#[test]
+fn download_progress_complete_is_sent_at_once_and_repeats_are_dropped() {
+    // The complete report is not held, even inside the interval; equal reports are sent once.
+    let (sent, last) = throttled(&[(0, 0), (1, 0), (2, 5), (3, 10), (4, 10)], 10);
+    assert_eq!(sent, [0, 10]);
+    assert_eq!(last, None, "nothing held once the complete report went out");
+    // A held report equal to the last sent one is not handed out again.
+    let (sent, last) = throttled(&[(0, 4), (1, 6), (2, 4)], 10);
+    assert_eq!(sent, [4]);
+    assert_eq!(last, None);
+}
+
+#[test]
+fn download_throttled_progress_sends_the_last_report_whatever_the_end() {
+    use std::cell::Cell;
+    let base = Instant::now();
+    let at = Cell::new(base);
+    let now = || at.get();
+    for result in [Ok(()), Err("cancelled")] {
+        let mut heard = Vec::new();
+        let out = with_throttled_progress(&mut |d, t| heard.push((d, t)), &now, |p| {
+            for (ms, done) in [(0, 0), (40, 300), (80, 600)] {
+                at.set(base + Duration::from_millis(ms));
+                p(done, 1000);
+            }
+            result
+        });
+        assert_eq!(out, result);
+        // The first report at once, then the last one held when the download ended.
+        assert_eq!(heard, [(0, 1000), (600, 1000)]);
+    }
+}

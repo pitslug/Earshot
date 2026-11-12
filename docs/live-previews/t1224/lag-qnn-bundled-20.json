@@ -1,0 +1,162 @@
+{
+  "audio": "bundled",
+  "capture_max_lag_s": 0.012,
+  "catch_up_after_end_s": 0.4192737,
+  "decodes_mic": {
+    "audio_s": 100.63999999999999,
+    "calls": 13,
+    "rtf": 0.024524429650238478,
+    "took_s": {
+      "max": 0.2395597,
+      "median": 0.1858204,
+      "n": 13,
+      "p95": 0.2379818
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 95.13600000000001,
+    "calls": 12,
+    "rtf": 0.024139493987554658,
+    "took_s": {
+      "max": 0.2440859,
+      "median": 0.1772895,
+      "n": 12,
+      "p95": 0.2302201
+    }
+  },
+  "host": {
+    "logical_cores": 12,
+    "machine_load_percent": {
+      "max": 20.0,
+      "median": 20.0,
+      "n": 4,
+      "p95": 20.0
+    },
+    "peak_private_gib": 2.65826416015625,
+    "peak_working_set_gib": 3.220500946044922,
+    "process_cpu_s": 38.796875
+  },
+  "length_s": 150.0,
+  "live_backends": [
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "max_piece_s": 20,
+  "mic": {
+    "first_word_lag_s": {
+      "max": 30.911872399999993,
+      "median": 7.4569792999999995,
+      "n": 13,
+      "p95": 27.462789099999995
+    },
+    "last_word_lag_s": {
+      "max": 21.391872399999997,
+      "median": 2.2148418999999997,
+      "n": 13,
+      "p95": 16.742789099999996
+    },
+    "on_screen_lag_s": {
+      "max": 30.911872399999993,
+      "median": 15.291807999999989,
+      "n": 244,
+      "p95": 26.5118724
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "6f4e71da22982e7f09169cd3d059417bab76764c91bd236abc2e7b75f8f2e87e",
+    "stretch_length_s": {
+      "max": 16.8,
+      "median": 5.12,
+      "n": 13,
+      "p95": 15.84
+    },
+    "stretches": 13,
+    "word_lag_s": {
+      "max": 30.911872399999993,
+      "median": 15.291807999999989,
+      "n": 244,
+      "p95": 26.5118724
+    },
+    "words": 244
+  },
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10"
+  ],
+  "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 20s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4, recover_speech: Some(2s) }",
+  "preview_refusal": null,
+  "preview_sessions": [],
+  "previews": [],
+  "reference": {
+    "first_word_lag_s": {
+      "max": 38.6450837,
+      "median": 8.979765399999998,
+      "n": 10,
+      "p95": 38.6450837
+    },
+    "last_word_lag_s": {
+      "max": 22.085083700000002,
+      "median": 2.979765399999998,
+      "n": 10,
+      "p95": 22.085083700000002
+    },
+    "on_screen_lag_s": {
+      "max": 38.6450837,
+      "median": 13.8436673,
+      "n": 217,
+      "p95": 33.6850837
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "8fd6c002890ced847efeebed8ab4860357a19572c587814e0279792097c8e43f",
+    "stretch_length_s": {
+      "max": 16.8,
+      "median": 6.16,
+      "n": 10,
+      "p95": 16.8
+    },
+    "stretches": 10,
+    "word_lag_s": {
+      "max": 38.6450837,
+      "median": 13.8436673,
+      "n": 217,
+      "p95": 33.6850837
+    },
+    "words": 217
+  },
+  "requested_backend": "Qnn",
+  "simulated_card_gib": null,
+  "speakers": true,
+  "stopped_with": "Finished",
+  "warnings": 0
+}

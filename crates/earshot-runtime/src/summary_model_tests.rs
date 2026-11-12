@@ -272,3 +272,24 @@ fn summary_model_config_needs_the_whole_installed_file() {
     let gpu = local_summary_config(&models, &choice, true).unwrap();
     assert!(gpu.gpu && gpu.cpu_fallback);
 }
+
+/// T9.23: on a processor without the native builds' baseline llama.cpp is never asked (its
+/// first call starts ggml's AVX2 CPU backend): summaries run on the CPU.
+#[test]
+fn summary_gpu_here_never_asks_llama_on_a_processor_without_the_baseline() {
+    assert!(!summary_gpu_here_with(
+        false,
+        || panic!("llama.cpp asked on a processor without AVX2"),
+        || panic!("whisper.cpp asked on a processor without AVX2"),
+    ));
+    assert!(summary_gpu_here_with(
+        true,
+        || true,
+        || vec![Accelerator::Vulkan, Accelerator::Cpu]
+    ));
+    assert!(!summary_gpu_here_with(
+        true,
+        || false,
+        || vec![Accelerator::Vulkan, Accelerator::Cpu]
+    ));
+}

@@ -1,5 +1,11 @@
 export { IpcProvider, useIpc } from "./context";
-export { EVENT_METHODS, IpcFailure, NEWER_DATA_KIND, everyCommandIsInIpc } from "./ipc";
+export {
+  DATA_FOLDER_KIND,
+  EVENT_METHODS,
+  IpcFailure,
+  NEWER_DATA_KIND,
+  everyCommandIsInIpc,
+} from "./ipc";
 export type {
   ActionView,
   AudioCheckEvent,
@@ -88,6 +94,7 @@ export type {
   PreviewsChoice,
   PreviewsView,
   ShellEvent,
+  RecoveredRecording,
   ObsidianSettingsValue,
   ObsidianSettingsView,
   SpeakerTimingChoice,
@@ -100,6 +107,7 @@ export type {
 export {
   POST_STEPS,
   CATCH_UP_MS,
+  DATA_FOLDER_COPY,
   POST_STEP_MS,
   SAMPLE_NOW,
   SCRIPT_LINES,

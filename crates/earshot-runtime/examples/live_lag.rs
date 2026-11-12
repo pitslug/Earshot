@@ -5,17 +5,18 @@
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root>
 //!     [--audio bundled|continuous] [--backend cpu|cuda|qnn] [--models <dir>] [--speakers on|off]
 //!     [--seconds <n>] [--previews off|on|everyone] [--force-previews] [--card-memory-gib <n>]
-//!     [--window <s>] [--interval <s>] [--out <file.json>]
+//!     [--window <s>] [--interval <s>] [--max-piece <s>] [--stream nemotron]
+//!     [--stream-threads <n>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root> --memory
 //!     [--backend cpu|cuda|qnn] [--card-memory-gib <n>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- <repo-root>
 //!     --backend cuda --contention alone|own|shared [--audio bundled|continuous] [--out <file.json>]
 //! ```
 //!
-//! `--backend qnn` needs an ARM64 build with `--features qnn` (the NPU, T12.4). The app refuses
-//! previews there (`backends::previews_refused`); `--force-previews` (evaluation only) loads the
-//! preview sessions through `backends::load_preview_unrefused` instead, which skips only that
-//! refusal. The report's `preview_refusal` says what the app would decide on this machine and
+//! `--backend qnn` needs an ARM64 build with `--features qnn` (the NPU, T12.4). Since T12.12c the
+//! app runs the far end's previews there and refuses the user's own voice
+//! (`backends::previews_refused_second`); `--force-previews` (evaluation only) loads the preview
+//! sessions through `backends::load_preview_unrefused` instead, which skips only the refusals. The report's `preview_refusal` says what the app would decide on this machine and
 //! whether this run went past it; `preview_sessions` lists every preview load with the backend
 //! the loaded session reports and, when forced, each ONNX Runtime session's placement (from ONNX
 //! Runtime's placement log, already checked by the load), never the request. `--memory` loads a
@@ -36,6 +37,14 @@
 //! the track's encoder through `backends::load_preview_sharing_encoder` (`shared`). It reports
 //! every real decode's time, its wait for the shared encoder's lock and a hash of its words.
 //!
+//! `--stream nemotron` (evaluation only, T12.23) gives each previewed track a streaming model
+//! instead of window decodes: NVIDIA's Nemotron Speech Streaming 0.6B (manifest set `stream-eval`,
+//! licence agreed for evaluation only) through `backends::load_nemotron_preview`, on
+//! `--stream-threads` (default 2) background CPU threads, fed every packet of the track's audio
+//! once (`LivePreviews::stream`). Which tracks have previews follows `--previews`; the app's
+//! preview rule is not applied (it is about window sessions). `preview_sessions` records each load
+//! with its placement, and the report's `stream` names the model and threads.
+//!
 //! Audio (public only): `bundled` is the Settings benchmark's meeting (AMI ES2004a, two tracks);
 //! `continuous` is `fixtures/smoke` joined with 200 ms gaps on the reference track, the mic
 //! silent: one person who never pauses, the worst case for a stretch.
@@ -51,11 +60,18 @@
 //! With previews the report adds, per word that settled, when it first reached the screen in either
 //! form (`on_screen_lag_s`), each preview word's own lag, how many preview words differed from the
 //! settled text they became (`changed`) and how many left before settled text reached them
-//! (`vanished`). Two runs store the same words when their `stored_sha256` match.
+//! (`vanished`). Two runs store the same words when their `stored_sha256` match. `vanished_kinds`
+//! (T12.12c) counts what became of the vanished words: settled on their own track nearby before
+//! they left or after, settled on the other track nearby (speech of the other side the live echo
+//! filter removed or never kept), or never settled; beside it the live echo filter's `echo_words_removed` and its `echo_locks`.
 //!
 //! The report names the backend the session announced and the host's load: the percentage of the
 //! whole machine in use, read about every 30 s, and this process's own CPU time and memory. A
 //! number measured with a loaded host is reported as such, never as an idle-host result.
+//!
+//! `--max-piece <s>` (evaluation only, T12.24) runs the live stretches with `PieceConfig::max_piece`
+//! at `s` seconds and every other field at its default; the report records it (`max_piece_s`,
+//! `pieces`). Without it the session runs `LiveConfig::default()`'s stretches unchanged.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,19 +79,20 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use earshot_core::asr::{
-    AsrError, BackendInfo, BackendKind, CancelToken, TranscribeOptions, Transcriber,
+    AsrError, BackendInfo, BackendKind, CancelToken, PieceConfig, TranscribeOptions, Transcriber,
     TranscriptEvent, Transcription,
 };
 use earshot_core::audio::{MonoBuffer, PIPELINE_RATE};
 use earshot_core::capture::{DeviceTime, ReplayBuilder, TrackId};
 use earshot_core::model::ClockDomain;
 use earshot_runtime::backends::{
-    Accelerator, ModelDir, PreviewSlot, init_onnx, load_preview_on_hardware,
+    Accelerator, ModelDir, PreviewSlot, init_onnx, load_nemotron_preview, load_preview_on_hardware,
     load_preview_unrefused, onnx_library, preview_backend, previews_refused,
     previews_refused_second, second_preview_backend,
 };
 use earshot_runtime::live::{
-    LiveAsrFactory, LiveConfig, LivePreviews, PreviewLoader, RuntimeEvent, start_live,
+    LiveAsrFactory, LiveConfig, LivePreviews, LiveTranscription, PreviewLoader, RuntimeEvent,
+    StreamLoader, start_live,
 };
 use earshot_runtime::preview_settings::PreviewChoice;
 use earshot_runtime::replay::{PaceClock, PaceState, Paced, WallClock};
@@ -120,6 +137,14 @@ struct Args {
     /// Evaluation only (T12.3b): measure real decodes beside previews instead of replaying
     /// ([`contention_report`]).
     contention: Option<Contention>,
+    /// Evaluation only (T12.23): each previewed track's words come from this streaming model
+    /// (`nemotron`, through `backends::load_nemotron_preview`) instead of window decodes.
+    stream: Option<String>,
+    /// Its ONNX Runtime threads (on background threads, the CPU).
+    stream_threads: usize,
+    /// Evaluation only (T12.24): the live stretches' `PieceConfig::max_piece` in seconds, every
+    /// other field at its default ([`stretch_pieces`]); `None` is production's config unchanged.
+    max_piece: Option<u64>,
 }
 
 fn parse_args() -> Args {
@@ -146,6 +171,9 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         force_previews: false,
         card_memory_gib: None,
         contention: None,
+        stream: None,
+        stream_threads: 2,
+        max_piece: None,
     };
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -165,6 +193,11 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 args.seconds = value()?.parse().map_err(|e| format!("--seconds: {e}"))?;
             }
             "--out" => args.out = Some(PathBuf::from(value()?)),
+            "--max-piece" => {
+                let s: u64 = value()?.parse().map_err(|e| format!("--max-piece: {e}"))?;
+                stretch_pieces(Some(s))?;
+                args.max_piece = Some(s);
+            }
             "--memory" => args.memory = true,
             "--previews" => {
                 args.previews = match value()?.as_str() {
@@ -194,8 +227,36 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                     other => return Err(format!("unknown --contention {other}")),
                 });
             }
+            "--stream" => {
+                args.stream = match value()?.as_str() {
+                    "nemotron" => Some("nemotron".to_owned()),
+                    other => return Err(format!("unknown --stream {other}")),
+                }
+            }
+            "--stream-threads" => {
+                let n: usize = value()?
+                    .parse()
+                    .map_err(|e| format!("--stream-threads: {e}"))?;
+                if !(1..=8).contains(&n) {
+                    return Err("--stream-threads must be 1 to 8".to_owned());
+                }
+                args.stream_threads = n;
+            }
             other => return Err(format!("unknown flag {other}")),
         }
+    }
+    if args.stream.is_some()
+        && (args.memory
+            || args.previews.is_none()
+            || args.force_previews
+            || args.card_memory_gib.is_some()
+            || args.contention.is_some())
+    {
+        return Err(
+            "--stream replaces the window previews of a replay: it needs --previews on|everyone \
+             and no --memory, --force-previews, --card-memory-gib or --contention"
+                .to_owned(),
+        );
     }
     if args.force_previews && (args.memory || args.previews.is_none()) {
         return Err(
@@ -224,7 +285,26 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 .to_owned(),
         );
     }
+    if args.max_piece.is_some() && (args.memory || args.contention.is_some()) {
+        return Err(
+            "--max-piece applies to a replay: not with --memory or --contention".to_owned(),
+        );
+    }
     Ok(args)
+}
+
+/// The live stretches' piece config (T12.24, evaluation only): production's
+/// `PieceConfig::default()` with `max_piece` set to `seconds` when given.
+///
+/// # Errors
+/// A value the config refuses (`PieceConfig::validate`: 1-30 s).
+fn stretch_pieces(seconds: Option<u64>) -> Result<PieceConfig, String> {
+    let mut pieces = PieceConfig::default();
+    if let Some(s) = seconds {
+        pieces.max_piece = Duration::from_secs(s);
+    }
+    pieces.validate().map_err(|e| format!("--max-piece: {e}"))?;
+    Ok(pieces)
 }
 
 /// Bytes in a GiB.
@@ -382,6 +462,54 @@ fn simulated_card_gib(machine: &earshot_hardware::Hardware) -> Option<u64> {
         .filter_map(|g| g.dedicated_memory)
         .max()
         .map(|m| m / GIB)
+}
+
+/// Evaluation only (`--stream nemotron`, T12.23): previews for `choice` whose words come from the
+/// streaming model, loaded through `backends::load_nemotron_preview` on `threads` CPU threads for
+/// each previewed track (the far end in a call; the mic too under Everyone), every load recorded
+/// in `log`. The app's preview rule is not applied: it is about window sessions of the
+/// transcription model. The window loaders are never called.
+fn streaming_previews(
+    models: &ModelDir,
+    choice: PreviewChoice,
+    threads: usize,
+    log: &Arc<Mutex<Vec<Value>>>,
+) -> LivePreviews {
+    let unused: PreviewLoader =
+        Arc::new(|_: &BackendInfo| Err("a streaming run loads no window session".to_owned()));
+    let mut p = LivePreviews::new(Arc::clone(&unused));
+    if choice == PreviewChoice::Everyone {
+        p.own_voice = Some(unused);
+    }
+    let models = models.clone();
+    let log = Arc::clone(log);
+    let load: StreamLoader = Arc::new(move |backend: &BackendInfo| {
+        let result = load_nemotron_preview(&models, threads);
+        let mut record = json!({
+            "stream": "nemotron",
+            "threads": threads,
+            "app_rule": "not applied (a streaming model, evaluation only)",
+            "track_backend": { "kind": format!("{:?}", backend.kind), "model": backend.model },
+        });
+        match &result {
+            Ok(s) => {
+                let ran = s.stream.backend_info();
+                record["loaded"] = json!({
+                    "kind": format!("{:?}", ran.kind),
+                    "device": ran.device,
+                    "model": ran.model,
+                    "placement": s.placement,
+                });
+            }
+            Err(why) => record["not_loaded"] = json!(why),
+        }
+        log.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(record);
+        result.map(|s| s.stream)
+    });
+    p.stream = Some(load);
+    p
 }
 
 /// The session's previews for `choice`: production's (`host::live_previews`), or the evaluation
@@ -567,6 +695,55 @@ fn timed(
 }
 
 /// `words` as (normalised text, start ms, end ms): held in memory only, to compare; never printed.
+/// How near in time a settled word must start to a vanished preview word holding the same word to
+/// count as it ([`vanished_kinds`]). A judgement fixed before the T12.12c run: the live echo
+/// filter matches far-end words at the canceller's delay plus or minus 1 s, and preview word times
+/// move by up to `COVERED_SLACK` between decodes.
+const VANISHED_NEAR_MS: u64 = 2000;
+
+/// What became of the preview words that left with no settled text at them (T12.12c step 4),
+/// counted only. `gone_at[i]` is how many of the track's settled words had arrived when `gone[i]`
+/// left. `own_settled_before`: the track's own settled text already held the same word within
+/// [`VANISHED_NEAR_MS`] when it left (a second copy of a settled word, gone); `own_settled_after`:
+/// it arrived later (the word left before its settled text came); `other_track_settled_nearby`:
+/// neither, but the other track's settled text holds it (speech of the other side that the track's
+/// live echo filter removed, or never kept); `never_settled`: none of these. Empty tokens are not
+/// counted.
+fn vanished_kinds(
+    gone: &[(String, u64)],
+    gone_at: &[usize],
+    own: &[(String, u64)],
+    other: &[(String, u64)],
+) -> Value {
+    let near = |list: &[(String, u64)], text: &str, start: u64| {
+        list.iter()
+            .any(|(t, s)| t == text && s.abs_diff(start) <= VANISHED_NEAR_MS)
+    };
+    let (mut before, mut after, mut far_end, mut never) = (0u64, 0u64, 0u64, 0u64);
+    for ((text, start), at) in gone.iter().zip(gone_at) {
+        if text.is_empty() {
+            continue;
+        }
+        let at = (*at).min(own.len());
+        if near(&own[..at], text, *start) {
+            before += 1;
+        } else if near(&own[at..], text, *start) {
+            after += 1;
+        } else if near(other, text, *start) {
+            far_end += 1;
+        } else {
+            never += 1;
+        }
+    }
+    json!({
+        "own_settled_before": before,
+        "own_settled_after": after,
+        "other_track_settled_nearby": far_end,
+        "never_settled": never,
+        "near_ms": VANISHED_NEAR_MS,
+    })
+}
+
 fn named_words(words: &[earshot_core::asr::Word]) -> Vec<(String, u64, u64)> {
     words
         .iter()
@@ -637,6 +814,8 @@ struct PreviewLags {
     changed: u64,
     /// Preview words that left with no settled text at them.
     vanished: u64,
+    /// Those words (normalised text, start ms), kept in memory for [`vanished_kinds`] only.
+    gone: Vec<(String, u64)>,
     /// Sends.
     updates: u64,
 }
@@ -656,13 +835,15 @@ impl PreviewLags {
                 next.push((text.clone(), *start, lag));
             }
         }
-        let gone = self
+        let gone: Vec<(String, u64)> = self
             .shown
             .iter()
             .filter(|(t, s, _)| !words.iter().any(|(wt, ws, _)| wt == t && ws == s))
-            .count();
+            .map(|(t, s, _)| (t.clone(), *s))
+            .collect();
         // What a final took away has been counted by `settled`.
-        self.vanished += gone as u64;
+        self.vanished += gone.len() as u64;
+        self.gone.extend(gone);
         self.shown = next;
     }
 
@@ -709,6 +890,10 @@ struct TrackLags {
     on_screen_s: Vec<f64>,
     /// Hashes every stored word's text and times, in order.
     stored: Sha256,
+    /// Every settled word (normalised text, start ms), kept in memory for [`vanished_kinds`] only.
+    settled: Vec<(String, u64)>,
+    /// Per vanished preview word, how many settled words had arrived when it left.
+    gone_at: Vec<usize>,
     previews: PreviewLags,
 }
 
@@ -1226,6 +1411,7 @@ fn main() {
         let machine = simulated.clone().unwrap_or_else(earshot_runtime::hardware);
         json!({
             "forced_past_it": args.force_previews,
+            "streaming_model_instead": args.stream.is_some(),
             "simulated_card_gib": simulated.as_ref().and_then(simulated_card_gib),
             "app_first": previews_refused(args.backend, &machine, choice),
             // Where the app would run the first session (T12.3c: the CPU beside a small card).
@@ -1247,7 +1433,11 @@ fn main() {
             (None, true) => PreviewLoads::Forced,
             (None, false) => PreviewLoads::App,
         };
-        let mut p = previews_for(&models, choice, &loads, &preview_sessions);
+        let mut p = if args.stream.is_some() {
+            streaming_previews(&models, choice, args.stream_threads, &preview_sessions)
+        } else {
+            previews_for(&models, choice, &loads, &preview_sessions)
+        };
         if let Some(s) = args.window {
             p.window = Duration::from_secs_f64(s);
         }
@@ -1260,6 +1450,9 @@ fn main() {
         title: "live_lag".into(),
         clock_domain: ClockDomain::Replay,
         previews,
+        transcription: LiveTranscription::Stretches(
+            stretch_pieces(args.max_piece).unwrap_or_else(|e| fail(e)),
+        ),
         ..LiveConfig::default()
     };
     let mut session = start_live(paced, services, config, Some(factory), os_seeded_rng())
@@ -1316,6 +1509,7 @@ fn main() {
                 lag.add(at, &words);
                 let named = named_words(&segment.words);
                 for (text, start, end) in &named {
+                    lag.settled.push((text.clone(), *start));
                     lag.stored.update(text.as_bytes());
                     lag.stored.update(start.to_le_bytes());
                     lag.stored.update(end.to_le_bytes());
@@ -1332,7 +1526,10 @@ fn main() {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .map_or(Duration::ZERO, |s| s.elapsed());
-                lags[index(track)].previews.update(at, &named_words(&words));
+                let lag = &mut lags[index(track)];
+                lag.previews.update(at, &named_words(&words));
+                let (settled, gone) = (lag.settled.len(), lag.previews.gone.len());
+                lag.gone_at.resize(gone, settled);
             }
             Ok(RuntimeEvent::LivePreviewReport(r)) => {
                 preview_reports.push(json!({
@@ -1394,6 +1591,8 @@ fn main() {
         "length_s": length.as_secs_f64(),
         "requested_backend": format!("{:?}", args.backend),
         "simulated_card_gib": simulated.as_ref().and_then(simulated_card_gib),
+        "max_piece_s": args.max_piece,
+        "pieces": format!("{:?}", stretch_pieces(args.max_piece).unwrap_or_else(|e| fail(e))),
         "live_backends": backends,
         "onnx_placement": *evidence.lock().unwrap_or_else(PoisonError::into_inner),
         "speakers": args.speakers,
@@ -1403,9 +1602,27 @@ fn main() {
         "catch_up_after_end_s": catch_up,
         "previews": preview_reports,
         "preview_refusal": refusal,
+        "stream": args.stream.as_ref().map(|m| json!({ "model": m, "threads": args.stream_threads })),
         "preview_sessions": *preview_sessions.lock().unwrap_or_else(PoisonError::into_inner),
         "mic": lags[0].json(),
         "reference": lags[1].json(),
+        // T12.12c step 4: what became of the vanished preview words, counts only.
+        "vanished_kinds": {
+            "mic": vanished_kinds(
+                &lags[0].previews.gone,
+                &lags[0].gone_at,
+                &lags[0].settled,
+                &lags[1].settled,
+            ),
+            "reference": vanished_kinds(
+                &lags[1].previews.gone,
+                &lags[1].gone_at,
+                &lags[1].settled,
+                &lags[0].settled,
+            ),
+        },
+        "echo_words_removed": outcome.echo_words_removed,
+        "echo_locks": outcome.echo_locks.len(),
         "decodes_mic": decodes(&logs[0]),
         "decodes_reference": decodes(&logs[1]),
         "host": {
@@ -1448,6 +1665,27 @@ mod tests {
                 .chain(args.iter().copied())
                 .map(str::to_owned),
         )
+    }
+
+    #[test]
+    fn live_lag_stretch_pieces_are_production_unless_max_piece_is_given() {
+        assert_eq!(
+            LiveConfig::default().transcription,
+            LiveTranscription::Stretches(stretch_pieces(None).unwrap())
+        );
+        let p = stretch_pieces(Some(15)).unwrap();
+        assert_eq!(p.max_piece, Duration::from_secs(15));
+        assert_eq!(
+            PieceConfig {
+                max_piece: PieceConfig::default().max_piece,
+                ..p
+            },
+            PieceConfig::default()
+        );
+        assert_eq!(parse(&["--max-piece", "10"]).unwrap().max_piece, Some(10));
+        assert!(parse(&["--max-piece", "31"]).is_err());
+        assert!(parse(&["--max-piece", "0"]).is_err());
+        assert_eq!(parse(&[]).unwrap().max_piece, None);
     }
 
     #[test]
@@ -1495,9 +1733,12 @@ mod tests {
         ModelDir::new(std::env::temp_dir().join(format!("live-lag-preview-{}", std::process::id())))
     }
 
-    /// Without `--force-previews` the app's loaders run unchanged: the NPU is refused, recorded.
+    /// Without `--force-previews` the app's loaders run unchanged (T12.12c): on the NPU the far end's
+    /// goes on to load (and fails here for a load reason, on an empty models folder) and the user's
+    /// own voice is refused with its reason, recorded.
     #[test]
     fn live_lag_preview_loads_are_the_apps_unless_forced() {
+        use earshot_runtime::backends::OWN_VOICE_NPU_REFUSED;
         let log = Arc::new(Mutex::new(Vec::new()));
         let p = previews_for(
             &empty_models(),
@@ -1506,20 +1747,21 @@ mod tests {
             &log,
         );
         let own = p.own_voice.clone().expect("everyone has a second loader");
-        for load in [p.load, own] {
-            assert_eq!(
-                load(&npu_track()).err().as_deref(),
-                Some("not measured on the NPU yet")
-            );
-        }
+        let why = (p.load)(&npu_track()).err().expect("no models here");
+        assert_ne!(why, OWN_VOICE_NPU_REFUSED);
+        assert!(!why.contains("not measured"), "{why}");
+        assert_eq!(
+            own(&npu_track()).err().as_deref(),
+            Some(OWN_VOICE_NPU_REFUSED)
+        );
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2);
         for (record, slot) in log.iter().zip(["first", "own_voice"]) {
             assert_eq!(record["slot"], slot);
             assert_eq!(record["refusal_bypassed"], false);
-            assert_eq!(record["not_loaded"], "not measured on the NPU yet");
             assert_eq!(record["requested"]["kind"], "Qnn");
         }
+        assert_eq!(log[1]["not_loaded"], OWN_VOICE_NPU_REFUSED);
         let on = previews_for(
             &empty_models(),
             PreviewChoice::Automatic,
@@ -1642,8 +1884,9 @@ mod tests {
     }
 
     /// With a simulated card the app's rule runs on that machine: a CUDA track's previews are
-    /// asked for on the CPU (the load fails here for a load reason, on an empty models folder), the
-    /// NPU is still refused, and every record names the simulated card and no bypass.
+    /// asked for on the CPU (the load fails here for a load reason, on an empty models folder), on
+    /// the NPU the user's own voice is still refused (T12.12c), and every record names the
+    /// simulated card and no bypass.
     #[test]
     fn live_lag_simulated_preview_loads_apply_the_apps_rule_to_the_simulated_card() {
         let machine = earshot_hardware::Hardware {
@@ -1667,11 +1910,16 @@ mod tests {
         for load in [&p.load, &own] {
             let why = load(&cuda).err().expect("no models here");
             assert!(!why.contains("card") && !why.contains("memory"), "{why}");
-            assert_eq!(
-                load(&npu_track()).err().as_deref(),
-                Some("not measured on the NPU yet")
-            );
         }
+        let why = (p.load)(&npu_track()).err().expect("no models here");
+        assert!(
+            !why.contains("not measured") && !why.contains("memory"),
+            "{why}"
+        );
+        assert_eq!(
+            own(&npu_track()).err().as_deref(),
+            Some(earshot_runtime::backends::OWN_VOICE_NPU_REFUSED)
+        );
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 4);
         assert!(log.iter().all(|r| r["refusal_bypassed"] == false));
@@ -1700,6 +1948,91 @@ mod tests {
 
     /// T12.3b: `--contention` is CUDA only and stands alone.
     #[test]
+    fn live_lag_parses_the_streaming_model_and_its_threads() {
+        let a = parse(&["--previews", "everyone", "--stream", "nemotron"]).unwrap();
+        assert_eq!(a.stream.as_deref(), Some("nemotron"));
+        assert_eq!(a.stream_threads, 2, "sherpa-onnx's default");
+        let a = parse(&[
+            "--previews",
+            "on",
+            "--stream",
+            "nemotron",
+            "--stream-threads",
+            "4",
+        ])
+        .unwrap();
+        assert_eq!(a.stream_threads, 4);
+        assert_eq!(parse(&["--previews", "on"]).unwrap().stream, None);
+        assert!(parse(&["--previews", "on", "--stream", "other"]).is_err());
+        assert!(
+            parse(&[
+                "--previews",
+                "on",
+                "--stream",
+                "nemotron",
+                "--stream-threads",
+                "0"
+            ])
+            .is_err()
+        );
+        // It replaces the previews of a replay, so it needs them and no other mode.
+        for other in [
+            &["--stream", "nemotron"][..],
+            &["--stream", "nemotron", "--previews", "off"],
+            &["--stream", "nemotron", "--previews", "on", "--memory"],
+            &[
+                "--stream",
+                "nemotron",
+                "--previews",
+                "on",
+                "--force-previews",
+            ],
+            &[
+                "--stream",
+                "nemotron",
+                "--previews",
+                "on",
+                "--card-memory-gib",
+                "12",
+            ],
+        ] {
+            let Err(why) = parse(other) else {
+                panic!("{other:?} parsed")
+            };
+            assert_eq!(
+                why,
+                "--stream replaces the window previews of a replay: it needs --previews \
+                 on|everyone and no --memory, --force-previews, --card-memory-gib or --contention",
+                "{other:?}"
+            );
+        }
+    }
+
+    /// A streaming run's previews load only the streaming model: the window loaders refuse, and
+    /// the mic has previews only under Everyone. With no model on disk the load fails with the
+    /// fetch command, recorded.
+    #[test]
+    fn live_lag_streaming_previews_load_only_the_streaming_model() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let p = streaming_previews(&empty_models(), PreviewChoice::Automatic, 2, &log);
+        assert!(p.own_voice.is_none());
+        assert!((p.load)(&npu_track()).is_err());
+        let load = p.stream.expect("a streaming model");
+        let Err(why) = load(&npu_track()) else {
+            panic!("no model on disk")
+        };
+        assert!(why.contains("fetch-models --set stream-eval"), "{why}");
+        let records = log.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["stream"], "nemotron");
+        assert_eq!(records[0]["threads"], 2);
+        assert!(records[0]["not_loaded"].is_string());
+        drop(records);
+        let p = streaming_previews(&empty_models(), PreviewChoice::Everyone, 3, &log);
+        assert!(p.own_voice.is_some_and(|l| l(&npu_track()).is_err()));
+    }
+
+    #[test]
     fn live_lag_contention_needs_cuda_and_no_other_mode() {
         for (value, setup) in [
             ("alone", Contention::Alone),
@@ -1721,6 +2054,48 @@ mod tests {
             assert!(parse(&a).is_err(), "{extra:?}");
         }
         assert_eq!(parse(&[]).unwrap().contention, None);
+    }
+
+    /// T12.12c: a vanished word counts against the track's own settled text first, then the other
+    /// track's, each within the window both ways; anything else never settled.
+    #[test]
+    fn live_lag_vanished_kinds_count_own_then_other_track_then_never() {
+        let w = |t: &str, s: u64| (t.to_owned(), s);
+        let gone = vec![
+            w("yes", 10_000),
+            w("right", 20_000),
+            w("budget", 30_000),
+            w("", 40_000),
+            w("yes", 50_000),
+        ];
+        let own = vec![
+            w("yes", 10_000 + VANISHED_NEAR_MS),
+            w("right", 25_000),
+            w("yes", 50_000 - VANISHED_NEAR_MS),
+        ];
+        let other = vec![
+            w("right", 20_000 - VANISHED_NEAR_MS),
+            w("budget", 30_000 + VANISHED_NEAR_MS + 1),
+            w("yes", 10_000),
+        ];
+        // The first "yes" left after one settled word had arrived, the second before the third.
+        let k = vanished_kinds(&gone, &[1, 1, 1, 1, 2], &own, &other);
+        assert_eq!(k["own_settled_before"], 1, "{k}");
+        assert_eq!(k["own_settled_after"], 1, "{k}");
+        assert_eq!(k["other_track_settled_nearby"], 1, "{k}");
+        assert_eq!(k["never_settled"], 1, "{k}");
+        let k = vanished_kinds(&gone, &[0; 5], &own, &other);
+        assert_eq!(k["own_settled_before"], 0, "{k}");
+        assert_eq!(k["own_settled_after"], 2, "{k}");
+        // Each preview word that left is remembered, the ones a final covered are not.
+        let mut p = PreviewLags::default();
+        p.update(
+            Duration::from_secs(5),
+            &[("a".into(), 1000, 1200), ("b".into(), 1300, 1500)],
+        );
+        p.update(Duration::from_secs(6), &[("a".into(), 1000, 1200)]);
+        assert_eq!(p.vanished, 1);
+        assert_eq!(p.gone, vec![("b".to_owned(), 1300)]);
     }
 
     #[test]

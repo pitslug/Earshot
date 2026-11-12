@@ -941,3 +941,86 @@ Written before measuring, 2026-11-09. Every evaluation so far ran Qwen 3.5 with 
 - **Time:** thinking roughly doubles to triples the time at hang-up (both models on the RTX 5080).
 
 **Decision:** no follow-up task; production stays thinking off. Generated off and on in the same build (format keys `...-chunk600` and `...-chunk600-think2048`, prefixes checked in each result header).
+
+## T12.27: Granite 4.2 screened as a local writer (evaluation only)
+
+Written and committed before any generation, 2026-11-12. Evaluation only: no test split, no default change. The local writer is paused (the owner's decision); this asks whether a newer small model is worth un-pausing it for.
+
+**Models.** Set `llm-eval`, both official IBM GGUFs, Q4_K_M, pins re-checked against the Hugging Face API on 2026-11-12 (commit, size, LFS SHA-256):
+
+| Candidate | Class (compared with) | Pin | Size (bytes) | Licence, where read |
+|---|---|---|---|---|
+| Granite 4.2 3B (`granite-4.2-3b-q4_k_m`) | Qwen 3.5 4B | `ibm-granite/granite-4.2-3b-GGUF` at `c40945d7` | 2,244,011,552 | Apache-2.0: card metadata of the GGUF repo at the pin and of `ibm-granite/granite-4.2-3b` (commit `4e9c275e`); no LICENSE file in either repo |
+| Granite 4.2 8B (`granite-4.2-8b-q4_k_m`, already pinned in T6.20) | Qwen 3.5 9B | `ibm-granite/granite-4.2-8b-GGUF` at `93f3f6a8` | 5,347,917,952 | Apache-2.0: card metadata of the GGUF repo at the pin and of `ibm-granite/granite-4.2-8b` (commit `a7042144`), whose card links the Apache 2.0 text; no LICENSE file in either repo |
+
+Note against the plan's premise: Granite 4.2 8B is not new here. It was a T6.20 round-one candidate and failed 13 of 20 dev meetings, but in the earlier format (fixed 3072-token reply, segment UUIDs; "Aside: earlier format" above), where the fixed budget decided most failures. It has never run in the production format. The 3B has never run here.
+
+**Chat template, checked with the pinned llama.cpp before any generation.** The GGUF template (`tokenizer.chat_template`, read from each file's metadata; the 3B's and the 8B's are byte-identical, 9,227 bytes) is ChatML with a thinking switch; thinking is on by default. With a system and a user message and thinking off it renders `<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think></think>`. llama-cpp-sys-2 0.1.160's `llm_chat_detect_template` classifies any template holding `<|im_start|>` (without `<|im_sep|>` or `<end_of_utterance>`) as ChatML, which renders the same text up to `<|im_start|>assistant\n`; the candidate's assistant prefix `<think></think>` (`GRANITE_NO_THINK`) completes it, byte for byte. One known deviation, in repair rounds only: the template writes an earlier assistant turn as `<think></think>{reply}`, llama.cpp's ChatML as `{reply}`. First requests, map and merge, are exact. The stored result header's `assistant_prefix` is checked before reporting.
+
+**Condition.** Thinking off (the screened condition, as the Qwen models ship). Dev split only, all 20 dev meetings, reference source, chunked 600 s, the production prompt and rules (format key `indented-numbered-r5-chunk600`), S16 (`--context 16384 --max-output 8192`), the production grammar, repairs, loop guard and join fallback, desktop GPU (CUDA). Qwen 3.5 4B and 9B are generated again in the same build and the same `--out`, so every row comes from one build:
+
+```
+cargo xtask sum-eval --model qwen3.5-4b-q4_k_m,qwen3.5-9b-q4_k_m,granite-4.2-3b-q4_k_m,granite-4.2-8b-q4_k_m --split dev --source reference --chunk-seconds 600 --backend cuda --target-dir C:\eb\granite --out target\sum-eval\t1227-dev
+```
+
+A thinking-on run is a separate condition, never the deciding one, and is not part of this screen (`--thinking` supports only the Qwen prefix today).
+
+**Rule, fixed now (judgements).**
+
+1. **First test, per Granite model, against the Qwen model of its class from the same run:** every dev meeting valid (20 of 20; a meeting saved by the join fallback counts as valid, as in T8.4d, and joined meetings are reported), and automatic coverage not below the Qwen model's: decisions covered plus actions covered under the coverage rule (`decisions_cov` + `actions_cov`, of 83 + 41 reference items) at least the Qwen model's total. Both lists are reported beside the total.
+2. **Judged round, only for a model that passes 1.** The five judged dev meetings (ES2003c, ES2011c, IS1008c, TS3004c, TS3006c), blinded packets (`--judge-packets --blind-key`): the passing Granite model(s) and Qwen 3.5 4B and 9B from `t1227-dev`, plus `claude-opus-5-5-medium-agent` and `qwen3.5-9b-chunked-current` carried from round five with `--prior-packets` / `--prior-key` (the main checkout's `target\sum-eval\judge-dev-t620d` and its key, read in place). One Claude Code agent per meeting gives the "Meaning judge" verdicts per annotated item. The same agent also reads each summary decision and action item against that meeting's fixed real-item list (`docs/summary-eval/prompt-rounds-2026-11-04.md`, with its definitions and borderline rules) and marks it real or made up; made-up items are reported beside caught items, per model.
+3. **What the round can recommend.** A Granite model is worth a follow-up (Surface timing beyond tonight's, then the owner's call on a test split) only if, in the judged round, its decisions plus actions covered are at least the Qwen model of its class minus 2 (T6.20a: one or two items is noise) and its made-up items are at most that model's. Otherwise the recommendation is to keep the local writer paused on Qwen 3.5.
+
+**Reported for every candidate**, beside quality: tokens read (prompt tokens) and written (generated tokens) per meeting, from llama.cpp's counts, and wall time per meeting and at hang-up. Other lanes build on this desktop tonight, so every wall time here is taken on a shared host and is not a timing figure; the Surface CPU timing (3B against 4B) is a separate run on an idle machine.
+
+### Ornith 1.5 9B, by the same rule (optional, after Granite's runs)
+
+Written before any generation, with the Granite rule. Only once Granite's runs have finished, desktop GPU only, never on the Surface.
+
+- **Model.** `bartowski/Ornith-1.5-9B-GGUF` (a community imatrix quantisation of `ornith-ai/Ornith-1.5-9B`, Qwen 3.5 architecture) at commit `1fc60d68`, `Ornith-1.5-9B-Q4_K_M.gguf`, 5,910,782,848 bytes, LFS SHA-256 `886e98b1...b266` (re-checked 2026-11-12). Licence MIT from the card metadata of both repos (`ornith-ai/Ornith-1.5-9B` at commit `489cb979`); both cards' `license_link` points at a LICENSE file in the base repo that does not exist (HTTP 404 on 2026-11-12), so the MIT text itself was not read from the publisher. Attribution goes to Ornith AI (model) and bartowski (GGUF conversion).
+- **Template.** Read from the GGUF before its manifest entry is committed; the assistant prefix is whatever that template renders with thinking off. If the pinned llama.cpp cannot load it or cannot format its template, that is reported and the screen stops. Checked 2026-11-12, before its generation: the GGUF template (7,939 bytes) is Qwen 3.5 9B's with two differences, thinking on by default and a tool-argument loop; with thinking off it renders `<|im_start|>assistant
+<think>
+
+</think>
+
+`, so llama.cpp detects ChatML and the prefix is `QWEN_NO_THINK`, as for the Qwen models. Whether the pinned llama.cpp loads it is known only from its run.
+- **Rule.** Rule 1 above against Qwen 3.5 9B from `t1227-dev` (its own `--out`, `target\sum-eval\t1227-ornith`, same build and settings); rule 2 and 3 likewise, with Qwen 3.5 9B as the class model.
+
+### Results: Granite 4.2 fails the first test (2026-11-12, `target/sum-eval/t1227-dev`)
+
+One run, one build, CUDA on the RTX 5080 (every load log: all layers offloaded to `CUDA0`), format key `indented-numbered-r5-chunk600`, assistant prefixes checked in each result header (`<think></think>` for Granite, `<think>\n\n</think>\n\n` for Qwen). Coverage is decisions covered of 83 plus actions covered of 41. Raw tables: `docs/summary-eval/t1227/dev-table.md` and `dev-tokens.md` (per meeting).
+
+| Model | Class model | Valid | Decisions cov | Actions cov | Coverage total | Decisions / actions written | ROUGE-Lsum | Rule 1 |
+|---|---|---|---|---|---|---|---|---|
+| Qwen 3.5 4B | - | 20/20 | 35 | 10 | 45 | 114 / 70 | 0.304 | - |
+| Granite 4.2 3B | Qwen 3.5 4B | 19/20 | 3 | 0 | 3 | 5 / 5 | 0.240 | fails (invalid meeting, coverage 3 < 45) |
+| Qwen 3.5 9B | - | 20/20 (1 joined) | 43 | 6 | 49 | 140 / 91 | 0.307 | - |
+| Granite 4.2 8B | Qwen 3.5 9B | 18/20 | 32 | 9 | 41 | 102 / 84 | 0.202 | fails (2 invalid meetings, coverage 41 < 49) |
+
+Tokens and time per meeting, means over the 20 dev meetings. **Shared host:** other lanes were building on the desktop during the run, so these seconds are not timing figures; they only say how the models compare in the same conditions.
+
+| Model | Tokens read | Tokens written | s per meeting (all) | s at hang-up | Repairs | Truncated | Looping |
+|---|---|---|---|---|---|---|---|
+| Qwen 3.5 4B | 22,202 | 5,224 | 36.8 | 19.2 | 1 | 0 | 0 |
+| Granite 4.2 3B | 19,024 | 2,118 | 11.3 | 5.2 | 2 | 0 | 3 |
+| Qwen 3.5 9B | 22,880 | 4,995 | 46.1 | 23.8 | 3 | 1 | 3 |
+| Granite 4.2 8B | 24,682 | 8,105 | 88.5 | 49.8 | 12 | 3 | 0 |
+
+- **Granite 4.2 3B** is fast because it writes little: 5 decisions and 5 action items over 20 meetings, against 114 and 70 for the 4B; almost everything goes into notes. TS3006a failed at a map step (a repeated item through all three requests).
+- **Granite 4.2 8B** writes 60% more than the 9B and needs 4 times the repairs. TS3004c and TS3006d failed in planning: its map summaries were long enough that the merge needed about 16,400 tokens of a 16,384 context (the production window), so no request was sent. With a larger context they might have run; the rule fixes S16, as production does.
+- No judged round (rule 2 needs rule 1). The fall-back to Granite 4.1 was not needed: llama.cpp loaded and formatted 4.2.
+
+### Results: Ornith 1.5 9B fails the first test (2026-11-12, `target/sum-eval/t1227-ornith`)
+
+Same build and settings as `t1227-dev`, run after it; CUDA (33/33 layers offloaded), prefix `<think>\n\n</think>\n\n` checked in the result header. The pinned llama.cpp loads and formats it. Compared with Qwen 3.5 9B from `t1227-dev`. Raw tables: `docs/summary-eval/t1227/ornith-table.md` and `ornith-tokens.md`.
+
+| Model | Valid | Decisions cov | Actions cov | Coverage total | Decisions / actions written | ROUGE-Lsum | Tokens read | Tokens written | s per meeting (all) | s at hang-up | Rule 1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Qwen 3.5 9B | 20/20 (1 joined) | 43 | 6 | 49 | 140 / 91 | 0.307 | 22,880 | 4,995 | 46.1 | 23.8 | - |
+| Ornith 1.5 9B | 20/20 | 28 | 11 | 39 | 136 / 104 | 0.260 | 22,258 | 4,449 | 40.6 | 21.9 | fails (coverage 39 < 49) |
+
+Means per meeting; seconds from a shared host (other lanes building), not timing figures. Ornith is valid on every meeting with one repair and no loop, and catches more actions (11 against 6), but 15 fewer decisions; no judged round.
+
+### Recommendation
+
+Keep the local writer paused on Qwen 3.5 (4B and 9B as shipped). None of the three candidates earned a judged round under the rule written before generation: Granite 4.2 3B barely writes decisions or actions, Granite 4.2 8B is longer, slower and overruns the production context on two merges, and Ornith 1.5 9B trades decisions for actions at the same speed. T12.25 and T12.26 can be unparked on the Qwen 4B, as their tasks assume. No test split was run and no default changed. The 3B's Surface timing against the 4B (if run) can only show a faster model that does not summarise decisions or actions, so it decides nothing.

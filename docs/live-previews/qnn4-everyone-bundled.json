@@ -1,0 +1,244 @@
+{
+  "audio": "bundled",
+  "capture_max_lag_s": 0.018,
+  "catch_up_after_end_s": 0.4077984,
+  "decodes_mic": {
+    "audio_s": 100.63999999999999,
+    "calls": 11,
+    "rtf": 0.023060763116057235,
+    "took_s": {
+      "max": 0.3141059,
+      "median": 0.2288686,
+      "n": 11,
+      "p95": 0.3141059
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 95.13600000000001,
+    "calls": 10,
+    "rtf": 0.022003086108308107,
+    "took_s": {
+      "max": 0.2903193,
+      "median": 0.2234852,
+      "n": 10,
+      "p95": 0.2903193
+    }
+  },
+  "echo_locks": 1,
+  "echo_words_removed": 0,
+  "host": {
+    "logical_cores": 12,
+    "machine_load_percent": {
+      "max": 26.0,
+      "median": 25.0,
+      "n": 4,
+      "p95": 26.0
+    },
+    "peak_private_gib": 2.7084388732910156,
+    "peak_working_set_gib": 3.851825714111328,
+    "process_cpu_s": 53.125
+  },
+  "length_s": 150.0,
+  "live_backends": [
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "mic": {
+    "first_word_lag_s": {
+      "max": 37.52957409999999,
+      "median": 6.9899314,
+      "n": 11,
+      "p95": 37.52957409999999
+    },
+    "last_word_lag_s": {
+      "max": 16.729574099999994,
+      "median": 2.290723800000009,
+      "n": 11,
+      "p95": 16.729574099999994
+    },
+    "on_screen_lag_s": {
+      "max": 37.52957409999999,
+      "median": 15.490723799999998,
+      "n": 244,
+      "p95": 32.3295741
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "6d099ad857c667baf8080bf43a4de9cce88d36d0d20b1cedab21d623b02cb7dd",
+    "stretch_length_s": {
+      "max": 23.36,
+      "median": 4.96,
+      "n": 11,
+      "p95": 23.36
+    },
+    "stretches": 11,
+    "word_lag_s": {
+      "max": 37.52957409999999,
+      "median": 15.490723799999998,
+      "n": 244,
+      "p95": 32.3295741
+    },
+    "words": 244
+  },
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10"
+  ],
+  "preview_refusal": {
+    "app_first": null,
+    "app_first_on": "Qnn",
+    "app_own_voice": "not for your own voice on the NPU yet: some words shown there vanished again, and why is not understood",
+    "app_own_voice_on": null,
+    "forced_past_it": false,
+    "simulated_card_gib": null
+  },
+  "preview_sessions": [
+    {
+      "not_loaded": "not for your own voice on the NPU yet: some words shown there vanished again, and why is not understood",
+      "refusal_bypassed": false,
+      "requested": {
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2"
+      },
+      "slot": "own_voice"
+    },
+    {
+      "loaded": {
+        "device": "qnn:npu",
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2",
+        "placement": null
+      },
+      "refusal_bypassed": false,
+      "requested": {
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2"
+      },
+      "slot": "first"
+    }
+  ],
+  "previews": [
+    {
+      "audio_dropped": 0,
+      "audio_s": 0.0,
+      "backend": null,
+      "cancelled": 0,
+      "decode_s": 0.0,
+      "decodes": 0,
+      "decodes_adding_nothing": 0,
+      "load_s": 0.0,
+      "off": "not for your own voice on the NPU yet: some words shown there vanished again, and why is not understood",
+      "rtf": null,
+      "skipped_busy": 0,
+      "slow_pauses": 0,
+      "slowest_s": 0.0,
+      "track": "Mic",
+      "words_shown": 0
+    },
+    {
+      "audio_dropped": 0,
+      "audio_s": 638.56,
+      "backend": "Qnn",
+      "cancelled": 1,
+      "decode_s": 15.207826099999997,
+      "decodes": 79,
+      "decodes_adding_nothing": 33,
+      "load_s": 3.1338369,
+      "off": null,
+      "rtf": 0.02381581386244049,
+      "skipped_busy": 0,
+      "slow_pauses": 0,
+      "slowest_s": 0.2478829,
+      "track": "Reference",
+      "words_shown": 199
+    }
+  ],
+  "reference": {
+    "first_word_lag_s": {
+      "max": 42.1077905,
+      "median": 14.98649900000001,
+      "n": 8,
+      "p95": 42.1077905
+    },
+    "last_word_lag_s": {
+      "max": 25.5477905,
+      "median": 3.5478801000000004,
+      "n": 8,
+      "p95": 25.5477905
+    },
+    "on_screen_lag_s": {
+      "max": 41.8677905,
+      "median": 2.248535199999992,
+      "n": 213,
+      "p95": 8.6177414
+    },
+    "previews": {
+      "changed": 9,
+      "kept": 189,
+      "updates": 54,
+      "vanished": 1,
+      "word_lag_s": {
+        "max": 7.9101959,
+        "median": 2.282861499999999,
+        "n": 199,
+        "p95": 5.4828614999999985
+      }
+    },
+    "stored_sha256": "344ffab8e28dc4bbe1632f17b252d0d939d10ce1efad56c676db50c89efed77d",
+    "stretch_length_s": {
+      "max": 20.16,
+      "median": 14.64,
+      "n": 8,
+      "p95": 20.16
+    },
+    "stretches": 8,
+    "word_lag_s": {
+      "max": 42.1077905,
+      "median": 14.217741399999994,
+      "n": 213,
+      "p95": 37.1477905
+    },
+    "words": 213
+  },
+  "requested_backend": "Qnn",
+  "simulated_card_gib": null,
+  "speakers": true,
+  "stopped_with": "Finished",
+  "vanished_kinds": {
+    "mic": {
+      "near_ms": 2000,
+      "never_settled": 0,
+      "other_track_settled_nearby": 0,
+      "own_settled_after": 0,
+      "own_settled_before": 0
+    },
+    "reference": {
+      "near_ms": 2000,
+      "never_settled": 1,
+      "other_track_settled_nearby": 0,
+      "own_settled_after": 0,
+      "own_settled_before": 0
+    }
+  },
+  "warnings": 0
+}

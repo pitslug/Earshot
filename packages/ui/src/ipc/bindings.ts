@@ -1036,7 +1036,10 @@ export type Installed =
 export type IpcError = {
 	/**  A stable machine-readable kind (`snake_case`), for the UI to choose a message. */
 	kind: string,
-	/**  The error's own text (never more than [`RuntimeError`]'s `Display` gives). */
+	/**
+	 *  What the user is told: fixed copy chosen by the error's kind
+	 *  ([`crate::plain_text::runtime_text`]), never a runtime error's own text.
+	 */
 	message: string,
 	/**  Whether retrying the same operation can succeed without user action. */
 	retryable: boolean,
@@ -1879,9 +1882,28 @@ voices_to_name: number } |
 { kind: "Skipped"; 
 /**  Why. */
 reason: string } | 
-/**  The summary (or the cleanup before it) failed; nothing was stored. */
+/**
+ *  The summary failed; nothing was stored. The final transcript stays, so the screen offers
+ *  Re-summarise.
+ */
 { kind: "Failed"; 
-/**  What failed. */
+/**  What failed (fixed copy, `plain_text::runtime_text`). */
+message: string; 
+/**  Whether trying again can succeed without changing anything. */
+retryable: boolean } | 
+/**
+ *  The meeting ended in an error before its recording was saved (T9.23): no final pass or
+ *  summary ran, and nothing here says what was kept, so the screen offers only Open.
+ */
+{ kind: "RecordingFailed"; 
+/**  What happened (fixed copy, `plain_text::runtime_text`). */
+message: string } | 
+/**
+ *  The final transcript could not be finished (T9.23), so no summary ran: the recording and
+ *  any draft stay, the meeting reads as `Unprocessed`, and the screen offers Re-transcribe.
+ */
+{ kind: "PostFailed"; 
+/**  Why (fixed copy, `plain_text::runtime_text`). */
 message: string; 
 /**  Whether trying again can succeed without changing anything. */
 retryable: boolean } | 

@@ -301,6 +301,30 @@ pub fn meeting_repo<R: MeetingRepo>(make: impl Fn() -> R) {
     repo.put_segment(gone.clone()).unwrap();
     assert_eq!(repo.segments(m).unwrap(), vec![s_early.clone(), gone]);
 
+    // `has_live_segment` answers what `live_segments` would, tombstones not counted: `m` holds
+    // one live Final row and one tombstoned Live row; `other` holds none.
+    let answers = |repo: &R| {
+        [m, other].map(|id| {
+            [TranscriptPass::Final, TranscriptPass::Live].map(|pass| {
+                let has = repo.has_live_segment(id, pass).unwrap();
+                let rows = super::repo::live_segments(repo, id, pass).unwrap();
+                assert_eq!(has, !rows.is_empty(), "{pass:?} of {id}: as live_segments");
+                has
+            })
+        })
+    };
+    assert_eq!(answers(&repo), [[true, false], [false, false]]);
+    let mut early_gone = s_early.clone();
+    early_gone.meta.mark_deleted(&mut f.hlc, &f.clock);
+    repo.put_segment(early_gone).unwrap();
+    assert_eq!(
+        answers(&repo),
+        [[false, false], [false, false]],
+        "a tombstoned Final row is no final transcript"
+    );
+    repo.put_segment(s_early.clone()).unwrap();
+    assert_eq!(answers(&repo), [[true, false], [false, false]]);
+
     // Notes: order by anchor.
     missing(
         repo.put_note(f.note(ghost, 0)),

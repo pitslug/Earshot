@@ -6,9 +6,10 @@
 //!
 //! # Finding the CLI ([`ClaudeCli::find`])
 //!
-//! `claude.exe` (or `claude` off Windows) in an absolute `PATH` directory, then the native
-//! installer's `%USERPROFILE%\.local\bin`, then npm's global folders (`%APPDATA%\npm`,
-//! `%LOCALAPPDATA%\npm`). An npm `claude.cmd` shim is never run (it would route the
+//! `claude.exe` (or `claude` off Windows) in the native installer's `%USERPROFILE%\.local\bin`,
+//! then npm's global folders (`%APPDATA%\npm`, `%LOCALAPPDATA%\npm`), then an absolute `PATH`
+//! directory: the known install folders come first, so a `claude` earlier on `PATH` (a wrapper
+//! someone else put there) is not run when a real install exists (T9.25). An npm `claude.cmd` shim is never run (it would route the
 //! arguments through `cmd.exe`): it is resolved to the `claude.exe` it wraps
 //! (`node_modules\@anthropic-ai\claude-code\bin\claude.exe`, Claude Code 2 and later) or to
 //! `node` plus `cli.js` (older releases), as another desktop app does.
@@ -29,9 +30,8 @@
 //!   PINEAPPLE); `--setting-sources project --safe-mode`, `--setting-sources ""` alone and both
 //!   together did not, and the sign-in kept working with `--setting-sources ""`. What can still
 //!   apply: admin-managed (policy) settings, which `--safe-mode` and `--restricted` say always
-//!   apply, and the user's environment variables except the ones removed below (for example an
-//!   `ANTHROPIC_BASE_URL` or `HTTPS_PROXY` of their own). `--bare` is not used: it never
-//!   reads the OAuth sign-in this provider runs on.
+//!   apply, and the user's environment variables except the ones removed below. `--bare` is
+//!   not used: it never reads the OAuth sign-in this provider runs on.
 //! - `--no-session-persistence`: Claude Code keeps no transcript of the run on disk.
 //! - The prompt goes only on standard input ([`stdin_text`]); the command line holds only
 //!   fixed text, the model name ([`check_model`]) and an [`Effort`] word from a fixed list.
@@ -43,7 +43,14 @@
 //! - The working folder is a new, empty temporary folder, deleted afterwards.
 //! - `CLAUDECODE` (the marker of a session started from inside Claude Code) and
 //!   `CLAUDE_CODE_SIMPLE` (what `--bare` sets: no OAuth) are removed from the child's
-//!   environment; `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING` and `DISABLE_AUTOUPDATER`
+//!   environment, and so is every variable Claude Code documents for another API address,
+//!   another provider (Bedrock, Vertex, Foundry, Claude Platform on AWS), a credential other
+//!   than the stored sign-in, custom headers, a proxy or OpenTelemetry export
+//!   ([`CLEARED_ENV`], T9.25): the CLI talks only to its signed-in default. A user signed in only through such a variable (an
+//!   `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`) reads as not signed in, so the summary
+//!   is skipped with a banner. Admin-managed settings can still set any of them (an `env`
+//!   block there is outside Earshot's reach); CA and client-certificate variables are kept
+//!   (they name no address). `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING` and `DISABLE_AUTOUPDATER`
 //!   are set (an earlier app's opt-outs).
 //! - Before any text is written to the CLI, [`HandoverSink::started`] is told (the runtime
 //!   stores a `started` entry then); if it cannot record, the CLI is stopped unread
@@ -113,8 +120,93 @@ The input is a request in parts: a system part with the rules, a user part with 
 and sometimes your earlier reply with a correction. Follow the system part exactly and answer \
 the last user part with only the JSON object it asks for, nothing before or after it.";
 
-/// Variables removed from the CLI's environment (module docs).
-const CLEARED_ENV: [&str; 2] = ["CLAUDECODE", "CLAUDE_CODE_SIMPLE"];
+/// Variables removed from the CLI's environment (module docs; T9.25, the owner's decision of
+/// 2026-11-12: the CLI talks only to its signed-in default, never to an address, account or
+/// provider a variable of the user's names). Every name comes from Claude Code's own
+/// documentation, read 2026-11-12 for Claude Code 2.1.292: the environment variables
+/// reference <https://code.claude.com/docs/en/env-vars> unless marked otherwise.
+/// `CLAUDE_CONFIG_DIR` is kept on purpose: it chooses which of the user's own stored sign-ins
+/// runs (as `CODEX_HOME` does for Codex). A deny list over a vendor table that grows each
+/// release can fall behind; re-read the reference on every Claude Code version change.
+pub const CLEARED_ENV: [&str; 61] = [
+    // Not about the network (T7.4ga): the marker of a session started from inside Claude
+    // Code, and what `--bare` sets (no OAuth; named by `claude --help`).
+    "CLAUDECODE",
+    "CLAUDE_CODE_SIMPLE",
+    // Another address for the API.
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+    "ANTHROPIC_AWS_BASE_URL",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    // Another provider (Amazon Bedrock, its Mantle endpoint, Claude Platform on AWS,
+    // Google Cloud's Agent Platform (Vertex), Microsoft Foundry) and its skipped sign-in.
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_MANTLE_AUTH",
+    "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+    // Credentials other than the stored sign-in (another account, or a gateway's), and
+    // headers that can carry one.
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_PROFILE",
+    "ANTHROPIC_FEDERATION_RULE_ID",
+    "ANTHROPIC_ORGANIZATION_ID",
+    "ANTHROPIC_WORKSPACE_ID",
+    "ANTHROPIC_AWS_API_KEY",
+    "ANTHROPIC_AWS_WORKSPACE_ID",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    // Used only by `claude auth login`, which Earshot never runs; cleared with the token
+    // above so no alternative credential reaches the child.
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+    "CLAUDE_CODE_OAUTH_SCOPES",
+    // OpenTelemetry export, switched on and aimed from the environment, which can carry the
+    // prompt (`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_RAW_API_BODIES`) to a collector of the
+    // user's; `DISABLE_TELEMETRY` does not cover it (found by review: T9.25). Names from the
+    // reference and <https://code.claude.com/docs/en/monitoring-usage>.
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+    "ENABLE_ENHANCED_TELEMETRY_BETA",
+    "ENABLE_BETA_TRACING_DETAILED",
+    "BETA_TRACING_ENDPOINT",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_LOGS_EXPORTER",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_ASSISTANT_RESPONSES",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_TOOL_CONTENT",
+    "OTEL_LOG_RAW_API_BODIES",
+    // Proxies: the reference and <https://code.claude.com/docs/en/network-config>, which says
+    // the lower-case forms work too (Windows names ignore case; the lower-case entries are
+    // for other systems).
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+];
 
 /// Variables set in the CLI's environment (module docs).
 const SET_ENV: [(&str, &str); 3] = [
@@ -347,28 +439,44 @@ impl CliSearch {
         }
     }
 
-    /// The directories searched, in order (module docs). Relative `PATH` entries are left
-    /// out (they would resolve against the current folder).
+    /// The directories searched, in order (module docs): the known install folders, then
+    /// `PATH`.
     #[must_use]
     pub fn dirs(&self) -> Vec<PathBuf> {
-        let mut dirs: Vec<PathBuf> = self
-            .path
+        let mut dirs = Vec::new();
+        if let Some(home) = &self.home {
+            dirs.push(home.join(".local").join("bin"));
+        }
+        dirs.extend(self.npm_dirs());
+        dirs.extend(self.path_dirs());
+        dirs
+    }
+
+    /// npm's global folders (`%APPDATA%\npm`, then `%LOCALAPPDATA%\npm`), on Windows only.
+    #[must_use]
+    pub fn npm_dirs(&self) -> Vec<PathBuf> {
+        if !cfg!(windows) {
+            return Vec::new();
+        }
+        [&self.app_data, &self.local_app_data]
+            .into_iter()
+            .flatten()
+            .map(|d| d.join("npm"))
+            .collect()
+    }
+
+    /// The absolute `PATH` entries, in order. Relative entries are left out (they would
+    /// resolve against the current folder).
+    #[must_use]
+    pub fn path_dirs(&self) -> Vec<PathBuf> {
+        self.path
             .as_ref()
             .map(|p| {
                 std::env::split_paths(p)
                     .filter(|d| d.is_absolute())
                     .collect()
             })
-            .unwrap_or_default();
-        if let Some(home) = &self.home {
-            dirs.push(home.join(".local").join("bin"));
-        }
-        if cfg!(windows) {
-            for d in [&self.app_data, &self.local_app_data].into_iter().flatten() {
-                dirs.push(d.join("npm"));
-            }
-        }
-        dirs
+            .unwrap_or_default()
     }
 }
 
@@ -1174,13 +1282,14 @@ mod tests {
             app_data: Some(PathBuf::from("C:\\appdata")),
             local_app_data: Some(PathBuf::from("C:\\local")),
         };
+        // The known install folders first, then PATH (T9.25).
         assert_eq!(
             search.dirs(),
             [
-                PathBuf::from("C:\\abs"),
                 PathBuf::from("C:\\home\\.local\\bin"),
                 PathBuf::from("C:\\appdata\\npm"),
                 PathBuf::from("C:\\local\\npm"),
+                PathBuf::from("C:\\abs"),
             ]
         );
     }

@@ -207,7 +207,7 @@ impl AgentCli {
 }
 
 /// The candidates, smallest first, then later additions.
-pub const CANDIDATES: [Candidate; 13] = [
+pub const CANDIDATES: [Candidate; 15] = [
     Candidate {
         id: "qwen2.5-1.5b-instruct-q4_k_m",
         name: "Qwen2.5 1.5B Instruct",
@@ -275,6 +275,20 @@ pub const CANDIDATES: [Candidate; 13] = [
     Candidate {
         id: "qwen3.5-2b-q4_k_m",
         name: "Qwen3.5 2B",
+        prefix: QWEN_NO_THINK,
+    },
+    // T12.27 screen (evaluation only): the 3B of the Granite 4.2 line, against the Qwen
+    // 3.5 4B; thinking off, as for the 8B.
+    Candidate {
+        id: "granite-4.2-3b-q4_k_m",
+        name: "Granite 4.2 3B",
+        prefix: GRANITE_NO_THINK,
+    },
+    // T12.27 (evaluation only, desktop GPU only): a Qwen 3.5 9B derivative whose template
+    // differs from Qwen 3.5's in thinking on by default; thinking off renders the same block.
+    Candidate {
+        id: "ornith-1.5-9b-q4_k_m",
+        name: "Ornith 1.5 9B",
         prefix: QWEN_NO_THINK,
     },
 ];
@@ -1995,6 +2009,28 @@ mod tests {
         for c in &CANDIDATES {
             assert!(!c.prefix.contains("<|channel>"), "{}: {:?}", c.id, c.prefix);
         }
+    }
+
+    #[test]
+    fn sum_eval_granite_candidates_run_with_thinking_off() {
+        // Granite 4.2 thinks by default; its template with thinking off opens the reply
+        // with an empty think block, which is the screened condition (T12.27).
+        for id in ["granite-4.2-3b-q4_k_m", "granite-4.2-8b-q4_k_m"] {
+            let c = CANDIDATES
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap_or_else(|| panic!("{id} is a candidate"));
+            assert_eq!(c.prefix, "<think></think>", "{id}");
+        }
+    }
+
+    #[test]
+    fn sum_eval_ornith_runs_with_qwens_thinking_off_block() {
+        let c = CANDIDATES
+            .iter()
+            .find(|c| c.id == "ornith-1.5-9b-q4_k_m")
+            .expect("Ornith is a candidate");
+        assert_eq!(c.prefix, "<think>\n\n</think>\n\n");
     }
 
     #[test]

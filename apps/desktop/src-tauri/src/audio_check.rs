@@ -453,6 +453,10 @@ pub fn failure_copy(e: &RuntimeError) -> String {
             }
             text
         }
+        // Why a device could not start, and what to do (T9.23).
+        RuntimeError::CaptureStart { problem, .. } => {
+            crate::plain_text::capture_copy(*problem).to_owned()
+        }
         RuntimeError::Store(_) | RuntimeError::Repo(_) => STORE_FAILED.to_owned(),
         _ => OTHER_FAILED.to_owned(),
     }

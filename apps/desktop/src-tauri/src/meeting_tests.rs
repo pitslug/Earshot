@@ -92,6 +92,78 @@ enum Script {
     PreflightPanics,
     /// The work after the meeting panics.
     AfterPanics,
+    /// Records until stopped, and its stop never returns until the test releases it.
+    StopHangs,
+    /// Records until stopped through a capture source whose thread never ends (T9.20).
+    CaptureThreadHangs,
+}
+
+/// Holds a stuck stop until the test lets it go (`true`).
+type StopGate = Arc<(Mutex<bool>, std::sync::Condvar)>;
+
+fn release(gate: &StopGate) {
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+}
+
+/// [`UntilStopped`] whose stop blocks until its gate opens: a source stuck in a call.
+struct HangingStop {
+    inner: UntilStopped,
+    gate: StopGate,
+}
+
+impl AudioSource for HangingStop {
+    type Error = <ReplaySource as AudioSource>::Error;
+    fn session(&self) -> &CaptureSession {
+        self.inner.session()
+    }
+    fn pump(&mut self, sink: &mut dyn CaptureSink) -> Result<SourceStatus, Self::Error> {
+        self.inner.pump(sink)
+    }
+    fn stop(&mut self) {
+        let (open, cv) = &*self.gate;
+        let mut released = open.lock().unwrap();
+        while !*released {
+            released = cv.wait(released).unwrap();
+        }
+        drop(released);
+        self.inner.stop();
+    }
+}
+
+/// A capture source whose thread delivered 1 s on both tracks and never ends: its stop gives
+/// the thread up after a short wait (T9.20). The gate releases the stuck thread at the end.
+#[cfg(windows)]
+fn stuck_capture(gate: StopGate) -> earshot_capture_wasapi::ChannelSource<String> {
+    use earshot_capture_wasapi::LiveMsg;
+    use earshot_core::capture::{CaptureEvent, TrackInfo};
+    let origin = DeviceTime::from_ticks(5_000_000);
+    let info = CaptureSession::new(
+        origin,
+        TrackInfo::new(PIPELINE_RATE),
+        Some(TrackInfo::new(PIPELINE_RATE)),
+    );
+    let (tx, rx) = mpsc::channel::<LiveMsg<String>>();
+    for i in 0..100u64 {
+        for track in [TrackId::Mic, TrackId::Reference] {
+            tx.send(LiveMsg::Event(CaptureEvent::Frames {
+                track,
+                device_ts: origin.after_frames(i * 160, PIPELINE_RATE),
+                frames: tone(0.01, 0.2),
+            }))
+            .unwrap();
+        }
+    }
+    earshot_capture_wasapi::ChannelSource::new(info, rx, move || {
+        // The sender lives as long as the stuck thread: the channel never closes.
+        let _keep = tx;
+        let (open, cv) = &*gate;
+        let mut released = open.lock().unwrap();
+        while !*released {
+            released = cv.wait(released).unwrap();
+        }
+    })
+    .with_stop_wait(Duration::from_millis(50))
 }
 
 /// The setup note the fake pre-flight reports (as `host::transcription_setup` would).
@@ -107,6 +179,8 @@ struct FakePrepare {
     call_signal: Mutex<Option<CallSignal>>,
     /// The summary step reports Claude Code at its default effort (an unreadable help).
     effort_unread: std::sync::atomic::AtomicBool,
+    /// Holds a [`Script::StopHangs`] or [`Script::CaptureThreadHangs`] stop.
+    stop_gate: StopGate,
 }
 
 impl FakePrepare {
@@ -117,6 +191,7 @@ impl FakePrepare {
             seed: 100.into(),
             call_signal: Mutex::new(None),
             effort_unread: false.into(),
+            stop_gate: Arc::default(),
         })
     }
 }
@@ -151,8 +226,36 @@ impl Prepare for FakePrepare {
         let seed = self.seed.fetch_add(1, Ordering::Relaxed);
         let mut cfg = config();
         cfg.title = request.title.clone();
+        let gate = Arc::clone(&self.stop_gate);
         let start: StartFn = Box::new(move |svc: &Services| match script {
-            Script::StartFails => Err(RuntimeError::Capture("no microphone".into())),
+            Script::StartFails => Err(RuntimeError::CaptureStart {
+                problem: earshot_runtime::CaptureProblem::MicrophoneAccessOff,
+                detail: "IAudioClient::Initialize: Access is denied. (0x80070005)".into(),
+            }),
+            Script::StopHangs => start_live(
+                HangingStop {
+                    inner: UntilStopped {
+                        inner: replay(0.5, reference),
+                        stopped: false,
+                    },
+                    gate: Arc::clone(&gate),
+                },
+                svc.clone(),
+                cfg,
+                None,
+                Box::new(ChaCha8Rng::seed_from_u64(seed)),
+            ),
+            #[cfg(windows)]
+            Script::CaptureThreadHangs => start_live(
+                stuck_capture(Arc::clone(&gate)),
+                svc.clone(),
+                LiveConfig {
+                    clock_domain: ClockDomain::Qpc,
+                    ..cfg
+                },
+                None,
+                Box::new(ChaCha8Rng::seed_from_u64(seed)),
+            ),
             Script::UntilStopped => start_live(
                 UntilStopped {
                     inner: replay(0.5, reference),
@@ -727,7 +830,9 @@ fn meeting_driver_a_session_that_cannot_start_is_an_ipc_error() {
     let (d, rx) = driver(FakePrepare::new(Script::StartFails));
     let e = d.start(&svc, request(CaptureMode::Call)).unwrap_err();
     assert_eq!(e.kind, "capture");
-    assert!(e.message.contains("no microphone"));
+    // What to do, by the error's kind; never Windows' own words (T9.23).
+    assert_eq!(e.message, crate::plain_text::MICROPHONE_ACCESS_OFF);
+    assert!(!e.message.contains("0x80070005"));
     assert!(rx.try_recv().is_err());
     assert!(svc.store().meetings().unwrap().is_empty());
     assert!(!d.busy());
@@ -760,9 +865,8 @@ fn meeting_driver_a_panic_after_the_start_ends_with_a_failed_summary_and_frees_t
         events.last(),
         Some(&MeetingEvent::Summary {
             meeting: events_meeting(&events),
-            result: SummaryEvent::Failed {
+            result: SummaryEvent::RecordingFailed {
                 message: MEETING_PANIC_MESSAGE.into(),
-                retryable: false,
             },
         })
     );
@@ -927,6 +1031,72 @@ fn meeting_driver_and_the_model_check_exclude_each_other() {
     until_summary(&rx);
     d.join();
     drop(gate.enter_check().unwrap());
+}
+
+#[test]
+fn meeting_driver_stop_and_wait_gives_up_at_its_ceiling() {
+    // T9.20: a source whose stop never returns holds the session thread; Quit must still end.
+    let dir = TempDir::new("driver-stop-ceiling");
+    let svc = services(&dir);
+    let prepare = FakePrepare::new(Script::StopHangs);
+    let gate = Arc::clone(&prepare.stop_gate);
+    let (d, rx) = driver(prepare);
+    let d = d.with_stop_ceiling(Duration::from_millis(200));
+    d.start(&svc, request(CaptureMode::Call)).unwrap();
+    assert!(
+        !d.stop_and_wait(),
+        "it returns, and says the recording is not saved"
+    );
+    assert_eq!(d.phase(), DriverPhase::Recording);
+    // Once the source lets go, the meeting finishes as usual.
+    release(&gate);
+    let events = until_summary(&rx);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, MeetingEvent::Ended { .. }))
+    );
+    d.join();
+}
+
+#[test]
+fn meeting_driver_stop_keep_waiting_rule() {
+    // The ceiling's rule, clock-free.
+    let c = Duration::from_secs(15);
+    assert!(keep_waiting(true, Duration::ZERO, c));
+    assert!(keep_waiting(true, c - Duration::from_millis(1), c));
+    assert!(!keep_waiting(true, c, c));
+    assert!(!keep_waiting(false, Duration::ZERO, c));
+    assert_eq!(STOP_CEILING, c);
+    // It outlasts the capture source's own stop wait, with room to save the files after it.
+    #[cfg(windows)]
+    assert!(STOP_CEILING >= earshot_capture_wasapi::STOP_WAIT + Duration::from_secs(5));
+}
+
+#[cfg(windows)]
+#[test]
+fn meeting_driver_stop_saves_the_recording_when_the_capture_thread_never_ends() {
+    // T9.20: the capture source gives its stuck thread up, the recording is saved and the
+    // user hears why; the stop and wait returns with nothing recording.
+    let dir = TempDir::new("driver-stuck-capture");
+    let svc = services(&dir);
+    let prepare = FakePrepare::new(Script::CaptureThreadHangs);
+    let gate = Arc::clone(&prepare.stop_gate);
+    let (d, rx) = driver(prepare);
+    let meeting = d.start(&svc, request(CaptureMode::Call)).unwrap();
+    assert!(d.stop_and_wait());
+    let events = until_summary(&rx);
+    let warned = position(
+        &events,
+        |e| matches!(e, MeetingEvent::Warning { key, .. } if key == "device-stopped-answering"),
+    );
+    let ended = position(&events, |e| matches!(e, MeetingEvent::Ended { .. }));
+    assert!(warned < ended, "{events:?}");
+    let id: earshot_core::identity::EntityId = meeting.parse().unwrap();
+    let files = svc.store().audio_files(id).unwrap();
+    assert_eq!(files.len(), 2, "both tracks are saved");
+    d.join();
+    release(&gate);
 }
 
 #[test]
@@ -1247,12 +1417,22 @@ fn meeting_queue_driver_a_failed_load_keeps_the_meeting_recording() {
 #[test]
 fn meeting_queue_driver_a_session_failure_after_the_save_does_not_blame_the_recording() {
     let e = RuntimeError::Poisoned;
-    let before = session_failure_message(false, &e);
+    // Before the save it claims nothing about what was kept and offers no re-summary.
+    let SummaryEvent::RecordingFailed { message: before } = session_failure(false, &e) else {
+        panic!("before the save the recording failed");
+    };
+    assert!(!before.contains("saved"), "{before}");
     assert!(
         before.starts_with("The recording could not be finished"),
         "{before}"
     );
-    let after = session_failure_message(true, &e);
+    // Fixed copy after it, never the error's own text (T9.23).
+    assert!(before.ends_with(crate::plain_text::INTERNAL), "{before}");
+    assert!(!before.contains(&e.to_string()), "{before}");
+    // After the save it is the live work: the screen offers Re-transcribe.
+    let SummaryEvent::PostFailed { message: after, .. } = session_failure(true, &e) else {
+        panic!("after the save the transcript is what did not finish");
+    };
     assert!(after.starts_with("The recording is saved"), "{after}");
     assert!(after.contains("live transcript"), "{after}");
     assert!(!after.contains("could not be finished"), "{after}");
@@ -1266,6 +1446,115 @@ enum Finish {
     SummaryUntilCancelled(mpsc::Sender<()>),
     /// Runs until its gate opens and logs whether it was cancelled.
     Gate(mpsc::Receiver<()>),
+    /// The live transcript's catch-up hangs in a call that never returns (until the test
+    /// releases it), given up after `stall` (T9.22).
+    LiveHangs {
+        stall: Duration,
+        release: Arc<Mutex<mpsc::Receiver<()>>>,
+    },
+}
+
+/// A transcriber stuck in a call that never returns, polling nothing, until released.
+struct HungTranscriber(Arc<Mutex<mpsc::Receiver<()>>>);
+
+impl earshot_core::asr::Transcriber for HungTranscriber {
+    fn transcribe(
+        &mut self,
+        _audio: &MonoBuffer,
+        _options: &earshot_core::asr::TranscribeOptions,
+        _cancel: &CancelToken,
+    ) -> Result<earshot_core::asr::Transcription, earshot_core::asr::AsrError> {
+        let _ = self.0.lock().unwrap().recv();
+        Err(earshot_core::asr::AsrError::Cancelled)
+    }
+
+    fn backend_info(&self) -> earshot_core::asr::BackendInfo {
+        earshot_core::asr::BackendInfo {
+            kind: BackendKind::Fake,
+            device: "hung".into(),
+            model: "hung".into(),
+        }
+    }
+}
+
+/// A replay that delivers all its audio at once, then holds its end until it is stopped: a
+/// meeting whose live transcript has all of it to catch up on after the stop.
+struct PlaysThenWaits {
+    inner: ReplaySource,
+    end: Option<earshot_core::capture::EndOfStream>,
+    played: bool,
+    stopped: bool,
+    ended: bool,
+}
+
+struct KeepEnd<'a>(
+    &'a mut dyn CaptureSink,
+    &'a mut Option<earshot_core::capture::EndOfStream>,
+);
+
+impl CaptureSink for KeepEnd<'_> {
+    fn frames(&mut self, track: TrackId, frames: &[f32], at: DeviceTime) {
+        self.0.frames(track, frames, at);
+    }
+    fn discontinuity(&mut self, track: TrackId, d: earshot_core::capture::Discontinuity) {
+        self.0.discontinuity(track, d);
+    }
+    fn end(&mut self, end: earshot_core::capture::EndOfStream) {
+        *self.1 = Some(end);
+    }
+}
+
+impl AudioSource for PlaysThenWaits {
+    type Error = <ReplaySource as AudioSource>::Error;
+    fn session(&self) -> &CaptureSession {
+        self.inner.session()
+    }
+    fn pump(&mut self, sink: &mut dyn CaptureSink) -> Result<SourceStatus, Self::Error> {
+        if self.ended {
+            return Ok(SourceStatus::Ended);
+        }
+        if !self.played {
+            let status = self.inner.pump(&mut KeepEnd(sink, &mut self.end))?;
+            if status != SourceStatus::Ended {
+                return Ok(status);
+            }
+            self.played = true;
+        }
+        if !self.stopped {
+            return Ok(SourceStatus::Idle);
+        }
+        self.ended = true;
+        if let Some(mut end) = self.end.take() {
+            end.reason = earshot_core::capture::EndReason::Stopped;
+            sink.end(end);
+        }
+        Ok(SourceStatus::Ended)
+    }
+    fn stop(&mut self) {
+        self.stopped = true;
+    }
+}
+
+/// Quiet noise, then two seconds of loud noise, then quiet: one stretch of speech to decode.
+fn one_stretch() -> ReplaySource {
+    let mut x: u32 = 0x2545_f491;
+    let mut noise = |n: usize, amp: f32| -> Vec<f32> {
+        (0..n)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((x >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * amp
+            })
+            .collect()
+    };
+    let mut audio = noise(32_000, 1e-4);
+    audio.extend(noise(32_000, 0.3));
+    audio.extend(noise(32_000, 1e-4));
+    ReplayBuilder::new(
+        DeviceTime::from_ticks(5_000_000),
+        MonoBuffer::new(PIPELINE_RATE, audio),
+    )
+    .build()
+    .unwrap()
 }
 
 /// Waits for a cancel the way a model call does: nothing else ends it, and only a failure runs into
@@ -1326,6 +1615,79 @@ impl Prepare for CancelPrepare {
         let seed = self.seed.fetch_add(1, Ordering::Relaxed);
         let title = request.title.clone();
         let hold = LiveHold::new(Arc::new(MeetingHold::new(Arc::clone(ticket))));
+        if let Finish::LiveHangs { stall, release } = &finish {
+            let (stall, release) = (*stall, Arc::clone(release));
+            let start: StartFn = Box::new(move |svc: &Services| {
+                let mut slot = Some(release);
+                let factory: LiveAsrFactory = Box::new(move |track, entity| {
+                    let Some(release) = slot.take().filter(|_| track == TrackId::Mic) else {
+                        return Ok(None);
+                    };
+                    let n = std::cell::Cell::new(0u8);
+                    Ok(Some(
+                        earshot_core::pipeline::LiveAsr {
+                            transcriber: Box::new(HungTranscriber(release)),
+                            vad: Box::new(earshot_core::asr::EnergyVad::default()),
+                            config: earshot_core::asr::ChunkerConfig::default(),
+                            track_entity: entity,
+                            segment_ids: Box::new(move || {
+                                n.set(n.get().wrapping_add(1));
+                                earshot_core::identity::EntityId::from_bytes([
+                                    0xC0,
+                                    n.get(),
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    1,
+                                ])
+                            }),
+                        }
+                        .into(),
+                    ))
+                });
+                start_live(
+                    PlaysThenWaits {
+                        inner: one_stretch(),
+                        end: None,
+                        played: false,
+                        stopped: false,
+                        ended: false,
+                    },
+                    svc.clone(),
+                    LiveConfig {
+                        title,
+                        catch_up_stall: stall,
+                        ..config()
+                    },
+                    Some(factory),
+                    Box::new(ChaCha8Rng::seed_from_u64(seed)),
+                )
+            });
+            let after: AfterFn = Box::new(move |_svc, outcome, cancel, _progress| {
+                log.lock().unwrap().push(format!(
+                    "{} after, cancelled {}",
+                    outcome.meeting,
+                    cancel.is_cancelled()
+                ));
+                outcome_of(Ok(HostPost::Skipped), SummaryResult::Cancelled)
+            });
+            return Ok(Prepared {
+                start,
+                after,
+                notices: Vec::new(),
+                call_signal: None,
+            });
+        }
         let start: StartFn = Box::new(move |svc: &Services| {
             let factory: LiveAsrFactory = Box::new(|_, _| Ok(None));
             start_live(
@@ -1374,6 +1736,7 @@ impl Prepare for CancelPrepare {
                     let reason = SkipReason::NotRequested;
                     outcome_of(post, SummaryResult::Skipped { reason })
                 }
+                Finish::LiveHangs { .. } => unreachable!("started above"),
             }
         });
         Ok(Prepared {
@@ -1453,6 +1816,88 @@ fn meeting_cancel_stops_the_final_pass_and_leaves_the_meeting_unprocessed() {
         earshot_runtime::MeetingActivity::Unprocessed,
     );
     assert_eq!(d.phase(), DriverPhase::Idle);
+}
+
+#[test]
+fn meeting_cancel_reaches_a_hung_live_catch_up() {
+    // T9.22: Cancel on "Finishing the meeting" works while the live transcript catches up, even
+    // when its decode never returns. The stall bound (an hour) cannot end it within the guard.
+    let dir = TempDir::new("cancel-catch-up");
+    let svc = services(&dir);
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let prepare = CancelPrepare::new(vec![Finish::LiveHangs {
+        stall: Duration::from_secs(3600),
+        release: Arc::new(Mutex::new(release_rx)),
+    }]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    assert!(d.stop_and_wait(), "the recording is saved");
+    d.cancel_finishing(&meeting);
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert_eq!(result_of(&events, &meeting), SummaryEvent::PostCancelled);
+    assert!(prepare.logged().is_empty(), "nothing ran after the cancel");
+    assert_eq!(recordings_of(&svc, &meeting), 1, "the audio stays");
+    activity_becomes(
+        &svc,
+        &meeting,
+        earshot_runtime::MeetingActivity::Unprocessed,
+    );
+    drop(release_tx);
+}
+
+#[test]
+fn meeting_with_a_stalled_live_catch_up_is_left_and_the_next_one_goes() {
+    // T9.22: a catch-up that stops moving is given up; the meeting is left unprocessed with a
+    // banner and the next meeting's turn comes without a restart.
+    let dir = TempDir::new("stalled-catch-up");
+    let svc = services(&dir);
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (open, gate) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![
+        Finish::LiveHangs {
+            stall: Duration::from_millis(200),
+            release: Arc::new(Mutex::new(release_rx)),
+        },
+        Finish::Gate(gate),
+    ]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let first = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    assert!(d.stop_and_wait());
+    let events = events_until(&rx, |e| is_summary_of(&first, e));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, MeetingEvent::Warning { key, .. } if key == "behind:you")),
+        "{events:?}"
+    );
+    assert_eq!(
+        result_of(&events, &first),
+        SummaryEvent::Failed {
+            message: CATCH_UP_STALLED_MESSAGE.into(),
+            retryable: false,
+        }
+    );
+    activity_becomes(&svc, &first, earshot_runtime::MeetingActivity::Unprocessed);
+
+    let second = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    open.send(()).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&second, e));
+    d.join();
+    assert!(matches!(
+        result_of(&events, &second),
+        SummaryEvent::Skipped { .. }
+    ));
+    assert_eq!(
+        prepare.logged(),
+        [
+            format!("{second} starts"),
+            format!("{second} ends, cancelled false")
+        ],
+        "the first never ran anything after its recording"
+    );
+    drop(release_tx);
 }
 
 #[test]
