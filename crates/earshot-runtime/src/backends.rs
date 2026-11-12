@@ -1239,9 +1239,24 @@ pub const PREVIEW_MIN_MEMORY_CUDA: u64 = 20 * 1024 * 1024 * 1024;
 /// CUDA track's previews run on the CPU instead (T12.3c, [`preview_backend`]).
 pub const PREVIEW_MIN_CARD_MEMORY: u64 = 14 * 1024 * 1024 * 1024;
 
+/// A machine with less memory than this has no previews by default on the NPU (T12.12c). A
+/// judgement: from the compiled NPU model a preview session added at most 0.77 GiB of working set
+/// to a meeting on the Surface ("Other people only", docs/live-previews.md, reports `qnn2-*.json`),
+/// so a 16 GB machine has room and must pass (`total_memory()` reports under 16 GiB there), and an
+/// 8 GB one little. The same value as [`PREVIEW_MIN_MEMORY`], kept apart because it rests on other
+/// numbers. The user's "on" lifts it, as on the CPU.
+pub const PREVIEW_MIN_MEMORY_NPU: u64 = 12 * 1024 * 1024 * 1024;
+
+/// Why the user's own track in a call has no preview session on the NPU (T12.12c): under
+/// "Everyone" on the Surface 52 of 236 provisional words of the user's own voice were shown and
+/// then vanished, and why is not understood yet (docs/live-previews.md).
+pub const OWN_VOICE_NPU_REFUSED: &str = "not for your own voice on the NPU yet: some words shown \
+                                         there vanished again, and why is not understood";
+
 /// Where this computer runs the previews' session for a track on `backend` (the far end in a call,
 /// the mic in the room), or why it runs none. The one rule (`live::preview` docs): the user's
-/// "off"; the NPU is off until the Surface numbers exist; whisper, on any backend, holds decoder
+/// "off"; on the NPU it runs on the NPU, from the compiled model only ([`load_preview`], T12.12c),
+/// with its own memory limit ([`PREVIEW_MIN_MEMORY_NPU`]); whisper, on any backend, holds decoder
 /// state and sampled retries a preview must not touch and would need a second model that nothing
 /// here has measured. A CUDA track whose card has no room for a third session
 /// ([`PREVIEW_MIN_CARD_MEMORY`]) runs it on the CPU with the CPU's shared weights and the CPU's
@@ -1269,7 +1284,7 @@ pub fn preview_backend(
                 (BackendKind::Cuda, PREVIEW_MIN_MEMORY_CUDA)
             }
         }
-        BackendKind::Qnn => return Err("not measured on the NPU yet".to_owned()),
+        BackendKind::Qnn => (BackendKind::Qnn, PREVIEW_MIN_MEMORY_NPU),
         BackendKind::Vulkan | BackendKind::Fake => {
             return Err("previews run on Parakeet only".to_owned());
         }
@@ -1300,7 +1315,8 @@ pub const PREVIEW_BOTH_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 
 /// Where this computer runs the second preview session, for the user's own track in a call (T9.14),
 /// when the track runs on `backend`; `Err` says why it runs none. The one rule: only when the user
-/// chose everyone, only where the first session runs ([`previews_refused`]), and only with
+/// chose everyone, only where the first session runs ([`previews_refused`]), never beside the NPU
+/// ([`OWN_VOICE_NPU_REFUSED`], T12.12c), and only with
 /// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there. It always runs on the CPU, with the CPU's shared
 /// weights: beside the CPU's own sessions, and beside CUDA too (T12.3a), so that the card holds no
 /// more sessions than with "Other people only"; beside a card too small for the first, with the
@@ -1319,6 +1335,9 @@ pub fn second_preview_backend(
     }
     if let Some(why) = previews_refused(backend, hardware, choice) {
         return Err(why);
+    }
+    if backend == BackendKind::Qnn {
+        return Err(OWN_VOICE_NPU_REFUSED.to_owned());
     }
     if !matches!(backend, BackendKind::Cpu | BackendKind::Cuda) {
         return Err("previews run on Parakeet on the CPU or CUDA only".to_owned());
@@ -1346,7 +1365,9 @@ pub fn previews_refused_second(
 /// The previews' own session of the model of a track that runs on `backend` (T9.1m): background
 /// threads, the thread budget of a live track, and nothing shared with the track. It loads where
 /// [`preview_backend`] says: the track's backend, or the CPU beside a card too small for it
-/// (T12.3c). An `Err` says why this meeting has no previews ([`crate::live::PreviewLoader`]).
+/// (T12.3c). On the NPU it loads only from the compiled model ([`qnn_load_steps`], T12.12c): never
+/// compiling in this process and never the ordinary load, which costs about 2 GiB and 30 s. An
+/// `Err` says why this meeting has no previews ([`crate::live::PreviewLoader`]).
 ///
 /// # Errors
 /// A whisper model (it holds decoder state and sampled retries, and is not measured here); the
@@ -1587,7 +1608,7 @@ fn load_parakeet_with(
         ..session_config(accel).map_err(|e| AsrError::Backend(e.to_string()))?
     };
     if accel == Accelerator::Qnn {
-        return load_parakeet_qnn(models, model, &config, threads);
+        return load_parakeet_qnn(models, model, &config, threads, background);
     }
     for rel in model.files() {
         models
@@ -1611,12 +1632,14 @@ fn load_parakeet_with(
 /// [`load_parakeet`] on QNN: the NPU conversion with its documented partition, the encoder from
 /// a context model compiled on this computer when there is a current one, else compiled now and
 /// kept for the next load ([`crate::npu_compiled`], T12.12a). However the encoder loads, the same
-/// checks run; a load that could not use the compiled model is recorded for the meeting's note.
+/// checks run; a load that could not use the compiled model is recorded for the meeting's note. A
+/// preview's load (`preview`) loads only a compiled model ([`qnn_load_steps`]).
 fn load_parakeet_qnn(
     models: &ModelDir,
     model: &ParakeetModel,
     encoder: &SessionConfig,
     threads: Option<usize>,
+    preview: bool,
 ) -> Result<ParakeetTranscriber, AsrError> {
     use crate::npu_compiled::{self, CompileKey, How};
     let dir = require_qnn_model(models, model)?;
@@ -1656,6 +1679,7 @@ fn load_parakeet_qnn(
                 )
             })),
         };
+    let (compile, ordinary) = qnn_load_steps(preview, compile, ordinary);
     let (t, how) = match CompileKey::for_conversion(&dir) {
         Ok(key) => npu_compiled::load(
             &dir,
@@ -1675,6 +1699,40 @@ fn load_parakeet_qnn(
     };
     npu_compiled::record(&how);
     Ok(t)
+}
+
+/// Why a preview on the NPU did not load (T12.12c): it loads only a compiled model.
+pub const PREVIEW_NEEDS_COMPILED: &str =
+    "a preview on the NPU loads only the compiled model, and it did not load";
+
+/// The ordinary load of an NPU encoder, or what stands in for it ([`qnn_load_steps`]).
+pub(crate) type OrdinaryLoad<'a, S> = Box<dyn FnOnce() -> Result<S, AsrError> + 'a>;
+
+/// What an NPU load may do besides load a compiled model ([`crate::npu_compiled::load`]). A track's
+/// load compiles a missing model (in the helper process, else in this one) and falls back to the
+/// ordinary load. A preview's (`preview`, T12.12c) may have the helper compile one, which this
+/// process then loads like any compiled model, but never compiles in this process and never takes
+/// the ordinary load: both hold the about 2 GiB of an ordinary session for the process's life (a
+/// QNN session is never closed, T12.12b) and take about 30 s, for words that are display only. Its
+/// refusal is [`PREVIEW_NEEDS_COMPILED`], and the meeting goes on without previews.
+pub(crate) fn qnn_load_steps<'a, S: 'a>(
+    preview: bool,
+    compile: crate::npu_compiled::Compile<'a, S, AsrError>,
+    ordinary: impl FnOnce() -> Result<S, AsrError> + 'a,
+) -> (
+    crate::npu_compiled::Compile<'a, S, AsrError>,
+    OrdinaryLoad<'a, S>,
+) {
+    use crate::npu_compiled::Compile;
+    if !preview {
+        return (compile, Box::new(ordinary));
+    }
+    let refused = || AsrError::Backend(PREVIEW_NEEDS_COMPILED.to_owned());
+    let compile = match compile {
+        Compile::Helper(helper) => Compile::Helper(helper),
+        Compile::InProcess(_) => Compile::InProcess(Box::new(move |_: &Path| Err(refused()))),
+    };
+    (compile, Box::new(move || Err(refused())))
 }
 
 /// The work of the [`crate::npu_compiled`] helper process (T12.12b): initialises ONNX Runtime with

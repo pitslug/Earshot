@@ -147,7 +147,7 @@ The owner asked for grey words on their own voice in a call too: Settings, Gener
 
 ## NPU measurement (T12.4)
 
-The app refuses previews on the NPU (`backends::previews_refused`: "not measured on the NPU yet"). To measure them on the Surface, `live_lag` takes `--backend qnn` and an evaluation-only `--force-previews`, which loads the preview sessions through `backends::load_preview_unrefused`: the same load as the app's (background threads, the NPU conversion, `check_qnn_parakeet`), without the refusal. Nothing the app or `host::live_previews` decides changes; `backends_preview_unrefused_load_is_used_by_no_shipped_code` keeps it out of shipped code.
+The app refused previews on the NPU here (`backends::previews_refused`); since T12.12c it runs them for the other people (section "Previews on the NPU from the compiled model" below). To measure them on the Surface, `live_lag` takes `--backend qnn` and an evaluation-only `--force-previews`, which loads the preview sessions through `backends::load_preview_unrefused`: the same load as the app's (background threads, the NPU conversion, `check_qnn_parakeet`), without the refusal. Nothing the app or `host::live_previews` decides changes; `backends_preview_unrefused_load_is_used_by_no_shipped_code` keeps it out of shipped code.
 
 **The rule, written and committed 2026-11-09 before any NPU run** (judgements, not derived; not while the owner is in a meeting; plugged in, since previews are off on battery; nothing else running). Each of "on" and "everyone" is judged against "off" on the same audio, and passes only if it passes on both `bundled` and `continuous`:
 
@@ -284,6 +284,67 @@ In the app every meeting drops its NPU sessions at the end, so the next meeting'
 **Idle battery** (`npu_compiled_idle_battery`, 2026-11-11, the Surface unplugged, screen on, the Claude app open, 10 min of 15 s samples of Windows' `BatteryStatus.DischargeRate` after a 1 min settle): no session loaded 6,341 mW mean, two 0.6B v2 sessions held idle 5,790 mW. The run with sessions drew less, so the difference is inside the noise of the rest of the machine: no cost measurable this way.
 
 What it costs: the pool holds every session a meeting used while Earshot stays open (in the tray too), and their files stay mapped, so a compiled folder in use cannot be replaced until Earshot closes. A plugin release that fixes the crash would let the pool go.
+
+## Previews on the NPU from the compiled model (T12.12c)
+
+**T12.4's rule run again (2026-11-12, the Surface, mains, the rule unchanged).** With the app loading NPU encoders from the compiled model (T12.12a, T12.12b), "on" and "everyone" were judged against "off" on `bundled` and `continuous`, with `--force-previews` (the app still refused previews there). Reports, copied unmodified: `qnn2-off-bundled.json`, `qnn2-on-bundled.json`, `qnn2-everyone-bundled.json`, the same three `-continuous`, `qnn2-memory.json` and `qnn3-memory.json` (the memory run again on a freshly restarted Surface), eight files. Every NPU session, the previews' included, ran its encoder on `QNNExecutionProvider`; machine load during the runs 19-29% (median).
+
+| | Off | Other people only | Everyone |
+|---|---|---|---|
+| 1. Every session on the NPU | yes | yes | yes |
+| 2. Stored words equal "off", bundled and continuous | - | yes | yes |
+| 3. Real decode rtf, bundled mic / reference | 0.021 / 0.021 | 0.022 / 0.021 (1.05x / 1.03x) | 0.023 / 0.021 (1.08x / 1.01x) |
+| 3. Real decode rtf, continuous reference | 0.012 | 0.012 (1.01x) | 0.012 (0.99x) |
+| 3. Catch-up after the end, bundled / continuous | 0.43 / 0.48 s | 0.42 / 0.49 s | 0.41 / 0.46 s |
+| 4. Far-end words on screen, median, bundled / continuous | 14.1 / 36.9 s | **2.7 / 1.9 s** | **2.3 / 1.9 s** |
+| 4. Mic words on screen, median, bundled | 15.4 s | 15.4 s | **2.5 s** |
+| 4. Previews turned off, slow pauses, audio dropped | - | none, 0, 0 | none, 0, 0 |
+| Peak working set, bundled / continuous | 3.00 / 3.11 GiB | 3.77 / 3.33 GiB | 4.47 / 3.96 GiB |
+
+Points 1 to 4 pass for both settings, by wide margins: the compiled sessions (T12.12) removed the NPU contention T12.4 saw.
+
+**Point 5 as written fails, and would fail with previews off.** `qnn3-memory.json`, from a fresh restart: 4.90 GiB free with no session, 4.60 after a track's own session, 4.07 after a second session (3.75 after its decodes), 2.16 after a third. A call holds two track sessions, so with previews off the Surface is already at about 3.75 GiB free, under the 4 GiB the point asks for; "on" adds one session and "everyone" two. Each NPU session costs about 0.63 GiB of working set (the stages' `peak_working_set_gib`: 0.69, 1.32, 1.95). The point measured the Surface's idle memory, not what previews cost.
+
+**Amended (the owner, 2026-11-12, after seeing these numbers, not before):** point 5 becomes what previews add over "off" on the same audio, measured as the replay's peak working set: at most 1 GiB for "Other people only" and 1.5 GiB for "Everyone". Read on the reports: "on" adds 0.77 GiB (bundled) and 0.22 GiB (continuous); "everyone" adds 1.47 and 0.85 GiB. Both pass the amended point ("everyone" by 0.03 GiB on bundled). This amendment was made after the measurement, so it is a decision on these numbers, not a rule fixed before them.
+
+**Decision (the owner, 2026-11-12):** "Other people only" runs on the NPU. "Everyone" stays refused there: on `bundled` 52 of the 236 provisional words of the user's own voice were shown and then vanished (against 7 of 201 on the far end), and that is to be understood first (step 4 below).
+
+**What the app does now** (`backends::preview_backend`, `second_preview_backend`, `qnn_load_steps`):
+
+- A track on the NPU has its previews' session on the NPU. By default only with `PREVIEW_MIN_MEMORY_NPU` (12 GiB, a judgement: a session added at most 0.77 GiB to a meeting here, a 16 GB Surface reports about 15.5 GiB and must pass, an 8 GB machine has little room); "Other people only" or "Everyone" chosen by the user lifts it, as on the CPU. Off on battery, during a hold and its catch-up, and for a track that falls behind, as everywhere.
+- A preview on the NPU loads only the compiled model: it may have the helper process compile one, but never compiles in the app's own process and never takes the ordinary load (about 2 GiB and 30 s, held for the process's life because a QNN session is never closed). A preview that cannot load that way is `PreviewReport.off` and the meeting goes on without previews.
+- The user's own voice in a call has no preview session beside the NPU (`OWN_VOICE_NPU_REFUSED`); the Settings page shows "Everyone" with a note saying it shows the other people only on the NPU and why.
+- A Parakeet model whose NPU version is not installed runs its tracks on the processor (`npu_order`), and its previews follow the track to the CPU's rule.
+
+**Vanished words of the user's own voice (step 4, evaluation only, 2026-11-13).** The question: are the 52 vanished words the live echo filter removing far-end words (expected), or words the settled text never held? `live_lag` now counts, for every preview word that left with no settled text at it, whether the track's own settled text holds the same word within 2 s and whether that settled word had already arrived when it left (`own_settled_before`) or came later (`own_settled_after`), else whether the other track's settled text holds it (`other_track_settled_nearby`), else `never_settled`; beside it the live echo filter's `echo_words_removed` and `echo_locks`. The 2 s window was fixed before the run (the echo filter's delay plus or minus 1 s, and preview word times moving between decodes). The pattern is not NPU-specific (T9.14's CPU run already had 42 of 221 vanished on the mic), so it was run on the desktop CPU, `--audio bundled --previews everyone`, three times (reports `t1212c-everyone-bundled-cpu.json`, `-2`, `-3`; counts only; other lanes were building, machine load median 12%, 6% and 1%):
+
+| Run | Mic preview words vanished | Settled on the mic later, within 2 s | Already settled when they left | Far end only | Never settled | Echo filter removed |
+|---|---|---|---|---|---|---|
+| 1 (load up to 65%) | 0 (the far end's previews turned off: fell behind) | - | - | - | - | 0 |
+| 2 | 52 | 52 in all (this run counted before the split into later and already) | - | 0 | 0 | 0 |
+| 3 | 40 | 40 | 0 | 0 | 0 | 0 |
+
+Stored words were identical in all three (`stored_sha256` equal).
+
+**Reading:** they are neither. No vanished word belongs to the far end only and the echo filter removed nothing on this meeting (`echo_words_removed` 0, with one echo lock). Every vanished word reached the mic's settled text within 2 s of where the preview showed it, after it had left: the preview showed a real word, took it away, and the settled text brought it back a moment later. That is a flicker, not lost or wrong words. The module promises that settled text lands before the words it replaces leave (`live::preview`), so something takes words off screen before their stretch's decode lands; the far end (7 of 201 on the Surface, 1 here) shows it far less than the mic, whose stretches are short and many (11 stretches, median 5 s, on `bundled`).
+
+**Recommendation:** keep "Everyone" refused on the NPU for now, as decided, and add a task to find what takes a shown word away before its settled text lands on short stretches (a `live_lag` count of which preview update dropped it: a new window no longer holding it, or the frontier moving past it) and fix it; it applies on every backend, so it is a fix to `live::preview`, not to the NPU. Once vanished words are near the far end's rate, "Everyone" on the NPU can be judged again on the amended point 5 (it passed points 1 to 5 here).
+
+**Checked by hand on the Surface (step 5, the owner).** From the branch, natively on the Surface, no `--force-previews`:
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio bundled --previews on --out target\live-lag\qnn4-on-bundled.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio continuous --seconds 120 --previews on --out target\live-lag\qnn4-on-continuous.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio bundled --previews everyone --out target\live-lag\qnn4-everyone-bundled.json
+```
+
+Read: in the first two, `preview_sessions[0].loaded.kind` is `Qnn` with `refusal_bypassed` false, and `preview_refusal.app_first` is null; in the third, the `own_voice` entry has `not_loaded` saying it is not for your own voice on the NPU yet, and the far end's still loads on QNN. Then one real call: words of the other side on screen within about 3 s.
 
 ## Your own words on the CPU beside CUDA (T12.3a)
 

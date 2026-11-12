@@ -108,31 +108,37 @@ impl earshot_core::asr::Transcriber for FakePreview {
     }
 }
 
-/// A track's real transcriber reporting CUDA, as a meeting transcribed on the graphics card does.
-struct OnCuda(Box<dyn earshot_core::asr::Transcriber + Send>);
+/// A track's real transcriber reporting `.0`, as a meeting transcribed on the graphics card (CUDA)
+/// or the NPU (QNN) does.
+struct OnBackend(BackendKind, Box<dyn earshot_core::asr::Transcriber + Send>);
 
-impl earshot_core::asr::Transcriber for OnCuda {
+impl earshot_core::asr::Transcriber for OnBackend {
     fn transcribe(
         &mut self,
         audio: &MonoBuffer,
         options: &TranscribeOptions,
         cancel: &CancelToken,
     ) -> Result<Transcription, AsrError> {
-        let mut t = self.0.transcribe(audio, options, cancel)?;
+        let mut t = self.1.transcribe(audio, options, cancel)?;
         t.backend = self.backend_info();
         Ok(t)
     }
 
     fn backend_info(&self) -> BackendInfo {
         BackendInfo {
-            kind: BackendKind::Cuda,
-            ..self.0.backend_info()
+            kind: self.0,
+            ..self.1.backend_info()
         }
     }
 }
 
 /// [`factory_of`], with both tracks' transcribers reporting CUDA.
 fn cuda_factory_of(scene: &Scene) -> LiveAsrFactory {
+    factory_on(scene, BackendKind::Cuda)
+}
+
+/// [`factory_of`], with both tracks' transcribers reporting `kind`.
+fn factory_on(scene: &Scene, kind: BackendKind) -> LiveAsrFactory {
     let mut inner = factory_of(scene, Arc::default());
     Box::new(move |track, entity| {
         let mut asr = inner(track, entity)?;
@@ -141,7 +147,7 @@ fn cuda_factory_of(scene: &Scene) -> LiveAsrFactory {
                 &mut asr.asr.transcriber,
                 Box::new(super::queue_tests::ContentWords),
             );
-            asr.asr.transcriber = Box::new(OnCuda(real));
+            asr.asr.transcriber = Box::new(OnBackend(kind, real));
         }
         Ok(asr)
     })
@@ -1260,24 +1266,63 @@ impl<S: AudioSource> AudioSource for WaitingSource<S> {
 fn live_preview_stays_off_during_a_hold_and_its_catch_up() {
     let scene = scene_of(27);
     let seen = Arc::new(Seen::default());
+    let load = loader(&seen, marker_words);
+    assert_previews_wait_for_the_hold(&scene, factory_of(&scene, Arc::default()), load, &seen, 321);
+}
+
+/// T12.12c: the same on the NPU, through the app's rule on an NPU machine: nothing is loaded or
+/// decoded for held audio, and the far end's previews start, on the NPU, once it is up to date.
+#[test]
+fn live_preview_on_the_npu_stays_off_during_a_hold_and_its_catch_up() {
+    use crate::preview_settings::PreviewChoice;
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let load = npu_rule_loader(
+        &seen,
+        &asked,
+        npu_machine(Some(15 * GIB)),
+        PreviewChoice::On,
+    );
+    let events = assert_previews_wait_for_the_hold(
+        &scene,
+        factory_on(&scene, BackendKind::Qnn),
+        load,
+        &seen,
+        353,
+    );
+    assert_eq!(*asked.lock().unwrap(), vec![BackendKind::Qnn]);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.backend, Some(BackendKind::Qnn), "{report:?}");
+}
+
+/// Runs `scene` held until its first `Held`, checks no preview model was called for held audio and
+/// that words show only after the transcript is up to date; returns every event.
+fn assert_previews_wait_for_the_hold(
+    scene: &Scene,
+    factory: LiveAsrFactory,
+    load: PreviewLoader,
+    seen: &Arc<Seen>,
+    seed: u64,
+) -> Vec<RuntimeEvent> {
     let gates = held_gates();
     let dir = TempDir::new();
     let svc = services(&dir);
     let go = Arc::new(AtomicBool::new(true));
     let source = WaitingSource {
-        inner: fast_source(&scene),
+        inner: fast_source(scene),
         go: Arc::clone(&go),
     };
     let config = LiveConfig {
-        previews: Some(previews(loader(&seen, marker_words))),
+        previews: Some(previews(load)),
         ..held_config(gates.clone())
     };
     let mut session = start_live(
         source,
         svc.clone(),
         config,
-        Some(factory_of(&scene, Arc::default())),
-        Box::new(ChaCha8Rng::seed_from_u64(321)),
+        Some(factory),
+        Box::new(ChaCha8Rng::seed_from_u64(seed)),
     )
     .unwrap();
     let events = session.take_events().unwrap();
@@ -1321,6 +1366,7 @@ fn live_preview_stays_off_during_a_hold_and_its_catch_up() {
         "shown at {shown}, caught up at {up_to_date}"
     );
     assert!(report_of(&all).expect("a report").decodes > 0);
+    all
 }
 
 /// A track that falls behind stops its previews.
@@ -1382,7 +1428,10 @@ fn live_preview_runs_only_where_it_was_measured_and_fits() {
     let big = machine(Some(PREVIEW_MIN_MEMORY_CUDA), Some(PREVIEW_MIN_CARD_MEMORY));
     assert_eq!(previews_refused(BackendKind::Cpu, &big), None);
     assert_eq!(previews_refused(BackendKind::Cuda, &big), None);
-    for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
+    // T12.12c: the NPU runs them (its rule's tests are in `backends_tests`); whisper-only backends
+    // do not.
+    assert_eq!(previews_refused(BackendKind::Qnn, &big), None);
+    for kind in [BackendKind::Vulkan, BackendKind::Fake] {
         assert!(previews_refused(kind, &big).is_some(), "{kind:?}");
     }
     let small = machine(Some(PREVIEW_MIN_MEMORY - 1), Some(PREVIEW_MIN_CARD_MEMORY));
@@ -1437,4 +1486,200 @@ fn live_preview_runs_only_where_it_was_measured_and_fits() {
         preview_backend(BackendKind::Cpu, &big),
         Ok(BackendKind::Cpu)
     );
+}
+
+const GIB: u64 = 1024 * 1024 * 1024;
+
+/// An NPU machine (the Surface's kind): `memory` of system memory, an NPU, no graphics card.
+fn npu_machine(memory: Option<u64>) -> earshot_hardware::Hardware {
+    earshot_hardware::Hardware {
+        total_memory: memory,
+        npus: vec![earshot_hardware::Npu {
+            name: "A test NPU".to_owned(),
+            driver_version: Some("1.0.0.0".to_owned()),
+        }],
+        ..earshot_hardware::Hardware::default()
+    }
+}
+
+/// A first-session loader deciding through the app's rule (`backends::load_preview_with`) on
+/// `machine`, recording the backend each load is asked for, loading a [`fake_session_on`].
+fn npu_rule_loader(
+    seen: &Arc<Seen>,
+    asked: &Arc<Mutex<Vec<BackendKind>>>,
+    machine: earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> PreviewLoader {
+    let (seen, asked) = (Arc::clone(seen), Arc::clone(asked));
+    Arc::new(move |backend: &BackendInfo| {
+        crate::backends::load_preview_with(backend, &machine, choice, |on| {
+            asked.lock().unwrap().push(on.kind);
+            Ok(fake_session_on(&seen, on))
+        })
+    })
+}
+
+/// [`npu_rule_loader`] for the user's own voice (`backends::load_preview_second_with`).
+fn npu_rule_own_voice(
+    seen: &Arc<Seen>,
+    asked: &Arc<Mutex<Vec<BackendKind>>>,
+    machine: earshot_hardware::Hardware,
+) -> PreviewLoader {
+    use crate::preview_settings::PreviewChoice;
+    let (seen, asked) = (Arc::clone(seen), Arc::clone(asked));
+    Arc::new(move |backend: &BackendInfo| {
+        crate::backends::load_preview_second_with(
+            backend,
+            &machine,
+            PreviewChoice::Everyone,
+            |on| {
+                asked.lock().unwrap().push(on.kind);
+                Ok(fake_session_on(&seen, on))
+            },
+        )
+    })
+}
+
+/// One meeting with both tracks on the NPU and `previews`; its events, what it stored, and the same
+/// meeting's store without previews.
+fn npu_run(
+    scene: &Scene,
+    previews: LivePreviews,
+    power: Option<PowerSupply>,
+    seed: u64,
+) -> (Vec<RuntimeEvent>, Stored, Stored) {
+    let run = |previews: Option<LivePreviews>| {
+        let dir = TempDir::new();
+        let svc = services(&dir);
+        let mut config = config_with(previews);
+        if let Some(supply) = power {
+            config.power = PowerProbe::new(Fixed(supply));
+        }
+        let session = start_live(
+            fast_source(scene),
+            svc.clone(),
+            config,
+            Some(factory_on(scene, BackendKind::Qnn)),
+            Box::new(ChaCha8Rng::seed_from_u64(seed)),
+        )
+        .unwrap();
+        let meeting = session.meeting();
+        let (events, _) = collect(session);
+        (events, stored(&svc, meeting))
+    };
+    let (events, with) = run(Some(previews));
+    let (_, without) = run(None);
+    (events, with, without)
+}
+
+/// T12.12c: a meeting on the NPU of a machine above the limit shows the far end's provisional words
+/// from a session on the NPU, refuses the user's own voice with its reason under Everyone, and
+/// stores exactly what it stores without previews.
+#[test]
+fn live_preview_on_the_npu_runs_for_the_far_end_and_refuses_your_own_voice() {
+    let scene = scene_of(27);
+    let (far, own) = (Arc::new(Seen::default()), Arc::new(Seen::default()));
+    let (far_asked, own_asked) = (
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let surface = npu_machine(Some(15 * GIB));
+    let config = LivePreviews {
+        own_voice: Some(npu_rule_own_voice(&own, &own_asked, surface.clone())),
+        ..previews(npu_rule_loader(
+            &far,
+            &far_asked,
+            surface,
+            crate::preview_settings::PreviewChoice::Everyone,
+        ))
+    };
+    let (events, with, without) = npu_run(&scene, config, None, 351);
+    assert_eq!(*far_asked.lock().unwrap(), vec![BackendKind::Qnn]);
+    assert!(own_asked.lock().unwrap().is_empty(), "own voice loaded");
+    assert_eq!(own.calls.load(Ordering::SeqCst), 0);
+    let far_report = report_for(&events, TrackId::Reference);
+    assert_eq!(far_report.backend, Some(BackendKind::Qnn), "{far_report:?}");
+    assert_eq!(far_report.off, None, "{far_report:?}");
+    assert!(far_report.decodes > 0, "{far_report:?}");
+    assert!(shown_on(&events, TrackId::Reference));
+    let mic = report_for(&events, TrackId::Mic);
+    assert_eq!(
+        mic.off.as_deref(),
+        Some(crate::backends::OWN_VOICE_NPU_REFUSED),
+        "{mic:?}"
+    );
+    assert_eq!(mic.backend, None, "{mic:?}");
+    assert!(!shown_on(&events, TrackId::Mic));
+    assert!(warnings(&events).is_empty(), "{:?}", warnings(&events));
+    assert_eq!(with, without);
+}
+
+/// T12.12c: below the NPU's limit a meeting has no previews by default, and loads nothing.
+#[test]
+fn live_preview_on_the_npu_below_the_limit_is_off_by_default_and_loads_nothing() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let small = npu_machine(Some(crate::backends::PREVIEW_MIN_MEMORY_NPU - 1));
+    let load = npu_rule_loader(
+        &seen,
+        &asked,
+        small,
+        crate::preview_settings::PreviewChoice::Automatic,
+    );
+    let (events, with, without) = npu_run(&scene, previews(load), None, 355);
+    assert!(asked.lock().unwrap().is_empty());
+    let report = report_of(&events).expect("a report");
+    assert_eq!(
+        report.off.as_deref(),
+        Some("not enough memory for a second session of the model"),
+        "{report:?}"
+    );
+    assert!(previews_of(&events).is_empty());
+    assert_eq!(with, without);
+}
+
+/// T12.12c: on battery a meeting on the NPU has no previews, and nothing is loaded for them.
+#[test]
+fn live_preview_on_the_npu_is_off_on_battery_and_loads_nothing() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let load = npu_rule_loader(
+        &seen,
+        &asked,
+        npu_machine(Some(15 * GIB)),
+        crate::preview_settings::PreviewChoice::On,
+    );
+    let (events, with, without) = npu_run(&scene, previews(load), Some(PowerSupply::Battery), 357);
+    assert!(asked.lock().unwrap().is_empty());
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 0);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.off.as_deref(), Some(ON_BATTERY_REASON));
+    assert!(previews_of(&events).is_empty());
+    assert_eq!(with, without);
+}
+
+/// T12.12c: a Parakeet model whose NPU version is not installed: the app's real loader, asked for
+/// the NPU, fails to load (no NPU files here) and the meeting goes on without previews, storing what
+/// it stores without them. A failed preview load is never a failed meeting.
+#[test]
+fn live_preview_on_the_npu_without_the_npu_version_costs_the_meeting_nothing() {
+    let scene = scene_of(27);
+    let empty = TempDir::new();
+    let models = crate::backends::ModelDir::new(&empty.0);
+    let load: PreviewLoader = Arc::new(move |backend: &BackendInfo| {
+        crate::backends::load_preview(&models, backend, crate::preview_settings::PreviewChoice::On)
+    });
+    let (events, with, without) = npu_run(&scene, previews(load), None, 359);
+    let report = report_of(&events).expect("a report");
+    let why = report.off.clone().expect("no previews");
+    assert!(
+        !why.contains("memory") && !why.contains("Settings") && !why.contains("battery"),
+        "refused instead of failing to load: {why}"
+    );
+    assert_eq!(report.backend, None, "{report:?}");
+    assert!(previews_of(&events).is_empty());
+    assert!(warnings(&events).is_empty(), "{:?}", warnings(&events));
+    assert_eq!(with, without);
 }

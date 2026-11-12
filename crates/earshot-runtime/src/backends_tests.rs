@@ -1995,10 +1995,11 @@ fn backends_previews_beside_a_small_card_run_on_the_cpu() {
             );
         }
     }
-    // Off, the NPU and whisper-only backends stay refused whatever the card.
+    // Off and whisper-only backends stay refused whatever the card (the NPU runs them since
+    // T12.12c: `backends_previews_on_the_npu_run_there_above_the_limit_and_refuse_below`).
     let m = nvidia_machine(Some(64 * GIB), small);
     assert!(preview_backend(BackendKind::Cuda, &m, PreviewChoice::Off).is_err());
-    for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
+    for kind in [BackendKind::Vulkan, BackendKind::Fake] {
         assert!(
             preview_backend(kind, &m, PreviewChoice::On).is_err(),
             "{kind:?}"
@@ -2108,17 +2109,27 @@ fn backends_preview_on_hardware_load_applies_the_rule_to_the_given_machine() {
         };
         assert!(want.is_some());
         assert_eq!(off.err(), want, "{slot:?}");
+        // T12.12c: on the NPU the first session goes on to load (and fails here for a load
+        // reason); the user's own voice is refused there.
         let npu = BackendInfo {
             kind: BackendKind::Qnn,
             ..cuda.clone()
         };
-        let refused =
-            load_preview_on_hardware(&models, &npu, PreviewChoice::Everyone, slot, &small);
-        assert_eq!(
-            refused.err().as_deref(),
-            Some("not measured on the NPU yet"),
-            "{slot:?}"
-        );
+        let npu_load =
+            load_preview_on_hardware(&models, &npu, PreviewChoice::Everyone, slot, &small).err();
+        match slot {
+            PreviewSlot::First => {
+                let why = npu_load.expect("an empty models folder");
+                assert_ne!(why, OWN_VOICE_NPU_REFUSED);
+                assert!(
+                    !why.contains("not measured") && !why.contains("memory"),
+                    "{why}"
+                );
+            }
+            PreviewSlot::OwnVoice => {
+                assert_eq!(npu_load.as_deref(), Some(OWN_VOICE_NPU_REFUSED));
+            }
+        }
     }
     // "Other people only" has no second session, on any machine.
     let second = load_preview_on_hardware(
@@ -2156,44 +2167,338 @@ fn backends_previews_everyone_lifts_the_first_sessions_memory_limit_like_on() {
     }
 }
 
-/// T12.4: the NPU stays refused for previews, both sessions, whatever the choice; the loaders the
-/// app uses refuse before touching a file.
+/// An NPU machine (the Surface's kind): `memory` of system memory, an NPU, no graphics card.
+fn npu_machine(memory: Option<u64>) -> earshot_hardware::Hardware {
+    earshot_hardware::Hardware {
+        total_memory: memory,
+        npus: vec![earshot_hardware::Npu {
+            name: "A test NPU".to_owned(),
+            driver_version: Some("1.0.0.0".to_owned()),
+        }],
+        ..earshot_hardware::Hardware::default()
+    }
+}
+
+fn npu_track() -> BackendInfo {
+    BackendInfo {
+        kind: BackendKind::Qnn,
+        device: "qnn:npu".to_owned(),
+        model: "parakeet-tdt-0.6b-v2".to_owned(),
+    }
+}
+
+/// T12.12c: a track on the NPU has its previews on the NPU. Above (or at) the NPU's own memory
+/// limit by default; below it, or with memory unknown, only when the user turned them on; never
+/// when turned off. A 16 GB Surface, which reports under 16 GiB, passes.
 #[test]
-fn backends_previews_stay_refused_on_the_npu_by_default() {
+fn backends_previews_on_the_npu_run_there_above_the_limit_and_refuse_below() {
     use crate::preview_settings::PreviewChoice;
-    use earshot_hardware::Hardware;
-    let big = Hardware {
-        total_memory: Some(64 * 1024 * 1024 * 1024),
-        ..Hardware::default()
+    assert_eq!(PREVIEW_MIN_MEMORY_NPU, 12 * GIB);
+    let surface = npu_machine(Some(15 * GIB + GIB / 2));
+    for m in [
+        surface,
+        npu_machine(Some(PREVIEW_MIN_MEMORY_NPU)),
+        npu_machine(Some(64 * GIB)),
+    ] {
+        for choice in [
+            PreviewChoice::Automatic,
+            PreviewChoice::On,
+            PreviewChoice::Everyone,
+        ] {
+            assert_eq!(
+                preview_backend(BackendKind::Qnn, &m, choice),
+                Ok(BackendKind::Qnn),
+                "{:?} {choice:?}",
+                m.total_memory
+            );
+            assert_eq!(previews_refused(BackendKind::Qnn, &m, choice), None);
+        }
+        assert_eq!(
+            previews_refused(BackendKind::Qnn, &m, PreviewChoice::Off).as_deref(),
+            Some("turned off in Settings")
+        );
+    }
+    for memory in [Some(PREVIEW_MIN_MEMORY_NPU - 1), Some(8 * GIB), None] {
+        let m = npu_machine(memory);
+        assert_eq!(
+            previews_refused(BackendKind::Qnn, &m, PreviewChoice::Automatic).as_deref(),
+            Some("not enough memory for a second session of the model"),
+            "{memory:?}"
+        );
+        for choice in [PreviewChoice::On, PreviewChoice::Everyone] {
+            assert_eq!(
+                preview_backend(BackendKind::Qnn, &m, choice),
+                Ok(BackendKind::Qnn),
+                "{memory:?} {choice:?}"
+            );
+        }
+        assert!(previews_refused(BackendKind::Qnn, &m, PreviewChoice::Off).is_some());
+    }
+}
+
+/// T12.12c: the user's own track in a call has no preview session beside the NPU, whatever the
+/// memory and the choice, and the reason says why without naming a model.
+#[test]
+fn backends_previews_own_voice_stays_refused_on_the_npu_with_its_reason() {
+    use crate::preview_settings::PreviewChoice;
+    for memory in [
+        Some(64 * GIB),
+        Some(15 * GIB),
+        Some(PREVIEW_MIN_MEMORY_NPU - 1),
+        None,
+    ] {
+        let m = npu_machine(memory);
+        assert_eq!(
+            previews_refused_second(BackendKind::Qnn, &m, PreviewChoice::Everyone).as_deref(),
+            Some(OWN_VOICE_NPU_REFUSED),
+            "{memory:?}"
+        );
+        assert_eq!(
+            second_preview_backend(BackendKind::Qnn, &m, PreviewChoice::Everyone),
+            Err(OWN_VOICE_NPU_REFUSED.to_owned())
+        );
+        // The first session still runs: only the user's own voice is refused.
+        assert_eq!(
+            previews_refused(BackendKind::Qnn, &m, PreviewChoice::Everyone),
+            None
+        );
+    }
+    // Choices without a second session keep their own reason.
+    let big = npu_machine(Some(64 * GIB));
+    for choice in [
+        PreviewChoice::Off,
+        PreviewChoice::Automatic,
+        PreviewChoice::On,
+    ] {
+        assert_ne!(
+            previews_refused_second(BackendKind::Qnn, &big, choice).as_deref(),
+            Some(OWN_VOICE_NPU_REFUSED),
+            "{choice:?}"
+        );
+        assert!(previews_refused_second(BackendKind::Qnn, &big, choice).is_some());
+    }
+    assert!(OWN_VOICE_NPU_REFUSED.contains("own voice"));
+    assert!(OWN_VOICE_NPU_REFUSED.contains("vanished"));
+    for text in [OWN_VOICE_NPU_REFUSED, PREVIEW_NEEDS_COMPILED] {
+        assert_eq!(crate::catalogue::manifest_id_in(text), None, "{text}");
+        assert!(!text.contains('\u{2014}'), "{text}");
+        assert!(!text.contains("not measured"), "{text}");
+    }
+}
+
+/// T12.12c: the loaders the app uses ask for the NPU for the first session and load nothing for a
+/// refusal: the user's own voice, or a machine below the limit by default.
+#[test]
+fn backends_previews_on_the_npu_load_there_and_refuse_before_loading() {
+    use crate::preview_settings::PreviewChoice;
+    let track = npu_track();
+    let asked = RefCell::new(Vec::new());
+    let load = |on: &BackendInfo| {
+        asked.borrow_mut().push(on.kind);
+        Ok::<_, String>(on.kind)
     };
+    let surface = npu_machine(Some(15 * GIB));
     for choice in [
         PreviewChoice::Automatic,
         PreviewChoice::On,
         PreviewChoice::Everyone,
     ] {
         assert_eq!(
-            previews_refused(BackendKind::Qnn, &big, choice).as_deref(),
-            Some("not measured on the NPU yet"),
-            "{choice:?}"
+            load_preview_with(&track, &surface, choice, load),
+            Ok(BackendKind::Qnn)
+        );
+    }
+    assert_eq!(*asked.borrow(), vec![BackendKind::Qnn; 3]);
+    asked.borrow_mut().clear();
+    let small = npu_machine(Some(8 * GIB));
+    assert!(load_preview_with(&track, &small, PreviewChoice::Automatic, load).is_err());
+    assert_eq!(
+        load_preview_second_with(&track, &surface, PreviewChoice::Everyone, load),
+        Err(OWN_VOICE_NPU_REFUSED.to_owned())
+    );
+    assert!(load_preview_with(&track, &surface, PreviewChoice::Off, load).is_err());
+    assert!(
+        asked.borrow().is_empty(),
+        "a refusal loaded {:?}",
+        asked.borrow()
+    );
+    // The real loaders on an empty models folder: the first goes on to load and fails for a load
+    // reason (no NPU version here), never a refusal; the second refuses before touching a file.
+    let empty = std::env::temp_dir().join(format!("earshot-preview-npu-{}", std::process::id()));
+    let models = ModelDir::new(&empty);
+    for choice in [PreviewChoice::On, PreviewChoice::Everyone] {
+        let why = load_preview(&models, &track, choice)
+            .err()
+            .expect("an empty models folder");
+        assert!(
+            !why.contains("not measured")
+                && !why.contains("memory")
+                && !why.contains("Settings")
+                && why != OWN_VOICE_NPU_REFUSED,
+            "{choice:?}: refused instead of loading: {why}"
         );
     }
     assert_eq!(
-        previews_refused_second(BackendKind::Qnn, &big, PreviewChoice::Everyone).as_deref(),
-        Some("not measured on the NPU yet")
+        load_preview_second(&models, &track, PreviewChoice::Everyone)
+            .err()
+            .as_deref(),
+        Some(OWN_VOICE_NPU_REFUSED)
     );
-    let empty = std::env::temp_dir().join(format!("earshot-preview-npu-{}", std::process::id()));
+}
+
+/// T12.12c: a Parakeet model whose NPU version is not installed runs its tracks on the processor
+/// (`npu_order`), and its previews follow the track: on the CPU, by the CPU's rule. Nothing asks
+/// for the NPU.
+#[test]
+fn backends_previews_follow_a_parakeet_model_without_its_npu_version_to_the_cpu() {
+    use crate::preview_settings::PreviewChoice;
+    let empty = std::env::temp_dir().join(format!("earshot-preview-no-npu-{}", std::process::id()));
     let models = ModelDir::new(&empty);
-    let npu = BackendInfo {
-        kind: BackendKind::Qnn,
-        device: "npu".to_owned(),
+    let (order, note) = npu_order(
+        &models,
+        "parakeet-tdt-0.6b-v2",
+        vec![Accelerator::Qnn, Accelerator::Cpu],
+    );
+    assert_eq!(order, vec![Accelerator::Cpu]);
+    assert!(note.is_some());
+    let track = BackendInfo {
+        kind: order[0].backend(),
+        device: "cpu".to_owned(),
         model: "parakeet-tdt-0.6b-v2".to_owned(),
     };
-    for choice in [PreviewChoice::On, PreviewChoice::Everyone] {
-        let first = load_preview(&models, &npu, choice).err();
-        assert_eq!(first.as_deref(), Some("not measured on the NPU yet"));
+    let surface = npu_machine(Some(15 * GIB));
+    let asked = RefCell::new(Vec::new());
+    let load = |on: &BackendInfo| {
+        asked.borrow_mut().push(on.kind);
+        Ok::<_, String>(())
+    };
+    load_preview_with(&track, &surface, PreviewChoice::Automatic, load).unwrap();
+    // "Everyone" on the CPU: the CPU's rule, not the NPU's refusal.
+    load_preview_second_with(&track, &surface, PreviewChoice::Everyone, load).unwrap();
+    assert_eq!(*asked.borrow(), vec![BackendKind::Cpu, BackendKind::Cpu]);
+    let small = npu_machine(Some(PREVIEW_MIN_MEMORY - 1));
+    assert_eq!(
+        previews_refused(BackendKind::Cpu, &small, PreviewChoice::Automatic),
+        previews_refused(
+            BackendKind::Cpu,
+            &nvidia_machine(Some(PREVIEW_MIN_MEMORY - 1), None),
+            PreviewChoice::Automatic
+        )
+    );
+}
+
+/// What [`qnn_load_steps`] lets one NPU load do, through `npu_compiled::load` with fakes: `compiled`
+/// says whether a compiled model loads, `helper` whether a helper process compiles (else this
+/// process would). Returns the result and which fakes ran (compile, ordinary).
+fn qnn_steps_run(
+    conversion: &Path,
+    preview: bool,
+    helper: bool,
+) -> (Result<&'static str, String>, u32, u32) {
+    use crate::npu_compiled::{Compile, CompileKey};
+    let key = CompileKey::from_parts(
+        &[("encoder.onnx", "aa11"), ("encoder.weights", "bb22")],
+        &earshot_onnx::qnn::QNN_ARM64,
+        "cc33",
+        &[],
+    );
+    let compiles = std::cell::Cell::new(0);
+    let ordinaries = std::cell::Cell::new(0);
+    let write = |model: &Path| {
+        std::fs::write(model, b"context model").unwrap();
+        std::fs::write(model.with_file_name("encoder_ctx_qnn.bin"), [7u8; 64]).unwrap();
+    };
+    let compile: Compile<'_, &'static str, AsrError> = if helper {
+        Compile::Helper(Box::new(|model: &Path| {
+            compiles.set(compiles.get() + 1);
+            write(model);
+            Ok(())
+        }))
+    } else {
+        Compile::InProcess(Box::new(|model: &Path| {
+            compiles.set(compiles.get() + 1);
+            write(model);
+            Ok("compiling")
+        }))
+    };
+    let ordinary = || {
+        ordinaries.set(ordinaries.get() + 1);
+        Ok("ordinary")
+    };
+    let (compile, ordinary) = qnn_load_steps(preview, compile, ordinary);
+    let result = crate::npu_compiled::load(
+        conversion,
+        &key,
+        |_| Ok(true),
+        |_| Ok::<_, AsrError>("compiled"),
+        compile,
+        ordinary,
+    )
+    .map(|(s, _)| s)
+    .map_err(|e| e.to_string());
+    (result, compiles.get(), ordinaries.get())
+}
+
+/// T12.12c: a preview on the NPU loads only a compiled model. With no compiled model and no helper
+/// it neither compiles in this process nor takes the ordinary load: it refuses, and the meeting
+/// goes on without previews. A helper may compile it; once compiled, the preview loads it. A
+/// track's load is unchanged.
+#[test]
+fn backends_preview_on_the_npu_loads_only_a_compiled_model() {
+    let dir = crate::testutil::TempDir::new("qnn-steps");
+    // No compiled model, no helper: refused, nothing compiled or loaded the ordinary way.
+    let (result, compiles, ordinaries) = qnn_steps_run(&dir.0, true, false);
+    let why = result.expect_err("a preview never compiles in process");
+    assert!(why.contains(PREVIEW_NEEDS_COMPILED), "{why}");
+    assert_eq!((compiles, ordinaries), (0, 0));
+    // A track's load compiles in process, as before (and keeps the compiled model).
+    assert_eq!(qnn_steps_run(&dir.0, false, false), (Ok("compiling"), 1, 0));
+    // Now the preview finds it compiled.
+    assert_eq!(qnn_steps_run(&dir.0, true, false), (Ok("compiled"), 0, 0));
+    // A helper may compile for a preview; this process then loads the compiled model.
+    let fresh = crate::testutil::TempDir::new("qnn-steps-helper");
+    assert_eq!(qnn_steps_run(&fresh.0, true, true), (Ok("compiled"), 1, 0));
+}
+
+/// T12.12c: a compiled model that does not load sends a preview away, never to the ordinary load;
+/// a track's load still falls back to it.
+#[test]
+fn backends_preview_on_the_npu_never_takes_the_ordinary_load() {
+    use crate::npu_compiled::{Compile, CompileKey};
+    let key = CompileKey::from_parts(
+        &[("encoder.onnx", "aa11"), ("encoder.weights", "bb22")],
+        &earshot_onnx::qnn::QNN_ARM64,
+        "cc33",
+        &[],
+    );
+    for preview in [true, false] {
+        let dir = crate::testutil::TempDir::new("qnn-steps-refused");
+        let ordinaries = std::cell::Cell::new(0);
+        let compile: Compile<'_, &'static str, AsrError> =
+            Compile::Helper(Box::new(|_: &Path| Err("the helper failed".to_owned())));
+        let (compile, ordinary) = qnn_load_steps(preview, compile, || {
+            ordinaries.set(ordinaries.get() + 1);
+            Ok("ordinary")
+        });
+        let result = crate::npu_compiled::load(
+            &dir.0,
+            &key,
+            |_| Ok(true),
+            |_| Err::<&'static str, _>(AsrError::Backend("refused".to_owned())),
+            compile,
+            ordinary,
+        );
+        if preview {
+            let Err(e) = result else {
+                panic!("a preview took a load");
+            };
+            assert!(e.to_string().contains(PREVIEW_NEEDS_COMPILED), "{e}");
+            assert_eq!(ordinaries.get(), 0);
+        } else {
+            assert_eq!(result.unwrap().0, "ordinary");
+            assert_eq!(ordinaries.get(), 1);
+        }
     }
-    let second = load_preview_second(&models, &npu, PreviewChoice::Everyone).err();
-    assert_eq!(second.as_deref(), Some("not measured on the NPU yet"));
 }
 
 /// T12.4: the evaluation load skips only the refusal: it goes on to load (and fails here on an
