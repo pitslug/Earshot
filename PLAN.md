@@ -1455,10 +1455,6 @@ M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go
   - deps: T9.1, T9.1b
   - do: `README.md` (install, usage, backends), `PRIVACY.md` (invariants from 3.9).
   - accept: `cargo xtask ci`
-- [ ] T9.1a Low-end laptop check
-  - deps: T6.13, T6.10c2, T6.10d
-  - do: a target, not a must: on a 4-core laptop without a discrete GPU (for example a 10th-gen Intel), the transcript keeps up within the 30-minute rule and the recording never drops audio. Measured on an older laptop with a real meeting or a `--realtime --timeline` replay: capture lag, transcript lag, model and backend chosen, CPU load; part of the decision on releasing more broadly at GATE-04.
-  - accept: the measurement logged; findings become tasks
 - [x] T9.17 Keep the audio when a recording write fails
   - deps: T9.1
   - found: pre-1.0 review, 2026-11-12, confirmed in code. `Session::record` (`crates/earshot-runtime/src/live/mod.rs`) calls `FlacTrackWriter::abort()` on any write error and `abort` deletes `<path>.part` (`crates/earshot-store/src/flac.rs`). A full disk or one transient I/O error late in a meeting deletes everything recorded on that track, and the session carries on with only a banner.
@@ -1611,11 +1607,6 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - status (2026-11-11): rule committed first (ca9f310); evaluation-only prototype merged (one encoder shared through a Mutex, no unsafe; ort rc.15 does not help), reviewed clear; measured on an idle desktop, all five points pass in both runs (lock wait at most 43 ms, card 0.59 GiB over alone, about 3.1 GiB less than a separate preview session). Under the rule a replay follow-up comes next (T12.3d); no shipped change.
   - do: the owner, 2026-11-08: ONNX Runtime's CUDA provider gives every session its own copy of the weights on the card. Find whether one session can serve both: first whether a newer `ort` lets `Session::run` take `&self`, else scope a minimal unsafe wrapper over the C API's `Run` (reviewer required). Write the rule (no preview delays a real decode by more than a stated bound) before measuring; measure card memory and how long real decodes wait. The result decides default on, default off or a setting (the owner). No shipped change without the owner.
   - accept: the rule, findings and numbers in docs/live-previews.md
-
-- [ ] T12.3d Shared CUDA encoder on whole meetings (follow-up to T12.3b)
-  - deps: T12.3b
-  - do: T12.3b's shared encoder passed its rule on contention runs (docs/live-previews.md). Measure it on whole replays the way T12.3c was (bundled and continuous, off / on / everyone, stored words, main rtf and catch-up, on-screen lag, private and card memory), with a rule written and committed before measuring, on an idle desktop. Evaluation only: the result goes to the owner, who chooses default on (perhaps lowering `PREVIEW_MIN_CARD_MEMORY`), a setting or default off.
-  - accept: the rule and measurements in docs/live-previews.md
 
 - [x] T12.3c Provisional words on the CPU when the graphics card is too small (rule failed point 4 by 30 ms; accepted by the owner 2026-11-11)
   - deps: T12.3a
@@ -1808,6 +1799,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.17 A few summary templates, shorter by default
   - deps: T7.4b
+  - decided (the owner, 2026-11-13): "optimise what we get before how we get it": unblocked now and judged on the writer in use (Claude); the local 4B must only not get worse under the new templates. The wait for the next local model below no longer applies. T12.25 and T12.26 stay parked and are re-run against these templates if a better local model arrives.
   - do: the owner, 2026-11-10: summaries are too long; decisions and actions are the priority, not minutiae. Offer a few templated prompts on Summaries, built on the summary style setting so every decision and action stays required. Not before the next local model is evaluated (Qwen 4 if it comes in the 9B and 4B sizes), because a local model's rules are judged on that model. Rule written before measuring, on the owner's meetings and AMI dev, with the 12-item cap (`SummaryLimits::max_items`) re-examined in the same evaluation.
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-runtime summary`; `cmd /c pnpm --filter @earshot/ui test`; the rule and numbers in docs/summary-eval.md, with no private measurement committed
 
@@ -1866,14 +1858,14 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [ ] T12.25 Local summaries: read less and write less (evaluation)
   - deps: T8.4d, T12.27
-  - parked (the owner, 2026-11-13): Granite and Ornith failed T12.27 and the owner chose to stay on the current models; not started until a new local model is worth measuring. Earlier: not started until T12.27 has judged Granite 4.1, because the rule and the model it measures depend on that result.
+  - parked (the owner, 2026-11-13): if a better local model arrives, run this against T12.17's templates, not today's prompt. Granite and Ornith failed T12.27 and the owner chose to stay on the current models; not started until a new local model is worth measuring. Earlier: not started until T12.27 has judged Granite 4.1, because the rule and the model it measures depend on that result.
   - why (pre-1.0 review, 2026-11-12): on the Surface the 4B reads about 93 and writes about 14 tokens a second, so a summary's time is its reply tokens plus re-reading: 18 minutes per meeting hour. Two costs are structural. Every request reads the same system text again (no prompt prefix is shared between requests, `earshot-llm-local/src/summarize.rs`). And the merge step writes the whole summary out a second time: on the CPU it is 60 to 70% of the wait at hang-up (docs/summary-eval.md, chunking experiment).
   - do: evaluation only, 4B, dev split, rule written and committed before measuring (docs/summary-eval.md): (1) Prefix reuse: keep the model's state for the system message across a run's requests (llama.cpp sequence state through `ffi.rs` only), replies byte-identical to today's (greedy, so this is a pure speed change: prove identity on the 20 dev meetings) and time saved measured on the Surface. This part may ship on identity alone. (2) Merge by selection: the map partials are kept as written; the merge request is given the numbered items of every part and replies only with which numbers to keep, which to fold together and a short `tldr` (a grammar of numbers, a reply of tens of tokens instead of the whole summary), and code builds the summary from the kept items (`join_partials` is the starting point; a superseded decision is dropped by number, never reworded). Judged against today's merge on the five judged dev meetings by blinded agents on the fixed real-item lists (caught, made up, duplicates) and on time at hang-up on the Surface; passes only if caught items do not fall by more than a margin fixed in the rule and made-up items do not rise. New format key in both `format_key`s; production grammar byte-identical. No shipped change to the merge without the owner.
   - accept: `cargo test -p earshot-llm-local`; `cargo test -p xtask sum_eval`; the rule, tables and timings in docs/summary-eval.md
 
 - [ ] T12.26 Check each decision and action against the lines it cites (evaluation)
   - deps: T12.25, T12.27
-  - parked (the owner, 2026-11-13): Granite and Ornith failed T12.27 and the owner chose to stay on the current models; not started until a new local model is worth measuring. Earlier: not started until T12.27 has judged Granite 4.1.
+  - parked (the owner, 2026-11-13): if a better local model arrives, run this against T12.17's templates, not today's prompt. Granite and Ornith failed T12.27 and the owner chose to stay on the current models; not started until a new local model is worth measuring. Earlier: not started until T12.27 has judged Granite 4.1.
   - why (pre-1.0 review, 2026-11-12): on five dev meetings the 4B made up 15 items where Claude made up none (docs/summary-eval/claude-vs-4b-2026-11-04.md). They are of three kinds: a proposal stated as a decision, a choice the meeting later reversed, and something done during the meeting listed as a task for after it. Prompt rounds halved them and stalled; thinking failed its rule (T12.10). A small model is better at one narrow yes-or-no question than at writing with every rule in mind.
   - do: evaluation only, rule written and committed before measuring. After the summary is built, one short request per decision and action: the item, its cited lines with a few lines either side, and for decisions the later lines that mention the same subject (found by the item's content words, in code), answered under a grammar with one of a fixed set (settled / proposed only / reversed later; task for after the meeting / done in the meeting / nobody took it on). Anything but the first answer drops the item; nothing is reworded or added. Measured on the five judged dev meetings and the five `b` meetings with the fixed real-item lists, by blinded agents: made-up items removed against real items lost. Passes only if made-up items fall by at least half and real items lost stay within a margin fixed in the rule (a wrongly dropped decision is worse than a kept doubtful one: state the weight first). Time per item on the Surface reported. The local fact judge failed its validation on a harder question (T6.20a: 75%, kappa 0.44), so do not assume this works. No shipped change without the owner.
   - accept: `cargo test -p earshot-llm-local`; `cargo test -p xtask sum_eval`; the rule and tables in docs/summary-eval.md
@@ -1904,6 +1896,22 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - found (the owner, 2026-11-13): "Everyone" worked well on a real call on the desktop, but nobody finds it in Settings; the wizard should offer the choice with a suggestion based on the hardware.
   - do: in the wizard's Optional extras step, the same Off / Other people only / Everyone choice as the Transcription page (reuse its part), with one option marked suggested for this computer. The suggestion comes from Rust, from the same rules that decide where previews may run (`backends::preview_backend`, `previews_refused`, `previews_refused_second`, through `crate::hardware()`), never a rule in the UI: Everyone where both tracks' previews are allowed (the desktop), Other people only where only the far end's is (the Surface NPU, today), Off where neither is; a refused option is disabled with its reason, as on the Transcription page. The choice saves on Next like the other wizard parts (`saveOnNext`); a user who skips the wizard keeps today's default. Mock IPC gains the suggestion for both mock machines (`?machine=desktop`, `surface`).
   - accept: `cargo test -p earshot-runtime backends`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; screenshots of the wizard step for both mock machines in light and dark
+
+### M13 - Lower-spec hardware optimisation
+
+Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids keep their original milestone numbers.
+
+- [ ] T9.1a Low-end laptop check
+  - parked (the owner, 2026-11-13): moved to M13; only if someone with a low-end laptop wants to use Earshot.
+  - deps: T6.13, T6.10c2, T6.10d
+  - do: a target, not a must: on a 4-core laptop without a discrete GPU (for example a 10th-gen Intel), the transcript keeps up within the 30-minute rule and the recording never drops audio. Measured on an older laptop with a real meeting or a `--realtime --timeline` replay: capture lag, transcript lag, model and backend chosen, CPU load; part of the decision on releasing more broadly at GATE-04.
+  - accept: the measurement logged; findings become tasks
+
+- [ ] T12.3d Shared CUDA encoder on whole meetings (follow-up to T12.3b)
+  - parked (the owner, 2026-11-13): moved to M13; only if someone with a smaller graphics card (for example 8 GB) and needs it; CUDA is fast enough on the owner's card wants to use Earshot.
+  - deps: T12.3b
+  - do: T12.3b's shared encoder passed its rule on contention runs (docs/live-previews.md). Measure it on whole replays the way T12.3c was (bundled and continuous, off / on / everyone, stored words, main rtf and catch-up, on-screen lag, private and card memory), with a rule written and committed before measuring, on an idle desktop. Evaluation only: the result goes to the owner, who chooses default on (perhaps lowering `PREVIEW_MIN_CARD_MEMORY`), a setting or default off.
+  - accept: the rule and measurements in docs/live-previews.md
 
 ### M10 - v2 Android in-person recorder
 
