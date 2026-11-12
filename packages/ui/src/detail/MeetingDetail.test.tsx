@@ -737,6 +737,30 @@ describe("MeetingDetailView", () => {
     expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
   });
 
+  it("slides the panel out while its column closes, hidden and inert, then removes it", async () => {
+    const { user } = await setup();
+    await screen.findByText(/TL;DR/);
+    const toggle = screen.getByRole("button", { name: /^Speakers/ });
+    if (toggle.getAttribute("aria-expanded") !== "true") await user.click(toggle);
+    const open = panel();
+    await user.click(toggle);
+    // Still drawn for the slide out, but no longer reachable.
+    expect(open).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
+    const leaving = open.closest('[aria-hidden="true"]');
+    expect(leaving).not.toBeNull();
+    expect(leaving).toHaveAttribute("inert");
+    // The column's own transition end removes it; a child's transition does not.
+    const column = leaving?.parentElement as HTMLElement;
+    fireEvent.transitionEnd(open);
+    expect(open).toBeInTheDocument();
+    fireEvent.transitionEnd(column);
+    expect(open).not.toBeInTheDocument();
+    // Opening again draws a reachable panel.
+    await user.click(toggle);
+    expect(panel()).toBeInTheDocument();
+  });
+
   it("opens by itself when a reload brings more voices that need a name, and never closes by itself", async () => {
     const base = sampleDetail(ITEM);
     const allNamed = {

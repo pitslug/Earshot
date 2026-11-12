@@ -189,6 +189,15 @@ const useStyles = makeStyles({
       animationDuration: "0.01ms",
     },
   },
+  // ...and out again the same way while its column closes.
+  drawerInnerLeaving: {
+    animationName: {
+      from: { transform: "translateX(0)", opacity: 1 },
+      to: { transform: "translateX(24px)", opacity: 0 },
+    },
+    animationTimingFunction: tokens.curveAccelerateMid,
+    animationFillMode: "forwards",
+  },
   badge: {
     marginLeft: tokens.spacingHorizontalXS,
   },
@@ -457,6 +466,16 @@ export function MeetingDetailView({
   // The Speakers panel: `null` until the meeting loads, then open by itself only when a
   // voice needs a name (T12.19); the header's Speakers button toggles it.
   const [speakersOpen, setSpeakersOpen] = useState<boolean | null>(null);
+  // A closed panel stays drawn, hidden from assistive technology and inert, while its column
+  // closes, so it slides out as it slid in; the column's transition end removes it.
+  // Set during render (React's "adjusting state when a value changes"), not in an effect, so
+  // the panel is never unmounted for one commit between open and leaving.
+  const [speakersLeaving, setSpeakersLeaving] = useState(false);
+  const [speakersWere, setSpeakersWere] = useState(speakersOpen);
+  if (speakersWere !== speakersOpen) {
+    setSpeakersWere(speakersOpen);
+    setSpeakersLeaving(speakersWere === true && speakersOpen !== true);
+  }
   const panelId = useId();
   const voicesBefore = useRef(0);
   const speakersButton = useRef<HTMLButtonElement | null>(null);
@@ -820,9 +839,24 @@ export function MeetingDetailView({
                 />
               )}
             </div>
-            <div className={mergeClasses(styles.drawer, speakersOpen === true && styles.drawerOpen)}>
-              {speakersOpen === true && (
-                <div className={styles.drawerInner}>
+            <div
+              className={mergeClasses(styles.drawer, speakersOpen === true && styles.drawerOpen)}
+              onTransitionEnd={(e) => {
+                if (e.target === e.currentTarget && speakersOpen !== true) setSpeakersLeaving(false);
+              }}
+              onTransitionCancel={(e) => {
+                if (e.target === e.currentTarget && speakersOpen !== true) setSpeakersLeaving(false);
+              }}
+            >
+              {(speakersOpen === true || speakersLeaving) && (
+                <div
+                  className={mergeClasses(
+                    styles.drawerInner,
+                    speakersOpen !== true && styles.drawerInnerLeaving,
+                  )}
+                  aria-hidden={speakersOpen !== true || undefined}
+                  inert={speakersOpen !== true || undefined}
+                >
                   <SpeakersPanel
                     id={panelId}
                     detail={detail}
