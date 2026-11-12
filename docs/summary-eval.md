@@ -985,3 +985,27 @@ Written before any generation, with the Granite rule. Only once Granite's runs h
 
 `, so llama.cpp detects ChatML and the prefix is `QWEN_NO_THINK`, as for the Qwen models. Whether the pinned llama.cpp loads it is known only from its run.
 - **Rule.** Rule 1 above against Qwen 3.5 9B from `t1227-dev` (its own `--out`, `target\sum-eval\t1227-ornith`, same build and settings); rule 2 and 3 likewise, with Qwen 3.5 9B as the class model.
+
+### Results: Granite 4.2 fails the first test (2026-11-12, `target/sum-eval/t1227-dev`)
+
+One run, one build, CUDA on the RTX 5080 (every load log: all layers offloaded to `CUDA0`), format key `indented-numbered-r5-chunk600`, assistant prefixes checked in each result header (`<think></think>` for Granite, `<think>\n\n</think>\n\n` for Qwen). Coverage is decisions covered of 83 plus actions covered of 41. Raw tables: `docs/summary-eval/t1227/dev-table.md` and `dev-tokens.md` (per meeting).
+
+| Model | Class model | Valid | Decisions cov | Actions cov | Coverage total | Decisions / actions written | ROUGE-Lsum | Rule 1 |
+|---|---|---|---|---|---|---|---|---|
+| Qwen 3.5 4B | - | 20/20 | 35 | 10 | 45 | 114 / 70 | 0.304 | - |
+| Granite 4.2 3B | Qwen 3.5 4B | 19/20 | 3 | 0 | 3 | 5 / 5 | 0.240 | fails (invalid meeting, coverage 3 < 45) |
+| Qwen 3.5 9B | - | 20/20 (1 joined) | 43 | 6 | 49 | 140 / 91 | 0.307 | - |
+| Granite 4.2 8B | Qwen 3.5 9B | 18/20 | 32 | 9 | 41 | 102 / 84 | 0.202 | fails (2 invalid meetings, coverage 41 < 49) |
+
+Tokens and time per meeting, means over the 20 dev meetings. **Shared host:** other lanes were building on the desktop during the run, so these seconds are not timing figures; they only say how the models compare in the same conditions.
+
+| Model | Tokens read | Tokens written | s per meeting (all) | s at hang-up | Repairs | Truncated | Looping |
+|---|---|---|---|---|---|---|---|
+| Qwen 3.5 4B | 22,202 | 5,224 | 36.8 | 19.2 | 1 | 0 | 0 |
+| Granite 4.2 3B | 19,024 | 2,118 | 11.3 | 5.2 | 2 | 0 | 3 |
+| Qwen 3.5 9B | 22,880 | 4,995 | 46.1 | 23.8 | 3 | 1 | 3 |
+| Granite 4.2 8B | 24,682 | 8,105 | 88.5 | 49.8 | 12 | 3 | 0 |
+
+- **Granite 4.2 3B** is fast because it writes little: 5 decisions and 5 action items over 20 meetings, against 114 and 70 for the 4B; almost everything goes into notes. TS3006a failed at a map step (a repeated item through all three requests).
+- **Granite 4.2 8B** writes 60% more than the 9B and needs 4 times the repairs. TS3004c and TS3006d failed in planning: its map summaries were long enough that the merge needed about 16,400 tokens of a 16,384 context (the production window), so no request was sent. With a larger context they might have run; the rule fixes S16, as production does.
+- No judged round (rule 2 needs rule 1). The fall-back to Granite 4.1 was not needed: llama.cpp loaded and formatted 4.2.
