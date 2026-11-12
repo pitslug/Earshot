@@ -575,7 +575,7 @@ pub fn run_check(
         &CaptureMode::Call(LoopbackRequest::DefaultDevice),
         devices,
     )
-    .map_err(|e| capture(e.to_string()))?;
+    .map_err(|e| crate::capture_start_error(&e))?;
     let mic_id = source.mic_endpoint().and_then(|p| p.id.clone());
     let output_id = source.output_endpoint_id().map(str::to_owned);
     let (Some(mic_id), Some(output_id)) = (mic_id, output_id) else {

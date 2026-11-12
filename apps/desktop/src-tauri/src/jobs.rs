@@ -193,9 +193,9 @@ impl JobRunner {
                 run_guarded(&inner, &svc, meeting, job, lease);
                 drop(pass);
             })
-            .map_err(|e| IpcError {
+            .map_err(|_| IpcError {
                 kind: "internal".into(),
-                message: format!("cannot start the job thread: {e}"),
+                message: crate::plain_text::INTERNAL.into(),
                 retryable: false,
             })?;
         running.insert(meeting, thread);

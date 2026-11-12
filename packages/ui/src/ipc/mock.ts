@@ -21,6 +21,7 @@ import {
   type MeetingEvent,
   type MeetingListItem,
   NEWER_DATA_KIND,
+  DATA_FOLDER_KIND,
   type PersonItem,
   type PostStep,
   type RememberOutcome,
@@ -233,6 +234,9 @@ export interface MockIpcData {
   /** The database was saved by a newer Earshot: the meeting and folder lists reject with
    * `newer_data`, as every store command does in the app (the preview's `?newerData=1`). */
   newerData?: boolean;
+  /** The data folder could not be opened at the start: the meeting and folder lists reject with
+   * `data_folder` (the preview's `?dataFolder=1`). */
+  dataFolderFails?: boolean;
 }
 
 /** A 0.1 s silent 16 kHz mono WAV file, base64 (the mock's speaker sample). */
@@ -264,6 +268,10 @@ export const SILENT_WAV_BASE64 = (() => {
 /** What the app says when its database was saved by a newer Earshot (`ipc::NEWER_DATA_COPY`). */
 export const NEWER_DATA_COPY =
   "This data was saved by a newer version of Earshot. Install the latest version to open it.";
+
+/** What the app says when its data folder could not be opened (`ipc::DATA_FOLDER_COPY`). */
+export const DATA_FOLDER_COPY =
+  "Earshot could not open its data folder on this computer. Check that the disk has free space and that another program (a backup or antivirus tool) is not holding it, then try again.";
 
 /** What the mock's update host offers. */
 const UPDATE_VERSION = "9.9.9";
@@ -332,6 +340,12 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     throw new IpcFailure({ kind, message, retryable });
   };
   const newerData = () => data.newerData === true;
+  // The lists' failure at the start, as the app's store commands give it.
+  const storeFailure = (): never | null => {
+    if (newerData()) fail(NEWER_DATA_KIND, NEWER_DATA_COPY);
+    if (data.dataFolderFails === true) fail(DATA_FOLDER_KIND, DATA_FOLDER_COPY);
+    return null;
+  };
 
   const record = (row: MeetingListItem, mode: CaptureMode, held: boolean) => {
     const call = mode === "Call";
@@ -557,14 +571,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     ...createCudaMock(data.machine ?? "surface", timer, data.cuda),
     ...createFirstRunMock(data.firstRun),
     ...foldersMock,
-    listFolders: async () => (newerData() ? fail(NEWER_DATA_KIND, NEWER_DATA_COPY) : foldersMock.listFolders()),
+    listFolders: async () => storeFailure() ?? foldersMock.listFolders(),
     appInfo: async () => ({ ...appInfo }),
     listMeetings: async () =>
-      newerData()
-        ? fail(NEWER_DATA_KIND, NEWER_DATA_COPY)
-        : [...meetings]
-            .sort((a, b) => b.started_at_ms - a.started_at_ms || b.id.localeCompare(a.id))
-            .map((m) => ({ ...m })),
+      storeFailure() ??
+      [...meetings]
+        .sort((a, b) => b.started_at_ms - a.started_at_ms || b.id.localeCompare(a.id))
+        .map((m) => ({ ...m })),
     searchMeetings: async (query) =>
       searchSample(meetings, (row) => details.get(row.id) ?? sampleDetail(row), query),
     startMeeting: async (mode, title, keepLocal) => {
@@ -640,9 +653,10 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       const end = (result: SummaryEvent) => {
         finishing.delete(row.id);
         processing = false;
-        row.state = result.kind === "PostCancelled" ? "Unprocessed" : "Ready";
+        const unprocessed = result.kind === "PostCancelled" || result.kind === "PostFailed";
+        row.state = unprocessed ? "Unprocessed" : "Ready";
         // The detail read during processing was the draft; the next read is the final one.
-        if (result.kind !== "PostCancelled") details.delete(row.id);
+        if (!unprocessed) details.delete(row.id);
         if (result.kind === "Stored" && row.title === "") row.title = result.title;
         emit({ type: "Summary", meeting: row.id, result });
         afterOlder?.();

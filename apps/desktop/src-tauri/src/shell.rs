@@ -375,6 +375,13 @@ pub fn finished_toast(result: &SummaryEvent) -> Option<Toast> {
             buttons: vec![("Open", ToastClick::Meeting)],
             stays: false,
         }),
+        SummaryEvent::PostFailed { .. } => Some(Toast {
+            title: "The transcript was not finished".into(),
+            body: "Open the meeting to see why and to re-transcribe it.".into(),
+            click: ToastClick::Meeting,
+            buttons: vec![("Open", ToastClick::Meeting)],
+            stays: false,
+        }),
         SummaryEvent::Skipped { .. } | SummaryEvent::Cancelled | SummaryEvent::PostCancelled => {
             None
         }

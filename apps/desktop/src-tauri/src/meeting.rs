@@ -295,9 +295,9 @@ impl MeetingDriver {
                     run_guarded(&inner, &svc, &request, &flags, &tx, seq);
                     drop(pass);
                 })
-                .map_err(|e| IpcError {
+                .map_err(|_| IpcError {
                     kind: "internal".into(),
-                    message: format!("cannot start the meeting thread: {e}"),
+                    message: crate::plain_text::INTERNAL.into(),
                     retryable: false,
                 })?;
             threads.newest = Some(Running {
@@ -414,16 +414,28 @@ pub const MEETING_PANIC_MESSAGE: &str =
     "The meeting stopped unexpectedly. What was recorded until then is kept.";
 
 /// What the UI hears when the session ends in an error. Once the recording is saved that error can
-/// only be about the live work, so it never says the recording failed.
-fn session_failure_message(saved: bool, e: &RuntimeError) -> String {
+/// only be about the live work, so it never says the recording failed, and the screen offers
+/// Re-transcribe ([`SummaryEvent::PostFailed`]); before, it says why in fixed copy (T9.23).
+fn session_failure(saved: bool, e: &RuntimeError) -> SummaryEvent {
     if saved {
-        "The recording is saved, but the live transcript did not finish. Re-transcribe the \
-         meeting from its page to get the full transcript."
-            .to_owned()
+        SummaryEvent::PostFailed {
+            message: SAVED_BUT_LIVE_FAILED.to_owned(),
+            retryable: false,
+        }
     } else {
-        format!("The recording could not be finished: {e}")
+        SummaryEvent::Failed {
+            message: format!(
+                "The recording could not be finished. {}",
+                crate::plain_text::runtime_text(e)
+            ),
+            retryable: false,
+        }
     }
 }
+
+/// The session failed after the recording was saved.
+pub const SAVED_BUT_LIVE_FAILED: &str = "The recording is saved, but the live transcript did \
+     not finish. Re-transcribe the meeting to get the full transcript.";
 
 /// The flags a meeting's thread shares with the driver.
 struct RunFlags {
@@ -679,10 +691,7 @@ fn run(
         Err(e) => {
             send(MeetingEvent::Summary {
                 meeting: id.to_string(),
-                result: SummaryEvent::Failed {
-                    message: session_failure_message(saved_seen, &e),
-                    retryable: false,
-                },
+                result: session_failure(saved_seen, &e),
             });
             return;
         }

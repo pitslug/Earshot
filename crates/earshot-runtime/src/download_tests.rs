@@ -709,3 +709,36 @@ fn download_content_range_start_parses_the_first_byte() {
     assert_eq!(content_range_start("items 1-2/3"), None);
     assert_eq!(content_range_start(""), None);
 }
+
+#[test]
+fn download_to_a_port_nobody_listens_on_reached_no_server() {
+    // A port that was free a moment ago: the connection is refused, as on a network that
+    // only lets traffic out through a proxy (T9.23).
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let d = downloader(local(&[port]));
+    let dir = TempDir::new("dl-noserver");
+    let b = body();
+    let sum = sha(&b);
+    let exp = Expected {
+        sha256: &sum,
+        size: b.len() as u64,
+    };
+    let url = Url::parse(&format!("http://127.0.0.1:{port}/file.bin")).unwrap();
+    let err = fetch(&d, &url, &dir.0.join("f"), &exp).0.unwrap_err();
+    assert!(err.reached_no_server(), "{err:?}");
+    // A server that answered, even with an error, is not this case.
+    let refused = DownloadError::Status {
+        url: "x".into(),
+        status: 502,
+    };
+    assert!(!refused.reached_no_server());
+    let blocked = DownloadError::Request {
+        url: "x".into(),
+        error: NetError::TooManyRedirects,
+    };
+    assert!(!blocked.reached_no_server());
+}

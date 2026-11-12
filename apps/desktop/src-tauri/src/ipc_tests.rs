@@ -188,7 +188,9 @@ fn ipc_error_keeps_the_runtime_errors_retryability() {
     let busy = IpcError::from(RuntimeError::MeetingBusy(id));
     assert_eq!(busy.kind, "meeting_busy");
     assert!(busy.retryable);
-    assert_eq!(busy.message, RuntimeError::MeetingBusy(id).to_string());
+    // Fixed copy, never the runtime's own text (which names the meeting's id).
+    assert_eq!(busy.message, crate::plain_text::MEETING_BUSY);
+    assert!(!busy.message.contains(&id.to_string()));
     let conflict = IpcError::from(RuntimeError::Conflict("changed"));
     assert!(conflict.retryable);
     let fixed = IpcError::from(RuntimeError::NoTracks);
@@ -199,6 +201,28 @@ fn ipc_error_keeps_the_runtime_errors_retryability() {
     let e = IpcError::from(busy_store());
     assert_eq!(e.kind, "store");
     assert!(e.retryable);
+}
+
+#[test]
+fn app_state_a_data_folder_that_cannot_be_opened_is_its_own_kind_without_its_text() {
+    let dir = TempDir::new("state-blocked");
+    // A file where the folder should be: neither the folder nor the database can be made.
+    let blocked = dir.0.join("blocked");
+    std::fs::write(&blocked, b"not a folder").unwrap();
+    let state = AppState::open(DataDir::new(blocked.clone()));
+    let e = state.services().unwrap_err();
+    assert_eq!(e.kind, DATA_FOLDER_KIND);
+    assert_eq!(e.message, DATA_FOLDER_COPY);
+    assert!(!e.message.contains("blocked"), "{}", e.message);
+    // The folder is still known, for the pages that show it.
+    assert_eq!(state.data_dir().map(DataDir::root), Some(blocked.as_path()));
+    // A database saved by a newer Earshot keeps its own screen.
+    let newer = data_folder_error(Some(&RuntimeError::Store(StoreError::SchemaTooNew {
+        found: 99,
+        supported: 1,
+    })));
+    assert_eq!(newer.kind, NEWER_DATA_KIND);
+    assert_eq!(data_folder_error(None).kind, DATA_FOLDER_KIND);
 }
 
 /// A window that records what was done to it.

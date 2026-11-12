@@ -578,8 +578,8 @@ fn summaries_no_api_key_skips_the_meetings_summary_with_a_banner() {
     };
     assert_eq!(
         message,
-        "The summary will not run: Windows Credential Manager could not be read (access \
-         denied). Check the key in Settings, Summaries, then re-summarise this meeting."
+        "The summary will not run: Windows Credential Manager could not be read. Check the key \
+         in Settings, Summaries, then re-summarise this meeting."
     );
     assert!(!message.contains('\u{2014}'), "{message}");
 }

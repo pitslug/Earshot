@@ -152,7 +152,10 @@ impl Prepare for FakePrepare {
         let mut cfg = config();
         cfg.title = request.title.clone();
         let start: StartFn = Box::new(move |svc: &Services| match script {
-            Script::StartFails => Err(RuntimeError::Capture("no microphone".into())),
+            Script::StartFails => Err(RuntimeError::CaptureStart {
+                problem: earshot_runtime::CaptureProblem::MicrophoneAccessOff,
+                detail: "IAudioClient::Initialize: Access is denied. (0x80070005)".into(),
+            }),
             Script::UntilStopped => start_live(
                 UntilStopped {
                     inner: replay(0.5, reference),
@@ -727,7 +730,9 @@ fn meeting_driver_a_session_that_cannot_start_is_an_ipc_error() {
     let (d, rx) = driver(FakePrepare::new(Script::StartFails));
     let e = d.start(&svc, request(CaptureMode::Call)).unwrap_err();
     assert_eq!(e.kind, "capture");
-    assert!(e.message.contains("no microphone"));
+    // What to do, by the error's kind; never Windows' own words (T9.23).
+    assert_eq!(e.message, crate::plain_text::MICROPHONE_ACCESS_OFF);
+    assert!(!e.message.contains("0x80070005"));
     assert!(rx.try_recv().is_err());
     assert!(svc.store().meetings().unwrap().is_empty());
     assert!(!d.busy());
@@ -1247,12 +1252,23 @@ fn meeting_queue_driver_a_failed_load_keeps_the_meeting_recording() {
 #[test]
 fn meeting_queue_driver_a_session_failure_after_the_save_does_not_blame_the_recording() {
     let e = RuntimeError::Poisoned;
-    let before = session_failure_message(false, &e);
+    let SummaryEvent::Failed {
+        message: before, ..
+    } = session_failure(false, &e)
+    else {
+        panic!("before the save the recording failed");
+    };
     assert!(
         before.starts_with("The recording could not be finished"),
         "{before}"
     );
-    let after = session_failure_message(true, &e);
+    // Fixed copy after it, never the error's own text (T9.23).
+    assert!(before.ends_with(crate::plain_text::INTERNAL), "{before}");
+    assert!(!before.contains(&e.to_string()), "{before}");
+    // After the save it is the live work: the screen offers Re-transcribe.
+    let SummaryEvent::PostFailed { message: after, .. } = session_failure(true, &e) else {
+        panic!("after the save the transcript is what did not finish");
+    };
     assert!(after.starts_with("The recording is saved"), "{after}");
     assert!(after.contains("live transcript"), "{after}");
     assert!(!after.contains("could not be finished"), "{after}");

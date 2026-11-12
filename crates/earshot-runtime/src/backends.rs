@@ -981,14 +981,17 @@ pub struct WhisperChoice<T> {
 
 /// Loads `model` on the first accelerator of `order` the loader can verify. QNN is not a
 /// whisper backend and is skipped without a refusal ([`model_order`] never offers it).
+/// Nothing loads on a processor without the native builds' baseline ([`crate::cpu`]).
 ///
 /// # Errors
-/// [`RuntimeError::NoBackend`] with every refusal when none verifies.
+/// [`RuntimeError::NoBackend`] with every refusal when none verifies;
+/// [`RuntimeError::ProcessorTooOld`] before any load.
 pub fn select_whisper<L: WhisperLoader + ?Sized>(
     loader: &L,
     model: &Path,
     order: &[Accelerator],
 ) -> Result<WhisperChoice<L::Transcriber>, RuntimeError> {
+    crate::cpu::require_native_builds()?;
     let mut rejected = Vec::new();
     for accel in order.iter().filter(|a| **a != Accelerator::Qnn) {
         let backend = accel.backend();
@@ -2224,7 +2227,7 @@ pub fn pass_backend(
 /// clock domain is QPC.
 ///
 /// # Errors
-/// [`RuntimeError::Capture`] if capture cannot start; as [`crate::live::start_live`].
+/// [`RuntimeError::CaptureStart`] if capture cannot start; as [`crate::live::start_live`].
 #[cfg(windows)]
 pub fn start_wasapi_session(
     services: crate::Services,
@@ -2252,7 +2255,7 @@ pub fn start_wasapi_session(
 /// Bluetooth hands-free warning).
 ///
 /// # Errors
-/// [`RuntimeError::Capture`] if capture cannot start; as [`crate::live::start_live`].
+/// [`RuntimeError::CaptureStart`] if capture cannot start; as [`crate::live::start_live`].
 #[cfg(windows)]
 pub fn start_wasapi_session_on(
     services: crate::Services,
@@ -2264,7 +2267,7 @@ pub fn start_wasapi_session_on(
     rng: crate::BoxRng,
 ) -> Result<crate::live::LiveSession, RuntimeError> {
     let source = earshot_capture_wasapi::wasapi::WasapiSource::start_on(mic_role, mode, devices)
-        .map_err(|e| RuntimeError::Capture(e.to_string()))?;
+        .map_err(|e| crate::capture_start_error(&e))?;
     let mut config = crate::live::LiveConfig {
         clock_domain: earshot_core::model::ClockDomain::Qpc,
         ..config

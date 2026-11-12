@@ -163,7 +163,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
 pub struct IpcError {
     /// A stable machine-readable kind (`snake_case`), for the UI to choose a message.
     pub kind: String,
-    /// The error's own text (never more than [`RuntimeError`]'s `Display` gives).
+    /// What the user is told: fixed copy chosen by the error's kind
+    /// ([`crate::plain_text::runtime_text`]), never a runtime error's own text.
     pub message: String,
     /// Whether retrying the same operation can succeed without user action.
     pub retryable: bool,
@@ -187,13 +188,31 @@ pub const NEWER_DATA_COPY: &str =
 /// The error kind of a database saved by a newer Earshot; the UI shows its own screen for it.
 pub const NEWER_DATA_KIND: &str = "newer_data";
 
+/// The error kind of a data folder that could not be opened at start (T9.23); the UI shows its
+/// own screen for it, whose Try again restarts the app (the store is opened once, at start).
+pub const DATA_FOLDER_KIND: &str = "data_folder";
+
+/// What the app says when its data folder could not be opened.
+pub const DATA_FOLDER_COPY: &str = "Earshot could not open its data folder on this computer. \
+     Check that the disk has free space and that another program (a backup or antivirus tool) \
+     is not holding it, then try again.";
+
+/// The error of a data folder that could not be created or opened: [`NEWER_DATA_KIND`] for a
+/// database saved by a newer Earshot, else [`DATA_FOLDER_KIND`]; never the error's text.
+pub(crate) fn data_folder_error(e: Option<&RuntimeError>) -> IpcError {
+    if let Some(RuntimeError::Store(StoreError::SchemaTooNew { .. })) = e {
+        return IpcError::new(NEWER_DATA_KIND, NEWER_DATA_COPY);
+    }
+    IpcError::new(DATA_FOLDER_KIND, DATA_FOLDER_COPY)
+}
+
 impl From<RuntimeError> for IpcError {
     fn from(e: RuntimeError) -> Self {
         if let RuntimeError::Store(StoreError::SchemaTooNew { .. }) = &e {
             return Self::new(NEWER_DATA_KIND, NEWER_DATA_COPY);
         }
-        // Edit refusals carry plain user copy; everything else the runtime's own text, never
-        // a developer command (`plain_text`).
+        // Edit refusals keep their own kinds; everything else is fixed copy chosen by the
+        // error's kind, never its text (`plain_text::runtime_text`, T9.23).
         if let RuntimeError::Edit(edit) = &e {
             return crate::detail::edit_error(edit);
         }
@@ -245,7 +264,8 @@ fn runtime_kind(e: &RuntimeError) -> &'static str {
         RuntimeError::NoBackend(_) | RuntimeError::Unavailable(_) | RuntimeError::Onnx(_) => {
             "backend"
         }
-        RuntimeError::Capture(_) => "capture",
+        RuntimeError::Capture(_) | RuntimeError::CaptureStart { .. } => "capture",
+        RuntimeError::ProcessorTooOld => "processor",
         RuntimeError::MeetingBusy(_) => "meeting_busy",
         RuntimeError::Edit(_) => "edit",
         RuntimeError::ApiKey(_) => "api_key",
@@ -434,10 +454,7 @@ impl AppState {
             None => Self {
                 data: None,
                 keys: Arc::new(CredentialManager::anthropic()),
-                services: Err(IpcError::new(
-                    "no_data_dir",
-                    "no data directory: LOCALAPPDATA is not set",
-                )),
+                services: Err(data_folder_error(None)),
             },
         }
     }
@@ -453,11 +470,12 @@ impl AppState {
     }
 
     pub(crate) fn services_in(data: &DataDir) -> Result<Services, IpcError> {
-        data.create().map_err(|e| {
-            IpcError::new("store", format!("cannot create the data directory: {e}"))
-        })?;
-        let store = data.open_store().map_err(RuntimeError::from)?;
-        Ok(Services::new(store, data.clone(), Arc::new(SystemClock))?)
+        data.create().map_err(|_| data_folder_error(None))?;
+        let store = data
+            .open_store()
+            .map_err(|e| data_folder_error(Some(&RuntimeError::from(e))))?;
+        Services::new(store, data.clone(), Arc::new(SystemClock))
+            .map_err(|e| data_folder_error(Some(&e)))
     }
 
     /// The data folder, known even when the store failed to open.

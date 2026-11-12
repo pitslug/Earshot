@@ -14,6 +14,7 @@ use earshot_core::capture::{EndReason, TrackId};
 use earshot_core::diar::SpeakerRole;
 use earshot_core::pipeline::PipelineError;
 use earshot_core::summary::SummaryV1;
+use earshot_runtime::RuntimeError;
 use earshot_runtime::host::{HostOutcome, HostPost, HostStep, SkipReason, SummaryResult};
 use earshot_runtime::live::{HoldReason, LiveTranscriptState, RuntimeEvent, RuntimeWarning};
 use earshot_runtime::post::{PostSpeaker, PostStage};
@@ -150,9 +151,18 @@ pub enum SummaryEvent {
         /// Why.
         reason: String,
     },
-    /// The summary (or the cleanup before it) failed; nothing was stored.
+    /// The summary failed; nothing was stored. The final transcript stays, so the screen offers
+    /// Re-summarise.
     Failed {
-        /// What failed.
+        /// What failed (fixed copy, `plain_text::runtime_text`).
+        message: String,
+        /// Whether trying again can succeed without changing anything.
+        retryable: bool,
+    },
+    /// The final transcript could not be finished (T9.23), so no summary ran: the recording and
+    /// any draft stay, the meeting reads as `Unprocessed`, and the screen offers Re-transcribe.
+    PostFailed {
+        /// Why (fixed copy, `plain_text::runtime_text`).
         message: String,
         /// Whether trying again can succeed without changing anything.
         retryable: bool,
@@ -1085,7 +1095,8 @@ pub fn no_key_copy(e: &earshot_runtime::summary_settings::ApiKeyError, ahead: bo
     };
     let why = match e {
         ApiKeyError::Missing => "no Anthropic API key is saved".to_owned(),
-        ApiKeyError::Store(m) => format!("Windows Credential Manager could not be read ({m})"),
+        // The store's own words are Windows' text: never shown (T9.23).
+        ApiKeyError::Store(_) => "Windows Credential Manager could not be read".to_owned(),
         ApiKeyError::Unsupported | ApiKeyError::Invalid(_) => e.to_string(),
     };
     let fix = if matches!(e, ApiKeyError::Missing) {
@@ -1110,14 +1121,24 @@ pub fn no_key_banner(reason: &SkipReason) -> Option<MeetingEvent> {
     }
 }
 
-/// What the summary step did, from the host's outcome. A failed cleanup is reported as a
-/// failure (the summary never ran), with the cleanup's error; a cancelled one as
+/// What the user is told when the final transcript could not be finished: what happened and
+/// the way forward, then why in fixed copy.
+#[must_use]
+pub fn post_failed_copy(e: &RuntimeError) -> String {
+    format!(
+        "The transcript could not be finished. The recording and the draft transcript are saved. {}",
+        crate::plain_text::runtime_text(e)
+    )
+}
+
+/// What the summary step did, from the host's outcome. A failed final pass is
+/// [`SummaryEvent::PostFailed`] (the summary never ran); a cancelled one
 /// [`SummaryEvent::PostCancelled`].
 #[must_use]
 pub fn summary_event(outcome: &HostOutcome) -> SummaryEvent {
     if let Err(e) = &outcome.post {
-        return SummaryEvent::Failed {
-            message: format!("The cleanup after the meeting failed: {e}"),
+        return SummaryEvent::PostFailed {
+            message: post_failed_copy(e),
             retryable: e.is_retryable(),
         };
     }
@@ -1187,7 +1208,7 @@ pub fn summary_result_event(result: &SummaryResult, voices_to_name: u32) -> Summ
             reason: skip_copy(reason),
         },
         SummaryResult::Failed { error, retryable } => SummaryEvent::Failed {
-            message: format!("The summary failed: {error}"),
+            message: crate::plain_text::runtime_text(error),
             retryable: *retryable,
         },
         SummaryResult::Cancelled => SummaryEvent::Cancelled,
