@@ -600,6 +600,21 @@ Then the last two with `--previews everyone` (`-everyone-` in the file names), a
 
 What to read, by point: 1, `preview_sessions[]` (`slot`, `stream`, `placement`) and `previews[].backend`; 2, `reference.stored_sha256` and `mic.stored_sha256`; 3, `decodes_mic.rtf`, `decodes_reference.rtf`, `catch_up_after_end_s`, `previews[]` (`audio_dropped`, `off`, `slow_pauses`); 4, `reference.on_screen_lag_s` and under `everyone` `mic.on_screen_lag_s`; 5, `reference.previews` and `mic.previews` (`kept`, `changed`, `vanished`); 6, `host.process_cpu_s` and `host.peak_private_gib`. A point that holds on one audio and not the other fails.
 
+### Result on the desktop (2026-11-13)
+
+Run by the coordinator on an idle desktop (machine load median 2-4% in every report; no build, test or other measurement running), transcription on the CPU, `--stream-threads 2`, after lane/nemotron's fix commit dec19c6. Reports in `docs/live-previews/t1223/`, unmodified. The rule above was not changed.
+
+| Audio, choice | 1 where | 2 stored | 3 main transcript | 4 lag (median; p95) streaming vs window | 5 changed, streaming vs window | 6 CPU s; peak private GiB, streaming vs window (off) |
+|---|---|---|---|---|---|---|
+| bundled, on | pass | pass | pass | far end 0.76 vs 2.75 s; **36.4 vs 9.2 s**: fail | **18.0% vs 5.6%**: fail | 92 vs 121 (64); **6.24 vs 5.81** (5.52): fail |
+| bundled, everyone | pass | pass | pass | far end 0.77 vs 3.89; **36.9 vs 22.3**; mic 1.00 vs 2.46; 22.4 vs 21.9: fail | far end **18.0% vs 8.5%**, mic 3.3% vs 2.7%: fail | 133 vs 190 (64); **6.94 vs 6.08** (5.52): fail |
+| continuous, on | pass | pass | pass | 0.85 vs 2.38; 1.8 vs 4.9: pass | 3.1% vs 5.2%: pass | 64 vs 135 (32); **5.93 vs 5.50** (5.21): fail |
+| continuous, everyone | pass | pass | pass | far end 0.85 vs 2.36; 1.6 vs 4.3: pass (the mic is silent on `continuous`) | far end 3.1% vs 2.7%: pass | 92 vs 132 (32); **6.63 vs 5.63** (5.21): fail |
+
+Point 3 in detail: decode rtf at or below "off" on both tracks, catch-up 0.97-1.49 s against 1.43-1.50 s off, no audio dropped, no preview off, no slow pause. Vanished words: far end 0-2 in every run; mic under `everyone` on `bundled` 50 against window's 42.
+
+**Verdict on the desktop: neither "Other people only" nor "Everyone" passes.** The streaming model shows words sooner at the median (under 1 s against 2.4-3.9 s) and uses less CPU (a quarter to a half less than window previews), but on `bundled` its far-end p95 on-screen lag is about 36 s (some far-end words seem to reach the screen only when the settled text does; the reports do not say why, and this was not investigated), it changes 18% of the far-end words it shows, and its peak private memory is 0.4-1.0 GiB above window previews on every run. Under the rule the Surface decides; it measures from lane/nemotron at dec19c6 or later. (Coordinator's note, not part of the rule: unless the Surface differs sharply, the window previews stay.)
+
 ## Re-measuring on a quiet host
 
 Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`

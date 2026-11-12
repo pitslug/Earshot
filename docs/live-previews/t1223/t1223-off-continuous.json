@@ -1,0 +1,181 @@
+{
+  "audio": "continuous",
+  "capture_max_lag_s": 0.011,
+  "catch_up_after_end_s": 1.4320366,
+  "decodes_mic": {
+    "audio_s": -0.0,
+    "calls": 0,
+    "rtf": null,
+    "took_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 120.0,
+    "calls": 6,
+    "rtf": 0.03628379833333333,
+    "took_s": {
+      "max": 0.9399572,
+      "median": 0.8220298,
+      "n": 6,
+      "p95": 0.9399572
+    }
+  },
+  "echo_locks": 0,
+  "echo_words_removed": 0,
+  "host": {
+    "logical_cores": 32,
+    "machine_load_percent": {
+      "max": 5.0,
+      "median": 2.0,
+      "n": 4,
+      "p95": 5.0
+    },
+    "peak_private_gib": 5.21368408203125,
+    "peak_working_set_gib": 4.4234771728515625,
+    "process_cpu_s": 32.328125
+  },
+  "length_s": 120.0,
+  "live_backends": [
+    {
+      "device": "cpu",
+      "kind": "Cpu",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "cpu",
+      "kind": "Cpu",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "max_piece_s": null,
+  "mic": {
+    "first_word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "last_word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "on_screen_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stretch_length_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "stretches": 0,
+    "word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "words": 0
+  },
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1993; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1993; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10"
+  ],
+  "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4, recover_speech: Some(2s) }",
+  "preview_refusal": null,
+  "preview_sessions": [],
+  "previews": [],
+  "reference": {
+    "first_word_lag_s": {
+      "max": 55.4055668,
+      "median": 49.009018600000005,
+      "n": 6,
+      "p95": 55.4055668
+    },
+    "last_word_lag_s": {
+      "max": 31.522802300000002,
+      "median": 31.089018600000003,
+      "n": 6,
+      "p95": 31.522802300000002
+    },
+    "on_screen_lag_s": {
+      "max": 55.4055668,
+      "median": 37.48165630000001,
+      "n": 230,
+      "p95": 50.2428023
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "00d93eb4118359fb85adcb96c82753838520392a68573b6716db2fd834eb68dd",
+    "stretch_length_s": {
+      "max": 26.0,
+      "median": 20.96,
+      "n": 6,
+      "p95": 26.0
+    },
+    "stretches": 6,
+    "word_lag_s": {
+      "max": 55.4055668,
+      "median": 37.48165630000001,
+      "n": 230,
+      "p95": 50.2428023
+    },
+    "words": 230
+  },
+  "requested_backend": "Cpu",
+  "simulated_card_gib": null,
+  "speakers": true,
+  "stopped_with": "Finished",
+  "stream": null,
+  "vanished_kinds": {
+    "mic": {
+      "near_ms": 2000,
+      "never_settled": 0,
+      "other_track_settled_nearby": 0,
+      "own_settled_after": 0,
+      "own_settled_before": 0
+    },
+    "reference": {
+      "near_ms": 2000,
+      "never_settled": 0,
+      "other_track_settled_nearby": 0,
+      "own_settled_after": 0,
+      "own_settled_before": 0
+    }
+  },
+  "warnings": 0
+}
