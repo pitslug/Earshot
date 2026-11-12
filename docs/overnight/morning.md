@@ -31,11 +31,11 @@ Each lane had a lane-merge review before its merge. Advisories are in TODO.md; d
 ## Not merged
 
 - **lane/recovery** (T9.18, T9.19): done and pushed, never merged, as agreed. It branched before the T9.17 review fixes (29c334b), so its rebase takes those in.
-- **Surface queue:** only `lane/stretches` reached origin. These had not been pushed when this note was written, and there is no `docs/overnight/surface.md`:
-  - `lane/granite-surface` (moot now: Granite failed);
-  - `lane/ui-profile` (T9.24 before-profile);
-  - `lane/nemotron-surface`;
-  - `lane/npu-previews-surface` (T12.12c check without `--force-previews`).
+- **Surface queue:** arrived later and merged in the morning, after one lane-merge review (clear, 4 advisories) and `public-guard --require-list` (ok, which also covers `lane/stretches`). Report: `docs/overnight/surface.md`.
+  - `lane/nemotron-surface`: neither setting passes on the Surface either (`on` fails points 4, 5 and 6, `everyone` fails 5). T12.23 is closed: the window previews stay.
+  - `lane/npu-previews-surface`: without `--force-previews` the far-end preview loads on the NPU (median 2.3 s on screen), and the mic preview is refused under Everyone. Only your real call is left for T12.12c.
+  - `lane/ui-profile`: T9.24 before-profile. The 1 s clock and the 10 Hz level events re-render the whole app; a 3-hour transcript makes each commit about 280 ms. No fix has been started.
+  - `lane/granite-surface`: Granite 3B is about 10% slower per token than Qwen 4B on the Surface CPU.
 
 ## Your steps, in order
 
@@ -46,7 +46,6 @@ Each lane had a lane-merge review before its merge. Advisories are in TODO.md; d
 5. Decisions waiting:
    - **Granite:** all three fail; I recommend keeping the writer paused. T12.25 and T12.26 are unparked by their condition, and starting them is your call.
    - **Stretch length:** under the rule as written, keep 30 s. If you want to act, re-run the lag idle first. 15 s is the value the numbers favour if point 6 becomes a tail criterion.
-   - **Nemotron:** fails on the desktop; waiting on the Surface run.
    - **NPU previews:** the preview's step sessions run at normal priority, not below normal. That is how your numbers were measured. Keep it, or change it and re-measure.
    - **CLI environment:** whether to replace the variable deny lists with an allow list.
 
