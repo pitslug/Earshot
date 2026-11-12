@@ -14,12 +14,13 @@ import {
   SCRIPT_LINES,
   SCRIPT_WARNING_AT,
   createMockIpc,
+  sampleMeetings,
 } from "../ipc";
 import { AppShell } from "../shell/AppShell";
 import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
-import { MAX_TITLE, RecordingView } from "./MeetingViews";
+import { MAX_TITLE, RecordingView, finishingExplanation } from "./MeetingViews";
 import { type LiveMeeting, reduce, startedMeeting } from "./liveMeeting";
 
 const START = new Date(2026, 10, 2, 10, 0).getTime();
@@ -140,6 +141,10 @@ beforeEach(() => {
   installMatchMedia(false);
 });
 
+/** What the page of a meeting that has ended says about its finishing and its result. */
+const meetingStatus = () => screen.getByRole("region", { name: "Meeting status" });
+const statusShown = () => screen.queryByRole("region", { name: "Meeting status" });
+
 describe("cancelling while a meeting finishes", () => {
   function countCancels(ipc: Ipc) {
     const pressed: string[] = [];
@@ -155,14 +160,17 @@ describe("cancelling while a meeting finishes", () => {
     const view = await startMeeting(s, "Call", "Invented planning call");
     advance(s.timer, 10_000);
     await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
-    expect(await screen.findByRole("heading", { name: "Finishing the meeting" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Invented planning call" }),
+    ).toBeInTheDocument();
+    expect(within(meetingStatus()).getByText("Summary in progress")).toBeInTheDocument();
   }
 
   it("says it is stopping, takes one press, and leaves the meeting not processed", async () => {
     const s = setup();
     const pressed = countCancels(s.ipc);
     await finishing(s);
-    const cancel = screen.getByRole("button", { name: "Cancel" });
+    const cancel = within(meetingStatus()).getByRole("button", { name: "Cancel" });
     expect(cancel).toBeEnabled();
     await s.user.click(cancel);
     expect(await screen.findByText(/^Stopping\./)).toBeInTheDocument();
@@ -171,10 +179,13 @@ describe("cancelling while a meeting finishes", () => {
     expect(pressed).toHaveLength(1);
 
     advance(s.timer, POST_STEP_MS);
-    expect(await screen.findByRole("heading", { name: "Meeting saved" })).toBeInTheDocument();
-    expect(screen.getByText("Transcript not finished")).toBeInTheDocument();
+    expect(await within(meetingStatus()).findByText("Transcript not finished")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Invented planning call" })).toBeInTheDocument();
+    expect(screen.queryByText("Summary in progress")).toBeNull();
     expect(
-      screen.getByText(/The recording and any draft transcript are saved\. Re-transcribe the meeting/),
+      within(meetingStatus()).getByText(
+        /The recording and any draft transcript are saved\. Re-transcribe the meeting/,
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
     const listed = await s.ipc.listMeetings();
@@ -185,19 +196,23 @@ describe("cancelling while a meeting finishes", () => {
     // Nothing was left running: the steps that were due never come.
     advance(s.timer, (POST_STEPS.length + 2) * POST_STEP_MS);
     expect(screen.queryByText("Summary ready")).toBeNull();
-    expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
+    expect(screen.queryByText("Summary in progress")).toBeNull();
+    expect(within(meetingStatus()).getByRole("button", { name: "Re-transcribe" })).toBeInTheDocument();
   });
 
   it("past the final pass cancels only the summary", async () => {
     const s = setup();
     await finishing(s);
     advance(s.timer, POST_STEPS.length * POST_STEP_MS);
-    expect(screen.getByText("Writing the summary")).toBeInTheDocument();
-    await s.user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(within(meetingStatus()).getByText("Writing the summary")).toBeInTheDocument();
+    await s.user.click(within(meetingStatus()).getByRole("button", { name: "Cancel" }));
     advance(s.timer, POST_STEP_MS);
-    expect(await screen.findByText("Summary cancelled")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Meeting finished" })).toBeInTheDocument();
-    expect(screen.getByText(/The recording and transcript are saved\./)).toBeInTheDocument();
+    expect(await within(meetingStatus()).findByText("Summary cancelled")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Invented planning call" })).toBeInTheDocument();
+    expect(
+      within(meetingStatus()).getByText(/The recording and transcript are saved\./),
+    ).toBeInTheDocument();
+    expect(within(meetingStatus()).getByRole("button", { name: "Re-summarise" })).toBeInTheDocument();
     expect((await s.ipc.listMeetings())[0].state).toBe("Ready");
   });
 
@@ -207,7 +222,7 @@ describe("cancelling while a meeting finishes", () => {
     s.ipc.cancelFinishing = async () => {
       throw new Error("Invented failure of the press.");
     };
-    const cancel = screen.getByRole("button", { name: "Cancel" });
+    const cancel = within(meetingStatus()).getByRole("button", { name: "Cancel" });
     await s.user.click(cancel);
     expect(await screen.findByText("Invented failure of the press.")).toBeInTheDocument();
     expect(cancel).toBeEnabled();
@@ -250,7 +265,7 @@ describe("a meeting started while the previous one finishes", () => {
     const s = setup();
     const first = await startMeeting(s);
     await s.user.click(within(first).getByRole("button", { name: "Stop meeting" }));
-    expect(await screen.findByRole("heading", { name: "Finishing the meeting" })).toBeInTheDocument();
+    expect(await screen.findByText("Summary in progress")).toBeInTheDocument();
     // The older meeting is being processed: a new one starts anyway.
     await startMeeting(s);
     expect(await screen.findByText(HELD)).toBeInTheDocument();
@@ -258,12 +273,14 @@ describe("a meeting started while the previous one finishes", () => {
     expect(within(screen.getByRole("group", { name: "Running on" })).getByText("Waiting")).toBeInTheDocument();
     // Its steps and its summary do not reach this meeting's screen.
     advance(s.timer, POST_STEP_MS);
-    expect(screen.queryByRole("heading", { name: "Finishing the meeting" })).toBeNull();
+    expect(screen.queryByText("Summary in progress")).toBeNull();
+    expect(statusShown()).toBeNull();
     expect(screen.getByRole("button", { name: "Stop meeting" })).toBeEnabled();
     advance(s.timer, POST_STEP_MS * POST_STEPS.length);
     await waitFor(() => expect(screen.getByText("Catching up on the transcript")).toBeInTheDocument());
     expect(screen.queryByText(HELD)).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Meeting finished" })).toBeNull();
+    expect(statusShown()).toBeNull();
+    expect(screen.queryByText("Summary ready")).toBeNull();
     advance(s.timer, CATCH_UP_MS);
     await waitFor(() => expect(screen.queryByText("Catching up on the transcript")).toBeNull());
     expect(screen.queryByText("Audio is recording.")).toBeNull();
@@ -355,7 +372,7 @@ describe("a meeting started while the previous one finishes", () => {
     const first = await startMeeting(s);
     const olderId = (await s.ipc.listMeetings())[0].id;
     await s.user.click(within(first).getByRole("button", { name: "Stop meeting" }));
-    expect(await screen.findByRole("heading", { name: "Finishing the meeting" })).toBeInTheDocument();
+    expect(await screen.findByText("Summary in progress")).toBeInTheDocument();
     await startMeeting(s);
     expect(screen.getByText("Your previous meeting is still finishing")).toBeInTheDocument();
     const cancel = screen.getByRole("button", { name: "Cancel finishing" });
@@ -677,52 +694,86 @@ describe("meeting screen", () => {
     await s.user.click(within(view).getByRole("button", { name: "Compact" }));
     await s.user.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(s.compactCalls).toEqual([true, false]));
-    expect(await screen.findByRole("heading", { name: "Finishing the meeting" })).toBeInTheDocument();
+    expect(await screen.findByText("Summary in progress")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Meetings and settings" })).toBeInTheDocument();
   });
 
-  it("after stop shows the post-meeting progress, then the summary ready notice", async () => {
+  it("after stop shows the meeting's page: the draft transcript, the summary in progress, then the summary", async () => {
     const s = setup();
     const view = await startMeeting(s, "Call", "Pump order");
     advance(s.timer, 10_000);
     await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
-    expect(await screen.findByRole("heading", { name: "Finishing the meeting" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Finishing the meeting" })).toBeNull();
+    const status = meetingStatus();
+    expect(within(status).getByText("Summary in progress")).toBeInTheDocument();
+    expect(within(status).getByRole("button", { name: "Cancel" })).toBeEnabled();
+    // The draft transcript can be read at once.
+    expect(await screen.findByRole("tab", { name: "Transcript", selected: true })).toBeInTheDocument();
+    expect(await screen.findByText(/lead time on the second pump set/)).toBeInTheDocument();
     const list = screen.getByRole("list", { name: "Meetings" });
     await waitFor(() => expect(within(list).getByLabelText("Processing")).toBeInTheDocument());
     advance(s.timer, 3 * POST_STEP_MS);
-    expect(screen.getByText("Finished the transcript for you")).toBeInTheDocument();
-    expect(screen.getByText("1 of 6 steps")).toBeInTheDocument();
+    expect(within(status).getByText("Finished the transcript for you")).toBeInTheDocument();
+    expect(
+      within(status).getByText(/making the final transcript \(who said what, with echo removed\)/),
+    ).toBeInTheDocument();
+    expect(
+      within(status).getByText(/1 of 6 steps done\. The summary appears on this page when it is ready/),
+    ).toBeInTheDocument();
     advance(s.timer, (POST_STEPS.length - 3) * POST_STEP_MS);
-    expect(screen.getByText("Writing the summary")).toBeInTheDocument();
+    expect(within(status).getByText("Writing the summary")).toBeInTheDocument();
     advance(s.timer, POST_STEP_MS);
-    expect(await screen.findByText("Summary ready")).toBeInTheDocument();
-    expect(screen.getByText(/Vendor review: pumps · 4 actions, 2 decisions · 2 voices to name/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Name voices" })).toBeInTheDocument();
+    // The summary is stored: the bar goes and the page shows the summary by itself.
+    expect(await screen.findByText(/The second pump set slips to 11 weeks/)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Summary", selected: true })).toBeInTheDocument();
+    expect(screen.queryByText("Summary in progress")).toBeNull();
+    expect(statusShown()).toBeNull();
+    expect(screen.queryByText("Summary ready")).toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
     await waitFor(() => expect(within(list).queryByLabelText("Processing")).toBeNull());
-    await s.user.click(screen.getByRole("button", { name: "Open" }));
-    expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+    // Its two voices still need a name, so the Speakers panel opens.
+    expect(await screen.findByRole("complementary", { name: "Speakers" })).toBeInTheDocument();
   });
 
-  it("opens the meeting detail at the Speakers panel from Name voices", async () => {
-    const s = setup();
-    const view = await startMeeting(s, "Call", "Pump order");
-    advance(s.timer, 10_000);
-    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
-    advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
-    await s.user.click(await screen.findByRole("button", { name: "Name voices" }));
-    expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
-    const panel = await screen.findByRole("complementary", { name: "Speakers" });
-    await waitFor(() =>
-      expect(within(panel).getByRole("textbox", { name: "Name of Speaker 2" })).toHaveFocus(),
+  it("explains finishing in words before the first step arrives", () => {
+    expect(finishingExplanation(null)).toBe(
+      "Earshot is making the final transcript (who said what, with echo removed), then writing the summary. The summary appears on this page when it is ready. You can read the draft transcript meanwhile, or leave this page: it keeps going.",
     );
   });
 
-  it("shows a skipped summary with its reason", async () => {
+  it("shows the finishing meeting's page with its bar when it is picked in the list, and no other page", async () => {
+    const s = setup({ meetings: sampleMeetings(START) });
+    const view = await startMeeting(s, "Call", "Pump order");
+    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
+    expect(await screen.findByText("Summary in progress")).toBeInTheDocument();
+    const list = screen.getByRole("list", { name: "Meetings" });
+    await s.user.click(within(list).getByRole("button", { name: /^Quarterly planning/ }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Quarterly planning" })).toBeInTheDocument();
+    expect(statusShown()).toBeNull();
+    expect(screen.queryByText("Summary in progress")).toBeNull();
+    await s.user.click(within(list).getByRole("button", { name: /^Pump order/ }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+    expect(within(meetingStatus()).getByText("Summary in progress")).toBeInTheDocument();
+    expect(within(meetingStatus()).getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.queryByRole("heading", { name: "Finishing the meeting" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop meeting" })).toBeNull();
+  });
+
+  it("shows a skipped summary with its reason on the meeting's page until dismissed", async () => {
     const s = setup({ summary: { kind: "Skipped", reason: "Summaries are turned off." } });
-    const view = await startMeeting(s);
+    const view = await startMeeting(s, "Call", "Pump order");
     await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
     advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
     expect(await screen.findByText("No summary")).toBeInTheDocument();
-    expect(screen.getByText(/Summaries are turned off. The transcript is saved./)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+    expect(
+      within(meetingStatus()).getByText(/Summaries are turned off. The transcript is saved./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Summary in progress")).toBeNull();
+    await s.user.click(within(meetingStatus()).getByRole("button", { name: "Dismiss" }));
+    expect(statusShown()).toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
   });
 
   it("shows a failed summary with a retry hint", async () => {
@@ -733,7 +784,8 @@ describe("meeting screen", () => {
     await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
     advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
     expect(await screen.findByText("Summary failed")).toBeInTheDocument();
-    expect(screen.getByText(/Trying again may work/)).toBeInTheDocument();
+    expect(within(meetingStatus()).getByText(/The summary failed: endpoint unreachable\./)).toBeInTheDocument();
+    expect(within(meetingStatus()).getByText(/Trying again may work/)).toBeInTheDocument();
   });
 
   // T9.23: the way forward is on the spot, and the meeting's page then shows the job.
@@ -747,10 +799,15 @@ describe("meeting screen", () => {
     await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
     advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
     expect(await screen.findByText("Summary failed")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
-    await s.user.click(screen.getByRole("button", { name: "Re-summarise" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+    expect(within(meetingStatus()).getByText(/The recording and transcript are saved\./)).toBeInTheDocument();
+    expect(within(meetingStatus()).queryByRole("button", { name: "Re-transcribe" })).toBeNull();
+    await s.user.click(within(meetingStatus()).getByRole("button", { name: "Re-summarise" }));
     await waitFor(() => expect(calls.some((c) => c[0] === "resummarise")).toBe(true));
-    expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+    expect(await screen.findByText("Writing a new summary")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+    // The job's own notice replaces the result.
+    expect(screen.queryByText("Summary failed")).toBeNull();
   });
 
   it("offers Re-transcribe when the transcript was not finished", async () => {
@@ -767,15 +824,18 @@ describe("meeting screen", () => {
     await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
     advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
     expect(await screen.findByText("Transcript not finished")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: "Meeting saved" })).toBeInTheDocument();
-    expect(screen.getByText(/The recording and the draft transcript are saved/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Re-summarise" })).toBeNull();
-    await s.user.click(screen.getByRole("button", { name: "Re-transcribe" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+    expect(
+      within(meetingStatus()).getByText(/The recording and the draft transcript are saved/),
+    ).toBeInTheDocument();
+    expect(within(meetingStatus()).queryByRole("button", { name: "Re-summarise" })).toBeNull();
+    await s.user.click(within(meetingStatus()).getByRole("button", { name: "Re-transcribe" }));
     await waitFor(() => expect(calls.some((c) => c[0] === "retranscribe")).toBe(true));
-    expect(await screen.findByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+    expect(await screen.findByText("Re-transcribing from the recording")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
   });
 
-  it("says why when Re-transcribe cannot start, and stays on the meeting's screen", async () => {
+  it("says why when Re-transcribe cannot start, and keeps the result on the meeting's page", async () => {
     const s = setup({
       summary: {
         kind: "PostFailed",
@@ -790,27 +850,31 @@ describe("meeting screen", () => {
     const view = await startMeeting(s);
     await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
     advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
-    await s.user.click(await screen.findByRole("button", { name: "Re-transcribe" }));
+    await screen.findByText("Transcript not finished");
+    await s.user.click(within(meetingStatus()).getByRole("button", { name: "Re-transcribe" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("This meeting is being recorded");
-    expect(screen.getByText("Transcript not finished")).toBeInTheDocument();
+    expect(within(meetingStatus()).getByText("Transcript not finished")).toBeInTheDocument();
+    expect(within(meetingStatus()).getByRole("button", { name: "Re-transcribe" })).toBeEnabled();
   });
 
-  it("offers only Open when the recording itself did not finish", async () => {
+  it("offers no job when the recording itself did not finish", async () => {
     const s = setup({
       summary: {
         kind: "RecordingFailed",
         message: "The recording could not be finished. Something went wrong inside Earshot. Restart Earshot and try again.",
       },
     });
-    const view = await startMeeting(s);
+    const view = await startMeeting(s, "Call", "Pump order");
     await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
     advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
     expect(await screen.findByText("Recording not finished")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: "Meeting stopped" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Re-summarise" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Re-transcribe" })).toBeNull();
-    expect(screen.queryByText(/transcript are saved/)).toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
+    const status = meetingStatus();
+    expect(within(status).getByText(/Something went wrong inside Earshot/)).toBeInTheDocument();
+    expect(within(status).getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
+    expect(within(status).queryByRole("button", { name: "Re-summarise" })).toBeNull();
+    expect(within(status).queryByRole("button", { name: "Re-transcribe" })).toBeNull();
+    expect(within(status).queryByText(/transcript are saved/)).toBeNull();
   });
 
   it("offers Re-transcribe after a cancelled finish", async () => {
@@ -819,10 +883,55 @@ describe("meeting screen", () => {
     const view = await startMeeting(s);
     await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
     advance(s.timer, POST_STEP_MS);
-    await s.user.click(await screen.findByRole("button", { name: "Cancel" }));
+    await screen.findByText("Summary in progress");
+    await s.user.click(within(meetingStatus()).getByRole("button", { name: "Cancel" }));
     advance(s.timer, POST_STEP_MS * 2);
     expect(await screen.findByText("Transcript not finished")).toBeInTheDocument();
-    await s.user.click(screen.getByRole("button", { name: "Re-transcribe" }));
+    await s.user.click(within(meetingStatus()).getByRole("button", { name: "Re-transcribe" }));
     await waitFor(() => expect(calls.some((c) => c[0] === "retranscribe")).toBe(true));
+  });
+
+  it("keeps the page's own Re-transcribe and Summarise off while the meeting finishes", async () => {
+    const s = setup({ summary: { kind: "Skipped", reason: "Summaries are turned off." } });
+    const view = await startMeeting(s, "Call", "Pump order");
+    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
+    await screen.findByText("Summary in progress");
+    const page = await screen.findByRole("region", { name: "Meeting detail" });
+    const retranscribe = await within(page).findByRole("button", { name: "Re-transcribe" });
+    const summarise = within(page).getByRole("button", { name: "Summarise" });
+    await waitFor(() => expect(retranscribe).toHaveAttribute("aria-disabled", "true"));
+    expect(summarise).toHaveAttribute("aria-disabled", "true");
+    const calls: string[] = [];
+    s.ipc.retranscribe = async () => {
+      calls.push("retranscribe");
+    };
+    await s.user.click(retranscribe);
+    expect(calls).toEqual([]);
+    advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
+    expect(await screen.findByText("No summary")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(page).getByRole("button", { name: "Re-transcribe" })).not.toHaveAttribute(
+        "aria-disabled",
+        "true",
+      ),
+    );
+    // The mock's stored meeting has a summary, so the button reads Re-summarise by then.
+    const after = within(page).getByRole("button", { name: /^(Re-s|S)ummarise$/ });
+    expect(after).toBeEnabled();
+    expect(after).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  });
+
+  it("drops the result when another meeting starts", async () => {
+    const s = setup({ summary: { kind: "Skipped", reason: "Summaries are turned off." } });
+    const view = await startMeeting(s, "Call", "Pump order");
+    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
+    advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
+    expect(await screen.findByText("No summary")).toBeInTheDocument();
+    await startMeeting(s, "Call", "Second invented call");
+    expect(screen.queryByText("No summary")).toBeNull();
+    expect(statusShown()).toBeNull();
   });
 });

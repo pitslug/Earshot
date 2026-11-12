@@ -1,6 +1,6 @@
 // The meeting screen's views (docs/ui-design.md "During the meeting"): the start view, the
-// recording view, the compact card and the view after the meeting. Each takes its state as
-// props; `AppShell` owns the meeting and the IPC calls.
+// recording view, the compact card and the status shown on the meeting's own page after it
+// (T12.28). Each takes its state as props; `AppShell` owns the meeting and the IPC calls.
 
 import {
   Accordion,
@@ -46,7 +46,6 @@ import {
   meterValue,
   runningOn,
   stepLabel,
-  summaryCounts,
   wordCount,
 } from "./liveMeeting";
 
@@ -256,8 +255,14 @@ const useStyles = makeStyles({
   progress: {
     display: "flex",
     flexDirection: "column",
+    gap: tokens.spacingVerticalXS,
+    marginTop: tokens.spacingVerticalXS,
+  },
+  statusArea: {
+    display: "flex",
+    flexDirection: "column",
+    flexShrink: 0,
     gap: tokens.spacingVerticalS,
-    maxWidth: "480px",
   },
 });
 
@@ -738,10 +743,8 @@ export function CompactCard({
   );
 }
 
-export interface AfterMeetingViewProps {
+export interface MeetingStatusProps {
   meeting: LiveMeeting;
-  onOpen(meetingId: string): void;
-  onNameVoices(meetingId: string): void;
   onDismissBanner(key: string): void;
   /** Stops the work after the recording: the audio stays and the meeting can be re-transcribed. */
   onCancel(): void;
@@ -749,42 +752,53 @@ export interface AfterMeetingViewProps {
   cancelling?: boolean;
   /** Re-transcribes the meeting, offered when its transcript was not finished (T9.23). */
   onRetranscribe(meetingId: string): void;
-  /** Writes the summary again, offered when it failed (T9.23). */
+  /** Writes the summary again, offered when it failed or was cancelled (T9.23). */
   onResummarise(meetingId: string): void;
+  /** Hides the result (and why a job asked for here did not start). */
+  onDismissResult(): void;
+  /** False once the user dismissed the result. */
+  showResult?: boolean;
   /** True while a re-transcription or re-summary asked for here is starting. */
   retrying?: boolean;
   /** Why the one asked for here did not start, in the app's words. */
   retryError?: string | null;
 }
 
-function afterMeetingHeading(s: LiveMeeting["summary"]): string {
-  if (s === null) return "Finishing the meeting";
-  if (s.kind === "RecordingFailed") return "Meeting stopped";
-  return s.kind === "PostCancelled" || s.kind === "PostFailed" ? "Meeting saved" : "Meeting finished";
+/** What finishing does, in words, with the step count as a detail rather than the message. */
+export function finishingExplanation(p: LiveMeeting["progress"]): string {
+  const what =
+    "Earshot is making the final transcript (who said what, with echo removed), then writing the summary.";
+  const count = p?.total ? ` ${p.done} of ${p.total} steps done.` : "";
+  return `${what}${count} The summary appears on this page when it is ready. You can read the draft transcript meanwhile, or leave this page: it keeps going.`;
 }
 
-/** After the stop: the post-meeting steps, then the summary result. */
-export function AfterMeetingView({
+/** At the top of the page of the meeting that has just ended (T12.28): "Summary in progress"
+ * while it finishes, then any result other than a stored summary with its way forward, and the
+ * banners about the work after the recording. A stored summary needs no word here: the page shows
+ * it. Renders nothing when there is nothing to say. */
+export function MeetingStatus({
   meeting,
-  onOpen,
-  onNameVoices,
   onDismissBanner,
   onCancel,
   cancelling = false,
   onRetranscribe,
   onResummarise,
+  onDismissResult,
+  showResult = true,
   retrying = false,
   retryError = null,
-}: AfterMeetingViewProps) {
+}: MeetingStatusProps) {
   const styles = useStyles();
   const p = meeting.progress;
   const s = meeting.summary;
+  const banners = afterMeetingBanners(meeting);
+  const result = s !== null && s.kind !== "Stored" && showResult;
+  const captureFailed = meeting.endedReason === "Failed";
+  const error = retryError !== null && showResult;
+  if (s !== null && !result && banners.length === 0 && !captureFailed && !error) return null;
   return (
-    <section className={styles.view} aria-label="Meeting">
-      <Title2 as="h1" className={styles.heading}>
-        {afterMeetingHeading(s)}
-      </Title2>
-      {meeting.endedReason === "Failed" && (
+    <section className={styles.statusArea} aria-label="Meeting status">
+      {captureFailed && (
         <MessageBar intent="error">
           <MessageBarBody>
             The recording stopped because audio capture failed. What was recorded is kept.
@@ -792,43 +806,43 @@ export function AfterMeetingView({
         </MessageBar>
       )}
       {s === null && (
-        <div className={styles.progress}>
-          <ProgressBar
-            aria-label="Progress"
-            value={p?.total ? p.done / p.total : undefined}
-            max={1}
-          />
-          <Body1 aria-live="polite">
-            {cancelling
-              ? "Stopping. This can take a moment if a model is still working or loading."
-              : p
-                ? stepLabel(p.step)
-                : "Finalising the recording"}
-          </Body1>
-          {p?.total ? (
-            <Caption1 className={styles.muted}>
-              {p.done} of {p.total} steps
-            </Caption1>
-          ) : null}
-          <div className={styles.buttons}>
+        <MessageBar intent="info" layout="multiline">
+          <MessageBarBody>
+            <MessageBarTitle>Summary in progress</MessageBarTitle>
+            <span className={styles.progress}>
+              <Body1 aria-live="polite">
+                {cancelling
+                  ? "Stopping. This can take a moment if a model is still working or loading."
+                  : p
+                    ? stepLabel(p.step)
+                    : "Finalising the recording"}
+              </Body1>
+              <ProgressBar
+                aria-label="Progress"
+                value={p?.total ? p.done / p.total : undefined}
+                max={1}
+              />
+              <Caption1 className={styles.muted}>{finishingExplanation(p)}</Caption1>
+            </span>
+          </MessageBarBody>
+          <MessageBarActions>
             <Button onClick={onCancel} disabled={cancelling}>
               Cancel
             </Button>
-          </div>
-        </div>
+          </MessageBarActions>
+        </MessageBar>
       )}
-      <Banners banners={afterMeetingBanners(meeting)} onDismiss={onDismissBanner} />
-      {s !== null && (
-        <SummaryNotice
+      <Banners banners={banners} onDismiss={onDismissBanner} />
+      {result && (
+        <ResultNotice
           meeting={meeting}
-          onOpen={onOpen}
-          onNameVoices={onNameVoices}
           onRetranscribe={onRetranscribe}
           onResummarise={onResummarise}
+          onDismiss={onDismissResult}
           retrying={retrying}
         />
       )}
-      {retryError !== null && (
+      {error && (
         <MessageBar intent="error" layout="multiline" role="alert">
           <MessageBarBody>{retryError}</MessageBarBody>
         </MessageBar>
@@ -837,25 +851,19 @@ export function AfterMeetingView({
   );
 }
 
-function SummaryNotice({
+/** A result other than a stored summary: its reason and its way forward. */
+function ResultNotice({
   meeting,
-  onOpen,
-  onNameVoices,
   onRetranscribe,
   onResummarise,
+  onDismiss,
   retrying,
-}: Pick<
-  AfterMeetingViewProps,
-  "meeting" | "onOpen" | "onNameVoices" | "onRetranscribe" | "onResummarise" | "retrying"
->) {
+}: Pick<MeetingStatusProps, "meeting" | "onRetranscribe" | "onResummarise" | "retrying"> & {
+  onDismiss(): void;
+}) {
   const s = meeting.summary;
   if (s === null) return null;
-  const open = (
-    <Button appearance="primary" size="small" onClick={() => onOpen(meeting.meetingId)}>
-      Open
-    </Button>
-  );
-  // The way forward on the spot (T9.23): the job starts and the meeting's page shows it.
+  // The way forward on the spot (T9.23): the job starts and this page shows it.
   const retranscribe = (
     <Button
       appearance="primary"
@@ -876,29 +884,14 @@ function SummaryNotice({
       Re-summarise
     </Button>
   );
-  const openSecondary = (
-    <Button size="small" onClick={() => onOpen(meeting.meetingId)}>
-      Open
+  const dismiss = (
+    <Button size="small" appearance="transparent" onClick={onDismiss}>
+      Dismiss
     </Button>
   );
   switch (s.kind) {
     case "Stored":
-      return (
-        <MessageBar intent="success" layout="multiline" role="status">
-          <MessageBarBody>
-            <MessageBarTitle>Summary ready</MessageBarTitle>
-            {s.title} · {summaryCounts(s)}
-          </MessageBarBody>
-          <MessageBarActions>
-            {open}
-            {s.voices_to_name > 0 && (
-              <Button size="small" onClick={() => onNameVoices(meeting.meetingId)}>
-                Name voices
-              </Button>
-            )}
-          </MessageBarActions>
-        </MessageBar>
-      );
+      return null;
     case "Skipped":
       return (
         <MessageBar intent="info" layout="multiline" role="status">
@@ -906,7 +899,7 @@ function SummaryNotice({
             <MessageBarTitle>No summary</MessageBarTitle>
             {s.reason} The transcript is saved.
           </MessageBarBody>
-          <MessageBarActions>{open}</MessageBarActions>
+          <MessageBarActions>{dismiss}</MessageBarActions>
         </MessageBar>
       );
     case "Failed":
@@ -921,7 +914,7 @@ function SummaryNotice({
           </MessageBarBody>
           <MessageBarActions>
             {resummarise}
-            {openSecondary}
+            {dismiss}
           </MessageBarActions>
         </MessageBar>
       );
@@ -934,7 +927,7 @@ function SummaryNotice({
             <MessageBarTitle>Recording not finished</MessageBarTitle>
             {s.message}
           </MessageBarBody>
-          <MessageBarActions>{open}</MessageBarActions>
+          <MessageBarActions>{dismiss}</MessageBarActions>
         </MessageBar>
       );
     case "PostFailed":
@@ -946,7 +939,7 @@ function SummaryNotice({
           </MessageBarBody>
           <MessageBarActions>
             {retranscribe}
-            {openSecondary}
+            {dismiss}
           </MessageBarActions>
         </MessageBar>
       );
@@ -955,9 +948,12 @@ function SummaryNotice({
         <MessageBar intent="info" layout="multiline" role="status">
           <MessageBarBody>
             <MessageBarTitle>Summary cancelled</MessageBarTitle>
-            The recording and transcript are saved. You can summarise the meeting from its page.
+            The recording and transcript are saved. Re-summarise when you want a summary.
           </MessageBarBody>
-          <MessageBarActions>{open}</MessageBarActions>
+          <MessageBarActions>
+            {resummarise}
+            {dismiss}
+          </MessageBarActions>
         </MessageBar>
       );
     case "PostCancelled":
@@ -970,7 +966,7 @@ function SummaryNotice({
           </MessageBarBody>
           <MessageBarActions>
             {retranscribe}
-            {openSecondary}
+            {dismiss}
           </MessageBarActions>
         </MessageBar>
       );

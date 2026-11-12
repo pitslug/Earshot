@@ -126,7 +126,7 @@ describe("the window hears the tray, the shortcut and notifications", () => {
     expect(screen.getByRole("heading", { level: 1 })).toBe(first);
   });
 
-  it("leaves the after-meeting screen when its finished meeting is deleted from the list", async () => {
+  it("leaves the finished meeting's result when that meeting is deleted from the list", async () => {
     const [gone, kept] = sampleMeetings();
     const s = await open({ meetings: [gone, kept] });
     s.meeting({ type: "Started", meeting: gone.id, mode: "Call", tracks: ["You", "Them"] });
@@ -136,14 +136,16 @@ describe("the window hears the tray, the shortcut and notifications", () => {
       meeting: gone.id,
       result: { kind: "Skipped", reason: "Summaries are turned off." },
     });
-    expect(await screen.findByRole("heading", { level: 1, name: "Meeting finished" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: gone.title })).toBeInTheDocument();
+    expect(screen.getByText("No summary")).toBeInTheDocument();
     await s.user.click(screen.getByRole("button", { name: `Delete ${gone.title}` }));
     await s.user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete meeting" }));
     expect(await screen.findByRole("heading", { level: 1, name: kept.title })).toBeInTheDocument();
-    expect(screen.queryByText("Meeting finished")).toBeNull();
+    expect(screen.queryByText("No summary")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Meeting status" })).toBeNull();
   });
 
-  it("keeps the after-meeting screen when another meeting is deleted from the list", async () => {
+  it("keeps the finished meeting's page and result when another meeting is deleted from the list", async () => {
     const [shown, other] = sampleMeetings();
     const s = await open({ meetings: [shown, other] });
     s.meeting({ type: "Started", meeting: shown.id, mode: "Call", tracks: ["You", "Them"] });
@@ -153,30 +155,58 @@ describe("the window hears the tray, the shortcut and notifications", () => {
       meeting: shown.id,
       result: { kind: "Skipped", reason: "Summaries are turned off." },
     });
-    await screen.findByRole("heading", { level: 1, name: "Meeting finished" });
+    await screen.findByRole("heading", { level: 1, name: shown.title });
+    expect(screen.getByText("No summary")).toBeInTheDocument();
     await s.user.click(screen.getByRole("button", { name: `Delete ${other.title}` }));
     await s.user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete meeting" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(await screen.findByRole("heading", { level: 1, name: "Meeting finished" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: shown.title })).toBeInTheDocument();
+    expect(screen.getByText("No summary")).toBeInTheDocument();
   });
 
-  it("shows what the work after a meeting warned of, and not the recording's own banners", async () => {
-    const s = await open();
+  it("shows what the work after a meeting warned of on its page, and not the recording's own banners", async () => {
+    const [warned] = sampleMeetings();
+    const s = await open({ meetings: sampleMeetings() });
     const warning = (key: string, message: string): MeetingEvent => ({
       type: "Warning",
       key,
       kind: "Backend",
       message,
     });
-    s.meeting({ type: "Started", meeting: "m-warned", mode: "Call", tracks: ["You", "Them"] });
+    s.meeting({ type: "Started", meeting: warned.id, mode: "Call", tracks: ["You", "Them"] });
     s.meeting(warning("backend:you", "A note from during the recording."));
     expect(await screen.findByText("A note from during the recording.")).toBeInTheDocument();
-    s.meeting({ type: "Ended", meeting: "m-warned", reason: "Stopped" });
+    s.meeting({ type: "Ended", meeting: warned.id, reason: "Stopped" });
+    expect(await screen.findByRole("heading", { level: 1, name: warned.title })).toBeInTheDocument();
     expect(screen.queryByText("A note from during the recording.")).toBeNull();
     s.meeting(warning("post-voices:them", "A note from the final pass."));
-    expect(screen.getByText("A note from the final pass.")).toBeInTheDocument();
-    await s.user.click(screen.getByRole("button", { name: "Dismiss" }));
+    const status = screen.getByRole("region", { name: "Meeting status" });
+    expect(within(status).getByText("A note from the final pass.")).toBeInTheDocument();
+    expect(within(status).getByText("Summary in progress")).toBeInTheDocument();
+    await s.user.click(within(status).getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText("A note from the final pass.")).toBeNull();
+    // A warning that arrives with the result stays beside it.
+    s.meeting(warning("recording-gap", "An invented gap in the recording."));
+    s.meeting({ type: "Summary", meeting: warned.id, result: { kind: "Cancelled" } });
+    expect(await screen.findByText("Summary cancelled")).toBeInTheDocument();
+    expect(screen.getByText("An invented gap in the recording.")).toBeInTheDocument();
+  });
+
+  it("says on the meeting's page that audio capture failed", async () => {
+    const [failed] = sampleMeetings();
+    const s = await open({ meetings: sampleMeetings() });
+    s.meeting({ type: "Started", meeting: failed.id, mode: "Call", tracks: ["You", "Them"] });
+    s.meeting({ type: "Ended", meeting: failed.id, reason: "Failed" });
+    expect(await screen.findByRole("heading", { level: 1, name: failed.title })).toBeInTheDocument();
+    const status = screen.getByRole("region", { name: "Meeting status" });
+    expect(
+      within(status).getByText("The recording stopped because audio capture failed. What was recorded is kept."),
+    ).toBeInTheDocument();
+    s.meeting({ type: "Summary", meeting: failed.id, result: { kind: "PostCancelled" } });
+    expect(await screen.findByText("Transcript not finished")).toBeInTheDocument();
+    expect(
+      screen.getByText("The recording stopped because audio capture failed. What was recorded is kept."),
+    ).toBeInTheDocument();
   });
 
   it("opens the meeting screen when the shortcut started a meeting, even from Settings", async () => {

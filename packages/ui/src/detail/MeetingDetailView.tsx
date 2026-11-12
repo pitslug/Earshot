@@ -23,6 +23,7 @@ import {
   TabList,
   Textarea,
   Title2,
+  Tooltip,
   makeStyles,
   mergeClasses,
   tokens,
@@ -307,7 +308,7 @@ const useStyles = makeStyles({
   },
 });
 
-type Tab = "summary" | "transcript";
+export type Tab = "summary" | "transcript";
 
 export interface Notice {
   key: string;
@@ -333,7 +334,23 @@ export interface MeetingDetailViewProps {
   onJobDismissed(): void;
   /** Timers (injected by tests). */
   timer?: Timer;
+  /** Shown at the top of the page: the meeting that has just ended says how its finishing goes
+   * and what came of it (T12.28). */
+  status?: ReactNode;
+  /** The meeting's final transcript and summary are still being made (T12.28): the page's own
+   * Re-transcribe and Summarise wait, because the app would refuse them as busy. */
+  finishing?: boolean;
+  /** The tab the page opens on (default the summary). */
+  initialTab?: Tab;
+  /** Changes when the meeting may have changed outside this page (its final transcript or its
+   * summary was stored): the page reads it again. */
+  refresh?: number;
+  /** Changes when the meeting's summary was stored: the page shows it. */
+  showSummary?: number;
 }
+
+/** Why Re-transcribe and Summarise wait while the meeting finishes. */
+const FINISHING_TIP = "Available when the summary is done.";
 
 /** A meeting's job: which one, and its latest event (`null` until the first). `seq` changes
  * with every event. */
@@ -419,6 +436,11 @@ export function MeetingDetailView({
   onJobStarted,
   onJobDismissed,
   timer = realTimer,
+  status,
+  finishing = false,
+  initialTab = "summary",
+  refresh = 0,
+  showSummary = 0,
 }: MeetingDetailViewProps) {
   const styles = useStyles();
   const ipc = useIpc();
@@ -426,7 +448,7 @@ export function MeetingDetailView({
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [persons, setPersons] = useState<PersonItem[]>([]);
-  const [tab, setTab] = useState<Tab>("summary");
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [cited, setCited] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [noAudio, setNoAudio] = useState<Set<string>>(new Set());
@@ -478,6 +500,22 @@ export function MeetingDetailView({
   useEffect(() => {
     if (ended !== null) void reload();
   }, [ended, reload]);
+
+  // The meeting changed outside this page (its finishing stored something): read again, and show
+  // a summary that was just stored. The values the page opened with were read by the first load.
+  const seenRefresh = useRef(refresh);
+  useEffect(() => {
+    if (seenRefresh.current === refresh) return;
+    seenRefresh.current = refresh;
+    void reload();
+  }, [refresh, reload]);
+  const seenSummary = useRef(showSummary);
+  useEffect(() => {
+    if (seenSummary.current === showSummary) return;
+    seenSummary.current = showSummary;
+    setCited(null);
+    setTab("summary");
+  }, [showSummary]);
 
   // "Name voices": open the panel and focus the first name field.
   useEffect(() => {
@@ -639,6 +677,10 @@ export function MeetingDetailView({
               <CompoundButton disabledFocusable secondaryContent="Recording no longer kept">
                 Re-transcribe
               </CompoundButton>
+            ) : finishing ? (
+              <Tooltip content={FINISHING_TIP} relationship="description">
+                <Button disabledFocusable>Re-transcribe</Button>
+              </Tooltip>
             ) : (
               <Button
                 disabled={detail === null}
@@ -647,9 +689,17 @@ export function MeetingDetailView({
                 Re-transcribe
               </Button>
             )}
-            <Button disabled={detail === null} onClick={() => void startJob("resummarise")}>
-              {detail !== null && detail.summary === null ? "Summarise" : "Re-summarise"}
-            </Button>
+            {finishing ? (
+              <Tooltip content={FINISHING_TIP} relationship="description">
+                <Button disabledFocusable>
+                  {detail !== null && detail.summary !== null ? "Re-summarise" : "Summarise"}
+                </Button>
+              </Tooltip>
+            ) : (
+              <Button disabled={detail === null} onClick={() => void startJob("resummarise")}>
+                {detail !== null && detail.summary === null ? "Summarise" : "Re-summarise"}
+              </Button>
+            )}
           </div>
         </div>
         {detail !== null && (
@@ -660,6 +710,7 @@ export function MeetingDetailView({
         )}
       </div>
 
+      {status}
       {jobBar !== null && (
         <MessageBar intent={jobBar.intent} layout="multiline">
           <MessageBarBody>
@@ -776,6 +827,7 @@ export function MeetingDetailView({
                     detail={detail}
                     persons={persons}
                     noAudio={noAudio}
+                    locked={finishing}
                     onClose={() => {
                       setSpeakersOpen(false);
                       // The Close button leaves with the panel: focus goes back where it opens.

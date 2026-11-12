@@ -299,19 +299,6 @@ export function stepLabel(step: PostStep): string {
   }
 }
 
-function plural(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`;
-}
-
-/** "4 actions, 2 decisions · 2 voices to name". */
-export function summaryCounts(s: Extract<SummaryEvent, { kind: "Stored" }>): string {
-  const parts = [
-    `${plural(s.actions, "action", "actions")}, ${plural(s.decisions, "decision", "decisions")}`,
-  ];
-  if (s.voices_to_name > 0) parts.push(`${plural(s.voices_to_name, "voice", "voices")} to name`);
-  return parts.join(" · ");
-}
-
 /** How close to the end of the transcript still counts as being at it (px). */
 export const FOLLOW_SLACK = 24;
 

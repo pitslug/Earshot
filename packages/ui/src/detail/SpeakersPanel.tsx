@@ -25,6 +25,8 @@ import {
   Field,
   Input,
   Menu,
+  MessageBar,
+  MessageBarBody,
   MenuButton,
   MenuItem,
   MenuList,
@@ -151,7 +153,14 @@ export interface SpeakersPanelProps {
   onForget(person: string): Promise<void>;
   /** Called with the name field of the first voice that needs a name (for "Name voices"). */
   firstNameField?: (input: HTMLInputElement | null) => void;
+  /** The meeting is still finishing (T12.28): the voices can be seen and heard, but every edit
+   * waits, because the final pass may change who is who and would drop it. */
+  locked?: boolean;
 }
+
+/** Why the Speakers panel's edits wait while the meeting finishes. */
+export const SPEAKERS_LOCKED_NOTE =
+  "Name voices when the summary is done: the final transcript may change who is who.";
 
 /** The Speakers panel. */
 export function SpeakersPanel(props: SpeakersPanelProps) {
@@ -168,6 +177,11 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
           Close
         </Button>
       </div>
+      {props.locked && (
+        <MessageBar intent="info" layout="multiline">
+          <MessageBarBody>{SPEAKERS_LOCKED_NOTE}</MessageBarBody>
+        </MessageBar>
+      )}
       {unnamed.length > 0 ? (
         <section className={styles.section} aria-label="Need a name">
           <Body1Strong as="h3" className={styles.subheading}>
@@ -256,7 +270,7 @@ function PlayButton({ card, detail, onPlay }: RowProps) {
   );
 }
 
-function MergeMenu({ card, detail, onMerge }: RowProps) {
+function MergeMenu({ card, detail, onMerge, locked }: RowProps) {
   const others = detail.speakers.filter((s) => s.id !== card.id);
   if (card.kind === "Me") {
     return (
@@ -273,7 +287,7 @@ function MergeMenu({ card, detail, onMerge }: RowProps) {
   return (
     <Menu>
       <MenuTrigger disableButtonEnhancement>
-        <MenuButton size="small" appearance="subtle" disabled={others.length === 0}>
+        <MenuButton size="small" appearance="subtle" disabled={others.length === 0 || locked}>
           Merge
         </MenuButton>
       </MenuTrigger>
@@ -290,14 +304,19 @@ function MergeMenu({ card, detail, onMerge }: RowProps) {
   );
 }
 
-function MarkMeButton({ card, onMarkMe }: RowProps) {
+function MarkMeButton({ card, onMarkMe, locked }: RowProps) {
   if (!card.can_mark_me) return null;
   return (
     <Tooltip
       content="Shows this voice as you in this meeting. No voiceprint is made from it."
       relationship="description"
     >
-      <Button size="small" appearance="subtle" onClick={() => void onMarkMe(card.id)}>
+      <Button
+        size="small"
+        appearance="subtle"
+        disabled={locked}
+        onClick={() => void onMarkMe(card.id)}
+      >
         This is me
       </Button>
     </Tooltip>
@@ -307,7 +326,7 @@ function MarkMeButton({ card, onMarkMe }: RowProps) {
 /** A voice that needs a name: its name field with Save (Enter saves too) and Ignore. */
 function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | null) => void }) {
   const styles = useStyles();
-  const { card, persons, onSave, onIgnore, nameRef } = props;
+  const { card, persons, onSave, onIgnore, nameRef, locked = false } = props;
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
   const placeholder = `Name ${card.name.toLowerCase().startsWith("speaker") ? card.name.toLowerCase() : "this voice"}`;
@@ -315,7 +334,7 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
   // Saving makes a person (an existing one with exactly that name) and remembers the voice,
   // so only on Save or Enter: leaving the field keeps the draft.
   const save = async () => {
-    if (typed === "" || saving) return;
+    if (typed === "" || saving || locked) return;
     const existing = personNamed(typed, persons);
     setSaving(true);
     try {
@@ -338,6 +357,7 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
           value={value}
           placeholder={placeholder}
           aria-label={`Name of ${card.name}`}
+          disabled={locked}
           ref={nameRef}
           onChange={(_, d) => setValue(d.value)}
           onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
@@ -348,7 +368,7 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
           size="small"
           appearance="primary"
           aria-label={`Save ${card.name}`}
-          disabled={typed === "" || saving}
+          disabled={typed === "" || saving || locked}
           onClick={() => void save()}
         >
           Save
@@ -361,7 +381,12 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
             content="Keeps this voice as it is labelled and stops asking for a name. Nothing is remembered."
             relationship="description"
           >
-            <Button size="small" appearance="subtle" onClick={() => void onIgnore(card.id)}>
+            <Button
+              size="small"
+              appearance="subtle"
+              disabled={locked}
+              onClick={() => void onIgnore(card.id)}
+            >
               Ignore
             </Button>
           </Tooltip>
@@ -376,7 +401,7 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
 /** A voice the user ignored: its label, and the way back. */
 function IgnoredRow(props: RowProps) {
   const styles = useStyles();
-  const { card, onUnignore } = props;
+  const { card, onUnignore, locked } = props;
   return (
     <li className={styles.row} aria-label={card.name}>
       <div className={styles.nameLine}>
@@ -385,7 +410,12 @@ function IgnoredRow(props: RowProps) {
       </div>
       <RowFacts {...props} />
       <div className={styles.actions}>
-        <Button size="small" appearance="subtle" onClick={() => void onUnignore(card.id)}>
+        <Button
+          size="small"
+          appearance="subtle"
+          disabled={locked}
+          onClick={() => void onUnignore(card.id)}
+        >
           Stop ignoring
         </Button>
       </div>
@@ -396,7 +426,7 @@ function IgnoredRow(props: RowProps) {
 /** A voice with a name: the user, a linked voice or a recognised one. */
 function NamedRow(props: RowProps) {
   const styles = useStyles();
-  const { card, persons, onRename, onLink, onUnmarkMe, onForget, onRenamePerson } = props;
+  const { card, persons, onRename, onLink, onUnmarkMe, onForget, onRenamePerson, locked } = props;
   // Which rename is open: this meeting's row, or the person in every meeting.
   const [editing, setEditing] = useState<"row" | "person" | null>(null);
   const [forgetting, setForgetting] = useState(false);
@@ -453,23 +483,33 @@ function NamedRow(props: RowProps) {
         <MergeMenu {...props} />
         <MarkMeButton {...props} />
         {card.can_unmark_me && (
-          <Button size="small" appearance="subtle" onClick={() => void onUnmarkMe(card.id)}>
+          <Button
+            size="small"
+            appearance="subtle"
+            disabled={locked}
+            onClick={() => void onUnmarkMe(card.id)}
+          >
             This isn&apos;t me
           </Button>
         )}
-        <LinkPopover card={card} persons={persons} onLink={onLink} />
+        <LinkPopover card={card} persons={persons} onLink={onLink} locked={locked} />
         {card.kind === "Other" && editing === null && (
-          <Button size="small" appearance="subtle" onClick={() => setEditing("row")}>
+          <Button size="small" appearance="subtle" disabled={locked} onClick={() => setEditing("row")}>
             Rename here
           </Button>
         )}
         {card.kind === "Other" && card.person !== null && editing === null && (
-          <Button size="small" appearance="subtle" onClick={() => setEditing("person")}>
+          <Button
+            size="small"
+            appearance="subtle"
+            disabled={locked}
+            onClick={() => setEditing("person")}
+          >
             Rename person
           </Button>
         )}
         {card.kind === "Other" && card.person?.has_voiceprint && (
-          <Button size="small" appearance="subtle" onClick={() => setForgetting(true)}>
+          <Button size="small" appearance="subtle" disabled={locked} onClick={() => setForgetting(true)}>
             Forget voice
           </Button>
         )}
@@ -548,10 +588,12 @@ function LinkPopover({
   card,
   persons,
   onLink,
+  locked = false,
 }: {
   card: SpeakerCard;
   persons: PersonItem[];
   onLink(speaker: string, choice: LinkChoice): Promise<void>;
+  locked?: boolean;
 }) {
   const styles = useStyles();
   const [open, setOpen] = useState(false);
@@ -579,7 +621,7 @@ function LinkPopover({
       trapFocus
     >
       <PopoverTrigger disableButtonEnhancement>
-        <Button size="small" appearance="subtle">
+        <Button size="small" appearance="subtle" disabled={locked}>
           Link to person
         </Button>
       </PopoverTrigger>

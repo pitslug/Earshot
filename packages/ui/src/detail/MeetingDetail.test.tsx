@@ -21,6 +21,7 @@ import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppShell } from "../shell/AppShell";
 import { COPIED_MS, handoverLine, savedText, summaryMarkdown } from "./detail";
+import { MeetingDetailView } from "./MeetingDetailView";
 
 const ITEM: MeetingListItem = { ...sampleMeetings()[1], started_at_ms: 2_000 };
 /** An older meeting, so `ITEM` is shown first. */
@@ -1582,5 +1583,62 @@ describe("MeetingDetailView, words to the Dictionary (T12.15f)", () => {
     );
     expect(offer).toEqual(["Quillmarsh"]);
     expect(await ipc.editSegment(ITEM.id, LINE1, "So the lead time on the Quillmarsh (zorbek) pump set is now about 11 weeks, quillmarsh.")).toEqual([]);
+  });
+});
+
+describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
+  function show(finishing: boolean, ipc: Ipc) {
+    return (
+      <EarshotThemeProvider>
+        <IpcProvider ipc={ipc}>
+          <MeetingDetailView
+            item={ITEM}
+            onChanged={() => {}}
+            onJobStarted={() => {}}
+            onJobDismissed={() => {}}
+            finishing={finishing}
+          />
+        </IpcProvider>
+      </EarshotThemeProvider>
+    );
+  }
+
+  it("shows the Speakers panel but keeps every edit off until a result, and says why", async () => {
+    const calls: unknown[][] = [];
+    const ipc = createMockIpc({ timer: createManualTimer(10_000), meetings: [ITEM, OTHER], onCall: (c) => calls.push(c) });
+    const user = userEvent.setup();
+    const view = render(show(true, ipc));
+    await screen.findByRole("complementary", { name: "Speakers" });
+    expect(
+      within(panel()).getByText(
+        "Name voices when the summary is done: the final transcript may change who is who.",
+      ),
+    ).toBeInTheDocument();
+    const row = speakerRow("Speaker 3");
+    const name = within(row).getByRole("textbox", { name: "Name of Speaker 3" });
+    expect(name).toBeDisabled();
+    expect(within(row).getByRole("button", { name: "Save Speaker 3" })).toBeDisabled();
+    expect(within(row).getByRole("button", { name: "Ignore" })).toBeDisabled();
+    expect(within(row).getByRole("button", { name: "Merge" })).toBeDisabled();
+    // Playing a sample changes nothing, so it stays.
+    expect(within(row).getByRole("button", { name: "Play a sample of Speaker 3" })).toBeEnabled();
+    await openNamed(user);
+    const named = within(panel()).getByRole("list", { name: "Named" });
+    for (const button of within(named).getAllByRole("button")) {
+      if (!/^Play a sample/.test(button.getAttribute("aria-label") ?? "")) {
+        expect(button.hasAttribute("disabled") || button.getAttribute("aria-disabled") === "true").toBe(true);
+      }
+    }
+    await user.click(within(row).getByRole("button", { name: "Ignore" }));
+    await user.click(within(named).getAllByRole("button", { name: "Link to person" })[0]);
+    const edits = ["saveVoice", "ignoreSpeaker", "linkSpeaker", "renameSpeaker", "mergeSpeakers", "markMe", "unmarkMe"];
+    expect(calls.filter((c) => edits.includes(c[0] as string))).toEqual([]);
+    expect(screen.queryByRole("dialog", { name: /Link .* to a person/ })).toBeNull();
+
+    view.rerender(show(false, ipc));
+    expect(within(panel()).queryByText(/Name voices when the summary is done/)).toBeNull();
+    expect(within(speakerRow("Speaker 3")).getByRole("textbox", { name: "Name of Speaker 3" })).toBeEnabled();
+    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Ignore" }));
+    expect(calls).toContainEqual(["ignoreSpeaker", ITEM.id, SAMPLE_SPEAKERS.third]);
   });
 });

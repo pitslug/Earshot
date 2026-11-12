@@ -1,6 +1,7 @@
 // The app window (docs/ui-design.md "Shape"): the meeting list on the left, the selected
 // meeting, the meeting screen (T7.2) or the empty state on the right; while recording it
-// can shrink to the compact listening card. "Settings" replaces the window with the
+// can shrink to the compact listening card. A meeting that has ended shows its own page, with
+// how its finishing goes at the top (T12.28). "Settings" replaces the window with the
 // Settings screen (T7.4f) until "Back to meetings".
 
 import {
@@ -50,8 +51,8 @@ import {
   useIpc,
 } from "../ipc";
 import {
-  AfterMeetingView,
   CompactCard,
+  MeetingStatus,
   NewMeetingView,
   RecordingView,
 } from "../meeting/MeetingViews";
@@ -262,8 +263,7 @@ export interface AppShellProps {
   notice?: ReactNode;
   /** Also told when "Settings" opens the Settings screen. */
   onOpenSettings?: () => void;
-  /** Also told when "Name voices" on the summary notice opens the meeting's Speakers
-   * panel. */
+  /** Also told when a notification's "Name voices" opens the meeting's Speakers panel. */
   onNameVoices?: (meetingId: string) => void;
 }
 
@@ -335,9 +335,15 @@ export function AppShell({
   const [compact, setCompact] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
-  // Re-transcribe or Re-summarise asked for on the finished meeting's screen (T9.23).
+  // Re-transcribe or Re-summarise asked for on the finished meeting's page (T9.23).
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  // The ended meeting whose result the user dismissed (or answered with a job) on its page.
+  const [resultDismissed, setResultDismissed] = useState<string | null>(null);
+  // Change when the ended meeting's final transcript or summary is stored, so its page reads it
+  // again (and shows a stored summary).
+  const [detailRefresh, setDetailRefresh] = useState(0);
+  const [summaryStored, setSummaryStored] = useState(0);
   // The meeting a Cancel was pressed for, until its result: a newer meeting differs.
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   // An older meeting still finishing behind a newer recording, until its result. The meeting
@@ -466,6 +472,18 @@ export function AppShell({
     }
     // An older meeting's end says nothing about the stop button of this one.
     if (event.type === "Ended" && event.meeting === liveMeetingId.current) setStopping(false);
+    // The page of the meeting that has ended reads it again when its finishing stored something.
+    if (
+      event.type === "PostProgress" &&
+      event.step.kind === "Stored" &&
+      event.meeting === liveMeetingId.current
+    ) {
+      setDetailRefresh((n) => n + 1);
+    }
+    if (event.type === "Summary" && event.meeting === liveMeetingId.current) {
+      setDetailRefresh((n) => n + 1);
+      if (event.result.kind === "Stored") setSummaryStored((n) => n + 1);
+    }
     if (event.type === "Summary") {
       setBehindId((id) => (id === event.meeting ? null : id));
       setCancellingId((id) => (id === event.meeting ? null : id));
@@ -476,7 +494,7 @@ export function AppShell({
   if (meeting !== null) {
     lastMeeting.current = { id: meeting.meetingId, finishing: meeting.phase === "processing" };
   }
-  const active = meeting !== null && meeting.phase !== "done";
+  const recording = meeting !== null && meeting.phase === "recording";
   const clockNow = useNow(timer, 1000);
 
   // The native title bar follows the theme chosen in Settings. A title bar that stays on the
@@ -523,6 +541,15 @@ export function AppShell({
   useEffect(() => {
     if (compact && meeting?.phase !== "recording") goCompact(false);
   }, [compact, meeting?.phase, goCompact]);
+
+  // Once the recording ends, whoever was watching it sees the meeting's own page: its draft
+  // transcript at once, how its finishing goes at the top, then its summary (T12.28).
+  const endedId = meeting !== null && meeting.phase !== "recording" ? meeting.meetingId : null;
+  useEffect(() => {
+    if (view !== "meeting" || endedId === null) return;
+    setSelectedId(endedId);
+    setView("detail");
+  }, [view, endedId]);
 
   const meetings = load.status === "loaded" ? load.meetings : [];
   const folders = load.status === "loaded" ? load.folders : [];
@@ -577,9 +604,10 @@ export function AppShell({
       setStopError(e instanceof Error ? e.message : String(e));
     });
   };
+  // Only a recording meeting has its own screen; one that has ended shows its page.
   const select = (id: string) => {
     setSelectedId(id);
-    setView(meeting !== null && meeting.meetingId === id && active ? "meeting" : "detail");
+    setView(meeting !== null && meeting.meetingId === id && recording ? "meeting" : "detail");
   };
   const open = (id: string) => {
     setSelectedId(id);
@@ -600,6 +628,8 @@ export function AppShell({
       jobSeq.current += 1;
       const seq = jobSeq.current;
       setJobs((all) => ({ ...all, [id]: { job, last: null, seq } }));
+      // The job's own notice on the page takes over from the result.
+      setResultDismissed(id);
       open(id);
     } catch (e: unknown) {
       setRetryError(e instanceof Error ? e.message : String(e));
@@ -828,7 +858,7 @@ export function AppShell({
             onDone={(noModel) => {
               refresh();
               setNoModelNote(noModel);
-              setView(setupFromSettings ? "settings" : active ? "meeting" : "detail");
+              setView(setupFromSettings ? "settings" : recording ? "meeting" : "detail");
             }}
           />
         </div>
@@ -852,7 +882,7 @@ export function AppShell({
     const settings = (
       <SettingsView
         initialSection={settingsSection}
-        onBack={() => setView(active ? "meeting" : "detail")}
+        onBack={() => setView(recording ? "meeting" : "detail")}
         onOpenSetup={() => {
           setSetupFromSettings(true);
           setSettingsSection("General");
@@ -899,6 +929,31 @@ export function AppShell({
   }
 
   const showMeeting = view === "meeting";
+  // The meeting that has ended, for its own page: how its finishing goes and what came of it.
+  const ended =
+    meeting !== null && meeting.phase !== "recording"
+      ? {
+          id: meeting.meetingId,
+          finishing: meeting.summary === null,
+          status: (
+            <MeetingStatus
+              meeting={meeting}
+              onDismissBanner={live.dismissBanner}
+              onCancel={() => cancelFinishing(meeting.meetingId)}
+              cancelling={cancellingId === meeting.meetingId}
+              onRetranscribe={(id) => void startAfterMeetingJob(id, "Retranscribe")}
+              onResummarise={(id) => void startAfterMeetingJob(id, "Resummarise")}
+              onDismissResult={() => {
+                setResultDismissed(meeting.meetingId);
+                setRetryError(null);
+              }}
+              showResult={resultDismissed !== meeting.meetingId}
+              retrying={retrying}
+              retryError={retryError}
+            />
+          ),
+        }
+      : null;
   return (
     <div className={styles.root}>
       {quitDialog}
@@ -1065,24 +1120,13 @@ export function AppShell({
             stopping={stopping}
           />
         )}
-        {showMeeting && meeting !== null && meeting.phase !== "recording" && (
-          <AfterMeetingView
-            meeting={meeting}
-            onOpen={open}
-            onNameVoices={openNames}
-            onDismissBanner={live.dismissBanner}
-            onCancel={() => cancelFinishing(meeting.meetingId)}
-            cancelling={cancellingId === meeting.meetingId}
-            onRetranscribe={(id) => void startAfterMeetingJob(id, "Retranscribe")}
-            onResummarise={(id) => void startAfterMeetingJob(id, "Resummarise")}
-            retrying={retrying}
-            retryError={retryError}
-          />
-        )}
         {view === "detail" && (
           <Detail
             load={load}
             selected={selected}
+            ended={ended}
+            refresh={detailRefresh}
+            summaryStored={summaryStored}
             onNewMeeting={newMeeting}
             nameVoices={nameVoices}
             onChanged={refresh}
@@ -1309,9 +1353,20 @@ function MeetingGroup({
   );
 }
 
+/** The meeting that has ended, as its page shows it. */
+interface EndedMeeting {
+  id: string;
+  /** Its final transcript and summary are still being made. */
+  finishing: boolean;
+  status: ReactNode;
+}
+
 function Detail({
   load,
   selected,
+  ended,
+  refresh,
+  summaryStored,
   onNewMeeting,
   nameVoices,
   onChanged,
@@ -1322,6 +1377,9 @@ function Detail({
 }: {
   load: Load;
   selected: MeetingListItem | null;
+  ended: EndedMeeting | null;
+  refresh: number;
+  summaryStored: number;
   onNewMeeting: () => void;
   nameVoices: number;
   onChanged: () => void;
@@ -1359,10 +1417,18 @@ function Detail({
       </div>
     );
   }
+  // Only the page of the meeting that has ended says how it finishes; the draft transcript is
+  // what there is to read meanwhile.
+  const own = ended !== null && ended.id === selected.id ? ended : null;
   return (
     <MeetingDetailView
       key={selected.id}
       item={selected}
+      status={own?.status}
+      finishing={own?.finishing ?? false}
+      initialTab={own?.finishing ? "transcript" : "summary"}
+      refresh={own !== null ? refresh : 0}
+      showSummary={own !== null ? summaryStored : 0}
       nameVoices={nameVoices}
       onChanged={onChanged}
       timer={timer}
