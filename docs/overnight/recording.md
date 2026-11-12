@@ -46,3 +46,15 @@ Too large for one commit with care; split proposed:
 ## Left
 
 - T9.21 (needs a fake stream seam first), T9.22b. PLAN.md status: T9.17 and T9.20 `[x]`; T9.22 stays `[ ]` with T9.22a `[x]` and T9.22b added if the coordinator takes the split; T9.21a added before T9.21.
+
+## Lane-merge review follow-up (T9.17: fix lane-merge review findings)
+
+1. A write failure before any whole frame: the writer is aborted (no AudioFile row, no `.part`), the warning still sent (`at` 0). Test `live_recording_that_failed_before_any_frame_keeps_no_empty_file`: both tracks fail on frame 0, no rows, the meeting stops itself, `load_post_input` finds no track.
+2. The session no longer holds the store across the file work: `earshot_store::finalize_track_audio_outside_lock` reaches the store through a `WithStore` callback only for the track check and the row; `Store::finalize_track_audio` is that function with its own store. Test `audio_finalised_outside_the_lock_reaches_the_store_only_for_the_check_and_the_row` (the check before the rename, the row after; a gone track: one look, no row, `.part` kept).
+3. `live_worker_token_is_polled_only_by_the_worker`: a source scan that `.cancel_token()` is taken only in `live/worker.rs`, once.
+4. `LiveConfig::catch_up_stall` and `StallWatch` docs state the rule: no single call between two polls may take the bound (Whisper polls in its graph compute, Parakeet once per piece and chunk); a backend that breaks it polls more often or raises the bound.
+5. `shell.rs`: `call_end_stopped` renamed `end_already_told` (and `ended_toast`'s parameter `already_told`).
+
+Accept: `cargo test -p earshot-store flac` -> 10 passed; `cargo test -p earshot-store` -> all pass (audio 22); `cargo test -p earshot-runtime --lib live_recording` -> 13 passed; `cargo test -p earshot-runtime --lib live` -> 193 passed; `cargo test -p earshot-runtime meeting_queue` -> 20 + 1 + 1 passed; `cargo test -p earshot-capture-wasapi` -> 164 passed; `cargo test -p earshot-desktop --bin earshot meeting` -> 109 passed; `shell` -> 23 passed. fmt and clippy `-D warnings` clean on core, capture-wasapi, store, runtime, cli, desktop.
+
+AGENTS.md: the bullet "An `AudioFile` row is written only by `Store::finalize_track_audio`" should read "only by `Store::finalize_track_audio` or `finalize_track_audio_outside_lock` (the same rules, the store reached only for the check and the row)".

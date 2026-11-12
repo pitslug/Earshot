@@ -3464,6 +3464,54 @@ fn live_recording_every_track_failing_stops_the_meeting_itself() {
 }
 
 #[test]
+fn live_recording_that_failed_before_any_frame_keeps_no_empty_file() {
+    // Lane-merge review: a failure on the very first frame leaves nothing to keep, so no
+    // AudioFile row and no `.part`, and nothing for the final pass; the meeting still ends.
+    let full = earshot_store::WriteFault::DiskFullAfter(0);
+    let cut = faulted_meeting(
+        12_000,
+        &[(TrackId::Mic, full), (TrackId::Reference, full)],
+        270,
+    );
+    assert_eq!(cut.flacs, [None, None]);
+    assert!(cut.outcome.audio_files.is_empty());
+    assert!(
+        cut.svc
+            .store()
+            .audio_files(cut.outcome.meeting)
+            .unwrap()
+            .is_empty()
+    );
+    let said = stopped_warnings(&cut.events);
+    assert_eq!(said.len(), 3, "{said:?}");
+    assert!(said[..2].iter().all(|w| matches!(
+        w,
+        RuntimeWarning::RecordingStopped { at, disk_full: true, .. } if *at == MeetingTime::from_millis(0)
+    )));
+    assert_eq!(
+        said[2],
+        RuntimeWarning::EveryRecordingStopped { disk_full: true }
+    );
+    assert_eq!(cut.outcome.reason, EndReason::Stopped);
+    assert!(matches!(cut.events.last(), Some(RuntimeEvent::Ended(_))));
+    for track in [TrackId::Mic, TrackId::Reference] {
+        let path = cut
+            .svc
+            .data
+            .resolve(&DataDir::audio_rel(cut.outcome.meeting, track))
+            .unwrap();
+        assert!(!path.exists() && !path.with_extension("flac.part").exists());
+    }
+    let (input, missing) =
+        crate::post::load_post_input(&cut.svc, cut.outcome.meeting, &cut.outcome.final_pass)
+            .unwrap();
+    assert!(
+        input.tracks.is_empty(),
+        "no empty file reaches the final pass"
+    );
+    assert_eq!(missing.len(), 2);
+}
+#[test]
 fn live_recording_that_cannot_be_finished_keeps_its_part_file() {
     // A drive that went away: the file cannot even be finished, so it stays as `.part` for
     // recovery (T9.18) and the track has no row; the meeting goes on with the other track.

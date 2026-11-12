@@ -331,9 +331,12 @@ pub struct LiveConfig {
     /// At the end, a track's live catch-up with no sign of life for this long (its decoded
     /// frontier, its decode's cancel-token polls and its messages all unchanged) is given up
     /// (T9.22, `worker::StallWatch`): the decode is asked to stop, its thread is left, never
-    /// joined, and [`RuntimeWarning::LiveCatchUpStalled`] says so. Default 2 minutes, a judgement:
-    /// every decode polls its cancel token many times a minute, so only a call that never returns
-    /// goes that long without one, and a slow decode is never cut.
+    /// joined, and [`RuntimeWarning::LiveCatchUpStalled`] says so. Default 2 minutes, a judgement.
+    /// The rule it rests on: no single call between two polls of the decode's token may take this
+    /// long. Whisper polls inside its graph compute (the abort callback), Parakeet only once per
+    /// piece and per chunk (an ONNX encoder run is one call, seconds at most), the piece loop once
+    /// per piece and per VAD frame. A backend or a piece length that breaks that rule must poll more
+    /// often or raise this bound, never let a slow decode be cut.
     pub catch_up_stall: Duration,
 }
 
@@ -1964,7 +1967,15 @@ where
         self.recording_stopped[slot(track)] = true;
         let at = MeetingTime::from_pipeline_frames(writer.whole_frames());
         let disk_full = error.is_disk_full();
-        let finished = self.finalize(track, writer);
+        // Nothing whole was written: there is no audio to keep, and an empty file would only
+        // read as a recording to re-transcribe. The `.part` holds no frame, so removing it loses
+        // nothing (a failed removal leaves it to the orphan sweep).
+        let finished = if writer.whole_frames() == 0 {
+            let _ = writer.abort();
+            None
+        } else {
+            self.finalize(track, writer)
+        };
         let stopped = RuntimeWarning::RecordingStopped {
             track,
             at,
@@ -1998,7 +2009,8 @@ where
     }
 
     /// Finishes `writer` (whole, or as far as it got after a failed write) into `track`'s
-    /// `AudioFile` row; `None` when the session has no such track.
+    /// `AudioFile` row; `None` when the session has no such track. The store is locked only for
+    /// the track check and the row: the file work (header, sync, rename) runs without it.
     fn finalize(
         &mut self,
         track: TrackId,
@@ -2011,14 +2023,15 @@ where
                 .then(|| AEC_VERSION.to_owned()),
         };
         let clock = Arc::clone(&self.services.clock);
-        let mut db = self.services.store();
-        Some(db.finalize_track_audio(
+        let services = self.services.clone();
+        Some(earshot_store::finalize_track_audio_outside_lock(
             writer,
             &self.services.data,
             &row,
             provenance,
             &*clock,
             &mut *self.rng,
+            &mut |f| f(&mut services.store()),
         ))
     }
 

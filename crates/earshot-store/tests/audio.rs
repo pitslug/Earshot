@@ -12,6 +12,7 @@ use earshot_core::model::{
     live_segments,
 };
 use earshot_core::prompt::Template;
+use earshot_store::finalize_track_audio_outside_lock;
 use earshot_store::{
     AudioProvenance, DAY_MS, DataDir, FlacTrackWriter, HOUR_MS, RETENTION_CLOCK_PREFIX,
     RETENTION_CLOCK_VERSION, RetentionClock, RetentionPolicy, Store, StoreError, WriteFault,
@@ -339,6 +340,79 @@ fn flac_disk_full_errors_are_named_as_such() {
     assert!(e.is_disk_full(), "{e:?}");
 }
 
+#[test]
+fn audio_finalised_outside_the_lock_reaches_the_store_only_for_the_check_and_the_row() {
+    // Lane-merge review: a session finishing a file mid-meeting never holds the store across
+    // the file work. The store is reached twice, and the file is renamed before the second.
+    let mut w = World::new("outside-lock");
+    let (m, tracks) = w.meeting_with(&[TrackId::Mic]);
+    let path = w
+        .data
+        .resolve(&DataDir::audio_rel(m.id, TrackId::Mic))
+        .unwrap();
+    let mut writer = w.data.track_writer(m.id, TrackId::Mic, 16_000).unwrap();
+    writer.write(&sine(10_000)).unwrap();
+    let mut calls = Vec::new();
+    let World {
+        store,
+        data,
+        clock,
+        rng,
+        ..
+    } = &mut w;
+    let file = finalize_track_audio_outside_lock(
+        writer,
+        data,
+        &tracks[0],
+        provenance(),
+        clock,
+        rng,
+        &mut |f| {
+            calls.push(path.exists());
+            f(store)
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        calls,
+        [false, true],
+        "the check before the file, the row after it"
+    );
+    assert_eq!(store.audio_files(m.id).unwrap(), [file]);
+
+    // A track that is gone: one look, no row, the audio left as `.part`.
+    let mut w = World::new("outside-lock-gone");
+    let (m, _) = w.meeting_with(&[]);
+    let ghost = Track::new(m.id, TrackId::Mic, None, ClockDomain::Qpc, &mut w.stamp());
+    let mut writer = w.data.track_writer(m.id, TrackId::Mic, 16_000).unwrap();
+    writer.write(&sine(5_000)).unwrap();
+    let mut looks = 0;
+    let World {
+        store,
+        data,
+        clock,
+        rng,
+        ..
+    } = &mut w;
+    let refused = finalize_track_audio_outside_lock(
+        writer,
+        data,
+        &ghost,
+        provenance(),
+        clock,
+        rng,
+        &mut |f| {
+            looks += 1;
+            f(store)
+        },
+    );
+    assert!(refused.is_err());
+    assert_eq!(looks, 1);
+    let path = data
+        .resolve(&DataDir::audio_rel(m.id, TrackId::Mic))
+        .unwrap();
+    assert!(path.with_extension("flac.part").exists());
+}
 #[test]
 fn audio_row_is_written_only_after_the_flac_is_finalised() {
     let mut w = World::new("crash-row");

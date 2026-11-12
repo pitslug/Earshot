@@ -98,7 +98,11 @@ pub(super) enum CatchUpEnd {
 
 /// The no-progress rule of a catch-up (T9.22): it stalls only when none of its signs of life
 /// (`sign`: the decoded frontier, the decode's cancel-token polls, messages from the worker)
-/// changed for `bound`. However long a decode takes, it never stalls while it moves.
+/// changed for `bound`. However long a decode takes, it never stalls while it moves, provided no single
+/// call between two polls of its token takes `bound` (Parakeet polls once per piece and chunk,
+/// Whisper inside its graph compute: `LiveConfig::catch_up_stall`). Only the worker thread may poll a
+/// worker's token: a second poller would keep a hung decode looking alive (pinned by
+/// `live_worker_token_is_polled_only_by_the_worker`).
 #[derive(Debug, Clone)]
 pub(super) struct StallWatch {
     bound: Duration,
@@ -485,6 +489,40 @@ mod tests {
         for minute in 0..600u64 {
             assert!(!slow.stalled([0, minute, 0], s(60 * minute)));
         }
+    }
+
+    #[test]
+    fn live_worker_token_is_polled_only_by_the_worker() {
+        // T9.22: the decode's cancel-token polls are a sign of life only if nothing else polls the
+        // token. The worker is the one place in this crate that takes a live track's token.
+        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    rs_files(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rs_files(&src, &mut files);
+        let needle = concat!(".cancel", "_token()");
+        let takers: Vec<String> = files
+            .iter()
+            .filter(|p| std::fs::read_to_string(p).unwrap().contains(needle))
+            .map(|p| {
+                p.strip_prefix(&src)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(takers, ["live/worker.rs"]);
+        // And within it, once: the token handed to the decode, kept for cancel and polls().
+        let me = std::fs::read_to_string(src.join("live").join("worker.rs")).unwrap();
+        assert_eq!(me.matches(needle).count(), 1);
     }
 
     #[test]
