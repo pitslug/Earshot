@@ -1009,3 +1009,18 @@ Tokens and time per meeting, means over the 20 dev meetings. **Shared host:** ot
 - **Granite 4.2 3B** is fast because it writes little: 5 decisions and 5 action items over 20 meetings, against 114 and 70 for the 4B; almost everything goes into notes. TS3006a failed at a map step (a repeated item through all three requests).
 - **Granite 4.2 8B** writes 60% more than the 9B and needs 4 times the repairs. TS3004c and TS3006d failed in planning: its map summaries were long enough that the merge needed about 16,400 tokens of a 16,384 context (the production window), so no request was sent. With a larger context they might have run; the rule fixes S16, as production does.
 - No judged round (rule 2 needs rule 1). The fall-back to Granite 4.1 was not needed: llama.cpp loaded and formatted 4.2.
+
+### Results: Ornith 1.5 9B fails the first test (2026-11-12, `target/sum-eval/t1227-ornith`)
+
+Same build and settings as `t1227-dev`, run after it; CUDA (33/33 layers offloaded), prefix `<think>\n\n</think>\n\n` checked in the result header. The pinned llama.cpp loads and formats it. Compared with Qwen 3.5 9B from `t1227-dev`. Raw tables: `docs/summary-eval/t1227/ornith-table.md` and `ornith-tokens.md`.
+
+| Model | Valid | Decisions cov | Actions cov | Coverage total | Decisions / actions written | ROUGE-Lsum | Tokens read | Tokens written | s per meeting (all) | s at hang-up | Rule 1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Qwen 3.5 9B | 20/20 (1 joined) | 43 | 6 | 49 | 140 / 91 | 0.307 | 22,880 | 4,995 | 46.1 | 23.8 | - |
+| Ornith 1.5 9B | 20/20 | 28 | 11 | 39 | 136 / 104 | 0.260 | 22,258 | 4,449 | 40.6 | 21.9 | fails (coverage 39 < 49) |
+
+Means per meeting; seconds from a shared host (other lanes building), not timing figures. Ornith is valid on every meeting with one repair and no loop, and catches more actions (11 against 6), but 15 fewer decisions; no judged round.
+
+### Recommendation
+
+Keep the local writer paused on Qwen 3.5 (4B and 9B as shipped). None of the three candidates earned a judged round under the rule written before generation: Granite 4.2 3B barely writes decisions or actions, Granite 4.2 8B is longer, slower and overruns the production context on two merges, and Ornith 1.5 9B trades decisions for actions at the same speed. T12.25 and T12.26 can be unparked on the Qwen 4B, as their tasks assume. No test split was run and no default changed. The 3B's Surface timing against the 4B (if run) can only show a faster model that does not summarise decisions or actions, so it decides nothing.
