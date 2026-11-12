@@ -978,5 +978,10 @@ A thinking-on run is a separate condition, never the deciding one, and is not pa
 Written before any generation, with the Granite rule. Only once Granite's runs have finished, desktop GPU only, never on the Surface.
 
 - **Model.** `bartowski/Ornith-1.5-9B-GGUF` (a community imatrix quantisation of `ornith-ai/Ornith-1.5-9B`, Qwen 3.5 architecture) at commit `1fc60d68`, `Ornith-1.5-9B-Q4_K_M.gguf`, 5,910,782,848 bytes, LFS SHA-256 `886e98b1...b266` (re-checked 2026-11-12). Licence MIT from the card metadata of both repos (`ornith-ai/Ornith-1.5-9B` at commit `489cb979`); both cards' `license_link` points at a LICENSE file in the base repo that does not exist (HTTP 404 on 2026-11-12), so the MIT text itself was not read from the publisher. Attribution goes to Ornith AI (model) and bartowski (GGUF conversion).
-- **Template.** Read from the GGUF before its manifest entry is committed; the assistant prefix is whatever that template renders with thinking off. If the pinned llama.cpp cannot load it or cannot format its template, that is reported and the screen stops.
+- **Template.** Read from the GGUF before its manifest entry is committed; the assistant prefix is whatever that template renders with thinking off. If the pinned llama.cpp cannot load it or cannot format its template, that is reported and the screen stops. Checked 2026-11-12, before its generation: the GGUF template (7,939 bytes) is Qwen 3.5 9B's with two differences, thinking on by default and a tool-argument loop; with thinking off it renders `<|im_start|>assistant
+<think>
+
+</think>
+
+`, so llama.cpp detects ChatML and the prefix is `QWEN_NO_THINK`, as for the Qwen models. Whether the pinned llama.cpp loads it is known only from its run.
 - **Rule.** Rule 1 above against Qwen 3.5 9B from `t1227-dev` (its own `--out`, `target\sum-eval\t1227-ornith`, same build and settings); rule 2 and 3 likewise, with Qwen 3.5 9B as the class model.
