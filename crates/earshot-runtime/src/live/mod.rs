@@ -71,8 +71,11 @@
 //!   the same message are counted, not re-sent; the count is reported when another
 //!   message arrives or the session ends.
 //! - **Persistence errors** during the meeting (a FLAC write, a live segment) are
-//!   reported and do not stop capture; a failed FLAC writer is aborted and that track
-//!   has no audio file.
+//!   reported and do not stop capture. A failed FLAC write never deletes audio (T9.17): that
+//!   track stops recording and its file is finished at once with the audio before the error
+//!   ([`RuntimeWarning::RecordingStopped`]); the other track goes on, and when every track has
+//!   stopped the session stops the meeting itself ([`RuntimeWarning::EveryRecordingStopped`]).
+//!   Tracks of different lengths are fine: the final pass reads each file as it is.
 //!
 //! # Finalising
 //!
@@ -561,12 +564,34 @@ pub enum RuntimeWarning {
         /// The endpoint now captured.
         device_name: String,
     },
-    /// Writing or finalising a track's recording failed; that track has no audio file.
+    /// Writing or finalising a track's recording failed; that track has no audio file (its
+    /// `.part` is left on disk).
     Recording {
         /// Track.
         track: TrackId,
         /// What failed.
         error: String,
+    },
+    /// Writing a track's recording failed during the meeting, so that track stopped recording
+    /// at `at` (T9.17): the audio before it is kept and finished as a readable file (if even
+    /// that fails, [`RuntimeWarning::Recording`] follows), and the other track goes on. Sent once
+    /// per track, during the meeting and again in [`LiveOutcome::problems`].
+    RecordingStopped {
+        /// Track.
+        track: TrackId,
+        /// Where the kept audio ends.
+        at: MeetingTime,
+        /// The disk (or the user's quota on it) is full.
+        disk_full: bool,
+        /// What failed.
+        error: String,
+    },
+    /// Every track of the meeting stopped recording ([`RuntimeWarning::RecordingStopped`]), so
+    /// the session stopped the meeting itself (the owner, 2026-11-12). Sent once, after the
+    /// last track's `RecordingStopped`, and again in [`LiveOutcome::problems`].
+    EveryRecordingStopped {
+        /// The last failure was a full disk.
+        disk_full: bool,
     },
     /// Storing a row failed (a live segment, or the meeting's duration at the end).
     Persistence(String),
@@ -999,7 +1024,9 @@ where
             track.kind,
             earshot_core::audio::PIPELINE_RATE.hz(),
         ) {
-            Ok(w) => writers[slot(track.kind)] = Some(w),
+            Ok(w) => {
+                writers[slot(track.kind)] = Some(with_test_fault(&services.data, track.kind, w));
+            }
             Err(e) => {
                 abort(&mut writers);
                 return Err(e.into());
@@ -1128,6 +1155,8 @@ where
         previews,
         next_preview_power: None,
         speaking: [false, false],
+        recording_stopped: [false, false],
+        stop_self: false,
     };
     let flag = Arc::clone(&stop);
     let spawned = std::thread::Builder::new()
@@ -1147,6 +1176,29 @@ where
         stop,
         thread: Some(thread),
     })
+}
+
+/// `w` with the write failure a test set for `track` ([`write_faults`]).
+#[cfg(test)]
+fn with_test_fault(
+    data: &earshot_store::DataDir,
+    track: TrackId,
+    mut w: FlacTrackWriter,
+) -> FlacTrackWriter {
+    if let Some(fault) = write_faults::take(data, track) {
+        w.inject_fault(fault);
+    }
+    w
+}
+
+/// `w` unchanged: production never injects a failure.
+#[cfg(not(test))]
+fn with_test_fault(
+    _data: &earshot_store::DataDir,
+    _track: TrackId,
+    w: FlacTrackWriter,
+) -> FlacTrackWriter {
+    w
 }
 
 /// Tombstones a meeting whose session could not start.
@@ -1269,6 +1321,10 @@ struct Session<S> {
     next_preview_power: Option<Instant>,
     /// Each track's voice activity now (by [`slot`]).
     speaking: [bool; 2],
+    /// Each track whose recording stopped on a write error (by [`slot`], T9.17).
+    recording_stopped: [bool; 2],
+    /// Every track stopped recording, so the session stops the meeting itself.
+    stop_self: bool,
 }
 
 impl<S> Session<S>
@@ -1316,7 +1372,7 @@ where
         self.begin_hold();
         let mut stop_sent = false;
         while !self.pipeline.is_ended() {
-            if !stop_sent && stop.load(Ordering::Acquire) {
+            if !stop_sent && (self.stop_self || stop.load(Ordering::Acquire)) {
                 self.source.stop();
                 stop_sent = true;
             }
@@ -1835,14 +1891,77 @@ where
             return;
         };
         if let Err(e) = writer.write(samples) {
-            if let Some(w) = self.writers[slot(track)].take() {
-                let _ = w.abort();
-            }
-            self.warn(RuntimeWarning::Recording {
-                track,
-                error: e.to_string(),
-            });
+            self.recording_failed(track, &e);
         }
+    }
+
+    /// A write to `track`'s recording failed (T9.17): the track stops recording and its file
+    /// is finished at once with the audio written before the error (a later crash then loses
+    /// nothing more), the user hears it once, and when no track records any more the session
+    /// stops the meeting itself.
+    fn recording_failed(&mut self, track: TrackId, error: &earshot_store::StoreError) {
+        let Some(writer) = self.writers[slot(track)].take() else {
+            return;
+        };
+        self.recording_stopped[slot(track)] = true;
+        let at = MeetingTime::from_pipeline_frames(writer.whole_frames());
+        let disk_full = error.is_disk_full();
+        let finished = self.finalize(track, writer);
+        let stopped = RuntimeWarning::RecordingStopped {
+            track,
+            at,
+            disk_full,
+            error: error.to_string(),
+        };
+        self.warn(stopped.clone());
+        self.problems.push(stopped);
+        match finished {
+            Some(Ok(file)) => self.audio_files.push((track, file.id)),
+            Some(Err(e)) => {
+                let w = RuntimeWarning::Recording {
+                    track,
+                    error: e.to_string(),
+                };
+                self.warn(w.clone());
+                self.problems.push(w);
+            }
+            None => {}
+        }
+        let all = self
+            .tracks
+            .iter()
+            .all(|t| self.recording_stopped[slot(t.kind)]);
+        if all && !self.stop_self {
+            self.stop_self = true;
+            let w = RuntimeWarning::EveryRecordingStopped { disk_full };
+            self.warn(w.clone());
+            self.problems.push(w);
+        }
+    }
+
+    /// Finishes `writer` (whole, or as far as it got after a failed write) into `track`'s
+    /// `AudioFile` row; `None` when the session has no such track.
+    fn finalize(
+        &mut self,
+        track: TrackId,
+        writer: FlacTrackWriter,
+    ) -> Option<Result<earshot_core::model::AudioFile, earshot_store::StoreError>> {
+        let row = self.tracks.iter().find(|t| t.kind == track)?.clone();
+        let provenance = AudioProvenance {
+            pipeline_version: PIPELINE_VERSION.to_owned(),
+            aec_version: (track == TrackId::Mic && self.capture.reference.is_some())
+                .then(|| AEC_VERSION.to_owned()),
+        };
+        let clock = Arc::clone(&self.services.clock);
+        let mut db = self.services.store();
+        Some(db.finalize_track_audio(
+            writer,
+            &self.services.data,
+            &row,
+            provenance,
+            &*clock,
+            &mut *self.rng,
+        ))
     }
 
     fn store_live(&mut self, segment: earshot_core::asr::Segment) {
@@ -1963,32 +2082,21 @@ where
             return;
         };
         let clock = Arc::clone(&self.services.clock);
-        let has_reference = self.capture.reference.is_some();
-        let mut db = self.services.store();
-        for track in &self.tracks {
-            let Some(writer) = self.writers[slot(track.kind)].take() else {
+        let kinds: Vec<TrackId> = self.tracks.iter().map(|t| t.kind).collect();
+        for track in kinds {
+            let Some(writer) = self.writers[slot(track)].take() else {
                 continue;
             };
-            let provenance = AudioProvenance {
-                pipeline_version: PIPELINE_VERSION.to_owned(),
-                aec_version: (track.kind == TrackId::Mic && has_reference)
-                    .then(|| AEC_VERSION.to_owned()),
-            };
-            match db.finalize_track_audio(
-                writer,
-                &self.services.data,
-                track,
-                provenance,
-                &*clock,
-                &mut *self.rng,
-            ) {
-                Ok(file) => self.audio_files.push((track.kind, file.id)),
-                Err(e) => self.problems.push(RuntimeWarning::Recording {
-                    track: track.kind,
+            match self.finalize(track, writer) {
+                Some(Ok(file)) => self.audio_files.push((track, file.id)),
+                Some(Err(e)) => self.problems.push(RuntimeWarning::Recording {
+                    track,
                     error: e.to_string(),
                 }),
+                None => {}
             }
         }
+        let mut db = self.services.store();
         // Re-read: only the duration changes, edits made during the meeting are kept.
         match db.meeting(self.meeting_id) {
             Ok(Some(mut meeting)) => {
@@ -2107,5 +2215,36 @@ where
             echo_words_removed: self.echo.removed(),
             echo_locks: self.echo.locks().to_vec(),
         })
+    }
+}
+
+/// Write failures injected by tests into a session's FLAC writers (T9.17), keyed by the data
+/// directory so tests running at once never see each other's.
+#[cfg(test)]
+pub(crate) mod write_faults {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    use earshot_core::capture::TrackId;
+    use earshot_store::{DataDir, WriteFault};
+
+    static FAULTS: Mutex<Vec<(PathBuf, TrackId, WriteFault)>> = Mutex::new(Vec::new());
+
+    /// The next session on `data` gets `fault` on `track`'s writer.
+    pub(crate) fn set(data: &DataDir, track: TrackId, fault: WriteFault) {
+        let mut f = FAULTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f.push((data.root().to_owned(), track, fault));
+    }
+
+    pub(super) fn take(data: &DataDir, track: TrackId) -> Option<WriteFault> {
+        let mut f = FAULTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let i = f
+            .iter()
+            .position(|(root, t, _)| root == data.root() && *t == track)?;
+        Some(f.remove(i).2)
     }
 }

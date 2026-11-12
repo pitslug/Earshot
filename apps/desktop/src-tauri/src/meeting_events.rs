@@ -557,6 +557,34 @@ fn gap_length(total: Duration) -> String {
     }
 }
 
+/// A time into the meeting as a clock reads it: `m:ss`, or `h:mm:ss` from an hour.
+fn meeting_clock(ms: u64) -> String {
+    let s = ms / 1000;
+    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// The banner key of [`RuntimeWarning::EveryRecordingStopped`]; the shell notifies on it
+/// whether or not the window is watched (T9.17).
+pub const RECORDING_STOPPED_KEY: &str = "recording-stopped";
+
+/// What the user is told when every track stopped recording and the meeting stopped itself
+/// (T9.17): fixed copy, also the notification's body.
+#[must_use]
+pub fn every_recording_stopped_message(disk_full: bool) -> &'static str {
+    if disk_full {
+        "Earshot stopped this meeting because the disk is full. What was recorded before that is \
+         kept. Free some space before the next meeting."
+    } else {
+        "Earshot stopped this meeting because it could not save any more audio. What was \
+         recorded before that is kept."
+    }
+}
+
 /// The banner after a recording stopped by itself (T9.4): the user may want to know it was cut.
 #[must_use]
 pub fn call_end_stopped_warning() -> MeetingEvent {
@@ -774,6 +802,35 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
                 format!("The recording of {} failed: {error}", t.device()),
             )
         }
+        // The same key as the failure above: a file that could not even be finished replaces it.
+        RuntimeWarning::RecordingStopped {
+            track,
+            at,
+            disk_full,
+            error,
+        } => {
+            let t = LiveTrack::of(*track);
+            let why = if *disk_full {
+                "the disk is full".to_owned()
+            } else {
+                format!("saving it failed: {error}")
+            };
+            warning(
+                format!("recording:{}", t.key()),
+                WarningKind::Recording,
+                format!(
+                    "The recording of {} stopped at {} because {why}. What was recorded before \
+                     that is kept.",
+                    t.device(),
+                    meeting_clock(at.as_millis())
+                ),
+            )
+        }
+        RuntimeWarning::EveryRecordingStopped { disk_full } => warning(
+            RECORDING_STOPPED_KEY.into(),
+            WarningKind::Recording,
+            every_recording_stopped_message(*disk_full).into(),
+        ),
         RuntimeWarning::Persistence(m) => warning(
             "storage".into(),
             WarningKind::Storage,

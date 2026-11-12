@@ -3259,6 +3259,246 @@ fn live_recording_gap_is_not_reported_when_nothing_was_lost_from_the_mic() {
     assert_eq!(recording_gaps(true, &[], 150), (vec![], None));
 }
 
+/// A two-track meeting of `total_ms` with `faults` injected into its writers: its events, its
+/// outcome and each track's FLAC as stored (`None`: no audio row).
+struct Faulted {
+    events: Vec<RuntimeEvent>,
+    outcome: LiveOutcome,
+    flacs: [Option<Vec<f32>>; 2],
+    svc: Services,
+    _dir: TempDir,
+}
+
+fn faulted_meeting(
+    total_ms: u64,
+    faults: &[(TrackId, earshot_store::WriteFault)],
+    seed: u64,
+) -> Faulted {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    for &(track, fault) in faults {
+        super::write_faults::set(&svc.data, track, fault);
+    }
+    let talk = words("a", 500, (total_ms / 400) as usize - 3);
+    let far = words("r", 700, (total_ms / 400) as usize - 3);
+    let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, speech(&talk, total_ms, seed)))
+        .reference(MonoBuffer::new(R16, speech(&far, total_ms, seed + 1)))
+        .build()
+        .unwrap();
+    let session = start_live(
+        source,
+        svc.clone(),
+        config(earshot_core::model::ClockDomain::Replay),
+        None,
+        Box::new(ChaCha8Rng::seed_from_u64(seed + 2)),
+    )
+    .unwrap();
+    let (events, outcome) = collect(session);
+    let mut flacs = [None, None];
+    {
+        let store = svc.store();
+        for f in store.audio_files(outcome.meeting).unwrap() {
+            let track = store
+                .tracks(outcome.meeting)
+                .unwrap()
+                .into_iter()
+                .find(|t| t.id == f.track_id)
+                .unwrap();
+            let (rate, samples) = read_flac(&svc.data.resolve(&f.path).unwrap()).unwrap();
+            assert_eq!(rate, 16_000);
+            assert_eq!(f.frames, samples.len() as u64, "the row matches the file");
+            flacs[slot(track.kind)] = Some(samples);
+        }
+    }
+    Faulted {
+        events,
+        outcome,
+        flacs,
+        svc,
+        _dir: dir,
+    }
+}
+
+fn stopped_warnings(events: &[RuntimeEvent]) -> Vec<RuntimeWarning> {
+    warnings(events)
+        .into_iter()
+        .filter(|w| {
+            matches!(
+                w,
+                RuntimeWarning::RecordingStopped { .. }
+                    | RuntimeWarning::EveryRecordingStopped { .. }
+                    | RuntimeWarning::Recording { .. }
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn live_recording_write_failure_keeps_the_audio_before_it_and_the_other_track() {
+    // T9.17: a full disk part way through the mic's recording. The same meeting without the
+    // failure is the control: the replay is deterministic, so the cut file must be exactly the
+    // start of the control's.
+    let whole = faulted_meeting(12_000, &[], 200);
+    assert!(stopped_warnings(&whole.events).is_empty());
+    let full = earshot_store::WriteFault::DiskFullAfter(40_000);
+    let cut = faulted_meeting(12_000, &[(TrackId::Mic, full)], 200);
+
+    let control_mic = whole.flacs[0].clone().expect("control mic");
+    let control_ref = whole.flacs[1].clone().expect("control reference");
+    let mic = cut.flacs[0]
+        .clone()
+        .expect("the cut mic is a readable file with its row");
+    assert!(
+        !mic.is_empty() && mic.len() < control_mic.len(),
+        "{} of {}",
+        mic.len(),
+        control_mic.len()
+    );
+    assert_eq!(
+        mic,
+        control_mic[..mic.len()],
+        "the audio before the error, bit for bit"
+    );
+    assert_eq!(
+        cut.flacs[1].as_deref(),
+        Some(&control_ref[..]),
+        "the reference goes on"
+    );
+
+    // Said once during the meeting, with where it stopped and why, and again in the outcome.
+    let at = MeetingTime::from_pipeline_frames(mic.len() as u64);
+    let said = stopped_warnings(&cut.events);
+    assert!(
+        matches!(
+            said.as_slice(),
+            [RuntimeWarning::RecordingStopped {
+                track: TrackId::Mic,
+                at: a,
+                disk_full: true,
+                ..
+            }] if *a == at
+        ),
+        "{said:?}"
+    );
+    assert!(
+        cut.outcome.problems.contains(&said[0]),
+        "{:?}",
+        cut.outcome.problems
+    );
+    assert!(
+        !cut.outcome
+            .problems
+            .iter()
+            .any(|p| matches!(p, RuntimeWarning::EveryRecordingStopped { .. })),
+        "one track still records"
+    );
+    // The meeting ran to its end and keeps both files.
+    assert_eq!(cut.outcome.reason, EndReason::Finished);
+    assert_eq!(cut.outcome.end, whole.outcome.end);
+    assert_eq!(cut.outcome.audio_files.len(), 2);
+    // Nothing is left half written.
+    let dir = cut
+        .svc
+        .data
+        .root()
+        .join("audio")
+        .join(cut.outcome.meeting.to_string());
+    let parts = std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|x| x == "part")
+        })
+        .count();
+    assert_eq!(parts, 0);
+}
+
+#[test]
+fn live_recording_every_track_failing_stops_the_meeting_itself() {
+    let full = earshot_store::WriteFault::DiskFullAfter(20_000);
+    let cut = faulted_meeting(
+        60_000,
+        &[(TrackId::Mic, full), (TrackId::Reference, full)],
+        210,
+    );
+    let said = stopped_warnings(&cut.events);
+    let stopped: Vec<TrackId> = said
+        .iter()
+        .filter_map(|w| match w {
+            RuntimeWarning::RecordingStopped {
+                track,
+                disk_full: true,
+                ..
+            } => Some(*track),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stopped.len(), 2, "{said:?}");
+    assert!(stopped.contains(&TrackId::Mic) && stopped.contains(&TrackId::Reference));
+    // Once, after both tracks said so.
+    assert_eq!(
+        said.last(),
+        Some(&RuntimeWarning::EveryRecordingStopped { disk_full: true })
+    );
+    assert_eq!(said.len(), 3, "{said:?}");
+    assert!(
+        cut.outcome
+            .problems
+            .contains(&RuntimeWarning::EveryRecordingStopped { disk_full: true })
+    );
+    // The session stopped it, long before the 60 s replay ran out.
+    assert_eq!(cut.outcome.reason, EndReason::Stopped);
+    assert!(
+        cut.outcome.end < MeetingTime::from_millis(60_000),
+        "{:?}",
+        cut.outcome.end
+    );
+    // Both files keep their audio.
+    for f in &cut.flacs {
+        assert!(f.as_ref().is_some_and(|s| !s.is_empty()));
+    }
+    assert!(matches!(cut.events.last(), Some(RuntimeEvent::Ended(_))));
+}
+
+#[test]
+fn live_recording_that_cannot_be_finished_keeps_its_part_file() {
+    // A drive that went away: the file cannot even be finished, so it stays as `.part` for
+    // recovery (T9.18) and the track has no row; the meeting goes on with the other track.
+    let broken = earshot_store::WriteFault::BrokenAfter(30_000);
+    let cut = faulted_meeting(12_000, &[(TrackId::Mic, broken)], 220);
+    assert!(cut.flacs[0].is_none());
+    assert!(cut.flacs[1].is_some());
+    let said = stopped_warnings(&cut.events);
+    assert!(
+        matches!(
+            said.as_slice(),
+            [
+                RuntimeWarning::RecordingStopped {
+                    track: TrackId::Mic,
+                    disk_full: false,
+                    ..
+                },
+                RuntimeWarning::Recording {
+                    track: TrackId::Mic,
+                    ..
+                },
+            ]
+        ),
+        "{said:?}"
+    );
+    let part = cut
+        .svc
+        .data
+        .resolve(&DataDir::audio_rel(cut.outcome.meeting, TrackId::Mic))
+        .unwrap()
+        .with_extension("flac.part");
+    assert!(part.exists(), "never deleted");
+    assert_eq!(cut.outcome.reason, EndReason::Finished);
+}
+
 #[test]
 fn live_voice_activity_stays_off_on_silence_and_ends_with_the_session() {
     // Negative control: quiet noise only, no "speaking" ever.

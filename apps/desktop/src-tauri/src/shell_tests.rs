@@ -359,6 +359,37 @@ fn call_end_toast_is_fixed_copy_that_stays_and_answers_in_one_click() {
 }
 
 #[test]
+fn shell_meeting_that_stopped_itself_always_notifies_with_fixed_copy() {
+    // T9.17: the banner of a meeting no track could record any more asks for a notification,
+    // whatever the window shows; no other banner does.
+    let stopped = crate::meeting_events::warning_event(
+        &earshot_runtime::live::RuntimeWarning::EveryRecordingStopped { disk_full: true },
+    )
+    .unwrap();
+    assert_eq!(
+        always_shown_toast(&stopped),
+        Some(recording_stopped_toast())
+    );
+    let other = crate::meeting_events::warning_event(
+        &earshot_runtime::live::RuntimeWarning::RecordingStopped {
+            track: earshot_core::capture::TrackId::Mic,
+            at: earshot_core::asr::MeetingTime::from_millis(1000),
+            disk_full: true,
+            error: "full".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(always_shown_toast(&other), None);
+    assert_eq!(always_shown_toast(&started()), None);
+    assert_eq!(always_shown_toast(&ended()), None);
+    let t = recording_stopped_toast();
+    assert!(!t.stays);
+    assert!(t.buttons.is_empty());
+    // Its own notification said it ended: the end's is not shown after it.
+    assert_eq!(ended_toast(EndedReason::Stopped, true), None);
+}
+
+#[test]
 fn call_end_question_closes_with_the_recording_and_not_with_an_older_meetings_summary() {
     let offer = |open| MeetingEvent::CallEndOffer { open };
     let summary = |meeting: &str| MeetingEvent::Summary {

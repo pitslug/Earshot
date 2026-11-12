@@ -35,6 +35,6 @@ pub use export::{
     ExportAction, ExportDb, ExportItem, ExportReport, VaultError, export_note, export_notes,
     validate_vault,
 };
-pub use flac::{FinishedFlac, FlacTrackWriter, read_flac};
+pub use flac::{FinishedFlac, FlacTrackWriter, WriteFault, read_flac};
 pub use fsutil::total_memory;
 pub use layout::DataDir;

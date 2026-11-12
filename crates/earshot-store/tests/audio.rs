@@ -14,7 +14,7 @@ use earshot_core::model::{
 use earshot_core::prompt::Template;
 use earshot_store::{
     AudioProvenance, DAY_MS, DataDir, FlacTrackWriter, HOUR_MS, RETENTION_CLOCK_PREFIX,
-    RETENTION_CLOCK_VERSION, RetentionClock, RetentionPolicy, Store, StoreError,
+    RETENTION_CLOCK_VERSION, RetentionClock, RetentionPolicy, Store, StoreError, WriteFault,
     decode_retention_clock, due_audio, encode_retention_clock, load_meeting_audio, read_flac,
     remove_audio, retention_clock, retention_clock_key, run_retention,
 };
@@ -192,6 +192,151 @@ fn flac_writer_never_overwrites_a_finished_file() {
         .finish()
         .unwrap();
     assert!(FlacTrackWriter::create(&path, 16_000).is_err());
+}
+
+/// Writes `input` in uneven chunks through `fault` until a write fails; returns the writer
+/// and how many samples were offered before the failure (all of them when none failed).
+fn write_until_failure(
+    path: &std::path::Path,
+    input: &[f32],
+    fault: WriteFault,
+) -> (FlacTrackWriter, usize) {
+    let mut w = FlacTrackWriter::create(path, 16_000).unwrap();
+    w.inject_fault(fault);
+    let mut offered = 0;
+    for chunk in input.chunks(777) {
+        offered += chunk.len();
+        if w.write(chunk).is_err() {
+            assert!(w.has_failed());
+            // The writer takes nothing more after its first error.
+            assert!(w.write(&input[..10]).is_err());
+            return (w, offered);
+        }
+    }
+    (w, offered)
+}
+
+/// Pseudo-random samples that compress little, so frame sizes are predictable (several KB).
+fn noisy(n: usize) -> Vec<f32> {
+    let mut x: u32 = 0x1234_5678;
+    (0..n)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            ((x >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * 0.6
+        })
+        .collect()
+}
+
+fn quantised(input: &[f32]) -> Vec<i32> {
+    input.iter().map(|&x| i32::from(f32_to_i16(x))).collect()
+}
+
+#[test]
+fn flac_disk_full_keeps_every_whole_frame_written_before_it() {
+    // T9.17: a full disk late in a meeting must not delete what was recorded. The fault lands
+    // at many offsets: before the first frame, inside frames, on a frame boundary.
+    let input = noisy(4096 * 6 + 999);
+    let tmp = TempDir::new("flac-full");
+    let mut boundary = None;
+    for (i, limit) in [0u64, 1, 500, 3000, 9000, 15_000, 21_000]
+        .into_iter()
+        .enumerate()
+    {
+        let path = tmp.path().join(format!("f{i}.flac"));
+        let (w, _) = write_until_failure(&path, &input, WriteFault::DiskFullAfter(limit));
+        assert!(w.has_failed(), "limit {limit} is inside the audio");
+        let kept = w.whole_frames();
+        let done = w
+            .finish()
+            .expect("a full disk still lets the header be rewritten");
+        assert!(done.cut_short);
+        assert_eq!(done.frames, kept);
+        assert_eq!(done.size_bytes, std::fs::metadata(&path).unwrap().len());
+        assert!(!path.with_extension("flac.part").exists());
+        // Whole 4096-sample frames, exactly the start of the input.
+        assert_eq!(kept % 4096, 0, "limit {limit}");
+        let mut r = claxon::FlacReader::open(&path).unwrap();
+        // FLAC writes 0 for an unknown total, which claxon reads as None.
+        let want = (kept > 0).then_some(kept);
+        assert_eq!(r.streaminfo().samples, want);
+        assert_eq!(r.streaminfo().md5sum, [0; 16], "MD5 unknown after a cut");
+        let got: Vec<i32> = r.samples().map(Result::unwrap).collect();
+        assert_eq!(got, quantised(&input[..kept as usize]), "limit {limit}");
+        let (_, decoded) = read_flac(&path).unwrap();
+        assert_eq!(decoded.len() as u64, kept);
+        if limit == 0 {
+            assert_eq!(kept, 0, "nothing fits: an empty but valid file");
+        }
+        if kept > 0 {
+            boundary.get_or_insert(kept);
+        }
+    }
+    assert!(boundary.is_some(), "some limit kept audio");
+}
+
+#[test]
+fn flac_disk_full_on_the_last_partial_frame_keeps_the_frames_before_it() {
+    // The failure comes only in finish(), encoding the last partial block.
+    let input = noisy(4096 * 2 + 1000);
+    let tmp = TempDir::new("flac-full-end");
+    let path = tmp.path().join("e.flac");
+    let mut w = FlacTrackWriter::create(&path, 16_000).unwrap();
+    w.write(&input).unwrap();
+    // Two whole frames are on disk; nothing more fits.
+    w.inject_fault(WriteFault::DiskFullAfter(0));
+    let done = w.finish().unwrap();
+    assert!(done.cut_short);
+    assert_eq!(done.frames, 4096 * 2);
+    let (_, decoded) = read_flac(&path).unwrap();
+    assert_eq!(decoded.len(), 4096 * 2);
+}
+
+#[test]
+fn flac_broken_drive_leaves_the_part_file_for_recovery() {
+    let input = noisy(4096 * 4);
+    let tmp = TempDir::new("flac-broken");
+    let path = tmp.path().join("b.flac");
+    let (w, _) = write_until_failure(&path, &input, WriteFault::BrokenAfter(6000));
+    assert!(w.has_failed());
+    assert!(w.finish().is_err(), "the file cannot be finished");
+    assert!(!path.exists());
+    let part = path.with_extension("flac.part");
+    assert!(part.exists(), "never deleted");
+    assert!(std::fs::metadata(&part).unwrap().len() >= 6000);
+}
+
+#[test]
+fn flac_fault_never_reached_finishes_whole() {
+    // Negative control: a limit beyond the recording changes nothing.
+    let input = sine(4096 * 3 + 17);
+    let tmp = TempDir::new("flac-fault-late");
+    let path = tmp.path().join("l.flac");
+    let (w, offered) = write_until_failure(&path, &input, WriteFault::DiskFullAfter(10_000_000));
+    assert_eq!(offered, input.len());
+    assert!(!w.has_failed());
+    let done = w.finish().unwrap();
+    assert!(!done.cut_short);
+    assert_eq!(done.frames, input.len() as u64);
+    let r = claxon::FlacReader::open(&path).unwrap();
+    assert_ne!(r.streaminfo().md5sum, [0; 16]);
+}
+
+#[test]
+fn flac_disk_full_errors_are_named_as_such() {
+    let full = StoreError::Io(std::io::Error::from(std::io::ErrorKind::StorageFull));
+    assert!(full.is_disk_full());
+    let quota = StoreError::Io(std::io::Error::from(std::io::ErrorKind::QuotaExceeded));
+    assert!(quota.is_disk_full());
+    #[cfg(windows)]
+    assert!(StoreError::Io(std::io::Error::from_raw_os_error(112)).is_disk_full());
+    assert!(!StoreError::Io(std::io::Error::other("gone")).is_disk_full());
+    assert!(!StoreError::Audio("encode".into()).is_disk_full());
+    // What the writer reports for an injected full disk is a full disk.
+    let tmp = TempDir::new("flac-full-kind");
+    let mut w = FlacTrackWriter::create(&tmp.path().join("k.flac"), 16_000).unwrap();
+    w.inject_fault(WriteFault::DiskFullAfter(0));
+    let e = w.write(&sine(4096)).unwrap_err();
+    assert!(e.is_disk_full(), "{e:?}");
 }
 
 #[test]

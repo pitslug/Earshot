@@ -432,8 +432,9 @@ pub fn listening_toast() -> Toast {
 }
 
 /// The notification when a recording ends for `reason` with no window on screen, so a stop by the
-/// shortcut is confirmed before the summary arrives; `None` after the call-end stop, whose own
-/// notification already said it ([`call_end_stopped_toast`]). Fixed copy, never meeting content.
+/// shortcut is confirmed before the summary arrives; `None` after the call-end stop or a meeting that
+/// stopped because no track could record, whose own notification already said it
+/// ([`call_end_stopped_toast`], [`recording_stopped_toast`]). Fixed copy, never meeting content.
 #[must_use]
 pub fn ended_toast(reason: EndedReason, stopped_by_call_end: bool) -> Option<Toast> {
     if stopped_by_call_end {
@@ -483,6 +484,36 @@ pub fn call_end_stopped_toast() -> Toast {
         click: ToastClick::Window,
         buttons: Vec::new(),
         stays: false,
+    }
+}
+
+/// The notification that every track stopped recording and the meeting stopped itself (T9.17):
+/// shown whether or not the window is watched, because nothing more is being recorded. Fixed
+/// copy, never meeting content.
+#[must_use]
+pub fn recording_stopped_toast() -> Toast {
+    Toast {
+        title: "Earshot stopped recording".into(),
+        body: "It could not save any more audio. What was recorded is kept: open Earshot to see \
+               why."
+            .into(),
+        click: ToastClick::Window,
+        buttons: Vec::new(),
+        stays: false,
+    }
+}
+
+/// The notification `event` asks for whatever the window shows: only the banner of a meeting
+/// that stopped itself because no track could record ([`recording_stopped_toast`]).
+#[must_use]
+pub fn always_shown_toast(event: &MeetingEvent) -> Option<Toast> {
+    match event {
+        MeetingEvent::Warning { key, .. }
+            if key == crate::meeting_events::RECORDING_STOPPED_KEY =>
+        {
+            Some(recording_stopped_toast())
+        }
+        _ => None,
     }
 }
 
@@ -580,7 +611,8 @@ pub struct Shell {
     has_tray: AtomicBool,
     /// The call-end question is open ([`call_end_open_after`]).
     call_end_open: AtomicBool,
-    /// The call-end offer stopped this recording ([`ended_toast`] says nothing more).
+    /// The call-end offer stopped this recording, or every track stopped recording (T9.17): its own
+    /// notification said so, and [`ended_toast`] says nothing more.
     call_end_stopped: AtomicBool,
     #[cfg(windows)]
     toasts: crate::toast_win::Toaster,
@@ -808,6 +840,13 @@ impl Shell {
         self.call_end_open.store(open, Ordering::SeqCst);
         if was && !open {
             self.take_back_call_end_toast();
+        }
+        // Once per meeting (the banner comes again with the saved recording's problems); its own
+        // notification says the recording ended, so the end's is not shown after it.
+        if let Some(toast) = always_shown_toast(event)
+            && !self.call_end_stopped.swap(true, Ordering::SeqCst)
+        {
+            self.notify(&toast, None);
         }
         match event {
             MeetingEvent::Started { .. } => self.call_end_stopped.store(false, Ordering::SeqCst),

@@ -464,6 +464,54 @@ fn meeting_events_every_runtime_warning_has_a_banner_with_plain_copy() {
 }
 
 #[test]
+fn meeting_events_a_stopped_recording_says_when_and_why_in_plain_words() {
+    // T9.17: once per track (one key per track), the time it stopped and a full disk named.
+    let stopped = |track, ms, disk_full| {
+        banner(&RuntimeWarning::RecordingStopped {
+            track,
+            at: MeetingTime::from_millis(ms),
+            disk_full,
+            error: "os error 112".into(),
+        })
+    };
+    let (key, kind, message) = stopped(TrackId::Mic, 754_200, true);
+    assert_copy(&message);
+    assert_eq!(
+        (key.as_str(), kind),
+        ("recording:you", WarningKind::Recording)
+    );
+    assert_eq!(
+        message,
+        "The recording of your microphone stopped at 12:34 because the disk is full. What was \
+         recorded before that is kept."
+    );
+    assert!(!message.contains("112"), "a full disk needs no error code");
+    let (key, _, message) = stopped(TrackId::Reference, 3_725_000, false);
+    assert_copy(&message);
+    assert_eq!(key, "recording:them");
+    assert!(message.contains("at 1:02:05"), "{message}");
+    assert!(
+        message.contains("os error 112"),
+        "any other failure says what it was"
+    );
+    // A file that could not even be finished replaces that banner.
+    let (failed_key, _, _) = banner(&RuntimeWarning::Recording {
+        track: TrackId::Mic,
+        error: "gone".into(),
+    });
+    assert_eq!(failed_key, "recording:you");
+
+    for disk_full in [true, false] {
+        let (key, kind, message) = banner(&RuntimeWarning::EveryRecordingStopped { disk_full });
+        assert_copy(&message);
+        assert_eq!(key, RECORDING_STOPPED_KEY);
+        assert_eq!(kind, WarningKind::Recording);
+        assert_eq!(message, every_recording_stopped_message(disk_full));
+        assert_eq!(message.contains("disk is full"), disk_full);
+    }
+}
+
+#[test]
 fn meeting_events_a_chosen_device_that_is_gone_says_what_is_recorded_instead() {
     let w = |track, chosen: &str, error: Option<&str>| {
         banner(&RuntimeWarning::ChosenDeviceUnavailable {
