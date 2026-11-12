@@ -411,10 +411,14 @@ fn audio_check_failures_reach_the_page_as_plain_words() {
     assert_eq!(
         events.lock().unwrap().clone(),
         [AudioCheckEvent::Failed {
-            message:
-                "The audio check did not finish: the sounds could not be played: device in use."
-                    .into()
+            message: CAPTURE_FAILED.into()
         }]
     );
+    // The runtime's own words never reach the page.
+    let shown = failure_copy(&RuntimeError::Capture(
+        "the capture failed: Device { hresult: -2004287480 }".into(),
+    ));
+    assert_eq!(shown, CAPTURE_FAILED);
+    assert!(!shown.contains("hresult") && !shown.contains("Device {"));
     assert_eq!(failure_copy(&RuntimeError::Poisoned), OTHER_FAILED);
 }
