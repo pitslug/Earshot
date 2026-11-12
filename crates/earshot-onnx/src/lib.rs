@@ -8,6 +8,7 @@
 pub mod embed;
 pub mod fbank;
 pub mod nemo_mel;
+pub mod nemotron;
 pub mod parakeet;
 pub mod qnn;
 pub mod runtime;

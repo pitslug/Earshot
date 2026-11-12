@@ -164,9 +164,20 @@ mod tests {
                 "helpers-x64",
                 "helpers-arm64",
                 "cuda-libraries",
-                "qnn-models"
+                "qnn-models",
+                "stream-eval"
             ]
         );
+        // The streaming models of T12.23 are evaluation only (the owner agreed NVIDIA's Open
+        // Model License for evaluation, 2026-11-12): they join no other set.
+        assert!(!ids(&m, "stream-eval").is_empty());
+        for a in m
+            .artefacts
+            .iter()
+            .filter(|a| a.sets.iter().any(|s| s == "stream-eval"))
+        {
+            assert_eq!(a.sets, ["stream-eval"], "{}", a.id);
+        }
         // NVIDIA's libraries for the app's opt-in download (T8.4ae) join no other set: never ci
         // or desktop, whatever `--set all` fetches.
         assert!(!ids(&m, "cuda-libraries").is_empty());
@@ -562,7 +573,12 @@ mod tests {
             // Earshot's own NPU conversions of the CC-BY-4.0 Parakeet models (T8.4g, PLAN 7:
             // published with the credit), in their own set only.
             let npu_only = a.sets == [crate::qnn_pack::SET];
-            let allowed: &[&str] = if eval_only || npu_only {
+            // NVIDIA's Open Model License, agreed by the owner for evaluation only (T12.23,
+            // 2026-11-12), is allowed only in the streaming evaluation set, which nothing ships.
+            let stream_eval_only = a.sets == ["stream-eval"];
+            let allowed: &[&str] = if stream_eval_only {
+                &["MIT", "Apache-2.0", "LicenseRef-NVIDIA-Open-Model-License"]
+            } else if eval_only || npu_only {
                 &["MIT", "Apache-2.0", "CC-BY-4.0"]
             } else if qnn_only {
                 &["MIT", "Apache-2.0", "MIT AND LicenseRef-Qualcomm-AI-Stack"]

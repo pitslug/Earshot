@@ -5,7 +5,8 @@
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root>
 //!     [--audio bundled|continuous] [--backend cpu|cuda|qnn] [--models <dir>] [--speakers on|off]
 //!     [--seconds <n>] [--previews off|on|everyone] [--force-previews] [--card-memory-gib <n>]
-//!     [--window <s>] [--interval <s>] [--out <file.json>]
+//!     [--window <s>] [--interval <s>] [--stream nemotron] [--stream-threads <n>]
+//!     [--out <file.json>]
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root> --memory
 //!     [--backend cpu|cuda|qnn] [--card-memory-gib <n>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- <repo-root>
@@ -35,6 +36,14 @@
 //! thread, with no preview (`alone`), the preview on its own session (`own`, today) or borrowing
 //! the track's encoder through `backends::load_preview_sharing_encoder` (`shared`). It reports
 //! every real decode's time, its wait for the shared encoder's lock and a hash of its words.
+//!
+//! `--stream nemotron` (evaluation only, T12.23) gives each previewed track a streaming model
+//! instead of window decodes: NVIDIA's Nemotron Speech Streaming 0.6B (manifest set `stream-eval`,
+//! licence agreed for evaluation only) through `backends::load_nemotron_preview`, on
+//! `--stream-threads` (default 2) background CPU threads, fed every packet of the track's audio
+//! once (`LivePreviews::stream`). Which tracks have previews follows `--previews`; the app's
+//! preview rule is not applied (it is about window sessions). `preview_sessions` records each load
+//! with its placement, and the report's `stream` names the model and threads.
 //!
 //! Audio (public only): `bundled` is the Settings benchmark's meeting (AMI ES2004a, two tracks);
 //! `continuous` is `fixtures/smoke` joined with 200 ms gaps on the reference track, the mic
@@ -73,12 +82,12 @@ use earshot_core::audio::{MonoBuffer, PIPELINE_RATE};
 use earshot_core::capture::{DeviceTime, ReplayBuilder, TrackId};
 use earshot_core::model::ClockDomain;
 use earshot_runtime::backends::{
-    Accelerator, ModelDir, PreviewSlot, init_onnx, load_preview_on_hardware,
+    Accelerator, ModelDir, PreviewSlot, init_onnx, load_nemotron_preview, load_preview_on_hardware,
     load_preview_unrefused, onnx_library, preview_backend, previews_refused,
     previews_refused_second, second_preview_backend,
 };
 use earshot_runtime::live::{
-    LiveAsrFactory, LiveConfig, LivePreviews, PreviewLoader, RuntimeEvent, start_live,
+    LiveAsrFactory, LiveConfig, LivePreviews, PreviewLoader, RuntimeEvent, StreamLoader, start_live,
 };
 use earshot_runtime::preview_settings::PreviewChoice;
 use earshot_runtime::replay::{PaceClock, PaceState, Paced, WallClock};
@@ -123,6 +132,11 @@ struct Args {
     /// Evaluation only (T12.3b): measure real decodes beside previews instead of replaying
     /// ([`contention_report`]).
     contention: Option<Contention>,
+    /// Evaluation only (T12.23): each previewed track's words come from this streaming model
+    /// (`nemotron`, through `backends::load_nemotron_preview`) instead of window decodes.
+    stream: Option<String>,
+    /// Its ONNX Runtime threads (on background threads, the CPU).
+    stream_threads: usize,
 }
 
 fn parse_args() -> Args {
@@ -149,6 +163,8 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         force_previews: false,
         card_memory_gib: None,
         contention: None,
+        stream: None,
+        stream_threads: 2,
     };
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -197,8 +213,36 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                     other => return Err(format!("unknown --contention {other}")),
                 });
             }
+            "--stream" => {
+                args.stream = match value()?.as_str() {
+                    "nemotron" => Some("nemotron".to_owned()),
+                    other => return Err(format!("unknown --stream {other}")),
+                }
+            }
+            "--stream-threads" => {
+                let n: usize = value()?
+                    .parse()
+                    .map_err(|e| format!("--stream-threads: {e}"))?;
+                if !(1..=8).contains(&n) {
+                    return Err("--stream-threads must be 1 to 8".to_owned());
+                }
+                args.stream_threads = n;
+            }
             other => return Err(format!("unknown flag {other}")),
         }
+    }
+    if args.stream.is_some()
+        && (args.memory
+            || args.previews.is_none()
+            || args.force_previews
+            || args.card_memory_gib.is_some()
+            || args.contention.is_some())
+    {
+        return Err(
+            "--stream replaces the window previews of a replay: it needs --previews on|everyone \
+             and no --memory, --force-previews, --card-memory-gib or --contention"
+                .to_owned(),
+        );
     }
     if args.force_previews && (args.memory || args.previews.is_none()) {
         return Err(
@@ -385,6 +429,54 @@ fn simulated_card_gib(machine: &earshot_hardware::Hardware) -> Option<u64> {
         .filter_map(|g| g.dedicated_memory)
         .max()
         .map(|m| m / GIB)
+}
+
+/// Evaluation only (`--stream nemotron`, T12.23): previews for `choice` whose words come from the
+/// streaming model, loaded through `backends::load_nemotron_preview` on `threads` CPU threads for
+/// each previewed track (the far end in a call; the mic too under Everyone), every load recorded
+/// in `log`. The app's preview rule is not applied: it is about window sessions of the
+/// transcription model. The window loaders are never called.
+fn streaming_previews(
+    models: &ModelDir,
+    choice: PreviewChoice,
+    threads: usize,
+    log: &Arc<Mutex<Vec<Value>>>,
+) -> LivePreviews {
+    let unused: PreviewLoader =
+        Arc::new(|_: &BackendInfo| Err("a streaming run loads no window session".to_owned()));
+    let mut p = LivePreviews::new(Arc::clone(&unused));
+    if choice == PreviewChoice::Everyone {
+        p.own_voice = Some(unused);
+    }
+    let models = models.clone();
+    let log = Arc::clone(log);
+    let load: StreamLoader = Arc::new(move |backend: &BackendInfo| {
+        let result = load_nemotron_preview(&models, threads);
+        let mut record = json!({
+            "stream": "nemotron",
+            "threads": threads,
+            "app_rule": "not applied (a streaming model, evaluation only)",
+            "track_backend": { "kind": format!("{:?}", backend.kind), "model": backend.model },
+        });
+        match &result {
+            Ok(s) => {
+                let ran = s.stream.backend_info();
+                record["loaded"] = json!({
+                    "kind": format!("{:?}", ran.kind),
+                    "device": ran.device,
+                    "model": ran.model,
+                    "placement": s.placement,
+                });
+            }
+            Err(why) => record["not_loaded"] = json!(why),
+        }
+        log.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(record);
+        result.map(|s| s.stream)
+    });
+    p.stream = Some(load);
+    p
 }
 
 /// The session's previews for `choice`: production's (`host::live_previews`), or the evaluation
@@ -1286,6 +1378,7 @@ fn main() {
         let machine = simulated.clone().unwrap_or_else(earshot_runtime::hardware);
         json!({
             "forced_past_it": args.force_previews,
+            "streaming_model_instead": args.stream.is_some(),
             "simulated_card_gib": simulated.as_ref().and_then(simulated_card_gib),
             "app_first": previews_refused(args.backend, &machine, choice),
             // Where the app would run the first session (T12.3c: the CPU beside a small card).
@@ -1307,7 +1400,11 @@ fn main() {
             (None, true) => PreviewLoads::Forced,
             (None, false) => PreviewLoads::App,
         };
-        let mut p = previews_for(&models, choice, &loads, &preview_sessions);
+        let mut p = if args.stream.is_some() {
+            streaming_previews(&models, choice, args.stream_threads, &preview_sessions)
+        } else {
+            previews_for(&models, choice, &loads, &preview_sessions)
+        };
         if let Some(s) = args.window {
             p.window = Duration::from_secs_f64(s);
         }
@@ -1467,6 +1564,7 @@ fn main() {
         "catch_up_after_end_s": catch_up,
         "previews": preview_reports,
         "preview_refusal": refusal,
+        "stream": args.stream.as_ref().map(|m| json!({ "model": m, "threads": args.stream_threads })),
         "preview_sessions": *preview_sessions.lock().unwrap_or_else(PoisonError::into_inner),
         "mic": lags[0].json(),
         "reference": lags[1].json(),
@@ -1790,6 +1888,91 @@ mod tests {
     }
 
     /// T12.3b: `--contention` is CUDA only and stands alone.
+    #[test]
+    fn live_lag_parses_the_streaming_model_and_its_threads() {
+        let a = parse(&["--previews", "everyone", "--stream", "nemotron"]).unwrap();
+        assert_eq!(a.stream.as_deref(), Some("nemotron"));
+        assert_eq!(a.stream_threads, 2, "sherpa-onnx's default");
+        let a = parse(&[
+            "--previews",
+            "on",
+            "--stream",
+            "nemotron",
+            "--stream-threads",
+            "4",
+        ])
+        .unwrap();
+        assert_eq!(a.stream_threads, 4);
+        assert_eq!(parse(&["--previews", "on"]).unwrap().stream, None);
+        assert!(parse(&["--previews", "on", "--stream", "other"]).is_err());
+        assert!(
+            parse(&[
+                "--previews",
+                "on",
+                "--stream",
+                "nemotron",
+                "--stream-threads",
+                "0"
+            ])
+            .is_err()
+        );
+        // It replaces the previews of a replay, so it needs them and no other mode.
+        for other in [
+            &["--stream", "nemotron"][..],
+            &["--stream", "nemotron", "--previews", "off"],
+            &["--stream", "nemotron", "--previews", "on", "--memory"],
+            &[
+                "--stream",
+                "nemotron",
+                "--previews",
+                "on",
+                "--force-previews",
+            ],
+            &[
+                "--stream",
+                "nemotron",
+                "--previews",
+                "on",
+                "--card-memory-gib",
+                "12",
+            ],
+        ] {
+            let Err(why) = parse(other) else {
+                panic!("{other:?} parsed")
+            };
+            assert_eq!(
+                why,
+                "--stream replaces the window previews of a replay: it needs --previews \
+                 on|everyone and no --memory, --force-previews, --card-memory-gib or --contention",
+                "{other:?}"
+            );
+        }
+    }
+
+    /// A streaming run's previews load only the streaming model: the window loaders refuse, and
+    /// the mic has previews only under Everyone. With no model on disk the load fails with the
+    /// fetch command, recorded.
+    #[test]
+    fn live_lag_streaming_previews_load_only_the_streaming_model() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let p = streaming_previews(&empty_models(), PreviewChoice::Automatic, 2, &log);
+        assert!(p.own_voice.is_none());
+        assert!((p.load)(&npu_track()).is_err());
+        let load = p.stream.expect("a streaming model");
+        let Err(why) = load(&npu_track()) else {
+            panic!("no model on disk")
+        };
+        assert!(why.contains("fetch-models --set stream-eval"), "{why}");
+        let records = log.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["stream"], "nemotron");
+        assert_eq!(records[0]["threads"], 2);
+        assert!(records[0]["not_loaded"].is_string());
+        drop(records);
+        let p = streaming_previews(&empty_models(), PreviewChoice::Everyone, 3, &log);
+        assert!(p.own_voice.is_some_and(|l| l(&npu_track()).is_err()));
+    }
+
     #[test]
     fn live_lag_contention_needs_cuda_and_no_other_mode() {
         for (value, setup) in [

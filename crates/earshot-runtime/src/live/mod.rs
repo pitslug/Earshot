@@ -151,7 +151,7 @@ pub use hold::{
 };
 use hold::{HoldState, held_entry};
 use preview::PreviewState;
-pub use preview::{LivePreviews, PreviewLoader, PreviewReport};
+pub use preview::{LivePreviews, PreviewLoader, PreviewReport, StreamLoader, StreamingPreview};
 pub use speaker_thread::SPEAKER_MAX_BUFFER;
 use speaker_thread::{SpeakerThread, SpeakerTrack};
 use summary_thread::{Job, SummaryThread};

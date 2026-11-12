@@ -2560,6 +2560,42 @@ fn backends_preview_sharing_encoder_is_used_by_no_shipped_code() {
     }
 }
 
+/// T12.23: nothing shipped loads the streaming model (licence agreed for evaluation only); only
+/// examples may. Its one [`crate::live::StreamingPreview`] is private to `backends.rs` and made
+/// only by that loader, so nothing shipped can give a live session a streaming preview either.
+#[test]
+fn backends_nemotron_preview_load_is_used_by_no_shipped_code() {
+    for name in [
+        concat!("load_nemotron_", "preview"),
+        concat!("nemotron", "::"),
+        concat!("earshot_onnx::", "nemotron"),
+        concat!("NEMOTRON_", "STREAM"),
+    ] {
+        let found = shipped_files_naming(name);
+        assert!(found.is_empty(), "shipped code names {name}: {found:?}");
+    }
+    // Nor can another implementation be wired in: nothing shipped sets the seam or implements
+    // it. The one exception is the fake of `live/preview_tests.rs`, a module compiled only
+    // under `#[cfg(test)]` (declared in `live/tests.rs`, itself `#[cfg(test)]` in `live/mod.rs`).
+    for name in [
+        concat!("stream: ", "Some("),
+        concat!(".stream = ", "Some("),
+        concat!("stream = ", "Some("),
+        concat!("StreamingPreview ", "for"),
+    ] {
+        let found: Vec<PathBuf> = shipped_files_naming(name)
+            .into_iter()
+            .filter(|p| p.file_name().is_none_or(|f| f != "preview_tests.rs"))
+            .collect();
+        assert!(found.is_empty(), "shipped code names {name}: {found:?}");
+    }
+    let live = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/live");
+    let mod_rs = std::fs::read_to_string(live.join("mod.rs")).unwrap();
+    assert!(mod_rs.contains("#[cfg(test)]\npub(crate) mod tests;"));
+    let tests_rs = std::fs::read_to_string(live.join("tests.rs")).unwrap();
+    assert!(tests_rs.contains("#[path = \"preview_tests.rs\"]\nmod preview_tests;"));
+}
+
 /// The shipped source files (runtime, CLI, desktop) other than `backends.rs` and its tests that
 /// contain `name`.
 fn shipped_files_naming(name: &str) -> Vec<PathBuf> {
