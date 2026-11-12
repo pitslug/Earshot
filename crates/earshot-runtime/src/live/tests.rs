@@ -3572,6 +3572,177 @@ fn live_stop_saves_the_recording_when_the_capture_thread_never_ends() {
     drop(release_tx);
 }
 
+/// How a catch-up test's transcriber behaves once its first decode starts.
+#[derive(Clone, Copy)]
+enum Decode {
+    /// Stuck in a call that never returns (no poll) until the test releases it.
+    Hangs,
+    /// Slow (20 polls 100 ms apart per call) but polling its cancel token all along.
+    SlowButPolling,
+}
+
+/// A transcriber over a timeline that behaves as `how` says.
+struct CatchUpTranscriber {
+    inner: crate::testutil::Timeline,
+    how: Decode,
+    release: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl earshot_core::asr::Transcriber for CatchUpTranscriber {
+    fn transcribe(
+        &mut self,
+        audio: &MonoBuffer,
+        options: &earshot_core::asr::TranscribeOptions,
+        cancel: &earshot_core::asr::CancelToken,
+    ) -> Result<earshot_core::asr::Transcription, AsrError> {
+        match self.how {
+            Decode::Hangs => {
+                let _ = self.release.lock().unwrap().recv();
+            }
+            Decode::SlowButPolling => {
+                for _ in 0..20 {
+                    if cancel.is_cancelled() {
+                        return Err(AsrError::Cancelled);
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        self.inner.transcribe(audio, options, cancel)
+    }
+
+    fn backend_info(&self) -> earshot_core::asr::BackendInfo {
+        self.inner.backend_info()
+    }
+}
+
+/// A stretch meeting of 6 s whose decodes behave as `how` says, stopped once it ends: its events
+/// and outcome, and whether `cancel` was used once the recording was saved.
+fn catch_up_meeting(
+    how: Decode,
+    stall: Duration,
+    cancel: bool,
+    seed: u64,
+) -> (Vec<RuntimeEvent>, LiveOutcome, Services, TempDir) {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let w = words("a", 500, 12);
+    let audio = speech(&w, 6000, seed);
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release = Arc::new(std::sync::Mutex::new(release_rx));
+    let mut slot = Some((audio.clone(), w));
+    let factory: LiveAsrFactory = Box::new(move |t, entity| {
+        let Some((audio, w)) = slot.take().filter(|_| t == TrackId::Mic) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            LiveAsr {
+                transcriber: Box::new(CatchUpTranscriber {
+                    inner: crate::testutil::timeline(audio, w),
+                    how,
+                    release: Arc::clone(&release),
+                }),
+                vad: Box::new(EnergyVad::default()),
+                config: ChunkerConfig::default(),
+                track_entity: entity,
+                segment_ids: ids(),
+            }
+            .into(),
+        ))
+    });
+    let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, audio))
+        .build()
+        .unwrap();
+    let mut session = start_live(
+        source,
+        svc.clone(),
+        LiveConfig {
+            catch_up_stall: stall,
+            ..stretch_config(earshot_core::model::ClockDomain::Replay)
+        },
+        Some(factory),
+        Box::new(ChaCha8Rng::seed_from_u64(seed + 1)),
+    )
+    .unwrap();
+    let rx = session.take_events().unwrap();
+    let mut events = Vec::new();
+    loop {
+        let e = rx
+            .recv_timeout(Duration::from_secs(120))
+            .expect("the session ends");
+        let saved = matches!(e, RuntimeEvent::RecordingSaved { .. });
+        let end = matches!(e, RuntimeEvent::Ended(_));
+        events.push(e);
+        if saved && cancel {
+            session.cancel_catch_up();
+        }
+        if end {
+            break;
+        }
+    }
+    let outcome = session.wait().unwrap();
+    // A hung decode is left behind; let it go now.
+    drop(release_tx);
+    (events, outcome, svc, dir)
+}
+
+#[test]
+fn live_catch_up_cancel_ends_the_session_without_waiting_for_a_hung_decode() {
+    // T9.22: Cancel on "Finishing the meeting" reaches the live catch-up. No stall bound could
+    // fire here (one hour); only the cancel ends it.
+    let (events, outcome, svc, _dir) =
+        catch_up_meeting(Decode::Hangs, Duration::from_secs(3600), true, 240);
+    assert!(matches!(events.last(), Some(RuntimeEvent::Ended(_))));
+    // Nothing to tell: the user asked for it.
+    assert!(
+        !warnings(&events)
+            .iter()
+            .any(|w| matches!(w, RuntimeWarning::LiveCatchUpStalled { .. }))
+    );
+    // The recording is kept whole.
+    let files = svc.store().audio_files(outcome.meeting).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].frames, 6 * 16_000);
+    assert!(matches!(
+        crate::stretches::stretch_record(&svc.store(), outcome.meeting, TrackId::Mic).unwrap(),
+        Some(crate::stretches::StoredStretches::Record(r)) if r.stopped.is_some()
+    ));
+}
+
+#[test]
+fn live_catch_up_that_stops_moving_is_given_up_and_said() {
+    let (events, outcome, _svc, _dir) =
+        catch_up_meeting(Decode::Hangs, Duration::from_millis(300), false, 250);
+    let said: Vec<RuntimeWarning> = warnings(&events)
+        .into_iter()
+        .filter(|w| matches!(w, RuntimeWarning::LiveCatchUpStalled { .. }))
+        .collect();
+    assert_eq!(
+        said,
+        [RuntimeWarning::LiveCatchUpStalled {
+            track: TrackId::Mic
+        }]
+    );
+    assert!(outcome.problems.contains(&said[0]));
+    assert!(matches!(events.last(), Some(RuntimeEvent::Ended(_))));
+}
+
+#[test]
+fn live_catch_up_that_is_slow_but_polling_is_never_cut() {
+    // Negative control: each decode takes 2 s, longer than the 1 s bound, but polls every 100 ms,
+    // so the catch-up runs to its end and every word lands.
+    let (events, outcome, svc, _dir) =
+        catch_up_meeting(Decode::SlowButPolling, Duration::from_secs(1), false, 260);
+    assert!(
+        !warnings(&events)
+            .iter()
+            .any(|w| matches!(w, RuntimeWarning::LiveCatchUpStalled { .. }))
+    );
+    let rows = live_segments(&**svc.store(), outcome.meeting, TranscriptPass::Live).unwrap();
+    let stored: Vec<String> = rows.iter().flat_map(|r| texts(&r.segment.words)).collect();
+    assert_eq!(stored, texts(&words("a", 500, 12)));
+}
+
 #[test]
 fn live_voice_activity_stays_off_on_silence_and_ends_with_the_session() {
     // Negative control: quiet noise only, no "speaking" ever.

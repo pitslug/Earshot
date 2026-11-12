@@ -1034,6 +1034,33 @@ pub fn wait_for_onnx() {
     }
 }
 
+/// [`wait_for_onnx`] that gives way to `cancel` (T9.22): returns false, without waiting longer, once
+/// `cancel` is cancelled while the gate is still closed; true once the gate is open. Looks at the
+/// token every [`ONNX_CANCEL_POLL`].
+#[must_use]
+pub fn wait_for_onnx_unless(cancel: &earshot_core::asr::CancelToken) -> bool {
+    if !onnx_held() {
+        return true;
+    }
+    let mut lock = ONNX_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    if onnx_held() {
+        ONNX_SLEPT.fetch_add(1, Ordering::AcqRel);
+    }
+    while onnx_held() {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        lock = ONNX_RELEASED
+            .wait_timeout(lock, ONNX_CANCEL_POLL)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+    }
+    true
+}
+
+/// How often [`wait_for_onnx_unless`] looks at its token.
+pub const ONNX_CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Tries the chosen set in this process, for a throwaway process only, because a bad set can end
 /// the process that loads it (docs/cuda-install.md): chooses CUDA, loads ONNX
 /// Runtime from [`folder`], loads the smallest installed Parakeet model on CUDA and decodes

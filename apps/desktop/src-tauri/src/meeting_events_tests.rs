@@ -430,6 +430,9 @@ fn meeting_events_every_runtime_warning_has_a_banner_with_plain_copy() {
         },
         RuntimeWarning::EveryRecordingStopped { disk_full: false },
         RuntimeWarning::DeviceStoppedAnswering,
+        RuntimeWarning::LiveCatchUpStalled {
+            track: TrackId::Reference,
+        },
     ];
     let kinds: Vec<WarningKind> = warnings
         .iter()
@@ -460,6 +463,7 @@ fn meeting_events_every_runtime_warning_has_a_banner_with_plain_copy() {
             WarningKind::Recording,
             WarningKind::Recording,
             WarningKind::Audio,
+            WarningKind::TrackBehind,
         ]
     );
     let (_, _, bt) = banner(&warnings[0]);

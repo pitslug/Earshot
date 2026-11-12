@@ -831,6 +831,18 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
             WarningKind::Recording,
             every_recording_stopped_message(*disk_full).into(),
         ),
+        RuntimeWarning::LiveCatchUpStalled { track } => {
+            let t = LiveTrack::of(*track);
+            warning(
+                format!("behind:{}", t.key()),
+                WarningKind::TrackBehind,
+                format!(
+                    "The live transcript for {} stopped answering after the recording, so Earshot \
+                     left this meeting unprocessed. The recording is kept.",
+                    t.device()
+                ),
+            )
+        }
         RuntimeWarning::DeviceStoppedAnswering => warning(
             "device-stopped-answering".into(),
             WarningKind::Audio,

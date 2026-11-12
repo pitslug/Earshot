@@ -600,6 +600,10 @@ pub(crate) fn format_warning(w: &RuntimeWarning) -> String {
                 ""
             }
         ),
+        RuntimeWarning::LiveCatchUpStalled { track } => format!(
+            "warning: the {} live transcript stopped answering after the recording and was left",
+            track_name(*track)
+        ),
         RuntimeWarning::DeviceStoppedAnswering => "warning: the audio device stopped answering \
              when capture was stopped; the recording was saved without it"
             .to_owned(),
