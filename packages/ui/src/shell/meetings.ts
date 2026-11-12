@@ -56,6 +56,19 @@ export function secondaryLine(m: MeetingListItem): string {
   return parts.join(" · ");
 }
 
+/** What the window says once about a recording Earshot was closed during, whose audio
+ * start-up recovery saved (T9.18). Whole minutes, never more than was saved. */
+export function recoveredText(savedMs: number): string {
+  const minutes = Math.floor(savedMs / 60_000);
+  const saved =
+    minutes < 1
+      ? "Less than a minute was saved."
+      : minutes === 1
+        ? "1 minute was saved."
+        : `${minutes} minutes were saved.`;
+  return `Earshot closed during this recording. ${saved}`;
+}
+
 /** The title shown for a meeting (titles stay empty until the user or a summary gives one). */
 export function displayTitle(m: Pick<MeetingListItem, "title">): string {
   return m.title.trim() === "" ? "Untitled meeting" : m.title;

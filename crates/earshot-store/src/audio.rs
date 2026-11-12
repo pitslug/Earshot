@@ -2,21 +2,26 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use earshot_core::capture::TrackId;
 use earshot_core::identity::{Clock, EntityId};
 use earshot_core::model::{AudioFile, AudioFileRepo, AudioFormat, MeetingRepo, RepoError, Track};
 use rand_core::Rng;
 
 use crate::db::{Store, StoreError};
-use crate::flac::{FlacTrackWriter, read_flac};
+use crate::flac::{
+    FinishedFlac, FlacTrackWriter, PartRecovery, describe_flac, read_flac, recover_part,
+};
 use crate::layout::DataDir;
 
 /// One day in milliseconds.
 pub const DAY_MS: u64 = 86_400_000;
 
-/// Age (by modification time) after which an audio file without a row, or a `.part` file,
-/// is removed by [`run_retention`] and [`DataDir::cleanup_stale_parts`]: 7 days, so a crashed
-/// recording stays recoverable for a week and a recording in progress (its `.part` is
-/// written continuously) is never touched.
+/// Age (by modification time) after which an audio file without a row, or a `.part` file, is
+/// removed by [`run_retention`] ([`sweep_orphan_audio`]) and [`DataDir::cleanup_stale_parts`],
+/// but only in a folder that belongs to no live meeting (a deleted meeting's, or one no
+/// meeting row names): 7 days. A live meeting's unfinished audio is never swept, whatever its
+/// age, because start-up recovery (T9.18) can still turn it into a recording; a recording in
+/// progress elsewhere (its `.part` is written continuously) is younger than this anyway.
 pub const ORPHAN_GRACE_MS: u64 = 7 * DAY_MS;
 
 /// What produced a track's audio (stored on the `AudioFile` row).
@@ -84,6 +89,141 @@ impl Store {
     }
 }
 
+/// What [`recover_track_file`] found for one track of an interrupted recording (T9.18).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackFileRecovery {
+    /// A finished file at the track's path (its row was never written): described from its
+    /// header, unchanged.
+    Finished(FinishedFlac),
+    /// The `.part`'s whole frames became the finished file ([`recover_part`]).
+    Recovered {
+        /// The finished file.
+        file: FinishedFlac,
+        /// Bytes of torn tail cut off.
+        torn_bytes: u64,
+    },
+    /// A `.part` with no whole frame: left alone.
+    NoWholeFrame,
+    /// Another process holds the `.part` open: not touched.
+    InUse,
+    /// Neither a finished file nor a `.part`.
+    NoFile,
+}
+
+impl TrackFileRecovery {
+    /// The finished file, when there is one now.
+    #[must_use]
+    pub fn finished(&self) -> Option<&FinishedFlac> {
+        match self {
+            Self::Finished(f) | Self::Recovered { file: f, .. } => Some(f),
+            Self::NoWholeFrame | Self::InUse | Self::NoFile => None,
+        }
+    }
+}
+
+/// Finishes the file of `meeting`'s `kind` track at its layout path after an interrupted
+/// recording (T9.18), with no store access, so a caller holding a store lock can do this part
+/// without it. A finished file there is never changed (its header only is read); otherwise the
+/// `.part` is recovered with [`recover_part`] at `sample_rate` (the rate the track was recorded
+/// at). The `AudioFile` row is written separately, by [`Store::adopt_track_audio`].
+///
+/// # Errors
+/// [`StoreError::Corrupt`] for a meeting id that does not give a layout path; I/O and decoding
+/// errors (the files are left as they were, apart from a torn tail already cut).
+pub fn recover_track_file(
+    data: &DataDir,
+    meeting: EntityId,
+    kind: TrackId,
+    sample_rate: u32,
+) -> Result<TrackFileRecovery, StoreError> {
+    let path = data.resolve(&DataDir::audio_rel(meeting, kind))?;
+    if path.exists() {
+        return Ok(TrackFileRecovery::Finished(describe_flac(&path)?));
+    }
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    if !std::path::Path::new(&part).exists() {
+        return Ok(TrackFileRecovery::NoFile);
+    }
+    Ok(match recover_part(&path, sample_rate)? {
+        PartRecovery::Recovered { file, torn_bytes } => {
+            TrackFileRecovery::Recovered { file, torn_bytes }
+        }
+        PartRecovery::NoWholeFrame => TrackFileRecovery::NoWholeFrame,
+        PartRecovery::InUse => TrackFileRecovery::InUse,
+    })
+}
+
+impl Store {
+    /// Writes the `AudioFile` row of a file [`recover_track_file`] finished (T9.18), by the
+    /// rules of [`Store::finalize_track_audio`]: the file is at the track's layout path and
+    /// exists, the meeting (not deleted) and the track exist, and the track has no row yet (a
+    /// second row is never written; the existing one is returned).
+    ///
+    /// # Errors
+    /// [`StoreError::Repo`] for a missing or deleted meeting or a missing track;
+    /// [`StoreError::Corrupt`] for a file that is not at the layout path or does not exist;
+    /// SQLite errors.
+    pub fn adopt_track_audio<C: Clock + ?Sized, R: Rng + ?Sized>(
+        &mut self,
+        file: &FinishedFlac,
+        data: &DataDir,
+        track: &Track,
+        provenance: AudioProvenance,
+        clock: &C,
+        rng: &mut R,
+    ) -> Result<AudioFile, StoreError> {
+        let rel = DataDir::audio_rel(track.meeting_id, track.kind);
+        if file.path != data.resolve(&rel)? || !file.path.is_file() {
+            return Err(StoreError::Corrupt(format!(
+                "{} is not a finished file at the layout path {rel}",
+                file.path.display()
+            )));
+        }
+        if !self
+            .meeting(track.meeting_id)?
+            .is_some_and(|m| !m.meta.deleted)
+        {
+            return Err(StoreError::Repo(RepoError::MissingParent {
+                entity: "meeting",
+                id: track.meeting_id,
+            }));
+        }
+        if !self
+            .tracks(track.meeting_id)?
+            .iter()
+            .any(|t| t.id == track.id)
+        {
+            return Err(StoreError::Repo(RepoError::MissingParent {
+                entity: "track",
+                id: track.id,
+            }));
+        }
+        if let Some(existing) = self
+            .audio_files(track.meeting_id)?
+            .into_iter()
+            .find(|f| f.track_id == track.id)
+        {
+            return Ok(existing);
+        }
+        let row = AudioFile {
+            id: EntityId::generate(clock, rng),
+            meeting_id: track.meeting_id,
+            track_id: track.id,
+            path: rel,
+            format: AudioFormat::Flac,
+            sample_rate_hz: file.sample_rate,
+            frames: file.frames,
+            size_bytes: file.size_bytes,
+            pipeline_version: provenance.pipeline_version,
+            aec_version: provenance.aec_version,
+            created_unix_ms: clock.now_unix_ms(),
+        };
+        self.put_audio_file(row.clone())?;
+        Ok(row)
+    }
+}
+
 /// One hour in milliseconds.
 pub const HOUR_MS: u64 = 3_600_000;
 
@@ -119,7 +259,8 @@ pub fn decode_retention_clock(bytes: &[u8]) -> Option<u64> {
 /// When `meeting`'s retention clock started, as stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionClock {
-    /// Not started: no summary was stored and no final pass ended with summaries off.
+    /// Not started: no final transcript was stored yet (the meeting is recording, or its
+    /// final pass has not succeeded).
     NotStarted,
     /// Started at this Unix ms.
     Since(u64),
@@ -142,11 +283,11 @@ pub fn retention_clock(store: &Store, meeting: EntityId) -> Result<RetentionCloc
 
 /// How long audio is kept (PLAN.md 3.6, T7.4k). The default keeps it 7 days.
 ///
-/// Every limited policy is summary-gated: a meeting's audio ages from its retention clock
-/// ([`retention_clock_key`]), which the runtime starts when the meeting's first summary is
-/// stored, or when its final pass ends with summaries turned off. A meeting whose clock has
-/// not started (recording, no final pass yet, a failed or cancelled summary) keeps its audio
-/// whatever the policy.
+/// Every limited policy is gated on the final transcript: a meeting's audio ages from its
+/// retention clock ([`retention_clock_key`]), which the runtime starts once, when the
+/// meeting's final transcript is first stored (in the final pass's write transaction),
+/// whatever the summary then does. A meeting whose clock has not started (recording,
+/// interrupted, no successful final pass yet) keeps its audio whatever the policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionPolicy {
     /// Never delete audio.
@@ -331,7 +472,9 @@ pub(crate) fn is_audio_name(name: &str) -> bool {
 
 /// Removes `audio/<dir>/*.flac` and `*.flac.part` files that no `AudioFile` row refers to and
 /// that were last modified at least `grace_ms` before `now_unix_ms`; emptied folders go too.
-/// Returns how many files were removed.
+/// A folder named after a live (not deleted) meeting is never swept: its unfinished or
+/// row-less audio is what start-up recovery (T9.18) adopts. Only audio of deleted meetings and
+/// of folders no meeting row names goes. Returns how many files were removed.
 ///
 /// # Errors
 /// SQLite errors; I/O errors other than "not found" removing a file.
@@ -350,7 +493,7 @@ pub fn sweep_orphan_audio(
     };
     let mut removed = 0;
     for d in dirs.filter_map(Result::ok) {
-        if !d.file_type().is_ok_and(|t| t.is_dir()) {
+        if !d.file_type().is_ok_and(|t| t.is_dir()) || belongs_to_live_meeting(store, &d)? {
             continue;
         }
         let Ok(files) = std::fs::read_dir(d.path()) else {
@@ -378,6 +521,25 @@ pub fn sweep_orphan_audio(
         let _ = std::fs::remove_dir(d.path());
     }
     Ok(removed)
+}
+
+/// Whether the `audio/<dir>` folder `d` is named after a meeting that exists and is not
+/// deleted (T9.18: such a folder's audio is never swept).
+///
+/// # Errors
+/// SQLite errors.
+pub(crate) fn belongs_to_live_meeting(
+    store: &Store,
+    d: &std::fs::DirEntry,
+) -> Result<bool, StoreError> {
+    let Some(id) = d
+        .file_name()
+        .to_str()
+        .and_then(|n| n.parse::<EntityId>().ok())
+    else {
+        return Ok(false);
+    };
+    Ok(store.meeting(id)?.is_some_and(|m| !m.meta.deleted))
 }
 
 /// A meeting's stored audio for re-transcription.

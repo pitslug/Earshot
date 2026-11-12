@@ -46,6 +46,7 @@ import {
   type MeetingEvent,
   type MeetingListItem,
   NEWER_DATA_KIND,
+  type RecoveredRecording,
   useIpc,
 } from "../ipc";
 import {
@@ -64,7 +65,7 @@ import { type Timer, realTimer } from "../time";
 import { MeetingSearchBox, MeetingSearchResults, useMeetingSearch } from "./MeetingSearch";
 import { ALL_MEETINGS_KEY, type FolderEdit, FolderGroup, NEW_FOLDER_KEY } from "./Folders";
 import { folderDeletionCopy, meetingCount, meetingsInFolder } from "./folderRules";
-import { type DayGroup, displayTitle, groupByDay, secondaryLine } from "./meetings";
+import { type DayGroup, displayTitle, groupByDay, recoveredText, secondaryLine } from "./meetings";
 import { openMenuFromKeyboard } from "./menuKeys";
 import { NewerDataScreen } from "./NewerDataScreen";
 
@@ -339,6 +340,10 @@ export function AppShell({
   // The last meeting the screen followed, kept across the reset a new start makes.
   const lastMeeting = useRef<{ id: string; finishing: boolean } | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
+  // Recordings Earshot was closed during whose audio was saved at this start (T9.18), each told
+  // once: the app hands each over one time only, so a result is never dropped.
+  const [recovered, setRecovered] = useState<RecoveredRecording[]>([]);
+  const [recoveredAsk, setRecoveredAsk] = useState(0);
   const [quitAsked, setQuitAsked] = useState<keyof typeof QUIT_COPY | null>(null);
   const [quitting, setQuitting] = useState(false);
   const [quitError, setQuitError] = useState<string | null>(null);
@@ -375,6 +380,17 @@ export function AppShell({
   const jobSeq = useRef(0);
   // Whether an update waits for the user (available, downloading or ready): a mark beside Settings.
   const [updateWaiting, setUpdateWaiting] = useState(false);
+
+  useEffect(() => {
+    ipc.recoveredRecordings().then(
+      (r) => {
+        if (r.length === 0) return;
+        setRecovered((all) => [...all, ...r]);
+        refresh();
+      },
+      () => {},
+    );
+  }, [ipc, recoveredAsk, refresh]);
 
   useEffect(() => {
     let live = true;
@@ -687,8 +703,9 @@ export function AppShell({
 
   // What the tray, the shortcut and notifications ask of the window. The latest handlers are
   // read through a ref so the subscription lasts the window's life.
-  const shellHandlers = useRef({ open, openNames, goCompact });
-  shellHandlers.current = { open, openNames, goCompact };
+  const askRecovered = () => setRecoveredAsk((n) => n + 1);
+  const shellHandlers = useRef({ open, openNames, goCompact, askRecovered });
+  shellHandlers.current = { open, openNames, goCompact, askRecovered };
   useEffect(() => {
     let current = true;
     let stopListening: (() => void) | null = null;
@@ -705,6 +722,9 @@ export function AppShell({
             h.goCompact(false);
             setQuitError(null);
             setQuitAsked(e.recording ? "recording" : "finishing");
+            break;
+          case "RecordingsRecovered":
+            h.askRecovered();
             break;
           case "StartFailed":
             setStartError(e.message);
@@ -951,6 +971,28 @@ export function AppShell({
           </Badge>
         )}
         {noModelBar}
+        {recovered.length > 0 && (
+          <MessageBar intent="info" layout="multiline">
+            <MessageBarBody>
+              <MessageBarTitle>Recording recovered</MessageBarTitle>
+              {recoveredText(recovered[0].saved_ms)}
+            </MessageBarBody>
+            <MessageBarActions>
+              <Button
+                size="small"
+                onClick={() => {
+                  open(recovered[0].meeting);
+                  setRecovered((all) => all.slice(1));
+                }}
+              >
+                Open meeting
+              </Button>
+              <Button size="small" appearance="transparent" onClick={() => setRecovered((all) => all.slice(1))}>
+                Dismiss
+              </Button>
+            </MessageBarActions>
+          </MessageBar>
+        )}
         {startError !== null && (
           <MessageBar intent="error">
             <MessageBarBody>

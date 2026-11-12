@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { MeetingListItem } from "../ipc";
-import { clockTime, displayTitle, groupByDay, secondaryLine } from "./meetings";
+import { clockTime, displayTitle, groupByDay, recoveredText, secondaryLine } from "./meetings";
 
 // Local times, so the tests hold in any time zone.
 const at = (day: number, hour: number, minute = 0) =>
@@ -74,5 +74,16 @@ describe("displayTitle", () => {
     expect(displayTitle({ ...meeting("a", 0), title: "" })).toBe("Untitled meeting");
     expect(displayTitle({ ...meeting("a", 0), title: "  " })).toBe("Untitled meeting");
     expect(displayTitle(meeting("a", 0))).toBe("Meeting a");
+  });
+});
+
+describe("recoveredText", () => {
+  it("says how many whole minutes were saved, never more", () => {
+    const head = "Earshot closed during this recording.";
+    expect(recoveredText(0)).toBe(`${head} Less than a minute was saved.`);
+    expect(recoveredText(59_999)).toBe(`${head} Less than a minute was saved.`);
+    expect(recoveredText(60_000)).toBe(`${head} 1 minute was saved.`);
+    expect(recoveredText(119_999)).toBe(`${head} 1 minute was saved.`);
+    expect(recoveredText(12 * 60_000 + 59_000)).toBe(`${head} 12 minutes were saved.`);
   });
 });

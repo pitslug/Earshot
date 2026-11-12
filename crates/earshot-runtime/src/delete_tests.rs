@@ -32,6 +32,7 @@ fn production_key(record: MeetingRecord, meeting: EntityId, device: DeviceId) ->
         MeetingRecord::AudioRetention => crate::retention::clock_key(meeting),
         MeetingRecord::KeptLocal => crate::keep_local::record_key(meeting),
         MeetingRecord::WordChoices => crate::word_choices::record_key(meeting),
+        MeetingRecord::RecoveredRecording => crate::recover::notice_key(meeting),
     }
 }
 

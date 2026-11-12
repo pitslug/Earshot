@@ -66,6 +66,9 @@ pub enum ShellEvent {
         /// Why.
         message: String,
     },
+    /// Start-up recovery gave an interrupted recording its audio back (T9.18): read the
+    /// notices (`recovered_recordings`) and show them.
+    RecordingsRecovered,
 }
 
 /// Where the current meeting is, as the tray shows it.

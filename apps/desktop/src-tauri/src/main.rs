@@ -37,6 +37,7 @@ mod obsidian;
 #[cfg(test)]
 mod page_names_tests;
 mod plain_text;
+mod recovery;
 mod shell;
 mod speaker_settings;
 mod storage_settings;
@@ -156,13 +157,19 @@ fn main() {
                         }));
                     });
             }
-            // Audio retention runs now and periodically (T7.4k).
+            // Recordings this app was closed during get their audio back (T9.18), then audio
+            // retention runs and periodically after (T7.4k): retention's sweep must never see
+            // unfinished audio before recovery has adopted it.
             let retention = storage_settings::RetentionStatus::default();
             if let Ok(services) = state.services() {
-                storage_settings::spawn_retention(
+                let handle = app.handle().clone();
+                recovery::spawn(
                     services,
                     retention.clone(),
                     storage_settings::RETENTION_PERIOD,
+                    move |_| {
+                        let _ = shell::ShellEvent::RecordingsRecovered.emit(&handle);
+                    },
                 );
             }
             // In-app updates (T9.1b): what an earlier update left goes first; a check only if the

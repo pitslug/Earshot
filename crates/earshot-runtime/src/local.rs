@@ -73,6 +73,9 @@ meeting_records! {
     /// `word-choices/<meeting>`: the user's choices on suggested words (content, T12.15ec;
     /// [`crate::word_choices`]).
     WordChoices => "word-choices/", meeting at 0;
+    /// `recovered-recording/<meeting>`: how much of an interrupted recording start-up recovery
+    /// saved, until the app has said so once (T9.18; no content, [`crate::recover`]).
+    RecoveredRecording => "recovered-recording/", meeting at 0;
 }
 
 impl MeetingRecord {

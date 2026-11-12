@@ -358,8 +358,10 @@ fn data_dir_startup_cleanup_removes_only_stale_part_files() {
     }
     age(&stale, Duration::from_millis(ORPHAN_GRACE_MS + DAY_MS));
     age(&finished, Duration::from_millis(ORPHAN_GRACE_MS + DAY_MS));
+    let store = Store::open(&data.db_path()).unwrap();
     assert_eq!(
-        data.cleanup_stale_parts(now_ms(), ORPHAN_GRACE_MS).unwrap(),
+        data.cleanup_stale_parts(&store, now_ms(), ORPHAN_GRACE_MS)
+            .unwrap(),
         1
     );
     assert!(!stale.exists() && fresh.exists() && finished.exists());

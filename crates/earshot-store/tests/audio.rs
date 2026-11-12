@@ -13,10 +13,11 @@ use earshot_core::model::{
 };
 use earshot_core::prompt::Template;
 use earshot_store::{
-    AudioProvenance, DAY_MS, DataDir, FlacTrackWriter, HOUR_MS, RETENTION_CLOCK_PREFIX,
-    RETENTION_CLOCK_VERSION, RetentionClock, RetentionPolicy, Store, StoreError, WriteFault,
-    decode_retention_clock, due_audio, encode_retention_clock, load_meeting_audio, read_flac,
-    remove_audio, retention_clock, retention_clock_key, run_retention,
+    AudioProvenance, DAY_MS, DataDir, FinishedFlac, FlacTrackWriter, HOUR_MS, PartRecovery,
+    RETENTION_CLOCK_PREFIX, RETENTION_CLOCK_VERSION, RetentionClock, RetentionPolicy, Store,
+    StoreError, TrackFileRecovery, WriteFault, decode_retention_clock, due_audio,
+    encode_retention_clock, load_meeting_audio, read_flac, recover_part, remove_audio,
+    retention_clock, retention_clock_key, run_retention,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
@@ -631,4 +632,355 @@ fn retranscribe_audio_tolerates_a_missing_file() {
             "16-bit quantisation only"
         );
     }
+}
+
+// ---- T9.18: recovering an interrupted recording ----
+
+fn part_of(path: &std::path::Path) -> std::path::PathBuf {
+    path.with_extension("flac.part")
+}
+
+/// Writes `blocks` whole 4096-sample blocks of `input` into a writer that is then dropped
+/// unfinished (a killed process). Returns the `.part` bytes and where each frame ends in them
+/// (read from the file after each block: every frame is written as soon as it is full).
+fn interrupted_part(dir: &std::path::Path, input: &[f32], blocks: usize) -> (Vec<u8>, Vec<u64>) {
+    let path = dir.join("source.flac");
+    let mut w = FlacTrackWriter::create(&path, 16_000).unwrap();
+    let mut ends = Vec::new();
+    for chunk in input.chunks(4096).take(blocks) {
+        w.write(chunk).unwrap();
+        ends.push(std::fs::metadata(part_of(&path)).unwrap().len());
+    }
+    drop(w);
+    let bytes = std::fs::read(part_of(&path)).unwrap();
+    std::fs::remove_file(part_of(&path)).unwrap();
+    assert_eq!(*ends.last().unwrap(), bytes.len() as u64);
+    (bytes, ends)
+}
+
+#[test]
+fn flac_recover_part_cut_at_every_byte_of_its_last_two_frames_keeps_exactly_the_whole_frames() {
+    // Quiet and smooth, so frames are small and every byte of two of them is few cuts.
+    let input: Vec<f32> = sine(4096 * 5).iter().map(|x| x * 0.02).collect();
+    let tmp = TempDir::new("flac-recover-cut");
+    let (bytes, ends) = interrupted_part(tmp.path(), &input, 5);
+    assert_eq!(ends.len(), 5);
+    let from = ends[2]; // the start of the fourth frame
+    let mut checked = 0;
+    for cut in from..=bytes.len() as u64 {
+        let path = tmp.path().join(format!("c{cut}.flac"));
+        std::fs::write(part_of(&path), &bytes[..cut as usize]).unwrap();
+        let whole = ends.iter().filter(|&&e| e <= cut).count();
+        let PartRecovery::Recovered { file, torn_bytes } = recover_part(&path, 16_000).unwrap()
+        else {
+            panic!("cut {cut}: three frames are whole");
+        };
+        let end = ends[whole - 1];
+        assert_eq!(file.frames, whole as u64 * 4096, "cut {cut}");
+        assert_eq!((file.size_bytes, torn_bytes), (end, cut - end), "cut {cut}");
+        assert!(file.cut_short);
+        assert!(!part_of(&path).exists(), "renamed");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), end);
+        let r = claxon::FlacReader::open(&path).unwrap();
+        assert_eq!(r.streaminfo().samples, Some(whole as u64 * 4096));
+        assert_eq!(r.streaminfo().md5sum, [0; 16], "MD5 unknown");
+        drop(r);
+        let (rate, decoded) = read_flac(&path).unwrap();
+        assert_eq!(rate, 16_000);
+        let decoded: Vec<i32> = decoded.iter().map(|&x| i32::from(f32_to_i16(x))).collect();
+        assert_eq!(decoded, quantised(&input[..whole * 4096]), "cut {cut}");
+        std::fs::remove_file(&path).unwrap();
+        checked += 1;
+    }
+    println!("{checked} cuts recovered");
+    assert!(
+        checked > 100,
+        "the last two frames span many bytes: {checked}"
+    );
+}
+
+#[test]
+fn flac_recover_part_writes_the_header_the_writer_would_have_but_the_md5() {
+    // Whole blocks and a short last one: the `.part` an interrupted finish() leaves (frames
+    // written, header still the placeholder) recovers to the finished file, MD5 aside.
+    let tmp = TempDir::new("flac-recover-header");
+    for n in [4096 * 3, 4096 * 3 + 1234, 700] {
+        let input = noisy(n);
+        let finished = tmp.path().join(format!("f{n}.flac"));
+        let mut w = FlacTrackWriter::create(&finished, 16_000).unwrap();
+        w.write(&input).unwrap();
+        let done = w.finish().unwrap();
+        let mut want = std::fs::read(&finished).unwrap();
+        let mut placeholder = want.clone();
+        placeholder[..42].fill(0);
+        want[26..42].fill(0);
+        let path = tmp.path().join(format!("r{n}.flac"));
+        std::fs::write(part_of(&path), &placeholder).unwrap();
+        let PartRecovery::Recovered { file, torn_bytes } = recover_part(&path, 16_000).unwrap()
+        else {
+            panic!("{n}: whole frames");
+        };
+        assert_eq!((file.frames, torn_bytes), (done.frames, 0));
+        assert_eq!(std::fs::read(&path).unwrap(), want, "{n}");
+        // Running it again finds the final file and changes nothing.
+        assert!(recover_part(&path, 16_000).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), want, "{n}");
+    }
+}
+
+#[test]
+fn flac_recover_part_with_no_whole_frame_leaves_it_alone() {
+    let input = sine(4096 * 2);
+    let tmp = TempDir::new("flac-recover-none");
+    let (bytes, ends) = interrupted_part(tmp.path(), &input, 2);
+    for cut in [0, 10, 41, 42, 43, ends[0] - 1] {
+        let path = tmp.path().join(format!("n{cut}.flac"));
+        let kept = &bytes[..cut as usize];
+        std::fs::write(part_of(&path), kept).unwrap();
+        assert_eq!(
+            recover_part(&path, 16_000).unwrap(),
+            PartRecovery::NoWholeFrame,
+            "cut {cut}"
+        );
+        assert_eq!(std::fs::read(part_of(&path)).unwrap(), kept, "untouched");
+        assert!(!path.exists());
+    }
+}
+
+#[test]
+fn flac_recover_part_never_overwrites_a_finished_file_or_takes_another_rate() {
+    let input = sine(4096 * 2);
+    let tmp = TempDir::new("flac-recover-refuse");
+    let (bytes, _) = interrupted_part(tmp.path(), &input, 2);
+    let path = tmp.path().join("x.flac");
+    std::fs::write(&path, b"someone else's").unwrap();
+    std::fs::write(part_of(&path), &bytes).unwrap();
+    assert!(
+        matches!(recover_part(&path, 16_000), Err(StoreError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists)
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"someone else's");
+    assert_eq!(std::fs::read(part_of(&path)).unwrap(), bytes);
+    // Frames recorded at 16 kHz are never described as 48 kHz.
+    let other = tmp.path().join("y.flac");
+    std::fs::write(part_of(&other), &bytes).unwrap();
+    assert!(
+        matches!(recover_part(&other, 48_000), Err(StoreError::Audio(m)) if m.contains("another sample rate"))
+    );
+    assert!(!other.exists());
+    assert_eq!(std::fs::read(part_of(&other)).unwrap(), bytes);
+}
+
+#[test]
+#[cfg_attr(not(windows), ignore = "the in-use check is Windows sharing modes")]
+fn flac_recover_part_leaves_a_part_another_writer_holds_open() {
+    let tmp = TempDir::new("flac-recover-in-use");
+    let path = tmp.path().join("live.flac");
+    let mut w = FlacTrackWriter::create(&path, 16_000).unwrap();
+    w.write(&sine(4096 * 3)).unwrap();
+    let before = std::fs::read(part_of(&path)).unwrap();
+    assert_eq!(recover_part(&path, 16_000).unwrap(), PartRecovery::InUse);
+    assert_eq!(std::fs::read(part_of(&path)).unwrap(), before);
+    // The recording goes on and finishes as usual.
+    w.write(&sine(100)).unwrap();
+    assert_eq!(w.finish().unwrap().frames, 4096 * 3 + 100);
+}
+
+#[test]
+fn audio_recovery_adopts_a_part_and_a_rowless_finished_file_then_reloads_them() {
+    let mut w = World::new("audio-recover");
+    let (m, tracks) = w.meeting_with(&[TrackId::Mic, TrackId::Reference]);
+    let (mic, reference) = (&tracks[0], &tracks[1]);
+    let input = sine(4096 * 4 + 300);
+    // The mic was cut by a crash; the loopback finished but its row was never written.
+    let mut wm = w.data.track_writer(m.id, TrackId::Mic, 16_000).unwrap();
+    wm.write(&input).unwrap();
+    drop(wm);
+    let mut wr = w
+        .data
+        .track_writer(m.id, TrackId::Reference, 16_000)
+        .unwrap();
+    wr.write(&input[..4096 * 2]).unwrap();
+    wr.finish().unwrap();
+
+    let got_mic = earshot_store::recover_track_file(&w.data, m.id, TrackId::Mic, 16_000).unwrap();
+    let got_ref =
+        earshot_store::recover_track_file(&w.data, m.id, TrackId::Reference, 16_000).unwrap();
+    assert!(
+        matches!(got_mic, TrackFileRecovery::Recovered { .. }),
+        "{got_mic:?}"
+    );
+    assert!(
+        matches!(got_ref, TrackFileRecovery::Finished(_)),
+        "{got_ref:?}"
+    );
+    let mic_file = got_mic.finished().unwrap().clone();
+    assert_eq!(
+        mic_file.frames,
+        4096 * 4,
+        "the unfinished block was never on disk"
+    );
+    let row_mic = w
+        .store
+        .adopt_track_audio(&mic_file, &w.data, mic, provenance(), &w.clock, &mut w.rng)
+        .unwrap();
+    let row_ref = w
+        .store
+        .adopt_track_audio(
+            got_ref.finished().unwrap(),
+            &w.data,
+            reference,
+            provenance(),
+            &w.clock,
+            &mut w.rng,
+        )
+        .unwrap();
+    assert_eq!((row_mic.frames, row_ref.frames), (4096 * 4, 4096 * 2));
+    assert_eq!(row_mic.path, DataDir::audio_rel(m.id, TrackId::Mic));
+    // A second adoption returns the row there is.
+    let again = w
+        .store
+        .adopt_track_audio(&mic_file, &w.data, mic, provenance(), &w.clock, &mut w.rng)
+        .unwrap();
+    assert_eq!(again.id, row_mic.id);
+    assert_eq!(w.store.audio_files(m.id).unwrap().len(), 2);
+    // Run again: both files are finished now and nothing changes.
+    let second = earshot_store::recover_track_file(&w.data, m.id, TrackId::Mic, 16_000).unwrap();
+    assert_eq!(
+        second,
+        TrackFileRecovery::Finished(FinishedFlac {
+            cut_short: false,
+            ..mic_file
+        })
+    );
+    let audio = load_meeting_audio(&w.store, &w.data, m.id).unwrap();
+    assert_eq!(audio.tracks.len(), 2);
+    assert_eq!(audio.tracks[0].2.len(), 4096 * 4);
+    assert_eq!(
+        earshot_store::recover_track_file(&w.data, m.id, TrackId::Mic, 16_000).ok(),
+        Some(second)
+    );
+    // A meeting with no file at all.
+    let (other, _) = w.meeting_with(&[TrackId::Mic]);
+    assert_eq!(
+        earshot_store::recover_track_file(&w.data, other.id, TrackId::Mic, 16_000).unwrap(),
+        TrackFileRecovery::NoFile
+    );
+}
+
+#[test]
+fn audio_recovery_writes_no_row_for_a_deleted_meeting_or_a_file_elsewhere() {
+    let mut w = World::new("audio-recover-refuse");
+    let (m, tracks) = w.meeting_with(&[TrackId::Mic]);
+    let mut wm = w.data.track_writer(m.id, TrackId::Mic, 16_000).unwrap();
+    wm.write(&sine(4096 * 2)).unwrap();
+    drop(wm);
+    let got = earshot_store::recover_track_file(&w.data, m.id, TrackId::Mic, 16_000).unwrap();
+    let file = got.finished().unwrap().clone();
+    // Not the layout path of this track.
+    let mut elsewhere = file.clone();
+    elsewhere.path = w.data.root().join("audio").join("x.flac");
+    assert!(
+        w.store
+            .adopt_track_audio(
+                &elsewhere,
+                &w.data,
+                &tracks[0],
+                provenance(),
+                &w.clock,
+                &mut w.rng
+            )
+            .is_err()
+    );
+    let mut tombstoned = w.store.meeting(m.id).unwrap().unwrap();
+    tombstoned.meta.deleted = true;
+    w.store.put_meeting(tombstoned).unwrap();
+    assert!(
+        w.store
+            .adopt_track_audio(
+                &file,
+                &w.data,
+                &tracks[0],
+                provenance(),
+                &w.clock,
+                &mut w.rng
+            )
+            .is_err()
+    );
+    assert!(w.store.audio_files(m.id).unwrap().is_empty());
+}
+
+fn make_old(path: &std::path::Path) {
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_millis(30 * DAY_MS))
+        .unwrap();
+}
+
+fn now_wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+#[test]
+fn audio_sweep_keeps_a_live_meetings_unfinished_audio_past_the_grace_period() {
+    let mut w = World::new("audio-sweep-live");
+    let (live, _) = w.meeting_with(&[TrackId::Mic, TrackId::Reference]);
+    let (gone, _) = w.meeting_with(&[TrackId::Mic]);
+    let audio =
+        |id: EntityId, name: &str| w.data.root().join("audio").join(id.to_string()).join(name);
+    let live_part = audio(live.id, "mic.flac.part");
+    let live_rowless = audio(live.id, "loopback.flac");
+    let gone_part = audio(gone.id, "mic.flac.part");
+    let stranger = w
+        .data
+        .root()
+        .join("audio")
+        .join("01920000-0000-7000-8000-0000000000ff")
+        .join("mic.flac.part");
+    for p in [&live_part, &live_rowless, &gone_part, &stranger] {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"fLaC").unwrap();
+    }
+    // The deleted meeting: its audio folder is removed with it; a late file left in it again.
+    let data = w.data.clone();
+    w.store
+        .delete_meeting(&data, gone.id, &mut w.hlc, &w.clock, &mut |_: &str| true)
+        .unwrap();
+    std::fs::create_dir_all(gone_part.parent().unwrap()).unwrap();
+    std::fs::write(&gone_part, b"fLaC").unwrap();
+    for p in [&live_part, &live_rowless, &gone_part, &stranger] {
+        make_old(p);
+    }
+    let now = now_wall_ms();
+    assert_eq!(
+        earshot_store::sweep_orphan_audio(&w.store, &w.data, now, earshot_store::ORPHAN_GRACE_MS)
+            .unwrap(),
+        2
+    );
+    assert!(
+        live_part.exists() && live_rowless.exists(),
+        "a live meeting's audio stays"
+    );
+    assert!(!gone_part.exists(), "a deleted meeting's audio goes");
+    assert!(!stranger.exists(), "audio no meeting names goes");
+    assert!(
+        !gone_part.parent().unwrap().exists(),
+        "its emptied folder too"
+    );
+    // The start-up cleanup follows the same rule.
+    std::fs::create_dir_all(gone_part.parent().unwrap()).unwrap();
+    std::fs::write(&gone_part, b"fLaC").unwrap();
+    make_old(&gone_part);
+    assert_eq!(
+        w.data
+            .cleanup_stale_parts(&w.store, now, earshot_store::ORPHAN_GRACE_MS)
+            .unwrap(),
+        1
+    );
+    assert!(live_part.exists() && !gone_part.exists());
+    // And so does a whole retention run.
+    let r = run_retention(&mut w.store, &w.data, RetentionPolicy::days(1), now).unwrap();
+    assert_eq!(r.orphans_removed, 0);
+    assert!(live_part.exists() && live_rowless.exists());
 }

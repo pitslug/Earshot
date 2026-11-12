@@ -1,7 +1,8 @@
 //! The Storage page of Settings (T7.4k): how long recordings are kept after a meeting's
 //! summary is stored. The choices, the rule and the runs are `earshot_runtime::retention`;
-//! this module maps them to the IPC types and runs retention at start-up and periodically
-//! ([`spawn_retention`]), keeping the last automatic run's problem for the page
+//! this module maps them to the IPC types and holds the loop that runs retention at start-up
+//! and periodically ([`retention_loop`], started after start-up recovery by
+//! `crate::recovery::spawn`), keeping the last automatic run's problem for the page
 //! ([`RetentionStatus`]).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -9,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use earshot_runtime::retention::{
-    self, AudioRetention, RetentionRun, audio_retention, preview, run_choice, set_audio_retention,
+    AudioRetention, RetentionRun, audio_retention, preview, run_choice, set_audio_retention,
 };
 use earshot_runtime::{RuntimeError, Services};
 use serde::Serialize;
@@ -202,19 +203,6 @@ pub fn retention_loop(
             return;
         }
     }
-}
-
-/// Runs [`retention_loop`] with [`retention::run`] on a thread of its own: at once (overdue
-/// audio goes when the app starts), then every `period` while the app runs.
-pub fn spawn_retention(services: Services, status: RetentionStatus, period: Duration) {
-    let _ = std::thread::Builder::new()
-        .name("earshot-retention".into())
-        .spawn(move || {
-            retention_loop(&services, &status, retention::run, || {
-                std::thread::sleep(period);
-                true
-            });
-        });
 }
 
 /// The Storage page settings.

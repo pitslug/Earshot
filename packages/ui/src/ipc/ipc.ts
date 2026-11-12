@@ -88,6 +88,7 @@ import type {
   PreviewsChoice,
   PreviewsView,
   ShellEvent,
+  RecoveredRecording,
   ObsidianSettingsValue,
   ObsidianSettingsView,
   SpeakerTimingChoice,
@@ -194,6 +195,7 @@ export type {
   PreviewsChoice,
   PreviewsView,
   ShellEvent,
+  RecoveredRecording,
   ObsidianSettingsValue,
   ObsidianSettingsView,
   SpeakerTimingChoice,
@@ -317,6 +319,9 @@ export interface IpcCommands
   /** Lets the summary writer summarise a meeting kept on this computer from now on (T12.13).
    * Sends nothing: the next summary does. */
   allowSummaryWriter(meeting: string): Promise<void>;
+  /** The recordings Earshot was closed during whose audio start-up recovery saved (T9.18),
+   * each returned once: the window says so once. */
+  recoveredRecordings(): Promise<RecoveredRecording[]>;
   /** Exports to the Obsidian vault. Rejects with `no_vault` while none is set. */
   exportMeeting(meeting: string): Promise<ExportDone>;
   /** Deletes the meeting. Rejects with `meeting_busy` while a job holds it. */
