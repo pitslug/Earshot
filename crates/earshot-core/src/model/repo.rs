@@ -83,6 +83,18 @@ pub trait MeetingRepo {
     /// # Errors
     /// [`RepoError::Storage`].
     fn segments(&self, meeting: EntityId) -> Result<Vec<SegmentRow>, RepoError>;
+    /// Whether `meeting` has a live (not tombstoned) segment of `pass`: the answer of
+    /// `!live_segments(repo, meeting, pass).is_empty()`. A repository may answer it without
+    /// reading any segment (the SQLite store asks for one row, T9.24a).
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn has_live_segment(&self, meeting: EntityId, pass: TranscriptPass) -> Result<bool, RepoError> {
+        Ok(self
+            .segments(meeting)?
+            .iter()
+            .any(|r| r.pass == pass && !r.meta.deleted))
+    }
     /// Inserts or replaces a segment.
     ///
     /// # Errors

@@ -5,7 +5,7 @@ use earshot_core::diar::EmbeddingModelId;
 use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp, SyncMeta};
 use earshot_core::model::{
     AudioFile, AudioFileRepo, ExportRecord, ExportRepo, Folder, FolderRepo, Meeting, MeetingRepo,
-    Note, RepoError, SegmentRow, Speaker, Summary, Track, VaultPath,
+    Note, RepoError, SegmentRow, Speaker, Summary, Track, TranscriptPass, VaultPath,
 };
 use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintError, VoiceprintRepo};
 use rusqlite::types::{Type, Value};
@@ -412,6 +412,20 @@ fn segments_of(c: &Connection, meeting: EntityId) -> Result<Vec<SegmentRow>, Rep
         "WHERE meeting_id = ?1 ORDER BY start_ms, id",
     );
     query(c, &sql, &[id_value(meeting)], segment_row)
+}
+
+/// Whether `meeting` has a live segment of `pass`: one indexed row read instead of every
+/// segment and its words (the meeting list asks this per meeting, T9.24a).
+fn has_live_segment(
+    c: &Connection,
+    meeting: EntityId,
+    pass: TranscriptPass,
+) -> Result<bool, RepoError> {
+    exists(
+        c,
+        "SELECT 1 FROM segment WHERE meeting_id = ?1 AND pass = ?2 AND deleted = 0 LIMIT 1",
+        &[id_value(meeting), enum_name(&pass)?],
+    )
 }
 
 fn put_segment(c: &Connection, row: &SegmentRow) -> Result<(), RepoError> {
@@ -837,6 +851,13 @@ macro_rules! impl_repos {
             }
             fn segments(&self, meeting: EntityId) -> Result<Vec<SegmentRow>, RepoError> {
                 segments_of(&self.conn, meeting)
+            }
+            fn has_live_segment(
+                &self,
+                meeting: EntityId,
+                pass: TranscriptPass,
+            ) -> Result<bool, RepoError> {
+                has_live_segment(&self.conn, meeting, pass)
             }
             fn put_segment(&mut self, segment: SegmentRow) -> Result<(), RepoError> {
                 put_segment(&self.conn, &segment)
