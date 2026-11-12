@@ -142,15 +142,11 @@ impl MeetingHold {
 }
 
 /// Waits until the CUDA start has decided which ONNX Runtime library loads, so what follows reads
-/// the order without waiting and never loads the wrong one; `false` when `cancel` came first.
+/// the order without waiting and never loads the wrong one; `false` when `cancel` came first. It
+/// waits at ONNX Runtime's own gate ([`crate::cuda::wait_for_onnx_unless`]), woken when the choice
+/// is made, never in a sleep loop of its own.
 fn wait_for_the_library_choice(cancel: &CancelToken) -> bool {
-    while crate::cuda::onnx_held() {
-        if cancel.is_cancelled() {
-            return false;
-        }
-        std::thread::sleep(WAIT_POLL);
-    }
-    !cancel.is_cancelled()
+    crate::cuda::wait_for_onnx_unless(cancel) && !cancel.is_cancelled()
 }
 
 impl HoldGates for MeetingHold {
