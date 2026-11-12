@@ -1,0 +1,590 @@
+{
+  "default_model": {
+    "name": "parakeet-tdt-0.6b-v2",
+    "rule": "the model check's first English rung for cpu (model_check::candidates; ladder [\"parakeet-tdt-0.6b-v2\", \"parakeet-tdt-110m\", \"base.en\"], QUALITY_ORDER rank 0): the check's answer on a host that runs it in real time (the timed check itself is not run here); without a recorded check the CLI falls back to base.en"
+  },
+  "informational": [],
+  "loads": [
+    {
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "parakeet-tdt-0.6b-v2"
+      },
+      "evidence": "ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1992; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+      "load_s": 0.9882759,
+      "model": "parakeet-tdt-0.6b-v2",
+      "requested_backend": "cpu",
+      "role": "live"
+    },
+    {
+      "backend_info": {
+        "device": "cpu",
+        "kind": "cpu",
+        "model": "parakeet-tdt-0.6b-v2"
+      },
+      "evidence": "ONNX Runtime placement: requested cpu, placed: CPUExecutionProvider=1992; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+      "load_s": 1.6618975,
+      "model": "parakeet-tdt-0.6b-v2",
+      "requested_backend": "cpu",
+      "role": "final pass"
+    }
+  ],
+  "max_piece_override_s": 15,
+  "metrics": [
+    {
+      "backend": "cpu",
+      "compared_words": 4678,
+      "definition": "words differing, after Whisper normalisation, between production live transcription (live_asr_factory + LiveTrack::with_stretches, LiveConfig::default() pieces, 10 ms pushes) and the final pass without stretch reuse (final_pass_asr + transcribe_in_pieces, PieceConfig::default(), the stretch track's final-pass options) on the same audio",
+      "differing": {
+        "deletions": 0,
+        "insertions": 0,
+        "substitutions": 0
+      },
+      "fallback_note": "no temperature fallback: Parakeet decodes greedily whatever the options ask",
+      "final_options": {
+        "decoding": {
+          "fallback": {
+            "increment": 0.20000000298023224,
+            "logprob_threshold": -1,
+            "repetition_threshold": 2.4000000953674316
+          },
+          "strategy": {
+            "strategy": "greedy"
+          },
+          "temperature": 0
+        },
+        "language": {
+          "code": "en"
+        },
+        "prompt": null
+      },
+      "final_pass": {
+        "audio_s": 1795.9502499999999,
+        "decode_s": 81.96857270000001,
+        "deletions": 11,
+        "insertions": 8,
+        "items": 26,
+        "ref_words": 4681,
+        "rtf": 0.04564078136351495,
+        "substitutions": 60,
+        "wer_percent": 1.6876735740226447
+      },
+      "final_piece_config": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 15s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4, recover_speech: Some(2s) }",
+      "id": "asr.stream_determinism",
+      "live": {
+        "audio_s": 1795.9502499999999,
+        "decode_s": 78.59753300000001,
+        "deletions": 11,
+        "insertions": 8,
+        "items": 26,
+        "ref_words": 4681,
+        "rtf": 0.04376375848941251,
+        "substitutions": 60,
+        "wer_percent": 1.6876735740226447
+      },
+      "live_options": {
+        "decoding": {
+          "fallback": {
+            "increment": 0.20000000298023224,
+            "logprob_threshold": -1,
+            "repetition_threshold": 2.4000000953674316
+          },
+          "strategy": {
+            "strategy": "greedy"
+          },
+          "temperature": 0
+        },
+        "language": {
+          "code": "en"
+        },
+        "prompt": null
+      },
+      "model": {
+        "backend_info": {
+          "device": "cpu",
+          "kind": "cpu",
+          "model": "parakeet-tdt-0.6b-v2"
+        },
+        "name": "parakeet-tdt-0.6b-v2"
+      },
+      "per_stream": [
+        {
+          "compared_words": 167,
+          "final_errors": 1,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 1,
+          "ref_words": 167,
+          "seconds": 67.615,
+          "utterances": [
+            "61-70968-0000",
+            "237-126133-0000"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 173,
+          "final_errors": 2,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 2,
+          "ref_words": 172,
+          "seconds": 62.445,
+          "utterances": [
+            "237-126133-0001",
+            "672-122797-0000"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 154,
+          "final_errors": 0,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 5,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 0,
+          "ref_words": 154,
+          "seconds": 61.99,
+          "utterances": [
+            "672-122797-0001",
+            "908-31957-0002"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 159,
+          "final_errors": 2,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 2,
+          "ref_words": 159,
+          "seconds": 66.6350625,
+          "utterances": [
+            "908-31957-0003",
+            "1188-133604-0001"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 173,
+          "final_errors": 3,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 3,
+          "ref_words": 173,
+          "seconds": 64.545,
+          "utterances": [
+            "1188-133604-0002",
+            "1221-135766-0002"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 208,
+          "final_errors": 3,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 7,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 3,
+          "ref_words": 209,
+          "seconds": 69.395,
+          "utterances": [
+            "1221-135766-0003",
+            "1320-122612-0001"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 183,
+          "final_errors": 2,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 5,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 2,
+          "ref_words": 182,
+          "seconds": 63.205,
+          "utterances": [
+            "1320-122612-0002",
+            "1995-1826-0000"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 163,
+          "final_errors": 1,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 1,
+          "ref_words": 163,
+          "seconds": 67.02,
+          "utterances": [
+            "1995-1826-0001",
+            "2094-142345-0002"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 149,
+          "final_errors": 0,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 0,
+          "ref_words": 149,
+          "seconds": 64.26,
+          "utterances": [
+            "2094-142345-0003",
+            "2300-131720-0003"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 211,
+          "final_errors": 2,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 7,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 2,
+          "ref_words": 210,
+          "seconds": 86.2850625,
+          "utterances": [
+            "2300-131720-0004",
+            "2961-960-0000"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 178,
+          "final_errors": 1,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 1,
+          "ref_words": 178,
+          "seconds": 69.2900625,
+          "utterances": [
+            "2961-960-0001",
+            "3570-5694-0002"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 205,
+          "final_errors": 6,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 6,
+          "ref_words": 206,
+          "seconds": 71.65,
+          "utterances": [
+            "3570-5694-0003",
+            "3729-6852-0001"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 194,
+          "final_errors": 5,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 7,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 5,
+          "ref_words": 194,
+          "seconds": 75.035,
+          "utterances": [
+            "3729-6852-0002",
+            "4077-13751-0003"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 164,
+          "final_errors": 6,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 5,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 6,
+          "ref_words": 163,
+          "seconds": 61.925,
+          "utterances": [
+            "4077-13751-0004",
+            "4507-16021-0001"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 162,
+          "final_errors": 2,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 2,
+          "ref_words": 162,
+          "seconds": 63.72,
+          "utterances": [
+            "4507-16021-0002",
+            "4992-23283-0000"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 168,
+          "final_errors": 2,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 2,
+          "ref_words": 168,
+          "seconds": 61.37,
+          "utterances": [
+            "4992-23283-0001",
+            "5105-28233-0003"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 212,
+          "final_errors": 2,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 2,
+          "ref_words": 212,
+          "seconds": 69.705,
+          "utterances": [
+            "5105-28233-0004",
+            "5639-40744-0001"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 160,
+          "final_errors": 4,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 4,
+          "ref_words": 160,
+          "seconds": 64.575,
+          "utterances": [
+            "5639-40744-0002",
+            "5683-32865-0005"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 228,
+          "final_errors": 1,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 7,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 1,
+          "ref_words": 227,
+          "seconds": 77.72,
+          "utterances": [
+            "5683-32865-0006",
+            "6930-75918-0003"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 170,
+          "final_errors": 7,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 7,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 7,
+          "ref_words": 170,
+          "seconds": 75.82,
+          "utterances": [
+            "6930-75918-0004",
+            "7021-79730-0004"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 204,
+          "final_errors": 3,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 8,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 3,
+          "ref_words": 205,
+          "seconds": 72.245,
+          "utterances": [
+            "7021-79730-0005",
+            "7176-88083-0001"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 180,
+          "final_errors": 1,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 7,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 1,
+          "ref_words": 180,
+          "seconds": 77.6050625,
+          "utterances": [
+            "7176-88083-0002",
+            "7729-102255-0004"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 138,
+          "final_errors": 1,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 7,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 1,
+          "ref_words": 138,
+          "seconds": 69.91,
+          "utterances": [
+            "7729-102255-0005",
+            "8224-274381-0002"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 170,
+          "final_errors": 3,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 3,
+          "ref_words": 169,
+          "seconds": 73,
+          "utterances": [
+            "8224-274381-0003",
+            "8230-279154-0004"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 216,
+          "final_errors": 6,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 7,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 6,
+          "ref_words": 217,
+          "seconds": 72.865,
+          "utterances": [
+            "8455-210777-0000",
+            "8463-287645-0002"
+          ],
+          "words_differing": 0
+        },
+        {
+          "compared_words": 189,
+          "final_errors": 13,
+          "final_pieces": {
+            "dropped_ms": [],
+            "pieces": 6,
+            "retried": 0,
+            "uncovered": 0
+          },
+          "live_errors": 13,
+          "ref_words": 194,
+          "seconds": 66.12,
+          "utterances": [
+            "8463-287645-0003",
+            "8555-284447-0004"
+          ],
+          "words_differing": 0
+        }
+      ],
+      "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 15s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4, recover_speech: Some(2s) }",
+      "set": "LibriSpeech subset test-clean utterances concatenated into ~60 s streams",
+      "streams": 26,
+      "unit": "count",
+      "value": 0
+    }
+  ],
+  "selected_backend": "cpu",
+  "note": "per-stream reference and hypothesis text removed before committing (counts only)"
+}
