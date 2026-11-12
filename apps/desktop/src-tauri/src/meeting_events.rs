@@ -818,7 +818,8 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
                 format!("recording:{}", t.key()),
                 WarningKind::Recording,
                 format!(
-                    "Earshot could not finish saving the recording of {}. What was recorded is                      kept and finished the next time Earshot starts.",
+                    "Earshot could not finish saving the recording of {}. What was recorded is \
+                     kept and finished the next time Earshot starts.",
                     t.device()
                 ),
             )

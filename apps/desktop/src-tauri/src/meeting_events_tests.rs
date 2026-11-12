@@ -366,6 +366,8 @@ fn assert_copy(message: &str) {
     assert!(!message.contains('\u{2014}'), "{message}");
     assert!(!message.to_lowercase().contains("please"), "{message}");
     assert!(!message.contains('!'), "{message}");
+    // A string literal broken across lines without `\` keeps the indentation (found at T9.18).
+    assert!(!message.contains("  "), "a run of spaces: {message}");
     assert!(
         message.chars().next().is_some_and(char::is_uppercase),
         "{message}"
