@@ -42,7 +42,7 @@ fn store_segment_edit_schema_v2_database_migrates_to_unedited_segments() {
 
     let mut store = Store::open(&path).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
-    assert_eq!(SCHEMA_VERSION, 3);
+    const { assert!(SCHEMA_VERSION >= 3) };
     let meetings = store.meetings().unwrap();
     assert_eq!(meetings.len(), 2, "{meetings:?}");
     let first = meetings

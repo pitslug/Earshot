@@ -414,8 +414,13 @@ fn segments_of(c: &Connection, meeting: EntityId) -> Result<Vec<SegmentRow>, Rep
     query(c, &sql, &[id_value(meeting)], segment_row)
 }
 
-/// Whether `meeting` has a live segment of `pass`: one indexed row read instead of every
-/// segment and its words (the meeting list asks this per meeting, T9.24a).
+/// The query of [`has_live_segment`]: `?1` the meeting id, `?2` the pass name.
+pub(crate) const HAS_LIVE_SEGMENT_SQL: &str =
+    "SELECT 1 FROM segment WHERE meeting_id = ?1 AND pass = ?2 AND deleted = 0 LIMIT 1";
+
+/// Whether `meeting` has a live segment of `pass`: answered from the `segment_live` index
+/// alone (migration 4, T12.30) instead of every segment and its words (the meeting list asks
+/// this per meeting, T9.24a).
 fn has_live_segment(
     c: &Connection,
     meeting: EntityId,
@@ -423,7 +428,7 @@ fn has_live_segment(
 ) -> Result<bool, RepoError> {
     exists(
         c,
-        "SELECT 1 FROM segment WHERE meeting_id = ?1 AND pass = ?2 AND deleted = 0 LIMIT 1",
+        HAS_LIVE_SEGMENT_SQL,
         &[id_value(meeting), enum_name(&pass)?],
     )
 }

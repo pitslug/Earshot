@@ -148,6 +148,13 @@ ALTER TABLE segment ADD COLUMN edited_logical INTEGER;
 ALTER TABLE segment ADD COLUMN edited_node BLOB;
 ";
 
+/// Migration 4: whether a meeting has a live segment of a pass (`has_live_segment`, asked per
+/// meeting by the meeting list, T9.24a) is answered from this index alone, never by reading a
+/// long meeting's segment rows (T12.30).
+const V4: &str = "
+CREATE INDEX segment_live ON segment(meeting_id, pass, deleted);
+";
+
 /// Tables with sync metadata (the HLC high-water mark is the greatest `updated_*` in them).
 pub(crate) const SYNCED_TABLES: [&str; 9] = [
     "meeting",
@@ -163,7 +170,7 @@ pub(crate) const SYNCED_TABLES: [&str; 9] = [
 
 /// The migrations, in order, with `{META}` expanded.
 pub(crate) fn migrations() -> Vec<String> {
-    [V1, V2, V3]
+    [V1, V2, V3, V4]
         .iter()
         .map(|m| m.replace("{META}", META))
         .collect()
@@ -180,6 +187,7 @@ mod tests {
         "a852be73b469315e94109bf9f648c0201399ce286f94a86438e781e695bfdaed",
         "3994bcb0037913aeecece98d816f969dd6d5ba90f0a3a0d55f144403ed633107",
         "46159521b8052eff5fba4622c74f0f91717db9ec39170deba1757f35e48602d4",
+        "85a4c55bdbd320805308174fdb3a2f531d9dfae9262659b726437b8caa14603b",
     ];
 
     /// `(type, name, tbl_name, sql)` of every schema object, sorted.
@@ -236,6 +244,68 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, 2);
+    }
+
+    /// The committed schema-3 fixture (`tests/data/schema_v3.sql`, used by
+    /// `tests/segment_live_index.rs`) creates exactly the objects migrations 1 to 3 create, so
+    /// the live-segment index migration (4) is tested on a real schema-3 database.
+    #[test]
+    fn store_segment_live_v3_fixture_has_exactly_the_schema_of_migrations_1_to_3() {
+        let fixture = rusqlite::Connection::open_in_memory().unwrap();
+        fixture
+            .execute_batch(include_str!("../tests/data/schema_v3.sql"))
+            .unwrap();
+        let fresh = rusqlite::Connection::open_in_memory().unwrap();
+        for m in &super::migrations()[..3] {
+            fresh.execute_batch(m).unwrap();
+        }
+        let want = objects(&fresh);
+        assert!(
+            want.iter().any(|o| o
+                .3
+                .as_deref()
+                .is_some_and(|sql| sql.contains("edited_wall"))),
+            "{want:?}"
+        );
+        assert_eq!(objects(&fixture), want);
+        let version: u32 = fixture
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+    }
+
+    /// The query plan of `has_live_segment` on a database after `upto` migrations.
+    fn live_segment_plan(upto: usize) -> String {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        for m in &super::migrations()[..upto] {
+            c.execute_batch(m).unwrap();
+        }
+        let mut st = c
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                crate::repo::HAS_LIVE_SEGMENT_SQL
+            ))
+            .unwrap();
+        // The plan does not depend on the values.
+        st.query_map(rusqlite::params![vec![0u8; 16], "final"], |r| {
+            r.get::<_, String>(3)
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .join("; ")
+    }
+
+    /// T12.30: whether a meeting has a live segment of a pass is answered from the index
+    /// alone (migration 4), never by reading a long meeting's segment rows; before migration 4
+    /// the only index (`segment_meeting`) left every row of the meeting to read.
+    #[test]
+    fn store_segment_live_existence_is_answered_from_its_index() {
+        let plan = live_segment_plan(super::migrations().len());
+        assert!(plan.contains("USING COVERING INDEX segment_live"), "{plan}");
+        // The negative control: the schema before the index reads the rows.
+        let before = live_segment_plan(3);
+        assert!(!before.contains("COVERING INDEX"), "{before}");
     }
 
     /// Every table with sync metadata is in `SYNCED_TABLES` (the HLC resumes from them) and
