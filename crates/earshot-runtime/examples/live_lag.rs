@@ -236,7 +236,8 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
             || args.contention.is_some())
     {
         return Err(
-            "--stream replaces the window previews of a replay: it needs --previews on|everyone              and no --memory, --force-previews, --card-memory-gib or --contention"
+            "--stream replaces the window previews of a replay: it needs --previews on|everyone \
+             and no --memory, --force-previews, --card-memory-gib or --contention"
                 .to_owned(),
         );
     }
@@ -1845,7 +1846,15 @@ mod tests {
                 "12",
             ],
         ] {
-            assert!(parse(other).is_err(), "{other:?}");
+            let Err(why) = parse(other) else {
+                panic!("{other:?} parsed")
+            };
+            assert_eq!(
+                why,
+                "--stream replaces the window previews of a replay: it needs --previews \
+                 on|everyone and no --memory, --force-previews, --card-memory-gib or --contention",
+                "{other:?}"
+            );
         }
     }
 

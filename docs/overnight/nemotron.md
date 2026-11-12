@@ -9,9 +9,27 @@ Desktop, 2026-11-12/13, six lanes building beside it. No timing was taken: the m
 3. `T12.23: evaluation-only streaming preview seam and Nemotron loader` (`LivePreviews::stream`, `backends::load_nemotron_preview`, scan test)
 4. `T12.23: rule for streaming previews, committed before measuring` (docs/live-previews.md)
 5. `T12.23: live_lag --stream nemotron, the evaluation loader in a replay`
-6. This report.
+6. `docs: overnight report for lane/nemotron`
+7. `T12.23: fix lane-merge review findings` (with this report's update)
 
-`lane/nemotron` was pushed after commit 5 (public-guard ok), so the Surface can run the rule from it.
+`lane/nemotron` was pushed after commit 5 (public-guard ok), and again after commit 7. **The Surface must measure from commit 7 or later**: before it, a slow pause left covered words on screen (finding 1 below).
+
+## Lane-merge review fixes (commit 7)
+
+1. **Covered words during a slow pause.** `stream_until_stopped` used to `continue` before the show step while paused, so covered words stayed on screen for the whole pause. The loop now runs through `StreamFeed` (`live/preview.rs`): the settled-text filter and the send run on every turn, paused or not. During a pause, audio is not fed and the model restarts once, keeping the words it had finished (`carried`, in meeting time) until settled text covers them. Tests: `live_preview_stream_covered_words_leave_during_a_pause` (feed-level) and `live_preview_stream_paused_for_slowness_still_clears_covered_words` (session-level, a fake whose word-finishing pushes take 20 ms against `slow` 4 ms, pause 600 s). Negative control: with the paused loop made to skip the show again, the session test failed 4 of 4 runs ("covered words still shown at the end, settled to 37.330s").
+2. **Scan test.** `backends_nemotron_preview_load_is_used_by_no_shipped_code` now also refuses `stream: Some(`, `.stream = Some(`, `stream = Some(` and `StreamingPreview for` in shipped sources. The one exception is `live/preview_tests.rs`, whose fake implements the trait; the test also asserts that the module is compiled only under `#[cfg(test)]` (its declaration in `live/tests.rs`, and `live/mod.rs` declaring `tests` under `#[cfg(test)]`).
+3. (Advisory, not changed: see the notes for the owner below.)
+4. **`--stream` refusal text.** The run of 14 spaces (a lost line continuation) is fixed, and `live_lag_parses_the_streaming_model_and_its_threads` now checks the exact message for each refused combination.
+5. **Gap restart.** `live_preview_stream_a_gap_starts_the_model_over`: one restart, the audio pending before the gap is dropped (never pushed), the words the model had finished stay, the new run is timed from the packet after the gap, and no shown word spans the gap.
+
+The fake streaming model now times each word at the newest audio (word `k` from 500k + 400 to 500k + 500 ms), as a streaming model finishes words. The rule's text did not depend on the old pause behaviour: it mentions slow pauses only as a count (point 3), and its "a gap starts the model over" still holds. The rule is unchanged.
+
+Results after the fixes: `cargo test -p earshot-runtime --lib -- live_preview backends_` 92 passed, 3 runs in a row; `cargo test -p earshot-runtime --lib live_preview_stream` 5 passed, twice; `cargo test -p earshot-runtime --example live_lag` 13 passed; clippy (`-p earshot-runtime -p earshot-onnx --all-targets -D warnings`, `CLIPPY_CONF_DIR` at the worktree root) and `cargo fmt --all -- --check` clean.
+
+**Notes for the owner (review advisories, not changed):**
+
+- **Advisory 3: one shared failure flag.** `load_nemotron_preview` reads the same `priority::PREVIEW_POOL_FAILED` flag as the window preview loaders. A streaming session's pool thread that cannot lower its priority would therefore also refuse later window previews in the same process, and the other way round. This only matters in evaluation runs. AGENTS.md says a new background ONNX user gets its own flag, so a shipping version would need one.
+- **Advisory 6: the reference venv was set up by hand.** The sherpa-onnx reference venv was built by hand under `target/nemotron-ref/`, not by an xtask command. The wheels were hash-pinned (`--require-hashes --no-deps --only-binary :all:`) with `PIP_DISABLE_PIP_VERSION_CHECK=1`, and the commands are in `reference.py` and `knf_features.py`. Reproducing the references means running those commands again.
 
 ## Step 1: the package
 
@@ -77,4 +95,4 @@ Judge with the rule's "What to read" list; copy the reports to `docs/live-previe
 
 - Every timing: the desktop runs above (idle machine) and the Surface runs (`lane/nemotron-surface`).
 - The result and recommendation in docs/live-previews.md.
-- No reviewer was spawned (T12.23 is not on the review list); the seam in `live/preview.rs` is shipped code with `stream: None`, so the lane-merge reviewer should read `stream_until_stopped` and the two new tests.
+- No reviewer was spawned by the lane (T12.23 is not on the review list). The coordinator's lane-merge review was clear, with advisories; findings 1, 2, 4 and 5 are fixed in commit 7.

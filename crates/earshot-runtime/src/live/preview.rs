@@ -470,40 +470,34 @@ impl PreviewWork {
     }
 
     /// Evaluation only (T12.23, module docs): every packet of the track's audio goes to the
-    /// streaming model once, and the words it finished are shown until settled text covers them.
-    /// A gap in the audio (dropped packets) starts the model over at the next packet.
+    /// streaming model once, and the words it finished are shown until settled text covers them
+    /// ([`StreamFeed`]). Covered words leave on every turn of the loop, during a slow pause too.
     fn stream_until_stopped(&self, load: &StreamLoader) -> Result<(), String> {
         let loading = Instant::now();
-        let mut model = load(&self.backend)?;
+        let model = load(&self.backend)?;
         let ran = model.backend_info().kind;
         self.add(|r| {
             r.load_s = loading.elapsed().as_secs_f64();
             r.backend = Some(ran);
         });
-        // Pipeline frame of the model's time zero, and of the end of what it was given.
-        let mut origin: Option<u64> = None;
-        let mut end = 0u64;
-        let mut pending: Vec<Sample> = Vec::new();
-        let mut shown: Vec<Word> = Vec::new();
+        let mut feed = StreamFeed::new(model);
         let mut slow = 0u32;
         let mut paused_until: Option<Instant> = None;
         let wait = Duration::from_millis(20);
         while !self.stop.load(Ordering::Acquire) {
+            if paused_until.is_some_and(|until| Instant::now() >= until) {
+                paused_until = None;
+            }
+            let paused = paused_until.is_some();
             match self.inbox.recv_timeout(wait) {
                 Ok(message) => {
                     let mut next = Some(message);
                     while let Some(message) = next.take() {
-                        if let ToPreview::Audio(at, samples) = message {
-                            if origin.is_none() || at != end {
-                                // Restart at the packet: what is pending belonged to the old run.
-                                if origin.is_some() {
-                                    model.restart();
-                                }
-                                pending.clear();
-                                origin = Some(at);
-                            }
-                            end = at + samples.len() as u64;
-                            pending.extend_from_slice(&samples);
+                        // Paused: the audio of the pause is not heard.
+                        if let ToPreview::Audio(at, samples) = message
+                            && !paused
+                        {
+                            feed.audio(at, &samples);
                         }
                         next = self.inbox.try_recv().ok();
                     }
@@ -511,25 +505,13 @@ impl PreviewWork {
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
-            if let Some(until) = paused_until {
-                if Instant::now() < until {
-                    // Paused: the audio of the pause is not heard; the model starts over after it.
-                    pending.clear();
-                    if origin.take().is_some() {
-                        model.restart();
-                    }
-                    continue;
-                }
-                paused_until = None;
-            }
-            let Some(zero) = origin else { continue };
-            let zero_time = MeetingTime::from_pipeline_frames(zero);
-            let frontier = MeetingTime::from_pipeline_frames(self.frontier.load(Ordering::SeqCst));
-            if !pending.is_empty() {
-                let audio = quantise_pcm16(&pending);
-                pending.clear();
+            if paused {
+                // The model starts over after the pause (it keeps the words it finished).
+                feed.pause();
+            } else if let Some(audio) = feed.take_pending() {
+                let audio = quantise_pcm16(&audio);
                 let began = Instant::now();
-                let steps = model.push(&audio)?;
+                let steps = feed.push(&audio)?;
                 let took = began.elapsed();
                 if steps > 0 {
                     self.add(|r| {
@@ -550,34 +532,134 @@ impl PreviewWork {
                 }
                 self.add(|r| r.audio_s += PIPELINE_RATE.duration_of(audio.len()).as_secs_f64());
             }
-            // The model's words in meeting time, without what settled text covers.
-            let relative = MeetingTime::from_millis(
-                frontier.as_millis().saturating_sub(zero_time.as_millis()),
-            );
-            model.forget_before(relative.saturating_sub_duration(COVERED_SLACK));
-            let now: Vec<Word> = model
-                .finished_words()
-                .into_iter()
-                .map(|w| Word {
-                    start: w.start + zero_time,
-                    end: w.end + zero_time,
-                    ..w
-                })
-                .filter(|w| w.start + COVERED_SLACK >= frontier)
-                .collect();
-            if now != shown {
-                let added = now
-                    .iter()
-                    .filter(|w| !shown.iter().any(|s| s.start == w.start && s.text == w.text))
-                    .count();
+            let frontier = MeetingTime::from_pipeline_frames(self.frontier.load(Ordering::SeqCst));
+            if let Some((words, added)) = feed.show(frontier) {
                 if added > 0 {
                     self.add(|r| r.words_shown += added as u64);
                 }
-                shown = now;
-                let _ = self.out.send(FromPreview::Words(shown.clone()));
+                let _ = self.out.send(FromPreview::Words(words));
             }
         }
         Ok(())
+    }
+}
+
+/// Evaluation only (T12.23): what a track's streaming model has been given and what it shows.
+/// Audio that does not follow the last packet (a gap: dropped packets) starts the model over;
+/// the words it had finished are kept, in meeting time, and the unfinished last word and any
+/// audio not yet pushed are dropped, so no word spans the gap.
+pub(super) struct StreamFeed {
+    model: Box<dyn StreamingPreview + Send>,
+    /// Pipeline frame of the model's time zero (`None`: nothing heard since the last restart).
+    origin: Option<u64>,
+    /// Pipeline frame just after the last packet given.
+    end: u64,
+    pending: Vec<Sample>,
+    /// Finished words of earlier runs of the model, in meeting time.
+    carried: Vec<Word>,
+    /// What was last shown.
+    shown: Vec<Word>,
+}
+
+impl StreamFeed {
+    pub(super) fn new(model: Box<dyn StreamingPreview + Send>) -> Self {
+        Self {
+            model,
+            origin: None,
+            end: 0,
+            pending: Vec::new(),
+            carried: Vec::new(),
+            shown: Vec::new(),
+        }
+    }
+
+    /// A packet of the track's audio at pipeline frame `at`.
+    pub(super) fn audio(&mut self, at: u64, samples: &[Sample]) {
+        if self.origin.is_some() && at != self.end {
+            self.restart();
+        }
+        if self.origin.is_none() {
+            self.origin = Some(at);
+        }
+        self.end = at + samples.len() as u64;
+        self.pending.extend_from_slice(samples);
+    }
+
+    /// The audio given and not yet pushed, if any.
+    pub(super) fn take_pending(&mut self) -> Option<Vec<Sample>> {
+        (!self.pending.is_empty()).then(|| std::mem::take(&mut self.pending))
+    }
+
+    /// Pushes `audio` (what [`StreamFeed::take_pending`] returned) to the model.
+    ///
+    /// # Errors
+    /// The model's.
+    pub(super) fn push(&mut self, audio: &[Sample]) -> Result<u64, String> {
+        self.model.push(audio)
+    }
+
+    /// Previews are paused: nothing pending is pushed and the model starts over (once).
+    pub(super) fn pause(&mut self) {
+        self.pending.clear();
+        if self.origin.is_some() {
+            self.restart();
+        }
+    }
+
+    fn restart(&mut self) {
+        if let Some(zero) = self.origin.take() {
+            let zero = MeetingTime::from_pipeline_frames(zero);
+            let finished = self.model.finished_words();
+            self.carried
+                .extend(finished.into_iter().map(|w| at_time(w, zero)));
+        }
+        self.model.restart();
+        self.pending.clear();
+    }
+
+    /// The words to show now that settled text reaches `frontier`, and how many of them are new,
+    /// when that differs from what was last shown.
+    pub(super) fn show(&mut self, frontier: MeetingTime) -> Option<(Vec<Word>, usize)> {
+        let covered = |w: &Word| w.start + COVERED_SLACK < frontier;
+        self.carried.retain(|w| !covered(w));
+        let mut now = self.carried.clone();
+        if let Some(zero) = self.origin {
+            let zero = MeetingTime::from_pipeline_frames(zero);
+            let relative =
+                MeetingTime::from_millis(frontier.as_millis().saturating_sub(zero.as_millis()));
+            self.model
+                .forget_before(relative.saturating_sub_duration(COVERED_SLACK));
+            now.extend(
+                self.model
+                    .finished_words()
+                    .into_iter()
+                    .map(|w| at_time(w, zero))
+                    .filter(|w| !covered(w)),
+            );
+        }
+        if now == self.shown {
+            return None;
+        }
+        let added = now
+            .iter()
+            .filter(|w| {
+                !self
+                    .shown
+                    .iter()
+                    .any(|s| s.start == w.start && s.text == w.text)
+            })
+            .count();
+        self.shown.clone_from(&now);
+        Some((now, added))
+    }
+}
+
+/// `w`, whose times are from `zero`, in meeting time.
+fn at_time(w: Word, zero: MeetingTime) -> Word {
+    Word {
+        start: w.start + zero,
+        end: w.end + zero,
+        ..w
     }
 }
 

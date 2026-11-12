@@ -12,7 +12,9 @@ use earshot_llm_replay::mock::{MockResponse, MockServer};
 
 use super::queue_tests::{Scene, by_kind, factory_of, held_config, held_gates, scene_of};
 use super::*;
-use crate::live::preview::{COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PreviewWords};
+use crate::live::preview::{
+    COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PreviewWords, StreamFeed,
+};
 use crate::live::{LivePreviews, PreviewLoader, PreviewReport};
 use crate::power::{PowerProbe, PowerSource, PowerSupply};
 use crate::replay::{PaceClock, PaceState, Paced};
@@ -1448,12 +1450,15 @@ struct Heard {
     restarts: AtomicUsize,
 }
 
-/// A streaming model that finishes a `MARKER` word every half second of audio it is given.
+/// A streaming model that finishes a `MARKER` word at the end of every half second of audio it
+/// is given (word `k` from `500k + 400` to `500k + 500` ms).
 struct FakeStream {
     heard: Arc<Heard>,
     /// Samples since the last restart.
     position: usize,
     words: Vec<Word>,
+    /// Each push that finishes a word takes at least this long.
+    slow: Duration,
 }
 
 impl crate::live::StreamingPreview for FakeStream {
@@ -1478,10 +1483,14 @@ impl crate::live::StreamingPreview for FakeStream {
         let before = self.position / 8000;
         self.position += samples.len();
         let after = self.position / 8000;
+        if after > before {
+            std::thread::sleep(self.slow);
+        }
+        // Each word ends where the half second that finished it ends: at the newest audio.
         for k in before..after {
-            let ms = k as u64 * 500;
+            let end = (k as u64 + 1) * 500;
             self.words
-                .push(Word::new(format!("{MARKER}{k}"), ms, ms + 100, 0.9));
+                .push(Word::new(format!("{MARKER}{k}"), end - 100, end, 0.9));
         }
         Ok((after - before) as u64)
     }
@@ -1495,13 +1504,27 @@ impl crate::live::StreamingPreview for FakeStream {
     }
 }
 
+fn fake_stream(heard: &Arc<Heard>) -> FakeStream {
+    FakeStream {
+        heard: Arc::clone(heard),
+        position: 0,
+        words: Vec::new(),
+        slow: Duration::ZERO,
+    }
+}
+
 fn stream_loader(heard: &Arc<Heard>) -> crate::live::StreamLoader {
+    slow_stream_loader(heard, Duration::ZERO)
+}
+
+fn slow_stream_loader(heard: &Arc<Heard>, slow: Duration) -> crate::live::StreamLoader {
     let heard = Arc::clone(heard);
     Arc::new(move |_| {
         Ok(Box::new(FakeStream {
             heard: Arc::clone(&heard),
             position: 0,
             words: Vec::new(),
+            slow,
         }) as Box<dyn crate::live::StreamingPreview + Send>)
     })
 }
@@ -1582,5 +1605,136 @@ fn live_preview_stream_words_leave_when_settled_and_never_reach_the_store() {
     assert!(
         last.1.is_empty(),
         "previews end with nothing shown: {last:?}"
+    );
+}
+
+fn texts_at(words: &[Word]) -> Vec<(String, u64)> {
+    words
+        .iter()
+        .map(|w| (w.text.clone(), w.start.as_millis()))
+        .collect()
+}
+
+/// T12.23 (review finding): a paused streaming preview still lets settled text take covered
+/// words away, and starts its model over once; the words it had finished stay until covered.
+#[test]
+fn live_preview_stream_covered_words_leave_during_a_pause() {
+    let heard = Arc::new(Heard::default());
+    let mut feed = StreamFeed::new(Box::new(fake_stream(&heard)));
+    feed.audio(0, &vec![0.0; 16_000]);
+    let audio = feed.take_pending().expect("audio");
+    assert_eq!(feed.push(&audio).unwrap(), 2);
+    let (shown, added) = feed.show(MeetingTime::ZERO).expect("words");
+    assert_eq!(added, 2);
+    assert_eq!(
+        texts_at(&shown),
+        [(format!("{MARKER}0"), 400), (format!("{MARKER}1"), 900)]
+    );
+    feed.pause();
+    feed.pause();
+    assert_eq!(heard.restarts.load(Ordering::SeqCst), 1, "starts over once");
+    assert_eq!(feed.take_pending(), None);
+    assert_eq!(feed.show(MeetingTime::ZERO), None, "nothing changed yet");
+    let (shown, added) = feed.show(MeetingTime::from_millis(800)).expect("a change");
+    assert_eq!(added, 0);
+    assert_eq!(texts_at(&shown), [(format!("{MARKER}1"), 900)]);
+    let (shown, _) = feed
+        .show(MeetingTime::from_millis(1_100))
+        .expect("a change");
+    assert!(shown.is_empty());
+}
+
+/// T12.23 (review finding): audio after a gap starts the model over at the packet after it; what
+/// was pending before the gap is dropped, the finished words stay, and no word spans the gap.
+#[test]
+fn live_preview_stream_a_gap_starts_the_model_over() {
+    let heard = Arc::new(Heard::default());
+    let mut feed = StreamFeed::new(Box::new(fake_stream(&heard)));
+    feed.audio(0, &vec![0.0; 12_000]);
+    let audio = feed.take_pending().unwrap();
+    feed.push(&audio).unwrap();
+    // Pending, never pushed: lost with the gap.
+    feed.audio(12_000, &vec![0.0; 1_000]);
+    // Frames 13,000 to 14,000 never arrive.
+    feed.audio(14_000, &vec![0.0; 2_000]);
+    assert_eq!(heard.restarts.load(Ordering::SeqCst), 1);
+    assert_eq!(feed.take_pending().map(|a| a.len()), Some(2_000));
+    feed.push(&vec![0.0; 2_000]).unwrap();
+    feed.audio(16_000, &vec![0.0; 14_000]);
+    let audio = feed.take_pending().unwrap();
+    feed.push(&audio).unwrap();
+    assert_eq!(heard.restarts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        heard.samples.load(Ordering::SeqCst),
+        12_000 + 2_000 + 14_000
+    );
+    let (shown, _) = feed.show(MeetingTime::ZERO).expect("words");
+    // Frame 14,000 is 875 ms: the new run's words are timed from there.
+    assert_eq!(
+        texts_at(&shown),
+        [
+            (format!("{MARKER}0"), 400),
+            (format!("{MARKER}0"), 1_275),
+            (format!("{MARKER}1"), 1_775)
+        ]
+    );
+    let (gap_start, gap_end) = (MeetingTime::from_millis(750), MeetingTime::from_millis(875));
+    assert!(
+        shown
+            .iter()
+            .all(|w| w.end <= gap_start || w.start >= gap_end),
+        "a word spans the gap: {shown:?}"
+    );
+}
+
+/// T12.23 (review finding): in a session, previews paused for slowness (here for the rest of the
+/// meeting, after their first words) still take covered words off the screen. At the end of the
+/// live transcript the screen holds no word that settled text covered before its last final (the
+/// last one may not have reached the thread yet). Without the fix the last words shown before
+/// the pause stayed (checked by making the paused loop skip the show: this test then fails).
+#[test]
+fn live_preview_stream_paused_for_slowness_still_clears_covered_words() {
+    let scene = scene_of(60);
+    let seen = Arc::new(Seen::default());
+    let heard = Arc::new(Heard::default());
+    let config = LivePreviews {
+        stream: Some(slow_stream_loader(&heard, Duration::from_millis(20))),
+        slow: Duration::from_millis(4),
+        slow_pause: Duration::from_secs(600),
+        ..previews(loader(&seen, marker_words))
+    };
+    let (_, events, ..) = run_with(&scene, Some(config), 345);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.slow_pauses, 1, "{report:?}");
+    let mut ends = Vec::new();
+    let mut last: Vec<Word> = Vec::new();
+    let mut was_shown = false;
+    for event in &events {
+        match event {
+            RuntimeEvent::LiveTranscriptFinished { .. } => break,
+            RuntimeEvent::Transcript {
+                track: TrackId::Reference,
+                event: TranscriptEvent::Final(s),
+            } => ends.push(s.end),
+            RuntimeEvent::LivePreview {
+                track: TrackId::Reference,
+                words,
+            } => {
+                was_shown |= !words.is_empty();
+                last.clone_from(words);
+            }
+            _ => {}
+        }
+    }
+    assert!(was_shown, "{report:?}");
+    ends.pop();
+    let settled = ends.into_iter().max().expect("finals before the last");
+    assert!(
+        settled > MeetingTime::from_millis(5_000),
+        "the meeting settled too little to judge: {settled:?}"
+    );
+    assert!(
+        last.iter().all(|w| w.start + COVERED_SLACK >= settled),
+        "covered words still shown at the end, settled to {settled:?}: {last:?}"
     );
 }
