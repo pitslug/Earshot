@@ -13,9 +13,30 @@ pub const E_NOTFOUND: i32 = 0x8007_0490_u32 as i32;
 /// `AUDCLNT_E_DEVICE_IN_USE`: another app holds the endpoint in exclusive mode.
 pub const AUDCLNT_E_DEVICE_IN_USE: i32 = 0x8889_000A_u32 as i32;
 
-/// The step whose failure means "no output device" rather than "no microphone": the default
-/// render endpoint (`wasapi::default_device`).
-const RENDER_ENDPOINT_CONTEXT: &str = "default render endpoint";
+/// The step that finds the default output (`wasapi::default_device`): its failure means "no
+/// output device" rather than "no microphone".
+pub const RENDER_ENDPOINT_CONTEXT: &str = "default render endpoint";
+/// Activating the audio client of an output for a device loopback.
+pub const LOOPBACK_ACTIVATE_CONTEXT: &str = "activate IAudioClient (loopback)";
+/// Initialising a loopback stream of an output.
+pub const LOOPBACK_INITIALIZE_CONTEXT: &str = "IAudioClient::Initialize (loopback)";
+/// Activating a process loopback.
+pub const PROCESS_LOOPBACK_CONTEXT: &str = "activate process loopback";
+/// Activating the audio client of an output to play on (the audio check).
+pub const RENDER_ACTIVATE_CONTEXT: &str = "activate IAudioClient (render)";
+/// Initialising a stream that plays on an output (the audio check).
+pub const RENDER_INITIALIZE_CONTEXT: &str = "IAudioClient::Initialize (render)";
+
+/// The steps that open the output side (the other people), never the microphone: Windows'
+/// microphone switch does not apply to them, and a missing endpoint there is no output.
+const OUTPUT_CONTEXTS: &[&str] = &[
+    RENDER_ENDPOINT_CONTEXT,
+    LOOPBACK_ACTIVATE_CONTEXT,
+    LOOPBACK_INITIALIZE_CONTEXT,
+    PROCESS_LOOPBACK_CONTEXT,
+    RENDER_ACTIVATE_CONTEXT,
+    RENDER_INITIALIZE_CONTEXT,
+];
 
 /// Why a capture could not start, as far as the person at the computer can act on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,10 +57,13 @@ pub enum StartProblem {
 /// description in the capture crate).
 #[must_use]
 pub fn start_problem(context: &str, code: i32) -> StartProblem {
+    let output = OUTPUT_CONTEXTS.contains(&context);
     match code {
+        // The microphone switch says nothing about the output side.
+        E_ACCESSDENIED if output => StartProblem::Other,
         E_ACCESSDENIED => StartProblem::MicrophoneAccessOff,
         AUDCLNT_E_DEVICE_IN_USE => StartProblem::DeviceInUse,
-        E_NOTFOUND if context == RENDER_ENDPOINT_CONTEXT => StartProblem::NoOutput,
+        E_NOTFOUND if output => StartProblem::NoOutput,
         E_NOTFOUND => StartProblem::NoMicrophone,
         AUDCLNT_E_DEVICE_INVALIDATED => StartProblem::NoMicrophone,
         _ => StartProblem::Other,
@@ -80,6 +104,14 @@ mod tests {
                 start_problem(context, E_ACCESSDENIED),
                 StartProblem::MicrophoneAccessOff
             );
+        }
+    }
+
+    #[test]
+    fn problem_access_denied_on_the_output_side_is_not_the_microphone_switch() {
+        for context in OUTPUT_CONTEXTS {
+            assert_eq!(start_problem(context, E_ACCESSDENIED), StartProblem::Other);
+            assert_eq!(start_problem(context, E_NOTFOUND), StartProblem::NoOutput);
         }
     }
 

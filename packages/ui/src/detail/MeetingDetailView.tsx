@@ -387,12 +387,18 @@ export function jobNotice(view: JobView): Notice {
           return { key: "job", intent: "info", title: "No summary", text: e.result.reason };
         case "Failed":
           return { key: "job", intent: "error", title: "Summary failed", text: e.result.message };
-        // A job has no final pass to cancel, so `PostCancelled` is only here to be complete.
+        // A job has no final pass or recording, so these are only here to be complete.
+        case "PostFailed":
+        case "RecordingFailed":
+          return { key: "job", intent: "error", title: "Summary failed", text: e.result.message };
         case "Cancelled":
         case "PostCancelled":
           return { key: "job", intent: "info", text: "The summary was cancelled." };
+        default: {
+          const unhandled: never = e.result;
+          return unhandled;
+        }
       }
-      break;
     case "Failed":
       return {
         key: "job",

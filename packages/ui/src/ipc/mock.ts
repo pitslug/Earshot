@@ -653,7 +653,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       const end = (result: SummaryEvent) => {
         finishing.delete(row.id);
         processing = false;
-        const unprocessed = result.kind === "PostCancelled" || result.kind === "PostFailed";
+        const unprocessed =
+          result.kind === "PostCancelled" || result.kind === "PostFailed" || result.kind === "RecordingFailed";
         row.state = unprocessed ? "Unprocessed" : "Ready";
         // The detail read during processing was the draft; the next read is the final one.
         if (!unprocessed) details.delete(row.id);

@@ -443,16 +443,16 @@ fn api_key_copy(e: &earshot_runtime::summary_settings::ApiKeyError) -> &'static 
     use earshot_runtime::summary_settings::ApiKeyError;
     match e {
         ApiKeyError::Missing => {
-            "Summaries go to Anthropic, but no API key is saved. Add it in Settings, Summaries,              or choose another way to summarise."
+            "Summaries go to Anthropic, but no API key is saved. Add it in Settings, Summaries, or choose another way to summarise."
         }
         ApiKeyError::Unsupported => {
-            "Keeping an API key needs Windows Credential Manager, which this computer does not              have. Choose another way to summarise in Settings, Summaries."
+            "Keeping an API key needs Windows Credential Manager, which this computer does not have. Choose another way to summarise in Settings, Summaries."
         }
         ApiKeyError::Invalid(_) => {
             "This API key cannot be saved. Copy it again without spaces or line breaks."
         }
         ApiKeyError::Store(_) => {
-            "Windows Credential Manager could not be read. Check the key in Settings, Summaries,              then try again."
+            "Windows Credential Manager could not be read. Check the key in Settings, Summaries, then try again."
         }
     }
 }
@@ -514,6 +514,9 @@ fn plain_summary(result: SummaryEvent) -> SummaryEvent {
         SummaryEvent::Failed { message, retryable } => SummaryEvent::Failed {
             message: plain(message),
             retryable,
+        },
+        SummaryEvent::RecordingFailed { message } => SummaryEvent::RecordingFailed {
+            message: plain(message),
         },
         SummaryEvent::PostFailed { message, retryable } => SummaryEvent::PostFailed {
             message: plain(message),
@@ -1188,6 +1191,78 @@ mod every_variant_tests {
             .into_iter()
             .find(|s| variant_index(s) == variant_index(e))
             .unwrap()
+    }
+
+    /// Every fixed copy T9.23 adds or routes, as written in a window: no doubled space (a line
+    /// continuation lost in a string literal leaves a run of spaces), no em dash, a full stop.
+    #[test]
+    fn plain_text_no_fixed_copy_holds_a_run_of_spaces() {
+        use earshot_runtime::summary_settings::ApiKeyError as K;
+        let id = EntityId::from_bytes([9; 16]);
+        let mut copies: Vec<String> = [
+            MODELS_NEEDED,
+            HELPERS_NEEDED,
+            TRANSCRIPTION_NEEDED,
+            TRANSCRIPTION_AND_HELPERS_NEEDED,
+            SUMMARY_MODEL_NEEDED,
+            KEPT_LOCAL_REFUSED,
+            NO_MICROPHONE,
+            NO_OUTPUT,
+            MICROPHONE_ACCESS_OFF,
+            DEVICE_IN_USE,
+            CAPTURE_FAILED,
+            PROCESSOR_TOO_OLD,
+            DATA_FAILED,
+            TRY_AGAIN_SOON,
+            MEETING_BUSY,
+            INTERNAL,
+            PIPELINE_FAILED,
+            TRANSCRIPTION_FAILED,
+            VOICES_FAILED,
+            VOICEPRINTS_FAILED,
+            NO_AUDIO,
+            NOT_THIS_VERSION,
+            NO_BACKEND,
+            HELPERS_FAILED,
+            ENDPOINT_UNUSABLE,
+            ENDPOINT_NOT_HTTPS,
+            NETWORK_SETUP_FAILED,
+            EXPORT_FAILED,
+            SUMMARY_UNREACHABLE,
+            SUMMARY_AUTH,
+            SUMMARY_SERVICE_ERROR,
+            SUMMARY_UNUSABLE,
+            SUMMARY_TOO_LONG,
+            SUMMARY_REFUSED,
+            SUMMARY_CANCELLED,
+            LOCAL_SUMMARY_FAILED,
+            crate::ipc::DATA_FOLDER_COPY,
+            crate::ipc::NEWER_DATA_COPY,
+            crate::model_jobs::NO_SERVER_ANSWERED,
+            crate::meeting::SAVED_BUT_LIVE_FAILED,
+            crate::meeting::MEETING_PANIC_MESSAGE,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        copies.extend(samples("zq-first-words", id).iter().map(runtime_text));
+        for k in [
+            K::Missing,
+            K::Unsupported,
+            K::Invalid("x"),
+            K::Store("x".into()),
+        ] {
+            copies.push(runtime_text(&RuntimeError::ApiKey(k)));
+        }
+        copies.push(crate::meeting_events::post_failed_copy(
+            &RuntimeError::NoTracks,
+        ));
+        for copy in &copies {
+            assert!(!copy.contains("  "), "a run of spaces in: {copy:?}");
+            assert!(!copy.contains('\n'), "a line break in: {copy:?}");
+            assert!(!copy.contains('\u{2014}'), "{copy:?}");
+            assert!(copy.ends_with('.'), "{copy:?}");
+        }
     }
 
     #[test]

@@ -84,6 +84,10 @@ use crate::live::{
     queue_limit,
 };
 use crate::observer::{ReopenOutcome, TrackObserver};
+use crate::problem::{
+    LOOPBACK_ACTIVATE_CONTEXT, LOOPBACK_INITIALIZE_CONTEXT, PROCESS_LOOPBACK_CONTEXT,
+    RENDER_ACTIVATE_CONTEXT, RENDER_ENDPOINT_CONTEXT, RENDER_INITIALIZE_CONTEXT,
+};
 use crate::recording::{
     DeviceDescription, LoopbackSource, MicRole, NotifyingTrack, RawRecording, RecordingTrack,
 };
@@ -325,7 +329,7 @@ fn default_device(
                 .ctx("default communications capture endpoint"),
             Endpoint::Loopback | Endpoint::ProcessLoopback { .. } => enumerator
                 .GetDefaultAudioEndpoint(eRender, eConsole)
-                .ctx("default render endpoint"),
+                .ctx(RENDER_ENDPOINT_CONTEXT),
         }
     }
 }
@@ -833,9 +837,9 @@ fn activate_process_loopback(pid: u32) -> Result<IAudioClient, CaptureError> {
     let mut activated: Option<IUnknown> = None;
     // SAFETY: both out-pointers are valid locals; activation has completed.
     unsafe { operation.GetActivateResult(&mut result, &mut activated) }.ctx("GetActivateResult")?;
-    result.ok().ctx("activate process loopback")?;
+    result.ok().ctx(PROCESS_LOOPBACK_CONTEXT)?;
     let unknown = activated.ok_or(CaptureError::Windows {
-        context: "activate process loopback",
+        context: PROCESS_LOOPBACK_CONTEXT,
         source: windows::core::Error::empty(),
     })?;
     unknown
@@ -950,8 +954,13 @@ impl<'com> CaptureStream<'com> {
                     let name = friendly_name(&device)?;
                     let id = device_id(&device);
                     // SAFETY: COM is initialised; the result is an owned interface.
-                    let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
-                        .ctx("activate IAudioClient")?;
+                    let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }.ctx(
+                        if endpoint == Endpoint::Loopback {
+                            LOOPBACK_ACTIVATE_CONTEXT
+                        } else {
+                            "activate IAudioClient"
+                        },
+                    )?;
                     let (mix, mix_bytes) = mix_format(&client)?;
                     let properties = endpoint_properties(&device, &name, Some(mix.sample_rate));
                     let (wfx, flags) = match conversion_target(&mix, rate, channels) {
@@ -986,7 +995,11 @@ impl<'com> CaptureStream<'com> {
                     wfx.as_ptr() as *const WAVEFORMATEX,
                     None,
                 )
-                .ctx("IAudioClient::Initialize")?;
+                .ctx(if flags & AUDCLNT_STREAMFLAGS_LOOPBACK != 0 {
+                    LOOPBACK_INITIALIZE_CONTEXT
+                } else {
+                    "IAudioClient::Initialize"
+                })?;
             client.SetEventHandle(event.0).ctx("SetEventHandle")?;
             client.GetService().ctx("get IAudioCaptureClient")?
         };
@@ -1192,7 +1205,7 @@ impl<'com> RenderStream<'com> {
         let device_id = device_id(&endpoint);
         // SAFETY: COM is initialised; the result is an owned interface.
         let client: IAudioClient =
-            unsafe { endpoint.Activate(CLSCTX_ALL, None) }.ctx("activate IAudioClient")?;
+            unsafe { endpoint.Activate(CLSCTX_ALL, None) }.ctx(RENDER_ACTIVATE_CONTEXT)?;
         if category != RenderCategory::Other {
             let client2: IAudioClient2 = client.cast().ctx("get IAudioClient2")?;
             let properties = AudioClientProperties {
@@ -1222,7 +1235,7 @@ impl<'com> RenderStream<'com> {
                     wfx.as_ptr() as *const WAVEFORMATEX,
                     None,
                 )
-                .ctx("IAudioClient::Initialize (render)")?;
+                .ctx(RENDER_INITIALIZE_CONTEXT)?;
             let frames = client.GetBufferSize().ctx("IAudioClient::GetBufferSize")?;
             let render: IAudioRenderClient = client.GetService().ctx("get IAudioRenderClient")?;
             (render, frames)

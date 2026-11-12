@@ -34,7 +34,7 @@ The default models are English. Other languages are a choice in Settings, using 
 - Memory: a replayed meeting transcribed on the CPU peaked at about 5.5 to 5.8 GiB, and writing the summary is extra. No minimum has been established.
 - Disk space for models, which the app offers to download and shows the size of first: the default transcription model is about 2.5 GB, and the local summary model is about 2.7 GB or 5.7 GB depending on your machine. On ARM64, a Parakeet model's NPU version adds about 640 MB (0.6B v2) or 140 MB (110M).
 - No graphics card is required. No NVIDIA software is required unless you opt in to CUDA.
-- On an x64 PC, Whisper models and summaries made on the PC need a processor with AVX2 (most from 2013 on). Without it Earshot says so and offers the rest.
+- On an x64 PC, Whisper models and summaries made on the PC need a processor with AVX2 and FMA. Without them Earshot refuses those with a message rather than starting them, and Parakeet models and summaries written elsewhere still work. This has not been tried on such a processor.
 - A direct internet connection for downloads. Earshot does not use a proxy, so on a work network that reaches the internet only through one, model downloads fail: download them on another network.
 
 ## Using it

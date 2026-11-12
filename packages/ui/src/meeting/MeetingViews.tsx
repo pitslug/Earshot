@@ -759,6 +759,7 @@ export interface AfterMeetingViewProps {
 
 function afterMeetingHeading(s: LiveMeeting["summary"]): string {
   if (s === null) return "Finishing the meeting";
+  if (s.kind === "RecordingFailed") return "Meeting stopped";
   return s.kind === "PostCancelled" || s.kind === "PostFailed" ? "Meeting saved" : "Meeting finished";
 }
 
@@ -922,6 +923,18 @@ function SummaryNotice({
             {resummarise}
             {openSecondary}
           </MessageBarActions>
+        </MessageBar>
+      );
+    // The recording itself did not finish: nothing to re-summarise, and the copy claims nothing
+    // about what was kept beyond its own words (T9.23).
+    case "RecordingFailed":
+      return (
+        <MessageBar intent="error" layout="multiline" role="status">
+          <MessageBarBody>
+            <MessageBarTitle>Recording not finished</MessageBarTitle>
+            {s.message}
+          </MessageBarBody>
+          <MessageBarActions>{open}</MessageBarActions>
         </MessageBar>
       );
     case "PostFailed":

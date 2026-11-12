@@ -795,6 +795,24 @@ describe("meeting screen", () => {
     expect(screen.getByText("Transcript not finished")).toBeInTheDocument();
   });
 
+  it("offers only Open when the recording itself did not finish", async () => {
+    const s = setup({
+      summary: {
+        kind: "RecordingFailed",
+        message: "The recording could not be finished. Something went wrong inside Earshot. Restart Earshot and try again.",
+      },
+    });
+    const view = await startMeeting(s);
+    await s.user.click(within(view).getByRole("button", { name: "Stop meeting" }));
+    advance(s.timer, (POST_STEPS.length + 1) * POST_STEP_MS);
+    expect(await screen.findByText("Recording not finished")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Meeting stopped" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Re-summarise" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Re-transcribe" })).toBeNull();
+    expect(screen.queryByText(/transcript are saved/)).toBeNull();
+  });
+
   it("offers Re-transcribe after a cancelled finish", async () => {
     const calls: unknown[][] = [];
     const s = setup({ onCall: (c) => calls.push(c) });

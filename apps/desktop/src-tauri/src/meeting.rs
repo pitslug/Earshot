@@ -415,7 +415,8 @@ pub const MEETING_PANIC_MESSAGE: &str =
 
 /// What the UI hears when the session ends in an error. Once the recording is saved that error can
 /// only be about the live work, so it never says the recording failed, and the screen offers
-/// Re-transcribe ([`SummaryEvent::PostFailed`]); before, it says why in fixed copy (T9.23).
+/// Re-transcribe ([`SummaryEvent::PostFailed`]); before, it says why in fixed copy and claims
+/// nothing about what was kept ([`SummaryEvent::RecordingFailed`], T9.23).
 fn session_failure(saved: bool, e: &RuntimeError) -> SummaryEvent {
     if saved {
         SummaryEvent::PostFailed {
@@ -423,12 +424,11 @@ fn session_failure(saved: bool, e: &RuntimeError) -> SummaryEvent {
             retryable: false,
         }
     } else {
-        SummaryEvent::Failed {
+        SummaryEvent::RecordingFailed {
             message: format!(
                 "The recording could not be finished. {}",
                 crate::plain_text::runtime_text(e)
             ),
-            retryable: false,
         }
     }
 }
@@ -546,9 +546,8 @@ fn run_guarded(
                 seq,
                 MeetingEvent::Summary {
                     meeting: meeting.clone(),
-                    result: SummaryEvent::Failed {
+                    result: SummaryEvent::RecordingFailed {
                         message: MEETING_PANIC_MESSAGE.into(),
-                        retryable: false,
                     },
                 },
             );

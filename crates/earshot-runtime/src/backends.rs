@@ -429,12 +429,30 @@ impl Accelerator {
 /// in a `cuda` build or after [`crate::cuda::use_for_transcription`] chose it, and Vulkan in a
 /// `vulkan` build when whisper.cpp sees a Vulkan device (a Vulkan build is meant for any machine,
 /// and many have none).
+/// On a processor without the native builds' baseline ([`crate::cpu`]) whisper.cpp is never
+/// asked: its device list starts ggml's CPU backend, built for AVX2, which would end the process
+/// (T9.23), so Vulkan is left out.
 #[must_use]
 pub fn accelerator_order() -> Vec<Accelerator> {
-    let vulkan = cfg!(feature = "vulkan")
-        && earshot_asr_whisper::gpu_devices()
-            .iter()
-            .any(|d| d.backend == BackendKind::Vulkan);
+    accelerator_order_with(
+        cfg!(feature = "vulkan"),
+        crate::cpu::runs_native_builds(),
+        || {
+            earshot_asr_whisper::gpu_devices()
+                .iter()
+                .any(|d| d.backend == BackendKind::Vulkan)
+        },
+    )
+}
+
+/// [`accelerator_order`] with the build's Vulkan feature, whether this processor runs the native
+/// builds, and whisper.cpp's "a Vulkan device is there", which is asked only when both hold.
+pub(crate) fn accelerator_order_with(
+    vulkan_build: bool,
+    native: bool,
+    vulkan_device: impl FnOnce() -> bool,
+) -> Vec<Accelerator> {
+    let vulkan = vulkan_build && native && vulkan_device();
     with_npu(
         order_for(onnx_cuda_usable(), vulkan),
         NPU_BUILD && !qnn_load_failed(),

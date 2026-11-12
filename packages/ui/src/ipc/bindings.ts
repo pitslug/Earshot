@@ -1874,6 +1874,13 @@ message: string;
 /**  Whether trying again can succeed without changing anything. */
 retryable: boolean } | 
 /**
+ *  The meeting ended in an error before its recording was saved (T9.23): no final pass or
+ *  summary ran, and nothing here says what was kept, so the screen offers only Open.
+ */
+{ kind: "RecordingFailed"; 
+/**  What happened (fixed copy, `plain_text::runtime_text`). */
+message: string } | 
+/**
  *  The final transcript could not be finished (T9.23), so no summary ran: the recording and
  *  any draft stay, the meeting reads as `Unprocessed`, and the screen offers Re-transcribe.
  */

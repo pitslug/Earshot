@@ -765,9 +765,8 @@ fn meeting_driver_a_panic_after_the_start_ends_with_a_failed_summary_and_frees_t
         events.last(),
         Some(&MeetingEvent::Summary {
             meeting: events_meeting(&events),
-            result: SummaryEvent::Failed {
+            result: SummaryEvent::RecordingFailed {
                 message: MEETING_PANIC_MESSAGE.into(),
-                retryable: false,
             },
         })
     );
@@ -1252,12 +1251,11 @@ fn meeting_queue_driver_a_failed_load_keeps_the_meeting_recording() {
 #[test]
 fn meeting_queue_driver_a_session_failure_after_the_save_does_not_blame_the_recording() {
     let e = RuntimeError::Poisoned;
-    let SummaryEvent::Failed {
-        message: before, ..
-    } = session_failure(false, &e)
-    else {
+    // Before the save it claims nothing about what was kept and offers no re-summary.
+    let SummaryEvent::RecordingFailed { message: before } = session_failure(false, &e) else {
         panic!("before the save the recording failed");
     };
+    assert!(!before.contains("saved"), "{before}");
     assert!(
         before.starts_with("The recording could not be finished"),
         "{before}"
