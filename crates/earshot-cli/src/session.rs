@@ -575,6 +575,38 @@ pub(crate) fn format_warning(w: &RuntimeWarning) -> String {
         RuntimeWarning::Recording { track, error } => {
             format!("warning: {} recording failed: {error}", track_name(*track))
         }
+        RuntimeWarning::RecordingStopped {
+            track,
+            at,
+            disk_full,
+            error,
+        } => {
+            let why = if *disk_full {
+                "the disk is full".to_owned()
+            } else {
+                error.clone()
+            };
+            format!(
+                "warning: {} recording stopped at {:.1} s ({why}); the audio before it is kept",
+                track_name(*track),
+                at.as_millis() as f64 / 1000.0
+            )
+        }
+        RuntimeWarning::EveryRecordingStopped { disk_full } => format!(
+            "warning: every track stopped recording{}, so the meeting was stopped",
+            if *disk_full {
+                " because the disk is full"
+            } else {
+                ""
+            }
+        ),
+        RuntimeWarning::LiveCatchUpStalled { track } => format!(
+            "warning: the {} live transcript stopped answering after the recording and was left",
+            track_name(*track)
+        ),
+        RuntimeWarning::DeviceStoppedAnswering => "warning: the audio device stopped answering \
+             when capture was stopped; the recording was saved without it"
+            .to_owned(),
         RuntimeWarning::Persistence(m) => format!("warning: storing failed: {m}"),
         RuntimeWarning::LiveLoadFailed { error } => {
             format!("warning: live transcription did not start: {error}")

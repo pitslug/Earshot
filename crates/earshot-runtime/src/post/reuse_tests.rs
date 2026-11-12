@@ -1076,6 +1076,82 @@ fn post_stretch_echo_reuse_equals_the_whole_pass_with_the_live_echo_filter_on() 
     assert!(outcome.echo.removed() > 0, "the final pass cleaned echo");
 }
 
+#[test]
+fn post_live_recording_cut_short_track_goes_through_the_final_pass() {
+    // T9.17: a full disk stopped the mic's recording part way, the reference went on. The final
+    // pass takes the two files at their own lengths: the mic's words up to the cut, every word
+    // of the reference.
+    let mic_words = four_turns();
+    let mut far = turn("far", 3_000, 8);
+    far.extend(turn("far", 18_000, 8));
+    let total_ms = 28_000;
+    let mic = speech(&mic_words, total_ms, 300);
+    let reference = speech(&far, total_ms, 400);
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    crate::live::write_faults::set(
+        &svc.data,
+        TrackId::Mic,
+        earshot_store::WriteFault::DiskFullAfter(150_000),
+    );
+    let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(PIPELINE_RATE, mic))
+        .reference(MonoBuffer::new(PIPELINE_RATE, reference))
+        .build()
+        .unwrap();
+    let session = start_live(
+        source,
+        svc.clone(),
+        live_config(LiveTranscription::Stretches(pieces())),
+        Some(oracle_asr::<Oracle>(None, None)),
+        Box::new(ChaCha8Rng::seed_from_u64(82)),
+    )
+    .unwrap();
+    let live = session.wait().unwrap();
+    assert!(
+        live.problems
+            .iter()
+            .any(|p| matches!(p, crate::live::RuntimeWarning::RecordingStopped { .. })),
+        "{:?}",
+        live.problems
+    );
+    let (input, missing) = load_post_input(&svc, live.meeting, &live.final_pass).unwrap();
+    assert!(missing.is_empty(), "both tracks have a file");
+    let (mic_track, ref_track) = (&input.tracks[0], &input.tracks[1]);
+    assert_eq!(
+        (mic_track.track.kind, ref_track.track.kind),
+        (TrackId::Mic, TrackId::Reference)
+    );
+    let cut = mic_track.audio.samples.len();
+    assert!(
+        cut > 16_000 * 5 && cut < ref_track.audio.samples.len(),
+        "the mic stops part way: {cut} of {}",
+        ref_track.audio.samples.len()
+    );
+    let cut_at = MeetingTime::from_pipeline_frames(cut as u64);
+    let kept_words: Vec<Word> = mic_words
+        .iter()
+        .filter(|w| w.midpoint() < cut_at)
+        .cloned()
+        .collect();
+    assert!(kept_words.len() < mic_words.len());
+    let timelines = vec![
+        (mic_track.audio.samples.clone(), kept_words.clone()),
+        (ref_track.audio.samples.clone(), far.clone()),
+    ];
+    let (mic_id, ref_id) = (mic_track.track.id, ref_track.track.id);
+    let mut post = processor(Oracle::new(timelines), CAMPPLUS_ID);
+    let (_, view) = run(&mut post, &svc, input, 90);
+    let on = |id: EntityId| -> Vec<String> {
+        view.iter()
+            .filter(|(t, _, _)| *t == id)
+            .flat_map(|(_, w, _)| w.iter().map(|(t, _, _)| t.clone()))
+            .collect()
+    };
+    let names = |w: &[Word]| w.iter().map(|x| x.text.clone()).collect::<Vec<_>>();
+    assert_eq!(on(mic_id), names(&kept_words));
+    assert_eq!(on(ref_id), names(&far));
+}
+
 // ---------------------------------------------------------------- live speaker windows
 // T6.13d2: the live worker computes speaker windows during the meeting; the final pass
 // finishes from them. Same standard as the stretches: the stored final transcript and

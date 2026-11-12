@@ -25,8 +25,14 @@
 //! Cancelling ([`MeetingDriver::cancel_finishing`]) reaches one meeting past its recording: it stops
 //! that meeting's final pass and summary, or its wait for its turn, and its thread then ends as it
 //! always does, with its one summary event, so the next meeting's turn comes. Nothing else changes:
-//! a recording has no token to cancel. The live transcript's catch-up after the recording is not
-//! cancelled: the token is first read when it ends.
+//! a recording has no token to cancel. The token covers the meeting from
+//! [`RuntimeEvent::RecordingSaved`] on (T9.22): the live transcript's catch-up
+//! ([`LiveSession::cancel_catch_up`]), the wait for its turn, the wait for the CUDA start
+//! (`MeetingModels::resolve_unless`), then the final pass and the summary. A catch-up that stops
+//! moving is given up by the session (`LiveConfig::catch_up_stall`); the meeting is then left
+//! unprocessed with a banner, its turn passing to the next.
+//! Not covered yet (T9.22b): a live model load hung on the session's hold thread (the session joins it
+//! before the catch-up), a final-pass step and a local summary load that never return.
 //!
 //! The driver is generic over [`Prepare`], so tests run it on a replay and fake post work.
 
@@ -174,6 +180,8 @@ struct Inner {
     shown: AtomicU64,
     /// What cancels each meeting past its recording, by meeting id ([`Finishing`]).
     finishing: Mutex<BTreeMap<String, CancelToken>>,
+    /// The most a stop and wait waits ([`STOP_CEILING`]).
+    stop_ceiling: Duration,
 }
 
 impl Inner {
@@ -207,6 +215,19 @@ pub enum DriverPhase {
 /// How often [`MeetingDriver::stop_and_wait`] looks at the recording.
 const STOP_POLL: Duration = Duration::from_millis(50);
 
+/// The most [`MeetingDriver::stop_and_wait`] waits for a recording to be saved (T9.20), so Quit
+/// always ends: the capture source's own stop wait (`earshot_capture_wasapi::STOP_WAIT`, 7 s)
+/// plus 8 s to finish the files and the meeting row. A judgement; past it the caller goes on,
+/// and a recording not yet saved reads as Interrupted at the next start, its `.part` files kept
+/// (T9.18 recovers them).
+pub const STOP_CEILING: Duration = Duration::from_secs(15);
+
+/// Whether [`MeetingDriver::stop_and_wait`] waits on: the recording is not saved yet and the
+/// ceiling has not passed.
+fn keep_waiting(recording: bool, waited: Duration, ceiling: Duration) -> bool {
+    recording && waited < ceiling
+}
+
 /// Records at most one meeting at a time (cheap to clone; clones share the meetings).
 #[derive(Clone)]
 pub struct MeetingDriver(Arc<Inner>);
@@ -231,6 +252,7 @@ impl MeetingDriver {
             started: AtomicU64::new(0),
             shown: AtomicU64::new(0),
             finishing: Mutex::default(),
+            stop_ceiling: STOP_CEILING,
         }))
     }
 
@@ -383,12 +405,34 @@ impl MeetingDriver {
     }
 
     /// Stops a recording meeting and returns once its recording is saved (at once when
-    /// none records). The work after the meeting goes on; the caller decides about that.
-    pub fn stop_and_wait(&self) {
+    /// none records), or after the driver's stop ceiling ([`STOP_CEILING`]) whatever the
+    /// meeting does, so Quit always ends. Returns whether nothing records any more. The work
+    /// after the meeting goes on; the caller decides about that.
+    pub fn stop_and_wait(&self) -> bool {
         let _ = self.stop();
-        while self.phase() == DriverPhase::Recording {
+        let start = Instant::now();
+        while keep_waiting(
+            self.phase() == DriverPhase::Recording,
+            start.elapsed(),
+            self.0.stop_ceiling,
+        ) {
             std::thread::sleep(STOP_POLL);
         }
+        self.phase() != DriverPhase::Recording
+    }
+
+    /// The same driver whose [`MeetingDriver::stop_and_wait`] gives up after `ceiling` (tests;
+    /// call it before the driver is shared).
+    ///
+    /// # Panics
+    /// When the driver was cloned already.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_stop_ceiling(mut self, ceiling: Duration) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("set before the driver is shared")
+            .stop_ceiling = ceiling;
+        self
     }
 
     /// Waits for every meeting's thread to finish.
@@ -412,6 +456,12 @@ impl MeetingDriver {
 /// What the UI hears when the meeting thread panics after the meeting started.
 pub const MEETING_PANIC_MESSAGE: &str =
     "The meeting stopped unexpectedly. What was recorded until then is kept.";
+
+/// What the UI hears when a meeting is left unprocessed because its live transcript stopped
+/// answering after the recording (T9.22).
+pub const CATCH_UP_STALLED_MESSAGE: &str = "The recording is saved, but the live transcript \
+     stopped answering, so Earshot left this meeting unprocessed. Restart Earshot, then \
+     re-transcribe the meeting from its page.";
 
 /// What the UI hears when the session ends in an error. Once the recording is saved that error can
 /// only be about the live work, so it never says the recording failed.
@@ -606,7 +656,13 @@ fn run(
     if let Some(events) = session.take_events() {
         let mut stop_sent = false;
         let mut stopped_by_call_end = false;
+        let mut catch_up_cancelled = false;
         loop {
+            // Cancel on "Finishing the meeting" reaches the live catch-up too (T9.22).
+            if saved_seen && !catch_up_cancelled && cancel.is_cancelled() {
+                session.cancel_catch_up();
+                catch_up_cancelled = true;
+            }
             if !stop_sent && stop.load(Ordering::SeqCst) {
                 session.request_stop();
                 stop_sent = true;
@@ -688,6 +744,24 @@ fn run(
         }
     };
     finishing.open();
+    // A live catch-up that stopped moving (T9.22): whatever hung may hang the final pass too, so
+    // the meeting is left unprocessed and its turn passes to the next (the banner came with it).
+    if outcome.problems.iter().any(|p| {
+        matches!(
+            p,
+            earshot_runtime::live::RuntimeWarning::LiveCatchUpStalled { .. }
+        )
+    }) {
+        send(MeetingEvent::Summary {
+            meeting: id.to_string(),
+            result: SummaryEvent::Failed {
+                message: CATCH_UP_STALLED_MESSAGE.into(),
+                retryable: false,
+            },
+        });
+        drop(waiting);
+        return;
+    }
     // Its turn. Only a cancel ends the wait: nothing can be lost by waiting and quitting ends the
     // process.
     ticket.wait_turn(&cancel);
@@ -1180,10 +1254,10 @@ mod production {
                       progress: &mut dyn FnMut(host::HostStep<'_>)| {
                     // What the live work ran on; decided now if its turn never came. This can wait
                     // for the CUDA start, so a cancel may have come meanwhile.
-                    let resolved = meeting_models.resolve();
-                    if cancel.is_cancelled() {
-                        return HostOutcome::cancelled(svc, outcome.meeting);
-                    }
+                    let resolved = match meeting_models.resolve_unless(cancel) {
+                        Some(r) if !cancel.is_cancelled() => r,
+                        _ => return HostOutcome::cancelled(svc, outcome.meeting),
+                    };
                     let resolved = match resolved {
                         Ok(r) => r,
                         Err(e) => return HostOutcome::not_started(e),

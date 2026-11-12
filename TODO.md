@@ -13,7 +13,7 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - Remaining dev-wide / held-out misses after T1.6c: false linear-stage divergence resets in quiet passages (a relevance gate fixed stereo 84/174 but slowed delay-jump recovery 2.5 -> 6.6 s), applied delay drifting from the true delay under clock drift (drift erle_linear 8.5 dB dev-wide, 10.5 held-out), double-talk SI-SDR limited by postfilter near-end distortion (held-out 9.95 mono, 5.50 stereo vs 10) (T1.6c lane) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d).
 - The skipped-speech recovery lives in the shared piece protocol behind `may_skip_speech`; the deeper fix is inside `ParakeetTdt::transcribe` (detect a chunk that stayed on blank over speech and re-decode its tail) so every caller (chunker live path, single calls) is covered (the worst case is now documented in pieces.rs) (T2.5d review; kept here by the owner: step 5 covers the defaults) - crates/earshot-onnx/src/parakeet.rs:632
 - xtask/src/ui.rs: a ui-step timeout kills only cmd; pnpm/node children can outlive it (needs a job object in proc).
-- crates/earshot-runtime/src/live/mod.rs (`finish_workers`): Cancel on "Finishing the meeting" waits for the live catch-up, up to the decode of `STRETCH_MAX_BACKLOG`; a wedged final-pass model call holds "Stopping" with no limit (no watchdog).
+- `host::after_meeting`: a wedged final-pass model call or local summary load holds the meeting with no limit (T9.22b).
 - apps/desktop/src-tauri/src/meeting.rs:679: the two early-cancel paths rely on the ticket's drop rather than `final_pass_done`; calling it once after `host` is known would be simpler.
 - apps/desktop/src-tauri/src/meeting.rs: `HostPrepare` (real WASAPI pre-flight and capture) is only compiled, never run: first hand run in `tauri dev` on the desktop (GATE-02 at the latest).
 - crates/earshot-runtime/src/edit.rs: re-transcription uses the default language (TranscribeOptions::batch()); store a per-meeting language when multilingual models ship.
@@ -48,8 +48,7 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-runtime/examples/m2_prod/main.rs:642: `asr.stream_determinism` compares after normalisation, as decided, so a flap the normaliser maps away passes; report the raw-token count beside it in the per-stream JSON.
 - crates/earshot-llm-local/examples/sum_eval/facts.rs:65: the first judge prompt (66.3%, kappa 0.34) is recorded nowhere, so that row cannot be reproduced; paste it into docs/summary-eval.md.
 - acceptance/results/m2.json records `7bafff9-dirty`: re-run `cargo xtask accept m2` on a clean tree for a clean stamp, on an idle host.
-- apps/desktop/src-tauri/src/meeting.rs:645: `ticket.wait_turn` has no cancel and the queue is strictly first in, first out: a hung older meeting leaves a newer one `Waiting` until Quit (nothing is lost; it is `Unprocessed` after a restart). Add a per-ticket ceiling or a way to skip the queue.
-- apps/desktop/src-tauri/src/meeting.rs:795: `meeting_models.resolve()` after `Ended` waits for the CUDA start with no cancel, which an unfinished `verify_part` could hold; poll with the post token when the app gets a cancel control.
+- a hung final pass or summary of an older meeting leaves a newer one `Waiting` until Quit (T9.22b); `wait_turn` itself has a cancel.
 - crates/earshot-runtime/src/live/hold.rs:163: held audio is kept as f32 twice, about 230 MB at the cap; stretch tracks could hold i16.
 - crates/earshot-runtime/src/live/echo.rs: a mic worker that crashed freezes the prune point for reference words, so they grow for the rest of that meeting.
 - packages/ui mock: the preview still lands script lines during a hold.
@@ -134,3 +133,5 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - packages/ui/src/ipc/mockWords.ts: `wordsToOffer` mirrors `vocabulary::words_to_offer` with no shared case table; add `fixtures/ui/words_to_offer_cases.json` run by both suites (T12.15f review).
 - packages/ui/src/ipc/mock.ts:753: the "Only a word can be added to the dictionary." refusal is not in `fixtures/ui/summary_settings_cases.json` (T12.15f review).
 - crates/earshot-runtime/src/vocabulary.rs:515: a word in single quotes is added with its quotes ('Zorbek'), the matcher keeping apostrophes; ask the owner whether to strip leading and trailing single quotes (T12.15f review).
+- crates/earshot-runtime/src/meeting_queue.rs (`wait_for_the_library_choice`): sleep-polls the CUDA choice; call `cuda::wait_for_onnx_unless` instead.
+- crates/earshot-runtime/src/live/mod.rs (`stall` docs): `CancelToken::polls` counts every clone; nothing but the scan test keeps a second poller out (T9.22a review).

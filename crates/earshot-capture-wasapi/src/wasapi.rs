@@ -2139,7 +2139,10 @@ fn track_info(s: &CaptureStream<'_>) -> Result<TrackInfo, CaptureError> {
 /// - [`pump`](AudioSource::pump) never blocks; [`stop`](AudioSource::stop) waits for
 ///   the thread to flush and exit (one wait period, about 20 ms, unless a re-open is in
 ///   progress: process loopback activation can take up to 5 s), after which the next
-///   pump delivers the rest and [`EndOfStream`] with [`EndReason::Stopped`]. A fatal
+///   pump delivers the rest and [`EndOfStream`] with [`EndReason::Stopped`]. A thread
+///   that has not ended within [`STOP_WAIT`](crate::STOP_WAIT) (stuck in a COM call) is
+///   given up and never joined, and the source ends without it (T9.20,
+///   [`ChannelSource`]). A fatal
 ///   capture error is returned once by `pump`, followed by [`EndOfStream`] with
 ///   [`EndReason::Failed`]. The end of stream is delivered exactly once, last.
 pub struct WasapiSource {
@@ -2617,6 +2620,13 @@ mod device_tests {
     use earshot_core::capture::CaptureEvent;
 
     use super::*;
+
+    #[test]
+    fn live_stop_wait_outlasts_the_longest_wait_the_capture_loop_makes() {
+        // T9.20: a stop landing in a process-loopback activation must not give up a thread
+        // that is only waiting as designed.
+        assert!(crate::STOP_WAIT > ACTIVATION_TIMEOUT + Duration::from_secs(1));
+    }
 
     #[test]
     fn lowered_thread_runs_below_normal_and_other_threads_stay_normal() {

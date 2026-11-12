@@ -71,8 +71,11 @@
 //!   the same message are counted, not re-sent; the count is reported when another
 //!   message arrives or the session ends.
 //! - **Persistence errors** during the meeting (a FLAC write, a live segment) are
-//!   reported and do not stop capture; a failed FLAC writer is aborted and that track
-//!   has no audio file.
+//!   reported and do not stop capture. A failed FLAC write never deletes audio (T9.17): that
+//!   track stops recording and its file is finished at once with the audio before the error
+//!   ([`RuntimeWarning::RecordingStopped`]); the other track goes on, and when every track has
+//!   stopped the session stops the meeting itself ([`RuntimeWarning::EveryRecordingStopped`]).
+//!   Tracks of different lengths are fine: the final pass reads each file as it is.
 //!
 //! # Finalising
 //!
@@ -101,7 +104,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use earshot_core::asr::{AsrError, BackendInfo, BackendKind, MeetingTime, TranscriptEvent};
+use earshot_core::asr::{
+    AsrError, BackendInfo, BackendKind, CancelToken, MeetingTime, TranscriptEvent,
+};
 use earshot_core::capture::{
     AudioSource, CaptureSession, CaptureSink, Discontinuity, DiscontinuityKind, EndOfStream,
     EndReason, EndpointWarning, SourceStatus, TrackId,
@@ -323,6 +328,16 @@ pub struct LiveConfig {
     /// off): the record is written in the transaction that creates the meeting's rows, so the
     /// meeting never exists without it.
     pub keep_summary_local: bool,
+    /// At the end, a track's live catch-up with no sign of life for this long (its decoded
+    /// frontier, its decode's cancel-token polls and its messages all unchanged) is given up
+    /// (T9.22, `worker::StallWatch`): the decode is asked to stop, its thread is left, never
+    /// joined, and [`RuntimeWarning::LiveCatchUpStalled`] says so. Default 2 minutes, a judgement.
+    /// The rule it rests on: no single call between two polls of the decode's token may take this
+    /// long. Whisper polls inside its graph compute (the abort callback), Parakeet only once per
+    /// piece and per chunk (an ONNX encoder run is one call, seconds at most), the piece loop once
+    /// per piece and per VAD frame. A backend or a piece length that breaks that rule must poll more
+    /// often or raise this bound, never let a slow decode be cut.
+    pub catch_up_stall: Duration,
 }
 
 /// How a live session transcribes.
@@ -373,6 +388,7 @@ impl Default for LiveConfig {
             hold: None,
             previews: None,
             keep_summary_local: false,
+            catch_up_stall: Duration::from_secs(120),
         }
     }
 }
@@ -524,7 +540,9 @@ pub enum RuntimeEvent {
     },
     /// Every live transcription worker has finished its queue: the live transcript is
     /// complete (sent once at the end, before the speaker and live-summary threads are
-    /// waited for; T7.4c measures catch-up to it).
+    /// waited for; T7.4c measures catch-up to it). Also sent after a catch-up that was cancelled or
+    /// given up (T9.22), when the transcript is not complete: then the outcome's problems hold
+    /// [`RuntimeWarning::LiveCatchUpStalled`] or the host cancelled it, and the time is no catch-up.
     LiveTranscriptFinished {
         /// How long after the capture source ended, measured by the session when it sends
         /// this, so it does not depend on when a host reads the event.
@@ -561,12 +579,46 @@ pub enum RuntimeWarning {
         /// The endpoint now captured.
         device_name: String,
     },
-    /// Writing or finalising a track's recording failed; that track has no audio file.
+    /// Writing or finalising a track's recording failed; that track has no audio file (its
+    /// `.part` is left on disk).
     Recording {
         /// Track.
         track: TrackId,
         /// What failed.
         error: String,
+    },
+    /// Writing a track's recording failed during the meeting, so that track stopped recording
+    /// at `at` (T9.17): the audio before it is kept and finished as a readable file (if even
+    /// that fails, [`RuntimeWarning::Recording`] follows), and the other track goes on. Sent once
+    /// per track, during the meeting and again in [`LiveOutcome::problems`].
+    RecordingStopped {
+        /// Track.
+        track: TrackId,
+        /// Where the kept audio ends.
+        at: MeetingTime,
+        /// The disk (or the user's quota on it) is full.
+        disk_full: bool,
+        /// What failed.
+        error: String,
+    },
+    /// Every track of the meeting stopped recording ([`RuntimeWarning::RecordingStopped`]), so
+    /// the session stopped the meeting itself (the owner, 2026-11-12). Sent once, after the
+    /// last track's `RecordingStopped`, and again in [`LiveOutcome::problems`].
+    EveryRecordingStopped {
+        /// The last failure was a full disk.
+        disk_full: bool,
+    },
+    /// The audio device (or Windows' audio service) stopped answering when capture was asked
+    /// to stop, so the source ended without it and the recording was saved with everything
+    /// captured before (T9.20, [`EndpointWarning::StoppedAnswering`]). At most once.
+    DeviceStoppedAnswering,
+    /// At the end a track's live catch-up showed no sign of life for
+    /// [`LiveConfig::catch_up_stall`], so it was given up (T9.22): the recording is saved and the
+    /// track's live transcript stops where it got to. Hosts leave the meeting unprocessed: whatever
+    /// hung may hang the final pass too.
+    LiveCatchUpStalled {
+        /// Track.
+        track: TrackId,
     },
     /// Storing a row failed (a live segment, or the meeting's duration at the end).
     Persistence(String),
@@ -698,6 +750,8 @@ pub struct LiveSession {
     meeting: EntityId,
     events: Option<Receiver<RuntimeEvent>>,
     stop: Arc<AtomicBool>,
+    /// Cancels the live catch-up after the recording ([`LiveSession::cancel_catch_up`]).
+    catch_up: CancelToken,
     thread: Option<JoinHandle<Result<LiveOutcome, RuntimeError>>>,
 }
 
@@ -720,6 +774,14 @@ impl LiveSession {
     /// returns the outcome. Repeating it has no further effect.
     pub fn request_stop(&self) {
         self.stop.store(true, Ordering::Release);
+    }
+
+    /// Stops the live transcript's catch-up after the recording (T9.22): every worker's decode is
+    /// asked to stop and the session finishes without waiting for it, so `Ended` comes at once. The
+    /// recording is unaffected; call it once the recording is saved (before, it ends the catch-up
+    /// before it begins). Repeating it has no further effect.
+    pub fn cancel_catch_up(&self) {
+        self.catch_up.cancel();
     }
 
     /// Requests the end of capture and waits until the recording is finalised. Do not
@@ -999,7 +1061,9 @@ where
             track.kind,
             earshot_core::audio::PIPELINE_RATE.hz(),
         ) {
-            Ok(w) => writers[slot(track.kind)] = Some(w),
+            Ok(w) => {
+                writers[slot(track.kind)] = Some(with_test_fault(&services.data, track.kind, w));
+            }
             Err(e) => {
                 abort(&mut writers);
                 return Err(e.into());
@@ -1074,6 +1138,7 @@ where
 
     let (tx, rx) = channel();
     let stop = Arc::new(AtomicBool::new(false));
+    let catch_up = CancelToken::new();
     let meeting_id = meeting.id;
     let session = Session {
         source,
@@ -1128,6 +1193,9 @@ where
         previews,
         next_preview_power: None,
         speaking: [false, false],
+        recording_stopped: [false, false],
+        stop_self: false,
+        catch_up: catch_up.clone(),
     };
     let flag = Arc::clone(&stop);
     let spawned = std::thread::Builder::new()
@@ -1145,8 +1213,32 @@ where
         meeting: meeting_id,
         events: Some(rx),
         stop,
+        catch_up,
         thread: Some(thread),
     })
+}
+
+/// `w` with the write failure a test set for `track` ([`write_faults`]).
+#[cfg(test)]
+fn with_test_fault(
+    data: &earshot_store::DataDir,
+    track: TrackId,
+    mut w: FlacTrackWriter,
+) -> FlacTrackWriter {
+    if let Some(fault) = write_faults::take(data, track) {
+        w.inject_fault(fault);
+    }
+    w
+}
+
+/// `w` unchanged: production never injects a failure.
+#[cfg(not(test))]
+fn with_test_fault(
+    _data: &earshot_store::DataDir,
+    _track: TrackId,
+    w: FlacTrackWriter,
+) -> FlacTrackWriter {
+    w
 }
 
 /// Tombstones a meeting whose session could not start.
@@ -1269,6 +1361,12 @@ struct Session<S> {
     next_preview_power: Option<Instant>,
     /// Each track's voice activity now (by [`slot`]).
     speaking: [bool; 2],
+    /// Each track whose recording stopped on a write error (by [`slot`], T9.17).
+    recording_stopped: [bool; 2],
+    /// Every track stopped recording, so the session stops the meeting itself.
+    stop_self: bool,
+    /// The live catch-up's cancel ([`LiveSession::cancel_catch_up`]).
+    catch_up: CancelToken,
 }
 
 impl<S> Session<S>
@@ -1316,7 +1414,7 @@ where
         self.begin_hold();
         let mut stop_sent = false;
         while !self.pipeline.is_ended() {
-            if !stop_sent && stop.load(Ordering::Acquire) {
+            if !stop_sent && (self.stop_self || stop.load(Ordering::Acquire)) {
                 self.source.stop();
                 stop_sent = true;
             }
@@ -1754,7 +1852,18 @@ where
             .collect();
         for w in workers {
             let track = w.track();
-            let (events, switches) = w.finish();
+            let (events, switches, end) =
+                w.finish_watched(self.policy.catch_up_stall, &self.catch_up);
+            match end {
+                worker::CatchUpEnd::Finished => {}
+                worker::CatchUpEnd::Cancelled => self.stop_stretches(track, "catch-up cancelled"),
+                worker::CatchUpEnd::Stalled => {
+                    self.stop_stretches(track, "catch-up stalled");
+                    let w = RuntimeWarning::LiveCatchUpStalled { track };
+                    self.warn(w.clone());
+                    self.problems.push(w);
+                }
+            }
             for p in switches {
                 self.emit(RuntimeEvent::LivePartials {
                     track,
@@ -1830,19 +1939,100 @@ where
         }
     }
 
+    /// Marks `track`'s stretch record as stopped (the final pass transcribes what it did not
+    /// decode).
+    fn stop_stretches(&mut self, track: TrackId, why: &str) {
+        if let Some((_, r)) = self.stretch_records.iter_mut().find(|(t, _)| *t == track) {
+            r.stopped.get_or_insert_with(|| why.to_owned());
+        }
+    }
+
     fn record(&mut self, track: TrackId, samples: &[f32]) {
         let Some(writer) = self.writers[slot(track)].as_mut() else {
             return;
         };
         if let Err(e) = writer.write(samples) {
-            if let Some(w) = self.writers[slot(track)].take() {
-                let _ = w.abort();
-            }
-            self.warn(RuntimeWarning::Recording {
-                track,
-                error: e.to_string(),
-            });
+            self.recording_failed(track, &e);
         }
+    }
+
+    /// A write to `track`'s recording failed (T9.17): the track stops recording and its file
+    /// is finished at once with the audio written before the error (a later crash then loses
+    /// nothing more), the user hears it once, and when no track records any more the session
+    /// stops the meeting itself.
+    fn recording_failed(&mut self, track: TrackId, error: &earshot_store::StoreError) {
+        let Some(writer) = self.writers[slot(track)].take() else {
+            return;
+        };
+        self.recording_stopped[slot(track)] = true;
+        let at = MeetingTime::from_pipeline_frames(writer.whole_frames());
+        let disk_full = error.is_disk_full();
+        // Nothing whole was written: there is no audio to keep, and an empty file would only
+        // read as a recording to re-transcribe. The `.part` holds no frame, so removing it loses
+        // nothing (a failed removal leaves it to the orphan sweep).
+        let finished = if writer.whole_frames() == 0 {
+            let _ = writer.abort();
+            None
+        } else {
+            self.finalize(track, writer)
+        };
+        let stopped = RuntimeWarning::RecordingStopped {
+            track,
+            at,
+            disk_full,
+            error: error.to_string(),
+        };
+        self.warn(stopped.clone());
+        self.problems.push(stopped);
+        match finished {
+            Some(Ok(file)) => self.audio_files.push((track, file.id)),
+            Some(Err(e)) => {
+                let w = RuntimeWarning::Recording {
+                    track,
+                    error: e.to_string(),
+                };
+                self.warn(w.clone());
+                self.problems.push(w);
+            }
+            None => {}
+        }
+        let all = self
+            .tracks
+            .iter()
+            .all(|t| self.recording_stopped[slot(t.kind)]);
+        if all && !self.stop_self {
+            self.stop_self = true;
+            let w = RuntimeWarning::EveryRecordingStopped { disk_full };
+            self.warn(w.clone());
+            self.problems.push(w);
+        }
+    }
+
+    /// Finishes `writer` (whole, or as far as it got after a failed write) into `track`'s
+    /// `AudioFile` row; `None` when the session has no such track. The store is locked only for
+    /// the track check and the row: the file work (header, sync, rename) runs without it.
+    fn finalize(
+        &mut self,
+        track: TrackId,
+        writer: FlacTrackWriter,
+    ) -> Option<Result<earshot_core::model::AudioFile, earshot_store::StoreError>> {
+        let row = self.tracks.iter().find(|t| t.kind == track)?.clone();
+        let provenance = AudioProvenance {
+            pipeline_version: PIPELINE_VERSION.to_owned(),
+            aec_version: (track == TrackId::Mic && self.capture.reference.is_some())
+                .then(|| AEC_VERSION.to_owned()),
+        };
+        let clock = Arc::clone(&self.services.clock);
+        let services = self.services.clone();
+        Some(earshot_store::finalize_track_audio_outside_lock(
+            writer,
+            &self.services.data,
+            &row,
+            provenance,
+            &*clock,
+            &mut *self.rng,
+            &mut |f| f(&mut services.store()),
+        ))
     }
 
     fn store_live(&mut self, segment: earshot_core::asr::Segment) {
@@ -1876,6 +2066,14 @@ where
                 wanted: wanted.clone(),
                 used: used.clone(),
             });
+            return;
+        }
+        if let DiscontinuityKind::Note {
+            warning: EndpointWarning::StoppedAnswering,
+        } = kind
+        {
+            self.warn(RuntimeWarning::DeviceStoppedAnswering);
+            self.problems.push(RuntimeWarning::DeviceStoppedAnswering);
             return;
         }
         let DiscontinuityKind::DeviceChanged {
@@ -1963,32 +2161,21 @@ where
             return;
         };
         let clock = Arc::clone(&self.services.clock);
-        let has_reference = self.capture.reference.is_some();
-        let mut db = self.services.store();
-        for track in &self.tracks {
-            let Some(writer) = self.writers[slot(track.kind)].take() else {
+        let kinds: Vec<TrackId> = self.tracks.iter().map(|t| t.kind).collect();
+        for track in kinds {
+            let Some(writer) = self.writers[slot(track)].take() else {
                 continue;
             };
-            let provenance = AudioProvenance {
-                pipeline_version: PIPELINE_VERSION.to_owned(),
-                aec_version: (track.kind == TrackId::Mic && has_reference)
-                    .then(|| AEC_VERSION.to_owned()),
-            };
-            match db.finalize_track_audio(
-                writer,
-                &self.services.data,
-                track,
-                provenance,
-                &*clock,
-                &mut *self.rng,
-            ) {
-                Ok(file) => self.audio_files.push((track.kind, file.id)),
-                Err(e) => self.problems.push(RuntimeWarning::Recording {
-                    track: track.kind,
+            match self.finalize(track, writer) {
+                Some(Ok(file)) => self.audio_files.push((track, file.id)),
+                Some(Err(e)) => self.problems.push(RuntimeWarning::Recording {
+                    track,
                     error: e.to_string(),
                 }),
+                None => {}
             }
         }
+        let mut db = self.services.store();
         // Re-read: only the duration changes, edits made during the meeting are kept.
         match db.meeting(self.meeting_id) {
             Ok(Some(mut meeting)) => {
@@ -2107,5 +2294,36 @@ where
             echo_words_removed: self.echo.removed(),
             echo_locks: self.echo.locks().to_vec(),
         })
+    }
+}
+
+/// Write failures injected by tests into a session's FLAC writers (T9.17), keyed by the data
+/// directory so tests running at once never see each other's.
+#[cfg(test)]
+pub(crate) mod write_faults {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    use earshot_core::capture::TrackId;
+    use earshot_store::{DataDir, WriteFault};
+
+    static FAULTS: Mutex<Vec<(PathBuf, TrackId, WriteFault)>> = Mutex::new(Vec::new());
+
+    /// The next session on `data` gets `fault` on `track`'s writer.
+    pub(crate) fn set(data: &DataDir, track: TrackId, fault: WriteFault) {
+        let mut f = FAULTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f.push((data.root().to_owned(), track, fault));
+    }
+
+    pub(super) fn take(data: &DataDir, track: TrackId) -> Option<WriteFault> {
+        let mut f = FAULTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let i = f
+            .iter()
+            .position(|(root, t, _)| root == data.root() && *t == track)?;
+        Some(f.remove(i).2)
     }
 }

@@ -3259,6 +3259,538 @@ fn live_recording_gap_is_not_reported_when_nothing_was_lost_from_the_mic() {
     assert_eq!(recording_gaps(true, &[], 150), (vec![], None));
 }
 
+/// A two-track meeting of `total_ms` with `faults` injected into its writers: its events, its
+/// outcome and each track's FLAC as stored (`None`: no audio row).
+struct Faulted {
+    events: Vec<RuntimeEvent>,
+    outcome: LiveOutcome,
+    flacs: [Option<Vec<f32>>; 2],
+    svc: Services,
+    _dir: TempDir,
+}
+
+fn faulted_meeting(
+    total_ms: u64,
+    faults: &[(TrackId, earshot_store::WriteFault)],
+    seed: u64,
+) -> Faulted {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    for &(track, fault) in faults {
+        super::write_faults::set(&svc.data, track, fault);
+    }
+    let talk = words("a", 500, (total_ms / 400) as usize - 3);
+    let far = words("r", 700, (total_ms / 400) as usize - 3);
+    let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, speech(&talk, total_ms, seed)))
+        .reference(MonoBuffer::new(R16, speech(&far, total_ms, seed + 1)))
+        .build()
+        .unwrap();
+    let session = start_live(
+        source,
+        svc.clone(),
+        config(earshot_core::model::ClockDomain::Replay),
+        None,
+        Box::new(ChaCha8Rng::seed_from_u64(seed + 2)),
+    )
+    .unwrap();
+    let (events, outcome) = collect(session);
+    let mut flacs = [None, None];
+    {
+        let store = svc.store();
+        for f in store.audio_files(outcome.meeting).unwrap() {
+            let track = store
+                .tracks(outcome.meeting)
+                .unwrap()
+                .into_iter()
+                .find(|t| t.id == f.track_id)
+                .unwrap();
+            let (rate, samples) = read_flac(&svc.data.resolve(&f.path).unwrap()).unwrap();
+            assert_eq!(rate, 16_000);
+            assert_eq!(f.frames, samples.len() as u64, "the row matches the file");
+            flacs[slot(track.kind)] = Some(samples);
+        }
+    }
+    Faulted {
+        events,
+        outcome,
+        flacs,
+        svc,
+        _dir: dir,
+    }
+}
+
+fn stopped_warnings(events: &[RuntimeEvent]) -> Vec<RuntimeWarning> {
+    warnings(events)
+        .into_iter()
+        .filter(|w| {
+            matches!(
+                w,
+                RuntimeWarning::RecordingStopped { .. }
+                    | RuntimeWarning::EveryRecordingStopped { .. }
+                    | RuntimeWarning::Recording { .. }
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn live_recording_write_failure_keeps_the_audio_before_it_and_the_other_track() {
+    // T9.17: a full disk part way through the mic's recording. The same meeting without the
+    // failure is the control: the replay is deterministic, so the cut file must be exactly the
+    // start of the control's.
+    let whole = faulted_meeting(12_000, &[], 200);
+    assert!(stopped_warnings(&whole.events).is_empty());
+    let full = earshot_store::WriteFault::DiskFullAfter(40_000);
+    let cut = faulted_meeting(12_000, &[(TrackId::Mic, full)], 200);
+
+    let control_mic = whole.flacs[0].clone().expect("control mic");
+    let control_ref = whole.flacs[1].clone().expect("control reference");
+    let mic = cut.flacs[0]
+        .clone()
+        .expect("the cut mic is a readable file with its row");
+    assert!(
+        !mic.is_empty() && mic.len() < control_mic.len(),
+        "{} of {}",
+        mic.len(),
+        control_mic.len()
+    );
+    assert_eq!(
+        mic,
+        control_mic[..mic.len()],
+        "the audio before the error, bit for bit"
+    );
+    assert_eq!(
+        cut.flacs[1].as_deref(),
+        Some(&control_ref[..]),
+        "the reference goes on"
+    );
+
+    // Said once during the meeting, with where it stopped and why, and again in the outcome.
+    let at = MeetingTime::from_pipeline_frames(mic.len() as u64);
+    let said = stopped_warnings(&cut.events);
+    assert!(
+        matches!(
+            said.as_slice(),
+            [RuntimeWarning::RecordingStopped {
+                track: TrackId::Mic,
+                at: a,
+                disk_full: true,
+                ..
+            }] if *a == at
+        ),
+        "{said:?}"
+    );
+    assert!(
+        cut.outcome.problems.contains(&said[0]),
+        "{:?}",
+        cut.outcome.problems
+    );
+    assert!(
+        !cut.outcome
+            .problems
+            .iter()
+            .any(|p| matches!(p, RuntimeWarning::EveryRecordingStopped { .. })),
+        "one track still records"
+    );
+    // The meeting ran to its end and keeps both files.
+    assert_eq!(cut.outcome.reason, EndReason::Finished);
+    assert_eq!(cut.outcome.end, whole.outcome.end);
+    assert_eq!(cut.outcome.audio_files.len(), 2);
+    // Nothing is left half written.
+    let dir = cut
+        .svc
+        .data
+        .root()
+        .join("audio")
+        .join(cut.outcome.meeting.to_string());
+    let parts = std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|x| x == "part")
+        })
+        .count();
+    assert_eq!(parts, 0);
+}
+
+#[test]
+fn live_recording_every_track_failing_stops_the_meeting_itself() {
+    let full = earshot_store::WriteFault::DiskFullAfter(20_000);
+    let cut = faulted_meeting(
+        60_000,
+        &[(TrackId::Mic, full), (TrackId::Reference, full)],
+        210,
+    );
+    let said = stopped_warnings(&cut.events);
+    let stopped: Vec<TrackId> = said
+        .iter()
+        .filter_map(|w| match w {
+            RuntimeWarning::RecordingStopped {
+                track,
+                disk_full: true,
+                ..
+            } => Some(*track),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stopped.len(), 2, "{said:?}");
+    assert!(stopped.contains(&TrackId::Mic) && stopped.contains(&TrackId::Reference));
+    // Once, after both tracks said so.
+    assert_eq!(
+        said.last(),
+        Some(&RuntimeWarning::EveryRecordingStopped { disk_full: true })
+    );
+    assert_eq!(said.len(), 3, "{said:?}");
+    assert!(
+        cut.outcome
+            .problems
+            .contains(&RuntimeWarning::EveryRecordingStopped { disk_full: true })
+    );
+    // The session stopped it, long before the 60 s replay ran out.
+    assert_eq!(cut.outcome.reason, EndReason::Stopped);
+    assert!(
+        cut.outcome.end < MeetingTime::from_millis(60_000),
+        "{:?}",
+        cut.outcome.end
+    );
+    // Both files keep their audio.
+    for f in &cut.flacs {
+        assert!(f.as_ref().is_some_and(|s| !s.is_empty()));
+    }
+    assert!(matches!(cut.events.last(), Some(RuntimeEvent::Ended(_))));
+}
+
+#[test]
+fn live_recording_that_failed_before_any_frame_keeps_no_empty_file() {
+    // Lane-merge review: a failure on the very first frame leaves nothing to keep, so no
+    // AudioFile row and no `.part`, and nothing for the final pass; the meeting still ends.
+    let full = earshot_store::WriteFault::DiskFullAfter(0);
+    let cut = faulted_meeting(
+        12_000,
+        &[(TrackId::Mic, full), (TrackId::Reference, full)],
+        270,
+    );
+    assert_eq!(cut.flacs, [None, None]);
+    assert!(cut.outcome.audio_files.is_empty());
+    assert!(
+        cut.svc
+            .store()
+            .audio_files(cut.outcome.meeting)
+            .unwrap()
+            .is_empty()
+    );
+    let said = stopped_warnings(&cut.events);
+    assert_eq!(said.len(), 3, "{said:?}");
+    assert!(said[..2].iter().all(|w| matches!(
+        w,
+        RuntimeWarning::RecordingStopped { at, disk_full: true, .. } if *at == MeetingTime::from_millis(0)
+    )));
+    assert_eq!(
+        said[2],
+        RuntimeWarning::EveryRecordingStopped { disk_full: true }
+    );
+    assert_eq!(cut.outcome.reason, EndReason::Stopped);
+    assert!(matches!(cut.events.last(), Some(RuntimeEvent::Ended(_))));
+    for track in [TrackId::Mic, TrackId::Reference] {
+        let path = cut
+            .svc
+            .data
+            .resolve(&DataDir::audio_rel(cut.outcome.meeting, track))
+            .unwrap();
+        assert!(!path.exists() && !path.with_extension("flac.part").exists());
+    }
+    let (input, missing) =
+        crate::post::load_post_input(&cut.svc, cut.outcome.meeting, &cut.outcome.final_pass)
+            .unwrap();
+    assert!(
+        input.tracks.is_empty(),
+        "no empty file reaches the final pass"
+    );
+    assert_eq!(missing.len(), 2);
+}
+#[test]
+fn live_recording_that_cannot_be_finished_keeps_its_part_file() {
+    // A drive that went away: the file cannot even be finished, so it stays as `.part` for
+    // recovery (T9.18) and the track has no row; the meeting goes on with the other track.
+    let broken = earshot_store::WriteFault::BrokenAfter(30_000);
+    let cut = faulted_meeting(12_000, &[(TrackId::Mic, broken)], 220);
+    assert!(cut.flacs[0].is_none());
+    assert!(cut.flacs[1].is_some());
+    let said = stopped_warnings(&cut.events);
+    assert!(
+        matches!(
+            said.as_slice(),
+            [
+                RuntimeWarning::RecordingStopped {
+                    track: TrackId::Mic,
+                    disk_full: false,
+                    ..
+                },
+                RuntimeWarning::Recording {
+                    track: TrackId::Mic,
+                    ..
+                },
+            ]
+        ),
+        "{said:?}"
+    );
+    let part = cut
+        .svc
+        .data
+        .resolve(&DataDir::audio_rel(cut.outcome.meeting, TrackId::Mic))
+        .unwrap()
+        .with_extension("flac.part");
+    assert!(part.exists(), "never deleted");
+    assert_eq!(cut.outcome.reason, EndReason::Finished);
+}
+
+#[cfg(windows)]
+#[test]
+fn live_stop_saves_the_recording_when_the_capture_thread_never_ends() {
+    // T9.20: a capture thread stuck in a call (its stop never returns). The source gives it up
+    // after its stop wait; the session still ends, both files hold everything delivered before,
+    // the user hears why once, and Ended is last.
+    use earshot_capture_wasapi::{ChannelSource, LiveMsg};
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let info = CaptureSession::new(ORIGIN, TrackInfo::new(R16), Some(TrackInfo::new(R16)));
+    let (tx, rx) = std::sync::mpsc::channel::<LiveMsg<String>>();
+    let packets = 300u64;
+    for i in 0..packets {
+        let at = ORIGIN.after_frames(i * 160, R16);
+        for track in [TrackId::Mic, TrackId::Reference] {
+            tx.send(LiveMsg::Event(CaptureEvent::Frames {
+                track,
+                device_ts: at,
+                frames: noise(i + 50 * u64::from(track == TrackId::Mic), 160, 0.05),
+            }))
+            .unwrap();
+        }
+    }
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(release_rx);
+    let source = ChannelSource::new(info, rx, move || {
+        let _ = release_rx.lock().unwrap().recv();
+    })
+    .with_stop_wait(Duration::from_millis(50));
+    let session = start_live(
+        source,
+        svc.clone(),
+        config(earshot_core::model::ClockDomain::Qpc),
+        None,
+        Box::new(ChaCha8Rng::seed_from_u64(230)),
+    )
+    .unwrap();
+    session.request_stop();
+    let (events, outcome) = collect(session);
+    assert!(matches!(events.last(), Some(RuntimeEvent::Ended(_))));
+    assert_eq!(outcome.reason, EndReason::Stopped);
+    let said: Vec<RuntimeWarning> = warnings(&events)
+        .into_iter()
+        .filter(|w| matches!(w, RuntimeWarning::DeviceStoppedAnswering))
+        .collect();
+    assert_eq!(said, [RuntimeWarning::DeviceStoppedAnswering]);
+    assert!(
+        outcome
+            .problems
+            .contains(&RuntimeWarning::DeviceStoppedAnswering)
+    );
+    let saved = events
+        .iter()
+        .position(|e| matches!(e, RuntimeEvent::RecordingSaved { .. }))
+        .expect("the recording is saved");
+    assert!(saved < events.len() - 1);
+    let store = svc.store();
+    let files = store.audio_files(outcome.meeting).unwrap();
+    assert_eq!(files.len(), 2);
+    for f in files {
+        let (_, samples) = read_flac(&svc.data.resolve(&f.path).unwrap()).unwrap();
+        assert_eq!(
+            samples.len() as u64,
+            packets * 160,
+            "everything delivered is kept"
+        );
+    }
+    drop(store);
+    // The stuck thread is left alone; let it go now the test is done.
+    drop(tx);
+    drop(release_tx);
+}
+
+/// How a catch-up test's transcriber behaves once its first decode starts.
+#[derive(Clone, Copy)]
+enum Decode {
+    /// Stuck in a call that never returns (no poll) until the test releases it.
+    Hangs,
+    /// Slow (20 polls 100 ms apart per call) but polling its cancel token all along.
+    SlowButPolling,
+}
+
+/// A transcriber over a timeline that behaves as `how` says.
+struct CatchUpTranscriber {
+    inner: crate::testutil::Timeline,
+    how: Decode,
+    release: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl earshot_core::asr::Transcriber for CatchUpTranscriber {
+    fn transcribe(
+        &mut self,
+        audio: &MonoBuffer,
+        options: &earshot_core::asr::TranscribeOptions,
+        cancel: &earshot_core::asr::CancelToken,
+    ) -> Result<earshot_core::asr::Transcription, AsrError> {
+        match self.how {
+            Decode::Hangs => {
+                let _ = self.release.lock().unwrap().recv();
+            }
+            Decode::SlowButPolling => {
+                for _ in 0..20 {
+                    if cancel.is_cancelled() {
+                        return Err(AsrError::Cancelled);
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        self.inner.transcribe(audio, options, cancel)
+    }
+
+    fn backend_info(&self) -> earshot_core::asr::BackendInfo {
+        self.inner.backend_info()
+    }
+}
+
+/// A stretch meeting of 6 s whose decodes behave as `how` says, stopped once it ends: its events
+/// and outcome, and whether `cancel` was used once the recording was saved.
+fn catch_up_meeting(
+    how: Decode,
+    stall: Duration,
+    cancel: bool,
+    seed: u64,
+) -> (Vec<RuntimeEvent>, LiveOutcome, Services, TempDir) {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let w = words("a", 500, 12);
+    let audio = speech(&w, 6000, seed);
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release = Arc::new(std::sync::Mutex::new(release_rx));
+    let mut slot = Some((audio.clone(), w));
+    let factory: LiveAsrFactory = Box::new(move |t, entity| {
+        let Some((audio, w)) = slot.take().filter(|_| t == TrackId::Mic) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            LiveAsr {
+                transcriber: Box::new(CatchUpTranscriber {
+                    inner: crate::testutil::timeline(audio, w),
+                    how,
+                    release: Arc::clone(&release),
+                }),
+                vad: Box::new(EnergyVad::default()),
+                config: ChunkerConfig::default(),
+                track_entity: entity,
+                segment_ids: ids(),
+            }
+            .into(),
+        ))
+    });
+    let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, audio))
+        .build()
+        .unwrap();
+    let mut session = start_live(
+        source,
+        svc.clone(),
+        LiveConfig {
+            catch_up_stall: stall,
+            ..stretch_config(earshot_core::model::ClockDomain::Replay)
+        },
+        Some(factory),
+        Box::new(ChaCha8Rng::seed_from_u64(seed + 1)),
+    )
+    .unwrap();
+    let rx = session.take_events().unwrap();
+    let mut events = Vec::new();
+    loop {
+        let e = rx
+            .recv_timeout(Duration::from_secs(120))
+            .expect("the session ends");
+        let saved = matches!(e, RuntimeEvent::RecordingSaved { .. });
+        let end = matches!(e, RuntimeEvent::Ended(_));
+        events.push(e);
+        if saved && cancel {
+            session.cancel_catch_up();
+        }
+        if end {
+            break;
+        }
+    }
+    let outcome = session.wait().unwrap();
+    // A hung decode is left behind; let it go now.
+    drop(release_tx);
+    (events, outcome, svc, dir)
+}
+
+#[test]
+fn live_catch_up_cancel_ends_the_session_without_waiting_for_a_hung_decode() {
+    // T9.22: Cancel on "Finishing the meeting" reaches the live catch-up. No stall bound could
+    // fire here (one hour); only the cancel ends it.
+    let (events, outcome, svc, _dir) =
+        catch_up_meeting(Decode::Hangs, Duration::from_secs(3600), true, 240);
+    assert!(matches!(events.last(), Some(RuntimeEvent::Ended(_))));
+    // Nothing to tell: the user asked for it.
+    assert!(
+        !warnings(&events)
+            .iter()
+            .any(|w| matches!(w, RuntimeWarning::LiveCatchUpStalled { .. }))
+    );
+    // The recording is kept whole.
+    let files = svc.store().audio_files(outcome.meeting).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].frames, 6 * 16_000);
+    assert!(matches!(
+        crate::stretches::stretch_record(&svc.store(), outcome.meeting, TrackId::Mic).unwrap(),
+        Some(crate::stretches::StoredStretches::Record(r)) if r.stopped.is_some()
+    ));
+}
+
+#[test]
+fn live_catch_up_that_stops_moving_is_given_up_and_said() {
+    let (events, outcome, _svc, _dir) =
+        catch_up_meeting(Decode::Hangs, Duration::from_millis(300), false, 250);
+    let said: Vec<RuntimeWarning> = warnings(&events)
+        .into_iter()
+        .filter(|w| matches!(w, RuntimeWarning::LiveCatchUpStalled { .. }))
+        .collect();
+    assert_eq!(
+        said,
+        [RuntimeWarning::LiveCatchUpStalled {
+            track: TrackId::Mic
+        }]
+    );
+    assert!(outcome.problems.contains(&said[0]));
+    assert!(matches!(events.last(), Some(RuntimeEvent::Ended(_))));
+}
+
+#[test]
+fn live_catch_up_that_is_slow_but_polling_is_never_cut() {
+    // Negative control: each decode takes 2 s, longer than the 1 s bound, but polls every 100 ms,
+    // so the catch-up runs to its end and every word lands.
+    let (events, outcome, svc, _dir) =
+        catch_up_meeting(Decode::SlowButPolling, Duration::from_secs(1), false, 260);
+    assert!(
+        !warnings(&events)
+            .iter()
+            .any(|w| matches!(w, RuntimeWarning::LiveCatchUpStalled { .. }))
+    );
+    let rows = live_segments(&**svc.store(), outcome.meeting, TranscriptPass::Live).unwrap();
+    let stored: Vec<String> = rows.iter().flat_map(|r| texts(&r.segment.words)).collect();
+    assert_eq!(stored, texts(&words("a", 500, 12)));
+}
+
 #[test]
 fn live_voice_activity_stays_off_on_silence_and_ends_with_the_session() {
     // Negative control: quiet noise only, no "speaking" ever.

@@ -85,6 +85,54 @@ enum FromWorker {
     Done,
 }
 
+/// How a worker's catch-up at the end of a meeting ended ([`LiveWorker::finish_watched`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CatchUpEnd {
+    /// It decoded its queue and its thread ended.
+    Finished,
+    /// The meeting's catch-up was cancelled: the decode was asked to stop and the thread left.
+    Cancelled,
+    /// Nothing moved for the stall bound: the thread was left (never joined).
+    Stalled,
+}
+
+/// The no-progress rule of a catch-up (T9.22): it stalls only when none of its signs of life
+/// (`sign`: the decoded frontier, the decode's cancel-token polls, messages from the worker)
+/// changed for `bound`. However long a decode takes, it never stalls while it moves, provided no single
+/// call between two polls of its token takes `bound` (Parakeet polls once per piece and chunk,
+/// Whisper inside its graph compute: `LiveConfig::catch_up_stall`). Only the worker thread may poll a
+/// worker's token: a second poller would keep a hung decode looking alive (pinned by
+/// `live_worker_token_is_polled_only_by_the_worker`).
+#[derive(Debug, Clone)]
+pub(super) struct StallWatch {
+    bound: Duration,
+    sign: Option<[u64; 3]>,
+    since: Duration,
+}
+
+impl StallWatch {
+    pub(super) fn new(bound: Duration) -> Self {
+        Self {
+            bound,
+            sign: None,
+            since: Duration::ZERO,
+        }
+    }
+
+    /// Looks at `sign` at `now` (time since the watch began): whether it has stalled.
+    pub(super) fn stalled(&mut self, sign: [u64; 3], now: Duration) -> bool {
+        if self.sign != Some(sign) {
+            self.sign = Some(sign);
+            self.since = now;
+            return false;
+        }
+        now.saturating_sub(self.since) >= self.bound
+    }
+}
+
+/// How often a watched catch-up looks at its worker.
+const WATCH_POLL: Duration = Duration::from_millis(50);
+
 /// The policy after a drain that left `behind` undecoded (hysteresis, module docs).
 fn partials_on(was_on: bool, behind: Duration) -> bool {
     if was_on {
@@ -350,6 +398,61 @@ impl LiveWorker {
         }
         (out, switches)
     }
+
+    /// [`LiveWorker::finish`] that never waits for ever (T9.22): `cancel` (the meeting's catch-up
+    /// token) or a stall ([`StallWatch`] over `stall`) asks the decode to stop and leaves the
+    /// thread to end on its own, never joined, as a stalled GPU summary is left (T8.4ab). Returns
+    /// the events received until then.
+    pub(super) fn finish_watched(
+        mut self,
+        stall: Duration,
+        cancel: &CancelToken,
+    ) -> (Vec<PipelineEvent>, Vec<PartialsSwitch>, CatchUpEnd) {
+        let _ = self.to.send(ToWorker::Finish);
+        let mut out = Vec::new();
+        let mut switches = Vec::new();
+        let mut watch = StallWatch::new(stall);
+        let started = std::time::Instant::now();
+        let mut messages = 0u64;
+        let polls = self.cancel.clone();
+        let end = loop {
+            match self.from.recv_timeout(WATCH_POLL) {
+                Ok(FromWorker::Events(e)) => {
+                    messages += 1;
+                    out.extend(e);
+                }
+                Ok(FromWorker::Partials(p)) => {
+                    messages += 1;
+                    switches.push(p);
+                }
+                Ok(FromWorker::Done) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break CatchUpEnd::Finished;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if cancel.is_cancelled() {
+                break CatchUpEnd::Cancelled;
+            }
+            let sign = [
+                self.decoded.load(Ordering::SeqCst),
+                polls.as_ref().map_or(0, CancelToken::polls),
+                messages,
+            ];
+            if watch.stalled(sign, started.elapsed()) {
+                break CatchUpEnd::Stalled;
+            }
+        };
+        if end == CatchUpEnd::Finished {
+            let (rest, more) = self.finish();
+            out.extend(rest);
+            switches.extend(more);
+        } else {
+            // Left running: it ends by itself once its call returns (it sees the cancel).
+            self.cancel();
+            drop(self.thread.take());
+        }
+        (out, switches, end)
+    }
 }
 
 impl Drop for LiveWorker {
@@ -366,6 +469,61 @@ impl Drop for LiveWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_catch_up_stalls_only_when_nothing_moves_for_the_bound() {
+        // T9.22, clock-free: times are given, never read.
+        let s = Duration::from_secs;
+        let mut w = StallWatch::new(s(120));
+        assert!(!w.stalled([0, 0, 0], s(0)));
+        assert!(!w.stalled([0, 0, 0], s(119)));
+        assert!(w.stalled([0, 0, 0], s(120)), "no movement for the bound");
+        // Any sign of life starts the bound again: the frontier, the decode's polls, a message.
+        for (k, sign) in [[1, 0, 0], [1, 1, 0], [1, 1, 1]].into_iter().enumerate() {
+            let at = s(200 + 100 * k as u64);
+            assert!(!w.stalled(sign, at));
+            assert!(!w.stalled(sign, at + s(119)));
+        }
+        // A decode that polls slowly but steadily is never cut, however long it takes.
+        let mut slow = StallWatch::new(s(120));
+        for minute in 0..600u64 {
+            assert!(!slow.stalled([0, minute, 0], s(60 * minute)));
+        }
+    }
+
+    #[test]
+    fn live_worker_token_is_polled_only_by_the_worker() {
+        // T9.22: the decode's cancel-token polls are a sign of life only if nothing else polls the
+        // token. The worker is the one place in this crate that takes a live track's token.
+        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    rs_files(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rs_files(&src, &mut files);
+        let needle = concat!(".cancel", "_token()");
+        let takers: Vec<String> = files
+            .iter()
+            .filter(|p| std::fs::read_to_string(p).unwrap().contains(needle))
+            .map(|p| {
+                p.strip_prefix(&src)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(takers, ["live/worker.rs"]);
+        // And within it, once: the token handed to the decode, kept for cancel and polls().
+        let me = std::fs::read_to_string(src.join("live").join("worker.rs")).unwrap();
+        assert_eq!(me.matches(needle).count(), 1);
+    }
 
     #[test]
     fn live_worker_partials_switch_with_hysteresis() {

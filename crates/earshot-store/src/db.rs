@@ -64,6 +64,24 @@ impl StoreError {
     pub fn is_retryable(&self) -> bool {
         matches!(self, StoreError::ConcurrentEdit(_) | StoreError::Busy(_))
     }
+
+    /// Whether this is a file system error that says the disk (or the user's quota on it) is
+    /// full, so a message can say so in plain words (T9.17).
+    #[must_use]
+    pub fn is_disk_full(&self) -> bool {
+        // Windows: ERROR_HANDLE_DISK_FULL (39), ERROR_DISK_FULL (112), ERROR_DISK_QUOTA_EXCEEDED
+        // (1295), in case std ever stops mapping them to `StorageFull` / `QuotaExceeded`.
+        const FULL_CODES: [i32; 3] = [39, 112, 1295];
+        match self {
+            StoreError::Io(e) => {
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded
+                ) || (cfg!(windows) && e.raw_os_error().is_some_and(|c| FULL_CODES.contains(&c)))
+            }
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for StoreError {

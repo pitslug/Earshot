@@ -180,6 +180,20 @@ impl MeetingModels {
         Ok(resolved)
     }
 
+    /// [`Self::resolve`] that gives way to `cancel` while it waits for the CUDA start (T9.22):
+    /// `None` when `cancel` came first, so a meeting cancelled after its recording never waits for
+    /// a start that may not end.
+    #[must_use]
+    pub fn resolve_unless(
+        &self,
+        cancel: &earshot_core::asr::CancelToken,
+    ) -> Option<Result<Arc<ResolvedModels>, RuntimeError>> {
+        if !crate::cuda::wait_for_onnx_unless(cancel) {
+            return None;
+        }
+        Some(self.resolve())
+    }
+
     /// Live transcription of the meeting, on what [`Self::resolve`] decides at its first call.
     pub fn live_factory(self: &Arc<Self>) -> LiveAsrFactory {
         let me = Arc::clone(self);
