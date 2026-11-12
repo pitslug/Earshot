@@ -615,6 +615,36 @@ Point 3 in detail: decode rtf at or below "off" on both tracks, catch-up 0.97-1.
 
 **Verdict on the desktop: neither "Other people only" nor "Everyone" passes.** The streaming model shows words sooner at the median (under 1 s against 2.4-3.9 s) and uses less CPU (a quarter to a half less than window previews), but on `bundled` its far-end p95 on-screen lag is about 36 s (some far-end words seem to reach the screen only when the settled text does; the reports do not say why, and this was not investigated), it changes 18% of the far-end words it shows, and its peak private memory is 0.4-1.0 GiB above window previews on every run. Under the rule the Surface decides; it measures from lane/nemotron at dec19c6 or later. (Coordinator's note, not part of the rule: unless the Surface differs sharply, the window previews stay.)
 
+### Result on the Surface, 2026-11-13
+
+The Surface (Snapdragon X2 Elite, 16 GB, mains), `lane/nemotron` at `dec19c6` (commit 7, after the review fixes), the rule above unchanged. Both tracks transcribed on QNN in every run (`live_backends`); every streaming session's three ONNX Runtime sessions on `CPUExecutionProvider`. "Window" is today's previews on the NPU loaded with `--force-previews`, the same load T12.12c allows for "Other people only" (that branch is not merged here); "Everyone" window previews stay refused on the NPU, so `everyone` is judged against "off" as the rule says. One run per setting; the machine had other user apps open (machine load median 4-34% across runs, in each report), none of this session's builds or measurements. Reports: `live-previews/t1223/t1223-qnn-*.json`.
+
+| Run | Ref on-screen median / p95 | Mic on-screen median / p95 | Ref changed (kept / changed / vanished) | Mic changed | Process CPU | Peak private | Preview rtf (t2 / t3 / t4) |
+|---|---|---|---|---|---|---|---|
+| off, bundled | 14.1 / 37.0 (settled) | 15.4 / 32.3 (settled) | - | - | 39 s | 2.66 GiB | - |
+| window on, bundled | 2.4 / 13.1 | - | 10 of 184 (174 / 10 / 1) | - | 54 s | 2.71 GiB | 0.023 (NPU) |
+| stream on, bundled | 0.8 / 36.0 | - | 37 of 210 (173 / 37 / 3) | - | 88-91 s | 3.36 GiB | 0.183 / 0.148 / 0.129 |
+| stream everyone, bundled | 0.8 / 36.0 | 1.0-1.1 / 21.4 | 37 of 210 | 7 of 184 (177 / 7 / 50) | 138-144 s | 4.05 GiB | 0.18 / 0.15 / 0.13 per track |
+| off, continuous | 36.9 / 49.7 (settled) | - | - | - | 19 s | 2.53 GiB | - |
+| window on, continuous | 1.9 / 5.0 | - | 7 of 218 (211 / 7 / 0) | - | 38 s | 2.59 GiB | 0.018 (NPU) |
+| stream on, continuous | 0.8-0.9 / 1.8 | - | 6 of 226 (220 / 6 / 0) | - | 60-62 s | 3.23 GiB | 0.183 / 0.150 / 0.130 |
+| stream everyone, continuous | 0.8-0.9 / 1.7-1.9 | - | 6 of 226 | - | 100-104 s | 3.92 GiB | 0.18 / 0.15 / 0.13 per track |
+
+The thread count changed only the streaming model's own rtf (2 to 4 threads: 0.18 to 0.13); every word count, lag and stored hash was identical across 2, 3 and 4 threads, so each count is judged the same.
+
+By point, at every thread count:
+
+1. **Where it ran**: holds.
+2. **Stored words identical**: holds (`stored_sha256` equals "off" on every track of every run).
+3. **Main transcript**: holds (track rtf 0.020-0.021 against off's 0.021 on `bundled`, 0.012 against 0.012 on `continuous`; catch-up within 0.1 s of off's; no audio dropped, no preview off, no slow pause).
+4. **Sooner**: the median holds everywhere (0.8-1.1 s against window's 2.4 and 1.9 s). The p95 fails for `on` on `bundled`: 36.0 s against window's 13.1 s. Most of the far-end words show within a second, but about one in twenty settled words never had a streamed word under it, so it waited for settled text as with previews off. On `continuous` it holds (1.8 against 5.0 s). For `everyone`, judged by the absolute bound only, the medians hold.
+5. **As good**: fails on `bundled` for both settings. The far end's changed share is 37 of 210, 17.6%, against the 10% bound and twice window's 5.4%. On `continuous` it holds (2.7%). The mic under `everyone` changed 3.8%, but 50 of its previewed words vanished before settling (the window previews' far-end-on-the-mic effect, T12.12c point 4, appears here too).
+6. **Cost**: `on` fails against window (process CPU 88-91 s against 54 s on `bundled`, 60-62 against 38 s on `continuous`; peak private 3.36 against 2.71 GiB and 3.23 against 2.59 GiB). `everyone` against off holds T12.12c's 1.5 GiB limit (+1.39 GiB on both audios); CPU time reported (138-144 s and 100-104 s against off's 39 and 19 s).
+
+**Under the rule, neither setting passes on the Surface at 2, 3 or 4 threads**: `on` fails points 4, 5 and 6, `everyone` fails point 5. The window previews stay. The rule's NPU conversion step is not indicated, since the failures are not only cost (points 4 and 5 fail too). What the numbers say beside the verdict: the streaming model shows far-end words much sooner at the median (under a second against about 2 s) and is steady on continuous speech, but on real meeting audio it disagrees with Parakeet's settled text about three times as often as the window previews and misses some words entirely, at about 1.7 times the window previews' CPU time on this machine. The desktop's CPU run is the coordinator's.
+
+The rule asks for an idle host and these reports show 4-34% machine load, so a pass could not have been claimed on them; the failures stand because points 4 and 5 are word counts and point 6 is the process's own CPU time (coordinator's note at merge, from the lane-merge review).
+
 ## Re-measuring on a quiet host
 
 Never beside ci or a build. `bundled` and `continuous`, off and on; for CUDA add `--features onnx-cuda`
