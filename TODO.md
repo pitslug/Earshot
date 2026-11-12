@@ -142,3 +142,6 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - apps/desktop/src-tauri/src/cuda_settings.rs:1062 and update_settings.rs:287: CUDA part and update installer downloads still send progress per network chunk; throttle them in one shared place (`Downloader::fetch` or `Catalogue::download`) rather than per caller (T9.24a review).
 - crates/earshot-runtime/src/host.rs:727: no test drives `host::download_model` and counts its reports, so dropping the throttle wrap passes every test; add a loopback test serving many small chunks (T9.24a review).
 - crates/earshot-store/src/repo.rs:426 `has_live_segment`: no index on `pass`/`deleted`, so a long live-only meeting still reads its segment headers (T9.24a review).
+- crates/earshot-llm/tests/claude_code.rs:146: the fake's `--help` branch does not record the environment, so the effort probe's clearing is covered only by the shared spec (T9.25 review).
+- crates/earshot-llm/src/codex.rs:183: `CODEX_REFRESH_TOKEN_URL_OVERRIDE` (in codex.exe 0.166.0, undocumented) is not cleared under the docs-only rule; owner to decide (T9.25).
+- crates/earshot-llm (T9.25 design question for the owner): an allow list (`env_clear` plus what the CLI needs) instead of the vendor deny lists; needs an `env_clear` flag in earshot-proc.
