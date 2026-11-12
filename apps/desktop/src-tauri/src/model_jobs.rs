@@ -235,7 +235,7 @@ pub fn require_catalogue_model(model: &str) -> Result<(), IpcError> {
     } else {
         Err(IpcError {
             kind: "unknown_model".into(),
-            message: format!("{model} is not a model of this version"),
+            message: crate::models::UNKNOWN_MODEL.into(),
             retryable: false,
         })
     }
@@ -339,7 +339,7 @@ impl ModelJobs {
             }
             _ => Err(IpcError {
                 kind: "not_downloading".into(),
-                message: format!("{model} is not downloading"),
+                message: "This model is not downloading.".into(),
                 retryable: false,
             }),
         }
@@ -731,10 +731,11 @@ impl ModelWork for HostModelWork {
 
         let models = host::model_dir(&svc.data);
         // Its own current-thread runtime; this is a plain thread, never inside another one.
-        let downloader = Downloader::for_manifest(Arc::clone(&svc.clock)).map_err(|e| {
+        // The error's words name the manifest: the page gets fixed copy (T9.23).
+        let downloader = Downloader::for_manifest(Arc::clone(&svc.clock)).map_err(|_| {
             DownloadEnd::Failed(IpcError {
                 kind: "download".into(),
-                message: e.to_string(),
+                message: crate::models::MODEL_FILES_FAILED.into(),
                 retryable: false,
             })
         })?;

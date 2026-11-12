@@ -4,7 +4,6 @@
 //! `earshot_runtime` (`host`, `recommend`, `model_settings`, `catalogue`); this module only
 //! shapes it for the UI.
 
-use crate::plain_text::plain;
 use earshot_core::asr::BackendKind;
 use earshot_runtime::Services;
 use earshot_runtime::backends::{Accelerator, ModelDir, accelerator_order};
@@ -315,8 +314,58 @@ pub struct ModelsView {
 fn internal(e: &CatalogueError) -> IpcError {
     IpcError {
         kind: "model".into(),
-        message: plain(e.to_string()),
+        message: catalogue_copy(e),
         retryable: false,
+    }
+}
+
+/// The models folder or the built-in model list could not be used.
+pub const MODEL_FILES_FAILED: &str = "Earshot could not read or change its model files. Close Earshot, open it again and try once more.";
+/// A model this version does not know.
+pub const UNKNOWN_MODEL: &str = "That model is not part of this version of Earshot.";
+/// A transcription model this version does not know.
+pub const UNKNOWN_TRANSCRIPTION_MODEL: &str =
+    "That transcription model is not part of this version of Earshot. Choose another one.";
+/// A summary model this version does not know.
+pub const UNKNOWN_SUMMARY_MODEL: &str =
+    "That summary model is not part of this version of Earshot. Choose another one.";
+/// A meeting language no model understands.
+pub const UNKNOWN_LANGUAGE: &str =
+    "No transcription model understands one of the chosen meeting languages. Choose another one.";
+
+/// The page's words for a catalogue error: fixed copy by kind, a model named only by its
+/// display name, never a file, a path, a URL or a manifest id (the error's Display keeps them
+/// for the CLI).
+#[must_use]
+pub fn catalogue_copy(e: &CatalogueError) -> String {
+    match e {
+        CatalogueError::Chosen(m) => format!(
+            "{} is in use; choose another model first",
+            earshot_runtime::catalogue::display_name(m)
+        ),
+        CatalogueError::UnknownModel(_) => UNKNOWN_MODEL.to_owned(),
+        CatalogueError::Manifest(_) | CatalogueError::Path { .. } | CatalogueError::Io { .. } => {
+            MODEL_FILES_FAILED.to_owned()
+        }
+    }
+}
+
+/// The page's words for a refused model setting: fixed copy by kind, models named only by
+/// their display names.
+#[must_use]
+pub fn settings_copy(e: &SettingsError) -> String {
+    match e {
+        SettingsError::UnknownModel(_) => UNKNOWN_TRANSCRIPTION_MODEL.to_owned(),
+        SettingsError::UnknownSummaryModel(_) => UNKNOWN_SUMMARY_MODEL.to_owned(),
+        SettingsError::NoLanguages => "choose at least one meeting language".to_owned(),
+        SettingsError::UnknownLanguage(_) => UNKNOWN_LANGUAGE.to_owned(),
+        SettingsError::ModelLanguages { model, missing } => format!(
+            "{} does not transcribe {}; choose a multilingual model",
+            earshot_runtime::catalogue::display_name(model),
+            missing.join(", ")
+        ),
+        SettingsError::NpuForSummaries => "summaries cannot run on the NPU".to_owned(),
+        SettingsError::Store(e) => crate::plain_text::runtime_text(e),
     }
 }
 
@@ -589,7 +638,7 @@ pub fn settings_error(e: SettingsError) -> IpcError {
         SettingsError::Store(e) => IpcError::from(e),
         other => IpcError {
             kind: "invalid_setting".into(),
-            message: other.to_string(),
+            message: settings_copy(&other),
             retryable: false,
         },
     }
@@ -632,7 +681,7 @@ pub fn remove_error(e: &CatalogueError) -> IpcError {
     };
     IpcError {
         kind: kind.into(),
-        message: plain(e.to_string()),
+        message: catalogue_copy(e),
         retryable: false,
     }
 }
