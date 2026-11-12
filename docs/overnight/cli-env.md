@@ -28,7 +28,7 @@ code-agents:code-reviewer (privacy). First pass BLOCKED: Claude Code's OpenTelem
 ### For the owner
 - Design question (reviewer, not built): a deny list follows a vendor table that grows each release. The stronger form is an allowlist: `env_clear()` in the child and pass only what the CLI needs (`PATH`, `SystemRoot`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, ... plus `CLAUDE_CONFIG_DIR`/`CODEX_HOME`). Needs an `env_clear` flag in earshot-proc and a real sign-in check on both CLIs.
 - A user signed in only through `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_ACCESS_TOKEN` now reads as not signed in (summary skipped with a banner). Neither is set on this desktop.
-- Not cleared, undocumented: `CODEX_REFRESH_TOKEN_URL_OVERRIDE` is present in `codex.exe` 0.166.0 (would send the refresh token elsewhere); the brief required documented names only.
+- Not cleared, undocumented: `CODEX_REFRESH_TOKEN_URL_OVERRIDE` is present in `codex.exe` 0.166.0 (would send the refresh token elsewhere); the brief required documented names only. Since cleared (T12.30, the owner's decision of 2026-11-13).
 - Not run: the two ignored real-CLI cases (they now run with every cleared variable set to a dead loopback address, so a pass would prove the clearing on the real CLIs).
 
 ### Proposed AGENTS.md bullets

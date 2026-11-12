@@ -439,6 +439,8 @@ fn run(inner: &Inner, svc: &Services, cancel: &CancelToken) -> AudioCheckEvent {
 /// The store could not be read or written.
 pub const STORE_FAILED: &str =
     "Earshot could not save the audio check to its database. Run the check again.";
+/// A device stopped, changed or could not be used during the check.
+pub const CAPTURE_FAILED: &str = "The audio check did not finish: the microphone or the output stopped, changed or could not be used. Check the devices on this page and run it again.";
 /// Anything else.
 pub const OTHER_FAILED: &str = "The audio check did not finish. Run it again.";
 
@@ -446,13 +448,9 @@ pub const OTHER_FAILED: &str = "The audio check did not finish. Run it again.";
 #[must_use]
 pub fn failure_copy(e: &RuntimeError) -> String {
     match e {
-        RuntimeError::Capture(m) => {
-            let mut text = format!("The audio check did not finish: {m}");
-            if !text.ends_with('.') {
-                text.push('.');
-            }
-            text
-        }
+        // The runtime's words are for the CLI: they can carry a device error's debug text,
+        // so the page shows fixed copy (T9.23).
+        RuntimeError::Capture(_) => CAPTURE_FAILED.to_owned(),
         // Why a device could not start, and what to do (T9.23).
         RuntimeError::CaptureStart { problem, .. } => {
             crate::plain_text::capture_copy(*problem).to_owned()

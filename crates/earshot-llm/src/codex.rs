@@ -180,7 +180,7 @@ const TEMP_PREFIX: &str = "earshot-codex";
 /// codex-cli 0.166.0 `codex.exe`, checked 2026-11-12). Codex has no variable that switches the
 /// provider: `model_provider` and `model_providers` are config keys, and
 /// `--ignore-user-config` leaves the user's `config.toml` unread.
-pub const CLEARED_ENV: [&str; 16] = [
+pub const CLEARED_ENV: [&str; 17] = [
     // Another address for the built-in OpenAI provider (T7.4gc, measured on 0.155.1; the
     // config reference names the matching key `openai_base_url`).
     "OPENAI_BASE_URL",
@@ -211,6 +211,10 @@ pub const CLEARED_ENV: [&str; 16] = [
     "http_proxy",
     "all_proxy",
     "no_proxy",
+    // Another address for refreshing the stored sign-in's token. Not in Codex's documentation:
+    // found as text in the codex-cli 0.166.0 `codex.exe` by a review. Cleared on the owner's
+    // decision of 2026-11-13, because it can send the sign-in's refresh token elsewhere.
+    "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
 ];
 
 /// Top-level event types of `codex exec --json` (every one seen in the captures: this host

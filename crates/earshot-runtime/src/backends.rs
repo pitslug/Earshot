@@ -1242,7 +1242,7 @@ pub fn load_parakeet(
     accel: Accelerator,
     threads: Option<usize>,
 ) -> Result<ParakeetTranscriber, AsrError> {
-    load_parakeet_with(models, model, accel, threads, false)
+    load_parakeet_with(models, model, accel, threads, false, QnnLoadFor::Track)
 }
 
 /// A machine with less memory than this has no previews by default on the CPU: a meeting with them
@@ -1387,7 +1387,8 @@ pub fn previews_refused_second(
 /// threads, the thread budget of a live track, and nothing shared with the track. It loads where
 /// [`preview_backend`] says: the track's backend, or the CPU beside a card too small for it
 /// (T12.3c). On the NPU it loads only from the compiled model ([`qnn_load_steps`], T12.12c): never
-/// compiling in this process and never the ordinary load, which costs about 2 GiB and 30 s. An
+/// compiling (in this process or the helper) and never the ordinary load, which cost about 2 GiB
+/// and 30 s beside the track. An
 /// `Err` says why this meeting has no previews ([`crate::live::PreviewLoader`]).
 ///
 /// # Errors
@@ -1716,21 +1717,41 @@ fn load_preview_parakeet(
     };
     let accel = Accelerator::of(backend.kind).ok_or("no accelerator for the backend")?;
     let threads = onnx_cpu_threads(cores(), 2);
-    let session =
-        load_parakeet_with(models, model, accel, Some(threads), true).map_err(|e| e.to_string())?;
+    let session = load_parakeet_with(
+        models,
+        model,
+        accel,
+        Some(threads),
+        true,
+        QnnLoadFor::Preview,
+    )
+    .map_err(|e| e.to_string())?;
     if crate::priority::preview_pool_failed() {
         return Err("a preview thread could not lower its priority".to_owned());
     }
     Ok(session)
 }
 
-/// [`load_parakeet`], on background threads when `background`.
+/// Whose NPU encoder load this is (T12.30). Said by the caller, never derived from the session's
+/// background threads, so a background load that is not a preview keeps a track's fallbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QnnLoadFor {
+    /// A meeting track's or the final pass's load: compiles a missing model, falls back to the
+    /// ordinary load, and is recorded for the meeting's note ([`crate::npu_compiled::record`]).
+    Track,
+    /// A preview's load ([`load_preview`]): only a compiled model, never recorded.
+    Preview,
+}
+
+/// [`load_parakeet`], on background threads when `background`; `load_for` says whose NPU load
+/// it is ([`QnnLoadFor`]).
 fn load_parakeet_with(
     models: &ModelDir,
     model: &ParakeetModel,
     accel: Accelerator,
     threads: Option<usize>,
     background: bool,
+    load_for: QnnLoadFor,
 ) -> Result<ParakeetTranscriber, AsrError> {
     let config = SessionConfig {
         intra_threads: threads,
@@ -1740,7 +1761,7 @@ fn load_parakeet_with(
         ..session_config(accel).map_err(|e| AsrError::Backend(e.to_string()))?
     };
     if accel == Accelerator::Qnn {
-        return load_parakeet_qnn(models, model, &config, threads, background);
+        return load_parakeet_qnn(models, model, &config, threads, load_for);
     }
     for rel in model.files() {
         models
@@ -1764,14 +1785,15 @@ fn load_parakeet_with(
 /// [`load_parakeet`] on QNN: the NPU conversion with its documented partition, the encoder from
 /// a context model compiled on this computer when there is a current one, else compiled now and
 /// kept for the next load ([`crate::npu_compiled`], T12.12a). However the encoder loads, the same
-/// checks run; a load that could not use the compiled model is recorded for the meeting's note. A
-/// preview's load (`preview`) loads only a compiled model ([`qnn_load_steps`]).
+/// checks run; a track's load that could not use the compiled model is recorded for the meeting's
+/// note. A preview's load loads only a compiled model ([`qnn_load_steps`]) and is never recorded
+/// ([`recorded_qnn_load`]).
 fn load_parakeet_qnn(
     models: &ModelDir,
     model: &ParakeetModel,
     encoder: &SessionConfig,
     threads: Option<usize>,
-    preview: bool,
+    load_for: QnnLoadFor,
 ) -> Result<ParakeetTranscriber, AsrError> {
     use crate::npu_compiled::{self, CompileKey, How};
     let dir = require_qnn_model(models, model)?;
@@ -1811,8 +1833,8 @@ fn load_parakeet_qnn(
                 )
             })),
         };
-    let (compile, ordinary) = qnn_load_steps(preview, compile, ordinary);
-    let (t, how) = match CompileKey::for_conversion(&dir) {
+    let (compile, ordinary) = qnn_load_steps(load_for, compile, ordinary);
+    let loaded = match CompileKey::for_conversion(&dir) {
         Ok(key) => npu_compiled::load(
             &dir,
             &key,
@@ -1829,8 +1851,22 @@ fn load_parakeet_qnn(
         )?,
         Err(why) => (ordinary()?, How::Ordinary { why }),
     };
-    npu_compiled::record(&how);
-    Ok(t)
+    Ok(recorded_qnn_load(load_for, loaded, npu_compiled::record))
+}
+
+/// The session of an NPU load, after `record`ing how a track's load went (T12.30). A preview's
+/// is not recorded: its refusal would take the process's one `npu-compiled` banner
+/// ([`crate::npu_compiled::take_note`]) and replace the track's
+/// [`crate::npu_compiled::last_load`].
+pub(crate) fn recorded_qnn_load<S>(
+    load_for: QnnLoadFor,
+    (session, how): (S, crate::npu_compiled::How),
+    record: impl FnOnce(&crate::npu_compiled::How),
+) -> S {
+    if load_for == QnnLoadFor::Track {
+        record(&how);
+    }
+    session
 }
 
 /// Why a preview on the NPU did not load (T12.12c): it loads only a compiled model.
@@ -1842,13 +1878,14 @@ pub(crate) type OrdinaryLoad<'a, S> = Box<dyn FnOnce() -> Result<S, AsrError> + 
 
 /// What an NPU load may do besides load a compiled model ([`crate::npu_compiled::load`]). A track's
 /// load compiles a missing model (in the helper process, else in this one) and falls back to the
-/// ordinary load. A preview's (`preview`, T12.12c) may have the helper compile one, which this
-/// process then loads like any compiled model, but never compiles in this process and never takes
-/// the ordinary load: both hold the about 2 GiB of an ordinary session for the process's life (a
-/// QNN session is never closed, T12.12b) and take about 30 s, for words that are display only. Its
-/// refusal is [`PREVIEW_NEEDS_COMPILED`], and the meeting goes on without previews.
+/// ordinary load. A preview's ([`QnnLoadFor::Preview`], T12.12c) never compiles, in this process
+/// or the helper (T12.30: about 30 s of NPU and CPU beside the meeting's track, holding the one
+/// NPU load lock, never measured), and never takes the ordinary load, which holds the about 2 GiB
+/// of an ordinary session for the process's life (a QNN session is never closed, T12.12b), for
+/// words that are display only. Its refusal is [`PREVIEW_NEEDS_COMPILED`], and the meeting goes
+/// on without previews.
 pub(crate) fn qnn_load_steps<'a, S: 'a>(
-    preview: bool,
+    load_for: QnnLoadFor,
     compile: crate::npu_compiled::Compile<'a, S, AsrError>,
     ordinary: impl FnOnce() -> Result<S, AsrError> + 'a,
 ) -> (
@@ -1856,14 +1893,13 @@ pub(crate) fn qnn_load_steps<'a, S: 'a>(
     OrdinaryLoad<'a, S>,
 ) {
     use crate::npu_compiled::Compile;
-    if !preview {
+    if load_for == QnnLoadFor::Track {
         return (compile, Box::new(ordinary));
     }
     let refused = || AsrError::Backend(PREVIEW_NEEDS_COMPILED.to_owned());
-    let compile = match compile {
-        Compile::Helper(helper) => Compile::Helper(helper),
-        Compile::InProcess(_) => Compile::InProcess(Box::new(move |_: &Path| Err(refused()))),
-    };
+    // Whichever compile was offered, nothing compiles: the compile step fails at once.
+    drop(compile);
+    let compile = Compile::InProcess(Box::new(move |_: &Path| Err(refused())));
     (compile, Box::new(move || Err(refused())))
 }
 

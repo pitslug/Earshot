@@ -563,3 +563,52 @@ fn models_view_says_when_this_computer_does_not_write_the_summaries() {
         assert_eq!(v.in_use.summaries_here, here, "{writer:?}");
     }
 }
+
+#[test]
+fn models_errors_reach_the_page_as_fixed_copy_without_files_or_ids() {
+    use earshot_runtime::catalogue::manifest_id_in;
+    let secret = r"C:\Users\someone\models\secret-file.onnx https://example.invalid/x";
+    let catalogue = [
+        CatalogueError::Manifest(secret.into()),
+        CatalogueError::Path {
+            path: secret.into(),
+            why: "leaves the models folder",
+        },
+        CatalogueError::UnknownModel("parakeet-tdt-0.6b-v2".into()),
+        CatalogueError::Chosen("parakeet-tdt-0.6b-v2".into()),
+        CatalogueError::Io {
+            path: secret.into(),
+            error: secret.into(),
+        },
+    ];
+    for e in &catalogue {
+        for shown in [remove_error(e).message, internal(e).message] {
+            assert!(!shown.contains("secret-file"), "{shown}");
+            assert!(!shown.contains("example.invalid"), "{shown}");
+            assert!(!shown.contains("manifest"), "{shown}");
+            assert_eq!(manifest_id_in(&shown), None, "{shown}");
+        }
+    }
+    assert_eq!(remove_error(&catalogue[0]).message, MODEL_FILES_FAILED);
+    assert_eq!(remove_error(&catalogue[2]).message, UNKNOWN_MODEL);
+    assert_eq!(
+        remove_error(&catalogue[3]).message,
+        "Parakeet 0.6B v2 is in use; choose another model first"
+    );
+    let settings = [
+        SettingsError::UnknownModel("parakeet-tdt-0.6b-v2".into()),
+        SettingsError::UnknownSummaryModel("qwen3.5-4b-q4_k_m".into()),
+        SettingsError::NoLanguages,
+        SettingsError::UnknownLanguage("secret-file".into()),
+        SettingsError::ModelLanguages {
+            model: "base.en".into(),
+            missing: vec!["ja".into()],
+        },
+        SettingsError::NpuForSummaries,
+    ];
+    for e in settings {
+        let shown = settings_error(e).message;
+        assert!(!shown.contains("secret-file"), "{shown}");
+        assert_eq!(manifest_id_in(&shown), None, "{shown}");
+    }
+}

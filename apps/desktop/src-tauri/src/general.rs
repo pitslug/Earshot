@@ -344,26 +344,44 @@ pub struct PreviewsView {
 }
 
 fn previews_view(services: &earshot_runtime::Services) -> Result<PreviewsView, IpcError> {
-    let (choice, unknown) = earshot_runtime::preview_settings::preview_choice(&services.store())?;
-    let page = earshot_runtime::preview_settings::preview_page(
-        choice,
-        lead_accelerator(),
+    previews_view_on(
+        services,
+        &earshot_runtime::host::model_dir(&services.data),
+        &earshot_runtime::backends::accelerator_order(),
         &earshot_runtime::hardware(),
-    );
+    )
+}
+
+/// The previews page for a build with accelerator `order` on `hardware`, judged by where the next
+/// meeting's transcription model runs (T12.30): the model and order of
+/// `host::transcription_setup`, placed by `recommend::runs_on_here`, so a Parakeet model without
+/// its NPU version is judged on the processor, as its previews run.
+fn previews_view_on(
+    services: &earshot_runtime::Services,
+    models: &earshot_runtime::backends::ModelDir,
+    order: &[earshot_runtime::backends::Accelerator],
+    hardware: &earshot_runtime::earshot_hardware::Hardware,
+) -> Result<PreviewsView, IpcError> {
+    use earshot_runtime::backends::Accelerator;
+    let (choice, unknown, lead) = {
+        let db = services.store();
+        let (choice, unknown) = earshot_runtime::preview_settings::preview_choice(&db)?;
+        let setup = earshot_runtime::host::transcription_setup(&db, models, order, hardware)?;
+        let runs_on =
+            earshot_runtime::recommend::runs_on_here(models, &setup.choice.model, &setup.order);
+        (
+            choice,
+            unknown,
+            Accelerator::of(runs_on).unwrap_or(Accelerator::Cpu),
+        )
+    };
+    let page = earshot_runtime::preview_settings::preview_page(choice, lead, hardware);
     Ok(PreviewsView {
         choice: page.shown.into(),
         can_change: page.can_change,
         note: page.note.map(str::to_owned),
         unknown,
     })
-}
-
-/// What transcription leads with on this run.
-fn lead_accelerator() -> earshot_runtime::backends::Accelerator {
-    earshot_runtime::backends::accelerator_order()
-        .first()
-        .copied()
-        .unwrap_or(earshot_runtime::backends::Accelerator::Cpu)
 }
 
 /// Whether meetings show provisional words.
@@ -565,5 +583,59 @@ mod tests {
             assert_eq!(view.choice, expected, "{view:?}");
             assert_eq!(view.unknown, None);
         }
+    }
+
+    /// T12.30: the page judges where the chosen transcription model runs, not what the build
+    /// leads with: on an NPU machine a Parakeet model without its NPU version runs on the
+    /// processor, and so do its previews.
+    #[test]
+    fn previews_page_follows_where_the_chosen_model_runs() {
+        use earshot_runtime::backends::{Accelerator, AsrModel, ModelDir, asr_model};
+        use earshot_runtime::earshot_hardware::{Cpu, Hardware, Npu};
+        use earshot_runtime::preview_settings::NOTE_EVERYONE_NPU;
+        const GIB: u64 = 1 << 30;
+        let dir = crate::testutil::TempDir::new("previews-model");
+        let services = crate::testutil::services(&dir);
+        let models = ModelDir::new(dir.0.join("models"));
+        let order = [Accelerator::Qnn, Accelerator::Cpu];
+        let hw = Hardware {
+            cpu: Cpu {
+                name: None,
+                physical_cores: Some(12),
+                logical_cores: Some(12),
+            },
+            gpus: Vec::new(),
+            npus: vec![Npu {
+                name: "An NPU".into(),
+                driver_version: Some("1.0".into()),
+            }],
+            total_memory: Some(32 * GIB),
+        };
+        let model = "parakeet-tdt-0.6b-v2";
+        let before = crate::models::settings_view(&services).unwrap().value;
+        crate::models::set_settings(
+            &services,
+            &crate::models::ModelSettingsValue {
+                transcription: Some(model.into()),
+                ..before
+            },
+        )
+        .unwrap();
+        store_previews(&services, PreviewsChoice::Everyone).unwrap();
+        // No NPU version: the model runs on the processor, so no NPU note.
+        let cpu = previews_view_on(&services, &models, &order, &hw).unwrap();
+        assert_ne!(cpu.note.as_deref(), Some(NOTE_EVERYONE_NPU), "{cpu:?}");
+        assert!(cpu.can_change);
+        // With its NPU version the model runs on the NPU, and the page says so.
+        let Ok(AsrModel::Parakeet(p)) = asr_model(model) else {
+            panic!("a Parakeet model");
+        };
+        for rel in p.qnn_files() {
+            let f = models.root().join(rel);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, b"x").unwrap();
+        }
+        let npu = previews_view_on(&services, &models, &order, &hw).unwrap();
+        assert_eq!(npu.note.as_deref(), Some(NOTE_EVERYONE_NPU), "{npu:?}");
     }
 }

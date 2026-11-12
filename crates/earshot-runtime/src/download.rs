@@ -114,26 +114,6 @@ impl ProgressThrottle {
     }
 }
 
-/// Runs `run` with a progress callback that passes `progress` at most one report per
-/// [`PROGRESS_INTERVAL`] ([`ProgressThrottle`], time from `now`), then sends the last report
-/// held back before returning `run`'s result, whatever it is (done, failed or cancelled).
-pub fn with_throttled_progress<T>(
-    progress: &mut dyn FnMut(u64, u64),
-    now: &dyn Fn() -> Instant,
-    run: impl FnOnce(&mut dyn FnMut(u64, u64)) -> T,
-) -> T {
-    let mut throttle = ProgressThrottle::new();
-    let out = run(&mut |done, total| {
-        if let Some((done, total)) = throttle.offer(now(), done, total) {
-            progress(done, total);
-        }
-    });
-    if let Some((done, total)) = throttle.finish() {
-        progress(done, total);
-    }
-    out
-}
-
 /// What a verified file must look like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Expected<'a> {
@@ -428,12 +408,39 @@ async fn or_cancel<F: Future>(fut: F, cancel: &CancelToken) -> Option<F::Output>
 }
 
 /// Makes sure `dest` holds the expected file, downloading it from `url` through `client`
-/// if needed (module docs for the rules). `progress(done, total)` is called as bytes
-/// arrive. Needs a tokio runtime with the time driver; [`Downloader`] provides one.
+/// if needed (module docs for the rules). `progress(done, total)` hears the bytes held as
+/// they arrive, at most once per [`PROGRESS_INTERVAL`] ([`ProgressThrottle`]), the last
+/// report always included whatever the end: every download (models, CUDA parts, updates)
+/// is thinned here, never by its caller. Needs a tokio runtime with the time driver;
+/// [`Downloader`] provides one.
 ///
 /// # Errors
 /// [`DownloadError`]; [`DownloadError::resumable`] says whether the `.part` was kept.
 pub async fn download(
+    client: &NetClient,
+    url: &Url,
+    dest: &Path,
+    exp: &Expected<'_>,
+    cancel: &CancelToken,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<Outcome, DownloadError> {
+    let mut throttle = ProgressThrottle::new();
+    let out = {
+        let mut thinned = |done, total| {
+            if let Some((done, total)) = throttle.offer(Instant::now(), done, total) {
+                progress(done, total);
+            }
+        };
+        download_each_chunk(client, url, dest, exp, cancel, &mut thinned).await
+    };
+    if let Some((done, total)) = throttle.finish() {
+        progress(done, total);
+    }
+    out
+}
+
+/// [`download`] reporting after every network chunk.
+async fn download_each_chunk(
     client: &NetClient,
     url: &Url,
     dest: &Path,

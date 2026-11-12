@@ -390,7 +390,7 @@ export function createModelsMock(
     }
     return { asr, sum, notes };
   };
-  const item = (name: string) => all.get(name) ?? fail("unknown_model", `${name} is not a model of this version`);
+  const item = (name: string) => all.get(name) ?? fail("unknown_model", "That model is not part of this version of Earshot.");
   const view = (): ModelsView => {
     const keep = protectedModels();
     const { asr, sum, notes } = placement();
@@ -443,13 +443,13 @@ export function createModelsMock(
     if (languages.length === 0) fail("invalid_setting", "choose at least one meeting language");
     for (const l of languages) {
       if (!WHISPER.includes(l) && !PARAKEET_V3.includes(l)) {
-        fail("invalid_setting", `no transcription model understands "${l}"`);
+        fail("invalid_setting", "No transcription model understands one of the chosen meeting languages. Choose another one.");
       }
     }
     if (s.transcription !== null) {
       const t = all.get(s.transcription);
       if (!t || t.kind !== "Transcription") {
-        fail("invalid_setting", `${s.transcription} is not a transcription model of this version`);
+        fail("invalid_setting", "That transcription model is not part of this version of Earshot. Choose another one.");
       } else {
         const missing = languages.filter((l) => !t.languages.includes(l));
         if (missing.length > 0) {
@@ -458,7 +458,7 @@ export function createModelsMock(
       }
     }
     if (s.summary !== null && all.get(s.summary)?.kind !== "Summary") {
-      fail("invalid_setting", `${s.summary} is not a summary model of this version`);
+      fail("invalid_setting", "That summary model is not part of this version of Earshot. Choose another one.");
     }
     if (s.summary_part === "Npu") fail("invalid_setting", "summaries cannot run on the NPU");
     return { ...s, languages };
@@ -530,7 +530,7 @@ export function createModelsMock(
       downloads.set(model, stop);
     },
     cancelDownload: async (model) => {
-      const stop = downloads.get(model) ?? fail("not_downloading", `${model} is not downloading`);
+      const stop = downloads.get(model) ?? fail("not_downloading", "This model is not downloading.");
       stop();
       downloads.delete(model);
       emit({ type: "Cancelled", model });

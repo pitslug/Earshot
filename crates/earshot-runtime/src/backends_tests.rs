@@ -2387,6 +2387,15 @@ fn backends_previews_follow_a_parakeet_model_without_its_npu_version_to_the_cpu(
     );
 }
 
+/// The load of a preview (`true`) or a track.
+fn load_for(preview: bool) -> QnnLoadFor {
+    if preview {
+        QnnLoadFor::Preview
+    } else {
+        QnnLoadFor::Track
+    }
+}
+
 /// What [`qnn_load_steps`] lets one NPU load do, through `npu_compiled::load` with fakes: `compiled`
 /// says whether a compiled model loads, `helper` whether a helper process compiles (else this
 /// process would). Returns the result and which fakes ran (compile, ordinary).
@@ -2425,7 +2434,7 @@ fn qnn_steps_run(
         ordinaries.set(ordinaries.get() + 1);
         Ok("ordinary")
     };
-    let (compile, ordinary) = qnn_load_steps(preview, compile, ordinary);
+    let (compile, ordinary) = qnn_load_steps(load_for(preview), compile, ordinary);
     let result = crate::npu_compiled::load(
         conversion,
         &key,
@@ -2439,10 +2448,10 @@ fn qnn_steps_run(
     (result, compiles.get(), ordinaries.get())
 }
 
-/// T12.12c: a preview on the NPU loads only a compiled model. With no compiled model and no helper
-/// it neither compiles in this process nor takes the ordinary load: it refuses, and the meeting
-/// goes on without previews. A helper may compile it; once compiled, the preview loads it. A
-/// track's load is unchanged.
+/// T12.12c, T12.30: a preview on the NPU loads only a compiled model. With no compiled model it
+/// neither compiles (in this process or in the helper: about 30 s of NPU and CPU beside the
+/// meeting's track) nor takes the ordinary load: it refuses, and the meeting goes on without
+/// previews. Once a track's load compiled it, the preview loads it. A track's load is unchanged.
 #[test]
 fn backends_preview_on_the_npu_loads_only_a_compiled_model() {
     let dir = crate::testutil::TempDir::new("qnn-steps");
@@ -2455,9 +2464,39 @@ fn backends_preview_on_the_npu_loads_only_a_compiled_model() {
     assert_eq!(qnn_steps_run(&dir.0, false, false), (Ok("compiling"), 1, 0));
     // Now the preview finds it compiled.
     assert_eq!(qnn_steps_run(&dir.0, true, false), (Ok("compiled"), 0, 0));
-    // A helper may compile for a preview; this process then loads the compiled model.
+    // No helper compile for a preview either.
     let fresh = crate::testutil::TempDir::new("qnn-steps-helper");
-    assert_eq!(qnn_steps_run(&fresh.0, true, true), (Ok("compiled"), 1, 0));
+    let (result, compiles, ordinaries) = qnn_steps_run(&fresh.0, true, true);
+    let why = result.expect_err("a preview never has the helper compile");
+    assert!(why.contains(PREVIEW_NEEDS_COMPILED), "{why}");
+    assert_eq!((compiles, ordinaries), (0, 0));
+    // A track's load still has the helper compile; the preview then loads that.
+    assert_eq!(qnn_steps_run(&fresh.0, false, true), (Ok("compiled"), 1, 0));
+    assert_eq!(qnn_steps_run(&fresh.0, true, true), (Ok("compiled"), 0, 0));
+}
+
+/// T12.30: how a preview's NPU load went is never recorded: its refusal must not take the
+/// process's one `npu-compiled` banner or replace `npu_compiled::last_load` (the track's). A
+/// track's load is recorded, whatever happened.
+#[test]
+fn backends_preview_npu_loads_are_not_recorded() {
+    use crate::npu_compiled::How;
+    let refused = How::Ordinary {
+        why: "the compiled model was refused".to_owned(),
+    };
+    for how in [How::Compiled, refused] {
+        let recorded = std::cell::RefCell::new(Vec::new());
+        let t = recorded_qnn_load(QnnLoadFor::Preview, ("preview", how.clone()), |h: &How| {
+            recorded.borrow_mut().push(h.clone());
+        });
+        assert_eq!(t, "preview");
+        assert!(recorded.borrow().is_empty(), "{how:?}");
+        let t = recorded_qnn_load(QnnLoadFor::Track, ("track", how.clone()), |h: &How| {
+            recorded.borrow_mut().push(h.clone());
+        });
+        assert_eq!(t, "track");
+        assert_eq!(*recorded.borrow(), [how]);
+    }
 }
 
 /// T12.12c: a compiled model that does not load sends a preview away, never to the ordinary load;
@@ -2476,7 +2515,7 @@ fn backends_preview_on_the_npu_never_takes_the_ordinary_load() {
         let ordinaries = std::cell::Cell::new(0);
         let compile: Compile<'_, &'static str, AsrError> =
             Compile::Helper(Box::new(|_: &Path| Err("the helper failed".to_owned())));
-        let (compile, ordinary) = qnn_load_steps(preview, compile, || {
+        let (compile, ordinary) = qnn_load_steps(load_for(preview), compile, || {
             ordinaries.set(ordinaries.get() + 1);
             Ok("ordinary")
         });

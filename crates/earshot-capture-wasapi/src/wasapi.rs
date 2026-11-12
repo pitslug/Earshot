@@ -343,8 +343,10 @@ fn chosen_device(
     id: &str,
 ) -> Result<IMMDevice, CaptureError> {
     let (flow, what) = match endpoint {
-        Endpoint::Microphone(_) => (eCapture, "microphone"),
-        Endpoint::Loopback | Endpoint::ProcessLoopback { .. } => (eRender, "output"),
+        Endpoint::Microphone(_) => (eCapture, crate::problem::GONE_MICROPHONE),
+        Endpoint::Loopback | Endpoint::ProcessLoopback { .. } => {
+            (eRender, crate::problem::GONE_OUTPUT)
+        }
     };
     let gone = CaptureError::DeviceGone { what };
     let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();

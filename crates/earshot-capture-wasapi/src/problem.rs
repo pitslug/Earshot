@@ -27,6 +27,12 @@ pub const RENDER_ACTIVATE_CONTEXT: &str = "activate IAudioClient (render)";
 /// Initialising a stream that plays on an output (the audio check).
 pub const RENDER_INITIALIZE_CONTEXT: &str = "IAudioClient::Initialize (render)";
 
+/// The `what` of a [`crate::wasapi::CaptureError::DeviceGone`] for a chosen microphone.
+pub const GONE_MICROPHONE: &str = "microphone";
+/// The `what` of a [`crate::wasapi::CaptureError::DeviceGone`] for a chosen output: no
+/// output, never a missing microphone.
+pub const GONE_OUTPUT: &str = "output";
+
 /// The steps that open the output side (the other people), never the microphone: Windows'
 /// microphone switch does not apply to them, and a missing endpoint there is no output.
 const OUTPUT_CONTEXTS: &[&str] = &[
@@ -77,6 +83,7 @@ impl crate::wasapi::CaptureError {
     pub fn start_problem(&self) -> StartProblem {
         match self {
             Self::Windows { context, source } => start_problem(context, source.code().0),
+            Self::DeviceGone { what } if *what == GONE_OUTPUT => StartProblem::NoOutput,
             Self::DeviceGone { .. } => StartProblem::NoMicrophone,
             _ => StartProblem::Other,
         }
@@ -165,6 +172,9 @@ mod tests {
         let gone = CaptureError::DeviceGone { what: "microphone" };
         assert_eq!(gone.start_problem(), StartProblem::NoMicrophone);
         assert_eq!(gone.hresult(), None);
+        // A chosen output that is gone is no output, never a missing microphone.
+        let output_gone = CaptureError::DeviceGone { what: "output" };
+        assert_eq!(output_gone.start_problem(), StartProblem::NoOutput);
         assert_eq!(
             CaptureError::ThreadExited.start_problem(),
             StartProblem::Other

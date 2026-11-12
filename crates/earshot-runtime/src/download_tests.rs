@@ -538,7 +538,10 @@ fn download_other_status_fails_without_touching_the_part() {
 fn download_cancelled_keeps_the_part_for_a_resume() {
     let b = body();
     let s = serve(b.clone(), Behaviour::default());
-    let d = downloader(local(&[s.port]));
+    // Progress is thinned to one report per interval, so the first transfer is slow enough
+    // for a report to arrive while bytes are still missing.
+    let slow = serve_in_pieces(b.clone(), 200);
+    let d = downloader(local(&[s.port, slow]));
     let dir = TempDir::new("dl-cancel");
     let dest = dir.0.join("file.bin");
     let sum = sha(&b);
@@ -547,9 +550,12 @@ fn download_cancelled_keeps_the_part_for_a_resume() {
         size: b.len() as u64,
     };
     let url = s.url("/file.bin");
+    let slow_url = Url::parse(&format!("http://127.0.0.1:{slow}/file.bin")).unwrap();
     let cancel = CancelToken::new();
+    let mut last = None;
     let err = d
-        .fetch(&url, &dest, &exp, &cancel, &mut |done, _| {
+        .fetch(&slow_url, &dest, &exp, &cancel, &mut |done, total| {
+            last = Some((done, total));
             if done > 0 {
                 cancel.cancel();
             }
@@ -559,6 +565,8 @@ fn download_cancelled_keeps_the_part_for_a_resume() {
         panic!("{err:?}")
     };
     assert_eq!(total, 200_000);
+    // The report held back when the download ended is still sent.
+    assert_eq!(last, Some((done, total)));
     assert!(done > 0 && done < total, "{done}");
     assert!(err.to_string().contains("run again to resume"), "{err}");
     assert_eq!(fs::read(part_path(&dest)).unwrap(), b[..done as usize]);
@@ -807,23 +815,76 @@ fn download_progress_complete_is_sent_at_once_and_repeats_are_dropped() {
     assert_eq!(last, None);
 }
 
-#[test]
-fn download_throttled_progress_sends_the_last_report_whatever_the_end() {
-    use std::cell::Cell;
-    let base = Instant::now();
-    let at = Cell::new(base);
-    let now = || at.get();
-    for result in [Ok(()), Err("cancelled")] {
-        let mut heard = Vec::new();
-        let out = with_throttled_progress(&mut |d, t| heard.push((d, t)), &now, |p| {
-            for (ms, done) in [(0, 0), (40, 300), (80, 600)] {
-                at.set(base + Duration::from_millis(ms));
-                p(done, 1000);
+/// A server that sends `body` in `pieces` writes with a pause after each, so the client
+/// reads it in many small network chunks.
+fn serve_in_pieces(body: Vec<u8>, pieces: usize) -> u16 {
+    use std::io::Write as _;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            if read_request(&stream).is_none() {
+                tcp::lingering_close(stream, &bad_request());
+                continue;
             }
-            result
-        });
-        assert_eq!(out, result);
-        // The first report at once, then the last one held when the download ended.
-        assert_eq!(heard, [(0, 1000), (600, 1000)]);
-    }
+            stream.set_nodelay(true).unwrap();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            for piece in body.chunks(body.len().div_ceil(pieces)) {
+                if stream
+                    .write_all(piece)
+                    .and_then(|()| stream.flush())
+                    .is_err()
+                {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            tcp::lingering_close(stream, &[]);
+        }
+    });
+    port
+}
+
+#[test]
+fn download_progress_of_many_network_chunks_is_thinned_on_the_real_path() {
+    // T9.24a: every download (models, CUDA parts, updates) goes through `download`, which
+    // thins its own reports; a caller never sees one report per network chunk.
+    let dir = TempDir::new("download-thin");
+    let b = body();
+    let port = serve_in_pieces(b.clone(), 200);
+    let d = downloader(local(&[port]));
+    let url = Url::parse(&format!("http://127.0.0.1:{port}/m.bin")).unwrap();
+    let dest = dir.0.join("m.bin");
+    let hash = sha(&b);
+    let exp = Expected {
+        sha256: &hash,
+        size: b.len() as u64,
+    };
+    let mut reports = Vec::new();
+    let started = Instant::now();
+    let out = d.fetch(
+        &url,
+        &dest,
+        &exp,
+        &CancelToken::new(),
+        &mut |done, total| {
+            reports.push((done, total));
+        },
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(out.unwrap(), Outcome::Downloaded { resumed_from: 0 });
+    // Whatever the download ended with is shown.
+    assert_eq!(reports.last(), Some(&(b.len() as u64, b.len() as u64)));
+    // At most one report per interval, plus the first and the last one.
+    let allowed = usize::try_from(elapsed.as_millis() / PROGRESS_INTERVAL.as_millis()).unwrap() + 2;
+    assert!(
+        reports.len() <= allowed,
+        "{} reports in {elapsed:?} (at most {allowed})",
+        reports.len()
+    );
 }

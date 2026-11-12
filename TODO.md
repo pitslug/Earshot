@@ -133,20 +133,9 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - packages/ui/src/ipc/mockWords.ts: `wordsToOffer` mirrors `vocabulary::words_to_offer` with no shared case table; add `fixtures/ui/words_to_offer_cases.json` run by both suites (T12.15f review).
 - packages/ui/src/ipc/mock.ts:753: the "Only a word can be added to the dictionary." refusal is not in `fixtures/ui/summary_settings_cases.json` (T12.15f review).
 - crates/earshot-runtime/src/vocabulary.rs:515: a word in single quotes is added with its quotes ('Zorbek'), the matcher keeping apostrophes; ask the owner whether to strip leading and trailing single quotes (T12.15f review).
-- crates/earshot-runtime/src/meeting_queue.rs (`wait_for_the_library_choice`): sleep-polls the CUDA choice; call `cuda::wait_for_onnx_unless` instead.
-- apps/desktop/src-tauri/src/audio_check.rs `failure_copy`: `RuntimeError::Capture(m)` still passes the runtime's text through, and crates/earshot-runtime/src/audio_check.rs builds one with `{e:?}` (T9.23 review).
-- apps/desktop/src-tauri/src/models.rs `internal`, `remove_error` and `settings_error` still show catalogue and settings errors' own text (T9.23 review).
-- README.md "What you need": the proxy sentence covers downloads; in-app update checks use the same client and are not mentioned (T9.23 review).
-- crates/earshot-capture-wasapi/src/problem.rs: `DeviceGone { what: "output" }` reads as `NoMicrophone`; reachable only past `WasapiSource::fallbacks` (T9.23 review).
-- apps/desktop/src-tauri/src/cuda_settings.rs:1062 and update_settings.rs:287: CUDA part and update installer downloads still send progress per network chunk; throttle them in one shared place (`Downloader::fetch` or `Catalogue::download`) rather than per caller (T9.24a review).
-- crates/earshot-runtime/src/host.rs:727: no test drives `host::download_model` and counts its reports, so dropping the throttle wrap passes every test; add a loopback test serving many small chunks (T9.24a review).
-- crates/earshot-store/src/repo.rs:426 `has_live_segment`: no index on `pass`/`deleted`, so a long live-only meeting still reads its segment headers (T9.24a review).
-- crates/earshot-llm/tests/claude_code.rs:146: the fake's `--help` branch does not record the environment, so the effort probe's clearing is covered only by the shared spec (T9.25 review).
-- crates/earshot-llm/src/codex.rs:183: `CODEX_REFRESH_TOKEN_URL_OVERRIDE` (in codex.exe 0.166.0, undocumented) is not cleared under the docs-only rule; owner to decide (T9.25).
-- crates/earshot-runtime/src/backends.rs:1730: a preview may run the helper compile mid-meeting when the track fell back to the ordinary load (about 30 s of NPU and CPU beside the track, holding `npu_compiled::LOADS`); never measured (T12.12c review).
-- crates/earshot-runtime/src/backends.rs:1699: `npu_compiled::record` runs for preview loads, so a preview's refused compile consumes the once-per-process `npu-compiled` banner and overwrites `last_load()` (T12.12c review).
-- apps/desktop/src-tauri/src/general.rs:362 + preview_settings.rs:118-156: the previews page judges by `accelerator_order().first()`, not where the chosen model runs (an NPU machine with a Parakeet model without its NPU version shows the NPU note while both previews run on the CPU); pre-existing (T12.12c review).
-- crates/earshot-runtime/src/backends.rs:1608: `preview` is derived from `background` in `load_parakeet_with`; a future non-preview background QNN load would silently lose the ordinary load (T12.12c review).
 - apps/desktop/src-tauri/src/recovery.rs:41: `RecoveryReport::failed` is never shown; a recovery that fails every start is silent (T9.18 review).
 - crates/earshot-store/src/layout.rs:121: `cleanup_stale_parts` has no production caller: call it or remove it (T9.18 review).
 - crates/earshot-runtime/src/live/mod.rs `after_panic`: a second panic inside its `save_recording` sends no `Ended` (T9.18 review).
+- crates/earshot-runtime/src/backends.rs:1720: no test pins that `load_preview_parakeet` passes `QnnLoadFor::Preview`; a revert to `Track` passes every test (T12.30 review).
+- apps/desktop/src-tauri/src/general.rs:365: the previews view runs `transcription_setup` (file stats) under the store guard on every page view (T12.30 review).
+- packages/ui/src/ipc/mockModels.ts: the model-page fixed copy is hand-copied from Rust; pin it with a shared fixture table as `summary_settings_cases.json` does (T12.30 review).
