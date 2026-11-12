@@ -35,7 +35,7 @@ const TEST_CLI_ENV: &str = "EARSHOT_TEST_CODEX_CLI";
 /// Variables `main` sets in this process and the CLI must not see (T7.4gc, and T9.25: every
 /// address, credential and proxy variable). Written out here, not read from the crate, so a
 /// name dropped from the crate's list fails the test.
-const MUST_CLEAR: [&str; 16] = [
+const MUST_CLEAR: [&str; 17] = [
     "OPENAI_BASE_URL",
     "OPENAI_API_BASE",
     "OPENAI_API_KEY",
@@ -52,6 +52,7 @@ const MUST_CLEAR: [&str; 16] = [
     "http_proxy",
     "all_proxy",
     "no_proxy",
+    "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
 ];
 
 /// A variable `main` sets that the CLI must still see (the rest of the environment stays).
