@@ -10,6 +10,7 @@ import {
   IpcProvider,
   type MeetingEvent,
   type MockIpcData,
+  type RecoveredRecording,
   type ShellEvent,
   createMockIpc,
   sampleMeetings,
@@ -22,6 +23,8 @@ import { AppShell } from "./AppShell";
 interface Setup {
   send(event: ShellEvent): void;
   meeting(event: MeetingEvent): void;
+  /** Recovery saved these after the window opened (the app hands them over at the next ask). */
+  recover(list: RecoveredRecording[]): void;
   user: ReturnType<typeof userEvent.setup>;
 }
 
@@ -30,8 +33,10 @@ async function open(data: MockIpcData = {}, quitApp?: Ipc["quitApp"]): Promise<S
   const base = createMockIpc({ timer, ...data });
   let shell: ((event: ShellEvent) => void) | null = null;
   let live: ((event: MeetingEvent) => void) | null = null;
+  const later: RecoveredRecording[] = [];
   const ipc: Ipc = {
     ...base,
+    recoveredRecordings: async () => [...(await base.recoveredRecordings()), ...later.splice(0)],
     quitApp: quitApp ?? base.quitApp,
     onShellEvent: async (handler) => {
       shell = handler;
@@ -58,6 +63,7 @@ async function open(data: MockIpcData = {}, quitApp?: Ipc["quitApp"]): Promise<S
   return {
     send: (event) => act(() => shell?.(event)),
     meeting: (event) => act(() => live?.(event)),
+    recover: (list) => later.push(...list),
     user: userEvent.setup(),
   };
 }
@@ -231,5 +237,39 @@ describe("the window hears the tray, the shortcut and notifications", () => {
     const s = await open({ meetings });
     s.send({ type: "OpenMeeting", meeting: target.id, name_voices: false });
     expect(await screen.findByRole("heading", { level: 1, name: target.title })).toBeInTheDocument();
+  });
+});
+
+describe("a recording Earshot was closed during", () => {
+  it("is told once at the start, opens its meeting, and is not told again", async () => {
+    const [target] = sampleMeetings();
+    const onCall = vi.fn();
+    const s = await open({ recovered: [{ meeting: target.id, saved_ms: 12 * 60_000 + 5_000 }], onCall });
+    expect(
+      await screen.findByText("Earshot closed during this recording. 12 minutes were saved."),
+    ).toBeInTheDocument();
+    await s.user.click(screen.getByRole("button", { name: "Open meeting" }));
+    expect(await screen.findByRole("heading", { level: 1, name: target.title })).toBeInTheDocument();
+    expect(screen.queryByText(/Earshot closed during this recording/)).toBeNull();
+    // A later ask finds nothing: the app handed it over once.
+    s.send({ type: "RecordingsRecovered" });
+    await waitFor(() =>
+      expect(onCall.mock.calls.filter((c) => c[0][0] === "recoveredRecordings").length).toBe(2),
+    );
+    expect(screen.queryByText(/Earshot closed during this recording/)).toBeNull();
+  });
+
+  it("is asked for again when recovery finishes after the window opened", async () => {
+    const [target] = sampleMeetings();
+    const s = await open();
+    expect(screen.queryByText("Recording recovered")).toBeNull();
+    // The recovery thread finished later: the app says so and the window reads it.
+    s.recover([{ meeting: target.id, saved_ms: 30_000 }]);
+    s.send({ type: "RecordingsRecovered" });
+    expect(
+      await screen.findByText("Earshot closed during this recording. Less than a minute was saved."),
+    ).toBeInTheDocument();
+    await s.user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Recording recovered")).toBeNull();
   });
 });

@@ -147,3 +147,6 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - crates/earshot-runtime/src/backends.rs:1699: `npu_compiled::record` runs for preview loads, so a preview's refused compile consumes the once-per-process `npu-compiled` banner and overwrites `last_load()` (T12.12c review).
 - apps/desktop/src-tauri/src/general.rs:362 + preview_settings.rs:118-156: the previews page judges by `accelerator_order().first()`, not where the chosen model runs (an NPU machine with a Parakeet model without its NPU version shows the NPU note while both previews run on the CPU); pre-existing (T12.12c review).
 - crates/earshot-runtime/src/backends.rs:1608: `preview` is derived from `background` in `load_parakeet_with`; a future non-preview background QNN load would silently lose the ordinary load (T12.12c review).
+- apps/desktop/src-tauri/src/recovery.rs:41: `RecoveryReport::failed` is never shown; a recovery that fails every start is silent (T9.18 review).
+- crates/earshot-store/src/layout.rs:121: `cleanup_stale_parts` has no production caller: call it or remove it (T9.18 review).
+- crates/earshot-runtime/src/live/mod.rs `after_panic`: a second panic inside its `save_recording` sends no `Ended` (T9.18 review).

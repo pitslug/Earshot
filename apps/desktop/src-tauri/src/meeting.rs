@@ -409,16 +409,7 @@ impl MeetingDriver {
     /// meeting does, so Quit always ends. Returns whether nothing records any more. The work
     /// after the meeting goes on; the caller decides about that.
     pub fn stop_and_wait(&self) -> bool {
-        let _ = self.stop();
-        let start = Instant::now();
-        while keep_waiting(
-            self.phase() == DriverPhase::Recording,
-            start.elapsed(),
-            self.0.stop_ceiling,
-        ) {
-            std::thread::sleep(STOP_POLL);
-        }
-        self.phase() != DriverPhase::Recording
+        self.stop_and_wait_for(self.0.stop_ceiling)
     }
 
     /// The same driver whose [`MeetingDriver::stop_and_wait`] gives up after `ceiling` (tests;
@@ -433,6 +424,17 @@ impl MeetingDriver {
             .expect("set before the driver is shared")
             .stop_ceiling = ceiling;
         self
+    }
+
+    /// [`MeetingDriver::stop_and_wait`] for at most `limit` instead of the stop ceiling (T9.19:
+    /// Windows waits only a few seconds for an app at a restart, less than the capture source's
+    /// own `STOP_WAIT`). Returns whether the recording is saved; when not, the stop stays
+    /// requested and start-up recovery (T9.18) saves what was written.
+    pub fn stop_and_wait_for(&self, limit: Duration) -> bool {
+        let _ = self.stop();
+        wait_until(limit, Instant::now, std::thread::sleep, || {
+            self.phase() != DriverPhase::Recording
+        })
     }
 
     /// Waits for every meeting's thread to finish.
@@ -450,6 +452,26 @@ impl MeetingDriver {
         if let Some(r) = newest {
             let _ = r.thread.join();
         }
+    }
+}
+
+/// Polls `done` every [`STOP_POLL`] (through `sleep`) until it holds or `limit` has passed on
+/// `now`; whether it held. `done` is asked once more at the deadline, so a check that comes true
+/// during the last sleep counts.
+fn wait_until(
+    limit: Duration,
+    mut now: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+    mut done: impl FnMut() -> bool,
+) -> bool {
+    let start = now();
+    loop {
+        let saved = done();
+        let elapsed = now().saturating_duration_since(start);
+        if !keep_waiting(!saved, elapsed, limit) {
+            return saved;
+        }
+        sleep(STOP_POLL.min(limit - elapsed));
     }
 }
 

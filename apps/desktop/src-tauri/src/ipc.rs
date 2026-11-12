@@ -74,6 +74,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             export_meeting,
             delete_meeting,
             crate::keep_local::allow_summary_writer,
+            crate::recovery::recovered_recordings,
             crate::folders::list_folders,
             crate::folders::create_folder,
             crate::folders::rename_folder,

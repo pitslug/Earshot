@@ -140,6 +140,11 @@ export const commands = {
 	 *  on (the UI asks first). Nothing is sent until the user re-summarises.
 	 */
 	allowSummaryWriter: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("allow_summary_writer", { meeting })),
+	/**
+	 *  The recordings recovered at this start (or an earlier one whose window never asked), each
+	 *  returned once.
+	 */
+	recoveredRecordings: () => typedError<RecoveredRecording[], IpcError>(__TAURI_INVOKE("recovered_recordings")),
 	/**  Every live folder, by name. */
 	listFolders: () => typedError<FolderListItem[], IpcError>(__TAURI_INVOKE("list_folders")),
 	/**  Creates a folder; returns its id. Refuses an unusable name or one another folder has. */
@@ -1610,6 +1615,14 @@ export type RecommendedView = {
 	reason: string,
 };
 
+/**  A recording Earshot was closed during, whose audio start-up recovery saved. */
+export type RecoveredRecording = {
+	/**  The meeting's id. */
+	meeting: string,
+	/**  How much was saved, in ms (well below 2^53). */
+	saved_ms: number,
+};
+
 /**  What remembering a saved voice did (T12.19). */
 export type RememberOutcome = 
 /**  Added to the person's voiceprint. */
@@ -1738,7 +1751,12 @@ recording: boolean } |
 /**  A meeting started from the tray or the shortcut could not start (nothing was recorded). */
 { type: "StartFailed"; 
 /**  Why. */
-message: string };
+message: string } | 
+/**
+ *  Start-up recovery gave an interrupted recording its audio back (T9.18): read the
+ *  notices (`recovered_recordings`) and show them.
+ */
+{ type: "RecordingsRecovered" };
 
 /**  One row of the Speakers panel. */
 export type SpeakerCard = {

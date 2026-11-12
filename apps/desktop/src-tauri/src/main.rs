@@ -37,7 +37,10 @@ mod obsidian;
 #[cfg(test)]
 mod page_names_tests;
 mod plain_text;
+mod recovery;
 mod shell;
+#[cfg(windows)]
+mod shutdown_win;
 mod speaker_settings;
 mod storage_settings;
 mod summaries;
@@ -156,13 +159,19 @@ fn main() {
                         }));
                     });
             }
-            // Audio retention runs now and periodically (T7.4k).
+            // Recordings this app was closed during get their audio back (T9.18), then audio
+            // retention runs and periodically after (T7.4k): retention's sweep must never see
+            // unfinished audio before recovery has adopted it.
             let retention = storage_settings::RetentionStatus::default();
             if let Ok(services) = state.services() {
-                storage_settings::spawn_retention(
+                let handle = app.handle().clone();
+                recovery::spawn(
                     services,
                     retention.clone(),
                     storage_settings::RETENTION_PERIOD,
+                    move |_| {
+                        let _ = shell::ShellEvent::RecordingsRecovered.emit(&handle);
+                    },
                 );
             }
             // In-app updates (T9.1b): what an earlier update left goes first; a check only if the
@@ -320,6 +329,15 @@ fn main() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("the Earshot window could not start");
+        .build(tauri::generate_context!())
+        .expect("the Earshot window could not start")
+        .run(|app, event| {
+            // The last event before the process ends, also when Windows restarts, shuts down or
+            // signs out (tao turns `WM_ENDSESSION` into it, then exits): a recording is saved
+            // first (T9.19). If `WM_ENDSESSION` arrives while tao is already inside its event
+            // handler, tao exits without this event; start-up recovery (T9.18) is the backstop.
+            if let tauri::RunEvent::Exit = event {
+                shell::save_before_exit(app);
+            }
+        });
 }

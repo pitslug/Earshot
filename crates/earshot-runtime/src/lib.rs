@@ -66,6 +66,7 @@ pub mod power;
 pub mod preview_settings;
 mod priority;
 pub mod recommend;
+pub mod recover;
 pub mod replay;
 pub mod retention;
 pub mod search;

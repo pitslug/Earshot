@@ -316,7 +316,8 @@ fn meeting_events_voice_activity_and_end_reasons_map_one_to_one() {
         now,
     );
     assert!(
-        matches!(&out[0], MeetingEvent::Warning { kind: WarningKind::Recording, message, .. } if message.contains("disk full"))
+        matches!(&out[0], MeetingEvent::Warning { kind: WarningKind::Recording, message, .. }
+            if message.contains("could not finish saving the recording") && !message.contains("disk full"))
     );
     assert_eq!(
         out.len(),
@@ -365,6 +366,8 @@ fn assert_copy(message: &str) {
     assert!(!message.contains('\u{2014}'), "{message}");
     assert!(!message.to_lowercase().contains("please"), "{message}");
     assert!(!message.contains('!'), "{message}");
+    // A string literal broken across lines without `\` keeps the indentation (found at T9.18).
+    assert!(!message.contains("  "), "a run of spaces: {message}");
     assert!(
         message.chars().next().is_some_and(char::is_uppercase),
         "{message}"
@@ -506,8 +509,12 @@ fn meeting_events_a_stopped_recording_says_when_and_why_in_plain_words() {
     assert_eq!(key, "recording:them");
     assert!(message.contains("at 1:02:05"), "{message}");
     assert!(
-        message.contains("os error 112"),
-        "any other failure says what it was"
+        message.contains("because Earshot could not save it."),
+        "any other failure is said in fixed copy: {message}"
+    );
+    assert!(
+        !message.contains("os error 112"),
+        "no error text: {message}"
     );
     // A file that could not even be finished replaces that banner.
     let (failed_key, _, _) = banner(&RuntimeWarning::Recording {
@@ -985,7 +992,8 @@ fn meeting_queue_events_a_failed_save_is_told_with_the_save() {
         Instant::now(),
     );
     assert!(
-        matches!(&out[0], MeetingEvent::Warning { kind: WarningKind::Recording, message, .. } if message.contains("disk full"))
+        matches!(&out[0], MeetingEvent::Warning { kind: WarningKind::Recording, message, .. }
+            if message.contains("could not finish saving the recording") && !message.contains("disk full"))
     );
     assert!(matches!(out[1], MeetingEvent::Ended { .. }));
 }
@@ -1096,4 +1104,31 @@ fn call_output_refused_says_what_is_still_recorded() {
         message,
         "The call plays on Headset, which Earshot could not open."
     );
+}
+
+#[test]
+fn meeting_events_a_failed_recording_save_shows_fixed_copy_and_no_path() {
+    // The error can be a store error naming a local file: never shown (T9.23).
+    let error = r"rename C:\Users\someone\AppData\Local\Earshot\audio\0190\loopback.flac.part: \
+                  Access is denied. (os error 5)";
+    for track in [TrackId::Mic, TrackId::Reference] {
+        let (key, kind, message) = banner(&RuntimeWarning::Recording {
+            track,
+            error: error.into(),
+        });
+        assert_copy(&message);
+        assert_eq!(kind, WarningKind::Recording);
+        assert!(key.starts_with("recording:"), "{key}");
+        for leak in [
+            "C:\\",
+            "Users",
+            "someone",
+            ".part",
+            "os error",
+            "Access is denied",
+        ] {
+            assert!(!message.contains(leak), "{leak} in {message}");
+        }
+        assert!(message.contains("next time Earshot starts"), "{message}");
+    }
 }

@@ -55,7 +55,8 @@ serde_json = "1.0.154"
 # The capture mode and mic role of a live meeting (`host::wasapi_starter`).
 earshot-capture-wasapi = { path = "../../../crates/earshot-capture-wasapi" }
 # The Anthropic API key in Credential Manager (`src/credentials_win.rs`), the vault folder
-# dialog (`src/folder_picker_win.rs`) and `src/wer_win.rs`: all the app's `unsafe`. Same version as
+# dialog (`src/folder_picker_win.rs`), `src/wer_win.rs` and `src/shutdown_win.rs`: all the app's
+# `unsafe`. Same version as
 # earshot-capture-wasapi; xtask does not depend on `windows`, so these features never widen
 # a crate the running xtask.exe was built from.
 windows = { version = "0.62", features = [
@@ -65,6 +66,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Com",
     # The Windows Error Reporting opt-out (`src/wer_win.rs`).
     "Win32_System_ErrorReporting",
+    # The reason shown while a recording is saved at a restart (`src/shutdown_win.rs`).
+    "Win32_System_Shutdown",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     # Notifications (`src/toast_win.rs`): WinRT, safe calls.

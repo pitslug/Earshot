@@ -1098,6 +1098,28 @@ describe("MeetingDetailView", () => {
     expect(calls.some((c) => c[0] === "retranscribe")).toBe(false);
   });
 
+  it("says no audio was saved for a meeting Earshot closed during, and offers no re-transcribe", async () => {
+    const { user, calls } = await setup({
+      meetings: [{ ...ITEM, state: "Interrupted", duration_ms: null }, OTHER],
+      details: { [ITEM.id]: { ...sampleDetail(ITEM), audio_kept: false, state: "Interrupted" } },
+    });
+    await screen.findByText(/TL;DR/);
+    const item = screen.getByRole("button", { name: /Re-transcribe/ });
+    expect(item).toHaveAttribute("aria-disabled", "true");
+    expect(item).toHaveTextContent("No usable audio from this recording");
+    await user.click(item);
+    expect(calls.some((c) => c[0] === "retranscribe")).toBe(false);
+  });
+
+  it("offers re-transcribe for a recovered meeting whose audio is kept", async () => {
+    await setup({
+      meetings: [{ ...ITEM, state: "Unprocessed" }, OTHER],
+      details: { [ITEM.id]: { ...sampleDetail(ITEM), audio_kept: true, state: "Unprocessed" } },
+    });
+    await screen.findByText(/TL;DR/);
+    expect(screen.getByRole("button", { name: /Re-transcribe/ })).not.toHaveAttribute("aria-disabled", "true");
+  });
+
   it("offers re-transcribe and samples while the recordings are kept", async () => {
     const { user } = await setup();
     await screen.findByText(/TL;DR/);

@@ -165,9 +165,20 @@ export function savedText(name: string, outcome: RememberOutcome): string {
   }
 }
 
-/** The meeting's recordings were deleted (audio retention, or by hand): it was recorded and
- * no track's recording is kept. While it records or has no stored track yet, nothing is
- * gone. */
+/** No recording of the meeting is there to use: it was recorded and its recordings were
+ * deleted (audio retention, or by hand), or Earshot closed during it and start-up recovery
+ * (T9.18) gave it no audio (none was saved, or recovery could not read it this time). While it
+ * records or is being finished, nothing is gone. */
 export function recordingsGone(detail: MeetingDetail): boolean {
-  return !detail.audio_kept && (detail.state === "Ready" || detail.state === "Unprocessed");
+  return (
+    !detail.audio_kept &&
+    (detail.state === "Ready" || detail.state === "Unprocessed" || detail.state === "Interrupted")
+  );
+}
+
+/** Why there is no recording, for a meeting [`recordingsGone`] says so of. An Interrupted
+ * meeting has no usable audio at this start: none was saved, or recovery could not read it
+ * (it tries again at the next start), so the copy claims neither. */
+export function recordingsGoneReason(detail: MeetingDetail): string {
+  return detail.state === "Interrupted" ? "No usable audio from this recording" : "Recording no longer kept";
 }

@@ -2097,3 +2097,75 @@ fn meeting_cancel_has_nothing_left_to_reach_after_a_panic() {
     assert!(d.0.finishing.lock().unwrap().is_empty());
     d.cancel_finishing(&meeting);
 }
+
+#[test]
+fn meeting_wait_until_gives_up_at_its_limit_on_a_clock_it_is_given() {
+    // T9.19: clock-free. A recording that never saves: the wait ends at the limit, having
+    // slept no longer than it.
+    let start = Instant::now();
+    let clock = std::cell::Cell::new(start);
+    let slept = std::cell::Cell::new(Duration::ZERO);
+    let limit = Duration::from_millis(4_000);
+    let saved = wait_until(
+        limit,
+        || clock.get(),
+        |d| {
+            slept.set(slept.get() + d);
+            clock.set(clock.get() + d);
+        },
+        || false,
+    );
+    assert!(!saved);
+    assert_eq!(slept.get(), limit);
+    // One that saves on the third look: true, after two polls.
+    let looks = std::cell::Cell::new(0);
+    clock.set(start);
+    slept.set(Duration::ZERO);
+    let saved = wait_until(
+        limit,
+        || clock.get(),
+        |d| {
+            slept.set(slept.get() + d);
+            clock.set(clock.get() + d);
+        },
+        || {
+            looks.set(looks.get() + 1);
+            looks.get() == 3
+        },
+    );
+    assert!(saved);
+    assert_eq!(slept.get(), STOP_POLL * 2);
+    // A check that comes true during the last sleep still counts.
+    clock.set(start);
+    let saved = wait_until(
+        Duration::from_millis(120),
+        || clock.get(),
+        |d| clock.set(clock.get() + d),
+        || clock.get() >= start + Duration::from_millis(120),
+    );
+    assert!(saved);
+}
+
+#[test]
+fn meeting_driver_stop_and_wait_for_saves_the_recording_within_its_limit() {
+    let dir = TempDir::new("driver-stop-limit");
+    let svc = services(&dir);
+    let (d, rx) = driver(FakePrepare::new(Script::UntilStopped));
+    assert!(
+        d.stop_and_wait_for(Duration::from_secs(4)),
+        "nothing records"
+    );
+    d.start(&svc, request(CaptureMode::Call)).unwrap();
+    assert_eq!(d.phase(), DriverPhase::Recording);
+    // A wide bound: the replay stops at once; under load this only has to be under a minute.
+    assert!(d.stop_and_wait_for(Duration::from_secs(60)));
+    assert_ne!(d.phase(), DriverPhase::Recording);
+    let events = until_summary(&rx);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, MeetingEvent::Ended { .. })),
+        "the recording ended"
+    );
+    d.join();
+}

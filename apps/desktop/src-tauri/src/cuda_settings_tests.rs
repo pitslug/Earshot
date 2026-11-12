@@ -1494,7 +1494,7 @@ fn cuda_settings_begin_comes_first_in_the_apps_setup() {
         .find("cuda_settings::begin(")
         .expect("main begins the switch");
     for later in [
-        "spawn_retention(",
+        "recovery::spawn(",
         "MeetingDriver::new(",
         "JobRunner::new(",
         "ModelJobs::new(",

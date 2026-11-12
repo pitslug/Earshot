@@ -76,6 +76,7 @@ import {
   handoverLine,
   headerLine,
   recordingsGone,
+  recordingsGoneReason,
   rowTime,
   savedText,
   summaryMarkdown,
@@ -674,7 +675,7 @@ export function MeetingDetailView({
             )}
             {detail !== null && recordingsGone(detail) ? (
               // Focusable, so a keyboard reaches the reason.
-              <CompoundButton disabledFocusable secondaryContent="Recording no longer kept">
+              <CompoundButton disabledFocusable secondaryContent={recordingsGoneReason(detail)}>
                 Re-transcribe
               </CompoundButton>
             ) : finishing ? (

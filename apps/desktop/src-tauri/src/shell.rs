@@ -45,6 +45,33 @@ pub fn started_by_windows(args: &[std::ffi::OsString]) -> bool {
     args.iter().any(|a| a == AUTOSTART_ARG)
 }
 
+/// How long the app holds up the end of the process to save a recording (T9.19): Windows shows
+/// its "apps are preventing restart" screen after about five seconds and may end the process
+/// any time after. A judgement; what is not saved by then start-up recovery (T9.18) saves.
+/// It bounds only this wait: stopping capture joins the capture thread with no bound of its
+/// own (T9.20 adds one), so a stalled device makes the limit expire and recovery takes over.
+pub const EXIT_SAVE_LIMIT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Saves a recording in progress before the process ends (T9.19): on Tauri's last event, which
+/// a Windows restart, shut down or sign-out also sends. The recording stops and its files are
+/// finished, waiting at most [`EXIT_SAVE_LIMIT`]; the final pass and summary are cut and the
+/// meeting stays Unprocessed, as tray Quit does. While it saves, Windows is told why Earshot
+/// holds up the restart. Nothing happens when nothing records (tray Quit has already stopped).
+pub fn save_before_exit(app: &AppHandle) {
+    let Some(driver) = app.try_state::<MeetingDriver>() else {
+        return;
+    };
+    if driver.phase() != DriverPhase::Recording {
+        return;
+    }
+    #[cfg(windows)]
+    let _reason = app
+        .get_webview_window(MAIN_WINDOW)
+        .and_then(|w| w.hwnd().ok())
+        .map(crate::shutdown_win::BlockReason::set);
+    let _ = driver.stop_and_wait_for(EXIT_SAVE_LIMIT);
+}
+
 /// Asks the UI to do something the tray, the shortcut or a notification cannot do alone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type, tauri_specta::Event)]
 #[serde(tag = "type")]
@@ -66,6 +93,9 @@ pub enum ShellEvent {
         /// Why.
         message: String,
     },
+    /// Start-up recovery gave an interrupted recording its audio back (T9.18): read the
+    /// notices (`recovered_recordings`) and show them.
+    RecordingsRecovered,
 }
 
 /// Where the current meeting is, as the tray shows it.

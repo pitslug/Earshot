@@ -24,6 +24,7 @@ import {
   DATA_FOLDER_KIND,
   type PersonItem,
   type PostStep,
+  type RecoveredRecording,
   type RememberOutcome,
   type SummaryEvent,
   type SummaryView,
@@ -175,6 +176,9 @@ export interface MockIpcData {
   onQuit?: () => void;
   /** Meetings whose summary is kept on this computer (T12.13), by id. */
   keptLocal?: string[];
+  /** Recordings start-up recovery saved (T9.18): returned by the first `recoveredRecordings`
+   * only, as the app takes them. */
+  recovered?: RecoveredRecording[];
   /** Meeting details by id (default: `sampleDetail` of each meeting). */
   details?: Record<string, MeetingDetail>;
   /** Finished meetings without a detail of their own were recorded in the room, with no
@@ -308,6 +312,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     for (const l of [...jobListeners]) l(event);
   };
   const details = new Map<string, MeetingDetail>(Object.entries(data.details ?? {}));
+  const recovered: RecoveredRecording[] = (data.recovered ?? []).map((r) => ({ ...r }));
   const previous = new Map<string, SummaryView>();
   const jobs = new Set<string>();
   const persons: PersonItem[] = (data.persons ?? samplePersons()).map((p) => ({ ...p }));
@@ -1097,6 +1102,10 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         },
         (steps.length + 1) * POST_STEP_MS,
       );
+    },
+    recoveredRecordings: async () => {
+      call("recoveredRecordings");
+      return recovered.splice(0);
     },
     allowSummaryWriter: async (meeting) => {
       call("allowSummaryWriter", meeting);

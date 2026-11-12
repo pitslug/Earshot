@@ -94,6 +94,7 @@ export type {
   PreviewsChoice,
   PreviewsView,
   ShellEvent,
+  RecoveredRecording,
   ObsidianSettingsValue,
   ObsidianSettingsView,
   SpeakerTimingChoice,
