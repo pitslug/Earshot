@@ -33,9 +33,9 @@
 
 use std::fmt;
 use std::num::NonZeroU16;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use earshot_core::audio::{Sample, SampleRate};
@@ -493,6 +493,42 @@ impl<E: std::error::Error + 'static> std::error::Error for LiveError<E> {
 
 type Stopper = Box<dyn FnOnce() + Send>;
 
+/// How long [`ChannelSource::stop`] waits for the capture thread to flush and end before it
+/// gives up on it (T9.20; [`ChannelSource::with_stop_wait`] changes it). A judgement: longer
+/// than the longest wait the capture loop makes on purpose (process loopback activation,
+/// 5 s, which a stop may land in), short enough that a stop or Quit still feels like one.
+pub const STOP_WAIT: Duration = Duration::from_secs(7);
+
+/// Runs `stopper` on a thread of its own and waits at most `bound` for it to return.
+/// Returns whether it did (a stopper that panicked has returned too); one still running is
+/// left to finish on its own, never joined. Without a thread to run it on, it runs here,
+/// unbounded, as before T9.20.
+fn stop_within(stopper: Stopper, bound: Duration) -> bool {
+    let slot = Arc::new(Mutex::new(Some(stopper)));
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let theirs = Arc::clone(&slot);
+    let spawned = std::thread::Builder::new()
+        .name("earshot-capture-stop".into())
+        .spawn(move || {
+            let stopper = theirs.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(stop) = stopper {
+                stop();
+            }
+            let _ = done_tx.send(());
+        });
+    if spawned.is_err() {
+        let stopper = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(stop) = stopper {
+            stop();
+        }
+        return true;
+    }
+    !matches!(
+        done_rx.recv_timeout(bound),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    )
+}
+
 /// Consumer side of a live capture: an [`AudioSource`] fed by a capture thread.
 ///
 /// [`pump`](AudioSource::pump) delivers every event already received and never waits.
@@ -500,10 +536,24 @@ type Stopper = Box<dyn FnOnce() + Send>;
 /// its last packets and the end of stream into the channel (normally one wait period,
 /// about 20 ms), so the next pump delivers them and returns [`SourceStatus::Ended`].
 /// Dropping the source stops the thread the same way.
+///
+/// A capture thread that has not ended after the stop wait ([`STOP_WAIT`]; a device or the
+/// audio service stuck in a call) is given up (T9.20): it is left running, never joined, and
+/// the next pumps deliver what it had already sent, then an
+/// [`EndpointWarning::StoppedAnswering`] note on the mic track and one substitute
+/// [`EndOfStream`] ([`EndReason::Stopped`], or [`EndReason::Failed`] after a reported capture
+/// failure), so the recording is saved whatever the thread does. A given-up thread that exits
+/// without its end is a vanished thread as before (an error, then a failed end, no note). The end is still delivered exactly once, last.
 pub struct ChannelSource<E> {
     session: CaptureSession,
     rx: Receiver<LiveMsg<E>>,
     stopper: Option<Stopper>,
+    /// How long a stop waits for the thread ([`STOP_WAIT`]).
+    stop_wait: Duration,
+    /// The thread did not end within the stop wait and was given up.
+    given_up: bool,
+    /// A capture failure was reported: an end without the thread is an error end.
+    failed: bool,
     thread_lost: bool,
     ended: bool,
     /// Current rate per track (index: mic, reference), for the substitute end time.
@@ -545,11 +595,60 @@ impl<E> ChannelSource<E> {
             session,
             rx,
             stopper: Some(Box::new(stopper)),
+            stop_wait: STOP_WAIT,
+            given_up: false,
+            failed: false,
             thread_lost: false,
             ended: false,
             rates: [mic, reference],
             gauge: None,
         }
+    }
+
+    /// The same source waiting at most `wait` for the thread on a stop ([`STOP_WAIT`] by
+    /// default).
+    #[must_use]
+    pub fn with_stop_wait(mut self, wait: Duration) -> Self {
+        self.stop_wait = wait;
+        self
+    }
+
+    /// Whether a stop gave up on the capture thread (it did not end within the stop wait).
+    #[must_use]
+    pub fn gave_up(&self) -> bool {
+        self.given_up
+    }
+
+    /// Asks the thread to stop and waits for it within the stop wait (once).
+    fn stop_thread(&mut self) {
+        if let Some(stop) = self.stopper.take()
+            && !stop_within(stop, self.stop_wait)
+        {
+            self.given_up = true;
+        }
+    }
+
+    /// Ends a source whose thread was given up: the note, then the substitute end.
+    fn end_without_thread(&mut self, sink: &mut dyn CaptureSink) -> SourceStatus {
+        self.ended = true;
+        sink.discontinuity(
+            TrackId::Mic,
+            Discontinuity {
+                at: self.last_end,
+                kind: DiscontinuityKind::Note {
+                    warning: EndpointWarning::StoppedAnswering,
+                },
+            },
+        );
+        sink.end(EndOfStream {
+            at: self.last_end,
+            reason: if self.failed {
+                EndReason::Failed
+            } else {
+                EndReason::Stopped
+            },
+        });
+        SourceStatus::Ended
     }
 
     /// Releases received frames from `gauge` (the one the channel's capped sinks use).
@@ -616,7 +715,15 @@ impl<E: fmt::Debug> AudioSource for ChannelSource<E> {
                     }
                     delivered = true;
                 }
-                Ok(LiveMsg::Failed(e)) => return Err(LiveError::Capture(e)),
+                Ok(LiveMsg::Failed(e)) => {
+                    self.failed = true;
+                    return Err(LiveError::Capture(e));
+                }
+                // Everything the given-up thread had sent is delivered: end without it. (One that
+                // exited instead is a vanished thread, below.)
+                Err(TryRecvError::Empty) if self.given_up => {
+                    return Ok(self.end_without_thread(sink));
+                }
                 Err(TryRecvError::Empty) => {
                     return Ok(if delivered {
                         SourceStatus::Delivered
@@ -646,17 +753,13 @@ impl<E: fmt::Debug> AudioSource for ChannelSource<E> {
     }
 
     fn stop(&mut self) {
-        if let Some(stop) = self.stopper.take() {
-            stop();
-        }
+        self.stop_thread();
     }
 }
 
 impl<E> Drop for ChannelSource<E> {
     fn drop(&mut self) {
-        if let Some(stop) = self.stopper.take() {
-            stop();
-        }
+        self.stop_thread();
     }
 }
 
@@ -1513,6 +1616,177 @@ mod tests {
             1,
             "drop stops a running source"
         );
+    }
+
+    /// A source whose stopper blocks until the returned sender is dropped (or sent to): a
+    /// capture thread stuck in a call. The receiver hears each stopper run as it starts.
+    fn stuck_source(
+        wait: Duration,
+    ) -> (
+        ChannelSource<String>,
+        mpsc::Sender<LiveMsg<String>>,
+        mpsc::Sender<()>,
+        mpsc::Receiver<()>,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let (started_tx, started_rx) = mpsc::channel();
+        let src = ChannelSource::new(session(), rx, move || {
+            started_tx.send(()).unwrap();
+            let _ = release_rx.lock().unwrap().recv();
+        })
+        .with_stop_wait(wait);
+        (src, tx, release_tx, started_rx)
+    }
+
+    #[test]
+    fn live_stop_gives_up_a_thread_that_never_ends_and_ends_without_it() {
+        // T9.20: a zero wait gives up at once, whatever the clock, while the stopper is stuck.
+        let (mut src, tx, release, started) = stuck_source(Duration::ZERO);
+        let mut out = Vec::new();
+        tx.send(frames_event(TrackId::Mic, T0, 480)).unwrap();
+        tx.send(frames_event(TrackId::Reference, T0, 441)).unwrap();
+        src.stop();
+        assert!(src.gave_up());
+        // Everything already sent is delivered, then the note, then one substitute end.
+        assert_eq!(src.pump(&mut out).unwrap(), SourceStatus::Ended);
+        assert_eq!(frames(&out).len(), 2);
+        let n = out.len();
+        assert_eq!(
+            out[n - 2],
+            CaptureEvent::Discontinuity {
+                track: TrackId::Mic,
+                discontinuity: Discontinuity {
+                    at: t(T0 + PQ),
+                    kind: DiscontinuityKind::Note {
+                        warning: EndpointWarning::StoppedAnswering,
+                    },
+                },
+            }
+        );
+        assert_eq!(
+            out[n - 1],
+            CaptureEvent::End(EndOfStream {
+                at: t(T0 + PQ),
+                reason: EndReason::Stopped,
+            })
+        );
+        // The thread wakes up later: nothing it sends is delivered, and nothing ends twice.
+        tx.send(frames_event(TrackId::Mic, T0 + PQ, 480)).unwrap();
+        tx.send(end_event(T0 + 2 * PQ, EndReason::Stopped)).unwrap();
+        assert_eq!(src.pump(&mut out).unwrap(), SourceStatus::Ended);
+        drop(src);
+        assert_eq!(out.len(), n);
+        assert_eq!(ends(&out), 1);
+        // It was asked to stop once, and a drop does not ask again.
+        started.recv().unwrap();
+        assert!(started.try_recv().is_err());
+        drop(release);
+    }
+
+    #[test]
+    fn live_given_up_thread_that_already_failed_still_reports_it_first() {
+        let (mut src, tx, release, _) = stuck_source(Duration::ZERO);
+        let mut out = Vec::new();
+        tx.send(LiveMsg::Failed("device exploded".into())).unwrap();
+        src.stop();
+        assert!(matches!(src.pump(&mut out), Err(LiveError::Capture(_))));
+        assert_eq!(src.pump(&mut out).unwrap(), SourceStatus::Ended);
+        assert_eq!(ends(&out), 1);
+        // Capture ended on an error: the substitute end says so.
+        assert!(matches!(
+            out.last(),
+            Some(CaptureEvent::End(EndOfStream {
+                reason: EndReason::Failed,
+                ..
+            }))
+        ));
+        drop(release);
+    }
+
+    #[test]
+    fn live_given_up_thread_that_then_exits_is_a_vanished_thread() {
+        // The thread was given up and later died without its end: the vanished-thread path
+        // (an error, then a failed end), never the note.
+        let (tx, rx) = mpsc::channel::<LiveMsg<String>>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let mut src = ChannelSource::new(session(), rx, move || {
+            let _ = release_rx.lock().unwrap().recv();
+        })
+        .with_stop_wait(Duration::ZERO);
+        let mut out = Vec::new();
+        tx.send(frames_event(TrackId::Mic, T0, 480)).unwrap();
+        src.stop();
+        assert!(src.gave_up());
+        drop(tx);
+        assert_eq!(src.pump(&mut out).unwrap(), SourceStatus::Delivered);
+        assert!(matches!(
+            src.pump(&mut out),
+            Err(LiveError::CaptureThreadExited)
+        ));
+        assert_eq!(src.pump(&mut out).unwrap(), SourceStatus::Ended);
+        assert_eq!(markers(&out), []);
+        assert!(matches!(
+            out.last(),
+            Some(CaptureEvent::End(EndOfStream {
+                reason: EndReason::Failed,
+                ..
+            }))
+        ));
+        drop(release_tx);
+    }
+
+    #[test]
+    fn live_stop_that_ends_in_time_is_the_normal_path() {
+        // Negative control: a thread that flushes and ends within the wait gives nothing up,
+        // and its own end is delivered with no note.
+        let (tx, rx) = mpsc::channel();
+        let producer = tx.clone();
+        let mut src = ChannelSource::new(session(), rx, move || {
+            producer
+                .send(end_event(T0 + PQ, EndReason::Stopped))
+                .unwrap();
+        })
+        .with_stop_wait(Duration::from_secs(600));
+        let mut out = Vec::new();
+        tx.send(frames_event(TrackId::Mic, T0, 480)).unwrap();
+        src.stop();
+        assert!(!src.gave_up());
+        assert_eq!(src.pump(&mut out).unwrap(), SourceStatus::Ended);
+        assert_eq!(out.len(), 2);
+        assert_eq!(markers(&out), []);
+        assert_eq!(
+            out.last(),
+            Some(&CaptureEvent::End(EndOfStream {
+                at: t(T0 + PQ),
+                reason: EndReason::Stopped,
+            }))
+        );
+    }
+
+    #[test]
+    fn live_stop_within_waits_for_a_stopper_that_returns_and_not_for_one_that_hangs() {
+        // The bound's rule, clock-free: a stopper that has returned (or panicked) counts as
+        // done whatever the bound; one still running past the bound is left running.
+        assert!(stop_within(Box::new(|| {}), Duration::from_secs(600)));
+        assert!(stop_within(
+            Box::new(|| panic!("a stopper bug")),
+            Duration::from_secs(600)
+        ));
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (ran_tx, ran_rx) = mpsc::channel::<()>();
+        let hang: Stopper = Box::new(move || {
+            ran_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        assert!(!stop_within(hang, Duration::ZERO));
+        // It still runs (it was handed over, not dropped) until released.
+        ran_rx.recv().unwrap();
+        drop(release_tx);
+        // The default is a judgement of a few seconds (the doc says why).
+        assert!(STOP_WAIT >= Duration::from_secs(2) && STOP_WAIT <= Duration::from_secs(10));
     }
 
     #[test]

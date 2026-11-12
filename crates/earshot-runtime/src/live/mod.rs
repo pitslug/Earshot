@@ -593,6 +593,10 @@ pub enum RuntimeWarning {
         /// The last failure was a full disk.
         disk_full: bool,
     },
+    /// The audio device (or Windows' audio service) stopped answering when capture was asked
+    /// to stop, so the source ended without it and the recording was saved with everything
+    /// captured before (T9.20, [`EndpointWarning::StoppedAnswering`]). At most once.
+    DeviceStoppedAnswering,
     /// Storing a row failed (a live segment, or the meeting's duration at the end).
     Persistence(String),
     /// A held session's live transcription could not start (T9.1l). The meeting goes on
@@ -1995,6 +1999,14 @@ where
                 wanted: wanted.clone(),
                 used: used.clone(),
             });
+            return;
+        }
+        if let DiscontinuityKind::Note {
+            warning: EndpointWarning::StoppedAnswering,
+        } = kind
+        {
+            self.warn(RuntimeWarning::DeviceStoppedAnswering);
+            self.problems.push(RuntimeWarning::DeviceStoppedAnswering);
             return;
         }
         let DiscontinuityKind::DeviceChanged {

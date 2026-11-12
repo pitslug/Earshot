@@ -3499,6 +3499,79 @@ fn live_recording_that_cannot_be_finished_keeps_its_part_file() {
     assert_eq!(cut.outcome.reason, EndReason::Finished);
 }
 
+#[cfg(windows)]
+#[test]
+fn live_stop_saves_the_recording_when_the_capture_thread_never_ends() {
+    // T9.20: a capture thread stuck in a call (its stop never returns). The source gives it up
+    // after its stop wait; the session still ends, both files hold everything delivered before,
+    // the user hears why once, and Ended is last.
+    use earshot_capture_wasapi::{ChannelSource, LiveMsg};
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let info = CaptureSession::new(ORIGIN, TrackInfo::new(R16), Some(TrackInfo::new(R16)));
+    let (tx, rx) = std::sync::mpsc::channel::<LiveMsg<String>>();
+    let packets = 300u64;
+    for i in 0..packets {
+        let at = ORIGIN.after_frames(i * 160, R16);
+        for track in [TrackId::Mic, TrackId::Reference] {
+            tx.send(LiveMsg::Event(CaptureEvent::Frames {
+                track,
+                device_ts: at,
+                frames: noise(i + 50 * u64::from(track == TrackId::Mic), 160, 0.05),
+            }))
+            .unwrap();
+        }
+    }
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(release_rx);
+    let source = ChannelSource::new(info, rx, move || {
+        let _ = release_rx.lock().unwrap().recv();
+    })
+    .with_stop_wait(Duration::from_millis(50));
+    let session = start_live(
+        source,
+        svc.clone(),
+        config(earshot_core::model::ClockDomain::Qpc),
+        None,
+        Box::new(ChaCha8Rng::seed_from_u64(230)),
+    )
+    .unwrap();
+    session.request_stop();
+    let (events, outcome) = collect(session);
+    assert!(matches!(events.last(), Some(RuntimeEvent::Ended(_))));
+    assert_eq!(outcome.reason, EndReason::Stopped);
+    let said: Vec<RuntimeWarning> = warnings(&events)
+        .into_iter()
+        .filter(|w| matches!(w, RuntimeWarning::DeviceStoppedAnswering))
+        .collect();
+    assert_eq!(said, [RuntimeWarning::DeviceStoppedAnswering]);
+    assert!(
+        outcome
+            .problems
+            .contains(&RuntimeWarning::DeviceStoppedAnswering)
+    );
+    let saved = events
+        .iter()
+        .position(|e| matches!(e, RuntimeEvent::RecordingSaved { .. }))
+        .expect("the recording is saved");
+    assert!(saved < events.len() - 1);
+    let store = svc.store();
+    let files = store.audio_files(outcome.meeting).unwrap();
+    assert_eq!(files.len(), 2);
+    for f in files {
+        let (_, samples) = read_flac(&svc.data.resolve(&f.path).unwrap()).unwrap();
+        assert_eq!(
+            samples.len() as u64,
+            packets * 160,
+            "everything delivered is kept"
+        );
+    }
+    drop(store);
+    // The stuck thread is left alone; let it go now the test is done.
+    drop(tx);
+    drop(release_tx);
+}
+
 #[test]
 fn live_voice_activity_stays_off_on_silence_and_ends_with_the_session() {
     // Negative control: quiet noise only, no "speaking" ever.

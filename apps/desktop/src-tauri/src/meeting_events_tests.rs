@@ -422,6 +422,14 @@ fn meeting_events_every_runtime_warning_has_a_banner_with_plain_copy() {
         },
         RuntimeWarning::FarEndSilent,
         RuntimeWarning::FarEndHeard,
+        RuntimeWarning::RecordingStopped {
+            track: TrackId::Mic,
+            at: MeetingTime::from_millis(61_000),
+            disk_full: true,
+            error: "full".into(),
+        },
+        RuntimeWarning::EveryRecordingStopped { disk_full: false },
+        RuntimeWarning::DeviceStoppedAnswering,
     ];
     let kinds: Vec<WarningKind> = warnings
         .iter()
@@ -449,6 +457,9 @@ fn meeting_events_every_runtime_warning_has_a_banner_with_plain_copy() {
             WarningKind::DeviceFallback,
             WarningKind::Audio,
             WarningKind::DeviceRestored,
+            WarningKind::Recording,
+            WarningKind::Recording,
+            WarningKind::Audio,
         ]
     );
     let (_, _, bt) = banner(&warnings[0]);

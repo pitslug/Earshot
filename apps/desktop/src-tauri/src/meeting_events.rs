@@ -831,6 +831,13 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
             WarningKind::Recording,
             every_recording_stopped_message(*disk_full).into(),
         ),
+        RuntimeWarning::DeviceStoppedAnswering => warning(
+            "device-stopped-answering".into(),
+            WarningKind::Audio,
+            "The audio device stopped answering when the recording was stopped, so Earshot saved \
+             the recording without waiting for it. Everything recorded before that is kept."
+                .into(),
+        ),
         RuntimeWarning::Persistence(m) => warning(
             "storage".into(),
             WarningKind::Storage,

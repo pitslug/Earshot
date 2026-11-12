@@ -174,6 +174,8 @@ struct Inner {
     shown: AtomicU64,
     /// What cancels each meeting past its recording, by meeting id ([`Finishing`]).
     finishing: Mutex<BTreeMap<String, CancelToken>>,
+    /// The most a stop and wait waits ([`STOP_CEILING`]).
+    stop_ceiling: Duration,
 }
 
 impl Inner {
@@ -207,6 +209,19 @@ pub enum DriverPhase {
 /// How often [`MeetingDriver::stop_and_wait`] looks at the recording.
 const STOP_POLL: Duration = Duration::from_millis(50);
 
+/// The most [`MeetingDriver::stop_and_wait`] waits for a recording to be saved (T9.20), so Quit
+/// always ends: the capture source's own stop wait (`earshot_capture_wasapi::STOP_WAIT`, 7 s)
+/// plus 8 s to finish the files and the meeting row. A judgement; past it the caller goes on,
+/// and a recording not yet saved reads as Interrupted at the next start, its `.part` files kept
+/// (T9.18 recovers them).
+pub const STOP_CEILING: Duration = Duration::from_secs(15);
+
+/// Whether [`MeetingDriver::stop_and_wait`] waits on: the recording is not saved yet and the
+/// ceiling has not passed.
+fn keep_waiting(recording: bool, waited: Duration, ceiling: Duration) -> bool {
+    recording && waited < ceiling
+}
+
 /// Records at most one meeting at a time (cheap to clone; clones share the meetings).
 #[derive(Clone)]
 pub struct MeetingDriver(Arc<Inner>);
@@ -231,6 +246,7 @@ impl MeetingDriver {
             started: AtomicU64::new(0),
             shown: AtomicU64::new(0),
             finishing: Mutex::default(),
+            stop_ceiling: STOP_CEILING,
         }))
     }
 
@@ -383,12 +399,34 @@ impl MeetingDriver {
     }
 
     /// Stops a recording meeting and returns once its recording is saved (at once when
-    /// none records). The work after the meeting goes on; the caller decides about that.
-    pub fn stop_and_wait(&self) {
+    /// none records), or after the driver's stop ceiling ([`STOP_CEILING`]) whatever the
+    /// meeting does, so Quit always ends. Returns whether nothing records any more. The work
+    /// after the meeting goes on; the caller decides about that.
+    pub fn stop_and_wait(&self) -> bool {
         let _ = self.stop();
-        while self.phase() == DriverPhase::Recording {
+        let start = Instant::now();
+        while keep_waiting(
+            self.phase() == DriverPhase::Recording,
+            start.elapsed(),
+            self.0.stop_ceiling,
+        ) {
             std::thread::sleep(STOP_POLL);
         }
+        self.phase() != DriverPhase::Recording
+    }
+
+    /// The same driver whose [`MeetingDriver::stop_and_wait`] gives up after `ceiling` (tests;
+    /// call it before the driver is shared).
+    ///
+    /// # Panics
+    /// When the driver was cloned already.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_stop_ceiling(mut self, ceiling: Duration) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("set before the driver is shared")
+            .stop_ceiling = ceiling;
+        self
     }
 
     /// Waits for every meeting's thread to finish.
