@@ -724,7 +724,8 @@ pub fn remove_model(
 
 /// Downloads every artefact of model `name` into `models` through `downloader`, one after
 /// the other ([`crate::catalogue::Catalogue::download`]); `progress` hears the bytes held
-/// over the whole model.
+/// over the whole model, at most once per [`crate::download::PROGRESS_INTERVAL`], the last
+/// report always included ([`crate::download::with_throttled_progress`]).
 ///
 /// # Errors
 /// As [`crate::catalogue::Catalogue::download`].
@@ -737,13 +738,15 @@ pub fn download_model(
 ) -> Result<(), crate::catalogue::ModelDownloadError> {
     let catalogue = crate::catalogue::Catalogue::embedded()
         .map_err(crate::catalogue::ModelDownloadError::Catalogue)?;
-    catalogue.download(
-        models,
-        name,
-        cancel,
-        progress,
-        &mut |url, dest, exp, cancel, p| downloader.fetch(url, dest, exp, cancel, p),
-    )
+    crate::download::with_throttled_progress(progress, &std::time::Instant::now, |progress| {
+        catalogue.download(
+            models,
+            name,
+            cancel,
+            progress,
+            &mut |url, dest, exp, cancel, p| downloader.fetch(url, dest, exp, cancel, p),
+        )
+    })
 }
 
 /// Downloads what the manifest pins of the CUDA part `part` into `models` through `downloader`

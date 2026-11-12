@@ -139,3 +139,6 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - apps/desktop/src-tauri/src/models.rs `internal`, `remove_error` and `settings_error` still show catalogue and settings errors' own text (T9.23 review).
 - README.md "What you need": the proxy sentence covers downloads; in-app update checks use the same client and are not mentioned (T9.23 review).
 - crates/earshot-capture-wasapi/src/problem.rs: `DeviceGone { what: "output" }` reads as `NoMicrophone`; reachable only past `WasapiSource::fallbacks` (T9.23 review).
+- apps/desktop/src-tauri/src/cuda_settings.rs:1062 and update_settings.rs:287: CUDA part and update installer downloads still send progress per network chunk; throttle them in one shared place (`Downloader::fetch` or `Catalogue::download`) rather than per caller (T9.24a review).
+- crates/earshot-runtime/src/host.rs:727: no test drives `host::download_model` and counts its reports, so dropping the throttle wrap passes every test; add a loopback test serving many small chunks (T9.24a review).
+- crates/earshot-store/src/repo.rs:426 `has_live_segment`: no index on `pass`/`deleted`, so a long live-only meeting still reads its segment headers (T9.24a review).
