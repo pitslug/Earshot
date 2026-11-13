@@ -437,9 +437,11 @@ const ENDPOINT_FILTER_PATH: PROPERTYKEY = PROPERTYKEY {
 
 /// Reads what [`crate::endpoint::classify_mic`] needs from `device`'s property store.
 /// Every property is optional: one that is missing or unreadable is `None`, never an
-/// error (the classification only ever warns).
+/// error (the classification only ever warns). `id` is the endpoint id the caller already
+/// read ([`device_id`]), so one open reads it once and the stream and its properties agree.
 fn endpoint_properties(
     device: &IMMDevice,
+    id: Option<String>,
     name: &str,
     sample_rate: Option<u32>,
 ) -> crate::endpoint::EndpointProperties {
@@ -486,7 +488,7 @@ fn endpoint_properties(
         form_factor,
         filter_path,
         sample_rate,
-        id: device_id(device).filter(|id| !id.is_empty()),
+        id: id.filter(|id| !id.is_empty()),
         raw_processing,
     }
 }
@@ -733,7 +735,7 @@ fn endpoints_of(
             .ok()
             .and_then(|client| mix_format(&client).ok())
             .map(|(mix, _)| mix.sample_rate);
-        let properties = endpoint_properties(&device, &name, rate);
+        let properties = endpoint_properties(&device, Some(id.clone()), &name, rate);
         out.push(AudioDevice {
             is_default: default_id.as_deref() == Some(id.as_str()),
             id,
@@ -1051,7 +1053,7 @@ impl<'com> CaptureStream<'com> {
                             "activate IAudioClient"
                         },
                     )?;
-                    let mut properties = endpoint_properties(&device, &name, None);
+                    let mut properties = endpoint_properties(&device, id.clone(), &name, None);
                     if raw {
                         if let Some(refusal) = raw_refusal(&properties) {
                             return Err(CaptureError::RawMic(refusal));
@@ -3770,7 +3772,7 @@ mod device_tests {
                 // SAFETY: COM is initialised; the client is an owned interface.
                 let client: IAudioClient = unsafe { d.Activate(CLSCTX_ALL, None) }.unwrap();
                 let (mix, _) = mix_format(&client).unwrap();
-                endpoint_properties(&d, &name, Some(mix.sample_rate))
+                endpoint_properties(&d, device_id(&d), &name, Some(mix.sample_rate))
             })
             .collect()
     }
