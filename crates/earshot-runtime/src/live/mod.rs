@@ -1597,7 +1597,7 @@ where
                     } = &e
                     {
                         // The mic's live ASR stopped for the meeting (TODO 51).
-                        self.echo.mic_stopped();
+                        self.mic_stopped(MicStop::LiveAsrError);
                     }
                     if let PipelineError::LiveAsr { track, error } = &e
                         && let Some((_, r)) =
@@ -1727,6 +1727,15 @@ where
         }
     }
 
+    /// The mic's live ASR stopped for the rest of the meeting: the echo filter stops keeping
+    /// reference words for it (TODO 51).
+    fn mic_stopped(&mut self, how: MicStop) {
+        #[cfg(test)]
+        mic_stops::record(&self.services.data, how);
+        let _ = how;
+        self.echo.mic_stopped();
+    }
+
     /// Handles the transcript events the live workers produced since the last call.
     fn handle_workers(&mut self) {
         // Mic finals wait for the reference worker's progress (live echo hold).
@@ -1737,12 +1746,17 @@ where
         {
             self.echo.reference_progress(r.decoded_through());
         }
-        if let Some(m) = self.workers.iter().find(|w| w.track() == TrackId::Mic) {
-            if m.ended() {
+        if let Some((ended, done)) = self
+            .workers
+            .iter()
+            .find(|w| w.track() == TrackId::Mic)
+            .map(|m| (m.ended(), m.decoded_through()))
+        {
+            if ended {
                 // A crashed mic worker sends nothing more (TODO 51).
-                self.echo.mic_stopped();
+                self.mic_stopped(MicStop::WorkerEnded);
             }
-            self.echo.mic_progress(m.decoded_through());
+            self.echo.mic_progress(done);
         }
         // Each track's decoded frontier, read before its events (a worker sends a decode's
         // events before it publishes the frontier), for the live summary windows.
@@ -2435,6 +2449,46 @@ where
 /// Panics injected by tests into a track's finish (T9.19 with T9.18), keyed by the data
 /// directory so tests running at once never see each other's.
 #[cfg(test)]
+/// How a session learned that the mic's live ASR stopped for good.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MicStop {
+    /// A `PipelineError::LiveAsr` on the mic.
+    LiveAsrError,
+    /// The mic worker's thread ended before its finish (it crashed).
+    WorkerEnded,
+}
+
+/// Which sessions told their echo filter the mic stopped, by data folder (tests only).
+#[cfg(test)]
+pub(crate) mod mic_stops {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    use earshot_store::DataDir;
+
+    use super::MicStop;
+
+    static SEEN: Mutex<Vec<(PathBuf, MicStop)>> = Mutex::new(Vec::new());
+
+    fn seen() -> std::sync::MutexGuard<'static, Vec<(PathBuf, MicStop)>> {
+        SEEN.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn record(data: &DataDir, how: MicStop) {
+        seen().push((data.root().to_owned(), how));
+    }
+
+    /// How the session on `root` learned it, in order.
+    pub(crate) fn of(root: &std::path::Path) -> Vec<MicStop> {
+        seen()
+            .iter()
+            .filter(|(r, _)| r == root)
+            .map(|(_, h)| *h)
+            .collect()
+    }
+}
+
 pub(crate) mod finalize_panics {
     use std::path::PathBuf;
     use std::sync::Mutex;

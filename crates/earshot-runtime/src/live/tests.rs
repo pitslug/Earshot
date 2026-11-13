@@ -2879,6 +2879,89 @@ fn failing_second_piece(panic: bool) -> (crate::stretches::StretchRecord, Vec<St
     )
 }
 
+/// TODO 51 through a session: a mic worker that crashes (a panicking transcriber) or whose
+/// live ASR fails stops keeping reference words. The replay keeps its end until the session
+/// has said so (a rendezvous, never a wait on time).
+fn mic_stop_of(panic: bool) -> Vec<super::MicStop> {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let root = svc.data.root().to_owned();
+    let mut w = words("a", 1000, 5);
+    w.extend(words("b", 9000, 5));
+    let audio = speech(&w, 12_000, 175);
+    let mut slot = Some((audio.clone(), w));
+    let factory: LiveAsrFactory = Box::new(move |t, entity| {
+        if t != TrackId::Mic {
+            return Ok(None);
+        }
+        let Some((audio, w)) = slot.take() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            LiveAsr {
+                transcriber: Box::new(FailOn {
+                    inner: crate::testutil::timeline(audio, w),
+                    on: 1,
+                    panic,
+                    calls: 0,
+                }),
+                vad: Box::new(EnergyVad::default()),
+                config: ChunkerConfig::default(),
+                track_entity: entity,
+                segment_ids: ids(),
+            }
+            .into(),
+        ))
+    });
+    let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let told = root.clone();
+    let source = HoldSource {
+        inner: ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, audio.clone()))
+            .build()
+            .unwrap(),
+        hold_at: audio.len(),
+        delivered: 0,
+        release: Box::new(move || !super::mic_stops::of(&told).is_empty()),
+        held_since: None,
+        released: false,
+        timed_out: Arc::clone(&timed_out),
+    };
+    let session = start_live(
+        source,
+        svc.clone(),
+        stretch_config(earshot_core::model::ClockDomain::Replay),
+        Some(factory),
+        Box::new(ChaCha8Rng::seed_from_u64(176)),
+    )
+    .unwrap();
+    let _ = collect(session);
+    assert!(
+        !timed_out.load(Ordering::SeqCst),
+        "the session never said so"
+    );
+    super::mic_stops::of(&root)
+}
+
+#[test]
+fn live_echo_a_crashed_mic_worker_stops_holding_reference_words() {
+    let stops = mic_stop_of(true);
+    assert_eq!(
+        stops.first(),
+        Some(&super::MicStop::WorkerEnded),
+        "{stops:?}"
+    );
+}
+
+#[test]
+fn live_echo_a_failed_mic_asr_stops_holding_reference_words() {
+    let stops = mic_stop_of(false);
+    assert_eq!(
+        stops.first(),
+        Some(&super::MicStop::LiveAsrError),
+        "{stops:?}"
+    );
+}
+
 /// Answers like `inner`, reporting CUDA until its first call and the CPU after it (a
 /// per-call GPU fallback, as `VerifiedWhisper` reports one).
 struct FallsBackToCpu {
