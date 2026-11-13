@@ -770,3 +770,22 @@ Found on 0.3.3 on the Surface (2026-11-13): every first meeting after a start sh
 - **The skels' signing catalogs.** A context model compiled with `libqnnhtpv73.cat` and `libqnnhtpv81.cat` beside the skels (the models folder, which every development run uses) failed under the installed plugin, which had no catalogs: `contextCreateFromBinary failed. Error: QNN_COMMON_ERROR_MEM_ALLOC`, after the record and the plugin's own fit check had passed. With the two files added beside the install it loaded. The installer now carries them (docs/qnn.md).
 - `last_load` hid it in earlier runs: the second track's compiled load replaced the first track's refusal. A refusal now also goes to device record `npu-compiled` (each kind's latest, as path-free steps and a time: `npu_compiled::RefusalRecord`, read with `host::stored_npu_refusals`), and a preview's refused load no longer puts the track's folder aside.
 - Checked after the fix (2026-11-13, the Surface, `bundled`, `--previews on`, no `--force-previews`): the fixed app's `earshot.exe --npu-compile` wrote the 0.6B v2 context model in 31 s; `live_lag` from the development build compiled the new key's folder (the catalogs are in the key), then the `qnn-installed` build with the shipped QNN files beside it loaded that folder with no refusal (`npu_refusals` empty), both tracks and the far-end preview on QNN, far-end words on screen after a median of 2.2 s. Reports, unmodified: `t1212e-dev-on-bundled.json`, `t1212e-installed-on-bundled.json`.
+
+## Releasing a cut speech piece sooner (T12.31)
+
+`stretch::settle` held the last piece of a pending region while a later piece could still merge into it. T12.31 releases a piece that ends at a cut as soon as no later cut could join it. The pieces are unchanged: settled pieces stay a prefix of the whole-track plan, and `m2_prod --metric asr.stream_determinism` still reads 0 words differing of 4,677.
+
+**Measured 2026-11-14** (the Surface, mains, Earshot closed, machine load 18-26%; `live_lag --backend qnn --audio continuous --seconds 120`; reports in `live-previews/t1231/`, counts and times only). Reference track, seconds:
+
+| build | previews | word lag median / p95 | first word of a piece (median) | last word of a piece (median) |
+|---|---|---|---|---|
+| before (main) | on | 18.2 / 29.1 | 29.8 | 9.4 |
+| after | on | 18.2 / 29.1 | 29.8 | 9.4 |
+| before (main) | off | 18.1 / 29.1 | 29.8 | 9.4 |
+| after | off | 18.1 / 29.1 | 29.8 | 9.4 |
+
+**No gain on unbroken speech.** Before the change a piece was already released when its own 30 s window had been heard: on this audio every piece is longer than half a window, so no two neighbours could merge and the old rule held nothing. The wait on unbroken speech is the window itself (a cut is chosen only once `max_piece` of audio is in), which only a shorter `max_piece` changes (T12.24 above). The stored words are identical in all four runs.
+
+What the change does cover, by the rule and its tests, not by this measurement: speech that runs a little past one window and then stops. The first piece then goes out when its window is heard rather than when the short remainder has settled.
+
+Not explained: T12.24's 30 s run of this audio (2026-11-13, previews off, the same stored words) read a first-word wait of 48.6 s, one piece later than main reads today, with or without `--max-piece 30`. The stretch planner did not change between the two.
