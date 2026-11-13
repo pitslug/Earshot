@@ -16,9 +16,13 @@ use crate::testutil::{TempDir, services};
 struct Heard {
     warnings: Vec<String>,
     trials: Vec<(String, BackendKind, Option<Verdict>)>,
+    damaged: Vec<Vec<String>>,
 }
 
 impl LineEvents for Heard {
+    fn damaged(&mut self, artefacts: Vec<String>) {
+        self.damaged.push(artefacts);
+    }
     fn warning(&mut self, message: String) {
         self.warnings.push(message);
     }
@@ -78,6 +82,49 @@ fn model_check_lines_of_every_kind_are_read_in_order() {
             BackendKind::Cpu,
             Some("parakeet-tdt-110m")
         )
+    );
+}
+
+#[test]
+fn model_check_damaged_files_found_in_the_child_reach_the_parent() {
+    // A refused library in the child marked nothing in the app: the child reports what it
+    // found before its final line, whichever that is.
+    let line = CheckLine::Damaged {
+        artefacts: vec!["ort".into()],
+    };
+    let text = serde_json::to_string(&line).unwrap();
+    assert_eq!(text, r#"{"line":"damaged","artefacts":["ort"]}"#);
+    let (r, heard) = read(&[text.as_str(), DONE].join("\n"));
+    assert!(r.is_ok());
+    assert_eq!(heard.damaged, [vec!["ort".to_owned()]]);
+    let error = r#"{"line":"error","message":"The speech helpers could not load."}"#;
+    let (r, heard) = read(&[text.as_str(), error].join("\n"));
+    assert_eq!(r.unwrap_err().kind, "model_check");
+    assert_eq!(heard.damaged, [vec!["ort".to_owned()]]);
+    // After the final line it is a line too many, as any other.
+    let (r, _) = read(&[DONE, text.as_str()].join("\n"));
+    assert!(r.is_err());
+}
+
+#[test]
+fn model_check_damaged_line_marks_the_files_in_the_app() {
+    // The job's events mark what the child reported in this process's catalogue, so the
+    // System page offers the download at once; an id the catalogue does not hold is ignored.
+    let dir = TempDir::new("check-damaged");
+    let models = ModelDir::new(dir.0.join("models"));
+    let catalogue = earshot_runtime::catalogue::Catalogue::embedded().unwrap();
+    let known = catalogue.artefacts()[0].id.clone();
+    let mut steps = Vec::new();
+    let mut warnings = Vec::new();
+    let mut events = JobLines {
+        models: &models,
+        progress: &mut |s: CheckStep| steps.push(s),
+        warn: &mut |w: String| warnings.push(w),
+    };
+    events.damaged(vec![known.clone(), "no-such-artefact".into()]);
+    assert_eq!(
+        earshot_runtime::catalogue::Catalogue::found_damaged(&models),
+        [known]
     );
 }
 
@@ -212,6 +259,7 @@ fn model_check_job_maps_a_fake_childs_lines_and_records_in_the_parent() {
     let models = ModelDir::new(dir.0.join("models"));
     let (mut steps, mut warnings) = (Vec::new(), Vec::new());
     let mut events = JobLines {
+        models: &models,
         progress: &mut |s: CheckStep| steps.push(s),
         warn: &mut |w: String| warnings.push(w),
     };

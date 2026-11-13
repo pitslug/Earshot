@@ -221,21 +221,56 @@ pub fn drain(
 /// [`drain_window`]; a stream still open after that (a grandchild holding the pipe) is
 /// returned partial and flagged incomplete, never silently empty.
 pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<CmdOutput> {
-    run_with_drain(cmd, timeout, |elapsed| drain_window(timeout, elapsed))
+    run_with_drain(cmd, timeout, |elapsed| drain_window(timeout, elapsed), None)
 }
 
-/// As [`run_with_timeout`], with the drain window chosen by `window(elapsed at exit)`.
+/// The kill-on-close job a command runs in ([`run_in_job_with_timeout`]): earshot-proc's,
+/// the workspace's one job object (Windows only).
+#[cfg(windows)]
+type Job = earshot_proc::KillOnClose;
+/// No job object off Windows.
+#[cfg(not(windows))]
+type Job = std::convert::Infallible;
+
+/// As [`run_with_timeout`], but `cmd` and everything it starts run in a kill-on-close job
+/// (Windows: started suspended and resumed once inside, `earshot_proc::KillOnClose::spawn`),
+/// so a timeout ends the whole tree, not only the direct child, and nothing outlives the
+/// return. Off Windows it is [`run_with_timeout`]. `None` also when the job cannot be made.
+pub fn run_in_job_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<CmdOutput> {
+    #[cfg(windows)]
+    {
+        let job = earshot_proc::KillOnClose::new().ok()?;
+        run_with_drain(
+            cmd,
+            timeout,
+            |elapsed| drain_window(timeout, elapsed),
+            Some(&job),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        run_with_timeout(cmd, timeout)
+    }
+}
+
+/// As [`run_with_timeout`], with the drain window chosen by `window(elapsed at exit)`, in
+/// `job` when one is given.
 fn run_with_drain(
     cmd: &mut Command,
     timeout: Duration,
     window: impl FnOnce(Duration) -> Duration,
+    job: Option<&Job>,
 ) -> Option<CmdOutput> {
-    let mut child = cmd
-        .stdin(Stdio::null())
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::piped());
+    let mut child = match job {
+        #[cfg(windows)]
+        Some(job) => job.spawn(cmd, 0).ok()?,
+        #[cfg(not(windows))]
+        Some(never) => match *never {},
+        None => cmd.spawn().ok()?,
+    };
     let stdout = child.stdout.take()?;
     let stderr = child.stderr.take()?;
     // One channel for both streams, so the drain below serves them concurrently.
@@ -253,10 +288,14 @@ fn run_with_drain(
     ) {
         Wait::Done(s) => s,
         Wait::TimedOut | Wait::Failed => {
-            // kill() terminates only the direct child (no job object), so a grandchild
+            // Without a job, kill() terminates only the direct child, so a grandchild
             // such as node under `cmd /c pnpm` may outlive it. Acceptable for short
             // version probes; the reader threads are never joined, so the caller does
             // not hang on them.
+            #[cfg(windows)]
+            if let Some(job) = job {
+                job.terminate();
+            }
             let _ = child.kill();
             let _ = child.wait();
             return None;
@@ -565,9 +604,12 @@ mod tests {
             c
         };
         let start = Instant::now();
-        let r = run_with_drain(&mut cmd, Duration::from_secs(60), |_| {
-            Duration::from_secs(3)
-        })
+        let r = run_with_drain(
+            &mut cmd,
+            Duration::from_secs(60),
+            |_| Duration::from_secs(3),
+            None,
+        )
         .expect("the shell runs");
         assert!(r.success, "{}", r.describe());
         assert!(!r.stdout_complete, "{}", r.describe());
@@ -579,5 +621,106 @@ mod tests {
             "{:?}",
             start.elapsed()
         );
+    }
+
+    /// Where the helper writes its grandchild's process id.
+    const GRANDCHILD_PID_FILE: &str = "EARSHOT_XTASK_PROC_GRANDCHILD_PID_FILE";
+
+    /// The helper's own name, as libtest's `--exact` wants it.
+    const HELPER: &str = "proc::tests::proc_job_helper_starts_a_grandchild_with_no_console";
+
+    /// Run by the job tests as the direct child of a timed-out command (the test binary run
+    /// again): starts a grandchild with no console at all (`DETACHED_PROCESS`), so nothing
+    /// about cmd's or this binary's console can end it, writes its process id and waits.
+    /// Run by hand, without the variable, it does nothing.
+    #[test]
+    #[ignore = "helper: run as a child process by the proc_job tests"]
+    fn proc_job_helper_starts_a_grandchild_with_no_console() {
+        let Some(file) = std::env::var_os(GRANDCHILD_PID_FILE) else {
+            return;
+        };
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "60", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            /// `DETACHED_PROCESS` (winbase.h).
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            cmd.creation_flags(DETACHED_PROCESS);
+        }
+        let mut grandchild = cmd.spawn().expect("ping starts");
+        std::fs::write(&file, grandchild.id().to_string()).expect("pid file");
+        // Waits as long as the grandchild runs (60 s), well past the 15 s deadline.
+        let _ = grandchild.wait();
+    }
+
+    /// Whether process `pid` still runs (a query by id only).
+    #[cfg(windows)]
+    fn running(pid: u32) -> bool {
+        let out = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output()
+            .expect("tasklist runs");
+        String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\""))
+    }
+
+    /// Runs the helper under a 15 s deadline (`in_job` or not), which it outlives; returns
+    /// its grandchild's process id.
+    #[cfg(windows)]
+    fn time_out_the_helper(in_job: bool) -> u32 {
+        let file = std::env::temp_dir().join(format!(
+            "earshot-xtask-proc-{}-{in_job}.pid",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&file);
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", HELPER, "--ignored", "--nocapture"])
+            .env(GRANDCHILD_PID_FILE, &file);
+        let deadline = Duration::from_secs(15);
+        let out = if in_job {
+            run_in_job_with_timeout(&mut cmd, deadline)
+        } else {
+            run_with_timeout(&mut cmd, deadline)
+        };
+        assert!(out.is_none(), "the helper waits 60 s: {out:?}");
+        let text = std::fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("the helper did not start a grandchild in 15 s: {e}"));
+        let _ = std::fs::remove_file(&file);
+        text.trim().parse().unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(not(windows), ignore = "job objects are Windows only")]
+    fn proc_job_a_timeout_ends_the_grandchildren_too() {
+        #[cfg(windows)]
+        {
+            let pid = time_out_the_helper(true);
+            let until = Instant::now() + Duration::from_secs(10);
+            while running(pid) {
+                assert!(Instant::now() < until, "grandchild {pid} outlived the job");
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(not(windows), ignore = "job objects are Windows only")]
+    fn proc_job_negative_control_without_a_job_the_grandchild_outlives_the_timeout() {
+        #[cfg(windows)]
+        {
+            let pid = time_out_the_helper(false);
+            let alive = running(pid);
+            // Stop the one process this test started, by its id.
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .output();
+            assert!(
+                alive,
+                "grandchild {pid} ended without a job: the control proves nothing"
+            );
+        }
     }
 }

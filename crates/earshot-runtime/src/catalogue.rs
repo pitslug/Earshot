@@ -1112,6 +1112,25 @@ impl Catalogue {
         Ok(!problems.is_empty())
     }
 
+    /// The artefacts of `models` that a refused load in this process found damaged
+    /// ([`Self::check_after_refused_load`]), in the order found: what a child process (the
+    /// model check) reports to the app, which marks them with [`Self::mark_damaged`].
+    #[must_use]
+    pub fn found_damaged(models: &ModelDir) -> Vec<String> {
+        damaged::of(models)
+    }
+
+    /// Marks `artefacts` of `models` damaged in this process, as a refused load here would
+    /// have: another process (the model check's child) found them so. Ids this catalogue does
+    /// not hold are ignored; returns how many were marked.
+    pub fn mark_damaged(&self, models: &ModelDir, artefacts: &[String]) -> usize {
+        artefacts
+            .iter()
+            .filter(|a| self.artefact(a).is_some())
+            .inspect(|a| damaged::mark(models, a))
+            .count()
+    }
+
     /// Puts back every extraction a crash left aside in `models` (`archive::restore_aside`), so
     /// the install needs no new download. Call it at start, before any download can run: it would
     /// otherwise race that download's own swap. Goes on past a failure, which costs only that
@@ -1491,6 +1510,18 @@ mod damaged {
         }
         let root = root(models);
         found().iter().any(|(r, a)| *r == root && a == artefact)
+    }
+
+    pub(super) fn of(models: &ModelDir) -> Vec<String> {
+        if found().is_empty() {
+            return Vec::new();
+        }
+        let root = root(models);
+        found()
+            .iter()
+            .filter(|(r, _)| *r == root)
+            .map(|(_, a)| a.clone())
+            .collect()
     }
 
     pub(super) fn clear(models: &ModelDir, artefact: &str) {

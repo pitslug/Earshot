@@ -792,7 +792,11 @@ impl ModelWork for HostModelWork {
                 .0
                 .languages
         };
-        let mut events = JobLines { progress, warn };
+        let mut events = JobLines {
+            models: &models,
+            progress,
+            warn,
+        };
         let outcome =
             crate::check_child::run_child(&languages, models.root(), cancel, &mut events)?;
         record_outcome(svc, &models, &languages, &outcome)
@@ -826,6 +830,8 @@ pub fn record_outcome(
 
 /// The child's lines as the job's progress and warnings.
 pub struct JobLines<'a> {
+    /// The models folder the check ran on: damage the child found is marked here.
+    pub models: &'a earshot_runtime::backends::ModelDir,
     /// Hears each trial step.
     pub progress: &'a mut dyn FnMut(CheckStep),
     /// Hears each notice.
@@ -833,6 +839,12 @@ pub struct JobLines<'a> {
 }
 
 impl crate::check_child::LineEvents for JobLines<'_> {
+    fn damaged(&mut self, artefacts: Vec<String>) {
+        if let Ok(catalogue) = earshot_runtime::catalogue::Catalogue::embedded() {
+            catalogue.mark_damaged(self.models, &artefacts);
+        }
+    }
+
     fn warning(&mut self, message: String) {
         (self.warn)(message);
     }

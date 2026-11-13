@@ -1035,6 +1035,60 @@ fn catalogue_helpers_found_damaged_by_a_refused_load_read_as_missing_until_downl
     assert!(c.is_installed(&models, HELPERS_MODEL), "repaired");
 }
 
+#[test]
+fn catalogue_helpers_found_damaged_in_another_process_read_as_missing_here() {
+    // A refused library in the model check's child marks nothing in the app process: the
+    // child reports what it found (`found_damaged`) and the app marks it (`mark_damaged`).
+    let h = small_helpers();
+    let dir = TempDir::new("catalogue-helpers");
+    let models = ModelDir::new(dir.0.join("models"));
+    let c = &h.catalogue;
+    let asked = std::cell::RefCell::new(Vec::new());
+    let mut fetch =
+        |url: &Url, dest: &Path, _: &Expected<'_>, _: &CancelToken, _: &mut dyn FnMut(u64, u64)| {
+            fake_fetch(&h.files, &asked, url, dest)
+        };
+    c.download(
+        &models,
+        HELPERS_MODEL,
+        &CancelToken::new(),
+        &mut |_, _| {},
+        &mut fetch,
+    )
+    .unwrap();
+    assert_eq!(Catalogue::found_damaged(&models), Vec::<String>::new());
+    // The child's process: a damaged member found by a refused load.
+    let member = "ort-dir/ort/lib/library.dll";
+    let size = std::fs::metadata(models.root().join(member)).unwrap().len();
+    put(&models, member, &vec![b'!'; usize::try_from(size).unwrap()]);
+    assert!(c.check_after_refused_load(&models, HELPERS_MODEL).unwrap());
+    let reported = Catalogue::found_damaged(&models);
+    assert_eq!(reported, ["ort"]);
+    // The app's process (here another models folder of the same install, so the marks are
+    // apart): unknown ids are ignored, a known one reads as damaged at once.
+    let app = ModelDir::new(dir.0.join("app-models"));
+    let mut fetch =
+        |url: &Url, dest: &Path, _: &Expected<'_>, _: &CancelToken, _: &mut dyn FnMut(u64, u64)| {
+            fake_fetch(&h.files, &asked, url, dest)
+        };
+    c.download(
+        &app,
+        HELPERS_MODEL,
+        &CancelToken::new(),
+        &mut |_, _| {},
+        &mut fetch,
+    )
+    .unwrap();
+    assert!(c.is_installed(&app, HELPERS_MODEL));
+    let mut heard = reported.clone();
+    heard.push("no-such-artefact".into());
+    assert_eq!(c.mark_damaged(&app, &heard), 1);
+    assert_eq!(Catalogue::found_damaged(&app), ["ort"]);
+    let state = c.install_state(&app, HELPERS_MODEL).unwrap();
+    assert_ne!(state.state, InstallState::Installed);
+    assert_eq!(state.files[2], ("ort".to_owned(), FileState::Damaged));
+}
+
 /// A crash between `publish`'s two renames: the start, or the next download, puts the good copy
 /// back with no request.
 #[test]
