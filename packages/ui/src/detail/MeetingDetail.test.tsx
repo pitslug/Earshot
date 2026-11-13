@@ -338,6 +338,16 @@ describe("MeetingDetailView", () => {
       expect(screen.getByText("Split the pump order into two deliveries")).toBeInTheDocument();
     });
 
+    it("shows the due-date editor's label, since the action's text is not shown while it is open", async () => {
+      const { user } = await setup();
+      await screen.findByText(/TL;DR/);
+      await user.click(screen.getByRole("button", { name: "Edit when action 1 is due" }));
+      const due = screen.getByRole("textbox", { name: "when action 1 is due" });
+      const shown = screen.getByText("When action 1 is due");
+      expect(shown.tagName).toBe("LABEL");
+      expect(shown).toHaveAttribute("for", due.id);
+    });
+
     it("cancels a summary edit with Escape and keeps it open on a refusal", async () => {
       const { user, calls } = await setup();
       await screen.findByText(/TL;DR/);

@@ -12,6 +12,7 @@ import {
   Caption1,
   CompoundButton,
   Input,
+  Label,
   Link,
   MessageBar,
   MessageBarActions,
@@ -139,6 +140,10 @@ const useStyles = makeStyles({
     flexWrap: "wrap",
     gap: tokens.spacingHorizontalS,
     minWidth: 0,
+  },
+  // A shown label takes its own line above the editor's field.
+  editorLabel: {
+    flexBasis: "100%",
   },
   field: {
     flexGrow: 1,
@@ -990,6 +995,8 @@ interface EditField {
   label: string;
   /** The button's own text. */
   button: string;
+  /** A label shown above the editor, for a field whose editor hides what it belongs to. */
+  shown?: string;
   text: string;
   onSave(text: string): Promise<boolean>;
 }
@@ -1003,6 +1010,7 @@ function Editable({ fields, children }: { fields: EditField[]; children: ReactNo
     return (
       <TextEditor
         label={editing.label}
+        shown={editing.shown}
         initial={editing.text}
         multiline
         onSave={async (t) => {
@@ -1043,8 +1051,13 @@ function SummaryBody({
 }) {
   const styles = useStyles();
   /** The field as an Edit button, or none when read only. */
-  const edit = (field: SummaryFieldRef, label: string, text: string, button = "Edit"): EditField[] =>
-    onEdit === undefined ? [] : [{ label, button, text, onSave: (t) => onEdit(field, t) }];
+  const edit = (
+    field: SummaryFieldRef,
+    label: string,
+    text: string,
+    button = "Edit",
+    shown?: string,
+  ): EditField[] => (onEdit === undefined ? [] : [{ label, button, shown, text, onSave: (t) => onEdit(field, t) }]);
   return (
     <>
       <div className={styles.section}>
@@ -1093,7 +1106,14 @@ function SummaryBody({
                       ...edit({ kind: "ActionTask", index: i }, `action ${i + 1}`, a.task),
                       ...(a.due === null
                         ? []
-                        : edit({ kind: "ActionDue", index: i }, `when action ${i + 1} is due`, a.due, "Edit date")),
+                        : edit(
+                            { kind: "ActionDue", index: i },
+                            `when action ${i + 1} is due`,
+                            a.due,
+                            "Edit date",
+                            // The editor replaces the action's text, so the date alone needs a label.
+                            `When action ${i + 1} is due`,
+                          )),
                     ]}
                   >
                     <Body1>
@@ -1218,12 +1238,15 @@ function SummaryTab({
  * transcript line holds no line break, so Enter never adds one. */
 function TextEditor({
   label,
+  shown,
   initial,
   multiline,
   onSave,
   onCancel,
 }: {
   label: string;
+  /** A visible label, when the editor needs one. */
+  shown?: string;
   initial: string;
   multiline: boolean;
   onSave(text: string): Promise<void>;
@@ -1251,10 +1274,17 @@ function TextEditor({
       onCancel();
     }
   };
+  const fieldId = useId();
   return (
     <div className={styles.editor}>
+      {shown !== undefined && (
+        <Label className={styles.editorLabel} htmlFor={fieldId}>
+          {shown}
+        </Label>
+      )}
       {multiline ? (
         <Textarea
+          id={fieldId}
           className={styles.field}
           aria-label={label}
           value={text}
@@ -1265,6 +1295,7 @@ function TextEditor({
         />
       ) : (
         <Input
+          id={fieldId}
           className={styles.field}
           aria-label={label}
           value={text}
