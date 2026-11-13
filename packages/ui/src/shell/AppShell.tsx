@@ -481,10 +481,18 @@ export function AppShell({
     if (event.type === "Started") {
       const older = lastMeeting.current;
       if (older !== null && older.finishing && older.id !== event.meeting) setBehindId(older.id);
+      lastMeeting.current = { id: event.meeting, finishing: false };
       setSelectedId(event.meeting);
       // Also a meeting the tray or the shortcut started.
       setView("meeting");
       setStartError(null);
+    }
+    // Followed here, not on a render: an end and the next start can arrive before React draws.
+    if (event.type === "Ended" && lastMeeting.current?.id === event.meeting) {
+      lastMeeting.current = { id: event.meeting, finishing: true };
+    }
+    if (event.type === "Summary" && lastMeeting.current?.id === event.meeting) {
+      lastMeeting.current = { id: event.meeting, finishing: false };
     }
     // An older meeting's end says nothing about the stop button of this one.
     if (event.type === "Ended" && event.meeting === liveMeetingId.current) setStopping(false);
@@ -507,9 +515,6 @@ export function AppShell({
   });
   const meeting = live.meeting;
   liveMeetingId.current = meeting?.meetingId ?? null;
-  if (meeting !== null) {
-    lastMeeting.current = { id: meeting.meetingId, finishing: meeting.phase === "processing" };
-  }
   const recording = meeting !== null && meeting.phase === "recording";
   // The list groups by day: it renders when the day changes, never on a clock tick (T9.24).
   const today = useLocalDay(timer, now);
