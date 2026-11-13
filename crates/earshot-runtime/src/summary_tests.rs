@@ -1012,6 +1012,28 @@ fn summary_input_is_text_only_with_speaker_names_and_local_start() {
     assert_eq!(input.notes.len(), 1);
 }
 
+#[test]
+fn summary_input_keeps_the_standard_rules_whatever_the_settings() {
+    use earshot_core::prompt::{PromptVariant, SummaryRules};
+    let dir = TempDir::new("summary");
+    let (svc, _) = services(&dir);
+    let id = meeting(&svc, "Friday release", 12);
+    // The writer alone chooses brief rules (T12.17c); no production input carries them, so
+    // the local model never gets them from a stored setting or a later experiment.
+    let input = SummaryService::input(&svc, id).unwrap();
+    assert_eq!(input.rules, SummaryRules::Standard);
+    assert_eq!(input.prompt_variant, PromptVariant::Current);
+    crate::summary_style::set_summary_style(&mut svc.store(), "Short bullets.").unwrap();
+    crate::vocabulary::set_vocabulary(&mut svc.store(), &["Quillmarsh"]).unwrap();
+    let input = SummaryService::input(&svc, id).unwrap();
+    assert_eq!(input.rules, SummaryRules::Standard);
+    assert_eq!(input.prompt_variant, PromptVariant::Current);
+    let view = MeetingView::load(&**svc.store(), id).unwrap().unwrap();
+    let eval = crate::summary::evaluation_input(&view);
+    assert_eq!(eval.rules, SummaryRules::Standard);
+    assert_eq!(eval.prompt_variant, PromptVariant::Current);
+}
+
 /// Starts a summary and runs `change` while the call is in flight, and returns the summary
 /// result. The mock endpoint runs `change` when the request arrives, before it answers:
 /// the summary input has been read and its result not yet written, however slow the host.

@@ -118,6 +118,27 @@ fn edit_word_list_is_the_dictionary_then_saved_names_without_repeats() {
 }
 
 #[test]
+fn edit_word_list_orders_people_with_ascii_case_folding_only() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    // The Speakers panel's order (`list_persons`): only ASCII letters fold, so an upper
+    // case non-ASCII letter sorts before its lower case form. The UI mock's `wordListOf`
+    // follows the same rule (packages/ui/src/ipc/mockWords.test.ts holds this case).
+    new_person(&svc, "ödrin Vale", false, 912);
+    new_person(&svc, "Ölvar Tesk", false, 913);
+    let listed: Vec<String> = list_persons(&svc)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(listed, ["Ölvar Tesk", "ödrin Vale"]);
+    assert_eq!(
+        word_list(&svc.store()).unwrap(),
+        ["Ölvar", "Tesk", "ödrin", "Vale"]
+    );
+}
+
+#[test]
 fn edit_word_marks_suggest_on_the_final_transcript_only() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
@@ -306,6 +327,31 @@ fn edit_keep_word_hides_the_suggestion_until_the_line_changes_under_it() {
 }
 
 #[test]
+fn edit_keep_word_refuses_a_word_with_no_suggestion() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let (m, id) = suggesting(&svc, 911);
+    // "ask sorbeck, then ship": only token 1 is suggested.
+    for token in [0, 2, 3] {
+        assert_eq!(
+            refused(keep_word(&svc, m, id, token)),
+            EditError::WordNotFound(id),
+            "token {token}"
+        );
+    }
+    assert!(stored(&svc, m).is_empty(), "nothing recorded on a refusal");
+    // With the word off the list, the suggestion is gone too.
+    set_words(&svc, &["Quillan"]);
+    assert_eq!(
+        refused(keep_word(&svc, m, id, 1)),
+        EditError::WordNotFound(id)
+    );
+    set_words(&svc, &["Zorbek"]);
+    assert!(keep_word(&svc, m, id, 1).unwrap());
+    assert_eq!(stored(&svc, m).len(), 1);
+}
+
+#[test]
 fn edit_word_choices_unreadable_record_reads_as_none() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
@@ -341,6 +387,10 @@ fn edit_word_choices_are_erased_with_the_meeting() {
     );
 }
 
+fn id_of_in(v: &MeetingView, text: &str) -> EntityId {
+    v.segments.iter().find(|s| s.text == text).unwrap().id
+}
+
 #[test]
 fn edit_retranscribe_keeps_a_changed_word_and_drops_a_kept_one() {
     let dir = TempDir::new("edit");
@@ -352,6 +402,13 @@ fn edit_retranscribe_keeps_a_changed_word_and_drops_a_kept_one() {
     let (first, second) = (id_of("first"), id_of("second"));
     set_words(&svc, &["Fyrstan", "Sekondo"]);
     assert!(use_word(&svc, m, first, 0, "Fyrstan").unwrap());
+    // Only a suggested word can be kept, and "second" is a common word: the line reads as
+    // the recogniser might have heard the listed word.
+    decoded(&svc, m, second, "sekonda");
+    assert_eq!(
+        line(&svc, m, second).suggestions,
+        [suggestion(0, "sekonda", "Sekondo")]
+    );
     assert!(keep_word(&svc, m, second, 0).unwrap());
     assert_eq!(stored(&svc, m).len(), 2);
 
@@ -364,11 +421,22 @@ fn edit_retranscribe_keeps_a_changed_word_and_drops_a_kept_one() {
         !v.segments.iter().any(|s| s.id == second),
         "the line was replaced"
     );
+    // The final pass drops the replaced line's choice (transcript words) in its own write.
+    let left = stored(&svc, m);
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!((left[0].segment, left[0].token), (first, 0));
     // The changed word survives with its line; the kept one went with its line, harmlessly.
     assert_eq!(
         line(&svc, m, first).changed,
         [changed(0, "first", "Fyrstan")]
     );
+    // A kept choice that went stale without a write (its line read another word since):
+    // the next word write drops it.
+    let new_second = id_of_in(&view(&svc, m), "second");
+    decoded(&svc, m, new_second, "sekonda");
+    assert!(keep_word(&svc, m, new_second, 0).unwrap());
+    decoded(&svc, m, new_second, "second");
+    assert_eq!(stored(&svc, m).len(), 2, "the stale choice is still stored");
     assert!(put_back_word(&svc, m, first, 0).unwrap());
     assert_eq!(text_of(&svc, m, first), "first");
     assert!(

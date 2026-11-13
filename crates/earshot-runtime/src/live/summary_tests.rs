@@ -31,6 +31,11 @@ struct Seen {
     title: Option<String>,
     /// The user's own words the window carried (T12.15a).
     vocabulary: Vec<String>,
+    /// The rules and prompt variant the window carried (always the standard ones, T12.17c).
+    rules: (
+        earshot_core::prompt::SummaryRules,
+        earshot_core::prompt::PromptVariant,
+    ),
     /// The thread's OS priority (Windows).
     priority: Option<i32>,
 }
@@ -84,6 +89,7 @@ impl MapChunk for FakeMapper {
             before: last.start,
             title: input.meeting.title.clone(),
             vocabulary: input.vocabulary.words().to_vec(),
+            rules: (input.rules, input.prompt_variant),
             priority,
         });
         assert!(self.behaviour != Behaviour::Panics, "the model crashed");
@@ -207,6 +213,15 @@ fn live_summaries_map_each_settled_window_during_the_session_and_record_it() {
     assert_eq!(seen[0].title, None);
     assert!(
         seen.iter().all(|s| s.vocabulary == ["Quillmarsh"]),
+        "{seen:?}"
+    );
+    // The local model's standard rules, never a writer's brief ones (T12.17c).
+    assert!(
+        seen.iter().all(|s| s.rules
+            == (
+                earshot_core::prompt::SummaryRules::Standard,
+                earshot_core::prompt::PromptVariant::Current
+            )),
         "{seen:?}"
     );
     assert_eq!(seen[0].before, 0);

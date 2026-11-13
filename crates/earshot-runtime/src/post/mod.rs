@@ -146,7 +146,8 @@
 //!    edited segment's span is left out) and the run reports
 //!    [`PostWarning::EditedLinesKept`]. The edited segment's speaker row is never made a
 //!    tombstone, though a new voice may still continue it (step 4); its "Speaker N" number
-//!    is not given to anyone else. Only when [`PostConfig::enroll_me`] is set, the
+//!    is not given to anyone else. A row kept only for its edited lines takes this run's
+//!    role for its track (never from or to "Me"). Only when [`PostConfig::enroll_me`] is set, the
 //!    user's voiceprint is updated from the "Me" centroid ([`enroll_me`]). The live
 //!    transcript is kept.
 //!
@@ -520,7 +521,8 @@ pub struct PostOutcome {
     pub meeting: EntityId,
     /// The speakers of the processed tracks (mic speakers first, then loopback).
     pub speakers: Vec<PostSpeaker>,
-    /// Number of final segments written for the processed tracks.
+    /// Number of final segments of the processed tracks: those written, and the edited
+    /// lines kept (module docs, step 5).
     pub final_segments: usize,
     /// The user's voiceprint written or updated by "Me" enrolment.
     pub enrolled_me: Option<EntityId>,
@@ -1706,15 +1708,70 @@ where
                 });
             }
 
+            let ours_now: BTreeSet<EntityId> = speakers.iter().map(|s| s.id).collect();
+            // A speaker row kept only for its edited lines (no new voice continued it) takes
+            // this run's role for its track, as a continued row does; "Me" stays "Me" (one Me
+            // row per meeting, and only it may be linked to the user). A row with lines on
+            // two tracks, or on a track this run left alone, keeps its role. Its carried
+            // identity entry is re-stamped as the continued-row branch does, so the pass's own
+            // write never reads as a user edit next time; an entry that already read as an
+            // edit is left as it is.
+            let mut restamped: Vec<(EntityId, earshot_core::identity::HlcTimestamp)> = Vec::new();
+            for old in &earlier {
+                if !edited_speakers.contains(&old.id)
+                    || ours_now.contains(&old.id)
+                    || kept_speakers.contains(&old.id)
+                    || old.role == SpeakerRole::Me
+                {
+                    continue;
+                }
+                let kinds: BTreeSet<TrackId> = edited
+                    .iter()
+                    .filter(|r| r.segment.speaker_id == Some(old.id))
+                    .filter_map(|r| {
+                        input
+                            .tracks
+                            .iter()
+                            .find(|t| t.track.id == r.segment.track)
+                            .map(|t| t.track.kind)
+                    })
+                    .collect();
+                let mut kinds = kinds.into_iter();
+                let (Some(kind), None) = (kinds.next(), kinds.next()) else {
+                    continue;
+                };
+                let role = match kind {
+                    _ if !two => SpeakerRole::Room,
+                    TrackId::Mic => SpeakerRole::Local,
+                    TrackId::Reference => SpeakerRole::Remote,
+                };
+                if old.role != role {
+                    let mut row = old.clone();
+                    row.role = role;
+                    row.meta.touch(stamp.hlc, stamp.clock);
+                    if previous
+                        .iter()
+                        .any(|i| i.speaker == old.id && !i.edited(old))
+                    {
+                        restamped.push((old.id, row.meta.updated_at));
+                    }
+                    tx.put_speaker(row)?;
+                }
+            }
+
             // The identities for the next run: this run's speakers, and the earlier entries
             // of speakers it left alone (another track's, on a partial re-run). Entries of
             // tombstoned speakers are dropped (their centroids are biometric data).
-            let ours_now: BTreeSet<EntityId> = speakers.iter().map(|s| s.id).collect();
             let mut record: Vec<SpeakerIdentity> = previous
                 .into_iter()
                 .filter(|i| !ours_now.contains(&i.speaker) && !tombstoned.contains(&i.speaker))
                 .filter(|i| earlier.iter().any(|s| s.id == i.speaker))
                 .collect();
+            for i in &mut record {
+                if let Some((_, at)) = restamped.iter().find(|(id, _)| *id == i.speaker) {
+                    i.given_stamp = Some(*at);
+                }
+            }
             record.extend(identities);
             if record.is_empty() {
                 tx.delete_local_value(key.as_str())?;
@@ -1739,7 +1796,9 @@ where
                 })
                 .collect();
             labelled.sort_by_key(|s| (s.start, s.id));
-            let final_segments = labelled.len();
+            // The final transcript of the processed tracks: the new segments and the edited
+            // lines kept (step 5).
+            let final_segments = labelled.len() + edited.len();
             for segment in labelled {
                 let row = SegmentRow::new(
                     meeting,
@@ -1750,6 +1809,9 @@ where
                 );
                 tx.put_segment(row)?;
             }
+            // Word choices on lines this run replaced go with them (transcript words);
+            // choices on kept lines (edited, or another track's) stay.
+            crate::word_choices::drop_stale_tx(tx, meeting)?;
 
             let mut enrolled_me = None;
             if config.enroll_me

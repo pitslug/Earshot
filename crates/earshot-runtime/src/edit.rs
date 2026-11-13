@@ -67,7 +67,7 @@ use earshot_core::model::{
 };
 use earshot_core::pipeline::{FinalPassRequest, FinalPassTrack};
 use earshot_core::summary::SummaryV1;
-use earshot_core::vocabulary::suggest::split_punctuation;
+use earshot_core::vocabulary::suggest::{Suggester, split_punctuation};
 use earshot_core::voiceprint::{
     Person, VoiceprintError, VoiceprintRepo, enroll, identity_of, me_person, resolve_person,
 };
@@ -170,7 +170,7 @@ pub enum EditError {
     /// ([`ignore_speaker`]). A re-transcription stores one.
     NoStoredVoice(EntityId),
     /// The line (the id) has no word at that position: it changed meanwhile ([`use_word`],
-    /// [`put_back_word`], [`keep_word`]).
+    /// [`put_back_word`], [`keep_word`]), or, for [`keep_word`], no word is suggested there.
     WordNotFound(EntityId),
     /// The word is not on the word list ([`use_word`]). Never carries the word.
     WordNotListed,
@@ -379,9 +379,12 @@ pub fn rename_meeting(
 /// transaction, and an edit after it finds the replaced segment gone
 /// ([`EditError::SegmentNotFound`]).
 ///
+/// Refused while a live session, a final pass or a summary works on the meeting
+/// (`line_edit_claim`): a summary run would otherwise be discarded at its store.
+///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting or segment, a draft transcript, unusable
-/// text); store errors.
+/// text); [`RuntimeError::MeetingBusy`] (retryable) while the meeting is busy; store errors.
 pub fn edit_segment(
     services: &Services,
     meeting: EntityId,
@@ -389,6 +392,7 @@ pub fn edit_segment(
     text: &str,
 ) -> Result<bool, RuntimeError> {
     let text = clean_segment_text(text)?;
+    let _claim = line_edit_claim(services, meeting)?;
     write(services, |tx, stamp| {
         let (row, _) = final_line(tx, meeting, segment)?;
         put_line_text(tx, stamp, row, text)
@@ -410,6 +414,7 @@ pub fn edit_segment_offering(
     text: &str,
 ) -> Result<Vec<String>, RuntimeError> {
     let text = clean_segment_text(text)?;
+    let _claim = line_edit_claim(services, meeting)?;
     write(services, |tx, stamp| {
         let (row, _) = final_line(tx, meeting, segment)?;
         let before = row.segment.text.clone();
@@ -420,6 +425,19 @@ pub fn edit_segment_offering(
         let listed = word_choices::word_list_tx(tx)?;
         Ok(crate::vocabulary::words_to_offer(&before, &after, &listed))
     })
+}
+
+/// Claims `meeting` for one line edit, refused with retryable [`RuntimeError::MeetingBusy`]
+/// while a live session records it or a final pass or summary works on it or waits to
+/// ([`Services::lease_meeting_alone`]). A summary is stored only over the transcript it
+/// read (`crate::summary::store_summary` conflicts on a text edit), so an edit during the
+/// run would discard the whole run: the edit waits instead, as summary edits do. The claim
+/// is an [`MeetingJob::Other`] lease, held across the write only.
+fn line_edit_claim(
+    services: &Services,
+    meeting: EntityId,
+) -> Result<crate::MeetingLease, RuntimeError> {
+    services.lease_meeting_alone(meeting, MeetingJob::Other)
 }
 
 /// The live final-transcript row `segment` of the live meeting `meeting`, with every live
@@ -559,6 +577,7 @@ pub fn use_word(
     token: usize,
     word: &str,
 ) -> Result<bool, RuntimeError> {
+    let _claim = line_edit_claim(services, meeting)?;
     write(services, |tx, stamp| {
         let (row, lines) = final_line(tx, meeting, segment)?;
         let (range, current) = word_at(&row, token)?;
@@ -613,6 +632,7 @@ pub fn put_back_word(
     segment: EntityId,
     token: usize,
 ) -> Result<bool, RuntimeError> {
+    let _claim = line_edit_claim(services, meeting)?;
     write(services, |tx, stamp| {
         let (row, lines) = final_line(tx, meeting, segment)?;
         let mut choices = holding_choices(tx, meeting, &lines)?;
@@ -633,10 +653,12 @@ pub fn put_back_word(
 
 /// "Keep" (T12.15e): token `token` of line `segment` stays as decoded and is not suggested
 /// again in this meeting (`crate::word_choices`); the line is not written. Returns whether a
-/// choice was recorded (a token whose choice still holds records nothing).
+/// choice was recorded (a token whose choice still holds records nothing). Only a token the
+/// matcher suggests a listed word for can be kept.
 ///
 /// # Errors
-/// [`EditError`] ([`edit_segment`]'s refusals, [`EditError::WordNotFound`]); store errors.
+/// [`EditError`] ([`edit_segment`]'s refusals, [`EditError::WordNotFound`] also for a token
+/// with no suggestion); store errors.
 pub fn keep_word(
     services: &Services,
     meeting: EntityId,
@@ -652,6 +674,16 @@ pub fn keep_word(
             .any(|c| c.segment == segment && c.token == token)
         {
             return Ok(false);
+        }
+        // Only a suggested word can be kept: one with no suggestion (the line or the word
+        // list changed since it was shown) is refused like a word that is gone.
+        let list = word_choices::word_list_tx(tx)?;
+        if !Suggester::new(&list)
+            .suggest(&row.segment.text)
+            .iter()
+            .any(|g| g.token == token)
+        {
+            return Err(EditError::WordNotFound(segment).into());
         }
         choices.push(WordChoice {
             segment,
@@ -1166,8 +1198,11 @@ pub fn can_unmark_me(tracks: &[Track], row: &Speaker) -> bool {
 /// [`remember_voices`] keeps refusing the row. The voice's existing entry in the identity
 /// record (the centroid the final pass already stored) stays, marked as the user's edit, so a
 /// re-run can match the voice again (`crate::post`, step 4): the one kind of "Me" row with an
-/// entry. Like any edit the mark goes with the voice when a re-run does not match it. Written
-/// summaries are not touched.
+/// entry. Like any edit the mark goes with the voice when a re-run does not match it; a voice
+/// with no entry (an invalid centroid, or an unreadable record) is marked too, but no re-run
+/// can match it, so its mark goes at the next re-transcription. The entry names the user as
+/// its person from then on, so forgetting the user's voice drops it and removing a person
+/// the pass had matched to the voice does not. Written summaries are not touched.
 ///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting or speaker, [`EditError::NotInRoom`],
@@ -1198,7 +1233,10 @@ pub fn mark_me(
         row.display_name.clone_from(&me.display_name);
         row.meta.touch(stamp.hlc, stamp.clock);
         tx.put_speaker(row)?;
+        // The entry is the user's voice now: forgetting the user's voice drops it, and
+        // removing a person the pass had matched to the voice does not.
         update_identity_entry(tx, meeting, speaker, |i| {
+            i.given_person = Some(me.id);
             i.user_edited = true;
             i.enrolled = false;
             i.ignored = false;

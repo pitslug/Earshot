@@ -46,6 +46,13 @@ describe("mock suggested words (T12.15e)", () => {
     ).toEqual(["Zorbek", "Quillan", "Marsh", "vantrel", "Brevik", "Tamsin", "Oskarine"]);
     // A user who set a name is listed like anyone else.
     expect(wordListOf([], [person("1", "Nilo Ardent", true)])).toEqual(["Nilo", "Ardent"]);
+    // Only ASCII letters fold, as in Rust (`edit_word_list_orders_people_with_ascii_case_folding_only`).
+    expect(wordListOf([], [person("1", "ödrin Vale"), person("2", "Ölvar Tesk")])).toEqual([
+      "Ölvar",
+      "Tesk",
+      "ödrin",
+      "Vale",
+    ]);
     expect(tokensOf(" a b  c ")).toEqual(["a", "b", "c"]);
     expect(splitPunctuation("(sorbeck's),")).toEqual(["(", "sorbeck's", "),"]);
     expect(splitPunctuation("--")).toEqual(["--", "", ""]);

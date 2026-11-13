@@ -226,6 +226,47 @@ fn edit_segment_marks_an_older_summary_out_of_date_and_sends_nothing() {
 }
 
 #[test]
+fn edit_segment_waits_while_a_summary_or_final_pass_works_on_the_meeting() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Release", 410);
+    let id = view(&svc, m).segments[1].id;
+    set_words_for_lines(&svc, &["Zorbek"]);
+    for job in [
+        MeetingJob::Processing,
+        MeetingJob::Recording,
+        MeetingJob::Waiting,
+    ] {
+        let lease = svc.lease_meeting_for(m, job).unwrap();
+        let before = segment_row(&svc, m, id);
+        // A summary run would be discarded at its store: the line edit waits instead.
+        for r in [
+            edit_segment(&svc, m, id, "yes Friday works").map(|_| ()),
+            edit_segment_offering(&svc, m, id, "yes Friday works").map(|_| ()),
+            use_word(&svc, m, id, 0, "Zorbek").map(|_| ()),
+            put_back_word(&svc, m, id, 0).map(|_| ()),
+        ] {
+            assert!(
+                matches!(r, Err(RuntimeError::MeetingBusy(x)) if x == m),
+                "{job:?}: {r:?}"
+            );
+        }
+        assert_eq!(segment_row(&svc, m, id), before, "{job:?}: nothing written");
+        drop(lease);
+    }
+    // An export's lease does not change what is happening to the meeting.
+    let export = svc.lease_meeting(m).unwrap();
+    assert!(edit_segment(&svc, m, id, "yes Friday works").unwrap());
+    drop(export);
+    // The edit's own claim is gone afterwards: a summary run may start.
+    drop(svc.lease_meeting_alone(m, MeetingJob::Processing).unwrap());
+}
+
+fn set_words_for_lines(svc: &Services, words: &[&str]) {
+    crate::vocabulary::set_vocabulary(&mut svc.store(), words).unwrap();
+}
+
+#[test]
 fn edit_retranscribe_keeps_edited_lines_and_warns() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
@@ -292,6 +333,137 @@ fn edit_retranscribe_keeps_edited_lines_and_warns() {
     assert!(matches!(third.post, HostPost::Done(_)));
     let texts: Vec<String> = view(&svc, m).segments.into_iter().map(|s| s.text).collect();
     assert_eq!(texts, ["me", "first, corrected by hand", "second"]);
+}
+
+#[test]
+fn edit_retranscribe_counts_kept_lines_and_gives_their_speaker_this_runs_role() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 412);
+    let v = view(&svc, m);
+    // The fakes decode "first" on the far end at 9.0-9.3 s, every run.
+    let first = v
+        .segments
+        .iter()
+        .find(|s| s.text == "first")
+        .unwrap()
+        .clone();
+    let speaker = first.speaker_id.unwrap();
+    assert!(edit_segment(&svc, m, first.id, "first, corrected by hand").unwrap());
+    // The speaker has no identity entry any more (as after an invalid centroid), so no new
+    // voice continues its row, and the row carries a role an older run gave it.
+    {
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        db.delete_local_value(record_key(m).as_str()).unwrap();
+        let mut row = db
+            .speakers(m)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == speaker)
+            .unwrap();
+        assert_eq!(row.role, SpeakerRole::Remote);
+        let (store, hlc) = db.parts();
+        row.role = SpeakerRole::Local;
+        row.meta.touch(hlc, &*clock);
+        store.put_speaker(row).unwrap();
+    }
+
+    let cancel = CancelToken::new();
+    let again = retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    let HostPost::Done(outcome) = &again.post else {
+        panic!("{:?}", again.post);
+    };
+    let v = view(&svc, m);
+    let texts: Vec<&str> = v.segments.iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(texts, ["me", "first, corrected by hand", "second"]);
+    assert_eq!(
+        outcome.final_segments,
+        v.segments.len(),
+        "the kept edited line is part of the final transcript"
+    );
+    let kept = v.speakers.iter().find(|s| s.id == speaker).unwrap();
+    assert_eq!(
+        kept.role,
+        SpeakerRole::Remote,
+        "a far-end line's speaker is remote under this run's policy"
+    );
+}
+
+#[test]
+fn edit_retranscribe_role_change_of_a_kept_row_is_not_read_as_a_user_edit() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 414);
+    let first = view(&svc, m)
+        .segments
+        .into_iter()
+        .find(|s| s.text == "first")
+        .unwrap();
+    let speaker = first.speaker_id.unwrap();
+    assert!(edit_segment(&svc, m, first.id, "first, corrected by hand").unwrap());
+    // The row keeps an identity entry no new voice matches (another voice's centroid), and
+    // a role an older run gave it; the entry reads as the pass's own naming.
+    {
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let mut row = db
+            .speakers(m)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == speaker)
+            .unwrap();
+        let (store, hlc) = db.parts();
+        row.role = SpeakerRole::Local;
+        row.meta.touch(hlc, &*clock);
+        store.put_speaker(row.clone()).unwrap();
+        let key = record_key(m);
+        let Some(StoredIdentities::Record(mut record)) =
+            store.local_value(key.as_str()).unwrap().map(|b| decode(&b))
+        else {
+            panic!("a record");
+        };
+        let entry = record
+            .speakers
+            .iter_mut()
+            .find(|i| i.speaker == speaker)
+            .unwrap();
+        let n = entry.centroid.vector.len();
+        let mut far = vec![0.0; n];
+        far[n - 1] = 1.0;
+        far[0] = -1.0;
+        entry.centroid = earshot_core::diar::Embedding::new(entry.centroid.model.clone(), far);
+        entry.given_stamp = Some(row.meta.updated_at);
+        entry.user_edited = false;
+        assert!(!entry.edited(&row));
+        // Test set-up only: production writes this record through the runtime's registry.
+        store
+            .set_local_value(
+                key.as_str(),
+                &crate::identities::encode(&IdentityRecord {
+                    speakers: record.speakers,
+                }),
+            )
+            .unwrap();
+    }
+
+    let cancel = CancelToken::new();
+    retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    let row = view(&svc, m)
+        .speakers
+        .into_iter()
+        .find(|s| s.id == speaker)
+        .unwrap();
+    assert_eq!(row.role, SpeakerRole::Remote, "the pass changed the role");
+    let entry = identities_in(&svc.store(), m)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.speaker == speaker)
+        .expect("the entry is carried");
+    assert!(
+        !entry.edited(&row),
+        "the pass's own role change is not a user edit: {entry:?}"
+    );
 }
 
 fn w(text: &str, start: u64, end: u64) -> Word {
