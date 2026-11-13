@@ -272,6 +272,24 @@ fn search_replaced_by_a_newer_one_fails_as_superseded_without_the_query() {
 }
 
 #[test]
+fn search_sent_later_keeps_its_answer_when_an_older_one_begins_after_it() {
+    let dir = TempDir::new("search-sent-order");
+    let svc = services(&dir);
+    meeting(&svc, "Orchard review", T0, Some(60_000), 43);
+    let searches = earshot_runtime::search::Searches::default();
+    let newer = searches.begin_sent(8);
+    let older = searches.begin_sent(7);
+    assert_eq!(
+        meeting_search(&svc, "orchard", &older).unwrap_err().kind,
+        SEARCH_SUPERSEDED_KIND
+    );
+    assert_eq!(
+        meeting_search(&svc, "orchard", &newer).unwrap().items.len(),
+        1
+    );
+}
+
+#[test]
 fn app_state_opens_and_reports_the_store() {
     let dir = TempDir::new("state");
     let state = AppState::open(DataDir::new(dir.0.join("fresh")));

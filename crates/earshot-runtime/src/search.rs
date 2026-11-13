@@ -122,21 +122,58 @@ pub fn search_meetings_unless(
 
 /// The searches of one window (T9.24): each new search supersedes the one before, which stops
 /// between two meetings and gives no answer. Typing runs a search per pause, and only the
-/// newest text is wanted.
+/// newest text is wanted. "Newest" is the order the window sent them in ([`Searches::begin_sent`]),
+/// never the order they begin here, which can differ for two searches sent a few ms apart.
 #[derive(Debug, Default)]
 pub struct Searches {
-    current: Mutex<Option<CancelToken>>,
+    state: Mutex<SearchOrder>,
+}
+
+#[derive(Debug, Default)]
+struct SearchOrder {
+    /// The running search: the number the window sent it with, and its token.
+    current: Option<(u64, CancelToken)>,
+    /// The highest number any search was sent with.
+    last: u64,
 }
 
 impl Searches {
-    /// The token of a new search, cancelling the search before it.
+    /// The token of a new search sent after every other, cancelling the search before it.
     pub fn begin(&self) -> CancelToken {
+        let next = self.order().last.saturating_add(1);
+        self.begin_sent(next)
+    }
+
+    /// The token of the search the window sent `sent`th (its numbers grow in the order it sends):
+    /// it cancels the running search when that was sent before it, and is itself cancelled at once
+    /// (so it gives no answer) when the running one was sent after it. Call
+    /// [`Searches::end_sent`] when it ends, so a window that counts from 1 again after a reload is
+    /// not taken for an older one.
+    pub fn begin_sent(&self, sent: u64) -> CancelToken {
         let token = CancelToken::new();
-        let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(older) = current.replace(token.clone()) {
-            older.cancel();
+        let mut order = self.order();
+        order.last = order.last.max(sent);
+        match &order.current {
+            Some((running, _)) if *running >= sent => token.cancel(),
+            _ => {
+                if let Some((_, older)) = order.current.replace((sent, token.clone())) {
+                    older.cancel();
+                }
+            }
         }
         token
+    }
+
+    /// The search sent `sent`th has ended; nothing changes when another one runs.
+    pub fn end_sent(&self, sent: u64) {
+        let mut order = self.order();
+        if order.current.as_ref().is_some_and(|(running, _)| *running == sent) {
+            order.current = None;
+        }
+    }
+
+    fn order(&self) -> std::sync::MutexGuard<'_, SearchOrder> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
