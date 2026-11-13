@@ -377,6 +377,22 @@ Rules learned while building. One bullet per rule; history lives in commits.
 - `StreamingChunker` finals do not depend on push batching (it steps per VAD frame) but partials do; echo-filter tests judge near-end words by the chunker's finals (`recognised_near`, computed offline with production `LiveTrack`), never by "every word in any partial".
 - `PostStage` promises order per step kind (track order for the tracks one diarizer handles; with a second diarizer `Diarised` steps come in either order) plus `EchoChecked` then `Stored` last; transcription and diarisation steps interleave (T6.12).
 
+- Learned in T12.36 (2026-11-14):
+  - Transcript line edits and word actions hold `lease_meeting_alone(Other)` across their write and are refused `MeetingBusy` while the meeting records, finishes or runs a job; the UI disables them under the same conditions.
+  - Whenever the final pass touches a speaker row whose identity entry it carries over, it re-stamps that entry's `given_stamp`, or the next run reads the pass's own write as a user edit.
+  - Whisper evidence windows hold only the calling thread's lines (`logs_since_complete_on_this_thread`); the ring is still process-wide, so `WHISPER_LOADS` guards overflow, not mixing.
+  - Install state is a size check plus an in-process `FileState::Damaged` mark, set only when `init_onnx` hears a refused library (`Catalogue::check_after_refused_load`) and cleared by that file's successful download.
+  - `run_after_watched` never polls the meeting's token. Cancel records the token's poll count, and a cancel grace applies only in `Steps` once the work has polled since the cancel, never to a model load.
+  - A left after-meeting thread holds a pass that refuses the check, benchmark, voice sample, audio check and CUDA removal, but never a meeting, a meeting job or the update's restart.
+  - Meeting search carries a per-page random number and a send sequence (`search_meetings(query, page, sent)`).
+  - `Store::open` retries the WAL switch until `BUSY_TIMEOUT`. xtask's zip reader reads per-entry zip64 extra fields.
+  - `sign-update` refuses when two release folders hold the version's installer.
+  - A shared case fixture pins nothing unless both suites read the key.
+  - The merge-by-selection path (T12.25 part 2) is evaluation only:
+    - `summary::{parse_selection, build_from_selection}`, `prompt::select_prompt`, `grammar::selection_grammar` and `summarize::summarize_chunks_select`;
+    - format key `-select` after `-reuse`, before `-template-`;
+    - pinned out of shipped code by `summarize_merge_by_selection_is_used_by_no_shipped_code`;
+    - the production grammar is pinned byte for byte by `crates/earshot-llm-local/src/snapshots/summary_grammar.gbnf`.
 - Process: lanes do not run `cargo xtask ci`; they run their crates' tests, `cargo clippy -p <crate> --all-targets -- -D warnings` with `CLIPPY_CONF_DIR` at the repo root, `cargo fmt --all -- --check` and the task's accept. The coordinator merges reviewed lanes in batches and runs the full `cargo xtask ci` once per batch on main before the batch is called done; at most about 6 lanes run at once. Under that load timing tests can exceed fixed bounds (`cancelling_from_another_thread_aborts_a_long_decode` took 5.4 s vs 5 s with 10 lanes running): re-run the failing test alone and the batch ci before calling it environmental, never widen the bound.
 
 - Desktop app (T7.1): `cargo xtask ci` runs the `ui` step first (`xtask/src/ui.rs`: `pnpm install --frozen-lockfile`, `-r build`, `-r test` via `cmd /c pnpm`) because `earshot-desktop`'s `tauri::generate_context!` needs `apps/desktop/dist` at compile time: run `cmd /c pnpm -r build` before a plain workspace `cargo build`/`clippy`/`test`, and keep pnpm on PATH (on the desktop in agent shells, `target\tools\pnpm.cmd` wraps pnpm 12's `bin/pnpm.mjs` while the global shim is broken). `packages/ui/src/ipc/bindings.ts` is generated from `apps/desktop/src-tauri/src/ipc.rs`; change it only with `EARSHOT_UPDATE_BINDINGS=1 cargo test -p earshot-desktop bindings` in the same commit as the command or type change; every command needs a matching `Ipc` method and mock (tsc and the mock test fail otherwise). Components reach Rust only through `useIpc()`; only `ipc/tauri.ts` imports `@tauri-apps/api`. 64-bit ints are exported as TS `number` (`dangerously_cast_bigints_to_number`): keep such fields below 2^53. Tauri crates and specta are pinned with `=` and match `@tauri-apps/api`/`cli` at the same 2.x minor.
