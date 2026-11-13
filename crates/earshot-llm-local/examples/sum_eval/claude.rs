@@ -12,7 +12,9 @@
 //!   with its reply budget and citable segment numbers. A meeting whose plan needs more
 //!   than one request has its map steps exported as `<meeting>.<source>.part<k>.*` and is
 //!   marked `"single": false`: its merge step depends on the map replies and cannot be
-//!   exported ahead of time, so its import counts as a failure.
+//!   exported ahead of time, so its import counts as a failure. The requests carry the
+//!   Anthropic writer's shared rules ([`EXPORT_RULES`], standard), recorded as `rules` in
+//!   `index.json` and every entry.
 //! - `--import-replies <dir> --label <name>`: reads `<meeting>.<source>.reply.json` (the raw
 //!   JSON the model returned), validates it with `earshot_core::summary::validate_reply`
 //!   against the same segment numbers and citable set, and scores it with `score.rs`
@@ -21,15 +23,42 @@
 
 use std::path::{Path, PathBuf};
 
-use earshot_core::prompt::{ChatMessage, Prompt, PromptPlan, Role, SummaryInput, plan};
+use std::borrow::Cow;
+
+use earshot_core::prompt::{
+    ChatMessage, Prompt, PromptPlan, Role, SummaryInput, SummaryRules, plan,
+};
 use earshot_core::summary::validate_reply;
 use earshot_llm::{ANTHROPIC_DEFAULT_BUDGET, SUMMARY_LLM_SCHEMA_JSON};
 use serde_json::{Value, json};
 
-/// The request steps of `input` under the Anthropic default budget, and whether the plan is
-/// one request.
+/// The shared rules the exported requests carry: the Anthropic API writer's
+/// (`earshot_llm::LlmClient::summary_rules`, T12.17c), whatever the input says, because the
+/// export is the request that writer would send. Recorded in `index.json` and every entry; the
+/// agent-CLI candidates (`--claude-code`, `--codex`) write with the brief rules instead.
+pub const EXPORT_RULES: SummaryRules = SummaryRules::Standard;
+
+/// `input` with [`EXPORT_RULES`].
+fn with_export_rules(input: &SummaryInput) -> Cow<'_, SummaryInput> {
+    if input.rules == EXPORT_RULES {
+        Cow::Borrowed(input)
+    } else {
+        Cow::Owned(SummaryInput {
+            rules: EXPORT_RULES,
+            ..input.clone()
+        })
+    }
+}
+
+/// The name [`EXPORT_RULES`] is recorded under.
+fn export_rules_name() -> Value {
+    serde_json::to_value(EXPORT_RULES).unwrap_or(Value::Null)
+}
+
+/// The request steps of `input` under the Anthropic default budget with [`EXPORT_RULES`], and
+/// whether the plan is one request.
 pub fn steps(input: &SummaryInput) -> Result<(Vec<Prompt>, bool), String> {
-    match plan(input, ANTHROPIC_DEFAULT_BUDGET).map_err(|e| e.to_string())? {
+    match plan(&with_export_rules(input), ANTHROPIC_DEFAULT_BUDGET).map_err(|e| e.to_string())? {
         PromptPlan::Single(p) => Ok((vec![p], true)),
         PromptPlan::MapReduce(chunks) => {
             Ok((chunks.into_iter().map(|c| c.prompt).collect(), false))
@@ -96,6 +125,7 @@ pub fn export_one(
         "meeting": meeting,
         "source": source,
         "single": single,
+        "rules": export_rules_name(),
         "segments": input.segments.len(),
         "steps": files,
         "note": if single { Value::Null } else { json!(
@@ -112,6 +142,7 @@ pub fn export_finish(dir: &Path, entries: Vec<Value>) -> Result<(), String> {
             "context_window": ANTHROPIC_DEFAULT_BUDGET.context_window,
             "max_output_tokens": ANTHROPIC_DEFAULT_BUDGET.max_output_tokens,
         },
+        "rules": export_rules_name(),
         "how": "For each step, send `system` as the system prompt and `user` as the one user turn; the reply must be one JSON object following schema.json (citations are the [n] segment numbers of the transcript, only the listed citable numbers, at most three per item). Save the raw JSON as `reply`.",
         "schema": "schema.json",
         "entries": entries,
@@ -191,6 +222,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn claude_export_carries_and_records_the_anthropic_writers_rules() {
+        let dir = scratch("claude-rules");
+        let standard = input(3);
+        let brief = SummaryInput {
+            rules: SummaryRules::Brief,
+            ..standard.clone()
+        };
+        let (a, _) = steps(&standard).unwrap();
+        let (b, _) = steps(&brief).unwrap();
+        assert_eq!(
+            a[0].messages, b[0].messages,
+            "the input's rules do not apply"
+        );
+        let entry = export_one(&dir, "ES2004a", "reference", &brief).unwrap();
+        export_finish(&dir, vec![entry.clone()]).unwrap();
+        assert_eq!(entry["rules"], "standard");
+        let index: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("index.json")).unwrap())
+                .unwrap();
+        assert_eq!(index["rules"], "standard");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
