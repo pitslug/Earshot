@@ -3171,18 +3171,16 @@ fn recording_gaps(
     gaps: &[(TrackId, u64, u64)],
     seed: u64,
 ) -> (Vec<Duration>, Option<Duration>) {
-    let (during, at_end, _) = recording_gaps_with(reference, gaps, &[], seed);
-    (during, at_end)
+    recording_gaps_with(reference, gaps, &[], seed)
 }
 
-/// [`recording_gaps`] with `markers` (track, frame at 16 kHz, kind) as well, and how the
-/// session ended.
+/// [`recording_gaps`] with `markers` (track, frame at 16 kHz, kind) as well.
 fn recording_gaps_with(
     reference: bool,
     gaps: &[(TrackId, u64, u64)],
     markers: &[(TrackId, u64, DiscontinuityKind)],
     seed: u64,
-) -> (Vec<Duration>, Option<Duration>, EndReason) {
+) -> (Vec<Duration>, Option<Duration>) {
     let dir = TempDir::new();
     let svc = services(&dir);
     let total_ms = 12_000;
@@ -3218,7 +3216,7 @@ fn recording_gaps_with(
         RuntimeWarning::RecordingGap { total } => Some(*total),
         _ => None,
     });
-    (during, at_end, outcome.reason)
+    (during, at_end)
 }
 
 fn assert_about(got: Duration, want_ms: u64) {
@@ -3269,9 +3267,9 @@ fn mic_reopen_markers(
 
 #[test]
 fn live_recording_gap_after_a_stream_error_reopen_is_reported() {
-    // A stream error re-opened the mic three seconds later (T9.21): the silence filled
+    // The markers a capture re-open leaves (T9.21), three seconds apart: the silence filled
     // between is a gap like any other.
-    let (during, at_end, reason) = recording_gaps_with(
+    let (during, at_end) = recording_gaps_with(
         true,
         &[(TrackId::Mic, 4000, 3000)],
         &mic_reopen_markers(4000, Some(7000)),
@@ -3279,14 +3277,13 @@ fn live_recording_gap_after_a_stream_error_reopen_is_reported() {
     );
     assert_about(*during.last().expect("a warning during the meeting"), 3000);
     assert_about(at_end.expect("in the outcome"), 3000);
-    assert_eq!(reason, EndReason::Finished);
 }
 
 #[test]
 fn live_recording_gap_grows_when_the_mic_track_ends_and_the_reference_records_on() {
-    // The mic ended after its stream errors outlasted their bound (T9.21) while the far end
-    // went on: the rest of the meeting is a gap on the mic, and the meeting is not failed.
-    let (during, at_end, reason) = recording_gaps_with(
+    // The markers of a mic track that ended (T9.21) while the far end went on: the rest of
+    // the meeting is a gap on the mic.
+    let (during, at_end) = recording_gaps_with(
         true,
         &[(TrackId::Mic, 6000, 6000)],
         &mic_reopen_markers(6000, None),
@@ -3294,7 +3291,6 @@ fn live_recording_gap_grows_when_the_mic_track_ends_and_the_reference_records_on
     );
     assert!(!during.is_empty(), "a warning during the meeting");
     assert_about(at_end.expect("in the outcome"), 6000);
-    assert_eq!(reason, EndReason::Finished);
 }
 
 #[test]

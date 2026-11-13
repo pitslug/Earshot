@@ -578,6 +578,64 @@ fn capture_loop_unknown_errors_past_the_bound_end_only_that_track() {
 }
 
 #[test]
+fn capture_loop_an_unknown_error_then_a_device_loss_is_retried_until_the_device_returns() {
+    // One unknown error (the re-open works), then the device is lost: the next 21 re-opens,
+    // a second apart, find it gone (twice the stream-error grace), then it comes back.
+    let run = run(
+        &[
+            Fault::on(Call::Drain(TrackId::Mic), 3, AUDCLNT_E_CPUUSAGE_EXCEEDED),
+            Fault::on(
+                Call::Drain(TrackId::Mic),
+                10,
+                follow::AUDCLNT_E_DEVICE_INVALIDATED,
+            ),
+            Fault {
+                call: Call::Open(TrackId::Mic),
+                first: 2,
+                last: 22,
+                hresult: follow::AUDCLNT_E_DEVICE_INVALIDATED,
+            },
+        ],
+        30,
+    );
+    assert!(run.result.is_ok());
+    assert!(
+        !run.mic
+            .heard
+            .iter()
+            .any(|h| matches!(h, Heard::Ended { .. })),
+        "the track never ended"
+    );
+    assert_eq!(
+        run.mic.reopens().last(),
+        Some(&(ReopenReason::Retry, true)),
+        "the device was opened again when it came back"
+    );
+    assert!(
+        matches!(run.mic.heard.last(), Some(Heard::Audio { to, .. }) if *to == 30 * QPC_UNITS_PER_SEC)
+    );
+}
+
+#[test]
+fn capture_loop_a_failed_reopen_logs_the_error_as_a_number_only() {
+    let mut heard = Vec::new();
+    let detail = CaptureError::Windows {
+        context: "IAudioClient::Initialize",
+        source: windows::core::Error::from_hresult(HRESULT(AUDCLNT_E_CPUUSAGE_EXCEEDED)),
+    }
+    .detail();
+    heard.push(detail);
+    heard.push(CaptureError::DeviceGone { what: "microphone" }.detail());
+    assert_eq!(
+        heard,
+        [
+            "IAudioClient::Initialize: error 0x88890017",
+            "the chosen microphone is not connected"
+        ]
+    );
+}
+
+#[test]
 fn capture_loop_every_programming_fault_on_a_drain_ends_the_capture() {
     for code in follow::PROGRAMMING_FAULTS {
         let run = run(&[Fault::on(Call::Drain(TrackId::Reference), 3, code)], 2);

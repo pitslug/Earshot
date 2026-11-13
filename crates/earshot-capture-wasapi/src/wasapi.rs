@@ -75,7 +75,9 @@ use windows::core::{BOOL, HRESULT, IUnknown, Interface, PCWSTR, PWSTR, Ref, impl
 use crate::call_output::{CallOutput, CallOutputFollower};
 use crate::devices::{AudioDevice, DeviceChoice, DeviceFallback, DeviceList, DeviceSelection};
 use crate::endpoint::{EndpointProperties, HandsFreeMic};
-use crate::follow::{self, DefaultDeviceChange, Flow, ReopenReason, Role, StreamFollower};
+use crate::follow::{
+    self, DefaultDeviceChange, Flow, OpenFailure, ReopenReason, Role, StreamFollower,
+};
 use crate::format::{
     ChannelMode, FormatError, MixFormat, check_delivered, conversion_target, float_waveformat_bytes,
 };
@@ -151,6 +153,16 @@ impl CaptureError {
     /// True when the error means the stream's device went away (re-open it).
     pub fn is_device_loss(&self) -> bool {
         matches!(self, Self::Windows { source, .. } if follow::is_device_loss(source.code().0))
+    }
+
+    /// What a log keeps of this error: for a Windows API error the call and its error as a
+    /// number only ([`follow::windows_error_detail`]), never Windows' message text; any other
+    /// error's own text.
+    fn detail(&self) -> String {
+        match self.windows_failure() {
+            Some((context, hresult)) => follow::windows_error_detail(context, hresult),
+            None => self.to_string(),
+        }
     }
 
     /// The failed call and its HRESULT, for a Windows API error.
@@ -1804,8 +1816,13 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                 self.stream = Some(s);
             }
             Err(e) => {
-                self.follower.open_failed(now);
-                let error = e.to_string();
+                let failure = if e.is_device_gone() {
+                    OpenFailure::DeviceGone
+                } else {
+                    OpenFailure::Other
+                };
+                self.follower.open_failed(now, failure);
+                let error = e.detail();
                 self.observer
                     .reopened(now, reason, ReopenOutcome::Failed { error: &error });
                 self.end_if_over(now);

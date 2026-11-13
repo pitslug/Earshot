@@ -96,6 +96,21 @@ pub fn track_ended_detail(hresult: i32) -> String {
     format!("stream error {:#010x}; the track ended", hresult as u32)
 }
 
+/// How a re-open failed ([`StreamFollower::open_failed`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenFailure {
+    /// The endpoint is not there: a device loss, or a chosen endpoint that is not connected.
+    DeviceGone,
+    /// Any other error.
+    Other,
+}
+
+/// The detail logged for a failed Windows call: the call's fixed name and its error only as a
+/// number, never Windows' message text.
+pub fn windows_error_detail(context: &str, hresult: i32) -> String {
+    format!("{context}: error {:#010x}", hresult as u32)
+}
+
 /// Data-flow direction of an endpoint (`EDataFlow`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flow {
@@ -204,12 +219,19 @@ impl StreamFollower {
 
     /// A re-open attempt at `now_qpc` failed: the stream has no device until a later
     /// notification or retry.
-    pub fn open_failed(&mut self, now_qpc: u64) {
+    ///
+    /// Only a failure that is not a device loss (`failure` [`OpenFailure::Other`]) counts
+    /// toward a run of stream errors ([`on_unknown_stream_error`](Self::on_unknown_stream_error));
+    /// a device that is gone ends the run, and a lost device is retried for as long as the
+    /// capture lasts, so it never ends a track.
+    pub fn open_failed(&mut self, now_qpc: u64, failure: OpenFailure) {
         self.lost = true;
         self.pending = None;
         self.last_attempt_qpc = Some(now_qpc);
-        if self.errors_since.is_some() {
-            self.failed_in_run(now_qpc);
+        match failure {
+            OpenFailure::DeviceGone => self.errors_since = None,
+            OpenFailure::Other if self.errors_since.is_some() => self.failed_in_run(now_qpc),
+            OpenFailure::Other => {}
         }
     }
 
@@ -220,7 +242,7 @@ impl StreamFollower {
     /// has [`ended`](Self::ended).
     pub fn on_unknown_stream_error(&mut self, now_qpc: u64) {
         self.errors_since.get_or_insert(now_qpc);
-        self.on_stream_error();
+        self.mark_lost();
         self.failed_in_run(now_qpc);
     }
 
@@ -278,8 +300,14 @@ impl StreamFollower {
         self.follows_default
     }
 
-    /// The running stream reported a device loss.
+    /// The running stream reported a device loss. It ends any run of stream errors: a lost
+    /// device is retried for as long as the capture lasts.
     pub fn on_stream_error(&mut self) {
+        self.errors_since = None;
+        self.mark_lost();
+    }
+
+    fn mark_lost(&mut self) {
         self.lost = true;
         self.pending = Some(ReopenReason::StreamError);
     }
@@ -409,14 +437,14 @@ mod tests {
         let mut f = mic();
         f.on_stream_error();
         assert_eq!(f.take_reopen(10), Some(ReopenReason::StreamError));
-        f.open_failed(10);
+        f.open_failed(10, OpenFailure::DeviceGone);
         assert!(f.is_lost());
         assert_eq!(f.take_reopen(10 + RETRY_INTERVAL_QPC - 1), None);
         assert_eq!(
             f.take_reopen(10 + RETRY_INTERVAL_QPC),
             Some(ReopenReason::Retry)
         );
-        f.open_failed(10 + RETRY_INTERVAL_QPC);
+        f.open_failed(10 + RETRY_INTERVAL_QPC, OpenFailure::DeviceGone);
         // A notification while lost re-opens immediately, even for the same id.
         f.on_default_changed(&change(Flow::Capture, Role::Console, Some("mic-a")));
         assert_eq!(
@@ -433,7 +461,7 @@ mod tests {
         let mut f = mic();
         f.on_default_changed(&change(Flow::Capture, Role::Console, None));
         assert_eq!(f.take_reopen(0), Some(ReopenReason::DefaultDeviceChanged));
-        f.open_failed(0);
+        f.open_failed(0, OpenFailure::DeviceGone);
         assert!(f.is_lost());
     }
 
@@ -445,7 +473,7 @@ mod tests {
         while now <= until {
             if f.take_reopen(now).is_some() {
                 attempts.push(now);
-                f.open_failed(now);
+                f.open_failed(now, OpenFailure::DeviceGone);
                 if f.give_up_chosen(now) {
                     return (attempts, true);
                 }
@@ -465,10 +493,10 @@ mod tests {
         assert_eq!(f.take_reopen(0), None);
         // A stream that is not on a chosen endpoint never gives anything up.
         let mut d = mic();
-        d.open_failed(0);
+        d.open_failed(0, OpenFailure::DeviceGone);
         assert!(!d.give_up_chosen(100 * CHOSEN_DEVICE_GRACE_QPC));
         let mut p = StreamFollower::new(Flow::Render, Role::Console, false);
-        p.open_failed(0);
+        p.open_failed(0, OpenFailure::DeviceGone);
         assert!(!p.give_up_chosen(100 * CHOSEN_DEVICE_GRACE_QPC));
     }
 
@@ -488,10 +516,10 @@ mod tests {
         assert!(!f.follows_default());
         // The exact boundary: a failure one tick before the grace ends keeps it ...
         let mut edge = f.clone();
-        edge.open_failed(t0 + CHOSEN_DEVICE_GRACE_QPC - 1);
+        edge.open_failed(t0 + CHOSEN_DEVICE_GRACE_QPC - 1, OpenFailure::DeviceGone);
         assert!(!edge.give_up_chosen(t0 + CHOSEN_DEVICE_GRACE_QPC - 1));
         // ... and one at the end gives it up: the default is opened at once and followed.
-        f.open_failed(t0 + CHOSEN_DEVICE_GRACE_QPC);
+        f.open_failed(t0 + CHOSEN_DEVICE_GRACE_QPC, OpenFailure::DeviceGone);
         assert!(f.give_up_chosen(t0 + CHOSEN_DEVICE_GRACE_QPC));
         assert!(f.follows_default());
         assert_eq!(
@@ -499,7 +527,7 @@ mod tests {
             Some(ReopenReason::Retry)
         );
         // Given up once: a later failure (of the default) gives nothing up again.
-        f.open_failed(t0 + CHOSEN_DEVICE_GRACE_QPC);
+        f.open_failed(t0 + CHOSEN_DEVICE_GRACE_QPC, OpenFailure::DeviceGone);
         assert!(!f.give_up_chosen(t0 + 10 * CHOSEN_DEVICE_GRACE_QPC));
         f.opened(Some("mic-b".into()));
         f.on_default_changed(&change(Flow::Capture, Role::Console, Some("mic-c")));
@@ -519,7 +547,7 @@ mod tests {
         let later = 100 * CHOSEN_DEVICE_GRACE_QPC;
         f.on_stream_error();
         assert_eq!(f.take_reopen(later), Some(ReopenReason::StreamError));
-        f.open_failed(later);
+        f.open_failed(later, OpenFailure::DeviceGone);
         assert!(
             !f.give_up_chosen(later),
             "a new loss starts a new grace period"
@@ -535,7 +563,7 @@ mod tests {
         while now <= until {
             if f.take_reopen(now).is_some() {
                 attempts.push(now);
-                f.open_failed(now);
+                f.open_failed(now, OpenFailure::Other);
             }
             if f.ended() {
                 return (attempts, true);
@@ -558,7 +586,7 @@ mod tests {
         // The retry due at the end of the grace fails too: the track ends.
         let end = t0 + STREAM_ERROR_GRACE_QPC;
         assert_eq!(f.take_reopen(end), Some(ReopenReason::Retry));
-        f.open_failed(end);
+        f.open_failed(end, OpenFailure::Other);
         assert!(f.ended());
         assert!(f.is_lost());
         // Never re-opened again, whatever the default does.
@@ -613,7 +641,7 @@ mod tests {
         let mut now = 0;
         while now < 100 * STREAM_ERROR_GRACE_QPC {
             if f.take_reopen(now).is_some() {
-                f.open_failed(now);
+                f.open_failed(now, OpenFailure::DeviceGone);
             }
             now += RETRY_INTERVAL_QPC;
         }
@@ -630,7 +658,7 @@ mod tests {
         let mut gave_up_at = None;
         while !f.ended() {
             if f.take_reopen(now).is_some() {
-                f.open_failed(now);
+                f.open_failed(now, OpenFailure::Other);
                 if f.give_up_chosen(now) {
                     gave_up_at.get_or_insert(now);
                 }
@@ -646,6 +674,50 @@ mod tests {
                 .contains(&ended_at),
             "{ended_at}"
         );
+    }
+
+    #[test]
+    fn an_unknown_error_then_a_device_loss_is_retried_past_the_grace_until_the_device_returns() {
+        let mut f = mic();
+        // A one-off error, and the re-open works.
+        f.on_unknown_stream_error(0);
+        assert_eq!(f.take_reopen(0), Some(ReopenReason::StreamError));
+        f.opened(Some("mic-a".into()));
+        f.stream_ran(RETRY_INTERVAL_QPC);
+        // Five seconds later the headset is unplugged, and every re-open finds it gone, long
+        // past the stream-error grace.
+        let lost = CHOSEN_DEVICE_GRACE_QPC;
+        f.on_stream_error();
+        let mut now = lost;
+        while now < lost + 3 * STREAM_ERROR_GRACE_QPC {
+            if f.take_reopen(now).is_some() {
+                f.open_failed(now, OpenFailure::DeviceGone);
+            }
+            assert!(!f.ended(), "ended at {now}");
+            now += RETRY_INTERVAL_QPC / 4;
+        }
+        // It comes back: the next retry opens it.
+        assert!(f.take_reopen(now + RETRY_INTERVAL_QPC).is_some());
+        f.opened(Some("mic-a".into()));
+        assert!(!f.is_lost());
+        // And a later one-off error is a new run, not the end of the track.
+        f.on_unknown_stream_error(now + 2 * RETRY_INTERVAL_QPC);
+        assert!(!f.ended());
+    }
+
+    #[test]
+    fn re_opens_failing_with_a_device_loss_never_end_a_run_of_stream_errors() {
+        let mut f = mic();
+        f.on_unknown_stream_error(0);
+        let mut now = 0;
+        while now < 3 * STREAM_ERROR_GRACE_QPC {
+            if f.take_reopen(now).is_some() {
+                f.open_failed(now, OpenFailure::DeviceGone);
+            }
+            assert!(!f.ended(), "ended at {now}");
+            now += RETRY_INTERVAL_QPC / 4;
+        }
+        assert!(f.take_reopen(now + RETRY_INTERVAL_QPC).is_some());
     }
 
     #[test]
@@ -669,6 +741,10 @@ mod tests {
         assert_eq!(
             track_ended_detail(0x8889_0017_u32 as i32),
             "stream error 0x88890017; the track ended"
+        );
+        assert_eq!(
+            windows_error_detail("IAudioClient::Initialize", 0x8889_000A_u32 as i32),
+            "IAudioClient::Initialize: error 0x8889000a"
         );
     }
 
