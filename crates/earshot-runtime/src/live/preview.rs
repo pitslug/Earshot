@@ -826,6 +826,15 @@ fn at_time(w: Word, zero: MeetingTime) -> Word {
     }
 }
 
+/// Why a preview thread is being stopped ([`PreviewThread::finish`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopAt {
+    /// The meeting ended: a thread left in a decode is reported as left.
+    MeetingEnd,
+    /// Turned off during the meeting: the caller says why.
+    DuringMeeting,
+}
+
 /// The session's end of a running preview thread.
 pub(super) struct PreviewThread {
     to: SyncSender<ToPreview>,
@@ -922,7 +931,7 @@ impl PreviewThread {
         Some(words)
     }
 
-    fn finish(mut self, wait: Duration) -> PreviewReport {
+    fn finish(mut self, wait: Duration, at: StopAt) -> PreviewReport {
         self.stop.store(true, Ordering::Release);
         self.decode
             .lock()
@@ -951,9 +960,9 @@ impl PreviewThread {
         if crashed {
             report.off = Some(PREVIEW_THREAD_CRASHED.to_owned());
             report.reason = Some(PreviewOffReason::Failed);
-        } else if !done && wait > Duration::ZERO && report.off.is_none() {
-            // Left in a decode at the end: never a report of previews that ran to the end. A
-            // zero wait is a stop during the meeting, whose caller says why.
+        } else if !done && at == StopAt::MeetingEnd && report.off.is_none() {
+            // Left in a decode at the end, whatever the wait: never a report of previews that
+            // ran to the end. A stop during the meeting has its caller's reason.
             report.off = Some(PREVIEW_THREAD_LEFT.to_owned());
             report.reason = Some(PreviewOffReason::Failed);
         }
@@ -1046,7 +1055,7 @@ where
         let report = match std::mem::take(&mut self.previews[slot(track)]) {
             PreviewState::Running(p) => {
                 let shown = !p.sent.is_empty();
-                let report = p.finish(Duration::ZERO);
+                let report = p.finish(Duration::ZERO, StopAt::DuringMeeting);
                 if shown {
                     self.emit(RuntimeEvent::LivePreview {
                         track,
@@ -1338,7 +1347,7 @@ where
                 PreviewState::Off(report) => report,
                 PreviewState::Running(p) => {
                     let shown = !p.sent.is_empty();
-                    let report = p.finish(self.policy.speaker_stop_wait);
+                    let report = p.finish(self.policy.speaker_stop_wait, StopAt::MeetingEnd);
                     if shown {
                         self.emit(RuntimeEvent::LivePreview {
                             track,

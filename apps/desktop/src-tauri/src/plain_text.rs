@@ -151,8 +151,10 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
             )),
             PostWarning::MeNotFoundAgain => Some((
                 "post-me",
-                "The voice shown as you could not be found again in the new transcript, so no \
-                 voice is shown as you. Use This is me in Speakers to mark yours.",
+                // Also true after the user forgot their own voice between runs: nothing here
+                // says the voice is gone, only that none is told apart as theirs.
+                "No voice in the new transcript is shown as you: Earshot could not tell which \
+                 one is yours this time. Use This is me in Speakers to mark yours.",
             )),
             PostWarning::BackendChanged { .. }
             | PostWarning::StretchRecordUnreadable { .. }
@@ -978,7 +980,9 @@ mod post_warning_tests {
         assert_eq!(copy.len(), 1, "one banner");
         assert_eq!(copy[0].0, "post-me");
         assert!(
-            copy[0].1.contains("no voice is shown as you"),
+            copy[0]
+                .1
+                .starts_with("No voice in the new transcript is shown as you"),
             "{}",
             copy[0].1
         );
@@ -1276,6 +1280,15 @@ mod tests {
         assert_eq!(plain(other), INTERNAL);
         for copy in [MODELS_NEEDED, NOT_THIS_VERSION, INTERNAL] {
             no_developer_text(copy);
+        }
+    }
+
+    /// Only text `plain` replaces is sorted by its download words, so each is a developer word.
+    #[test]
+    fn plain_text_download_words_are_developer_words() {
+        for word in DOWNLOAD_WORDS {
+            assert!(DEVELOPER_WORDS.contains(word), "{word}");
+            assert!(names_developer_tool(word), "{word}");
         }
     }
 

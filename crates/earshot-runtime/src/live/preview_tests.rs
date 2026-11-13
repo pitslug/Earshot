@@ -1226,6 +1226,17 @@ fn live_preview_a_crashed_thread_stops_only_the_previews() {
 /// it never reads as previews that ran to the end.
 #[test]
 fn live_preview_a_thread_left_at_the_end_wait_says_so_in_the_report() {
+    assert_left_at_the_end(Duration::from_millis(50));
+}
+
+/// The same with no end wait at all: the end of the meeting is said by the caller, never read
+/// from the wait.
+#[test]
+fn live_preview_a_thread_left_with_no_end_wait_says_so_in_the_report() {
+    assert_left_at_the_end(Duration::ZERO);
+}
+
+fn assert_left_at_the_end(stop_wait: Duration) {
     let scene = scene_of(27);
     let seen = Arc::new(Seen::default());
     // Every decode stays in progress, cancelled or not, until the session has ended.
@@ -1245,7 +1256,7 @@ fn live_preview_a_thread_left_at_the_end_wait_says_so_in_the_report() {
         fast_source(&scene),
         svc.clone(),
         LiveConfig {
-            speaker_stop_wait: Duration::from_millis(50),
+            speaker_stop_wait: stop_wait,
             ..config_with(Some(previews(load)))
         },
         Some(factory_of(&scene, Arc::default())),
