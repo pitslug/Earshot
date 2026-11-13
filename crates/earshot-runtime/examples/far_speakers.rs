@@ -20,6 +20,15 @@
 //! - `even`: two speakers in alternating turns, half each;
 //! - `dominant`: two speakers, the second about a tenth of the speech.
 //!
+//! A speaker's audio is reused across scenes: each pair scene is cut from the same stream of
+//! each of its two speakers as their `one` scenes (from the start of the stream), so the `one`
+//! row and the pair rows are correlated, and `even` and `dominant` of one pair share both
+//! voices. The rows are not independent samples; a fix judged on them counts voices, not
+//! scenes (AGENTS.md: about `count` voices in all). The report's `dev_source` names the
+//! directory's last part and the speaker ids used, in scene order, with this reuse spelled
+//! out. Reports from before `dev_source` existed (T6.9's `docs/far-speakers/dev-clean.json`)
+//! record neither, so their "dev-clean" is the name the run was given only.
+//!
 //! Sensitivity tables re-run the production `cluster_embeddings` over the embeddings the
 //! diarisation computed, at other thresholds and minimum cluster sizes. On a private recording
 //! they are a description only: a threshold is never chosen from them (AGENTS.md). The dev
@@ -697,7 +706,12 @@ fn dev_summary(rows: &[DevRow]) -> Value {
     json!(out)
 }
 
-fn run_dev(dir: &Path, count: usize, mut d: Prod, config: &DiarizationConfig) -> Value {
+/// How the dev scenes reuse audio, for the report (`dev_source`).
+const DEV_AUDIO_REUSE: &str = "each speaker's one stream makes their `one` scene and both of \
+their pair's `even` and `dominant` scenes: rows share audio and are not independent";
+
+/// The dev summary ([`dev_summary`]) and where its audio came from (`dev_source`).
+fn run_dev(dir: &Path, count: usize, mut d: Prod, config: &DiarizationConfig) -> (Value, Value) {
     let hz = PIPELINE_RATE.hz() as usize;
     let mut speakers: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())))
@@ -706,6 +720,19 @@ fn run_dev(dir: &Path, count: usize, mut d: Prod, config: &DiarizationConfig) ->
         .collect();
     speakers.sort();
     speakers.truncate(count);
+    let ids: Vec<String> = speakers
+        .iter()
+        .map(|s| {
+            s.file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+        })
+        .collect();
+    let source = json!({
+        "dir_name": dir.file_name().map(|n| n.to_string_lossy().into_owned()),
+        "speakers": ids,
+        "pairs": ids.as_chunks::<2>().0.iter().map(|p| [&p[0], &p[1]]).collect::<Vec<_>>(),
+        "audio_reuse": DEV_AUDIO_REUSE,
+    });
     let streams: Vec<Vec<f32>> = speakers
         .iter()
         .map(|s| dev_stream(s, DEV_SCENE_S * hz))
@@ -729,7 +756,7 @@ fn run_dev(dir: &Path, count: usize, mut d: Prod, config: &DiarizationConfig) ->
         rows.push(row);
         d = next;
     }
-    dev_summary(&rows)
+    (dev_summary(&rows), source)
 }
 
 fn main() {
@@ -832,10 +859,11 @@ fn main() {
         }
     }
 
-    let dev = args
+    let (dev, dev_source) = args
         .dev
         .as_ref()
-        .map(|dir| run_dev(dir, args.dev_speakers, d, &config));
+        .map(|dir| run_dev(dir, args.dev_speakers, d, &config))
+        .unzip();
 
     let report = json!({
         "model": model.to_string(),
@@ -845,6 +873,7 @@ fn main() {
         "recordings": recordings,
         "centroid_cosine_across_everything": across,
         "dev": dev,
+        "dev_source": dev_source,
     });
     let text = serde_json::to_string_pretty(&report).unwrap_or_else(|e| fail(e));
     if let Some(out) = &args.out {
