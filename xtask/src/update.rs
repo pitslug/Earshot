@@ -125,15 +125,24 @@ pub fn installer_candidates(
         .collect()
 }
 
-/// The first of `candidates` that `exists`, else the first (whose absence the signing step
+/// The one of `candidates` that `exists`, else the first (whose absence the signing step
 /// reports).
-fn installer_to_sign(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> PathBuf {
-    candidates
-        .iter()
-        .find(|p| exists(p))
-        .or(candidates.first())
-        .cloned()
-        .unwrap_or_default()
+///
+/// # Errors
+/// More than one exists: two builds of this version, and which to sign is not guessed.
+fn installer_to_sign(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> Result<PathBuf> {
+    let found: Vec<&PathBuf> = candidates.iter().filter(|p| exists(p)).collect();
+    match found.as_slice() {
+        [] => Ok(candidates.first().cloned().unwrap_or_default()),
+        [one] => Ok((*one).clone()),
+        many => bail!(
+            "more than one installer of this version: {}; remove the one not to sign",
+            many.iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ),
+    }
 }
 
 /// `cargo xtask sign-update`: writes the version file beside the installer and prints both, the
@@ -159,7 +168,7 @@ pub fn run_sign(
             &bundle::installer_path(&version, &triple)?,
         ),
         Path::is_file,
-    );
+    )?;
     let arch = if triple.starts_with("aarch64") {
         "arm64"
     } else {
@@ -212,9 +221,20 @@ mod tests {
             [at(r"C:\eb\host\release")]
         );
         // The one that exists is signed, else the first is reported missing.
-        assert_eq!(installer_to_sign(&both, |p| *p == both[1]), both[1]);
-        assert_eq!(installer_to_sign(&both, |p| *p == both[0]), both[0]);
-        assert_eq!(installer_to_sign(&both, |_| false), both[0]);
+        assert_eq!(
+            installer_to_sign(&both, |p| *p == both[1]).unwrap(),
+            both[1]
+        );
+        assert_eq!(
+            installer_to_sign(&both, |p| *p == both[0]).unwrap(),
+            both[0]
+        );
+        assert_eq!(installer_to_sign(&both, |_| false).unwrap(), both[0]);
+        // Both exist: refused, naming both, never the first signed silently.
+        let e = installer_to_sign(&both, |_| true).unwrap_err().to_string();
+        for p in &both {
+            assert!(e.contains(&p.display().to_string()), "{e}");
+        }
     }
 
     /// A folder outside the repo, removed on drop.
