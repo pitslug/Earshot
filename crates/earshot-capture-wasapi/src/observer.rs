@@ -68,6 +68,14 @@ pub trait TrackObserver {
         let _ = (qpc, wanted, used, error);
     }
 
+    /// The re-open at `qpc` just reported to [`reopened`](Self::reopened) as failed was a mic
+    /// opened raw (T12.32) whose new endpoint refuses raw processing: the track stays without a
+    /// stream rather than record the processed signal. Called for every such attempt,
+    /// retries included. Default: ignored.
+    fn raw_refused(&mut self, qpc: u64) {
+        let _ = qpc;
+    }
+
     /// The track ended at `qpc` after its stream kept failing for
     /// [`STREAM_ERROR_GRACE_QPC`](crate::follow::STREAM_ERROR_GRACE_QPC) (T9.21); `hresult` is
     /// the last stream error. No packet or re-open follows, and the other track goes on.

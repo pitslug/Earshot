@@ -11,6 +11,8 @@ import {
   type MockIpcData,
   POST_STEPS,
   POST_STEP_MS,
+  PROVISIONAL_WORDS_COPY,
+  PROVISIONAL_WORDS_START_AT,
   SCRIPT_LINES,
   SCRIPT_WARNING_AT,
   createMockIpc,
@@ -684,6 +686,57 @@ describe("meeting screen", () => {
     expect(within(view).getByText(/hands-free mode/)).toBeInTheDocument();
     await s.user.click(within(view).getByRole("button", { name: "Dismiss" }));
     expect(within(view).queryByText(/hands-free mode/)).toBeNull();
+  });
+
+  it("says why provisional words are off, for the whole meeting on battery", async () => {
+    const s = setup({ provisionalWords: "battery" });
+    const view = await startMeeting(s);
+    expect(within(view).getByText(PROVISIONAL_WORDS_COPY.battery)).toBeInTheDocument();
+    advance(s.timer, SCRIPT_LINES[4].at);
+    expect(within(view).getByText(PROVISIONAL_WORDS_COPY.battery)).toBeInTheDocument();
+    // One banner, and the settled transcript is unaffected.
+    expect(within(view).getAllByText(/Provisional words/)).toHaveLength(1);
+    const table = within(view).getByRole("table", { name: "Transcript as it lands" });
+    expect(within(table).getAllByRole("row").length).toBeGreaterThan(1);
+  });
+
+  it("takes the provisional words banner back when they start", async () => {
+    const s = setup({ provisionalWords: "waiting" });
+    const view = await startMeeting(s);
+    expect(within(view).getByText(PROVISIONAL_WORDS_COPY.waiting)).toBeInTheDocument();
+    advance(s.timer, PROVISIONAL_WORDS_START_AT - 1);
+    expect(within(view).getByText(PROVISIONAL_WORDS_COPY.waiting)).toBeInTheDocument();
+    advance(s.timer, 1);
+    expect(within(view).queryByText(/Provisional words/)).toBeNull();
+  });
+
+  it("shows no provisional words banner in an ordinary meeting", async () => {
+    const s = setup();
+    const view = await startMeeting(s);
+    advance(s.timer, SCRIPT_LINES[4].at);
+    expect(within(view).queryByText(/Provisional words/)).toBeNull();
+  });
+
+  it("clears a banner by its key only, and shows it again when its condition comes back", () => {
+    const warn = (key: string, message: string): MeetingEvent => ({
+      type: "Warning",
+      key,
+      kind: key === "provisional-words" ? "ProvisionalWords" : "Audio",
+      message,
+    });
+    const started = startedMeeting("m", "Call", ["You", "Them"], 0);
+    const both = reduce(
+      reduce(started, warn("provisional-words", "Waiting."), 1),
+      warn("audio", "A problem."),
+      2,
+    );
+    expect(both?.banners.map((b) => b.key)).toEqual(["provisional-words", "audio"]);
+    const cleared = reduce(both, { type: "WarningCleared", key: "provisional-words" }, 3);
+    expect(cleared?.banners.map((b) => b.key)).toEqual(["audio"]);
+    // Nothing to clear: the state is the same object, so nothing renders.
+    expect(reduce(cleared, { type: "WarningCleared", key: "provisional-words" }, 4)).toBe(cleared);
+    const again = reduce(cleared, warn("provisional-words", "Off."), 5);
+    expect(again?.banners.map((b) => b.message)).toEqual(["A problem.", "Off."]);
   });
 
   it("shows one meter in room mode", async () => {

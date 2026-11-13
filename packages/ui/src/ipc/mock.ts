@@ -131,6 +131,17 @@ const PROVISIONAL_BEFORE = 900;
 /** When the scripted warning arrives (ms after the start). */
 export const SCRIPT_WARNING_AT = 2_500;
 
+/** The mock's banners for provisional words that are off or waiting (T12.33), as
+ * `plain_text::provisional_words_copy` words them. */
+export const PROVISIONAL_WORDS_COPY = {
+  battery:
+    "Provisional words are off for this meeting because the computer is on battery. Plug it in before a meeting starts to see them.",
+  waiting: "Provisional words start once the live transcript has caught up.",
+} as const;
+
+/** When the mock's provisional words start after a wait (`provisionalWords: "waiting"`). */
+export const PROVISIONAL_WORDS_START_AT = 4_000;
+
 /** The scripted post-meeting steps, in order, one every `POST_STEP_MS`. */
 export const POST_STEPS: PostStep[] = [
   { kind: "Loading" },
@@ -213,6 +224,9 @@ export interface MockIpcData {
   modelCheckWarning?: string;
   /** A machine straight after installing: no speech helpers yet. */
   cleanInstall?: boolean;
+  /** The scripted meeting has no provisional words and says why (T12.33): `battery` for the
+   * whole meeting, `waiting` until `PROVISIONAL_WORDS_START_AT`, when the banner is taken back. */
+  provisionalWords?: keyof typeof PROVISIONAL_WORDS_COPY;
   /** No model is on this machine and there is no stored check. */
   noModels?: boolean;
   /** The Summaries page's stored settings and API key (default: on this computer, no key). */
@@ -380,8 +394,27 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         } else {
           for (const track of tracks) emit({ type: "Backend", track, label: "GPU (CUDA)" });
         }
+        if (data.provisionalWords !== undefined) {
+          emit({
+            type: "Warning",
+            key: "provisional-words",
+            kind: "ProvisionalWords",
+            message: PROVISIONAL_WORDS_COPY[data.provisionalWords],
+          });
+        }
       }, 0),
     );
+    if (data.provisionalWords === "waiting") {
+      cancel.push(
+        timer.setTimeout(() => {
+          emit({ type: "WarningCleared", key: "provisional-words" });
+        }, PROVISIONAL_WORDS_START_AT),
+      );
+    }
+    // Whether the script's guess at `at` is shown: not while provisional words are off.
+    const provisionalAt = (at: number) =>
+      data.provisionalWords === undefined ||
+      (data.provisionalWords === "waiting" && at >= PROVISIONAL_WORDS_START_AT);
     // Levels every 100 ms, voice activity on a 12 s cycle: Them talks, then You.
     cancel.push(
       timer.setInterval(() => {
@@ -407,18 +440,20 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       const start = Math.max(0, line.at - 1_400);
       const said = line.text.split(/\s+/).filter((w) => w !== "");
       // Its first words as a provisional guess while it is being said (T9.1m).
-      cancel.push(
-        timer.setTimeout(() => {
-          if (holding) return;
-          emit({
-            type: "Provisional",
-            track: line.track,
-            words: said
-              .slice(0, Math.ceil(said.length / 2))
-              .map((text, i) => ({ start_ms: start + i * 50, text })),
-          });
-        }, line.at - PROVISIONAL_BEFORE),
-      );
+      if (provisionalAt(line.at - PROVISIONAL_BEFORE)) {
+        cancel.push(
+          timer.setTimeout(() => {
+            if (holding) return;
+            emit({
+              type: "Provisional",
+              track: line.track,
+              words: said
+                .slice(0, Math.ceil(said.length / 2))
+                .map((text, i) => ({ start_ms: start + i * 50, text })),
+            });
+          }, line.at - PROVISIONAL_BEFORE),
+        );
+      }
       const land = () => {
         words += said.length;
         emit({
@@ -430,8 +465,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         });
         emit({ type: "Words", total: words });
       };
-      cancel.push(timer.setTimeout(() => (holding ? waiting.push(land) : land()), line.at));
-    }
+      cancel.push(timer.setTimeout(() => (holding ? waiting.push(land) : land()), line.at));    }
     cancel.push(
       timer.setTimeout(() => {
         emit({

@@ -1399,7 +1399,9 @@ pub fn live_factory(
 /// too small for them, T12.3c), and never costs the meeting anything. With
 /// [`PreviewChoice::Everyone`](crate::preview_settings::PreviewChoice::Everyone) the user's own
 /// track in a call gets a second session of its own, where `backends::second_preview_backend`
-/// says (T9.14; the CPU, also beside CUDA: T12.3a).
+/// says (T9.14; the CPU, also beside CUDA: T12.3a). Each loader's rule is also given as
+/// [`LivePreviews::rule`](crate::live::LivePreviews), so the session knows what the computer
+/// refuses before it tells the user about a wait or the battery (T12.33).
 #[must_use]
 pub fn live_previews(
     models: &ModelDir,
@@ -1409,10 +1411,20 @@ pub fn live_previews(
     let mut previews = crate::live::LivePreviews::new(Arc::new(move |backend| {
         crate::backends::load_preview(&first, backend, choice)
     }));
+    // The loaders' own rule, backend and model, asked before anything is said to the user
+    // (T12.33).
+    previews.rule = Some(Arc::new(move |backend| {
+        crate::backends::preview_rule(backend, &crate::hardware(), choice).err()
+    }));
+    // Under the automatic choice nobody asked for them: what the rule refuses needs no word.
+    previews.user_asked = choice != crate::preview_settings::PreviewChoice::Automatic;
     if choice == crate::preview_settings::PreviewChoice::Everyone {
         let second = models.clone();
         previews.own_voice = Some(Arc::new(move |backend| {
             crate::backends::load_preview_second(&second, backend, choice)
+        }));
+        previews.own_voice_rule = Some(Arc::new(move |backend| {
+            crate::backends::second_preview_rule(backend, &crate::hardware(), choice).err()
         }));
     }
     previews

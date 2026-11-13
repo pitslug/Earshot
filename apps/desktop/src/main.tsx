@@ -19,10 +19,13 @@ import { createRoot } from "react-dom/client";
 // shows the screen for a database saved by a newer Earshot, `?dataFolder=1` the one for a data
 // folder that could not be opened, `?summary=failed` / `?summary=postFailed` a meeting whose
 // summary or transcript did not finish (T9.23). `?keptLocal=1` keeps the weekly sync
-// on this computer with Claude Code as the summary writer (T12.13).
+// on this computer with Claude Code as the summary writer (T12.13). `?previews=battery` shows a
+// meeting whose provisional words are off on battery, `?previews=waiting` one where they wait
+// for the transcript and the banner is taken back (T12.33).
 const inTauri = isTauri();
 const query = new URLSearchParams(window.location.search);
 const machine = query.get("machine") === "desktop" ? "desktop" : "surface";
+const previews = query.get("previews");
 const ipc = inTauri
   ? createTauriIpc()
   : createMockIpc({
@@ -35,6 +38,7 @@ const ipc = inTauri
       callEndOfferAfterMs: query.get("callEnded") === "1" ? 3_000 : undefined,
       newerData: query.get("newerData") === "1",
       dataFolderFails: query.get("dataFolder") === "1",
+      provisionalWords: previews === "battery" || previews === "waiting" ? previews : undefined,
       ...(query.get("summary") === "failed"
         ? {
             summary: {

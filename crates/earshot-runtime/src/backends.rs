@@ -74,7 +74,7 @@ use earshot_store::{DataDir, Store};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{Rng, SeedableRng};
 
-use crate::live::{LiveAsrFactory, LiveSpeakers, TrackAsr};
+use crate::live::{LiveAsrFactory, LiveSpeakers, PreviewOffReason, PreviewRefusal, TrackAsr};
 use crate::local::{LocalKey, MeetingRecord};
 use crate::post::{PostConfig, PostProcessor};
 use crate::{BoxRng, RuntimeError, SharedClock};
@@ -1306,9 +1306,22 @@ pub fn preview_backend(
     hardware: &earshot_hardware::Hardware,
     choice: crate::preview_settings::PreviewChoice,
 ) -> Result<BackendKind, String> {
+    preview_backend_or_refusal(backend, hardware, choice).map_err(String::from)
+}
+
+/// [`preview_backend`], with the kind of each refusal beside its text (T12.33): the rule itself.
+///
+/// # Errors
+/// The reason no preview session runs.
+pub fn preview_backend_or_refusal(
+    backend: BackendKind,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<BackendKind, PreviewRefusal> {
     use crate::preview_settings::PreviewChoice;
+    let refused = |reason, text: &str| Err(PreviewRefusal::new(reason, text));
     if choice == PreviewChoice::Off {
-        return Err("turned off in Settings".to_owned());
+        return refused(PreviewOffReason::TurnedOff, "turned off in Settings");
     }
     let (runs_on, memory_limit) = match backend {
         BackendKind::Cpu => (BackendKind::Cpu, PREVIEW_MIN_MEMORY),
@@ -1322,14 +1335,67 @@ pub fn preview_backend(
         }
         BackendKind::Qnn => (BackendKind::Qnn, PREVIEW_MIN_MEMORY_NPU),
         BackendKind::Vulkan | BackendKind::Fake => {
-            return Err("previews run on Parakeet only".to_owned());
+            return refused(PreviewOffReason::Model, PREVIEWS_PARAKEET_ONLY);
         }
     };
+    // Only the automatic choice has this limit: the user did not ask for previews here.
     if choice == PreviewChoice::Automatic && hardware.total_memory.is_none_or(|m| m < memory_limit)
     {
-        return Err("not enough memory for a second session of the model".to_owned());
+        return refused(
+            PreviewOffReason::OffByDefault,
+            "not enough memory for a second session of the model",
+        );
     }
     Ok(runs_on)
+}
+
+/// What a refusal says of a model or part that has no previews.
+const PREVIEWS_PARAKEET_ONLY: &str = "previews run on Parakeet only";
+
+fn parakeet_only() -> PreviewRefusal {
+    PreviewRefusal::new(PreviewOffReason::Model, PREVIEWS_PARAKEET_ONLY)
+}
+
+/// The model rule of previews, decided here only (T12.33): they run on a Parakeet model. A whisper
+/// model is refused ([`PreviewOffReason::Model`]); a name this build does not know is `Ok(None)`,
+/// left to the load, which refuses it in the same words.
+fn preview_model(model: &str) -> Result<Option<&'static ParakeetModel>, PreviewRefusal> {
+    match asr_model(model) {
+        Ok(AsrModel::Parakeet(p)) => Ok(Some(p)),
+        Ok(AsrModel::Whisper(_)) => Err(parakeet_only()),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The whole rule for a track's first preview session (T12.33): [`preview_backend_or_refusal`] on
+/// the track's backend, then the model rule, so a whisper track is refused before anything is
+/// loaded or said. [`load_preview`] and the app's [`crate::live::LivePreviews::rule`] both ask it.
+///
+/// # Errors
+/// The reason no preview session runs.
+pub fn preview_rule(
+    backend: &BackendInfo,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<BackendKind, PreviewRefusal> {
+    let kind = preview_backend_or_refusal(backend.kind, hardware, choice)?;
+    preview_model(&backend.model)?;
+    Ok(kind)
+}
+
+/// [`preview_rule`] for the second session, the user's own track in a call (T9.14):
+/// [`second_preview_backend_or_refusal`], then the model rule.
+///
+/// # Errors
+/// The reason no second session runs.
+pub fn second_preview_rule(
+    backend: &BackendInfo,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<BackendKind, PreviewRefusal> {
+    let kind = second_preview_backend_or_refusal(backend.kind, hardware, choice)?;
+    preview_model(&backend.model)?;
+    Ok(kind)
 }
 
 /// Why this computer runs no previews for a track on `backend`, or `None` when it does: the reason
@@ -1365,24 +1431,42 @@ pub fn second_preview_backend(
     hardware: &earshot_hardware::Hardware,
     choice: crate::preview_settings::PreviewChoice,
 ) -> Result<BackendKind, String> {
+    second_preview_backend_or_refusal(backend, hardware, choice).map_err(String::from)
+}
+
+/// [`second_preview_backend`], with the kind of each refusal beside its text (T12.33): the rule
+/// itself.
+///
+/// # Errors
+/// The reason no second session runs.
+pub fn second_preview_backend_or_refusal(
+    backend: BackendKind,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<BackendKind, PreviewRefusal> {
     use crate::preview_settings::PreviewChoice;
+    let refused = |reason, text: &str| Err(PreviewRefusal::new(reason, text));
     if choice != PreviewChoice::Everyone {
-        return Err("only for the other people".to_owned());
+        return refused(PreviewOffReason::NotAsked, "only for the other people");
     }
-    if let Some(why) = previews_refused(backend, hardware, choice) {
-        return Err(why);
-    }
+    preview_backend_or_refusal(backend, hardware, choice)?;
     if backend == BackendKind::Qnn {
-        return Err(OWN_VOICE_NPU_REFUSED.to_owned());
+        return refused(PreviewOffReason::OwnVoiceOnNpu, OWN_VOICE_NPU_REFUSED);
     }
     if !matches!(backend, BackendKind::Cpu | BackendKind::Cuda) {
-        return Err("previews run on Parakeet on the CPU or CUDA only".to_owned());
+        return refused(
+            PreviewOffReason::Model,
+            "previews run on Parakeet on the CPU or CUDA only",
+        );
     }
     if hardware
         .total_memory
         .is_none_or(|m| m < PREVIEW_BOTH_MIN_MEMORY)
     {
-        return Err("not enough memory for a third session of the model".to_owned());
+        return refused(
+            PreviewOffReason::NotEnoughMemory,
+            "not enough memory for a third session of the model",
+        );
     }
     Ok(BackendKind::Cpu)
 }
@@ -1413,21 +1497,22 @@ pub fn load_preview(
     models: &ModelDir,
     backend: &BackendInfo,
     choice: crate::preview_settings::PreviewChoice,
-) -> Result<Box<dyn Transcriber + Send>, String> {
+) -> Result<Box<dyn Transcriber + Send>, PreviewRefusal> {
     load_preview_with(backend, &crate::hardware(), choice, |on| {
         load_preview_session(models, on)
     })
 }
 
 /// [`load_preview`] on `hardware`, loading through `load` with the track's model on the backend
-/// the rule chose.
-pub(crate) fn load_preview_with<T>(
+/// the rule chose. The error is the caller's: a [`PreviewRefusal`] keeps the kind, a `String`
+/// only the text.
+pub(crate) fn load_preview_with<T, E: From<PreviewRefusal>>(
     backend: &BackendInfo,
     hardware: &earshot_hardware::Hardware,
     choice: crate::preview_settings::PreviewChoice,
-    load: impl FnOnce(&BackendInfo) -> Result<T, String>,
-) -> Result<T, String> {
-    let kind = preview_backend(backend.kind, hardware, choice)?;
+    load: impl FnOnce(&BackendInfo) -> Result<T, E>,
+) -> Result<T, E> {
+    let kind = preview_rule(backend, hardware, choice)?;
     load(&BackendInfo {
         kind,
         ..backend.clone()
@@ -1444,7 +1529,7 @@ pub fn load_preview_second(
     models: &ModelDir,
     backend: &BackendInfo,
     choice: crate::preview_settings::PreviewChoice,
-) -> Result<Box<dyn Transcriber + Send>, String> {
+) -> Result<Box<dyn Transcriber + Send>, PreviewRefusal> {
     load_preview_second_with(backend, &crate::hardware(), choice, |on| {
         load_preview_session(models, on)
     })
@@ -1452,13 +1537,13 @@ pub fn load_preview_second(
 
 /// [`load_preview_second`] on `hardware`, loading through `load` with the track's model on the
 /// backend the rule chose.
-pub(crate) fn load_preview_second_with<T>(
+pub(crate) fn load_preview_second_with<T, E: From<PreviewRefusal>>(
     backend: &BackendInfo,
     hardware: &earshot_hardware::Hardware,
     choice: crate::preview_settings::PreviewChoice,
-    load: impl FnOnce(&BackendInfo) -> Result<T, String>,
-) -> Result<T, String> {
-    let kind = second_preview_backend(backend.kind, hardware, choice)?;
+    load: impl FnOnce(&BackendInfo) -> Result<T, E>,
+) -> Result<T, E> {
+    let kind = second_preview_rule(backend, hardware, choice)?;
     load(&BackendInfo {
         kind,
         ..backend.clone()
@@ -1719,18 +1804,41 @@ pub fn load_preview_sharing_encoder(
 fn load_preview_session(
     models: &ModelDir,
     backend: &BackendInfo,
-) -> Result<Box<dyn Transcriber + Send>, String> {
+) -> Result<Box<dyn Transcriber + Send>, PreviewRefusal> {
     Ok(Box::new(load_preview_parakeet(models, backend)?))
+}
+
+/// What a preview's failed model load is to the user (T12.33): the NPU's own refusal
+/// ([`qnn_load_steps`] is its one source, and it reaches here as the error it made there), else a
+/// load that failed.
+pub(crate) fn preview_load_refusal(e: &AsrError) -> PreviewRefusal {
+    let reason = match e {
+        AsrError::Backend(why) if why == PREVIEW_NEEDS_COMPILED => {
+            PreviewOffReason::NeedsCompiledModel
+        }
+        _ => PreviewOffReason::LoadFailed,
+    };
+    PreviewRefusal::new(reason, e.to_string())
 }
 
 fn load_preview_parakeet(
     models: &ModelDir,
     backend: &BackendInfo,
-) -> Result<ParakeetTranscriber, String> {
-    let Ok(AsrModel::Parakeet(model)) = asr_model(&backend.model) else {
-        return Err("previews run on Parakeet only".to_owned());
+) -> Result<ParakeetTranscriber, PreviewRefusal> {
+    let pool_failed = || {
+        PreviewRefusal::new(
+            PreviewOffReason::Failed,
+            "a preview thread could not lower its priority",
+        )
     };
-    let accel = Accelerator::of(backend.kind).ok_or("no accelerator for the backend")?;
+    // A name this build does not know is refused here, by the load; a known model without
+    // previews already by the rule both share.
+    let Some(model) = preview_model(&backend.model)? else {
+        return Err(parakeet_only());
+    };
+    let accel = Accelerator::of(backend.kind).ok_or_else(|| {
+        PreviewRefusal::new(PreviewOffReason::Model, "no accelerator for the backend")
+    })?;
     let threads = onnx_cpu_threads(cores(), 2);
     let session = load_parakeet_with(
         models,
@@ -1740,9 +1848,9 @@ fn load_preview_parakeet(
         true,
         QnnLoadFor::Preview,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| preview_load_refusal(&e))?;
     if crate::priority::preview_pool_failed() {
-        return Err("a preview thread could not lower its priority".to_owned());
+        return Err(pool_failed());
     }
     Ok(session)
 }

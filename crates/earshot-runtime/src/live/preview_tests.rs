@@ -15,7 +15,7 @@ use super::*;
 use crate::live::preview::{
     COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PreviewWords, StreamFeed,
 };
-use crate::live::{LivePreviews, PreviewLoader, PreviewReport};
+use crate::live::{LivePreviews, PreviewLoader, PreviewOffReason, PreviewRefusal, PreviewReport};
 use crate::power::{PowerProbe, PowerSource, PowerSupply};
 use crate::replay::{PaceClock, PaceState, Paced};
 use crate::stretches::{StoredStretches, stretch_record};
@@ -203,6 +203,9 @@ fn previews(load: PreviewLoader) -> LivePreviews {
         fell_behind: Duration::from_secs(3600),
         background: false,
         own_voice: None,
+        rule: None,
+        own_voice_rule: None,
+        user_asked: true,
         stream: None,
     }
 }
@@ -1029,7 +1032,7 @@ fn live_preview_report_names_the_loaded_sessions_backend() {
     let (_, events, ..) = run_with(&scene, Some(previews(loader(&seen, marker_words))), 343);
     let report = report_of(&events).expect("a report");
     assert_eq!(report.backend, Some(BackendKind::Fake), "{report:?}");
-    let refused: PreviewLoader = Arc::new(|_| Err("not on this backend".to_owned()));
+    let refused: PreviewLoader = Arc::new(|_| Err("not on this backend".into()));
     let (_, events, ..) = run_with(&scene, Some(previews(refused)), 345);
     let report = report_of(&events).expect("a report");
     assert_eq!(report.backend, None, "{report:?}");
@@ -1054,7 +1057,7 @@ fn live_preview_own_voice_failing_to_load_leaves_the_far_end_running() {
     let scene = scene_of(27);
     let seen = Arc::new(Seen::default());
     let config = LivePreviews {
-        own_voice: Some(Arc::new(|_| Err("needs more memory".to_owned()))),
+        own_voice: Some(Arc::new(|_| Err("needs more memory".into()))),
         ..previews(loader(&seen, marker_words))
     };
     let (with, events, ..) = run_with(&scene, Some(config), 335);
@@ -1168,7 +1171,7 @@ fn live_preview_is_off_on_battery_and_costs_nothing() {
 #[test]
 fn live_preview_a_failed_load_costs_nothing() {
     let scene = scene_of(27);
-    let load: PreviewLoader = Arc::new(|_| Err("not on this backend".to_owned()));
+    let load: PreviewLoader = Arc::new(|_| Err("not on this backend".into()));
     let (with, events, ..) = run_with(&scene, Some(previews(load)), 317);
     let report = report_of(&events).expect("a report");
     assert_eq!(report.off.as_deref(), Some("not on this backend"));
@@ -1982,4 +1985,967 @@ fn live_preview_stream_paused_for_slowness_still_clears_covered_words() {
         last.iter().all(|w| w.start + COVERED_SLACK >= settled),
         "covered words still shown at the end, settled to {settled:?}: {last:?}"
     );
+}
+
+/// T12.33: what each track said of its previews, in order.
+fn states_of(events: &[RuntimeEvent]) -> Vec<(TrackId, Option<PreviewOffReason>)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            RuntimeEvent::LivePreviewState { track, off } => Some((*track, *off)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn position(events: &[RuntimeEvent], pred: impl Fn(&RuntimeEvent) -> bool) -> usize {
+    events.iter().position(pred).expect("the event was sent")
+}
+
+/// T12.33: previews that run say so once, when their model is loaded and before any word; a
+/// session without previews, and the mic in a call nobody asked previews for, say nothing.
+#[test]
+fn live_preview_state_says_running_once_and_only_for_a_track_with_previews() {
+    let scene = scene_of(27);
+    let (_, events, ..) = run_with(&scene, None, 361);
+    assert!(states_of(&events).is_empty(), "no previews, nothing said");
+    let seen = Arc::new(Seen::default());
+    let (_, events, ..) = run_with(&scene, Some(previews(loader(&seen, marker_words))), 361);
+    assert_eq!(states_of(&events), vec![(TrackId::Reference, None)]);
+    let said = position(&events, |e| {
+        matches!(e, RuntimeEvent::LivePreviewState { .. })
+    });
+    let shown = position(
+        &events,
+        |e| matches!(e, RuntimeEvent::LivePreview { words, .. } if !words.is_empty()),
+    );
+    assert!(said < shown, "said at {said}, words at {shown}");
+    assert_eq!(report_of(&events).expect("a report").reason, None);
+}
+
+/// T12.33: on battery the reason is said once, as a kind, while the meeting records (before its
+/// recording is saved), never only in the report at the end.
+#[test]
+fn live_preview_on_battery_says_why_once_during_the_meeting() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let config = LiveConfig {
+        power: PowerProbe::new(Fixed(PowerSupply::Battery)),
+        ..config_with(Some(previews(loader(&seen, marker_words))))
+    };
+    let session = start_live(
+        fast_source(&scene),
+        svc,
+        config,
+        Some(factory_of(&scene, Arc::default())),
+        Box::new(ChaCha8Rng::seed_from_u64(363)),
+    )
+    .unwrap();
+    let (events, _) = collect(session);
+    assert_eq!(
+        states_of(&events),
+        vec![(TrackId::Reference, Some(PreviewOffReason::OnBattery))]
+    );
+    let said = position(&events, |e| {
+        matches!(e, RuntimeEvent::LivePreviewState { .. })
+    });
+    let saved = position(&events, |e| {
+        matches!(e, RuntimeEvent::RecordingSaved { .. })
+    });
+    let first_words = position(&events, |e| {
+        matches!(
+            e,
+            RuntimeEvent::Transcript {
+                event: TranscriptEvent::Final(_),
+                ..
+            }
+        )
+    });
+    assert!(said < saved, "said at {said}, saved at {saved}");
+    assert!(said < first_words, "said at {said}, words at {first_words}");
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.reason, Some(PreviewOffReason::OnBattery));
+    assert_eq!(report.off.as_deref(), Some(ON_BATTERY_REASON));
+}
+
+/// T12.33: during a hold and its catch-up the track says it is waiting, then that previews run
+/// once the transcript is up to date: the wait is taken back.
+#[test]
+fn live_preview_state_waits_for_the_catch_up_then_takes_it_back() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let events = held_run(
+        &scene,
+        previews(loader(&seen, marker_words)),
+        None,
+        365,
+        true,
+    );
+    assert_eq!(
+        states_of(&events),
+        vec![
+            (TrackId::Reference, Some(PreviewOffReason::CatchingUp)),
+            (TrackId::Reference, None),
+        ]
+    );
+    let state = |want: Option<PreviewOffReason>| {
+        position(
+            &events,
+            |e| matches!(e, RuntimeEvent::LivePreviewState { off, .. } if *off == want),
+        )
+    };
+    let up_to_date = position(&events, |e| {
+        matches!(
+            e,
+            RuntimeEvent::LiveTranscript(LiveTranscriptState::UpToDate)
+        )
+    });
+    assert!(state(Some(PreviewOffReason::CatchingUp)) < up_to_date);
+    assert!(up_to_date < state(None));
+}
+
+/// T12.33: a held meeting on battery never says it waits for the catch-up, because previews will
+/// not start after it: it says the battery, once.
+#[test]
+fn live_preview_a_held_meeting_on_battery_says_only_the_battery() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let gates = held_gates();
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let config = LiveConfig {
+        previews: Some(previews(loader(&seen, marker_words))),
+        power: PowerProbe::new(Fixed(PowerSupply::Battery)),
+        ..held_config(gates.clone())
+    };
+    let mut session = start_live(
+        fast_source(&scene),
+        svc,
+        config,
+        Some(factory_of(&scene, Arc::default())),
+        Box::new(ChaCha8Rng::seed_from_u64(367)),
+    )
+    .unwrap();
+    let events = session.take_events().unwrap();
+    let mut all = Vec::new();
+    for event in &events {
+        if matches!(
+            event,
+            RuntimeEvent::LiveTranscript(LiveTranscriptState::Held(_))
+        ) {
+            gates.transcription.store(true, Ordering::SeqCst);
+        }
+        let ended = matches!(event, RuntimeEvent::Ended(_));
+        all.push(event);
+        if ended {
+            break;
+        }
+    }
+    session.wait().unwrap();
+    assert_eq!(
+        states_of(&all),
+        vec![(TrackId::Reference, Some(PreviewOffReason::OnBattery))]
+    );
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 0);
+}
+
+/// T12.33: a track that falls behind says previews ran, then why they stopped.
+#[test]
+fn live_preview_a_track_falling_behind_says_why() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (source, handles) = super::queue_tests::source_of(&scene);
+    let open = Arc::new(AtomicBool::new(false));
+    let session = start_live(
+        source,
+        svc,
+        config_with(Some(LivePreviews {
+            fell_behind: LivePreviews::new(loader(&seen, marker_words)).fell_behind,
+            ..previews(loader(&seen, marker_words))
+        })),
+        Some(gated_factory(Arc::clone(&open))),
+        Box::new(ChaCha8Rng::seed_from_u64(369)),
+    )
+    .unwrap();
+    let limit = Instant::now() + GUARD;
+    while !handles.delivered.load(Ordering::SeqCst) {
+        assert!(Instant::now() < limit, "the replay never ended");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    open.store(true, Ordering::SeqCst);
+    handles.released.store(true, Ordering::SeqCst);
+    let (events, _) = collect(session);
+    let states = states_of(&events);
+    assert_eq!(
+        states.last(),
+        Some(&(TrackId::Reference, Some(PreviewOffReason::FellBehind))),
+        "{states:?}"
+    );
+    // Once per change: never the same thing twice in a row, and nothing after the turn-off.
+    assert!(states.windows(2).all(|w| w[0] != w[1]), "{states:?}");
+    assert_eq!(
+        states
+            .iter()
+            .filter(|(_, off)| *off == Some(PreviewOffReason::FellBehind))
+            .count(),
+        1,
+        "{states:?}"
+    );
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.reason, Some(PreviewOffReason::FellBehind));
+}
+
+/// T12.33: under Everyone beside the NPU the far end's previews run and the user's own voice
+/// says its refusal once, as its own kind.
+#[test]
+fn live_preview_on_the_npu_own_voice_says_its_refusal_once() {
+    let scene = scene_of(27);
+    let (far, own) = (Arc::new(Seen::default()), Arc::new(Seen::default()));
+    let (far_asked, own_asked) = (
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let surface = npu_machine(Some(15 * GIB));
+    let config = LivePreviews {
+        own_voice: Some(npu_rule_own_voice(&own, &own_asked, surface.clone())),
+        ..previews(npu_rule_loader(
+            &far,
+            &far_asked,
+            surface,
+            crate::preview_settings::PreviewChoice::Everyone,
+        ))
+    };
+    let (events, ..) = npu_run(&scene, config, None, 371);
+    let of = |track: TrackId| -> Vec<Option<PreviewOffReason>> {
+        states_of(&events)
+            .into_iter()
+            .filter(|(t, _)| *t == track)
+            .map(|(_, off)| off)
+            .collect()
+    };
+    assert_eq!(of(TrackId::Reference), vec![None]);
+    assert_eq!(
+        of(TrackId::Mic),
+        vec![Some(PreviewOffReason::OwnVoiceOnNpu)]
+    );
+    let mic = report_for(&events, TrackId::Mic);
+    assert_eq!(mic.reason, Some(PreviewOffReason::OwnVoiceOnNpu));
+}
+
+/// T12.33: a load that fails and a chunker session each say their kind.
+#[test]
+fn live_preview_a_failed_load_and_a_chunker_session_say_their_kind() {
+    let scene = scene_of(27);
+    let load: PreviewLoader = Arc::new(|_| Err("not on this backend".into()));
+    let (_, events, ..) = run_with(&scene, Some(previews(load)), 373);
+    assert_eq!(
+        states_of(&events),
+        vec![(TrackId::Reference, Some(PreviewOffReason::LoadFailed))]
+    );
+    let seen = Arc::new(Seen::default());
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let config = LiveConfig {
+        transcription: LiveTranscription::Chunker,
+        ..config_with(Some(previews(loader(&seen, marker_words))))
+    };
+    let session = start_live(
+        fast_source(&scene),
+        svc,
+        config,
+        Some(factory_of(&scene, Arc::default())),
+        Box::new(ChaCha8Rng::seed_from_u64(375)),
+    )
+    .unwrap();
+    let (events, _) = collect(session);
+    assert_eq!(
+        states_of(&events),
+        vec![(TrackId::Reference, Some(PreviewOffReason::NotApplicable))]
+    );
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 0);
+}
+
+/// T12.33: every refusal of the app's rule and loader carries its kind beside the text the
+/// string forms give, so a host never reads the text to know what happened.
+#[test]
+fn live_preview_refusals_carry_their_kind_beside_the_same_text() {
+    use crate::backends::{
+        OWN_VOICE_NPU_REFUSED, PREVIEW_BOTH_MIN_MEMORY, PREVIEW_MIN_MEMORY, PREVIEW_NEEDS_COMPILED,
+        preview_backend, preview_backend_or_refusal, preview_load_refusal, second_preview_backend,
+        second_preview_backend_or_refusal,
+    };
+    use crate::preview_settings::PreviewChoice;
+    use earshot_hardware::Hardware;
+    let machine = |memory: u64| Hardware {
+        total_memory: Some(memory),
+        ..Hardware::default()
+    };
+    let (big, small) = (machine(64 * GIB), machine(PREVIEW_MIN_MEMORY - 1));
+    let first = |kind, hw: &Hardware, choice| {
+        let typed = preview_backend_or_refusal(kind, hw, choice);
+        assert_eq!(
+            typed.clone().map_err(|r| r.text),
+            preview_backend(kind, hw, choice)
+        );
+        typed.err().map(|r| r.reason)
+    };
+    let second = |kind, hw: &Hardware, choice| {
+        let typed = second_preview_backend_or_refusal(kind, hw, choice);
+        assert_eq!(
+            typed.clone().map_err(|r| r.text),
+            second_preview_backend(kind, hw, choice)
+        );
+        typed.err().map(|r| r.reason)
+    };
+    for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
+        assert_eq!(
+            first(kind, &big, PreviewChoice::Off),
+            Some(PreviewOffReason::TurnedOff)
+        );
+        assert_eq!(first(kind, &big, PreviewChoice::On), None);
+        // The memory limit is the automatic choice's alone: nobody asked for previews there.
+        assert_eq!(
+            first(kind, &small, PreviewChoice::Automatic),
+            Some(PreviewOffReason::OffByDefault)
+        );
+        assert_eq!(first(kind, &small, PreviewChoice::On), None);
+        for choice in [PreviewChoice::Automatic, PreviewChoice::On] {
+            assert_eq!(second(kind, &big, choice), Some(PreviewOffReason::NotAsked));
+        }
+    }
+    assert_eq!(
+        first(BackendKind::Vulkan, &big, PreviewChoice::On),
+        Some(PreviewOffReason::Model)
+    );
+    assert_eq!(
+        second(BackendKind::Vulkan, &big, PreviewChoice::Everyone),
+        Some(PreviewOffReason::Model)
+    );
+    assert_eq!(
+        second(BackendKind::Cpu, &big, PreviewChoice::Everyone),
+        None
+    );
+    assert_eq!(
+        second(BackendKind::Qnn, &big, PreviewChoice::Everyone),
+        Some(PreviewOffReason::OwnVoiceOnNpu)
+    );
+    // The user asked for their own voice too, and the machine has no room for it.
+    assert_eq!(
+        second(
+            BackendKind::Cpu,
+            &machine(PREVIEW_BOTH_MIN_MEMORY - 1),
+            PreviewChoice::Everyone
+        ),
+        Some(PreviewOffReason::NotEnoughMemory)
+    );
+    // The loader: the NPU's own refusal, as `qnn_load_steps` makes it, and any other failure.
+    let needs = preview_load_refusal(&AsrError::Backend(PREVIEW_NEEDS_COMPILED.to_owned()));
+    assert_eq!(needs.reason, PreviewOffReason::NeedsCompiledModel);
+    assert!(needs.contains(PREVIEW_NEEDS_COMPILED), "{needs}");
+    let other = preview_load_refusal(&AsrError::Backend("a file is missing".to_owned()));
+    assert_eq!(other.reason, PreviewOffReason::LoadFailed);
+    assert!(other.contains("a file is missing"), "{other}");
+    assert_ne!(OWN_VOICE_NPU_REFUSED, PREVIEW_NEEDS_COMPILED);
+    // Plain words from a loader are a load that failed.
+    assert_eq!(
+        PreviewRefusal::from("no session").reason,
+        PreviewOffReason::LoadFailed
+    );
+}
+
+/// A held meeting of `scene` with `previews`, released at its first `Held`; every event. With
+/// `catch_up_gate` the first real decode after the hold stays in progress, so the catch-up
+/// lasts, until the session has said its previews wait for it (a rendezvous, never a sleep;
+/// `GUARD` opens it in a failing case, so the test fails instead of hanging).
+fn held_run(
+    scene: &Scene,
+    previews: LivePreviews,
+    power: Option<PowerSupply>,
+    seed: u64,
+    catch_up_gate: bool,
+) -> Vec<RuntimeEvent> {
+    held_run_on(
+        scene,
+        previews,
+        |config| {
+            if let Some(supply) = power {
+                config.power = PowerProbe::new(Fixed(supply));
+            }
+        },
+        |factory| factory,
+        seed,
+        catch_up_gate,
+        |event| {
+            matches!(
+                event,
+                RuntimeEvent::LivePreviewState {
+                    off: Some(PreviewOffReason::CatchingUp),
+                    ..
+                }
+            )
+        },
+    )
+}
+
+/// [`held_run`] with the session's config changed by `tweak`, the tracks' transcribers made by
+/// `wrap` around the run's own factory, and the gated catch-up let go at the first event `opens`
+/// accepts (in [`held_run`], the wait being said).
+fn held_run_on(
+    scene: &Scene,
+    previews: LivePreviews,
+    tweak: impl FnOnce(&mut LiveConfig),
+    wrap: impl FnOnce(LiveAsrFactory) -> LiveAsrFactory,
+    seed: u64,
+    catch_up_gate: bool,
+    mut opens: impl FnMut(&RuntimeEvent) -> bool,
+) -> Vec<RuntimeEvent> {
+    let open = Arc::new(AtomicBool::new(false));
+    let factory = wrap(if catch_up_gate {
+        gated_factory(Arc::clone(&open))
+    } else {
+        factory_of(scene, Arc::default())
+    });
+    let finished = Arc::new(AtomicBool::new(false));
+    let watchdog = {
+        let (open, finished) = (Arc::clone(&open), Arc::clone(&finished));
+        std::thread::spawn(move || {
+            let limit = Instant::now() + GUARD;
+            while !finished.load(Ordering::SeqCst) && Instant::now() < limit {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            open.store(true, Ordering::SeqCst);
+        })
+    };
+    let gates = held_gates();
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let mut config = LiveConfig {
+        previews: Some(previews),
+        ..held_config(gates.clone())
+    };
+    tweak(&mut config);
+    let mut session = start_live(
+        fast_source(scene),
+        svc,
+        config,
+        Some(factory),
+        Box::new(ChaCha8Rng::seed_from_u64(seed)),
+    )
+    .unwrap();
+    let events = session.take_events().unwrap();
+    let mut all = Vec::new();
+    for event in &events {
+        // Released at once, or once the hold has kept more audio than counts as caught up
+        // (judged on the audio's own time, so there is a catch-up to wait for).
+        let release = match event {
+            RuntimeEvent::LiveTranscript(LiveTranscriptState::Held(_)) => !catch_up_gate,
+            RuntimeEvent::Levels(l) => {
+                catch_up_gate && l.end >= MeetingTime::from_millis(2 * CAUGHT_UP_BACKLOG_MS)
+            }
+            _ => false,
+        };
+        if release {
+            gates.transcription.store(true, Ordering::SeqCst);
+        }
+        if opens(&event) {
+            open.store(true, Ordering::SeqCst);
+        }
+        let ended = matches!(event, RuntimeEvent::Ended(_));
+        all.push(event);
+        if ended {
+            break;
+        }
+    }
+    session.wait().unwrap();
+    finished.store(true, Ordering::SeqCst);
+    watchdog.join().unwrap();
+    all
+}
+
+const CAUGHT_UP_BACKLOG_MS: u64 = crate::live::hold::CAUGHT_UP_BACKLOG.as_millis() as u64;
+
+fn refusing_rule(reason: PreviewOffReason, text: &'static str) -> crate::live::PreviewRule {
+    Arc::new(move |_: &BackendInfo| Some(PreviewRefusal::new(reason, text)))
+}
+
+/// T12.33: what the computer's rule refuses is known before anything is said, so a meeting
+/// whose previews are turned off (or off by default here) never says it waits for the catch-up
+/// or blames the battery, and loads nothing.
+#[test]
+fn live_preview_the_rule_is_asked_before_a_wait_or_the_battery_is_said() {
+    let scene = scene_of(27);
+    for (reason, text, power, seed) in [
+        (
+            PreviewOffReason::TurnedOff,
+            "turned off in Settings",
+            None,
+            377,
+        ),
+        (
+            PreviewOffReason::OffByDefault,
+            "not enough memory for a second session of the model",
+            Some(PowerSupply::Battery),
+            379,
+        ),
+    ] {
+        let seen = Arc::new(Seen::default());
+        let config = LivePreviews {
+            rule: Some(refusing_rule(reason, text)),
+            ..previews(loader(&seen, marker_words))
+        };
+        let events = held_run(&scene, config, power, seed, false);
+        assert_eq!(
+            states_of(&events),
+            vec![(TrackId::Reference, Some(reason))],
+            "{reason:?}"
+        );
+        assert_eq!(seen.calls.load(Ordering::SeqCst), 0, "{reason:?}");
+        let report = report_of(&events).expect("a report");
+        assert_eq!(report.off.as_deref(), Some(text));
+        assert_eq!(report.reason, Some(reason));
+        assert!(previews_of(&events).is_empty());
+    }
+    // A rule that allows them changes nothing: the wait is said, then that they run.
+    let seen = Arc::new(Seen::default());
+    let allows: crate::live::PreviewRule = Arc::new(|_: &BackendInfo| None);
+    let config = LivePreviews {
+        rule: Some(allows),
+        ..previews(loader(&seen, marker_words))
+    };
+    assert_eq!(
+        states_of(&held_run(&scene, config, None, 381, true)),
+        vec![
+            (TrackId::Reference, Some(PreviewOffReason::CatchingUp)),
+            (TrackId::Reference, None),
+        ]
+    );
+    // Without a hold the rule still comes before the battery.
+    let seen = Arc::new(Seen::default());
+    let dir = TempDir::new();
+    let config = LiveConfig {
+        power: PowerProbe::new(Fixed(PowerSupply::Battery)),
+        ..config_with(Some(LivePreviews {
+            rule: Some(refusing_rule(
+                PreviewOffReason::Model,
+                "previews run on Parakeet only",
+            )),
+            ..previews(loader(&seen, marker_words))
+        }))
+    };
+    let session = start_live(
+        fast_source(&scene),
+        services(&dir),
+        config,
+        Some(factory_of(&scene, Arc::default())),
+        Box::new(ChaCha8Rng::seed_from_u64(383)),
+    )
+    .unwrap();
+    let (events, _) = collect(session);
+    assert_eq!(
+        states_of(&events),
+        vec![(TrackId::Reference, Some(PreviewOffReason::Model))]
+    );
+}
+
+/// T12.33: a preview thread that crashes says so while the meeting records, in the words the
+/// report at the end keeps.
+#[test]
+fn live_preview_a_crashed_thread_says_so_during_the_meeting() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let script = |_: usize, _: &CancelToken| -> Result<Vec<Word>, AsrError> {
+        panic!("a test crash");
+    };
+    let (with, events, ..) = run_with(&scene, Some(previews(loader(&seen, script))), 387);
+    assert_eq!(
+        states_of(&events),
+        vec![
+            (TrackId::Reference, None),
+            (TrackId::Reference, Some(PreviewOffReason::Failed)),
+        ]
+    );
+    let said = position(&events, |e| {
+        matches!(e, RuntimeEvent::LivePreviewState { off: Some(_), .. })
+    });
+    let saved = position(&events, |e| {
+        matches!(e, RuntimeEvent::RecordingSaved { .. })
+    });
+    assert!(said < saved, "said at {said}, saved at {saved}");
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.off.as_deref(), Some("the preview thread crashed"));
+    assert_eq!(report.reason, Some(PreviewOffReason::Failed));
+    let (without, ..) = run_with(&scene, None, 387);
+    assert_eq!(with, without);
+}
+
+/// T12.33: the user's own track in a call is judged by its own rule, the far end by the first;
+/// in the room the mic is judged by the first.
+#[test]
+fn live_preview_each_track_is_judged_by_its_own_rule() {
+    let scene = scene_of(27);
+    let (far, own) = (Arc::new(Seen::default()), Arc::new(Seen::default()));
+    let config = LivePreviews {
+        own_voice: Some(loader(&own, marker_words)),
+        own_voice_rule: Some(refusing_rule(
+            PreviewOffReason::OwnVoiceOnNpu,
+            crate::backends::OWN_VOICE_NPU_REFUSED,
+        )),
+        ..previews(loader(&far, marker_words))
+    };
+    let (_, events, ..) = run_with(&scene, Some(config), 385);
+    let mut states = states_of(&events);
+    states.sort_by_key(|(track, _)| *track == TrackId::Reference);
+    assert_eq!(
+        states,
+        vec![
+            (TrackId::Mic, Some(PreviewOffReason::OwnVoiceOnNpu)),
+            (TrackId::Reference, None),
+        ]
+    );
+    assert_eq!(own.calls.load(Ordering::SeqCst), 0, "own voice loaded");
+    assert!(far.calls.load(Ordering::SeqCst) > 0);
+    let mic = report_for(&events, TrackId::Mic);
+    assert_eq!(
+        mic.off.as_deref(),
+        Some(crate::backends::OWN_VOICE_NPU_REFUSED)
+    );
+}
+
+/// T12.33: the app's previews carry the loaders' own rule: the first for every choice, the
+/// user's own voice only under Everyone; with the setting off the rule says so on any backend.
+#[test]
+fn live_preview_the_apps_previews_carry_the_loaders_rule() {
+    use crate::preview_settings::PreviewChoice;
+    let empty = TempDir::new();
+    let models = crate::backends::ModelDir::new(&empty.0);
+    let on = |kind| BackendInfo {
+        kind,
+        device: "a device".to_owned(),
+        model: "a model".to_owned(),
+    };
+    for choice in [
+        PreviewChoice::Off,
+        PreviewChoice::Automatic,
+        PreviewChoice::On,
+        PreviewChoice::Everyone,
+    ] {
+        let previews = crate::host::live_previews(&models, choice);
+        let rule = previews.rule.clone().expect("the first rule");
+        assert_eq!(
+            previews.own_voice_rule.is_some(),
+            choice == PreviewChoice::Everyone,
+            "{choice:?}"
+        );
+        assert_eq!(
+            previews.own_voice.is_some(),
+            previews.own_voice_rule.is_some(),
+            "{choice:?}"
+        );
+        for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
+            let said = rule(&on(kind)).map(|r| r.reason);
+            if choice == PreviewChoice::Off {
+                assert_eq!(said, Some(PreviewOffReason::TurnedOff), "{kind:?}");
+            } else {
+                assert_ne!(
+                    said,
+                    Some(PreviewOffReason::TurnedOff),
+                    "{choice:?} {kind:?}"
+                );
+            }
+            // The rule is the loader's: what one refuses, the other refuses in the same words.
+            assert_eq!(
+                rule(&on(kind)).map(|r| r.text),
+                crate::backends::previews_refused(kind, &crate::hardware(), choice),
+                "{choice:?} {kind:?}"
+            );
+        }
+        // No preview runs beside a part that is not Parakeet's, whatever was chosen.
+        if choice != PreviewChoice::Off {
+            assert_eq!(
+                rule(&on(BackendKind::Vulkan)).map(|r| r.reason),
+                Some(PreviewOffReason::Model)
+            );
+        }
+        if let Some(own) = &previews.own_voice_rule {
+            assert_eq!(
+                own(&on(BackendKind::Qnn)).map(|r| r.reason),
+                Some(PreviewOffReason::OwnVoiceOnNpu)
+            );
+        }
+    }
+}
+
+/// A power supply that counts its reads, on battery while `.1` is set.
+struct CountingPower(Arc<AtomicUsize>, Arc<AtomicBool>);
+
+impl PowerSource for CountingPower {
+    fn supply(&self) -> PowerSupply {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        if self.1.load(Ordering::SeqCst) {
+            PowerSupply::Battery
+        } else {
+            PowerSupply::Mains
+        }
+    }
+}
+
+fn is_state(event: &RuntimeEvent, want: Option<PreviewOffReason>) -> bool {
+    matches!(event, RuntimeEvent::LivePreviewState { off, .. } if *off == want)
+}
+
+/// T12.33 review: through a long catch-up (many session loops with the track's backend known)
+/// the rule is asked once for the track and the power supply is read at its own pace, never on
+/// every loop; what is said does not change.
+#[test]
+fn live_preview_a_long_catch_up_asks_the_rule_once_and_reads_the_supply_at_its_pace() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let asked = Arc::new(AtomicUsize::new(0));
+    let rule: crate::live::PreviewRule = {
+        let asked = Arc::clone(&asked);
+        Arc::new(move |_: &BackendInfo| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            None
+        })
+    };
+    let reads = Arc::new(AtomicUsize::new(0));
+    let power = CountingPower(Arc::clone(&reads), Arc::default());
+    let config = LivePreviews {
+        rule: Some(rule),
+        ..previews(loader(&seen, marker_words))
+    };
+    // The catch-up lasts while 40 meters go by after the wait is said: many session loops.
+    let mut meters_after_the_wait: Option<u32> = None;
+    let events = held_run_on(
+        &scene,
+        config,
+        |c| {
+            c.power = PowerProbe::new(power);
+            c.power_poll = Duration::from_secs(3600);
+        },
+        |factory| factory,
+        389,
+        true,
+        |event| {
+            if is_state(event, Some(PreviewOffReason::CatchingUp)) {
+                meters_after_the_wait = Some(0);
+            }
+            if let (RuntimeEvent::Levels(_), Some(n)) = (event, meters_after_the_wait.as_mut()) {
+                *n += 1;
+            }
+            meters_after_the_wait.is_some_and(|n| n >= 40)
+        },
+    );
+    assert_eq!(
+        states_of(&events),
+        vec![
+            (TrackId::Reference, Some(PreviewOffReason::CatchingUp)),
+            (TrackId::Reference, None),
+        ]
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "the rule is asked once");
+    // At most one read each with an hour between reads: the session's start, its speaker watch,
+    // the waiting previews, the start after the catch-up and the running previews.
+    let reads = reads.load(Ordering::SeqCst);
+    assert!(reads <= 5, "{reads} reads of the power supply");
+}
+
+/// T12.33 review: a computer that goes on battery while previews wait for the catch-up says the
+/// battery while the transcript is still catching up, not only when the wait is over.
+#[test]
+fn live_preview_going_on_battery_during_the_catch_up_says_it_at_once() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let battery = Arc::new(AtomicBool::new(false));
+    let power = CountingPower(Arc::default(), Arc::clone(&battery));
+    let events = held_run_on(
+        &scene,
+        previews(loader(&seen, marker_words)),
+        |c| {
+            c.power = PowerProbe::new(power);
+            c.power_poll = Duration::from_millis(1);
+        },
+        |factory| factory,
+        391,
+        true,
+        |event| {
+            if is_state(event, Some(PreviewOffReason::CatchingUp)) {
+                battery.store(true, Ordering::SeqCst);
+            }
+            is_state(event, Some(PreviewOffReason::OnBattery))
+        },
+    );
+    assert_eq!(
+        states_of(&events),
+        vec![
+            (TrackId::Reference, Some(PreviewOffReason::CatchingUp)),
+            (TrackId::Reference, Some(PreviewOffReason::OnBattery)),
+        ]
+    );
+    let battery_said = position(&events, |e| is_state(e, Some(PreviewOffReason::OnBattery)));
+    let up_to_date = position(&events, |e| {
+        matches!(
+            e,
+            RuntimeEvent::LiveTranscript(LiveTranscriptState::UpToDate)
+        )
+    });
+    assert!(battery_said < up_to_date, "{battery_said} {up_to_date}");
+    // Still decided at the start after the catch-up: on battery nothing loads.
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        report_of(&events).expect("a report").reason,
+        Some(PreviewOffReason::OnBattery)
+    );
+}
+
+/// A track's real transcriber reporting the model `.1` on `.0`, as a meeting transcribed with
+/// that model does.
+struct Reporting(
+    BackendKind,
+    &'static str,
+    Box<dyn earshot_core::asr::Transcriber + Send>,
+);
+
+impl earshot_core::asr::Transcriber for Reporting {
+    fn transcribe(
+        &mut self,
+        audio: &MonoBuffer,
+        options: &TranscribeOptions,
+        cancel: &CancelToken,
+    ) -> Result<Transcription, AsrError> {
+        let mut t = self.2.transcribe(audio, options, cancel)?;
+        t.backend = self.backend_info();
+        Ok(t)
+    }
+
+    fn backend_info(&self) -> BackendInfo {
+        BackendInfo {
+            kind: self.0,
+            model: self.1.to_owned(),
+            ..self.2.backend_info()
+        }
+    }
+}
+
+/// `inner` with both tracks' transcribers reporting `model` on `kind`.
+fn reporting(mut inner: LiveAsrFactory, kind: BackendKind, model: &'static str) -> LiveAsrFactory {
+    Box::new(move |track, entity| {
+        let mut asr = inner(track, entity)?;
+        if let Some(asr) = asr.as_mut() {
+            let real = std::mem::replace(
+                &mut asr.asr.transcriber,
+                Box::new(super::queue_tests::ContentWords),
+            );
+            asr.asr.transcriber = Box::new(Reporting(kind, model, real));
+        }
+        Ok(asr)
+    })
+}
+
+/// A whisper model of the manifest.
+const WHISPER: &str = "base.en";
+
+/// T12.33 review: the app's rule holds the loader's model rule, so a whisper track is refused by
+/// the rule in the loader's own words and kind, on every part, before anything is loaded.
+#[test]
+fn live_preview_the_apps_rule_refuses_a_whisper_track_as_the_loader_does() {
+    use crate::preview_settings::PreviewChoice;
+    assert!(matches!(
+        crate::backends::asr_model(WHISPER),
+        Ok(crate::backends::AsrModel::Whisper(_))
+    ));
+    let empty = TempDir::new();
+    let models = crate::backends::ModelDir::new(&empty.0);
+    let whisper = |kind| BackendInfo {
+        kind,
+        device: "a device".to_owned(),
+        model: WHISPER.to_owned(),
+    };
+    for choice in [PreviewChoice::On, PreviewChoice::Everyone] {
+        let previews = crate::host::live_previews(&models, choice);
+        let rule = previews.rule.clone().expect("the first rule");
+        for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
+            let refused = rule(&whisper(kind)).expect("a whisper track is refused");
+            assert_eq!(
+                refused.reason,
+                PreviewOffReason::Model,
+                "{choice:?} {kind:?}"
+            );
+            let Err(loaded) = (previews.load)(&whisper(kind)) else {
+                panic!("a whisper preview loaded");
+            };
+            assert_eq!(loaded, refused, "{choice:?} {kind:?}");
+        }
+        if let (Some(own), Some(own_rule)) = (&previews.own_voice, &previews.own_voice_rule) {
+            let Err(loaded) = own(&whisper(BackendKind::Cpu)) else {
+                panic!("a whisper preview loaded");
+            };
+            assert_eq!(Some(loaded), own_rule(&whisper(BackendKind::Cpu)));
+        }
+        assert!(previews.user_asked, "{choice:?}");
+    }
+    assert!(!crate::host::live_previews(&models, PreviewChoice::Automatic).user_asked);
+}
+
+/// T12.33 review: a held meeting on battery transcribed by a whisper model never says it waits
+/// for the catch-up or blames the battery: previews never run on it. Turned on, it says the model;
+/// under the automatic choice it says nothing a host shows.
+#[test]
+fn live_preview_a_whisper_track_says_the_model_or_nothing_never_a_wait_or_the_battery() {
+    use crate::preview_settings::PreviewChoice;
+    let scene = scene_of(27);
+    let empty = TempDir::new();
+    let models = crate::backends::ModelDir::new(&empty.0);
+    for (choice, said, seed) in [
+        (PreviewChoice::On, PreviewOffReason::Model, 393),
+        (
+            PreviewChoice::Automatic,
+            PreviewOffReason::OffByDefault,
+            395,
+        ),
+    ] {
+        let previews = LivePreviews {
+            background: false,
+            ..crate::host::live_previews(&models, choice)
+        };
+        let events = held_run_on(
+            &scene,
+            previews,
+            |c| c.power = PowerProbe::new(Fixed(PowerSupply::Battery)),
+            |factory| reporting(factory, BackendKind::Cpu, WHISPER),
+            seed,
+            false,
+            |_| false,
+        );
+        assert_eq!(
+            states_of(&events),
+            vec![(TrackId::Reference, Some(said))],
+            "{choice:?}"
+        );
+        let report = report_of(&events).expect("a report");
+        assert_eq!(report.reason, Some(said), "{choice:?}");
+        // The report keeps the rule's own words.
+        assert_eq!(
+            report.off.as_deref(),
+            crate::backends::preview_rule(
+                &BackendInfo {
+                    kind: BackendKind::Cpu,
+                    device: String::new(),
+                    model: WHISPER.to_owned(),
+                },
+                &crate::hardware(),
+                choice
+            )
+            .err()
+            .map(|r| r.text)
+            .as_deref(),
+            "{choice:?}"
+        );
+        assert!(previews_of(&events).is_empty());
+    }
 }

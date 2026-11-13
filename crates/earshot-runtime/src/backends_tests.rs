@@ -822,6 +822,7 @@ fn backends_a_bluetooth_hands_free_mic_becomes_a_session_warning() {
         filter_path: None,
         sample_rate: Some(16_000),
         id: None,
+        raw_processing: None,
     };
     let found = classify(&headset).expect("a hands-free mic");
     assert_eq!(
@@ -2586,6 +2587,55 @@ fn backends_preview_unrefused_load_skips_only_the_refusal() {
     assert_eq!(
         load_preview_unrefused(&models, &whisper).err().as_deref(),
         Some("previews run on Parakeet only")
+    );
+}
+
+/// T12.33 review: the preview load says what kind of refusal each of its own checks is: a
+/// whisper model, a name it does not know and a part with no accelerator are the model's or
+/// part's, never a load that failed.
+#[test]
+fn backends_preview_load_refusals_have_their_own_kind() {
+    use crate::live::PreviewOffReason;
+    let empty = std::env::temp_dir().join(format!("earshot-preview-kinds-{}", std::process::id()));
+    let models = ModelDir::new(&empty);
+    let on = |kind, model: &str| BackendInfo {
+        kind,
+        device: String::new(),
+        model: model.to_owned(),
+    };
+    for backend in [
+        on(BackendKind::Cpu, "base.en"),
+        on(BackendKind::Cpu, "a model nobody knows"),
+        on(BackendKind::Fake, "parakeet-tdt-0.6b-v2"),
+    ] {
+        let Err(why) = load_preview_parakeet(&models, &backend) else {
+            panic!("{backend:?} loaded");
+        };
+        assert_eq!(why.reason, PreviewOffReason::Model, "{backend:?}: {why}");
+    }
+    assert_eq!(
+        load_preview_parakeet(&models, &on(BackendKind::Fake, "parakeet-tdt-0.6b-v2"))
+            .err()
+            .map(|why| why.text),
+        Some("no accelerator for the backend".to_owned())
+    );
+    // The rule both the loader and the app's session ask refuses only the whisper model: a name
+    // it does not know is left to the load.
+    let hw = earshot_hardware::Hardware::default();
+    let choice = crate::preview_settings::PreviewChoice::On;
+    assert_eq!(
+        preview_rule(&on(BackendKind::Cpu, "base.en"), &hw, choice)
+            .err()
+            .map(|r| r.reason),
+        Some(PreviewOffReason::Model)
+    );
+    assert_eq!(
+        preview_rule(&on(BackendKind::Cpu, "parakeet-tdt-0.6b-v2"), &hw, choice),
+        Ok(BackendKind::Cpu)
+    );
+    assert_eq!(
+        preview_rule(&on(BackendKind::Cpu, "a model nobody knows"), &hw, choice),
+        Ok(BackendKind::Cpu)
     );
 }
 

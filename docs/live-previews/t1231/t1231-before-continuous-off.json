@@ -1,0 +1,182 @@
+{
+  "audio": "continuous",
+  "capture_max_lag_s": 0.013,
+  "catch_up_after_end_s": 0.2253038,
+  "decodes_mic": {
+    "audio_s": -0.0,
+    "calls": 0,
+    "rtf": null,
+    "took_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 120.0,
+    "calls": 6,
+    "rtf": 0.011709090833333331,
+    "took_s": {
+      "max": 0.2591794,
+      "median": 0.2374717,
+      "n": 6,
+      "p95": 0.2591794
+    }
+  },
+  "echo_locks": 0,
+  "echo_words_removed": 0,
+  "host": {
+    "logical_cores": 12,
+    "machine_load_percent": {
+      "max": 28.0,
+      "median": 18.0,
+      "n": 3,
+      "p95": 28.0
+    },
+    "peak_private_gib": 2.530517578125,
+    "peak_working_set_gib": 3.133220672607422,
+    "process_cpu_s": 19.0
+  },
+  "length_s": 120.0,
+  "live_backends": [
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "max_piece_s": null,
+  "mic": {
+    "first_word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "last_word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "on_screen_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stretch_length_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "stretches": 0,
+    "word_lag_s": {
+      "max": null,
+      "median": null,
+      "n": 0,
+      "p95": null
+    },
+    "words": 0
+  },
+  "npu_refusals": [],
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10"
+  ],
+  "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4, recover_speech: Some(2s) }",
+  "preview_refusal": null,
+  "preview_sessions": [],
+  "previews": [],
+  "reference": {
+    "first_word_lag_s": {
+      "max": 29.938040900000004,
+      "median": 29.810025699999997,
+      "n": 6,
+      "p95": 29.938040900000004
+    },
+    "last_word_lag_s": {
+      "max": 13.650572999999994,
+      "median": 9.354012100000002,
+      "n": 6,
+      "p95": 13.650572999999994
+    },
+    "on_screen_lag_s": {
+      "max": 29.938040900000004,
+      "median": 18.130573,
+      "n": 230,
+      "p95": 29.090025699999998
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "81282c4c616d62cb3058788ef1b6349b6d39b23493e2cbd37c35565a5f1c77a9",
+    "stretch_length_s": {
+      "max": 26.0,
+      "median": 21.12,
+      "n": 6,
+      "p95": 26.0
+    },
+    "stretches": 6,
+    "word_lag_s": {
+      "max": 29.938040900000004,
+      "median": 18.130573,
+      "n": 230,
+      "p95": 29.090025699999998
+    },
+    "words": 230
+  },
+  "requested_backend": "Qnn",
+  "simulated_card_gib": null,
+  "speakers": true,
+  "stopped_with": "Finished",
+  "stream": null,
+  "vanished_kinds": {
+    "mic": {
+      "near_ms": 2000,
+      "never_settled": 0,
+      "other_track_settled_nearby": 0,
+      "own_settled_after": 0,
+      "own_settled_before": 0
+    },
+    "reference": {
+      "near_ms": 2000,
+      "never_settled": 0,
+      "other_track_settled_nearby": 0,
+      "own_settled_after": 0,
+      "own_settled_before": 0
+    }
+  },
+  "warnings": 0
+}

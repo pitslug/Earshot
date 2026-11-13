@@ -21,7 +21,12 @@
 //!   `max_piece` past the cut start and the cut window's probabilities are in, so a speaker
 //!   who never pauses still yields a piece every `max_piece` or less;
 //! - the last merged piece is final when the next part (the pending region's remainder, or
-//!   anything after `b`) can no longer merge into it (`merge_gap`, `max_piece`).
+//!   anything after `b`) can no longer merge into it (`merge_gap`, `max_piece`). A piece
+//!   that ends at a cut of the pending region is final at once (T12.31), without waiting
+//!   for the window after it, unless that window's cut could still fall close enough to
+//!   join it: only when this cut and the next can both land on the first frame they may
+//!   and the two parts then fit one window (`settle` has the proof and the exact
+//!   condition).
 //!
 //!
 //! # Resuming (T6.13c)
@@ -105,6 +110,7 @@ fn settle(probs: &[f32], frame: usize, config: &PieceConfig) -> (Vec<Span>, usiz
     }
     // The start of whatever comes next: the pending region's remainder after its known
     // cuts, else at the earliest `b`.
+    let mut ends_at_cut = false;
     let next_start = match regions.get(finals) {
         Some(pending) => {
             let mut s = pending.start;
@@ -112,6 +118,7 @@ fn settle(probs: &[f32], frame: usize, config: &PieceConfig) -> (Vec<Span>, usiz
                 let cut = cut_point(s, probs, frame, max);
                 parts.push(Span { start: s, end: cut });
                 s = cut;
+                ends_at_cut = true;
             }
             s
         }
@@ -120,17 +127,46 @@ fn settle(probs: &[f32], frame: usize, config: &PieceConfig) -> (Vec<Span>, usiz
     let mut pieces = merge_parts(&parts, merge_gap, max);
     let mut frontier = next_start;
     if let Some(&last) = pieces.last() {
-        // The next part starts at or after `next_start` and is never empty (cuts move
-        // forward, regions have length), so it cannot fit within `max` of `last.start` once
-        // `next_start - last.start` reaches `max`.
-        let can_merge = next_start.saturating_sub(last.end) <= merge_gap
-            && next_start.saturating_sub(last.start) < max;
+        let can_merge = if ends_at_cut {
+            // `last` ends at the pending region's latest cut `c = next_start`, made on the
+            // window starting at `s` (`last.start <= s`: equal unless earlier parts were
+            // merged in). Every part up to `c` is the whole-track plan's, and the plan
+            // merges part by part, so only its next part `p` matters: it starts at `c`
+            // (the region runs on past `c`) and joins `last` exactly when
+            // `p.end - last.start <= max` (`merge_parts`; the gap is zero). `p` is either
+            // - the region's remainder, when the region turns out to end within `max` of
+            //   `c`: `p.end` is the region's final end, at least `pending.end` (ends are
+            //   lower bounds), and `pending.end - s > max` is why `c` was cut at all, so
+            //   `p.end - last.start > max` and it never joins; or
+            // - the next cut part: `p.end = cut_point(c, ..)` over probabilities not all
+            //   heard yet, never before `earliest_cut(c, ..)`.
+            // So nothing can join `last` once `earliest_cut(c) - last.start > max`;
+            // otherwise the next cut decides and `last` waits for it.
+            earliest_cut(next_start, frame, max) - last.start <= max
+        } else {
+            // The next part starts at or after `next_start` and is never empty (cuts move
+            // forward, regions have length), so it cannot fit within `max` of `last.start`
+            // once `next_start - last.start` reaches `max`.
+            next_start.saturating_sub(last.end) <= merge_gap
+                && next_start.saturating_sub(last.start) < max
+        };
         if can_merge {
             pieces.pop();
             frontier = last.start;
         }
     }
     (pieces, frontier)
+}
+
+/// The earliest [`cut_point`] can cut a region longer than `max` samples starting at `s`,
+/// whatever the probabilities: its first candidate frame (`cut_point` takes a frame of
+/// `(s + max / 2).div_ceil(frame) ..< (s + max) / frame`, else `s + max`, then clamps, which
+/// keeps the order).
+pub(super) fn earliest_cut(s: usize, frame: usize, max: usize) -> usize {
+    let lo = (s + max / 2).div_ceil(frame);
+    let hi = (s + max) / frame;
+    let first = if lo < hi { lo * frame } else { s + max };
+    first.clamp(s + 1, s + max)
 }
 
 /// A piece decoded by [`PieceStream`].
