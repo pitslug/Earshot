@@ -740,19 +740,39 @@ pub fn check_after_start(
     let spawned = std::thread::Builder::new()
         .name("earshot-cuda-check".into())
         .spawn(move || {
-            let start = latch.wait();
-            let models = earshot_runtime::host::model_dir(&services.data);
-            let follows = check_state(&services, &models)
-                .is_ok_and(|(automatic, current)| check_follows_start(&start, automatic, current));
-            if follows && let Err(e) = checks.start_check_giving_way(&services) {
-                sink(CudaEvent::Warning {
-                    part: CudaPartChoice::Transcription,
-                    message: crate::model_jobs::check_not_started_message(&e.message),
-                });
-            }
+            check_once_started(&latch, &services, &checks, &sink);
         });
     // Nothing waits for it: the Models page says the check is out of date and offers it.
     drop(spawned);
+}
+
+/// The step of [`check_after_start`] on the calling thread: waits for the start, then starts the
+/// model check through `checks` if [`check_follows_start`] says so, or tells `sink` why it could
+/// not. Returns whether a check started (its end comes as `checks`' own events). The replay's
+/// proof of the switch runs this same step (`crate::headless`).
+pub fn check_once_started(
+    latch: &CudaLatch,
+    services: &Services,
+    checks: &ModelJobs,
+    sink: &CudaSink,
+) -> bool {
+    let start = latch.wait();
+    let models = earshot_runtime::host::model_dir(&services.data);
+    let follows = check_state(services, &models)
+        .is_ok_and(|(automatic, current)| check_follows_start(&start, automatic, current));
+    if !follows {
+        return false;
+    }
+    match checks.start_check_giving_way(services) {
+        Ok(()) => true,
+        Err(e) => {
+            sink(CudaEvent::Warning {
+                part: CudaPartChoice::Transcription,
+                message: crate::model_jobs::check_not_started_message(&e.message),
+            });
+            false
+        }
+    }
 }
 
 fn installed(state: PartState) -> Installed {
