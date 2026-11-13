@@ -256,7 +256,10 @@ enum Cmd {
         #[arg(long)]
         chunk_seconds: Option<u32>,
         /// The shared prompt rules (T6.20b prompt tuning; docs/summary-eval.md): current
-        /// (the production prompt), owners, decisions, items, lean, assignments, handed, checked or previous (the production prompt before T6.20f). Local runs only.
+        /// (the production prompt: brief for claude-code and codex, standard for the rest,
+        /// T12.17c), owners, decisions, items, lean, assignments, handed, checked, previous
+        /// (the production prompt before T6.20f), short, brief or standard (system.md
+        /// whatever the writer). Summary runs only.
         #[arg(long, default_value = "current")]
         prompt_variant: earshot_core::prompt::PromptVariant,
         /// A summary template in every input (T12.17, evaluation; docs/summary-eval.md):

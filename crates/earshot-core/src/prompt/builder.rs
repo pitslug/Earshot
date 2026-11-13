@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use super::style::{StylePreset, SummaryStyle, style_block};
 use super::template::{
-    MAP, PromptVariant, REDUCE, TWO_CALL_MAP_ACTIONS, TWO_CALL_MAP_REST, TWO_CALL_REDUCE_MERGE,
-    Template, USER_NAME,
+    MAP, PromptVariant, REDUCE, SummaryRules, TWO_CALL_MAP_ACTIONS, TWO_CALL_MAP_REST,
+    TWO_CALL_REDUCE_MERGE, Template, USER_NAME,
 };
 use super::tokens::{TOKENS_PER_MESSAGE, TOKENS_PER_REQUEST, estimate_tokens};
 use super::vocabulary::Vocabulary;
@@ -129,6 +129,13 @@ pub struct SummaryInput {
     /// so serialised inputs from before T6.20b read and write unchanged.
     #[serde(default, skip_serializing_if = "PromptVariant::is_current")]
     pub prompt_variant: PromptVariant,
+    /// The writer's shared rules (T12.17c), used when [`SummaryInput::prompt_variant`] is
+    /// current. Set only by the writer (`earshot_llm::LlmSummarizer` from
+    /// `LlmClient::summary_rules`); everything else builds inputs with the standard rules.
+    /// Left out of the JSON when standard, so serialised inputs from before T12.17c read and
+    /// write unchanged.
+    #[serde(default, skip_serializing_if = "SummaryRules::is_standard")]
+    pub rules: SummaryRules,
     /// The user's summary style (T7.4b): appended after the fixed rules of the request that
     /// writes the summary the user sees (the single request, the last merge), never in a
     /// map request. Empty (the default) adds nothing. Left out of the JSON when empty, so
@@ -157,6 +164,12 @@ impl SummaryInput {
     #[must_use]
     pub fn segment_ids(&self) -> BTreeSet<EntityId> {
         self.segments.iter().map(|s| s.id).collect()
+    }
+
+    /// The shared rules every request of this input starts with: the prompt variant's rules
+    /// file, which for [`PromptVariant::Current`] is the writer's ([`SummaryInput::rules`]).
+    fn rules_text(&self) -> &'static str {
+        self.prompt_variant.rules_for(self.rules)
     }
 }
 
@@ -369,7 +382,7 @@ pub fn plan(input: &SummaryInput, budget: ContextBudget) -> Result<PromptPlan, P
                 Role::System,
                 system_text(
                     input.template,
-                    input.prompt_variant,
+                    input.rules_text(),
                     input.user_name.as_deref(),
                     None,
                     &input.vocabulary,
@@ -393,7 +406,7 @@ pub fn plan(input: &SummaryInput, budget: ContextBudget) -> Result<PromptPlan, P
         + 2 * TOKENS_PER_MESSAGE
         + estimate_tokens(&system_text(
             input.template,
-            input.prompt_variant,
+            input.rules_text(),
             input.user_name.as_deref(),
             Some(&map_extra),
             &input.vocabulary,
@@ -488,7 +501,7 @@ fn map_chunks(
                         Role::System,
                         system_text(
                             input.template,
-                            input.prompt_variant,
+                            input.rules_text(),
                             input.user_name.as_deref(),
                             Some(&ask.text(part, parts)),
                             &input.vocabulary,
@@ -720,7 +733,7 @@ fn reduce_groups_with(
         // level that ends in one group must fit with it.
         + estimate_tokens(&system_text(
             input.template,
-            input.prompt_variant,
+            input.rules_text(),
             input.user_name.as_deref(),
             Some(&merge.text()),
             &input.vocabulary,
@@ -827,7 +840,7 @@ fn reduce_prompt_with(
                 Role::System,
                 system_text(
                     input.template,
-                    input.prompt_variant,
+                    input.rules_text(),
                     input.user_name.as_deref(),
                     Some(&merge.text()),
                     &input.vocabulary,
@@ -909,19 +922,20 @@ fn schema_text() -> &'static str {
     SCHEMA.get_or_init(|| llm_json_schema().to_string())
 }
 
-/// The system message: the shared rules with the schema, the template, `extra` (a map or
-/// merge instruction), the user's own words (T12.15a; every request, nothing when empty) and
-/// last the user's style block (T7.4b; nothing when `style` is `None` or empty). A request
-/// without words or a style is unchanged.
+/// The system message: the shared rules (`rules`, [`SummaryInput::rules_text`]) with the
+/// schema, the template, `extra` (a map or merge instruction), the user's own words
+/// (T12.15a; every request, nothing when empty) and last the user's style block (T7.4b;
+/// nothing when `style` is `None` or empty). A request without words or a style is
+/// unchanged.
 fn system_text(
     template: Template,
-    variant: PromptVariant,
+    rules: &str,
     user_name: Option<&str>,
     extra: Option<&str>,
     vocabulary: &Vocabulary,
     style: Option<(StylePreset, &SummaryStyle)>,
 ) -> String {
-    let mut s = variant.rules().replace("{{schema}}", schema_text());
+    let mut s = rules.replace("{{schema}}", schema_text());
     s.push('\n');
     s.push_str(template.instructions());
     if let Some(name) = user_name {

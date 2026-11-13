@@ -23,8 +23,10 @@
 //! - [`estimate_tokens`]: a pessimistic token estimate without a tokenizer.
 //!
 //! Templates and the shared rules are data files under `src/prompt/templates/`, embedded
-//! with `include_str!`. [`PromptVariant`] picks an alternative set of shared rules for
-//! evaluation only (T6.20b); production uses [`PromptVariant::Current`]. The rules require one JSON object following the summary v1 schema
+//! with `include_str!`. The shared rules are chosen by the writer ([`SummaryRules`],
+//! T12.17c: `brief.md` for the agent CLIs, `system.md` for everyone else); [`PromptVariant`]
+//! picks an alternative set of shared rules for evaluation only (T6.20b); production uses
+//! [`PromptVariant::Current`], which reads [`SummaryInput::rules`]. The rules require one JSON object following the summary v1 schema
 //! (included in the system message, so `json_object` and plain-text fallbacks see it too)
 //! and citations by segment number: transcript lines are numbered 1, 2, 3, ... per meeting
 //! and replies follow [`crate::summary::llm_json_schema`]; [`crate::summary::validate_reply`]
@@ -50,7 +52,7 @@ pub use chunks::{TimeChunkError, time_chunks};
 pub use style::{
     MAX_STYLE_CHARS, STYLE_LINE_PREFIX, StyleError, StylePreset, SummaryStyle, UnknownStylePreset,
 };
-pub use template::{PromptVariant, Template, UnknownPromptVariant, UnknownTemplate};
+pub use template::{PromptVariant, SummaryRules, Template, UnknownPromptVariant, UnknownTemplate};
 pub use tokens::{TOKENS_PER_MESSAGE, TOKENS_PER_REQUEST, estimate_tokens};
 pub use vocabulary::{
     MAX_VOCABULARY_CHARS, MAX_VOCABULARY_WORD_CHARS, MAX_VOCABULARY_WORDS, VOCABULARY_LINE_PREFIX,

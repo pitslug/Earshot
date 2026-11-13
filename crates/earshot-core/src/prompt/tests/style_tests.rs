@@ -412,3 +412,38 @@ fn prompt_style_preset_single_pass_snapshot() {
     );
     assert_snapshot("style_preset_brief_single_general", &render(&single(&inp)));
 }
+
+#[test]
+fn prompt_style_composes_with_the_brief_rules_as_with_the_standard_ones() {
+    // T12.17c: an agent CLI's brief rules change only the shared rules at the top; the
+    // template and the user's style block follow exactly as they do after system.md.
+    let standard = with_preset(
+        &input(Template::General),
+        StylePreset::Decisions,
+        "Spell out acronyms.",
+    );
+    let brief = SummaryInput {
+        rules: SummaryRules::Brief,
+        ..standard.clone()
+    };
+    let cut = |inp: &SummaryInput| {
+        let s = system_of(&single(inp)).to_owned();
+        let at = s
+            .find(Template::General.instructions())
+            .expect("template instructions follow the rules");
+        (s[..at].to_owned(), s[at..].to_owned())
+    };
+    let (standard_rules, standard_tail) = cut(&standard);
+    let (brief_rules, brief_tail) = cut(&brief);
+    assert_ne!(standard_rules, brief_rules);
+    assert_eq!(standard_tail, brief_tail);
+    assert!(brief_tail.contains(StylePreset::Decisions.text()));
+    assert!(brief_tail.contains("Spell out acronyms."));
+    let partials = [partial(1, &[id(S1)]), partial(2, &[id(S2)])];
+    let last = reduce_prompt(&brief, &partials, BIG, MergeLevel::Last);
+    assert!(system_of(&last).contains(StylePreset::Decisions.text()));
+    assert_snapshot(
+        "rules_brief_style_preset_decisions_single_general",
+        &render(&single(&brief)),
+    );
+}

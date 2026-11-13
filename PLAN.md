@@ -1871,6 +1871,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - accept: the rule, numbers and a recommendation in docs/live-previews.md
 
 - [ ] T12.17c `brief` as the default rules for Claude Code and Codex
+  - status (2026-11-13): merged into main after a lane-merge review (clear, 6 advisories, 4 in TODO.md); accepts pass on the lane (`accept m4` pass, prompt, earshot-llm, earshot-llm-local, runtime summary and xtask sum_eval tests); test split once on Claude: brief 20/20 valid, -63.7% words, decisions_cov 36 against 37, actions_cov 10 against 13 (one run each, reported only). Batch ci pending.
   - deps: T12.17
   - decided (the owner, 2026-11-13): after the judged rounds (docs/summary-eval.md): on Claude `brief` kept meaning coverage and real items with nothing made up at 62% fewer words; on Qwen 3.5 4B it lost decisions and made more up. So the agent-CLI writers get `brief`, the local writer keeps today's rules until T12.25/T12.26 decide otherwise.
   - do: the rules file is chosen per writer: Claude Code and Codex use the `brief` rules (moved from `variants/` into the shipped templates), local and OpenAI-compatible or Anthropic API writers keep `system.md`; the choice is made once where the backend is chosen, never by a setting. The templates and the style compose with either. Format key bump for the agent writers in both `format_key`s; prompt snapshots regenerated and reviewed; `accept m4`; the AMI test split once on Claude with `brief` against the current rules (counts only, reported, cannot change the decision).

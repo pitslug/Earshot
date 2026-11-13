@@ -1169,3 +1169,22 @@ The same five judges (one per meeting, kept from the Claude round so a summary i
 - **So on the 4B the shorter rules lose decisions** (the judged decisions fall from 17 to 11 or 13 of 22), while actions hold. Combined with the Claude round: `brief` suits Claude and does not suit the local 4B.
 - **Time.** The shorter rules generate about a third fewer tokens, so a Surface summary would be roughly a third quicker (an estimate from token counts, not a Surface timing); that comes with the coverage loss above.
 - **For every writer, the 4B is much weaker than Claude** on these meetings: 36 real items caught and 12 made up against Claude's 51 to 53 and 0, with open or reversed points written as decisions (the case shape in TS3006c, the chip in TS3004c, the power source in ES2011c).
+
+### What shipped (T12.17c, 2026-11-13): `brief` for Claude Code and Codex
+
+The owner's decision after both judged rounds: the agent CLIs write with `brief`, the local model keeps `system.md`.
+
+- **Rules per writer.** `brief` moved from `variants/` into the shipped templates (`templates/brief.md`, `earshot_core::prompt::SummaryRules::Brief`). The writer chooses its rules in one place, `earshot_llm::LlmClient::summary_rules` (Claude Code and Codex: brief; OpenAI-compatible and Anthropic APIs: standard), and `LlmSummarizer` applies it to every request of a run (single, map, every merge, repairs). The local llama.cpp writer and the API writers send byte-identical prompts to before (the existing snapshots are unchanged). No setting chooses the rules. Templates and the user's style compose with either rules file as before.
+- **Evaluation.** `--prompt-variant current` is each writer's production rules; `--prompt-variant standard` (new) is `system.md` whatever the writer, which reproduces the earlier rules on Claude Code or Codex. The agent writers' format key part is now `-claude-code-brief` / `-codex-brief`, so result files from the earlier rules are never reused.
+- **`accept m4`** passes unchanged (the replay cases use the API writers).
+
+### Test split, once (2026-11-13, `docs/summary-eval/t1217c/`)
+
+Claude through Claude Code 2.1.292 at its default model and effort, the 20 AMI test meetings, reference source, the production plan (unchunked). `brief` is the shipped run (`--out target/sum-eval/t1217c-claude-test-brief`); the standard rules ran on the same build with `--prompt-variant standard` (`t1217c-claude-test-standard`). The two runs ran one after the other (run side by side, the two CLIs collided while renewing the sign-in and every request failed; those runs were deleted and not scored). One run each, so Claude's run-to-run spread (5 caught actions between two identical dev runs) applies. Coverage is the coverage rule's decisions caught of 94 and actions caught of 30. Reported only: it cannot change the decision.
+
+| Run | Valid | Words | Notes words | Sections / bullets | Decisions / actions written | Decisions cov | Actions cov | Coverage total | ROUGE-L |
+|---|---|---|---|---|---|---|---|---|---|
+| standard rules | 20/20 | 13,422 | 10,824 | 98 / 405 | 132 / 48 | 37 | 13 | 50 | 0.160 |
+| brief (shipped) | 20/20 | 4,876 (-63.7%) | 2,689 | 58 / 146 | 146 / 46 | 36 | 10 | 46 | 0.175 |
+
+- The test split repeats the dev pattern: about 64% fewer words (dev: 61%), every meeting valid, as many decisions and action items written, decision coverage level and the token-based action coverage lower by 3 (dev: 5.5 below the control mean), which the dev meaning-judge round traced to shorter action wording rather than missing actions. No invalid summary.
