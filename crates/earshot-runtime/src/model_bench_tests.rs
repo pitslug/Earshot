@@ -189,6 +189,47 @@ fn model_check_fingerprint_changes_with_what_the_answer_depends_on() {
 }
 
 #[test]
+fn model_check_fingerprint_changes_when_an_npu_version_arrives() {
+    // TODO 77: a check stored before an NPU version was downloaded must not stay current.
+    let dir = crate::testutil::TempDir::new("model-check-fp-npu");
+    let models = ModelDir::new(dir.0.as_path());
+    let facts = HardwareFacts {
+        accelerators: Vec::new(),
+        cores: 12,
+        memory: 16 << 30,
+        drivers: Some(Vec::new()),
+    };
+    let arm64 =
+        crate::catalogue::Catalogue::parse_with(crate::download::MODELS_MANIFEST, true).unwrap();
+    assert_eq!(
+        installed_npu_versions(&arm64, &models),
+        Vec::<String>::new()
+    );
+    let none = check_fingerprint_with(&models, &facts, &["en"], &[]);
+    assert_eq!(
+        none,
+        check_fingerprint(&models, &facts, &["en"]),
+        "no field"
+    );
+    let npu = arm64
+        .models_of(crate::catalogue::ModelKind::NpuVersion)
+        .next()
+        .unwrap()
+        .name
+        .clone();
+    let with = check_fingerprint_with(&models, &facts, &["en"], &[npu]);
+    assert_ne!(none, with);
+    let stored = StoredCheck {
+        fingerprint: none,
+        model: "parakeet-tdt-110m".into(),
+        backend: BackendKind::Cpu,
+        fallback: None,
+        trials: Vec::new(),
+    };
+    assert!(!stored.current(&with));
+}
+
+#[test]
 fn model_check_answer_is_stored_device_locally() {
     let dir = crate::testutil::TempDir::new("model-check-store");
     let data = DataDir::new(dir.0.as_path());
