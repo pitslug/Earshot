@@ -1309,7 +1309,7 @@ fn contention_report(
 
 fn main() {
     // NPU compiles in a helper, as in the app (T12.12b).
-    let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if let Some(code) = earshot_runtime::npu_compiled::child_main(&raw) {
         std::process::exit(code);
     }
@@ -1597,6 +1597,14 @@ fn main() {
         "onnx_placement": *evidence.lock().unwrap_or_else(PoisonError::into_inner),
         "speakers": args.speakers,
         "warnings": problems,
+        // NPU loads that did not use the compiled model (T12.12e): path-free steps only.
+        "npu_refusals": earshot_runtime::npu_compiled::take_unstored()
+            .iter()
+            .map(|r| json!({
+                "load_for": format!("{:?}", r.load_for),
+                "steps": r.steps.iter().map(|s| s.word()).collect::<Vec<_>>(),
+            }))
+            .collect::<Vec<_>>(),
         "stopped_with": format!("{:?}", outcome.reason),
         "capture_max_lag_s": state.max_lag().as_secs_f64(),
         "catch_up_after_end_s": catch_up,

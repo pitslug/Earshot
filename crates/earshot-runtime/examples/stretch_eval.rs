@@ -290,7 +290,7 @@ impl Totals {
 
 fn main() {
     // NPU compiles in a helper, as in the app (T12.12b).
-    let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if let Some(code) = earshot_runtime::npu_compiled::child_main(&raw) {
         std::process::exit(code);
     }

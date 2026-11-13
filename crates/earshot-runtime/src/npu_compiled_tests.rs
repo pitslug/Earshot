@@ -162,6 +162,12 @@ fn npu_compiled_a_failed_helper_or_its_refused_model_is_the_ordinary_load() {
         assert_eq!(s, "ordinary");
         assert!(how.is_refusal(), "{how:?}");
         assert!(matches!(how, How::Ordinary { .. }), "{how:?}");
+        let step = if helper_ok {
+            Step::HelperLoad
+        } else {
+            Step::Helper
+        };
+        assert_eq!(how.steps(), [step]);
         assert_eq!(calls.ordinary.get(), 1);
         assert!(
             !names(&dir.0.join(COMPILED_DIR))
@@ -182,7 +188,10 @@ fn npu_compiled_a_damaged_folder_with_a_helper_is_compiled_again_there() {
     let (s, how) = run_helper(&dir.0, &key(), &calls, true, true);
     assert_eq!(s, "compiled");
     match &how {
-        How::CompiledByHelper { refused: Some(why) } => assert!(why.contains(BINARY), "{why}"),
+        How::CompiledByHelper { refused: Some(r) } => {
+            assert!(r.why.contains(BINARY), "{r:?}");
+            assert_eq!(r.step, Step::Verify);
+        }
         other => panic!("{other:?}"),
     }
     assert!(how.is_refusal());
@@ -191,17 +200,18 @@ fn npu_compiled_a_damaged_folder_with_a_helper_is_compiled_again_there() {
 #[test]
 fn npu_compiled_child_mode_answers_only_its_flag() {
     use std::ffi::OsString;
-    let exe = OsString::from("earshot.exe");
-    assert_eq!(child_main(std::slice::from_ref(&exe)), None);
-    assert_eq!(child_main(&[exe.clone(), "--summary-child".into()]), None);
+    assert_eq!(child_main(&[]), None);
+    assert_eq!(child_main(&["--summary-child".into()]), None);
+    // T12.12e: the arguments after the program, as the app's other child modes take them. A list
+    // with the program first is not this mode (0.3.3's app passed the other form and so started
+    // itself again instead of compiling).
+    let mut with_program = vec![OsString::from("earshot.exe")];
+    with_program.extend(helper_args(Path::new("m"), "a", Path::new("c")));
+    assert_eq!(child_main(&with_program), None);
     // Its own flag with arguments it does not take: refused, nothing loaded.
-    assert_eq!(
-        child_main(&[exe.clone(), COMPILE_FLAG.into(), "--out".into()]),
-        Some(1)
-    );
+    assert_eq!(child_main(&[COMPILE_FLAG.into(), "--out".into()]), Some(1));
     assert_eq!(
         child_main(&[
-            exe,
             COMPILE_FLAG.into(),
             "--model".into(),
             "a".into(),
@@ -212,6 +222,25 @@ fn npu_compiled_child_mode_answers_only_its_flag() {
         ]),
         Some(1)
     );
+}
+
+#[test]
+fn npu_compiled_child_mode_reads_exactly_what_the_helper_is_given() {
+    let (models, out) = (
+        Path::new("C:/models dir"),
+        Path::new("C:/x/encoder_ctx.onnx"),
+    );
+    let line = helper_args(models, "parakeet-tdt-0.6b-v2", out);
+    assert_eq!(line[0], COMPILE_FLAG);
+    assert_eq!(
+        parse_helper_args(&line).unwrap(),
+        (
+            models.to_path_buf(),
+            "parakeet-tdt-0.6b-v2".to_owned(),
+            out.to_path_buf()
+        )
+    );
+    assert!(parse_helper_args(&line[1..]).is_err());
 }
 
 fn folder(conversion: &Path, key: &CompileKey) -> PathBuf {
@@ -285,9 +314,12 @@ fn npu_compiled_a_damaged_binary_is_refused_and_compiled_again() {
     );
     match &how {
         How::Compiling {
-            refused: Some(why),
+            refused: Some(r),
             kept: Ok(()),
-        } => assert!(why.contains(BINARY), "{why}"),
+        } => {
+            assert!(r.why.contains(BINARY), "{r:?}");
+            assert_eq!(r.step, Step::Verify);
+        }
         other => panic!("{other:?}"),
     }
     assert!(how.is_refusal());
@@ -363,8 +395,8 @@ fn npu_compiled_a_record_for_another_key_is_refused() {
     assert_eq!(calls.compiled.get(), 0);
     match how {
         How::Compiling {
-            refused: Some(why), ..
-        } => assert!(why.contains("something else"), "{why}"),
+            refused: Some(r), ..
+        } => assert!(r.why.contains("something else"), "{r:?}"),
         other => panic!("{other:?}"),
     }
 }
@@ -379,6 +411,12 @@ fn npu_compiled_the_plugins_no_or_a_refused_load_compiles_again() {
         assert_eq!(s, "ordinary, writing");
         assert_eq!(calls.compile.get(), 1);
         assert!(how.is_refusal(), "{how:?}");
+        let step = if fit {
+            Step::CompiledLoad
+        } else {
+            Step::NpuFit
+        };
+        assert_eq!(how.steps(), [step]);
     }
 }
 
@@ -391,7 +429,10 @@ fn npu_compiled_a_failed_compile_is_the_ordinary_load() {
     assert_eq!(s, "ordinary");
     assert_eq!(calls.ordinary.get(), 1);
     match &how {
-        How::Ordinary { why } => assert!(why.contains("could not write"), "{why}"),
+        How::Ordinary { steps, why } => {
+            assert!(why.contains("could not write"), "{why}");
+            assert_eq!(steps, &[Step::Compile]);
+        }
         other => panic!("{other:?}"),
     }
     assert!(how.is_refusal());
@@ -515,6 +556,143 @@ fn npu_compiled_key_covers_the_encoder_qnn_runtime_and_npu() {
     );
 }
 
+/// One preview load ([`Compile::Never`]) with fakes: `Ok` what loaded, else the steps that refused.
+fn preview_run(conversion: &Path, fit: bool, compiled_ok: bool) -> Result<&'static str, Vec<Step>> {
+    let steps = std::cell::RefCell::new(None);
+    let r = load(
+        conversion,
+        &key(),
+        |_| Ok(fit),
+        |_| {
+            if compiled_ok {
+                Ok("compiled")
+            } else {
+                Err("the plugin refused the context model".to_owned())
+            }
+        },
+        Compile::Never(Box::new(|s: Vec<Step>| {
+            *steps.borrow_mut() = Some(s);
+            "refused".to_owned()
+        })),
+        || -> Result<&'static str, String> { panic!("a preview never takes the ordinary load") },
+    );
+    match r {
+        Ok((s, how)) => {
+            assert_eq!(how, How::Compiled);
+            Ok(s)
+        }
+        Err(e) => {
+            assert_eq!(e, "refused");
+            Err(steps
+                .into_inner()
+                .expect("the refusal was made from its steps"))
+        }
+    }
+}
+
+/// T12.12e: a preview's load changes nothing on disk. With no folder it refuses as not compiled and
+/// creates nothing; a folder the plugin refuses, or whose files no longer match, stays in place
+/// for the track's load, which then replaces it as before.
+#[test]
+fn npu_compiled_a_preview_load_never_puts_a_folder_aside() {
+    let dir = TempDir::new("npu-preview");
+    assert_eq!(
+        preview_run(&dir.0, true, true),
+        Err(vec![Step::NotCompiled])
+    );
+    assert!(!dir.0.join(COMPILED_DIR).exists(), "nothing created");
+    run(&dir.0, &key(), &Calls::default(), true, true, true);
+    let kept = names(&dir.0.join(COMPILED_DIR));
+    let files = names(&folder(&dir.0, &key()));
+    assert_eq!(preview_run(&dir.0, true, true), Ok("compiled"));
+    for (fit, compiled_ok, step) in [
+        (true, false, Step::CompiledLoad),
+        (false, true, Step::NpuFit),
+    ] {
+        assert_eq!(preview_run(&dir.0, fit, compiled_ok), Err(vec![step]));
+        assert_eq!(names(&dir.0.join(COMPILED_DIR)), kept, "{step:?}");
+        assert_eq!(names(&folder(&dir.0, &key())), files, "{step:?}");
+    }
+    let binary = folder(&dir.0, &key()).join(BINARY);
+    let mut bytes = std::fs::read(&binary).unwrap();
+    bytes[100] ^= 1;
+    std::fs::write(&binary, &bytes).unwrap();
+    assert_eq!(preview_run(&dir.0, true, true), Err(vec![Step::Verify]));
+    assert_eq!(std::fs::read(&binary).unwrap(), bytes, "left as it was");
+    // The track's load still replaces it.
+    let (s, how) = run(&dir.0, &key(), &Calls::default(), true, true, true);
+    assert_eq!((s, how.steps()), ("ordinary, writing", vec![Step::Verify]));
+    assert_eq!(preview_run(&dir.0, true, true), Ok("compiled"));
+}
+
+/// T12.12e: the stored record keeps the latest refusal of each kind, reads back what it wrote,
+/// refuses another version, and holds only step words and times: no path, file name or error text.
+#[test]
+fn npu_compiled_refusal_record_keeps_the_latest_of_each_kind_without_paths() {
+    let track = |ms, steps| Refused {
+        at_ms: ms,
+        load_for: LoadFor::Track,
+        steps,
+    };
+    let preview = Refused {
+        at_ms: 5,
+        load_for: LoadFor::Preview,
+        steps: vec![Step::NotCompiled],
+    };
+    let record = RefusalRecord::default()
+        .with(vec![track(1, vec![Step::Verify])])
+        .with(vec![
+            preview.clone(),
+            track(9, vec![Step::CompiledLoad, Step::Helper]),
+        ]);
+    assert_eq!(
+        record.track,
+        Some(track(9, vec![Step::CompiledLoad, Step::Helper]))
+    );
+    assert_eq!(record.preview, Some(preview));
+    let bytes = record.encode().unwrap();
+    assert_eq!(RefusalRecord::decode(&bytes), Some(record.clone()));
+    let json = String::from_utf8(bytes[4..].to_vec()).unwrap();
+    assert!(json.contains("\"compiled-load\""), "{json}");
+    for bad in [":\\", "/", ".onnx", ".bin", "QNN"] {
+        assert!(!json.contains(bad), "{bad} in {json}");
+    }
+    let mut other = bytes.clone();
+    other[0] = 2;
+    assert_eq!(RefusalRecord::decode(&other), None);
+    assert_eq!(RefusalRecord::decode(b"\x01\x00\x00\x00{"), None);
+    assert_eq!(RefusalRecord::decode(&[1, 0]), None);
+}
+
+/// Each step's word is what serde writes, and its copy is plain words a person can read.
+#[test]
+fn npu_compiled_steps_have_plain_copy_and_their_stored_word() {
+    use Step::*;
+    for step in [
+        NoKey,
+        NotCompiled,
+        Verify,
+        NpuFit,
+        CompiledLoad,
+        Replace,
+        NoTempFolder,
+        Compile,
+        Helper,
+        HelperLoad,
+        Keep,
+    ] {
+        assert_eq!(
+            serde_json::to_string(&step).unwrap(),
+            format!("\"{}\"", step.word())
+        );
+        let copy = step.copy();
+        assert!(!copy.contains('\u{2014}'), "{copy}");
+        for word in ["QNN", "onnx", "compiled.json", "cargo", "/", "\\"] {
+            assert!(!copy.contains(word), "{word} in {copy}");
+        }
+    }
+}
+
 /// The only test that touches the process's note state.
 #[test]
 fn npu_compiled_a_refusal_is_noted_once_per_process() {
@@ -526,17 +704,32 @@ fn npu_compiled_a_refusal_is_noted_once_per_process() {
     });
     assert_eq!(take_note(), None, "no refusal, no note");
     record(&How::Ordinary {
+        steps: vec![Step::Compile],
         why: "x".to_owned(),
     });
     record(&How::Ordinary {
+        steps: vec![Step::Compile],
         why: "y".to_owned(),
     });
     assert_eq!(take_note(), Some(NOTE));
     assert_eq!(take_note(), None);
     record(&How::Ordinary {
+        steps: vec![Step::Compile],
         why: "z".to_owned(),
     });
     assert_eq!(take_note(), None, "once per process");
+    // Every refusal waits to be stored, the latest of a track's kept (path-free steps only).
+    // Preview refusals from other tests may be there too.
+    let tracks: Vec<Refused> = take_unstored()
+        .into_iter()
+        .filter(|r| r.load_for == LoadFor::Track)
+        .collect();
+    assert_eq!(tracks.len(), 1, "{tracks:?}");
+    assert_eq!(tracks[0].steps, [Step::Compile]);
+    assert!(
+        !take_unstored().iter().any(|r| r.load_for == LoadFor::Track),
+        "taken once"
+    );
 }
 
 #[test]

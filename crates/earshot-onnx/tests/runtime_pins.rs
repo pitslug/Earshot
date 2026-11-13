@@ -72,7 +72,7 @@ fn runtime_qnn_plugin_pins_match_the_manifest() {
     }
 }
 
-/// The `.dll` and `.so` members the manifest pins under the extraction folder `into`, sorted.
+/// The `.dll`, `.so` and `.cat` members the manifest pins under the extraction folder `into`, sorted.
 fn member_libraries(manifest: &toml::Value, into: &str) -> Vec<String> {
     let mut out = Vec::new();
     for a in manifest["artefact"].as_array().unwrap() {
@@ -87,7 +87,7 @@ fn member_libraries(manifest: &toml::Value, into: &str) -> Vec<String> {
             .flatten()
         {
             let path = m["path"].as_str().unwrap();
-            if path.ends_with(".dll") || path.ends_with(".so") {
+            if path.ends_with(".dll") || path.ends_with(".so") || path.ends_with(".cat") {
                 out.push(path.to_owned());
             }
         }
