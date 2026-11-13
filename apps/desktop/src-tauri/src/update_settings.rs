@@ -20,6 +20,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -306,6 +307,9 @@ struct Inner {
     recorder: CheckRecorder,
     phase: Mutex<UpdatePhase>,
     cancel: Mutex<Option<CancelToken>>,
+    /// A restart was claimed ([`UpdateJobs::hold_for_restart`]): no download starts any more.
+    /// Set and read under the phase lock.
+    restarting: AtomicBool,
 }
 
 impl Inner {
@@ -338,6 +342,15 @@ impl Inner {
             return Err(IpcError {
                 kind: "busy".into(),
                 message: ALREADY_RUNNING.into(),
+                retryable: true,
+            });
+        }
+        // A restart would cut a download started now.
+        if matches!(next, UpdatePhase::Downloading { .. }) && self.restarting.load(Ordering::SeqCst)
+        {
+            return Err(IpcError {
+                kind: "busy".into(),
+                message: crate::model_jobs::RESTARTING.into(),
                 retryable: true,
             });
         }
@@ -374,7 +387,24 @@ impl UpdateJobs {
             recorder,
             phase: Mutex::new(UpdatePhase::Idle),
             cancel: Mutex::new(None),
+            restarting: AtomicBool::new(false),
         }))
+    }
+
+    /// Runs `f` (the restart's claim) with whether an update downloads, holding the phase so no
+    /// download starts meanwhile; once `f` succeeds no update download starts again.
+    ///
+    /// # Errors
+    /// `f`'s error, which claims nothing.
+    pub fn hold_for_restart(
+        &self,
+        f: impl FnOnce(bool) -> Result<(), IpcError>,
+    ) -> Result<(), IpcError> {
+        let phase = self.0.phase.lock().unwrap_or_else(PoisonError::into_inner);
+        f(matches!(*phase, UpdatePhase::Downloading { .. }))?;
+        self.0.restarting.store(true, Ordering::SeqCst);
+        drop(phase);
+        Ok(())
     }
 
     /// Where the update stands.
