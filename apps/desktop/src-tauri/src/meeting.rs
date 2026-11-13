@@ -1100,6 +1100,10 @@ fn run(
         };
         host
     };
+    // Once the outcome is known, whatever the path: a cancel before the turn, or before the final
+    // pass's first step, never reached `PostFinished`, and newer meetings' speaker work need not
+    // wait for this thread's end to start (calling it twice changes nothing).
+    ticket.final_pass_done();
     if let Ok(earshot_runtime::host::HostPost::Done(post)) = &host.post {
         for (key, message) in crate::plain_text::post_warning_copy(&post.warnings) {
             send(MeetingEvent::Warning {
