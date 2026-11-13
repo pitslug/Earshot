@@ -1154,3 +1154,18 @@ Asked by the owner after the Claude round: does `brief` hold up on the local wri
 - **Rule (judgements).** A variant passes on the 4B if: (1) meaning covered at least the control minus 2 and actions covered at least the control minus 1; (2) real items caught at least the control minus 2; (3) made up at most the control's; (4) contradicted at most the control's. "Better coverage" is claimed only for a variant at least 3 above the control on meaning covered or real caught.
 - **Time (informational, decides nothing here).** Prompt and generated tokens per meeting from llama.cpp's counts, over all 20 dev meetings and the five, and generated tokens of the last step (what a person waits for at hang-up). These are GPU runs: tokens stand in for Surface CPU time; a Surface timing is a separate run on an idle machine.
 - **What a pass means.** With the Claude round, `brief` for every writer becomes a candidate for `system.md`; adopting it is still the owner's call (format key bump, `accept m4`, the test split once).
+
+### Results: 4B judged round (2026-11-13, `target/sum-eval/judge-dev-t1217q-verdicts.md`): both variants fail on the 4B
+
+The same five judges (one per meeting, kept from the Claude round so a summary item with the same meaning got the same verdict) judged the 15 blinded packets; `--import-verdicts` matched the packet set and key. Made up counts include items caught but with a false part. The coordinator checked the two recurring made-up claims against the transcript (TS3006c's case agreed double curved at 284-288; TS3004c's advanced chip at 672-675); the outcome below does not depend on the made-up counts, because both variants already fail parts 1 and 2.
+
+| 4B run | Generated tokens (20 meetings) | AMI decisions covered / contradicted (of 22) | AMI actions covered / contradicted (of 11) | Meaning covered | Contradicted | Real decisions caught (of 42) | Real actions caught (of 18) | Real caught | Made up |
+|---|---|---|---|---|---|---|---|---|---|
+| current (control) | 104,477 | 17 / 1 | 6 / 2 | 23 | 3 | 25 | 11 | 36 | 12 |
+| short | 69,670 (-33%) | 11 / 2 | 7 / 0 | 18 | 2 | 23 | 9 | 32 | 17 |
+| brief | 65,637 (-37%) | 13 / 3 | 7 / 1 | 20 | 4 | 22 | 10 | 32 | 14 |
+
+- **`brief` fails** parts 1 (meaning 20 against a floor of 21), 2 (real caught 32 against 34), 3 (made up 14 against 12) and 4 (contradicted 4 against 3). **`short` fails** parts 1, 2 and 3. Neither has better coverage.
+- **So on the 4B the shorter rules lose decisions** (the judged decisions fall from 17 to 11 or 13 of 22), while actions hold. Combined with the Claude round: `brief` suits Claude and does not suit the local 4B.
+- **Time.** The shorter rules generate about a third fewer tokens, so a Surface summary would be roughly a third quicker (an estimate from token counts, not a Surface timing); that comes with the coverage loss above.
+- **For every writer, the 4B is much weaker than Claude** on these meetings: 36 real items caught and 12 made up against Claude's 51 to 53 and 0, with open or reversed points written as decisions (the case shape in TS3006c, the chip in TS3004c, the power source in ES2011c).
