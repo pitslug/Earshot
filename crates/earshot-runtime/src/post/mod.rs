@@ -1712,7 +1712,11 @@ where
             // A speaker row kept only for its edited lines (no new voice continued it) takes
             // this run's role for its track, as a continued row does; "Me" stays "Me" (one Me
             // row per meeting, and only it may be linked to the user). A row with lines on
-            // two tracks, or on a track this run left alone, keeps its role.
+            // two tracks, or on a track this run left alone, keeps its role. Its carried
+            // identity entry is re-stamped as the continued-row branch does, so the pass's own
+            // write never reads as a user edit next time; an entry that already read as an
+            // edit is left as it is.
+            let mut restamped: Vec<(EntityId, earshot_core::identity::HlcTimestamp)> = Vec::new();
             for old in &earlier {
                 if !edited_speakers.contains(&old.id)
                     || ours_now.contains(&old.id)
@@ -1745,6 +1749,12 @@ where
                     let mut row = old.clone();
                     row.role = role;
                     row.meta.touch(stamp.hlc, stamp.clock);
+                    if previous
+                        .iter()
+                        .any(|i| i.speaker == old.id && !i.edited(old))
+                    {
+                        restamped.push((old.id, row.meta.updated_at));
+                    }
                     tx.put_speaker(row)?;
                 }
             }
@@ -1757,6 +1767,11 @@ where
                 .filter(|i| !ours_now.contains(&i.speaker) && !tombstoned.contains(&i.speaker))
                 .filter(|i| earlier.iter().any(|s| s.id == i.speaker))
                 .collect();
+            for i in &mut record {
+                if let Some((_, at)) = restamped.iter().find(|(id, _)| *id == i.speaker) {
+                    i.given_stamp = Some(*at);
+                }
+            }
             record.extend(identities);
             if record.is_empty() {
                 tx.delete_local_value(key.as_str())?;
