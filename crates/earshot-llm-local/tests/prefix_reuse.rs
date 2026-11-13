@@ -109,14 +109,41 @@ fn shipped_sources() -> Vec<std::path::PathBuf> {
     found
 }
 
+/// Whether `text` calls `set_prefix_reuse`, as a method or by path (UFCS); its definition is
+/// not a call.
+fn calls_prefix_reuse(text: &str) -> bool {
+    [
+        concat!(".set_prefix_", "reuse("),
+        concat!("::set_prefix_", "reuse("),
+    ]
+    .iter()
+    .any(|c| text.contains(c))
+}
+
+/// The scan's rule catches both call forms (negative control) and not the definition.
+#[test]
+fn prefix_reuse_scan_catches_method_and_ufcs_calls() {
+    assert!(calls_prefix_reuse(concat!(
+        "llm.set_prefix_",
+        "reuse(true);"
+    )));
+    assert!(calls_prefix_reuse(concat!(
+        "LocalLlm::set_prefix_",
+        "reuse(&mut llm, true);"
+    )));
+    assert!(!calls_prefix_reuse(concat!(
+        "pub fn set_prefix_",
+        "reuse(&mut self, on: bool) {"
+    )));
+}
+
 /// T12.25: prefix reuse is evaluation only (`sum_eval --prefix-reuse`) until the owner turns it
 /// on: no shipped file calls `set_prefix_reuse`, the one that defines it included.
 #[test]
 fn prefix_reuse_is_used_by_no_shipped_code() {
-    let call = concat!(".set_prefix_", "reuse(");
     let found: Vec<_> = shipped_sources()
         .into_iter()
-        .filter(|p| std::fs::read_to_string(p).unwrap().contains(call))
+        .filter(|p| calls_prefix_reuse(&std::fs::read_to_string(p).unwrap()))
         .collect();
     assert!(
         found.is_empty(),
