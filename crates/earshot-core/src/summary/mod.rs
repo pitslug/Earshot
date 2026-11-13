@@ -33,7 +33,8 @@ pub use cite::{
 };
 pub use recite::{ReciteError, Recited, TimedSegment, recite};
 pub use select::{
-    SELECTION_FIELDS, SelectCounts, SelectItems, Selection, build_from_selection, parse_selection,
+    SELECTION_FIELDS, SELECTION_MAX_KEPT, SelectCounts, SelectItems, Selection,
+    build_from_selection, parse_selection,
 };
 pub use summarizer::Summarizer;
 pub use validate::{

@@ -992,6 +992,14 @@ mod tests {
     }
 
     #[test]
+    fn grammar_selection_parser_cap_is_the_production_list_cap() {
+        assert_eq!(
+            SummaryLimits::default().max_items as usize,
+            earshot_core::summary::SELECTION_MAX_KEPT
+        );
+    }
+
+    #[test]
     fn grammar_selection_takes_only_numbers_in_range_and_a_tldr() {
         use crate::gbnf_match::Gbnf;
         use earshot_core::summary::SelectCounts;

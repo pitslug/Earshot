@@ -174,7 +174,13 @@ fn array<'a>(
     }
 }
 
-/// The numbers kept of list `name`: each in range, each at most once.
+/// At most this many numbers kept per list: the production list cap (the local grammar's
+/// `GrammarLimits::max_items`, pinned to this by a test in earshot-llm-local), checked here
+/// as well so a backend without the grammar cannot exceed it.
+pub const SELECTION_MAX_KEPT: usize = 12;
+
+/// The numbers kept of list `name`: at most [`SELECTION_MAX_KEPT`], each in range, each at
+/// most once.
 fn kept(
     obj: &serde_json::Map<String, Value>,
     name: &str,
@@ -182,7 +188,17 @@ fn kept(
     errors: &mut Vec<SummaryError>,
 ) -> Vec<usize> {
     let mut out = Vec::new();
-    for (k, n) in array(obj, name, errors).iter().enumerate() {
+    let list = array(obj, name, errors);
+    if list.len() > SELECTION_MAX_KEPT {
+        errors.push(SummaryError {
+            path: format!("/{name}"),
+            kind: SummaryErrorKind::WrongType {
+                expected: "at most 12 numbers",
+            },
+        });
+        return out;
+    }
+    for (k, n) in list.iter().enumerate() {
         let path = format!("/{name}/{k}");
         if let Some(n) = number(n, count, path.clone(), errors) {
             if out.contains(&n) {
@@ -599,6 +615,33 @@ mod tests {
         assert_eq!(
             parse_selection(&v, counts).unwrap().decisions,
             vec![vec![3]]
+        );
+    }
+
+    #[test]
+    fn summary_select_parse_refuses_more_than_the_list_cap() {
+        let counts = SelectCounts {
+            decisions: 20,
+            action_items: 0,
+            open_questions: 0,
+        };
+        let at_cap: Vec<usize> = (1..=SELECTION_MAX_KEPT).collect();
+        assert_eq!(
+            parse_selection(&reply(json!(at_cap), json!([]), json!([])), counts)
+                .unwrap()
+                .decisions
+                .len(),
+            SELECTION_MAX_KEPT
+        );
+        let over: Vec<usize> = (1..=SELECTION_MAX_KEPT + 1).collect();
+        let errs = parse_selection(&reply(json!(over), json!([]), json!([])), counts).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].path, "/decisions");
+        assert_eq!(
+            errs[0].kind,
+            SummaryErrorKind::WrongType {
+                expected: "at most 12 numbers"
+            }
         );
     }
 
