@@ -427,6 +427,47 @@ describe("a meeting started while the previous one finishes", () => {
     expect(screen.getByText("Your previous meeting is still finishing")).toBeInTheDocument();
   }, 30_000);
 
+  it("keeps a Cancel for every meeting still finishing behind, each until its own result", async () => {
+    const handlers: ((e: MeetingEvent) => void)[] = [];
+    const s = setup({
+      wrap: (ipc) => {
+        const real = ipc.onMeetingEvent.bind(ipc);
+        ipc.onMeetingEvent = (handler) => {
+          handlers.push(handler);
+          return real(handler);
+        };
+      },
+    });
+    const pressed: string[] = [];
+    s.ipc.cancelFinishing = async (meeting) => {
+      pressed.push(meeting);
+    };
+    await startMeeting(s);
+    const first = (await s.ipc.listMeetings())[0].id;
+    const send = (e: MeetingEvent) =>
+      act(() => {
+        for (const h of handlers) h(e);
+      });
+    const NOTICE = "Your previous meeting is still finishing";
+    send({ type: "Ended", meeting: first, reason: "Stopped" });
+    send({ type: "Started", meeting: "second-meeting", mode: "Call", tracks: ["You", "Them"] });
+    send({ type: "Ended", meeting: "second-meeting", reason: "Stopped" });
+    send({ type: "Started", meeting: "third-meeting", mode: "Call", tracks: ["You", "Them"] });
+    expect(screen.getAllByText(NOTICE)).toHaveLength(2);
+    const cancels = screen.getAllByRole("button", { name: "Cancel finishing" });
+    expect(cancels).toHaveLength(2);
+    await s.user.click(cancels[0]);
+    await s.user.click(cancels[1]);
+    expect(pressed).toEqual([first, "second-meeting"]);
+    // Each result ends only its own notice.
+    send({ type: "Summary", meeting: first, result: { kind: "Cancelled" } });
+    expect(screen.getAllByText(NOTICE)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Cancel finishing" })).toBeDisabled();
+    send({ type: "Summary", meeting: "second-meeting", result: { kind: "Cancelled" } });
+    expect(screen.queryByText(NOTICE)).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop meeting" })).toBeEnabled();
+  }, 30_000);
+
   it("offers Cancel when the next meeting's start arrives before the older one's end", async () => {
     const handlers: ((e: MeetingEvent) => void)[] = [];
     const s = setup({

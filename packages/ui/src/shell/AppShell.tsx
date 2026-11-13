@@ -355,11 +355,12 @@ export function AppShell({
   // again (and shows a stored summary).
   const [detailRefresh, setDetailRefresh] = useState(0);
   const [summaryStored, setSummaryStored] = useState(0);
-  // The meeting a Cancel was pressed for, until its result: a newer meeting differs.
-  const [cancellingId, setCancellingId] = useState<string | null>(null);
-  // An older meeting still finishing behind a newer recording, until its result. The meeting
-  // screen follows the newer one, so its Cancel is offered here.
-  const [behindId, setBehindId] = useState<string | null>(null);
+  // The meetings a Cancel was pressed for, each until its result.
+  const [cancellingIds, setCancellingIds] = useState<string[]>([]);
+  // Older meetings still finishing behind the newer one the screen follows, oldest first, each
+  // until its own result. The meeting screen follows the newer one, so their Cancel is here.
+  const [behindIds, setBehindIds] = useState<string[]>([]);
+  const addBehind = (id: string) => setBehindIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
   // The last meeting the screen followed, kept across the reset a new start makes.
   const lastMeeting = useRef<{ id: string; finishing: boolean } | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -490,7 +491,7 @@ export function AppShell({
     if (RELOAD_ON.includes(event.type)) setReload((n) => n + 1);
     if (event.type === "Started") {
       const older = lastMeeting.current;
-      if (older !== null && older.finishing && older.id !== event.meeting) setBehindId(older.id);
+      if (older !== null && older.finishing && older.id !== event.meeting) addBehind(older.id);
       lastMeeting.current = { id: event.meeting, finishing: false };
       setSelectedId(event.meeting);
       // Also a meeting the tray or the shortcut started.
@@ -503,7 +504,7 @@ export function AppShell({
     } else if (event.type === "Ended" && lastMeeting.current !== null) {
       // A newer meeting's start overtook this end (the driver frees the next start just before
       // sending it): this meeting finishes behind the newer one until its result.
-      setBehindId(event.meeting);
+      addBehind(event.meeting);
     }
     if (event.type === "Summary" && lastMeeting.current?.id === event.meeting) {
       lastMeeting.current = { id: event.meeting, finishing: false };
@@ -523,8 +524,8 @@ export function AppShell({
       if (event.result.kind === "Stored") setSummaryStored((n) => n + 1);
     }
     if (event.type === "Summary") {
-      setBehindId((id) => (id === event.meeting ? null : id));
-      setCancellingId((id) => (id === event.meeting ? null : id));
+      setBehindIds((ids) => ids.filter((id) => id !== event.meeting));
+      setCancellingIds((ids) => ids.filter((id) => id !== event.meeting));
     }
   });
   const meeting = live.meeting;
@@ -633,10 +634,10 @@ export function AppShell({
     });
   };
   const cancelFinishing = (id: string) => {
-    setCancellingId(id);
+    setCancellingIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
     setStopError(null);
     ipc.cancelFinishing(id).catch((e: unknown) => {
-      setCancellingId(null);
+      setCancellingIds((ids) => ids.filter((i) => i !== id));
       setStopError(e instanceof Error ? e.message : String(e));
     });
   };
@@ -1006,7 +1007,7 @@ export function AppShell({
               meeting={meeting}
               onDismissBanner={live.dismissBanner}
               onCancel={() => cancelFinishing(meeting.meetingId)}
-              cancelling={cancellingId === meeting.meetingId}
+              cancelling={cancellingIds.includes(meeting.meetingId)}
               onRetranscribe={(id) => void startAfterMeetingJob(id, "Retranscribe")}
               onResummarise={(id) => void startAfterMeetingJob(id, "Resummarise")}
               onDismissResult={() => {
@@ -1167,12 +1168,12 @@ export function AppShell({
             </MessageBarActions>
           </MessageBar>
         )}
-        {behindId !== null && (
-          <MessageBar intent="info" layout="multiline">
+        {behindIds.map((behindId) => (
+          <MessageBar key={behindId} intent="info" layout="multiline">
             <MessageBarBody>
               <MessageBarTitle>Your previous meeting is still finishing</MessageBarTitle>
               <span aria-live="polite">
-                {cancellingId === behindId
+                {cancellingIds.includes(behindId)
                   ? "Stopping. This can take a moment if a model is still working or loading."
                   : "Its final transcript and summary are being made. Cancel keeps the recording; you can re-transcribe it later."}
               </span>
@@ -1180,14 +1181,14 @@ export function AppShell({
             <MessageBarActions>
               <Button
                 size="small"
-                disabled={cancellingId === behindId}
+                disabled={cancellingIds.includes(behindId)}
                 onClick={() => cancelFinishing(behindId)}
               >
                 Cancel finishing
               </Button>
             </MessageBarActions>
           </MessageBar>
-        )}
+        ))}
         {view === "start" && <NewMeetingView onStart={start} onCancel={() => setView("detail")} />}
         {showMeeting && meeting === null && <Spinner label="Starting the meeting" />}
         {showMeeting && meeting !== null && meeting.phase === "recording" && (
