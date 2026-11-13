@@ -19,7 +19,7 @@
 //! ([`LivePreviews::own_voice`], T9.14; on the CPU even when the track runs on CUDA, T12.3a). A
 //! track's previews stopping never stops the other's, and each track sends its own [`PreviewReport`]. Without `own_voice` a mic in a call shows nothing:
 //! far-end words leak into it until the echo filter removes them, and that filter works on settled
-//! text (`live_preview_mic_in_a_call_shows_no_far_end_word`).
+//! text (`live_preview_mic_in_a_call_without_own_voice_gets_no_previews`).
 //!
 //! **What is decoded.** About every [`LivePreviews::interval`], while the track's voice activity says
 //! there is unfinished speech, the last [`LivePreviews::window`] of the audio after the worker's
@@ -93,6 +93,10 @@ pub const ON_BATTERY_REASON: &str = "off on battery";
 
 /// What a report says of a preview thread that panicked.
 const PREVIEW_THREAD_CRASHED: &str = "the preview thread crashed";
+
+/// What a report says of a preview thread still in a decode when the end wait ran out: it is
+/// left, never joined.
+pub(super) const PREVIEW_THREAD_LEFT: &str = "the preview thread did not stop within the end wait";
 
 /// Why previews stop for a slow track.
 pub const FELL_BEHIND_REASON: &str = "the live transcript fell behind";
@@ -822,6 +826,15 @@ fn at_time(w: Word, zero: MeetingTime) -> Word {
     }
 }
 
+/// Why a preview thread is being stopped ([`PreviewThread::finish`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopAt {
+    /// The meeting ended: a thread left in a decode is reported as left.
+    MeetingEnd,
+    /// Turned off during the meeting: the caller says why.
+    DuringMeeting,
+}
+
 /// The session's end of a running preview thread.
 pub(super) struct PreviewThread {
     to: SyncSender<ToPreview>,
@@ -918,7 +931,7 @@ impl PreviewThread {
         Some(words)
     }
 
-    fn finish(mut self, wait: Duration) -> PreviewReport {
+    fn finish(mut self, wait: Duration, at: StopAt) -> PreviewReport {
         self.stop.store(true, Ordering::Release);
         self.decode
             .lock()
@@ -946,6 +959,11 @@ impl PreviewThread {
             .clone();
         if crashed {
             report.off = Some(PREVIEW_THREAD_CRASHED.to_owned());
+            report.reason = Some(PreviewOffReason::Failed);
+        } else if !done && at == StopAt::MeetingEnd && report.off.is_none() {
+            // Left in a decode at the end, whatever the wait: never a report of previews that
+            // ran to the end. A stop during the meeting has its caller's reason.
+            report.off = Some(PREVIEW_THREAD_LEFT.to_owned());
             report.reason = Some(PreviewOffReason::Failed);
         }
         report
@@ -1037,7 +1055,7 @@ where
         let report = match std::mem::take(&mut self.previews[slot(track)]) {
             PreviewState::Running(p) => {
                 let shown = !p.sent.is_empty();
-                let report = p.finish(Duration::ZERO);
+                let report = p.finish(Duration::ZERO, StopAt::DuringMeeting);
                 if shown {
                     self.emit(RuntimeEvent::LivePreview {
                         track,
@@ -1329,7 +1347,7 @@ where
                 PreviewState::Off(report) => report,
                 PreviewState::Running(p) => {
                     let shown = !p.sent.is_empty();
-                    let report = p.finish(self.policy.speaker_stop_wait);
+                    let report = p.finish(self.policy.speaker_stop_wait, StopAt::MeetingEnd);
                     if shown {
                         self.emit(RuntimeEvent::LivePreview {
                             track,

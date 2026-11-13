@@ -383,6 +383,41 @@ fn settings_host_transcription_setup_uses_the_settings() {
     assert!(t.notes.iter().any(|n| n.contains(SUMMARY_PART_KEY)));
 }
 
+/// What `transcription_setup` reads from the store is read in one go, so a page can let the
+/// store go before the model files are looked at: the setup from those reads is the setup of
+/// the store as it was when they were taken, whatever the store says after.
+#[test]
+fn settings_host_transcription_setup_from_reads_needs_no_store() {
+    let dir = TempDir::new("settings-host-reads");
+    let mut db = store(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let tiny = machine(GIB / 4, None);
+    let langs = ["en"];
+    let check = StoredCheck {
+        fingerprint: check_fingerprint(&models, &hardware_facts(), &langs),
+        model: "parakeet-tdt-0.6b-v3".into(),
+        backend: BackendKind::Cpu,
+        fallback: None,
+        trials: Vec::new(),
+    };
+    record_check(&mut db, &check).unwrap();
+    let before = host::transcription_setup(&db, &models, DESKTOP, &tiny).unwrap();
+    assert_eq!(before.source, TranscriptionSource::ModelCheck);
+    let reads = host::TranscriptionReads::read(&db).unwrap();
+    // The store changes and goes away; the reads do not.
+    set_model_settings(
+        &mut db,
+        &ModelSettings {
+            transcription: named("large-v3-turbo"),
+            ..ModelSettings::default()
+        },
+    )
+    .unwrap();
+    drop(db);
+    let from = host::transcription_setup_from(reads, &models, DESKTOP, &tiny).unwrap();
+    assert_eq!(from, before);
+}
+
 #[test]
 fn settings_host_summary_request_follows_the_settings() {
     let dir = TempDir::new("settings-host");

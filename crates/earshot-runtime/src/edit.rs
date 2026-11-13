@@ -1200,7 +1200,8 @@ pub fn can_unmark_me(tracks: &[Track], row: &Speaker) -> bool {
 /// re-run can match the voice again (`crate::post`, step 4): the one kind of "Me" row with an
 /// entry. Like any edit the mark goes with the voice when a re-run does not match it; a voice
 /// with no entry (an invalid centroid, or an unreadable record) is marked too, but no re-run
-/// can match it, so its mark goes at the next re-transcription. The entry names the user as
+/// can match it, so its mark goes at the next re-transcription, which then says so
+/// ([`crate::post::PostWarning::MeNotFoundAgain`]). The entry names the user as
 /// its person from then on, so forgetting the user's voice drops it and removing a person
 /// the pass had matched to the voice does not. Written summaries are not touched.
 ///

@@ -13,7 +13,8 @@ use earshot_llm_replay::mock::{MockResponse, MockServer};
 use super::queue_tests::{Scene, by_kind, factory_of, held_config, held_gates, scene_of};
 use super::*;
 use crate::live::preview::{
-    COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PreviewWords, StreamFeed,
+    COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PREVIEW_THREAD_LEFT, PreviewWords,
+    StreamFeed,
 };
 use crate::live::{LivePreviews, PreviewLoader, PreviewOffReason, PreviewRefusal, PreviewReport};
 use crate::power::{PowerProbe, PowerSource, PowerSupply};
@@ -783,10 +784,12 @@ fn live_preview_words_behind_the_frontier_are_not_shown() {
     assert_eq!(texts(words.shown()), vec!["c"]);
 }
 
-/// The echo rule works on settled text, so a call's mic shows no previews: the far end's words
-/// that leak into the mic are never decoded for display, with the echo in or out.
+/// Without the user's own voice chosen, a call's mic (with the far end leaking into it) gets no
+/// previews: no session, no shown words, no report; only the far end has them. This checks which
+/// track runs previews, not what a mic preview would show of the echo: with the user's own voice
+/// chosen (T9.14) the mic does show previews, before the echo rule has run on settled text.
 #[test]
-fn live_preview_mic_in_a_call_shows_no_far_end_word() {
+fn live_preview_mic_in_a_call_without_own_voice_gets_no_previews() {
     let sim = leaky_call(true);
     let n = sim.mic.len() / earshot_core::aec::BLOCK * earshot_core::aec::BLOCK;
     let scene = Scene {
@@ -801,6 +804,14 @@ fn live_preview_mic_in_a_call_shows_no_far_end_word() {
         previews_of(&events)
             .iter()
             .all(|(track, _)| *track == TrackId::Reference)
+    );
+    // Nothing is said about the mic's previews either: it never had any.
+    assert!(
+        states_of(&events)
+            .iter()
+            .all(|(track, _)| *track == TrackId::Reference),
+        "{:?}",
+        states_of(&events)
     );
 }
 
@@ -1209,6 +1220,62 @@ fn live_preview_a_crashed_thread_stops_only_the_previews() {
     assert_eq!(report.off.as_deref(), Some("the preview thread crashed"));
     let (without, ..) = run_with(&scene, None, 325);
     assert_eq!(with, without);
+}
+
+/// A preview thread still in a decode when the end wait runs out is left, and its report says so:
+/// it never reads as previews that ran to the end.
+#[test]
+fn live_preview_a_thread_left_at_the_end_wait_says_so_in_the_report() {
+    assert_left_at_the_end(Duration::from_millis(50));
+}
+
+/// The same with no end wait at all: the end of the meeting is said by the caller, never read
+/// from the wait.
+#[test]
+fn live_preview_a_thread_left_with_no_end_wait_says_so_in_the_report() {
+    assert_left_at_the_end(Duration::ZERO);
+}
+
+fn assert_left_at_the_end(stop_wait: Duration) {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    // Every decode stays in progress, cancelled or not, until the session has ended.
+    let release = Arc::new(AtomicBool::new(false));
+    let waited = Arc::clone(&release);
+    let load = loader(&seen, move |call, cancel| {
+        let limit = Instant::now() + GUARD;
+        while !waited.load(Ordering::SeqCst) {
+            assert!(Instant::now() < limit, "the session never ended");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        marker_words(call, cancel)
+    });
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let session = start_live(
+        fast_source(&scene),
+        svc.clone(),
+        LiveConfig {
+            speaker_stop_wait: stop_wait,
+            ..config_with(Some(previews(load)))
+        },
+        Some(factory_of(&scene, Arc::default())),
+        Box::new(ChaCha8Rng::seed_from_u64(327)),
+    )
+    .unwrap();
+    let (events, _) = collect(session);
+    release.store(true, Ordering::SeqCst);
+    assert!(
+        seen.calls.load(Ordering::SeqCst) > 0,
+        "a decode was in progress"
+    );
+    let report = report_of(&events).expect("a report");
+    assert_eq!(
+        report.off.as_deref(),
+        Some(PREVIEW_THREAD_LEFT),
+        "{report:?}"
+    );
+    assert_eq!(report.reason, Some(PreviewOffReason::Failed), "{report:?}");
 }
 
 /// Previews that take too long pause and come back: other work having the machine for a while does

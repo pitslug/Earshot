@@ -149,6 +149,13 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
                 "post-names",
                 "The names given in this meeting could not be kept. Name its voices again.",
             )),
+            PostWarning::MeNotFoundAgain => Some((
+                "post-me",
+                // Also true after the user forgot their own voice between runs: nothing here
+                // says the voice is gone, only that none is told apart as theirs.
+                "No voice in the new transcript is shown as you: Earshot could not tell which \
+                 one is yours this time. Use This is me in Speakers to mark yours.",
+            )),
             PostWarning::BackendChanged { .. }
             | PostWarning::StretchRecordUnreadable { .. }
             | PostWarning::SpeakerRecordUnreadable { .. }
@@ -274,11 +281,28 @@ pub fn names_developer_tool(text: &str) -> bool {
     DEVELOPER_WORDS.iter().any(|w| text.contains(w))
 }
 
-/// `text`, or [`MODELS_NEEDED`] when it names a developer tool.
+/// Developer words that mean a download is missing (a fetch command, the NPU conversion, the
+/// models folder setting).
+const DOWNLOAD_WORDS: &[&str] = &["fetch-models", "qnn-convert", "EARSHOT_MODELS"];
+
+/// The fixed copy that replaces `text`, which names a developer tool: chosen by what the text is
+/// about, so only a download command says a download is missing.
+fn developer_text_copy(text: &str) -> &'static str {
+    if DOWNLOAD_WORDS.iter().any(|w| text.contains(w)) {
+        MODELS_NEEDED
+    } else if text.contains("manifest.toml") {
+        // A model or file the built-in model list does not hold: this version's limit.
+        NOT_THIS_VERSION
+    } else {
+        INTERNAL
+    }
+}
+
+/// `text`, or fixed copy chosen by what it is about when it names a developer tool.
 #[must_use]
 pub fn plain(text: String) -> String {
     if names_developer_tool(&text) {
-        MODELS_NEEDED.to_owned()
+        developer_text_copy(&text).to_owned()
     } else {
         text
     }
@@ -477,11 +501,11 @@ fn summary_copy(e: &LlmError) -> String {
     }
 }
 
-/// [`INTERNAL`], or [`MODELS_NEEDED`] when the runtime's fixed words name a developer command
-/// (a missing NPU conversion is reported that way).
+/// [`INTERNAL`], or the copy of [`developer_text_copy`] when the runtime's fixed words name a
+/// developer command (a missing NPU conversion is reported that way).
 fn internal_copy(words: &'static str) -> &'static str {
     if names_developer_tool(words) {
-        MODELS_NEEDED
+        developer_text_copy(words)
     } else {
         INTERNAL
     }
@@ -949,6 +973,25 @@ mod post_warning_tests {
         assert!(!names_developer_tool(&copy[0].1));
     }
 
+    /// T9.12: a re-transcription that lost the voice shown as the user says so, once.
+    #[test]
+    fn post_warnings_say_when_the_voice_shown_as_you_was_not_found_again() {
+        let copy = post_warning_copy(&[PostWarning::MeNotFoundAgain, PostWarning::MeNotFoundAgain]);
+        assert_eq!(copy.len(), 1, "one banner");
+        assert_eq!(copy[0].0, "post-me");
+        assert!(
+            copy[0]
+                .1
+                .starts_with("No voice in the new transcript is shown as you"),
+            "{}",
+            copy[0].1
+        );
+        assert!(copy[0].1.contains("This is me"), "{}", copy[0].1);
+        assert!(!copy[0].1.contains('\u{2014}'));
+        assert!(!copy[0].1.contains("  "));
+        assert!(!names_developer_tool(&copy[0].1));
+    }
+
     #[test]
     fn post_warnings_never_show_a_warnings_own_text_and_leave_out_what_changes_nothing() {
         let reason = "cargo xtask fetch-models secret-reason";
@@ -1215,6 +1258,38 @@ mod tests {
         assert_eq!(plain_meeting_event(titled.clone()), titled);
         // A device called Cargo is not a command.
         assert!(!names_developer_tool("Cargo Pro headset is back"));
+    }
+
+    /// Text that names a developer tool is replaced by copy chosen by what the text is about
+    /// (TODO: `plain` swapped every match for "needs a download"): only a download command or
+    /// the models folder setting says a download is missing.
+    #[test]
+    fn plain_text_developer_text_is_replaced_by_copy_that_matches_it() {
+        for download in [
+            "run `cargo xtask fetch-models --set ci`",
+            "the NPU conversion is missing: run `cargo xtask qnn-convert --model m`",
+            "set EARSHOT_MODELS to the models folder",
+        ] {
+            assert_eq!(plain(download.to_owned()), MODELS_NEEDED, "{download}");
+        }
+        // An unknown model is this version's limit, not a missing download.
+        let unknown = "model \"zq-old\" is not in models/manifest.toml".to_owned();
+        assert_eq!(plain(unknown), NOT_THIS_VERSION);
+        // Any other developer command says nothing about downloads.
+        let other = "run `cargo xtask build --app` again".to_owned();
+        assert_eq!(plain(other), INTERNAL);
+        for copy in [MODELS_NEEDED, NOT_THIS_VERSION, INTERNAL] {
+            no_developer_text(copy);
+        }
+    }
+
+    /// Only text `plain` replaces is sorted by its download words, so each is a developer word.
+    #[test]
+    fn plain_text_download_words_are_developer_words() {
+        for word in DOWNLOAD_WORDS {
+            assert!(DEVELOPER_WORDS.contains(word), "{word}");
+            assert!(names_developer_tool(word), "{word}");
+        }
     }
 
     #[test]

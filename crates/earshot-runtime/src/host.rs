@@ -340,21 +340,36 @@ pub fn choose_model(
     models: &ModelDir,
     languages: &[&str],
 ) -> Result<(ModelChoice, ModelSource), RuntimeError> {
+    let check = if requested.is_some() {
+        None
+    } else {
+        stored_check(store)?
+    };
+    Ok(choose_model_from(requested, check, models, languages))
+}
+
+/// [`choose_model`] with the stored model check `check` already read.
+fn choose_model_from(
+    requested: Option<&str>,
+    check: Option<crate::model_bench::StoredCheck>,
+    models: &ModelDir,
+    languages: &[&str],
+) -> (ModelChoice, ModelSource) {
     if let Some(m) = requested {
         let choice = ModelChoice {
             model: m.to_owned(),
             backend: None,
         };
-        return Ok((choice, ModelSource::Requested));
+        return (choice, ModelSource::Requested);
     }
     let fingerprint = check_fingerprint(models, &hardware_facts(), languages);
-    let why = match stored_check(store)? {
+    let why = match check {
         Some(c) if c.current(&fingerprint) => {
             let choice = ModelChoice {
                 model: c.model,
                 backend: Some(c.backend),
             };
-            return Ok((choice, ModelSource::ModelCheck));
+            return (choice, ModelSource::ModelCheck);
         }
         Some(_) => "the model check is out of date for this machine",
         None => "no model check yet",
@@ -363,7 +378,7 @@ pub fn choose_model(
         model: FALLBACK_MODEL.to_owned(),
         backend: None,
     };
-    Ok((choice, ModelSource::Fallback(why)))
+    (choice, ModelSource::Fallback(why))
 }
 
 /// Where the transcription model of [`transcription_setup`] came from.
@@ -495,8 +510,57 @@ pub fn transcription_setup(
     build: &[Accelerator],
     hardware: &earshot_hardware::Hardware,
 ) -> Result<TranscriptionSetup, RuntimeError> {
-    use crate::model_settings::{ModelPick, model_settings, transcription_placement};
-    let (settings, unknown) = model_settings(store)?;
+    transcription_setup_from(TranscriptionReads::read(store)?, models, build, hardware)
+}
+
+/// What [`transcription_setup`] reads from the store, read in one go so a caller holding the
+/// store lock can release it before the model files are looked at
+/// ([`transcription_setup_from`]).
+#[derive(Debug, Clone)]
+pub struct TranscriptionReads {
+    settings: crate::model_settings::ModelSettings,
+    unknown: Vec<crate::model_settings::UnknownSetting>,
+    /// The stored model check; read only under the automatic choice, as before.
+    check: Option<crate::model_bench::StoredCheck>,
+}
+
+impl TranscriptionReads {
+    /// The model settings in `store`, and its stored model check when the choice is automatic.
+    ///
+    /// # Errors
+    /// The stored model check does not parse; store errors.
+    pub fn read(store: &Store) -> Result<Self, RuntimeError> {
+        use crate::model_settings::{ModelPick, model_settings};
+        let (settings, unknown) = model_settings(store)?;
+        let check = match settings.transcription {
+            ModelPick::Automatic => stored_check(store)?,
+            ModelPick::Named(_) => None,
+        };
+        Ok(Self {
+            settings,
+            unknown,
+            check,
+        })
+    }
+}
+
+/// [`transcription_setup`] from settings already read: looks only at the model files, never the
+/// store.
+///
+/// # Errors
+/// None today; the same `Result` as [`transcription_setup`].
+pub fn transcription_setup_from(
+    reads: TranscriptionReads,
+    models: &ModelDir,
+    build: &[Accelerator],
+    hardware: &earshot_hardware::Hardware,
+) -> Result<TranscriptionSetup, RuntimeError> {
+    use crate::model_settings::{ModelPick, transcription_placement};
+    let TranscriptionReads {
+        settings,
+        unknown,
+        check,
+    } = reads;
     let languages = settings.language_refs();
     let (choice, source) = match &settings.transcription {
         ModelPick::Named(m) => (
@@ -506,7 +570,7 @@ pub fn transcription_setup(
             },
             TranscriptionSource::Setting,
         ),
-        ModelPick::Automatic => match choose_model(None, store, models, &languages)? {
+        ModelPick::Automatic => match choose_model_from(None, check, models, &languages) {
             // Nothing is requested here, so only the check or the fallback answers.
             (choice, ModelSource::ModelCheck | ModelSource::Requested) => {
                 (choice, TranscriptionSource::ModelCheck)

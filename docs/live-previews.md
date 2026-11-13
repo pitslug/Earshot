@@ -118,7 +118,7 @@ The CPU rows are the final code; the CUDA rows ran before the slow-preview pause
 - **One track per meeting: the far end in a call, the mic in the room** (since T9.14 the default,
   "Other people only"; "Everyone" adds the call's mic, below). A call's mic shows none by default: its
   words are held and cleaned by the echo filter, and far-end words leak in until that runs
-  (`live_preview_mic_in_a_call_shows_no_far_end_word`). You know what you just said. A real decode
+  (`live_preview_mic_in_a_call_without_own_voice_gets_no_previews`). You know what you just said. A real decode
   covers it within the same lag as before.
 - **Parakeet on the CPU and CUDA only.** The NPU stays off until GATE-03a and a measurement: its encoder
   always takes a full 30 s input and its memory on 16 GB is unmeasured. Whisper on Vulkan or the CPU has
