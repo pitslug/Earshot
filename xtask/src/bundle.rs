@@ -1772,7 +1772,6 @@ pub fn check(
     } else {
         Vec::new()
     };
-    let notice = install_notice_text(root)?;
     let digest = sha256_file(&nsis)?;
     println!("{}", installer_digest_line(&nsis, &digest));
     let without_build = if exe_dir.is_none() {
@@ -1784,6 +1783,9 @@ pub fn check(
     } else {
         0
     };
+    // After the digest, so a run stopped by an unreadable checkout notice still names the
+    // installer it was given; still before anything is touched.
+    let notice = install_notice_text(root)?;
     let reference = exe_dir
         .as_deref()
         .map_or(Reference::Installer, Reference::Built);
