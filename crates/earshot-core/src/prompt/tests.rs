@@ -114,6 +114,7 @@ fn input(template: Template) -> SummaryInput {
         template,
         prompt_variant: PromptVariant::Current,
         style: SummaryStyle::default(),
+        style_preset: Default::default(),
         vocabulary: Vocabulary::default(),
         user_name: None,
     }
@@ -323,6 +324,7 @@ fn long_input(n: usize) -> SummaryInput {
         template: Template::General,
         prompt_variant: PromptVariant::Current,
         style: SummaryStyle::default(),
+        style_preset: Default::default(),
         vocabulary: Vocabulary::default(),
         user_name: None,
     }
@@ -852,7 +854,9 @@ fn prompt_variants_have_stable_names_and_current_is_the_default() {
             "assignments",
             "handed",
             "checked",
-            "previous"
+            "previous",
+            "short",
+            "brief"
         ]
     );
     for v in PromptVariant::ALL {
@@ -894,7 +898,9 @@ fn prompt_variants_change_only_the_shared_rules() {
         "Reply with one JSON object only",
         "Use only what was said in the transcript or written in the user's notes. Do not invent facts, names, dates or decisions.",
         "Cite your sources by segment number. Every decision and every action item lists one to three segment numbers",
-        "Keep `tldr` to one to three sentences. Write in the language of the transcript. Do not use em dashes.",
+        // T12.17's variants shorten the tldr; the rest of rule 7 is kept by all.
+        "Keep `tldr` to one",
+        "Write in the language of the transcript. Do not use em dashes.",
         "Write each point once. No filler:",
     ];
     for v in PromptVariant::ALL.into_iter().skip(1) {
@@ -937,6 +943,37 @@ fn prompt_variants_change_only_the_shared_rules() {
     assert!(items.contains(owner_rule) && items.contains(decision_rule));
     assert!(!items.contains(notes_rule));
     assert!(lean.contains(owner_rule) && lean.contains(decision_rule) && lean.contains(notes_rule));
+    // Every variant but T12.17's keeps the tldr at one to three sentences.
+    let three = "Keep `tldr` to one to three sentences.";
+    for v in PromptVariant::ALL {
+        let shorter = matches!(v, PromptVariant::Short | PromptVariant::Brief);
+        assert_eq!(v.rules().contains(three), !shorter, "{v}");
+    }
+    // T12.17's variants shorten the notes and the tldr and still require every item.
+    let every = "Still list every decision and every action item";
+    for (v, notes, tldr) in [
+        (
+            PromptVariant::Short,
+            "at most four sections of at most four bullets",
+            "Keep `tldr` to one or two sentences.",
+        ),
+        (
+            PromptVariant::Brief,
+            "at most three sections of at most three bullets",
+            "Keep `tldr` to one sentence.",
+        ),
+    ] {
+        let rules = v.rules();
+        assert!(
+            rules.contains(notes) && rules.contains(tldr) && rules.contains(every),
+            "{v}"
+        );
+        // Rules 5 and 6 (action items and decisions) are the production rules word for word.
+        for n in ["5. ", "6. "] {
+            let line = |r: &str| r.lines().find(|l| l.starts_with(n)).map(str::to_owned);
+            assert_eq!(line(rules), line(base), "{v} rule {n}");
+        }
+    }
 }
 
 #[test]
@@ -1028,6 +1065,28 @@ fn prompt_variant_assignments_single_pass_snapshot() {
         &render(&single(&with_variant(
             Template::General,
             PromptVariant::Assignments,
+        ))),
+    );
+}
+
+#[test]
+fn prompt_variant_short_single_pass_snapshot() {
+    assert_snapshot(
+        "variant_short_single_general",
+        &render(&single(&with_variant(
+            Template::General,
+            PromptVariant::Short,
+        ))),
+    );
+}
+
+#[test]
+fn prompt_variant_brief_single_pass_snapshot() {
+    assert_snapshot(
+        "variant_brief_single_general",
+        &render(&single(&with_variant(
+            Template::General,
+            PromptVariant::Brief,
         ))),
     );
 }

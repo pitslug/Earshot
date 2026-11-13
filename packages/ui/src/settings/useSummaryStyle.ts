@@ -28,6 +28,10 @@ export interface SummaryStyleState {
   save(): Promise<void>;
   /** Stores no style (the default) and empties the field. */
   reset(): Promise<void>;
+  /** Stores the summary template at once (a choice: no Save). The field is kept. */
+  chooseTemplate(template: string): Promise<void>;
+  /** Why the last template choice was refused (null when it was not). */
+  templateError: string | null;
 }
 
 /** Loads the summary style and saves it. */
@@ -75,6 +79,24 @@ export function useSummaryStyle(): SummaryStyleState {
     [ipc],
   );
 
+  const [templateError, setTemplateError] = useState<string | null>(null);
+  const chooseTemplate = useCallback(
+    async (template: string) => {
+      setBusy(true);
+      try {
+        // The view's own style is the stored one; the field's text being edited is kept.
+        const view = await ipc.setSummaryTemplate(template);
+        setLoad({ status: "loaded", view });
+        setTemplateError(null);
+      } catch (e) {
+        setTemplateError(errorText(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [ipc],
+  );
+
   const stored = load.status === "loaded" ? load.view.style : "";
   return {
     load,
@@ -91,5 +113,7 @@ export function useSummaryStyle(): SummaryStyleState {
     busy,
     save: () => store(draft),
     reset: () => store(""),
+    chooseTemplate,
+    templateError,
   };
 }

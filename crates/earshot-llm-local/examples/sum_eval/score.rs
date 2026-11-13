@@ -16,6 +16,10 @@
 //!   reference-recall rule defined after seeing dev data;
 //!   `decisions_cov`/`actions_cov` the many-to-one coverage rule defined after seeing data
 //!   (`items::covered_items`: only caught / reference is meaningful).
+//! - Length (T12.17, fixed before measuring, [`Length`]): words of what the summary says
+//!   (tldr, section headings, note bullets, decisions, action item tasks, open questions;
+//!   not the title, owners, due dates or topics), note sections and bullets, items written
+//!   and lists at the local grammar's item cap. A failed meeting counts zero.
 
 use earshot_core::metrics::items::{
     ItemCounts, ItemCoverage, ItemMatch, ItemRule, covered_items, match_items_by,
@@ -42,6 +46,88 @@ pub fn summary_text(s: &SummaryV1) -> String {
 #[must_use]
 pub fn reference_text(r: &AbsSumm) -> String {
     r.abstract_.join("\n")
+}
+
+/// How long one summary is (T12.17, docs/summary-eval.md): every count is zero without a
+/// summary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Length {
+    /// Whitespace-separated words of the tldr, every section heading, every note bullet,
+    /// every decision, every action item's task and every open question.
+    pub words: usize,
+    /// Words of the tldr, the section headings and the note bullets alone.
+    pub notes_words: usize,
+    /// Note sections.
+    pub sections: usize,
+    /// Note bullets.
+    pub bullets: usize,
+    /// Decisions written.
+    pub decisions: usize,
+    /// Action items written.
+    pub actions: usize,
+    /// Lists holding `cap` items or more (sections, any section's bullets, decisions,
+    /// action items, open questions, topics).
+    pub lists_at_cap: usize,
+    /// Of those, the decisions and action items lists.
+    pub item_lists_at_cap: usize,
+}
+
+fn words(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
+/// The [`Length`] of `summary` (None when the run failed); `cap` is the most items a list
+/// may hold under the local grammar (`SummaryLimits::max_items`).
+#[must_use]
+pub fn length(summary: Option<&SummaryV1>, cap: usize) -> Length {
+    let Some(s) = summary else {
+        return Length::default();
+    };
+    let notes_words = words(&s.tldr)
+        + s.enhanced_notes
+            .iter()
+            .map(|n| words(&n.heading) + n.bullets.iter().map(|b| words(&b.text)).sum::<usize>())
+            .sum::<usize>();
+    let item_words = s.decisions.iter().map(|d| words(&d.text)).sum::<usize>()
+        + s.action_items.iter().map(|a| words(&a.task)).sum::<usize>()
+        + s.open_questions.iter().map(|q| words(q)).sum::<usize>();
+    let at = |n: usize| usize::from(n >= cap);
+    let item_lists_at_cap = at(s.decisions.len()) + at(s.action_items.len());
+    let lists_at_cap = item_lists_at_cap
+        + at(s.enhanced_notes.len())
+        + s.enhanced_notes
+            .iter()
+            .map(|n| at(n.bullets.len()))
+            .sum::<usize>()
+        + at(s.open_questions.len())
+        + at(s.topics.len());
+    Length {
+        words: notes_words + item_words,
+        notes_words,
+        sections: s.enhanced_notes.len(),
+        bullets: s.enhanced_notes.iter().map(|n| n.bullets.len()).sum(),
+        decisions: s.decisions.len(),
+        actions: s.action_items.len(),
+        lists_at_cap,
+        item_lists_at_cap,
+    }
+}
+
+impl Length {
+    /// JSON for the report.
+    #[must_use]
+    pub fn to_json(self) -> Value {
+        json!({
+            "words": self.words,
+            "notes_words": self.notes_words,
+            "sections": self.sections,
+            "bullets": self.bullets,
+            "decisions": self.decisions,
+            "actions": self.actions,
+            "lists_at_cap": self.lists_at_cap,
+            "item_lists_at_cap": self.item_lists_at_cap,
+        })
+    }
 }
 
 /// Scores of one meeting.
@@ -73,6 +159,8 @@ pub struct MeetingScore {
     pub actions_cov: ItemCounts,
     /// The covered reference actions.
     pub action_cover: Vec<ItemCoverage>,
+    /// How long the summary is (T12.17).
+    pub length: Length,
 }
 
 /// Scores `summary` (None when the run failed) against `reference`.
@@ -110,7 +198,14 @@ pub fn score(summary: Option<&SummaryV1>, reference: &AbsSumm) -> MeetingScore {
         decision_cover,
         actions_cov,
         action_cover,
+        length: length(summary, item_cap()),
     }
+}
+
+/// The local grammar's item cap (`SummaryLimits::max_items`), against which
+/// [`Length::lists_at_cap`] is counted for every candidate.
+fn item_cap() -> usize {
+    earshot_llm_local::grammar::SummaryLimits::default().max_items as usize
 }
 
 fn cover_json(c: &ItemCounts, cover: &[ItemCoverage]) -> Value {
@@ -153,6 +248,7 @@ impl MeetingScore {
             "actions_rr": counts_json(&self.actions_rr, &self.action_matches_rr),
             "decisions_cov": cover_json(&self.decisions_cov, &self.decision_cover),
             "actions_cov": cover_json(&self.actions_cov, &self.action_cover),
+            "length": self.length.to_json(),
         })
     }
 }
@@ -273,6 +369,35 @@ mod tests {
         let j = s.to_json();
         assert_eq!(j["decisions_cov"]["caught"], 1);
         assert_eq!(j["actions_cov"]["caught"], 1);
+    }
+
+    #[test]
+    fn score_length_counts_what_the_summary_says_and_lists_at_the_cap() {
+        let mut s = summary();
+        s.open_questions = vec!["Which colour?".into()];
+        s.topics = vec!["budget topic words".into()];
+        let l = length(Some(&s), 12);
+        // tldr 8 + heading 1 + bullet 6 = 15; decision 7, task 4, question 2 (title,
+        // owner and topics are left out).
+        assert_eq!((l.notes_words, l.words), (15, 28));
+        assert_eq!(
+            (l.sections, l.bullets, l.decisions, l.actions),
+            (1, 1, 1, 1)
+        );
+        assert_eq!((l.lists_at_cap, l.item_lists_at_cap), (0, 0));
+        let d = s.decisions[0].clone();
+        s.decisions = vec![d; 3];
+        let b = s.enhanced_notes[0].bullets[0].clone();
+        s.enhanced_notes[0].bullets = vec![b; 3];
+        let l = length(Some(&s), 3);
+        assert_eq!((l.lists_at_cap, l.item_lists_at_cap), (2, 1));
+        assert_eq!(length(None, 12), Length::default());
+        assert_eq!(
+            score(Some(&s), &reference()).to_json()["length"]["decisions"],
+            3
+        );
+        // The cap counted against is the local grammar's.
+        assert_eq!(item_cap(), 12);
     }
 
     #[test]

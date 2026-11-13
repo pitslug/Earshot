@@ -1,6 +1,7 @@
 // Settings, Summaries, "Summary style" (T7.4b): the user's own words about tone, length,
-// emphasis and jargon, used when the summary is written. The fixed rules (what a summary
-// must contain, its sources) and the note layout are not part of it.
+// emphasis and jargon, used when the summary is written, and a template to start from (T12.17:
+// a choice, applied at once; the app adds its fixed words before the user's own). The fixed
+// rules (what a summary must contain, its sources) and the note layout are not part of it.
 
 import {
   Button,
@@ -9,6 +10,7 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
+  Select,
   Spinner,
   Textarea,
   makeStyles,
@@ -43,7 +45,11 @@ export const STYLE_PLACEHOLDER =
 export const STYLE_HINT =
   "Changes the tone, length and emphasis of the summary. It cannot change what a summary must contain: every decision and action item, with its sources, stays.";
 
-/** The style field, Save and Reset to default. */
+/** What the template choice does. */
+export const TEMPLATE_HINT =
+  "Applies at once. Your own words below are added to the template.";
+
+/** The template choice, then the style field with Save and Reset to default. */
 export function SummaryStyleSection() {
   const styles = useStyles();
   const state = useSummaryStyle();
@@ -75,6 +81,25 @@ export function SummaryStyleSection() {
         </MessageBar>
       )}
       <Field
+        label="Template"
+        hint={`${view.templates.find((t) => t.value === view.template)?.description ?? ""} ${TEMPLATE_HINT}`.trim()}
+        validationState={state.templateError !== null ? "error" : "none"}
+        validationMessage={state.templateError ?? undefined}
+      >
+        <Select
+          value={view.template}
+          disabled={state.busy}
+          onChange={(_, d) => void state.chooseTemplate(d.value)}
+        >
+          {view.templates.map((t) => (
+            <option key={t.value} value={t.value}>
+              {t.label}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <div role="group" aria-label="Your own words" className={styles.body}>
+      <Field
         label="How the summary should read"
         hint={`${STYLE_HINT} ${count} of ${view.max_chars} characters.`}
         validationState={state.error !== null ? "error" : "none"}
@@ -100,6 +125,7 @@ export function SummaryStyleSection() {
           Reset to default
         </Button>
         {state.saved && !state.changed && <Caption1 className={styles.muted}>Saved.</Caption1>}
+      </div>
       </div>
     </div>
   );

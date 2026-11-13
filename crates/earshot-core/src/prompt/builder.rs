@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use super::style::SummaryStyle;
+use super::style::{StylePreset, SummaryStyle, style_block};
 use super::template::{
     MAP, PromptVariant, REDUCE, TWO_CALL_MAP_ACTIONS, TWO_CALL_MAP_REST, TWO_CALL_REDUCE_MERGE,
     Template, USER_NAME,
@@ -135,6 +135,12 @@ pub struct SummaryInput {
     /// serialised inputs from before T7.4b read and write unchanged.
     #[serde(default, skip_serializing_if = "SummaryStyle::is_empty")]
     pub style: SummaryStyle,
+    /// The summary template the user picked (T12.17): its fixed text goes in the style block
+    /// before [`SummaryInput::style`], in the same requests. Standard (the default) adds
+    /// nothing and is left out of the JSON, so serialised inputs from before T12.17 read and
+    /// write unchanged.
+    #[serde(default, skip_serializing_if = "StylePreset::is_standard")]
+    pub style_preset: StylePreset,
     /// The user's own words (T12.15a): spelling help for names and acronyms, in every
     /// request (single, map, every merge). Empty (the default) adds nothing. Left out of the
     /// JSON when empty, so serialised inputs from before T12.15a read and write unchanged.
@@ -367,7 +373,7 @@ pub fn plan(input: &SummaryInput, budget: ContextBudget) -> Result<PromptPlan, P
                     input.user_name.as_deref(),
                     None,
                     &input.vocabulary,
-                    Some(&input.style),
+                    Some((input.style_preset, &input.style)),
                 ),
             ),
             ChatMessage::new(Role::User, user_text(input, &numbered, &input.notes, None)),
@@ -676,8 +682,13 @@ impl Merge {
     /// The style a merge at `level` carries: the input's on the last production merge, none
     /// on an inner merge (its reply is another partial) or a two-call merge (evaluation
     /// only, run with an empty style).
-    fn style(self, input: &SummaryInput, level: MergeLevel) -> Option<&SummaryStyle> {
-        (self == Merge::Plain && level == MergeLevel::Last).then_some(&input.style)
+    fn style(
+        self,
+        input: &SummaryInput,
+        level: MergeLevel,
+    ) -> Option<(StylePreset, &SummaryStyle)> {
+        (self == Merge::Plain && level == MergeLevel::Last)
+            .then_some((input.style_preset, &input.style))
     }
 }
 
@@ -908,7 +919,7 @@ fn system_text(
     user_name: Option<&str>,
     extra: Option<&str>,
     vocabulary: &Vocabulary,
-    style: Option<&SummaryStyle>,
+    style: Option<(StylePreset, &SummaryStyle)>,
 ) -> String {
     let mut s = variant.rules().replace("{{schema}}", schema_text());
     s.push('\n');
@@ -925,7 +936,7 @@ fn system_text(
         s.push('\n');
         s.push_str(&block);
     }
-    if let Some(block) = style.and_then(SummaryStyle::block) {
+    if let Some(block) = style.and_then(|(preset, style)| style_block(preset, style)) {
         s.push('\n');
         s.push_str(&block);
     }

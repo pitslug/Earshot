@@ -193,3 +193,104 @@ fn summary_style_reaches_the_summary_request_and_a_resummarise_uses_the_current_
         );
     }
 }
+
+// T12.17: the summary template beside the style.
+
+#[test]
+fn summary_style_template_is_standard_until_one_is_chosen_and_each_is_stored_by_name() {
+    let dir = TempDir::new("summary-style");
+    let mut s = store(&dir);
+    assert_eq!(summary_template(&s).unwrap(), (StylePreset::Standard, None));
+    for p in StylePreset::ALL {
+        set_summary_template(&mut s, p).unwrap();
+        assert_eq!(summary_template(&s).unwrap(), (p, None));
+        assert_eq!(
+            s.local_value(SUMMARY_TEMPLATE_KEY).unwrap().as_deref(),
+            Some(p.name().as_bytes())
+        );
+    }
+}
+
+#[test]
+fn summary_style_template_an_unknown_stored_word_reads_as_standard_and_is_reported() {
+    let dir = TempDir::new("summary-style");
+    let mut s = store(&dir);
+    for bad in [&b"terse"[..], &[0xff, 0xfe][..], &b""[..]] {
+        s.set_local_value(SUMMARY_TEMPLATE_KEY, bad).unwrap();
+        let (p, refused) = summary_template(&s).unwrap();
+        assert_eq!(p, StylePreset::Standard);
+        let refused = refused.expect("reported");
+        assert_eq!(refused.key, SUMMARY_TEMPLATE_KEY);
+        assert!(!refused.to_string().contains("terse"), "{refused}");
+    }
+}
+
+#[test]
+fn summary_style_template_reaches_the_summary_request_before_the_style() {
+    let dir = TempDir::new("summary-style");
+    let (svc, _) = services(&dir);
+    let id = meeting(&svc, "", 1);
+    assert_eq!(
+        SummaryService::input(&svc, id).unwrap().style_preset,
+        StylePreset::Standard
+    );
+    set_summary_template(&mut svc.store(), StylePreset::Decisions).unwrap();
+    set_summary_style(&mut svc.store(), "Name the Kestrel project.").unwrap();
+    assert_eq!(
+        SummaryService::input(&svc, id).unwrap().style_preset,
+        StylePreset::Decisions
+    );
+    let server = MockServer::start(vec![reply("Release planning")]).unwrap();
+    let service = SummaryService::new(
+        &SummaryConfig::new(server.endpoint().as_str(), "test-model"),
+        svc.clock.clone(),
+    )
+    .unwrap();
+    service
+        .summarize(
+            &svc,
+            id,
+            &mut ChaCha8Rng::seed_from_u64(2),
+            &CancelToken::new(),
+        )
+        .unwrap();
+    let body = String::from_utf8(server.requests()[0].body.clone()).unwrap();
+    let preset = body
+        .find(&StylePreset::Decisions.text()[..40])
+        .expect("template text");
+    let style = body.find("Kestrel").expect("style text");
+    assert!(preset < style);
+    assert!(body.find("BEGIN USER STYLE").unwrap() < preset);
+}
+
+#[test]
+fn summary_style_template_unknown_is_a_meeting_note() {
+    use earshot_hardware::{Cpu, Hardware};
+    let dir = TempDir::new("summary-style");
+    let mut s = store(&dir);
+    s.set_local_value(SUMMARY_TEMPLATE_KEY, b"terse").unwrap();
+    let hw = Hardware {
+        cpu: Cpu {
+            name: Some("Test CPU".into()),
+            physical_cores: Some(8),
+            logical_cores: Some(8),
+        },
+        total_memory: Some(16 << 30),
+        ..Hardware::default()
+    };
+    let cpu = [crate::backends::Accelerator::Cpu];
+    let notes = |s: &Store| {
+        crate::host::summary_from_settings(
+            s,
+            &cpu,
+            &hw,
+            &crate::summary_settings::NoApiKeys,
+            crate::keep_local::SummaryPrivacy::Writer,
+        )
+        .unwrap()
+        .notes
+    };
+    assert!(notes(&s).iter().any(|n| n.contains(SUMMARY_TEMPLATE_KEY)));
+    set_summary_template(&mut s, StylePreset::Brief).unwrap();
+    assert!(!notes(&s).iter().any(|n| n.contains(SUMMARY_TEMPLATE_KEY)));
+}

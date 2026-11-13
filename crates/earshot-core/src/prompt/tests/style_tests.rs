@@ -305,3 +305,110 @@ fn prompt_style_reduce_snapshot() {
         &render(&reduce_prompt(&inp, &partials, BIG, MergeLevel::Last)),
     );
 }
+
+// T12.17 summary templates: fixed text in the style block, before the user's own style.
+
+fn with_preset(inp: &SummaryInput, preset: StylePreset, text: &str) -> SummaryInput {
+    SummaryInput {
+        style_preset: preset,
+        ..styled(inp, text)
+    }
+}
+
+#[test]
+fn prompt_style_presets_have_stable_names_and_standard_adds_nothing() {
+    let names: Vec<&str> = StylePreset::ALL.iter().map(|p| p.name()).collect();
+    assert_eq!(names, ["standard", "brief", "decisions", "detailed"]);
+    for p in StylePreset::ALL {
+        assert_eq!(p.name().parse::<StylePreset>(), Ok(p));
+        assert_eq!(
+            serde_json::to_value(p).unwrap(),
+            serde_json::json!(p.name())
+        );
+        assert_eq!(p.text().is_empty(), p.is_standard(), "{p}");
+        assert!(!p.text().contains('\u{2014}'), "{p}: no em dash");
+        assert!(p.text().chars().count() <= 200, "{p}");
+    }
+    assert_eq!(
+        "short".parse::<StylePreset>(),
+        Err(UnknownStylePreset("short".into()))
+    );
+    assert_eq!(StylePreset::default(), StylePreset::Standard);
+    // Standard with no style is byte-identical to an input from before T12.17, and is left
+    // out of serialised inputs.
+    let inp = input(Template::General);
+    assert_eq!(inp.style_preset, StylePreset::Standard);
+    let explicit = with_preset(&inp, StylePreset::Standard, "");
+    assert_eq!(single(&explicit), single(&inp));
+    let json = serde_json::to_value(&inp).unwrap();
+    assert!(json.get("style_preset").is_none());
+    let brief = with_preset(&inp, StylePreset::Brief, "");
+    let json = serde_json::to_value(&brief).unwrap();
+    assert_eq!(json["style_preset"], "brief");
+    assert_eq!(serde_json::from_value::<SummaryInput>(json).unwrap(), brief);
+}
+
+#[test]
+fn prompt_style_presets_cannot_remove_the_fixed_rules() {
+    let inp = input(Template::General);
+    let plain = single(&inp);
+    let partials = [partial(1, &[id(S1), id(S2)]), partial(2, &[id(S3)])];
+    let plain_merge = reduce_prompt(&inp, &partials, BIG, MergeLevel::Last);
+    for preset in StylePreset::ALL.into_iter().skip(1) {
+        for text in ["".to_owned(), "Spell out acronyms.".to_owned()]
+            .into_iter()
+            .chain(hostile())
+        {
+            let with = with_preset(&inp, preset, &text);
+            let p = single(&with);
+            assert_block_after_rules(system_of(&p), system_of(&plain), &text);
+            assert_eq!(p.messages[1], plain.messages[1]);
+            let system = system_of(&p);
+            // The template's words come first, then the user's own.
+            let at = system
+                .find(&format!("| {}", preset.text()))
+                .unwrap_or_else(|| panic!("{preset}: template text"));
+            if !text.trim().is_empty() {
+                let first = text.trim().lines().next().unwrap_or_default();
+                let first = first
+                    .split(['\r', '\u{2028}', '\t'])
+                    .next()
+                    .unwrap()
+                    .trim_end();
+                if !first.is_empty() {
+                    assert!(system[at..].contains(first), "{preset} {text:?}");
+                }
+            }
+            let m = reduce_prompt(&with, &partials, BIG, MergeLevel::Last);
+            assert_block_after_rules(system_of(&m), system_of(&plain_merge), &text);
+        }
+    }
+}
+
+#[test]
+fn prompt_style_presets_never_reach_map_requests_or_inner_merges() {
+    let plain = long_input(60);
+    let inp = with_preset(&plain, StylePreset::Detailed, "");
+    let ranges = [0..20, 20..40, 40..60];
+    assert_eq!(
+        plan_chunks(&inp, BIG, &ranges).unwrap(),
+        plan_chunks(&plain, BIG, &ranges).unwrap()
+    );
+    let partials = [partial(1, &[id(S1)]), partial(2, &[id(S2)])];
+    assert_eq!(
+        reduce_prompt(&inp, &partials, BIG, MergeLevel::Inner),
+        reduce_prompt(&plain, &partials, BIG, MergeLevel::Inner)
+    );
+    let last = reduce_prompt(&inp, &partials, BIG, MergeLevel::Last);
+    assert!(system_of(&last).contains(StylePreset::Detailed.text()));
+}
+
+#[test]
+fn prompt_style_preset_single_pass_snapshot() {
+    let inp = with_preset(
+        &input(Template::General),
+        StylePreset::Brief,
+        "Spell out acronyms.",
+    );
+    assert_snapshot("style_preset_brief_single_general", &render(&single(&inp)));
+}

@@ -329,6 +329,11 @@ export const commands = {
 	summaryStyle: () => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("summary_style")),
 	/**  Checks and stores the summary style ("" for none; `invalid_setting`: nothing stored). */
 	setSummaryStyle: (style: string) => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("set_summary_style", { style })),
+	/**
+	 *  Stores the summary template (one of `SummaryStyleView.templates`; `invalid_setting`:
+	 *  nothing stored).
+	 */
+	setSummaryTemplate: (template: string) => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("set_summary_template", { template })),
 	/**  The user's own words for summaries (and a stored list this version refuses). */
 	summaryVocabulary: () => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("summary_vocabulary")),
 	/**
@@ -2003,6 +2008,20 @@ export type SummaryStyleView = {
 	unknown: string[],
 	/**  The longest style accepted, in characters. */
 	max_chars: number,
+	/**  The chosen summary template (a `StylePreset` name; "standard" by default). */
+	template: string,
+	/**  Every template the page offers, in its order. */
+	templates: SummaryTemplateOption[],
+};
+
+/**  One summary template on the page. */
+export type SummaryTemplateOption = {
+	/**  The stored name (`StylePreset::name`). */
+	value: string,
+	/**  The name shown. */
+	label: string,
+	/**  One line on what it gives. */
+	description: string,
 };
 
 /**  The current summary. */

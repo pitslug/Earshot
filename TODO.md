@@ -148,3 +148,5 @@ Advisory review findings, one per line. Not scope unless the owner says so.
 - packages/ui/src/detail/MeetingDetailView.tsx:1427: `latest.current` (the `LineHandlers` target) is written during render; move it into a `useLayoutEffect` so a discarded render cannot leave handlers on uncommitted state (T9.24 review).
 - packages/ui/src/meeting/hooks.ts:113: `metering` lives in the event effect's closure, so a re-run of that effect mid-meeting would freeze the meters until the next `Started` (deps are stable today) (T9.24 review).
 - On a live meeting each landed line still re-renders `AppShell` and its meeting list (about 110 ms in the development build); memoise the list rows (T9.24 after-profile).
+- packages/ui/src/settings/SummaryStyleSection.tsx:75: a refused stored template shows under "The stored summary style is not used"; give the template its own title (T12.17 review).
+- docs/summary-eval/t1217/4b-cap16.md came from an uncommitted `max_items` edit; add an evaluation-only `sum_eval --max-items` so the committed tool reproduces it (T12.17 review).

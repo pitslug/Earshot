@@ -9,6 +9,7 @@
 //! not what the user reads); layout stays in the export renderer.
 
 use core::fmt;
+use core::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -91,13 +92,117 @@ impl SummaryStyle {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
 
-    /// The style block appended to a final request's system message: `None` when empty,
-    /// else [`STYLE`] with the neutralised text ([`neutralise`]) in its slot.
+/// A summary template the user picks on the Summaries page (T12.17, docs/summary-eval.md):
+/// fixed text placed in the style block before the user's own style, so like the style it
+/// changes tone, length and emphasis and never the fixed rules. [`StylePreset::Standard`]
+/// (the default) adds nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StylePreset {
+    /// The default rules alone.
+    #[default]
+    Standard,
+    /// A one-sentence summary and at most three note bullets.
+    Brief,
+    /// What was decided and who does what, with only the background needed.
+    Decisions,
+    /// Fuller notes on every topic, with the reasons for each decision.
+    Detailed,
+}
+
+impl StylePreset {
+    /// Every template, in the order the Summaries page lists them.
+    pub const ALL: [StylePreset; 4] = [
+        StylePreset::Standard,
+        StylePreset::Brief,
+        StylePreset::Decisions,
+        StylePreset::Detailed,
+    ];
+
+    /// The stored and command-line name.
     #[must_use]
-    pub(super) fn block(&self) -> Option<String> {
-        (!self.is_empty()).then(|| STYLE.replace("{{style}}", &neutralise(&self.0)))
+    pub const fn name(self) -> &'static str {
+        match self {
+            StylePreset::Standard => "standard",
+            StylePreset::Brief => "brief",
+            StylePreset::Decisions => "decisions",
+            StylePreset::Detailed => "detailed",
+        }
     }
+
+    /// Whether this is the default (no text; left out of serialised inputs).
+    #[must_use]
+    pub fn is_standard(&self) -> bool {
+        *self == StylePreset::Standard
+    }
+
+    /// The text placed in the style block (empty for [`StylePreset::Standard`]). Fixed by
+    /// the T12.17 rule before measuring (docs/summary-eval.md).
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            StylePreset::Standard => "",
+            StylePreset::Brief => {
+                "Keep it short: a one-sentence summary and no more than three note bullets in all. Still list every decision and action item, each in a few words."
+            }
+            StylePreset::Decisions => {
+                "Focus on what was decided and who will do what. Keep the notes to the background a reader needs for those, and leave out the rest of the discussion."
+            }
+            StylePreset::Detailed => {
+                "Give fuller notes: cover each topic that was discussed, with the main points and the reasons given for each decision."
+            }
+        }
+    }
+}
+
+impl fmt::Display for StylePreset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// A template name that is not one of [`StylePreset::ALL`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownStylePreset(pub String);
+
+impl fmt::Display for UnknownStylePreset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<&str> = StylePreset::ALL.iter().map(|p| p.name()).collect();
+        write!(
+            f,
+            "unknown summary template `{}` (one of {})",
+            self.0,
+            names.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnknownStylePreset {}
+
+impl FromStr for StylePreset {
+    type Err = UnknownStylePreset;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        StylePreset::ALL
+            .into_iter()
+            .find(|p| p.name() == s)
+            .ok_or_else(|| UnknownStylePreset(s.to_string()))
+    }
+}
+
+/// The style block appended to a final request's system message: `None` when the template
+/// is [`StylePreset::Standard`] and the style empty, else [`STYLE`] with the template's
+/// text, then the user's style, neutralised together ([`neutralise`]) in its slot.
+#[must_use]
+pub(super) fn style_block(preset: StylePreset, style: &SummaryStyle) -> Option<String> {
+    let text = match (preset.text(), style.as_str()) {
+        ("", "") => return None,
+        (p, "") => p.to_owned(),
+        ("", s) => s.to_owned(),
+        (p, s) => format!("{p}\n\n{s}"),
+    };
+    Some(STYLE.replace("{{style}}", &neutralise(&text)))
 }
 
 impl TryFrom<String> for SummaryStyle {

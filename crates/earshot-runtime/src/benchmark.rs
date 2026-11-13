@@ -256,6 +256,8 @@ pub struct BenchmarkSettings {
     pub check: Option<crate::model_bench::StoredCheck>,
     /// The user's summary style (a refused stored one is empty, with a note in `summary`).
     pub style: SummaryStyle,
+    /// The summary template (T12.17; an unknown stored one is Standard).
+    pub style_preset: earshot_core::prompt::StylePreset,
     /// The user's word list (T12.15a; a refused stored one is empty, with a note in
     /// `summary`).
     pub vocabulary: Vocabulary,
@@ -285,6 +287,7 @@ pub fn read_settings(
         speaker_timing: crate::speaker_timing::speaker_timing(store)?.timing(),
         check: crate::model_bench::stored_check(store)?,
         style: crate::summary_style::summary_style(store)?.0,
+        style_preset: crate::summary_style::summary_template(store)?.0,
         vocabulary: crate::vocabulary::vocabulary(store)?.0,
     })
 }
@@ -316,6 +319,8 @@ pub struct BenchmarkSetup {
     pub check: Option<crate::model_bench::StoredCheck>,
     /// The user's summary style.
     pub style: SummaryStyle,
+    /// The summary template (T12.17).
+    pub style_preset: earshot_core::prompt::StylePreset,
     /// The user's word list (T12.15a).
     pub vocabulary: Vocabulary,
     /// What the user is told with the result (a "where it runs" choice not used, an unknown
@@ -349,6 +354,7 @@ pub fn benchmark_setup(
         live_summaries: settings.summary.live,
         check: settings.check,
         style: settings.style,
+        style_preset: settings.style_preset,
         vocabulary: settings.vocabulary,
         notes,
     })
@@ -476,6 +482,8 @@ pub struct BenchmarkRun<'a> {
     pub live_summaries: LiveSummariesRun,
     /// The user's summary style, copied into the throwaway store.
     pub style: SummaryStyle,
+    /// The summary template (T12.17), copied into the throwaway store.
+    pub style_preset: earshot_core::prompt::StylePreset,
     /// The user's word list (T12.15a), copied into the throwaway store.
     pub vocabulary: Vocabulary,
     /// Timings and pacing.
@@ -600,6 +608,7 @@ fn run_in(
     let svc = Services::new(store, data, run.services_clock)?;
     crate::summary_style::set_summary_style(&mut svc.store(), run.style.as_str())
         .map_err(|_| RuntimeError::Internal("the summary style cannot be copied"))?;
+    crate::summary_style::set_summary_template(&mut svc.store(), run.style_preset)?;
     crate::vocabulary::set_vocabulary(&mut svc.store(), run.vocabulary.words())
         .map_err(|_| RuntimeError::Internal("the word list cannot be copied"))?;
     let total = run.meeting.duration();
@@ -1045,6 +1054,7 @@ pub fn run_from_settings(
             after,
             live_summaries: live_run,
             style: setup.style.clone(),
+            style_preset: setup.style_preset,
             vocabulary: setup.vocabulary.clone(),
             clock: Arc::new(WallClock::new()),
             realtime: true,
