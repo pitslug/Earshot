@@ -166,10 +166,12 @@ impl SummaryInput {
         self.segments.iter().map(|s| s.id).collect()
     }
 
-    /// The shared rules every request of this input starts with: the prompt variant's rules
-    /// file, which for [`PromptVariant::Current`] is the writer's ([`SummaryInput::rules`]).
-    fn rules_text(&self) -> &'static str {
-        self.prompt_variant.rules_for(self.rules)
+    /// The shared rules every request of this input starts with when `writer` writes it:
+    /// the prompt variant's rules file, which for [`PromptVariant::Current`] is `writer`'s
+    /// ([`SummaryInput::rules`] unless the caller names a writer's, as the `*_with_rules`
+    /// functions do).
+    fn rules_text(&self, writer: SummaryRules) -> &'static str {
+        self.prompt_variant.rules_for(writer)
     }
 }
 
@@ -371,6 +373,20 @@ pub fn segment_numbers(input: &SummaryInput) -> SegmentNumbers {
 /// the plan satisfies [`ContextBudget::fits`] with that budget (leaving
 /// [`REPAIR_MAX_TOKENS`] for a repair round).
 pub fn plan(input: &SummaryInput, budget: ContextBudget) -> Result<PromptPlan, PromptError> {
+    plan_with_rules(input, input.rules, budget)
+}
+
+/// [`plan`] with the shared rules of `rules` in place of [`SummaryInput::rules`]: a writer
+/// with its own rules (T12.17c, `earshot_llm::LlmSummarizer`) plans with them without
+/// copying the input.
+///
+/// # Errors
+/// As [`plan`].
+pub fn plan_with_rules(
+    input: &SummaryInput,
+    rules: SummaryRules,
+    budget: ContextBudget,
+) -> Result<PromptPlan, PromptError> {
     let numbered: Vec<String> = input
         .segments
         .iter()
@@ -386,7 +402,7 @@ pub fn plan(input: &SummaryInput, budget: ContextBudget) -> Result<PromptPlan, P
                 Role::System,
                 system_text(
                     input.template,
-                    input.rules_text(),
+                    input.rules_text(rules),
                     input.user_name.as_deref(),
                     None,
                     &input.vocabulary,
@@ -410,7 +426,7 @@ pub fn plan(input: &SummaryInput, budget: ContextBudget) -> Result<PromptPlan, P
         + 2 * TOKENS_PER_MESSAGE
         + estimate_tokens(&system_text(
             input.template,
-            input.rules_text(),
+            input.rules_text(rules),
             input.user_name.as_deref(),
             Some(&map_extra),
             &input.vocabulary,
@@ -449,6 +465,7 @@ pub fn plan(input: &SummaryInput, budget: ContextBudget) -> Result<PromptPlan, P
     chunks.push(start..input.segments.len());
     Ok(PromptPlan::MapReduce(map_chunks(
         input,
+        rules,
         budget,
         &numbered,
         &line_costs,
@@ -485,6 +502,7 @@ impl MapAsk {
 /// is [`MapAsk::Whole`]).
 fn map_chunks(
     input: &SummaryInput,
+    rules: SummaryRules,
     budget: ContextBudget,
     numbered: &[String],
     line_costs: &[usize],
@@ -505,7 +523,7 @@ fn map_chunks(
                         Role::System,
                         system_text(
                             input.template,
-                            input.rules_text(),
+                            input.rules_text(rules),
                             input.user_name.as_deref(),
                             Some(&ask.text(part, parts)),
                             &input.vocabulary,
@@ -547,7 +565,24 @@ pub fn plan_chunks(
     budget: ContextBudget,
     ranges: &[Range<usize>],
 ) -> Result<Vec<MapChunk>, PromptError> {
-    plan_chunks_asking(input, budget, ranges, MapAsk::Whole)
+    plan_chunks_with_rules(input, input.rules, budget, ranges)
+}
+
+/// [`plan_chunks`] with the shared rules of `rules` in place of [`SummaryInput::rules`]
+/// (as [`plan_with_rules`]).
+///
+/// # Errors
+/// As [`plan_chunks`].
+///
+/// # Panics
+/// As [`plan_chunks`].
+pub fn plan_chunks_with_rules(
+    input: &SummaryInput,
+    rules: SummaryRules,
+    budget: ContextBudget,
+    ranges: &[Range<usize>],
+) -> Result<Vec<MapChunk>, PromptError> {
+    plan_chunks_asking(input, rules, budget, ranges, MapAsk::Whole)
 }
 
 /// One part of a two-call chunked run (T6.20c, evaluation only): two requests over the same
@@ -583,8 +618,8 @@ pub fn plan_chunks_two_call(
     budget: ContextBudget,
     ranges: &[Range<usize>],
 ) -> Result<Vec<TwoCallChunk>, PromptError> {
-    let actions = plan_chunks_asking(input, budget, ranges, MapAsk::Actions)?;
-    let rest = plan_chunks_asking(input, budget, ranges, MapAsk::Rest)?;
+    let actions = plan_chunks_asking(input, input.rules, budget, ranges, MapAsk::Actions)?;
+    let rest = plan_chunks_asking(input, input.rules, budget, ranges, MapAsk::Rest)?;
     Ok(actions
         .into_iter()
         .zip(rest)
@@ -600,6 +635,7 @@ pub fn plan_chunks_two_call(
 
 fn plan_chunks_asking(
     input: &SummaryInput,
+    rules: SummaryRules,
     budget: ContextBudget,
     ranges: &[Range<usize>],
     ask: MapAsk,
@@ -620,7 +656,7 @@ fn plan_chunks_asking(
         .map(|(i, s)| segment_line(i + 1, s))
         .collect();
     let line_costs: Vec<usize> = numbered.iter().map(|l| estimate_tokens(l)).collect();
-    let chunks = map_chunks(input, budget, &numbered, &line_costs, ranges, ask);
+    let chunks = map_chunks(input, rules, budget, &numbered, &line_costs, ranges, ask);
     for c in &chunks {
         if !budget.fits(c.prompt.estimated_tokens, c.prompt.max_output_tokens) {
             return Err(PromptError::ContextTooSmall {
@@ -663,7 +699,21 @@ pub fn reduce_groups(
     partials: &[SummaryV1],
     budget: ContextBudget,
 ) -> Result<Vec<Range<usize>>, PromptError> {
-    reduce_groups_with(input, partials, budget, Merge::Plain)
+    reduce_groups_with_rules(input, input.rules, partials, budget)
+}
+
+/// [`reduce_groups`] with the shared rules of `rules` in place of [`SummaryInput::rules`]
+/// (as [`plan_with_rules`]).
+///
+/// # Errors
+/// As [`reduce_groups`].
+pub fn reduce_groups_with_rules(
+    input: &SummaryInput,
+    rules: SummaryRules,
+    partials: &[SummaryV1],
+    budget: ContextBudget,
+) -> Result<Vec<Range<usize>>, PromptError> {
+    reduce_groups_merging(input, rules, partials, budget, Merge::Plain)
 }
 
 /// [`reduce_groups`] for the merge requests of a two-call run ([`reduce_prompt_two_call`],
@@ -676,7 +726,7 @@ pub fn reduce_groups_two_call(
     partials: &[SummaryV1],
     budget: ContextBudget,
 ) -> Result<Vec<Range<usize>>, PromptError> {
-    reduce_groups_with(input, partials, budget, Merge::TwoCall)
+    reduce_groups_merging(input, input.rules, partials, budget, Merge::TwoCall)
 }
 
 /// Which merge instruction a reduce request carries.
@@ -720,13 +770,14 @@ pub enum MergeLevel {
     Inner,
 }
 
-fn reduce_groups_with(
+fn reduce_groups_merging(
     input: &SummaryInput,
+    rules: SummaryRules,
     partials: &[SummaryV1],
     budget: ContextBudget,
     merge: Merge,
 ) -> Result<Vec<Range<usize>>, PromptError> {
-    let whole = reduce_prompt_with(input, partials, budget, merge, MergeLevel::Last);
+    let whole = reduce_prompt_merging(input, rules, partials, budget, merge, MergeLevel::Last);
     if budget.fits(whole.estimated_tokens, whole.max_output_tokens) {
         return Ok(std::iter::once(0..partials.len()).collect());
     }
@@ -737,7 +788,7 @@ fn reduce_groups_with(
         // level that ends in one group must fit with it.
         + estimate_tokens(&system_text(
             input.template,
-            input.rules_text(),
+            input.rules_text(rules),
             input.user_name.as_deref(),
             Some(&merge.text()),
             &input.vocabulary,
@@ -808,7 +859,20 @@ pub fn reduce_prompt(
     budget: ContextBudget,
     level: MergeLevel,
 ) -> Prompt {
-    reduce_prompt_with(input, partials, budget, Merge::Plain, level)
+    reduce_prompt_with_rules(input, input.rules, partials, budget, level)
+}
+
+/// [`reduce_prompt`] with the shared rules of `rules` in place of [`SummaryInput::rules`]
+/// (as [`plan_with_rules`]).
+#[must_use]
+pub fn reduce_prompt_with_rules(
+    input: &SummaryInput,
+    rules: SummaryRules,
+    partials: &[SummaryV1],
+    budget: ContextBudget,
+    level: MergeLevel,
+) -> Prompt {
+    reduce_prompt_merging(input, rules, partials, budget, Merge::Plain, level)
 }
 
 /// [`reduce_prompt`] for a two-call run (T6.20c, evaluation only): the same request with
@@ -822,11 +886,19 @@ pub fn reduce_prompt_two_call(
     partials: &[SummaryV1],
     budget: ContextBudget,
 ) -> Prompt {
-    reduce_prompt_with(input, partials, budget, Merge::TwoCall, MergeLevel::Last)
+    reduce_prompt_merging(
+        input,
+        input.rules,
+        partials,
+        budget,
+        Merge::TwoCall,
+        MergeLevel::Last,
+    )
 }
 
-fn reduce_prompt_with(
+fn reduce_prompt_merging(
     input: &SummaryInput,
+    rules: SummaryRules,
     partials: &[SummaryV1],
     budget: ContextBudget,
     merge: Merge,
@@ -844,7 +916,7 @@ fn reduce_prompt_with(
                 Role::System,
                 system_text(
                     input.template,
-                    input.rules_text(),
+                    input.rules_text(rules),
                     input.user_name.as_deref(),
                     Some(&merge.text()),
                     &input.vocabulary,

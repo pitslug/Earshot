@@ -765,7 +765,8 @@ fn index(track: TrackId) -> usize {
 }
 
 /// The whole machine's CPU use (percent) and this process's CPU seconds, private bytes and
-/// working set, read through PowerShell (a child, about once per [`LOAD_EVERY`]).
+/// working set, read through PowerShell (a child; during the meeting on its own thread, about once
+/// per [`LOAD_EVERY`]).
 fn host_reading() -> Option<(f64, f64, f64, f64)> {
     let pid = std::process::id();
     let script = format!(
@@ -1466,22 +1467,24 @@ fn main() {
     let mut problems = 0usize;
     let mut catch_up = None;
     let mut preview_reports = Vec::new();
-    let mut loads = Vec::new();
-    let mut last = host_reading();
-    let first_cpu = last.map(|r| r.1);
-    let mut next_load = Instant::now() + LOAD_EVERY;
-    let mut peak_private = 0.0f64;
-    let mut peak_ws = 0.0f64;
-    loop {
-        if Instant::now() >= next_load {
-            next_load = Instant::now() + LOAD_EVERY;
-            if let Some(r) = host_reading() {
-                loads.push(r.0);
-                peak_private = peak_private.max(r.2);
-                peak_ws = peak_ws.max(r.3);
-                last = Some(r);
+    let first = host_reading();
+    let first_cpu = first.map(|r| r.1);
+    // The readings spawn PowerShell, so they run on a thread of their own: on this thread
+    // a reading's spawn time would delay the events it reads and so add to a word's lag.
+    let (stop_readings, stop) = std::sync::mpsc::channel::<()>();
+    let sampler = std::thread::Builder::new()
+        .name("live_lag-host".into())
+        .spawn(move || {
+            let mut readings = Vec::new();
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                stop.recv_timeout(LOAD_EVERY)
+            {
+                readings.extend(host_reading());
             }
-        }
+            readings
+        })
+        .unwrap_or_else(|e| fail(format!("host reading thread: {e}")));
+    loop {
         match events.recv_timeout(Duration::from_millis(200)) {
             Ok(RuntimeEvent::Ended(_)) => break,
             Ok(RuntimeEvent::LiveBackend { track, backend, .. }) => {
@@ -1568,6 +1571,14 @@ fn main() {
     let outcome = session
         .wait()
         .unwrap_or_else(|e| fail(format!("session: {e}")));
+    drop(stop_readings);
+    let readings = sampler
+        .join()
+        .unwrap_or_else(|_| fail("the host reading thread panicked"));
+    let loads: Vec<f64> = readings.iter().map(|r| r.0).collect();
+    let mut peak_private = readings.iter().map(|r| r.2).fold(0.0f64, f64::max);
+    let mut peak_ws = readings.iter().map(|r| r.3).fold(0.0f64, f64::max);
+    let last = readings.last().copied().or(first);
     let end_reading = host_reading().or(last);
     if let Some(r) = end_reading {
         peak_private = peak_private.max(r.2);

@@ -212,6 +212,11 @@ mod tests {
         );
     }
 
+    /// `Variant::SoundRare` calls core's matcher, so this is equal by construction apart from
+    /// the field mapping and the punctuation kept around a replaced word, which is all it
+    /// pins. It is not evidence that core's matcher behaves as the evaluated one did: that is
+    /// the T12.15ea reproduction (docs/vocabulary.md, AGENTS.md "re-runs the T12.15ea
+    /// reproduction").
     #[test]
     fn vocab_correction_sound_rare_is_cores_matcher() {
         let listed = s(&["Kam", "Bozzle", "Quint"]);

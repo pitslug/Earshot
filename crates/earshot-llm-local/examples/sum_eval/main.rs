@@ -153,13 +153,29 @@ fn merge_suffix(select: bool) -> &'static str {
 }
 
 /// The format key part of a summary template (T12.17, evaluation): `-template-<name>`
-/// after everything else, nothing for Standard. xtask's `Options::format_key` appends the
-/// same.
+/// after everything but the item cap, nothing for Standard. xtask's `Options::format_key`
+/// appends the same.
 fn template_suffix(preset: StylePreset) -> String {
     if preset.is_standard() {
         String::new()
     } else {
         format!("-template-{}", preset.name())
+    }
+}
+
+/// The format key part of the item cap (`--max-items`, T12.36, evaluation): `-items<n>`
+/// last, after the template; nothing for the grammar's own cap. xtask's
+/// `Options::format_key` appends the same.
+fn items_suffix(max_items: Option<u32>) -> String {
+    max_items.map_or_else(String::new, |n| format!("-items{n}"))
+}
+
+/// Writes a `--max-items` run's cap into the result header as `max_items`, which
+/// `score::cap_of` reads back on `--rescore`; a run with the grammar's own cap writes nothing,
+/// so its header is unchanged.
+fn record_max_items(header: &mut Value, max_items: Option<u32>) {
+    if let Some(n) = max_items {
+        header["max_items"] = json!(n);
     }
 }
 
@@ -259,6 +275,9 @@ struct Args {
     /// (`earshot_llm_local::summarize::summarize_chunks_select`). Needs `--chunk-seconds`;
     /// local models only.
     merge_select: bool,
+    /// The local grammar's item cap of every list (evaluation only: `SummaryLimits::max_items`,
+    /// 12 when absent); format key `-items<n>`, and "lists at the cap" counts against it.
+    max_items: Option<u32>,
 }
 
 impl Args {
@@ -280,12 +299,17 @@ impl Args {
 }
 
 fn parse_args() -> Result<Args, String> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+/// [`parse_args`] over `args` (the command line without the program name).
+fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut a = Args {
         context: 16_384,
         max_output: 8192,
         ..Args::default()
     };
-    let mut it = std::env::args().skip(1);
+    let mut it = args.into_iter();
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or_else(|| format!("{flag} needs a value"));
         match flag.as_str() {
@@ -374,6 +398,13 @@ fn parse_args() -> Result<Args, String> {
             "--store-inputs" => a.store_inputs = Some(val()?.into()),
             "--prefix-reuse" => a.prefix_reuse = true,
             "--merge-select" => a.merge_select = true,
+            "--max-items" => {
+                let n: u32 = val()?.parse().map_err(|e| format!("--max-items: {e}"))?;
+                if n == 0 {
+                    return Err("--max-items must be at least 1".into());
+                }
+                a.max_items = Some(n);
+            }
             "--compare-summaries" => {
                 let first = val()?;
                 let second = it
@@ -520,7 +551,18 @@ fn parse_args() -> Result<Args, String> {
         return Err("--prefix-reuse is for local models without --thinking".into());
     }
     check_merge_select(&a)?;
+    if a.max_items.is_some() && a.model.is_none() {
+        return Err("--max-items is the local grammar's cap: local --model runs only".into());
+    }
     Ok(a)
+}
+
+impl Args {
+    /// The item cap this run's lists are counted against ([`score::item_cap`] unless
+    /// `--max-items`).
+    fn item_cap(&self) -> usize {
+        self.max_items.map_or_else(score::item_cap, |n| n as usize)
+    }
 }
 
 /// What a `--merge-select` run (T12.25 part 2) refuses: anything but a local summary run
@@ -1244,6 +1286,7 @@ fn rescore_file(annotations: &Path, file: &Path) -> Result<(), String> {
     let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let mut v: Value = serde_json::from_str(&text)
         .map_err(|e| format!("{}: {}", file.display(), store::json_error(&e)))?;
+    let cap = score::cap_of(&v);
     let jobs = v["jobs"]
         .as_array_mut()
         .ok_or_else(|| format!("{}: no jobs", file.display()))?;
@@ -1261,7 +1304,7 @@ fn rescore_file(annotations: &Path, file: &Path) -> Result<(), String> {
                     .map_err(|e| {
                         format!("{} {meeting}: {}", file.display(), store::json_error(&e))
                     })?;
-                row["score"] = score::store_score(summary.as_ref());
+                row["score"] = score::store_score(summary.as_ref(), cap);
                 n += 1;
                 continue;
             }
@@ -1278,7 +1321,7 @@ fn rescore_file(annotations: &Path, file: &Path) -> Result<(), String> {
                     file.display()
                 ));
             }
-            row["score"] = score::score(summary.as_ref(), &reference).to_json();
+            row["score"] = score::score(summary.as_ref(), &reference, cap).to_json();
             n += 1;
         }
         let rows = job["meetings"].as_array().cloned().unwrap_or_default();
@@ -1783,7 +1826,7 @@ fn import_replies(a: &Args, dir: &Path) -> Result<(), String> {
             let (input, words) = load_input(a, source, meeting)?;
             let result = claude::import_one(dir, meeting, source, &input);
             let summary = result.as_ref().ok().map(|c| &c.summary);
-            let s = score::score(summary, &reference);
+            let s = score::score(summary, &reference, score::item_cap());
             eprintln!(
                 "sum_eval: {} {split}:{source} {meeting}: {}",
                 a.model_id,
@@ -1916,7 +1959,7 @@ fn run() -> Result<(), String> {
             load.load_time.as_secs_f64(),
             load.description
         );
-        let header = json!({
+        let mut header = json!({
             "candidate": a.model_id,
             "kind": "local",
             "model_file": path.file_name().map(|f| f.to_string_lossy().into_owned()),
@@ -1930,7 +1973,7 @@ fn run() -> Result<(), String> {
             "max_output_tokens": a.max_output,
             "assistant_prefix": assistant_prefix,
             "thinking_cap": a.thinking,
-            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking) + reuse_suffix(a.prefix_reuse) + merge_suffix(a.merge_select) + &template_suffix(a.style_preset),
+            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking) + reuse_suffix(a.prefix_reuse) + merge_suffix(a.merge_select) + &template_suffix(a.style_preset) + &items_suffix(a.max_items),
             "prefix_reuse": a.prefix_reuse,
             "merge_select": a.merge_select,
             "chunk_seconds": a.chunk_seconds,
@@ -1940,12 +1983,16 @@ fn run() -> Result<(), String> {
             "style_preset": a.style_preset.name(),
             "system_info": earshot_llm_local::system_info(),
         });
+        record_max_items(&mut header, a.max_items);
         let engine = Engine::Local {
             llm,
             options: SummaryOptions {
                 max_output_tokens: a.max_output,
                 assistant_prefix,
-                limits: SummaryLimits::default(),
+                limits: SummaryLimits {
+                    max_items: a.max_items.unwrap_or(SummaryLimits::default().max_items),
+                    ..SummaryLimits::default()
+                },
                 cancel: CancelToken::new(),
             },
             chunk_seconds: a.chunk_seconds,
@@ -2025,6 +2072,7 @@ fn run() -> Result<(), String> {
         ) + reuse_suffix(a.prefix_reuse)
             + merge_suffix(a.merge_select)
             + &template_suffix(a.style_preset)
+            + &items_suffix(a.max_items)
     );
     let partial = a.out.with_extension("partial.jsonl");
     let mut done: BTreeMap<(String, String, String), Value> = BTreeMap::new();
@@ -2069,8 +2117,8 @@ fn run() -> Result<(), String> {
                 )
             };
             let score_of = |summary: Option<&SummaryV1>| match &reference {
-                Some(r) => score::score(summary, r).to_json(),
-                None => score::store_score(summary),
+                Some(r) => score::score(summary, r, a.item_cap()).to_json(),
+                None => score::store_score(summary, a.item_cap()),
             };
             if let Some(row) = done.get(&(split.clone(), source.clone(), meeting.clone())) {
                 // The summary is stored; the score is recomputed with this build's rules
@@ -2131,7 +2179,7 @@ fn run() -> Result<(), String> {
             let score_json = score_of(result.as_ref().ok());
             match &reference {
                 Some(r) => {
-                    let s = score::score(result.as_ref().ok(), r);
+                    let s = score::score(result.as_ref().ok(), r, a.item_cap());
                     eprintln!(
                         "sum_eval: {} {split}:{source} {meeting}: {} in {seconds:.1} s, rougeL {:.3}, decisions {}/{}, actions {}/{}",
                         a.model_id,
@@ -2913,7 +2961,7 @@ mod store_tests {
 
     #[test]
     fn sum_eval_store_rows_are_scored_by_length_only() {
-        let s = score::store_score(None);
+        let s = score::store_score(None, score::item_cap());
         assert_eq!(s["length"]["decisions"], 0);
         assert!(s.get("rougeL").is_none() && s.get("decisions").is_none());
         // The aggregate reads the absent scores as zero and sums the lengths.
@@ -3080,6 +3128,64 @@ mod reuse_tests {
                 .unwrap_err()
                 .contains("--merge-select")
         );
+    }
+
+    /// T12.36: `-items<n>` sits last, after the template, as xtask's `Options::format_key`
+    /// builds it (`sum_eval_max_items_has_its_own_format_key`).
+    #[test]
+    fn sum_eval_max_items_key_part_sits_after_the_template() {
+        let key = format_key(Some(600), PromptVariant::Brief, false, false, None, None)
+            + reuse_suffix(true)
+            + merge_suffix(true)
+            + &template_suffix(StylePreset::Brief)
+            + &items_suffix(Some(16));
+        assert_eq!(
+            key,
+            "indented-numbered-r5-chunk600-prompt-brief-reuse-select-template-brief-items16"
+        );
+        assert_eq!(
+            format_key(Some(600), PromptVariant::Current, false, false, None, None)
+                + &items_suffix(Some(16)),
+            "indented-numbered-r5-chunk600-items16"
+        );
+        assert_eq!(items_suffix(None), "");
+    }
+
+    #[test]
+    fn sum_eval_max_items_is_for_local_runs_and_sets_the_counted_cap() {
+        let args = |extra: &[&str]| {
+            let mut v: Vec<String> = [
+                "--job",
+                "dev:reference",
+                "--model-id",
+                "m",
+                "--out",
+                "o.json",
+            ]
+            .map(str::to_owned)
+            .to_vec();
+            v.extend(extra.iter().map(|s| (*s).to_owned()));
+            parse_args_from(v)
+        };
+        let local = args(&["--model", "m.gguf", "--max-items", "16"]).unwrap();
+        assert_eq!(local.max_items, Some(16));
+        assert_eq!(local.item_cap(), 16);
+        assert_eq!(args(&["--model", "m.gguf"]).unwrap().item_cap(), 12);
+        assert!(args(&["--model", "m.gguf", "--max-items", "0"]).is_err());
+        assert!(args(&["--remote", "--max-items", "16"]).is_err());
+    }
+
+    #[test]
+    fn sum_eval_max_items_header_round_trips_to_the_rescore_cap() {
+        let mut header = json!({ "candidate": "m" });
+        record_max_items(&mut header, None);
+        assert_eq!(header, json!({ "candidate": "m" }));
+        assert_eq!(score::cap_of(&header), score::item_cap());
+        record_max_items(&mut header, Some(16));
+        // Through the file's bytes, as `--rescore` reads it.
+        let read: Value =
+            serde_json::from_slice(&serde_json::to_vec_pretty(&header).unwrap()).unwrap();
+        assert_eq!(score::cap_of(&read), 16);
     }
 
     /// The fields [`check_merge_select`] reads.

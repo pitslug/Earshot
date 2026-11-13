@@ -5,7 +5,8 @@
 //! pinned test-clean subset, one piece run per utterance, the production decoding path) on
 //! every model of the manifest's Vulkan ladders, once per backend, into
 //! [`REPORT_DIR`]; a Vulkan report per device is allowed (`vulkan-<device>.json`, measured
-//! with `GGML_VK_VISIBLE_DEVICES`). Judging reads those reports and nothing else, so it can
+//! with `GGML_VK_VISIBLE_DEVICES` by `--device <device>=<n>`). Judging reads those reports and
+//! nothing else, so it can
 //! be repeated (`--skip-run`) and the committed reports stay pinned to the rule by a plain
 //! test (`vulkan_parity_committed_reports_hold_the_rule`).
 //!
@@ -18,6 +19,10 @@
 //!
 //! A host with no Vulkan device fails the Vulkan run; that host's check is compile-only:
 //! `cargo xtask build --features vulkan`.
+//!
+//! Only WER is judged. The reports also hold the evaluation's speed fields, which say nothing
+//! about the host's load: the committed ones were measured on a shared host (docs/asr-models.md),
+//! so read them as upper bounds, never as a figure or baseline (the T8.1 rule).
 
 use std::path::{Path, PathBuf};
 
@@ -228,15 +233,61 @@ pub fn judge_dir(dir: &Path, models: &[String]) -> Result<Vec<Row>> {
     Ok(rows)
 }
 
-/// Measures unless `skip_run`, then judges and prints the table. Whether every model holds.
+/// `--device <name>=<n>`: the report name (`vulkan-<name>.json`) and the `Vulkan<n>` index.
+///
+/// # Errors
+/// Another shape, a name that is not lower-case letters, digits and `-`, or an index that is
+/// not a number.
+pub fn device_run(arg: &str) -> Result<(String, u32)> {
+    let Some((name, index)) = arg.split_once('=') else {
+        bail!("--device {arg:?} is not <name>=<n>, for example igpu=0");
+    };
+    ensure!(
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+        "--device name {name:?} must be lower-case letters, digits or '-'"
+    );
+    let index = index
+        .parse()
+        .with_context(|| format!("--device index {index:?} is not a number"))?;
+    Ok((format!("vulkan-{name}.json"), index))
+}
+
+/// Measures unless `skip_run` (with `device`, only that Vulkan device, [`device_run`]), then
+/// judges and prints the table. Whether every model holds.
 ///
 /// # Errors
 /// A failed evaluation; a report that cannot be judged.
-pub fn run(root: &Path, skip_run: bool, target_dir: Option<PathBuf>) -> Result<bool> {
+pub fn run(
+    root: &Path,
+    skip_run: bool,
+    device: Option<&str>,
+    target_dir: Option<PathBuf>,
+) -> Result<bool> {
     let manifest = Manifest::load(&crate::models::manifest_path(root))?;
     let models = ladder_models(&manifest);
     let dir = root.join(REPORT_DIR);
-    if !skip_run {
+    let device = device.map(device_run).transpose()?;
+    ensure!(
+        !(skip_run && device.is_some()),
+        "--device measures a device; --skip-run measures nothing"
+    );
+    if let Some((report, index)) = &device {
+        model_eval::run(
+            root,
+            &model_eval::Options {
+                backend: Some("vulkan".to_owned()),
+                models: models.clone(),
+                corpora: vec![CORPUS.to_owned()],
+                decodings: vec![DECODING.to_owned()],
+                out: Some(dir.join(report)),
+                target_dir: target_dir.clone(),
+                vulkan_device: Some(*index),
+            },
+        )?;
+    } else if !skip_run {
         // Vulkan first: a host without a device fails in minutes, not after the CPU's hours.
         for backend in ["vulkan", "cpu"] {
             model_eval::run(
@@ -248,6 +299,7 @@ pub fn run(root: &Path, skip_run: bool, target_dir: Option<PathBuf>) -> Result<b
                     decodings: vec![DECODING.to_owned()],
                     out: Some(dir.join(format!("{backend}.json"))),
                     target_dir: target_dir.clone(),
+                    vulkan_device: None,
                 },
             )?;
         }
@@ -266,7 +318,7 @@ pub fn run(root: &Path, skip_run: bool, target_dir: Option<PathBuf>) -> Result<b
         );
     }
     println!(
-        "{} reference words; limit {MAX_POINTS} point",
+        "{} reference words; limit {MAX_POINTS} point; speed fields are not judged",
         rows[0].ref_words
     );
     if rows.iter().any(|r| r.ref_words != rows[0].ref_words) {
@@ -312,6 +364,55 @@ mod tests {
 
     fn models() -> Vec<String> {
         vec!["m".to_owned()]
+    }
+
+    #[test]
+    fn vulkan_parity_device_runs_name_their_report_and_index() {
+        assert_eq!(
+            device_run("igpu=0").unwrap(),
+            ("vulkan-igpu.json".to_owned(), 0)
+        );
+        assert_eq!(
+            device_run("rtx-5080=1").unwrap(),
+            ("vulkan-rtx-5080.json".to_owned(), 1)
+        );
+        for bad in [
+            "igpu", "=0", "IGPU=0", "i/gpu=0", "igpu=x", "igpu=-1", "igpu=",
+        ] {
+            assert!(device_run(bad).is_err(), "{bad}");
+        }
+        // The committed device report is one such name.
+        let reports = vulkan_reports(&repo().join(REPORT_DIR)).unwrap();
+        assert!(
+            reports
+                .iter()
+                .any(|p| p.file_name().is_some_and(|n| n == "vulkan-igpu.json")),
+            "{reports:?}"
+        );
+    }
+
+    #[test]
+    fn vulkan_parity_a_device_reaches_the_evaluation_only_on_vulkan() {
+        let opts = |vulkan_device| model_eval::Options {
+            backend: None,
+            models: Vec::new(),
+            corpora: Vec::new(),
+            decodings: Vec::new(),
+            out: None,
+            target_dir: None,
+            vulkan_device,
+        };
+        assert!(
+            model_eval::eval_env("vulkan", &opts(None))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            model_eval::eval_env("vulkan", &opts(Some(0))).unwrap(),
+            [(model_eval::VULKAN_DEVICES_ENV, "0".to_owned())]
+        );
+        assert!(model_eval::eval_env("cpu", &opts(Some(0))).is_err());
+        assert!(model_eval::eval_env("cpu", &opts(None)).unwrap().is_empty());
     }
 
     #[test]

@@ -2,8 +2,10 @@
 //! name the user who built it or their home folder. Release builds use neutral paths
 //! ([`crate::build::NeutralPaths`]), and this is what proves it.
 //!
-//! The bytes are searched as they are, without regard to ASCII case, in UTF-8 and in UTF-16 LE
+//! The bytes are searched as they are, without regard to case, in UTF-8 and in UTF-16 LE
 //! (Windows strings and debug records), so a compressed file proves nothing about what it holds.
+//! ASCII letters are folded in the haystack; any other letter of a name matches as written, in
+//! lower case or in upper case, each letter on its own.
 //! `uninstall.exe` is one such file: NSIS compresses its data.
 
 use std::path::{Path, PathBuf};
@@ -27,8 +29,53 @@ pub struct Needles(Vec<Needle>);
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Needle {
     text: String,
-    bytes: Vec<u8>,
+    /// Per character of `text`, every encoded spelling it may have in an ASCII-folded haystack.
+    chars: Vec<Vec<Vec<u8>>>,
     wide: bool,
+}
+
+impl Needle {
+    fn new(text: String, wide: bool) -> Self {
+        // Folded byte by byte after encoding, exactly as `scan_bytes` folds the haystack: a
+        // UTF-16 code unit can hold a byte in A..Z (Ł is `41 01`), which the haystack folds too.
+        let encode = |s: &str| -> Vec<u8> {
+            let bytes: Vec<u8> = if wide {
+                s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+            } else {
+                s.as_bytes().to_vec()
+            };
+            bytes.to_ascii_lowercase()
+        };
+        let chars = text
+            .chars()
+            .map(|c| {
+                let mut forms: Vec<Vec<u8>> = Vec::new();
+                for form in [
+                    c.to_string(),
+                    c.to_lowercase().collect(),
+                    c.to_uppercase().collect(),
+                ] {
+                    let bytes = encode(&form);
+                    if !forms.contains(&bytes) {
+                        forms.push(bytes);
+                    }
+                }
+                forms
+            })
+            .collect();
+        Self { text, chars, wide }
+    }
+
+    /// The length of the match of `chars` at the start of `haystack`, if any.
+    fn match_len(chars: &[Vec<Vec<u8>>], haystack: &[u8]) -> Option<usize> {
+        let Some((first, rest)) = chars.split_first() else {
+            return Some(0);
+        };
+        first.iter().find_map(|form| {
+            let tail = haystack.strip_prefix(form.as_slice())?;
+            Self::match_len(rest, tail).map(|n| form.len() + n)
+        })
+    }
 }
 
 impl Needles {
@@ -36,19 +83,12 @@ impl Needles {
     /// a renamed account keeps its old folder.
     ///
     /// # Errors
-    /// An empty name or home: a scan with nothing to look for would prove nothing. A name or home
-    /// that is not ASCII: bytes are compared without regard to ASCII case only, so another spelling
-    /// of it would pass unseen.
+    /// An empty name or home: a scan with nothing to look for would prove nothing.
     pub fn new(user: &str, home: &str) -> Result<Self> {
         ensure!(!user.trim().is_empty(), "the build user's name is empty");
         ensure!(
             !home.trim().is_empty(),
             "the build user's home folder is empty"
-        );
-        ensure!(
-            user.is_ascii() && home.is_ascii(),
-            "the scan for the build user's paths handles ASCII names only, and this user's name or \
-             home folder is not ASCII: run bundle-check from an account with an ASCII name"
         );
         let mut texts = Vec::new();
         let unix = home.replace('\\', "/");
@@ -69,16 +109,8 @@ impl Needles {
             if needles.iter().any(|n: &Needle| n.text == text) {
                 continue;
             }
-            needles.push(Needle {
-                bytes: text.as_bytes().to_vec(),
-                text: text.clone(),
-                wide: false,
-            });
-            needles.push(Needle {
-                bytes: text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
-                text,
-                wide: true,
-            });
+            needles.push(Needle::new(text.clone(), false));
+            needles.push(Needle::new(text, true));
         }
         Ok(Self(needles))
     }
@@ -126,16 +158,17 @@ fn quote(bytes: &[u8], at: usize) -> String {
         .collect()
 }
 
-/// Where `needle` occurs in `haystack`.
-fn places_of(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
-    let Some((&head, rest)) = needle.split_first() else {
+/// Where `needle` occurs in `haystack` (ASCII-folded).
+fn places_of(haystack: &[u8], needle: &Needle) -> Vec<usize> {
+    let Some(first) = needle.chars.first() else {
         return Vec::new();
     };
+    let heads: Vec<u8> = first.iter().filter_map(|f| f.first().copied()).collect();
     let mut places = Vec::new();
     let mut from = 0;
-    while let Some(i) = haystack[from..].iter().position(|b| *b == head) {
+    while let Some(i) = haystack[from..].iter().position(|b| heads.contains(b)) {
         let at = from + i;
-        if haystack[at + 1..].starts_with(rest) {
+        if Needle::match_len(&needle.chars, &haystack[at..]).is_some() {
             places.push(at);
         }
         from = at + 1;
@@ -150,7 +183,7 @@ pub fn scan_bytes(file: &Path, bytes: &[u8], needles: &Needles) -> Option<Findin
     let mut places = 0;
     let mut quotes: Vec<String> = Vec::new();
     for needle in &needles.0 {
-        let found = places_of(&lower, &needle.bytes);
+        let found = places_of(&lower, needle);
         places += found.len();
         for at in found {
             if quotes.len() == MAX_QUOTES {
@@ -294,15 +327,95 @@ mod tests {
     }
 
     #[test]
+    fn build_bundle_scan_finds_a_name_that_is_not_ascii_in_any_case() {
+        // Before: such a name was refused, because only ASCII case was folded.
+        let n = Needles::new("Zoë Ångström", r"C:\Users\Zoë Ångström").unwrap();
+        for text in [
+            r"C:\Users\Zoë Ångström\x.rs",
+            r"c:\users\zoë ångström\x.rs",
+            r"C:\USERS\ZOË ÅNGSTRÖM\X.RS",
+            "by ZOË ångström",
+            "by zoË ÅngstrÖm",
+        ] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &n).is_some(),
+                "{text}"
+            );
+            assert!(
+                scan_bytes(Path::new("a"), &wide(text), &n).is_some(),
+                "wide {text}"
+            );
+        }
+        // Another letter is another name.
+        for text in ["Zoe Angstrom", "Zoé Ångström"] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &n).is_none(),
+                "{text}"
+            );
+            assert!(
+                scan_bytes(Path::new("a"), &wide(text), &n).is_none(),
+                "wide {text}"
+            );
+        }
+        // Letters whose UTF-16 code unit holds a byte in A..Z (Ł is `41 01`, 中 `2d 4e`... and
+        // 婀 U+5A40 is `40 5a`), which the haystack's byte fold changes.
+        let l = Needles::new("Łukasz", r"C:\Users\Łukasz").unwrap();
+        for text in [r"C:\Users\Łukasz\x.pdb", "ŁUKASZ", "łukasz"] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &l).is_some(),
+                "{text}"
+            );
+            assert!(
+                scan_bytes(Path::new("a"), &wide(text), &l).is_some(),
+                "wide {text}"
+            );
+        }
+        for text in ["Lukasz", "Ńukasz"] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &l).is_none(),
+                "{text}"
+            );
+            assert!(
+                scan_bytes(Path::new("a"), &wide(text), &l).is_none(),
+                "wide {text}"
+            );
+        }
+        let c = Needles::new("婀娜用户", r"C:\Users\婀娜用户").unwrap();
+        for text in [r"C:\Users\婀娜用户\x.pdb", "by 婀娜用户"] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &c).is_some(),
+                "{text}"
+            );
+            assert!(
+                scan_bytes(Path::new("a"), &wide(text), &c).is_some(),
+                "wide {text}"
+            );
+        }
+        for text in ["婀娜用戶", "阿娜用户"] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &c).is_none(),
+                "{text}"
+            );
+            assert!(
+                scan_bytes(Path::new("a"), &wide(text), &c).is_none(),
+                "wide {text}"
+            );
+        }
+        // A letter whose upper case is two letters matches either way.
+        let s = Needles::new("Strauß", r"C:\Users\Strauß").unwrap();
+        for text in ["strauß", "STRAUSS", "STRAUß"] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &s).is_some(),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
     fn build_bundle_scan_needs_something_to_look_for() {
         assert!(Needles::new("", HOME).is_err());
         assert!(Needles::new("  ", HOME).is_err());
         assert!(Needles::new("x", "").is_err());
-        // One it could miss is refused rather than scanned for.
-        for (user, home) in [("Zoë", r"C:\Users\Zoe"), ("Zoe", r"C:\Users\Zoë")] {
-            let e = Needles::new(user, home).unwrap_err().to_string();
-            assert!(e.contains("ASCII"), "{e}");
-        }
         // A file that cannot be read is an error, not a pass.
         let dir = tree("unreadable");
         let open = dir.join("held.dll");

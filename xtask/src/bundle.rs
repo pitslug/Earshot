@@ -141,6 +141,52 @@ pub fn effective_target(target: Option<&str>) -> &str {
     })
 }
 
+/// The registry key whose `PROCESSOR_ARCHITECTURE` names the machine's own architecture. An
+/// x64 process under emulation on ARM64 reads its own environment variable as `AMD64`, but
+/// this value as the machine's (`ARM64`).
+const MACHINE_ENVIRONMENT_KEY: &str =
+    r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
+
+/// The target triple of the machine's own architecture from `reg query` output of
+/// [`MACHINE_ENVIRONMENT_KEY`] `/v PROCESSOR_ARCHITECTURE`, or `None` for anything else.
+pub fn parse_machine_arch(reg_stdout: &str) -> Option<&'static str> {
+    let value = reg_stdout.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        (words.next()? == "PROCESSOR_ARCHITECTURE" && words.next()? == "REG_SZ")
+            .then(|| words.next())
+            .flatten()
+    })?;
+    match value.to_ascii_uppercase().as_str() {
+        "AMD64" => Some(X64_WINDOWS),
+        "ARM64" => Some(ARM64_WINDOWS),
+        _ => None,
+    }
+}
+
+/// The machine's own architecture as a target triple, which is what an installed app runs as:
+/// an x64 xtask under emulation on ARM64 is still on an ARM64 machine. Falls back to the
+/// architecture this xtask runs as ([`effective_target`]) when the registry cannot be read.
+pub fn machine_target() -> &'static str {
+    let mut cmd = Command::new("reg");
+    cmd.args([
+        "query",
+        MACHINE_ENVIRONMENT_KEY,
+        "/v",
+        "PROCESSOR_ARCHITECTURE",
+    ]);
+    run_with_timeout(&mut cmd, Duration::from_secs(30))
+        .filter(|o| o.success && o.stdout_complete)
+        .and_then(|o| parse_machine_arch(&o.stdout))
+        .unwrap_or_else(|| {
+            let own = effective_target(None);
+            println!(
+                "bundle-check: the machine's architecture could not be read from the registry; \
+                 using this xtask's own ({own})"
+            );
+            own
+        })
+}
+
 /// The installer's path below `<profile>\bundle`. The bundler names it from the version, so a
 /// version from anywhere but the workspace fails the check that the file exists.
 ///
@@ -1727,12 +1773,15 @@ pub fn check(
     target: Option<&str>,
     installer: Option<&Path>,
 ) -> Result<bool> {
-    // The host is the architecture this xtask runs as: run it from the machine's own toolchain.
+    // The host is the architecture this xtask runs as (where cargo put the build); what can
+    // be installed and run is the machine's own, read apart so an x64 xtask under emulation
+    // on ARM64 still checks the ARM64 installer.
     let host = effective_target(None);
+    let machine = machine_target();
     let version = workspace_version(root)?;
     let (nsis, exe_dir, triple) = if let Some(path) = installer {
         let (named, triple) = installer_name_target(path)?;
-        refuse_unless_runnable(triple, host)?;
+        refuse_unless_runnable(triple, machine)?;
         ensure!(
             named == version,
             "{} is version {named} but this repo is {version}: check out the commit it was built \
@@ -1743,7 +1792,7 @@ pub fn check(
         (path.to_path_buf(), None, triple)
     } else {
         let triple = effective_target(target);
-        refuse_unless_runnable(triple, host)?;
+        refuse_unless_runnable(triple, machine)?;
         let name = installer_path(&version, triple)?;
         let dirs = built_release_dirs(
             root,

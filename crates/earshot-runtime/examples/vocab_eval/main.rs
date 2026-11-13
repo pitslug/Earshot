@@ -111,6 +111,9 @@ struct Args {
     prior_report: Option<PathBuf>,
     /// `--decode ami` decodes only the baseline (T12.15ea).
     baseline_only: bool,
+    /// What the person running a decode says about the host's load (`--host-note`), recorded
+    /// as given; without it the meta says nothing about load.
+    host_note: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -119,6 +122,7 @@ fn parse_args() -> Args {
     let mut report = None;
     let mut prior_report = None;
     let mut baseline_only = false;
+    let mut host_note = None;
     let mut gate = Gate::Open;
     let (mut workers, mut threads) = (4usize, 4usize);
     while let Some(flag) = it.next() {
@@ -151,6 +155,7 @@ fn parse_args() -> Args {
             "--score-ami" => mode = Some(Mode::ScoreAmi),
             "--suggest-ami" => mode = Some(Mode::SuggestAmi),
             "--baseline-only" => baseline_only = true,
+            "--host-note" => host_note = Some(value()),
             "--workers" => workers = value().parse().unwrap_or_else(|e| fail(e)),
             "--threads" => threads = value().parse().unwrap_or_else(|e| fail(e)),
             other => fail(format!("unknown argument {other}")),
@@ -175,6 +180,7 @@ fn parse_args() -> Args {
         gate,
         prior_report,
         baseline_only,
+        host_note,
     }
 }
 
@@ -308,6 +314,33 @@ fn read_lines(out: &Path, name: &str) -> Option<Vec<Line>> {
     )
 }
 
+/// SHA-256 of `<out>/<name>.jsonl` as written.
+fn file_sha256(out: &Path, name: &str) -> String {
+    let path = out.join(format!("{name}.jsonl"));
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| fail(format!("{}: {e}", path.display())));
+    use sha2::{Digest, Sha256};
+    Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Whether `meta` (an `ami-meta.json`) records `hash` for `<name>.jsonl`: the meta describes
+/// the decode being read only when every file read is the one that decode wrote (an
+/// interrupted or interleaved run could leave them apart).
+fn meta_records(meta: &Value, name: &str, hash: &str) -> Result<(), String> {
+    match meta["files_sha256"][format!("{name}.jsonl")].as_str() {
+        Some(h) if h == hash => Ok(()),
+        Some(_) => Err(format!(
+            "{name}.jsonl is not the file ami-meta.json describes: run --decode ami again"
+        )),
+        None => Err(format!(
+            "ami-meta.json records no hash of {name}.jsonl (a decode from before T12.36, or \
+             another decode): run --decode ami again"
+        )),
+    }
+}
+
 fn write_json(out: &Path, name: &str, v: &Value) {
     let path = out.join(name);
     let text = serde_json::to_string_pretty(v).unwrap_or_else(|e| fail(e));
@@ -342,10 +375,12 @@ fn graph_of(list: &List, pieces: &HashMap<String, usize>) -> (ContextGraph, usiz
     (ContextGraph::new(&seqs), untokenised)
 }
 
-fn host_note() -> Value {
+/// The host as the meta records it: the core count, and the load only as `--host-note` gives
+/// it (null without one: nothing here measures load). Decode times decide nothing either way.
+fn host_note(args: &Args) -> Value {
     json!({
         "logical_cores": std::thread::available_parallelism().map(std::num::NonZeroUsize::get).ok(),
-        "load": "shared build host: other lanes were compiling and testing during the run; decode times decide nothing",
+        "load": args.host_note,
     })
 }
 
@@ -490,7 +525,7 @@ fn decode_parakeet(args: &Args, s: &Setup) {
             "listed_forms_not_tokenised": untokenised.into_inner(),
             "decode_seconds": totals,
             "wall_seconds": started.elapsed().as_secs_f64(),
-            "host": host_note(),
+            "host": host_note(args),
         }),
     );
 }
@@ -583,7 +618,7 @@ fn decode_whisper(args: &Args, s: &Setup) {
             "threads": args.threads,
             "decode_seconds": { "baseline": secs(&plain), "prompt": secs(&prompted) },
             "wall_seconds": started.elapsed().as_secs_f64(),
-            "host": host_note(),
+            "host": host_note(args),
         }),
     );
 }
@@ -1147,6 +1182,15 @@ fn decode_ami(args: &Args, s: &Setup) {
     } else {
         json!({ "gate": gate_name(args.gate), "beta": ami::BETA })
     };
+    let mut written: Vec<String> = names.iter().map(|n| format!("ami-{n}")).collect();
+    written.push("ami-silence-baseline".to_owned());
+    if !args.baseline_only {
+        written.extend(ami::LISTS.iter().map(|n| format!("ami-silence-{n}")));
+    }
+    let files: serde_json::Map<String, Value> = written
+        .iter()
+        .map(|n| (format!("{n}.jsonl"), json!(file_sha256(&args.out, n))))
+        .collect();
     write_json(
         &args.out,
         "ami-meta.json",
@@ -1165,9 +1209,55 @@ fn decode_ami(args: &Args, s: &Setup) {
             "listed_forms_not_tokenised": untokenised,
             "decode_seconds": totals,
             "wall_seconds": started.elapsed().as_secs_f64(),
-            "host": host_note(),
+            "host": host_note(args),
+            "files_sha256": files,
         }),
     );
+}
+
+/// Per meeting and list, the SHA-256 of the list's tokens in list order, one per line: the
+/// lists are rebuilt from the fixtures on every run, so a report pins the ones it used.
+fn list_hashes(meetings: &[ami::Meeting]) -> Vec<Value> {
+    meetings
+        .iter()
+        .flat_map(|m| {
+            ami::LISTS.iter().zip(&m.lists).map(|(name, l)| {
+                json!({
+                    "meeting": m.name,
+                    "list": name,
+                    "sha256": sha256_hex(&l.tokens.join("\n")),
+                })
+            })
+        })
+        .collect()
+}
+
+/// `meeting/list` of every entry of `now` whose hash a prior report's `list_sha256` does not
+/// hold; `None` when the prior report records no list hashes (reports from before T12.36).
+fn differing_lists(now: &[Value], prior: &Value) -> Option<Vec<String>> {
+    let prior = prior["list_sha256"].as_array()?;
+    Some(
+        now.iter()
+            .filter(|n| !prior.contains(n))
+            .map(|n| {
+                format!(
+                    "{}/{}",
+                    n["meeting"].as_str().unwrap_or("?"),
+                    n["list"].as_str().unwrap_or("?")
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The prior report's `results.json`.
+fn prior_results(dir: &Path) -> Value {
+    let path = dir.join("results.json");
+    serde_json::from_str(
+        &std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| fail(format!("{}: {e}", path.display()))),
+    )
+    .unwrap_or_else(|e| fail(format!("{}: {e}", path.display())))
 }
 
 /// Listed tokens a decode of non-speech wrote.
@@ -1249,6 +1339,7 @@ fn score_ami(args: &Args, s: &Setup) {
     let read = |name: &str, expected: &[String]| -> HashMap<String, Line> {
         let lines = read_lines(&args.out, name)
             .unwrap_or_else(|| fail(format!("{name}.jsonl is missing: run --decode ami first")));
+        meta_records(&meta, name, &file_sha256(&args.out, name)).unwrap_or_else(|e| fail(e));
         index_rows(lines, expected).unwrap_or_else(|e| fail(format!("{name}.jsonl: {e}")))
     };
     // Every scored unit in order: (meeting, segment id, reference, kind) with the outside
@@ -1279,13 +1370,18 @@ fn score_ami(args: &Args, s: &Setup) {
     let base = read("ami-baseline", &decoded_ids);
     // Informational (docs/vocabulary.md, T12.15ca): baseline segments whose hypothesis differs
     // from a committed report's.
+    let lists_now = list_hashes(&meetings);
     let prior = args.prior_report.as_deref().map(|dir| {
         let hashes = committed_hashes(&dir.join("counts-baseline-ne.jsonl"));
         let differing = decoded_ids
             .iter()
             .filter(|id| hashes.get(id.as_str()) != Some(&sha256_hex(&base[id.as_str()].hyp)))
             .count();
-        json!({ "segments_compared": decoded_ids.len(), "baseline_segments_differing": differing })
+        json!({
+            "segments_compared": decoded_ids.len(),
+            "baseline_segments_differing": differing,
+            "lists_differing": differing_lists(&lists_now, &prior_results(dir)),
+        })
     });
     let hyp_of = |lines: &HashMap<String, Line>, id: &str, decoded: bool| -> String {
         if decoded {
@@ -1421,6 +1517,7 @@ fn score_ami(args: &Args, s: &Setup) {
         },
         "count_fields": COUNT_FIELDS,
         "guards": { "g1_distractors_per_1000": G1_DISTRACTORS, "g2_u_wer_points": G2_UWER },
+        "list_sha256": lists_now,
         "lists": lists_json,
         "prior_baseline": prior,
         "verdict": if verdict { "pass" } else { "fail" },
@@ -1509,6 +1606,12 @@ fn suggest_ami(args: &Args, s: &Setup) {
     let ids: Vec<String> = units.iter().map(|u| u.1.clone()).collect();
     let lines = read_lines(&args.out, "ami-baseline")
         .unwrap_or_else(|| fail("ami-baseline.jsonl is missing: run --decode ami first"));
+    meta_records(
+        &meta,
+        "ami-baseline",
+        &file_sha256(&args.out, "ami-baseline"),
+    )
+    .unwrap_or_else(|e| fail(e));
     let base = index_rows(lines, &ids).unwrap_or_else(|e| fail(format!("ami-baseline.jsonl: {e}")));
     // The rule: any segment differing from the committed baseline stops the run before
     // anything below is read.
@@ -1525,6 +1628,15 @@ fn suggest_ami(args: &Args, s: &Setup) {
             "the baseline differs from the committed one on {} segments ({}); the rule stops here",
             differing.len(),
             differing.join(", ")
+        ));
+    }
+    let lists_now = list_hashes(&meetings);
+    let lists_differing = differing_lists(&lists_now, &prior_results(prior));
+    if let Some(d) = lists_differing.as_ref().filter(|d| !d.is_empty()) {
+        fail(format!(
+            "the lists differ from the committed report's on {} ({}); the rule stops here",
+            d.len(),
+            d.join(", ")
         ));
     }
     std::fs::create_dir_all(report).unwrap_or_else(|e| fail(format!("{}: {e}", report.display())));
@@ -1629,7 +1741,9 @@ fn suggest_ami(args: &Args, s: &Setup) {
             "report": "docs/vocabulary/ami/counts-baseline-ne.jsonl",
             "segments_compared": ids.len(),
             "baseline_segments_differing": differing.len(),
+            "lists_differing": lists_differing,
         },
+        "list_sha256": lists_now,
         "row_fields": ["id", "hyp_sha256", "suggestions", "right", "wrong", "no_effect", "distractor"],
         "runs": runs,
         "bar": {
@@ -1727,6 +1841,52 @@ mod tests {
         assert!(extra.unwrap_err().contains("unknown"));
         let missing = index_rows(vec![row("a.A.0")], &want);
         assert!(missing.unwrap_err().contains("missing"));
+    }
+
+    #[test]
+    fn vocab_ami_meta_must_describe_the_file_read() {
+        let meta = json!({ "files_sha256": { "ami-baseline.jsonl": "aa" } });
+        assert!(meta_records(&meta, "ami-baseline", "aa").is_ok());
+        assert!(
+            meta_records(&meta, "ami-baseline", "bb")
+                .unwrap_err()
+                .contains("not the file")
+        );
+        assert!(
+            meta_records(&meta, "ami-ne", "aa")
+                .unwrap_err()
+                .contains("no hash")
+        );
+        assert!(meta_records(&json!({}), "ami-baseline", "aa").is_err());
+    }
+
+    #[test]
+    fn vocab_ami_list_hashes_compare_with_a_prior_report() {
+        let entry = |m: &str, l: &str, h: &str| json!({ "meeting": m, "list": l, "sha256": h });
+        let now = vec![entry("a", "ne", "1"), entry("a", "rare", "2")];
+        // A report from before list hashes says nothing.
+        assert_eq!(differing_lists(&now, &json!({ "lists": [] })), None);
+        let same = json!({ "list_sha256": [entry("a", "rare", "2"), entry("a", "ne", "1")] });
+        assert_eq!(differing_lists(&now, &same), Some(vec![]));
+        let other = json!({ "list_sha256": [entry("a", "ne", "1"), entry("a", "rare", "3")] });
+        assert_eq!(
+            differing_lists(&now, &other),
+            Some(vec!["a/rare".to_owned()])
+        );
+        let fewer = json!({ "list_sha256": [entry("a", "ne", "1")] });
+        assert_eq!(
+            differing_lists(&now, &fewer),
+            Some(vec!["a/rare".to_owned()])
+        );
+        // The hash is of the tokens in list order.
+        let list = |t: &[&str]| List {
+            tokens: t.iter().map(|w| (*w).to_owned()).collect(),
+            spoken: 0,
+        };
+        assert_eq!(
+            sha256_hex(&list(&["x", "y"]).tokens.join("\n")),
+            sha256_hex("x\ny")
+        );
     }
 
     #[test]

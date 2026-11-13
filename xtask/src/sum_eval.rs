@@ -385,6 +385,9 @@ pub struct Options {
     /// then a selection request instead of the merge. Needs [`Options::chunk_seconds`]; local
     /// summary runs only; format key `-select`.
     pub merge_select: bool,
+    /// The local grammar's item cap of every list (T12.36, evaluation only; the example's
+    /// `--max-items`, 12 when `None`). Local candidates only; format key `-items<n>`, last.
+    pub max_items: Option<u32>,
 }
 
 /// The request format the `sum_eval` example records as `grammar` (its `format_key`): a
@@ -516,10 +519,14 @@ impl Options {
         if self.merge_select {
             key.push_str("-select");
         }
-        // T12.17: the summary template last, as the example's `template_suffix`.
+        // T12.17: the summary template, as the example's `template_suffix`.
         if !self.style_preset.is_standard() {
             key.push_str("-template-");
             key.push_str(self.style_preset.name());
+        }
+        // T12.36: the item cap last, as the example's `items_suffix`.
+        if let Some(n) = self.max_items {
+            key.push_str(&format!("-items{n}"));
         }
         key
     }
@@ -599,6 +606,7 @@ impl Default for Options {
             store_exclude: Vec::new(),
             prefix_reuse: false,
             merge_select: false,
+            max_items: None,
         }
     }
 }
@@ -1080,6 +1088,9 @@ pub fn eval_args(
     if opts.merge_select && model.is_some() {
         a.push("--merge-select".into());
     }
+    if let Some(n) = opts.max_items.filter(|_| model.is_some()) {
+        a.extend(["--max-items".into(), n.to_string().into()]);
+    }
     a.extend([
         "--context".into(),
         opts.context.to_string().into(),
@@ -1535,6 +1546,10 @@ pub fn check_agent_cli(opts: &Options, agent: AgentCli) -> Result<()> {
         !opts.merge_select,
         "--merge-select is for local candidates only, not --model {id}"
     );
+    ensure!(
+        opts.max_items.is_none(),
+        "--max-items is the local grammar's cap: local candidates only, not --model {id}"
+    );
     check_variant_differs_from_writer_rules(opts)
 }
 
@@ -1941,6 +1956,12 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
                 && !opts.two_track
                 && !(opts.stored_only() || opts.rescore || opts.replay_only)),
         "--merge-select needs --chunk-seconds, not --two-call or --two-track, and applies to local summary runs only"
+    );
+    ensure!(
+        opts.max_items.is_none_or(|n| n > 0)
+            && (opts.max_items.is_none()
+                || !(opts.stored_only() || opts.rescore || opts.replay_only)),
+        "--max-items is at least 1 and applies to local summary runs only"
     );
     let report = crate::doctor::collect();
     let cuda = crate::doctor::cuda_for_backend_choice(&report, opts.backend.as_deref())?;
@@ -3078,6 +3099,72 @@ mod tests {
             ..Options::default()
         };
         assert!(check_claude_code(&agent).is_err());
+    }
+
+    #[test]
+    fn sum_eval_max_items_has_its_own_format_key() {
+        let o = Options {
+            models: vec!["qwen3.5-4b-q4_k_m".into()],
+            chunk_seconds: Some(600),
+            prompt_variant: PromptVariant::Brief,
+            style_preset: StylePreset::Brief,
+            prefix_reuse: true,
+            merge_select: true,
+            max_items: Some(16),
+            ..Options::default()
+        };
+        // Last, after the template, as the example's `items_suffix`.
+        assert_eq!(
+            o.format_key(),
+            "indented-numbered-r5-chunk600-prompt-brief-reuse-select-template-brief-items16"
+        );
+        let plain = Options {
+            models: vec!["qwen3.5-4b-q4_k_m".into()],
+            chunk_seconds: Some(600),
+            max_items: Some(16),
+            ..Options::default()
+        };
+        assert_eq!(plain.format_key(), "indented-numbered-r5-chunk600-items16");
+        let today = Options {
+            max_items: None,
+            ..plain.clone()
+        };
+        assert_eq!(today.format_key(), "indented-numbered-r5-chunk600");
+        // The flag reaches local runs only.
+        let c = select_candidates(&plain.models).unwrap().remove(0);
+        let args = |opts: &Options, model: bool| -> Vec<String> {
+            eval_args(
+                Path::new("a"),
+                Path::new("e"),
+                &[],
+                &[],
+                model.then_some((Path::new("m.gguf"), &c)),
+                true,
+                opts,
+                Path::new("o.json"),
+            )
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+        };
+        let local = args(&plain, true);
+        let at = local.iter().position(|a| a == "--max-items").unwrap();
+        assert_eq!(local[at + 1], "16");
+        assert!(!args(&today, true).iter().any(|a| a == "--max-items"));
+        assert!(!args(&plain, false).iter().any(|a| a == "--max-items"));
+        // Never an agent CLI.
+        let agent = Options {
+            models: vec!["claude-code".into()],
+            sources: vec!["reference".into()],
+            max_items: Some(16),
+            ..Options::default()
+        };
+        assert!(
+            check_claude_code(&agent)
+                .unwrap_err()
+                .to_string()
+                .contains("--max-items")
+        );
     }
 
     #[test]
