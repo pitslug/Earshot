@@ -118,6 +118,27 @@ fn edit_word_list_is_the_dictionary_then_saved_names_without_repeats() {
 }
 
 #[test]
+fn edit_word_list_orders_people_with_ascii_case_folding_only() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    // The Speakers panel's order (`list_persons`): only ASCII letters fold, so an upper
+    // case non-ASCII letter sorts before its lower case form. The UI mock's `wordListOf`
+    // follows the same rule (packages/ui/src/ipc/mockWords.test.ts holds this case).
+    new_person(&svc, "ödrin Vale", false, 912);
+    new_person(&svc, "Ölvar Tesk", false, 913);
+    let listed: Vec<String> = list_persons(&svc)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(listed, ["Ölvar Tesk", "ödrin Vale"]);
+    assert_eq!(
+        word_list(&svc.store()).unwrap(),
+        ["Ölvar", "Tesk", "ödrin", "Vale"]
+    );
+}
+
+#[test]
 fn edit_word_marks_suggest_on_the_final_transcript_only() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);

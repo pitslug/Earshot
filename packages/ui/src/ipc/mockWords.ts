@@ -23,15 +23,20 @@ export function splitPunctuation(token: string): [string, string, string] {
   return [chars.slice(0, first).join(""), chars.slice(first, last + 1).join(""), chars.slice(last + 1).join("")];
 }
 
+/** Rust's `to_ascii_lowercase`: only A-Z fold. */
+function asciiLower(s: string): string {
+  return s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
 /** `word_choices::list_of`: the Dictionary's words, then the words of saved people's names
- * (by name, the default "Me" left out), each dropped when it repeats an earlier word in
- * another case. */
+ * (by name with ASCII case ignored, as `list_persons` orders them; the default "Me" left out),
+ * each dropped when it repeats an earlier word in another case. */
 export function wordListOf(dictionary: string[], persons: PersonItem[]): string[] {
   const people = persons
     .filter((p) => !(p.is_me && p.name === "Me"))
     .sort((a, b) => {
-      const x = a.name.toLowerCase();
-      const y = b.name.toLowerCase();
+      const x = asciiLower(a.name);
+      const y = asciiLower(b.name);
       if (x !== y) return x < y ? -1 : 1;
       return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     });
