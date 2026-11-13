@@ -2671,7 +2671,7 @@ fn backends_preview_hardware_seams_take_this_computers_hardware_in_shipped_code(
         let evaluation = item_span(&src, concat!("pub fn load_preview_", "on_hardware("));
         let mut calls = 0;
         for (at, line) in code_lines(&src) {
-            if line.contains(name) && !line.contains(concat!("fn load_preview_")) {
+            if line.contains(name) && !line.contains("fn load_preview_") {
                 calls += 1;
                 assert!(
                     line.contains("&crate::hardware()") || evaluation.contains(&at),
