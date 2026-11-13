@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use earshot_capture_wasapi::{
-    DeviceDescription, LoopbackMode, LoopbackRequest, LoopbackSource, MicRole, RawRecording,
-    SampleFormat, TrackRecording, TrackReport,
+    DeviceChange, DeviceDescription, LoopbackMode, LoopbackRequest, LoopbackSource, MicProcessing,
+    MicRole, RawRecording, SampleFormat, TrackRecording, TrackReport,
 };
 
 /// Mic track file name.
@@ -136,6 +136,40 @@ pub fn describe_mic_warning(w: &earshot_capture_wasapi::HandsFreeMic) -> String 
     crate::session::format_warning(&earshot_runtime::backends::hands_free_warning(w.clone()))
 }
 
+/// What `--mic-raw` asks of the mic stream: raw only when given.
+pub fn mic_processing(mic_raw: bool) -> MicProcessing {
+    if mic_raw {
+        MicProcessing::Raw
+    } else {
+        MicProcessing::Default
+    }
+}
+
+/// The stderr line saying the mic was opened raw (T12.32), printed once the streams are open;
+/// nothing for the default processing. A mic that cannot be opened raw never gets here: the
+/// recording fails with the reason.
+pub fn describe_mic_processing(processing: MicProcessing) -> Option<&'static str> {
+    match processing {
+        MicProcessing::Default => None,
+        MicProcessing::Raw => Some(concat!(
+            "mic: opened raw (AUDCLNT_STREAMOPTIONS_RAW): without the signal processing ",
+            "Windows or the device applies by default"
+        )),
+    }
+}
+
+/// One stderr line for a re-open during the recording: why, the device it ended on, and for a
+/// failed one the error (a mic recorded raw is never re-opened with Windows' processing, so a
+/// new mic without raw support shows here).
+pub fn describe_reopen(label: &str, c: &DeviceChange) -> String {
+    let to = c.device_name.as_deref().unwrap_or("no device");
+    let why = c
+        .error
+        .as_deref()
+        .map_or_else(String::new, |e| format!(" ({e})"));
+    format!("{label}: re-opened ({:?}) -> {to}{why}", c.reason)
+}
+
 /// Validates the requested duration.
 pub fn check_seconds(seconds: f64) -> Result<()> {
     anyhow::ensure!(
@@ -150,6 +184,7 @@ pub fn check_seconds(seconds: f64) -> Result<()> {
 pub fn run(
     seconds: f64,
     mic_role: MicRole,
+    mic_processing: MicProcessing,
     loopback: &LoopbackRequest,
     dir: &Path,
 ) -> Result<Outputs> {
@@ -157,9 +192,13 @@ pub fn run(
     let rec = earshot_capture_wasapi::record_raw(
         seconds,
         mic_role,
+        mic_processing,
         loopback,
         |mic, lb, src| {
             eprintln!("{}", describe_device("mic", mic));
+            if let Some(line) = describe_mic_processing(mic_processing) {
+                eprintln!("{line}");
+            }
             eprintln!("{}", describe_device("loopback", lb));
             eprintln!("{}", describe_loopback_source(src));
             eprintln!("record-raw: recording {seconds} s ...");
@@ -172,8 +211,7 @@ pub fn run(
     }
     for (label, track) in [("mic", &rec.mic), ("loopback", &rec.loopback)] {
         for c in &track.device_changes {
-            let to = c.device_name.as_deref().unwrap_or("no device");
-            eprintln!("{label}: re-opened ({:?}) -> {to}", c.reason);
+            eprintln!("{}", describe_reopen(label, c));
         }
         eprintln!("{}", describe_track_stats(label, &track.report()));
     }
@@ -185,11 +223,12 @@ pub fn run(
 pub fn run(
     seconds: f64,
     mic_role: MicRole,
+    mic_processing: MicProcessing,
     loopback: &LoopbackRequest,
     dir: &Path,
 ) -> Result<Outputs> {
     check_seconds(seconds)?;
-    let _ = (mic_role, loopback, dir);
+    let _ = (mic_role, mic_processing, loopback, dir);
     anyhow::bail!("record-raw is only supported on Windows (WASAPI)")
 }
 
@@ -230,6 +269,7 @@ mod tests {
         lb.finish(end);
         RawRecording {
             mic_role: MicRole::Console,
+            mic_processing: MicProcessing::Default,
             requested_seconds: 0.5,
             refused_call_outputs: Vec::new(),
             start_qpc: t0,
@@ -550,6 +590,44 @@ mod tests {
         );
         assert!(line.contains("(16 kHz)"), "{line}");
         assert!(line.contains("computer's own mic"), "{line}");
+    }
+
+    #[test]
+    fn says_the_mic_was_opened_raw_only_when_it_was() {
+        assert_eq!(describe_mic_processing(MicProcessing::Default), None);
+        assert_eq!(
+            describe_mic_processing(MicProcessing::Raw),
+            Some(
+                "mic: opened raw (AUDCLNT_STREAMOPTIONS_RAW): without the signal processing \
+                 Windows or the device applies by default"
+            )
+        );
+        assert_eq!(canned().mic_processing, MicProcessing::Default);
+    }
+
+    #[test]
+    fn describes_a_reopen_with_the_error_of_a_failed_one() {
+        use earshot_capture_wasapi::ReopenReason;
+        let mut change = DeviceChange {
+            qpc: 0,
+            track_frame: 0,
+            reason: ReopenReason::DefaultDeviceChanged,
+            device_name: Some("Mic".into()),
+            device_format: Some(fmt(48_000)),
+            error: None,
+            hands_free: None,
+        };
+        assert_eq!(
+            describe_reopen("mic", &change),
+            "mic: re-opened (DefaultDeviceChanged) -> Mic"
+        );
+        change.device_name = None;
+        change.error = Some("the mic \"Other\" cannot be opened raw".into());
+        assert_eq!(
+            describe_reopen("mic", &change),
+            "mic: re-opened (DefaultDeviceChanged) -> no device (the mic \"Other\" cannot be \
+             opened raw)"
+        );
     }
 
     #[test]

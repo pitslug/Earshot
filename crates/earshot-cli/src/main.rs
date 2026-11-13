@@ -52,6 +52,12 @@ enum Command {
             value_name = "auto|NAME|PID|default-device|follow-call"
         )]
         loopback_process: LoopbackRequest,
+        /// Open the mic in raw mode (`AUDCLNT_STREAMOPTIONS_RAW`): without the signal
+        /// processing Windows or the device applies by default (noise suppression, any echo
+        /// control). For measurements (T12.32). A mic that does not support raw is refused;
+        /// the processed stream is never recorded instead.
+        #[arg(long)]
+        mic_raw: bool,
     },
     /// Transcribe a WAV or FLAC file with whisper.cpp: one batch decode (beam 5), or with
     /// `--stream` through the VAD-driven streaming chunker (greedy). Models come from
@@ -109,8 +115,15 @@ fn main() -> anyhow::Result<()> {
             out,
             mic_role,
             loopback_process,
+            mic_raw,
         } => {
-            let o = record_raw::run(seconds, mic_role.into(), &loopback_process, &out)?;
+            let o = record_raw::run(
+                seconds,
+                mic_role.into(),
+                record_raw::mic_processing(mic_raw),
+                &loopback_process,
+                &out,
+            )?;
             println!("{}", o.mic.display());
             println!("{}", o.loopback.display());
             println!("{}", o.timestamps.display());
@@ -149,11 +162,16 @@ mod tests {
             out,
             mic_role,
             loopback_process,
+            mic_raw,
         } = cli.command
         else {
             panic!("expected record-raw");
         };
         assert_eq!(seconds, 5.0);
+        assert!(
+            !mic_raw,
+            "the mic is opened with Windows' processing unless asked"
+        );
         assert_eq!(out, PathBuf::from("x"));
         assert_eq!(mic_role, MicRoleArg::Console, "console is the default");
         assert_eq!(
@@ -241,6 +259,41 @@ mod tests {
         assert_eq!(parse("console").unwrap(), MicRole::Console);
         assert_eq!(parse("communications").unwrap(), MicRole::Communications);
         assert!(parse("multimedia").is_err());
+    }
+
+    #[test]
+    fn parses_mic_raw_as_an_opt_in_of_record_raw_only() {
+        use earshot_capture_wasapi::MicProcessing;
+        let cli = Cli::try_parse_from([
+            "earshot",
+            "record-raw",
+            "--seconds",
+            "1",
+            "--out",
+            "x",
+            "--mic-raw",
+        ])
+        .unwrap();
+        let Command::RecordRaw { mic_raw, .. } = cli.command else {
+            panic!("expected record-raw");
+        };
+        assert!(mic_raw);
+        assert_eq!(record_raw::mic_processing(true), MicProcessing::Raw);
+        assert_eq!(record_raw::mic_processing(false), MicProcessing::Default);
+        // The flag takes no value, and the live meeting command does not have it.
+        assert!(
+            Cli::try_parse_from([
+                "earshot",
+                "record-raw",
+                "--seconds",
+                "1",
+                "--out",
+                "x",
+                "--mic-raw=false",
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["earshot", "record", "--out", "x", "--mic-raw"]).is_err());
     }
 
     #[test]

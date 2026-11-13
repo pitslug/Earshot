@@ -8,7 +8,8 @@
 //! - [`session`]: loopback source choice, i.e. call-app detection from the audio
 //!   sessions on render endpoints (portable).
 //! - [`endpoint`]: microphone endpoint classification: is the mic a Bluetooth hands-free
-//!   headset (T6.24; portable).
+//!   headset (T6.24), and can it be opened raw, without Windows' own signal processing
+//!   (T12.32: only [`record_raw`] can ask; portable).
 //! - [`follow`]: default-device following and device-loss re-open decisions (portable).
 //! - [`devices`]: the listed endpoints, the user's microphone and output choice, and the
 //!   fallback to the default when a chosen endpoint is gone (T7.4i; portable).
@@ -44,7 +45,8 @@ pub use devices::{
     AudioDevice, DeviceChoice, DeviceFallback, DeviceList, DeviceSelection, FallbackCause,
 };
 pub use endpoint::{
-    EndpointProperties, HandsFreeFollower, HandsFreeMic, MicKind, classify_mic, hands_free_warning,
+    EndpointProperties, HandsFreeFollower, HandsFreeMic, MicKind, MicProcessing, RawRefusal,
+    RawSupport, classify_mic, hands_free_warning, raw_refusal, raw_support,
 };
 pub use follow::{DefaultDeviceChange, Flow, ReopenReason, Role, StreamFollower};
 pub use format::{

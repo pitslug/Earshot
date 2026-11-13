@@ -57,6 +57,10 @@ struct Platform {
     counts: RefCell<HashMap<Call, usize>>,
     faults: Vec<Fault>,
     changes: RefCell<Vec<DefaultDeviceChange>>,
+    /// What every opened stream was asked for, in order (T12.32).
+    opened_with: RefCell<Vec<(TrackId, MicProcessing)>>,
+    /// The mic there is to open says it does not support raw processing.
+    mic_without_raw: Cell<bool>,
 }
 
 impl Platform {
@@ -217,8 +221,19 @@ impl LoopDriver for FakeDriver {
         _: Option<&str>,
         rate: Option<u32>,
         channels: Option<u16>,
+        processing: MicProcessing,
     ) -> Result<FakeStream, CaptureError> {
         self.platform.call(Call::Open(track_of(endpoint)))?;
+        self.platform
+            .opened_with
+            .borrow_mut()
+            .push((track_of(endpoint), processing));
+        // As `CaptureStream::open_with`: a raw request on a mic without raw support is refused.
+        if processing == MicProcessing::Raw && self.platform.mic_without_raw.get() {
+            return Err(CaptureError::RawMic(RawRefusal::NotSupported {
+                device_name: "Fake mic".into(),
+            }));
+        }
         assert_eq!(rate, Some(RATE), "a re-open keeps the track's rate");
         Ok(FakeStream::new(
             &self.platform,
@@ -728,4 +743,279 @@ fn capture_loop_hresults_match_the_windows_bindings() {
     for (ours, theirs) in pairs {
         assert_eq!(ours, theirs.0, "{ours:#x}");
     }
+}
+
+/// Runs the loop for `seconds` on a fake mic opened with `processing` and a default-device
+/// loopback, with the default mic and the default output both changing on the first pass.
+/// `mic_without_raw_until` is how long (QPC) the new default mic lacks raw support.
+fn run_with_default_changes(
+    processing: MicProcessing,
+    mic_without_raw_until: u64,
+    seconds: u64,
+) -> Run {
+    let platform = Rc::new(Platform::default());
+    platform.mic_without_raw.set(mic_without_raw_until > 0);
+    for (flow, id) in [
+        (Flow::Capture, "another-mic"),
+        (Flow::Render, "another-output"),
+    ] {
+        platform.changes.borrow_mut().push(DefaultDeviceChange {
+            flow,
+            role: Role::Console,
+            device_id: Some(id.into()),
+        });
+    }
+    let mut driver = FakeDriver {
+        platform: Rc::clone(&platform),
+    };
+    let mic_endpoint = Endpoint::Microphone(MicRole::Console);
+    let mic_stream = FakeStream::new(&platform, mic_endpoint, 1);
+    let lb_stream = FakeStream::new(&platform, Endpoint::Loopback, 2);
+    mic_stream.start().unwrap();
+    lb_stream.start().unwrap();
+    let mut mic = Track::new(
+        mic_stream,
+        mic_endpoint,
+        DeviceChoice::Default,
+        StreamFollower::new(Flow::Capture, Role::Console, true),
+        Ear::default(),
+    )
+    .with_processing(processing);
+    let mut lb = Track::new(
+        lb_stream,
+        Endpoint::Loopback,
+        DeviceChoice::Default,
+        StreamFollower::new(Flow::Render, Role::Console, true),
+        Ear::default(),
+    );
+    let end = seconds * QPC_UNITS_PER_SEC;
+    let result = run_capture(&mut driver, &mut mic, Some(&mut lb), None, |now| {
+        if now >= mic_without_raw_until {
+            platform.mic_without_raw.set(false);
+        }
+        now >= end
+    });
+    Run {
+        result,
+        mic: mic.observer,
+        reference: lb.observer,
+        platform,
+    }
+}
+
+/// What the opens of `track` were asked for.
+fn asked_for(platform: &Platform, track: TrackId) -> Vec<MicProcessing> {
+    platform
+        .opened_with
+        .borrow()
+        .iter()
+        .filter(|(t, _)| *t == track)
+        .map(|(_, p)| *p)
+        .collect()
+}
+
+#[test]
+fn capture_loop_a_raw_mic_asks_for_raw_again_when_it_is_reopened() {
+    let run = run_with_default_changes(MicProcessing::Raw, 0, 2);
+    assert!(run.result.is_ok());
+    assert_eq!(
+        run.mic.reopens(),
+        [(ReopenReason::DefaultDeviceChanged, true)]
+    );
+    assert_eq!(
+        asked_for(&run.platform, TrackId::Mic),
+        [MicProcessing::Raw],
+        "the re-open keeps the request"
+    );
+    // Raw is the mic's alone: the loopback re-opened beside it declares nothing.
+    assert_eq!(
+        run.reference.reopens(),
+        [(ReopenReason::DefaultDeviceChanged, true)]
+    );
+    assert_eq!(
+        asked_for(&run.platform, TrackId::Reference),
+        [MicProcessing::Default]
+    );
+}
+
+#[test]
+fn capture_loop_tracks_ask_for_the_default_processing_unless_told_otherwise() {
+    // Every track but the raw recorder's mic: what the app's live sessions run.
+    let changed = run_with_default_changes(MicProcessing::Default, 0, 2);
+    assert!(changed.result.is_ok());
+    assert_eq!(
+        asked_for(&changed.platform, TrackId::Mic),
+        [MicProcessing::Default]
+    );
+    assert_eq!(
+        asked_for(&changed.platform, TrackId::Reference),
+        [MicProcessing::Default]
+    );
+    // And a track built without a word about processing, after a device loss.
+    let lost = run(
+        &[Fault::on(
+            Call::Drain(TrackId::Mic),
+            3,
+            follow::AUDCLNT_E_DEVICE_INVALIDATED,
+        )],
+        2,
+    );
+    assert_eq!(
+        asked_for(&lost.platform, TrackId::Mic),
+        [MicProcessing::Default]
+    );
+}
+
+#[test]
+fn capture_loop_a_raw_mic_reopened_on_a_mic_without_raw_records_no_processed_audio() {
+    // The new default mic has no raw support for the first 3 s, then one that has it returns.
+    let back = 3 * QPC_UNITS_PER_SEC;
+    let run = run_with_default_changes(MicProcessing::Raw, back, 5);
+    assert!(run.result.is_ok(), "the recording goes on");
+    // The failed re-open is reported once, its retries are not, and the one that works is.
+    assert_eq!(
+        run.mic.reopens(),
+        [
+            (ReopenReason::DefaultDeviceChanged, false),
+            (ReopenReason::Retry, true)
+        ]
+    );
+    let asked = asked_for(&run.platform, TrackId::Mic);
+    assert!(asked.len() >= 3, "retried every interval: {asked:?}");
+    assert!(
+        asked.iter().all(|p| *p == MicProcessing::Raw),
+        "never asked for the processed stream: {asked:?}"
+    );
+    // The track did not end, and nothing was recorded while no raw mic was open: only the
+    // first pass before the change, and what followed the mic's return.
+    assert!(
+        !run.mic
+            .heard
+            .iter()
+            .any(|h| matches!(h, Heard::Ended { .. }))
+    );
+    let audio: Vec<(u64, u64)> = run
+        .mic
+        .heard
+        .iter()
+        .filter_map(|h| match h {
+            Heard::Audio { from, to } => Some((*from, *to)),
+            Heard::Reopened { .. } | Heard::Ended { .. } => None,
+        })
+        .collect();
+    assert_eq!(audio.len(), 2, "{audio:?}");
+    assert_eq!(audio[0], (0, WAIT_QPC));
+    assert!(audio[1].0 >= back, "{audio:?}");
+    assert_eq!(audio[1].1, 5 * QPC_UNITS_PER_SEC);
+    // The reference re-opened once and recorded throughout.
+    assert_eq!(
+        run.reference.reopens(),
+        [(ReopenReason::DefaultDeviceChanged, true)]
+    );
+}
+
+#[test]
+fn capture_loop_a_raw_refusal_is_an_open_failure_that_is_not_a_lost_device() {
+    let refused = CaptureError::RawMic(RawRefusal::NotSupported {
+        device_name: "Fake mic".into(),
+    });
+    assert!(!refused.is_device_gone());
+    assert!(!refused.is_device_loss());
+    // What the re-open's log entry holds: the refusal's own text.
+    assert_eq!(refused.detail(), refused.to_string());
+    assert!(refused.detail().contains("cannot be opened raw"));
+}
+
+/// Every `.rs` file under `dir`, build output left out.
+fn rust_files(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        if path.is_dir() {
+            if name != "target" && name != "node_modules" && name != ".git" {
+                rust_files(&path, found);
+            }
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            found.push(path);
+        }
+    }
+}
+
+/// T12.32: the raw mic is a measurement switch of the raw recorder and the developer CLI.
+/// Nothing else in the workspace (the runtime, the app, xtask) names the request, so no live
+/// session, audio check or voice sample can ask for it.
+#[test]
+fn raw_mic_is_named_only_by_the_capture_crate_and_the_cli() {
+    let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = here.parent().and_then(|p| p.parent()).expect("repo root");
+    let cli = root.join("crates").join("earshot-cli");
+    let mut files = Vec::new();
+    for dir in ["crates", "apps", "xtask"] {
+        rust_files(&root.join(dir), &mut files);
+    }
+    assert!(
+        files.iter().any(|f| f.starts_with(&cli)),
+        "the scan found the workspace"
+    );
+    // A raw request cannot be written without naming its type (`MicProcessing::Raw`; the
+    // default is all `Default::default()` gives), so these cover every way to ask.
+    let names = [
+        "MicProcessing",
+        "mic_processing",
+        "RawRefusal",
+        "raw_refusal",
+        "STREAMOPTIONS_RAW",
+    ];
+    let mut naming = Vec::new();
+    for file in files
+        .iter()
+        .filter(|f| !f.starts_with(here) && !f.starts_with(&cli))
+    {
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        if let Some(name) = names.iter().find(|n| text.contains(**n)) {
+            naming.push(format!("{}: {name}", file.display()));
+        }
+    }
+    assert!(naming.is_empty(), "outside the recorder: {naming:?}");
+}
+
+/// T12.32: inside this crate only [`record_raw`] can make a raw mic. The live source's
+/// capture never names the request, and exactly one track is ever told its processing.
+#[test]
+fn raw_mic_is_made_only_by_the_raw_recorder() {
+    let source = include_str!("../wasapi.rs");
+    let shipped = source
+        .split_once("\n#[cfg(test)]")
+        .map_or(source, |(code, _)| code);
+    let between = |from: &str, to: &str| {
+        let start = shipped.find(from).unwrap_or_else(|| panic!("no {from}"));
+        let end = start
+            + shipped[start..]
+                .find(to)
+                .unwrap_or_else(|| panic!("no {to}"));
+        &shipped[start..end]
+    };
+    // Everything a live session runs: the source, its thread and its capture.
+    let live = between("pub struct WasapiSource", "pub struct CtrlC");
+    for name in ["MicProcessing", "open_with(", "with_processing("] {
+        assert!(!live.contains(name), "the live source names {name}");
+    }
+    // The shared openers take no processing: they always open with the default.
+    let openers = between("fn open_chosen", "fn start_streams");
+    assert!(!openers.contains("MicProcessing"));
+    assert!(!openers.contains("open_with("));
+    assert_eq!(
+        shipped.matches(".with_processing(").count(),
+        1,
+        "one caller: record_raw"
+    );
+    // Streams are opened with a processing in two places: the loop's re-open, which passes
+    // the track's own, and record_raw.
+    assert_eq!(shipped.matches("CaptureStream::open_with(").count(), 2);
+    let recorder = between("pub fn record_raw", "struct Started");
+    assert_eq!(recorder.matches("CaptureStream::open_with(").count(), 1);
+    assert_eq!(recorder.matches(".with_processing(").count(), 1);
 }

@@ -5,7 +5,7 @@ use serde::Serialize;
 
 #[cfg(test)]
 use crate::endpoint::hands_free_warning;
-use crate::endpoint::{EndpointProperties, HandsFreeFollower, HandsFreeMic};
+use crate::endpoint::{EndpointProperties, HandsFreeFollower, HandsFreeMic, MicProcessing};
 use crate::follow::ReopenReason;
 use crate::format::MixFormat;
 use crate::observer::{ReopenOutcome, TrackObserver, reopen_is_reported};
@@ -329,6 +329,9 @@ pub struct DeviceDescription {
 pub struct RawRecording {
     /// Role of the capture endpoint used for the mic track.
     pub mic_role: MicRole,
+    /// How the mic stream was opened (T12.32): with Windows' default signal processing, or
+    /// raw. Not written to `timestamps.json` (schema v4 has no field for it).
+    pub mic_processing: MicProcessing,
     /// Requested duration in seconds.
     pub requested_seconds: f64,
     /// The outputs the call played on that could not be opened (T6.15), each with why.
@@ -452,6 +455,7 @@ pub(crate) mod tests {
         lb.finish(end);
         RawRecording {
             mic_role: MicRole::Console,
+            mic_processing: MicProcessing::Default,
             requested_seconds: 1.0,
             refused_call_outputs: Vec::new(),
             start_qpc: t0,
