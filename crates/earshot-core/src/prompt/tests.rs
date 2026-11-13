@@ -1407,6 +1407,52 @@ fn prompt_rules_brief_reaches_single_map_and_reduce_requests() {
     }
 }
 
+/// The `*_with_rules` forms (T12.36: a writer plans with its own rules without copying the
+/// input) build exactly what the plain forms build for an input carrying those rules, and
+/// override whatever rules the input carries.
+#[test]
+fn prompt_rules_with_rules_forms_equal_an_input_carrying_the_rules() {
+    let partials = [partial(1, &[id(S1)]), partial(2, &[id(S2)])];
+    let ranges = [0..30, 30..60];
+    for carried in [SummaryRules::Standard, SummaryRules::Brief] {
+        for writer in [SummaryRules::Standard, SummaryRules::Brief] {
+            let given = with_rules(long_input(60), carried);
+            let expect = with_rules(long_input(60), writer);
+            assert_eq!(
+                plan_with_rules(&given, writer, BIG).unwrap(),
+                plan(&expect, BIG).unwrap(),
+                "{carried:?} {writer:?}"
+            );
+            let long = plan_with_rules(
+                &with_rules(long_input(200), carried),
+                writer,
+                small_budget(),
+            )
+            .unwrap();
+            assert!(matches!(long, PromptPlan::MapReduce(_)));
+            assert_eq!(
+                long,
+                plan(&with_rules(long_input(200), writer), small_budget()).unwrap(),
+                "{carried:?} {writer:?} map-reduce"
+            );
+            assert_eq!(
+                plan_chunks_with_rules(&given, writer, BIG, &ranges).unwrap(),
+                plan_chunks(&expect, BIG, &ranges).unwrap()
+            );
+            assert_eq!(
+                reduce_groups_with_rules(&given, writer, &partials, BIG).unwrap(),
+                reduce_groups(&expect, &partials, BIG).unwrap()
+            );
+            for level in [MergeLevel::Inner, MergeLevel::Last] {
+                assert_eq!(
+                    reduce_prompt_with_rules(&given, writer, &partials, BIG, level),
+                    reduce_prompt(&expect, &partials, BIG, level)
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn prompt_rules_give_way_to_an_evaluation_variant() {
     // A variant other than current names its own rules file whatever the writer's rules,

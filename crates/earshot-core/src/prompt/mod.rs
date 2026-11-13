@@ -8,7 +8,8 @@
 //!   map-reduce over consecutive transcript chunks ([`MapChunk`]); [`reduce_groups`] and
 //!   [`reduce_prompt`] merge the partial summaries, hierarchically when they do not fit
 //!   in one request. [`plan_chunks`] builds the same map requests over chunks the caller
-//!   chose.
+//!   chose. Each has a `*_with_rules` form taking the writer's [`SummaryRules`] in place of
+//!   [`SummaryInput::rules`] (T12.17c).
 //! - [`plan_chunks_two_call`], [`reduce_groups_two_call`], [`reduce_prompt_two_call`]: the
 //!   two-call chunked evaluation (T6.20c, evaluation only): per chunk one request for the
 //!   action items and one for everything else, then a merge that also folds reworded
@@ -49,9 +50,10 @@ pub use builder::{
     ChatMessage, ContextBudget, MapChunk, MeetingInfo, MergeLevel, Prompt, PromptError, PromptPlan,
     PromptSegment, REPAIR_MAX_TOKENS, REPLY_MIN_TOKENS, REPLY_PER_PARTIAL_TOKEN,
     REPLY_PER_TRANSCRIPT_TOKEN, ReplyBasis, Role, SummaryInput, TwoCallChunk, UserNote,
-    estimate_messages, grown_reply_tokens, plan, plan_chunks, plan_chunks_two_call, reduce_groups,
-    reduce_groups_two_call, reduce_prompt, reduce_prompt_two_call, repair_message, reply_tokens,
-    segment_numbers,
+    estimate_messages, grown_reply_tokens, plan, plan_chunks, plan_chunks_two_call,
+    plan_chunks_with_rules, plan_with_rules, reduce_groups, reduce_groups_two_call,
+    reduce_groups_with_rules, reduce_prompt, reduce_prompt_two_call, reduce_prompt_with_rules,
+    repair_message, reply_tokens, segment_numbers,
 };
 pub use chunks::{TimeChunkError, time_chunks};
 pub use select::{

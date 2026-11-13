@@ -1,14 +1,13 @@
 //! [`Summarizer`] over an OpenAI-compatible or Anthropic endpoint (PLAN.md 3.7, D19).
 
-use std::borrow::Cow;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use earshot_core::asr::CancelToken;
 use earshot_core::prompt::{
-    ChatMessage, MapChunk, MergeLevel, Prompt, PromptPlan, Role, SummaryInput, estimate_messages,
-    grown_reply_tokens, plan, plan_chunks, reduce_groups, reduce_prompt, repair_message,
-    segment_numbers,
+    ChatMessage, MapChunk, MergeLevel, Prompt, PromptPlan, Role, SummaryInput, SummaryRules,
+    estimate_messages, grown_reply_tokens, plan_chunks_with_rules, plan_with_rules,
+    reduce_groups_with_rules, reduce_prompt_with_rules, repair_message, segment_numbers,
 };
 use earshot_core::summary::{
     SegmentNumbers, Summarizer, SummaryError, SummaryErrorKind, SummaryV1, join_partials,
@@ -147,25 +146,9 @@ impl LlmSummarizer {
     /// [`LlmSummarizer::summarize_with_report`] with the wall time of every request step
     /// (evaluation: `sum_eval`).
     pub async fn summarize_timed(&self, input: &SummaryInput, cancel: &CancelToken) -> TimedRun {
-        let input = self.with_writer_rules(input);
         let mut run = self.run(cancel);
-        let result = run.summarize(&input).await;
+        let result = run.summarize(input).await;
         run.finish(result)
-    }
-
-    /// `input` with this writer's shared rules ([`LlmClient::summary_rules`], T12.17c), so
-    /// every request of the run (single, map, every merge, repair) starts with them; an
-    /// evaluation's prompt variant other than current still names its own rules file.
-    fn with_writer_rules<'i>(&self, input: &'i SummaryInput) -> Cow<'i, SummaryInput> {
-        let rules = self.client.summary_rules();
-        if input.rules == rules {
-            Cow::Borrowed(input)
-        } else {
-            Cow::Owned(SummaryInput {
-                rules,
-                ..input.clone()
-            })
-        }
     }
 
     /// Evaluation only (T7.4gb; production plans with [`earshot_core::prompt::plan`]): one
@@ -179,12 +162,11 @@ impl LlmSummarizer {
         ranges: &[Range<usize>],
         cancel: &CancelToken,
     ) -> TimedRun {
-        let input = self.with_writer_rules(input);
         let mut run = self.run(cancel);
         let result = if ranges.len() <= 1 {
-            run.summarize(&input).await
+            run.summarize(input).await
         } else {
-            run.summarize_chunks(&input, ranges).await
+            run.summarize_chunks(input, ranges).await
         };
         run.finish(result)
     }
@@ -192,6 +174,7 @@ impl LlmSummarizer {
     fn run<'a>(&'a self, cancel: &'a CancelToken) -> Run<'a> {
         Run {
             client: &self.client,
+            rules: self.client.summary_rules(),
             cancel,
             any_success: false,
             report: SummaryReport {
@@ -223,6 +206,11 @@ impl Summarizer for LlmSummarizer {
 
 struct Run<'a> {
     client: &'a LlmClient,
+    /// This writer's shared rules ([`LlmClient::summary_rules`], T12.17c): every request of
+    /// the run (single, map, every merge, repair) starts with them, whatever
+    /// [`SummaryInput::rules`] says; an evaluation's prompt variant other than current still
+    /// names its own rules file. The input is never copied for them.
+    rules: SummaryRules,
     cancel: &'a CancelToken,
     /// Whether a request of this run has been answered with a completion.
     any_success: bool,
@@ -244,7 +232,7 @@ impl Run<'_> {
     async fn summarize(&mut self, input: &SummaryInput) -> Result<SummaryV1, LlmError> {
         let budget = self.client.budget();
         let numbers = segment_numbers(input);
-        let chunks = match plan(input, budget)? {
+        let chunks = match plan_with_rules(input, self.rules, budget)? {
             PromptPlan::Single(p) => return self.step("single", p, &numbers).await,
             PromptPlan::MapReduce(chunks) => chunks,
         };
@@ -257,7 +245,7 @@ impl Run<'_> {
         input: &SummaryInput,
         ranges: &[Range<usize>],
     ) -> Result<SummaryV1, LlmError> {
-        let chunks = plan_chunks(input, self.client.budget(), ranges)?;
+        let chunks = plan_chunks_with_rules(input, self.rules, self.client.budget(), ranges)?;
         self.map_reduce(input, chunks, &segment_numbers(input))
             .await
     }
@@ -276,7 +264,7 @@ impl Run<'_> {
             partials.push(self.step("map", chunk.prompt, numbers).await?);
         }
         loop {
-            let groups = reduce_groups(input, &partials, budget)?;
+            let groups = reduce_groups_with_rules(input, self.rules, &partials, budget)?;
             // One group: this merge writes the summary the user sees (and carries the style).
             let level = if groups.len() == 1 {
                 MergeLevel::Last
@@ -290,7 +278,13 @@ impl Run<'_> {
                     next.push(partials[g.start].clone());
                     continue;
                 }
-                let p = reduce_prompt(input, &partials[g.clone()], budget, level);
+                let p = reduce_prompt_with_rules(
+                    input,
+                    self.rules,
+                    &partials[g.clone()],
+                    budget,
+                    level,
+                );
                 let merged = match self.step("reduce", p, numbers).await {
                     // A rougher summary rather than none (T8.4d); it says so itself.
                     Err(LlmError::Invalid { .. }) => {
