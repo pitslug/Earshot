@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use super::pieces::{cut_point, samples as sample_count};
 use super::stretch::*;
 use super::*;
 use crate::asr::transcriber::{BackendKind, Language, Transcription};
@@ -442,6 +443,278 @@ fn asr_stretch_settled_pieces_are_always_a_prefix_of_the_final_plan() {
         early * 2 > checked,
         "{early} of {checked} prefixes had settled pieces"
     );
+}
+
+/// A cheap config for sweeps over every stream length (T12.31): windows of `max_piece`, no
+/// padding, every region kept.
+fn small_windows(max_piece: Duration) -> PieceConfig {
+    PieceConfig {
+        max_piece,
+        min_speech: Duration::ZERO,
+        min_silence: Duration::from_millis(300),
+        speech_pad: Duration::ZERO,
+        merge_gap: Duration::from_millis(200),
+        ..PieceConfig::default()
+    }
+}
+
+/// Checks, for every stream length of `probs`, that the settled pieces are a prefix of the
+/// whole-track plan and never go away. Returns the plan and, per plan piece, the number of
+/// frames heard when it first settled (`None`: only at the end).
+fn sweep_every_length(
+    probs: &[f32],
+    frame: usize,
+    config: &PieceConfig,
+) -> (Vec<Span>, Vec<Option<usize>>) {
+    let total = probs.len() * frame;
+    let regions = speech_regions(probs, frame, total, config);
+    let plan = plan_pieces(&regions, probs, frame, config);
+    let mut first: Vec<Option<usize>> = vec![None; plan.len()];
+    let mut previous = 0;
+    for n in 0..=probs.len() {
+        let settled = settled_pieces(&probs[..n], frame, config);
+        assert!(
+            settled.len() <= plan.len() && settled[..] == plan[..settled.len()],
+            "not a prefix at frame {n} (frame {frame}): {settled:?} vs {plan:?} ({config:?})"
+        );
+        assert!(
+            settled.len() >= previous,
+            "a settled piece went away at {n}"
+        );
+        for slot in &mut first[previous..settled.len()] {
+            *slot = Some(n);
+        }
+        previous = settled.len();
+    }
+    (plan, first)
+}
+
+/// Pieces shorter than a window that settled before the window after them was heard, while
+/// the speech after them had not paused, although the next piece starts where they end: cut
+/// pieces released without waiting for the next cut. (A piece of exactly one window never
+/// waits, nothing can join it; nor does a cut piece of a region that has ended.)
+fn released_before_the_next_window(
+    plan: &[Span],
+    first: &[Option<usize>],
+    probs: &[f32],
+    frame: usize,
+    config: &PieceConfig,
+) -> usize {
+    let max = sample_count(config.max_piece);
+    plan.windows(2)
+        .zip(first)
+        .filter(|(pair, at)| {
+            pair[1].start == pair[0].end
+                && pair[0].len() < max
+                && at.is_some_and(|n| {
+                    n * frame < pair[0].end + max
+                        && probs[pair[0].end / frame..n]
+                            .iter()
+                            .all(|p| *p >= config.threshold - 0.15)
+                })
+        })
+        .count()
+}
+
+#[test]
+fn asr_stretch_a_cut_piece_settles_when_its_own_window_is_heard() {
+    // Unbroken speech with the least speech-like frame of each 2 s window in its middle:
+    // pieces of 1.5 s (150 frames), cut at frames 150, 300, 450, ...
+    let frame = 160;
+    let config = small_windows(Duration::from_secs(2));
+    let mut probs = vec![0.6f32; 1000];
+    for dip in (150..1000).step_by(150) {
+        probs[dip] = 0.45;
+    }
+    let (plan, first) = sweep_every_length(&probs, frame, &config);
+    assert!(plan.len() >= 6, "{plan:?}");
+    for (i, piece) in plan.iter().take(5).enumerate() {
+        assert_eq!(
+            (piece.start, piece.end),
+            (i * 150 * frame, (i + 1) * 150 * frame)
+        );
+        // Its window is frames `150 i ..< 150 i + 200`; the region is known to run past it
+        // one frame later. Waiting for the next window would be frame `150 (i + 1) + 201`.
+        assert_eq!(first[i], Some(150 * i + 201), "piece {i}");
+    }
+
+    // The same through a stream: each piece is decoded within one settle interval of its
+    // window, not a whole piece later.
+    let samples: Vec<f32> = probs
+        .iter()
+        .flat_map(|&p| (0..frame).map(move |i| if i % 2 == 0 { p } else { -p }))
+        .collect();
+    let mut t = Recorder::default();
+    let mut vad = LevelVad;
+    let cancel = CancelToken::new();
+    let mut s = PieceStream::new(&t, &mut vad, &beam(), &config).unwrap();
+    let mut seen: Vec<(Span, usize)> = Vec::new();
+    for chunk in samples.chunks(frame) {
+        for p in s.push(&mut t, &mut vad, chunk, &cancel).unwrap() {
+            seen.push((p.span, s.pushed() / frame));
+        }
+    }
+    assert!(seen.len() >= 5, "{seen:?}");
+    for (i, (span, heard)) in seen.iter().enumerate() {
+        assert_eq!(*span, plan[i]);
+        assert!(
+            *heard <= 150 * i + 201 + SETTLE_EVERY_FRAMES,
+            "piece {i} came out after {heard} frames"
+        );
+        assert_eq!(s.decoded_through().min(span.end), span.end);
+    }
+}
+
+#[test]
+fn asr_stretch_a_cut_piece_is_held_while_the_next_cut_could_join_it() {
+    // The tie: a region starting on a frame, a window whose half is a whole number of
+    // frames and every frame equally speech-like, so each cut falls on its first candidate
+    // frame and two cut parts are exactly one window: the plan joins them.
+    let frame = 160;
+    let config = small_windows(Duration::from_secs(1));
+    let max = 16_000;
+    let probs = vec![0.9f32; 700];
+    let (plan, first) = sweep_every_length(&probs, frame, &config);
+    assert!(plan.len() >= 6, "{plan:?}");
+    for piece in &plan[..plan.len() - 1] {
+        assert_eq!(piece.len(), max, "{plan:?}");
+    }
+    // Such a piece settles when its second cut is known (the window from frame
+    // `100 i + 50`), and then at once: the cut after it is at least half a window on.
+    assert_eq!(
+        released_before_the_next_window(&plan, &first, &probs, frame, &config),
+        0
+    );
+    for (i, at) in first.iter().take(5).enumerate() {
+        assert_eq!(*at, Some(100 * i + 151), "piece {i}");
+    }
+
+    // One later frame less speech-like than the first candidate of the second window: the
+    // second cut cannot be the first candidate, but the stream does not know that until the
+    // window is heard, so the first part is still held, and the plan no longer joins them.
+    let mut probs = vec![0.9f32; 700];
+    probs[120] = 0.5;
+    let (plan, first) = sweep_every_length(&probs, frame, &config);
+    assert_eq!((plan[0].start, plan[0].end), (0, 50 * frame));
+    assert_eq!(plan[1].end, 120 * frame);
+    assert_eq!(first[0], Some(151));
+    assert_eq!(first[1], Some(151));
+}
+
+#[test]
+fn asr_stretch_no_cut_is_earlier_than_the_earliest_cut() {
+    let mut rng = Lcg(31);
+    let (mut reached, mut later) = (0, 0);
+    for (frame, max) in [
+        (160usize, 16_000usize),
+        (160, 16_001),
+        (512, 16_000),
+        (512, 480_000),
+        (160, 480_000),
+        (7, 16_000),
+        (40_000, 16_000),
+    ] {
+        for _ in 0..300 {
+            let s = (rng.next() % 100_000) as usize;
+            let s = if rng.next().is_multiple_of(2) {
+                s / frame * frame
+            } else {
+                s
+            };
+            let frames = (s + max) / frame + 2;
+            let earliest = earliest_cut(s, frame, max);
+            assert!(earliest > s && earliest <= s + max);
+            // Constant probabilities cut at the first candidate; any others no earlier.
+            let flat = vec![0.9f32; frames];
+            assert_eq!(cut_point(s, &flat, frame, max), earliest);
+            let levels: Vec<f32> = (0..frames).map(|_| (rng.next() % 5) as f32 / 5.0).collect();
+            let known = (rng.next() % (frames as u64 + 1)) as usize;
+            for probs in [&levels[..], &levels[..known], &[]] {
+                let cut = cut_point(s, probs, frame, max);
+                assert!(cut >= earliest, "{cut} < {earliest} ({s}, {frame}, {max})");
+                if cut == earliest {
+                    reached += 1;
+                } else {
+                    later += 1;
+                }
+            }
+        }
+    }
+    assert!(reached > 100 && later > 100, "{reached} {later}");
+}
+
+#[test]
+fn asr_stretch_settled_cut_pieces_are_a_prefix_of_the_plan_at_every_length() {
+    let even = Duration::from_secs(1);
+    // 16,001 samples: an odd window, whose two halves are one sample short of it.
+    let odd = Duration::from_nanos(1_000_062_500);
+    assert_eq!(sample_count(odd), 16_001);
+    let configs = [
+        small_windows(even),
+        small_windows(odd),
+        // Padding, and a merge gap longer than the window (pieces join across regions).
+        PieceConfig {
+            speech_pad: Duration::from_millis(50),
+            merge_gap: Duration::from_millis(3000),
+            ..small_windows(even)
+        },
+        // Padding that is not a whole number of frames: windows start off the frame grid.
+        PieceConfig {
+            speech_pad: Duration::from_micros(33_125),
+            min_speech: Duration::from_millis(100),
+            ..small_windows(even)
+        },
+    ];
+    let (mut checked, mut released, mut inputs) = (0usize, 0usize, 0usize);
+    let mut run = |probs: &[f32], frame: usize, config: &PieceConfig| {
+        let (plan, first) = sweep_every_length(probs, frame, config);
+        released += released_before_the_next_window(&plan, &first, probs, frame, config);
+        checked += probs.len() + 1;
+        inputs += 1;
+    };
+    for config in &configs {
+        for frame in [160usize, 512] {
+            // Speech that ends just past a cut (and further on), then a pause too short and
+            // one long enough to end the region, then more speech. `dip` moves the first
+            // cut off its first candidate frame; with none, the cuts tie.
+            let window = sample_count(config.max_piece) / frame;
+            for speech in (window + 1..=2 * window + 30).step_by(3) {
+                for dip in [None, Some(1), Some(window / 4), Some(window / 2 - 2)] {
+                    for pause in [8usize, 80] {
+                        let mut probs = vec![0.9f32; speech];
+                        if let Some(d) = dip {
+                            probs[window / 2 + d] = 0.5;
+                        }
+                        probs.extend(std::iter::repeat_n(0.0, pause));
+                        probs.extend(std::iter::repeat_n(0.9, window + window / 2));
+                        probs.extend(std::iter::repeat_n(0.0, 40));
+                        run(&probs, frame, config);
+                    }
+                }
+            }
+            // Long runs of speech at a few levels (so least speech-like frames tie), with
+            // rare pauses.
+            let mut rng = Lcg(7 + frame as u64);
+            for _ in 0..12 {
+                let mut probs: Vec<f32> = Vec::new();
+                while probs.len() < 6 * window {
+                    let len = 1 + (rng.next() % (window as u64 / 2)) as usize;
+                    let p = match rng.next() % 12 {
+                        0 => 0.0,
+                        1..=4 => 0.9,
+                        5..=7 => 0.6,
+                        8 | 9 => 0.4,
+                        _ => 0.5 + (rng.next() % 4) as f32 / 10.0,
+                    };
+                    probs.extend(std::iter::repeat_n(p, len));
+                }
+                run(&probs, frame, config);
+            }
+        }
+    }
+    assert!(inputs > 1000 && checked > 200_000, "{inputs} {checked}");
+    // Not vacuous: cut pieces were released before the window after them was heard.
+    assert!(released > 1000, "{released} cut pieces released early");
 }
 
 #[test]
