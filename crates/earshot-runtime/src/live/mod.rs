@@ -2241,6 +2241,26 @@ where
         });
     }
 
+    /// Says that each track whose file a panic left unfinished (in its finish) is saved at the
+    /// next start by start-up recovery (T9.18), once per track: `told` holds the tracks said.
+    fn tell_unfinished(&mut self, told: &mut Vec<TrackId>) {
+        for t in self.tracks.iter().map(|t| t.kind).collect::<Vec<_>>() {
+            let finished = self.audio_files.iter().any(|(k, _)| *k == t);
+            if self.writers[slot(t)].is_none()
+                && !finished
+                && !self.recording_stopped[slot(t)]
+                && !told.contains(&t)
+            {
+                told.push(t);
+                self.problems.push(RuntimeWarning::Recording {
+                    track: t,
+                    error: "the recording was not finished; it is saved at the next start"
+                        .to_owned(),
+                });
+            }
+        }
+    }
+
     /// What is left to do after a panic on the session thread (T9.19), whatever the session was
     /// doing: capture is stopped, every track still recording is finished as far as it got
     /// (T9.17's path) and the meeting gets its duration, [`RuntimeEvent::RecordingSaved`] goes
@@ -2267,20 +2287,27 @@ where
         };
         if !self.recording_saved {
             self.capture_end = Some(failed);
-            // A track whose file a panic left unfinished (in its finish) is said so: start-up
-            // recovery saves it at the next start (T9.18).
-            for t in self.tracks.iter().map(|t| t.kind).collect::<Vec<_>>() {
-                let finished = self.audio_files.iter().any(|(k, _)| *k == t);
-                if self.writers[slot(t)].is_none() && !finished && !self.recording_stopped[slot(t)]
-                {
-                    self.problems.push(RuntimeWarning::Recording {
-                        track: t,
-                        error: "the recording was not finished; it is saved at the next start"
-                            .to_owned(),
-                    });
+            // A second panic inside the save (a track's finish) takes only that track's writer
+            // with it: the save is tried again for the rest, at most once per track, and
+            // RecordingSaved goes out even if every try panicked (T9.18 review).
+            let mut told = Vec::new();
+            for _ in 0..=self.tracks.len() {
+                self.tell_unfinished(&mut told);
+                let tried = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.save_recording();
+                }));
+                if tried.is_ok() || self.recording_saved {
+                    break;
                 }
             }
-            self.save_recording();
+            if !self.recording_saved {
+                self.tell_unfinished(&mut told);
+                self.recording_saved = true;
+                self.emit(RuntimeEvent::RecordingSaved {
+                    reason: EndReason::Failed,
+                    problems: self.problems.clone(),
+                });
+            }
         }
         let final_pass = self.final_pass.clone().unwrap_or_else(|| FinalPassRequest {
             end,
