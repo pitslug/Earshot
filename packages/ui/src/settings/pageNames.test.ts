@@ -10,12 +10,13 @@ import table from "../../../../fixtures/ui/page_name_cases.json";
 import { SETTINGS_SECTIONS } from "./SettingsView";
 
 /** The gone page names `text` uses, in the shared table's forms ("the Models page", "Settings,
- * Models", "see Models"), as whole words: no letter, digit or underscore right after. */
+ * Models", "see Models"), as whole words: no Unicode letter, number or underscore right after. */
 function stalePageNames(text: string): string[] {
   const found: string[] = [];
   for (const page of table.gone_pages) {
     for (const form of table.forms.map((f) => f.replace("{page}", page))) {
-      const at = new RegExp(`${form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`);
+      // As Rust's `char::is_alphanumeric`: any Unicode letter or number, not only ASCII.
+      const at = new RegExp(`${form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{Alphabetic}\\p{N}_])`, "u");
       if (at.test(text)) found.push(form);
     }
   }
