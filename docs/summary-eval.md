@@ -1057,3 +1057,56 @@ Written and committed before any run, 2026-11-13. The owner (2026-11-10, 2026-11
 6. **Test split, once, at the end:** Claude and the 4B, current rules and the shipped rules, 20 test meetings, reference source, same settings. Reported to the owner; it cannot change the outcome of the dev rule. An invalid summary there is reported as a finding.
 
 Meaning judgements (blinded packets, `--judge-packets --blind-key`) are not part of the rule; packets of the five judged dev meetings for the winner and the control can be written for the owner or agents to judge later.
+
+### Results (2026-11-13, `docs/summary-eval/t1217/`): no variant passes, the default stays; the templates ship
+
+Dev split, 20 meetings, reference source. Claude through Claude Code 2.1.292 at its default model and effort (`claude-code`, unchunked production plan); Qwen 3.5 4B on CUDA (RTX 5080), chunked 600 s, S16. One build per round; the four Claude runs ran side by side and the three 4B runs side by side, so the seconds are not timings. Raw tables (the tool's unmodified `table.md`, counts and scores only) are in `docs/summary-eval/t1217/`. Coverage is the coverage rule's decisions caught of 83 and actions caught of 41.
+
+**Claude, rule 1** (control: the mean of `current-1` and `current-2`).
+
+| Run | Valid | Words | Notes words | Sections / bullets | Decisions / actions written | Decisions cov | Actions cov | Coverage total | ROUGE-L |
+|---|---|---|---|---|---|---|---|---|---|
+| current-1 | 20/20 | 14,235 | 11,134 | 96 / 401 | 142 / 70 | 40 | 11 | 51 | 0.153 |
+| current-2 | 20/20 | 14,298 | 11,164 | 99 / 397 | 136 / 69 | 42 | 16 | 58 | 0.156 |
+| control (mean) | 20/20 | 14,266.5 | 11,149 | | | 41 | 13.5 | 54.5 | |
+| short | 20/20 | 7,420 (-48.0%) | 4,278 | 61 / 192 | 153 / 75 | 42 | 9 | 51 | 0.192 |
+| brief | 20/20 | 5,520 (-61.3%) | 2,846 | 55 / 151 | 141 / 74 | 44 | 8 | 52 | 0.185 |
+
+- **`short` fails:** words pass (-48%), decisions pass (42 against a floor of 39), but actions 9 against a floor of 11.5 and the total 51 against a floor of 51.5.
+- **`brief` fails:** words pass (-61%), decisions pass (44), the total passes (52 against 51.5), actions fail (8 against 11.5).
+- **So no variant passes and `system.md` stays as it is** (rule 3); rule 2 is not reached. No format key bump, no `accept m4` re-run.
+- **Reading, after the rule (not a decision).** Both variants write more action items than the control (74 and 75 against 69 and 70) and more decisions, while the token-based coverage of actions falls: shorter action wording carries fewer of the annotation's words. The two control runs themselves differ by 5 caught actions (11 and 16), more than the per-list tolerance of 2 the rule allows, so the action guard sits inside Claude's own run-to-run spread. Whether the shorter actions say the same in meaning is a question for the blinded meaning judge (packets of the five judged meetings), which this rule did not include. The owner may want that round before deciding on `short`.
+
+**Qwen 3.5 4B, informational** (rule 2 applies only to a variant that passed rule 1).
+
+| Run | Valid | Words | Notes words | Decisions / actions written | Decisions cov | Actions cov | Coverage total | Repairs |
+|---|---|---|---|---|---|---|---|---|
+| current | 20/20 | 11,778 | 8,387 | 114 / 70 | 35 | 10 | 45 | 1 |
+| short | 20/20 | 6,601 (-44%) | 3,628 | 113 / 61 | 33 | 7 | 40 | 0 |
+| brief | 20/20 | 5,944 (-50%) | 3,027 | 107 / 65 | 34 | 6 | 40 | 0 |
+
+Both variants would also fail rule 2 on the 4B (coverage 5 below), and the 4B writes fewer action items under them, unlike Claude.
+
+**The 12-item cap, rule 4.** In the 4B run of the shipped rules (`current`), a final decisions or action items list held 12 items in 2 of the 20 meetings, which triggers the raise to 16. Measured by rule 2 (`4b-cap16`, the same build with `SummaryLimits::max_items` 16; its "lists at the cap" column counts lists of 16):
+
+| Run | Valid | Words | Decisions / actions written | Coverage total | Lists at the cap (decisions or actions) |
+|---|---|---|---|---|---|
+| current (cap 12) | 20/20 | 11,778 | 114 / 70 | 45 | 2 meetings at 12 |
+| cap 16 | 20/20 | 12,117 (+2.9%) | 118 / 70 | 45 | 1 meeting at 16 |
+
+Valid and coverage hold, but the words rise, so by rule 2 the raise fails and **the cap stays at 12** (the change was reverted). For context: Claude has no cap and wrote a decisions or action items list of 12 or more in 3 to 5 of the 20 dev meetings.
+
+**Templates, rule 5** (the shipped rules; the five judged dev meetings; coverage of 22 decisions and 11 actions):
+
+| Template | Valid | Words | Notes words | Bullets | Decisions / actions written | Decisions cov | Actions cov | Total |
+|---|---|---|---|---|---|---|---|---|
+| Standard | 5/5 | 3,894 | 3,020 | 116 | 36 / 16 | 11 | 1 | 12 |
+| Brief | 5/5 | 1,137 (-71%) | 592 | 15 | 48 / 15 | 12 | 1 | 13 |
+| Decisions and actions | 5/5 | 2,346 (-40%) | 1,514 | 48 | 36 / 16 | 12 | 1 | 13 |
+| Detailed notes | 5/5 | 6,198 (+59%) | 5,119 | 154 | 43 / 17 | 13 | 1 | 14 |
+
+No template is more than 3 below Standard, so all four ship unchanged. The templates do what their names say: Brief cuts the words by about 70% and Decisions and actions by about 40% with every decision and action still listed, which is the shorter summary the owner asked for, as a choice rather than the default.
+
+**Test split, rule 6: not run.** The settled format is the current one (no variant passed, the cap is unchanged), so there is no new format to test once; the templates are style text and were checked on dev only, as rule 5 says.
+
+**What shipped (T12.17b).** The template choice on the Summaries page ("Summary style": Template, then the user's own words), stored as `settings/summary-template` and composed with the style in one block (`earshot_core::prompt::StylePreset`, `style_block`). `system.md`, the format key and the 12-item cap are unchanged.
