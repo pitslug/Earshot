@@ -7,11 +7,12 @@ rust-version.workspace = true
 publish.workspace = true
 
 # std only. The Windows job object is declared by hand in `src/job_win.rs` (all `unsafe` of
-# this crate: five kernel32 functions and two structures, their size pinned by a test). The
-# alternative, `windows-sys` with `Win32_System_JobObjects`, would add a feature to the
+# this crate: seven kernel32 functions and four structures, the two passed to Windows by size
+# pinned by tests). The alternative, `windows-sys` with `Win32_System_JobObjects` and
+# the memory call's feature, would add features to the
 # windows-sys 0.61 that xtask and the whole workspace already build without it (checked with
 # `cargo tree -e features -i windows-sys@0.61.2`, 2026-11-04): harmless for builds (a normal
-# dependency unifies the same in every build) but a recompile of a widely shared crate for five
+# dependency unifies the same in every build) but a recompile of a widely shared crate for a few
 # declarations. The `windows` crate is not in xtask's graph at all.
 
 [lints]
