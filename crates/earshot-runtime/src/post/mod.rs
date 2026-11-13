@@ -462,6 +462,11 @@ pub enum PostWarning {
         /// How much speech diarisation gave it.
         speech: Duration,
     },
+    /// An in-room meeting's earlier "Me" row was not found again and this run has no "Me" of
+    /// its own: a voice the user marked as themselves (T9.12) that did not match, or had no
+    /// identity entry to match by, or one their voiceprint named before. No voice is the
+    /// user's now until they mark one again.
+    MeNotFoundAgain,
 }
 
 /// Whether a track's final pass reused its live speech stretches (module docs, step 1).
@@ -1706,6 +1711,15 @@ where
                     speech: s.speech,
                     ignored: false,
                 });
+            }
+            // The room's earlier "Me" went and this run named none: never silently (T9.12).
+            if in_room_kinds(&recorded)
+                && earlier
+                    .iter()
+                    .any(|old| old.role == SpeakerRole::Me && tombstoned.contains(&old.id))
+                && !speakers.iter().any(|s| s.role == SpeakerRole::Me)
+            {
+                warnings.push(PostWarning::MeNotFoundAgain);
             }
 
             let ours_now: BTreeSet<EntityId> = speakers.iter().map(|s| s.id).collect();

@@ -215,6 +215,57 @@ fn post_rerun_loses_an_edit_mark_with_the_voice_when_it_does_not_match() {
         "the centroid goes with the tombstoned row"
     );
     assert!(again.enrolled_me.is_none());
+    // The user hears that no voice is "Me" any more.
+    assert_eq!(
+        again
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, PostWarning::MeNotFoundAgain))
+            .count(),
+        1,
+        "{:?}",
+        again.warnings
+    );
+}
+
+/// A voice marked with no identity entry (an invalid centroid, an unreadable record) cannot be
+/// matched by a re-run: the mark goes, and the run says so rather than dropping it silently.
+#[test]
+fn post_rerun_says_so_when_an_edit_mark_without_an_entry_goes() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let mic = meeting_with(&svc, &[TrackId::Mic])[0].clone();
+    let meeting = mic.meeting_id;
+    let mut post = room_post(2, false);
+    let first = run_room(&mut post, &svc, &mic, room_scene(), 513);
+    let voice = first.speakers[0].id;
+    // Test set-up only: the meeting has no identity record, as when no centroid was valid.
+    svc.store()
+        .delete_local_value(record_key(meeting).as_str())
+        .unwrap();
+    crate::edit::mark_me(&svc, meeting, voice).unwrap();
+    assert_eq!(live_me_rows(&svc, meeting), [voice]);
+
+    let again = run_room(&mut post, &svc, &mic, room_scene(), 514);
+    assert!(live_me_rows(&svc, meeting).is_empty());
+    assert!(again.speakers.iter().all(|s| s.role == SpeakerRole::Room));
+    assert_eq!(again.warnings, [PostWarning::MeNotFoundAgain]);
+}
+
+/// A re-run that keeps the marked voice, or finds no earlier "Me" at all, says nothing of it.
+#[test]
+fn post_rerun_says_nothing_of_me_when_no_me_was_lost() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let mic = meeting_with(&svc, &[TrackId::Mic])[0].clone();
+    let meeting = mic.meeting_id;
+    let mut post = room_post(3, false);
+    let first = run_room(&mut post, &svc, &mic, room_scene(), 515);
+    let again = run_room(&mut post, &svc, &mic, room_scene(), 516);
+    assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+    crate::edit::mark_me(&svc, meeting, first.speakers[0].id).unwrap();
+    let kept = run_room(&mut post, &svc, &mic, room_scene(), 517);
+    assert!(kept.warnings.is_empty(), "{:?}", kept.warnings);
 }
 
 #[test]

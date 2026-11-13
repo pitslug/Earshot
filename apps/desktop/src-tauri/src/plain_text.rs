@@ -149,6 +149,11 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
                 "post-names",
                 "The names given in this meeting could not be kept. Name its voices again.",
             )),
+            PostWarning::MeNotFoundAgain => Some((
+                "post-me",
+                "The voice shown as you could not be found again in the new transcript, so no \
+                 voice is shown as you. Use This is me in Speakers to mark yours.",
+            )),
             PostWarning::BackendChanged { .. }
             | PostWarning::StretchRecordUnreadable { .. }
             | PostWarning::SpeakerRecordUnreadable { .. }
@@ -963,6 +968,23 @@ mod post_warning_tests {
         assert_eq!(copy.len(), 1, "one banner");
         assert!(copy[0].1.starts_with("3 lines you corrected were kept"));
         assert!(!copy[0].1.contains('\u{2014}'));
+        assert!(!names_developer_tool(&copy[0].1));
+    }
+
+    /// T9.12: a re-transcription that lost the voice shown as the user says so, once.
+    #[test]
+    fn post_warnings_say_when_the_voice_shown_as_you_was_not_found_again() {
+        let copy = post_warning_copy(&[PostWarning::MeNotFoundAgain, PostWarning::MeNotFoundAgain]);
+        assert_eq!(copy.len(), 1, "one banner");
+        assert_eq!(copy[0].0, "post-me");
+        assert!(
+            copy[0].1.contains("no voice is shown as you"),
+            "{}",
+            copy[0].1
+        );
+        assert!(copy[0].1.contains("This is me"), "{}", copy[0].1);
+        assert!(!copy[0].1.contains('\u{2014}'));
+        assert!(!copy[0].1.contains("  "));
         assert!(!names_developer_tool(&copy[0].1));
     }
 
