@@ -544,7 +544,6 @@ pub fn run_child(
 ) -> Result<CheckOutcome, IpcError> {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         use std::sync::atomic::{AtomicBool, Ordering};
 
         /// `CREATE_NO_WINDOW`: the child gets no console window.
@@ -554,7 +553,8 @@ pub fn run_child(
             .map_err(|e| child_failed(format!("cannot find Earshot's own program: {e}")))?;
         let job = earshot_proc::KillOnClose::new()
             .map_err(|e| child_failed(format!("cannot set up the model check: {e}")))?;
-        let mut child = std::process::Command::new(exe)
+        let mut command = std::process::Command::new(exe);
+        command
             .args(child_args(
                 languages,
                 models,
@@ -562,15 +562,18 @@ pub fn run_child(
             ))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|e| child_failed(format!("cannot start the model check: {e}")))?;
-        if let Err(e) = job.assign(&child) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(child_failed(format!("cannot set up the model check: {e}")));
-        }
+            .stderr(std::process::Stdio::null());
+        // Started suspended and resumed only once in the job: nothing it starts runs outside.
+        let mut child = job
+            .spawn(&mut command, CREATE_NO_WINDOW)
+            .map_err(|e| match e {
+                earshot_proc::SpawnError::Start(e) => {
+                    child_failed(format!("cannot start the model check: {e}"))
+                }
+                earshot_proc::SpawnError::Job(e) => {
+                    child_failed(format!("cannot set up the model check: {e}"))
+                }
+            })?;
         let Some(stdout) = child.stdout.take() else {
             drop(job);
             let _ = child.wait();

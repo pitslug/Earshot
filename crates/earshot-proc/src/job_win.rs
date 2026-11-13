@@ -4,9 +4,12 @@
 //! file because it is the crate's other Windows call.
 //!
 //! The five job kernel32 functions and the three job structures are declared by hand, as are
-//! the two calls and one structure of [`peak_memory`] (`Cargo.toml`: `windows-sys` would need
-//! features nothing else in the workspace builds). A process
-//! started between the spawn and [`KillOnClose::assign`] is not in the job (crate docs). Layouts follow
+//! the two calls and one structure of [`peak_memory`] and the five calls and one structure that
+//! resume a suspended child (`Cargo.toml`: `windows-sys` would need
+//! features nothing else in the workspace builds). [`KillOnClose::spawn`] starts a child
+//! suspended and resumes it only once it is in the job (std cannot hand out the primary
+//! thread's handle, so the thread is found through a toolhelp snapshot); a child spawned
+//! elsewhere and then given to [`KillOnClose::assign`] runs outside the job until then. Layouts follow
 //! `winnt.h` (`JOBOBJECT_BASIC_LIMIT_INFORMATION`, `IO_COUNTERS`,
 //! `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`); `SetInformationJobObject` refuses a wrong size
 //! with `ERROR_BAD_LENGTH`, and the size is pinned by a test.
@@ -68,6 +71,87 @@ unsafe extern "system" {
     fn CloseHandle(handle: Handle) -> Bool;
     fn GetCurrentProcess() -> Handle;
     fn K32GetProcessMemoryInfo(process: Handle, counters: *mut MemoryCounters, size: u32) -> Bool;
+    fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> Handle;
+    fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry) -> Bool;
+    fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry) -> Bool;
+    fn OpenThread(access: u32, inherit: Bool, thread_id: u32) -> Handle;
+    fn ResumeThread(thread: Handle) -> u32;
+}
+
+/// `CREATE_SUSPENDED` (winbase.h): the primary thread waits for `ResumeThread`.
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+/// `TH32CS_SNAPTHREAD` (tlhelp32.h): every thread of the system.
+const TH32CS_SNAPTHREAD: u32 = 0x0000_0004;
+/// `THREAD_SUSPEND_RESUME` (winnt.h).
+const THREAD_SUSPEND_RESUME: u32 = 0x0002;
+/// `INVALID_HANDLE_VALUE`: what `CreateToolhelp32Snapshot` returns on failure.
+const INVALID_HANDLE_VALUE: Handle = usize::MAX as Handle;
+
+/// `THREADENTRY32` (tlhelp32.h).
+#[repr(C)]
+#[derive(Default)]
+struct ThreadEntry {
+    size: u32,
+    usage: u32,
+    thread_id: u32,
+    owner_process_id: u32,
+    base_priority: i32,
+    delta_priority: i32,
+    flags: u32,
+}
+
+/// Why [`KillOnClose::spawn`] gave no child.
+#[derive(Debug)]
+pub enum SpawnError {
+    /// The program could not be started.
+    Start(io::Error),
+    /// It started but could not be put into the job or resumed (it was killed unrun).
+    Job(io::Error),
+}
+
+/// Resumes every thread of process `pid` (a suspended new process has one: its primary
+/// thread, whose handle std does not expose). Errors when none was found or one refused.
+fn resume_threads_of(pid: u32) -> io::Result<()> {
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    // SAFETY: no pointers; returns an owned snapshot handle or INVALID_HANDLE_VALUE.
+    let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a valid handle just returned to us and owned by nothing else; the
+    // OwnedHandle closes it once.
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut entry = ThreadEntry {
+        size: u32::try_from(size_of::<ThreadEntry>()).unwrap_or(u32::MAX),
+        ..ThreadEntry::default()
+    };
+    let mut resumed = 0usize;
+    // SAFETY: the snapshot handle is valid (owned above); `entry` is a live, writable
+    // THREADENTRY32 whose `size` is set as the call requires.
+    let mut more = unsafe { Thread32First(snapshot.as_raw_handle(), &raw mut entry) } != 0;
+    while more {
+        if entry.owner_process_id == pid {
+            // SAFETY: no pointers; returns an owned thread handle or null.
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.thread_id) };
+            if thread.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `thread` is a valid handle just returned and owned by nothing else.
+            let thread = unsafe { OwnedHandle::from_raw_handle(thread) };
+            // SAFETY: the thread handle is valid (owned above) and opened with
+            // THREAD_SUSPEND_RESUME.
+            if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
+                return Err(io::Error::last_os_error());
+            }
+            resumed += 1;
+        }
+        // SAFETY: as for Thread32First.
+        more = unsafe { Thread32Next(snapshot.as_raw_handle(), &raw mut entry) } != 0;
+    }
+    if resumed == 0 {
+        return Err(io::Error::other("the new process has no thread to resume"));
+    }
+    Ok(())
 }
 
 /// `PROCESS_MEMORY_COUNTERS` (`psapi.h`); kernel32 exports the call as `K32...` since Windows 7.
@@ -162,6 +246,33 @@ impl KillOnClose {
         Ok(())
     }
 
+    /// Starts `cmd` inside the job: suspended (`CREATE_SUSPENDED` added to `flags`, which
+    /// replace any creation flags set on `cmd`), put into the job, then resumed, so no code
+    /// of the child, and nothing it starts, ever runs outside the job.
+    ///
+    /// # Errors
+    /// [`SpawnError::Start`] when it cannot start; [`SpawnError::Job`] when it cannot be put
+    /// into the job or resumed (the child is killed before it ran).
+    pub fn spawn(
+        &self,
+        cmd: &mut std::process::Command,
+        flags: u32,
+    ) -> Result<std::process::Child, SpawnError> {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(flags | CREATE_SUSPENDED);
+        let mut child = cmd.spawn().map_err(SpawnError::Start)?;
+        if let Err(e) = self
+            .assign(&child)
+            .and_then(|()| resume_threads_of(child.id()))
+        {
+            // Only the child: the job may hold other processes of the caller's.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(SpawnError::Job(e));
+        }
+        Ok(child)
+    }
+
     /// Kills every process in the job now.
     pub fn terminate(&self) {
         // SAFETY: the job handle is valid (owned by `self`); terminating an empty job or
@@ -220,6 +331,92 @@ mod tests {
             112
         };
         assert_eq!(std::mem::size_of::<ExtendedLimitInformation>(), expected);
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn IsProcessInJob(process: Handle, job: Handle, result: *mut Bool) -> Bool;
+    }
+
+    fn in_job(job: &KillOnClose, child: &std::process::Child) -> bool {
+        let mut result: Bool = 0;
+        // SAFETY: both handles are valid for the call (owned by `job` and `child`, which
+        // outlive it); `result` is a live, writable Bool.
+        let ok = unsafe { IsProcessInJob(child.as_raw_handle(), job.0, &raw mut result) };
+        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+        result != 0
+    }
+
+    #[test]
+    fn proc_job_spawn_runs_the_child_only_inside_the_job() {
+        // Started suspended, put into the job, then resumed: it is in the job when `spawn`
+        // returns and runs to its normal end.
+        let job = KillOnClose::new().unwrap();
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/c", "echo resumed"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped());
+        let child = job.spawn(&mut cmd, 0).unwrap();
+        assert!(in_job(&job, &child));
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "resumed");
+    }
+
+    #[test]
+    fn proc_job_spawn_keeps_the_callers_creation_flags() {
+        // BELOW_NORMAL_PRIORITY_CLASS passed through: the child reports it (WMIC is gone, so
+        // PowerShell reads its own priority class).
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        let job = KillOnClose::new().unwrap();
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-Command",
+            "(Get-Process -Id $PID).PriorityClass",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped());
+        let child = job.spawn(&mut cmd, BELOW_NORMAL_PRIORITY_CLASS).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "BelowNormal");
+    }
+
+    #[test]
+    fn proc_job_spawn_reports_a_program_that_cannot_start() {
+        let job = KillOnClose::new().unwrap();
+        let e = job
+            .spawn(
+                &mut std::process::Command::new("no-such-program-earshot-proc"),
+                0,
+            )
+            .unwrap_err();
+        assert!(matches!(e, SpawnError::Start(_)), "{e:?}");
+    }
+
+    #[test]
+    fn proc_job_spawned_child_dies_when_the_job_closes() {
+        let started = std::time::Instant::now();
+        let job = KillOnClose::new().unwrap();
+        let mut cmd = std::process::Command::new("ping");
+        cmd.args(["-n", "120", "127.0.0.1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null());
+        let mut child = job.spawn(&mut cmd, 0).unwrap();
+        assert!(child.try_wait().unwrap().is_none(), "running in the job");
+        drop(job);
+        child.wait().unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "killed by the job, not finished: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn proc_thread_entry_has_the_tlhelp32_size() {
+        // tlhelp32.h THREADENTRY32: seven 32-bit fields on every Windows.
+        assert_eq!(size_of::<ThreadEntry>(), 28);
     }
 
     #[test]

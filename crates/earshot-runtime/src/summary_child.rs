@@ -655,7 +655,6 @@ pub(crate) fn run_job(
 
 #[cfg(windows)]
 fn run_windows(child: &GpuChild, bytes: Vec<u8>, watch: Watch, cancel: &CancelToken) -> ChildEnd {
-    use std::os::windows::process::CommandExt;
     use std::process::Stdio;
 
     /// `CREATE_NO_WINDOW`: the child gets no console window.
@@ -671,23 +670,23 @@ fn run_windows(child: &GpuChild, bytes: Vec<u8>, watch: Watch, cancel: &CancelTo
     } else {
         CREATE_NO_WINDOW
     };
-    let mut process = match std::process::Command::new(&child.program)
+    let mut command = std::process::Command::new(&child.program);
+    command
         .args(&child.args)
         .envs(child.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(flags)
-        .spawn()
-    {
+        .stderr(Stdio::null());
+    // Started suspended and resumed only once in the job: nothing it starts runs outside.
+    let mut process = match job.spawn(&mut command, flags) {
         Ok(process) => process,
-        Err(_) => return ChildEnd::Died("it could not start".to_owned()),
+        Err(earshot_proc::SpawnError::Start(_)) => {
+            return ChildEnd::Died("it could not start".to_owned());
+        }
+        Err(earshot_proc::SpawnError::Job(_)) => {
+            return ChildEnd::Died("it could not be set up".to_owned());
+        }
     };
-    if job.assign(&process).is_err() {
-        let _ = process.kill();
-        let _ = process.wait();
-        return ChildEnd::Died("it could not be set up".to_owned());
-    }
     let (Some(mut stdin), Some(stdout)) = (process.stdin.take(), process.stdout.take()) else {
         let _ = process.kill();
         let _ = process.wait();

@@ -7,11 +7,9 @@
 //! [`run`]:
 //! - starts the program with every stream piped, no console window on Windows
 //!   (`CREATE_NO_WINDOW`), in the given folder and with the given environment changes;
-//! - on Windows puts it into a kill-on-close job object ([`KillOnClose`]) at once, so the
-//!   child and everything it starts are killed when the run ends, on a timeout or a cancel,
-//!   and if this process dies. There is a window between the spawn and the assignment (a
-//!   few instructions; std cannot start a process suspended): a grandchild started inside it
-//!   would not be in the job. Claude Code takes far longer than that to start one;
+//! - on Windows starts it inside a kill-on-close job object ([`KillOnClose::spawn`]:
+//!   suspended, assigned, then resumed), so the child and everything it starts are killed
+//!   when the run ends, on a timeout or a cancel, and if this process dies;
 //! - with [`run_with`], asks the caller once the child is in the job and before any input is
 //!   written (`on_started` with the child's pid); a `false` answer stops the child unread
 //!   ([`ChildError::Aborted`]);
@@ -40,7 +38,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
-pub use job_win::{KillOnClose, peak_memory};
+pub use job_win::{KillOnClose, SpawnError, peak_memory};
 
 /// A process's peak memory so far ([`peak_memory`]; `cargo xtask bench`, T8.1), in bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,12 +186,19 @@ impl Job {
         })
     }
 
-    fn assign(&self, child: &Child) -> io::Result<()> {
+    /// Starts `cmd` inside the job (Windows: no console window), or plainly elsewhere.
+    fn spawn(&self, cmd: &mut Command) -> Result<Child, ChildError> {
         #[cfg(windows)]
-        self.job.assign(child)?;
+        {
+            self.job.spawn(cmd, CREATE_NO_WINDOW).map_err(|e| match e {
+                SpawnError::Start(e) => ChildError::Start(e),
+                SpawnError::Job(e) => ChildError::Job(e),
+            })
+        }
         #[cfg(not(windows))]
-        let _ = child;
-        Ok(())
+        {
+            cmd.spawn().map_err(ChildError::Start)
+        }
     }
 
     fn terminate(&self) {
@@ -291,16 +296,7 @@ pub fn run_with(
     for (name, value) in &spec.env_set {
         cmd.env(name, value);
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let mut child = cmd.spawn().map_err(ChildError::Start)?;
-    if let Err(e) = job.assign(&child) {
-        kill(&job, &mut child);
-        return Err(ChildError::Job(e));
-    }
+    let mut child = job.spawn(&mut cmd)?;
     let (tx, rx) = mpsc::channel::<(Stream, Vec<u8>, bool)>();
     if let Some(out) = child.stdout.take() {
         let tx = tx.clone();
