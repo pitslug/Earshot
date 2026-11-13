@@ -379,9 +379,12 @@ pub fn rename_meeting(
 /// transaction, and an edit after it finds the replaced segment gone
 /// ([`EditError::SegmentNotFound`]).
 ///
+/// Refused while a live session, a final pass or a summary works on the meeting
+/// (`line_edit_claim`): a summary run would otherwise be discarded at its store.
+///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting or segment, a draft transcript, unusable
-/// text); store errors.
+/// text); [`RuntimeError::MeetingBusy`] (retryable) while the meeting is busy; store errors.
 pub fn edit_segment(
     services: &Services,
     meeting: EntityId,
@@ -389,6 +392,7 @@ pub fn edit_segment(
     text: &str,
 ) -> Result<bool, RuntimeError> {
     let text = clean_segment_text(text)?;
+    let _claim = line_edit_claim(services, meeting)?;
     write(services, |tx, stamp| {
         let (row, _) = final_line(tx, meeting, segment)?;
         put_line_text(tx, stamp, row, text)
@@ -410,6 +414,7 @@ pub fn edit_segment_offering(
     text: &str,
 ) -> Result<Vec<String>, RuntimeError> {
     let text = clean_segment_text(text)?;
+    let _claim = line_edit_claim(services, meeting)?;
     write(services, |tx, stamp| {
         let (row, _) = final_line(tx, meeting, segment)?;
         let before = row.segment.text.clone();
@@ -420,6 +425,19 @@ pub fn edit_segment_offering(
         let listed = word_choices::word_list_tx(tx)?;
         Ok(crate::vocabulary::words_to_offer(&before, &after, &listed))
     })
+}
+
+/// Claims `meeting` for one line edit, refused with retryable [`RuntimeError::MeetingBusy`]
+/// while a live session records it or a final pass or summary works on it or waits to
+/// ([`Services::lease_meeting_alone`]). A summary is stored only over the transcript it
+/// read (`crate::summary::store_summary` conflicts on a text edit), so an edit during the
+/// run would discard the whole run: the edit waits instead, as summary edits do. The claim
+/// is an [`MeetingJob::Other`] lease, held across the write only.
+fn line_edit_claim(
+    services: &Services,
+    meeting: EntityId,
+) -> Result<crate::MeetingLease, RuntimeError> {
+    services.lease_meeting_alone(meeting, MeetingJob::Other)
 }
 
 /// The live final-transcript row `segment` of the live meeting `meeting`, with every live
@@ -559,6 +577,7 @@ pub fn use_word(
     token: usize,
     word: &str,
 ) -> Result<bool, RuntimeError> {
+    let _claim = line_edit_claim(services, meeting)?;
     write(services, |tx, stamp| {
         let (row, lines) = final_line(tx, meeting, segment)?;
         let (range, current) = word_at(&row, token)?;
@@ -613,6 +632,7 @@ pub fn put_back_word(
     segment: EntityId,
     token: usize,
 ) -> Result<bool, RuntimeError> {
+    let _claim = line_edit_claim(services, meeting)?;
     write(services, |tx, stamp| {
         let (row, lines) = final_line(tx, meeting, segment)?;
         let mut choices = holding_choices(tx, meeting, &lines)?;

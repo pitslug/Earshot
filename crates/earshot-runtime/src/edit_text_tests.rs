@@ -226,6 +226,47 @@ fn edit_segment_marks_an_older_summary_out_of_date_and_sends_nothing() {
 }
 
 #[test]
+fn edit_segment_waits_while_a_summary_or_final_pass_works_on_the_meeting() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Release", 410);
+    let id = view(&svc, m).segments[1].id;
+    set_words_for_lines(&svc, &["Zorbek"]);
+    for job in [
+        MeetingJob::Processing,
+        MeetingJob::Recording,
+        MeetingJob::Waiting,
+    ] {
+        let lease = svc.lease_meeting_for(m, job).unwrap();
+        let before = segment_row(&svc, m, id);
+        // A summary run would be discarded at its store: the line edit waits instead.
+        for r in [
+            edit_segment(&svc, m, id, "yes Friday works").map(|_| ()),
+            edit_segment_offering(&svc, m, id, "yes Friday works").map(|_| ()),
+            use_word(&svc, m, id, 0, "Zorbek").map(|_| ()),
+            put_back_word(&svc, m, id, 0).map(|_| ()),
+        ] {
+            assert!(
+                matches!(r, Err(RuntimeError::MeetingBusy(x)) if x == m),
+                "{job:?}: {r:?}"
+            );
+        }
+        assert_eq!(segment_row(&svc, m, id), before, "{job:?}: nothing written");
+        drop(lease);
+    }
+    // An export's lease does not change what is happening to the meeting.
+    let export = svc.lease_meeting(m).unwrap();
+    assert!(edit_segment(&svc, m, id, "yes Friday works").unwrap());
+    drop(export);
+    // The edit's own claim is gone afterwards: a summary run may start.
+    drop(svc.lease_meeting_alone(m, MeetingJob::Processing).unwrap());
+}
+
+fn set_words_for_lines(svc: &Services, words: &[&str]) {
+    crate::vocabulary::set_vocabulary(&mut svc.store(), words).unwrap();
+}
+
+#[test]
 fn edit_retranscribe_keeps_edited_lines_and_warns() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
