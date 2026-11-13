@@ -1122,3 +1122,25 @@ Asked by the owner after the results above: the token rule said no because actio
 - **Control.** The mean of the three shipped-rules runs; their spread (largest minus smallest) is reported beside it.
 - **Rule (judgements).** A variant (`short`, `brief`) is recommended as the new default only if all four hold: (1) meaning covered at least the control mean minus 2, and actions covered at least the control mean minus 1; (2) real items caught at least the control mean minus 2; (3) made up at most the control's largest; (4) contradicted at most the control's largest. If both pass, the one with fewer words over the 20 dev meetings is recommended. The owner decides; adopting one means `system.md` changes with a format key bump, `accept m4` and the test split once (rule 6 above). The templates are reported beside the variants and decide nothing.
 - **Limits, stated now.** Claude judges Claude, and blinding hides the labels but not length or style; each summary set is one run; five meetings.
+
+### Results: judged round (2026-11-13, `target/sum-eval/judge-dev-t1217-verdicts.md`): both shorter variants pass
+
+Five Claude Code agents (Opus 5.5), one per meeting, judged the 35 blinded packets; `--import-verdicts` matched the packet set and key. The coordinator checked the one made-up mark against the transcript (it stands: a closing proposal the fixed list already names as not a decision). Words are those five meetings only.
+
+| Summary set | Words (5 meetings) | AMI decisions covered (of 22) | AMI actions covered (of 11) | Meaning covered | Contradicted | Real decisions caught (of 42) | Real actions caught (of 18) | Real caught | Made up |
+|---|---|---|---|---|---|---|---|---|---|
+| current-1 | 3,954 | 18 | 11 | 29 | 0 | 36 | 17 | 53 | 0 |
+| current-2 | 3,957 | 17 | 11 | 28 | 0 | 35 | 16 | 51 | 0 |
+| template-standard | 3,894 | 17 | 11 | 28 | 0 | 34 | 17 | 51 | 0 |
+| control (mean; spread) | 3,935 | | 11 | 28.3 (1) | 0 | | | 51.7 (2) | 0 |
+| short | 1,937 (-51%) | 18 | 11 | 29 | 0 | 36 | 17 | 53 | 0 |
+| brief | 1,504 (-62%) | 18 | 11 | 29 | 0 | 38 | 18 | 56 | 0 |
+| template-brief | 1,137 (-71%) | 18 | 11 | 29 | 0 | 37 | 16 | 53 | 1 |
+| template-decisions | 2,346 (-40%) | 18 | 11 | 29 | 0 | 35 | 17 | 52 | 0 |
+
+- **`short` passes** all four parts of the rule (meaning 29 against a floor of 26.3, actions 11 against 10, real caught 53 against 49.7, nothing made up or contradicted).
+- **`brief` passes** all four (meaning 29, actions 11, real caught 56, nothing made up or contradicted), and it has fewer words over the 20 dev meetings (5,520 against 7,420), so **the rule recommends `brief`**.
+- **Why the token rule said no.** Every set covers all 11 AMI actions in meaning; the shorter action wording carries fewer of the annotation's words, which is what `actions_cov` counted.
+- **Templates (decide nothing).** Brief and Decisions and actions keep meaning coverage; the Brief template made one item up (a closing proposal written as a decision).
+- **Limits.** Near the ceiling: TS3006c was perfect for all seven and most differences are one or two items, so the round shows the shorter rules lose nothing measurable here, not that they are better. Claude judged Claude.
+- **Not settled by this round.** `system.md` is shared by every writer, and on Qwen 3.5 4B `brief` cut the token coverage by 5 and wrote fewer action items (rule 2 above); the 4B was not in this judged round. Nothing has changed yet: adopting `brief` is the owner's call, and the steps are those of the rule (format key bump, `accept m4`, the test split once).
