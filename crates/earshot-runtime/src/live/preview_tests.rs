@@ -13,7 +13,8 @@ use earshot_llm_replay::mock::{MockResponse, MockServer};
 use super::queue_tests::{Scene, by_kind, factory_of, held_config, held_gates, scene_of};
 use super::*;
 use crate::live::preview::{
-    COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PreviewWords, StreamFeed,
+    COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PREVIEW_THREAD_LEFT, PreviewWords,
+    StreamFeed,
 };
 use crate::live::{LivePreviews, PreviewLoader, PreviewOffReason, PreviewRefusal, PreviewReport};
 use crate::power::{PowerProbe, PowerSource, PowerSupply};
@@ -1209,6 +1210,51 @@ fn live_preview_a_crashed_thread_stops_only_the_previews() {
     assert_eq!(report.off.as_deref(), Some("the preview thread crashed"));
     let (without, ..) = run_with(&scene, None, 325);
     assert_eq!(with, without);
+}
+
+/// A preview thread still in a decode when the end wait runs out is left, and its report says so:
+/// it never reads as previews that ran to the end.
+#[test]
+fn live_preview_a_thread_left_at_the_end_wait_says_so_in_the_report() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    // Every decode stays in progress, cancelled or not, until the session has ended.
+    let release = Arc::new(AtomicBool::new(false));
+    let waited = Arc::clone(&release);
+    let load = loader(&seen, move |call, cancel| {
+        let limit = Instant::now() + GUARD;
+        while !waited.load(Ordering::SeqCst) {
+            assert!(Instant::now() < limit, "the session never ended");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        marker_words(call, cancel)
+    });
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let session = start_live(
+        fast_source(&scene),
+        svc.clone(),
+        LiveConfig {
+            speaker_stop_wait: Duration::from_millis(50),
+            ..config_with(Some(previews(load)))
+        },
+        Some(factory_of(&scene, Arc::default())),
+        Box::new(ChaCha8Rng::seed_from_u64(327)),
+    )
+    .unwrap();
+    let (events, _) = collect(session);
+    release.store(true, Ordering::SeqCst);
+    assert!(
+        seen.calls.load(Ordering::SeqCst) > 0,
+        "a decode was in progress"
+    );
+    let report = report_of(&events).expect("a report");
+    assert_eq!(
+        report.off.as_deref(),
+        Some(PREVIEW_THREAD_LEFT),
+        "{report:?}"
+    );
+    assert_eq!(report.reason, Some(PreviewOffReason::Failed), "{report:?}");
 }
 
 /// Previews that take too long pause and come back: other work having the machine for a while does

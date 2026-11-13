@@ -94,6 +94,10 @@ pub const ON_BATTERY_REASON: &str = "off on battery";
 /// What a report says of a preview thread that panicked.
 const PREVIEW_THREAD_CRASHED: &str = "the preview thread crashed";
 
+/// What a report says of a preview thread still in a decode when the end wait ran out: it is
+/// left, never joined.
+pub(super) const PREVIEW_THREAD_LEFT: &str = "the preview thread did not stop within the end wait";
+
 /// Why previews stop for a slow track.
 pub const FELL_BEHIND_REASON: &str = "the live transcript fell behind";
 
@@ -946,6 +950,11 @@ impl PreviewThread {
             .clone();
         if crashed {
             report.off = Some(PREVIEW_THREAD_CRASHED.to_owned());
+            report.reason = Some(PreviewOffReason::Failed);
+        } else if !done && wait > Duration::ZERO && report.off.is_none() {
+            // Left in a decode at the end: never a report of previews that ran to the end. A
+            // zero wait is a stop during the meeting, whose caller says why.
+            report.off = Some(PREVIEW_THREAD_LEFT.to_owned());
             report.reason = Some(PreviewOffReason::Failed);
         }
         report
