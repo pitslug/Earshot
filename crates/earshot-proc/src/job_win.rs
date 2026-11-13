@@ -307,13 +307,23 @@ mod tests {
     #[test]
     fn proc_peak_memory_grows_with_touched_memory() {
         const SIZE: usize = 256 * 1024 * 1024;
+        // Under memory pressure Windows can trim pages while the block is being touched, so
+        // one pass may never hold all of it at once: touch it again (the same bounds, more
+        // passes). A wrong field never reaches the bound however often it is touched.
+        const TOUCH_PASSES: u8 = 5;
         let before = peak_memory().expect("peak memory");
         let mut block = vec![0u8; SIZE];
-        for page in block.chunks_mut(4096) {
-            page[0] = 1;
+        let mut after = before;
+        for pass in 1..=TOUCH_PASSES {
+            for page in block.chunks_mut(4096) {
+                page[0] = pass;
+            }
+            std::hint::black_box(&block);
+            after = peak_memory().expect("peak memory");
+            if after.working_set >= SIZE as u64 {
+                break;
+            }
         }
-        std::hint::black_box(&block);
-        let after = peak_memory().expect("peak memory");
         assert!(after.working_set >= SIZE as u64, "{after:?}");
         assert!(after.committed >= SIZE as u64, "{after:?}");
         assert!(
