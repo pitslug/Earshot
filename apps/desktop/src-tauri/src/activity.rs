@@ -53,6 +53,11 @@ struct State {
     work: usize,
     /// Meetings running (counted in `work` too).
     meetings: usize,
+    /// Work after a meeting whose meeting thread may have left it (it stopped answering): it may
+    /// still wake and load models, so the check, the benchmark, the voice sample, the audio
+    /// check and a CUDA part's removal stay out until it ends; an update's restart and meetings
+    /// do not.
+    left: usize,
     /// A model check runs.
     check: bool,
     /// It stops for a meeting: its cancel token.
@@ -75,7 +80,15 @@ pub struct WorkGate(Arc<Mutex<State>>);
 #[derive(Debug)]
 pub struct WorkPass {
     gate: WorkGate,
-    meeting: bool,
+    kind: PassKind,
+}
+
+/// What a [`WorkPass`] counts as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassKind {
+    Meeting,
+    Job,
+    AfterMeeting,
 }
 
 /// Held while the voice sample records or is saved.
@@ -191,7 +204,7 @@ impl WorkGate {
         s.work += 1;
         Ok(WorkPass {
             gate: self.clone(),
-            meeting: false,
+            kind: PassKind::Job,
         })
     }
 
@@ -224,7 +237,7 @@ impl WorkGate {
         s.meetings += 1;
         Ok(WorkPass {
             gate: self.clone(),
-            meeting: true,
+            kind: PassKind::Meeting,
         })
     }
 
@@ -237,7 +250,7 @@ impl WorkGate {
     pub fn enter_voice(&self) -> Result<VoicePass, IpcError> {
         let mut s = self.state();
         Self::refuse_during_cuda_start(&s, false)?;
-        if s.meetings > 0 {
+        if s.meetings > 0 || s.left > 0 {
             return Err(busy(MEETING_RUNNING));
         }
         if s.check {
@@ -264,7 +277,7 @@ impl WorkGate {
     pub fn enter_check(&self) -> Result<CheckPass, IpcError> {
         let mut s = self.state();
         Self::refuse_during_cuda_start(&s, false)?;
-        if s.work > 0 {
+        if s.work > 0 || s.left > 0 {
             return Err(busy(WORK_RUNNING));
         }
         if s.voice {
@@ -295,7 +308,12 @@ impl WorkGate {
     /// `busy` (retryable) while a meeting or a job ([`WORK_RUNNING_FOR_CUDA_REMOVAL`]) or
     /// anything else that holds the gate runs.
     pub fn enter_cuda_removal(&self) -> Result<CheckPass, IpcError> {
-        if self.state().work > 0 {
+        // Work after a meeting that was left may still have the files mapped.
+        let busy_work = {
+            let s = self.state();
+            s.work > 0 || s.left > 0
+        };
+        if busy_work {
             return Err(busy(WORK_RUNNING_FOR_CUDA_REMOVAL));
         }
         self.enter_check()
@@ -309,7 +327,7 @@ impl WorkGate {
     /// runs.
     pub fn enter_audio_check(&self) -> Result<AudioCheckPass, IpcError> {
         let mut s = self.state();
-        if s.meetings > 0 {
+        if s.meetings > 0 || s.left > 0 {
             return Err(busy(MEETING_RUNNING_FOR_AUDIO_CHECK));
         }
         if s.check {
@@ -335,7 +353,13 @@ impl WorkGate {
     /// the model check ([`CHECK_RUNNING`]), the voice sample ([`VOICE_RUNNING`]), the audio
     /// check ([`AUDIO_CHECK_RUNNING`]) or another benchmark runs.
     pub fn enter_benchmark(&self) -> Result<BenchmarkPass, IpcError> {
-        Self::refuse_during_cuda_start(&self.state(), true)?;
+        {
+            let s = self.state();
+            Self::refuse_during_cuda_start(&s, true)?;
+            if s.left > 0 {
+                return Err(busy(WORK_RUNNING_FOR_BENCHMARK));
+            }
+        }
         self.enter_restart()
     }
 
@@ -367,16 +391,18 @@ impl WorkGate {
 }
 
 impl WorkPass {
-    /// A meeting job's pass beside this one, for work this pass's thread hands to a thread that
-    /// may outlive it (a meeting's work after the meeting, left behind for stopping answering,
-    /// may still wake and load models). Never refused: while this pass is held, nothing it keeps
-    /// out can be running.
+    /// The pass of a meeting's work after the meeting, beside this meeting's own: its thread may
+    /// outlive the meeting's when left for stopping answering, and may still wake and load
+    /// models, so it keeps the model check, the benchmark, the voice sample, the audio check and
+    /// a CUDA part's removal (it may have the files mapped) out until it ends, but not an
+    /// update's restart, which ends the process anyway. Never refused: while this pass is held,
+    /// nothing it keeps out can be running.
     #[must_use]
-    pub fn job_beside(&self) -> WorkPass {
-        self.gate.state().work += 1;
+    pub fn after_meeting_beside(&self) -> WorkPass {
+        self.gate.state().left += 1;
         WorkPass {
             gate: self.gate.clone(),
-            meeting: false,
+            kind: PassKind::AfterMeeting,
         }
     }
 }
@@ -384,9 +410,13 @@ impl WorkPass {
 impl Drop for WorkPass {
     fn drop(&mut self) {
         let mut s = self.gate.state();
-        s.work = s.work.saturating_sub(1);
-        if self.meeting {
-            s.meetings = s.meetings.saturating_sub(1);
+        match self.kind {
+            PassKind::Meeting => {
+                s.work = s.work.saturating_sub(1);
+                s.meetings = s.meetings.saturating_sub(1);
+            }
+            PassKind::Job => s.work = s.work.saturating_sub(1),
+            PassKind::AfterMeeting => s.left = s.left.saturating_sub(1),
         }
     }
 }
