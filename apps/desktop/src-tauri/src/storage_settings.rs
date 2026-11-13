@@ -70,22 +70,41 @@ pub struct StorageView {
     pub problem: Option<String>,
 }
 
-/// The last automatic run's problem, shared by the retention thread and the page.
+/// The last automatic run's problem, shared by the retention thread and the page, and start-up
+/// recovery's (`crate::recovery`), which no retention run clears: it comes once per start.
 #[derive(Debug, Clone, Default)]
-pub struct RetentionStatus(Arc<Mutex<Option<String>>>);
+pub struct RetentionStatus(Arc<Mutex<Problems>>);
+
+#[derive(Debug, Default)]
+struct Problems {
+    retention: Option<String>,
+    recovery: Option<&'static str>,
+}
 
 impl RetentionStatus {
-    /// The last problem.
+    /// The last problems, retention's first.
     #[must_use]
     pub fn problem(&self) -> Option<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        let p = self.problems();
+        match (&p.retention, p.recovery) {
+            (Some(r), Some(c)) => Some(format!("{r} {c}")),
+            (Some(r), None) => Some(r.clone()),
+            (None, c) => c.map(str::to_owned),
+        }
     }
 
-    fn set(&self, problem: Option<&str>) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = problem.map(str::to_owned);
+    /// The last retention run's problem (`None`: it went well).
+    pub(crate) fn set(&self, problem: Option<&str>) {
+        self.problems().retention = problem.map(str::to_owned);
+    }
+
+    /// Start-up recovery's problem, fixed copy.
+    pub(crate) fn set_recovery(&self, problem: &'static str) {
+        self.problems().recovery = Some(problem);
+    }
+
+    fn problems(&self) -> std::sync::MutexGuard<'_, Problems> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
