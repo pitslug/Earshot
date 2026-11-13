@@ -1244,7 +1244,7 @@ fn meeting_events_provisional_words_refused_for_your_own_voice_say_so_once() {
 /// are two sentences in one banner, other people first.
 #[test]
 fn meeting_events_provisional_words_banner_names_whose_words_are_off() {
-    use crate::plain_text::{PREVIEWS_OWN_VOICE_NPU, PreviewScope, provisional_words_copy};
+    use crate::plain_text::{PREVIEWS_OWN_VOICE_NPU_ALONE, PreviewScope, provisional_words_copy};
     let behind = |scope| provisional_words_copy(PreviewOffReason::FellBehind, scope).unwrap();
     let said = |you, them| provisional_words_banner([you, them]);
     let fell = Some(Some(PreviewOffReason::FellBehind));
@@ -1254,15 +1254,127 @@ fn meeting_events_provisional_words_banner_names_whose_words_are_off() {
     assert_eq!(said(fell, fell), Some(behind(PreviewScope::All)));
     assert_eq!(said(None, fell), Some(behind(PreviewScope::All)));
     assert_eq!(said(fell, None), Some(behind(PreviewScope::All)));
+    // Other people's words are off: the user's own voice is said alone, never "shown for other
+    // people only" (T12.33 review).
     assert_eq!(
         said(Some(Some(PreviewOffReason::OwnVoiceOnNpu)), fell),
         Some(format!(
-            "{} {PREVIEWS_OWN_VOICE_NPU}",
+            "{} {PREVIEWS_OWN_VOICE_NPU_ALONE}",
             behind(PreviewScope::Them)
         ))
     );
     assert_eq!(said(running, running), None);
     assert_eq!(said(None, None), None);
+}
+
+/// T12.33 review: a refusal of the user's own voice says other people's words are shown only
+/// while their track says they run. Their track off for a reason the banner gives: that reason,
+/// and the user's own voice alone. Not heard from yet: nothing about the user's own voice.
+#[test]
+fn meeting_events_provisional_words_own_voice_never_contradicts_the_other_track() {
+    use crate::plain_text::{
+        PREVIEWS_OWN_VOICE_MEMORY, PREVIEWS_OWN_VOICE_MEMORY_ALONE, PREVIEWS_OWN_VOICE_NPU,
+        PREVIEWS_OWN_VOICE_NPU_ALONE, PreviewScope, provisional_words_copy,
+    };
+    let other = |reason| provisional_words_copy(reason, PreviewScope::Them).unwrap();
+    for (own, shown, alone) in [
+        (
+            PreviewOffReason::OwnVoiceOnNpu,
+            PREVIEWS_OWN_VOICE_NPU,
+            PREVIEWS_OWN_VOICE_NPU_ALONE,
+        ),
+        (
+            PreviewOffReason::NotEnoughMemory,
+            PREVIEWS_OWN_VOICE_MEMORY,
+            PREVIEWS_OWN_VOICE_MEMORY_ALONE,
+        ),
+    ] {
+        let you = Some(Some(own));
+        let said = |them| provisional_words_banner([you, them]);
+        // Other people's run.
+        assert_eq!(said(Some(None)), Some(shown.to_owned()));
+        // Other people's off for every reason the banner gives.
+        for reason in [
+            PreviewOffReason::OnBattery,
+            PreviewOffReason::CatchingUp,
+            PreviewOffReason::FellBehind,
+            PreviewOffReason::NeedsCompiledModel,
+            PreviewOffReason::Model,
+            PreviewOffReason::LoadFailed,
+            PreviewOffReason::Failed,
+        ] {
+            let banner = said(Some(Some(reason))).expect("a banner");
+            assert_eq!(banner, format!("{} {alone}", other(reason)), "{reason:?}");
+            assert!(!banner.contains("other people only"), "{banner}");
+            assert_copy(&banner);
+        }
+        // Other people's not heard from yet, or off for a reason that needs no word.
+        assert_eq!(said(None), None);
+        assert_eq!(said(Some(Some(PreviewOffReason::TranscriptStopped))), None);
+    }
+}
+
+/// T12.33 review: on battery, under Everyone on a computer that refuses the user's own voice, the
+/// banner says the battery for other people and the user's own voice alone.
+#[test]
+fn meeting_events_provisional_words_own_voice_refused_and_others_on_battery() {
+    use crate::plain_text::PREVIEWS_OWN_VOICE_NPU_ALONE;
+    let mut m = EventMapper::new(CaptureMode::Call);
+    let now = Instant::now();
+    assert!(
+        m.map(
+            &preview_state(TrackId::Mic, Some(PreviewOffReason::OwnVoiceOnNpu)),
+            now
+        )
+        .is_empty(),
+        "nothing about the user's own voice before other people's are heard from"
+    );
+    let banner = preview_banner(&m.map(
+        &preview_state(TrackId::Reference, Some(PreviewOffReason::OnBattery)),
+        now,
+    ));
+    assert_eq!(
+        banner,
+        format!(
+            "Provisional words for other people are off for this meeting because the computer is \
+             on battery. Plug it in before a meeting starts to see them. \
+             {PREVIEWS_OWN_VOICE_NPU_ALONE}"
+        )
+    );
+}
+
+/// T12.33 review: other people's words waiting for the catch-up, then running: the banner ends
+/// as the "other people only" sentence and never says both at once.
+#[test]
+fn meeting_events_provisional_words_own_voice_refused_while_others_catch_up_then_run() {
+    use crate::plain_text::{PREVIEWS_OWN_VOICE_NPU, PREVIEWS_OWN_VOICE_NPU_ALONE};
+    let mut m = EventMapper::new(CaptureMode::Call);
+    let now = Instant::now();
+    let waiting = preview_banner(&m.map(
+        &preview_state(TrackId::Reference, Some(PreviewOffReason::CatchingUp)),
+        now,
+    ));
+    assert_eq!(
+        waiting,
+        "Provisional words start once the live transcript has caught up."
+    );
+    let both = preview_banner(&m.map(
+        &preview_state(TrackId::Mic, Some(PreviewOffReason::OwnVoiceOnNpu)),
+        now,
+    ));
+    assert_eq!(
+        both,
+        format!(
+            "Provisional words for other people start once the live transcript has caught up. \
+             {PREVIEWS_OWN_VOICE_NPU_ALONE}"
+        )
+    );
+    let running = preview_banner(&m.map(&preview_state(TrackId::Reference, None), now));
+    assert_eq!(running, PREVIEWS_OWN_VOICE_NPU);
+    assert!(
+        m.map(&preview_state(TrackId::Reference, None), now)
+            .is_empty()
+    );
 }
 
 /// T12.33: nothing is shown for what the user did not ask for or cannot act on: the setting off,

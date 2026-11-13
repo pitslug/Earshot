@@ -1320,7 +1320,7 @@ pub fn preview_backend_or_refusal(
         }
         BackendKind::Qnn => (BackendKind::Qnn, PREVIEW_MIN_MEMORY_NPU),
         BackendKind::Vulkan | BackendKind::Fake => {
-            return refused(PreviewOffReason::Model, "previews run on Parakeet only");
+            return refused(PreviewOffReason::Model, PREVIEWS_PARAKEET_ONLY);
         }
     };
     // Only the automatic choice has this limit: the user did not ask for previews here.
@@ -1332,6 +1332,55 @@ pub fn preview_backend_or_refusal(
         );
     }
     Ok(runs_on)
+}
+
+/// What a refusal says of a model or part that has no previews.
+const PREVIEWS_PARAKEET_ONLY: &str = "previews run on Parakeet only";
+
+fn parakeet_only() -> PreviewRefusal {
+    PreviewRefusal::new(PreviewOffReason::Model, PREVIEWS_PARAKEET_ONLY)
+}
+
+/// The model rule of previews, decided here only (T12.33): they run on a Parakeet model. A whisper
+/// model is refused ([`PreviewOffReason::Model`]); a name this build does not know is `Ok(None)`,
+/// left to the load, which refuses it in the same words.
+fn preview_model(model: &str) -> Result<Option<&'static ParakeetModel>, PreviewRefusal> {
+    match asr_model(model) {
+        Ok(AsrModel::Parakeet(p)) => Ok(Some(p)),
+        Ok(AsrModel::Whisper(_)) => Err(parakeet_only()),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The whole rule for a track's first preview session (T12.33): [`preview_backend_or_refusal`] on
+/// the track's backend, then the model rule, so a whisper track is refused before anything is
+/// loaded or said. [`load_preview`] and the app's [`crate::live::LivePreviews::rule`] both ask it.
+///
+/// # Errors
+/// The reason no preview session runs.
+pub fn preview_rule(
+    backend: &BackendInfo,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<BackendKind, PreviewRefusal> {
+    let kind = preview_backend_or_refusal(backend.kind, hardware, choice)?;
+    preview_model(&backend.model)?;
+    Ok(kind)
+}
+
+/// [`preview_rule`] for the second session, the user's own track in a call (T9.14):
+/// [`second_preview_backend_or_refusal`], then the model rule.
+///
+/// # Errors
+/// The reason no second session runs.
+pub fn second_preview_rule(
+    backend: &BackendInfo,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<BackendKind, PreviewRefusal> {
+    let kind = second_preview_backend_or_refusal(backend.kind, hardware, choice)?;
+    preview_model(&backend.model)?;
+    Ok(kind)
 }
 
 /// Why this computer runs no previews for a track on `backend`, or `None` when it does: the reason
@@ -1448,7 +1497,7 @@ pub(crate) fn load_preview_with<T, E: From<PreviewRefusal>>(
     choice: crate::preview_settings::PreviewChoice,
     load: impl FnOnce(&BackendInfo) -> Result<T, E>,
 ) -> Result<T, E> {
-    let kind = preview_backend_or_refusal(backend.kind, hardware, choice)?;
+    let kind = preview_rule(backend, hardware, choice)?;
     load(&BackendInfo {
         kind,
         ..backend.clone()
@@ -1479,7 +1528,7 @@ pub(crate) fn load_preview_second_with<T, E: From<PreviewRefusal>>(
     choice: crate::preview_settings::PreviewChoice,
     load: impl FnOnce(&BackendInfo) -> Result<T, E>,
 ) -> Result<T, E> {
-    let kind = second_preview_backend_or_refusal(backend.kind, hardware, choice)?;
+    let kind = second_preview_rule(backend, hardware, choice)?;
     load(&BackendInfo {
         kind,
         ..backend.clone()
@@ -1767,13 +1816,14 @@ fn load_preview_parakeet(
             "a preview thread could not lower its priority",
         )
     };
-    let Ok(AsrModel::Parakeet(model)) = asr_model(&backend.model) else {
-        return Err(PreviewRefusal::new(
-            PreviewOffReason::Model,
-            "previews run on Parakeet only",
-        ));
+    // A name this build does not know is refused here, by the load; a known model without
+    // previews already by the rule both share.
+    let Some(model) = preview_model(&backend.model)? else {
+        return Err(parakeet_only());
     };
-    let accel = Accelerator::of(backend.kind).ok_or("no accelerator for the backend")?;
+    let accel = Accelerator::of(backend.kind).ok_or_else(|| {
+        PreviewRefusal::new(PreviewOffReason::Model, "no accelerator for the backend")
+    })?;
     let threads = onnx_cpu_threads(cores(), 2);
     let session = load_parakeet_with(
         models,

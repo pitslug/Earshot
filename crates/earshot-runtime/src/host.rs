@@ -1411,22 +1411,20 @@ pub fn live_previews(
     let mut previews = crate::live::LivePreviews::new(Arc::new(move |backend| {
         crate::backends::load_preview(&first, backend, choice)
     }));
-    // The loaders' own rule, asked before anything is said to the user (T12.33).
+    // The loaders' own rule, backend and model, asked before anything is said to the user
+    // (T12.33).
     previews.rule = Some(Arc::new(move |backend| {
-        crate::backends::preview_backend_or_refusal(backend.kind, &crate::hardware(), choice).err()
+        crate::backends::preview_rule(backend, &crate::hardware(), choice).err()
     }));
+    // Under the automatic choice nobody asked for them: what the rule refuses needs no word.
+    previews.user_asked = choice != crate::preview_settings::PreviewChoice::Automatic;
     if choice == crate::preview_settings::PreviewChoice::Everyone {
         let second = models.clone();
         previews.own_voice = Some(Arc::new(move |backend| {
             crate::backends::load_preview_second(&second, backend, choice)
         }));
         previews.own_voice_rule = Some(Arc::new(move |backend| {
-            crate::backends::second_preview_backend_or_refusal(
-                backend.kind,
-                &crate::hardware(),
-                choice,
-            )
-            .err()
+            crate::backends::second_preview_rule(backend, &crate::hardware(), choice).err()
         }));
     }
     previews

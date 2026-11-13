@@ -184,6 +184,28 @@ pub const PREVIEWS_OWN_VOICE_NPU: &str = "Provisional words are shown for other 
 pub const PREVIEWS_OWN_VOICE_MEMORY: &str = "Provisional words are shown for other people only. \
      This computer does not have enough memory to show them for your own voice as well.";
 
+/// The user's own voice is refused beside the NPU, said alone: nothing about other people's words,
+/// which are off themselves or not started yet.
+pub const PREVIEWS_OWN_VOICE_NPU_ALONE: &str =
+    "Earshot cannot show provisional words for your own voice on this computer yet.";
+
+/// The user's own voice is refused for want of memory, said alone (as
+/// [`PREVIEWS_OWN_VOICE_NPU_ALONE`]).
+pub const PREVIEWS_OWN_VOICE_MEMORY_ALONE: &str =
+    "This computer does not have enough memory to show provisional words for your own voice.";
+
+/// What the meeting screen says of a refusal about the user's own voice alone (T12.33), when
+/// other people's provisional words are not shown either: fixed copy, claiming nothing about
+/// theirs. `None` for every other kind.
+#[must_use]
+pub fn own_voice_alone_copy(reason: PreviewOffReason) -> Option<&'static str> {
+    match reason {
+        PreviewOffReason::OwnVoiceOnNpu => Some(PREVIEWS_OWN_VOICE_NPU_ALONE),
+        PreviewOffReason::NotEnoughMemory => Some(PREVIEWS_OWN_VOICE_MEMORY_ALONE),
+        _ => None,
+    }
+}
+
 /// What the meeting screen says when provisional words are off or waiting (T12.33), by kind:
 /// fixed copy, never the runtime's text. `None` for what needs no word: the user turned them off
 /// or never asked, the meeting has none by design, or another banner already says it (a stopped
@@ -216,7 +238,8 @@ pub fn provisional_words_copy(reason: PreviewOffReason, scope: PreviewScope) -> 
             "stopped working and are off for the rest of this meeting. The transcript is not \
              affected."
         }
-        // About the user's own voice whatever the scope.
+        // About the user's own voice whatever the scope, and saying other people's words are
+        // shown: only for while they are ([`own_voice_alone_copy`] otherwise).
         PreviewOffReason::OwnVoiceOnNpu => return Some(PREVIEWS_OWN_VOICE_NPU.to_owned()),
         PreviewOffReason::NotEnoughMemory => return Some(PREVIEWS_OWN_VOICE_MEMORY.to_owned()),
         PreviewOffReason::TranscriptStopped
@@ -769,6 +792,41 @@ mod provisional_words_tests {
                     said.contains(&reason),
                     "{reason:?} {scope:?}"
                 );
+            }
+        }
+    }
+
+    /// The user's own voice said alone: only its two kinds have words, which are plain by the same
+    /// rules as the rest and never claim other people's words are shown.
+    #[test]
+    fn plain_text_provisional_words_own_voice_alone_is_plain_and_claims_nothing_of_others() {
+        for reason in ALL {
+            let Some(copy) = own_voice_alone_copy(reason) else {
+                assert!(
+                    !matches!(
+                        reason,
+                        PreviewOffReason::OwnVoiceOnNpu | PreviewOffReason::NotEnoughMemory
+                    ),
+                    "{reason:?}"
+                );
+                continue;
+            };
+            assert!(copy.ends_with('.'), "{copy}");
+            assert!(
+                copy.contains("provisional words for your own voice"),
+                "{copy}"
+            );
+            assert!(!copy.to_lowercase().contains("other people"), "{copy}");
+            assert!(!copy.contains("  "), "a run of spaces in: {copy:?}");
+            assert!(!copy.contains('\n'), "{copy:?}");
+            assert!(!copy.contains('\u{2014}'), "{copy}");
+            assert!(!names_developer_tool(copy), "{copy}");
+            let lower = copy.to_lowercase();
+            for word in [
+                "preview", "session", "parakeet", "whisper", "onnx", "qnn", "npu", "cuda",
+                "backend", "thread", "decode", "compiled", "please",
+            ] {
+                assert!(!lower.contains(word), "{word:?} in: {copy}");
             }
         }
     }

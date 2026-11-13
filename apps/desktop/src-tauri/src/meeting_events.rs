@@ -602,10 +602,13 @@ pub const PROVISIONAL_WORDS_KEY: &str = "provisional-words";
 /// the computer's audio), `None` when there is nothing to say: fixed copy by kind
 /// ([`crate::plain_text::provisional_words_copy`]). Both tracks off for one reason is one
 /// sentence about all of them; otherwise each track's sentence says whose words it is about,
-/// other people first.
+/// other people first. A refusal of the user's own voice says other people's words are shown only
+/// while their track says so; while theirs are off for a reason the banner gives, it is said
+/// alone, and before their track has said anything it is not said yet. No sentence contradicts
+/// another.
 #[must_use]
 pub fn provisional_words_banner(said: [Option<Option<PreviewOffReason>>; 2]) -> Option<String> {
-    use crate::plain_text::{PreviewScope, provisional_words_copy};
+    use crate::plain_text::{PreviewScope, own_voice_alone_copy, provisional_words_copy};
     let [you, them] = said;
     type Said = Option<Option<PreviewOffReason>>;
     let copy = |reason: Said, other: Said, scope| {
@@ -618,14 +621,22 @@ pub fn provisional_words_banner(said: [Option<Option<PreviewOffReason>>; 2]) -> 
         };
         provisional_words_copy(reason, scope)
     };
+    let them_sentence = copy(them, you, PreviewScope::Them);
+    let you_sentence = match you {
+        Some(Some(reason)) if own_voice_alone_copy(reason).is_some() => match them {
+            // Other people's words are shown.
+            Some(None) => provisional_words_copy(reason, PreviewScope::You),
+            // Theirs are off and the banner says why: the user's own voice alone.
+            Some(Some(_)) if them_sentence.is_some() => {
+                own_voice_alone_copy(reason).map(str::to_owned)
+            }
+            // Not heard from yet, or off for a reason that needs no word: nothing yet.
+            _ => None,
+        },
+        _ => copy(you, them, PreviewScope::You),
+    };
     let mut sentences: Vec<String> = Vec::new();
-    for sentence in [
-        copy(them, you, PreviewScope::Them),
-        copy(you, them, PreviewScope::You),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    for sentence in [them_sentence, you_sentence].into_iter().flatten() {
         if !sentences.contains(&sentence) {
             sentences.push(sentence);
         }

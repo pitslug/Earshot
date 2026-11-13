@@ -49,8 +49,13 @@
 //! or why not, as a kind ([`PreviewOffReason`]) in [`super::RuntimeEvent::LivePreviewState`], once
 //! per change: waiting for the transcript to catch up, running once the model is loaded, off for
 //! the meeting. A track without previews (the mic in a call without `own_voice`) says nothing.
-//! [`LivePreviews::rule`] is asked before a wait or the battery is said, so neither is said for
-//! previews this computer would not run anyway (turned off, off by default, another model).
+//! [`LivePreviews::rule`] is asked before a wait or the battery is said, once per track (its
+//! backend and model never change once known), so neither is said for previews this computer
+//! would not run anyway: turned off, off by default, a part without them, and in the app a whisper
+//! model (`backends::preview_rule`, the loader's own rule). Under the automatic choice what the
+//! rule refuses is said as off by default ([`LivePreviews::user_asked`]). While a hold keeps
+//! previews waiting, the power supply is read at most every [`super::LiveConfig::power_poll`],
+//! and a computer on battery then says the battery rather than the wait.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -122,7 +127,8 @@ pub enum PreviewOffReason {
     OwnVoiceOnNpu,
     /// The user asked for their own voice too, and this computer has too little memory for it.
     NotEnoughMemory,
-    /// Off by default on a computer with this little memory; the user did not turn them on.
+    /// Off by default here, and the user did not turn them on: a computer with this little memory,
+    /// or under the automatic choice anything the rule refuses ([`LivePreviews::user_asked`]).
     OffByDefault,
     /// The meeting's transcription model or the part it runs on has no previews.
     Model,
@@ -254,6 +260,12 @@ pub struct LivePreviews {
     pub rule: Option<PreviewRule>,
     /// The same for `own_voice`.
     pub own_voice_rule: Option<PreviewRule>,
+    /// Whether the user turned provisional words on themselves (default true). When false, under
+    /// the automatic choice, what `rule` or `own_voice_rule` refuses is said as
+    /// [`PreviewOffReason::OffByDefault`]: nobody asked for them, so a computer, model or part
+    /// without them needs no word. The report keeps the rule's own text; what happens to previews
+    /// that were to run (the battery, a wait, a failure) is said whatever this is.
+    pub user_asked: bool,
     /// How often the unfinished stretch is decoded (a starting value, default 1 s).
     pub interval: Duration,
     /// How much of it (a starting value, default 12 s).
@@ -286,6 +298,7 @@ impl LivePreviews {
             own_voice: None,
             rule: None,
             own_voice_rule: None,
+            user_asked: true,
             interval: Duration::from_secs(1),
             window: Duration::from_secs(12),
             slow: Duration::from_secs(3),
@@ -327,6 +340,7 @@ impl PartialEq for LivePreviews {
             }
             && same_rule(&self.rule, &other.rule)
             && same_rule(&self.own_voice_rule, &other.own_voice_rule)
+            && self.user_asked == other.user_asked
             && match (&self.stream, &other.stream) {
                 (None, None) => true,
                 (Some(a), Some(b)) => std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b)),
@@ -1096,19 +1110,17 @@ where
         let mut messages: [Vec<FromPreview>; 2] = [Vec::new(), Vec::new()];
         let mut crashed = [false; 2];
         for track in TRACKS {
-            if let PreviewState::Running(p) = &self.previews[slot(track)] {
+            if let PreviewState::Running(p) = &mut self.previews[slot(track)] {
                 p.yield_to_real_decode();
                 // Read before the messages: a thread that ended has sent all it will.
                 let ended = p.thread.as_ref().is_some_and(JoinHandle::is_finished);
-                let said: Vec<FromPreview> = p.from.try_iter().collect();
-                // It ended unasked and without a word: it crashed, and the user hears it now
-                // rather than never (the report at the end says the same).
-                crashed[slot(track)] = ended
-                    && !p.stop.load(Ordering::Acquire)
-                    && !said
-                        .iter()
-                        .any(|m| matches!(m, FromPreview::Off(_) | FromPreview::Done));
-                messages[slot(track)] = said;
+                messages[slot(track)] = p.from.try_iter().collect();
+                // A thread that ended is joined now, which does not wait: only a panic is a crash,
+                // and the user hears it now rather than never (the report at the end says the
+                // same). One that returned said why itself, in the messages above.
+                if ended && let Some(thread) = p.thread.take() {
+                    crashed[slot(track)] = thread.join().is_err();
+                }
             }
         }
         // A thread trims words after the worker's frontier moved, and a worker sends a decode's
@@ -1173,16 +1185,46 @@ where
     }
 
     /// What the session's rule ([`LivePreviews::rule`]) refuses for `track`'s waiting previews
-    /// on `backend`, if it was given one.
+    /// on `backend`, if it was given one; under the automatic choice as
+    /// [`PreviewOffReason::OffByDefault`] ([`LivePreviews::user_asked`]). Asked at most once per
+    /// track: a refusal turns them off, and an answer that allows them is kept.
     fn preview_rule_refusal(
-        &self,
+        &mut self,
         track: TrackId,
         backend: &BackendInfo,
     ) -> Option<PreviewRefusal> {
+        if self.preview_rule_allowed[slot(track)] {
+            return None;
+        }
         let PreviewState::Pending(previews) = &self.previews[slot(track)] else {
             return None;
         };
-        previews.rule.as_ref().and_then(|rule| rule(backend))
+        let Some(why) = previews.rule.as_ref().and_then(|rule| rule(backend)) else {
+            self.preview_rule_allowed[slot(track)] = true;
+            return None;
+        };
+        Some(if previews.user_asked {
+            why
+        } else {
+            PreviewRefusal {
+                reason: PreviewOffReason::OffByDefault,
+                ..why
+            }
+        })
+    }
+
+    /// The power supply for previews waiting for a hold: read at most every
+    /// [`super::LiveConfig::power_poll`], as running previews read it, never on every loop.
+    fn waiting_supply(&mut self) -> PowerSupply {
+        let now = Instant::now();
+        if let Some((supply, due)) = self.waiting_power
+            && now < due
+        {
+            return supply;
+        }
+        let supply = self.policy.power.supply();
+        self.waiting_power = Some((supply, now + self.policy.power_poll));
+        supply
     }
 
     /// Starts `track`'s thread when nothing holds it back any more (module docs).
@@ -1195,7 +1237,9 @@ where
             )
         {
             // The wait is said only where previews would start after it: once the track's
-            // backend is known, where the computer's rule runs them on it, and not on battery.
+            // backend is known and where the computer's rule runs them on it. On battery the
+            // battery is said instead, as soon as it is read: the start after the hold reads the
+            // supply again and decides.
             let backend = self
                 .stretch_records
                 .iter()
@@ -1206,7 +1250,9 @@ where
             {
                 if let Some(why) = self.preview_rule_refusal(track, &backend) {
                     self.previews_off(track, why);
-                } else if self.policy.power.supply() != PowerSupply::Battery {
+                } else if self.waiting_supply() == PowerSupply::Battery {
+                    self.say_previews(track, Some(PreviewOffReason::OnBattery));
+                } else {
                     self.say_previews(track, Some(PreviewOffReason::CatchingUp));
                 }
             }

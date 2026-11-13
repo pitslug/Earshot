@@ -1210,6 +1210,8 @@ where
         previews,
         preview_said: [None, None],
         next_preview_power: None,
+        preview_rule_allowed: [false, false],
+        waiting_power: None,
         speaking: [false, false],
         recording_stopped: [false, false],
         stop_self: false,
@@ -1394,6 +1396,12 @@ struct Session<S> {
     preview_said: [Option<Option<PreviewOffReason>>; 2],
     /// When the running previews next read the power supply.
     next_preview_power: Option<Instant>,
+    /// Each track whose previews the rule ([`LivePreviews::rule`]) allowed: asked once, because a
+    /// track's backend and model never change once its stretch record exists (T12.33).
+    preview_rule_allowed: [bool; 2],
+    /// The power supply as previews waiting for a hold last read it, and when they read it next
+    /// (at most every [`LiveConfig::power_poll`], T12.33).
+    waiting_power: Option<(PowerSupply, Instant)>,
     /// Each track's voice activity now (by [`slot`]).
     speaking: [bool; 2],
     /// Each track whose recording stopped on a write error (by [`slot`], T9.17).
