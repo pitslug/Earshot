@@ -441,19 +441,32 @@ impl Encoder {
     }
 
     /// Runs `f` on the session, after the lock for a shared one; returns how long the lock took.
-    fn with<R>(&mut self, f: impl FnOnce(&mut OnnxSession) -> R) -> (R, Option<Duration>) {
+    ///
+    /// # Errors
+    /// `f`'s error, or [`OnnxError::Runtime`] for a shared session whose lock is poisoned.
+    fn with<T>(
+        &mut self,
+        f: impl FnOnce(&mut OnnxSession) -> Result<T, OnnxError>,
+    ) -> (Result<T, OnnxError>, Option<Duration>) {
         match self {
             Self::Own(s) => (f(s), None),
             Self::Shared(s) => {
                 let asked = std::time::Instant::now();
-                // A poisoned lock means another model panicked inside a run: the session itself
-                // keeps no state between calls, so the next call may use it.
-                let mut guard = s.session.lock().unwrap_or_else(PoisonError::into_inner);
-                let waited = asked.elapsed();
-                (f(&mut guard), Some(waited))
+                let result = lock_shared(&s.session).and_then(|mut guard| f(&mut guard));
+                (result, Some(asked.elapsed()))
             }
         }
     }
+}
+
+/// The lock of a shared encoder. A poisoned lock means another model panicked inside a run, so
+/// the session's state after that run is not known: an error, never a reuse.
+fn lock_shared<T>(lock: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, OnnxError> {
+    lock.lock().map_err(|_: PoisonError<_>| {
+        OnnxError::Runtime(
+            "the shared encoder's lock is poisoned: another model panicked inside a run".to_owned(),
+        )
+    })
 }
 
 impl ParakeetTdt {
@@ -1021,6 +1034,22 @@ impl Transcriber for ParakeetTdt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parakeet_shared_encoder_lock_poisoned_is_an_error() {
+        let lock = Arc::new(Mutex::new(1_u32));
+        assert_eq!(*lock_shared(&lock).unwrap(), 1);
+        let held = Arc::clone(&lock);
+        let _ = std::thread::spawn(move || {
+            let _guard = held.lock().unwrap();
+            panic!("a run panicked while holding the encoder");
+        })
+        .join();
+        match lock_shared(&lock) {
+            Err(OnnxError::Runtime(m)) => assert!(m.contains("poisoned"), "{m}"),
+            other => panic!("{:?}", other.map(|g| *g)),
+        }
+    }
 
     fn placed(lines: &[&str], requested: crate::Provider) -> SessionBackend {
         let mut placement = crate::runtime::Placement::default();
