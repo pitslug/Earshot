@@ -56,7 +56,7 @@ From the 2.7.0 zip, sizes measured here:
 | `QnnHtpV81Stub.dll`, `libQnnHtpV81Skel.so` | 14.8 |
 | **Total** | **about 132** |
 
-These are the files `models/manifest.toml` pins for the plugin. Plus `Qualcomm_LICENSE.pdf`, `LICENSE` and `ThirdPartyNotices.txt`. The zip also holds `libqnnhtpv73.cat` and `libqnnhtpv81.cat`, which the manifest does not pin: T8.4 should find out whether the NPU path needs them. [Guessing that it may] Whether the 92.8 MB `QnnHtpPrepare.dll` can be dropped is untested, and it would need a re-measure on the Surface.
+These are the files `models/manifest.toml` pins for the plugin. Plus `Qualcomm_LICENSE.pdf`, `LICENSE` and `ThirdPartyNotices.txt`. The zip also holds `libqnnhtpv73.cat` and `libqnnhtpv81.cat` (about 12 KB each), the skels' signing catalogs. Since T12.12e (2026-11-13) they are pinned and shipped too: without them a context model compiled with them fails to load (docs/qnn.md). Whether the 92.8 MB `QnnHtpPrepare.dll` can be dropped is untested, and it would need a re-measure on the Surface.
 
 ## The Windows ML alternative
 

@@ -159,8 +159,8 @@ fn build_bundle_installs_exactly_llama_dlls_and_the_runtime_and_never_an_acceler
     assert!(!refused_in_install("llama.dll", X64, &[]));
 }
 
-/// T8.4e: the QNN files the owner approved for the ARM64 install, by name.
-const APPROVED_QNN_LIBRARIES: [&str; 8] = [
+/// T8.4e: the QNN files the owner approved for the ARM64 install, by name (the catalogs: T12.12e).
+const APPROVED_QNN_LIBRARIES: [&str; 10] = [
     "onnxruntime_providers_qnn.dll",
     "QnnHtp.dll",
     "QnnHtpPrepare.dll",
@@ -169,6 +169,8 @@ const APPROVED_QNN_LIBRARIES: [&str; 8] = [
     "libQnnHtpV73Skel.so",
     "QnnHtpV81Stub.dll",
     "libQnnHtpV81Skel.so",
+    "libqnnhtpv73.cat",
+    "libqnnhtpv81.cat",
 ];
 
 #[test]
@@ -188,14 +190,13 @@ fn build_bundle_qnn_files_are_refused_on_x64_and_only_the_approved_ones_allowed_
             "{name}: case does not count"
         );
     }
-    // A QNN library the owner did not approve, the catalogue files, and NVIDIA's libraries stay
-    // out of an ARM64 install too.
+    // A QNN library the owner did not approve, and NVIDIA's libraries, stay out of an ARM64
+    // install too.
     for name in [
         "QnnGpu.dll",
         "QnnSaver.dll",
         "QnnHtpV68Stub.dll",
         "libQnnHtpV68Skel.so",
-        "libqnnhtpv73.cat",
         "cublas64_13.dll",
         "onnxruntime_providers_cuda.dll",
     ] {
@@ -260,16 +261,23 @@ fn build_bundle_arm64_install_holds_exactly_the_qnn_files_and_their_licences() {
     assert_eq!(QNN_LICENSE_IN_INSTALL, "QNN-LICENSE.txt");
     assert_eq!(QNN_NOTICES_IN_INSTALL, "QNN-ThirdPartyNotices.txt");
     assert!(!arm.contains(&PathBuf::from("LICENSE")));
-    // Exactly these on top of what x64 and ARM64 share, and no catalogue file.
+    // Exactly these on top of what x64 and ARM64 share, the skels' catalogs among them (T12.12e).
     assert_eq!(qnn_install_files().len(), APPROVED_QNN_LIBRARIES.len() + 3);
     let base = expected_files(ARM64_WINDOWS)
         .into_iter()
         .filter(|f| !names.contains(&f.to_str().unwrap()) && f != Path::new(QNN_NOTICE))
         .count();
     assert_eq!(arm.len(), base + qnn_install_files().len() + 1);
-    assert!(
-        !arm.iter()
-            .any(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("cat")))
+    let catalogs: Vec<&PathBuf> = arm
+        .iter()
+        .filter(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("cat")))
+        .collect();
+    assert_eq!(
+        catalogs,
+        [
+            &PathBuf::from("libqnnhtpv73.cat"),
+            &PathBuf::from("libqnnhtpv81.cat")
+        ]
     );
     // x64 holds none of it.
     for name in names.iter().chain([&QNN_NOTICE]) {
@@ -298,9 +306,10 @@ fn build_bundle_qnn_files_come_from_pinned_members_of_the_manifest() {
             "{from} must be a pinned member of {QNN_ARTEFACT}"
         );
     }
-    // Every pinned library ships, so the install and the runtime's pins agree.
+    // Every pinned library and catalog ships, so the install and the runtime's pins agree.
     for mm in &x.members {
-        let library = mm.path.ends_with(".dll") || mm.path.ends_with(".so");
+        let library =
+            mm.path.ends_with(".dll") || mm.path.ends_with(".so") || mm.path.ends_with(".cat");
         assert_eq!(
             library,
             QNN_LIBRARIES.contains(&mm.path.as_str()),

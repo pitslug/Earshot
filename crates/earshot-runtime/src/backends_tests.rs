@@ -2482,6 +2482,7 @@ fn backends_preview_on_the_npu_loads_only_a_compiled_model() {
 fn backends_preview_npu_loads_are_not_recorded() {
     use crate::npu_compiled::How;
     let refused = How::Ordinary {
+        steps: vec![crate::npu_compiled::Step::CompiledLoad],
         why: "the compiled model was refused".to_owned(),
     };
     for how in [How::Compiled, refused] {

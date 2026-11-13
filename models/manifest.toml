@@ -436,6 +436,18 @@ path = "libQnnHtpV81Skel.so"
 sha256 = "e1eeb53f7fe1699fbe842ea2bb495a310ae7ac638c33e1ae42077d48a1ff0764"
 size = 14198532
 
+# The skels' signing catalogs (T12.12e): without them beside the skels a context model compiled
+# with them fails to load (QNN_COMMON_ERROR_MEM_ALLOC, measured on the Surface 2026-11-13).
+[[artefact.extract.member]]
+path = "libqnnhtpv73.cat"
+sha256 = "c275fd4293f3d81493b7d23ec546954d77245b6ac96a1be9ee91d19ef9186a8b"
+size = 12216
+
+[[artefact.extract.member]]
+path = "libqnnhtpv81.cat"
+sha256 = "744c1e21b5dbd6bd7ca1f5054a5c3ec81d7b495afd6be60e699b920757b7b372"
+size = 12213
+
 [[artefact.extract.member]]
 path = "Qualcomm_LICENSE.pdf"
 sha256 = "ec1dccfdcba5c6e64126e84199b8362bf4999107bfa567ebe831dbb4c461692b"

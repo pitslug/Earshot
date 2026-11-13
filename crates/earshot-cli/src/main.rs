@@ -98,7 +98,7 @@ impl From<MicRoleArg> for MicRole {
 fn main() -> anyhow::Result<()> {
     // The NPU compile helper (T12.12b): this exe in a hidden mode, so a run never closes an NPU
     // session it compiled with.
-    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if let Some(code) = earshot_runtime::npu_compiled::child_main(&args) {
         std::process::exit(code);
     }

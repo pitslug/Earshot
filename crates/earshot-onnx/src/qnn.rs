@@ -51,7 +51,8 @@ pub struct QnnPackage {
     /// SHA-256 of [`QNN_HTP_LIB`] (manifest member pin).
     pub htp_sha256: &'static str,
     /// `(file name, SHA-256)` of every other library the manifest pins for the package (T8.4e),
-    /// checked before anything is loaded, because the backend loads them from the same folder.
+    /// and on ARM64 the skels' signing catalogs (T12.12e), checked before anything is loaded,
+    /// because the backend loads them from the same folder.
     pub libraries: &'static [(&'static str, &'static str)],
 }
 
@@ -85,6 +86,16 @@ pub const QNN_ARM64: QnnPackage = QnnPackage {
         (
             "libQnnHtpV81Skel.so",
             "e1eeb53f7fe1699fbe842ea2bb495a310ae7ac638c33e1ae42077d48a1ff0764",
+        ),
+        // The skels' signing catalogs (T12.12e): a context model compiled with them present does
+        // not load without them (QNN_COMMON_ERROR_MEM_ALLOC).
+        (
+            "libqnnhtpv73.cat",
+            "c275fd4293f3d81493b7d23ec546954d77245b6ac96a1be9ee91d19ef9186a8b",
+        ),
+        (
+            "libqnnhtpv81.cat",
+            "744c1e21b5dbd6bd7ca1f5054a5c3ec81d7b495afd6be60e699b920757b7b372",
         ),
     ],
 };
