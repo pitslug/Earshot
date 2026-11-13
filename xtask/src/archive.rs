@@ -425,7 +425,11 @@ fn extract_zip_entries<R: Read + Seek>(
             m => bail!("zip entry `{raw}` uses unsupported compression method {m}"),
         };
         // Never write more than the declared size (+1 byte to detect an overrun).
-        let mut src = src.take(z.size + 1);
+        let limit = z
+            .size
+            .checked_add(1)
+            .with_context(|| format!("zip entry `{raw}`: declared size {} is too large", z.size))?;
+        let mut src = src.take(limit);
         let mut out = File::create(&dest).with_context(|| format!("create {}", dest.display()))?;
         let mut crc = flate2::Crc::new();
         let mut buf = vec![0u8; 1 << 16];
@@ -703,6 +707,28 @@ mod tests {
         assert!(zip64_fields([1, 2, u32::MAX], &[]).is_err());
         assert!(zip64_fields([1, 2, u32::MAX], &[1, 0, 4, 0, 0, 0, 0, 0]).is_err());
         assert_eq!(zip64_fields([1, 2, 3], &[]).unwrap(), [1, 2, 3]);
+    }
+
+    /// A zip64 size of `u64::MAX` (a hostile archive) is an error, never an overflow panic.
+    #[test]
+    fn zip_refuses_a_declared_size_of_u64_max() {
+        let data = b"some bytes";
+        let plain = zip_bytes(&[("top/a.bin", data, false, 0o100_644, 0)]);
+        let mut z = with_zip64_fields(&plain, true, false);
+        // The zip64 field holds the uncompressed size first (APPNOTE 4.5.3).
+        let size = (data.len() as u64).to_le_bytes();
+        let hits: Vec<usize> = (0..z.len() - 7).filter(|&i| z[i..i + 8] == size).collect();
+        assert_eq!(
+            hits.len(),
+            2,
+            "the zip64 sizes, uncompressed then compressed"
+        );
+        let at = hits[0];
+        z[at..at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        let d = tmp("zip-max");
+        let err = zip_extract(z, &d.join("out")).unwrap_err();
+        assert!(format!("{err:#}").contains("too large"), "{err:#}");
+        assert!(!d.join("out").exists());
     }
 
     fn zip_extract(z: Vec<u8>, into: &Path) -> Result<()> {
