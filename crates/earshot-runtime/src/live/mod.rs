@@ -2446,9 +2446,6 @@ where
     }
 }
 
-/// Panics injected by tests into a track's finish (T9.19 with T9.18), keyed by the data
-/// directory so tests running at once never see each other's.
-#[cfg(test)]
 /// How a session learned that the mic's live ASR stopped for good.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MicStop {
@@ -2489,6 +2486,9 @@ pub(crate) mod mic_stops {
     }
 }
 
+/// Panics injected by tests into a track's finish (T9.19 with T9.18), keyed by the data
+/// directory so tests running at once never see each other's.
+#[cfg(test)]
 pub(crate) mod finalize_panics {
     use std::path::PathBuf;
     use std::sync::Mutex;
