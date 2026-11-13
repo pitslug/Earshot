@@ -193,10 +193,25 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
     std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
-    let part = &merged[opts.part.as_str()];
     println!(
-        "bench {} on {backend}: rtf {:.3}, chunk latency p50 {:.2} ms p95 {:.2} ms, peak {} MB",
-        opts.part,
+        "{}",
+        console_line(&opts.part, backend, &merged[opts.part.as_str()])
+    );
+    println!("bench: {}", path.display());
+    Ok(())
+}
+
+/// The console summary of one part's timing, with its note: a timing whose note says the host
+/// was shared is not a figure (AGENTS.md), and a run without `--note` says so rather than
+/// reading as clean.
+fn console_line(name: &str, backend: &str, part: &Value) -> String {
+    let note = match part["note"].as_str() {
+        Some(n) if !n.trim().is_empty() => format!("note: {n}"),
+        _ => "no note (host load not recorded: pass --note)".to_owned(),
+    };
+    format!(
+        "bench {name} on {backend}: rtf {:.3}, chunk latency p50 {:.2} ms p95 {:.2} ms, peak {} \
+         MB; {note}",
         part["rtf"].as_f64().unwrap_or(f64::NAN),
         part["live"]["latency_ms"]["p50"]
             .as_f64()
@@ -205,14 +220,33 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
             .as_f64()
             .unwrap_or(f64::NAN),
         part["peak_memory_mb"]["working_set"],
-    );
-    println!("bench: {}", path.display());
-    Ok(())
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bench_console_line_prints_the_note_or_says_there_is_none() {
+        let part = |note: Value| {
+            json!({
+                "rtf": 0.25,
+                "live": { "latency_ms": { "p50": 1.0, "p95": 2.0 } },
+                "peak_memory_mb": { "working_set": 100 },
+                "note": note,
+            })
+        };
+        let line = console_line("asr", "cpu", &part(json!("a build ran beside it")));
+        assert!(line.ends_with("; note: a build ran beside it"), "{line}");
+        for none in [Value::Null, json!(""), json!("  ")] {
+            let line = console_line("asr", "cpu", &part(none));
+            assert!(
+                line.ends_with("; no note (host load not recorded: pass --note)"),
+                "{line}"
+            );
+        }
+    }
 
     fn options(part: &str) -> Options {
         Options {
