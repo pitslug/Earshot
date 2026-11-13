@@ -581,6 +581,8 @@ fn asr_stretch_a_cut_piece_is_held_while_the_next_cut_could_join_it() {
     }
     // Such a piece settles when its second cut is known (the window from frame
     // `100 i + 50`), and then at once: the cut after it is at least half a window on.
+    // (The rule before T12.31 gives these same frames; the second half below is the part
+    // that rule fails.)
     assert_eq!(
         released_before_the_next_window(&plan, &first, &probs, frame, &config),
         0

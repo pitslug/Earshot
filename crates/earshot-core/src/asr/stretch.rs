@@ -140,15 +140,8 @@ fn settle(probs: &[f32], frame: usize, config: &PieceConfig) -> (Vec<Span>, usiz
             //   `p.end - last.start > max` and it never joins; or
             // - the next cut part: `p.end = cut_point(c, ..)` over probabilities not all
             //   heard yet, never before `earliest_cut(c, ..)`.
-            // So nothing can join `last` once `earliest_cut(c) - last.start > max`. With
-            // `h = max / 2` (rounded down), `c >= s + h` and `earliest_cut(c) >= c + h`, so
-            // the hold is left only where `last.start == s`, both cuts can sit on their
-            // first candidate frame and the frame rounding loses nothing: for an even
-            // `max`, `c == s + h` with `s + max` on the frame grid (then a next cut at
-            // exactly `s + max` joins the two parts into one window); an odd `max` also
-            // allows one sample of rounding in all. There the next cut decides, and
-            // `last` waits for it as before. A piece the earlier rule released
-            // (`c - last.start >= max`) is released here too, as `earliest_cut(c) > c`.
+            // So nothing can join `last` once `earliest_cut(c) - last.start > max`;
+            // otherwise the next cut decides and `last` waits for it.
             earliest_cut(next_start, frame, max) - last.start <= max
         } else {
             // The next part starts at or after `next_start` and is never empty (cuts move
