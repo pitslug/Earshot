@@ -129,7 +129,7 @@ use earshot_core::audio::{MonoBuffer, PIPELINE_RATE, quantise_pcm16};
 use earshot_core::capture::TrackId;
 use earshot_core::identity::EntityId;
 use earshot_core::metrics::sisdr::si_sdr;
-use earshot_core::metrics::wer::{WerCounts, word_errors_normalized};
+use earshot_core::metrics::wer::{WerCounts, word_errors, word_errors_normalized};
 use earshot_core::pipeline::{LiveTrack, PartialPolicy, PipelineEvent};
 use earshot_core::sim::ScenarioFile;
 use earshot_onnx::silero::SileroVad;
@@ -656,6 +656,7 @@ fn stream_determinism(args: &Args, prod: &mut Prod) -> Value {
     let streams = refs::group_streams(&durations, STREAM_TARGET_S);
     let (mut live, mut fin) = (Score::default(), Score::default());
     let mut differing = WerCounts::default();
+    let mut raw_differing = WerCounts::default();
     let mut per_stream = Vec::new();
     for (i, r) in streams.iter().enumerate() {
         // 16-bit PCM, as the stretch worker and the meeting's FLAC hold it (T6.13e).
@@ -678,6 +679,10 @@ fn stream_determinism(args: &Args, prod: &mut Prod) -> Value {
             word_errors_normalized(&reference, &fh),
         );
         let diff = word_errors_normalized(&fh, &lh);
+        // Beside it, informational: the same comparison on the raw tokens, so a flap the
+        // normaliser maps away (case, punctuation, spelling) still shows (TODO 47).
+        let raw = word_errors(&fh, &lh);
+        raw_differing += raw;
         differing += diff;
         live.add(cl, audio.len(), lt);
         fin.add(cf, audio.len(), ft);
@@ -699,6 +704,8 @@ fn stream_determinism(args: &Args, prod: &mut Prod) -> Value {
             "ref_words": cl.ref_words,
             "compared_words": diff.ref_words,
             "words_differing": diff.errors(),
+            "raw_compared_tokens": raw.ref_words,
+            "raw_tokens_differing": raw.errors(),
             "live_errors": cl.errors(),
             "final_errors": cf.errors(),
             "final_pieces": prod.last_report.clone(),
@@ -729,6 +736,8 @@ fn stream_determinism(args: &Args, prod: &mut Prod) -> Value {
                        same audio",
         "streams": streams.len(),
         "compared_words": differing.ref_words,
+        "raw_compared_tokens": raw_differing.ref_words,
+        "raw_tokens_differing": raw_differing.errors(),
         "differing": {
             "substitutions": differing.substitutions,
             "deletions": differing.deletions,
