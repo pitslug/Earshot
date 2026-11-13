@@ -709,6 +709,7 @@ pub fn format_event(event: &RuntimeEvent) -> Option<String> {
         | RuntimeEvent::RecordingSaved { .. }
         | RuntimeEvent::LiveTranscript(_)
         | RuntimeEvent::LivePreview { .. }
+        | RuntimeEvent::LivePreviewState { .. }
         | RuntimeEvent::LivePreviewReport(_)
         | RuntimeEvent::LiveTranscriptFinished { .. } => None,
         RuntimeEvent::Transcript { track, event } => match event {

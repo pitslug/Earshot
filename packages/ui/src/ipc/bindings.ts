@@ -1265,6 +1265,13 @@ key: string;
 kind: WarningKind; 
 /**  Plain copy. */
 message: string } | 
+/**
+ *  The condition of the banner `key` is over: the banner goes away (T12.33). Nothing happens
+ *  when no such banner is shown.
+ */
+{ type: "WarningCleared"; 
+/**  The banner's key. */
+key: string } | 
 /**  The question "the call seems to have ended: stop recording?" appears or goes away (T9.4). */
 { type: "CallEndOffer"; 
 /**  Whether it is being asked. */
@@ -2251,7 +2258,9 @@ export type WarningKind =
 /**  Saving to the database failed. */
 "Storage" | 
 /**  The recording stopped by itself because the call seemed to have ended. */
-"CallEnded";
+"CallEnded" | 
+/**  Provisional words are off or waiting (T12.33). */
+"ProvisionalWords";
 
 /**  A theme the window's title bar can be put on. */
 export type WindowTheme = 

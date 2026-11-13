@@ -18,6 +18,7 @@
 use earshot_runtime::NetError;
 use earshot_runtime::catalogue::{Catalogue, ModelKind, display_name};
 use earshot_runtime::claude_code::LlmError;
+use earshot_runtime::live::PreviewOffReason;
 use earshot_runtime::post::PostWarning;
 use earshot_runtime::{CaptureProblem, RuntimeError};
 use earshot_store::StoreError;
@@ -162,6 +163,98 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// Whose provisional words a banner sentence is about (T12.33).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewScope {
+    /// Every voice the user asked provisional words for.
+    All,
+    /// The user's own voice, while other people's are shown or off for another reason.
+    You,
+    /// Other people's, while the user's own are shown or off for another reason.
+    Them,
+}
+
+/// The user's own voice is refused beside the NPU: the other people's words are still shown.
+pub const PREVIEWS_OWN_VOICE_NPU: &str = "Provisional words are shown for other people only. \
+     Earshot cannot show them for your own voice on this computer yet.";
+
+/// The user's own voice is refused for want of memory: the other people's words are still shown.
+pub const PREVIEWS_OWN_VOICE_MEMORY: &str = "Provisional words are shown for other people only. \
+     This computer does not have enough memory to show them for your own voice as well.";
+
+/// The user's own voice is refused beside the NPU, said alone: nothing about other people's words,
+/// which are off themselves or not started yet.
+pub const PREVIEWS_OWN_VOICE_NPU_ALONE: &str =
+    "Earshot cannot show provisional words for your own voice on this computer yet.";
+
+/// The user's own voice is refused for want of memory, said alone (as
+/// [`PREVIEWS_OWN_VOICE_NPU_ALONE`]).
+pub const PREVIEWS_OWN_VOICE_MEMORY_ALONE: &str =
+    "This computer does not have enough memory to show provisional words for your own voice.";
+
+/// What the meeting screen says of a refusal about the user's own voice alone (T12.33), when
+/// other people's provisional words are not shown either: fixed copy, claiming nothing about
+/// theirs. `None` for every other kind.
+#[must_use]
+pub fn own_voice_alone_copy(reason: PreviewOffReason) -> Option<&'static str> {
+    match reason {
+        PreviewOffReason::OwnVoiceOnNpu => Some(PREVIEWS_OWN_VOICE_NPU_ALONE),
+        PreviewOffReason::NotEnoughMemory => Some(PREVIEWS_OWN_VOICE_MEMORY_ALONE),
+        _ => None,
+    }
+}
+
+/// What the meeting screen says when provisional words are off or waiting (T12.33), by kind:
+/// fixed copy, never the runtime's text. `None` for what needs no word: the user turned them off
+/// or never asked, the meeting has none by design, or another banner already says it (a stopped
+/// live transcript).
+#[must_use]
+pub fn provisional_words_copy(reason: PreviewOffReason, scope: PreviewScope) -> Option<String> {
+    let rest = match reason {
+        PreviewOffReason::OnBattery => {
+            "are off for this meeting because the computer is on battery. Plug it in before a \
+             meeting starts to see them."
+        }
+        PreviewOffReason::CatchingUp => "start once the live transcript has caught up.",
+        PreviewOffReason::FellBehind => {
+            "are off for the rest of this meeting because the live transcript fell behind. The \
+             transcript still appears as it is ready."
+        }
+        PreviewOffReason::NeedsCompiledModel => {
+            "are off for this meeting because Earshot is still preparing the transcription model \
+             for this computer. They start in a later meeting once it is ready."
+        }
+        PreviewOffReason::Model => {
+            "are not available with the transcription model this meeting uses. You can choose \
+             another model in Settings, Transcription."
+        }
+        PreviewOffReason::LoadFailed => {
+            "are off for this meeting because Earshot could not load what they need. The \
+             transcript is not affected."
+        }
+        PreviewOffReason::Failed => {
+            "stopped working and are off for the rest of this meeting. The transcript is not \
+             affected."
+        }
+        // About the user's own voice whatever the scope, and saying other people's words are
+        // shown: only for while they are ([`own_voice_alone_copy`] otherwise).
+        PreviewOffReason::OwnVoiceOnNpu => return Some(PREVIEWS_OWN_VOICE_NPU.to_owned()),
+        PreviewOffReason::NotEnoughMemory => return Some(PREVIEWS_OWN_VOICE_MEMORY.to_owned()),
+        PreviewOffReason::TranscriptStopped
+        | PreviewOffReason::OffByDefault
+        | PreviewOffReason::TurnedOff
+        | PreviewOffReason::NotAsked
+        | PreviewOffReason::NotApplicable
+        | PreviewOffReason::MeetingEnded => return None,
+    };
+    let who = match scope {
+        PreviewScope::All => "Provisional words",
+        PreviewScope::You => "Provisional words for your own voice",
+        PreviewScope::Them => "Provisional words for other people",
+    };
+    Some(format!("{who} {rest}"))
 }
 
 /// Text only a developer can act on. Lower case and specific, so a device called "Cargo Pro"
@@ -622,6 +715,166 @@ pub fn plain_cuda_event(event: CudaEvent) -> CudaEvent {
             retryable,
         },
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod provisional_words_tests {
+    use super::*;
+
+    const SCOPES: [PreviewScope; 3] = [PreviewScope::All, PreviewScope::You, PreviewScope::Them];
+
+    /// One of every kind. `index` is exhaustive, so a new kind fails to compile until it has an
+    /// index here, a place in `ALL` and an entry in `plain_text_provisional_words_*` below.
+    const ALL: [PreviewOffReason; 15] = [
+        PreviewOffReason::OnBattery,
+        PreviewOffReason::CatchingUp,
+        PreviewOffReason::FellBehind,
+        PreviewOffReason::TranscriptStopped,
+        PreviewOffReason::NeedsCompiledModel,
+        PreviewOffReason::OwnVoiceOnNpu,
+        PreviewOffReason::NotEnoughMemory,
+        PreviewOffReason::OffByDefault,
+        PreviewOffReason::Model,
+        PreviewOffReason::TurnedOff,
+        PreviewOffReason::NotAsked,
+        PreviewOffReason::NotApplicable,
+        PreviewOffReason::LoadFailed,
+        PreviewOffReason::Failed,
+        PreviewOffReason::MeetingEnded,
+    ];
+
+    fn index(reason: PreviewOffReason) -> usize {
+        match reason {
+            PreviewOffReason::OnBattery => 0,
+            PreviewOffReason::CatchingUp => 1,
+            PreviewOffReason::FellBehind => 2,
+            PreviewOffReason::TranscriptStopped => 3,
+            PreviewOffReason::NeedsCompiledModel => 4,
+            PreviewOffReason::OwnVoiceOnNpu => 5,
+            PreviewOffReason::NotEnoughMemory => 6,
+            PreviewOffReason::OffByDefault => 7,
+            PreviewOffReason::Model => 8,
+            PreviewOffReason::TurnedOff => 9,
+            PreviewOffReason::NotAsked => 10,
+            PreviewOffReason::NotApplicable => 11,
+            PreviewOffReason::LoadFailed => 12,
+            PreviewOffReason::Failed => 13,
+            PreviewOffReason::MeetingEnded => 14,
+        }
+    }
+
+    #[test]
+    fn plain_text_provisional_words_list_holds_every_kind_once() {
+        for (i, reason) in ALL.into_iter().enumerate() {
+            assert_eq!(index(reason), i, "{reason:?}");
+        }
+    }
+
+    /// Which kinds the user is told about, and which need no word.
+    #[test]
+    fn plain_text_provisional_words_say_only_what_the_user_can_act_on_or_wait_out() {
+        let said = [
+            PreviewOffReason::OnBattery,
+            PreviewOffReason::CatchingUp,
+            PreviewOffReason::FellBehind,
+            PreviewOffReason::NeedsCompiledModel,
+            PreviewOffReason::OwnVoiceOnNpu,
+            PreviewOffReason::NotEnoughMemory,
+            PreviewOffReason::Model,
+            PreviewOffReason::LoadFailed,
+            PreviewOffReason::Failed,
+        ];
+        for reason in ALL {
+            for scope in SCOPES {
+                assert_eq!(
+                    provisional_words_copy(reason, scope).is_some(),
+                    said.contains(&reason),
+                    "{reason:?} {scope:?}"
+                );
+            }
+        }
+    }
+
+    /// The user's own voice said alone: only its two kinds have words, which are plain by the same
+    /// rules as the rest and never claim other people's words are shown.
+    #[test]
+    fn plain_text_provisional_words_own_voice_alone_is_plain_and_claims_nothing_of_others() {
+        for reason in ALL {
+            let Some(copy) = own_voice_alone_copy(reason) else {
+                assert!(
+                    !matches!(
+                        reason,
+                        PreviewOffReason::OwnVoiceOnNpu | PreviewOffReason::NotEnoughMemory
+                    ),
+                    "{reason:?}"
+                );
+                continue;
+            };
+            assert!(copy.ends_with('.'), "{copy}");
+            assert!(
+                copy.contains("provisional words for your own voice"),
+                "{copy}"
+            );
+            assert!(!copy.to_lowercase().contains("other people"), "{copy}");
+            assert!(!copy.contains("  "), "a run of spaces in: {copy:?}");
+            assert!(!copy.contains('\n'), "{copy:?}");
+            assert!(!copy.contains('\u{2014}'), "{copy}");
+            assert!(!names_developer_tool(copy), "{copy}");
+            let lower = copy.to_lowercase();
+            for word in [
+                "preview", "session", "parakeet", "whisper", "onnx", "qnn", "npu", "cuda",
+                "backend", "thread", "decode", "compiled", "please",
+            ] {
+                assert!(!lower.contains(word), "{word:?} in: {copy}");
+            }
+        }
+    }
+
+    /// Plain sentences: no developer term, model id or part name, no em dash, no run of spaces
+    /// (a lost line continuation), and every one starts "Provisional words" and ends in a stop.
+    #[test]
+    fn plain_text_provisional_words_copy_is_plain() {
+        let mut seen = std::collections::BTreeSet::new();
+        for reason in ALL {
+            for scope in SCOPES {
+                let Some(copy) = provisional_words_copy(reason, scope) else {
+                    continue;
+                };
+                assert!(copy.starts_with("Provisional words"), "{copy}");
+                assert!(copy.ends_with('.'), "{copy}");
+                assert!(!copy.contains("  "), "a run of spaces in: {copy:?}");
+                assert!(!copy.contains('\n'), "{copy:?}");
+                assert!(!copy.contains('\u{2014}'), "{copy}");
+                assert!(!copy.contains('!'), "{copy}");
+                assert!(!names_developer_tool(&copy), "{copy}");
+                let lower = copy.to_lowercase();
+                for word in [
+                    "preview", "session", "parakeet", "whisper", "onnx", "qnn", "npu", "cuda",
+                    "backend", "thread", "decode", "compiled", "please",
+                ] {
+                    assert!(!lower.contains(word), "{word:?} in: {copy}");
+                }
+                seen.insert((index(reason), copy));
+            }
+        }
+        // A kind's words differ by whose voices they are about, except the two about the user's
+        // own voice, which name it themselves.
+        let per_kind =
+            |reason: PreviewOffReason| seen.iter().filter(|(i, _)| *i == index(reason)).count();
+        assert_eq!(per_kind(PreviewOffReason::OnBattery), 3);
+        assert_eq!(per_kind(PreviewOffReason::OwnVoiceOnNpu), 1);
+        assert_eq!(per_kind(PreviewOffReason::NotEnoughMemory), 1);
+        assert_eq!(
+            provisional_words_copy(PreviewOffReason::OnBattery, PreviewScope::All).unwrap(),
+            "Provisional words are off for this meeting because the computer is on battery. \
+             Plug it in before a meeting starts to see them."
+        );
+        assert_eq!(
+            provisional_words_copy(PreviewOffReason::FellBehind, PreviewScope::Them).unwrap(),
+            "Provisional words for other people are off for the rest of this meeting because \
+             the live transcript fell behind. The transcript still appears as it is ready."
+        );
     }
 }
 

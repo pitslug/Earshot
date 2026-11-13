@@ -387,7 +387,7 @@ fn recorded_loader(
             result
                 .as_ref()
                 .map(|t| (t.backend_info(), None))
-                .map_err(String::as_str),
+                .map_err(|e| e.text.as_str()),
         );
         log.lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -417,7 +417,7 @@ fn forced_loader(
         log.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(record);
-        result.map(|p| p.transcriber)
+        result.map(|p| p.transcriber).map_err(Into::into)
     })
 }
 
@@ -449,7 +449,7 @@ fn simulated_loader(
         log.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(record);
-        result.map(|p| p.transcriber)
+        result.map(|p| p.transcriber).map_err(Into::into)
     })
 }
 
@@ -476,7 +476,7 @@ fn streaming_previews(
     log: &Arc<Mutex<Vec<Value>>>,
 ) -> LivePreviews {
     let unused: PreviewLoader =
-        Arc::new(|_: &BackendInfo| Err("a streaming run loads no window session".to_owned()));
+        Arc::new(|_: &BackendInfo| Err("a streaming run loads no window session".into()));
     let mut p = LivePreviews::new(Arc::clone(&unused));
     if choice == PreviewChoice::Everyone {
         p.own_voice = Some(unused);
@@ -506,7 +506,7 @@ fn streaming_previews(
         log.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(record);
-        result.map(|s| s.stream)
+        result.map(|s| s.stream).map_err(Into::into)
     });
     p.stream = Some(load);
     p
