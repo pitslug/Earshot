@@ -592,6 +592,7 @@ fn live_summaries_thread_runs_below_normal_priority() {
         notes: Vec::new(),
         template: earshot_core::prompt::Template::General,
         prompt_variant: earshot_core::prompt::PromptVariant::Current,
+        rules: Default::default(),
         style: Default::default(),
         style_preset: Default::default(),
         vocabulary: Default::default(),

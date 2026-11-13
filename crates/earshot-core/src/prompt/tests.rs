@@ -113,6 +113,7 @@ fn input(template: Template) -> SummaryInput {
         ],
         template,
         prompt_variant: PromptVariant::Current,
+        rules: Default::default(),
         style: SummaryStyle::default(),
         style_preset: Default::default(),
         vocabulary: Vocabulary::default(),
@@ -323,6 +324,7 @@ fn long_input(n: usize) -> SummaryInput {
         notes,
         template: Template::General,
         prompt_variant: PromptVariant::Current,
+        rules: Default::default(),
         style: SummaryStyle::default(),
         style_preset: Default::default(),
         vocabulary: Vocabulary::default(),
@@ -856,7 +858,8 @@ fn prompt_variants_have_stable_names_and_current_is_the_default() {
             "checked",
             "previous",
             "short",
-            "brief"
+            "brief",
+            "standard"
         ]
     );
     for v in PromptVariant::ALL {
@@ -903,7 +906,12 @@ fn prompt_variants_change_only_the_shared_rules() {
         "Write in the language of the transcript. Do not use em dashes.",
         "Write each point once. No filler:",
     ];
-    for v in PromptVariant::ALL.into_iter().skip(1) {
+    // `standard` names system.md itself (T12.17c), for an agent CLI writer.
+    assert_eq!(PromptVariant::Standard.rules(), base);
+    for v in PromptVariant::ALL
+        .into_iter()
+        .filter(|v| !matches!(v, PromptVariant::Current | PromptVariant::Standard))
+    {
         let rules = v.rules();
         assert_ne!(rules, base, "{v}");
         assert_eq!(rules.matches("{{schema}}").count(), 1, "{v}");
@@ -1320,4 +1328,130 @@ fn prompt_user_name_reaches_every_map_and_merge_request() {
                 .contains("appears in the transcript as Casey.")
         );
     }
+}
+
+// T12.17c: the writer's shared rules (`SummaryRules`): brief for the agent CLIs, system.md
+// for the local model and the API writers.
+
+fn with_rules(inp: SummaryInput, rules: SummaryRules) -> SummaryInput {
+    SummaryInput { rules, ..inp }
+}
+
+fn rules_with_schema(rules: &str) -> String {
+    rules.replace("{{schema}}", &llm_json_schema().to_string())
+}
+
+#[test]
+fn prompt_rules_standard_is_system_md_and_brief_is_the_measured_brief_variant() {
+    assert_eq!(SummaryRules::default(), SummaryRules::Standard);
+    assert_eq!(SummaryInput::default().rules, SummaryRules::Standard);
+    assert_eq!(SummaryRules::Standard.rules(), super::template::SYSTEM);
+    assert_eq!(SummaryRules::Brief.rules(), super::template::BRIEF);
+    // The shipped brief rules are the file T12.17 measured as the `brief` variant.
+    assert_eq!(PromptVariant::Brief.rules(), super::template::BRIEF);
+    assert_ne!(super::template::BRIEF, super::template::SYSTEM);
+}
+
+#[test]
+fn prompt_rules_standard_leaves_every_request_byte_identical() {
+    // The local model and the API writers build inputs with the standard rules: every
+    // request is exactly what it was before T12.17c (the `single_general`, `map_part_2`
+    // and `reduce` snapshots pin the text itself).
+    let plain = long_input(60);
+    let standard = with_rules(long_input(60), SummaryRules::Standard);
+    assert_eq!(plain, standard);
+    assert_eq!(
+        single(&input(Template::General)),
+        single(&with_rules(
+            input(Template::General),
+            SummaryRules::Standard
+        ))
+    );
+    let ranges = [0..30, 30..60];
+    assert_eq!(
+        plan_chunks(&plain, BIG, &ranges).unwrap(),
+        plan_chunks(&standard, BIG, &ranges).unwrap()
+    );
+    let system = rules_with_schema(super::template::SYSTEM);
+    assert!(
+        single(&input(Template::General)).messages[0]
+            .content
+            .starts_with(&system)
+    );
+}
+
+#[test]
+fn prompt_rules_brief_reaches_single_map_and_reduce_requests() {
+    let brief = rules_with_schema(super::template::BRIEF);
+    let system = rules_with_schema(super::template::SYSTEM);
+    let one = with_rules(input(Template::General), SummaryRules::Brief);
+    let p = single(&one);
+    assert!(p.messages[0].content.starts_with(&brief));
+    // Only the rules move: same transcript message, budget and citable set.
+    let current = single(&input(Template::General));
+    assert_eq!(p.messages[1], current.messages[1]);
+    assert_eq!(
+        (p.max_output_tokens, &p.cites),
+        (current.max_output_tokens, &current.cites)
+    );
+    assert_eq!(p.estimated_tokens, estimate_messages(&p.messages));
+    let long = with_rules(long_input(60), SummaryRules::Brief);
+    for c in plan_chunks(&long, BIG, &[0..30, 30..60]).unwrap() {
+        assert!(c.prompt.messages[0].content.starts_with(&brief), "map");
+    }
+    let partials = [partial(1, &[id(S1)]), partial(2, &[id(S2)])];
+    for level in [MergeLevel::Inner, MergeLevel::Last] {
+        let r = reduce_prompt(&one, &partials, BIG, level);
+        assert!(r.messages[0].content.starts_with(&brief), "{level:?}");
+        assert!(!r.messages[0].content.starts_with(&system), "{level:?}");
+    }
+}
+
+#[test]
+fn prompt_rules_give_way_to_an_evaluation_variant() {
+    // A variant other than current names its own rules file whatever the writer's rules,
+    // so an evaluation can run the standard rules on an agent CLI (`standard`).
+    for rules in [SummaryRules::Standard, SummaryRules::Brief] {
+        for v in PromptVariant::ALL.into_iter().skip(1) {
+            let inp = SummaryInput {
+                prompt_variant: v,
+                ..with_rules(input(Template::General), rules)
+            };
+            assert!(
+                single(&inp).messages[0]
+                    .content
+                    .starts_with(&rules_with_schema(v.rules())),
+                "{v} on {rules:?}"
+            );
+        }
+    }
+    let standard_on_brief = SummaryInput {
+        prompt_variant: PromptVariant::Standard,
+        ..with_rules(input(Template::General), SummaryRules::Brief)
+    };
+    assert_eq!(
+        single(&standard_on_brief),
+        single(&input(Template::General))
+    );
+}
+
+#[test]
+fn prompt_rules_are_left_out_of_serialised_inputs_when_standard() {
+    let standard = serde_json::to_value(input(Template::General)).unwrap();
+    assert!(standard.get("rules").is_none());
+    let brief = with_rules(input(Template::General), SummaryRules::Brief);
+    let json = serde_json::to_value(&brief).unwrap();
+    assert_eq!(json["rules"], "brief");
+    assert_eq!(serde_json::from_value::<SummaryInput>(json).unwrap(), brief);
+}
+
+#[test]
+fn prompt_rules_brief_single_pass_snapshot() {
+    assert_snapshot(
+        "rules_brief_single_general",
+        &render(&single(&with_rules(
+            input(Template::General),
+            SummaryRules::Brief,
+        ))),
+    );
 }

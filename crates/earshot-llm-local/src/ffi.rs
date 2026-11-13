@@ -89,6 +89,12 @@ pub(crate) struct Engine {
     model: NonNull<sys::llama_model>,
     ctx: NonNull<sys::llama_context>,
     vocab: NonNull<sys::llama_vocab>,
+    /// The tokens the context's memory holds for sequence 0, at positions 0, 1, ...: every
+    /// token [`Engine::decode`] ran since the last [`Engine::clear`], less what
+    /// [`Engine::keep_prefix`] removed (T12.25 prefix reuse).
+    cached: Vec<sys::llama_token>,
+    /// The micro-batch size the context was created with (`n_ubatch`).
+    ubatch: usize,
 }
 
 /// Raw engine settings.
@@ -141,7 +147,61 @@ impl Engine {
             }
             return None;
         };
-        Some(Engine { model, ctx, vocab })
+        Some(Engine {
+            model,
+            ctx,
+            vocab,
+            cached: Vec::new(),
+            ubatch: cp.n_ubatch as usize,
+        })
+    }
+
+    /// The tokens the context's memory holds (see the field).
+    pub(crate) fn cached(&self) -> &[sys::llama_token] {
+        &self.cached
+    }
+
+    /// The context's micro-batch size (`n_ubatch`).
+    pub(crate) fn ubatch(&self) -> usize {
+        self.ubatch
+    }
+
+    /// A copy of sequence 0's whole state as it stands (`llama_state_seq_get_data`: the
+    /// attention cache and, for a hybrid or recurrent model, the recurrent state), or `None`
+    /// when llama.cpp writes nothing. A partial cache cannot be cut back on a recurrent model
+    /// (`llama_memory_seq_rm` refuses), so prefix reuse saves the state at a boundary instead.
+    pub(crate) fn save_state(&self) -> Option<Vec<u8>> {
+        // SAFETY: live context; sequence 0 is the only one used.
+        let size = unsafe { sys::llama_state_seq_get_size(self.ctx.as_ptr(), 0) };
+        if size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; size];
+        // SAFETY: live context; `buf` holds `size` writable bytes and outlives the call.
+        let n =
+            unsafe { sys::llama_state_seq_get_data(self.ctx.as_ptr(), buf.as_mut_ptr(), size, 0) };
+        if n == 0 || n > size {
+            return None;
+        }
+        buf.truncate(n);
+        Some(buf)
+    }
+
+    /// Clears the memory and loads `state` (from [`Engine::save_state`] after decoding exactly
+    /// `tokens`) into sequence 0, so the next decode continues at position `tokens.len()`.
+    /// `false`, with the memory cleared, when llama.cpp refuses it.
+    pub(crate) fn load_state(&mut self, state: &[u8], tokens: &[sys::llama_token]) -> bool {
+        self.clear();
+        // SAFETY: live context; `state` is readable for its length and outlives the call.
+        let n = unsafe {
+            sys::llama_state_seq_set_data(self.ctx.as_ptr(), state.as_ptr(), state.len(), 0)
+        };
+        if n == 0 {
+            self.clear();
+            return false;
+        }
+        self.cached = tokens.to_vec();
+        true
     }
 
     /// The context size actually allocated.
@@ -252,22 +312,29 @@ impl Engine {
 
     /// Clears the context's memory (KV cache) so a new prompt starts at position 0.
     pub(crate) fn clear(&mut self) {
+        self.cached.clear();
         // SAFETY: live context; the memory handle belongs to it.
         unsafe { sys::llama_memory_clear(sys::llama_get_memory(self.ctx.as_ptr()), true) };
     }
 
     /// Runs `tokens` through the model (appending to the context). llama.cpp return code:
-    /// 0 is success.
+    /// 0 is success. A failed decode clears the memory, whose contents are then unknown.
     pub(crate) fn decode(&mut self, tokens: &mut [sys::llama_token]) -> i32 {
         let Ok(n) = i32::try_from(tokens.len()) else {
             return -1;
         };
         // SAFETY: live context; the batch borrows `tokens`, which outlives the call
         // (llama_batch_get_one does not copy and llama_decode reads it synchronously).
-        unsafe {
+        let rc = unsafe {
             let batch = sys::llama_batch_get_one(tokens.as_mut_ptr(), n);
             sys::llama_decode(self.ctx.as_ptr(), batch)
+        };
+        if rc == 0 {
+            self.cached.extend_from_slice(tokens);
+        } else {
+            self.clear();
         }
+        rc
     }
 
     /// Whether `token` ends generation.

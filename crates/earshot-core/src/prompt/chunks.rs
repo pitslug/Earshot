@@ -104,6 +104,7 @@ mod tests {
             notes: vec![],
             template: Template::General,
             prompt_variant: Default::default(),
+            rules: Default::default(),
             style: Default::default(),
             style_preset: Default::default(),
             vocabulary: Default::default(),

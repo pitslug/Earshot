@@ -45,6 +45,7 @@ fn meeting(n: usize) -> SummaryInput {
         notes: vec![],
         template: Template::General,
         prompt_variant: Default::default(),
+        rules: Default::default(),
         style: Default::default(),
         style_preset: Default::default(),
         vocabulary: Default::default(),
@@ -199,6 +200,15 @@ async fn anthropic_valid_reply_is_one_structured_output_request_to_the_messages_
         .map(|m| m.content.as_str())
         .collect();
     assert_eq!(body["system"], system.join("\n\n"));
+    // T12.17c: an API writer keeps the standard rules (system.md), byte for byte the plan
+    // of an input built with them.
+    assert_eq!(
+        s.summarizer.client().summary_rules(),
+        earshot_core::prompt::SummaryRules::Standard
+    );
+    let sent = body["system"].as_str().unwrap();
+    assert!(sent.contains("Keep `tldr` to one to three sentences."));
+    assert!(!sent.contains("at most three sections of at most three bullets"));
     let user: Vec<(String, String)> = p
         .messages
         .iter()

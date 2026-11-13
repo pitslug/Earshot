@@ -70,6 +70,7 @@ fn fin() -> (Vec<TimedSegment>, SummaryInput) {
         notes: Vec::new(),
         template: Template::General,
         prompt_variant: PromptVariant::Current,
+        rules: Default::default(),
         style: Default::default(),
         style_preset: Default::default(),
         vocabulary: Default::default(),

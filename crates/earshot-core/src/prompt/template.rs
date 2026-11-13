@@ -5,9 +5,15 @@ use core::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// Shared rules for every summary request; `{{schema}}` is replaced by the summary v1
-/// JSON Schema.
+/// Shared rules of every summary request written by the local model or an API writer
+/// ([`SummaryRules::Standard`]); `{{schema}}` is replaced by the summary v1 JSON Schema.
 pub(super) const SYSTEM: &str = include_str!("templates/system.md");
+/// Shared rules of every summary request written by an agent CLI, Claude Code or Codex
+/// ([`SummaryRules::Brief`], T12.17c): [`SYSTEM`] with shorter notes (at most three sections
+/// of three one-sentence bullets), a one-sentence tldr and items of about fifteen words at
+/// most, every decision and action item still listed. Measured as the T12.17 `brief`
+/// variant (docs/summary-eval.md).
+pub(super) const BRIEF: &str = include_str!("templates/brief.md");
 /// Extra instruction for one part of a map-reduce run; `{{part}}` and `{{parts}}` are
 /// replaced by the part number and count.
 pub(super) const MAP: &str = include_str!("templates/map.md");
@@ -42,7 +48,6 @@ const VARIANT_HANDED: &str = include_str!("templates/variants/handed.md");
 const VARIANT_CHECKED: &str = include_str!("templates/variants/checked.md");
 const VARIANT_PREVIOUS: &str = include_str!("templates/variants/previous.md");
 const VARIANT_SHORT: &str = include_str!("templates/variants/short.md");
-const VARIANT_BRIEF: &str = include_str!("templates/variants/brief.md");
 
 const GENERAL: &str = include_str!("templates/general.md");
 const ONE_ON_ONE: &str = include_str!("templates/one-on-one.md");
@@ -116,17 +121,51 @@ impl FromStr for Template {
     }
 }
 
+/// The shared rules a summary request uses in production (T12.17c), chosen by the writer
+/// in one place (`earshot_llm::LlmClient::summary_rules`), never by a setting: the agent
+/// CLIs (Claude Code, Codex) use [`SummaryRules::Brief`]; the local model and the
+/// OpenAI-compatible and Anthropic API writers use [`SummaryRules::Standard`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SummaryRules {
+    /// `templates/system.md`.
+    #[default]
+    Standard,
+    /// `templates/brief.md`.
+    Brief,
+}
+
+impl SummaryRules {
+    /// The rules text; `{{schema}}` is replaced by the reply schema.
+    #[must_use]
+    pub(super) const fn rules(self) -> &'static str {
+        match self {
+            SummaryRules::Standard => SYSTEM,
+            SummaryRules::Brief => BRIEF,
+        }
+    }
+
+    /// Whether these are the standard rules (used to leave the field out of serialised
+    /// inputs, so stored summary inputs are unchanged).
+    #[must_use]
+    pub fn is_standard(&self) -> bool {
+        *self == SummaryRules::Standard
+    }
+}
+
 /// Which set of shared rules a summary request uses (T6.20b prompt tuning).
 ///
-/// [`PromptVariant::Current`] is the production prompt ([`SYSTEM`]); every other variant is
-/// a full alternative rules file under `src/prompt/templates/variants/`, for evaluation
-/// only (`cargo xtask sum-eval --prompt-variant`, docs/summary-eval.md, "T6.20b prompt
+/// [`PromptVariant::Current`] is the production prompt: the input's [`SummaryRules`], which
+/// the writer chooses (T12.17c). Every other variant names one rules file whatever the
+/// writer: [`PromptVariant::Standard`] is [`SYSTEM`], [`PromptVariant::Brief`] is [`BRIEF`]
+/// and the rest are full alternative rules files under `src/prompt/templates/variants/`,
+/// all for evaluation only (`cargo xtask sum-eval --prompt-variant`, docs/summary-eval.md, "T6.20b prompt
 /// variants"). A variant replaces only the shared rules: templates, map and reduce
 /// instructions, numbering, schema and validation are the same for all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PromptVariant {
-    /// The production rules.
+    /// The production rules: the input's [`SummaryRules`].
     #[default]
     Current,
     /// Action items: one per task, the owner is the person who will do it (often named or
@@ -157,13 +196,17 @@ pub enum PromptVariant {
     /// one- or two-sentence tldr, and every decision and action item still listed.
     Short,
     /// T12.17: [`PromptVariant::Short`], tighter (three sections of three bullets, a
-    /// one-sentence tldr, items of about fifteen words at most).
+    /// one-sentence tldr, items of about fifteen words at most). Since T12.17c the agent
+    /// CLIs' production rules ([`BRIEF`]); as a variant it applies them to any writer.
     Brief,
+    /// T12.17c: [`SYSTEM`] whatever the writer, so an evaluation can run the standard rules
+    /// on an agent CLI, whose production rules are [`BRIEF`].
+    Standard,
 }
 
 impl PromptVariant {
     /// Every variant, the production one first.
-    pub const ALL: [PromptVariant; 11] = [
+    pub const ALL: [PromptVariant; 12] = [
         PromptVariant::Current,
         PromptVariant::Owners,
         PromptVariant::Decisions,
@@ -175,6 +218,7 @@ impl PromptVariant {
         PromptVariant::Previous,
         PromptVariant::Short,
         PromptVariant::Brief,
+        PromptVariant::Standard,
     ];
 
     /// The variant's name as used on the command line and in format keys.
@@ -192,6 +236,7 @@ impl PromptVariant {
             PromptVariant::Previous => "previous",
             PromptVariant::Short => "short",
             PromptVariant::Brief => "brief",
+            PromptVariant::Standard => "standard",
         }
     }
 
@@ -202,11 +247,22 @@ impl PromptVariant {
         *self == PromptVariant::Current
     }
 
-    /// The shared rules of this variant; `{{schema}}` is replaced by the reply schema.
+    /// The shared rules of this variant for a writer of the standard rules (as
+    /// [`PromptVariant::rules_for`] with [`SummaryRules::Standard`]).
+    #[cfg(test)]
     #[must_use]
     pub(super) const fn rules(self) -> &'static str {
+        self.rules_for(SummaryRules::Standard)
+    }
+
+    /// The shared rules of this variant for an input whose writer's rules are `writer`;
+    /// `{{schema}}` is replaced by the reply schema. Only [`PromptVariant::Current`] reads
+    /// `writer`.
+    #[must_use]
+    pub(super) const fn rules_for(self, writer: SummaryRules) -> &'static str {
         match self {
-            PromptVariant::Current => SYSTEM,
+            PromptVariant::Current => writer.rules(),
+            PromptVariant::Standard => SYSTEM,
             PromptVariant::Owners => VARIANT_OWNERS,
             PromptVariant::Decisions => VARIANT_DECISIONS,
             PromptVariant::Items => VARIANT_ITEMS,
@@ -216,7 +272,7 @@ impl PromptVariant {
             PromptVariant::Checked => VARIANT_CHECKED,
             PromptVariant::Previous => VARIANT_PREVIOUS,
             PromptVariant::Short => VARIANT_SHORT,
-            PromptVariant::Brief => VARIANT_BRIEF,
+            PromptVariant::Brief => BRIEF,
         }
     }
 }

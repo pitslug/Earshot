@@ -1,0 +1,29 @@
+{
+  "a": {
+    "decoded_prompt_tokens": 432043.0,
+    "generate_s": 342.44550860000004,
+    "generated_tokens": 65637.0,
+    "hangup_s": 193.50551950000005,
+    "meetings": 20,
+    "prompt_s": 42.3410948,
+    "prompt_tokens": 432043.0,
+    "requests": 91.0,
+    "seconds": 385.42291600000004
+  },
+  "b": {
+    "decoded_prompt_tokens": 379819.0,
+    "generate_s": 365.54796059999995,
+    "generated_tokens": 65637.0,
+    "hangup_s": 203.77511570000001,
+    "meetings": 20,
+    "prompt_s": 43.4363899,
+    "prompt_tokens": 432043.0,
+    "requests": 91.0,
+    "seconds": 409.7813335
+  },
+  "differ": [],
+  "identical": true,
+  "only_a": [],
+  "only_b": [],
+  "same": 20
+}

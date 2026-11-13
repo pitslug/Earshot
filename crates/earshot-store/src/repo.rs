@@ -13,7 +13,7 @@ use rusqlite::{Connection, Row, params_from_iter};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::db::{Store, StoreTx};
+use crate::db::{ReadOnlyStore, Store, StoreTx};
 
 const META_COLS: [&str; 8] = [
     "created_wall",
@@ -955,3 +955,54 @@ macro_rules! impl_repos {
 
 impl_repos!(Store);
 impl_repos!(StoreTx<'_>);
+
+/// The refusal of every write on a [`ReadOnlyStore`].
+fn read_only() -> RepoError {
+    RepoError::Storage("the store is open read-only".into())
+}
+
+/// Reads as [`Store`] does; every write is refused before SQLite sees it.
+impl MeetingRepo for ReadOnlyStore {
+    fn meeting(&self, id: EntityId) -> Result<Option<Meeting>, RepoError> {
+        get_meeting(&self.conn, id)
+    }
+    fn meetings(&self) -> Result<Vec<Meeting>, RepoError> {
+        all_meetings(&self.conn)
+    }
+    fn put_meeting(&mut self, _meeting: Meeting) -> Result<(), RepoError> {
+        Err(read_only())
+    }
+    fn tracks(&self, meeting: EntityId) -> Result<Vec<Track>, RepoError> {
+        tracks_of(&self.conn, meeting)
+    }
+    fn put_track(&mut self, _track: Track) -> Result<(), RepoError> {
+        Err(read_only())
+    }
+    fn segments(&self, meeting: EntityId) -> Result<Vec<SegmentRow>, RepoError> {
+        segments_of(&self.conn, meeting)
+    }
+    fn has_live_segment(&self, meeting: EntityId, pass: TranscriptPass) -> Result<bool, RepoError> {
+        has_live_segment(&self.conn, meeting, pass)
+    }
+    fn put_segment(&mut self, _segment: SegmentRow) -> Result<(), RepoError> {
+        Err(read_only())
+    }
+    fn speakers(&self, meeting: EntityId) -> Result<Vec<Speaker>, RepoError> {
+        speakers_of(&self.conn, meeting)
+    }
+    fn put_speaker(&mut self, _speaker: Speaker) -> Result<(), RepoError> {
+        Err(read_only())
+    }
+    fn notes(&self, meeting: EntityId) -> Result<Vec<Note>, RepoError> {
+        notes_of(&self.conn, meeting)
+    }
+    fn put_note(&mut self, _note: Note) -> Result<(), RepoError> {
+        Err(read_only())
+    }
+    fn summaries(&self, meeting: EntityId) -> Result<Vec<Summary>, RepoError> {
+        summaries_of(&self.conn, meeting)
+    }
+    fn put_summary(&mut self, _summary: Summary) -> Result<(), RepoError> {
+        Err(read_only())
+    }
+}

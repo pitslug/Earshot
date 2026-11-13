@@ -31,7 +31,7 @@ pub use audio::{
     recover_track_file, remove_audio, remove_stale_part, retention_clock, retention_clock_key,
     run_retention, sweep_orphan_audio,
 };
-pub use db::{SCHEMA_VERSION, Store, StoreError, StoreTx};
+pub use db::{ReadOnlyStore, SCHEMA_VERSION, Store, StoreError, StoreTx};
 pub use delete::{MeetingDeletion, PersonRemoval, first_free_speaker_name};
 pub use export::{
     ExportAction, ExportDb, ExportItem, ExportReport, VaultError, export_note, export_notes,
