@@ -1528,6 +1528,22 @@ pub(crate) fn store_summary<R: Rng + ?Sized>(
     stored
 }
 
+/// The prompt input production builds for `view`, with no summary style, template or own
+/// words: what the T12.25a evaluation (`store_inputs` example) summarises from a copy of the
+/// user's store, so every condition it compares starts from the production input and none
+/// from the settings of the day. Evaluation only; production goes through `load_input`.
+#[must_use]
+pub fn evaluation_input(view: &MeetingView) -> SummaryInput {
+    input_of(
+        view,
+        &PromptSettings {
+            style: SummaryStyle::default(),
+            style_preset: earshot_core::prompt::StylePreset::default(),
+            vocabulary: Vocabulary::default(),
+        },
+    )
+}
+
 /// The prompt input of a meeting view with the user's summary style and own words.
 fn input_of(view: &MeetingView, settings: &PromptSettings) -> SummaryInput {
     let m = &view.meeting;

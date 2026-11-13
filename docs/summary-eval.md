@@ -1169,3 +1169,29 @@ The same five judges (one per meeting, kept from the Claude round so a summary i
 - **So on the 4B the shorter rules lose decisions** (the judged decisions fall from 17 to 11 or 13 of 22), while actions hold. Combined with the Claude round: `brief` suits Claude and does not suit the local 4B.
 - **Time.** The shorter rules generate about a third fewer tokens, so a Surface summary would be roughly a third quicker (an estimate from token counts, not a Surface timing); that comes with the coverage loss above.
 - **For every writer, the 4B is much weaker than Claude** on these meetings: 36 real items caught and 12 made up against Claude's 51 to 53 and 0, with open or reversed points written as decisions (the case shape in TS3006c, the chip in TS3004c, the power source in ES2011c).
+
+## T12.25a: judging on the owner's own meetings, privately (evaluation only)
+
+The owner asked for summary changes to be judged on their own recorded meetings (AMI's scripted design meetings are hard to judge and unlike them). Their text may go to Claude Code agents as judges, as their summaries already do; nothing from them enters the repo.
+
+**Prepare a run** (once per set of meetings; close Earshot first so the copy is consistent):
+
+```
+cargo xtask sum-eval --store-db <path to earshot.db> --store-run <name> [--store-count 6] [--store-min-minutes 15] [--store-exclude <id,...>]
+```
+
+- xtask refuses unless `fixtures/private/real-meetings/<name>/` is git-ignored (`git check-ignore`), then runs earshot-runtime's `store_inputs` example: the database (and its `-wal`) is copied there, and only the copy is opened, read-only (`earshot_store::ReadOnlyStore`: SQLite's read-only open and `query_only`, never `Store::open`, no migration; a store from another schema version is refused).
+- **Pick rule (reads no text):** live meetings with a Final transcript and a duration of at least 15 minutes, minus `--store-exclude`, most recent start first, the first 6. They are labelled `r1` (the most recent) to `r6`.
+- Written into the run folder only: `inputs/r<k>.json` (the `SummaryInput` production builds: `MeetingView::load` and `summary::evaluation_input`, the Final transcript, names as the app shows them, title and start, no style, template or Dictionary words), `transcripts/r<k>.txt` (the transcript as a model reads it, numbered, for the real-item list writers and the judges), `picked.json` (labels, meeting ids, starts, durations). It prints counts and the folder only.
+
+**Summarise** with any candidate, today's plan:
+
+```
+cargo xtask sum-eval --source store --store-run <name> --model <candidate> [--chunk-seconds 600] [--prompt-variant <v>] [--out <folder inside the run>]
+```
+
+Results, checkpoints, `report.json` and `table.md` go to `<run>/results` (or an `--out` inside the run folder; anything else is refused by xtask and again by the example). A store run is scored by length counts only (`score::store_score`: words, sections, decisions and actions written); there is no annotation. Claude Code and Codex may summarise them (`--model claude-code`, `--model codex`); a remote endpoint never does, whatever `EARSHOT_LLM_URL` says.
+
+**Real items and judging.** One Claude Code agent per meeting writes the real decisions and actions from `transcripts/r<k>.txt` under the definitions and borderline rules of `docs/summary-eval/prompt-rounds-2026-11-04.md`, into the run folder, before any summary of that meeting is read. Blinded packets come from `sum_eval --store-inputs <run> --meetings real=r1,... --judge-packets <run>/packets --blind-key <run>/key.json --summaries <name>=<run>/results/<file>.json ...` (all paths inside the private tree, checked): each meeting folder holds `transcript.txt` in place of `reference.json` and the blinded `summary.S<n>.json` packets. The AMI meaning judge (`--import-verdicts`, `--facts`) and carried AMI packets are refused for these meetings; the real-item marks are counted by the coordinator.
+
+**What may leave the run folder:** counts only (meetings, picked, valid, decisions and actions written, tokens, seconds), under the labels `r<k>`. No meeting id, title, name or text in any committed file, log line or test.
