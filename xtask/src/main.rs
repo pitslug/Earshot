@@ -165,6 +165,11 @@ enum Cmd {
         /// Judge the reports already there.
         #[arg(long)]
         skip_run: bool,
+        /// Measure one more Vulkan device, `<name>=<n>` (its `Vulkan<n>` index), into
+        /// `vulkan-<name>.json` (for example `igpu=0`); the CPU and default reports are not
+        /// re-measured.
+        #[arg(long)]
+        device: Option<String>,
         /// Build in this directory (a Vulkan build otherwise uses the short directory of
         /// `cargo xtask build`).
         #[arg(long)]
@@ -543,13 +548,15 @@ fn main() -> ExitCode {
                 decodings: decoding,
                 out,
                 target_dir,
+                vulkan_device: None,
             },
         )
         .map(|()| true),
         Cmd::VulkanParity {
             skip_run,
+            device,
             target_dir,
-        } => xtask::vulkan_parity::run(&root, skip_run, target_dir),
+        } => xtask::vulkan_parity::run(&root, skip_run, device.as_deref(), target_dir),
         Cmd::Bench {
             part,
             backend,

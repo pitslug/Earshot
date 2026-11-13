@@ -38,7 +38,26 @@ pub struct Options {
     pub out: Option<PathBuf>,
     /// Build here (a Vulkan build otherwise uses `cargo xtask build`'s short directory).
     pub target_dir: Option<PathBuf>,
+    /// On Vulkan, the one device whisper.cpp may see (`GGML_VK_VISIBLE_DEVICES`, by its
+    /// `Vulkan<n>` index), so a device other than the one Earshot picks can be measured.
+    pub vulkan_device: Option<u32>,
 }
+
+/// The environment the evaluation runs with: `GGML_VK_VISIBLE_DEVICES` when a Vulkan device is
+/// named.
+///
+/// # Errors
+/// A device named for another backend.
+pub fn eval_env(backend: &str, opts: &Options) -> Result<Vec<(&'static str, String)>> {
+    match opts.vulkan_device {
+        None => Ok(Vec::new()),
+        Some(n) if backend == "vulkan" => Ok(vec![(VULKAN_DEVICES_ENV, n.to_string())]),
+        Some(_) => bail!("a Vulkan device is named, but the backend is {backend}"),
+    }
+}
+
+/// whisper.cpp's variable naming the Vulkan devices it may use.
+pub const VULKAN_DEVICES_ENV: &str = "GGML_VK_VISIBLE_DEVICES";
 
 /// The backend to run: `requested` if given, else CUDA when doctor reports it, else the CPU.
 /// Vulkan is never picked by default.
@@ -152,6 +171,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
     let cuda = crate::doctor::cuda_for_backend_choice(&report, opts.backend.as_deref())?;
     let vulkan = crate::doctor::reports_vulkan_sdk(&report);
     let backend = select_backend(opts.backend.as_deref(), cuda, vulkan)?;
+    let env = eval_env(backend, opts)?;
     let models = crate::models::cache_dir()?;
     let fixtures = crate::fixtures::cache_dir()?;
     let out = opts
@@ -182,6 +202,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
         example_executable(&built.stdout, "model_eval").context("cargo reported no model_eval")?;
     let status = std::process::Command::new(&exe)
         .args(eval_args(root, backend, &models, &fixtures, &out, opts))
+        .envs(env)
         .current_dir(root)
         .status()
         .with_context(|| format!("start {}", exe.display()))?;
