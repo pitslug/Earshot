@@ -3171,6 +3171,18 @@ fn recording_gaps(
     gaps: &[(TrackId, u64, u64)],
     seed: u64,
 ) -> (Vec<Duration>, Option<Duration>) {
+    let (during, at_end, _) = recording_gaps_with(reference, gaps, &[], seed);
+    (during, at_end)
+}
+
+/// [`recording_gaps`] with `markers` (track, frame at 16 kHz, kind) as well, and how the
+/// session ended.
+fn recording_gaps_with(
+    reference: bool,
+    gaps: &[(TrackId, u64, u64)],
+    markers: &[(TrackId, u64, DiscontinuityKind)],
+    seed: u64,
+) -> (Vec<Duration>, Option<Duration>, EndReason) {
     let dir = TempDir::new();
     let svc = services(&dir);
     let total_ms = 12_000;
@@ -3182,6 +3194,9 @@ fn recording_gaps(
     }
     for &(track, start, len) in gaps {
         builder = builder.gap(track, start * 16, len * 16).unwrap();
+    }
+    for (track, at, kind) in markers {
+        builder = builder.discontinuity(*track, *at, kind.clone()).unwrap();
     }
     let session = start_live(
         builder.build().unwrap(),
@@ -3203,7 +3218,7 @@ fn recording_gaps(
         RuntimeWarning::RecordingGap { total } => Some(*total),
         _ => None,
     });
-    (during, at_end)
+    (during, at_end, outcome.reason)
 }
 
 fn assert_about(got: Duration, want_ms: u64) {
@@ -3231,6 +3246,55 @@ fn live_recording_gap_during_sleep_counts_once_across_both_tracks() {
     );
     assert_about(*during.last().expect("a warning"), 3000);
     assert_about(at_end.expect("in the outcome"), 3000);
+}
+
+/// The markers a capture re-open leaves on the mic (T9.21): no device from `lost_ms`, and
+/// `back` from `back_ms` (`None`: the track ended and never came back).
+fn mic_reopen_markers(
+    lost_ms: u64,
+    back_ms: Option<u64>,
+) -> Vec<(TrackId, u64, DiscontinuityKind)> {
+    let changed = |name: Option<&str>| DiscontinuityKind::DeviceChanged {
+        device_name: name.map(str::to_owned),
+        rate: R16,
+        warning: None,
+    };
+    // Just before the gap's first frame, so the marker is not moved past the gap.
+    let mut markers = vec![(TrackId::Mic, lost_ms * 16 - 1, changed(None))];
+    if let Some(back) = back_ms {
+        markers.push((TrackId::Mic, back * 16, changed(Some("Microphone"))));
+    }
+    markers
+}
+
+#[test]
+fn live_recording_gap_after_a_stream_error_reopen_is_reported() {
+    // A stream error re-opened the mic three seconds later (T9.21): the silence filled
+    // between is a gap like any other.
+    let (during, at_end, reason) = recording_gaps_with(
+        true,
+        &[(TrackId::Mic, 4000, 3000)],
+        &mic_reopen_markers(4000, Some(7000)),
+        160,
+    );
+    assert_about(*during.last().expect("a warning during the meeting"), 3000);
+    assert_about(at_end.expect("in the outcome"), 3000);
+    assert_eq!(reason, EndReason::Finished);
+}
+
+#[test]
+fn live_recording_gap_grows_when_the_mic_track_ends_and_the_reference_records_on() {
+    // The mic ended after its stream errors outlasted their bound (T9.21) while the far end
+    // went on: the rest of the meeting is a gap on the mic, and the meeting is not failed.
+    let (during, at_end, reason) = recording_gaps_with(
+        true,
+        &[(TrackId::Mic, 6000, 6000)],
+        &mic_reopen_markers(6000, None),
+        170,
+    );
+    assert!(!during.is_empty(), "a warning during the meeting");
+    assert_about(at_end.expect("in the outcome"), 6000);
+    assert_eq!(reason, EndReason::Finished);
 }
 
 #[test]

@@ -244,6 +244,22 @@ impl TrackObserver for RecordingTrack {
     fn call_output_refused(&mut self, _qpc: u64, wanted: &str, _used: Option<&str>, error: &str) {
         self.refused.push(format!("{wanted}: {error}"));
     }
+
+    /// Logs the end as a change with no device and the error only as a number
+    /// ([`follow::track_ended_detail`](crate::follow::track_ended_detail)); the timeline is
+    /// padded with silence to the end of the recording by [`finish`](Self::finish).
+    fn track_ended(&mut self, qpc: u64, hresult: i32) {
+        let track_frame = self.timeline.mark_discontinuity();
+        self.changes.push(DeviceChange {
+            qpc,
+            track_frame,
+            reason: ReopenReason::StreamError,
+            device_name: None,
+            device_format: None,
+            error: Some(crate::follow::track_ended_detail(hresult)),
+            hands_free: None,
+        });
+    }
 }
 
 /// A [`RecordingTrack`] that also hands each Bluetooth hands-free warning it logs to
@@ -279,6 +295,10 @@ impl<F: FnMut(&HandsFreeMic)> TrackObserver for NotifyingTrack<F> {
         {
             (self.notify)(&w);
         }
+    }
+
+    fn track_ended(&mut self, qpc: u64, hresult: i32) {
+        self.track.track_ended(qpc, hresult);
     }
 }
 
@@ -674,6 +694,29 @@ pub(crate) mod tests {
         let r = n.into_track().finish(t0 + 100_000);
         assert_eq!(r.device_changes.len(), 3);
         assert_eq!(heard, vec![hands_free_warning(&hfp).unwrap()]);
+    }
+
+    #[test]
+    fn recording_track_logs_an_ended_track_with_the_error_as_a_number_only() {
+        let t0 = 5_000_000;
+        let first = DeviceDescription {
+            name: "Mic".into(),
+            format: fmt48(),
+        };
+        let track = RecordingTrack::new(first, TrackTimeline::new(48_000, t0));
+        let mut n = NotifyingTrack::new(track, |_: &HandsFreeMic| {});
+        n.track_ended(t0 + 20_000_000, 0x8889_0017_u32 as i32);
+        let r = n.into_track().finish(t0 + 30_000_000);
+        assert_eq!(r.device_changes.len(), 1);
+        let change = &r.device_changes[0];
+        assert_eq!(change.reason, ReopenReason::StreamError);
+        assert_eq!(change.device_name, None);
+        assert_eq!(
+            change.error.as_deref(),
+            Some("stream error 0x88890017; the track ended")
+        );
+        // Silence up to the end of the recording.
+        assert_eq!(r.timeline.frames(), 3 * 48_000);
     }
 
     #[test]

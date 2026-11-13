@@ -153,6 +153,14 @@ impl CaptureError {
         matches!(self, Self::Windows { source, .. } if follow::is_device_loss(source.code().0))
     }
 
+    /// The failed call and its HRESULT, for a Windows API error.
+    fn windows_failure(&self) -> Option<(&'static str, i32)> {
+        match self {
+            Self::Windows { context, source } => Some((context, source.code().0)),
+            _ => None,
+        }
+    }
+
     /// True when a chosen endpoint is not there (not listed, not active, or the wrong
     /// direction): [`CaptureError::DeviceGone`], or a device loss while opening it.
     pub fn is_device_gone(&self) -> bool {
@@ -1645,6 +1653,11 @@ struct Track<S, O> {
     channels: Option<u16>,
     stream: Option<S>,
     follower: StreamFollower,
+    /// The last stream error that was neither a device loss nor a programming fault (T9.21):
+    /// the failed call and its HRESULT.
+    stream_error: Option<(&'static str, i32)>,
+    /// The observer has heard that the track ended.
+    end_reported: bool,
     observer: O,
 }
 
@@ -1669,6 +1682,8 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             channels,
             stream: Some(stream),
             follower,
+            stream_error: None,
+            end_reported: false,
             observer,
         }
     }
@@ -1677,21 +1692,66 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
         self.stream.as_ref().map(LoopStream::event)
     }
 
-    /// Drains pending packets into the observer; packets stamped after `horizon` are
-    /// bogus. A device loss marks the stream for re-open instead of failing capture.
-    fn drain(&mut self, horizon: u64) -> Result<(), CaptureError> {
+    /// Drains pending packets into the observer at `now`; packets stamped later than `now`
+    /// plus a margin are bogus. A device loss marks the stream for re-open instead of failing
+    /// capture, and so does any other Windows error except a programming fault
+    /// ([`follow::PROGRAMMING_FAULTS`]), but those only for
+    /// [`follow::STREAM_ERROR_GRACE_QPC`], after which this track ends (T9.21). A programming
+    /// fault, or an error that is not Windows' (a malformed packet), ends the capture.
+    fn drain(&mut self, now: u64) -> Result<(), CaptureError> {
         let Some(stream) = self.stream.as_mut() else {
             return Ok(());
         };
         let observer = &mut self.observer;
-        observer.set_horizon(horizon);
+        observer.set_horizon(now.saturating_add(QPC_LIMIT_MARGIN));
         match stream.drain(&mut |p, s| observer.packet(p, s)) {
+            Ok(()) => {
+                self.follower.stream_ran(now);
+                Ok(())
+            }
             Err(e) if e.is_device_loss() => {
                 self.follower.on_stream_error();
                 Ok(())
             }
-            r => r,
+            Err(e) => match e.windows_failure() {
+                Some(failure) if !follow::is_programming_fault(failure.1) => {
+                    self.stream_error = Some(failure);
+                    self.follower.on_unknown_stream_error(now);
+                    self.end_if_over(now);
+                    Ok(())
+                }
+                _ => Err(e),
+            },
         }
+    }
+
+    /// Once the follower has ended the track: closes its stream (keeping its last packets)
+    /// and tells the observer, once.
+    fn end_if_over(&mut self, now: u64) {
+        if !self.follower.ended() || self.end_reported {
+            return;
+        }
+        if let Some(mut old) = self.stream.take() {
+            let _ = old.stop();
+            let observer = &mut self.observer;
+            observer.set_horizon(now.saturating_add(QPC_LIMIT_MARGIN));
+            let _ = old.drain(&mut |p, s| observer.packet(p, s));
+        }
+        self.end_reported = true;
+        let hresult = self.stream_error.map_or(0, |(_, hr)| hr);
+        self.observer.track_ended(now, hresult);
+    }
+
+    /// The error that ended the track (T9.21), as a [`CaptureError`]; `None` while it records.
+    fn ended_error(&self) -> Option<CaptureError> {
+        if !self.follower.ended() {
+            return None;
+        }
+        let (context, hresult) = self.stream_error?;
+        Some(CaptureError::Windows {
+            context,
+            source: windows::core::Error::from_hresult(HRESULT(hresult)),
+        })
     }
 
     /// Closes the current stream (keeping its last packets) and opens `endpoint` again
@@ -1748,6 +1808,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                 let error = e.to_string();
                 self.observer
                     .reopened(now, reason, ReopenOutcome::Failed { error: &error });
+                self.end_if_over(now);
                 if self.follower.give_up_chosen(now)
                     && let DeviceChoice::Endpoint { name, .. } = std::mem::take(&mut self.device)
                 {
@@ -1822,10 +1883,8 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
     /// After [`stop`](Self::stop): drains what the stream had already captured (errors
     /// ignored: the capture is over).
     fn flush<D: LoopDriver>(&mut self, driver: &mut D) {
-        let horizon = driver
-            .qpc_now()
-            .map_or(u64::MAX, |now| now.saturating_add(QPC_LIMIT_MARGIN));
-        let _ = self.drain(horizon);
+        let now = driver.qpc_now().unwrap_or(u64::MAX);
+        let _ = self.drain(now);
     }
 }
 
@@ -2005,10 +2064,10 @@ fn run_capture<D: LoopDriver, M: TrackObserver, L: TrackObserver>(
             .flatten()
             .collect();
         driver.wait_any(&events, Duration::from_millis(u64::from(WAIT_MS)))?;
-        let horizon = driver.qpc_now()?.saturating_add(QPC_LIMIT_MARGIN);
-        mic.drain(horizon)?;
+        let drained_at = driver.qpc_now()?;
+        mic.drain(drained_at)?;
         if let Some(lb) = loopback.as_deref_mut() {
-            lb.drain(horizon)?;
+            lb.drain(drained_at)?;
         }
         for change in driver.take_changes() {
             mic.follower.on_default_changed(&change);
@@ -2031,6 +2090,13 @@ fn run_capture<D: LoopDriver, M: TrackObserver, L: TrackObserver>(
         }
         if let (Some(follow), Some(lb)) = (call_output.as_mut(), loopback.as_deref_mut()) {
             follow.step(driver, lb, now);
+        }
+        // A track ended by stream errors (T9.21) leaves the other recording; with none left
+        // the capture has failed.
+        if let Some(e) = mic.ended_error()
+            && loopback.as_ref().is_none_or(|t| t.follower.ended())
+        {
+            return Err(e);
         }
     }
 }

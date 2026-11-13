@@ -68,6 +68,14 @@ pub trait TrackObserver {
         let _ = (qpc, wanted, used, error);
     }
 
+    /// The track ended at `qpc` after its stream kept failing for
+    /// [`STREAM_ERROR_GRACE_QPC`](crate::follow::STREAM_ERROR_GRACE_QPC) (T9.21); `hresult` is
+    /// the last stream error. No packet or re-open follows, and the other track goes on.
+    /// Default: ignored.
+    fn track_ended(&mut self, qpc: u64, hresult: i32) {
+        let _ = (qpc, hresult);
+    }
+
     /// Packets drained after this call were captured before `qpc` (a "now" plus a
     /// margin); a later timestamp is bogus. Default: ignored.
     fn set_horizon(&mut self, qpc: u64) {

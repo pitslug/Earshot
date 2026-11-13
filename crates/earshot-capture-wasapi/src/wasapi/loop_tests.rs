@@ -40,6 +40,14 @@ impl Fault {
             hresult,
         }
     }
+
+    /// Fails the `nth` call and every one after it.
+    fn from(call: Call, nth: usize, hresult: i32) -> Self {
+        Self {
+            last: usize::MAX,
+            ..Self::on(call, nth, hresult)
+        }
+    }
 }
 
 /// What the fake platform shares with its streams.
@@ -232,11 +240,18 @@ impl LoopDriver for FakeDriver {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Heard {
     /// Packets delivered back to back, from `from` to `to` (QPC).
-    Audio { from: u64, to: u64 },
+    Audio {
+        from: u64,
+        to: u64,
+    },
     Reopened {
         at: u64,
         reason: ReopenReason,
         opened: bool,
+    },
+    Ended {
+        at: u64,
+        hresult: i32,
     },
 }
 
@@ -252,17 +267,23 @@ impl Ear {
             .iter()
             .map(|h| match h {
                 Heard::Audio { from, to } => to - from,
-                Heard::Reopened { .. } => 0,
+                Heard::Reopened { .. } | Heard::Ended { .. } => 0,
             })
             .sum()
     }
 
+    /// The reported re-opens ([`reopen_is_reported`]: every attempt but a failed retry).
     fn reopens(&self) -> Vec<(ReopenReason, bool)> {
         self.heard
             .iter()
             .filter_map(|h| match h {
-                Heard::Reopened { reason, opened, .. } => Some((*reason, *opened)),
-                Heard::Audio { .. } => None,
+                Heard::Reopened { reason, opened, .. }
+                    if crate::observer::reopen_is_reported(*reason, *opened) =>
+                {
+                    Some((*reason, *opened))
+                }
+                Heard::Reopened { .. } => None,
+                Heard::Audio { .. } | Heard::Ended { .. } => None,
             })
             .collect()
     }
@@ -287,6 +308,10 @@ impl TrackObserver for Ear {
             reason,
             opened: outcome.is_opened(),
         });
+    }
+
+    fn track_ended(&mut self, at: u64, hresult: i32) {
+        self.heard.push(Heard::Ended { at, hresult });
     }
 }
 
@@ -419,7 +444,7 @@ fn capture_loop_a_reopen_that_fails_is_retried_after_the_interval() {
         .iter()
         .filter_map(|h| match h {
             Heard::Reopened { at, .. } => Some(*at),
-            Heard::Audio { .. } => None,
+            Heard::Audio { .. } | Heard::Ended { .. } => None,
         })
         .collect();
     assert_eq!(
@@ -481,4 +506,168 @@ fn capture_loop_follows_a_default_device_change() {
         [(ReopenReason::DefaultDeviceChanged, true)]
     );
     assert_eq!(platform.count(Call::Open(TrackId::Mic)), 1);
+}
+
+/// An error the capture loop has no rule for: neither a device loss nor a programming fault.
+const AUDCLNT_E_CPUUSAGE_EXCEEDED: i32 = 0x8889_0017_u32 as i32;
+
+#[test]
+fn capture_loop_an_unknown_error_on_the_third_drain_reopens_that_track_only() {
+    let run = run(
+        &[Fault::on(
+            Call::Drain(TrackId::Mic),
+            3,
+            AUDCLNT_E_CPUUSAGE_EXCEEDED,
+        )],
+        3,
+    );
+    assert!(run.result.is_ok(), "the capture goes on");
+    assert_eq!(run.mic.reopens(), [(ReopenReason::StreamError, true)]);
+    assert!(
+        matches!(run.mic.heard[1], Heard::Reopened { at, .. } if at == 3 * WAIT_QPC),
+        "{:?}",
+        run.mic.heard
+    );
+    assert!(
+        !run.mic
+            .heard
+            .iter()
+            .any(|h| matches!(h, Heard::Ended { .. }))
+    );
+    assert_eq!(run.platform.count(Call::Open(TrackId::Mic)), 1);
+    // The re-opened stream records to the end.
+    assert!(
+        matches!(run.mic.heard.last(), Some(Heard::Audio { to, .. }) if *to == 3 * QPC_UNITS_PER_SEC)
+    );
+    assert!(run.reference.reopens().is_empty());
+    assert_eq!(run.reference.audio(), 3 * QPC_UNITS_PER_SEC);
+}
+
+#[test]
+fn capture_loop_unknown_errors_past_the_bound_end_only_that_track() {
+    let seconds = 15;
+    let run = run(
+        &[
+            Fault::on(Call::Drain(TrackId::Mic), 3, AUDCLNT_E_CPUUSAGE_EXCEEDED),
+            Fault::from(Call::Open(TrackId::Mic), 1, AUDCLNT_E_CPUUSAGE_EXCEEDED),
+        ],
+        seconds,
+    );
+    assert!(run.result.is_ok(), "the other track keeps recording");
+    let first = 3 * WAIT_QPC;
+    let end = first + follow::STREAM_ERROR_GRACE_QPC;
+    // Re-opened at once, then every retry interval, until the bound: then the track ends.
+    let attempts = 1 + follow::STREAM_ERROR_GRACE_QPC / follow::RETRY_INTERVAL_QPC;
+    assert_eq!(
+        run.platform.count(Call::Open(TrackId::Mic)) as u64,
+        attempts
+    );
+    assert_eq!(
+        run.mic.heard.last(),
+        Some(&Heard::Ended {
+            at: end,
+            hresult: AUDCLNT_E_CPUUSAGE_EXCEEDED
+        })
+    );
+    // Only the first failure is reported; the periodic retries are not.
+    assert_eq!(run.mic.reopens(), [(ReopenReason::StreamError, false)]);
+    assert_eq!(run.mic.audio(), first);
+    // The reference never noticed.
+    assert!(run.reference.reopens().is_empty());
+    assert_eq!(run.reference.audio(), seconds * QPC_UNITS_PER_SEC);
+}
+
+#[test]
+fn capture_loop_every_programming_fault_on_a_drain_ends_the_capture() {
+    for code in follow::PROGRAMMING_FAULTS {
+        let run = run(&[Fault::on(Call::Drain(TrackId::Reference), 3, code)], 2);
+        let err = run.result.expect_err("a programming fault fails fast");
+        assert_eq!(hresult_of(&err), Some(code), "{code:#x}");
+        assert_eq!(run.platform.count(Call::Open(TrackId::Reference)), 0);
+    }
+}
+
+#[test]
+fn capture_loop_both_tracks_ended_ends_the_capture() {
+    let run = run(
+        &[
+            Fault::on(Call::Drain(TrackId::Mic), 3, AUDCLNT_E_CPUUSAGE_EXCEEDED),
+            Fault::from(Call::Open(TrackId::Mic), 1, AUDCLNT_E_CPUUSAGE_EXCEEDED),
+            Fault::on(
+                Call::Drain(TrackId::Reference),
+                5,
+                AUDCLNT_E_CPUUSAGE_EXCEEDED,
+            ),
+            Fault::from(
+                Call::Open(TrackId::Reference),
+                1,
+                AUDCLNT_E_CPUUSAGE_EXCEEDED,
+            ),
+        ],
+        60,
+    );
+    let err = run.result.expect_err("nothing is left to record");
+    assert_eq!(hresult_of(&err), Some(AUDCLNT_E_CPUUSAGE_EXCEEDED));
+    assert!(matches!(run.mic.heard.last(), Some(Heard::Ended { .. })));
+    assert!(matches!(
+        run.reference.heard.last(),
+        Some(Heard::Ended { .. })
+    ));
+    // It stopped when the second track ended, not at the deadline.
+    assert!(run.platform.clock.get() < 60 * QPC_UNITS_PER_SEC);
+}
+
+#[test]
+fn capture_loop_hresults_match_the_windows_bindings() {
+    use windows::Win32::Foundation::{
+        E_INVALIDARG as WIN_E_INVALIDARG, E_POINTER as WIN_E_POINTER,
+    };
+    use windows::Win32::Media::Audio as a;
+    let pairs = [
+        (follow::E_POINTER, WIN_E_POINTER),
+        (follow::E_INVALIDARG, WIN_E_INVALIDARG),
+        (
+            follow::AUDCLNT_E_NOT_INITIALIZED,
+            a::AUDCLNT_E_NOT_INITIALIZED,
+        ),
+        (
+            follow::AUDCLNT_E_ALREADY_INITIALIZED,
+            a::AUDCLNT_E_ALREADY_INITIALIZED,
+        ),
+        (
+            follow::AUDCLNT_E_WRONG_ENDPOINT_TYPE,
+            a::AUDCLNT_E_WRONG_ENDPOINT_TYPE,
+        ),
+        (follow::AUDCLNT_E_NOT_STOPPED, a::AUDCLNT_E_NOT_STOPPED),
+        (follow::AUDCLNT_E_OUT_OF_ORDER, a::AUDCLNT_E_OUT_OF_ORDER),
+        (follow::AUDCLNT_E_INVALID_SIZE, a::AUDCLNT_E_INVALID_SIZE),
+        (
+            follow::AUDCLNT_E_BUFFER_OPERATION_PENDING,
+            a::AUDCLNT_E_BUFFER_OPERATION_PENDING,
+        ),
+        (
+            follow::AUDCLNT_E_EVENTHANDLE_NOT_EXPECTED,
+            a::AUDCLNT_E_EVENTHANDLE_NOT_EXPECTED,
+        ),
+        (
+            follow::AUDCLNT_E_EVENTHANDLE_NOT_SET,
+            a::AUDCLNT_E_EVENTHANDLE_NOT_SET,
+        ),
+        (
+            follow::AUDCLNT_E_DEVICE_INVALIDATED,
+            a::AUDCLNT_E_DEVICE_INVALIDATED,
+        ),
+        (
+            follow::AUDCLNT_E_SERVICE_NOT_RUNNING,
+            a::AUDCLNT_E_SERVICE_NOT_RUNNING,
+        ),
+        (
+            follow::AUDCLNT_E_RESOURCES_INVALIDATED,
+            a::AUDCLNT_E_RESOURCES_INVALIDATED,
+        ),
+        (AUDCLNT_E_CPUUSAGE_EXCEEDED, a::AUDCLNT_E_CPUUSAGE_EXCEEDED),
+    ];
+    for (ours, theirs) in pairs {
+        assert_eq!(ours, theirs.0, "{ours:#x}");
+    }
 }
