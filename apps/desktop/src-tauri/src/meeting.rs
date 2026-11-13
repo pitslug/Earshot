@@ -581,6 +581,11 @@ pub struct AfterBounds {
     /// (`LiveConfig::catch_up_stall`), since every decode polls its token many times a minute and
     /// no single engine call may take that long.
     pub step: Duration,
+    /// Once the meeting is cancelled, in either of those phases: work that answers stops at its
+    /// next poll, so silence this long after the cancel (or after its last sign of life, if later)
+    /// is a stall, without waiting for the phase's bound. 30 seconds, a judgement: the grace a
+    /// cancelled local summary gets (`summary::STALL_CANCEL_GRACE`).
+    pub cancelled: Duration,
 }
 
 impl Default for AfterBounds {
@@ -588,6 +593,7 @@ impl Default for AfterBounds {
         Self {
             load: Duration::from_secs(600),
             step: Duration::from_secs(120),
+            cancelled: Duration::from_secs(30),
         }
     }
 }
@@ -620,6 +626,8 @@ struct AfterWatch {
     bounds: AfterBounds,
     sign: Option<[u64; 2]>,
     since: Duration,
+    /// When the cancel was first seen.
+    cancelled_at: Option<Duration>,
 }
 
 impl AfterWatch {
@@ -628,12 +636,24 @@ impl AfterWatch {
             bounds,
             sign: None,
             since: Duration::ZERO,
+            cancelled_at: None,
         }
     }
 
     /// Whether the work in `phase` has stalled at `now`, given `steps` heard and `polls` of its
-    /// token. Every step changes the count, so a new phase always starts its bound afresh.
-    fn stalled(&mut self, phase: AfterPhase, steps: u64, polls: u64, now: Duration) -> bool {
+    /// token, and whether the meeting is `cancelled`. Every step changes the count, so a new phase
+    /// always starts its bound afresh.
+    fn stalled(
+        &mut self,
+        phase: AfterPhase,
+        steps: u64,
+        polls: u64,
+        now: Duration,
+        cancelled: bool,
+    ) -> bool {
+        if cancelled && self.cancelled_at.is_none() {
+            self.cancelled_at = Some(now);
+        }
         let sign = [steps, polls];
         if self.sign != Some(sign) {
             self.sign = Some(sign);
@@ -645,7 +665,10 @@ impl AfterWatch {
             AfterPhase::Steps => self.bounds.step,
             AfterPhase::Summary => return false,
         };
-        now.saturating_sub(self.since) >= bound
+        let graced = self.cancelled_at.is_some_and(|at| {
+            now.saturating_sub(self.since.max(at)) >= self.bounds.cancelled
+        });
+        graced || now.saturating_sub(self.since) >= bound
     }
 }
 
@@ -672,7 +695,8 @@ fn with_pass(after: AfterFn, pass: crate::activity::WorkPass) -> AfterFn {
 /// Runs `after` on a thread of its own and watches it ([`AfterBounds`]); forwards what the UI
 /// hears of each step through `send`. `None`: it stopped answering and was left, its token
 /// cancelled, so it stops if its call ever returns (its result then goes nowhere). The meeting's
-/// thread itself never polls `cancel` here: its polls are the work's sign of life. The caller
+/// thread reads `cancel` here only to shorten the bound after a Cancel, and takes its own reads out
+/// of the poll count: the work's polls are its sign of life. The caller
 /// hands `after` a pass of its own ([`with_pass`]), so a thread left behind keeps the model check
 /// and the benchmark out until it ends.
 fn run_after_watched(
@@ -708,7 +732,7 @@ fn run_after_watched(
     };
     let mut watch = AfterWatch::new(bounds);
     let started = Instant::now();
-    let (mut phase, mut steps) = (AfterPhase::Loading, 0u64);
+    let (mut phase, mut steps, mut own_polls) = (AfterPhase::Loading, 0u64, 0u64);
     loop {
         match rx.recv_timeout(AFTER_WATCH_POLL) {
             Ok(FromAfter::Step(p, event)) => {
@@ -733,7 +757,12 @@ fn run_after_watched(
                 };
             }
         }
-        if watch.stalled(phase, steps, cancel.polls(), started.elapsed()) {
+        // This thread's own look at the token is counted as a poll: take it out, so only the
+        // work's polls are a sign of life.
+        let cancelled = cancel.is_cancelled();
+        own_polls += 1;
+        let polls = cancel.polls().saturating_sub(own_polls);
+        if watch.stalled(phase, steps, polls, started.elapsed(), cancelled) {
             cancel.cancel();
             drop(worker);
             return None;

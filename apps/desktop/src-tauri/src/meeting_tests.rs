@@ -1977,6 +1977,7 @@ fn meeting_with_a_stalled_live_catch_up_is_left_and_the_next_one_goes() {
 const SHORT_AFTER: AfterBounds = AfterBounds {
     load: Duration::from_millis(200),
     step: Duration::from_millis(200),
+    cancelled: Duration::from_millis(200),
 };
 
 /// Waits until the log holds `line`: a thread left behind ends on its own.
@@ -2247,35 +2248,99 @@ fn meeting_after_watch_rule_is_no_sign_of_life_for_the_phase_bound() {
     let bounds = AfterBounds::default();
     assert_eq!((bounds.load, bounds.step), (s(600), s(120)));
     let mut w = AfterWatch::new(bounds);
-    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0)));
-    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(599)));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0), false));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(599), false));
     assert!(
-        w.stalled(AfterPhase::Loading, 0, 0, s(600)),
+        w.stalled(AfterPhase::Loading, 0, 0, s(600), false),
         "a load that never returns"
     );
     // A step starts the step bound afresh, whatever time it came at.
-    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(700)));
-    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(819)));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(700), false));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(819), false));
     assert!(
-        w.stalled(AfterPhase::Steps, 1, 0, s(820)),
+        w.stalled(AfterPhase::Steps, 1, 0, s(820), false),
         "a step that never returns"
     );
     // Any sign of life starts it again: a poll of the token, a step.
     let mut w = AfterWatch::new(bounds);
     for (k, (steps, polls)) in [(1, 0), (1, 1), (2, 1)].into_iter().enumerate() {
         let at = s(1000 * k as u64);
-        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at));
-        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at + s(119)));
+        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at, false));
+        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at + s(119), false));
     }
     // A decode that polls slowly but steadily is never cut, however long it takes.
     let mut slow = AfterWatch::new(bounds);
     for minute in 0..600u64 {
-        assert!(!slow.stalled(AfterPhase::Steps, 1, minute, s(60 * minute)));
+        assert!(!slow.stalled(AfterPhase::Steps, 1, minute, s(60 * minute), false));
     }
     // Nor is a summary, whatever it does: its own watch decides.
     let mut summary = AfterWatch::new(bounds);
-    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0)));
-    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400)));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0), false));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400), false));
+}
+
+#[test]
+fn meeting_after_watch_gives_cancelled_work_a_short_grace() {
+    // Clock-free: once cancelled, work silent for the grace is given up, counted from the later
+    // of its last sign of life and the moment the cancel was seen; a sign of life starts it again.
+    let s = Duration::from_secs;
+    let bounds = AfterBounds::default();
+    assert_eq!(bounds.cancelled, s(30));
+    for phase in [AfterPhase::Loading, AfterPhase::Steps] {
+        let mut w = AfterWatch::new(bounds);
+        assert!(!w.stalled(phase, 1, 0, s(0), false));
+        // Silent for 50 s, then cancelled: the grace starts at the cancel, not at the silence.
+        assert!(!w.stalled(phase, 1, 0, s(50), true));
+        assert!(!w.stalled(phase, 1, 0, s(79), true));
+        assert!(w.stalled(phase, 1, 0, s(80), true), "{phase:?}");
+        // A poll after the cancel starts the grace afresh.
+        let mut w = AfterWatch::new(bounds);
+        assert!(!w.stalled(phase, 1, 0, s(0), true));
+        assert!(!w.stalled(phase, 1, 1, s(20), true));
+        assert!(!w.stalled(phase, 1, 1, s(49), true));
+        assert!(w.stalled(phase, 1, 1, s(50), true), "{phase:?}");
+    }
+    // The summary keeps its own watch, cancelled or not.
+    let mut summary = AfterWatch::new(bounds);
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0), true));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400), true));
+}
+
+#[test]
+fn meeting_cancel_on_after_work_that_stopped_answering_leaves_it_after_the_grace() {
+    // A Cancel on a hung final-pass step does not wait for the step bound (an hour here).
+    let dir = TempDir::new("after-cancel-grace");
+    let svc = services(&dir);
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::AfterHangs {
+        in_step: true,
+        inside: inside_tx,
+        release: release_rx,
+    }]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let hour = Duration::from_secs(3600);
+    let d = d.with_after_bounds(AfterBounds {
+        load: hour,
+        step: hour,
+        cancelled: Duration::from_millis(200),
+    });
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    d.cancel_finishing(&meeting);
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert_eq!(
+        result_of(&events, &meeting),
+        SummaryEvent::Failed {
+            message: POST_STALLED_MESSAGE.into(),
+            retryable: false,
+        }
+    );
+    d.join();
+    assert_eq!(d.phase(), DriverPhase::Idle);
+    release.send(()).unwrap();
+    logged_eventually(&prepare, &format!("{meeting} returned, cancelled true"));
 }
 
 #[test]
