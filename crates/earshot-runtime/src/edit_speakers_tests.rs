@@ -194,6 +194,69 @@ fn edit_naming_an_ignored_voice_ends_the_ignore() {
 }
 
 #[test]
+fn edit_ignored_voice_stays_unlinked_when_a_voiceprint_would_name_it() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    // Two meetings processed before any voiceprint exists (the level fakes give every
+    // meeting the same voices; the fakes' voiceprint threshold is calibrated): in one the
+    // far end's first voice is ignored, the other is the control.
+    let m = processed(&svc, 532);
+    let voice = remote_speakers(&svc, m)[0].clone();
+    assert!(ignore_speaker(&svc, m, voice.id).unwrap());
+    let control = processed(&svc, 531);
+    // Then a voiceprint of that voice is saved in a third meeting.
+    let elsewhere = processed(&svc, 530);
+    let avery = save_voice_with(
+        &svc,
+        elsewhere,
+        remote_speakers(&svc, elsewhere)[0].id,
+        &PersonChoice::New {
+            name: "Avery".into(),
+        },
+        &calibrated(true),
+    )
+    .unwrap()
+    .person;
+    assert!(print_count(&svc, avery).is_some());
+    let cancel = CancelToken::new();
+
+    // Control: a re-run names the voice by that voiceprint.
+    assert!(
+        view(&svc, control)
+            .speakers
+            .iter()
+            .all(|s| s.person_id != Some(avery))
+    );
+    retranscribe_with(&svc, control, &cancel, fake_post, &mut |_| {}).unwrap();
+    assert!(
+        view(&svc, control)
+            .speakers
+            .iter()
+            .any(|s| s.person_id == Some(avery)),
+        "the voiceprint names the voice on a re-run"
+    );
+
+    // The ignored voice: the re-run keeps it unlinked and ignored.
+    let again = retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    let HostPost::Done(outcome) = again.post else {
+        panic!("{:?}", again.post);
+    };
+    let carried = outcome.speakers.iter().find(|p| p.id == voice.id).unwrap();
+    assert!(carried.ignored && carried.person.is_none(), "{carried:?}");
+    let after = row(&svc, m, voice.id);
+    assert_eq!(after.person_id, None);
+    assert_eq!(after.display_name, voice.display_name);
+    assert!(ignored(&svc, m, voice.id));
+    assert!(
+        view(&svc, m)
+            .speakers
+            .iter()
+            .all(|s| s.person_id != Some(avery)),
+        "no other row took the voiceprint's name"
+    );
+}
+
+#[test]
 fn edit_save_voice_links_and_remembers_in_one_step() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
