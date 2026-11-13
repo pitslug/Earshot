@@ -78,6 +78,36 @@ fn store_opens_in_wal_mode_with_foreign_keys_and_the_latest_schema() {
 }
 
 #[test]
+fn store_opens_racing_on_a_brand_new_file_all_succeed_in_wal_mode() {
+    // A brand-new file starts in rollback mode; every opener switches it to WAL, which
+    // needs an exclusive lock that SQLite's busy handler does not always wait for.
+    const OPENERS: usize = 8;
+    let dir = TempDir::new("wal-race");
+    for round in 0..20 {
+        let path = dir.path().join(format!("race{round}.db"));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(OPENERS));
+        let threads: Vec<_> = (0..OPENERS)
+            .map(|_| {
+                let (path, start) = (path.clone(), std::sync::Arc::clone(&start));
+                std::thread::spawn(move || {
+                    start.wait();
+                    let store = Store::open(&path)?;
+                    Ok::<_, StoreError>((store.journal_mode()?, store.schema_version()?))
+                })
+            })
+            .collect();
+        for t in threads {
+            let (mode, version) = t
+                .join()
+                .unwrap()
+                .unwrap_or_else(|e| panic!("round {round}: {e}"));
+            assert_eq!(mode, "wal");
+            assert_eq!(version, SCHEMA_VERSION);
+        }
+    }
+}
+
+#[test]
 fn store_reopen_keeps_data_and_does_not_reapply_migrations() {
     let dir = TempDir::new("reopen");
     let path = dir.path().join("earshot.db");
