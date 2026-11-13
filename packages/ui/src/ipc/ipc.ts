@@ -302,7 +302,7 @@ export interface IpcCommands
   downloadUpdate(): Promise<void>;
   /** Stops a download; what arrived is kept. */
   cancelUpdate(): Promise<void>;
-  /** Turns the check at each start on or off. */
+  /** Turns automatic checks (at each start and on the schedule) on or off. */
   setUpdateAutoCheck(on: boolean): Promise<UpdateView>;
   /** Stores how often automatic checks run; applies at the schedule's next wake. */
   setUpdateSchedule(schedule: ScheduleChoice): Promise<UpdateView>;
