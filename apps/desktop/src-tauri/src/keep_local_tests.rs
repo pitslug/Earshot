@@ -17,7 +17,7 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
 use super::*;
-use crate::meeting::{StartRequest, summary_setup};
+use crate::meeting::{StartRequest, meeting_summary, summary_setup};
 use crate::meeting_events::{CaptureMode, MeetingEvent, WarningKind, kept_local_banner};
 use crate::testutil::{TempDir, services};
 
@@ -181,6 +181,67 @@ fn meeting_kept_local_setup_builds_nothing_remote_and_says_why() {
             SkipReason::KeptLocalNoModel { .. }
         ));
         assert!(kept_local_banner(&open.no_summary).is_none());
+    }
+}
+
+/// The pre-flight's summary part takes the start request's choice to both places it acts: the
+/// setup (no remote writer, the banner) and the live config's flag.
+#[test]
+fn meeting_preflight_carries_the_start_requests_keep_local_to_setup_and_live_config() {
+    let order = [earshot_runtime::backends::Accelerator::Cpu];
+    for settings in remote_writers() {
+        let dir = TempDir::new("keep-local-preflight");
+        let svc = services(&dir);
+        let models = earshot_runtime::backends::ModelDir::new(dir.0.join("models"));
+        set_writer(&svc, &settings);
+        let keys = Keys(Cell::new(0));
+        let request = |keep_local| StartRequest {
+            mode: CaptureMode::Call,
+            title: String::new(),
+            keep_local,
+        };
+        let kept = meeting_summary(
+            &svc,
+            &models,
+            &request(true),
+            &order,
+            (&keys, &NeverClaude, &NeverCodex),
+        )
+        .unwrap();
+        assert!(kept.summary.is_none(), "{:?}", settings.writer);
+        assert!(kept.keep_summary_local);
+        assert_eq!(keys.0.get(), 0, "no API key is read");
+        assert!(
+            matches!(kept.no_summary, SkipReason::KeptLocalNoModel { .. }),
+            "{:?}",
+            kept.no_summary
+        );
+        assert!(
+            kept.banners.iter().any(
+                |b| matches!(b, MeetingEvent::Warning { key, .. } if key == "summary-kept-local")
+            ),
+            "the banner goes with the meeting"
+        );
+        let open = meeting_summary(
+            &svc,
+            &models,
+            &request(false),
+            &order,
+            (
+                &keys,
+                &earshot_runtime::claude_code::FixedClaudeCode(ClaudeCodeStatus::NotInstalled),
+                &earshot_runtime::codex::FixedCodex(CodexStatus::NotInstalled),
+            ),
+        )
+        .unwrap();
+        assert!(!open.keep_summary_local);
+        assert!(!matches!(
+            open.no_summary,
+            SkipReason::KeptLocalNoModel { .. }
+        ));
+        assert!(!open.banners.iter().any(
+            |b| matches!(b, MeetingEvent::Warning { key, .. } if key == "summary-kept-local")
+        ));
     }
 }
 

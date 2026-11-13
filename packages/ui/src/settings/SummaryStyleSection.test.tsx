@@ -118,13 +118,34 @@ describe("Settings, Summaries, Summary style", () => {
       summaryStyle: async () => ({
         style: "",
         unknown: ["The stored setting settings/summary-style is not known to this version."],
+        unknown_template: [],
         max_chars: 1000,
         template: "standard",
         templates: SUMMARY_TEMPLATES,
       }),
     }));
     expect(await screen.findByText("The stored summary style is not used")).toBeInTheDocument();
+    expect(screen.queryByText("The stored summary template is not used")).toBeNull();
     expect(await field()).toHaveValue("");
+  });
+
+  it("reports a stored template this version does not offer under its own title", async () => {
+    const line = "The stored setting settings/summary-template is not known to this version.";
+    await open({}, (ipc) => ({
+      ...ipc,
+      summaryStyle: async () => ({
+        style: "Keep it short.",
+        unknown: [],
+        unknown_template: [line],
+        max_chars: 1000,
+        template: "standard",
+        templates: SUMMARY_TEMPLATES,
+      }),
+    }));
+    expect(await screen.findByText("The stored summary template is not used")).toBeInTheDocument();
+    expect(screen.getByText(line)).toBeInTheDocument();
+    expect(screen.queryByText("The stored summary style is not used")).toBeNull();
+    expect(await field()).toHaveValue("Keep it short.");
   });
 
   it("says when the style cannot be read", async () => {

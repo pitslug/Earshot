@@ -954,7 +954,8 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::FolderNotFound(id), "folder_not_found"),
         (EditError::FolderNameTaken(id), "folder_name_taken"),
         (EditError::MeetingRecording(id), "meeting_recording"),
-        (EditError::InvalidTitle(TextProblem::Empty), "invalid_title"),
+        // Never sent (an empty title is allowed, pinned below): no copy asks for a title.
+        (EditError::InvalidTitle(TextProblem::Empty), "internal"),
         (
             EditError::InvalidTitle(TextProblem::TooLong),
             "invalid_title",
@@ -1007,6 +1008,12 @@ fn detail_edit_refusals_become_plain_user_copy() {
     assert_eq!(
         edit_error(&EditError::NotTheUser(id)).message,
         "Only your own row can be linked to you."
+    );
+    // An empty title clears the title: the user never sees a refusal asking for one.
+    assert_eq!(earshot_runtime::edit::clean_title("   ").unwrap(), "");
+    assert_eq!(
+        edit_error(&EditError::InvalidTitle(TextProblem::Empty)).message,
+        crate::plain_text::INTERNAL
     );
 }
 

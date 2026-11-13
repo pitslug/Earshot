@@ -631,11 +631,14 @@ fn run(args: &Args, out: &mut dyn Write) -> Result<(), String> {
             let _ = tx.lock().unwrap_or_else(PoisonError::into_inner).send(e);
         }
     });
+    // Without the switch nothing was begun: CUDA is off for this run.
+    let cuda_off = crate::cuda_settings::CudaLatch::resolved_off();
     let driver = MeetingDriver::new(
         Arc::new(prepare),
         sink,
         Arc::new(Instant::now),
         WorkGate::new(),
+        cuda_latch.as_deref().unwrap_or(&cuda_off),
     );
     let meeting = driver
         .start(

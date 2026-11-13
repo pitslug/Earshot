@@ -525,8 +525,8 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "invalid_title",
             "Titles cannot contain line breaks or tabs.",
         ),
-        // An empty title is allowed; kept for exhaustiveness.
-        EditError::InvalidTitle(TextProblem::Empty) => err("invalid_title", "Enter a title."),
+        // Never sent: an empty title is allowed (`edit::clean_title`), so no copy asks for one.
+        EditError::InvalidTitle(TextProblem::Empty) => err("internal", crate::plain_text::INTERNAL),
         EditError::InvalidText(TextProblem::Empty) => err(
             "invalid_text",
             "Enter the words of this line. A line cannot be left empty.",

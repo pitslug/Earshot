@@ -8,7 +8,7 @@ use earshot_runtime::cuda_switch::{NOT_AVAILABLE_YET, PartFiles};
 use earshot_runtime::earshot_hardware::{ComputeCapability, Gpu, NVIDIA_VENDOR_ID};
 
 use super::*;
-use crate::model_jobs::{CheckDone, CheckStep, DownloadEnd, ModelSink, ModelWork};
+use crate::model_jobs::{CheckDone, CheckStep, DownloadEnd, ModelSink, ModelWork, RESTARTING};
 use crate::testutil::{TempDir, services};
 
 const VULKAN: &[Accelerator] = &[Accelerator::Vulkan, Accelerator::Cpu];
@@ -1786,6 +1786,107 @@ fn cuda_settings_restart_is_refused_while_anything_runs_and_then_holds_the_gate(
     claim_for_restart(&gate, false).unwrap();
     // Nothing long starts between the claim and the end of the process.
     assert_eq!(gate.enter_meeting().unwrap_err().kind, "busy");
+}
+
+/// The restart's download check and its claim are one step: no download starts after the claim,
+/// so none is cut by the restart.
+#[test]
+fn cuda_settings_no_download_starts_once_a_restart_is_claimed() {
+    let dir = TempDir::new("cuda-restart-download");
+    let svc = services(&dir);
+    let files = Arc::new(FakeFiles::new(PartState::Missing, PartState::Missing));
+    let r = rig(Arc::clone(&files));
+    // A running download refuses the claim and takes no pass.
+    let (wait, held) = mpsc::channel::<()>();
+    *files.download_wait.lock().unwrap() = Some(held);
+    r.jobs
+        .start_download(&svc, &desktop(), CudaPartChoice::Summaries, true)
+        .unwrap();
+    let update = update_jobs(false);
+    let e = r.jobs.claim_for_restart(&r.gate, &update).unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str()),
+        ("busy", RESTART_DOWNLOADING)
+    );
+    assert_eq!(r.gate.enter_work().map(drop), Ok(()));
+    drop(wait);
+    r.jobs.join();
+    r.jobs.claim_for_restart(&r.gate, &update).unwrap();
+    let e = r
+        .jobs
+        .start_download(&svc, &desktop(), CudaPartChoice::Summaries, true)
+        .unwrap_err();
+    assert_eq!((e.kind.as_str(), e.message.as_str()), ("busy", RESTARTING));
+    let e = r.checks.start_download(&svc, "tiny.en").unwrap_err();
+    assert_eq!((e.kind.as_str(), e.message.as_str()), ("busy", RESTARTING));
+    assert!(!r.jobs.any_downloading());
+    assert_eq!(files.downloads.load(Ordering::SeqCst), 1);
+}
+
+/// An update host whose download runs until it is cancelled.
+struct UpdateHost {
+    downloads: AtomicU32,
+    wait_for_cancel: bool,
+}
+
+impl crate::update_settings::UpdateWork for UpdateHost {
+    fn check(&self) -> Result<Option<(String, u64)>, earshot_runtime::update::UpdateError> {
+        Ok(Some(("9.9.9".into(), 100)))
+    }
+
+    fn download(
+        &self,
+        cancel: &CancelToken,
+        _: &mut dyn FnMut(u64, u64),
+    ) -> Result<(), earshot_runtime::update::UpdateError> {
+        self.downloads.fetch_add(1, Ordering::SeqCst);
+        while self.wait_for_cancel && !cancel.is_cancelled() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Err(earshot_runtime::update::UpdateError::Network("cut".into()))
+    }
+
+    fn launch(&self) -> Result<(), earshot_runtime::update::UpdateError> {
+        unreachable!("no install here")
+    }
+}
+
+/// Update jobs with an offer found, their downloads waiting for a cancel when `wait`.
+fn update_jobs(wait: bool) -> crate::update_settings::UpdateJobs {
+    let jobs = crate::update_settings::UpdateJobs::new(
+        Arc::new(UpdateHost {
+            downloads: AtomicU32::new(0),
+            wait_for_cancel: wait,
+        }),
+        Arc::new(|_| {}),
+    );
+    jobs.start_check(false).unwrap().join().unwrap();
+    jobs
+}
+
+/// An update download counts as a download for the restart both ways: a running one refuses the
+/// claim, and none starts after it.
+#[test]
+fn cuda_settings_a_restart_claim_and_an_update_download_exclude_each_other() {
+    let files = Arc::new(FakeFiles::new(PartState::Missing, PartState::Missing));
+    let r = rig(files);
+    let update = update_jobs(true);
+    let running = update.start_download().unwrap();
+    let e = r.jobs.claim_for_restart(&r.gate, &update).unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str()),
+        ("busy", RESTART_DOWNLOADING)
+    );
+    assert_eq!(r.gate.enter_work().map(drop), Ok(()), "no pass taken");
+    update.cancel();
+    running.join().unwrap();
+    r.jobs.claim_for_restart(&r.gate, &update).unwrap();
+    let e = update.start_download().unwrap_err();
+    assert_eq!((e.kind.as_str(), e.message.as_str()), ("busy", RESTARTING));
+    assert!(matches!(
+        update.phase(),
+        crate::update_settings::UpdatePhase::Available { .. }
+    ));
 }
 
 #[test]

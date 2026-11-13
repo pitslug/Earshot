@@ -13,6 +13,7 @@ fn summary_style_view_starts_empty_and_saves_trimmed_text() {
         SummaryStyleView {
             style: String::new(),
             unknown: vec![],
+            unknown_template: vec![],
             max_chars: 1000,
             template: "standard".into(),
             templates: template_options(),
@@ -24,6 +25,32 @@ fn summary_style_view_starts_empty_and_saves_trimmed_text() {
     // Reset to default: empty.
     assert_eq!(set_style(&svc, "").unwrap().style, "");
     assert_eq!(style_view(&svc).unwrap().style, "");
+}
+
+/// A stored template this version refuses is reported apart from the style, so the page says
+/// which of the two is not used.
+#[test]
+fn summary_style_a_refused_template_is_not_reported_as_the_style() {
+    let dir = TempDir::new("summary-style");
+    let svc = services(&dir);
+    set_style(&svc, "Keep it short.").unwrap();
+    svc.store()
+        .set_local_value(
+            earshot_runtime::summary_style::SUMMARY_TEMPLATE_KEY,
+            b"poem",
+        )
+        .unwrap();
+    let v = style_view(&svc).unwrap();
+    assert!(v.unknown.is_empty(), "{:?}", v.unknown);
+    assert_eq!(v.unknown_template.len(), 1, "{:?}", v.unknown_template);
+    assert!(
+        !v.unknown_template[0].contains("poem"),
+        "never the stored text"
+    );
+    assert_eq!(v.template, "standard");
+    assert_eq!(v.style, "Keep it short.");
+    let json = serde_json::to_value(&v).unwrap();
+    assert_eq!(json["unknown_template"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -47,9 +74,10 @@ fn summary_style_refusals_are_plain_sentences_and_store_nothing() {
 
 #[test]
 fn summary_style_the_view_serialises_for_the_ui() {
-    let json = serde_json::to_value(view("Short.", StylePreset::Brief, vec![])).unwrap();
+    let json = serde_json::to_value(view("Short.", StylePreset::Brief, vec![], vec![])).unwrap();
     assert_eq!(json["style"], "Short.");
     assert_eq!(json["unknown"], serde_json::json!([]));
+    assert_eq!(json["unknown_template"], serde_json::json!([]));
     assert_eq!(json["max_chars"], 1000);
     assert_eq!(json["template"], "brief");
     assert_eq!(

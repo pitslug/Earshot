@@ -190,6 +190,9 @@ struct Inner {
     downloads: Mutex<BTreeMap<String, Download>>,
     check: Mutex<Option<(CancelToken, JoinHandle<()>)>>,
     gate: WorkGate,
+    /// A restart was claimed ([`ModelJobs::claim_restart`]): no download starts any more. Set and
+    /// read under the check slot, which every download start holds.
+    restarting: AtomicBool,
 }
 
 /// Runs the model jobs (cheap to clone; clones share the jobs).
@@ -203,6 +206,9 @@ pub const CHECK_RUNNING_MESSAGE: &str =
 /// Why the model check is refused while a transcription model download is still writing.
 pub const DOWNLOADING_MESSAGE: &str =
     "A model is still downloading. Run the model check when the downloads have finished.";
+
+/// Why a download is refused once a restart was claimed: the restart would cut it.
+pub const RESTARTING: &str = "Earshot is restarting. Try again once it has started.";
 
 /// What a model job that panicked reports.
 pub const MODEL_JOB_PANIC_MESSAGE: &str = "The model job stopped unexpectedly.";
@@ -250,6 +256,7 @@ impl ModelJobs {
             downloads: Mutex::new(BTreeMap::new()),
             check: Mutex::new(None),
             gate,
+            restarting: AtomicBool::new(false),
         }))
     }
 
@@ -284,6 +291,7 @@ impl ModelJobs {
         require_catalogue_model(model)?;
         let check = self.check_slot();
         Self::refuse_while_checking(&check)?;
+        self.refuse_while_restarting()?;
         let mut downloads = self.downloads();
         downloads.retain(|_, d| !d.thread.is_finished());
         if downloads.contains_key(model) {
@@ -383,6 +391,33 @@ impl ModelJobs {
         let out = f();
         drop(check);
         out
+    }
+
+    /// `busy` once a restart was claimed. Call it holding the check slot, as every download
+    /// start does (the CUDA parts' through [`Self::without_check`]).
+    ///
+    /// # Errors
+    /// As described.
+    pub fn refuse_while_restarting(&self) -> Result<(), IpcError> {
+        if self.0.restarting.load(Ordering::SeqCst) {
+            Err(busy(RESTARTING))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Runs `f` (the restart's claim) holding the check slot, so no download starts between its
+    /// look at the downloads and the claim; once `f` succeeds no download starts again
+    /// ([`Self::refuse_while_restarting`]). A running check is `f`'s to refuse.
+    ///
+    /// # Errors
+    /// `f`'s error, which claims nothing.
+    pub fn claim_restart(&self, f: impl FnOnce() -> Result<(), IpcError>) -> Result<(), IpcError> {
+        let check = self.check_slot();
+        f()?;
+        self.0.restarting.store(true, Ordering::SeqCst);
+        drop(check);
+        Ok(())
     }
 
     /// Runs `f` (a CUDA part's removal) unless the model check, a meeting or a meeting job runs: a

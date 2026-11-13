@@ -80,6 +80,14 @@ export function SummaryStyleSection() {
           </MessageBarBody>
         </MessageBar>
       )}
+      {view.unknown_template.length > 0 && (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            <MessageBarTitle>The stored summary template is not used</MessageBarTitle>
+            {view.unknown_template.join(" ")}
+          </MessageBarBody>
+        </MessageBar>
+      )}
       <Field
         label="Template"
         hint={`${view.templates.find((t) => t.value === view.template)?.description ?? ""} ${TEMPLATE_HINT}`.trim()}

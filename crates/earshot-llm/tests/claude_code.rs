@@ -960,6 +960,58 @@ fn claude_code_effort_help_stops_on_cancel_and_is_asked_again() {
     s.assert_temp_root_empty();
 }
 
+/// While one run asks the help, reading what it said answers at once, and a second run waiting
+/// for that answer stops on its own cancel.
+fn claude_code_effort_help_holds_no_lock_others_wait_on() {
+    let input = meeting(3);
+    let s = Scenario::new("effort-busy");
+    std::fs::write(s.dir.join("help-sleep"), "60000").unwrap();
+    s.script(None, &format!("reply {}", summary_json(&[1])));
+    let client = s.client(|c| c.effort = Some(Effort::High));
+    let first_cancel = CancelToken::new();
+    let first = {
+        let client = client.clone();
+        let input = input.clone();
+        let cancel = first_cancel.clone();
+        std::thread::spawn(move || summarise(&client, &input, &cancel).result)
+    };
+    let help_calls = s.dir.join("help-calls");
+    let until = Instant::now() + Duration::from_secs(30);
+    while !help_calls.is_file() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(help_calls.is_file(), "the help was asked");
+    let read = Instant::now();
+    assert_eq!(client.effort_probe(), None, "no answer yet");
+    assert!(
+        read.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        read.elapsed()
+    );
+    // A second run waits for the first one's answer, and its own cancel stops the wait.
+    let second_cancel = CancelToken::new();
+    let setter = second_cancel.clone();
+    let t = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        setter.cancel();
+    });
+    let started = Instant::now();
+    let e = summarise(&client, &input, &second_cancel)
+        .result
+        .unwrap_err();
+    t.join().unwrap();
+    assert!(matches!(e, LlmError::Cancelled), "{e}");
+    assert!(
+        started.elapsed() < STATUS_TIMEOUT / 2,
+        "{:?}",
+        started.elapsed()
+    );
+    first_cancel.cancel();
+    assert!(matches!(first.join().unwrap(), Err(LlmError::Cancelled)));
+    assert_eq!(s.read("help-calls").trim(), "1", "the help is asked once");
+    assert_eq!(s.calls(), 0);
+}
+
 fn claude_code_unreadable_help_says_the_run_used_the_default_effort() {
     let input = meeting(3);
     let s = Scenario::new("effort-unreadable");
@@ -1234,6 +1286,11 @@ const CASES: &[Case] = &[
     (
         "claude_code_effort_help_stops_on_cancel_and_is_asked_again",
         claude_code_effort_help_stops_on_cancel_and_is_asked_again,
+        false,
+    ),
+    (
+        "claude_code_effort_help_holds_no_lock_others_wait_on",
+        claude_code_effort_help_holds_no_lock_others_wait_on,
         false,
     ),
     (

@@ -2017,6 +2017,8 @@ export type SummaryStyleView = {
 	style: string,
 	/**  One line when the stored style is one this version refuses (none is used). */
 	unknown: string[],
+	/**  One line when the stored template is one this version does not offer (Standard is used). */
+	unknown_template: string[],
 	/**  The longest style accepted, in characters. */
 	max_chars: number,
 	/**  The chosen summary template (a `StylePreset` name; "standard" by default). */

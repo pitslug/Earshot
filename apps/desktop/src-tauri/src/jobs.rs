@@ -144,7 +144,16 @@ fn busy() -> IpcError {
 impl JobRunner {
     /// A runner of `work`, sending events to `sink`; each job holds a pass of `gate` for
     /// its thread's life (no model check meanwhile).
-    pub fn new(work: Arc<dyn JobWork>, sink: JobSink, gate: crate::activity::WorkGate) -> Self {
+    ///
+    /// `_cuda` is the app's CUDA start ([`crate::cuda_settings::begin`]), asked for only so a
+    /// runner cannot exist before the start has closed its gates: a job may reach llama.cpp or
+    /// ONNX Runtime.
+    pub fn new(
+        work: Arc<dyn JobWork>,
+        sink: JobSink,
+        gate: crate::activity::WorkGate,
+        _cuda: &crate::cuda_settings::CudaLatch,
+    ) -> Self {
         let sink: JobSink = Arc::new(move |e| sink(crate::plain_text::plain_job_event(e)));
         Self(Arc::new(Inner {
             work,

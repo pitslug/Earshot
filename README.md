@@ -76,7 +76,7 @@ cargo xtask doctor
 cargo xtask build --bundle
 ```
 
-That builds the app and its unsigned per-user installer for your PC's architecture. [docs/arm64-release.md](docs/arm64-release.md) covers building the ARM64 installer on an x64 PC, and [docs/updates.md](docs/updates.md) how in-app updates are signed and published. To run the checks, fetch what the tests load and run `ci`:
+That builds the app and its unsigned per-user installer for your PC's architecture. For work on the app itself, `pnpm --filter @earshot/desktop tauri dev` runs it against the Vite dev server, but that build has no Cargo features: transcription and summaries run on the CPU only (no Vulkan, no CUDA). `cargo xtask build --app` builds the app with the shipped backends and the build setup they need. [docs/arm64-release.md](docs/arm64-release.md) covers building the ARM64 installer on an x64 PC, and [docs/updates.md](docs/updates.md) how in-app updates are signed and published. To run the checks, fetch what the tests load and run `ci`:
 
 ```powershell
 cargo xtask fetch-models --set ci

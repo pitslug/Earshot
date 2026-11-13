@@ -1076,6 +1076,7 @@ impl CudaJobs {
             ));
         }
         self.0.checks.without_check(|| {
+            self.0.checks.refuse_while_restarting()?;
             let mut downloads = self.downloads();
             downloads.retain(|_, d| !d.thread.is_finished());
             if downloads.contains_key(&part) {
@@ -1136,6 +1137,25 @@ impl CudaJobs {
     pub fn any_downloading(&self) -> bool {
         self.downloads().values().any(|d| !d.thread.is_finished())
             || self.0.checks.any_downloading()
+    }
+
+    /// [`claim_for_restart`] with the look at the downloads and the claim in one step: under the
+    /// check slot, which every model and CUDA download start holds, and the update jobs' phase,
+    /// which an update download's start holds (lock order: the check slot, the update phase, then
+    /// the downloads). No download of any kind starts after it.
+    ///
+    /// # Errors
+    /// As [`claim_for_restart`].
+    pub fn claim_for_restart(
+        &self,
+        gate: &WorkGate,
+        update: &crate::update_settings::UpdateJobs,
+    ) -> Result<(), IpcError> {
+        self.0.checks.claim_restart(|| {
+            update.hold_for_restart(|updating| {
+                claim_for_restart(gate, updating || self.any_downloading())
+            })
+        })
     }
 
     /// [`set_switch`] with no removal running: a part cannot be switched on while it is removed.
@@ -1402,9 +1422,13 @@ pub fn restart_app(
     app: AppHandle,
     gate: State<'_, WorkGate>,
     jobs: State<'_, CudaJobs>,
+    update: State<'_, crate::update_settings::UpdateJobs>,
 ) -> Result<(), IpcError> {
-    claim_for_restart(gate.inner(), jobs.any_downloading())?;
-    // Through the normal exit, so the single-instance plugin lets the new process start.
+    jobs.claim_for_restart(gate.inner(), update.inner())?;
+    // Through the normal exit, so the single-instance plugin lets the new process start. The
+    // claim is never given back: `request_restart` returns nothing to act on, and when its exit
+    // request fails Tauri 2.12 restarts the process itself (`process::restart`); the app's run
+    // handler never prevents an exit. So the process always ends after this.
     app.request_restart();
     Ok(())
 }
