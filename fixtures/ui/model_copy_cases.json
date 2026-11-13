@@ -1,0 +1,18 @@
+{
+  "about": "The model pages' fixed copy for refused model actions and settings (T12.30): apps/desktop/src-tauri (models_tests.rs) checks `models::catalogue_copy`, `models::settings_copy` and their constants against this table, and packages/ui/src/ipc/mockModels.test.ts checks the mock's refusals, so the mock's copy cannot drift from Rust. `rust_only` holds copy the mock never shows (it has no model files to fail on): only the desktop's test reads it. {model} stands for the model's display name, {missing} for the missing languages joined with \", \".",
+  "rust_only": {
+    "model_files_failed": "Earshot could not read or change its model files. Close Earshot, open it again and try once more."
+  },
+  "fixed": {
+    "unknown_model": "That model is not part of this version of Earshot.",
+    "unknown_transcription_model": "That transcription model is not part of this version of Earshot. Choose another one.",
+    "unknown_summary_model": "That summary model is not part of this version of Earshot. Choose another one.",
+    "unknown_language": "No transcription model understands one of the chosen meeting languages. Choose another one.",
+    "no_languages": "choose at least one meeting language",
+    "npu_for_summaries": "summaries cannot run on the NPU"
+  },
+  "templates": {
+    "chosen": "{model} is in use; choose another model first",
+    "model_languages": "{model} does not transcribe {missing}; choose a multilingual model"
+  }
+}

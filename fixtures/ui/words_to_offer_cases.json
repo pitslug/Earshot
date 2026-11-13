@@ -1,0 +1,14 @@
+{
+  "about": "Which words the bar under a line just edited offers for the Dictionary (T12.15f): each white-space token of `after` whose word is not the core of a token of `before`, leaving out common words, words on `listed` (case ignored) and repeats in another case, in line order. crates/earshot-runtime (vocabulary_tests.rs) runs every case through `vocabulary::words_to_offer`, and packages/ui/src/ipc/mockWords.test.ts through the mock's `wordsToOffer`. The mock carries a short stand-in for the matcher's common words, so every common word here is in both lists. Every word is invented.",
+  "cases": [
+    { "before": "So the pump is late.", "after": "So the Quillmarsh pump is late.", "listed": [], "offer": ["Quillmarsh"] },
+    { "before": "", "after": "Velmora and velmora, VELMORA", "listed": [], "offer": ["Velmora"] },
+    { "before": "", "after": "Tarnwick and Quillmarsh", "listed": ["tarnwick"], "offer": ["Quillmarsh"] },
+    { "before": "Zorbek", "after": "so we think it is on", "listed": [], "offer": [] },
+    { "before": "", "after": "(Zorbek), 42 -- ...", "listed": [], "offer": ["Zorbek"] },
+    { "before": "Velmora,", "after": "\"Velmora.\"", "listed": [], "offer": [] },
+    { "before": "velmora", "after": "Velmora", "listed": [], "offer": ["Velmora"] },
+    { "before": "", "after": "Quillmarsh Velmora\tTarnwick", "listed": ["Velmora"], "offer": ["Quillmarsh", "Tarnwick"] },
+    { "before": "Quillmarsh", "after": "Quillmarsh", "listed": [], "offer": [] }
+  ]
+}

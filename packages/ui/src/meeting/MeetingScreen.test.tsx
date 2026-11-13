@@ -32,7 +32,7 @@ interface Setup {
   user: ReturnType<typeof userEvent.setup>;
 }
 
-function setup(data: MockIpcData = {}): Setup {
+function setup({ wrap, ...data }: MockIpcData & { wrap?: (ipc: Ipc) => void } = {}): Setup {
   const timer = createManualTimer(START);
   const compactCalls: boolean[] = [];
   const ipc = createMockIpc({
@@ -41,6 +41,7 @@ function setup(data: MockIpcData = {}): Setup {
     onSetCompact: (c) => compactCalls.push(c),
     ...data,
   });
+  wrap?.(ipc);
   render(
     <EarshotThemeProvider>
       <IpcProvider ipc={ipc}>
@@ -399,6 +400,29 @@ describe("a meeting started while the previous one finishes", () => {
     advance(s.timer, POST_STEP_MS * (POST_STEPS.length + 2));
     await waitFor(() => expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull());
     expect(screen.getByRole("button", { name: "Stop meeting" })).toBeEnabled();
+  }, 30_000);
+
+  it("offers Cancel when the next meeting starts in the same batch as the older one's end", async () => {
+    const handlers: ((e: MeetingEvent) => void)[] = [];
+    const s = setup({
+      wrap: (ipc) => {
+        const real = ipc.onMeetingEvent.bind(ipc);
+        ipc.onMeetingEvent = (handler) => {
+          handlers.push(handler);
+          return real(handler);
+        };
+      },
+    });
+    await startMeeting(s);
+    const olderId = (await s.ipc.listMeetings())[0].id;
+    // The end and the next start reach the window before React draws in between.
+    act(() => {
+      for (const h of handlers) {
+        h({ type: "Ended", meeting: olderId, reason: "Stopped" });
+        h({ type: "Started", meeting: "newer-meeting", mode: "Call", tracks: ["You", "Them"] });
+      }
+    });
+    expect(screen.getByText("Your previous meeting is still finishing")).toBeInTheDocument();
   }, 30_000);
 });
 

@@ -12,6 +12,7 @@ import {
   Caption1,
   CompoundButton,
   Input,
+  Label,
   Link,
   MessageBar,
   MessageBarActions,
@@ -37,6 +38,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -139,6 +141,10 @@ const useStyles = makeStyles({
     flexWrap: "wrap",
     gap: tokens.spacingHorizontalS,
     minWidth: 0,
+  },
+  // A shown label takes its own line above the editor's field.
+  editorLabel: {
+    flexBasis: "100%",
   },
   field: {
     flexGrow: 1,
@@ -634,6 +640,10 @@ export function MeetingDetailView({
   // A new summary being written replaces the one shown, so there is nothing settled to copy.
   const writingSummary = job !== undefined && job.job === "Resummarise" && !isTerminal(job.last);
   const summaryText = detail?.summary && !writingSummary ? summaryMarkdown(detail.summary) : "";
+  // The runtime refuses line and word edits while the meeting is busy (recording, finishing, a
+  // job on it): they are off here too, and a refusal that still comes is shown as before.
+  const linesLocked =
+    finishing || item.state === "Recording" || (job !== undefined && !isTerminal(job.last));
 
   return (
     <section ref={view} className={styles.root} aria-label="Meeting detail">
@@ -803,6 +813,7 @@ export function MeetingDetailView({
                 <TranscriptTab
                   detail={detail}
                   cited={cited}
+                  locked={linesLocked}
                   onEdit={async (segment, text) => {
                     let offer: string[] = [];
                     const saved = await save(async () => {
@@ -833,7 +844,7 @@ export function MeetingDetailView({
                       void save(() => ipc.useWord(id, segment, token, word), "The word was not changed"),
                     onPutBack: (token) =>
                       void save(() => ipc.putBackWord(id, segment, token), "The word was not put back"),
-                    onKeep: (token) => void save(() => ipc.keepWord(id, segment, token), "The word was not kept"),
+                    onKeep: (token) => save(() => ipc.keepWord(id, segment, token), "The word was not kept"),
                   })}
                   rowRef={(segment, el) => {
                     if (el) rows.current.set(segment, el);
@@ -990,6 +1001,8 @@ interface EditField {
   label: string;
   /** The button's own text. */
   button: string;
+  /** A label shown above the editor, for a field whose editor hides what it belongs to. */
+  shown?: string;
   text: string;
   onSave(text: string): Promise<boolean>;
 }
@@ -1003,6 +1016,7 @@ function Editable({ fields, children }: { fields: EditField[]; children: ReactNo
     return (
       <TextEditor
         label={editing.label}
+        shown={editing.shown}
         initial={editing.text}
         multiline
         onSave={async (t) => {
@@ -1043,8 +1057,13 @@ function SummaryBody({
 }) {
   const styles = useStyles();
   /** The field as an Edit button, or none when read only. */
-  const edit = (field: SummaryFieldRef, label: string, text: string, button = "Edit"): EditField[] =>
-    onEdit === undefined ? [] : [{ label, button, text, onSave: (t) => onEdit(field, t) }];
+  const edit = (
+    field: SummaryFieldRef,
+    label: string,
+    text: string,
+    button = "Edit",
+    shown?: string,
+  ): EditField[] => (onEdit === undefined ? [] : [{ label, button, shown, text, onSave: (t) => onEdit(field, t) }]);
   return (
     <>
       <div className={styles.section}>
@@ -1093,7 +1112,14 @@ function SummaryBody({
                       ...edit({ kind: "ActionTask", index: i }, `action ${i + 1}`, a.task),
                       ...(a.due === null
                         ? []
-                        : edit({ kind: "ActionDue", index: i }, `when action ${i + 1} is due`, a.due, "Edit date")),
+                        : edit(
+                            { kind: "ActionDue", index: i },
+                            `when action ${i + 1} is due`,
+                            a.due,
+                            "Edit date",
+                            // The editor replaces the action's text, so the date alone needs a label.
+                            `When action ${i + 1} is due`,
+                          )),
                     ]}
                   >
                     <Body1>
@@ -1218,12 +1244,15 @@ function SummaryTab({
  * transcript line holds no line break, so Enter never adds one. */
 function TextEditor({
   label,
+  shown,
   initial,
   multiline,
   onSave,
   onCancel,
 }: {
   label: string;
+  /** A visible label, when the editor needs one. */
+  shown?: string;
   initial: string;
   multiline: boolean;
   onSave(text: string): Promise<void>;
@@ -1251,10 +1280,17 @@ function TextEditor({
       onCancel();
     }
   };
+  const fieldId = useId();
   return (
     <div className={styles.editor}>
+      {shown !== undefined && (
+        <Label className={styles.editorLabel} htmlFor={fieldId}>
+          {shown}
+        </Label>
+      )}
       {multiline ? (
         <Textarea
+          id={fieldId}
           className={styles.field}
           aria-label={label}
           value={text}
@@ -1265,6 +1301,7 @@ function TextEditor({
         />
       ) : (
         <Input
+          id={fieldId}
           className={styles.field}
           aria-label={label}
           value={text}
@@ -1291,9 +1328,12 @@ function TranscriptTab({
   onAddWord,
   onRemoveWord,
   rowRef,
+  locked,
 }: {
   detail: MeetingDetail;
   cited: string | null;
+  /** Line edits and word choices are off: the meeting is busy. */
+  locked: boolean;
   /** Saves a line's new text; the words the Dictionary bar offers, or `null` when it was
    * refused. */
   onEdit(segment: string, text: string): Promise<string[] | null>;
@@ -1320,13 +1360,22 @@ function TranscriptTab({
     back: HTMLElement | null;
   } | null>(null);
   // Where focus goes once the detail shows an action's result (the clicked button may be gone).
-  const [focusNext, setFocusNext] = useState<{ undo: true } | { word: string } | null>(null);
+  // `edit`: the line's Edit button, only when focus fell to the page (the control that had it
+  // left the DOM).
+  const [focusNext, setFocusNext] = useState<{ undo: true } | { word: string } | { edit: string } | null>(
+    null,
+  );
   const undoRef = useRef<HTMLButtonElement | null>(null);
   const tableRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (focusNext === null) return;
     if ("undo" in focusNext) undoRef.current?.focus();
-    else
+    else if ("edit" in focusNext) {
+      const at = document.activeElement;
+      if (at === null || at === document.body || !at.isConnected) {
+        lineEditButton(tableRef.current, focusNext.edit)?.focus();
+      }
+    } else
       tableRef.current
         ?.querySelector<HTMLElement>(`[data-offered-word="${CSS.escape(focusNext.word)}"]`)
         ?.focus();
@@ -1335,7 +1384,10 @@ function TranscriptTab({
 
   // What a line does, read at the moment it is used: the rows get one object that never
   // changes, so a row renders only when its own props do (T9.24).
-  const latest = useRef<LineHandlers | null>(null);
+  const latest = useRef<Omit<LineHandlers, "rowRef"> | null>(null);
+  // A row's ref is attached before the layout effect below sets `latest` on the first commit,
+  // so it has its own ref, which starts as this render's (it only touches the parent's map).
+  const rowRefLatest = useRef(rowRef);
   const handlers = useMemo<LineHandlers>(
     () => ({
       contextMenu: (r, e) => latest.current?.contextMenu(r, e),
@@ -1345,9 +1397,10 @@ function TranscriptTab({
       cancelEdit: () => latest.current?.cancelEdit(),
       toggle: (segment, word) => latest.current?.toggle(segment, word),
       addFromBar: (segment, word) => latest.current?.addFromBar(segment, word),
-      closeBar: () => latest.current?.closeBar(),
+      closeBar: (segment) => latest.current?.closeBar(segment),
+      keep: (segment, token) => latest.current?.keep(segment, token),
       undo: (segment, word) => latest.current?.undo(segment, word),
-      rowRef: (segment, el) => latest.current?.rowRef(segment, el),
+      rowRef: (segment, el) => rowRefLatest.current(segment, el),
       wordActions: (segment) =>
         latest.current?.wordActions(segment) ?? { onUse: noop, onPutBack: noop, onKeep: noop },
     }),
@@ -1409,7 +1462,9 @@ function TranscriptTab({
     const word = el?.getAttribute(WORD_ATTRIBUTE);
     if (!el || !word) return;
     e.preventDefault();
-    openMenu(r.segment_id, [word], pointTarget(e.clientX, e.clientY), el.tagName === "BUTTON" ? el : null);
+    // A plain word takes no focus: the menu gives it back to the line's Edit button.
+    const back = el.tagName === "BUTTON" ? el : lineEditButton(e.currentTarget, r.segment_id);
+    openMenu(r.segment_id, [word], pointTarget(e.clientX, e.clientY), back);
   };
   /** The Menu key or Shift+F10: on a marked word, that word's menu; anywhere else in the row
    * (its Edit button), a menu of every word of the line. */
@@ -1424,31 +1479,37 @@ function TranscriptTab({
     openMenu(r.segment_id, words, el, el);
   };
 
-  latest.current = {
-    contextMenu: (r, e) => onRowContextMenu(r)(e),
-    keyDown: (r, e) => onRowKeyDown(r)(e),
-    startEdit: (segment) => {
-      setEditing(segment);
-      setOffer(null);
-      setNote(null);
-    },
-    saveEdit: async (segment, text) => {
-      const offered = await onEdit(segment, text);
-      if (offered === null) return;
-      setEditing(null);
-      setOffer(offered.length > 0 ? { segment, words: offered } : null);
-    },
-    cancelEdit: () => setEditing(null),
-    toggle,
-    addFromBar: (segment, word) => void add(segment, word, true),
-    closeBar: () => {
-      setOffer(null);
-      setNote(null);
-    },
-    undo: (segment, word) => void undo(segment, word),
-    rowRef,
-    wordActions,
-  };
+  // Set once a render is committed: a render React discards leaves the committed handlers.
+  useLayoutEffect(() => {
+    rowRefLatest.current = rowRef;
+    latest.current = {
+      contextMenu: (r, e) => onRowContextMenu(r)(e),
+      keyDown: (r, e) => onRowKeyDown(r)(e),
+      startEdit: (segment) => {
+        setEditing(segment);
+        setOffer(null);
+        setNote(null);
+      },
+      saveEdit: async (segment, text) => {
+        const offered = await onEdit(segment, text);
+        if (offered === null) return;
+        setEditing(null);
+        setOffer(offered.length > 0 ? { segment, words: offered } : null);
+      },
+      cancelEdit: () => setEditing(null),
+      toggle,
+      addFromBar: (segment, word) => void add(segment, word, true),
+      closeBar: (segment) => {
+        setOffer(null);
+        setNote(null);
+        setFocusNext({ edit: segment });
+      },
+      keep: (segment, token) =>
+        void Promise.resolve(wordActions(segment).onKeep(token)).then(() => setFocusNext({ edit: segment })),
+      undo: (segment, word) => void undo(segment, word),
+      wordActions,
+    };
+  });
 
   if (detail.transcript.length === 0) {
     return <Body1 className={styles.muted}>No speech was transcribed in this meeting.</Body1>;
@@ -1466,6 +1527,7 @@ function TranscriptTab({
             cited={r.segment_id === cited}
             editing={editing === r.segment_id}
             canEdit={canEdit}
+            locked={locked}
             wordList={detail.word_list}
             dictionary={detail.dictionary}
             offered={offer?.segment === r.segment_id ? offer.words : null}
@@ -1499,6 +1561,12 @@ function TranscriptTab({
 
 const noop = () => {};
 
+/** The Edit button of line `segment` inside `root`: where focus goes when the control that had
+ * it is gone or took none. */
+function lineEditButton(root: Element | null, segment: string): HTMLElement | null {
+  return root?.querySelector<HTMLElement>(`[data-line-edit="${CSS.escape(segment)}"]`) ?? null;
+}
+
 /** What a transcript line does; each call reaches `TranscriptTab`'s current state. */
 interface LineHandlers {
   contextMenu(r: TranscriptRow, e: MouseEvent<HTMLDivElement>): void;
@@ -1508,7 +1576,9 @@ interface LineHandlers {
   cancelEdit(): void;
   toggle(segment: string, word: string): void;
   addFromBar(segment: string, word: string): void;
-  closeBar(): void;
+  closeBar(segment: string): void;
+  /** "Keep" on a suggestion: the mark leaves the line, so focus goes to its Edit button. */
+  keep(segment: string, token: number): void;
   undo(segment: string, word: string): void;
   rowRef(segment: string, el: HTMLDivElement | null): void;
   wordActions(segment: string): WordActions;
@@ -1523,6 +1593,7 @@ const TranscriptLine = memo(function TranscriptLine({
   cited,
   editing,
   canEdit,
+  locked,
   wordList,
   dictionary,
   offered,
@@ -1536,6 +1607,8 @@ const TranscriptLine = memo(function TranscriptLine({
   cited: boolean;
   editing: boolean;
   canEdit: boolean;
+  /** The meeting is busy: Edit and the word choices are off. */
+  locked: boolean;
   wordList: string[];
   dictionary: string[];
   /** The words the bar under this line offers, `null` without the bar. */
@@ -1553,7 +1626,7 @@ const TranscriptLine = memo(function TranscriptLine({
     () => ({
       onUse: (token, word) => h.wordActions(segment).onUse(token, word),
       onPutBack: (token) => h.wordActions(segment).onPutBack(token),
-      onKeep: (token) => h.wordActions(segment).onKeep(token),
+      onKeep: (token) => h.keep(segment, token),
     }),
     [h, segment],
   );
@@ -1594,6 +1667,7 @@ const TranscriptLine = memo(function TranscriptLine({
               row={r}
               wordList={wordList}
               actions={actions}
+              locked={locked}
               dictionary={lineDictionary}
               tinted={offered?.filter((w) => !inDictionary(dictionary, w))}
             />
@@ -1611,6 +1685,9 @@ const TranscriptLine = memo(function TranscriptLine({
             appearance="subtle"
             className={mergeClasses(styles.lineEdit, "earshot-line-edit")}
             aria-label={`Edit line ${i + 1}`}
+            data-line-edit={segment}
+            // Focusable, so focus that comes back to it after a word's choice stays in the line.
+            disabledFocusable={locked}
             onClick={() => h.startEdit(segment)}
           >
             Edit
@@ -1624,7 +1701,7 @@ const TranscriptLine = memo(function TranscriptLine({
               words={offered}
               dictionary={dictionary}
               onAdd={(w) => h.addFromBar(segment, w)}
-              onClose={h.closeBar}
+              onClose={() => h.closeBar(segment)}
             />
           )}
           {note !== null && (

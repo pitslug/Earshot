@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import table from "../../../../fixtures/ui/summary_settings_cases.json";
 import { IpcFailure, type SummarySettingsValue } from "./ipc";
+import { createMockIpc } from "./mock";
 import {
   CLAUDE_CODE_EFFORT_NEEDS_NEWER,
   CLAUDE_CODE_NOT_INSTALLED,
@@ -107,5 +108,12 @@ describe("the Summaries mock against the app's case table", () => {
     expect(MAX_VOCABULARY_WORDS).toBe(table.limits.max_vocabulary_words);
     expect(MAX_VOCABULARY_WORD_CHARS).toBe(table.limits.max_vocabulary_word_chars);
     expect(MAX_VOCABULARY_CHARS).toBe(table.limits.max_vocabulary_chars);
+  });
+
+  it("refuses a token with no word as the app does (T12.15f)", async () => {
+    const ipc = createMockIpc();
+    await expect(ipc.addDictionaryWord("--")).rejects.toMatchObject({
+      error: { kind: "invalid_setting", message: table.messages.not_a_word },
+    });
   });
 });

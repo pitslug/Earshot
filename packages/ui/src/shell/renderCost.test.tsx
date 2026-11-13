@@ -15,6 +15,7 @@ import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppShell } from "./AppShell";
+import * as meetingsModule from "./meetings";
 
 vi.mock("../meeting/liveMeeting", async (original) => {
   const real = await original<typeof import("../meeting/liveMeeting")>();
@@ -25,7 +26,14 @@ vi.mock("../detail/detail", async (original) => {
   return { ...real, rowTime: vi.fn(real.rowTime) };
 });
 
+vi.mock("./meetings", async (original) => {
+  const real = await original<typeof import("./meetings")>();
+  return { ...real, secondaryLine: vi.fn(real.secondaryLine) };
+});
+
 const clockSpy = vi.mocked(liveModule.clock);
+// Every row of the meeting list calls it once per render.
+const listRowSpy = vi.mocked(meetingsModule.secondaryLine);
 const rowTimeSpy = vi.mocked(detailModule.rowTime);
 
 const at = (day: number, hour: number, minute = 0, second = 0) =>
@@ -84,6 +92,7 @@ beforeEach(() => {
   installMatchMedia(false);
   clockSpy.mockClear();
   rowTimeSpy.mockClear();
+  listRowSpy.mockClear();
 });
 
 describe("render cost", () => {
@@ -149,6 +158,19 @@ describe("render cost", () => {
     expect(screen.getByText("Invented line number 5 about the gravel.")).toBeInTheDocument();
     expect(clockCallsAt(startOf(5))).toBe(1);
     for (let i = 0; i < 5; i += 1) expect(clockCallsAt(startOf(i))).toBe(0);
+  });
+
+  it("render cost: a landed line renders no row of the meeting list", async () => {
+    const s = setup();
+    await screen.findByRole("heading", { level: 1, name: "Hedge trimming plan" });
+    s.emit({ type: "Started", meeting: "live", mode: "Call", tracks: ["You", "Them"] });
+    await screen.findByRole("region", { name: "Meeting" });
+    s.emit(landed(0));
+    await act(async () => {});
+    listRowSpy.mockClear();
+    for (let i = 1; i < 4; i += 1) s.emit(landed(i));
+    expect(screen.getByText("Invented line number 3 about the gravel.")).toBeInTheDocument();
+    expect(listRowSpy).not.toHaveBeenCalled();
   });
 
   it("render cost: typing a search does not render the open transcript's lines again", async () => {

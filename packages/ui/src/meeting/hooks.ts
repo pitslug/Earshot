@@ -106,26 +106,27 @@ export function useLiveMeeting(
   const [levels] = useState(createLevels);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
+  // The meeting the meters belong to: an older meeting's end leaves them alone. A ref, so a
+  // re-run of the effect below mid-meeting keeps it.
+  const metering = useRef<string | null>(null);
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let live = true;
-    // The meeting the meters belong to: an older meeting's end leaves them alone.
-    let metering: string | null = null;
     ipc
       .onMeetingEvent((event) => {
         if (!live) return;
         if (event.type === "Levels") {
           // Not meeting state: only the meters hear it (T9.24).
-          if (metering !== null) levels.set({ You: event.you_dbfs, Them: event.them_dbfs });
+          if (metering.current !== null) levels.set({ You: event.you_dbfs, Them: event.them_dbfs });
           onEventRef.current?.(event);
           return;
         }
         if (event.type === "Started") {
-          metering = event.meeting;
+          metering.current = event.meeting;
           levels.set(NO_LEVELS);
         }
-        if (event.type === "Ended" && event.meeting === metering) {
-          metering = null;
+        if (event.type === "Ended" && event.meeting === metering.current) {
+          metering.current = null;
           levels.set(NO_LEVELS);
         }
         setMeeting((state) => reduce(state, event, timer.now()));

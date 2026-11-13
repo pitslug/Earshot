@@ -37,7 +37,17 @@ import {
   useFocusFinders,
   useRestoreFocusTarget,
 } from "@fluentui/react-components";
-import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  type ReactNode,
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   type CaptureMode,
@@ -481,10 +491,18 @@ export function AppShell({
     if (event.type === "Started") {
       const older = lastMeeting.current;
       if (older !== null && older.finishing && older.id !== event.meeting) setBehindId(older.id);
+      lastMeeting.current = { id: event.meeting, finishing: false };
       setSelectedId(event.meeting);
       // Also a meeting the tray or the shortcut started.
       setView("meeting");
       setStartError(null);
+    }
+    // Followed here, not on a render: an end and the next start can arrive before React draws.
+    if (event.type === "Ended" && lastMeeting.current?.id === event.meeting) {
+      lastMeeting.current = { id: event.meeting, finishing: true };
+    }
+    if (event.type === "Summary" && lastMeeting.current?.id === event.meeting) {
+      lastMeeting.current = { id: event.meeting, finishing: false };
     }
     // An older meeting's end says nothing about the stop button of this one.
     if (event.type === "Ended" && event.meeting === liveMeetingId.current) setStopping(false);
@@ -507,9 +525,6 @@ export function AppShell({
   });
   const meeting = live.meeting;
   liveMeetingId.current = meeting?.meetingId ?? null;
-  if (meeting !== null) {
-    lastMeeting.current = { id: meeting.meetingId, finishing: meeting.phase === "processing" };
-  }
   const recording = meeting !== null && meeting.phase === "recording";
   // The list groups by day: it renders when the day changes, never on a clock tick (T9.24).
   const today = useLocalDay(timer, now);
@@ -630,6 +645,31 @@ export function AppShell({
     setSelectedId(id);
     setView("detail");
   };
+  // What a row of the meeting list does, read when it is used: the rows get one object that
+  // never changes, so a landed line or a clock tick renders none of them (T9.24).
+  const rowLatest = useRef<Omit<RowHandlers, "rowRef"> | null>(null);
+  const rowHandlers = useMemo<RowHandlers>(
+    () => ({
+      select: (id) => rowLatest.current?.select(id),
+      remove: (item) => rowLatest.current?.remove(item),
+      move: (item, folder) => rowLatest.current?.move(item, folder),
+      newFolderFor: (item) => rowLatest.current?.newFolderFor(item),
+      // Refs attach before the layout effect below runs; this one only touches a ref.
+      rowRef: (id, el) => {
+        if (el) rowButtons.current.set(id, el);
+        else rowButtons.current.delete(id);
+      },
+    }),
+    [],
+  );
+  useLayoutEffect(() => {
+    rowLatest.current = {
+      select,
+      remove: setDeleting,
+      move: (item, folder) => void moveMeeting(item, folder),
+      newFolderFor: (item) => setFolderEdit({ kind: "new", moveMeeting: item.id }),
+    };
+  });
   // A result can outlast its meeting: reading the list again takes the result away too.
   const pickResult = (id: string) => {
     if (meetings.some((m) => m.id === id)) select(id);
@@ -1030,14 +1070,7 @@ export function AppShell({
                   group={group}
                   selectedId={view === "start" ? null : selectedId}
                   folders={folders}
-                  onSelect={select}
-                  onDelete={setDeleting}
-                  onMove={(item, folder) => void moveMeeting(item, folder)}
-                  onNewFolderFor={(item) => setFolderEdit({ kind: "new", moveMeeting: item.id })}
-                  rowRef={(id, el) => {
-                    if (el) rowButtons.current.set(id, el);
-                    else rowButtons.current.delete(id);
-                  }}
+                  handlers={rowHandlers}
                 />
               ))}
             </ul>
@@ -1285,30 +1318,28 @@ function TrashIcon() {
   );
 }
 
+/** What a row of the meeting list does; each call reaches `AppShell`'s current state. */
+interface RowHandlers {
+  select(id: string): void;
+  remove(item: MeetingListItem): void;
+  move(item: MeetingListItem, folder: string | null): void;
+  newFolderFor(item: MeetingListItem): void;
+  rowRef(id: string, el: HTMLButtonElement | null): void;
+}
+
 function MeetingGroup({
   group,
   selectedId,
   folders,
-  onSelect,
-  onDelete,
-  onMove,
-  onNewFolderFor,
-  rowRef,
+  handlers,
 }: {
   group: DayGroup;
   selectedId: string | null;
   folders: FolderListItem[];
-  onSelect: (id: string) => void;
-  onDelete: (item: MeetingListItem) => void;
-  onMove: (item: MeetingListItem, folder: string | null) => void;
-  onNewFolderFor: (item: MeetingListItem) => void;
-  rowRef: (id: string, el: HTMLButtonElement | null) => void;
+  handlers: RowHandlers;
 }) {
   const styles = useStyles();
   const headingId = useId();
-  // The delete dialog opens with no trigger of its own: on Cancel it hands focus back to where it
-  // was, the row or its trash can.
-  const restoreFocus = useRestoreFocusTarget();
   return (
     <li className={styles.group}>
       <div role="group" aria-labelledby={headingId}>
@@ -1316,87 +1347,103 @@ function MeetingGroup({
           {group.label}
         </Caption1Strong>
         <ul className={styles.list}>
-          {group.meetings.map((m) => {
-            const isSelected = m.id === selectedId;
-            return (
-              <li key={m.id} className={styles.rowItem}>
-                {/* A right-click, or the Menu key or Shift+F10 on the focused row. */}
-                <Menu openOnContext>
-                  <MenuTrigger disableButtonEnhancement>
-                    <Button
-                      {...restoreFocus}
-                      ref={(el: HTMLButtonElement | null) => rowRef(m.id, el)}
-                      appearance="subtle"
-                      className={mergeClasses(styles.row, isSelected && styles.rowSelected)}
-                      aria-current={isSelected ? "true" : undefined}
-                      onClick={() => onSelect(m.id)}
-                      onKeyDown={openMenuFromKeyboard}
-                    >
-                      <span className={styles.rowText}>
-                        <Body1 className={mergeClasses("earshot-row-title", styles.rowTitle)}>
-                          {displayTitle(m)}
-                        </Body1>
-                        <Caption1 className={styles.rowMeta}>
-                          {m.state === "Recording" && (
-                            <span className={styles.recordingDot} aria-hidden="true" />
-                          )}
-                          {(m.state === "Processing" || m.state === "Waiting") && (
-                            <Spinner size="extra-tiny" aria-label={m.state} />
-                          )}
-                          {secondaryLine(m)}
-                        </Caption1>
-                      </span>
-                    </Button>
-                  </MenuTrigger>
-                  <MenuPopover>
-                    <MenuList>
-                      {/* A meeting is filed once it has finished recording. */}
-                      <Menu>
-                        <MenuTrigger disableButtonEnhancement>
-                          <MenuItem disabled={m.state === "Recording"}>Move to folder</MenuItem>
-                        </MenuTrigger>
-                        <MenuPopover>
-                          <MenuList
-                            checkedValues={{ folder: [m.folder_id ?? ""] }}
-                            onCheckedValueChange={(_, d) => {
-                              const to = d.checkedItems[0] ?? "";
-                              if (to !== (m.folder_id ?? "")) onMove(m, to === "" ? null : to);
-                            }}
-                          >
-                            {folders.map((f) => (
-                              <MenuItemRadio key={f.id} name="folder" value={f.id}>
-                                {f.name}
-                              </MenuItemRadio>
-                            ))}
-                            {folders.length > 0 && <MenuDivider />}
-                            <MenuItem onClick={() => onNewFolderFor(m)}>New folder...</MenuItem>
-                            <MenuItemRadio name="folder" value="">
-                              No folder
-                            </MenuItemRadio>
-                          </MenuList>
-                        </MenuPopover>
-                      </Menu>
-                      <MenuItem onClick={() => onDelete(m)}>Delete meeting...</MenuItem>
-                    </MenuList>
-                  </MenuPopover>
-                </Menu>
-                <Button
-                  appearance="subtle"
-                  size="small"
-                  icon={<TrashIcon />}
-                  {...restoreFocus}
-                  aria-label={`Delete ${displayTitle(m)}`}
-                  className={mergeClasses("earshot-row-delete", styles.rowDelete)}
-                  onClick={() => onDelete(m)}
-                />
-              </li>
-            );
-          })}
+          {group.meetings.map((m) => (
+            <MeetingRow key={m.id} m={m} selected={m.id === selectedId} folders={folders} handlers={handlers} />
+          ))}
         </ul>
       </div>
     </li>
   );
 }
+
+/** One row of the meeting list. Memoised: every prop is the row's own or never changes, so a
+ * live meeting's landed lines leave the list alone (T9.24). */
+const MeetingRow = memo(function MeetingRow({
+  m,
+  selected: isSelected,
+  folders,
+  handlers: h,
+}: {
+  m: MeetingListItem;
+  selected: boolean;
+  folders: FolderListItem[];
+  handlers: RowHandlers;
+}) {
+  const styles = useStyles();
+  // The delete dialog opens with no trigger of its own: on Cancel it hands focus back to where it
+  // was, the row or its trash can.
+  const restoreFocus = useRestoreFocusTarget();
+  const rowRef = useCallback((el: HTMLButtonElement | null) => h.rowRef(m.id, el), [h, m.id]);
+  return (
+    <li className={styles.rowItem}>
+      {/* A right-click, or the Menu key or Shift+F10 on the focused row. */}
+      <Menu openOnContext>
+        <MenuTrigger disableButtonEnhancement>
+          <Button
+            {...restoreFocus}
+            ref={rowRef}
+            appearance="subtle"
+            className={mergeClasses(styles.row, isSelected && styles.rowSelected)}
+            aria-current={isSelected ? "true" : undefined}
+            onClick={() => h.select(m.id)}
+            onKeyDown={openMenuFromKeyboard}
+          >
+            <span className={styles.rowText}>
+              <Body1 className={mergeClasses("earshot-row-title", styles.rowTitle)}>{displayTitle(m)}</Body1>
+              <Caption1 className={styles.rowMeta}>
+                {m.state === "Recording" && <span className={styles.recordingDot} aria-hidden="true" />}
+                {(m.state === "Processing" || m.state === "Waiting") && (
+                  <Spinner size="extra-tiny" aria-label={m.state} />
+                )}
+                {secondaryLine(m)}
+              </Caption1>
+            </span>
+          </Button>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            {/* A meeting is filed once it has finished recording. */}
+            <Menu>
+              <MenuTrigger disableButtonEnhancement>
+                <MenuItem disabled={m.state === "Recording"}>Move to folder</MenuItem>
+              </MenuTrigger>
+              <MenuPopover>
+                <MenuList
+                  checkedValues={{ folder: [m.folder_id ?? ""] }}
+                  onCheckedValueChange={(_, d) => {
+                    const to = d.checkedItems[0] ?? "";
+                    if (to !== (m.folder_id ?? "")) h.move(m, to === "" ? null : to);
+                  }}
+                >
+                  {folders.map((f) => (
+                    <MenuItemRadio key={f.id} name="folder" value={f.id}>
+                      {f.name}
+                    </MenuItemRadio>
+                  ))}
+                  {folders.length > 0 && <MenuDivider />}
+                  <MenuItem onClick={() => h.newFolderFor(m)}>New folder...</MenuItem>
+                  <MenuItemRadio name="folder" value="">
+                    No folder
+                  </MenuItemRadio>
+                </MenuList>
+              </MenuPopover>
+            </Menu>
+            <MenuItem onClick={() => h.remove(m)}>Delete meeting...</MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+      <Button
+        appearance="subtle"
+        size="small"
+        icon={<TrashIcon />}
+        {...restoreFocus}
+        aria-label={`Delete ${displayTitle(m)}`}
+        className={mergeClasses("earshot-row-delete", styles.rowDelete)}
+        onClick={() => h.remove(m)}
+      />
+    </li>
+  );
+});
 
 /** The meeting that has ended, as its page shows it. */
 interface EndedMeeting {

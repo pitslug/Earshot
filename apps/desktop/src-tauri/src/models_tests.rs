@@ -612,3 +612,62 @@ fn models_errors_reach_the_page_as_fixed_copy_without_files_or_ids() {
         assert_eq!(manifest_id_in(&shown), None, "{shown}");
     }
 }
+
+/// The UI mock's copy is checked against the same table (`mockModels.test.ts`).
+#[test]
+fn models_copy_matches_the_shared_case_table() {
+    let table: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/model_copy_cases.json"
+    ))
+    .unwrap();
+    let (fixed, templates) = (&table["fixed"], &table["templates"]);
+    assert_eq!(
+        table["rust_only"]["model_files_failed"].as_str(),
+        Some(MODEL_FILES_FAILED)
+    );
+    let cases = [
+        (
+            "unknown_model",
+            catalogue_copy(&CatalogueError::UnknownModel("x".into())),
+        ),
+        (
+            "unknown_transcription_model",
+            settings_copy(&SettingsError::UnknownModel("x".into())),
+        ),
+        (
+            "unknown_summary_model",
+            settings_copy(&SettingsError::UnknownSummaryModel("x".into())),
+        ),
+        (
+            "unknown_language",
+            settings_copy(&SettingsError::UnknownLanguage("xx".into())),
+        ),
+        ("no_languages", settings_copy(&SettingsError::NoLanguages)),
+        (
+            "npu_for_summaries",
+            settings_copy(&SettingsError::NpuForSummaries),
+        ),
+    ];
+    for (key, copy) in cases {
+        assert_eq!(fixed[key].as_str(), Some(copy.as_str()), "{key}");
+    }
+    let model = "parakeet-tdt-0.6b-v2";
+    let template = |k: &str| {
+        templates[k]
+            .as_str()
+            .unwrap()
+            .replace("{model}", earshot_runtime::catalogue::display_name(model))
+    };
+    let missing = SettingsError::ModelLanguages {
+        model: model.into(),
+        missing: vec!["de".into(), "fr".into()],
+    };
+    assert_eq!(
+        settings_copy(&missing),
+        template("model_languages").replace("{missing}", "de, fr")
+    );
+    assert_eq!(
+        catalogue_copy(&CatalogueError::Chosen(model.into())),
+        template("chosen")
+    );
+}

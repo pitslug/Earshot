@@ -527,13 +527,12 @@ fn detail_dictionary_words_from_the_transcript_add_undo_and_remove() {
         e.message,
         "The list can hold at most 100 words; this one has 101."
     );
+    // The UI mock's refusal is pinned to the same table entry (`mockSummaries.test.ts`).
+    let table = crate::testutil::summary_cases();
     let e = add_dictionary_word(&svc, "--").unwrap_err();
     assert_eq!(
-        (e.kind.as_str(), e.message.as_str()),
-        (
-            "invalid_setting",
-            "Only a word can be added to the dictionary."
-        )
+        (e.kind.as_str(), Some(e.message.as_str())),
+        ("invalid_setting", table["messages"]["not_a_word"].as_str())
     );
     assert_eq!(meeting_detail(&svc, f.meeting).unwrap().dictionary, full);
 

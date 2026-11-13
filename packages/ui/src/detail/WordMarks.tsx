@@ -83,8 +83,8 @@ export interface WordActions {
   onUse(token: number, word: string): void;
   /** "Put back": token `token` reads as decoded again. */
   onPutBack(token: number): void;
-  /** "Keep": the suggestion for token `token` goes. */
-  onKeep(token: number): void;
+  /** "Keep": the suggestion for token `token` goes; resolves once the detail was read again. */
+  onKeep(token: number): void | Promise<unknown>;
 }
 
 /** The Dictionary as a line's words see it (T12.15f). */
@@ -109,12 +109,15 @@ export function LineText({
   row,
   wordList,
   actions,
+  locked = false,
   dictionary,
   tinted = [],
 }: {
   row: TranscriptRow;
   wordList: string[];
   actions: WordActions;
+  /** The meeting is busy: the marks show, but no choice changes the line. */
+  locked?: boolean;
   dictionary: DictionaryState;
   tinted?: string[];
 }): ReactNode {
@@ -157,6 +160,7 @@ export function LineText({
             word={word}
             decoded={changed.decoded}
             wordList={wordList}
+            locked={locked}
             listed={listed}
             onDictionary={() => dictionary.onToggle(word)}
             onUse={(w) => actions.onUse(t, w)}
@@ -167,6 +171,7 @@ export function LineText({
             kind="suggestion"
             word={word}
             suggested={suggestion?.listed ?? ""}
+            locked={locked}
             listed={listed}
             onDictionary={() => dictionary.onToggle(word)}
             onUse={(w) => actions.onUse(t, w)}
@@ -184,6 +189,8 @@ interface MarkBase {
   word: string;
   /** The word is a Dictionary entry: the popover offers Remove rather than Add. */
   listed: boolean;
+  /** The meeting is busy: the choices that change the line are off. */
+  locked: boolean;
   onDictionary(): void;
 }
 
@@ -215,9 +222,11 @@ function WordMark(props: MarkProps) {
     </Button>
   );
   const wanted = query.trim().toLowerCase();
+  // The list is deduplicated without case, so the written word is left out the same way.
+  const written = props.word.toLowerCase();
   const others =
     props.kind === "changed"
-      ? props.wordList.filter((w) => w !== props.word && w.toLowerCase().includes(wanted))
+      ? props.wordList.filter((w) => w.toLowerCase() !== written && w.toLowerCase().includes(wanted))
       : [];
   return (
     <Popover
@@ -237,8 +246,6 @@ function WordMark(props: MarkProps) {
           {...{ [WORD_ATTRIBUTE]: props.word }}
           aria-label={name}
           className={mergeClasses(styles.mark, props.kind === "suggestion" ? styles.suggestion : styles.changed)}
-          // The word is not the line: a click here never starts a line edit.
-          onClick={(e) => e.stopPropagation()}
         >
           {props.word}
         </button>
@@ -250,10 +257,15 @@ function WordMark(props: MarkProps) {
               Your dictionary has <Body1Strong>{props.suggested}</Body1Strong>
             </Body1>
             <div className={styles.buttons}>
-              <Button appearance="primary" size="small" onClick={() => choose(() => props.onUse(props.suggested))}>
+              <Button
+                appearance="primary"
+                size="small"
+                disabled={props.locked}
+                onClick={() => choose(() => props.onUse(props.suggested))}
+              >
                 Use it
               </Button>
-              <Button size="small" onClick={() => choose(props.onKeep)}>
+              <Button size="small" disabled={props.locked} onClick={() => choose(props.onKeep)}>
                 Keep
               </Button>
               {dictionaryButton}
@@ -265,15 +277,16 @@ function WordMark(props: MarkProps) {
               Changed from <Body1Strong>{props.decoded}</Body1Strong>
             </Body1>
             <div className={styles.buttons}>
-              <Button size="small" onClick={() => choose(props.onPutBack)}>
+              <Button size="small" disabled={props.locked} onClick={() => choose(props.onPutBack)}>
                 Put back {props.decoded}
               </Button>
               {dictionaryButton}
             </div>
-            {props.wordList.some((w) => w !== props.word) && (
+            {props.wordList.some((w) => w.toLowerCase() !== written) && (
               <Field label="Another word" size="small">
                 <Combobox
                   size="small"
+                  disabled={props.locked}
                   placeholder="Find a word"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}

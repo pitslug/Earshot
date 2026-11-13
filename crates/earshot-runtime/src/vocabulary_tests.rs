@@ -234,6 +234,32 @@ fn vocabulary_dictionary_word_follows_the_shared_case_table() {
 }
 
 #[test]
+fn vocabulary_words_to_offer_follows_the_shared_case_table() {
+    let table: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/ui/words_to_offer_cases.json"
+    ))
+    .unwrap();
+    let cases = table["cases"].as_array().unwrap();
+    assert!(cases.len() >= 8);
+    let strings = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_owned())
+            .collect()
+    };
+    for case in cases {
+        let after = case["after"].as_str().unwrap();
+        let listed = strings(&case["listed"]);
+        assert_eq!(
+            words_to_offer(case["before"].as_str().unwrap(), after, &listed),
+            strings(&case["offer"]),
+            "after {after:?}"
+        );
+    }
+}
+
+#[test]
 fn vocabulary_add_word_appends_the_core_and_remove_takes_exactly_it_back() {
     let dir = TempDir::new("summary-vocabulary");
     let mut s = store(&dir);

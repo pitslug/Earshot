@@ -64,9 +64,18 @@ export function withWord(
     ...detail,
     transcript: detail.transcript.map((r) => {
       if (r.segment_id !== segment) return r;
-      const tokens = tokensOf(r.text);
-      const [pre, , post] = splitPunctuation(tokens[token]);
-      const next = tokens.map((t, i) => (i === token ? `${pre}${word}${post}` : t)).join(" ");
+      // The token is replaced in place, the line's own white space kept (Rust `token_ranges`).
+      let at = -1;
+      const next = r.text
+        .split(/(\p{White_Space}+)/u)
+        .map((piece) => {
+          if (piece === "" || /^\p{White_Space}+$/u.test(piece)) return piece;
+          at += 1;
+          if (at !== token) return piece;
+          const [pre, , post] = splitPunctuation(piece);
+          return `${pre}${word}${post}`;
+        })
+        .join("");
       const changed = r.changed_words.filter((c) => c.token !== token);
       if (word !== decoded) changed.push({ token, decoded, written: word });
       changed.sort((a, b) => a.token - b.token);

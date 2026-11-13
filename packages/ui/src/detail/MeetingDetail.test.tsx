@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type Ipc,
   IpcFailure,
+  type JobKind,
   MISSING_SEGMENT,
   type MeetingListItem,
   type MockIpcData,
@@ -21,7 +22,7 @@ import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppShell } from "../shell/AppShell";
 import { COPIED_MS, handoverLine, savedText, summaryMarkdown } from "./detail";
-import { MeetingDetailView } from "./MeetingDetailView";
+import { type JobView, MeetingDetailView } from "./MeetingDetailView";
 
 const ITEM: MeetingListItem = { ...sampleMeetings()[1], started_at_ms: 2_000 };
 /** An older meeting, so `ITEM` is shown first. */
@@ -336,6 +337,16 @@ describe("MeetingDetailView", () => {
       await user.click(screen.getByRole("button", { name: "Switch to previous summary" }));
       expect(await screen.findByText(/\(by Friday\)/)).toBeInTheDocument();
       expect(screen.getByText("Split the pump order into two deliveries")).toBeInTheDocument();
+    });
+
+    it("shows the due-date editor's label, since the action's text is not shown while it is open", async () => {
+      const { user } = await setup();
+      await screen.findByText(/TL;DR/);
+      await user.click(screen.getByRole("button", { name: "Edit when action 1 is due" }));
+      const due = screen.getByRole("textbox", { name: "when action 1 is due" });
+      const shown = screen.getByText("When action 1 is due");
+      expect(shown.tagName).toBe("LABEL");
+      expect(shown).toHaveAttribute("for", due.id);
     });
 
     it("cancels a summary edit with Escape and keeps it open on a refusal", async () => {
@@ -1356,6 +1367,34 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
     expect(screen.getByRole("button", { name: "Changed word Reidar" })).toBeInTheDocument();
   });
 
+  it("leaves the written word out of Another word whatever its case", async () => {
+    // "Reid" was written while the list held it so; the Dictionary now lists it as "reid".
+    const base = sampleDetail(ITEM);
+    const detail = {
+      ...base,
+      transcript: base.transcript.map((r, i) =>
+        i === 7
+          ? {
+              ...r,
+              text: "Fine by us. I'll send it to Tom Reid in writing.",
+              suggestions: [],
+              changed_words: [{ token: 8, decoded: "Reed", written: "Reid" }],
+            }
+          : r,
+      ),
+    };
+    const { user } = await transcript({
+      details: { [ITEM.id]: detail },
+      summaries: { vocabulary: ["reid", "Quillan"] },
+    });
+    await user.click(screen.getByRole("button", { name: "Changed word Reid" }));
+    const dialog = await screen.findByRole("dialog", { name: "Changed word Reid" });
+    await user.click(within(dialog).getByRole("combobox", { name: "Another word" }));
+    expect(await screen.findByRole("option", { name: "Quillan" })).toBeInTheDocument();
+    const offered = screen.getAllByRole("option").map((o) => o.textContent?.toLowerCase());
+    expect(offered).not.toContain("reid");
+  });
+
   it("keeps the word with Keep: the mark goes and the line is unchanged", async () => {
     const { user, calls } = await transcript();
     await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));
@@ -1365,6 +1404,28 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
     expect(calls).toContainEqual(["keepWord", ITEM.id, LINE8, 8]);
     expect(lineCell().textContent).toBe(LINE8_TEXT);
     expect(screen.queryByRole("textbox", { name: "Line 8" })).not.toBeInTheDocument();
+  });
+
+  it("gives focus to the line's Edit button after Keep", async () => {
+    const { user } = await transcript();
+    // Held from before: the popover's modal hides the page from role queries for a moment.
+    const edit = screen.getByRole("button", { name: "Edit line 8" });
+    screen.getByRole("button", { name: "Suggestion for Reed" }).focus();
+    await user.keyboard("{Enter}");
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Keep" }));
+    await waitFor(() => expect(marks()).toEqual([]));
+    await waitFor(() => expect(edit).toHaveFocus());
+  });
+
+  it("keeps focus on the word's mark after Use it", async () => {
+    const { user } = await transcript();
+    const mark = screen.getByRole("button", { name: "Suggestion for Reed" });
+    mark.focus();
+    await user.keyboard("{Enter}");
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Use it" }));
+    const changed = await screen.findByRole("button", { name: "Changed word Reid" });
+    expect(changed).toBe(mark);
+    await waitFor(() => expect(changed).toHaveFocus());
   });
 
   it("opens the popover and never a line edit from the word; line edits start only from Edit", async () => {
@@ -1516,6 +1577,37 @@ describe("MeetingDetailView, words to the Dictionary (T12.15f)", () => {
     expect(calls.some((c) => c[0] === "addDictionaryWord")).toBe(false);
   });
 
+  it("gives focus to the line's Edit button when the bar closes with Not now", async () => {
+    const { user } = await transcript();
+    await editLine1(user);
+    const offer = await screen.findByRole("group", { name: "Add to Dictionary" });
+    const edit = screen.getByRole("button", { name: "Edit line 1" });
+    await user.click(within(offer).getByRole("button", { name: "Not now" }));
+    expect(bar()).toBeNull();
+    await waitFor(() => expect(edit).toHaveFocus());
+  });
+
+  it("gives focus to the line's Edit button when the bar closes with Escape", async () => {
+    const { user } = await transcript();
+    await editLine1(user);
+    const edit = screen.getByRole("button", { name: "Edit line 1" });
+    (await screen.findByRole("button", { name: 'Add "Quillmarsh" to Dictionary' })).focus();
+    await user.keyboard("{Escape}");
+    expect(bar()).toBeNull();
+    await waitFor(() => expect(edit).toHaveFocus());
+  });
+
+  it("gives focus to the line's Edit button when a plain word's menu closes", async () => {
+    const { user } = await transcript();
+    // Held from before: the open menu hides the page from role queries for a moment.
+    const edit = screen.getByRole("button", { name: "Edit line 1" });
+    fireEvent.contextMenu(word("lead")!, { clientX: 40, clientY: 40 });
+    await screen.findByRole("menuitem", { name: 'Add "lead" to Dictionary' });
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
+    await waitFor(() => expect(edit).toHaveFocus());
+  });
+
   it("keeps the bar while another line's menu is open, and closes it when that menu adds a word", async () => {
     const { user } = await transcript();
     await editLine1(user);
@@ -1634,7 +1726,7 @@ describe("MeetingDetailView, words to the Dictionary (T12.15f)", () => {
 });
 
 describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
-  function show(finishing: boolean, ipc: Ipc) {
+  function show(finishing: boolean, ipc: Ipc, job?: JobView) {
     return (
       <EarshotThemeProvider>
         <IpcProvider ipc={ipc}>
@@ -1644,6 +1736,7 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
             onJobStarted={() => {}}
             onJobDismissed={() => {}}
             finishing={finishing}
+            job={job}
           />
         </IpcProvider>
       </EarshotThemeProvider>
@@ -1687,5 +1780,46 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
     expect(within(speakerRow("Speaker 3")).getByRole("textbox", { name: "Name of Speaker 3" })).toBeEnabled();
     await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Ignore" }));
     expect(calls).toContainEqual(["ignoreSpeaker", ITEM.id, SAMPLE_SPEAKERS.third]);
+  });
+
+  it("keeps line edits and word choices off while the meeting is busy (TODO 95)", async () => {
+    const calls: unknown[][] = [];
+    const ipc = createMockIpc({
+      timer: createManualTimer(10_000),
+      meetings: [ITEM, OTHER],
+      onCall: (c) => calls.push(c),
+    });
+    const user = userEvent.setup();
+    const busy = (job: JobKind): JobView => ({ job, last: null, seq: 1 });
+    const offWhile = async (finishing: boolean, job?: JobView) => {
+      const view = render(show(finishing, ipc, job));
+      await user.click(await screen.findByRole("tab", { name: "Transcript" }));
+      const edit = screen.getByRole("button", { name: "Edit line 8" });
+      expect(edit).toHaveAttribute("aria-disabled", "true");
+      await user.click(edit);
+      expect(screen.queryByRole("textbox", { name: "Line 8" })).toBeNull();
+      // The mark still opens: its Dictionary action changes no line, its choices are off.
+      await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));
+      const dialog = await screen.findByRole("dialog", { name: "Suggestion for Reed" });
+      expect(within(dialog).getByRole("button", { name: "Use it" })).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "Keep" })).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "Add to Dictionary" })).toBeEnabled();
+      view.unmount();
+    };
+    await offWhile(true);
+    await offWhile(false, busy("Retranscribe"));
+    await offWhile(false, busy("Resummarise"));
+    const edits = ["editSegment", "useWord", "keepWord", "putBackWord"];
+    expect(calls.filter((c) => edits.includes(c[0] as string))).toEqual([]);
+
+    // A finished job leaves them on.
+    const failed: JobView = {
+      job: "Retranscribe",
+      last: { type: "Failed", meeting: ITEM.id, job: "Retranscribe", message: "Invented.", retryable: true },
+      seq: 2,
+    };
+    render(show(false, ipc, failed));
+    await user.click(await screen.findByRole("tab", { name: "Transcript" }));
+    expect(screen.getByRole("button", { name: "Edit line 8" })).not.toHaveAttribute("aria-disabled");
   });
 });
