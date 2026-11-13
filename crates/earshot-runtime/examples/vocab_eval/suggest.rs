@@ -215,6 +215,30 @@ mod tests {
     }
 
     #[test]
+    fn vocab_suggest_alone_differs_from_a_cumulative_judge() {
+        // One reference word, two near misses both changed to it: each alone removes an
+        // error, but after the first the second only moves the insertion.
+        let said: HashSet<String> = ["zorbla", "met"].map(str::to_owned).into();
+        let reference = "zorbla met";
+        let words = s(&["zorble", "zorbly", "met"]);
+        let corrected = s(&["Zorbla", "Zorbla", "met"]);
+        let changes = [change(0, "zorble", "Zorbla"), change(1, "zorbly", "Zorbla")];
+        let effects: Vec<Verdict> = judge(reference, &words, &corrected, &changes, &said)
+            .iter()
+            .map(|j| j.effect)
+            .collect();
+        assert_eq!(effects, [Verdict::Right, Verdict::Right]);
+        // The case tells the two apart: applied one after the other, the second changes
+        // nothing.
+        let first = s(&["Zorbla", "zorbly", "met"]);
+        assert!(word_errors(reference, &first) < word_errors(reference, &words));
+        assert_eq!(
+            word_errors(reference, &corrected),
+            word_errors(reference, &first)
+        );
+    }
+
+    #[test]
     fn vocab_suggest_judges_what_the_matcher_writes() {
         let said: HashSet<String> = ["bozzle", "met", "the"].map(str::to_owned).into();
         let words = s(&["Bozle", "met", "the"]);
