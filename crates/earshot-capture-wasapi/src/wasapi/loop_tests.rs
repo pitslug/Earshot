@@ -723,6 +723,107 @@ fn capture_loop_a_refused_call_output_logs_the_error_as_a_number_only() {
     assert!(lb.stream.is_some(), "still recording where it was");
 }
 
+/// Hears which chosen endpoint each successful re-open says it gave up.
+#[derive(Default)]
+struct GiveUpEar {
+    opened: Vec<Option<String>>,
+}
+
+impl TrackObserver for GiveUpEar {
+    fn packet(&mut self, _: PacketInfo, _: &[f32]) {}
+
+    fn reopened(&mut self, _: u64, _: ReopenReason, outcome: ReopenOutcome<'_>) {
+        if let ReopenOutcome::Opened { gave_up, .. } = outcome {
+            self.opened.push(gave_up.map(str::to_owned));
+        }
+    }
+}
+
+/// A loopback on `device` (moved onto the call's output first when `follow_call`) whose output
+/// is lost on the third pass and cannot be opened for 15 s, so it is given up for the default.
+/// What each successful re-open said it gave up.
+fn lose_output(device: DeviceChoice, follow_call: bool) -> Vec<Option<String>> {
+    let lost_until = 15 * QPC_UNITS_PER_SEC / follow::RETRY_INTERVAL_QPC;
+    let platform = Rc::new(Platform {
+        faults: vec![
+            Fault::on(
+                Call::Drain(TrackId::Reference),
+                4,
+                follow::AUDCLNT_E_DEVICE_INVALIDATED,
+            ),
+            Fault {
+                call: Call::Open(TrackId::Reference),
+                first: usize::from(follow_call) + 1,
+                last: usize::from(follow_call) + lost_until as usize,
+                hresult: follow::AUDCLNT_E_DEVICE_INVALIDATED,
+            },
+        ],
+        ..Platform::default()
+    });
+    let mut driver = FakeDriver {
+        platform: Rc::clone(&platform),
+    };
+    let stream = FakeStream::new(&platform, Endpoint::Loopback, 2);
+    stream.start().unwrap();
+    let follower = match device {
+        DeviceChoice::Default => StreamFollower::new(Flow::Render, Role::Console, true),
+        DeviceChoice::Endpoint { .. } => StreamFollower::chosen(Flow::Render, Role::Console),
+    };
+    let mut lb = Track::new(
+        stream,
+        Endpoint::Loopback,
+        device,
+        follower,
+        GiveUpEar::default(),
+    );
+    if follow_call {
+        let mut rule = CallOutputFollower::new();
+        for n in 1..=crate::call_output::POLLS_TO_MOVE {
+            follow_call_reading(
+                &mut rule,
+                Some(call_on("headset")),
+                &mut driver,
+                &mut lb,
+                u64::from(n),
+            );
+        }
+        assert_eq!(platform.count(Call::Open(TrackId::Reference)), 1, "moved");
+    }
+    let mic_stream = FakeStream::new(&platform, Endpoint::Microphone(MicRole::Console), 1);
+    mic_stream.start().unwrap();
+    let mut mic = Track::new(
+        mic_stream,
+        Endpoint::Microphone(MicRole::Console),
+        DeviceChoice::Default,
+        StreamFollower::new(Flow::Capture, Role::Console, true),
+        Ear::default(),
+    );
+    let end = 30 * QPC_UNITS_PER_SEC;
+    run_capture(&mut driver, &mut mic, Some(&mut lb), None, |now| now >= end).unwrap();
+    assert!(lb.stream.is_some(), "recording the default at the end");
+    assert!(lb.follower.follows_default());
+    lb.observer.opened
+}
+
+#[test]
+fn capture_loop_a_lost_call_output_is_not_reported_as_a_chosen_device() {
+    // The control: an output chosen on the Audio page is named when it is given up.
+    let chosen = DeviceChoice::Endpoint {
+        id: "headset".into(),
+        name: "Invented headset".into(),
+    };
+    assert_eq!(
+        lose_output(chosen, false),
+        [Some("Invented headset".to_owned())]
+    );
+    // An output the recording followed a call onto was never the user's choice: its loss
+    // moves the track to the default without saying a choice was given up.
+    let followed = lose_output(DeviceChoice::Default, true);
+    assert_eq!(followed.len(), 2, "{followed:?}");
+    assert_eq!(followed[0], None, "the move itself");
+    assert_eq!(followed[1], None, "the default after the loss");
+}
+
 #[test]
 fn capture_loop_logs_no_windows_message_text() {
     // Every error the capture crate keeps as text goes through `CaptureError::detail`.

@@ -1737,6 +1737,9 @@ struct Track<S, O> {
     /// The chosen endpoint's name, from when it is given up until the default opens (that
     /// re-open reports it).
     gave_up: Option<String>,
+    /// `device` is an output the track followed a call onto (T6.15), not one the user chose:
+    /// giving it up names no choice.
+    followed_call: bool,
     /// Rate every re-opened stream is asked to deliver (the first stream's rate).
     rate: u32,
     /// Channels every re-opened stream is asked to deliver when the track keeps them
@@ -1773,6 +1776,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             endpoint,
             device,
             gave_up: None,
+            followed_call: false,
             rate: stream.format().sample_rate,
             channels,
             processing: MicProcessing::Default,
@@ -1923,6 +1927,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                 self.end_if_over(now);
                 if self.follower.give_up_chosen(now)
                     && let DeviceChoice::Endpoint { name, .. } = std::mem::take(&mut self.device)
+                    && !std::mem::take(&mut self.followed_call)
                 {
                     self.gave_up = Some(name);
                 }
@@ -1934,7 +1939,8 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
     /// and started before the old one is touched, so an output that cannot be used changes
     /// nothing: the error is returned and the track goes on recording where it was. From then on
     /// the track stays on that output like a chosen one, or follows the default if it is the
-    /// default; a lost output is given up for the default ([`follow::CHOSEN_DEVICE_GRACE_QPC`]).
+    /// default; a lost output is given up for the default ([`follow::CHOSEN_DEVICE_GRACE_QPC`]),
+    /// and that re-open names no chosen endpoint, because the user chose none.
     fn move_output<D: LoopDriver<Stream = S>>(
         &mut self,
         driver: &mut D,
@@ -1971,6 +1977,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             )
         };
         self.follower.opened(new.device_id().map(str::to_owned));
+        self.followed_call = !on_default;
         self.gave_up = None;
         self.observer.reopened(
             now,
