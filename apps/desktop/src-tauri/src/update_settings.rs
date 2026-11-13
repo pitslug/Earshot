@@ -627,8 +627,12 @@ pub fn schedule_tick(
     now_ms: u64,
     ran: &mut Option<u64>,
 ) -> Result<Duration, RuntimeError> {
-    let (on, (schedule, _), last) = {
+    let ((schedule, _), last) = {
         let mut store = services.store();
+        // Off is no request at all, whatever the schedule says, and no write either.
+        if !earshot_runtime::update::auto_check(&store)? {
+            return Ok(SCHEDULE_STEP);
+        }
         let mut last = earshot_runtime::update::last_check(&store)?;
         // The wall clock moved back past the last check: count from now, once, or each wake
         // would put the check one interval further away.
@@ -636,16 +640,8 @@ pub fn schedule_tick(
             earshot_runtime::update::record_check(&mut store, now_ms)?;
             last = Some(now_ms);
         }
-        (
-            earshot_runtime::update::auto_check(&store)?,
-            earshot_runtime::update::update_schedule(&store)?,
-            last,
-        )
+        (earshot_runtime::update::update_schedule(&store)?, last)
     };
-    // Off is no request at all, whatever the schedule says.
-    if !on {
-        return Ok(SCHEDULE_STEP);
-    }
     // The same for this thread's own memory of its last check.
     if ran.is_some_and(|r| r > now_ms) {
         *ran = Some(now_ms);

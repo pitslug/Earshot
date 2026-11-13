@@ -492,6 +492,21 @@ fn update_schedule_clock_moved_back_waits_no_more_than_one_interval() {
 }
 
 #[test]
+fn update_schedule_off_leaves_a_last_check_ahead_of_the_clock_alone() {
+    // Off is no work at all: the clock-back rewrite waits until checks are on.
+    let dir = crate::testutil::TempDir::new("update-schedule-back-off");
+    let services = crate::testutil::services(&dir);
+    let ahead = T0 + 365 * 24 * HOUR_MS;
+    earshot_runtime::update::record_check(&mut services.store(), ahead).unwrap();
+    let fake = Arc::new(Fake::default());
+    let j = scheduled(Arc::clone(&fake), &services, at(T0), never_notify());
+    let mut ran = None;
+    schedule_tick(&services, &j, T0, &mut ran).unwrap();
+    assert_eq!(last(&services), Some(ahead));
+    assert_eq!(fake.checks.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn update_schedule_a_changed_setting_applies_at_the_next_wake() {
     let dir = crate::testutil::TempDir::new("update-schedule-change");
     let services = crate::testutil::services(&dir);
