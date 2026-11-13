@@ -252,7 +252,9 @@ pub fn hands_free_warning(p: &EndpointProperties) -> Option<HandsFreeMic> {
 /// (T6.24): once per switch onto such a mic. Two endpoints are the same mic when both
 /// carry an endpoint id and the ids are equal or, when either id is unknown, when their
 /// friendly names are equal; a re-open judged the same mic by name keeps the id it had, so the
-/// rule does not lose ids. The mic opened at the start is warned about by the caller of
+/// rule does not lose ids. That carried id can only add warnings, never hide one: if the mic
+/// whose id went unread was in fact an identical headset, the next re-open on the first one
+/// compares ids and warns once more. The mic opened at the start is warned about by the caller of
 /// `WasapiSource::start` (`WasapiSource::mic_warning`), so a follower starting on a
 /// hands-free mic does not warn again until the track has been on another mic in between;
 /// a switch from one hands-free mic straight to another warns. A failed re-open (no

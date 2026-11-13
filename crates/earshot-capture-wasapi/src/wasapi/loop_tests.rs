@@ -841,6 +841,67 @@ fn capture_loop_a_refused_keep_awake_is_kept_as_a_number() {
     assert_eq!(source.matches("sleep_refusal(&awake)").count(), 2);
 }
 
+/// The places in `src` (shipped code of `wasapi.rs`) that may turn an error into text other
+/// than through [`CaptureError::detail`]: any `.to_string()` except the two `PWSTR`
+/// conversions (which return a `Result`, so their `.unwrap_or_default()` / `.ok()` would not
+/// compile on an error's `String`), any `ToString::to_string`, and any format argument that
+/// names an error binding, inline (`{e}`, `{source:?}`) or positional (`"{}", e`). The one
+/// place allowed to format the Windows error is `CaptureError`'s own `Display` (what `detail`
+/// avoids), which is cut out first, with `detail` itself.
+fn windows_text_leaks(src: &str) -> Vec<String> {
+    const ERROR_NAMES: [&str; 5] = ["e", "err", "error", "source", "why"];
+    const ALLOWED_TO_STRING: [&str; 2] =
+        ["p.to_string().unwrap_or_default()", "id.to_string() }.ok()"];
+    let cut = |text: &str, from: &str, to: &str| -> String {
+        match text.find(from) {
+            Some(start) => {
+                let end = text[start..]
+                    .find(to)
+                    .map_or(text.len(), |n| start + n + to.len());
+                format!("{}{}", &text[..start], &text[end..])
+            }
+            None => text.to_owned(),
+        }
+    };
+    let text = cut(src, "impl fmt::Display for CaptureError", "\n}\n");
+    let text = cut(&text, "    fn detail(&self) -> String {", "\n    }\n");
+    let mut leaks = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or_default();
+        let mut rest = code;
+        while let Some(at) = rest.find(".to_string()") {
+            let around = &rest[at.saturating_sub(3)..];
+            if !ALLOWED_TO_STRING.iter().any(|ok| around.contains(ok)) {
+                leaks.push(format!("{n}: {line}"));
+            }
+            rest = &rest[at + 1..];
+        }
+        if code.contains("ToString::to_string") {
+            leaks.push(format!("{n}: {line}"));
+        }
+        let formats = [
+            "format!(",
+            "write!(",
+            "writeln!(",
+            "print!(",
+            "println!(",
+            "panic!(",
+        ]
+        .iter()
+        .any(|m| code.contains(m));
+        for name in ERROR_NAMES {
+            let inline = [format!("{{{name}}}"), format!("{{{name}:")];
+            let positional = [format!(", {name})"), format!(", {name},")];
+            if inline.iter().any(|p| code.contains(p.as_str()))
+                || (formats && positional.iter().any(|p| code.contains(p.as_str())))
+            {
+                leaks.push(format!("{n}: {line}"));
+            }
+        }
+    }
+    leaks
+}
+
 #[test]
 fn capture_loop_logs_no_windows_message_text() {
     // Every error the capture crate keeps as text goes through `CaptureError::detail`.
@@ -849,9 +910,38 @@ fn capture_loop_logs_no_windows_message_text() {
         .split_once("\n#[cfg(test)]")
         .map_or(source, |(code, _)| code);
     assert!(
-        !shipped.contains("e.to_string()"),
-        "an error kept as its Windows message text"
+        shipped.contains("impl fmt::Display for CaptureError")
+            && shipped.contains("    fn detail(&self) -> String {"),
+        "the allowed places are where the scan expects them"
     );
+    let leaks = windows_text_leaks(shipped);
+    assert!(leaks.is_empty(), "errors kept as message text: {leaks:#?}");
+
+    // The negative control: each way an error becomes its message text is caught.
+    for leak in [
+        "        Err(e) => Err(e.to_string()),",
+        "        .map_err(|err| err.to_string())",
+        "        let s = ToString::to_string(&e);",
+        "        observer.note(&format!(\"open failed: {e}\"));",
+        "        observer.note(&format!(\"open failed: {source:?}\"));",
+        "        observer.note(&format!(\"{}\", e));",
+        "        observer.note(&format!(\"{} {}\", what, error));",
+        "        let text = failure.to_string();",
+    ] {
+        let found = windows_text_leaks(&format!("fn f() {{\n{leak}\n}}\n"));
+        assert_eq!(found.len(), 1, "missed: {leak}");
+    }
+    // And the allowed forms pass.
+    for ok in [
+        "        let s = p.to_string().unwrap_or_default();",
+        "            unsafe { id.to_string() }.ok()",
+        "        Err(e) => Err(e.detail()),",
+    ] {
+        assert!(
+            windows_text_leaks(&format!("fn f() {{\n{ok}\n}}\n")).is_empty(),
+            "{ok}"
+        );
+    }
 }
 
 #[test]

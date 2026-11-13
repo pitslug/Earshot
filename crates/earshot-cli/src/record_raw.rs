@@ -142,7 +142,8 @@ pub fn describe_mic_warning(w: &earshot_capture_wasapi::HandsFreeMic) -> String 
 
 /// Writes lines on a thread of its own. `record_raw` calls its mic-warning callback on the
 /// capture thread, inside a re-open, so the callback only hands its line over here: a console
-/// that blocks the write (a QuickEdit selection) stalls this thread, never the capture.
+/// that blocks the write (a QuickEdit selection) stalls this thread, never the capture. The
+/// start lines go through it too, so nothing it writes interleaves with them.
 struct LinePrinter {
     lines: Option<std::sync::mpsc::Sender<String>>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -260,19 +261,25 @@ pub fn run(
     let printer = LinePrinter::spawn(|line| eprintln!("{line}"))
         .context("cannot start the warning printer")?;
     let warnings = printer.sender();
+    let started = printer.sender();
     let rec = earshot_capture_wasapi::record_raw(
         seconds,
         mic_role,
         mic_processing,
         loopback,
-        |mic, lb, src| {
-            eprintln!("{}", describe_device("mic", mic));
-            if let Some(line) = describe_mic_processing(mic_processing) {
-                eprintln!("{line}");
+        // Through the same printer as the warnings, so the lines never interleave. It owns its
+        // sender too, so the queue closes when record_raw returns.
+        move |mic, lb, src| {
+            let lines = [
+                Some(describe_device("mic", mic)),
+                describe_mic_processing(mic_processing).map(str::to_owned),
+                Some(describe_device("loopback", lb)),
+                Some(describe_loopback_source(src)),
+                Some(format!("record-raw: recording {seconds} s ...")),
+            ];
+            for line in lines.into_iter().flatten() {
+                let _ = started.send(line);
             }
-            eprintln!("{}", describe_device("loopback", lb));
-            eprintln!("{}", describe_loopback_source(src));
-            eprintln!("record-raw: recording {seconds} s ...");
         },
         // On the capture thread: queue the line, never write it here. It owns the sender, so
         // the printer's queue closes when record_raw returns.
