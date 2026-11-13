@@ -180,9 +180,7 @@ struct Download {
     /// check), so the check is refused while any download still writes, yet a download
     /// finishing never counts itself or another download that has already ended.
     writing: Arc<AtomicBool>,
-    /// Whether the check waits for it: a transcription model enters the check's fingerprint
-    /// (`model_bench::check_fingerprint` lists `model_check::MODELS`) and the check runs on
-    /// the speech helpers, so a summary download alone never blocks the check.
+    /// Whether the check waits for it ([`check_waits_for`]).
     in_check: bool,
 }
 
@@ -317,8 +315,7 @@ impl ModelJobs {
                 cancel,
                 thread,
                 writing,
-                in_check: is_kind(model, ModelKind::Transcription)
-                    || is_kind(model, ModelKind::Helpers),
+                in_check: Catalogue::embedded().is_ok_and(|c| check_waits_for(c, model)),
             },
         );
         drop(downloads);
@@ -524,21 +521,47 @@ impl ModelJobs {
 }
 
 /// Whether `model` is a model of that kind in the catalogue.
+#[cfg(test)]
 fn is_kind(model: &str, kind: ModelKind) -> bool {
     Catalogue::embedded().is_ok_and(|c| c.model(model).is_some_and(|m| m.kind == kind))
 }
 
-/// Whether a finished download of `model` starts the check: any transcription model; the
-/// speech helpers only when there is a transcription model in `models` to check (the check
-/// did not run when that model arrived first, or failed for want of them).
+/// Whether a finished download of `model` starts the check: any transcription model or NPU
+/// version (it changes where a model can run, and the check's fingerprint); the speech helpers
+/// only when there is a transcription model in `models` to check (the check did not run when
+/// that model arrived first, or failed for want of them).
 #[must_use]
 pub fn check_follows(models: &earshot_runtime::backends::ModelDir, model: &str) -> bool {
-    is_kind(model, ModelKind::Transcription)
-        || (is_kind(model, ModelKind::Helpers)
-            && Catalogue::embedded().is_ok_and(|c| {
-                c.models_of(ModelKind::Transcription)
-                    .any(|m| c.is_installed(models, &m.name))
-            }))
+    Catalogue::embedded().is_ok_and(|c| check_follows_in(c, models, model))
+}
+
+/// [`check_follows`] in catalogue `c`.
+#[must_use]
+pub fn check_follows_in(
+    c: &Catalogue,
+    models: &earshot_runtime::backends::ModelDir,
+    model: &str,
+) -> bool {
+    match c.model(model).map(|m| m.kind) {
+        Some(ModelKind::Transcription | ModelKind::NpuVersion) => true,
+        Some(ModelKind::Helpers) => c
+            .models_of(ModelKind::Transcription)
+            .any(|m| c.is_installed(models, &m.name)),
+        _ => false,
+    }
+}
+
+/// Whether the check waits for a download of `model` in catalogue `c`: what enters the check's
+/// fingerprint or what it runs on (a transcription model, its NPU version, the speech helpers),
+/// so a summary download alone never blocks the check.
+#[must_use]
+pub fn check_waits_for(c: &Catalogue, model: &str) -> bool {
+    c.model(model).is_some_and(|m| {
+        matches!(
+            m.kind,
+            ModelKind::Transcription | ModelKind::NpuVersion | ModelKind::Helpers
+        )
+    })
 }
 
 /// What the user is told about a download that failed: fixed copy, never a URL or a file name
