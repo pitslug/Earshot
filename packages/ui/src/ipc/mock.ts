@@ -358,6 +358,14 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     const cancel: (() => void)[] = [];
     let words = 0;
     let tick = 0;
+    // While held behind an older meeting nothing is transcribed: the lines said meanwhile land
+    // at once when the hold ends (the catch-up), and no provisional words show until then.
+    let holding = held;
+    const waiting: (() => void)[] = [];
+    const release = () => {
+      holding = false;
+      for (const land of waiting.splice(0)) land();
+    };
     const speaking: Record<LiveTrack, boolean> = { You: false, Them: false };
     const voice = (track: LiveTrack, on: boolean) => {
       if (speaking[track] === on) return;
@@ -401,6 +409,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       // Its first words as a provisional guess while it is being said (T9.1m).
       cancel.push(
         timer.setTimeout(() => {
+          if (holding) return;
           emit({
             type: "Provisional",
             track: line.track,
@@ -410,19 +419,18 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
           });
         }, line.at - PROVISIONAL_BEFORE),
       );
-      cancel.push(
-        timer.setTimeout(() => {
-          words += said.length;
-          emit({
-            type: "Landed",
-            track: line.track,
-            start_ms: start,
-            end_ms: line.at,
-            text: line.text,
-          });
-          emit({ type: "Words", total: words });
-        }, line.at),
-      );
+      const land = () => {
+        words += said.length;
+        emit({
+          type: "Landed",
+          track: line.track,
+          start_ms: start,
+          end_ms: line.at,
+          text: line.text,
+        });
+        emit({ type: "Words", total: words });
+      };
+      cancel.push(timer.setTimeout(() => (holding ? waiting.push(land) : land()), line.at));
     }
     cancel.push(
       timer.setTimeout(() => {
@@ -435,7 +443,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         });
       }, SCRIPT_WARNING_AT),
     );
-    return { cancel, speaking, tracks };
+    return { cancel, speaking, tracks, release };
   };
 
   // What Cancel does to each meeting past its recording, until its summary event.
@@ -600,7 +608,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       };
       meetings.push(row);
       if (keepLocal) keptLocal.add(row.id);
-      const { cancel, speaking, tracks } = record(row, mode, held);
+      const { cancel, speaking, tracks, release } = record(row, mode, held);
       if (data.callEndOfferAfterMs !== undefined && mode === "Call") {
         cancel.push(
           timer.setTimeout(
@@ -615,6 +623,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         afterOlder = () => {
           for (const track of tracks) emit({ type: "Backend", track, label: "GPU (CUDA)" });
           emit({ type: "Transcript", state: "CatchingUp" });
+          release();
           cancel.push(
             timer.setTimeout(() => emit({ type: "Transcript", state: "Live" }), CATCH_UP_MS),
           );

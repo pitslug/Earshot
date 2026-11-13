@@ -77,6 +77,27 @@ describe("mock IPC", () => {
     expect(events.at(-1)).toMatchObject({ type: "Summary", result: { kind: "Stored" } });
   });
 
+  it("lands no line while a meeting is held behind an older one, then catches up at once", async () => {
+    const timer = createManualTimer(0);
+    const ipc = createMockIpc({ meetings: [], timer });
+    await ipc.startMeeting("Call", null, false);
+    timer.advance(1_000);
+    await ipc.stopMeeting();
+    const events: MeetingEvent[] = [];
+    await ipc.onMeetingEvent((e) => events.push(e));
+    await ipc.startMeeting("Call", null, false);
+    const olderEnds = (POST_STEPS.length + 1) * POST_STEP_MS;
+    expect(SCRIPT_LINES.filter((l) => l.at < olderEnds).length).toBeGreaterThan(0);
+    timer.advance(olderEnds - 1);
+    expect(events).toContainEqual({ type: "Transcript", state: "WaitingForPreviousMeeting" });
+    expect(events.filter((e) => e.type === "Landed" || e.type === "Provisional")).toEqual([]);
+    timer.advance(1);
+    const caught = events.findIndex((e) => e.type === "Transcript" && e.state === "CatchingUp");
+    expect(caught).toBeGreaterThan(0);
+    const landed = events.slice(caught).filter((e) => e.type === "Landed");
+    expect(landed.length).toBe(SCRIPT_LINES.filter((l) => l.at < olderEnds).length);
+  });
+
   it("plays a room meeting with one track and refuses a second start", async () => {
     const timer = createManualTimer(0);
     const ipc = createMockIpc({ meetings: [], timer });
