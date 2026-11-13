@@ -31,6 +31,16 @@ describe("the models mock against the app's copy table", () => {
     const mock = createModelsMock("desktop", createManualTimer(0));
     const set = (change: Partial<ModelSettingsValue>) => () => mock.setModelSettings({ ...SETTINGS, ...change });
     const f = table.fixed;
+    // Every `fixed` entry is shown by the mock and checked below; Rust-only copy lives apart.
+    expect(Object.keys(f).sort()).toEqual([
+      "no_languages",
+      "npu_for_summaries",
+      "unknown_language",
+      "unknown_model",
+      "unknown_summary_model",
+      "unknown_transcription_model",
+    ]);
+    expect(Object.keys(table.rust_only)).toEqual(["model_files_failed"]);
     expect(await refusal(set({ languages: [] }))).toBe(f.no_languages);
     expect(await refusal(set({ languages: ["xx"] }))).toBe(f.unknown_language);
     expect(await refusal(set({ transcription: "no-such-model" }))).toBe(f.unknown_transcription_model);

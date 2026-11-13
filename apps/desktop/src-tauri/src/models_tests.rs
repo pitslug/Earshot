@@ -621,8 +621,11 @@ fn models_copy_matches_the_shared_case_table() {
     ))
     .unwrap();
     let (fixed, templates) = (&table["fixed"], &table["templates"]);
+    assert_eq!(
+        table["rust_only"]["model_files_failed"].as_str(),
+        Some(MODEL_FILES_FAILED)
+    );
     let cases = [
-        ("model_files_failed", MODEL_FILES_FAILED.to_owned()),
         (
             "unknown_model",
             catalogue_copy(&CatalogueError::UnknownModel("x".into())),
