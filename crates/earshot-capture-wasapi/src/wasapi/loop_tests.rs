@@ -650,6 +650,92 @@ fn capture_loop_a_failed_reopen_logs_the_error_as_a_number_only() {
     );
 }
 
+/// Hears what [`TrackObserver::call_output_refused`] is told.
+#[derive(Default)]
+struct RefusalEar {
+    refused: Vec<(String, Option<String>, String)>,
+}
+
+impl TrackObserver for RefusalEar {
+    fn packet(&mut self, _: PacketInfo, _: &[f32]) {}
+
+    fn reopened(&mut self, _: u64, _: ReopenReason, _: ReopenOutcome<'_>) {}
+
+    fn call_output_refused(&mut self, _: u64, wanted: &str, used: Option<&str>, error: &str) {
+        self.refused
+            .push((wanted.into(), used.map(str::to_owned), error.into()));
+    }
+}
+
+/// A reading with a call app sounding on the output `id`.
+fn call_on(id: &str) -> SessionReading {
+    Ok(vec![crate::session::SessionPeak {
+        endpoint: "Invented headset".into(),
+        endpoint_id: id.into(),
+        pid: 100,
+        process_name: "ms-teams.exe".into(),
+        active: true,
+        peak: Some(0.2),
+    }])
+}
+
+#[test]
+fn capture_loop_a_refused_call_output_logs_the_error_as_a_number_only() {
+    let platform = Rc::new(Platform {
+        faults: vec![Fault::from(
+            Call::Open(TrackId::Reference),
+            1,
+            AUDCLNT_E_CPUUSAGE_EXCEEDED,
+        )],
+        ..Platform::default()
+    });
+    let mut driver = FakeDriver {
+        platform: Rc::clone(&platform),
+    };
+    let stream = FakeStream::new(&platform, Endpoint::Loopback, 2);
+    stream.start().unwrap();
+    let mut lb = Track::new(
+        stream,
+        Endpoint::Loopback,
+        DeviceChoice::Default,
+        StreamFollower::new(Flow::Render, Role::Console, true),
+        RefusalEar::default(),
+    );
+    let mut rule = CallOutputFollower::new();
+    for n in 1..=crate::call_output::POLLS_TO_MOVE {
+        follow_call_reading(
+            &mut rule,
+            Some(call_on("headset")),
+            &mut driver,
+            &mut lb,
+            u64::from(n),
+        );
+    }
+    assert_eq!(platform.count(Call::Open(TrackId::Reference)), 1);
+    assert_eq!(
+        lb.observer.refused,
+        [(
+            "Invented headset".to_owned(),
+            Some("Fake output".to_owned()),
+            "fake: error 0x88890017".to_owned()
+        )]
+    );
+    assert!(lb.stream.is_some(), "still recording where it was");
+}
+
+#[test]
+fn capture_loop_logs_no_windows_message_text() {
+    // Every error the capture crate keeps as text goes through `CaptureError::detail`.
+    let source = include_str!("../wasapi.rs");
+    let shipped = source
+        .split_once("\n#[cfg(test)]")
+        .map_or(source, |(code, _)| code);
+    assert!(
+        !shipped.contains("e.to_string()"),
+        "an error kept as its Windows message text"
+    );
+}
+
 #[test]
 fn capture_loop_every_programming_fault_on_a_drain_ends_the_capture() {
     for code in follow::PROGRAMMING_FAULTS {

@@ -585,8 +585,8 @@ impl RenderSessionPoller {
         Self::start_with(interval, || {
             let com = ComApartment::init_mta();
             move || match &com {
-                Ok(com) => render_session_peaks(com).map_err(|e| e.to_string()),
-                Err(e) => Err(e.to_string()),
+                Ok(com) => render_session_peaks(com).map_err(|e| e.detail()),
+                Err(e) => Err(e.detail()),
             }
         })
     }
@@ -2047,32 +2047,45 @@ impl CallOutputFollow {
         })
     }
 
-    /// Acts on the newest reading, if there is one. An output that cannot be opened is reported
-    /// once and the track stays where it is.
+    /// Acts on the newest reading, if there is one.
     fn step<D: LoopDriver, O: TrackObserver>(
         &mut self,
         driver: &mut D,
         loopback: &mut Track<D::Stream, O>,
         now: u64,
     ) {
-        let sessions = match self.poller.latest() {
-            None => return,
-            Some(Err(_)) => {
-                self.rule.no_reading();
-                return;
-            }
-            Some(Ok(sessions)) => sessions,
-        };
-        let Some(target) = self.rule.reading(loopback.follower.current_id(), &sessions) else {
+        let reading = self.poller.latest();
+        follow_call_reading(&mut self.rule, reading, driver, loopback, now);
+    }
+}
+
+/// [`CallOutputFollow::step`] on `reading` (`None`: nothing new). An output that cannot be
+/// opened is reported once, its error as [`CaptureError::detail`] (never Windows' message
+/// text), and the track stays where it is.
+fn follow_call_reading<D: LoopDriver, O: TrackObserver>(
+    rule: &mut CallOutputFollower,
+    reading: Option<SessionReading>,
+    driver: &mut D,
+    loopback: &mut Track<D::Stream, O>,
+    now: u64,
+) {
+    let sessions = match reading {
+        None => return,
+        Some(Err(_)) => {
+            rule.no_reading();
             return;
-        };
-        if let Err(e) = loopback.move_output(driver, &target, now) {
-            self.rule.refused(&target.id);
-            let used = loopback.stream.as_ref().map(LoopStream::device_name);
-            loopback
-                .observer
-                .call_output_refused(now, &target.name, used, &e.to_string());
         }
+        Some(Ok(sessions)) => sessions,
+    };
+    let Some(target) = rule.reading(loopback.follower.current_id(), &sessions) else {
+        return;
+    };
+    if let Err(e) = loopback.move_output(driver, &target, now) {
+        rule.refused(&target.id);
+        let used = loopback.stream.as_ref().map(LoopStream::device_name);
+        loopback
+            .observer
+            .call_output_refused(now, &target.name, used, &e.detail());
     }
 }
 
@@ -2104,7 +2117,7 @@ fn open_chosen<'com>(
                 track,
                 choice,
                 e.is_device_gone(),
-                &e.to_string(),
+                &e.detail(),
                 stream.device_name(),
             );
             Ok((stream, DeviceChoice::Default, fallback))
@@ -2238,7 +2251,7 @@ fn open_loopback<'com>(
         _ => match list_render_sessions(com) {
             Ok(sessions) => choose_loopback(request, &sessions).map_err(CaptureError::Selection)?,
             Err(e) if auto => {
-                LoopbackChoice::DefaultDevice(FallbackReason::SessionQueryFailed(e.to_string()))
+                LoopbackChoice::DefaultDevice(FallbackReason::SessionQueryFailed(e.detail()))
             }
             Err(_) if matches!(request, LoopbackRequest::Pid(_)) => {
                 choose_loopback(request, &[]).map_err(CaptureError::Selection)?
@@ -2283,7 +2296,7 @@ fn open_loopback<'com>(
                     })
                 }
                 Err(e) if auto => default_device(LoopbackChoice::DefaultDevice(
-                    FallbackReason::ProcessLoopbackUnavailable(e.to_string()),
+                    FallbackReason::ProcessLoopbackUnavailable(e.detail()),
                 )),
                 Err(e) => Err(e),
             }
