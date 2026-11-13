@@ -427,8 +427,19 @@ impl UpdateJobs {
                     _ => None,
                 },
             };
+            // What a quiet check that failed or panicked leaves: the offer the work keeps behind
+            // it when a check fails, else nothing to say.
+            let quietly = |before: UpdatePhase| match before {
+                UpdatePhase::Available { .. } => before,
+                _ => UpdatePhase::Idle,
+            };
             let result = match result {
                 Ok(result) => result,
+                Err(_) if quiet => {
+                    inner.set(quietly(before));
+                    inner.recorded(&end);
+                    return;
+                }
                 Err(panic) => {
                     inner.recorded(&end);
                     std::panic::resume_unwind(panic);
@@ -437,11 +448,7 @@ impl UpdateJobs {
             let next = match result {
                 Ok(None) => UpdatePhase::UpToDate,
                 Ok(Some((version, size))) => UpdatePhase::Available { version, size },
-                Err(_) if quiet => match before {
-                    // The work keeps the offer behind it when a check fails.
-                    UpdatePhase::Available { .. } => before,
-                    _ => UpdatePhase::Idle,
-                },
+                Err(_) if quiet => quietly(before),
                 Err(e) => UpdatePhase::Failed {
                     message: failure_copy(&e).into(),
                 },
