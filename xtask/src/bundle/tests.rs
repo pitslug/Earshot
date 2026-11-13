@@ -1259,3 +1259,24 @@ fn bundle_check_the_common_words_credit_needs_every_field_of_the_core_notice() {
         assert!(common_words_credit(&without).is_err(), "{drop}");
     }
 }
+
+#[test]
+fn bundle_check_reads_the_machine_architecture_not_the_xtask_binary_one() {
+    let reg = |value: &str| {
+        format!(
+            "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\r\n    PROCESSOR_ARCHITECTURE    REG_SZ    {value}\r\n\r\n"
+        )
+    };
+    assert_eq!(parse_machine_arch(&reg("AMD64")), Some(X64));
+    assert_eq!(parse_machine_arch(&reg("ARM64")), Some(ARM64_WINDOWS));
+    assert_eq!(parse_machine_arch(&reg("arm64")), Some(ARM64_WINDOWS));
+    // Anything else falls back to the xtask binary's own architecture in `machine_target`.
+    assert_eq!(parse_machine_arch(&reg("x86")), None);
+    assert_eq!(parse_machine_arch(""), None);
+    assert_eq!(
+        parse_machine_arch("    PROCESSOR_ARCHITECTURE    REG_EXPAND_SZ    ARM64"),
+        None
+    );
+    // This machine: whatever it is, the reading is one of the two installer targets.
+    assert!([X64, ARM64_WINDOWS].contains(&machine_target()));
+}
