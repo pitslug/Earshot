@@ -165,7 +165,7 @@ pub struct MeetingScore {
 
 /// Scores `summary` (None when the run failed) against `reference`.
 #[must_use]
-pub fn score(summary: Option<&SummaryV1>, reference: &AbsSumm) -> MeetingScore {
+pub fn score(summary: Option<&SummaryV1>, reference: &AbsSumm, cap: usize) -> MeetingScore {
     let refd: Vec<&str> = reference.decisions.iter().map(String::as_str).collect();
     let refa: Vec<&str> = reference.actions.iter().map(String::as_str).collect();
     let (sysd, sysa): (Vec<&str>, Vec<&str>) = match summary {
@@ -198,7 +198,7 @@ pub fn score(summary: Option<&SummaryV1>, reference: &AbsSumm) -> MeetingScore {
         decision_cover,
         actions_cov,
         action_cover,
-        length: length(summary, item_cap()),
+        length: length(summary, cap),
     }
 }
 
@@ -206,14 +206,24 @@ pub fn score(summary: Option<&SummaryV1>, reference: &AbsSumm) -> MeetingScore {
 /// the owner's meetings have no annotation; the rest of a row's score is absent (the
 /// aggregate reads it as zero). Meaning is judged by agents on the private packets.
 #[must_use]
-pub fn store_score(summary: Option<&SummaryV1>) -> Value {
-    json!({ "length": length(summary, item_cap()).to_json() })
+pub fn store_score(summary: Option<&SummaryV1>, cap: usize) -> Value {
+    json!({ "length": length(summary, cap).to_json() })
 }
 
 /// The local grammar's item cap (`SummaryLimits::max_items`), against which
-/// [`Length::lists_at_cap`] is counted for every candidate.
-fn item_cap() -> usize {
+/// [`Length::lists_at_cap`] is counted for every candidate unless a run set its own
+/// (`--max-items`, [`cap_of`]).
+pub fn item_cap() -> usize {
     earshot_llm_local::grammar::SummaryLimits::default().max_items as usize
+}
+
+/// The item cap a result file ran with: its header's `max_items` (written only by a
+/// `--max-items` run), else [`item_cap`].
+pub fn cap_of(header: &Value) -> usize {
+    header["max_items"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or_else(item_cap)
 }
 
 fn cover_json(c: &ItemCounts, cover: &[ItemCoverage]) -> Value {
@@ -316,7 +326,7 @@ mod tests {
 
     #[test]
     fn score_counts_items_and_na_has_no_reference_decision() {
-        let s = score(Some(&summary()), &reference());
+        let s = score(Some(&summary()), &reference(), item_cap());
         assert!(s.rouge.rouge_l.fmeasure > 0.5);
         // "NA." is not a decision: the summary's decision is an extra item.
         assert_eq!(
@@ -347,7 +357,7 @@ mod tests {
             .into();
         let mut r = reference();
         r.decisions = vec!["The remote will have changeable case covers.".into()];
-        let s = score(Some(&sum), &r);
+        let s = score(Some(&sum), &r, item_cap());
         assert_eq!(s.decisions.caught, 0);
         assert_eq!(s.decisions_rr.caught, 1);
         assert_eq!(s.decisions_cov.caught, 1);
@@ -371,7 +381,7 @@ mod tests {
         r.decisions = vec![
             "The remote will have an LCD screen, rubber buttons and a kinetic battery.".into(),
         ];
-        let s = score(Some(&sum), &r);
+        let s = score(Some(&sum), &r, item_cap());
         assert_eq!((s.decisions.caught, s.decisions_rr.caught), (0, 0));
         assert_eq!((s.decisions_cov.caught, s.decisions_cov.reference), (1, 1));
         let j = s.to_json();
@@ -401,16 +411,22 @@ mod tests {
         assert_eq!((l.lists_at_cap, l.item_lists_at_cap), (2, 1));
         assert_eq!(length(None, 12), Length::default());
         assert_eq!(
-            score(Some(&s), &reference()).to_json()["length"]["decisions"],
+            score(Some(&s), &reference(), item_cap()).to_json()["length"]["decisions"],
             3
         );
-        // The cap counted against is the local grammar's.
+        // The cap counted against is the local grammar's, unless the run set its own.
         assert_eq!(item_cap(), 12);
+        assert_eq!(cap_of(&json!({})), 12);
+        assert_eq!(cap_of(&json!({ "max_items": 3 })), 3);
+        assert_eq!(
+            score(Some(&s), &reference(), 3).to_json()["length"]["lists_at_cap"],
+            2
+        );
     }
 
     #[test]
     fn score_without_a_summary_is_zero_and_misses_every_item() {
-        let s = score(None, &reference());
+        let s = score(None, &reference(), item_cap());
         assert_eq!(s.rouge.rouge_l.fmeasure, 0.0);
         assert_eq!(s.rouge.rouge_lsum.fmeasure, 0.0);
         assert_eq!(

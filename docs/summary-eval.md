@@ -1087,7 +1087,7 @@ Dev split, 20 meetings, reference source. Claude through Claude Code 2.1.292 at 
 
 Both variants would also fail rule 2 on the 4B (coverage 5 below), and the 4B writes fewer action items under them, unlike Claude.
 
-**The 12-item cap, rule 4.** In the 4B run of the shipped rules (`current`), a final decisions or action items list held 12 items in 2 of the 20 meetings, which triggers the raise to 16. Measured by rule 2 (`4b-cap16`, the same build with `SummaryLimits::max_items` 16; its "lists at the cap" column counts lists of 16):
+**The 12-item cap, rule 4.** In the 4B run of the shipped rules (`current`), a final decisions or action items list held 12 items in 2 of the 20 meetings, which triggers the raise to 16. Measured by rule 2 (`4b-cap16`, the same build with `SummaryLimits::max_items` 16; its "lists at the cap" column counts lists of 16). That run came from a build with the cap edited by hand; since T12.36 the committed tool reproduces it with `cargo xtask sum-eval ... --max-items 16` (evaluation only, format key `-items16`, its own `--out`):
 
 | Run | Valid | Words | Decisions / actions written | Coverage total | Lists at the cap (decisions or actions) |
 |---|---|---|---|---|---|

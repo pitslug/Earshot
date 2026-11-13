@@ -323,6 +323,11 @@ enum Cmd {
         /// own --out.
         #[arg(long, requires = "chunk_seconds", conflicts_with_all = ["two_call", "two_track"])]
         merge_select: bool,
+        /// The local grammar's item cap of every list (evaluation only; 12 when absent):
+        /// format key `-items<n>`, and "lists at the cap" counts against it. Local
+        /// candidates; use its own --out.
+        #[arg(long)]
+        max_items: Option<u32>,
     },
     /// Build the NPU conversion of a Parakeet TDT model (T8.3): static 30 s input shape,
     /// QDQ quantisation for Qualcomm's HTP backend, into <models>/parakeet-qnn/<name>.
@@ -606,6 +611,7 @@ fn main() -> ExitCode {
             store_exclude,
             prefix_reuse,
             merge_select,
+            max_items,
         } => xtask::sum_eval::run(
             &root,
             &xtask::sum_eval::Options {
@@ -640,6 +646,7 @@ fn main() -> ExitCode {
                 store_exclude,
                 prefix_reuse,
                 merge_select,
+                max_items,
             },
         )
         .map(|()| true),
