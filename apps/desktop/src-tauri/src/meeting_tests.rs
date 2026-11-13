@@ -1452,6 +1452,23 @@ enum Finish {
         stall: Duration,
         release: Arc<Mutex<mpsc::Receiver<()>>>,
     },
+    /// The work after the meeting hangs in a call that polls nothing, until the test releases it:
+    /// in a final-pass step when `in_step`, else while it loads (before any step; T9.22b). Says
+    /// when it is in the call.
+    AfterHangs {
+        in_step: bool,
+        inside: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    },
+    /// The live model load on the hold thread hangs until the test releases it, the hold's load
+    /// bound `stall` (T9.22b). Says when it is loading.
+    LoadHangs {
+        stall: Duration,
+        loading: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    },
+    /// Only logs that it started (what `LoadHangs` runs after the recording, if anything).
+    Logs,
 }
 
 /// A transcriber stuck in a call that never returns, polling nothing, until released.
@@ -1688,8 +1705,28 @@ impl Prepare for CancelPrepare {
                 call_signal: None,
             });
         }
+        let mut hold = hold;
+        let (finish, hung_load) = match finish {
+            Finish::LoadHangs {
+                stall,
+                loading,
+                release,
+            } => {
+                hold.load_stall = stall;
+                (Finish::Logs, Some(Mutex::new((loading, release))))
+            }
+            other => (other, None),
+        };
         let start: StartFn = Box::new(move |svc: &Services| {
-            let factory: LiveAsrFactory = Box::new(|_, _| Ok(None));
+            let factory: LiveAsrFactory = match hung_load {
+                Some(hung) => Box::new(move |_, _| {
+                    let hung = hung.lock().unwrap();
+                    let _ = hung.0.send(());
+                    let _ = hung.1.recv();
+                    Err(RuntimeError::Internal("released"))
+                }),
+                None => Box::new(|_, _| Ok(None)),
+            };
             start_live(
                 UntilStopped {
                     inner: replay(0.5, false),
@@ -1736,7 +1773,35 @@ impl Prepare for CancelPrepare {
                     let reason = SkipReason::NotRequested;
                     outcome_of(post, SummaryResult::Skipped { reason })
                 }
-                Finish::LiveHangs { .. } => unreachable!("started above"),
+                Finish::AfterHangs {
+                    in_step,
+                    inside,
+                    release,
+                } => {
+                    if in_step {
+                        progress(HostStep::PostStarting {
+                            fallbacks: &[],
+                            work: &[],
+                            asr_backend: BackendKind::Fake,
+                        });
+                    }
+                    inside.send(()).unwrap();
+                    let _ = release.recv();
+                    let cancelled = cancel.is_cancelled();
+                    log.lock()
+                        .unwrap()
+                        .push(format!("{id} returned, cancelled {cancelled}"));
+                    outcome_of(Ok(HostPost::Skipped), SummaryResult::Cancelled)
+                }
+                Finish::Logs => outcome_of(
+                    Ok(HostPost::Skipped),
+                    SummaryResult::Skipped {
+                        reason: SkipReason::NotRequested,
+                    },
+                ),
+                Finish::LiveHangs { .. } | Finish::LoadHangs { .. } => {
+                    unreachable!("taken above")
+                }
             }
         });
         Ok(Prepared {
@@ -1898,6 +1963,293 @@ fn meeting_with_a_stalled_live_catch_up_is_left_and_the_next_one_goes() {
         "the first never ran anything after its recording"
     );
     drop(release_tx);
+}
+
+/// Short bounds for the work after the meeting: only work that never answers runs into them.
+const SHORT_AFTER: AfterBounds = AfterBounds {
+    load: Duration::from_millis(200),
+    step: Duration::from_millis(200),
+};
+
+/// Waits until the log holds `line`: a thread left behind ends on its own.
+fn logged_eventually(prepare: &CancelPrepare, line: &str) {
+    let deadline = Instant::now() + MEET_GUARD;
+    while !prepare.logged().iter().any(|l| l == line) {
+        assert!(Instant::now() < deadline, "never logged {line}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// T9.22b: work after the meeting that stops answering (in a final-pass step, or while it loads)
+/// is left: its banner and a failed summary event, the meeting unprocessed, the driver free while
+/// the thread is still stuck, and its token cancelled so it stops when its call returns.
+fn after_that_stops_answering_is_left(in_step: bool) {
+    let dir = TempDir::new("after-stalls");
+    let svc = services(&dir);
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::AfterHangs {
+        in_step,
+        inside: inside_tx,
+        release: release_rx,
+    }]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let d = d.with_after_bounds(SHORT_AFTER);
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert_eq!(
+        result_of(&events, &meeting),
+        SummaryEvent::Failed {
+            message: POST_STALLED_MESSAGE.into(),
+            retryable: false,
+        }
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            MeetingEvent::Warning { key, message, .. }
+                if key == POST_STALLED_KEY && message == POST_STALLED_BANNER
+        )),
+        "{events:?}"
+    );
+    // Still stuck, and nothing waits for it.
+    d.join();
+    assert_eq!(d.phase(), DriverPhase::Idle);
+    assert_eq!(prepare.logged(), [format!("{meeting} starts")]);
+    assert_eq!(recordings_of(&svc, &meeting), 1, "the audio stays");
+    activity_becomes(
+        &svc,
+        &meeting,
+        earshot_runtime::MeetingActivity::Unprocessed,
+    );
+    release.send(()).unwrap();
+    logged_eventually(&prepare, &format!("{meeting} returned, cancelled true"));
+}
+
+#[test]
+fn meeting_final_pass_step_that_stops_answering_is_left() {
+    after_that_stops_answering_is_left(true);
+}
+
+#[test]
+fn meeting_final_pass_load_that_stops_answering_is_left() {
+    after_that_stops_answering_is_left(false);
+}
+
+#[test]
+fn meeting_live_model_load_that_never_returns_leaves_the_meeting_unprocessed() {
+    // T9.22b: a live model load on the hold thread still running at the end is left after its
+    // bound; the meeting is left unprocessed before its turn, as for a stalled catch-up.
+    let dir = TempDir::new("load-stalls");
+    let svc = services(&dir);
+    let (loading_tx, loading) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::LoadHangs {
+        stall: Duration::from_millis(200),
+        loading: loading_tx,
+        release: release_rx,
+    }]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    loading.recv_timeout(MEET_GUARD).unwrap();
+    d.stop().unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert_eq!(
+        result_of(&events, &meeting),
+        SummaryEvent::Failed {
+            message: LIVE_LOAD_STALLED_MESSAGE.into(),
+            retryable: false,
+        }
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, MeetingEvent::Warning { key, .. } if key == "live-load-stalled")),
+        "{events:?}"
+    );
+    assert!(
+        prepare.logged().is_empty(),
+        "nothing ran after the recording"
+    );
+    assert_eq!(recordings_of(&svc, &meeting), 1, "the audio stays");
+    activity_becomes(
+        &svc,
+        &meeting,
+        earshot_runtime::MeetingActivity::Unprocessed,
+    );
+    drop(release);
+}
+
+/// T9.22: while the first meeting's thread is still stuck (its `release` held back), a second
+/// meeting records, takes its turn and finishes: nothing the stuck thread holds keeps the queue.
+/// `stuck` waits until the first meeting is inside its stuck call.
+fn a_stuck_meeting_never_blocks_the_next(first: Finish, stuck: impl FnOnce(), expected: &str) {
+    let dir = TempDir::new("stuck-first");
+    let svc = services(&dir);
+    let (open, gate) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![first, Finish::Gate(gate)]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let d = d.with_after_bounds(SHORT_AFTER);
+    let first = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    stuck();
+    d.stop().unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&first, e));
+    assert_eq!(
+        result_of(&events, &first),
+        SummaryEvent::Failed {
+            message: expected.into(),
+            retryable: false,
+        }
+    );
+
+    let second = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    open.send(()).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&second, e));
+    d.join();
+    assert!(matches!(
+        result_of(&events, &second),
+        SummaryEvent::Skipped { .. }
+    ));
+    assert!(
+        prepare.logged().ends_with(&[
+            format!("{second} starts"),
+            format!("{second} ends, cancelled false")
+        ]),
+        "{:?}",
+        prepare.logged()
+    );
+    assert!(
+        !prepare
+            .logged()
+            .iter()
+            .any(|l| l.starts_with(&format!("{first} returned"))),
+        "the first is still stuck"
+    );
+}
+
+#[test]
+fn meeting_with_a_final_pass_step_that_never_returns_never_blocks_the_next() {
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    a_stuck_meeting_never_blocks_the_next(
+        Finish::AfterHangs {
+            in_step: true,
+            inside: inside_tx,
+            release: release_rx,
+        },
+        || {},
+        POST_STALLED_MESSAGE,
+    );
+    // Its call came, and it is released only now.
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    drop(release);
+}
+
+#[test]
+fn meeting_with_a_final_pass_load_that_never_returns_never_blocks_the_next() {
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    a_stuck_meeting_never_blocks_the_next(
+        Finish::AfterHangs {
+            in_step: false,
+            inside: inside_tx,
+            release: release_rx,
+        },
+        || {},
+        POST_STALLED_MESSAGE,
+    );
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    drop(release);
+}
+
+#[test]
+fn meeting_with_a_live_model_load_that_never_returns_never_blocks_the_next() {
+    // The stuck hold thread holds the first meeting's ticket: only ending it explicitly lets the
+    // second take its turn.
+    let (loading_tx, loading) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    a_stuck_meeting_never_blocks_the_next(
+        Finish::LoadHangs {
+            stall: Duration::from_millis(200),
+            loading: loading_tx,
+            release: release_rx,
+        },
+        || loading.recv_timeout(MEET_GUARD).unwrap(),
+        LIVE_LOAD_STALLED_MESSAGE,
+    );
+    drop(release);
+}
+
+#[test]
+fn meeting_after_watch_rule_is_no_sign_of_life_for_the_phase_bound() {
+    // T9.22b, clock-free: the bound of the phase the work is in, counted from its last step or
+    // token poll; the summary is watched elsewhere.
+    let s = Duration::from_secs;
+    let bounds = AfterBounds::default();
+    assert_eq!((bounds.load, bounds.step), (s(600), s(120)));
+    let mut w = AfterWatch::new(bounds);
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0)));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(599)));
+    assert!(
+        w.stalled(AfterPhase::Loading, 0, 0, s(600)),
+        "a load that never returns"
+    );
+    // A step starts the step bound afresh, whatever time it came at.
+    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(700)));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(819)));
+    assert!(
+        w.stalled(AfterPhase::Steps, 1, 0, s(820)),
+        "a step that never returns"
+    );
+    // Any sign of life starts it again: a poll of the token, a step.
+    let mut w = AfterWatch::new(bounds);
+    for (k, (steps, polls)) in [(1, 0), (1, 1), (2, 1)].into_iter().enumerate() {
+        let at = s(1000 * k as u64);
+        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at));
+        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at + s(119)));
+    }
+    // A decode that polls slowly but steadily is never cut, however long it takes.
+    let mut slow = AfterWatch::new(bounds);
+    for minute in 0..600u64 {
+        assert!(!slow.stalled(AfterPhase::Steps, 1, minute, s(60 * minute)));
+    }
+    // Nor is a summary, whatever it does: its own watch decides.
+    let mut summary = AfterWatch::new(bounds);
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0)));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400)));
+}
+
+#[test]
+fn meeting_after_phase_follows_the_host_steps() {
+    let post = Ok(HostPost::Skipped);
+    assert_eq!(
+        AfterPhase::of(&HostStep::PostLoaded { missing: &[] }),
+        AfterPhase::Loading
+    );
+    let starting = HostStep::PostStarting {
+        fallbacks: &[],
+        work: &[],
+        asr_backend: BackendKind::Fake,
+    };
+    assert_eq!(AfterPhase::of(&starting), AfterPhase::Steps);
+    assert_eq!(
+        AfterPhase::of(&HostStep::Post(PostStage::EchoChecked {
+            elapsed: Duration::ZERO
+        })),
+        AfterPhase::Steps
+    );
+    assert_eq!(
+        AfterPhase::of(&HostStep::PostFinished(&post)),
+        AfterPhase::Summary
+    );
+    assert_eq!(
+        AfterPhase::of(&HostStep::SummaryStarting),
+        AfterPhase::Summary
+    );
 }
 
 #[test]

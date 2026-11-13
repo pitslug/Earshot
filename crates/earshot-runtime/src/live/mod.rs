@@ -146,8 +146,8 @@ mod worker;
 
 use echo::{LiveEchoFilter, Released};
 pub use hold::{
-    CAUGHT_UP_BACKLOG, HeldSpeakerFactory, HoldGates, HoldNotes, HoldReason, LiveHold,
-    LiveTranscriptState, SPEAKER_HANDOVER_MARGIN,
+    CAUGHT_UP_BACKLOG, HOLD_LOAD_STALL, HeldSpeakerFactory, HoldGates, HoldNotes, HoldReason,
+    LiveHold, LiveTranscriptState, SPEAKER_HANDOVER_MARGIN,
 };
 use hold::{HoldState, held_entry};
 use preview::PreviewState;
@@ -620,6 +620,11 @@ pub enum RuntimeWarning {
         /// Track.
         track: TrackId,
     },
+    /// At the end a held session's model load had not returned within [`LiveHold::load_stall`],
+    /// so its thread was left, never joined (T9.22b): the recording is saved and the session ends
+    /// without its live transcript. Hosts leave the meeting unprocessed, as for
+    /// [`RuntimeWarning::LiveCatchUpStalled`]: the final pass loads the same models.
+    LiveLoadStalled,
     /// Storing a row failed (a live segment, or the meeting's duration at the end).
     Persistence(String),
     /// A held session's live transcription could not start (T9.1l). The meeting goes on

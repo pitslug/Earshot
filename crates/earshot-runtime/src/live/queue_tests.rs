@@ -1,8 +1,8 @@
 //! T9.1l: a recording starts at once and its live work takes its turn. Replays and fakes only.
 //! Every name contains `meeting_queue`.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::{Mutex, mpsc};
 use std::time::Instant;
 
 use earshot_core::asr::{CancelToken, Word};
@@ -830,6 +830,104 @@ fn meeting_queue_quitting_during_a_hold_keeps_the_audio_and_leaves_the_meeting_u
         svc.meeting_activity(meeting).unwrap(),
         Some(MeetingActivity::Unprocessed)
     );
+}
+
+/// A factory whose model load never returns until the test releases it, polling nothing; says
+/// when it is loading (a rendezvous, so the stop comes during the load).
+fn load_that_hangs(loading: Arc<AtomicBool>, release: mpsc::Receiver<()>) -> LiveAsrFactory {
+    let release = Mutex::new(release);
+    Box::new(move |_, _| {
+        loading.store(true, Ordering::SeqCst);
+        let _ = release.lock().unwrap().recv();
+        Err(RuntimeError::Internal("released"))
+    })
+}
+
+/// A held session stopped while its live model load hangs, its hold's load bound `stall`.
+fn stop_during_a_hung_load(
+    svc: &Services,
+    stall: Duration,
+    seed: u64,
+) -> (LiveSession, Receiver<RuntimeEvent>, mpsc::Sender<()>) {
+    let gates = held_gates();
+    gates.transcription.store(true, Ordering::SeqCst);
+    let (source, handles) = source_of(&scene());
+    let loading = Arc::new(AtomicBool::new(false));
+    let (release, released) = mpsc::channel();
+    let mut config = held_config(gates);
+    if let Some(hold) = &mut config.hold {
+        hold.load_stall = stall;
+    }
+    let mut session = start_live(
+        source,
+        svc.clone(),
+        config,
+        Some(load_that_hangs(Arc::clone(&loading), released)),
+        Box::new(ChaCha8Rng::seed_from_u64(seed)),
+    )
+    .unwrap();
+    let events = session.take_events().unwrap();
+    wait_for(&handles.delivered);
+    wait_for(&loading);
+    session.request_stop();
+    (session, events, release)
+}
+
+/// T9.22b: a live model load that never returns cannot keep the session from ending: after the
+/// hold's load bound with nothing from the thread, the thread is left and the session ends with
+/// its recording saved and the stall in its warnings and outcome.
+#[test]
+fn meeting_queue_a_live_model_load_that_never_returns_is_left_at_the_end() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (session, events, release) = stop_during_a_hung_load(&svc, Duration::from_millis(200), 237);
+    let meeting = session.meeting();
+    let outcome = session.wait().unwrap();
+    assert_recorded_whole(&svc, meeting, &scene());
+    assert_eq!(outcome.problems, [RuntimeWarning::LiveLoadStalled]);
+    let seen: Vec<RuntimeEvent> = events.try_iter().collect();
+    let saved = seen
+        .iter()
+        .position(|e| matches!(e, RuntimeEvent::RecordingSaved { .. }))
+        .expect("saved");
+    let warned = seen
+        .iter()
+        .position(|e| *e == RuntimeEvent::Warning(RuntimeWarning::LiveLoadStalled))
+        .expect("warned");
+    assert!(saved < warned, "saved before the wait: {seen:?}");
+    assert!(matches!(seen.last(), Some(RuntimeEvent::Ended(_))));
+    // The load finally returning, long after, changes nothing.
+    drop(release);
+}
+
+/// T9.22b: the catch-up's cancel ends the wait for a load in progress at once, whatever the bound,
+/// and a cancel is the user's, never a stall.
+#[test]
+fn meeting_queue_a_cancelled_catch_up_leaves_a_load_in_progress_unreported() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (session, events, release) = stop_during_a_hung_load(&svc, Duration::from_secs(3600), 238);
+    until(&events, "the saved recording", |e| {
+        matches!(e, RuntimeEvent::RecordingSaved { .. })
+    });
+    session.cancel_catch_up();
+    let outcome = session.wait().unwrap();
+    assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+    drop(release);
+}
+
+/// A slow load that returns within the bound is waited for and joined, never reported.
+#[test]
+fn meeting_queue_a_slow_live_model_load_is_waited_for() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (session, events, release) = stop_during_a_hung_load(&svc, Duration::from_secs(3600), 239);
+    until(&events, "the saved recording", |e| {
+        matches!(e, RuntimeEvent::RecordingSaved { .. })
+    });
+    release.send(()).unwrap();
+    let outcome = session.wait().unwrap();
+    assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
 }
 
 /// A backlog never delays saving: the decode is held back past the recording's save.

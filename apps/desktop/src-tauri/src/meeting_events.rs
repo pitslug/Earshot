@@ -866,6 +866,13 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
                 ),
             )
         }
+        RuntimeWarning::LiveLoadStalled => warning(
+            "live-load-stalled".into(),
+            WarningKind::Backend,
+            "The live transcription model did not finish loading after the recording, so Earshot \
+             left this meeting unprocessed. The recording is kept."
+                .into(),
+        ),
         RuntimeWarning::DeviceStoppedAnswering => warning(
             "device-stopped-answering".into(),
             WarningKind::Audio,

@@ -436,6 +436,7 @@ fn meeting_events_every_runtime_warning_has_a_banner_with_plain_copy() {
         RuntimeWarning::LiveCatchUpStalled {
             track: TrackId::Reference,
         },
+        RuntimeWarning::LiveLoadStalled,
     ];
     let kinds: Vec<WarningKind> = warnings
         .iter()
@@ -467,6 +468,7 @@ fn meeting_events_every_runtime_warning_has_a_banner_with_plain_copy() {
             WarningKind::Recording,
             WarningKind::Audio,
             WarningKind::TrackBehind,
+            WarningKind::Backend,
         ]
     );
     let (_, _, bt) = banner(&warnings[0]);

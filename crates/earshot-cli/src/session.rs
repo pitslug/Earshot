@@ -604,6 +604,9 @@ pub(crate) fn format_warning(w: &RuntimeWarning) -> String {
             "warning: the {} live transcript stopped answering after the recording and was left",
             track_name(*track)
         ),
+        RuntimeWarning::LiveLoadStalled => {
+            "warning: a live model load did not return after the recording and was left".to_owned()
+        }
         RuntimeWarning::DeviceStoppedAnswering => "warning: the audio device stopped answering \
              when capture was stopped; the recording was saved without it"
             .to_owned(),

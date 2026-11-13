@@ -19,9 +19,12 @@
 //!   saved at once and the final pass transcribes the whole meeting in its turn. A source that runs
 //!   out by itself (a replay, [`EndReason::Finished`]) has nobody waiting for it, and its hold runs
 //!   to the end, so a replay faster than a model load still has its live pass.
+//! - A load still in progress at the end is waited for, up to [`LiveHold::load_stall`] with
+//!   nothing from the thread or until the catch-up is cancelled; then the thread is left, never
+//!   joined, so a load that never returns cannot keep the session from ending (T9.22b).
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -35,7 +38,7 @@ use earshot_core::pipeline::FinalPassTrack;
 
 use super::speaker_thread::{SpeakerThread, SpeakerTrack};
 use super::summary_thread::SummaryThread;
-use super::worker::LiveWorker;
+use super::worker::{LiveWorker, StallWatch};
 use super::{
     BuiltTrack, LiveAsrFactory, LiveSpeakers, LiveTranscription, RuntimeEvent, RuntimeWarning,
     SPEAKER_MAX_BUFFER, STRETCH_MAX_BACKLOG, Session, build_track, slot,
@@ -50,6 +53,15 @@ pub const CAUGHT_UP_BACKLOG: Duration = Duration::from_secs(5);
 /// and a hold of the whole `SPEAKER_MAX_BUFFER` would put it over with the next packet. A judgement:
 /// time for the first batches to go through.
 pub const SPEAKER_HANDOVER_MARGIN: Duration = Duration::from_secs(30);
+
+/// How long the end of a held session waits for a model load in progress on the hold thread
+/// before it leaves the thread ([`LiveHold::load_stall`], T9.22b). A judgement, the same as a GPU
+/// summary load's (`summary::GPU_LOAD_LIMIT`): a load reports nothing until it returns and may
+/// first read gigabytes from a slow disk, so only a load that never returns goes this long.
+pub const HOLD_LOAD_STALL: Duration = Duration::from_secs(600);
+
+/// How often the end of a held session looks at the hold thread.
+const HOLD_WATCH_POLL: Duration = Duration::from_millis(50);
 
 /// When a held session's live work may start. Implementations block, and return `false` as soon as
 /// `cancel` is set (the session is ending, or no longer wants the work).
@@ -109,6 +121,11 @@ pub struct LiveHold {
     pub max_held: Duration,
     /// The most audio a track holds for speaker work that has not started.
     pub max_speaker_buffer: Duration,
+    /// At the end, a hold thread that has not finished this long after it was told to stop (a
+    /// model load in progress, which polls nothing) is left, never joined, and
+    /// [`super::RuntimeWarning::LiveLoadStalled`] says so (T9.22b). Each message from the thread
+    /// (a load that returned) starts the bound again. [`HOLD_LOAD_STALL`] in production.
+    pub load_stall: Duration,
 }
 
 impl LiveHold {
@@ -121,6 +138,7 @@ impl LiveHold {
             notes: Arc::default(),
             max_held: STRETCH_MAX_BACKLOG,
             max_speaker_buffer: SPEAKER_MAX_BUFFER.saturating_sub(SPEAKER_HANDOVER_MARGIN),
+            load_stall: HOLD_LOAD_STALL,
         }
     }
 }
@@ -131,6 +149,7 @@ impl std::fmt::Debug for LiveHold {
             .field("speakers", &self.speakers.is_some())
             .field("max_held", &self.max_held)
             .field("max_speaker_buffer", &self.max_speaker_buffer)
+            .field("load_stall", &self.load_stall)
             .finish_non_exhaustive()
     }
 }
@@ -269,6 +288,43 @@ impl HoldWork {
             out.push(build_track(*track, asr, &self.transcription)?);
         }
         Ok(out)
+    }
+}
+
+/// How the wait for a stopped hold thread ended ([`Session::end_hold`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoldThreadEnd {
+    /// It ended.
+    Ended,
+    /// The catch-up was cancelled first.
+    Cancelled,
+    /// Nothing came from it for the bound: a load that does not return.
+    Stalled,
+}
+
+/// Waits for the hold thread, already told to stop, to end: its sender goes when it does. What it
+/// still sends (a load that returned) is dropped and counts as a sign of life for the bound
+/// ([`StallWatch`], the live catch-up's rule).
+fn wait_for_hold_thread(
+    from: &Receiver<FromHold>,
+    bound: Duration,
+    cancel: &CancelToken,
+) -> HoldThreadEnd {
+    let mut watch = StallWatch::new(bound);
+    let started = Instant::now();
+    let mut messages = 0u64;
+    loop {
+        match from.recv_timeout(HOLD_WATCH_POLL) {
+            Ok(_) => messages += 1,
+            Err(RecvTimeoutError::Disconnected) => return HoldThreadEnd::Ended,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if cancel.is_cancelled() {
+            return HoldThreadEnd::Cancelled;
+        }
+        if watch.stalled([messages, 0, 0], started.elapsed()) {
+            return HoldThreadEnd::Stalled;
+        }
     }
 }
 
@@ -650,7 +706,10 @@ where
 
     /// Ends the hold at the end of capture: work that has not started is abandoned. Waits for the
     /// hold thread, so no model load outlives the session (a final pass loads next; a load
-    /// in progress cannot be interrupted). What it loaded goes with it.
+    /// in progress cannot be interrupted). What it loaded goes with it. The wait gives way to the
+    /// catch-up's cancel ([`super::LiveSession::cancel_catch_up`]) and ends after
+    /// [`LiveHold::load_stall`] with nothing from the thread (T9.22b): either way the thread is
+    /// left to end on its own, never joined, and only the stall is reported.
     pub(super) fn end_hold(&mut self) {
         // Nobody stopped a source that ran out by itself: its work goes on (module docs). Replays
         // only: this wait cannot be cancelled and lasts as long as the gates stay closed, which a
@@ -677,7 +736,19 @@ where
         // Unstarted, it has a factory that nothing will ever call.
         hold.work = None;
         if let Some(thread) = hold.thread.take() {
-            let _ = thread.join();
+            match wait_for_hold_thread(&hold.from, hold.hold.load_stall, &self.catch_up) {
+                HoldThreadEnd::Ended => {
+                    let _ = thread.join();
+                }
+                // Left running: it ends by itself once its load returns, and what it loaded goes
+                // nowhere (the receiver goes with `hold`).
+                HoldThreadEnd::Cancelled => drop(thread),
+                HoldThreadEnd::Stalled => {
+                    drop(thread);
+                    self.warn(RuntimeWarning::LiveLoadStalled);
+                    self.problems.push(RuntimeWarning::LiveLoadStalled);
+                }
+            }
         }
         for note in hold.take_notes() {
             self.warn(note);

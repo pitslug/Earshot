@@ -1505,6 +1505,7 @@ mod local {
         let c = config();
         assert_eq!(c.stall_limit, Duration::from_secs(180));
         assert_eq!(c.load_stall_limit, Duration::from_secs(600));
+        assert_eq!(c.cpu_load_limit, Duration::from_secs(600));
         let limit = Duration::from_secs(180);
         assert!(!has_stalled(Duration::from_secs(179), limit, false));
         assert!(has_stalled(limit, limit, false));
@@ -1575,6 +1576,122 @@ mod local {
         assert_eq!(local_report(&out).backend, LlamaBackend::Cpu);
         assert_eq!(*shared.load_gpu.lock().unwrap(), [true, false]);
         stuck.release();
+    }
+
+    /// What a CPU try does in the T9.22b tests.
+    enum OnCpu {
+        /// The load never returns until released.
+        StuckLoad(Stuck),
+        /// The load returns at once; each request then takes this long with no progress reported.
+        QuietRun(Duration),
+    }
+
+    /// A model whose requests each take a while and report nothing meanwhile.
+    struct QuietModel(Duration, FakeModel);
+
+    impl Generate for QuietModel {
+        fn context_tokens(&self) -> usize {
+            self.1.context_tokens()
+        }
+
+        fn prompt_tokens(&self, m: &[ChatMessage], prefix: &str) -> Result<usize, LlmError> {
+            self.1.prompt_tokens(m, prefix)
+        }
+
+        fn generate(
+            &mut self,
+            m: &[ChatMessage],
+            prefix: &str,
+            grammar: &str,
+            max_tokens: usize,
+            cancel: &CancelToken,
+        ) -> Result<Generation, LlmError> {
+            std::thread::sleep(self.0);
+            self.1.generate(m, prefix, grammar, max_tokens, cancel)
+        }
+    }
+
+    struct CpuLoader(OnCpu, Arc<Shared>);
+
+    impl LoadLocal for CpuLoader {
+        fn load(&self, config: &LocalSummaryConfig) -> Result<LoadedModel, RuntimeError> {
+            self.1.load_gpu.lock().unwrap().push(config.gpu);
+            let fake = FakeModel(Arc::clone(&self.1));
+            let model: Box<dyn Generate> = match &self.0 {
+                OnCpu::StuckLoad(s) => {
+                    s.hold();
+                    Box::new(fake)
+                }
+                OnCpu::QuietRun(d) => Box::new(QuietModel(*d, fake)),
+            };
+            Ok(LoadedModel {
+                heartbeat: Heartbeat::default(),
+                model,
+                backend: LlamaBackend::Cpu,
+                load_time: Duration::from_millis(5),
+            })
+        }
+    }
+
+    /// A CPU summary with all its limits at 300 ms.
+    fn cpu_stall_service(on_cpu: OnCpu) -> SummaryService {
+        let mut cfg = config();
+        cfg.stall_limit = Duration::from_millis(300);
+        cfg.load_stall_limit = Duration::from_millis(300);
+        cfg.cpu_load_limit = Duration::from_millis(300);
+        let flag: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        SummaryService::local_flagged(
+            &cfg,
+            Box::new(CpuLoader(on_cpu, Arc::new(Shared::default()))),
+            flag,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn summary_a_cpu_load_that_never_returns_fails_the_summary_and_is_left() {
+        // T9.22b: a load polls nothing, so it has its own bound; past it the thread is left behind
+        // and the summary fails, so the meeting's turn passes to the next.
+        let dir = TempDir::new("summary");
+        let (svc, _) = services(&dir);
+        let id = meeting(&svc, "", 181);
+        let stuck = Stuck::default();
+        let service = cpu_stall_service(OnCpu::StuckLoad(stuck.clone()));
+        let result = service.summarize(
+            &svc,
+            id,
+            &mut ChaCha8Rng::seed_from_u64(182),
+            &CancelToken::new(),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(RuntimeError::LocalSummary(LocalSummaryError::LoadStalled))
+            ),
+            "{result:?}"
+        );
+        assert!(stuck.1.load(Ordering::SeqCst), "it was in the load");
+        assert!(svc.store().summaries(id).unwrap().is_empty());
+        stuck.release();
+    }
+
+    #[test]
+    fn summary_a_slow_cpu_run_is_never_cut() {
+        // Negative control: each request is quiet for three times the limits, and only the load
+        // is watched on the CPU.
+        let dir = TempDir::new("summary");
+        let (svc, _) = services(&dir);
+        let id = meeting(&svc, "", 183);
+        let service = cpu_stall_service(OnCpu::QuietRun(Duration::from_millis(900)));
+        let out = service
+            .summarize(
+                &svc,
+                id,
+                &mut ChaCha8Rng::seed_from_u64(184),
+                &CancelToken::new(),
+            )
+            .unwrap();
+        assert_eq!(local_report(&out).backend, LlamaBackend::Cpu);
     }
 
     #[test]

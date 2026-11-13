@@ -175,6 +175,11 @@ pub const GPU_STALL_LIMIT: Duration = Duration::from_secs(180);
 /// 5 GB from a slow disk.
 pub const GPU_LOAD_LIMIT: Duration = Duration::from_secs(600);
 
+/// The limit for any other load (T9.22b), a judgement, the same as [`GPU_LOAD_LIMIT`] for the same
+/// reason: it reports nothing until it ends and may first read gigabytes from a slow disk. Only a
+/// load is bounded on the CPU; a slow CPU run is never cut.
+pub const CPU_LOAD_LIMIT: Duration = Duration::from_secs(600);
+
 /// How long a cancelled run may stay silent before it is left behind, so a stop does not wait
 /// for the whole stall limit.
 const STALL_CANCEL_GRACE: Duration = Duration::from_secs(30);
@@ -225,6 +230,10 @@ pub struct LocalSummaryConfig {
     pub stall_limit: Duration,
     /// The same for the load itself, which reports no progress ([`GPU_LOAD_LIMIT`]).
     pub load_stall_limit: Duration,
+    /// The bound of every other load (on the CPU, or a GPU load with no fallback): one that has
+    /// not returned by then is left behind and the summary fails with
+    /// [`LocalSummaryError::LoadStalled`] ([`CPU_LOAD_LIMIT`], T9.22b).
+    pub cpu_load_limit: Duration,
     /// With `gpu`: the program that runs the model, so a stall or a crash costs only this
     /// summary ([`crate::summary_child`]). `None`: in this process.
     pub gpu_child: Option<GpuChild>,
@@ -252,6 +261,7 @@ impl LocalSummaryConfig {
             refuse_gpus: Vec::new(),
             stall_limit: GPU_STALL_LIMIT,
             load_stall_limit: GPU_LOAD_LIMIT,
+            cpu_load_limit: CPU_LOAD_LIMIT,
             gpu_child: None,
             models: None,
         }
@@ -274,6 +284,11 @@ pub enum LocalSummaryError {
     /// The GPU stopped making progress, in this summary or an earlier one of the session: the
     /// stuck call is left behind and the summary runs on the CPU (T8.4ab).
     GpuStalled,
+    /// A load not watched as a GPU try (on the CPU) had not returned after
+    /// [`LocalSummaryConfig::cpu_load_limit`]: its thread is left behind, as a stalled GPU's is,
+    /// and the summary fails (T9.22b). A slow CPU run is never cut; only the load, which reports
+    /// nothing until it returns, has a bound.
+    LoadStalled,
     /// The GPU's child process stopped making progress and was killed, which freed the card:
     /// this summary runs on the CPU and the next one tries the card again (T9.3).
     GpuChildStalled,
@@ -317,6 +332,7 @@ impl fmt::Display for LocalSummaryError {
                 )
             }
             Self::GpuStalled => f.write_str("the GPU stopped making progress"),
+            Self::LoadStalled => f.write_str("loading the summary model did not finish"),
             Self::GpuChildStalled => f.write_str(CHILD_STALLED),
             Self::GpuChildDied { why } => write!(f, "the GPU's summary process died: {why}"),
             Self::CudaFilesChanged { why } => {
@@ -1232,13 +1248,20 @@ fn has_stalled(silent: Duration, limit: Duration, cancelled: bool) -> bool {
 /// One try on a thread of its own. A GPU try that can fall back is watched: with no progress
 /// for its limit the thread is left behind (`Attempt::Stalled`) with its token cancelled, so
 /// it stops and frees the model if the call ever returns, and its answer goes nowhere. Nothing
-/// on that thread touches the store. Only the GPU is watched: a slow CPU is not a stall.
+/// on that thread touches the store. Only the GPU's run is watched: a slow CPU is not a stall.
+/// Every other try's load is watched too (T9.22b): one that has not returned after
+/// [`LocalSummaryConfig::cpu_load_limit`] is left behind the same way and the summary fails with
+/// [`LocalSummaryError::LoadStalled`] (or is cancelled, when it was).
 fn attempt_local(job: LocalJob, cancel: &CancelToken) -> Result<Attempt, RuntimeError> {
     let (tx, rx) = std::sync::mpsc::channel();
     let token = CancelToken::new();
     let options = options_of(&job.config, &token);
-    let mut limit =
-        (job.config.gpu && job.config.cpu_fallback).then_some(job.config.load_stall_limit);
+    let gpu_watched = job.config.gpu && job.config.cpu_fallback;
+    let mut limit = Some(if gpu_watched {
+        job.config.load_stall_limit
+    } else {
+        job.config.cpu_load_limit
+    });
     let run_limit = job.config.stall_limit;
     let worker = std::thread::Builder::new()
         .name("earshot-summary".into())
@@ -1276,7 +1299,7 @@ fn attempt_local(job: LocalJob, cancel: &CancelToken) -> Result<Attempt, Runtime
         match rx.recv_timeout(STALL_POLL) {
             Ok(Progress::Loaded(backend, beat)) => {
                 // Refused and retried on the CPU, or a CPU try: nothing to watch from here.
-                limit = (limit.is_some() && backend != LlamaBackend::Cpu).then_some(run_limit);
+                limit = (gpu_watched && backend != LlamaBackend::Cpu).then_some(run_limit);
                 last_count = beat.count();
                 heartbeat = Some(beat);
                 since = std::time::Instant::now();
@@ -1303,7 +1326,15 @@ fn attempt_local(job: LocalJob, cancel: &CancelToken) -> Result<Attempt, Runtime
             && has_stalled(since.elapsed(), limit, cancel.is_cancelled())
         {
             token.cancel();
-            return Ok(Attempt::Stalled);
+            if gpu_watched {
+                return Ok(Attempt::Stalled);
+            }
+            // Only a load is watched here: the thread is left as a stalled GPU's is.
+            return Err(RuntimeError::LocalSummary(if cancel.is_cancelled() {
+                LocalSummaryError::Run(SummaryFailure::Cancelled)
+            } else {
+                LocalSummaryError::LoadStalled
+            }));
         }
     }
 }
