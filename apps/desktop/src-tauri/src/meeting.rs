@@ -581,10 +581,12 @@ pub struct AfterBounds {
     /// (`LiveConfig::catch_up_stall`), since every decode polls its token many times a minute and
     /// no single engine call may take that long.
     pub step: Duration,
-    /// Once the meeting is cancelled, in either of those phases: work that answers stops at its
-    /// next poll, so silence this long after the cancel (or after its last sign of life, if later)
-    /// is a stall, without waiting for the phase's bound. 30 seconds, a judgement: the grace a
-    /// cancelled local summary gets (`summary::STALL_CANCEL_GRACE`).
+    /// Once the meeting is cancelled and a step has polled its token since (so it has seen the
+    /// cancel): work that answers then returns, so silence this long after that poll is a stall,
+    /// without waiting for the step bound. Never in `load`: a model load polls nothing and cannot
+    /// be interrupted, and a step that has not polled since the cancel may be inside one long
+    /// engine call; both keep their phase's bound. 30 seconds, a judgement: the grace a cancelled
+    /// local summary gets (`summary::STALL_CANCEL_GRACE`).
     pub cancelled: Duration,
 }
 
@@ -626,8 +628,8 @@ struct AfterWatch {
     bounds: AfterBounds,
     sign: Option<[u64; 2]>,
     since: Duration,
-    /// When the cancel was first seen.
-    cancelled_at: Option<Duration>,
+    /// The work's polls when the cancel was first seen.
+    polls_at_cancel: Option<u64>,
 }
 
 impl AfterWatch {
@@ -636,7 +638,7 @@ impl AfterWatch {
             bounds,
             sign: None,
             since: Duration::ZERO,
-            cancelled_at: None,
+            polls_at_cancel: None,
         }
     }
 
@@ -651,8 +653,8 @@ impl AfterWatch {
         now: Duration,
         cancelled: bool,
     ) -> bool {
-        if cancelled && self.cancelled_at.is_none() {
-            self.cancelled_at = Some(now);
+        if cancelled && self.polls_at_cancel.is_none() {
+            self.polls_at_cancel = Some(polls);
         }
         let sign = [steps, polls];
         if self.sign != Some(sign) {
@@ -665,9 +667,11 @@ impl AfterWatch {
             AfterPhase::Steps => self.bounds.step,
             AfterPhase::Summary => return false,
         };
-        let graced = self
-            .cancelled_at
-            .is_some_and(|at| now.saturating_sub(self.since.max(at)) >= self.bounds.cancelled);
+        // Counted from the last sign of life, which is that poll or later.
+        let polled_since_cancel = self.polls_at_cancel.is_some_and(|at| polls > at);
+        let graced = phase == AfterPhase::Steps
+            && polled_since_cancel
+            && now.saturating_sub(self.since) >= self.bounds.cancelled;
         graced || now.saturating_sub(self.since) >= bound
     }
 }
@@ -1071,7 +1075,7 @@ fn run(
         HostOutcome::cancelled(svc, id)
     } else {
         let watched = run_after_watched(
-            with_pass(prepared.after, flags.pass.job_beside()),
+            with_pass(prepared.after, flags.pass.after_meeting_beside()),
             svc,
             &outcome,
             &cancel,
