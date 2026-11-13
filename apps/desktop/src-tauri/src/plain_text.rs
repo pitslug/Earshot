@@ -274,11 +274,28 @@ pub fn names_developer_tool(text: &str) -> bool {
     DEVELOPER_WORDS.iter().any(|w| text.contains(w))
 }
 
-/// `text`, or [`MODELS_NEEDED`] when it names a developer tool.
+/// Developer words that mean a download is missing (a fetch command, the NPU conversion, the
+/// models folder setting).
+const DOWNLOAD_WORDS: &[&str] = &["fetch-models", "qnn-convert", "EARSHOT_MODELS"];
+
+/// The fixed copy that replaces `text`, which names a developer tool: chosen by what the text is
+/// about, so only a download command says a download is missing.
+fn developer_text_copy(text: &str) -> &'static str {
+    if DOWNLOAD_WORDS.iter().any(|w| text.contains(w)) {
+        MODELS_NEEDED
+    } else if text.contains("manifest.toml") {
+        // A model or file the built-in model list does not hold: this version's limit.
+        NOT_THIS_VERSION
+    } else {
+        INTERNAL
+    }
+}
+
+/// `text`, or fixed copy chosen by what it is about when it names a developer tool.
 #[must_use]
 pub fn plain(text: String) -> String {
     if names_developer_tool(&text) {
-        MODELS_NEEDED.to_owned()
+        developer_text_copy(&text).to_owned()
     } else {
         text
     }
@@ -477,11 +494,11 @@ fn summary_copy(e: &LlmError) -> String {
     }
 }
 
-/// [`INTERNAL`], or [`MODELS_NEEDED`] when the runtime's fixed words name a developer command
-/// (a missing NPU conversion is reported that way).
+/// [`INTERNAL`], or the copy of [`developer_text_copy`] when the runtime's fixed words name a
+/// developer command (a missing NPU conversion is reported that way).
 fn internal_copy(words: &'static str) -> &'static str {
     if names_developer_tool(words) {
-        MODELS_NEEDED
+        developer_text_copy(words)
     } else {
         INTERNAL
     }
@@ -1215,6 +1232,29 @@ mod tests {
         assert_eq!(plain_meeting_event(titled.clone()), titled);
         // A device called Cargo is not a command.
         assert!(!names_developer_tool("Cargo Pro headset is back"));
+    }
+
+    /// Text that names a developer tool is replaced by copy chosen by what the text is about
+    /// (TODO: `plain` swapped every match for "needs a download"): only a download command or
+    /// the models folder setting says a download is missing.
+    #[test]
+    fn plain_text_developer_text_is_replaced_by_copy_that_matches_it() {
+        for download in [
+            "run `cargo xtask fetch-models --set ci`",
+            "the NPU conversion is missing: run `cargo xtask qnn-convert --model m`",
+            "set EARSHOT_MODELS to the models folder",
+        ] {
+            assert_eq!(plain(download.to_owned()), MODELS_NEEDED, "{download}");
+        }
+        // An unknown model is this version's limit, not a missing download.
+        let unknown = "model \"zq-old\" is not in models/manifest.toml".to_owned();
+        assert_eq!(plain(unknown), NOT_THIS_VERSION);
+        // Any other developer command says nothing about downloads.
+        let other = "run `cargo xtask build --app` again".to_owned();
+        assert_eq!(plain(other), INTERNAL);
+        for copy in [MODELS_NEEDED, NOT_THIS_VERSION, INTERNAL] {
+            no_developer_text(copy);
+        }
     }
 
     #[test]
