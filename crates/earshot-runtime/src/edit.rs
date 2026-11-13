@@ -67,7 +67,7 @@ use earshot_core::model::{
 };
 use earshot_core::pipeline::{FinalPassRequest, FinalPassTrack};
 use earshot_core::summary::SummaryV1;
-use earshot_core::vocabulary::suggest::split_punctuation;
+use earshot_core::vocabulary::suggest::{Suggester, split_punctuation};
 use earshot_core::voiceprint::{
     Person, VoiceprintError, VoiceprintRepo, enroll, identity_of, me_person, resolve_person,
 };
@@ -170,7 +170,7 @@ pub enum EditError {
     /// ([`ignore_speaker`]). A re-transcription stores one.
     NoStoredVoice(EntityId),
     /// The line (the id) has no word at that position: it changed meanwhile ([`use_word`],
-    /// [`put_back_word`], [`keep_word`]).
+    /// [`put_back_word`], [`keep_word`]), or, for [`keep_word`], no word is suggested there.
     WordNotFound(EntityId),
     /// The word is not on the word list ([`use_word`]). Never carries the word.
     WordNotListed,
@@ -653,10 +653,12 @@ pub fn put_back_word(
 
 /// "Keep" (T12.15e): token `token` of line `segment` stays as decoded and is not suggested
 /// again in this meeting (`crate::word_choices`); the line is not written. Returns whether a
-/// choice was recorded (a token whose choice still holds records nothing).
+/// choice was recorded (a token whose choice still holds records nothing). Only a token the
+/// matcher suggests a listed word for can be kept.
 ///
 /// # Errors
-/// [`EditError`] ([`edit_segment`]'s refusals, [`EditError::WordNotFound`]); store errors.
+/// [`EditError`] ([`edit_segment`]'s refusals, [`EditError::WordNotFound`] also for a token
+/// with no suggestion); store errors.
 pub fn keep_word(
     services: &Services,
     meeting: EntityId,
@@ -672,6 +674,16 @@ pub fn keep_word(
             .any(|c| c.segment == segment && c.token == token)
         {
             return Ok(false);
+        }
+        // Only a suggested word can be kept: one with no suggestion (the line or the word
+        // list changed since it was shown) is refused like a word that is gone.
+        let list = word_choices::word_list_tx(tx)?;
+        if !Suggester::new(&list)
+            .suggest(&row.segment.text)
+            .iter()
+            .any(|g| g.token == token)
+        {
+            return Err(EditError::WordNotFound(segment).into());
         }
         choices.push(WordChoice {
             segment,

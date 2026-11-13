@@ -306,6 +306,31 @@ fn edit_keep_word_hides_the_suggestion_until_the_line_changes_under_it() {
 }
 
 #[test]
+fn edit_keep_word_refuses_a_word_with_no_suggestion() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let (m, id) = suggesting(&svc, 911);
+    // "ask sorbeck, then ship": only token 1 is suggested.
+    for token in [0, 2, 3] {
+        assert_eq!(
+            refused(keep_word(&svc, m, id, token)),
+            EditError::WordNotFound(id),
+            "token {token}"
+        );
+    }
+    assert!(stored(&svc, m).is_empty(), "nothing recorded on a refusal");
+    // With the word off the list, the suggestion is gone too.
+    set_words(&svc, &["Quillan"]);
+    assert_eq!(
+        refused(keep_word(&svc, m, id, 1)),
+        EditError::WordNotFound(id)
+    );
+    set_words(&svc, &["Zorbek"]);
+    assert!(keep_word(&svc, m, id, 1).unwrap());
+    assert_eq!(stored(&svc, m).len(), 1);
+}
+
+#[test]
 fn edit_word_choices_unreadable_record_reads_as_none() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
@@ -352,6 +377,13 @@ fn edit_retranscribe_keeps_a_changed_word_and_drops_a_kept_one() {
     let (first, second) = (id_of("first"), id_of("second"));
     set_words(&svc, &["Fyrstan", "Sekondo"]);
     assert!(use_word(&svc, m, first, 0, "Fyrstan").unwrap());
+    // Only a suggested word can be kept, and "second" is a common word: the line reads as
+    // the recogniser might have heard the listed word.
+    decoded(&svc, m, second, "sekonda");
+    assert_eq!(
+        line(&svc, m, second).suggestions,
+        [suggestion(0, "sekonda", "Sekondo")]
+    );
     assert!(keep_word(&svc, m, second, 0).unwrap());
     assert_eq!(stored(&svc, m).len(), 2);
 
