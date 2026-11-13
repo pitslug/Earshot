@@ -1343,6 +1343,70 @@ pub(crate) fn live_summaries(
     }
 }
 
+/// The summary part of a meeting's pre-flight ([`meeting_summary`]).
+pub(crate) struct MeetingSummary {
+    /// The service, `None` when no summary runs.
+    pub summary: Option<PreparedSummary>,
+    /// Why none runs (when `summary` is `None`).
+    pub no_summary: SkipReason,
+    /// The setup notes, the live summaries' note last: they follow the transcription's notes.
+    pub notes: Vec<String>,
+    /// The banners of a summary that will not run, after every setup note.
+    pub banners: Vec<MeetingEvent>,
+    /// The live summaries (`live_summaries`).
+    pub live_summaries: Option<earshot_runtime::live_summaries::LiveSummaries>,
+    /// `LiveConfig::keep_summary_local`: the meeting is kept on this computer (T12.13).
+    pub keep_summary_local: bool,
+}
+
+/// The summary part of `request`'s pre-flight on transcription order `order`: its privacy reaches
+/// the setup and the live config from here (T12.13), and its banners are made here.
+///
+/// # Errors
+/// As [`summary_setup`].
+pub(crate) fn meeting_summary(
+    svc: &Services,
+    models: &ModelDir,
+    request: &StartRequest,
+    order: &[earshot_runtime::backends::Accelerator],
+    probes: (&dyn ApiKeyStore, &dyn ClaudeCodeProbe, &dyn CodexProbe),
+) -> Result<MeetingSummary, IpcError> {
+    let (keys, claude, codex) = probes;
+    let privacy = request.summary_privacy();
+    let setup = summary_setup(svc, models, keys, claude, codex, privacy)?;
+    let (live_summaries, live_note) = live_summaries(&setup, order);
+    let SummarySetup {
+        summary,
+        no_summary,
+        mut notes,
+        ..
+    } = setup;
+    notes.extend(live_note);
+    let banners = [
+        // An endpoint without its API key: the meeting runs, the summary is skipped.
+        crate::meeting_events::no_key_banner(&no_summary),
+        // Claude Code chosen but not installed or not signed in: the same rule.
+        crate::meeting_events::claude_code_banner(&no_summary),
+        // Codex likewise (T7.4gc).
+        crate::meeting_events::codex_banner(&no_summary),
+        // A summary model chosen by name and not downloaded: the same rule.
+        crate::meeting_events::chosen_model_banner(&no_summary),
+        // Kept on this computer without a local summary model (T12.13).
+        crate::meeting_events::kept_local_banner(&no_summary),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    Ok(MeetingSummary {
+        summary,
+        no_summary,
+        notes,
+        banners,
+        live_summaries,
+        keep_summary_local: privacy == host::SummaryPrivacy::KeptLocal,
+    })
+}
+
 /// The banners of the pre-flight's setup notes (a "where it runs" choice not used, a stored
 /// setting this version does not know), one per note: keys `settings-0`, `settings-1`, ...
 #[must_use]
@@ -1530,43 +1594,31 @@ mod production {
                 model: setup.choice.model.clone(),
                 order: setup.order.clone(),
             };
-            let summary_setup = super::summary_setup(
-                svc,
-                &models,
-                &crate::credentials::CredentialManager::anthropic(),
-                &earshot_runtime::claude_code::InstalledClaudeCode::meeting_start(),
-                &earshot_runtime::codex::InstalledCodex::meeting_start(),
-                request.summary_privacy(),
-            )?;
-            let (live_summaries, live_note) = super::live_summaries(&summary_setup, &setup.order);
-            // A setting never costs a recording: one that cannot be read is automatic.
-            let previews = earshot_runtime::preview_settings::preview_choice(&svc.store())
-                .map_or_else(|_| Default::default(), |(choice, _)| choice);
-            let super::SummarySetup {
+            let super::MeetingSummary {
                 summary,
                 no_summary,
                 notes: summary_notes,
-                ..
-            } = summary_setup;
+                banners,
+                live_summaries,
+                keep_summary_local,
+            } = super::meeting_summary(
+                svc,
+                &models,
+                request,
+                &setup.order,
+                (
+                    &crate::credentials::CredentialManager::anthropic(),
+                    &earshot_runtime::claude_code::InstalledClaudeCode::meeting_start(),
+                    &earshot_runtime::codex::InstalledCodex::meeting_start(),
+                ),
+            )?;
+            // A setting never costs a recording: one that cannot be read is automatic.
+            let previews = earshot_runtime::preview_settings::preview_choice(&svc.store())
+                .map_or_else(|_| Default::default(), |(choice, _)| choice);
             // "Where it runs" not honoured, or a stored setting this version does not know.
-            let mut notices = super::setup_notices(
-                setup
-                    .notes
-                    .into_iter()
-                    .chain(summary_notes)
-                    .chain(live_note)
-                    .collect(),
-            );
-            // An endpoint without its API key: the meeting runs, the summary is skipped.
-            notices.extend(crate::meeting_events::no_key_banner(&no_summary));
-            // Claude Code chosen but not installed or not signed in: the same rule.
-            notices.extend(crate::meeting_events::claude_code_banner(&no_summary));
-            // Codex likewise (T7.4gc).
-            notices.extend(crate::meeting_events::codex_banner(&no_summary));
-            // A summary model chosen by name and not downloaded: the same rule.
-            notices.extend(crate::meeting_events::chosen_model_banner(&no_summary));
-            // Kept on this computer without a local summary model (T12.13).
-            notices.extend(crate::meeting_events::kept_local_banner(&no_summary));
+            let mut notices =
+                super::setup_notices(setup.notes.into_iter().chain(summary_notes).collect());
+            notices.extend(banners);
             let (timing, _) = {
                 let mut db = svc.store();
                 host::choose_speaker_timing(&mut db, None, false)?
@@ -1590,7 +1642,7 @@ mod production {
                 live_summaries,
                 hold: Some(hold),
                 previews: Some(host::live_previews(&models, previews)),
-                keep_summary_local: request.summary_privacy() == host::SummaryPrivacy::KeptLocal,
+                keep_summary_local,
                 ..LiveConfig::default()
             };
             let factory = meeting_models.live_factory();
