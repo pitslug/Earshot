@@ -1515,6 +1515,26 @@ pub fn check_agent_cli(opts: &Options, agent: AgentCli) -> Result<()> {
         !opts.prefix_reuse,
         "--prefix-reuse is for local candidates only, not --model {id}"
     );
+    check_variant_differs_from_writer_rules(opts)
+}
+
+/// Refuses a prompt variant that names the writer's own production rules (T12.17c): `brief`
+/// on an agent CLI and `standard` on any other writer send exactly what `current` sends, under
+/// another format key.
+///
+/// # Errors
+/// A variant equal to `current` for this run's writer.
+pub fn check_variant_differs_from_writer_rules(opts: &Options) -> Result<()> {
+    let own = if opts.agent_cli().is_some() {
+        PromptVariant::Brief
+    } else {
+        PromptVariant::Standard
+    };
+    ensure!(
+        opts.prompt_variant != own,
+        "--prompt-variant {} is this writer's own rules: use the current variant",
+        own.name()
+    );
     Ok(())
 }
 
@@ -1869,6 +1889,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
         opts.prompt_variant.is_current() || !(opts.stored_only() || opts.rescore),
         "--prompt-variant applies to local summary runs only"
     );
+    check_variant_differs_from_writer_rules(opts)?;
     ensure!(
         opts.style_preset.is_standard() || !(opts.stored_only() || opts.rescore),
         "--style-preset applies to summary runs only"
@@ -2910,6 +2931,34 @@ mod tests {
         assert!(t.contains("| qwen3.5-9b-q4_k_m | ? |"), "{t}");
         // No length block in these aggregates: no length table.
         assert!(!t.contains("notes words"), "{t}");
+    }
+
+    #[test]
+    fn sum_eval_prompt_variant_naming_the_writers_own_rules_is_refused() {
+        let agent = Options {
+            models: vec!["claude-code".into()],
+            sources: vec!["reference".into()],
+            ..Options::default()
+        };
+        let local = Options {
+            models: vec!["qwen3.5-4b-q4_k_m".into()],
+            ..Options::default()
+        };
+        let with = |o: &Options, v: PromptVariant| Options {
+            prompt_variant: v,
+            ..o.clone()
+        };
+        assert!(
+            check_agent_cli(&with(&agent, PromptVariant::Brief), AgentCli::ClaudeCode).is_err()
+        );
+        check_agent_cli(&with(&agent, PromptVariant::Standard), AgentCli::ClaudeCode).unwrap();
+        check_agent_cli(&with(&agent, PromptVariant::Current), AgentCli::ClaudeCode).unwrap();
+        assert!(
+            check_variant_differs_from_writer_rules(&with(&local, PromptVariant::Standard))
+                .is_err()
+        );
+        check_variant_differs_from_writer_rules(&with(&local, PromptVariant::Brief)).unwrap();
+        check_variant_differs_from_writer_rules(&with(&local, PromptVariant::Current)).unwrap();
     }
 
     #[test]
