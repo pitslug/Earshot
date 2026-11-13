@@ -3,6 +3,7 @@
  "messages": {
   "effort_needs_newer": "Choosing the effort needs a newer Claude Code. This one runs at its own default effort; update Claude Code to choose it.",
   "live_needs_local": "Summarising during the meeting needs a local summary model.",
+  "not_a_word": "Only a word can be added to the dictionary.",
   "anthropic_url": "https://api.anthropic.com",
   "claude_code_not_installed": {
    "message": "Claude Code is not installed on this computer.",
