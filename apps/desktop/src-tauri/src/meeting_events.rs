@@ -964,6 +964,19 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
              the recording without waiting for it. Everything recorded before that is kept."
                 .into(),
         ),
+        // The same key as the loss's "unavailable" banner, which it replaces: it is not coming back.
+        RuntimeWarning::TrackEnded { track } => {
+            let t = LiveTrack::of(*track);
+            warning(
+                format!("device:{}", t.key()),
+                WarningKind::DeviceUnavailable,
+                format!(
+                    "{} kept failing, so Earshot stopped recording it for this meeting. What was \
+                     recorded before is kept.",
+                    sentence_start(t.device())
+                ),
+            )
+        }
         RuntimeWarning::Persistence(m) => warning(
             "storage".into(),
             WarningKind::Storage,

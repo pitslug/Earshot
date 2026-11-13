@@ -273,6 +273,20 @@ impl TrackEmitter {
             },
         );
     }
+
+    /// The capture loop ended this track at `qpc` after its stream kept failing (T9.21): one
+    /// note, so a consumer can tell it from a track still being retried. No frames follow.
+    pub fn track_ended(&mut self, qpc: u64, sink: &mut dyn CaptureSink) {
+        sink.discontinuity(
+            self.track,
+            Discontinuity {
+                at: DeviceTime::from_ticks(qpc),
+                kind: DiscontinuityKind::Note {
+                    warning: EndpointWarning::TrackEnded,
+                },
+            },
+        );
+    }
 }
 
 /// What the capture thread sends to the consumer.
@@ -451,6 +465,10 @@ impl<E> TrackObserver for EmitterTrack<E> {
     fn call_output_refused(&mut self, qpc: u64, wanted: &str, used: Option<&str>, _error: &str) {
         self.emitter
             .call_output_refused(qpc, wanted, used, &mut self.sink);
+    }
+
+    fn track_ended(&mut self, qpc: u64, _hresult: i32) {
+        self.emitter.track_ended(qpc, &mut self.sink);
     }
 
     fn set_horizon(&mut self, qpc: u64) {
@@ -1192,6 +1210,44 @@ mod tests {
         assert_eq!(markers(&out).len(), 1);
         e.packet(pkt(T0 + PQ, 480), &ramp(480), &mut out);
         assert_eq!(e.end(), Some(t(T0 + 2 * PQ)));
+    }
+
+    #[test]
+    fn live_an_ended_track_is_a_note_on_that_track() {
+        let (tx, rx) = mpsc::channel::<LiveMsg<()>>();
+        let mut track = EmitterTrack {
+            emitter: emitter(),
+            sink: ChannelSink::new(tx),
+        };
+        TrackObserver::packet(&mut track, pkt(T0, 480), &ramp(480));
+        TrackObserver::track_ended(&mut track, T0 + PQ, 0x8889_0017_u32 as i32);
+        let events: Vec<CaptureEvent> = rx
+            .try_iter()
+            .map(|m| match m {
+                LiveMsg::Event(e) => e,
+                LiveMsg::Failed(()) => panic!("an ended track is not a failed capture"),
+            })
+            .collect();
+        let notes = markers(&events);
+        assert_eq!(
+            notes,
+            [Discontinuity {
+                at: t(T0 + PQ),
+                kind: DiscontinuityKind::Note {
+                    warning: EndpointWarning::TrackEnded,
+                },
+            }]
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                CaptureEvent::Discontinuity {
+                    track: TrackId::Mic,
+                    ..
+                }
+            )),
+            "on the ended track"
+        );
     }
 
     #[test]

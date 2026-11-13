@@ -4121,6 +4121,59 @@ fn live_call_output_refused_is_said_once_and_leaves_the_device_state_alone() {
     );
 }
 
+#[test]
+fn live_an_ended_track_is_said_once_and_kept_in_the_problems() {
+    // T9.21: the capture ended the reference for good; the mic goes on.
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let session_info = CaptureSession::new(ORIGIN, TrackInfo::new(R16), Some(TrackInfo::new(R16)));
+    let at = |packet: u64| ORIGIN.after_frames(packet * 160, R16);
+    let ended = DiscontinuityKind::Note {
+        warning: EndpointWarning::TrackEnded,
+    };
+    let mut script = Vec::new();
+    for i in 0..60 {
+        if i == 30 {
+            script.push(marker(TrackId::Reference, at(i), ended.clone()));
+            // A second note for the same track is the same news.
+            script.push(marker(TrackId::Reference, at(i), ended.clone()));
+        }
+        script.push(frames(TrackId::Mic, noise(i, 160, 0.01), at(i)));
+        if i < 30 {
+            script.push(frames(
+                TrackId::Reference,
+                noise(i + 1000, 160, 0.01),
+                at(i),
+            ));
+        }
+    }
+    script.push(Ok(CaptureEvent::End(EndOfStream {
+        at: at(60),
+        reason: EndReason::Finished,
+    })));
+    let session = start_live(
+        ScriptSource::new(session_info, script),
+        svc,
+        config(earshot_core::model::ClockDomain::Qpc),
+        None,
+        Box::new(ChaCha8Rng::seed_from_u64(32)),
+    )
+    .unwrap();
+    let (events, outcome) = collect(session);
+    let said: Vec<RuntimeWarning> = warnings(&events)
+        .into_iter()
+        .filter(|w| matches!(w, RuntimeWarning::TrackEnded { .. }))
+        .collect();
+    let expected = RuntimeWarning::TrackEnded {
+        track: TrackId::Reference,
+    };
+    assert_eq!(said, std::slice::from_ref(&expected), "{events:?}");
+    assert_eq!(
+        outcome.problems.iter().filter(|w| **w == expected).count(),
+        1
+    );
+}
+
 /// A source that panics on its `panic_at`th pump (a bug on the session thread, T9.19).
 struct PanicSource<S> {
     inner: S,

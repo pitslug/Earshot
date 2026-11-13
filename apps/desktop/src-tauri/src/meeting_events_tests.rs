@@ -484,6 +484,20 @@ fn meeting_events_every_runtime_warning_has_a_banner_with_plain_copy() {
 }
 
 #[test]
+fn meeting_events_an_ended_track_replaces_its_unavailable_banner() {
+    // T9.21: the track will not come back, so the "until it is back" banner is replaced.
+    for track in [TrackId::Mic, TrackId::Reference] {
+        let (lost_key, _, _) = banner(&RuntimeWarning::DeviceUnavailable { track });
+        let (key, kind, message) = banner(&RuntimeWarning::TrackEnded { track });
+        assert_eq!(key, lost_key);
+        assert_eq!(kind, WarningKind::DeviceUnavailable);
+        assert_copy(&message);
+        assert!(message.contains("stopped recording it"), "{message}");
+        assert!(message.contains("recorded before is kept"), "{message}");
+    }
+}
+
+#[test]
 fn meeting_events_a_stopped_recording_says_when_and_why_in_plain_words() {
     // T9.17: once per track (one key per track), the time it stopped and a full disk named.
     let stopped = |track, ms, disk_full| {

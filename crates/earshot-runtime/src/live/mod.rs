@@ -624,6 +624,14 @@ pub enum RuntimeWarning {
     /// to stop, so the source ended without it and the recording was saved with everything
     /// captured before (T9.20, [`EndpointWarning::StoppedAnswering`]). At most once.
     DeviceStoppedAnswering,
+    /// A track's device kept failing, so the source ended that track for the rest of the
+    /// meeting (T9.21, [`EndpointWarning::TrackEnded`]): what it recorded before is kept and the
+    /// other track goes on. Sent once per track, during the meeting and again in
+    /// [`LiveOutcome::problems`].
+    TrackEnded {
+        /// Track.
+        track: TrackId,
+    },
     /// At the end a track's live catch-up showed no sign of life for
     /// [`LiveConfig::catch_up_stall`], so it was given up (T9.22): the recording is saved and the
     /// track's live transcript stops where it got to. Hosts leave the meeting unprocessed: whatever
@@ -2150,6 +2158,17 @@ where
         {
             self.warn(RuntimeWarning::DeviceStoppedAnswering);
             self.problems.push(RuntimeWarning::DeviceStoppedAnswering);
+            return;
+        }
+        if let DiscontinuityKind::Note {
+            warning: EndpointWarning::TrackEnded,
+        } = kind
+        {
+            let ended = RuntimeWarning::TrackEnded { track };
+            if !self.problems.contains(&ended) {
+                self.warn(ended.clone());
+                self.problems.push(ended);
+            }
             return;
         }
         let DiscontinuityKind::DeviceChanged {
