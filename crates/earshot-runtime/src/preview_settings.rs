@@ -159,14 +159,10 @@ pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardwar
         }
         PreviewChoice::Automatic => {
             if previews_refused(backend, hardware, choice).is_none() {
-                (
-                    PreviewSetting::OtherPeople,
-                    if below_limit {
-                        Some(NOTE_DEFAULT_OFF)
-                    } else {
-                        card_note
-                    },
-                )
+                // Not refused by default means the memory is known and at least the limit the
+                // notes name (no automatic limit is lower), so only the card can need a note
+                // (pinned by `preview_automatic_on_never_says_default_off`).
+                (PreviewSetting::OtherPeople, card_note)
             } else {
                 (PreviewSetting::Off, below_limit.then_some(NOTE_DEFAULT_OFF))
             }
@@ -202,6 +198,44 @@ mod tests {
             }],
             ..Hardware::default()
         }
+    }
+
+    /// TODO 87: wherever Automatic shows them, the machine is at or above the limit the notes
+    /// name, so the "off by default" note can never go with them.
+    #[test]
+    fn preview_automatic_on_never_says_default_off() {
+        let memories = [
+            None,
+            Some(4),
+            Some(8),
+            Some(11),
+            Some(12),
+            Some(16),
+            Some(20),
+            Some(32),
+        ];
+        let cards = [None, Some(4), Some(8), Some(14), Some(24)];
+        let mut shown = 0;
+        for memory in memories.map(|m| m.map(|g| g * GIB)) {
+            let mut machines = vec![npu_machine(memory)];
+            machines.extend(cards.map(|c| machine(memory, c.map(|g| g * GIB))));
+            for m in &machines {
+                for lead in [
+                    Accelerator::Cpu,
+                    Accelerator::Cuda,
+                    Accelerator::Qnn,
+                    Accelerator::Vulkan,
+                ] {
+                    let page = preview_page(PreviewChoice::Automatic, lead, m);
+                    if page.shown == PreviewSetting::OtherPeople {
+                        shown += 1;
+                        assert_ne!(page.note, Some(NOTE_DEFAULT_OFF), "{lead:?} {m:?}");
+                        assert!(memory.is_some_and(|g| g >= PREVIEW_MIN_MEMORY));
+                    }
+                }
+            }
+        }
+        assert!(shown > 0, "the sweep reaches the case");
     }
 
     #[test]
