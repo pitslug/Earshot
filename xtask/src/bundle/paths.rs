@@ -36,13 +36,15 @@ struct Needle {
 
 impl Needle {
     fn new(text: String, wide: bool) -> Self {
+        // Folded byte by byte after encoding, exactly as `scan_bytes` folds the haystack: a
+        // UTF-16 code unit can hold a byte in A..Z (Ł is `41 01`), which the haystack folds too.
         let encode = |s: &str| -> Vec<u8> {
-            let s = s.to_ascii_lowercase();
-            if wide {
+            let bytes: Vec<u8> = if wide {
                 s.encode_utf16().flat_map(u16::to_le_bytes).collect()
             } else {
-                s.into_bytes()
-            }
+                s.as_bytes().to_vec()
+            };
+            bytes.to_ascii_lowercase()
         };
         let chars = text
             .chars()
@@ -352,6 +354,50 @@ mod tests {
             );
             assert!(
                 scan_bytes(Path::new("a"), &wide(text), &n).is_none(),
+                "wide {text}"
+            );
+        }
+        // Letters whose UTF-16 code unit holds a byte in A..Z (Ł is `41 01`, 中 `2d 4e`... and
+        // 婀 U+5A40 is `40 5a`), which the haystack's byte fold changes.
+        let l = Needles::new("Łukasz", r"C:\Users\Łukasz").unwrap();
+        for text in [r"C:\Users\Łukasz\x.pdb", "ŁUKASZ", "łukasz"] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &l).is_some(),
+                "{text}"
+            );
+            assert!(
+                scan_bytes(Path::new("a"), &wide(text), &l).is_some(),
+                "wide {text}"
+            );
+        }
+        for text in ["Lukasz", "Ńukasz"] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &l).is_none(),
+                "{text}"
+            );
+            assert!(
+                scan_bytes(Path::new("a"), &wide(text), &l).is_none(),
+                "wide {text}"
+            );
+        }
+        let c = Needles::new("婀娜用户", r"C:\Users\婀娜用户").unwrap();
+        for text in [r"C:\Users\婀娜用户\x.pdb", "by 婀娜用户"] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &c).is_some(),
+                "{text}"
+            );
+            assert!(
+                scan_bytes(Path::new("a"), &wide(text), &c).is_some(),
+                "wide {text}"
+            );
+        }
+        for text in ["婀娜用戶", "阿娜用户"] {
+            assert!(
+                scan_bytes(Path::new("a"), text.as_bytes(), &c).is_none(),
+                "{text}"
+            );
+            assert!(
+                scan_bytes(Path::new("a"), &wide(text), &c).is_none(),
                 "wide {text}"
             );
         }

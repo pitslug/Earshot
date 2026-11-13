@@ -177,7 +177,14 @@ pub fn machine_target() -> &'static str {
     run_with_timeout(&mut cmd, Duration::from_secs(30))
         .filter(|o| o.success && o.stdout_complete)
         .and_then(|o| parse_machine_arch(&o.stdout))
-        .unwrap_or_else(|| effective_target(None))
+        .unwrap_or_else(|| {
+            let own = effective_target(None);
+            println!(
+                "bundle-check: the machine's architecture could not be read from the registry; \
+                 using this xtask's own ({own})"
+            );
+            own
+        })
 }
 
 /// The installer's path below `<profile>\bundle`. The bundler names it from the version, so a

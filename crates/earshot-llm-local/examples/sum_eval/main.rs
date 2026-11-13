@@ -170,6 +170,15 @@ fn items_suffix(max_items: Option<u32>) -> String {
     max_items.map_or_else(String::new, |n| format!("-items{n}"))
 }
 
+/// Writes a `--max-items` run's cap into the result header as `max_items`, which
+/// `score::cap_of` reads back on `--rescore`; a run with the grammar's own cap writes nothing,
+/// so its header is unchanged.
+fn record_max_items(header: &mut Value, max_items: Option<u32>) {
+    if let Some(n) = max_items {
+        header["max_items"] = json!(n);
+    }
+}
+
 #[derive(Debug, Default)]
 struct Args {
     annotations: PathBuf,
@@ -1950,7 +1959,7 @@ fn run() -> Result<(), String> {
             load.load_time.as_secs_f64(),
             load.description
         );
-        let header = json!({
+        let mut header = json!({
             "candidate": a.model_id,
             "kind": "local",
             "model_file": path.file_name().map(|f| f.to_string_lossy().into_owned()),
@@ -1974,6 +1983,7 @@ fn run() -> Result<(), String> {
             "style_preset": a.style_preset.name(),
             "system_info": earshot_llm_local::system_info(),
         });
+        record_max_items(&mut header, a.max_items);
         let engine = Engine::Local {
             llm,
             options: SummaryOptions {
@@ -3163,6 +3173,19 @@ mod reuse_tests {
         assert_eq!(args(&["--model", "m.gguf"]).unwrap().item_cap(), 12);
         assert!(args(&["--model", "m.gguf", "--max-items", "0"]).is_err());
         assert!(args(&["--remote", "--max-items", "16"]).is_err());
+    }
+
+    #[test]
+    fn sum_eval_max_items_header_round_trips_to_the_rescore_cap() {
+        let mut header = json!({ "candidate": "m" });
+        record_max_items(&mut header, None);
+        assert_eq!(header, json!({ "candidate": "m" }));
+        assert_eq!(score::cap_of(&header), score::item_cap());
+        record_max_items(&mut header, Some(16));
+        // Through the file's bytes, as `--rescore` reads it.
+        let read: Value =
+            serde_json::from_slice(&serde_json::to_vec_pretty(&header).unwrap()).unwrap();
+        assert_eq!(score::cap_of(&read), 16);
     }
 
     /// The fields [`check_merge_select`] reads.

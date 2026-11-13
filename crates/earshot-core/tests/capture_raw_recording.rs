@@ -185,6 +185,7 @@ fn capture_replays_gate10_raw_recording() {
         );
         let flagged = track.packets.iter().filter(|p| p.discontinuity).count() as u32;
         let (lost, at_stream_start) = flags_by_kind(track);
+        // A consistency check of the split above (true by construction), not evidence.
         assert_eq!(lost + at_stream_start, flagged);
         assert_eq!(
             data_lost[i], lost,
