@@ -19,6 +19,8 @@ getrandom = "0.4"
 earshot-llm = { path = "../crates/earshot-llm" }
 earshot-llm-replay = { path = "../crates/earshot-llm-replay" }
 earshot-net = { path = "../crates/earshot-net" }
+# The ui step's kill-on-close job, so a timeout also stops pnpm's node children (std only).
+earshot-proc = { path = "../crates/earshot-proc" }
 # `accept m5` runs the real export writer against temp vaults.
 earshot-store = { path = "../crates/earshot-store" }
 flate2 = "1"

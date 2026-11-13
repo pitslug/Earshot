@@ -224,11 +224,40 @@ pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<CmdOutpu
     run_with_drain(cmd, timeout, |elapsed| drain_window(timeout, elapsed))
 }
 
+/// As [`run_with_timeout`], for a command whose children may outlive it (`cmd /c pnpm` starting
+/// node): on Windows the child goes into a kill-on-close job object
+/// ([`earshot_proc::KillOnClose`]) as soon as it starts, and the whole job is killed on a timeout
+/// and when this returns, grandchildren included. A process the child starts before it is put in
+/// the job (the first few milliseconds) escapes; `cmd` starts nothing that early. A job that
+/// cannot be made leaves the run as [`run_with_timeout`]'s. Elsewhere it is [`run_with_timeout`].
+pub fn run_in_job_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<CmdOutput> {
+    run_with_drain_in(cmd, timeout, |elapsed| drain_window(timeout, elapsed), true)
+}
+
 /// As [`run_with_timeout`], with the drain window chosen by `window(elapsed at exit)`.
 fn run_with_drain(
     cmd: &mut Command,
     timeout: Duration,
     window: impl FnOnce(Duration) -> Duration,
+) -> Option<CmdOutput> {
+    run_with_drain_in(cmd, timeout, window, false)
+}
+
+/// The kill-on-close job of [`run_in_job_with_timeout`], if one could be made and the child put
+/// in it.
+#[cfg(windows)]
+fn job_for(child: &std::process::Child) -> Option<earshot_proc::KillOnClose> {
+    let job = earshot_proc::KillOnClose::new().ok()?;
+    job.assign(child).ok()?;
+    Some(job)
+}
+
+/// [`run_with_drain`], with the child in a kill-on-close job when `in_job` (Windows only).
+fn run_with_drain_in(
+    cmd: &mut Command,
+    timeout: Duration,
+    window: impl FnOnce(Duration) -> Duration,
+    in_job: bool,
 ) -> Option<CmdOutput> {
     let mut child = cmd
         .stdin(Stdio::null())
@@ -236,6 +265,11 @@ fn run_with_drain(
         .stderr(Stdio::piped())
         .spawn()
         .ok()?;
+    // Dropped when this returns, which kills anything of the run still alive.
+    #[cfg(windows)]
+    let job = if in_job { job_for(&child) } else { None };
+    #[cfg(not(windows))]
+    let _ = in_job;
     let stdout = child.stdout.take()?;
     let stderr = child.stderr.take()?;
     // One channel for both streams, so the drain below serves them concurrently.
@@ -253,10 +287,14 @@ fn run_with_drain(
     ) {
         Wait::Done(s) => s,
         Wait::TimedOut | Wait::Failed => {
-            // kill() terminates only the direct child (no job object), so a grandchild
+            // Without a job, kill() terminates only the direct child, so a grandchild
             // such as node under `cmd /c pnpm` may outlive it. Acceptable for short
             // version probes; the reader threads are never joined, so the caller does
             // not hang on them.
+            #[cfg(windows)]
+            if let Some(job) = &job {
+                job.terminate();
+            }
             let _ = child.kill();
             let _ = child.wait();
             return None;
@@ -280,6 +318,51 @@ fn run_with_drain(
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    /// A `cmd` run that starts a grandchild writing `done.txt` after about 3 s, then waits
+    /// about 30 s itself; `tag` names its own temp folder.
+    #[cfg(windows)]
+    fn grandchild_run(tag: &str) -> (Command, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("earshot-proc-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("grandchild.cmd"),
+            "@ping -n 4 127.0.0.1 >nul\r\n@echo x> \"%~dp0done.txt\"\r\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("parent.cmd"),
+            "@start \"\" /b cmd /c \"%~dp0grandchild.cmd\"\r\n@ping -n 30 127.0.0.1 >nul\r\n",
+        )
+        .unwrap();
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/c").arg(dir.join("parent.cmd"));
+        (cmd, dir)
+    }
+
+    /// TODO 15: a timeout in a job stops the grandchild too; without the job (the negative
+    /// control) the grandchild outlives the killed `cmd` and writes its file.
+    #[cfg(windows)]
+    #[test]
+    fn proc_timeout_in_a_job_kills_grandchildren_too() {
+        let (mut cmd, dir) = grandchild_run("job");
+        assert!(run_in_job_with_timeout(&mut cmd, Duration::from_secs(1)).is_none());
+        let (mut bare, bare_dir) = grandchild_run("bare");
+        assert!(run_with_timeout(&mut bare, Duration::from_secs(1)).is_none());
+        // Well past the grandchild's ~3 s.
+        thread::sleep(Duration::from_secs(10));
+        assert!(
+            !dir.join("done.txt").exists(),
+            "the grandchild outlived the job"
+        );
+        assert!(
+            bare_dir.join("done.txt").exists(),
+            "negative control: without a job the grandchild should outlive cmd"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&bare_dir);
+    }
 
     #[test]
     fn deadline_returns_value_when_ready() {
