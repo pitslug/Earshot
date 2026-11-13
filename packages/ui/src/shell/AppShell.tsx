@@ -60,7 +60,7 @@ import {
 import { failureText } from "../detail/detail";
 import { type JobView, MeetingDetailView, isTerminal } from "../detail/MeetingDetailView";
 import { FirstRunWizard, NO_MODEL_NOTE } from "../firstRun/FirstRunWizard";
-import { useLiveMeeting, useNow } from "../meeting/hooks";
+import { useLiveMeeting, useLocalDay } from "../meeting/hooks";
 import { type SettingsSection, SettingsView } from "../settings/SettingsView";
 import { useThemeChoice } from "../theme/EarshotThemeProvider";
 import { type Timer, realTimer } from "../time";
@@ -511,7 +511,8 @@ export function AppShell({
     lastMeeting.current = { id: meeting.meetingId, finishing: meeting.phase === "processing" };
   }
   const recording = meeting !== null && meeting.phase === "recording";
-  const clockNow = useNow(timer, 1000);
+  // The list groups by day: it renders when the day changes, never on a clock tick (T9.24).
+  const today = useLocalDay(timer, now);
 
   // The native title bar follows the theme chosen in Settings. A title bar that stays on the
   // system's colours changes nothing else, so a refusal is not worth a banner.
@@ -846,7 +847,8 @@ export function AppShell({
     return (
       <CompactCard
         meeting={meeting}
-        now={clockNow}
+        timer={timer}
+        levels={live.levels}
         onStop={stop}
         onExpand={() => goCompact(false)}
         onKeepRecording={keepRecording}
@@ -1022,7 +1024,7 @@ export function AppShell({
           )}
           {!search.active && visible.length > 0 && (
             <ul className={styles.list} aria-label="Meetings">
-              {groupByDay(visible, now()).map((group) => (
+              {groupByDay(visible, today).map((group) => (
                 <MeetingGroup
                   key={group.label}
                   group={group}
@@ -1154,7 +1156,8 @@ export function AppShell({
         {showMeeting && meeting !== null && meeting.phase === "recording" && (
           <RecordingView
             meeting={meeting}
-            now={clockNow}
+            timer={timer}
+            levels={live.levels}
             onStop={stop}
             onCompact={() => goCompact(true)}
             onDismiss={live.dismissBanner}

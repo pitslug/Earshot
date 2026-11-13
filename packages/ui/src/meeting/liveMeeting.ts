@@ -49,7 +49,6 @@ export interface LiveMeeting {
   startedAt: number;
   /** When the recording ended (the injected clock's ms), freezing the clock. */
   endedAt: number | null;
-  levels: Record<LiveTrack, number | null>;
   speaking: Record<LiveTrack, boolean>;
   backends: Partial<Record<LiveTrack, string>>;
   words: number;
@@ -86,7 +85,6 @@ export function startedMeeting(
     tracks,
     startedAt: now,
     endedAt: null,
-    levels: { You: null, Them: null },
     speaking: { You: false, Them: false },
     backends: {},
     words: 0,
@@ -125,7 +123,9 @@ export function reduce(
     case "Backend":
       return { ...state, backends: { ...state.backends, [event.track]: event.label } };
     case "Levels":
-      return { ...state, levels: { You: event.you_dbfs, Them: event.them_dbfs } };
+      // Not meeting state: the meters read levels from `useLiveMeeting`'s own store, so 10
+      // events a second never render the meeting screen (T9.24).
+      return state;
     case "VoiceActivity":
       return { ...state, speaking: { ...state.speaking, [event.track]: event.speaking } };
     case "Lag":
@@ -175,7 +175,6 @@ export function reduce(
         endedSeq: state.seq,
         endedReason: event.reason,
         speaking: { You: false, Them: false },
-        levels: { You: null, Them: null },
         provisional: { You: [], Them: [] },
       };
     case "PostProgress":

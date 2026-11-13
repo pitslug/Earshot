@@ -15,7 +15,8 @@ export const commands = {
 	listMeetings: () => typedError<MeetingListItem[], IpcError>(__TAURI_INVOKE("list_meetings")),
 	/**
 	 *  The live meetings whose title, transcript or summary contains `query`, newest first (T9.7).
-	 *  Runs off the main thread; the store lock is held only for each meeting's read.
+	 *  Runs off the main thread; the store lock is held only for each meeting's read. A newer
+	 *  search stops this one, which then fails with kind [`SEARCH_SUPERSEDED_KIND`] (T9.24).
 	 */
 	searchMeetings: (query: string) => typedError<SearchResultsView, IpcError>(__TAURI_INVOKE("search_meetings", { query })),
 	/**

@@ -138,6 +138,80 @@ window.__profile = {
     }
     return n;
   },
+  /** T9.24's scenarios in one go, from a freshly loaded page (about 80 s, window in view):
+   * idle list, open the 3 h meeting, idle on its summary, open and idle on its transcript,
+   * type a 14-character search, then a live call just started and with 3 h landed. The
+   * result is also kept in `window.__profileResult` while it runs. */
+  scenarios: async () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const out: Record<string, unknown> = {};
+    const w = window as unknown as { __profileResult: unknown };
+    // Rates are over the scenario's whole window, not between its first and last commit, so a
+    // window with no commits reads as 0 and one with two commits is not a burst rate.
+    const summary = (windowMs: number) => {
+      const s = stats();
+      const r = (x: number | null, d = 1) => (x === null ? null : Number(x.toFixed(d)));
+      const seconds = windowMs / 1000;
+      return {
+        commits: s.commits,
+        commits_per_s: r(s.commits / seconds, 2),
+        median_ms: r(s.median_ms),
+        p95_ms: r(s.p95_ms),
+        react_ms_per_s: r(s.total_ms / seconds, 0),
+        visible: document.visibilityState === "visible",
+      };
+    };
+    const during = async (name: string, ms: number, action?: () => void) => {
+      commits.length = 0;
+      action?.();
+      await sleep(ms);
+      out[name] = summary(ms);
+      w.__profileResult = out;
+    };
+    const byText = (selector: string, re: RegExp) =>
+      [...document.querySelectorAll<HTMLElement>(selector)].find((e) => re.test(e.textContent ?? ""));
+    const click = (selector: string, re: RegExp) => {
+      const el = byText(selector, re);
+      if (!el) throw new Error(`nothing matches ${re}`);
+      el.click();
+    };
+    await sleep(2_000);
+    await during("idle_list", 10_000);
+    await during("open_summary", 4_000, () => click("button", /^Weekly sync with/));
+    await during("idle_summary", 10_000);
+    await during("open_transcript", 5_000, () => click('[role="tab"]', /^Transcript/));
+    await during("idle_transcript", 10_000);
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="Search meetings"]');
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (!input || !setValue) throw new Error("no search box");
+    const type = (text: string) => {
+      setValue.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    commits.length = 0;
+    input.focus();
+    const query = "the budget plan";
+    for (let i = 1; i <= 14; i += 1) {
+      type(query.slice(0, i));
+      await sleep(150);
+    }
+    await sleep(1_500);
+    out.typing = summary(14 * 150 + 1_500);
+    type("");
+    await sleep(1_000);
+    click("button", /^New meeting$/);
+    await sleep(800);
+    click("button", /^Start$/);
+    await sleep(2_500);
+    await during("live_start", 8_000);
+    (window.__profile as { landLive(h: number): number }).landLive(3);
+    await sleep(2_000);
+    await during("live_3h", 8_000);
+    byText("button", /^Stop meeting$/)?.click();
+    out.done = true;
+    w.__profileResult = out;
+    return out;
+  },
   meetings: MEETINGS,
   long_meeting: longRow.id,
 };

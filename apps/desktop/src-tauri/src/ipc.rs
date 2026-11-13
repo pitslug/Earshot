@@ -7,9 +7,10 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
+use earshot_core::asr::CancelToken;
 use earshot_core::identity::EntityId;
 use earshot_core::model::{Meeting, MeetingRepo};
-use earshot_runtime::search::MatchedIn;
+use earshot_runtime::search::{MatchedIn, Searches};
 use earshot_runtime::{MeetingActivity, RuntimeError, Services, SystemClock};
 use earshot_store::{DataDir, StoreError};
 use serde::{Deserialize, Serialize};
@@ -410,13 +411,27 @@ pub struct SearchResultsView {
     pub capped: bool,
 }
 
-/// [`earshot_runtime::search::search_meetings`] as the UI sees it. The query goes no further:
-/// not into a log, a record or an error.
+/// The error kind of a search that a newer search replaced before it answered (T9.24); the UI
+/// waits for the newer one's answer.
+pub const SEARCH_SUPERSEDED_KIND: &str = "superseded";
+
+/// [`earshot_runtime::search::search_meetings_unless`] as the UI sees it. The query goes no
+/// further: not into a log, a record or an error.
 ///
 /// # Errors
-/// Store errors.
-pub fn meeting_search(services: &Services, query: &str) -> Result<SearchResultsView, IpcError> {
-    let results = earshot_runtime::search::search_meetings(services, query)?;
+/// Store errors, and kind [`SEARCH_SUPERSEDED_KIND`] once `cancel` is cancelled.
+pub fn meeting_search(
+    services: &Services,
+    query: &str,
+    cancel: &CancelToken,
+) -> Result<SearchResultsView, IpcError> {
+    let Some(results) = earshot_runtime::search::search_meetings_unless(services, query, cancel)?
+    else {
+        return Err(IpcError::new(
+            SEARCH_SUPERSEDED_KIND,
+            "A newer search replaced this one.",
+        ));
+    };
     Ok(SearchResultsView {
         items: results
             .hits
@@ -515,15 +530,18 @@ async fn list_meetings(state: State<'_, AppState>) -> Result<Vec<MeetingListItem
 }
 
 /// The live meetings whose title, transcript or summary contains `query`, newest first (T9.7).
-/// Runs off the main thread; the store lock is held only for each meeting's read.
+/// Runs off the main thread; the store lock is held only for each meeting's read. A newer
+/// search stops this one, which then fails with kind [`SEARCH_SUPERSEDED_KIND`] (T9.24).
 #[tauri::command]
 #[specta::specta]
 async fn search_meetings(
     state: State<'_, AppState>,
+    searches: State<'_, Searches>,
     query: String,
 ) -> Result<SearchResultsView, IpcError> {
+    let cancel = searches.begin();
     let services = state.services()?;
-    blocking(move || meeting_search(&services, &query)).await
+    blocking(move || meeting_search(&services, &query, &cancel)).await
 }
 
 /// Starts a meeting in `mode` with an optional title and returns its id once it records.

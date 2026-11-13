@@ -223,7 +223,7 @@ fn search_answers_with_the_meetings_found_newest_first() {
     meeting(&svc, "Something else", T0 + 180_000, Some(60_000), 24);
     svc.delete_meeting(gone).unwrap();
 
-    let found = meeting_search(&svc, " ORCHARD ").unwrap();
+    let found = meeting_search(&svc, " ORCHARD ", &CancelToken::new()).unwrap();
     assert!(!found.capped);
     let ids: Vec<&str> = found.items.iter().map(|i| i.id.as_str()).collect();
     assert_eq!(ids, [new.to_string(), old.to_string()]);
@@ -246,12 +246,29 @@ fn search_of_nothing_or_no_match_is_an_empty_answer_that_does_not_repeat_the_que
     let svc = services(&dir);
     meeting(&svc, "Orchard review", T0, Some(60_000), 31);
     for query in ["", "   ", "quinceharvest"] {
-        let answer = meeting_search(&svc, query).unwrap();
+        let answer = meeting_search(&svc, query, &CancelToken::new()).unwrap();
         assert_eq!(answer.items, []);
         assert!(!answer.capped);
         let json = serde_json::to_string(&answer).unwrap();
         assert!(!json.contains("quinceharvest"), "{json}");
     }
+}
+
+#[test]
+fn search_replaced_by_a_newer_one_fails_as_superseded_without_the_query() {
+    let dir = TempDir::new("search-superseded");
+    let svc = services(&dir);
+    meeting(&svc, "Orchard review", T0, Some(60_000), 41);
+    let searches = earshot_runtime::search::Searches::default();
+    let older = searches.begin();
+    let newer = searches.begin();
+    let err = meeting_search(&svc, "orchard", &older).unwrap_err();
+    assert_eq!(err.kind, SEARCH_SUPERSEDED_KIND);
+    assert!(!err.message.contains("orchard"), "{}", err.message);
+    assert_eq!(
+        meeting_search(&svc, "orchard", &newer).unwrap().items.len(),
+        1
+    );
 }
 
 #[test]

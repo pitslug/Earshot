@@ -309,7 +309,7 @@ describe("a meeting started while the previous one finishes", () => {
         <EarshotThemeProvider>
           <RecordingView
             meeting={meeting}
-            now={START}
+            timer={createManualTimer(START)}
             onStop={() => {}}
             onCompact={() => {}}
             onDismiss={() => {}}
@@ -413,7 +413,7 @@ describe("provisional words", () => {
       <EarshotThemeProvider>
         <RecordingView
           meeting={meeting}
-          now={START}
+          timer={createManualTimer(START)}
           onStop={() => {}}
           onKeepRecording={() => {}}
           onCompact={() => {}}

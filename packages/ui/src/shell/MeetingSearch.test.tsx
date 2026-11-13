@@ -17,7 +17,7 @@ import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppShell } from "./AppShell";
-import { SEARCH_DEBOUNCE_MS, resultLine } from "./MeetingSearch";
+import { SEARCH_DEBOUNCE_MS, SEARCH_SUPERSEDED_KIND, resultLine } from "./MeetingSearch";
 
 const at = (day: number, hour: number) => new Date(2026, 10, day, hour, 0).getTime();
 const NOW = at(2, 16);
@@ -231,6 +231,27 @@ describe("meeting search", () => {
     await settle();
     expect(screen.getByRole("status").textContent).toBe("The search did not finish. Try again.");
     expect(screen.queryByText(/disk full/)).toBeNull();
+  });
+
+  it("search treats a search a newer one replaced as no answer, never a failure", async () => {
+    const base = createMockIpc({ meetings: MEETINGS });
+    const { settle, user } = setup({
+      ...base,
+      searchMeetings: (query) =>
+        query === "orch"
+          ? base.searchMeetings(query)
+          : Promise.reject(
+              new IpcFailure({ kind: SEARCH_SUPERSEDED_KIND, message: "replaced", retryable: false }),
+            ),
+    });
+    await user.type(await box(), "orch");
+    await settle();
+    expect(resultTitles()).toEqual(["Orchard walk", "Orchard planning"]);
+    await user.type(await box(), "ard");
+    await settle();
+    expect(screen.queryByText("The search did not finish. Try again.")).toBeNull();
+    // The last answer stays until the newer search answers.
+    expect(resultTitles()).toEqual(["Orchard walk", "Orchard planning"]);
   });
 
   it("search reads the list again when a result's meeting is gone from it, and drops the result", async () => {
