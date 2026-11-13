@@ -1991,7 +1991,7 @@ mod tests {
         let mut m = Fake::new(16_384, 1.0);
         three_parts(&mut m);
         m.script.push_back(select_reply(
-            r#"{"decisions":[[1],[3]],"action_items":[[1,3]],"open_questions":[[3]],"tldr":"A yellow plastic remote."}"#,
+            r#"{"decisions":[1,3],"action_items":[1],"open_questions":[3],"same_decisions":[],"same_action_items":[[1,3]],"tldr":"A yellow plastic remote."}"#,
         ));
         let run = summarize_chunks_select(&mut m, &inp, &options(), &RANGES);
         let s = run.result.unwrap();
@@ -2064,7 +2064,7 @@ mod tests {
         three_parts(&mut m);
         for _ in 0..=MAX_REPAIRS {
             m.script.push_back(select_reply(
-                r#"{"decisions":[[1],[1]],"action_items":[],"open_questions":[],"tldr":"x"}"#,
+                r#"{"decisions":[1,1],"action_items":[],"open_questions":[],"same_decisions":[],"same_action_items":[],"tldr":"x"}"#,
             ));
         }
         let run = summarize_chunks_select(&mut m, &input(30), &options(), &RANGES);
@@ -2082,7 +2082,7 @@ mod tests {
         let repair = &m.calls[4].0.last().unwrap().content;
         assert!(repair.contains("not a valid selection"), "{repair}");
         assert!(
-            repair.contains("/decisions/1/0: this number is used twice"),
+            repair.contains("/decisions/1: this number is used twice"),
             "{repair}"
         );
     }
@@ -2092,9 +2092,9 @@ mod tests {
         let mut m = Fake::new(16_384, 1.0);
         three_parts(&mut m);
         m.script
-            .push_back(Some((r#"{"decisions":[[1"#.into(), Stop::MaxTokens)));
+            .push_back(Some((r#"{"decisions":[1"#.into(), Stop::MaxTokens)));
         m.script.push_back(select_reply(
-            r#"{"decisions":[[1]],"action_items":[],"open_questions":[],"tldr":"x"}"#,
+            r#"{"decisions":[1],"action_items":[],"open_questions":[],"same_decisions":[],"same_action_items":[],"tldr":"x"}"#,
         ));
         let run = summarize_chunks_select(&mut m, &input(30), &options(), &RANGES);
         assert_eq!(run.result.unwrap().decisions.len(), 1);

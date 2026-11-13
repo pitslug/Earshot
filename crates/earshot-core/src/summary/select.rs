@@ -84,9 +84,9 @@ impl<'a> SelectItems<'a> {
     }
 }
 
-/// A selection reply: per list, the groups of item numbers (from 1) the summary keeps, one
-/// summary item per group (a group of several folds them, the first one's words kept); and
-/// the summary's `tldr`.
+/// A checked selection reply ([`parse_selection`]): per list, the groups of item numbers
+/// (from 1) the summary keeps, one summary item per group (a group of several folds them,
+/// the first one's words kept); and the summary's `tldr`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selection {
     /// Groups of decision numbers.
@@ -112,15 +112,167 @@ impl Selection {
     }
 }
 
-/// The keys of a selection reply, in the order the grammar writes them.
-pub const SELECTION_FIELDS: [&str; 4] = ["decisions", "action_items", "open_questions", "tldr"];
+/// The keys of a selection reply, in the order the grammar writes them: the numbers kept of
+/// each list, then the groups of numbers that are one item in other words (decisions and
+/// action items), then the `tldr`.
+pub const SELECTION_FIELDS: [&str; 6] = [
+    "decisions",
+    "action_items",
+    "open_questions",
+    "same_decisions",
+    "same_action_items",
+    "tldr",
+];
 
-/// Checks a selection reply against `counts` (the items it may number): an object with
-/// exactly [`SELECTION_FIELDS`]; each list an array of non-empty arrays of integers from 1 to
-/// that list's count, every number at most once in its list; a non-blank `tldr`. Errors carry
-/// a JSON Pointer path: [`SummaryErrorKind::UnknownSegmentNumber`] for a number outside the
-/// list (an item number here, not a segment) and [`SummaryErrorKind::Repetition`] for a
-/// number given twice.
+/// One number of a selection list: an integer from 1 to `count`, else an error at `path`.
+fn number(n: &Value, count: usize, path: String, errors: &mut Vec<SummaryError>) -> Option<usize> {
+    match n.as_u64() {
+        Some(k) if k >= 1 && usize::try_from(k).is_ok_and(|k| k <= count) => {
+            usize::try_from(k).ok()
+        }
+        Some(k) => {
+            errors.push(SummaryError {
+                path,
+                kind: SummaryErrorKind::UnknownSegmentNumber(k),
+            });
+            None
+        }
+        None => {
+            errors.push(SummaryError {
+                path,
+                kind: SummaryErrorKind::WrongType {
+                    expected: "an integer from 1",
+                },
+            });
+            None
+        }
+    }
+}
+
+/// The array at `/{name}` of `obj`, or an error.
+fn array<'a>(
+    obj: &'a serde_json::Map<String, Value>,
+    name: &str,
+    errors: &mut Vec<SummaryError>,
+) -> &'a [Value] {
+    match obj.get(name) {
+        None => {
+            errors.push(SummaryError {
+                path: format!("/{name}"),
+                kind: SummaryErrorKind::MissingField,
+            });
+            &[]
+        }
+        Some(Value::Array(a)) => a,
+        Some(_) => {
+            errors.push(SummaryError {
+                path: format!("/{name}"),
+                kind: SummaryErrorKind::WrongType { expected: "array" },
+            });
+            &[]
+        }
+    }
+}
+
+/// The numbers kept of list `name`: each in range, each at most once.
+fn kept(
+    obj: &serde_json::Map<String, Value>,
+    name: &str,
+    count: usize,
+    errors: &mut Vec<SummaryError>,
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (k, n) in array(obj, name, errors).iter().enumerate() {
+        let path = format!("/{name}/{k}");
+        if let Some(n) = number(n, count, path.clone(), errors) {
+            if out.contains(&n) {
+                errors.push(SummaryError {
+                    path,
+                    kind: SummaryErrorKind::Repetition,
+                });
+            } else {
+                out.push(n);
+            }
+        }
+    }
+    out
+}
+
+/// The groups of list `name`: each of two or more numbers in range, a number in at most one
+/// group.
+fn same(
+    obj: &serde_json::Map<String, Value>,
+    name: &str,
+    count: usize,
+    errors: &mut Vec<SummaryError>,
+) -> Vec<Vec<usize>> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for (g, group) in array(obj, name, errors).iter().enumerate() {
+        let Some(numbers) = group.as_array() else {
+            errors.push(SummaryError {
+                path: format!("/{name}/{g}"),
+                kind: SummaryErrorKind::WrongType { expected: "array" },
+            });
+            continue;
+        };
+        if numbers.len() < 2 {
+            errors.push(SummaryError {
+                path: format!("/{name}/{g}"),
+                kind: SummaryErrorKind::WrongType {
+                    expected: "a group of two or more numbers",
+                },
+            });
+            continue;
+        }
+        let mut members = Vec::new();
+        for (k, n) in numbers.iter().enumerate() {
+            let path = format!("/{name}/{g}/{k}");
+            if let Some(n) = number(n, count, path.clone(), errors) {
+                if seen.insert(n) {
+                    members.push(n);
+                } else {
+                    errors.push(SummaryError {
+                        path,
+                        kind: SummaryErrorKind::Repetition,
+                    });
+                }
+            }
+        }
+        out.push(members);
+    }
+    out
+}
+
+/// The summary's items from the numbers `kept` and the `same` groups: in the order kept, one
+/// item per kept number not already folded into an earlier one, folding in the other members
+/// of its group (kept or not).
+fn fold(kept: &[usize], same: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut used = BTreeSet::new();
+    let mut out = Vec::new();
+    for &k in kept {
+        if !used.insert(k) {
+            continue;
+        }
+        let mut item = vec![k];
+        if let Some(group) = same.iter().find(|g| g.contains(&k)) {
+            item.extend(group.iter().copied().filter(|&n| used.insert(n)));
+        }
+        out.push(item);
+    }
+    out
+}
+
+/// Checks a selection reply against `counts` (the items it may number) and turns it into
+/// groups: an object with exactly [`SELECTION_FIELDS`]; `decisions`, `action_items` and
+/// `open_questions` the numbers kept (integers from 1 to the list's count, each at most
+/// once); `same_decisions` and `same_action_items` groups of two or more numbers that are one
+/// item in other words (a number in at most one group); a non-blank `tldr`. Each kept number
+/// gives one item, in the order kept, with the other members of its group folded into it
+/// (kept or not); a kept number already folded into an earlier one gives none, and a group
+/// none of whose numbers is kept changes nothing. Errors carry a JSON Pointer path:
+/// [`SummaryErrorKind::UnknownSegmentNumber`] for a number outside the list (an item number
+/// here, not a segment) and [`SummaryErrorKind::Repetition`] for a number given twice.
 ///
 /// # Errors
 /// Every problem found.
@@ -128,102 +280,59 @@ pub fn parse_selection(
     value: &Value,
     counts: SelectCounts,
 ) -> Result<Selection, Vec<SummaryError>> {
-    let mut errors = Vec::new();
-    let err = |path: String, kind| SummaryError { path, kind };
     let Some(obj) = value.as_object() else {
-        return Err(vec![err(
-            String::new(),
-            SummaryErrorKind::WrongType { expected: "object" },
-        )]);
+        return Err(vec![SummaryError {
+            path: String::new(),
+            kind: SummaryErrorKind::WrongType { expected: "object" },
+        }]);
     };
+    let mut errors = Vec::new();
     for k in obj.keys() {
         if !SELECTION_FIELDS.contains(&k.as_str()) {
-            errors.push(err(format!("/{k}"), SummaryErrorKind::UnknownField));
+            errors.push(SummaryError {
+                path: format!("/{k}"),
+                kind: SummaryErrorKind::UnknownField,
+            });
         }
     }
-    let list = |name: &str, count: usize, errors: &mut Vec<SummaryError>| -> Vec<Vec<usize>> {
-        let Some(v) = obj.get(name) else {
-            errors.push(err(format!("/{name}"), SummaryErrorKind::MissingField));
-            return Vec::new();
-        };
-        let Some(groups) = v.as_array() else {
-            errors.push(err(
-                format!("/{name}"),
-                SummaryErrorKind::WrongType { expected: "array" },
-            ));
-            return Vec::new();
-        };
-        let mut seen = BTreeSet::new();
-        let mut out = Vec::new();
-        for (g, group) in groups.iter().enumerate() {
-            let Some(numbers) = group.as_array() else {
-                errors.push(err(
-                    format!("/{name}/{g}"),
-                    SummaryErrorKind::WrongType { expected: "array" },
-                ));
-                continue;
-            };
-            if numbers.is_empty() {
-                errors.push(err(format!("/{name}/{g}"), SummaryErrorKind::Blank));
-                continue;
-            }
-            let mut kept = Vec::new();
-            for (k, n) in numbers.iter().enumerate() {
-                let path = format!("/{name}/{g}/{k}");
-                match n.as_u64() {
-                    Some(n) if n >= 1 && usize::try_from(n).is_ok_and(|n| n <= count) => {
-                        if seen.insert(n) {
-                            kept.push(usize::try_from(n).unwrap_or(usize::MAX));
-                        } else {
-                            errors.push(err(path, SummaryErrorKind::Repetition));
-                        }
-                    }
-                    Some(n) => errors.push(err(path, SummaryErrorKind::UnknownSegmentNumber(n))),
-                    None => errors.push(err(
-                        path,
-                        SummaryErrorKind::WrongType {
-                            expected: "an integer from 1",
-                        },
-                    )),
-                }
-            }
-            if !kept.is_empty() {
-                out.push(kept);
-            }
-        }
-        out
-    };
-    let decisions = list("decisions", counts.decisions, &mut errors);
-    let action_items = list("action_items", counts.action_items, &mut errors);
-    let open_questions = list("open_questions", counts.open_questions, &mut errors);
+    let decisions = kept(obj, "decisions", counts.decisions, &mut errors);
+    let action_items = kept(obj, "action_items", counts.action_items, &mut errors);
+    let open_questions = kept(obj, "open_questions", counts.open_questions, &mut errors);
+    let same_decisions = same(obj, "same_decisions", counts.decisions, &mut errors);
+    let same_actions = same(obj, "same_action_items", counts.action_items, &mut errors);
     let tldr = match obj.get("tldr") {
+        Some(Value::String(s)) if !s.trim().is_empty() => s.trim().to_owned(),
+        Some(Value::String(_)) => {
+            errors.push(SummaryError {
+                path: "/tldr".into(),
+                kind: SummaryErrorKind::Blank,
+            });
+            String::new()
+        }
         None => {
-            errors.push(err("/tldr".into(), SummaryErrorKind::MissingField));
+            errors.push(SummaryError {
+                path: "/tldr".into(),
+                kind: SummaryErrorKind::MissingField,
+            });
             String::new()
         }
-        Some(Value::String(s)) if s.trim().is_empty() => {
-            errors.push(err("/tldr".into(), SummaryErrorKind::Blank));
-            String::new()
-        }
-        Some(Value::String(s)) => s.trim().to_owned(),
         Some(_) => {
-            errors.push(err(
-                "/tldr".into(),
-                SummaryErrorKind::WrongType { expected: "string" },
-            ));
+            errors.push(SummaryError {
+                path: "/tldr".into(),
+                kind: SummaryErrorKind::WrongType { expected: "string" },
+            });
             String::new()
         }
     };
-    if errors.is_empty() {
-        Ok(Selection {
-            decisions,
-            action_items,
-            open_questions,
-            tldr,
-        })
-    } else {
-        Err(errors)
+    if !errors.is_empty() {
+        return Err(errors);
     }
+    Ok(Selection {
+        decisions: fold(&decisions, &same_decisions),
+        action_items: fold(&action_items, &same_actions),
+        open_questions: open_questions.into_iter().map(|n| vec![n]).collect(),
+        tldr,
+    })
 }
 
 /// The summary `selection` keeps of `parts` (numbered as [`SelectItems::of`]): what
@@ -457,18 +566,39 @@ mod tests {
         assert_eq!(s.tldr, "Nothing settled.");
     }
 
+    /// A reply of the given lists with no folds, as the grammar writes it.
+    fn reply(d: Value, a: Value, q: Value) -> Value {
+        json!({"decisions": d, "action_items": a, "open_questions": q, "same_decisions": [], "same_action_items": [], "tldr": "Done."})
+    }
+
     #[test]
-    fn summary_select_parse_takes_a_valid_reply() {
+    fn summary_select_parse_takes_kept_numbers_and_folds_them_by_group() {
         let counts = SelectCounts::of_parts(&parts());
-        let v = json!({"decisions": [[1, 4], [3]], "action_items": [[2]], "open_questions": [], "tldr": "Done."});
+        // Kept in the order given; nothing folded.
         assert_eq!(
-            parse_selection(&v, counts).unwrap(),
+            parse_selection(&reply(json!([3, 1]), json!([2]), json!([])), counts).unwrap(),
             Selection {
-                decisions: vec![vec![1, 4], vec![3]],
+                decisions: vec![vec![3], vec![1]],
                 action_items: vec![vec![2]],
                 open_questions: vec![],
                 tldr: "Done.".into(),
             }
+        );
+        // A group folds its other members into the first kept member, kept or not; a kept
+        // number already folded gives no item; a group with no kept member changes nothing.
+        let mut v = reply(json!([1, 3, 4]), json!([2, 1]), json!([2]));
+        v["same_decisions"] = json!([[4, 1], [2, 3]]);
+        v["same_action_items"] = json!([[1, 2]]);
+        let s = parse_selection(&v, counts).unwrap();
+        assert_eq!(s.decisions, vec![vec![1, 4], vec![3, 2]]);
+        assert_eq!(s.action_items, vec![vec![2, 1]]);
+        assert_eq!(s.open_questions, vec![vec![2]]);
+        assert_eq!(s.folded(), 3);
+        let mut v = reply(json!([3]), json!([]), json!([]));
+        v["same_decisions"] = json!([[1, 2]]);
+        assert_eq!(
+            parse_selection(&v, counts).unwrap().decisions,
+            vec![vec![3]]
         );
     }
 
@@ -482,43 +612,55 @@ mod tests {
                 .map(|e| (e.path, e.kind))
                 .collect()
         };
-        // A number twice, in two groups or in one.
+        // A number kept twice; a number in two groups.
         assert_eq!(
-            kinds(
-                json!({"decisions": [[1], [2, 1]], "action_items": [], "open_questions": [], "tldr": "x"})
-            ),
-            [("/decisions/1/1".to_owned(), SummaryErrorKind::Repetition)]
+            kinds(reply(json!([1, 2, 1]), json!([]), json!([]))),
+            [("/decisions/2".to_owned(), SummaryErrorKind::Repetition)]
         );
+        let mut v = reply(json!([1]), json!([]), json!([]));
+        v["same_decisions"] = json!([[1, 2], [3, 2]]);
         assert_eq!(
-            kinds(
-                json!({"decisions": [[3, 3]], "action_items": [], "open_questions": [], "tldr": "x"})
-            ),
-            [("/decisions/0/1".to_owned(), SummaryErrorKind::Repetition)]
+            kinds(v),
+            [(
+                "/same_decisions/1/1".to_owned(),
+                SummaryErrorKind::Repetition
+            )]
         );
-        // Out of range: 0, past the list's count (2 actions).
+        // Out of range: 0, past the list's count (2 actions), and in a group.
+        let mut v = reply(json!([0]), json!([3]), json!([]));
+        v["same_action_items"] = json!([[1, 9]]);
         assert_eq!(
-            kinds(
-                json!({"decisions": [[0]], "action_items": [[3]], "open_questions": [], "tldr": "x"})
-            ),
+            kinds(v),
             [
                 (
-                    "/decisions/0/0".to_owned(),
+                    "/decisions/0".to_owned(),
                     SummaryErrorKind::UnknownSegmentNumber(0)
                 ),
                 (
-                    "/action_items/0/0".to_owned(),
+                    "/action_items/0".to_owned(),
                     SummaryErrorKind::UnknownSegmentNumber(3)
+                ),
+                (
+                    "/same_action_items/0/1".to_owned(),
+                    SummaryErrorKind::UnknownSegmentNumber(9)
                 ),
             ]
         );
-        // An empty group, a blank tldr, a missing list, an unknown field, a wrong type.
-        let e = kinds(json!({"decisions": [[]], "action_items": "no", "tldr": " ", "title": "t"}));
+        // A group of one, a blank tldr, a missing list, an unknown field, a wrong type.
+        let e = kinds(
+            json!({"decisions": [1], "action_items": "no", "same_decisions": [[2]], "same_action_items": [], "tldr": " ", "title": "t"}),
+        );
         assert!(
             e.contains(&("/title".into(), SummaryErrorKind::UnknownField)),
             "{e:?}"
         );
         assert!(
-            e.contains(&("/decisions/0".into(), SummaryErrorKind::Blank)),
+            e.contains(&(
+                "/same_decisions/0".into(),
+                SummaryErrorKind::WrongType {
+                    expected: "a group of two or more numbers"
+                }
+            )),
             "{e:?}"
         );
         assert!(e.contains(&(
@@ -535,11 +677,9 @@ mod tests {
             )]
         );
         assert!(
-            kinds(
-                json!({"decisions": [["1"]], "action_items": [], "open_questions": [], "tldr": "x"})
-            )
-            .iter()
-            .any(|(p, _)| p == "/decisions/0/0")
+            kinds(reply(json!(["1"]), json!([]), json!([])))
+                .iter()
+                .any(|(p, _)| p == "/decisions/0")
         );
     }
 

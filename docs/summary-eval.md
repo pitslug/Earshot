@@ -1305,3 +1305,22 @@ The control and brief runs are made again in this build; before anything is judg
 **Time.** Reported per meeting from llama.cpp's counts and step times: requests, prompt and generated tokens, and `hangup_s` (the last map step plus the merge, the wait after the meeting ends). These runs are on the desktop GPU, possibly a shared host, so their seconds are not Surface times. The 50% criterion needs a Surface run on an idle machine, which comes later. So tonight's result can at most say "quality passes, speed not yet measured"; a condition that fails a quality part fails whatever its speed.
 
 **Limits, stated now.** Four of the owner's meetings, one run per condition, one judge per meeting; a total that moves by 1 or 2 between rounds can be judge noise. The selection merge keeps every part's notes, so its summaries can be longer than today's merge; words are reported, and length is not part of the rule.
+
+**Method amended before any result was judged (2026-11-14).** The first selection runs (both arms, the five AMI dev meetings and the owner's four) put nearly every number of a list into one group, which the reply format reads as "fold all of these into one": every summary kept one decision and one action item (AMI: 5 decisions and 5 actions written over five meetings in each arm, against 35 and 18 for the control; the owner's meetings: one action per meeting). That is the model misreading the reply format, not a selection, so those runs were stopped, are not judged and are kept aside (`target/sum-eval/t1225s-*-select`, and in the private run folder). The reply format is now a flat list of the numbers kept per list (`decisions`, `action_items`, `open_questions`) plus separate fold groups (`same_decisions`, `same_action_items`, groups of two or more numbers that are one item in other words): each kept number is one item in the order kept, the other members of its group are folded into it (their citations kept, at most three), a kept number already folded into an earlier one gives no item, and a group with no kept member changes nothing. Everything else in the method, the conditions, the judging and the rule are unchanged. The format key stays `-select`; the amended runs go to new folders, and the control and `brief` runs were made again in the amended build so all four conditions come from one build.
+
+### Runs (2026-11-14, counts only): generation done, judging pending
+
+One build (CUDA, RTX 5080, S16, greedy, chunked 600 s). **Today's method reproduces:** `--compare-summaries` of the control and `brief` runs against the stored runs gave 5 of 5 AMI meetings identical in each arm (against `t1217-4b-current` and `t1217-4b-brief`) and 4 of 4 of the owner's meetings identical in each arm (against the T12.25a first run), both before and after the amendment above. Every summary of every condition is valid; no selection reply needed a repair and none was joined. Seconds are desktop GPU seconds on a possibly shared host, not Surface times.
+
+| Set | Condition | Valid | Requests | Prompt tokens | Generated tokens | At hang-up, s per meeting (GPU) | Decisions / actions written |
+|---|---|---|---|---|---|---|---|
+| AMI (5) | control | 5/5 | 25 | 121,837 | 28,349 | 17.9 | 35 / 18 |
+| AMI (5) | brief | 5/5 | 25 | 120,818 | 19,215 | 10.7 | 36 / 17 |
+| AMI (5) | standard-select | 5/5 | 25 | 112,957 | 18,272 | 5.5 | 31 / 18 |
+| AMI (5) | brief-select | 5/5 | 25 | 114,122 | 13,202 | 4.3 | 28 / 14 |
+| Owner's (4) | control | 4/4 | 18 | 66,039 | 20,703 | 15.0 | 4 / 20 |
+| Owner's (4) | brief | 4/4 | 18 | 64,020 | 10,559 | 8.4 | 6 / 13 |
+| Owner's (4) | standard-select | 4/4 | 18 | 59,355 | 11,800 | 4.6 | 3 / 14 |
+| Owner's (4) | brief-select | 4/4 | 18 | 60,047 | 6,426 | 3.8 | 5 / 12 |
+
+- The selection merge cuts the GPU wait at hang-up by about 70% against the control in both sets (the merge itself drops from about 14 s to under 1 s per meeting); whether that holds on the Surface is not measured. Quality is not judged yet: the blinded packets (four summaries per meeting) are written, the AMI set under `target/sum-eval/judge-dev-t1225s`, the owner's in the private run folder.

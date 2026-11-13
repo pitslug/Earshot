@@ -273,13 +273,13 @@ fn grammar_for(
 }
 
 /// The grammar of a selection reply (T12.25 part 2, merge by selection, evaluation only;
-/// production never calls it): `{"decisions": [[...], ...], "action_items": [...],
-/// "open_questions": [...], "tldr": "..."}` in that order (`earshot_core::summary::
-/// SELECTION_FIELDS`), each list holding at most `limits.max_items` groups (and at most as
-/// many as it has items) of 1 to `count` item numbers from 1 to that list's count, and a
-/// non-blank `tldr`. A list with no items can only be empty. Whitespace as
-/// [`summary_grammar`] (indented output allowed). A number used twice is left to
-/// `earshot_core::summary::parse_selection`.
+/// production never calls it): the keys of `earshot_core::summary::SELECTION_FIELDS` in
+/// that order. `decisions`, `action_items` and `open_questions` hold at most
+/// `limits.max_items` (and at most as many as the list has items) numbers from 1 to that
+/// list's count; `same_decisions` and `same_action_items` hold groups of 2 to `count` such
+/// numbers, at most `count / 2` groups; `tldr` is non-blank. A list with no items can only be
+/// empty. Whitespace as [`summary_grammar`] (indented output allowed). A number used twice is
+/// left to `earshot_core::summary::parse_selection`.
 ///
 /// # Errors
 /// [`GrammarError`] only if the converter refuses the schema (it does not).
@@ -287,20 +287,30 @@ pub fn selection_grammar(
     counts: earshot_core::summary::SelectCounts,
     limits: SummaryLimits,
 ) -> Result<String, GrammarError> {
-    let list = |count: usize| {
-        let numbers: Vec<Value> = if count == 0 {
+    let numbers = |count: usize| -> Value {
+        let n: Vec<Value> = if count == 0 {
             vec![json!(1)]
         } else {
             (1..=count).map(|n| json!(n)).collect()
         };
+        json!({"enum": n})
+    };
+    let kept = |count: usize| {
         json!({
             "type": "array",
             "maxItems": count.min(limits.max_items as usize),
+            "items": numbers(count),
+        })
+    };
+    let same = |count: usize| {
+        json!({
+            "type": "array",
+            "maxItems": count / 2,
             "items": {
                 "type": "array",
-                "minItems": 1,
-                "maxItems": count.max(1),
-                "items": {"enum": numbers},
+                "minItems": 2,
+                "maxItems": count.max(2),
+                "items": numbers(count),
             },
         })
     };
@@ -308,9 +318,11 @@ pub fn selection_grammar(
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "decisions": list(counts.decisions),
-            "action_items": list(counts.action_items),
-            "open_questions": list(counts.open_questions),
+            "decisions": kept(counts.decisions),
+            "action_items": kept(counts.action_items),
+            "open_questions": kept(counts.open_questions),
+            "same_decisions": same(counts.decisions),
+            "same_action_items": same(counts.action_items),
             "tldr": {"type": "string"},
         },
         "required": earshot_core::summary::SELECTION_FIELDS,
@@ -989,27 +1001,29 @@ mod tests {
             open_questions: 0,
         };
         let g = Gbnf::parse(&selection_grammar(counts, SummaryLimits::default()).unwrap());
-        let ok = r#"{"decisions":[[1,4],[3]],"action_items":[[2]],"open_questions":[],"tldr":"A yellow remote."}"#;
+        let ok = r#"{"decisions":[1,4,3],"action_items":[2],"open_questions":[],"same_decisions":[[1,4]],"same_action_items":[],"tldr":"A yellow remote."}"#;
         assert!(g.accepts(ok));
         assert!(g.accepts(&indent(ok)));
         assert!(g.accepts(
-            r#"{"decisions":[],"action_items":[],"open_questions":[],"tldr":"Nothing."}"#
+            r#"{"decisions":[],"action_items":[],"open_questions":[],"same_decisions":[],"same_action_items":[],"tldr":"Nothing."}"#
         ));
         for bad in [
-            ok.replace("[1,4]", "[1,5]"), // past the decisions
-            ok.replace("[[2]]", "[[3]]"), // past the actions
-            ok.replace("[1,4]", "[]"),    // an empty group
-            ok.replace(",[3]]", ",3]"),   // not a group
-            ok.replace(r#""open_questions":[]"#, r#""open_questions":[[1]]"#), // none to give
+            ok.replace("[1,4,3]", "[1,5]"), // past the decisions
+            ok.replace(r#""action_items":[2]"#, r#""action_items":[3]"#), // past the actions
+            ok.replace("[[1,4]]", "[[1]]"), // a group of one
+            ok.replace("[[1,4]]", "[[1,4],[2,3],[1,2]]"), // more groups than 4 / 2
+            ok.replace("[1,4,3]", "[[1],[4]]"), // groups where numbers go
+            ok.replace(r#""open_questions":[]"#, r#""open_questions":[1]"#), // none to give
             ok.replace(r#""A yellow remote.""#, r#""""#), // a blank tldr
             ok.replace(r#""A yellow remote.""#, r#"" x""#), // leading space
-            ok.replace("[1,4]", "[0]"),   // numbers start at 1
+            ok.replace("[1,4,3]", "[0]"),   // numbers start at 1
             ok.replace(r#""decisions""#, r#""title":"t","decisions""#), // another field
+            ok.replace(r#","same_action_items":[]"#, ""), // a missing field
         ] {
             assert_ne!(bad, ok);
             assert!(!g.accepts(&bad), "{bad}");
         }
-        // The list cap applies (2 groups here), and never more groups than items.
+        // The list cap applies (2 here), and never more numbers than items.
         let capped = Gbnf::parse(
             &selection_grammar(
                 counts,
@@ -1020,9 +1034,9 @@ mod tests {
             )
             .unwrap(),
         );
-        assert!(capped.accepts(ok));
-        assert!(!capped.accepts(&ok.replace("[[1,4],[3]]", "[[1],[3],[4]]")));
-        assert!(!g.accepts(&ok.replace("[[2]]", "[[2],[1],[2]]")));
+        assert!(capped.accepts(&ok.replace("[1,4,3]", "[1,4]")));
+        assert!(!capped.accepts(ok));
+        assert!(!g.accepts(&ok.replace(r#""action_items":[2]"#, r#""action_items":[2,1,2]"#)));
     }
 
     #[test]
