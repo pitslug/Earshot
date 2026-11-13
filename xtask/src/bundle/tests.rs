@@ -1203,6 +1203,25 @@ fn build_bundle_install_notice_credits_the_common_words() {
     assert!(text.is_ascii());
 }
 
+/// T12.15ee: the notice the bundle run writes beside the exe is this checkout's assembled text,
+/// and it is the file the overlay installs as the meeting's notice.
+#[test]
+fn build_bundle_install_notice_is_written_beside_the_exe_and_installed_by_the_overlay() {
+    let root = crate::repo_root();
+    let exe_dir = tmp("notice");
+    let notice = write_install_notice(&root, &exe_dir).unwrap();
+    assert_eq!(notice, exe_dir.join(INSTALL_NOTICE_BUILT));
+    let text = std::fs::read_to_string(&notice).unwrap();
+    assert_eq!(text, install_notice_text(&root).unwrap());
+    assert!(notice_missing_credits(&text).is_empty());
+    let c = bundle_config(&exe_dir, &notice, Path::new("h.nsh"), &["nsis"], X64, &[]);
+    assert_eq!(
+        c["bundle"]["resources"][notice.display().to_string()],
+        MEETING_NOTICE_IN_INSTALL
+    );
+    let _ = std::fs::remove_dir_all(&exe_dir);
+}
+
 #[test]
 fn bundle_check_refuses_a_notice_without_the_common_words() {
     let root = crate::repo_root();
@@ -1214,6 +1233,7 @@ fn bundle_check_refuses_a_notice_without_the_common_words() {
     assert!(!notice_check(&meeting, &text).0);
     // So does a section with its licence cut, and an empty or missing file.
     let cut = text.replace(COMMON_WORDS_LICENCE_URL, "");
+    assert_eq!(notice_missing_credits(&cut), [COMMON_WORDS_LICENCE_URL]);
     assert!(!notice_check(&cut, &text).0);
     assert!(!notice_check("", &text).0);
     // The bundle's own text passes.

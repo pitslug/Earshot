@@ -523,6 +523,19 @@ pub fn install_notice_text(root: &Path) -> Result<String> {
     install_notice(&meeting, &core)
 }
 
+/// Writes this checkout's [`install_notice_text`] beside the built exe as
+/// [`INSTALL_NOTICE_BUILT`] and returns its path: the file [`bundle_config`] installs as
+/// [`MEETING_NOTICE_IN_INSTALL`] (T12.15ee).
+///
+/// # Errors
+/// As [`install_notice_text`]; a failed write.
+pub fn write_install_notice(root: &Path, exe_dir: &Path) -> Result<PathBuf> {
+    let notice = exe_dir.join(INSTALL_NOTICE_BUILT);
+    std::fs::write(&notice, install_notice_text(root)?)
+        .with_context(|| format!("write {}", notice.display()))?;
+    Ok(notice)
+}
+
 /// The credits the install's notice `text` lacks ([`NOTICE_CREDITS`]).
 #[must_use]
 pub fn notice_missing_credits(text: &str) -> Vec<&'static str> {
@@ -999,9 +1012,7 @@ pub fn run(
     {
         check_binary(name, &read_pe(&exe_dir.join(name))?, &triple, features)?;
     }
-    let notice = exe_dir.join(INSTALL_NOTICE_BUILT);
-    std::fs::write(&notice, install_notice_text(root)?)
-        .with_context(|| format!("write {}", notice.display()))?;
+    let notice = write_install_notice(root, exe_dir)?;
     let config = dir.join(format!("earshot-bundle-{triple}.json"));
     let overlay = bundle_config(
         exe_dir,
