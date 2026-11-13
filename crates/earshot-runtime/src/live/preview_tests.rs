@@ -784,10 +784,12 @@ fn live_preview_words_behind_the_frontier_are_not_shown() {
     assert_eq!(texts(words.shown()), vec!["c"]);
 }
 
-/// The echo rule works on settled text, so a call's mic shows no previews: the far end's words
-/// that leak into the mic are never decoded for display, with the echo in or out.
+/// Without the user's own voice chosen, a call's mic (with the far end leaking into it) gets no
+/// previews: no session, no shown words, no report; only the far end has them. This checks which
+/// track runs previews, not what a mic preview would show of the echo: with the user's own voice
+/// chosen (T9.14) the mic does show previews, before the echo rule has run on settled text.
 #[test]
-fn live_preview_mic_in_a_call_shows_no_far_end_word() {
+fn live_preview_mic_in_a_call_without_own_voice_gets_no_previews() {
     let sim = leaky_call(true);
     let n = sim.mic.len() / earshot_core::aec::BLOCK * earshot_core::aec::BLOCK;
     let scene = Scene {
@@ -802,6 +804,14 @@ fn live_preview_mic_in_a_call_shows_no_far_end_word() {
         previews_of(&events)
             .iter()
             .all(|(track, _)| *track == TrackId::Reference)
+    );
+    // Nothing is said about the mic's previews either: it never had any.
+    assert!(
+        states_of(&events)
+            .iter()
+            .all(|(track, _)| *track == TrackId::Reference),
+        "{:?}",
+        states_of(&events)
     );
 }
 

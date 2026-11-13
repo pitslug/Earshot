@@ -19,7 +19,7 @@
 //! ([`LivePreviews::own_voice`], T9.14; on the CPU even when the track runs on CUDA, T12.3a). A
 //! track's previews stopping never stops the other's, and each track sends its own [`PreviewReport`]. Without `own_voice` a mic in a call shows nothing:
 //! far-end words leak into it until the echo filter removes them, and that filter works on settled
-//! text (`live_preview_mic_in_a_call_shows_no_far_end_word`).
+//! text (`live_preview_mic_in_a_call_without_own_voice_gets_no_previews`).
 //!
 //! **What is decoded.** About every [`LivePreviews::interval`], while the track's voice activity says
 //! there is unfinished speech, the last [`LivePreviews::window`] of the audio after the worker's
