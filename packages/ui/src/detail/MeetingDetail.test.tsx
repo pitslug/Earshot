@@ -1363,7 +1363,8 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
 
     await waitFor(() => expect(marks()).toEqual([]));
     expect(calls).toContainEqual(["keepWord", ITEM.id, LINE8, 8]);
-    expect(lineCell().textContent).toBe(LINE8_TEXT);
+    // The popover just closed: tabster hides the page for its deferred pass, then shows it again.
+    await waitFor(() => expect(lineCell().textContent).toBe(LINE8_TEXT));
     expect(screen.queryByRole("textbox", { name: "Line 8" })).not.toBeInTheDocument();
   });
 
@@ -1493,21 +1494,29 @@ describe("MeetingDetailView, words to the Dictionary (T12.15f)", () => {
     expect(status).toHaveTextContent("1 other line now has a suggestion.");
   });
 
-  it("closes the bar when the user moves on, and ignoring it adds nothing", async () => {
+  // One way of moving on per test: each types a whole line key by key, and three in one test
+  // ran past the test timeout on a slower machine.
+  it("closes the bar on Not now, and ignoring it adds nothing", async () => {
     const { user, calls } = await transcript();
     await editLine1(user);
     expect(await screen.findByRole("group", { name: "Add to Dictionary" })).toBeInTheDocument();
     await user.click(within(bar()!).getByRole("button", { name: "Not now" }));
     expect(bar()).toBeNull();
     expect(word("Quillmarsh")?.className ?? "").toBe("");
+    expect(calls.some((c) => c[0] === "addDictionaryWord")).toBe(false);
+  });
 
-    // Again, then another line's edit: the bar goes.
+  it("closes the bar when another line's edit starts, and adds nothing", async () => {
+    const { user, calls } = await transcript();
     await editLine1(user, "So the lead time on the Velmora pump set is now looking like eleven weeks.");
     expect(await screen.findByRole("button", { name: 'Add "Velmora" to Dictionary' })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Edit line 2" }));
     expect(bar()).toBeNull();
-    // Escape inside the bar closes it too.
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(calls.some((c) => c[0] === "addDictionaryWord")).toBe(false);
+  });
+
+  it("closes the bar with Escape inside it, and adds nothing", async () => {
+    const { user, calls } = await transcript();
     await editLine1(user, "So the lead time on the Tarnwick pump set is now looking like eleven weeks.");
     const button = await screen.findByRole("button", { name: 'Add "Tarnwick" to Dictionary' });
     button.focus();
