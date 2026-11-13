@@ -995,12 +995,12 @@ pub fn input_args(
     jobs: &[(String, String)],
     meetings: &[(String, Vec<String>)],
 ) -> Vec<OsString> {
-    let mut a: Vec<OsString> = vec![
-        "--annotations".into(),
-        annotations.into(),
-        "--earshot-inputs".into(),
-        earshot_inputs.into(),
-    ];
+    let mut a: Vec<OsString> = vec!["--annotations".into(), annotations.into()];
+    // A store run (T12.25a) reads only its run folder; the example refuses Earshot inputs
+    // beside it.
+    if !jobs.iter().any(|(_, source)| source == "store") {
+        a.extend(["--earshot-inputs".into(), earshot_inputs.into()]);
+    }
     for (split, source) in jobs {
         a.push("--job".into());
         a.push(format!("{split}:{source}").into());
@@ -2187,6 +2187,24 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sum_eval_store_jobs_never_pass_earshot_inputs() {
+        let store = input_args(
+            Path::new("ann"),
+            Path::new("ins"),
+            &[("real".to_owned(), "store".to_owned())],
+            &[],
+        );
+        assert!(!store.iter().any(|a| a == "--earshot-inputs"));
+        let ami = input_args(
+            Path::new("ann"),
+            Path::new("ins"),
+            &[("dev".to_owned(), "reference".to_owned())],
+            &[],
+        );
+        assert!(ami.iter().any(|a| a == "--earshot-inputs"));
+    }
 
     #[test]
     fn sum_eval_jobs_put_the_earshot_source_on_the_test_split_only() {
