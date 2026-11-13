@@ -29,10 +29,14 @@
 //! [`RuntimeEvent::RecordingSaved`] on (T9.22): the live transcript's catch-up
 //! ([`LiveSession::cancel_catch_up`]), the wait for its turn, the wait for the CUDA start
 //! (`MeetingModels::resolve_unless`), then the final pass and the summary. A catch-up that stops
-//! moving is given up by the session (`LiveConfig::catch_up_stall`); the meeting is then left
-//! unprocessed with a banner, its turn passing to the next.
-//! Not covered yet (T9.22b): a live model load hung on the session's hold thread (the session joins it
-//! before the catch-up), a final-pass step and a local summary load that never return.
+//! moving is given up by the session (`LiveConfig::catch_up_stall`), and so is a live model load
+//! on the session's hold thread that does not return at the end (`LiveHold::load_stall`); the
+//! meeting is then left unprocessed with a banner, its turn passing to the next (T9.22b). The work
+//! after the meeting runs on a thread of its own, watched for signs of life ([`AfterBounds`]): a
+//! final pass that stops answering is left the same way. A local summary's load has its own bound
+//! (`LocalSummaryConfig::load_stall_limit`) and fails the summary. A thread left keeps what it
+//! holds and ends on its own, never joined; the meeting's place in the queue ends whatever it
+//! holds ([`QueueTicket::end`]).
 //!
 //! The driver is generic over [`Prepare`], so tests run it on a replay and fake post work.
 
@@ -95,9 +99,11 @@ impl StartRequest {
 pub type StartFn = Box<dyn FnOnce(&Services) -> Result<LiveSession, RuntimeError>>;
 
 /// The work after the meeting: the host's post-meeting runner, with the token that cancels both its
-/// final pass and its summary and its progress callback.
+/// final pass and its summary and its progress callback. It runs on a thread of its own, watched
+/// by the meeting's thread ([`AfterBounds`]), so it can be left if it stops answering.
 pub type AfterFn = Box<
-    dyn FnOnce(&Services, &LiveOutcome, &CancelToken, &mut dyn FnMut(HostStep<'_>)) -> HostOutcome,
+    dyn FnOnce(&Services, &LiveOutcome, &CancelToken, &mut dyn FnMut(HostStep<'_>)) -> HostOutcome
+        + Send,
 >;
 
 /// A meeting ready to start: everything the pre-flight checked.
@@ -182,6 +188,8 @@ struct Inner {
     finishing: Mutex<BTreeMap<String, CancelToken>>,
     /// The most a stop and wait waits ([`STOP_CEILING`]).
     stop_ceiling: Duration,
+    /// When the work after a meeting is given up ([`AfterBounds`]).
+    after_bounds: AfterBounds,
 }
 
 impl Inner {
@@ -253,6 +261,7 @@ impl MeetingDriver {
             shown: AtomicU64::new(0),
             finishing: Mutex::default(),
             stop_ceiling: STOP_CEILING,
+            after_bounds: AfterBounds::default(),
         }))
     }
 
@@ -426,6 +435,20 @@ impl MeetingDriver {
         self
     }
 
+    /// The same driver whose work after a meeting is given up at `bounds` (tests; call it before
+    /// the driver is shared).
+    ///
+    /// # Panics
+    /// When the driver was cloned already.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_after_bounds(mut self, bounds: AfterBounds) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("set before the driver is shared")
+            .after_bounds = bounds;
+        self
+    }
+
     /// [`MeetingDriver::stop_and_wait`] for at most `limit` instead of the stop ceiling (T9.19:
     /// Windows waits only a few seconds for an app at a restart, less than the capture source's
     /// own `STOP_WAIT`). Returns whether the recording is saved; when not, the stop stays
@@ -508,6 +531,214 @@ fn session_failure(saved: bool, e: &RuntimeError) -> SummaryEvent {
 /// The session failed after the recording was saved.
 pub const SAVED_BUT_LIVE_FAILED: &str = "The recording is saved, but the live transcript did \
      not finish. Re-transcribe the meeting to get the full transcript.";
+
+/// What the UI hears when a meeting is left unprocessed because a live model load did not return
+/// after the recording (T9.22b).
+pub const LIVE_LOAD_STALLED_MESSAGE: &str = "The recording is saved, but the live transcription \
+     model did not finish loading, so Earshot left this meeting unprocessed. Restart Earshot, \
+     then re-transcribe the meeting from its page.";
+
+/// What the UI hears when a meeting is left unprocessed because its final pass stopped answering
+/// (T9.22b).
+pub const POST_STALLED_MESSAGE: &str = "The recording is saved, but finishing the transcript \
+     stopped answering, so Earshot left this meeting unprocessed. Restart Earshot, then \
+     re-transcribe the meeting from its page.";
+
+/// The banner of a final pass left for stopping answering (T9.22b), key [`POST_STALLED_KEY`].
+pub const POST_STALLED_BANNER: &str = "Finishing the transcript stopped answering, so Earshot \
+     left this meeting unprocessed. The recording is kept.";
+
+/// The banner key of [`POST_STALLED_BANNER`].
+pub const POST_STALLED_KEY: &str = "post-stalled";
+
+/// Why the session's outcome leaves the meeting unprocessed before its turn (T9.22): a live
+/// catch-up or a live model load that stopped answering may hang the final pass too. `None`: it
+/// takes its turn.
+fn left_unprocessed(outcome: &LiveOutcome) -> Option<&'static str> {
+    use earshot_runtime::live::RuntimeWarning;
+    outcome.problems.iter().find_map(|p| match p {
+        RuntimeWarning::LiveCatchUpStalled { .. } => Some(CATCH_UP_STALLED_MESSAGE),
+        RuntimeWarning::LiveLoadStalled => Some(LIVE_LOAD_STALLED_MESSAGE),
+        _ => None,
+    })
+}
+
+/// When the work after a meeting is given up (T9.22b): no sign of life (a [`HostStep`], or a poll
+/// of the meeting's cancel token, which every shipped decode makes between engine calls) for the
+/// bound of the phase it is in. Then the meeting's turn passes to the next, the meeting is left
+/// unprocessed with a banner, and the thread is left to end on its own, never joined, as a stalled
+/// GPU summary is (T8.4ab). Nothing here cuts work that is merely slow. The summary is not watched
+/// here: a local model's load and run have their own watch (`summary::attempt_local`, the GPU
+/// child), a remote request its timeout, an agent CLI its deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AfterBounds {
+    /// Up to the final pass's first step: the recordings read and its models loaded, which poll
+    /// nothing. 10 minutes, a judgement: as a GPU summary's load (`summary::GPU_LOAD_LIMIT`), it
+    /// may first read gigabytes from a slow disk.
+    pub load: Duration,
+    /// The final pass's steps. 2 minutes, a judgement: the live catch-up's
+    /// (`LiveConfig::catch_up_stall`), since every decode polls its token many times a minute and
+    /// no single engine call may take that long.
+    pub step: Duration,
+}
+
+impl Default for AfterBounds {
+    fn default() -> Self {
+        Self {
+            load: Duration::from_secs(600),
+            step: Duration::from_secs(120),
+        }
+    }
+}
+
+/// Where the work after a meeting is, for [`AfterWatch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterPhase {
+    /// Before the final pass's steps: reading the recordings, loading its models.
+    Loading,
+    /// The final pass's steps.
+    Steps,
+    /// The summary (not watched here, [`AfterBounds`]).
+    Summary,
+}
+
+impl AfterPhase {
+    /// The phase a step begins.
+    fn of(step: &HostStep<'_>) -> Self {
+        match step {
+            HostStep::PostLoaded { .. } => Self::Loading,
+            HostStep::PostStarting { .. } | HostStep::Post(_) => Self::Steps,
+            HostStep::PostFinished(_) | HostStep::SummaryStarting => Self::Summary,
+        }
+    }
+}
+
+/// The rule of [`AfterBounds`], clock-free: fed the steps heard and the token's polls, with the
+/// time since the watch began.
+struct AfterWatch {
+    bounds: AfterBounds,
+    sign: Option<[u64; 2]>,
+    since: Duration,
+}
+
+impl AfterWatch {
+    fn new(bounds: AfterBounds) -> Self {
+        Self {
+            bounds,
+            sign: None,
+            since: Duration::ZERO,
+        }
+    }
+
+    /// Whether the work in `phase` has stalled at `now`, given `steps` heard and `polls` of its
+    /// token. Every step changes the count, so a new phase always starts its bound afresh.
+    fn stalled(&mut self, phase: AfterPhase, steps: u64, polls: u64, now: Duration) -> bool {
+        let sign = [steps, polls];
+        if self.sign != Some(sign) {
+            self.sign = Some(sign);
+            self.since = now;
+            return false;
+        }
+        let bound = match phase {
+            AfterPhase::Loading => self.bounds.load,
+            AfterPhase::Steps => self.bounds.step,
+            AfterPhase::Summary => return false,
+        };
+        now.saturating_sub(self.since) >= bound
+    }
+}
+
+/// How often the meeting's thread looks at the work after the meeting.
+const AFTER_WATCH_POLL: Duration = Duration::from_millis(50);
+
+/// What the thread of the work after the meeting tells the meeting's thread.
+enum FromAfter {
+    /// A step, the phase it begins and what the UI hears of it.
+    Step(AfterPhase, Option<MeetingEvent>),
+    /// The work is over.
+    Done(Box<HostOutcome>),
+}
+
+/// Runs `after` on a thread of its own and watches it ([`AfterBounds`]); forwards what the UI
+/// hears of each step through `send`. `None`: it stopped answering and was left, its token
+/// cancelled, so it stops if its call ever returns (its result then goes nowhere). The meeting's
+/// thread itself never polls `cancel` here: its polls are the work's sign of life.
+fn run_after_watched(
+    after: AfterFn,
+    svc: &Services,
+    outcome: &LiveOutcome,
+    cancel: &CancelToken,
+    ticket: &Arc<QueueTicket>,
+    bounds: AfterBounds,
+    send: &dyn Fn(MeetingEvent),
+) -> Option<HostOutcome> {
+    let (tx, rx) = mpsc::channel();
+    let work = {
+        let (svc, outcome, cancel) = (svc.clone(), outcome.clone(), cancel.clone());
+        let ticket = Arc::clone(ticket);
+        let mut progress = PostProgressMapper::of(outcome.meeting.to_string());
+        move || {
+            let host = after(&svc, &outcome, &cancel, &mut |step| {
+                if matches!(step, HostStep::PostFinished(_)) {
+                    ticket.final_pass_done();
+                }
+                let _ = tx.send(FromAfter::Step(AfterPhase::of(&step), progress.step(&step)));
+            });
+            let _ = tx.send(FromAfter::Done(Box::new(host)));
+        }
+    };
+    let worker = match std::thread::Builder::new()
+        .name("earshot-after-meeting".into())
+        .spawn(work)
+    {
+        Ok(w) => w,
+        Err(e) => return Some(HostOutcome::not_started(RuntimeError::Spawn(e))),
+    };
+    let mut watch = AfterWatch::new(bounds);
+    let started = Instant::now();
+    let (mut phase, mut steps) = (AfterPhase::Loading, 0u64);
+    loop {
+        match rx.recv_timeout(AFTER_WATCH_POLL) {
+            Ok(FromAfter::Step(p, event)) => {
+                phase = p;
+                steps += 1;
+                if let Some(e) = event {
+                    send(e);
+                }
+            }
+            Ok(FromAfter::Done(host)) => {
+                let _ = worker.join();
+                return Some(*host);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            // It ended without a result: a panic, which goes on as it did on this thread.
+            Err(RecvTimeoutError::Disconnected) => {
+                return match worker.join() {
+                    Err(panic) => std::panic::resume_unwind(panic),
+                    Ok(()) => Some(HostOutcome::not_started(RuntimeError::Internal(
+                        "the work after the meeting sent no result",
+                    ))),
+                };
+            }
+        }
+        if watch.stalled(phase, steps, cancel.polls(), started.elapsed()) {
+            cancel.cancel();
+            drop(worker);
+            return None;
+        }
+    }
+}
+
+/// Ends the meeting's place in the queue on every way off its thread, a panic's unwind included,
+/// even while a thread it left still holds the ticket (T9.22: a live model load, a final-pass
+/// step).
+struct EndTicket<'a>(&'a QueueTicket);
+
+impl Drop for EndTicket<'_> {
+    fn drop(&mut self) {
+        self.0.end();
+    }
+}
 
 /// The flags a meeting's thread shares with the driver.
 struct RunFlags {
@@ -648,6 +879,7 @@ fn run(
     let send = |e: MeetingEvent| inner.send(seq, e);
     // The meeting's place: everything it loads and runs after capture goes in this order.
     let ticket = Arc::new(inner.queue.enter());
+    let _end_ticket = EndTicket(&ticket);
     let prepared = match inner.prepare.prepare(svc, request, &ticket) {
         Ok(p) => p,
         Err(e) => {
@@ -774,18 +1006,14 @@ fn run(
         }
     };
     finishing.open();
-    // A live catch-up that stopped moving (T9.22): whatever hung may hang the final pass too, so
-    // the meeting is left unprocessed and its turn passes to the next (the banner came with it).
-    if outcome.problems.iter().any(|p| {
-        matches!(
-            p,
-            earshot_runtime::live::RuntimeWarning::LiveCatchUpStalled { .. }
-        )
-    }) {
+    // A live catch-up or a live model load that stopped answering (T9.22): whatever hung may hang
+    // the final pass too, so the meeting is left unprocessed and its turn passes to the next (the
+    // banner came with it).
+    if let Some(message) = left_unprocessed(&outcome) {
         send(MeetingEvent::Summary {
             meeting: id.to_string(),
             result: SummaryEvent::Failed {
-                message: CATCH_UP_STALLED_MESSAGE.into(),
+                message: message.into(),
                 retryable: false,
             },
         });
@@ -795,19 +1023,39 @@ fn run(
     // Its turn. Only a cancel ends the wait: nothing can be lost by waiting and quitting ends the
     // process.
     ticket.wait_turn(&cancel);
-    let mut progress = PostProgressMapper::of(id.to_string());
     let host = if cancel.is_cancelled() {
         // Out of its turn, so it runs nothing; a newer meeting's turn comes when the ticket ends.
         HostOutcome::cancelled(svc, id)
     } else {
-        (prepared.after)(svc, &outcome, &cancel, &mut |step| {
-            if matches!(step, HostStep::PostFinished(_)) {
-                ticket.final_pass_done();
-            }
-            if let Some(e) = progress.step(&step) {
-                send(e);
-            }
-        })
+        let watched = run_after_watched(
+            prepared.after,
+            svc,
+            &outcome,
+            &cancel,
+            &ticket,
+            inner.after_bounds,
+            &send,
+        );
+        let Some(host) = watched else {
+            // Stopped answering (T9.22b): left unprocessed, its turn passing to the next. The
+            // thread left keeps its lease on the meeting, so nothing runs beside it until it ends
+            // or Earshot restarts.
+            send(MeetingEvent::Warning {
+                key: POST_STALLED_KEY.into(),
+                kind: crate::meeting_events::WarningKind::Backend,
+                message: POST_STALLED_BANNER.into(),
+            });
+            send(MeetingEvent::Summary {
+                meeting: id.to_string(),
+                result: SummaryEvent::Failed {
+                    message: POST_STALLED_MESSAGE.into(),
+                    retryable: false,
+                },
+            });
+            drop(waiting);
+            return;
+        };
+        host
     };
     if let Ok(earshot_runtime::host::HostPost::Done(post)) = &host.post {
         for (key, message) in crate::plain_text::post_warning_copy(&post.warnings) {

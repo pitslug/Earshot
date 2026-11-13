@@ -120,12 +120,19 @@ impl QueueTicket {
         }
         self.queue.changed.notify_all();
     }
+
+    /// Ends this meeting's place now, as dropping the last handle does, even while a thread that
+    /// was given up still holds a handle (T9.22: a load or step that never returns must not hold
+    /// the meetings after it). Ending it twice, or dropping it after, changes nothing.
+    pub fn end(&self) {
+        self.queue.tickets().open.remove(&self.id);
+        self.queue.changed.notify_all();
+    }
 }
 
 impl Drop for QueueTicket {
     fn drop(&mut self) {
-        self.queue.tickets().open.remove(&self.id);
-        self.queue.changed.notify_all();
+        self.end();
     }
 }
 
@@ -241,5 +248,29 @@ mod tests {
         });
         assert!(panicked.join().is_err());
         assert!(!q.enter().behind_older_work());
+    }
+
+    #[test]
+    fn meeting_queue_an_ended_ticket_lets_the_next_go_while_a_stuck_thread_holds_it() {
+        // T9.22: a thread given up (a model load that never returns) keeps its handle; ending the
+        // ticket still gives the next meeting its turn.
+        let q = MeetingQueue::new();
+        let stuck = Arc::new(q.enter());
+        let held_by_the_stuck_thread = Arc::clone(&stuck);
+        let next = q.enter();
+        let stop = CancelToken::new();
+        stop.cancel();
+        assert!(!next.wait_turn(&stop), "the older meeting still holds it");
+        stuck.end();
+        drop(stuck);
+        assert!(next.wait_turn(&CancelToken::new()));
+        assert!(next.wait_final_passes(&CancelToken::new()));
+        // Ending it again, or the stuck thread letting go at last, changes nothing.
+        held_by_the_stuck_thread.end();
+        drop(held_by_the_stuck_thread);
+        let after = q.enter();
+        assert!(after.behind_older_work(), "`next` is still open");
+        drop(next);
+        assert!(!after.behind_older_work());
     }
 }
