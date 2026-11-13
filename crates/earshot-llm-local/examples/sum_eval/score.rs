@@ -116,7 +116,7 @@ pub fn length(summary: Option<&SummaryV1>, cap: usize) -> Length {
 impl Length {
     /// JSON for the report.
     #[must_use]
-    pub fn to_json(&self) -> Value {
+    pub fn to_json(self) -> Value {
         json!({
             "words": self.words,
             "notes_words": self.notes_words,

@@ -1470,6 +1470,10 @@ pub fn check_agent_cli(opts: &Options, agent: AgentCli) -> Result<()> {
 
 /// The arguments of the `sum_eval` example for the Claude Code candidate `id`.
 #[must_use]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is one example argument; a struct would only rename them"
+)]
 pub fn claude_code_args(
     annotations: &Path,
     jobs: &[(String, String)],
