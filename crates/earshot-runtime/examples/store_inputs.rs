@@ -166,6 +166,28 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Whether some process holds `shm` open. On Windows: an open for reading that shares
+/// nothing fails while any other handle exists (it never writes the file). Elsewhere: whether
+/// it exists, which can refuse a stale one.
+fn shm_in_use(shm: &Path) -> bool {
+    if !shm.exists() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(shm)
+            .is_err()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// Steps 1 to 4 of the module docs.
 fn run(a: &Args) -> Result<Counts, String> {
     let copy = a.into.join("earshot.db");
@@ -178,13 +200,17 @@ fn run(a: &Args) -> Result<Counts, String> {
     if !a.db.is_file() {
         return Err("--db is not a file".into());
     }
-    // SQLite keeps `-shm` beside the database while any connection has it open, and removes
-    // it when the last one closes: a copy taken now could be a torn database and WAL pair.
+    // A copy taken while a connection is open could be a torn database and WAL pair. Every
+    // open connection holds the `-shm` file; one left behind by an app that exited without a
+    // clean close (Earshot's quit ends the process) is held by nobody and is no reason to
+    // refuse.
     let mut shm = a.db.clone().into_os_string();
     shm.push("-shm");
-    if Path::new(&shm).exists() {
+    if shm_in_use(Path::new(&shm)) {
         return Err(
-            "the database is open (its -shm file exists); quit Earshot and try again".into(),
+            "the database is open (a process holds its -shm file); quit Earshot and \
+                    try again"
+                .into(),
         );
     }
     for sub in ["inputs", "transcripts"] {
@@ -562,16 +588,25 @@ mod tests {
         };
         let counts = run(&c).unwrap();
         assert_eq!((counts.excluded, counts.picked), (1, 1));
-        // A database some process still has open (its -shm exists) is not copied.
+        // A database whose -shm a process still holds is not copied.
         let mut shm = c.db.clone().into_os_string();
         shm.push("-shm");
         std::fs::write(&shm, b"").unwrap();
+        let held = std::fs::File::open(&shm).unwrap();
         let d = Args {
             into: root.join("private").join("run-4"),
             ..c
         };
         assert!(run(&d).unwrap_err().contains("is open"));
         assert!(!d.into.join("earshot.db").exists());
+        drop(held);
+        // A stale -shm nobody holds (an app that exited without a clean close) is no reason
+        // to refuse on Windows.
+        if cfg!(windows) {
+            run(&d).unwrap();
+        } else {
+            assert!(run(&d).unwrap_err().contains("is open"));
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
