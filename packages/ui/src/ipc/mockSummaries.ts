@@ -326,6 +326,7 @@ export function createSummariesMock(
   const styleView = (): SummaryStyleView => ({
     style,
     unknown: [],
+    unknown_template: [],
     max_chars: MAX_STYLE_CHARS,
     template,
     templates: SUMMARY_TEMPLATES.map((t) => ({ ...t })),

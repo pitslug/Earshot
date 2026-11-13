@@ -24,6 +24,8 @@ pub struct SummaryStyleView {
     pub style: String,
     /// One line when the stored style is one this version refuses (none is used).
     pub unknown: Vec<String>,
+    /// One line when the stored template is one this version does not offer (Standard is used).
+    pub unknown_template: Vec<String>,
     /// The longest style accepted, in characters.
     pub max_chars: u32,
     /// The chosen summary template (a `StylePreset` name; "standard" by default).
@@ -84,10 +86,16 @@ pub fn template_options() -> Vec<SummaryTemplateOption> {
         .collect()
 }
 
-fn view(style: &str, template: StylePreset, unknown: Vec<String>) -> SummaryStyleView {
+fn view(
+    style: &str,
+    template: StylePreset,
+    unknown: Vec<String>,
+    unknown_template: Vec<String>,
+) -> SummaryStyleView {
     SummaryStyleView {
         style: style.to_owned(),
         unknown,
+        unknown_template,
         max_chars: u32::try_from(MAX_STYLE_CHARS).unwrap_or(u32::MAX),
         template: template.name().to_owned(),
         templates: template_options(),
@@ -119,11 +127,8 @@ pub fn style_view(services: &Services) -> Result<SummaryStyleView, IpcError> {
     Ok(view(
         style.as_str(),
         template,
-        unknown
-            .iter()
-            .chain(unknown_template.iter())
-            .map(ToString::to_string)
-            .collect(),
+        unknown.iter().map(ToString::to_string).collect(),
+        unknown_template.iter().map(ToString::to_string).collect(),
     ))
 }
 
