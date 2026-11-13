@@ -35,6 +35,7 @@ pub fn compare(a: &Value, b: &Value) -> Value {
     let mut same = 0;
     let mut differ = Vec::new();
     let mut only_a = Vec::new();
+    let mut failed_both = Vec::new();
     for (k, row) in &ra {
         let label = format!("{}:{}:{}", k.0, k.1, k.2);
         match rb.get(k) {
@@ -43,8 +44,11 @@ pub fn compare(a: &Value, b: &Value) -> Value {
                 let equal = ["ok", "failure", "summary"]
                     .iter()
                     .all(|f| row[*f] == other[*f]);
-                if equal {
+                if equal && row["ok"] == true {
                     same += 1;
+                } else if equal {
+                    // Failed the same way on both sides: proves nothing about the summaries.
+                    failed_both.push(label);
                 } else {
                     differ.push(label);
                 }
@@ -82,9 +86,14 @@ pub fn compare(a: &Value, b: &Value) -> Value {
     json!({
         "same": same,
         "differ": differ,
+        "failed_both": failed_both,
         "only_a": only_a,
         "only_b": only_b,
-        "identical": differ.is_empty() && only_a.is_empty() && only_b.is_empty() && same > 0,
+        "identical": differ.is_empty()
+            && failed_both.is_empty()
+            && only_a.is_empty()
+            && only_b.is_empty()
+            && same > 0,
         "a": sums(&ra),
         "b": sums(&rb),
     })
@@ -92,11 +101,24 @@ pub fn compare(a: &Value, b: &Value) -> Value {
 
 fn read(p: &Path) -> Result<Value, String> {
     let text = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", p.display()))
+    // A fixed message: serde's own can quote the value it refused, which in a store run is
+    // meeting text.
+    serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "{}: not a readable result file (line {}, column {})",
+            p.display(),
+            e.line(),
+            e.column()
+        )
+    })
 }
 
 /// `--compare-summaries a b`: prints the comparison as JSON; `Err` unless identical.
 pub fn run(a: &Path, b: &Path) -> Result<(), String> {
+    let canon = |p: &Path| std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()));
+    if canon(a)? == canon(b)? {
+        return Err("--compare-summaries needs two different files".to_owned());
+    }
     let c = compare(&read(a)?, &read(b)?);
     println!(
         "{}",
@@ -154,8 +176,14 @@ mod tests {
         // A failure on one side.
         let mut failed = row("m2", "B", 600);
         failed["ok"] = json!(false);
-        let c = compare(&a, &file(json!([row("m1", "A", 400), failed])));
+        let c = compare(&a, &file(json!([row("m1", "A", 400), failed.clone()])));
         assert_eq!(c["identical"], false);
+        // The same failure on both sides is not a match.
+        let both = |f: Value| file(json!([row("m1", "A", 400), f]));
+        let c = compare(&both(failed.clone()), &both(failed));
+        assert_eq!(c["identical"], false);
+        assert_eq!(c["same"], 1);
+        assert_eq!(c["failed_both"], json!(["dev:reference:m2"]));
         // Two empty files prove nothing.
         assert_eq!(
             compare(&file(json!([])), &file(json!([])))["identical"],

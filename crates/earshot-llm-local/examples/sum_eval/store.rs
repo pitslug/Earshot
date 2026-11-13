@@ -87,6 +87,17 @@ pub fn check_private(path: &Path, what: &str) -> Result<(), String> {
     }
 }
 
+/// A JSON error without serde's own message, which can quote the value it refused (in a
+/// store run, meeting text): only the kind and the position.
+pub fn json_error(e: &serde_json::Error) -> String {
+    format!(
+        "not readable ({:?} error at line {}, column {})",
+        e.classify(),
+        e.line(),
+        e.column()
+    )
+}
+
 /// The summary input of `label` in run folder `run`.
 pub fn input(run: &Path, label: &str) -> Result<(SummaryInput, usize), String> {
     let p = run.join("inputs").join(format!("{label}.json"));
@@ -97,7 +108,7 @@ pub fn input(run: &Path, label: &str) -> Result<(SummaryInput, usize), String> {
         )
     })?;
     let input: SummaryInput =
-        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", p.display()))?;
+        serde_json::from_str(&text).map_err(|e| format!("{}: {}", p.display(), json_error(&e)))?;
     let words = input
         .segments
         .iter()
@@ -124,6 +135,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn sum_eval_store_json_errors_never_quote_the_value() {
+        // serde's own message quotes a refused string; the store message must not.
+        let e = serde_json::from_str::<u32>("\"invented secret words\"").unwrap_err();
+        assert!(e.to_string().contains("invented secret words"));
+        let shown = json_error(&e);
+        assert!(!shown.contains("invented"), "{shown}");
+        assert!(shown.contains("line 1"), "{shown}");
     }
 
     #[test]

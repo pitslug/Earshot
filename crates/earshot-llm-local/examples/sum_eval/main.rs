@@ -1147,8 +1147,8 @@ fn aggregate(meetings: &[Value]) -> Value {
 /// and timings are kept as they were generated. A failed meeting keeps scoring 0.
 fn rescore_file(annotations: &Path, file: &Path) -> Result<(), String> {
     let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    let mut v: Value =
-        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
+    let mut v: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("{}: {}", file.display(), store::json_error(&e)))?;
     let jobs = v["jobs"]
         .as_array_mut()
         .ok_or_else(|| format!("{}: no jobs", file.display()))?;
@@ -1163,7 +1163,9 @@ fn rescore_file(annotations: &Path, file: &Path) -> Result<(), String> {
             if is_store {
                 // The owner's meetings: length counts only (`score::store_score`).
                 let summary: Option<SummaryV1> = serde_json::from_value(row["summary"].clone())
-                    .map_err(|e| format!("{} {meeting}: {e}", file.display()))?;
+                    .map_err(|e| {
+                        format!("{} {meeting}: {}", file.display(), store::json_error(&e))
+                    })?;
                 row["score"] = score::store_score(summary.as_ref());
                 n += 1;
                 continue;
@@ -1174,7 +1176,7 @@ fn rescore_file(annotations: &Path, file: &Path) -> Result<(), String> {
             let reference = ami::parse_abssumm(&read_latin1(&summ_path)?)
                 .map_err(|e| format!("{}: {e}", summ_path.display()))?;
             let summary: Option<SummaryV1> = serde_json::from_value(row["summary"].clone())
-                .map_err(|e| format!("{} {meeting}: {e}", file.display()))?;
+                .map_err(|e| format!("{} {meeting}: {}", file.display(), store::json_error(&e)))?;
             if summary.is_some() != (row["ok"] == true) {
                 return Err(format!(
                     "{} {meeting}: summary and ok disagree",
@@ -1399,8 +1401,8 @@ fn judge_packets(a: &Args, dir: &Path) -> Result<(), String> {
     let mut results = Vec::new();
     for (model, file) in &a.summaries {
         let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
-        let v: Value =
-            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
+        let v: Value = serde_json::from_str(&text)
+            .map_err(|e| format!("{}: {}", file.display(), store::json_error(&e)))?;
         results.push((model.clone(), v));
     }
     let mut key = json!({});
@@ -1444,7 +1446,7 @@ fn judge_packets(a: &Args, dir: &Path) -> Result<(), String> {
                     .find(|m| m["meeting"] == meeting.as_str())
                     .ok_or_else(|| format!("{model}: no {split} {row_source} row for {meeting}"))?;
                 let summary: Option<SummaryV1> = serde_json::from_value(row["summary"].clone())
-                    .map_err(|e| format!("{model} {meeting}: {e}"))?;
+                    .map_err(|e| format!("{model} {meeting}: {}", store::json_error(&e)))?;
                 let packet = judge::summary_packet(
                     meeting,
                     model,
@@ -1977,7 +1979,9 @@ fn run() -> Result<(), String> {
                 // (rows written before a scoring rule was added gain it).
                 let mut row = row.clone();
                 let summary: Option<SummaryV1> = serde_json::from_value(row["summary"].clone())
-                    .map_err(|e| format!("checkpoint row for {meeting}: {e}"))?;
+                    .map_err(|e| {
+                        format!("checkpoint row for {meeting}: {}", store::json_error(&e))
+                    })?;
                 row["score"] = score_of(summary.as_ref());
                 eprintln!(
                     "sum_eval: {} {split}:{source} {meeting}: from the checkpoint (re-scored)",

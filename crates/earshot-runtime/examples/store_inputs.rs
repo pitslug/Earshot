@@ -178,6 +178,15 @@ fn run(a: &Args) -> Result<Counts, String> {
     if !a.db.is_file() {
         return Err("--db is not a file".into());
     }
+    // SQLite keeps `-shm` beside the database while any connection has it open, and removes
+    // it when the last one closes: a copy taken now could be a torn database and WAL pair.
+    let mut shm = a.db.clone().into_os_string();
+    shm.push("-shm");
+    if Path::new(&shm).exists() {
+        return Err(
+            "the database is open (its -shm file exists); quit Earshot and try again".into(),
+        );
+    }
     for sub in ["inputs", "transcripts"] {
         let d = a.into.join(sub);
         std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
@@ -553,6 +562,16 @@ mod tests {
         };
         let counts = run(&c).unwrap();
         assert_eq!((counts.excluded, counts.picked), (1, 1));
+        // A database some process still has open (its -shm exists) is not copied.
+        let mut shm = c.db.clone().into_os_string();
+        shm.push("-shm");
+        std::fs::write(&shm, b"").unwrap();
+        let d = Args {
+            into: root.join("private").join("run-4"),
+            ..c
+        };
+        assert!(run(&d).unwrap_err().contains("is open"));
+        assert!(!d.into.join("earshot.db").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
