@@ -313,6 +313,22 @@ fn backends_qnn_package_is_the_models_folder_unless_the_exe_folder_holds_the_plu
         qnn_package_dir(&models),
         Some(models.root().join(earshot_onnx::qnn::QNN_HOST.dir))
     );
+    // The wrapper is the rule for this exe and build, so the exe-folder branch is the one
+    // `backends_qnn_install_only_takes_the_plugin_from_beside_the_exe_alone` pins with a
+    // folder that holds the plugin (TODO 73).
+    assert_eq!(
+        qnn_package_dir(&models),
+        qnn_package_dir_in(&models, Some(&exe), QNN_INSTALL_ONLY)
+    );
+    let install = std::env::temp_dir().join(format!("earshot-qnn-beside-{}", std::process::id()));
+    std::fs::create_dir_all(&install).unwrap();
+    std::fs::write(install.join(earshot_onnx::qnn::QNN_PROVIDER_LIB), b"plugin").unwrap();
+    assert_eq!(
+        qnn_package_dir_in(&models, Some(&install), QNN_INSTALL_ONLY),
+        Some(install.clone()),
+        "a folder beside the exe that holds the plugin wins"
+    );
+    std::fs::remove_dir_all(&install).unwrap();
 }
 
 #[test]
