@@ -335,6 +335,61 @@ fn edit_retranscribe_keeps_edited_lines_and_warns() {
     assert_eq!(texts, ["me", "first, corrected by hand", "second"]);
 }
 
+#[test]
+fn edit_retranscribe_counts_kept_lines_and_gives_their_speaker_this_runs_role() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 412);
+    let v = view(&svc, m);
+    // The fakes decode "first" on the far end at 9.0-9.3 s, every run.
+    let first = v
+        .segments
+        .iter()
+        .find(|s| s.text == "first")
+        .unwrap()
+        .clone();
+    let speaker = first.speaker_id.unwrap();
+    assert!(edit_segment(&svc, m, first.id, "first, corrected by hand").unwrap());
+    // The speaker has no identity entry any more (as after an invalid centroid), so no new
+    // voice continues its row, and the row carries a role an older run gave it.
+    {
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        db.delete_local_value(record_key(m).as_str()).unwrap();
+        let mut row = db
+            .speakers(m)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == speaker)
+            .unwrap();
+        assert_eq!(row.role, SpeakerRole::Remote);
+        let (store, hlc) = db.parts();
+        row.role = SpeakerRole::Local;
+        row.meta.touch(hlc, &*clock);
+        store.put_speaker(row).unwrap();
+    }
+
+    let cancel = CancelToken::new();
+    let again = retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    let HostPost::Done(outcome) = &again.post else {
+        panic!("{:?}", again.post);
+    };
+    let v = view(&svc, m);
+    let texts: Vec<&str> = v.segments.iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(texts, ["me", "first, corrected by hand", "second"]);
+    assert_eq!(
+        outcome.final_segments,
+        v.segments.len(),
+        "the kept edited line is part of the final transcript"
+    );
+    let kept = v.speakers.iter().find(|s| s.id == speaker).unwrap();
+    assert_eq!(
+        kept.role,
+        SpeakerRole::Remote,
+        "a far-end line's speaker is remote under this run's policy"
+    );
+}
+
 fn w(text: &str, start: u64, end: u64) -> Word {
     Word::new(text, start, end, 0.9)
 }
