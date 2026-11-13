@@ -16,8 +16,9 @@ use crate::timeline::{PacketInfo, PacketRecord, QPC_UNITS_PER_SEC, TrackTimeline
 /// (mic 1, loopback the device's channels, normally 2, interleaved); every frame
 /// count and position stays in frames. v4: a mic `device_changes` entry carries
 /// `hands_free` when the re-open switched onto a Bluetooth hands-free mic (absent
-/// otherwise).
-pub const TIMESTAMPS_SCHEMA_VERSION: u32 = 4;
+/// otherwise). v5: the mic section carries `"processing": "raw"` when the mic was opened
+/// raw (T12.32; absent for the default stream).
+pub const TIMESTAMPS_SCHEMA_VERSION: u32 = 5;
 
 /// The Bluetooth hands-free warning of a mic re-open (schema v4), judged by the same
 /// [`HandsFreeFollower`] rule as the live mic track.
@@ -100,6 +101,10 @@ pub struct TrackRecording {
     pub timeline: TrackTimeline,
     /// Stream re-opens, in order.
     pub device_changes: Vec<DeviceChange>,
+    /// Frames of this track that are silence because a mic recorded raw (T12.32) was re-opened
+    /// on an endpoint that refuses raw processing: from the first refused re-open to the first
+    /// packet of the next stream, or to the end. Never in `timestamps.json`; 0 otherwise.
+    pub raw_refused_frames: u64,
 }
 
 impl TrackRecording {
@@ -136,6 +141,7 @@ impl TrackRecording {
             timestamp_errors: packets.iter().filter(|p| p.timestamp_error).count() as u32,
             packet_count: packets.len() as u64,
             device_changes: self.device_changes.clone(),
+            processing: None,
             packets: packets.to_vec(),
         }
     }
@@ -152,6 +158,10 @@ pub struct RecordingTrack {
     refused: Vec<String>,
     /// Judges mic re-opens for the Bluetooth hands-free warning (the mic track only).
     hands_free: Option<HandsFreeFollower>,
+    /// The track frame where the current run of silence after a refused raw re-open began.
+    raw_refused_from: Option<u64>,
+    /// Frames of finished runs of such silence.
+    raw_refused_frames: u64,
 }
 
 impl RecordingTrack {
@@ -163,6 +173,8 @@ impl RecordingTrack {
             changes: Vec::new(),
             refused: Vec::new(),
             hands_free: None,
+            raw_refused_from: None,
+            raw_refused_frames: 0,
         }
     }
 
@@ -186,11 +198,15 @@ impl RecordingTrack {
     /// Pads the timeline up to `end_qpc` (capture stop) and returns the recording.
     pub fn finish(mut self, end_qpc: u64) -> TrackRecording {
         self.timeline.finish(end_qpc);
+        if let Some(from) = self.raw_refused_from.take() {
+            self.raw_refused_frames += self.timeline.frames().saturating_sub(from);
+        }
         TrackRecording {
             device_name: self.first.name,
             format: self.first.format,
             timeline: self.timeline,
             device_changes: self.changes,
+            raw_refused_frames: self.raw_refused_frames,
         }
     }
 }
@@ -198,6 +214,16 @@ impl RecordingTrack {
 impl TrackObserver for RecordingTrack {
     fn packet(&mut self, info: PacketInfo, mono: &[f32]) {
         self.timeline.push(info, mono);
+        // The first packet after a refused raw re-open (no stream delivers in between) ends
+        // the silence where its kept frames start.
+        if let Some(from) = self.raw_refused_from.take() {
+            let resumed = self
+                .timeline
+                .packets()
+                .last()
+                .map_or(from, |p| p.track_frame);
+            self.raw_refused_frames += resumed.saturating_sub(from);
+        }
     }
 
     /// Marks the discontinuity in the timeline (every attempt) and logs reported
@@ -243,6 +269,13 @@ impl TrackObserver for RecordingTrack {
 
     fn call_output_refused(&mut self, _qpc: u64, wanted: &str, _used: Option<&str>, error: &str) {
         self.refused.push(format!("{wanted}: {error}"));
+    }
+
+    /// Starts counting silence at the current end of the track (retries keep the first start).
+    fn raw_refused(&mut self, _qpc: u64) {
+        if self.raw_refused_from.is_none() {
+            self.raw_refused_from = Some(self.timeline.frames());
+        }
     }
 
     /// Logs the end as a change with no device and the error only as a number
@@ -297,6 +330,10 @@ impl<F: FnMut(&HandsFreeMic)> TrackObserver for NotifyingTrack<F> {
         }
     }
 
+    fn raw_refused(&mut self, qpc: u64) {
+        self.track.raw_refused(qpc);
+    }
+
     fn track_ended(&mut self, qpc: u64, hresult: i32) {
         self.track.track_ended(qpc, hresult);
     }
@@ -330,7 +367,7 @@ pub struct RawRecording {
     /// Role of the capture endpoint used for the mic track.
     pub mic_role: MicRole,
     /// How the mic stream was opened (T12.32): with Windows' default signal processing, or
-    /// raw. Not written to `timestamps.json` (schema v4 has no field for it).
+    /// raw. A raw mic is marked in `timestamps.json` (schema v5, [`TrackReport::processing`]).
     pub mic_processing: MicProcessing,
     /// Requested duration in seconds.
     pub requested_seconds: f64,
@@ -360,7 +397,11 @@ impl RawRecording {
             start_qpc: self.start_qpc,
             end_qpc: self.end_qpc,
             loopback_source: self.loopback_source.clone(),
-            mic: self.mic.report(),
+            mic: TrackReport {
+                processing: (self.mic_processing == MicProcessing::Raw)
+                    .then_some(MicProcessing::Raw),
+                ..self.mic.report()
+            },
             loopback: self.loopback.report(),
         }
     }
@@ -417,6 +458,10 @@ pub struct TrackReport {
     pub packet_count: u64,
     /// Stream re-opens (device switches and recoveries), in order.
     pub device_changes: Vec<DeviceChange>,
+    /// `raw` on a mic opened raw (schema v5); left out of the JSON for the default stream
+    /// and on the loopback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processing: Option<MicProcessing>,
     /// Every packet received.
     pub packets: Vec<PacketRecord>,
 }
@@ -494,12 +539,14 @@ pub(crate) mod tests {
                         }),
                     },
                 ],
+                raw_refused_frames: 0,
             },
             loopback: TrackRecording {
                 device_name: "Speakers (Test)".into(),
                 format: fmt,
                 timeline: lb,
                 device_changes: Vec::new(),
+                raw_refused_frames: 0,
             },
         }
     }
@@ -774,9 +821,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn timestamps_json_marks_a_mic_opened_raw() {
+        let mut rec = canned();
+        rec.mic_processing = MicProcessing::Raw;
+        let v = serde_json::to_value(rec.timestamps()).unwrap();
+        assert_eq!(v["schema_version"], 5);
+        assert_eq!(v["mic"]["processing"], "raw");
+        assert!(v["loopback"].get("processing").is_none());
+        // Nothing else of the document changes.
+        let mut plain = serde_json::to_value(canned().timestamps()).unwrap();
+        plain["mic"]["processing"] = "raw".into();
+        assert_eq!(v, plain);
+    }
+
+    #[test]
     fn timestamps_json_shape() {
         let v = serde_json::to_value(canned().timestamps()).unwrap();
-        assert_eq!(v["schema_version"], 4);
+        assert_eq!(v["schema_version"], 5);
         assert_eq!(v["qpc_units_per_second"], 10_000_000);
         assert_eq!(v["start_qpc"], 5_000_000);
         assert_eq!(v["end_qpc"], 15_000_000);
@@ -859,6 +920,10 @@ pub(crate) mod tests {
             hf["hands_free"],
             serde_json::json!({ "sample_rate": 16_000 })
         );
+        // v5: `processing` only on a mic opened raw.
+        for track in ["mic", "loopback"] {
+            assert!(v[track].get("processing").is_none(), "{track}");
+        }
         let lb = &v["loopback"];
         assert_eq!(lb["device_changes"].as_array().unwrap().len(), 0);
         assert_eq!(lb["packet_count"], 0);

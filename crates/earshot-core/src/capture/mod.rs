@@ -24,7 +24,9 @@ mod time;
 #[cfg(test)]
 mod tests;
 
-pub use raw::{RawDeviceChange, RawHandsFree, RawPacket, RawTimeline, RawTrackTimeline};
+pub use raw::{
+    RawDeviceChange, RawHandsFree, RawPacket, RawProcessing, RawTimeline, RawTrackTimeline,
+};
 pub use replay::{
     DEFAULT_PACKET, ReplayBuilder, ReplayError, ReplaySource, SUPPORTED_SCHEMAS, TrackBuffer,
 };

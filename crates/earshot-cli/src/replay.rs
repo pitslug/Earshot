@@ -18,7 +18,9 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use clap::Args;
-use earshot_core::capture::{DeviceTime, RawTimeline, ReplayBuilder, TrackBuffer, mix_to_mono};
+use earshot_core::capture::{
+    DeviceTime, RawProcessing, RawTimeline, ReplayBuilder, TrackBuffer, mix_to_mono,
+};
 use earshot_core::model::ClockDomain;
 use earshot_runtime::live::{LiveConfig, start_live};
 use earshot_runtime::replay::{PaceState, Paced, WallClock};
@@ -73,6 +75,17 @@ fn to_mono(track: TrackBuffer) -> Result<TrackBuffer> {
     TrackBuffer::new(track.rate(), NonZeroU16::MIN, mono).map_err(|e| anyhow!("{e:?}"))
 }
 
+/// The line saying a `--timeline` take's mic was recorded raw (schema v5, T12.32), or `None`
+/// for the default stream. The replay itself is the same either way.
+fn processing_line(timeline: &RawTimeline) -> Option<&'static str> {
+    match timeline.mic.processing {
+        RawProcessing::Default => None,
+        RawProcessing::Raw => Some(
+            "replay: this take's mic was recorded raw (without the signal processing Windows or the device applies by default)",
+        ),
+    }
+}
+
 /// Runs the replay, printing to `out`.
 ///
 /// # Errors
@@ -84,6 +97,9 @@ pub fn run(args: &ReplayArgs, out: &mut dyn Write) -> Result<earshot_core::ident
                 .map_err(|e| anyhow!("cannot read {}: {e}", timeline.display()))?;
             let timeline: RawTimeline = serde_json::from_slice(&bytes)
                 .map_err(|e| anyhow!("{} is not a raw timeline: {e}", timeline.display()))?;
+            if let Some(line) = processing_line(&timeline) {
+                writeln!(out, "{line}")?;
+            }
             ReplayBuilder::from_raw_timeline(
                 &timeline,
                 read_track(&args.mic)?,
@@ -171,6 +187,27 @@ mod tests {
         assert_eq!(mono.samples(), &[0.5, 0.5, 0.0]);
         let same = TrackBuffer::new(rate, NonZeroU16::MIN, vec![0.25, -0.25]).unwrap();
         assert_eq!(to_mono(same.clone()).unwrap(), same);
+    }
+
+    #[test]
+    fn replay_says_when_the_takes_mic_was_recorded_raw() {
+        let json = |processing: &str| {
+            format!(
+                r#"{{"schema_version": 5, "qpc_units_per_second": 10000000, "start_qpc": 0,
+                   "end_qpc": 1, "mic": {{"device_name": "m", "wav_sample_rate": 48000,
+                   {processing} "frames_written": 0, "synthesized_silence_frames": 0,
+                   "packets": []}}, "loopback": {{"device_name": "l",
+                   "wav_sample_rate": 48000, "frames_written": 0,
+                   "synthesized_silence_frames": 0, "packets": []}}}}"#
+            )
+        };
+        let read = |p: &str| serde_json::from_str::<RawTimeline>(&json(p)).unwrap();
+        assert_eq!(processing_line(&read("")), None);
+        let line = processing_line(&read(r#""processing": "raw","#)).expect("a line");
+        assert!(
+            line.starts_with("replay: this take's mic was recorded raw"),
+            "{line}"
+        );
     }
 
     #[test]

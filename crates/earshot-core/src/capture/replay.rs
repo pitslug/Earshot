@@ -14,7 +14,7 @@ use super::{
 use crate::audio::{MonoBuffer, Sample, SampleRate, WavAudio};
 
 /// `timestamps.json` schema versions [`ReplayBuilder::from_raw_timeline`] reads.
-pub const SUPPORTED_SCHEMAS: [u32; 4] = [1, 2, 3, 4];
+pub const SUPPORTED_SCHEMAS: [u32; 5] = [1, 2, 3, 4, 5];
 
 /// Audio of one replayed track: frames of `channels` interleaved samples at `rate`
 /// (the [`CaptureSink`] layout). A [`MonoBuffer`] converts into a one-channel buffer.

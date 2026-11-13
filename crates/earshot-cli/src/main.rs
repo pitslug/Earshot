@@ -127,6 +127,10 @@ fn main() -> anyhow::Result<()> {
             println!("{}", o.mic.display());
             println!("{}", o.loopback.display());
             println!("{}", o.timestamps.display());
+            // Last, after the files: a raw take with a silent stretch fails (T12.32).
+            if let Some(line) = o.raw_refused {
+                anyhow::bail!(line);
+            }
         }
         Command::Transcribe(args) => transcribe::run(&args)?,
         Command::Replay(args) => {

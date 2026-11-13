@@ -1,5 +1,5 @@
 //! `earshot-cli record-raw`: raw mic + loopback capture to WAV and `timestamps.json`
-//! (schema v4). `mic.wav` is mono; `loopback.wav` keeps the loopback's channels
+//! (schema v5). `mic.wav` is mono; `loopback.wav` keeps the loopback's channels
 //! (stereo on a desktop and for process loopback), interleaved. No AEC, no resampling
 //! (a re-opened device is asked for the track's rate and channel count).
 
@@ -32,6 +32,9 @@ pub struct Outputs {
     pub loopback: PathBuf,
     /// `timestamps.json`.
     pub timestamps: PathBuf,
+    /// [`describe_raw_refused`]'s line when the mic track holds silence from a refused raw
+    /// re-open: the caller prints the paths, then fails with it.
+    pub raw_refused: Option<String>,
 }
 
 /// Writes a 32-bit float WAV at the track's native rate with the track's channels
@@ -58,6 +61,7 @@ pub fn write_outputs(dir: &Path, rec: &RawRecording) -> Result<Outputs> {
         mic: dir.join(MIC_WAV),
         loopback: dir.join(LOOPBACK_WAV),
         timestamps: dir.join(TIMESTAMPS_JSON),
+        raw_refused: describe_raw_refused(rec),
     };
     write_wav(&out.mic, &rec.mic)?;
     write_wav(&out.loopback, &rec.loopback)?;
@@ -168,6 +172,19 @@ pub fn describe_reopen(label: &str, c: &DeviceChange) -> String {
         .as_deref()
         .map_or_else(String::new, |e| format!(" ({e})"));
     format!("{label}: re-opened ({:?}) -> {to}{why}", c.reason)
+}
+
+/// The final line of a raw take whose mic track holds silence because a re-open was refused
+/// raw processing (T12.32), or `None`. `earshot-cli record-raw` prints it last and exits with
+/// an error after writing the files, so the gap cannot go unnoticed.
+pub fn describe_raw_refused(rec: &RawRecording) -> Option<String> {
+    let frames = rec.mic.raw_refused_frames;
+    (frames > 0).then(|| {
+        let secs = frames as f64 / f64::from(rec.mic.sample_rate().max(1));
+        format!(
+            "record-raw: {secs:.3} s of the mic track ({frames} frames) is silence: the mic was recorded raw and the default mic changed to one that cannot be opened raw (the processed signal is never recorded instead); the files are written"
+        )
+    })
 }
 
 /// Validates the requested duration.
@@ -287,12 +304,14 @@ mod tests {
                 format: fmt(48_000),
                 timeline: mic,
                 device_changes: Vec::new(),
+                raw_refused_frames: 0,
             },
             loopback: TrackRecording {
                 device_name: "Speakers".into(),
                 format: fmt(44_100),
                 timeline: lb,
                 device_changes: Vec::new(),
+                raw_refused_frames: 0,
             },
         }
     }
@@ -357,7 +376,11 @@ mod tests {
 
         let json: serde_json::Value =
             serde_json::from_slice(&fs::read(&out.timestamps).unwrap()).unwrap();
-        assert_eq!(json["schema_version"], 4);
+        assert_eq!(json["schema_version"], 5);
+        assert!(
+            json["mic"].get("processing").is_none(),
+            "the default stream"
+        );
         assert_eq!(json["mic"]["wav_channels"], 1);
         assert_eq!(json["loopback"]["wav_channels"], 2);
         assert_eq!(json["loopback"]["frames_written"], 22_050);
@@ -402,7 +425,7 @@ mod tests {
 
     #[test]
     fn written_recording_replays_through_the_core_reader() {
-        // Writer (this crate, capture-wasapi) and reader (earshot-core) agree on v4.
+        // Writer (this crate, capture-wasapi) and reader (earshot-core) agree on v5.
         use earshot_core::capture::{
             AudioSource, CaptureEvent, RawTimeline, ReplayBuilder, SourceStatus, TrackBuffer,
             TrackId,
@@ -467,7 +490,7 @@ mod tests {
         let out = write_outputs(dir.path(), &rec).unwrap();
         let bytes = fs::read(&out.timestamps).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json["schema_version"], 4);
+        assert_eq!(json["schema_version"], 5);
         let changes = &json["mic"]["device_changes"];
         assert_eq!(changes[0]["hands_free"]["sample_rate"], 16_000);
         assert!(changes[1].get("hands_free").is_none());
@@ -486,6 +509,36 @@ mod tests {
                 }),
                 None
             ]
+        );
+    }
+
+    #[test]
+    fn written_raw_take_reads_back_as_raw_through_the_core_reader() {
+        use earshot_core::capture::{RawProcessing, RawTimeline};
+        let dir = ScratchDir::new();
+        let mut rec = canned();
+        let read = |rec: &RawRecording| {
+            let out = write_outputs(dir.path(), rec).unwrap();
+            let timeline: RawTimeline =
+                serde_json::from_slice(&fs::read(&out.timestamps).unwrap()).unwrap();
+            (timeline.mic.processing, timeline.loopback.processing)
+        };
+        assert_eq!(read(&rec), (RawProcessing::Default, RawProcessing::Default));
+        rec.mic_processing = MicProcessing::Raw;
+        assert_eq!(read(&rec), (RawProcessing::Raw, RawProcessing::Default));
+    }
+
+    #[test]
+    fn says_how_much_of_a_raw_mic_track_is_silent_after_a_refused_reopen() {
+        let mut rec = canned();
+        assert_eq!(describe_raw_refused(&rec), None, "nothing refused");
+        // 0.25 s at 48 kHz.
+        rec.mic.raw_refused_frames = 12_000;
+        assert_eq!(
+            describe_raw_refused(&rec).as_deref(),
+            Some(
+                "record-raw: 0.250 s of the mic track (12000 frames) is silence: the mic was recorded raw and the default mic changed to one that cannot be opened raw (the processed signal is never recorded instead); the files are written"
+            )
         );
     }
 

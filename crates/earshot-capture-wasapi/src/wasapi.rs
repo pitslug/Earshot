@@ -1917,6 +1917,9 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                 let error = e.detail();
                 self.observer
                     .reopened(now, reason, ReopenOutcome::Failed { error: &error });
+                if matches!(e, CaptureError::RawMic(_)) {
+                    self.observer.raw_refused(now);
+                }
                 self.end_if_over(now);
                 if self.follower.give_up_chosen(now)
                     && let DeviceChoice::Endpoint { name, .. } = std::mem::take(&mut self.device)
@@ -2317,7 +2320,9 @@ fn open_loopback<'com>(
 /// a mic that cannot be opened raw fails the recording before anything is captured
 /// ([`CaptureError::RawMic`]), and a re-open during the recording asks for raw again, so a
 /// new default mic without raw support leaves the mic track silent (the failed re-open is in
-/// its [`DeviceChange`]s) instead of recording processed audio into a raw recording. Only
+/// its [`DeviceChange`]s, the silence counted in
+/// [`TrackRecording::raw_refused_frames`](crate::recording::TrackRecording::raw_refused_frames))
+/// instead of recording processed audio into a raw recording. Only
 /// this recorder can ask for it: live sessions always open the mic with the default.
 ///
 /// Runs on the calling thread and initialises COM (MTA) for the duration of the call.

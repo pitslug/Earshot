@@ -1,9 +1,9 @@
 //! The parts of a raw recording's `timestamps.json` (written by `earshot-cli record-raw`,
 //! `earshot-capture-wasapi::recording`) that replay needs. Schema v1, v2 (adds
 //! `device_changes`), v3 (per-track `wav_channels` may exceed 1: the loopback WAV
-//! keeps its device channels, interleaved) and v4 (a mic device change may carry
-//! `hands_free`); unknown fields are ignored. Parsing (for example with
-//! `serde_json::from_reader`) is done by the caller.
+//! keeps its device channels, interleaved), v4 (a mic device change may carry
+//! `hands_free`) and v5 (the mic section may carry `processing`); unknown fields are
+//! ignored. Parsing (for example with `serde_json::from_reader`) is done by the caller.
 
 use serde::Deserialize;
 
@@ -14,7 +14,7 @@ fn mono() -> u16 {
 /// Root of `timestamps.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RawTimeline {
-    /// Layout version (1 to 4).
+    /// Layout version (1 to 5).
     pub schema_version: u32,
     /// Units of every `*qpc` field per second (10 000 000 for WASAPI QPC).
     pub qpc_units_per_second: u64,
@@ -48,6 +48,23 @@ pub struct RawTrackTimeline {
     /// Stream re-opens (schema v2; empty for v1).
     #[serde(default)]
     pub device_changes: Vec<RawDeviceChange>,
+    /// How the track's stream was opened (schema v5, T12.32): `"raw"` on a mic opened without
+    /// Windows' default signal processing; absent for the default stream, on the loopback and
+    /// in v1 to v4. Informational: replay is the same either way.
+    #[serde(default)]
+    pub processing: RawProcessing,
+}
+
+/// How a raw recording's mic stream was opened (schema v5). Any other value is refused: a
+/// take whose mic was opened some other way cannot be read as either.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawProcessing {
+    /// With the endpoint's default signal processing (what every meeting records).
+    #[default]
+    Default,
+    /// Without it (`earshot-cli record-raw --mic-raw`).
+    Raw,
 }
 
 /// One captured packet.

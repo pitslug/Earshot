@@ -72,8 +72,10 @@ pub struct EndpointProperties {
     pub raw_processing: Option<bool>,
 }
 
-/// What signal processing a microphone stream is opened with (T12.32).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What signal processing a microphone stream is opened with (T12.32). Serialised as
+/// `default` or `raw` (a raw recording's `timestamps.json`, schema v5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MicProcessing {
     /// The stream declares nothing: Windows applies the endpoint's default processing
     /// (on some machines the vendor's noise suppression or echo control). What the app and

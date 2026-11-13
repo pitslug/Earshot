@@ -753,7 +753,33 @@ fn run_with_default_changes(
     mic_without_raw_until: u64,
     seconds: u64,
 ) -> Run {
-    let platform = Rc::new(Platform::default());
+    let (result, mic, reference, platform) = drive_default_changes(
+        processing,
+        mic_without_raw_until,
+        seconds,
+        &[],
+        Ear::default(),
+    );
+    Run {
+        result,
+        mic,
+        reference,
+        platform,
+    }
+}
+
+/// [`run_with_default_changes`] with `faults` and `mic_observer` on the mic track.
+fn drive_default_changes<O: TrackObserver>(
+    processing: MicProcessing,
+    mic_without_raw_until: u64,
+    seconds: u64,
+    faults: &[Fault],
+    mic_observer: O,
+) -> (Result<u64, CaptureError>, O, Ear, Rc<Platform>) {
+    let platform = Rc::new(Platform {
+        faults: faults.to_vec(),
+        ..Platform::default()
+    });
     platform.mic_without_raw.set(mic_without_raw_until > 0);
     for (flow, id) in [
         (Flow::Capture, "another-mic"),
@@ -778,7 +804,7 @@ fn run_with_default_changes(
         mic_endpoint,
         DeviceChoice::Default,
         StreamFollower::new(Flow::Capture, Role::Console, true),
-        Ear::default(),
+        mic_observer,
     )
     .with_processing(processing);
     let mut lb = Track::new(
@@ -795,12 +821,7 @@ fn run_with_default_changes(
         }
         now >= end
     });
-    Run {
-        result,
-        mic: mic.observer,
-        reference: lb.observer,
-        platform,
-    }
+    (result, mic.observer, lb.observer, platform)
 }
 
 /// What the opens of `track` were asked for.
@@ -914,6 +935,84 @@ fn capture_loop_a_raw_mic_reopened_on_a_mic_without_raw_records_no_processed_aud
     );
 }
 
+/// Records the mic of [`drive_default_changes`] as `record_raw` does (a [`RecordingTrack`]
+/// inside a [`NotifyingTrack`]) and finishes it at the end of the capture.
+fn record_default_changes(
+    processing: MicProcessing,
+    mic_without_raw_until: u64,
+    seconds: u64,
+    faults: &[Fault],
+) -> crate::recording::TrackRecording {
+    let first = DeviceDescription {
+        name: "Fake mic".into(),
+        format: MixFormat::from_waveformat_bytes(&float_waveformat_bytes(RATE, 1)).unwrap(),
+    };
+    let track = RecordingTrack::new(first, crate::timeline::TrackTimeline::new(RATE, 0));
+    let observer = NotifyingTrack::new(track, |_: &HandsFreeMic| {});
+    let (result, mic, _, _) =
+        drive_default_changes(processing, mic_without_raw_until, seconds, faults, observer);
+    mic.into_track()
+        .finish(result.expect("the recording goes on"))
+}
+
+fn qpc_frames(qpc: u64) -> u64 {
+    qpc * u64::from(RATE) / QPC_UNITS_PER_SEC
+}
+
+#[test]
+fn capture_loop_a_raw_mic_reopen_refused_counts_the_silence_it_leaves() {
+    // The new default mic has no raw support for the first 3 s of a 5 s take.
+    let rec = record_default_changes(MicProcessing::Raw, 3 * QPC_UNITS_PER_SEC, 5, &[]);
+    let back = rec
+        .device_changes
+        .iter()
+        .find(|c| c.reason == ReopenReason::Retry && c.device_name.is_some())
+        .expect("the raw mic came back")
+        .qpc;
+    assert!(back >= 3 * QPC_UNITS_PER_SEC, "{back}");
+    // From the refused re-open (the first pass) to the first packet of the returned mic.
+    let silent = qpc_frames(back - WAIT_QPC);
+    assert_eq!(rec.raw_refused_frames, silent);
+    assert!(silent > 2 * u64::from(RATE), "{silent}");
+    // It is the track's silence, not something counted beside it.
+    assert_eq!(rec.timeline.packets()[1].silence_before, silent);
+    assert!(
+        rec.timeline.samples()[qpc_frames(WAIT_QPC) as usize..][..silent as usize]
+            .iter()
+            .all(|&s| s == 0.0)
+    );
+
+    // A raw mic that never comes back: silence to the end of the take.
+    let rec = record_default_changes(MicProcessing::Raw, 10 * QPC_UNITS_PER_SEC, 5, &[]);
+    assert_eq!(
+        rec.raw_refused_frames,
+        qpc_frames(5 * QPC_UNITS_PER_SEC - WAIT_QPC)
+    );
+    assert_eq!(
+        rec.raw_refused_frames,
+        rec.timeline.frames() - qpc_frames(WAIT_QPC)
+    );
+}
+
+#[test]
+fn capture_loop_only_a_refused_raw_reopen_counts_as_raw_silence() {
+    // A raw mic re-opened raw at once.
+    let rec = record_default_changes(MicProcessing::Raw, 0, 3, &[]);
+    assert_eq!(rec.raw_refused_frames, 0);
+    // A mic that cannot be opened for a second for another reason (device gone) leaves
+    // silence too, but none of it is a raw refusal: raw or default.
+    for processing in [MicProcessing::Raw, MicProcessing::Default] {
+        let gone = Fault::on(
+            Call::Open(TrackId::Mic),
+            1,
+            follow::AUDCLNT_E_DEVICE_INVALIDATED,
+        );
+        let rec = record_default_changes(processing, 0, 3, &[gone]);
+        assert!(rec.timeline.synthesized_frames() > u64::from(RATE / 2));
+        assert_eq!(rec.raw_refused_frames, 0, "{processing:?}");
+    }
+}
+
 #[test]
 fn capture_loop_a_raw_refusal_is_an_open_failure_that_is_not_a_lost_device() {
     let refused = CaptureError::RawMic(RawRefusal::NotSupported {
@@ -926,12 +1025,14 @@ fn capture_loop_a_raw_refusal_is_an_open_failure_that_is_not_a_lost_device() {
     assert!(refused.detail().contains("cannot be opened raw"));
 }
 
-/// Every `.rs` file under `dir`, build output left out.
+/// Every `.rs` file under `dir`, build output left out. Fails closed: a folder or entry that
+/// cannot be read panics rather than leave files unscanned.
 fn rust_files(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()));
+    for entry in entries {
+        let entry =
+            entry.unwrap_or_else(|e| panic!("cannot read an entry of {}: {e}", dir.display()));
         let path = entry.path();
         let name = entry.file_name();
         if path.is_dir() {
@@ -942,6 +1043,25 @@ fn rust_files(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
             found.push(path);
         }
     }
+}
+
+/// The text of a scanned source file. Fails closed: an unreadable file panics, never reads as
+/// a clean one.
+fn read_source(file: &std::path::Path) -> String {
+    std::fs::read_to_string(file).unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()))
+}
+
+#[test]
+fn raw_mic_source_scan_fails_closed_on_what_it_cannot_read() {
+    let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("no-such-folder-t12-32");
+    assert!(!missing.exists());
+    let listed = std::panic::catch_unwind(|| rust_files(&missing, &mut Vec::new()));
+    assert!(
+        listed.is_err(),
+        "a folder that cannot be listed fails the scan"
+    );
+    let read = std::panic::catch_unwind(|| read_source(&missing.join("lib.rs")));
+    assert!(read.is_err(), "a file that cannot be read fails the scan");
 }
 
 /// T12.32: the raw mic is a measurement switch of the raw recorder and the developer CLI.
@@ -974,7 +1094,7 @@ fn raw_mic_is_named_only_by_the_capture_crate_and_the_cli() {
         .iter()
         .filter(|f| !f.starts_with(here) && !f.starts_with(&cli))
     {
-        let text = std::fs::read_to_string(file).unwrap_or_default();
+        let text = read_source(file);
         if let Some(name) = names.iter().find(|n| text.contains(**n)) {
             naming.push(format!("{}: {name}", file.display()));
         }
