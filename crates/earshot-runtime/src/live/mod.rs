@@ -1591,6 +1591,14 @@ where
                     self.emit(RuntimeEvent::Discontinuity { track, at, kind });
                 }
                 PipelineEvent::Error(e) => {
+                    if let PipelineError::LiveAsr {
+                        track: TrackId::Mic,
+                        ..
+                    } = &e
+                    {
+                        // The mic's live ASR stopped for the meeting (TODO 51).
+                        self.echo.mic_stopped();
+                    }
                     if let PipelineError::LiveAsr { track, error } = &e
                         && let Some((_, r)) =
                             self.stretch_records.iter_mut().find(|(t, _)| t == track)
@@ -1730,6 +1738,10 @@ where
             self.echo.reference_progress(r.decoded_through());
         }
         if let Some(m) = self.workers.iter().find(|w| w.track() == TrackId::Mic) {
+            if m.ended() {
+                // A crashed mic worker sends nothing more (TODO 51).
+                self.echo.mic_stopped();
+            }
             self.echo.mic_progress(m.decoded_through());
         }
         // Each track's decoded frontier, read before its events (a worker sends a decode's
