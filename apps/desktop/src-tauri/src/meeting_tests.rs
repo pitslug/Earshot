@@ -2083,6 +2083,107 @@ fn meeting_live_model_load_that_never_returns_leaves_the_meeting_unprocessed() {
     drop(release);
 }
 
+/// T9.22: while the first meeting's thread is still stuck (its `release` held back), a second
+/// meeting records, takes its turn and finishes: nothing the stuck thread holds keeps the queue.
+/// `stuck` waits until the first meeting is inside its stuck call.
+fn a_stuck_meeting_never_blocks_the_next(first: Finish, stuck: impl FnOnce(), expected: &str) {
+    let dir = TempDir::new("stuck-first");
+    let svc = services(&dir);
+    let (open, gate) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![first, Finish::Gate(gate)]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let d = d.with_after_bounds(SHORT_AFTER);
+    let first = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    stuck();
+    d.stop().unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&first, e));
+    assert_eq!(
+        result_of(&events, &first),
+        SummaryEvent::Failed {
+            message: expected.into(),
+            retryable: false,
+        }
+    );
+
+    let second = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    open.send(()).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&second, e));
+    d.join();
+    assert!(matches!(
+        result_of(&events, &second),
+        SummaryEvent::Skipped { .. }
+    ));
+    assert!(
+        prepare.logged().ends_with(&[
+            format!("{second} starts"),
+            format!("{second} ends, cancelled false")
+        ]),
+        "{:?}",
+        prepare.logged()
+    );
+    assert!(
+        !prepare
+            .logged()
+            .iter()
+            .any(|l| l.starts_with(&format!("{first} returned"))),
+        "the first is still stuck"
+    );
+}
+
+#[test]
+fn meeting_with_a_final_pass_step_that_never_returns_never_blocks_the_next() {
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    a_stuck_meeting_never_blocks_the_next(
+        Finish::AfterHangs {
+            in_step: true,
+            inside: inside_tx,
+            release: release_rx,
+        },
+        || {},
+        POST_STALLED_MESSAGE,
+    );
+    // Its call came, and it is released only now.
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    drop(release);
+}
+
+#[test]
+fn meeting_with_a_final_pass_load_that_never_returns_never_blocks_the_next() {
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    a_stuck_meeting_never_blocks_the_next(
+        Finish::AfterHangs {
+            in_step: false,
+            inside: inside_tx,
+            release: release_rx,
+        },
+        || {},
+        POST_STALLED_MESSAGE,
+    );
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    drop(release);
+}
+
+#[test]
+fn meeting_with_a_live_model_load_that_never_returns_never_blocks_the_next() {
+    // The stuck hold thread holds the first meeting's ticket: only ending it explicitly lets the
+    // second take its turn.
+    let (loading_tx, loading) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    a_stuck_meeting_never_blocks_the_next(
+        Finish::LoadHangs {
+            stall: Duration::from_millis(200),
+            loading: loading_tx,
+            release: release_rx,
+        },
+        || loading.recv_timeout(MEET_GUARD).unwrap(),
+        LIVE_LOAD_STALLED_MESSAGE,
+    );
+    drop(release);
+}
+
 #[test]
 fn meeting_after_watch_rule_is_no_sign_of_life_for_the_phase_bound() {
     // T9.22b, clock-free: the bound of the phase the work is in, counted from its last step or
