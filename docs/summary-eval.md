@@ -1263,3 +1263,18 @@ Qwen 3.5 4B on CUDA (desktop GPU, not Surface timings), the production local pla
 - **Quality parts of the rule pass:** no meeting loses a decision, actions caught are level in total (r1 one fewer, r2 one more), made-up items halve (all of it on r3).
 - **Time:** at hang-up 15.7 s against 8.8 s per meeting on the GPU (-44%), words -62%. The rule's 50% is a Surface figure and is not measured yet.
 - **Limits:** four meetings, 9 real decisions, one judge per meeting, one run per arm. This differs from the AMI 4B round (brief lost decisions there); the owner's meetings decide (T12.25a).
+
+## T12.25a second run: the same meetings without time chunks (2026-11-13, counts only)
+
+Asked by the owner: does the 600 s chunking lose the items both arms missed? The same 4 meetings, both arms, with no time chunks and `--context 32768 --max-output 16384`, so each meeting went to the model in one request (5.7k to 14.4k prompt tokens). The real-item lists are the first run's, unchanged. New blinded packets went to one new Claude Code agent per meeting, with the same marking rules.
+
+| Run | Decisions caught (of 9) | Actions caught (of 14) | Made up | Duplicates |
+|---|---|---|---|---|
+| Chunked, standard (first run) | 6 | 9 | 10 | 3 |
+| Chunked, brief (first run) | 6 | 9 | 5 | 2 |
+| Unchunked, standard | 2 | 6 | 4 | 0 |
+| Unchunked, brief | 3 | 10 | 0 | 0 |
+
+- **Chunking does not lose the items.** Unchunked caught fewer decisions in both arms, and most of the loss was on r3. 2 decisions and 1 action on r1, and 1 action on r3, were missed by all four runs. The limit is the 4B, not the plan or the prompt length.
+- **Unchunked brief** made nothing up and caught the most actions, but it lost decisions on r1 and r3 against the rule's limit of one per meeting.
+- **Limits:** the judges differ between the rounds, so a total that moves by 1 or 2 is within judge noise; the decision drop is larger. Unchunked reads the whole meeting after hang-up, so it would cost more time at hang-up on the Surface than the chunked plan; not measured. GPU times at hang-up: 8.4 s (standard) and 5.8 s (brief) per meeting.
