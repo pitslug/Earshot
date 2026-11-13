@@ -209,7 +209,8 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         split: Vec<String>,
         /// Transcript sources, comma-separated: reference, earshot (default: both; earshot
-        /// on the test split only).
+        /// on the test split only). Or `store` alone with --store-run: the owner's own
+        /// meetings (T12.25a), results kept in the run folder.
         #[arg(long, value_delimiter = ',')]
         source: Vec<String>,
         /// Only the first N meetings of each split.
@@ -288,6 +289,29 @@ enum Cmd {
         /// 3.5 candidates only; use its own --out.
         #[arg(long, value_name = "TOKENS", conflicts_with_all = ["two_call", "two_track"])]
         thinking: Option<u32>,
+        /// Prepare a run of the owner's own meetings (T12.25a, evaluation only) from this
+        /// Earshot database: copy it into fixtures/private/real-meetings/<--store-run> and
+        /// write the picked meetings' summary inputs there (counts printed only). No summaries.
+        #[arg(long, value_name = "PATH", requires = "store_run")]
+        store_db: Option<std::path::PathBuf>,
+        /// The run folder under fixtures/private/real-meetings (git-ignored) of --store-db
+        /// and --source store.
+        #[arg(long, value_name = "NAME")]
+        store_run: Option<String>,
+        /// How many meetings --store-db picks (the most recent with a final transcript).
+        #[arg(long, default_value_t = 6)]
+        store_count: usize,
+        /// The shortest meeting --store-db picks, in minutes.
+        #[arg(long, default_value_t = 15)]
+        store_min_minutes: u64,
+        /// Meeting ids --store-db leaves out, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        store_exclude: Vec<String>,
+        /// Prompt prefix reuse (T12.25 part 1, evaluation only): keep the shared start of a
+        /// summary run's prompts in llama.cpp's cache (format key `-reuse`). Local candidates
+        /// without --thinking; use its own --out.
+        #[arg(long, conflicts_with = "thinking")]
+        prefix_reuse: bool,
     },
     /// Build the NPU conversion of a Parakeet TDT model (T8.3): static 30 s input shape,
     /// QDQ quantisation for Qualcomm's HTP backend, into <models>/parakeet-qnn/<name>.
@@ -562,6 +586,12 @@ fn main() -> ExitCode {
             meeting,
             codex_cli,
             thinking,
+            store_db,
+            store_run,
+            store_count,
+            store_min_minutes,
+            store_exclude,
+            prefix_reuse,
         } => xtask::sum_eval::run(
             &root,
             &xtask::sum_eval::Options {
@@ -589,6 +619,12 @@ fn main() -> ExitCode {
                 meetings: meeting,
                 codex_cli,
                 thinking,
+                store_db,
+                store_run,
+                store_count,
+                store_min_minutes,
+                store_exclude,
+                prefix_reuse,
             },
         )
         .map(|()| true),

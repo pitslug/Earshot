@@ -1188,3 +1188,62 @@ Claude through Claude Code 2.1.292 at its default model and effort, the 20 AMI t
 | brief (shipped) | 20/20 | 4,876 (-63.7%) | 2,689 | 58 / 146 | 146 / 46 | 36 | 10 | 46 | 0.175 |
 
 - The test split repeats the dev pattern: about 64% fewer words (dev: 61%), every meeting valid, as many decisions and action items written, decision coverage level and the token-based action coverage lower by 3 (dev: 5.5 below the control mean), which the dev meaning-judge round traced to shorter action wording rather than missing actions. No invalid summary.
+
+## T12.25a: judging on the owner's own meetings, privately (evaluation only)
+
+The owner asked for summary changes to be judged on their own recorded meetings (AMI's scripted design meetings are hard to judge and unlike them). Their text may go to Claude Code agents as judges, as their summaries already do; nothing from them enters the repo.
+
+**Prepare a run** (once per set of meetings; close Earshot first so the copy is consistent):
+
+```
+cargo xtask sum-eval --store-db <path to earshot.db> --store-run <name> [--store-count 6] [--store-min-minutes 15] [--store-exclude <id,...>]
+```
+
+- xtask refuses unless `fixtures/private/real-meetings/<name>/` is git-ignored (`git check-ignore`), then runs earshot-runtime's `store_inputs` example: the database (and its `-wal`) is copied there, and only the copy is opened, read-only (`earshot_store::ReadOnlyStore`: SQLite's read-only open and `query_only`, never `Store::open`, no migration; a store from another schema version is refused).
+- **Pick rule (reads no text):** live meetings with a Final transcript and a duration of at least 15 minutes, minus `--store-exclude`, most recent start first, the first 6. They are labelled `r1` (the most recent) to `r6`.
+- Written into the run folder only: `inputs/r<k>.json` (the `SummaryInput` production builds: `MeetingView::load` and `summary::evaluation_input`, the Final transcript, names as the app shows them, title and start, no style, template or Dictionary words), `transcripts/r<k>.txt` (the transcript as a model reads it, numbered, for the real-item list writers and the judges), `picked.json` (labels, meeting ids, starts, durations). It prints counts and the folder only.
+
+**Summarise** with any candidate, today's plan:
+
+```
+cargo xtask sum-eval --source store --store-run <name> --model <candidate> [--chunk-seconds 600] [--prompt-variant <v>] [--out <folder inside the run>]
+```
+
+Results, checkpoints, `report.json` and `table.md` go to `<run>/results` (or an `--out` inside the run folder; anything else is refused by xtask and again by the example). A store run is scored by length counts only (`score::store_score`: words, sections, decisions and actions written); there is no annotation. Claude Code and Codex may summarise them (`--model claude-code`, `--model codex`); a remote endpoint never does, whatever `EARSHOT_LLM_URL` says.
+
+**Real items and judging.** One Claude Code agent per meeting writes the real decisions and actions from `transcripts/r<k>.txt` under the definitions and borderline rules of `docs/summary-eval/prompt-rounds-2026-11-04.md`, into the run folder, before any summary of that meeting is read. Blinded packets come from `sum_eval --store-inputs <run> --meetings real=r1,... --judge-packets <run>/packets --blind-key <run>/key.json --summaries <name>=<run>/results/<file>.json ...` (all paths inside the private tree, checked): each meeting folder holds `transcript.txt` in place of `reference.json` and the blinded `summary.S<n>.json` packets. The AMI meaning judge (`--import-verdicts`, `--facts`) and carried AMI packets are refused for these meetings; the real-item marks are counted by the coordinator.
+
+**What may leave the run folder:** counts only (meetings, picked, valid, decisions and actions written, tokens, seconds), under the labels `r<k>`. No meeting id, title, name or text in any committed file, log line or test.
+
+## T12.25 part 1: prompt prefix reuse (rule written before measuring, 2026-11-13)
+
+Every request of a local summary decodes its whole prompt again, although map requests share the chat template and the shared rules, and a repair round repeats the whole original prompt. Prefix reuse keeps llama.cpp's KV cache between the requests of one summary run and decodes only what is new.
+
+- **Method.** `LocalLlm` remembers the tokens its context holds (prompt and reply). A new request keeps the longest common token prefix with them, rounded down to a multiple of the micro-batch (`n_ubatch`, 512 tokens), always decoding at least the last prompt token, removes the rest from the cache (`llama_memory_seq_rm`) and decodes the remaining prompt in chunks that end on the same 2048-token boundaries as a fresh prompt. So every micro-batch llama.cpp computes holds the same tokens at the same positions as it does without reuse, and the kept cache entries were computed by identical micro-batches. All llama.cpp calls stay in `ffi.rs`. The cache is cleared at the start of every meeting, as production loads the model once per summary. Reuse is off unless asked for (`sum_eval --prefix-reuse`, `cargo xtask sum-eval --prefix-reuse`, format key `-reuse`); no shipped code turns it on in this task.
+- **Runs.** Qwen 3.5 4B (`qwen3.5-4b-q4_k_m`), all 20 dev meetings, reference transcripts, `--chunk-seconds 600`, CUDA, S16, greedy; both prompt arms (today's rules and `--prompt-variant brief`), each with reuse off (today) and on, each its own `--out` under `target/sum-eval/t1225-*`, one build.
+- **Rule (ships on identity alone).** Reuse passes only if, in both arms, every meeting's stored result with reuse on equals the one with reuse off: the same `ok`, the same failure text, and the stored `summary` byte for byte as JSON, compared by `sum_eval --compare-summaries` (committed). One difference anywhere fails, is reported with the number of meetings that differ, and is not retried or tuned away.
+- **Reported, deciding nothing.** Prompt tokens decoded with and without reuse (llama.cpp's counts), requests, and prompt and total seconds on the desktop GPU, labelled as a GPU on a possibly shared host, not Surface timings. Time saved on the Surface is a separate run by the owner on an idle Surface, steps written below with the results.
+- **What a pass means.** The part may ship on identity alone (PLAN T12.25); turning it on in the app is a follow-up the owner approves.
+- **Method amended before any result was judged (2026-11-13).** The first reuse-on run kept no token at all: Qwen 3.5 is a hybrid model (recurrent layers beside attention), and llama.cpp refuses to cut a recurrent sequence back (`llama_memory_seq_rm` returns false), so every request fell back to a fresh prompt and the comparison was trivially identical. Those runs were stopped and are not reported. The method now saves the sequence state (`llama_state_seq_get_data`) at micro-batch boundaries while a prompt is decoded (the boundary it shares with the context before it, in a slot of its own, and its last one, in a second slot) and loads the longest saved state that starts the next prompt (`llama_state_seq_set_data`); decode calls are also cut at the save points, which are micro-batch boundaries, so the micro-batches are still a fresh prompt's. The runs and the rule above are unchanged, and all four runs are made again from one build.
+
+### Results: prefix reuse passes on identity (2026-11-13, `target/sum-eval/t1225-*`)
+
+All four runs from one build (CUDA, RTX 5080, 20 dev meetings, chunked 600 s, S16), compared with `sum_eval --compare-summaries` (`target/sum-eval/t1225-<arm>-compare.json`):
+
+| Arm | Meetings identical (reuse on against off) | Requests | Prompt tokens | Decoded with reuse | Saved | Prompt s off / on (GPU) | Total s off / on (GPU) |
+|---|---|---|---|---|---|---|---|
+| today's rules | 20 / 20 | 92 | 444,040 | 385,672 | 58,368 (13.1%) | 44.6 / 40.8 | 605.8 / 582.1 |
+| `brief` | 20 / 20 | 91 | 432,043 | 379,819 | 52,224 (12.1%) | 42.3 / 43.4 | 385.4 / 409.8 |
+
+- **The rule passes in both arms**: every meeting's `ok`, failure text and stored summary are the same with reuse on (generated tokens equal too: 104,477 and 65,637). By the rule, prefix reuse may ship; turning it on in the app is the owner's call.
+- **What it saves.** About an eighth of the prompt tokens: the shared rules and schema of each map request after the first two of a meeting (kept to a whole 512-token micro-batch, so about 1,024 of each request's roughly 1,500 shared tokens), plus whole prompts on repair rounds. The merge request shares only the rules with the maps.
+- **GPU seconds decide nothing.** Prompt time is 7% of a GPU run, and the on and off differences (-3.8 s and +1.1 s of prompt time, -24 s and +24 s in total) are within the run-to-run spread of a possibly shared host; they are not Surface timings. On the Surface, where the 4B reads about 93 prompt tokens a second, 58,368 tokens would be about 10 minutes over the 20 meetings, roughly 30 s per meeting, most of it during the meeting (map steps) rather than at hang-up: an estimate from token counts, to be replaced by the Surface run below.
+- **An earlier attempt, kept as an aside** (`target/sum-eval/t1225r1-*`, same build otherwise): keeping only the two newest saved states let each prompt's last state push out the shared one, so it saved 37,888 and 30,720 tokens (8.5% and 7.1%); also identical in both arms. The final method keeps the shared state in a slot of its own.
+
+**Surface timing (for the owner, on an idle Surface, mains power, nothing else running):**
+
+1. `cd <the Earshot checkout>`
+2. `cargo xtask sum-eval --model qwen3.5-4b-q4_k_m --split dev --source reference --chunk-seconds 600 --backend cpu --meeting ES2003c,ES2011c,IS1008c,TS3004c,TS3006c --out target/sum-eval/t1225-surface-off`
+3. `cargo xtask sum-eval --model qwen3.5-4b-q4_k_m --split dev --source reference --chunk-seconds 600 --backend cpu --meeting ES2003c,ES2011c,IS1008c,TS3004c,TS3006c --prefix-reuse --out target/sum-eval/t1225-surface-on`
+4. `cargo run --release -p earshot-llm-local --example sum_eval -- --compare-summaries target/sum-eval/t1225-surface-off/qwen3.5-4b-q4_k_m-cpu.json target/sum-eval/t1225-surface-on/qwen3.5-4b-q4_k_m-cpu.json`
+5. Report the printed `identical`, `prompt_s`, `hangup_s` and `seconds` of both runs. The Surface identity check is informational (the rule was judged on the GPU); a difference there is reported to the owner before anything ships.

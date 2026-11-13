@@ -149,6 +149,48 @@ pub struct StoreTx<'a> {
     pub(crate) conn: Transaction<'a>,
 }
 
+/// A database opened read-only, for evaluation tools that read a copy of a user's store
+/// (T12.25a, `sum_eval --source store`): SQLite's read-only open (`SQLITE_OPEN_READ_ONLY`,
+/// what a `mode=ro` URI asks for) plus `PRAGMA query_only`, no migration, no checkpoint and
+/// no pragma that writes. It implements [`MeetingRepo`](earshot_core::model::MeetingRepo)
+/// for reading; every `put_*` is refused. Never use it on a store a running Earshot owns:
+/// open a copy (in WAL mode SQLite may create the copy's `-shm` file beside it).
+#[derive(Debug)]
+pub struct ReadOnlyStore {
+    pub(crate) conn: Connection,
+}
+
+impl ReadOnlyStore {
+    /// Opens the database at `path` read-only. It must exist and hold exactly this build's
+    /// schema ([`SCHEMA_VERSION`]): an older one would need migrations, which write.
+    ///
+    /// # Errors
+    /// [`StoreError::SchemaTooNew`] for a newer schema, [`StoreError::Corrupt`] for an older
+    /// one; SQLite errors (a missing file included).
+    pub fn open(path: &Path) -> Result<ReadOnlyStore, StoreError> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        conn.pragma_update(None, "query_only", true)?;
+        let found: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if found > SCHEMA_VERSION {
+            return Err(StoreError::SchemaTooNew {
+                found,
+                supported: SCHEMA_VERSION,
+            });
+        }
+        if found < SCHEMA_VERSION {
+            return Err(StoreError::Corrupt(format!(
+                "database schema {found} is older than this build reads ({SCHEMA_VERSION}); \
+                 a read-only open cannot migrate it"
+            )));
+        }
+        Ok(ReadOnlyStore { conn })
+    }
+}
+
 impl Store {
     /// Opens (creating if needed) the database at `path`: WAL journal, foreign keys on,
     /// migrations applied.

@@ -220,18 +220,8 @@ impl LocalLlm {
                 context,
             });
         }
-        self.engine.clear();
         let started = Instant::now();
-        for chunk in tokens.chunks_mut(2048) {
-            if cancel.is_cancelled() {
-                return Err(LlmError::Cancelled);
-            }
-            let rc = self.engine.decode(chunk);
-            if rc != 0 {
-                return Err(LlmError::Decode(rc));
-            }
-            self.heartbeat.beat();
-        }
+        self.decode_prompt(&mut tokens, cancel)?;
         let prompt_time = started.elapsed();
         let started = Instant::now();
         let mut bytes = Vec::new();

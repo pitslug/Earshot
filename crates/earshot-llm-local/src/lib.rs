@@ -292,11 +292,117 @@ fn format_chat_with(
     ))
 }
 
+/// Prompt tokens per `llama_decode` call; chunks end on multiples of this from position 0.
+const PROMPT_CHUNK: usize = 2048;
+
+/// The saved-state slot of the boundary a prompt shares with the one before it (T12.25): the
+/// shared rules of a run's requests. A later "last" state never replaces it.
+const SHARED_SLOT: usize = 0;
+
+/// The saved-state slot of a prompt's last boundary (for a repair round, which repeats it).
+const LAST_SLOT: usize = 1;
+
+/// The state of sequence 0 after decoding exactly `tokens` (a multiple of the micro-batch).
+struct Snapshot {
+    tokens: Vec<i32>,
+    state: Vec<u8>,
+}
+
+/// A boundary of `prompt` shared with `cached` (T12.25 prefix reuse): their common prefix,
+/// less the last prompt token (whose logits the reply needs), rounded down to a multiple of
+/// `ubatch`, so the rest of the prompt is computed in the same micro-batches as a fresh
+/// prompt would be (docs/summary-eval.md, T12.25 part 1).
+#[must_use]
+fn reusable_prefix(cached: &[i32], prompt: &[i32], ubatch: usize) -> usize {
+    if ubatch == 0 {
+        return 0;
+    }
+    let common = cached
+        .iter()
+        .zip(prompt)
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(prompt.len().saturating_sub(1));
+    common / ubatch * ubatch
+}
+
+/// The `llama_decode` chunks of prompt positions `start..len`: the first ends at the next
+/// multiple of `chunk` (or `len`), every later one is `chunk` long, so for `start` = 0 they
+/// are `len` cut every `chunk`, exactly as without reuse.
+#[must_use]
+fn prompt_chunks(start: usize, len: usize, chunk: usize) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut at = start;
+    while at < len {
+        let end = ((at / chunk + 1) * chunk).min(len);
+        out.push(at..end);
+        at = end;
+    }
+    out
+}
+
+/// [`prompt_chunks`] also cut at every `save` point inside `start..len`, where prefix reuse
+/// saves the state. Cuts fall on micro-batch boundaries, so llama.cpp still computes the same
+/// micro-batches; only the call that ends at a cut also returns that token's logits, which
+/// nothing reads.
+#[must_use]
+fn decode_ranges(
+    start: usize,
+    len: usize,
+    chunk: usize,
+    save: &[usize],
+) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    for r in prompt_chunks(start, len, chunk) {
+        let mut cuts: Vec<usize> = save
+            .iter()
+            .copied()
+            .filter(|&p| p > r.start && p < r.end)
+            .collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut at = r.start;
+        for c in cuts {
+            out.push(at..c);
+            at = c;
+        }
+        out.push(at..r.end);
+    }
+    out
+}
+
+/// Prompt token counts of the requests since the last [`LocalLlm::take_reuse_stats`] (T12.25,
+/// evaluation): how many prompt tokens there were and how many of them the context already
+/// held, so were not decoded again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReuseStats {
+    /// Requests.
+    pub requests: usize,
+    /// Prompt tokens of those requests.
+    pub prompt_tokens: usize,
+    /// Of those, kept from the context instead of decoded.
+    pub reused_tokens: usize,
+}
+
+impl ReuseStats {
+    /// Prompt tokens llama.cpp decoded.
+    #[must_use]
+    pub fn decoded_tokens(&self) -> usize {
+        self.prompt_tokens - self.reused_tokens
+    }
+}
+
 /// A loaded GGUF model with one context. Not `Send`: use it on the thread that loaded it.
 pub struct LocalLlm {
     engine: ffi::Engine,
     template: CString,
     heartbeat: Heartbeat,
+    /// Keep the shared start of consecutive prompts in the context (T12.25); off by default.
+    prefix_reuse: bool,
+    /// Counts since the last [`LocalLlm::take_reuse_stats`].
+    reuse: ReuseStats,
+    /// Saved states: [`SHARED_SLOT`] and [`LAST_SLOT`].
+    snapshots: [Option<Snapshot>; 2],
 }
 
 /// Counts a run's progress (prompt batches and reply tokens), readable from another thread: a
@@ -389,9 +495,121 @@ impl LocalLlm {
                 engine,
                 template,
                 heartbeat: Heartbeat::default(),
+                prefix_reuse: false,
+                reuse: ReuseStats::default(),
+                snapshots: [None, None],
             },
             report,
         ))
+    }
+
+    /// Turns prompt prefix reuse on or off (T12.25 part 1; off after a load). On, a request
+    /// keeps the start it shares with what the context holds ([`reusable_prefix`]) and
+    /// decodes only the rest; greedy replies are meant to be byte-identical to a fresh
+    /// prompt's, which docs/summary-eval.md proves on the dev meetings. Evaluation only until
+    /// the owner turns it on in the app.
+    pub fn set_prefix_reuse(&mut self, on: bool) {
+        self.prefix_reuse = on;
+    }
+
+    /// Forgets what the context holds, so the next request starts fresh (a new meeting).
+    pub fn forget_prefix(&mut self) {
+        self.engine.clear();
+        self.snapshots = [None, None];
+    }
+
+    /// The prompt counts since the last call ([`ReuseStats`]), reset.
+    pub fn take_reuse_stats(&mut self) -> ReuseStats {
+        std::mem::take(&mut self.reuse)
+    }
+
+    /// Readies the context for `tokens` and decodes them, checking `cancel` before every
+    /// call. Without prefix reuse: from position 0 after clearing the memory, in
+    /// [`prompt_chunks`], as before T12.25. With it: from the longest saved [`Snapshot`]
+    /// whose tokens start the prompt (shorter than it), loaded with `llama_state_seq_set_data`,
+    /// in [`decode_ranges`]; on the way the state is saved at the boundary this prompt shares
+    /// with what the context held before it (into [`SHARED_SLOT`]) and at its last boundary
+    /// (into [`LAST_SLOT`]), both from [`reusable_prefix`], unless a slot already holds it.
+    /// Returns the tokens kept.
+    pub(crate) fn decode_prompt(
+        &mut self,
+        tokens: &mut [i32],
+        cancel: &CancelToken,
+    ) -> Result<usize, LlmError> {
+        if !self.prefix_reuse {
+            self.engine.clear();
+            self.count_request(tokens.len(), 0);
+            for range in prompt_chunks(0, tokens.len(), PROMPT_CHUNK) {
+                self.decode_range(&mut tokens[range], cancel)?;
+            }
+            return Ok(0);
+        }
+        let ubatch = self.engine.ubatch();
+        let shared = reusable_prefix(self.engine.cached(), tokens, ubatch);
+        let last = reusable_prefix(tokens, tokens, ubatch);
+        let usable = |s: &Snapshot| s.tokens.len() < tokens.len() && tokens.starts_with(&s.tokens);
+        let best = self
+            .snapshots
+            .iter()
+            .flatten()
+            .filter(|s| usable(s))
+            .max_by_key(|s| s.tokens.len());
+        let mut start = 0;
+        match best {
+            Some(snap) => {
+                if self.engine.load_state(&snap.state, &snap.tokens) {
+                    start = snap.tokens.len();
+                }
+            }
+            None => self.engine.clear(),
+        }
+        let held = |b: usize, slots: &[Option<Snapshot>; 2]| {
+            slots
+                .iter()
+                .flatten()
+                .any(|s| s.tokens.len() == b && tokens.starts_with(&s.tokens))
+        };
+        let mut save: Vec<(usize, usize)> = Vec::new();
+        for (b, slot) in [(shared, SHARED_SLOT), (last, LAST_SLOT)] {
+            if b > start && !held(b, &self.snapshots) && !save.iter().any(|(p, _)| *p == b) {
+                save.push((b, slot));
+            }
+        }
+        let points: Vec<usize> = save.iter().map(|(p, _)| *p).collect();
+        self.count_request(tokens.len(), start);
+        for range in decode_ranges(start, tokens.len(), PROMPT_CHUNK, &points) {
+            let end = range.end;
+            self.decode_range(&mut tokens[range], cancel)?;
+            if let Some(&(_, slot)) = save.iter().find(|(p, _)| *p == end)
+                && let Some(state) = self.engine.save_state()
+            {
+                self.snapshots[slot] = Some(Snapshot {
+                    tokens: tokens[..end].to_vec(),
+                    state,
+                });
+            }
+        }
+        Ok(start)
+    }
+
+    /// Adds one request of `prompt` tokens, `kept` of them from a saved state, to the counts.
+    fn count_request(&mut self, prompt: usize, kept: usize) {
+        self.reuse.requests += 1;
+        self.reuse.prompt_tokens += prompt;
+        self.reuse.reused_tokens += kept;
+    }
+
+    /// One `llama_decode` call of prompt tokens, after a cancellation check.
+    fn decode_range(&mut self, tokens: &mut [i32], cancel: &CancelToken) -> Result<(), LlmError> {
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
+        }
+        let rc = self.engine.decode(tokens);
+        if rc != 0 {
+            return Err(LlmError::Decode(rc));
+        }
+        self.heartbeat.beat();
+        Ok(())
     }
 
     /// This model's progress counter ([`Heartbeat`]).
@@ -506,18 +724,8 @@ impl LocalLlm {
                 context,
             });
         }
-        self.engine.clear();
         let started = Instant::now();
-        for chunk in tokens.chunks_mut(2048) {
-            if cancel.is_cancelled() {
-                return Err(LlmError::Cancelled);
-            }
-            let rc = self.engine.decode(chunk);
-            if rc != 0 {
-                return Err(LlmError::Decode(rc));
-            }
-            self.heartbeat.beat();
-        }
+        self.decode_prompt(&mut tokens, cancel)?;
         let prompt_time = started.elapsed();
         let started = Instant::now();
         let mut bytes = Vec::new();
@@ -958,5 +1166,70 @@ mod tests {
     fn default_threads_is_bounded() {
         let t = super::default_threads();
         assert!((1..=8).contains(&t), "{t}");
+    }
+
+    #[test]
+    fn prefix_reuse_keeps_whole_micro_batches_and_always_decodes_the_last_token() {
+        use super::reusable_prefix;
+        let seq: Vec<i32> = (0..2000).collect();
+        // Nothing cached, or reuse off by a zero micro-batch: nothing kept.
+        assert_eq!(reusable_prefix(&[], &seq, 512), 0);
+        assert_eq!(reusable_prefix(&seq, &seq, 0), 0);
+        // A shared start of 1300 tokens keeps two whole micro-batches.
+        let mut other = seq.clone();
+        other[1300] = -5;
+        assert_eq!(reusable_prefix(&seq, &other, 512), 1024);
+        // Shorter than one micro-batch: nothing.
+        assert_eq!(reusable_prefix(&seq[..511], &seq, 512), 0);
+        // The same prompt again: the last token is always decoded, so 1999 rounds to 1536.
+        assert_eq!(reusable_prefix(&seq, &seq, 512), 1536);
+        // A prompt of exactly 1024 shared tokens keeps 512, never all of it.
+        assert_eq!(reusable_prefix(&seq, &seq[..1024], 512), 512);
+        // A cache longer than the prompt (an earlier reply) changes nothing.
+        let mut longer = seq.clone();
+        longer.extend(5000..6000);
+        assert_eq!(reusable_prefix(&longer, &seq[..1600], 512), 1536);
+    }
+
+    #[test]
+    fn prefix_reuse_chunks_end_where_a_fresh_prompt_chunks_end() {
+        use super::prompt_chunks;
+        assert_eq!(
+            prompt_chunks(0, 0, 2048),
+            Vec::<std::ops::Range<usize>>::new()
+        );
+        // From 0: the fresh prompt's `chunks_mut(2048)`.
+        assert_eq!(
+            prompt_chunks(0, 5000, 2048),
+            [0..2048, 2048..4096, 4096..5000]
+        );
+        // From a kept prefix: the first chunk ends on the same boundary.
+        assert_eq!(
+            prompt_chunks(1536, 5000, 2048),
+            [1536..2048, 2048..4096, 4096..5000]
+        );
+        let one = |start, len| {
+            let c = prompt_chunks(start, len, 2048);
+            assert_eq!(c.len(), 1, "{c:?}");
+            c[0].clone()
+        };
+        assert_eq!(one(2048, 3000), 2048..3000);
+        assert_eq!(one(512, 900), 512..900);
+        // Save points cut a chunk; nothing else moves.
+        assert_eq!(
+            super::decode_ranges(0, 5000, 2048, &[1536, 4608, 1536, 9000]),
+            [0..1536, 1536..2048, 2048..4096, 4096..4608, 4608..5000]
+        );
+        // A save point at a chunk end or at the start cuts nothing.
+        assert_eq!(
+            super::decode_ranges(1024, 5000, 2048, &[1024, 2048]),
+            [1024..2048, 2048..4096, 4096..5000]
+        );
+        // Every chunk boundary of a run from any start is one of the fresh run's.
+        for start in [0, 512, 1024, 2560, 4608] {
+            for r in prompt_chunks(start, 9000, 2048) {
+                assert!(r.end == 9000 || r.end % 2048 == 0, "{start}: {r:?}");
+            }
+        }
     }
 }

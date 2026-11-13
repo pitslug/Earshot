@@ -202,6 +202,14 @@ pub fn score(summary: Option<&SummaryV1>, reference: &AbsSumm) -> MeetingScore {
     }
 }
 
+/// The score of a store meeting (T12.25a, `store.rs`): its [`Length`] counts only, because
+/// the owner's meetings have no annotation; the rest of a row's score is absent (the
+/// aggregate reads it as zero). Meaning is judged by agents on the private packets.
+#[must_use]
+pub fn store_score(summary: Option<&SummaryV1>) -> Value {
+    json!({ "length": length(summary, item_cap()).to_json() })
+}
+
 /// The local grammar's item cap (`SummaryLimits::max_items`), against which
 /// [`Length::lists_at_cap`] is counted for every candidate.
 fn item_cap() -> usize {

@@ -55,6 +55,8 @@ use crate::fixtures::{AMI_ANNOTATIONS_DIR, AMI_MEETINGS_XML, ami_sum_meetings};
 use crate::manifest::Manifest;
 use crate::proc::run_with_timeout;
 
+pub mod store;
+
 /// Transcription model of the Earshot source: the top of the English ladder for CUDA and
 /// the CPU in `models/manifest.toml`.
 pub const ASR_MODEL: &str = "parakeet-tdt-0.6b-v2";
@@ -365,6 +367,20 @@ pub struct Options {
     /// many tokens counted apart from the reply budget (`earshot_llm_local::thinking`). Local
     /// summary runs of the candidates whose prefix is the empty thinking block only.
     pub thinking: Option<u32>,
+    /// Prepare a run of the owner's own meetings from this database (T12.25a, [`store`]):
+    /// copy it into the run folder and write the inputs; no summaries.
+    pub store_db: Option<PathBuf>,
+    /// The run folder name under `fixtures/private/real-meetings/` ([`store::run_dir`]).
+    pub store_run: Option<String>,
+    /// How many meetings the preparation picks.
+    pub store_count: usize,
+    /// The shortest meeting it picks, in minutes.
+    pub store_min_minutes: u64,
+    /// Meeting ids it leaves out.
+    pub store_exclude: Vec<String>,
+    /// Prompt prefix reuse on (T12.25 part 1, evaluation): local candidates without
+    /// thinking; format key `-reuse`.
+    pub prefix_reuse: bool,
 }
 
 /// The request format the `sum_eval` example records as `grammar` (its `format_key`): a
@@ -487,6 +503,10 @@ impl Options {
             self.agent_cli(),
             self.thinking,
         );
+        // T12.25: prefix reuse before the template, as the example's `reuse_suffix`.
+        if self.prefix_reuse {
+            key.push_str("-reuse");
+        }
         // T12.17: the summary template last, as the example's `template_suffix`.
         if !self.style_preset.is_standard() {
             key.push_str("-template-");
@@ -563,6 +583,12 @@ impl Default for Options {
             meetings: Vec::new(),
             codex_cli: None,
             thinking: None,
+            store_db: None,
+            store_run: None,
+            store_count: 6,
+            store_min_minutes: 15,
+            store_exclude: Vec::new(),
+            prefix_reuse: false,
         }
     }
 }
@@ -573,6 +599,14 @@ impl Default for Options {
 /// # Errors
 /// An unknown split or source, or nothing left to run.
 pub fn jobs(splits: &[String], sources: &[String]) -> Result<Vec<(String, String)>> {
+    // The owner's own meetings (T12.25a) are one job of their own.
+    if sources.iter().any(|s| s == store::SOURCE) {
+        ensure!(
+            sources.iter().all(|s| s == store::SOURCE) && splits.iter().all(|s| s == store::SPLIT),
+            "--source store runs alone, on split real"
+        );
+        return Ok(vec![(store::SPLIT.to_owned(), store::SOURCE.to_owned())]);
+    }
     let splits: Vec<&str> = if splits.is_empty() {
         vec!["dev", "test"]
     } else {
@@ -1030,6 +1064,9 @@ pub fn eval_args(
     if let Some(cap) = opts.thinking {
         a.extend(["--thinking".into(), cap.to_string().into()]);
     }
+    if opts.prefix_reuse && model.is_some() {
+        a.push("--prefix-reuse".into());
+    }
     a.extend([
         "--context".into(),
         opts.context.to_string().into(),
@@ -1438,10 +1475,14 @@ pub fn check_agent_cli(opts: &Options, agent: AgentCli) -> Result<()> {
         opts.models
     );
     agent.model(&opts.models[0])?;
+    // The owner's own meetings may go to the agent CLIs (T12.25a, the owner's decision);
+    // Earshot's replays of AMI audio never do.
     ensure!(
-        !opts.sources.is_empty() && opts.sources.iter().all(|s| s == "reference"),
-        "--model {id} summarises only the public AMI reference transcripts: pass \
-         --source reference"
+        !opts.sources.is_empty()
+            && (opts.sources.iter().all(|s| s == "reference")
+                || opts.sources.iter().all(|s| s == store::SOURCE)),
+        "--model {id} summarises only the public AMI reference transcripts or the owner's \
+         own meetings: pass --source reference or --source store"
     );
     let defaults = Options::default();
     // A prompt variant is allowed (T12.17, evaluation only): the rules change, the plan
@@ -1469,6 +1510,10 @@ pub fn check_agent_cli(opts: &Options, agent: AgentCli) -> Result<()> {
     ensure!(
         opts.thinking.is_none(),
         "--thinking is for local Qwen candidates only, not --model {id}"
+    );
+    ensure!(
+        !opts.prefix_reuse,
+        "--prefix-reuse is for local candidates only, not --model {id}"
     );
     Ok(())
 }
@@ -1586,6 +1631,38 @@ fn check_overwrite(
     Ok(())
 }
 
+/// The run folder of a run whose jobs read the owner's own meetings ([`store`]): named by
+/// `--store-run`, git-ignored and prepared; `None` for an AMI run (which must not name one).
+///
+/// # Errors
+/// A store job without `--store-run`, a folder git would track or one not prepared, or
+/// `--store-run` on an AMI run.
+fn store_run_of(root: &Path, opts: &Options, jobs: &[(String, String)]) -> Result<Option<PathBuf>> {
+    if !jobs.iter().any(|(_, s)| s == store::SOURCE) {
+        ensure!(
+            opts.store_run.is_none(),
+            "--store-run needs --source store (or --store-db)"
+        );
+        return Ok(None);
+    }
+    let name = opts
+        .store_run
+        .as_deref()
+        .context("--source store needs --store-run <name>")?;
+    let run = store::run_dir(root, name)?;
+    store::check_ignored(root, &run)?;
+    ensure!(
+        run.join("picked.json").is_file(),
+        "{} is not prepared; run `cargo xtask sum-eval --store-db <earshot.db> --store-run {name}` first",
+        run.display()
+    );
+    ensure!(
+        !(opts.stored_only() || opts.replay_only || opts.rerun_earshot),
+        "the owner's meetings are not exported, imported or replayed"
+    );
+    Ok(Some(run))
+}
+
 /// The Claude Code run (T7.4gb, [`check_claude_code`]): builds the `sum_eval` example
 /// (plain release build: llama.cpp is linked but not used), runs it once with
 /// `--claude-code` and writes `<out>/report.json` and `<out>/table.md` as [`run`] does. A
@@ -1609,19 +1686,28 @@ pub fn run_agent_cli(root: &Path, opts: &Options, agent: AgentCli) -> Result<()>
     let model = agent.model(&id)?;
     let backend = agent.id();
     let jobs = jobs(&opts.splits, &opts.sources)?;
+    let store_run = store_run_of(root, opts, &jobs)?;
     let fixtures = crate::fixtures::cache_dir()?;
     let annotations = fixtures.join(AMI_ANNOTATIONS_DIR);
     ensure!(
-        annotations.join("abstractive").is_dir(),
+        store_run.is_some() || annotations.join("abstractive").is_dir(),
         "{} has no abstractive summaries; run `cargo xtask fetch-fixtures --set ami-sum`",
         annotations.display()
     );
-    let out = opts
-        .out
-        .clone()
-        .unwrap_or_else(|| root.join("target").join("sum-eval"));
-    std::fs::create_dir_all(&out)?;
-    let meetings = run_meetings(&jobs, &opts.meetings, opts.limit)?;
+    let (out, meetings) = match &store_run {
+        Some(run) => (
+            store::out_dir(run, opts.out.as_deref())?,
+            store::meetings(run, &opts.meetings, opts.limit)?,
+        ),
+        None => {
+            let out = opts
+                .out
+                .clone()
+                .unwrap_or_else(|| root.join("target").join("sum-eval"));
+            std::fs::create_dir_all(&out)?;
+            (out, run_meetings(&jobs, &opts.meetings, opts.limit)?)
+        }
+    };
     let target_dir = crate::build::short_target_dir(
         root,
         opts.target_dir.as_deref(),
@@ -1686,6 +1772,12 @@ pub fn run_agent_cli(root: &Path, opts: &Options, agent: AgentCli) -> Result<()>
                 opts.codex_cli.as_deref(),
                 &file,
             ))
+            .args(
+                store_run
+                    .as_deref()
+                    .map(store::example_args)
+                    .unwrap_or_default(),
+            )
             .env("PATH", &path)
             .status()
             .with_context(|| format!("start {}", exe.display()))?;
@@ -1759,6 +1851,9 @@ pub fn check_thinking(opts: &Options) -> Result<()> {
 /// # Errors
 /// Backend selection, missing fixtures or models, a failed build, replay or evaluation.
 pub fn run(root: &Path, opts: &Options) -> Result<()> {
+    if opts.store_db.is_some() {
+        return store::prepare(root, opts);
+    }
     if let Some(agent) = opts.agent_cli() {
         return run_agent_cli(root, opts, agent);
     }
@@ -1792,6 +1887,12 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
         "--two-track needs --chunk-seconds and --source reference, not --two-call, and applies to local summary runs only"
     );
     check_thinking(opts)?;
+    ensure!(
+        !opts.prefix_reuse
+            || (opts.thinking.is_none()
+                && !(opts.stored_only() || opts.rescore || opts.replay_only)),
+        "--prefix-reuse applies to local summary runs without --thinking only"
+    );
     let report = crate::doctor::collect();
     let cuda = crate::doctor::cuda_for_backend_choice(&report, opts.backend.as_deref())?;
     // Vulkan (T8.3h) applies to the summaries only: Earshot-source replays are built as
@@ -1802,19 +1903,26 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
     };
     let gpu = backend != "cpu";
     let jobs = jobs(&opts.splits, &opts.sources)?;
+    let store_run = store_run_of(root, opts, &jobs)?;
     let candidates = select_candidates(&opts.models)?;
     let fixtures = crate::fixtures::cache_dir()?;
     let annotations = fixtures.join(AMI_ANNOTATIONS_DIR);
     ensure!(
-        annotations.join("abstractive").is_dir(),
+        store_run.is_some() || annotations.join("abstractive").is_dir(),
         "{} has no abstractive summaries; run `cargo xtask fetch-fixtures --set ami-sum`",
         annotations.display()
     );
-    let out = opts
-        .out
-        .clone()
-        .unwrap_or_else(|| root.join("target").join("sum-eval"));
-    std::fs::create_dir_all(&out)?;
+    let out = match &store_run {
+        Some(run) => store::out_dir(run, opts.out.as_deref())?,
+        None => {
+            let out = opts
+                .out
+                .clone()
+                .unwrap_or_else(|| root.join("target").join("sum-eval"));
+            std::fs::create_dir_all(&out)?;
+            out
+        }
+    };
     let models_dir = crate::models::cache_dir()?;
     let manifest = Manifest::load(&crate::models::manifest_path(root))?;
     let mut paths = Vec::new();
@@ -1838,7 +1946,10 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
         );
         paths.push(p);
     }
-    let meetings = run_meetings(&jobs, &opts.meetings, opts.limit)?;
+    let meetings = match &store_run {
+        Some(run) => store::meetings(run, &opts.meetings, opts.limit)?,
+        None => run_meetings(&jobs, &opts.meetings, opts.limit)?,
+    };
     // A short target directory: CUDA builds of whisper.cpp fail CMake's probe in a deep
     // worktree path (AGENTS.md).
     let target_dir = crate::build::short_target_dir(
@@ -1988,6 +2099,12 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
                 opts,
                 &file,
             ))
+            .args(
+                store_run
+                    .as_deref()
+                    .map(store::example_args)
+                    .unwrap_or_default(),
+            )
             .env("PATH", &path)
             .status()
             .with_context(|| format!("start {}", exe.display()))?;
@@ -2014,6 +2131,9 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
         } else {
             json!("not run (EARSHOT_LLM_URL is not set)")
         }
+    } else if store_run.is_some() {
+        // The owner's meetings never go to a remote endpoint (T12.25a).
+        json!("not run (the owner's meetings)")
     } else if std::env::var_os("EARSHOT_LLM_URL").is_some_and(|v| !v.is_empty()) {
         let file = out.join("remote.json");
         let status = Command::new(&exe)
@@ -2082,6 +2202,27 @@ mod tests {
         assert!(jobs(&["dev".into()], &["earshot".into()]).is_err());
         assert!(jobs(&["train".into()], &[]).is_err());
         assert!(jobs(&[], &["asr".into()]).is_err());
+        // The owner's own meetings (T12.25a): one job of their own, split real.
+        let real = [("real".to_string(), "store".to_string())];
+        assert_eq!(jobs(&[], &["store".into()]).unwrap(), real);
+        assert_eq!(jobs(&["real".into()], &["store".into()]).unwrap(), real);
+        assert!(jobs(&["dev".into()], &["store".into()]).is_err());
+        assert!(jobs(&[], &["store".into(), "reference".into()]).is_err());
+        assert!(jobs(&["real".into()], &["reference".into()]).is_err());
+        // An agent CLI may summarise them (the owner's decision), never mixed with AMI.
+        let agent = |sources: Vec<String>| Options {
+            models: vec!["claude-code".into()],
+            sources,
+            ..Options::default()
+        };
+        check_agent_cli(&agent(vec!["store".into()]), AgentCli::ClaudeCode).unwrap();
+        assert!(
+            check_agent_cli(
+                &agent(vec!["store".into(), "reference".into()]),
+                AgentCli::ClaudeCode
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2792,6 +2933,56 @@ mod tests {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
         assert!(args.windows(2).any(|w| w == ["--style-preset", "detailed"]));
+    }
+
+    #[test]
+    fn sum_eval_prefix_reuse_has_its_own_key_part_and_reaches_only_local_runs() {
+        let o = Options {
+            models: vec!["qwen3.5-4b-q4_k_m".into()],
+            chunk_seconds: Some(600),
+            prompt_variant: PromptVariant::Brief,
+            style_preset: StylePreset::Brief,
+            prefix_reuse: true,
+            ..Options::default()
+        };
+        // After the prompt variant, before the template, as the example's `reuse_suffix`.
+        assert_eq!(
+            o.format_key(),
+            "indented-numbered-r5-chunk600-prompt-brief-reuse-template-brief"
+        );
+        let off = Options {
+            prefix_reuse: false,
+            ..o.clone()
+        };
+        assert_ne!(off.format_key(), o.format_key());
+        let c = select_candidates(&o.models).unwrap().remove(0);
+        let args = |opts: &Options, model: bool| -> Vec<String> {
+            eval_args(
+                Path::new("a"),
+                Path::new("e"),
+                &[],
+                &[],
+                model.then_some((Path::new("m.gguf"), &c)),
+                true,
+                opts,
+                Path::new("o.json"),
+            )
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+        };
+        assert!(args(&o, true).iter().any(|a| a == "--prefix-reuse"));
+        assert!(!args(&off, true).iter().any(|a| a == "--prefix-reuse"));
+        // The remote ceiling has no llama.cpp context.
+        assert!(!args(&o, false).iter().any(|a| a == "--prefix-reuse"));
+        // Never an agent CLI.
+        let agent = Options {
+            models: vec!["claude-code".into()],
+            sources: vec!["reference".into()],
+            prefix_reuse: true,
+            ..Options::default()
+        };
+        assert!(check_claude_code(&agent).is_err());
     }
 
     #[test]

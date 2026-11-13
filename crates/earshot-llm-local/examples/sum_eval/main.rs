@@ -29,9 +29,11 @@
 mod ami;
 mod claude;
 mod claude_cli;
+mod compare;
 mod facts;
 mod judge;
 mod score;
+mod store;
 mod two_track;
 
 use std::collections::BTreeMap;
@@ -55,7 +57,7 @@ use earshot_llm_local::thinking::{
     QWEN_THINKING_OFF_PREFIX, QWEN_THINKING_PREFIX, ThinkingLlm, ThinkingStats,
     thinking_load_context,
 };
-use earshot_llm_local::{LoadOptions, LocalLlm};
+use earshot_llm_local::{LoadOptions, LocalLlm, ReuseStats};
 use serde_json::{Value, json};
 
 const FETCH: &str = "cargo xtask fetch-fixtures --set ami-sum";
@@ -133,6 +135,14 @@ fn format_key(
         key.push_str(variant.name());
     }
     key
+}
+
+/// The format key part of prompt prefix reuse (T12.25 part 1, evaluation): `-reuse` after
+/// the prompt variant and before the template, nothing when off. Its replies are meant to be
+/// byte-identical, but its rows are never reused for a run without it, so a difference
+/// cannot hide. xtask's `Options::format_key` appends the same.
+fn reuse_suffix(on: bool) -> &'static str {
+    if on { "-reuse" } else { "" }
 }
 
 /// The format key part of a summary template (T12.17, evaluation): `-template-<name>`
@@ -229,9 +239,22 @@ struct Args {
     /// and the empty thinking block as `--assistant-prefix`, which it replaces with the opened
     /// section.
     thinking: Option<usize>,
+    /// The run folder of the owner's own meetings (T12.25a, `store.rs`): the inputs of
+    /// `--job <split>:store` jobs and the transcripts of their judge packets.
+    store_inputs: Option<PathBuf>,
+    /// Prompt prefix reuse on (T12.25 part 1, evaluation; `LocalLlm::set_prefix_reuse`).
+    /// Local models without thinking only.
+    prefix_reuse: bool,
+    /// Compare the summaries of two finished result files (`compare.rs`).
+    compare: Option<(PathBuf, PathBuf)>,
 }
 
 impl Args {
+    /// Whether any job reads the owner's own meetings (`store.rs`).
+    fn has_store_jobs(&self) -> bool {
+        self.jobs.iter().any(|(_, source)| source == store::SOURCE)
+    }
+
     /// The agent-CLI candidate of this run, if any.
     fn agent_cli(&self) -> Option<AgentCli> {
         if self.claude_code {
@@ -259,7 +282,7 @@ fn parse_args() -> Result<Args, String> {
             "--job" => {
                 let v = val()?;
                 let (split, source) = v.split_once(':').ok_or("--job is <split>:<source>")?;
-                if !matches!(source, "reference" | "earshot") {
+                if !matches!(source, "reference" | "earshot" | store::SOURCE) {
                     return Err(format!("unknown source {source}"));
                 }
                 a.jobs.push((split.to_owned(), source.to_owned()));
@@ -336,8 +359,21 @@ fn parse_args() -> Result<Args, String> {
             "--thinking" => {
                 a.thinking = Some(val()?.parse().map_err(|e| format!("--thinking: {e}"))?);
             }
+            "--store-inputs" => a.store_inputs = Some(val()?.into()),
+            "--prefix-reuse" => a.prefix_reuse = true,
+            "--compare-summaries" => {
+                let first = val()?;
+                let second = it
+                    .next()
+                    .ok_or("--compare-summaries needs two result files")?;
+                a.compare = Some((first.into(), second.into()));
+            }
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    check_store(&a)?;
+    if a.compare.is_some() {
+        return Ok(a);
     }
     if a.split_facts.is_some() {
         if a.annotations.as_os_str().is_empty()
@@ -430,8 +466,12 @@ fn parse_args() -> Result<Args, String> {
         return Ok(a);
     }
     if a.judge_packets.is_some() {
-        if a.annotations.as_os_str().is_empty() || a.meetings.is_empty() {
-            return Err("--judge-packets needs --annotations and --meetings".into());
+        if (a.annotations.as_os_str().is_empty() && a.store_inputs.is_none())
+            || a.meetings.is_empty()
+        {
+            return Err(
+                "--judge-packets needs --meetings and --annotations (or --store-inputs)".into(),
+            );
         }
         if a.judge_replies.is_some() && a.model_id.is_empty() {
             return Err("--judge-replies needs --label".into());
@@ -462,7 +502,55 @@ fn parse_args() -> Result<Args, String> {
         return Err("give exactly one of --model, --remote, --claude-code and --codex".into());
     }
     check_thinking(&a)?;
+    if a.prefix_reuse && (a.model.is_none() || a.thinking.is_some()) {
+        return Err("--prefix-reuse is for local models without --thinking".into());
+    }
     Ok(a)
+}
+
+/// What a run over the owner's own meetings (T12.25a, `store.rs`) refuses: store jobs
+/// without `--store-inputs` or beside other sources, `--store-inputs` without store jobs
+/// (except for judge packets), and every mode that could send their text elsewhere or
+/// compare it with AMI annotations: `--remote`, `--earshot-inputs`, prompt export and
+/// import, `--two-track`, the AMI meaning judge (`--import-verdicts`, `--facts`, the local
+/// fact judge) and carrying AMI packets (`--prior-packets`, `--judge-replies`). Where the
+/// outputs go is checked by [`store::check_private`] when the run starts.
+fn check_store(a: &Args) -> Result<(), String> {
+    let store_jobs = a.has_store_jobs();
+    if !store_jobs && a.store_inputs.is_none() {
+        return Ok(());
+    }
+    if store_jobs && a.store_inputs.is_none() {
+        return Err("--job <split>:store needs --store-inputs <run folder>".into());
+    }
+    if store_jobs && a.jobs.iter().any(|(_, source)| source != store::SOURCE) {
+        return Err("store jobs run alone (no reference or earshot jobs beside them)".into());
+    }
+    if !store_jobs && a.judge_packets.is_none() {
+        return Err("--store-inputs needs --job <split>:store or --judge-packets".into());
+    }
+    if a.remote
+        || a.earshot_inputs.is_some()
+        || a.export_prompts.is_some()
+        || a.import_replies.is_some()
+        || a.two_track
+        || a.import_verdicts.is_some()
+        || a.facts.is_some()
+        || a.split_facts.is_some()
+        || a.judge_facts.is_some()
+        || a.agreement.is_some()
+        || !a.prior_packets.is_empty()
+        || a.judge_replies.is_some()
+    {
+        return Err(
+            "the owner's meetings run only as summary runs (local model, Claude Code or \
+             Codex), re-scoring and judge packets: no --remote, --earshot-inputs, \
+             --export-prompts, --import-replies, --two-track, --import-verdicts, --facts, \
+             --split-facts, --judge-facts, --agreement, --prior-packets or --judge-replies"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// What a `--thinking` run (T12.10) refuses: anything but a local summary run of a model
@@ -504,10 +592,16 @@ fn check_agent_cli(a: &Args, agent: AgentCli) -> Result<(), String> {
     if a.remote || a.model.is_some() || (a.claude_code && a.codex) {
         return Err("give exactly one of --model, --remote, --claude-code and --codex".into());
     }
-    if a.jobs.iter().any(|(_, source)| source != "reference") || a.earshot_inputs.is_some() {
+    // The owner's own meetings may go to the agent CLIs (T12.25a, the owner's decision:
+    // their summaries already do); Earshot's replays of AMI audio never do.
+    if a.jobs
+        .iter()
+        .any(|(_, source)| source != "reference" && source != store::SOURCE)
+        || a.earshot_inputs.is_some()
+    {
         return Err(format!(
-            "{flag} summarises only the public AMI reference transcripts \
-                 (--job <split>:reference, no --earshot-inputs)"
+            "{flag} summarises only the public AMI reference transcripts or the owner's \
+                 own meetings (--job <split>:reference or <split>:store, no --earshot-inputs)"
         ));
     }
     // A prompt variant is allowed (T12.17, evaluation only): the rules change, the plan
@@ -743,6 +837,32 @@ impl LocalModel {
             Self::Thinking(llm) => Some(llm.take_stats()),
         }
     }
+
+    /// Forgets the context and the prompt counts before a meeting (a plain model).
+    fn start_meeting(&mut self) {
+        if let Self::Plain(llm) = self {
+            llm.forget_prefix();
+            llm.take_reuse_stats();
+        }
+    }
+
+    /// The prompt counts since [`LocalModel::start_meeting`] (a plain model), reset.
+    fn take_reuse(&mut self) -> Option<ReuseStats> {
+        match self {
+            Self::Plain(llm) => Some(llm.take_reuse_stats()),
+            Self::Thinking(_) => None,
+        }
+    }
+}
+
+/// A meeting's prompt counts (T12.25): tokens only.
+fn reuse_json(r: &ReuseStats) -> Value {
+    json!({
+        "requests": r.requests,
+        "prompt_tokens": r.prompt_tokens,
+        "reused_tokens": r.reused_tokens,
+        "decoded_tokens": r.decoded_tokens(),
+    })
 }
 
 /// A meeting's thinking counts: token counts only, never the thinking text.
@@ -823,10 +943,16 @@ impl Engine {
                 two_call,
             } => {
                 llm.take_thinking();
+                // Production loads the model once per summary: nothing carries over from
+                // the meeting before (T12.25 prefix reuse).
+                llm.start_meeting();
                 let (result, mut report) =
                     summarise_local(llm.generate(), input, options, *chunk_seconds, *two_call);
                 if let Some(t) = llm.take_thinking() {
                     report["thinking"] = thinking_json(&t);
+                }
+                if let Some(r) = llm.take_reuse() {
+                    report["prefix_reuse"] = reuse_json(&r);
                 }
                 (result, report)
             }
@@ -1028,11 +1154,20 @@ fn rescore_file(annotations: &Path, file: &Path) -> Result<(), String> {
         .ok_or_else(|| format!("{}: no jobs", file.display()))?;
     let mut n = 0;
     for job in jobs.iter_mut() {
+        let is_store = job["source"] == store::SOURCE;
         let rows = job["meetings"]
             .as_array_mut()
             .ok_or_else(|| format!("{}: a job without meetings", file.display()))?;
         for row in rows.iter_mut() {
             let meeting = row["meeting"].as_str().unwrap_or_default().to_owned();
+            if is_store {
+                // The owner's meetings: length counts only (`score::store_score`).
+                let summary: Option<SummaryV1> = serde_json::from_value(row["summary"].clone())
+                    .map_err(|e| format!("{} {meeting}: {e}", file.display()))?;
+                row["score"] = score::store_score(summary.as_ref());
+                n += 1;
+                continue;
+            }
             let summ_path = annotations
                 .join("abstractive")
                 .join(format!("{meeting}.abssumm.xml"));
@@ -1066,6 +1201,10 @@ fn rescore_file(annotations: &Path, file: &Path) -> Result<(), String> {
 fn load_input(a: &Args, source: &str, meeting: &str) -> Result<(SummaryInput, usize), String> {
     match source {
         "reference" => reference_input(&a.annotations, meeting),
+        store::SOURCE => store::input(
+            a.store_inputs.as_deref().ok_or("--store-inputs missing")?,
+            meeting,
+        ),
         _ => earshot_input(
             a.earshot_inputs
                 .as_deref()
@@ -1233,9 +1372,30 @@ fn agreement(a: &Args, gold: &Path) -> Result<(), String> {
 /// packet per `--summaries` result file (the dev reference-source job), and with
 /// `--judge-replies` a packet of model `--label` from exported-prompt replies (validated by
 /// `claude::import_one`, as `--import-replies` does).
+///
+/// With `--store-inputs` (the owner's own meetings, T12.25a) the packets, the blinding key
+/// and every summary come from inside the private tree (`store::check_private`), the rows
+/// are those of the store jobs, and each meeting folder gets `transcript.txt` (the numbered
+/// transcript the model read) in place of `reference.json`: the judges mark every decision
+/// and action against the transcript and the meeting's fixed real-item list.
 fn judge_packets(a: &Args, dir: &Path) -> Result<(), String> {
+    if let Some(run) = &a.store_inputs {
+        store::check_private(dir, "--judge-packets")?;
+        if let Some(k) = &a.blind_key {
+            store::check_private(k, "--blind-key")?;
+        }
+        for (model, file) in &a.summaries {
+            store::check_private(file, &format!("--summaries {model}"))?;
+        }
+        store::check_private(run, "--store-inputs")?;
+    }
     check_judge_sources(a, dir)?;
     let facts = a.facts.as_deref().map(facts::FactsFile::read).transpose()?;
+    let row_source = if a.store_inputs.is_some() {
+        store::SOURCE
+    } else {
+        "reference"
+    };
     let mut results = Vec::new();
     for (model, file) in &a.summaries {
         let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
@@ -1247,28 +1407,42 @@ fn judge_packets(a: &Args, dir: &Path) -> Result<(), String> {
     let mut written = 0;
     for (split, list) in &a.meetings {
         for meeting in list {
-            let summ_path = a
-                .annotations
-                .join("abstractive")
-                .join(format!("{meeting}.abssumm.xml"));
-            let reference = ami::parse_abssumm(&read_latin1(&summ_path)?)
-                .map_err(|e| format!("{}: {e}", summ_path.display()))?;
-            judge::write(
-                dir,
-                meeting,
-                "reference.json",
-                &judged_reference(facts.as_ref(), meeting, &reference)?,
-            )?;
+            let reference = match &a.store_inputs {
+                Some(run) => {
+                    let mdir = dir.join(meeting);
+                    std::fs::create_dir_all(&mdir)
+                        .map_err(|e| format!("{}: {e}", mdir.display()))?;
+                    let p = mdir.join("transcript.txt");
+                    std::fs::write(&p, store::transcript(run, meeting)?)
+                        .map_err(|e| format!("{}: {e}", p.display()))?;
+                    None
+                }
+                None => {
+                    let summ_path = a
+                        .annotations
+                        .join("abstractive")
+                        .join(format!("{meeting}.abssumm.xml"));
+                    let reference = ami::parse_abssumm(&read_latin1(&summ_path)?)
+                        .map_err(|e| format!("{}: {e}", summ_path.display()))?;
+                    judge::write(
+                        dir,
+                        meeting,
+                        "reference.json",
+                        &judged_reference(facts.as_ref(), meeting, &reference)?,
+                    )?;
+                    Some(reference)
+                }
+            };
             let mut packets: Vec<(String, Value)> = Vec::new();
             for (model, v) in &results {
                 let row = v["jobs"]
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter(|j| j["split"] == split.as_str() && j["source"] == "reference")
+                    .filter(|j| j["split"] == split.as_str() && j["source"] == row_source)
                     .flat_map(|j| j["meetings"].as_array().into_iter().flatten())
                     .find(|m| m["meeting"] == meeting.as_str())
-                    .ok_or_else(|| format!("{model}: no {split} reference row for {meeting}"))?;
+                    .ok_or_else(|| format!("{model}: no {split} {row_source} row for {meeting}"))?;
                 let summary: Option<SummaryV1> = serde_json::from_value(row["summary"].clone())
                     .map_err(|e| format!("{model} {meeting}: {e}"))?;
                 let packet = judge::summary_packet(
@@ -1284,9 +1458,13 @@ fn judge_packets(a: &Args, dir: &Path) -> Result<(), String> {
                     .prior_key
                     .as_deref()
                     .ok_or("--prior-packets needs --prior-key")?;
+                // `check_store` refuses prior packets for the owner's meetings.
+                let reference = reference
+                    .as_ref()
+                    .ok_or("--prior-packets needs AMI meetings")?;
                 packets.push((
                     model.clone(),
-                    judge::prior_packet(prior, key, meeting, model, &reference)?,
+                    judge::prior_packet(prior, key, meeting, model, reference)?,
                 ));
             }
             if let Some(replies) = &a.judge_replies {
@@ -1563,6 +1741,13 @@ fn import_replies(a: &Args, dir: &Path) -> Result<(), String> {
 
 fn run() -> Result<(), String> {
     let a = parse_args()?;
+    if let Some((first, second)) = &a.compare {
+        return compare::run(first, second);
+    }
+    if a.has_store_jobs() {
+        // The result file and its checkpoint (`<out>.partial.jsonl`, beside it).
+        store::check_private(&a.out, "--out")?;
+    }
     if !a.rescore.is_empty() {
         for f in &a.rescore {
             rescore_file(&a.annotations, f)?;
@@ -1617,11 +1802,15 @@ fn run() -> Result<(), String> {
                 QWEN_THINKING_PREFIX.to_owned(),
                 a.context,
             ),
-            None => (
-                LocalModel::Plain(Box::new(llm)),
-                a.assistant_prefix.clone(),
-                load.context_tokens,
-            ),
+            None => {
+                let mut llm = llm;
+                llm.set_prefix_reuse(a.prefix_reuse);
+                (
+                    LocalModel::Plain(Box::new(llm)),
+                    a.assistant_prefix.clone(),
+                    load.context_tokens,
+                )
+            }
         };
         eprintln!(
             "sum_eval: {} on {} (load {:.1} s): {}",
@@ -1644,7 +1833,8 @@ fn run() -> Result<(), String> {
             "max_output_tokens": a.max_output,
             "assistant_prefix": assistant_prefix,
             "thinking_cap": a.thinking,
-            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking) + &template_suffix(a.style_preset),
+            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking) + reuse_suffix(a.prefix_reuse) + &template_suffix(a.style_preset),
+            "prefix_reuse": a.prefix_reuse,
             "chunk_seconds": a.chunk_seconds,
             "two_call": a.two_call,
             "two_track": a.two_track,
@@ -1733,7 +1923,8 @@ fn run() -> Result<(), String> {
             a.two_track,
             a.agent_cli(),
             a.thinking,
-        ) + &template_suffix(a.style_preset)
+        ) + reuse_suffix(a.prefix_reuse)
+            + &template_suffix(a.style_preset)
     );
     let partial = a.out.with_extension("partial.jsonl");
     let mut done: BTreeMap<(String, String, String), Value> = BTreeMap::new();
@@ -1764,19 +1955,30 @@ fn run() -> Result<(), String> {
             .ok_or_else(|| format!("no --meetings for split {split}"))?;
         let mut rows = Vec::new();
         for meeting in list {
-            let summ_path = a
-                .annotations
-                .join("abstractive")
-                .join(format!("{meeting}.abssumm.xml"));
-            let reference = ami::parse_abssumm(&read_latin1(&summ_path)?)
-                .map_err(|e| format!("{}: {e}", summ_path.display()))?;
+            // The owner's meetings have no annotation: length counts only (`store.rs`).
+            let reference = if source == store::SOURCE {
+                None
+            } else {
+                let summ_path = a
+                    .annotations
+                    .join("abstractive")
+                    .join(format!("{meeting}.abssumm.xml"));
+                Some(
+                    ami::parse_abssumm(&read_latin1(&summ_path)?)
+                        .map_err(|e| format!("{}: {e}", summ_path.display()))?,
+                )
+            };
+            let score_of = |summary: Option<&SummaryV1>| match &reference {
+                Some(r) => score::score(summary, r).to_json(),
+                None => score::store_score(summary),
+            };
             if let Some(row) = done.get(&(split.clone(), source.clone(), meeting.clone())) {
                 // The summary is stored; the score is recomputed with this build's rules
                 // (rows written before a scoring rule was added gain it).
                 let mut row = row.clone();
                 let summary: Option<SummaryV1> = serde_json::from_value(row["summary"].clone())
                     .map_err(|e| format!("checkpoint row for {meeting}: {e}"))?;
-                row["score"] = score::score(summary.as_ref(), &reference).to_json();
+                row["score"] = score_of(summary.as_ref());
                 eprintln!(
                     "sum_eval: {} {split}:{source} {meeting}: from the checkpoint (re-scored)",
                     a.model_id
@@ -1786,6 +1988,13 @@ fn run() -> Result<(), String> {
             }
             let (mut input, words, ends) = match source.as_str() {
                 "reference" => reference_input_timed(&a.annotations, meeting)?,
+                store::SOURCE => {
+                    let (input, words) = store::input(
+                        a.store_inputs.as_deref().ok_or("--store-inputs missing")?,
+                        meeting,
+                    )?;
+                    (input, words, Vec::new())
+                }
                 _ => {
                     let (input, words) = earshot_input(
                         a.earshot_inputs
@@ -1817,17 +2026,31 @@ fn run() -> Result<(), String> {
                     report["timing"]["hangup_s"].as_f64().unwrap_or(0.0),
                 );
             }
-            let s = score::score(result.as_ref().ok(), &reference);
-            eprintln!(
-                "sum_eval: {} {split}:{source} {meeting}: {} in {seconds:.1} s, rougeL {:.3}, decisions {}/{}, actions {}/{}",
-                a.model_id,
-                if result.is_ok() { "ok" } else { "FAILED" },
-                s.rouge.rouge_l.fmeasure,
-                s.decisions.caught,
-                s.decisions.reference,
-                s.actions.caught,
-                s.actions.reference,
-            );
+            let score_json = score_of(result.as_ref().ok());
+            match &reference {
+                Some(r) => {
+                    let s = score::score(result.as_ref().ok(), r);
+                    eprintln!(
+                        "sum_eval: {} {split}:{source} {meeting}: {} in {seconds:.1} s, rougeL {:.3}, decisions {}/{}, actions {}/{}",
+                        a.model_id,
+                        if result.is_ok() { "ok" } else { "FAILED" },
+                        s.rouge.rouge_l.fmeasure,
+                        s.decisions.caught,
+                        s.decisions.reference,
+                        s.actions.caught,
+                        s.actions.reference,
+                    );
+                }
+                // Counts only: the label, never anything of the meeting.
+                None => eprintln!(
+                    "sum_eval: {} {split}:{source} {meeting}: {} in {seconds:.1} s, decisions \
+                     written {}, actions written {}",
+                    a.model_id,
+                    if result.is_ok() { "ok" } else { "FAILED" },
+                    score_json["length"]["decisions"],
+                    score_json["length"]["actions"],
+                ),
+            }
             let row = json!({
                 "meeting": meeting,
                 "ok": result.is_ok(),
@@ -1837,7 +2060,7 @@ fn run() -> Result<(), String> {
                 "input_segments": input.segments.len(),
                 "input_words": words,
                 "report": report,
-                "score": s.to_json(),
+                "score": score_json,
                 "summary": result.as_ref().ok(),
             });
             let line = json!({"key": key, "split": split, "source": source, "row": row});
@@ -2471,5 +2694,220 @@ mod tests {
         );
         assert_eq!(a["cap_hit"].as_u64(), Some(2));
         assert!(aggregate(&[json!({"ok": true, "report": {}})])["two_call_actions"].is_null());
+    }
+}
+
+/// The owner's own meetings as a source (T12.25a, `store.rs`); invented meetings only.
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+
+    fn store_args() -> Args {
+        Args {
+            jobs: vec![("real".into(), store::SOURCE.into())],
+            store_inputs: Some("run".into()),
+            out: "o.json".into(),
+            model_id: "qwen3.5-4b-q4_k_m".into(),
+            model: Some("m.gguf".into()),
+            context: 16_384,
+            max_output: 8192,
+            ..Args::default()
+        }
+    }
+
+    #[test]
+    fn sum_eval_store_jobs_need_their_folder_run_alone_and_refuse_every_other_destination() {
+        check_store(&store_args()).unwrap();
+        // Needs the run folder.
+        assert!(
+            check_store(&Args {
+                store_inputs: None,
+                ..store_args()
+            })
+            .is_err()
+        );
+        // Never beside AMI jobs (the result file is one file).
+        let mut mixed = store_args();
+        mixed.jobs.push(("dev".into(), "reference".into()));
+        assert!(check_store(&mixed).is_err());
+        // A run folder without store jobs only for judge packets.
+        let stray = Args {
+            jobs: vec![("dev".into(), "reference".into())],
+            ..store_args()
+        };
+        assert!(check_store(&stray).is_err());
+        let packets = Args {
+            jobs: Vec::new(),
+            judge_packets: Some("p".into()),
+            ..store_args()
+        };
+        check_store(&packets).unwrap();
+        // Every mode that could send the text elsewhere or needs AMI annotations.
+        let refused: [fn(&mut Args); 12] = [
+            |a| a.remote = true,
+            |a| a.earshot_inputs = Some("e".into()),
+            |a| a.export_prompts = Some("x".into()),
+            |a| a.import_replies = Some("x".into()),
+            |a| a.two_track = true,
+            |a| a.import_verdicts = Some("v".into()),
+            |a| a.facts = Some("f.json".into()),
+            |a| a.split_facts = Some("f.json".into()),
+            |a| a.judge_facts = Some("d".into()),
+            |a| a.agreement = Some("g".into()),
+            |a| a.prior_packets = vec![("m".into(), "d".into())],
+            |a| a.judge_replies = Some("r".into()),
+        ];
+        for (i, f) in refused.iter().enumerate() {
+            let mut a = store_args();
+            f(&mut a);
+            assert!(check_store(&a).is_err(), "case {i}");
+        }
+        // AMI runs are untouched by the rule.
+        let ami = Args {
+            jobs: vec![("dev".into(), "reference".into())],
+            store_inputs: None,
+            remote: true,
+            ..store_args()
+        };
+        check_store(&ami).unwrap();
+    }
+
+    #[test]
+    fn sum_eval_agent_clis_take_the_owners_meetings_but_never_earshot_replays() {
+        let claude = Args {
+            model: None,
+            claude_code: true,
+            ..store_args()
+        };
+        check_agent_cli(&claude, AgentCli::ClaudeCode).unwrap();
+        let codex = Args {
+            model: None,
+            codex: true,
+            ..store_args()
+        };
+        check_agent_cli(&codex, AgentCli::Codex).unwrap();
+        let replay = Args {
+            jobs: vec![("test".into(), "earshot".into())],
+            ..claude
+        };
+        assert!(check_agent_cli(&replay, AgentCli::ClaudeCode).is_err());
+    }
+
+    #[test]
+    fn sum_eval_store_rows_are_scored_by_length_only() {
+        let s = score::store_score(None);
+        assert_eq!(s["length"]["decisions"], 0);
+        assert!(s.get("rougeL").is_none() && s.get("decisions").is_none());
+        // The aggregate reads the absent scores as zero and sums the lengths.
+        let agg = aggregate(&[json!({"ok": true, "report": {}, "score": s})]);
+        assert_eq!(agg["ok"], 1);
+        assert_eq!(agg["length"]["words"], 0);
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("sum_eval_store_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn sum_eval_store_judge_packets_stay_private_and_carry_the_transcript() {
+        let root = temp_root("packets");
+        let private = root.join("fixtures").join("private").join("real-meetings");
+        let run = private.join("run-1");
+        std::fs::create_dir_all(run.join("transcripts")).unwrap();
+        std::fs::write(
+            run.join("transcripts").join("r1.txt"),
+            "[1] 00:00 Robin Example: We agree to ship it.\n",
+        )
+        .unwrap();
+        let result = run.join("results").join("m.json");
+        std::fs::create_dir_all(result.parent().unwrap()).unwrap();
+        std::fs::write(
+            &result,
+            serde_json::to_vec(&json!({"jobs": [{
+                "split": "real", "source": "store",
+                "meetings": [{"meeting": "r1", "ok": false, "failure": "invented failure", "summary": null}],
+            }]}))
+            .unwrap(),
+        )
+        .unwrap();
+        let meetings: BTreeMap<String, Vec<String>> =
+            [("real".to_owned(), vec!["r1".to_owned()])].into();
+        let a = Args {
+            jobs: Vec::new(),
+            store_inputs: Some(run.clone()),
+            meetings: meetings.clone(),
+            judge_packets: Some(private.join("run-1").join("packets")),
+            blind_key: Some(run.join("key.json")),
+            summaries: vec![("model-a".into(), result.clone())],
+            ..Args::default()
+        };
+        let dir = a.judge_packets.clone().unwrap();
+        judge_packets(&a, &dir).unwrap();
+        let mdir = dir.join("r1");
+        assert!(mdir.join("transcript.txt").is_file());
+        assert!(!mdir.join("reference.json").exists());
+        let names: Vec<String> = std::fs::read_dir(&mdir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n == "summary.S1.json"), "{names:?}");
+        let key = std::fs::read_to_string(run.join("key.json")).unwrap();
+        assert!(key.contains("model-a"));
+        // Packets, a key or summaries outside the private tree are refused, nothing written.
+        let outside = root.join("target").join("packets");
+        assert!(judge_packets(&a, &outside).is_err());
+        assert!(!outside.exists());
+        let key_outside = Args {
+            blind_key: Some(root.join("key.json")),
+            ..Args {
+                summaries: a.summaries.clone(),
+                meetings: meetings.clone(),
+                store_inputs: a.store_inputs.clone(),
+                ..Args::default()
+            }
+        };
+        assert!(judge_packets(&key_outside, &dir).is_err());
+        let summaries_outside = Args {
+            summaries: vec![("model-a".into(), root.join("m.json"))],
+            meetings,
+            store_inputs: a.store_inputs.clone(),
+            ..Args::default()
+        };
+        assert!(judge_packets(&summaries_outside, &dir).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// Prompt prefix reuse (T12.25 part 1).
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+
+    #[test]
+    fn sum_eval_prefix_reuse_key_part_sits_before_the_template_as_in_xtask() {
+        let key = format_key(Some(600), PromptVariant::Brief, false, false, None, None)
+            + reuse_suffix(true)
+            + &template_suffix(StylePreset::Brief);
+        assert_eq!(
+            key,
+            "indented-numbered-r5-chunk600-prompt-brief-reuse-template-brief"
+        );
+        assert_eq!(reuse_suffix(false), "");
+    }
+
+    #[test]
+    fn sum_eval_reuse_counts_are_tokens_only() {
+        let r = ReuseStats {
+            requests: 3,
+            prompt_tokens: 5000,
+            reused_tokens: 1536,
+        };
+        let v = reuse_json(&r);
+        assert_eq!(v["decoded_tokens"], 3464);
+        assert_eq!(v.as_object().unwrap().len(), 4);
     }
 }
