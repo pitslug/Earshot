@@ -77,6 +77,8 @@ fn store_opens_in_wal_mode_with_foreign_keys_and_the_latest_schema() {
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
 }
 
+/// TODO 69 (T12.36): written before the fix, it reproduced the failure against the pre-fix
+/// `Store::open` ("round 0: sqlite: database is locked"), and passed 8 runs of 8 after it.
 #[test]
 fn store_opens_racing_on_a_brand_new_file_all_succeed_in_wal_mode() {
     // A brand-new file starts in rollback mode; every opener switches it to WAL, which
