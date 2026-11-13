@@ -292,6 +292,14 @@ pub fn host_msvc_x64() -> Result<(PathBuf, Vec<PathBuf>)> {
 /// path of their source as `__FILE__`, and llama.cpp builds from the registry's copy, so with the
 /// usual `CARGO_HOME` a shipped DLL names its builder (T9.1j, 300+ places in the CUDA set). Crates
 /// are downloaded here once per machine.
+///
+/// This folder and the sysroot junction ([`neutral_sysroot`]) sit directly in [`short_root`],
+/// which is also the ARM64 target directory (a subfolder would exceed
+/// [`MAX_PROFILE_ROOT_CHARS`]). A whole `cargo clean` with that directory deletes both: the next
+/// release build downloads its crates again and re-makes the junction. The toolchain itself is
+/// not touched (the junction only points at it; measured), and moving either into a subfolder
+/// would not protect them from such a clean. `cargo xtask clean-build` refuses the junction and
+/// removes only a named folder.
 pub const NEUTRAL_CARGO_HOME: &str = "cargo-home";
 
 /// `CARGO_HOME` for a release build.
