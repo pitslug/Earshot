@@ -431,3 +431,46 @@ fn search_stops_at_the_cap_newest_first_and_says_so() {
     assert_eq!(got, ids);
     assert!(!got.contains(&older));
 }
+
+#[test]
+fn search_with_a_cancelled_token_gives_no_answer() {
+    let dir = TempDir::new("search-cancelled");
+    let (svc, _) = services(&dir);
+    for i in 0..3 {
+        meeting_at(&svc, "Bramble review", i * 1_000, 40 + i);
+    }
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    assert_eq!(
+        search_meetings_unless(&svc, "bramble", &cancel).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn search_checks_its_token_before_every_meeting_and_answers_as_before() {
+    let dir = TempDir::new("search-token-polls");
+    let (svc, _) = services(&dir);
+    for i in 0..5 {
+        meeting_at(&svc, &format!("Juniper {i}"), i * 1_000, 50 + i);
+    }
+    let cancel = CancelToken::new();
+    let answer = search_meetings_unless(&svc, "juniper", &cancel).unwrap();
+    assert_eq!(answer, Some(search_meetings(&svc, "juniper").unwrap()));
+    assert_eq!(answer.unwrap().hits.len(), 5);
+    // Once per meeting at least, so a cancel stops it between two meetings.
+    assert!(cancel.polls() >= 5, "{} polls", cancel.polls());
+}
+
+#[test]
+fn search_a_newer_search_supersedes_the_one_before() {
+    let searches = Searches::default();
+    let first = searches.begin();
+    assert!(!first.is_cancelled());
+    let second = searches.begin();
+    assert!(first.is_cancelled(), "the older search goes");
+    assert!(!second.is_cancelled());
+    let third = searches.begin();
+    assert!(second.is_cancelled());
+    assert!(!third.is_cancelled());
+}

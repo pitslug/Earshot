@@ -32,9 +32,12 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  type RefObject,
+  memo,
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -1330,11 +1333,29 @@ function TranscriptTab({
     setFocusNext(null);
   }, [focusNext]);
 
+  // What a line does, read at the moment it is used: the rows get one object that never
+  // changes, so a row renders only when its own props do (T9.24).
+  const latest = useRef<LineHandlers | null>(null);
+  const handlers = useMemo<LineHandlers>(
+    () => ({
+      contextMenu: (r, e) => latest.current?.contextMenu(r, e),
+      keyDown: (r, e) => latest.current?.keyDown(r, e),
+      startEdit: (segment) => latest.current?.startEdit(segment),
+      saveEdit: async (segment, text) => latest.current?.saveEdit(segment, text),
+      cancelEdit: () => latest.current?.cancelEdit(),
+      toggle: (segment, word) => latest.current?.toggle(segment, word),
+      addFromBar: (segment, word) => latest.current?.addFromBar(segment, word),
+      closeBar: () => latest.current?.closeBar(),
+      undo: (segment, word) => latest.current?.undo(segment, word),
+      rowRef: (segment, el) => latest.current?.rowRef(segment, el),
+      wordActions: (segment) =>
+        latest.current?.wordActions(segment) ?? { onUse: noop, onPutBack: noop, onKeep: noop },
+    }),
+    [],
+  );
+
   // Only the final transcript can be corrected: the final pass replaces a draft.
   const canEdit = detail.header.transcript === "Final";
-  if (detail.transcript.length === 0) {
-    return <Body1 className={styles.muted}>No speech was transcribed in this meeting.</Body1>;
-  }
 
   /** Moving on to another line closes what was open under an earlier one. */
   const moveTo = (segment: string) => {
@@ -1403,109 +1424,62 @@ function TranscriptTab({
     openMenu(r.segment_id, words, el, el);
   };
 
+  latest.current = {
+    contextMenu: (r, e) => onRowContextMenu(r)(e),
+    keyDown: (r, e) => onRowKeyDown(r)(e),
+    startEdit: (segment) => {
+      setEditing(segment);
+      setOffer(null);
+      setNote(null);
+    },
+    saveEdit: async (segment, text) => {
+      const offered = await onEdit(segment, text);
+      if (offered === null) return;
+      setEditing(null);
+      setOffer(offered.length > 0 ? { segment, words: offered } : null);
+    },
+    cancelEdit: () => setEditing(null),
+    toggle,
+    addFromBar: (segment, word) => void add(segment, word, true),
+    closeBar: () => {
+      setOffer(null);
+      setNote(null);
+    },
+    undo: (segment, word) => void undo(segment, word),
+    rowRef,
+    wordActions,
+  };
+
+  if (detail.transcript.length === 0) {
+    return <Body1 className={styles.muted}>No speech was transcribed in this meeting.</Body1>;
+  }
+
   return (
     <div role="table" aria-label="Transcript" className={styles.transcript} ref={tableRef}>
-      {detail.transcript.map((r, i) => (
-        <div
-          role="row"
-          key={r.segment_id}
-          ref={(el) => rowRef(r.segment_id, el)}
-          aria-current={r.segment_id === cited ? "true" : undefined}
-          className={mergeClasses(styles.row, r.segment_id === cited && styles.rowCited)}
-          onContextMenu={onRowContextMenu(r)}
-          onKeyDown={onRowKeyDown(r)}
-        >
-          <Caption1 role="cell" className={styles.time}>
-            {rowTime(r.start_ms)}
-          </Caption1>
-          <Body1Strong role="cell" className={styles.speaker}>
-            {r.speaker}
-          </Body1Strong>
-          {editing === r.segment_id ? (
-            <div role="cell" className={styles.text}>
-              <TextEditor
-                label={`Line ${i + 1}`}
-                initial={r.text}
-                multiline
-                onSave={async (text) => {
-                  const offered = await onEdit(r.segment_id, text);
-                  if (offered === null) return;
-                  setEditing(null);
-                  setOffer(offered.length > 0 ? { segment: r.segment_id, words: offered } : null);
-                }}
-                onCancel={() => setEditing(null)}
-              />
-            </div>
-          ) : (
-            <Body1 role="cell" className={styles.text}>
-              {canEdit ? (
-                <LineText
-                  row={r}
-                  wordList={detail.word_list}
-                  actions={wordActions(r.segment_id)}
-                  dictionary={{
-                    entries: detail.dictionary,
-                    onToggle: (w) => toggle(r.segment_id, w),
-                  }}
-                  tinted={
-                    offer?.segment === r.segment_id
-                      ? offer.words.filter((w) => !inDictionary(detail.dictionary, w))
-                      : undefined
-                  }
-                />
-              ) : (
-                r.text
-              )}
-              {r.edited && <Caption1 className={styles.editedMark}>(edited)</Caption1>}
-            </Body1>
-          )}
-          {/* Not a cell: a row's cells are its time, speaker and words. */}
-          <span>
-            {canEdit && editing !== r.segment_id && (
-              <Button
-                size="small"
-                appearance="subtle"
-                className={mergeClasses(styles.lineEdit, "earshot-line-edit")}
-                aria-label={`Edit line ${i + 1}`}
-                onClick={() => {
-                  setEditing(r.segment_id);
-                  setOffer(null);
-                  setNote(null);
-                }}
-              >
-                Edit
-              </Button>
-            )}
-          </span>
-          {canEdit &&
-            editing !== r.segment_id &&
-            (offer?.segment === r.segment_id || note?.segment === r.segment_id) && (
-              <div className={styles.lineDictionary}>
-                {offer?.segment === r.segment_id && (
-                  <DictionaryBar
-                    words={offer.words}
-                    dictionary={detail.dictionary}
-                    onAdd={(w) => void add(r.segment_id, w, true)}
-                    onClose={() => {
-                      setOffer(null);
-                      setNote(null);
-                    }}
-                  />
-                )}
-                {note?.segment === r.segment_id && (
-                  <DictionaryNoteLine
-                    note={note}
-                    others={
-                      note.kind === "added" ? otherLinesSuggesting(detail.transcript, r.segment_id, note.word) : 0
-                    }
-                    undoRef={undoRef}
-                    onUndo={() => note.kind === "added" && void undo(r.segment_id, note.word)}
-                  />
-                )}
-              </div>
-            )}
-        </div>
-      ))}
+      {detail.transcript.map((r, i) => {
+        const lineNote = note?.segment === r.segment_id ? note : null;
+        return (
+          <TranscriptLine
+            key={r.segment_id}
+            row={r}
+            index={i}
+            cited={r.segment_id === cited}
+            editing={editing === r.segment_id}
+            canEdit={canEdit}
+            wordList={detail.word_list}
+            dictionary={detail.dictionary}
+            offered={offer?.segment === r.segment_id ? offer.words : null}
+            note={lineNote}
+            others={
+              lineNote?.kind === "added"
+                ? otherLinesSuggesting(detail.transcript, r.segment_id, lineNote.word)
+                : 0
+            }
+            undoRef={undoRef}
+            handlers={handlers}
+          />
+        );
+      })}
       <WordMenu
         words={menu?.words ?? []}
         dictionary={detail.dictionary}
@@ -1522,3 +1496,147 @@ function TranscriptTab({
     </div>
   );
 }
+
+const noop = () => {};
+
+/** What a transcript line does; each call reaches `TranscriptTab`'s current state. */
+interface LineHandlers {
+  contextMenu(r: TranscriptRow, e: MouseEvent<HTMLDivElement>): void;
+  keyDown(r: TranscriptRow, e: KeyboardEvent<HTMLDivElement>): void;
+  startEdit(segment: string): void;
+  saveEdit(segment: string, text: string): Promise<void>;
+  cancelEdit(): void;
+  toggle(segment: string, word: string): void;
+  addFromBar(segment: string, word: string): void;
+  closeBar(): void;
+  undo(segment: string, word: string): void;
+  rowRef(segment: string, el: HTMLDivElement | null): void;
+  wordActions(segment: string): WordActions;
+}
+
+/** One line of the meeting's transcript. Memoised: typing a search, a citation or an edit on
+ * another line leaves it alone, which with hours of transcript was most of each commit (T9.24).
+ * Every prop is either the line's own or never changes (`handlers`, `undoRef`). */
+const TranscriptLine = memo(function TranscriptLine({
+  row: r,
+  index: i,
+  cited,
+  editing,
+  canEdit,
+  wordList,
+  dictionary,
+  offered,
+  note,
+  others,
+  undoRef,
+  handlers: h,
+}: {
+  row: TranscriptRow;
+  index: number;
+  cited: boolean;
+  editing: boolean;
+  canEdit: boolean;
+  wordList: string[];
+  dictionary: string[];
+  /** The words the bar under this line offers, `null` without the bar. */
+  offered: string[] | null;
+  /** The note under this line after a Dictionary action. */
+  note: DictionaryNote | null;
+  /** How many other lines suggest the word `note` added. */
+  others: number;
+  undoRef: RefObject<HTMLButtonElement | null>;
+  handlers: LineHandlers;
+}) {
+  const styles = useStyles();
+  const segment = r.segment_id;
+  const actions = useMemo<WordActions>(
+    () => ({
+      onUse: (token, word) => h.wordActions(segment).onUse(token, word),
+      onPutBack: (token) => h.wordActions(segment).onPutBack(token),
+      onKeep: (token) => h.wordActions(segment).onKeep(token),
+    }),
+    [h, segment],
+  );
+  const lineDictionary = useMemo(
+    () => ({ entries: dictionary, onToggle: (w: string) => h.toggle(segment, w) }),
+    [dictionary, h, segment],
+  );
+  const rowRef = useCallback((el: HTMLDivElement | null) => h.rowRef(segment, el), [h, segment]);
+  return (
+    <div
+      role="row"
+      ref={rowRef}
+      aria-current={cited ? "true" : undefined}
+      className={mergeClasses(styles.row, cited && styles.rowCited)}
+      onContextMenu={(e) => h.contextMenu(r, e)}
+      onKeyDown={(e) => h.keyDown(r, e)}
+    >
+      <Caption1 role="cell" className={styles.time}>
+        {rowTime(r.start_ms)}
+      </Caption1>
+      <Body1Strong role="cell" className={styles.speaker}>
+        {r.speaker}
+      </Body1Strong>
+      {editing ? (
+        <div role="cell" className={styles.text}>
+          <TextEditor
+            label={`Line ${i + 1}`}
+            initial={r.text}
+            multiline
+            onSave={(text) => h.saveEdit(segment, text)}
+            onCancel={h.cancelEdit}
+          />
+        </div>
+      ) : (
+        <Body1 role="cell" className={styles.text}>
+          {canEdit ? (
+            <LineText
+              row={r}
+              wordList={wordList}
+              actions={actions}
+              dictionary={lineDictionary}
+              tinted={offered?.filter((w) => !inDictionary(dictionary, w))}
+            />
+          ) : (
+            r.text
+          )}
+          {r.edited && <Caption1 className={styles.editedMark}>(edited)</Caption1>}
+        </Body1>
+      )}
+      {/* Not a cell: a row's cells are its time, speaker and words. */}
+      <span>
+        {canEdit && !editing && (
+          <Button
+            size="small"
+            appearance="subtle"
+            className={mergeClasses(styles.lineEdit, "earshot-line-edit")}
+            aria-label={`Edit line ${i + 1}`}
+            onClick={() => h.startEdit(segment)}
+          >
+            Edit
+          </Button>
+        )}
+      </span>
+      {canEdit && !editing && (offered !== null || note !== null) && (
+        <div className={styles.lineDictionary}>
+          {offered !== null && (
+            <DictionaryBar
+              words={offered}
+              dictionary={dictionary}
+              onAdd={(w) => h.addFromBar(segment, w)}
+              onClose={h.closeBar}
+            />
+          )}
+          {note !== null && (
+            <DictionaryNoteLine
+              note={note}
+              others={others}
+              undoRef={undoRef}
+              onUndo={() => note.kind === "added" && h.undo(segment, note.word)}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+});

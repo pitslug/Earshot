@@ -12,13 +12,17 @@ import {
 } from "@fluentui/react-components";
 import { type KeyboardEvent, useEffect, useState } from "react";
 
-import type { Ipc, SearchResultItem, SearchResultsView } from "../ipc";
+import { type Ipc, IpcFailure, type SearchResultItem, type SearchResultsView } from "../ipc";
 import { clock } from "../meeting/liveMeeting";
 import type { Timer } from "../time";
 import { clockTime, displayTitle } from "./meetings";
 
 /** How long typing must pause before a search runs. */
 export const SEARCH_DEBOUNCE_MS = 200;
+
+/** The error kind of a search a newer one replaced before it answered (`ipc::SEARCH_SUPERSEDED_KIND`
+ * in Rust, T9.24): the app stops it and the newer search's answer is the one wanted. */
+export const SEARCH_SUPERSEDED_KIND = "superseded";
 
 const useStyles = makeStyles({
   box: {
@@ -113,7 +117,9 @@ export function useMeetingSearch(ipc: Ipc, timer: Timer, reload: number): Meetin
           if (live) setAnswer({ query: wanted, results });
         },
         // Fixed copy on the screen: an error's own text has no place beside the search text.
-        () => {
+        // A search a newer one replaced has no answer: the newer one's is wanted (T9.24).
+        (error: unknown) => {
+          if (error instanceof IpcFailure && error.error.kind === SEARCH_SUPERSEDED_KIND) return;
           if (live) setAnswer({ query: wanted, results: null });
         },
       );

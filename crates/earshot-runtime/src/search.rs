@@ -6,6 +6,9 @@
 //! store lock per meeting, and matches with the lock free. The text searched for is never logged,
 //! stored or put in an error.
 
+use std::sync::{Mutex, PoisonError};
+
+use earshot_core::asr::CancelToken;
 use earshot_core::identity::EntityId;
 use earshot_core::model::MeetingRepo;
 use earshot_core::summary::SummaryV1;
@@ -70,15 +73,36 @@ pub struct SearchResults {
 /// # Errors
 /// Storage errors.
 pub fn search_meetings(services: &Services, query: &str) -> Result<SearchResults, RuntimeError> {
+    let answer = search_meetings_unless(services, query, &CancelToken::new())?;
+    Ok(answer.unwrap_or_default())
+}
+
+/// [`search_meetings`] that stops when `cancel` is cancelled (T9.24): the token is checked
+/// before each meeting is read, so a superseded search stops between two meetings. `None`: it
+/// was cancelled and has no answer.
+///
+/// # Errors
+/// Storage errors.
+pub fn search_meetings_unless(
+    services: &Services,
+    query: &str,
+    cancel: &CancelToken,
+) -> Result<Option<SearchResults>, RuntimeError> {
     let query = Query::new(query.trim());
     let mut results = SearchResults::default();
+    if cancel.is_cancelled() {
+        return Ok(None);
+    }
     if query.is_empty() {
-        return Ok(results);
+        return Ok(Some(results));
     }
     let mut meetings = services.store().meetings()?;
     meetings.retain(|m| !m.meta.deleted);
     meetings.sort_by_key(|m| std::cmp::Reverse((m.started_unix_ms, m.id)));
     for meeting in meetings {
+        if cancel.is_cancelled() {
+            return Ok(None);
+        }
         // One short lock per meeting; matching runs without it. `None`: deleted since the read
         // above.
         let Some(view) = MeetingView::load(&**services.store(), meeting.id)? else {
@@ -93,7 +117,27 @@ pub fn search_meetings(services: &Services, query: &str) -> Result<SearchResults
         }
         results.hits.push(hit);
     }
-    Ok(results)
+    Ok(Some(results))
+}
+
+/// The searches of one window (T9.24): each new search supersedes the one before, which stops
+/// between two meetings and gives no answer. Typing runs a search per pause, and only the
+/// newest text is wanted.
+#[derive(Debug, Default)]
+pub struct Searches {
+    current: Mutex<Option<CancelToken>>,
+}
+
+impl Searches {
+    /// The token of a new search, cancelling the search before it.
+    pub fn begin(&self) -> CancelToken {
+        let token = CancelToken::new();
+        let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(older) = current.replace(token.clone()) {
+            older.cancel();
+        }
+        token
+    }
 }
 
 /// The first match in `view`, if any.

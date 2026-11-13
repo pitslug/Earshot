@@ -223,6 +223,7 @@ fn main() {
             }
             app.manage(update_jobs);
             app.manage(state);
+            app.manage(earshot_runtime::search::Searches::default());
             app.manage(retention);
             let handle = app.handle().clone();
             let sink: meeting::Sink = Arc::new(move |e: meeting_events::MeetingEvent| {

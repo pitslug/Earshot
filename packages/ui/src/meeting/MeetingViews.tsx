@@ -29,12 +29,15 @@ import {
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { type FormEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type FormEvent, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { useIpc } from "../ipc";
+import type { Timer } from "../time";
+import { type LiveLevels, QUIET_LEVELS, useLevel, useNow } from "./hooks";
 import type { CaptureMode, LiveTrack, MessageBarIntent } from "./types";
 import {
   type Banner,
+  type LandedLine,
   type LiveMeeting,
   MODE_LABEL,
   atTheEnd,
@@ -476,10 +479,12 @@ function TranscriptBanner({ meeting }: { meeting: LiveMeeting }) {
 function Meter({
   track,
   meeting,
+  levels,
   compact = false,
 }: {
   track: LiveTrack;
   meeting: LiveMeeting;
+  levels: LiveLevels;
   compact?: boolean;
 }) {
   const styles = useStyles();
@@ -488,12 +493,7 @@ function Meter({
   return (
     <>
       <Label>{track}</Label>
-      <ProgressBar
-        aria-label={`${track} level`}
-        value={meterValue(meeting.levels[track])}
-        max={1}
-        thickness="large"
-      />
+      <MeterBar track={track} levels={levels} />
       <span
         role="img"
         aria-label={speaking ? `${track} speaking` : `${track} quiet`}
@@ -503,16 +503,40 @@ function Meter({
   );
 }
 
-function StatusLine({ meeting, now }: { meeting: LiveMeeting; now: number }) {
+/** A meter's bar: the only part of the screen a `Levels` event renders (T9.24). */
+function MeterBar({ track, levels }: { track: LiveTrack; levels: LiveLevels }) {
+  const level = useLevel(levels, track);
+  return (
+    <ProgressBar aria-label={`${track} level`} value={meterValue(level)} max={1} thickness="large" />
+  );
+}
+
+/** The time since the meeting started: the only part of the screen the clock renders (T9.24). */
+function Elapsed({
+  timer,
+  startedAt,
+  className,
+}: {
+  timer: Timer;
+  startedAt: number;
+  className: string;
+}) {
+  const now = useNow(timer, 1000);
+  return (
+    <Subtitle2 className={className} aria-label="Elapsed">
+      {clock(now - startedAt)}
+    </Subtitle2>
+  );
+}
+
+function StatusLine({ meeting, timer }: { meeting: LiveMeeting; timer: Timer }) {
   const styles = useStyles();
   return (
     <div className={mergeClasses(styles.status, styles.headerStatus)}>
       <span className={styles.recordingDot} aria-hidden="true" />
       <Subtitle2>Listening</Subtitle2>
       <Caption1 className={styles.statusMode}>{MODE_LABEL[meeting.mode]}</Caption1>
-      <Subtitle2 className={styles.clock} aria-label="Elapsed">
-        {clock(now - meeting.startedAt)}
-      </Subtitle2>
+      <Elapsed timer={timer} startedAt={meeting.startedAt} className={styles.clock} />
     </div>
   );
 }
@@ -568,6 +592,25 @@ function FollowingTranscript({ meeting }: { meeting: LiveMeeting }) {
   );
 }
 
+/** One settled line. A line never changes once landed, so a new line renders only itself:
+ * with hours of transcript, re-rendering every line was most of each commit (T9.24). */
+const LiveLine = memo(function LiveLine({ line }: { line: LandedLine }) {
+  const styles = useStyles();
+  return (
+    <div role="row" className={styles.row}>
+      <Caption1 role="cell" className={styles.time}>
+        {clock(line.startMs)}
+      </Caption1>
+      <Body1 role="cell" className={styles.speaker}>
+        {line.track}
+      </Body1>
+      <Body1 role="cell" className={styles.text}>
+        {line.text}
+      </Body1>
+    </div>
+  );
+});
+
 function TranscriptGrid({ meeting }: { meeting: LiveMeeting }) {
   const styles = useStyles();
   const provisional = (["You", "Them"] as const)
@@ -576,17 +619,7 @@ function TranscriptGrid({ meeting }: { meeting: LiveMeeting }) {
   return (
     <div role="table" aria-label="Transcript as it lands" className={styles.grid}>
       {meeting.lines.map((line) => (
-        <div role="row" key={line.seq} className={styles.row}>
-          <Caption1 role="cell" className={styles.time}>
-            {clock(line.startMs)}
-          </Caption1>
-          <Body1 role="cell" className={styles.speaker}>
-            {line.track}
-          </Body1>
-          <Body1 role="cell" className={styles.text}>
-            {line.text}
-          </Body1>
-        </div>
+        <LiveLine key={line.seq} line={line} />
       ))}
       {provisional.map(([track, words]) => (
         <div role="row" key={track} aria-label={`${track}, provisional`} className={styles.row}>
@@ -617,8 +650,10 @@ function TranscriptGrid({ meeting }: { meeting: LiveMeeting }) {
 
 export interface RecordingViewProps {
   meeting: LiveMeeting;
-  /** The injected clock's time, for the elapsed clock. */
-  now: number;
+  /** The injected clock, for the elapsed time (held by a leaf, so a tick renders only it). */
+  timer: Timer;
+  /** The meters' levels (default: none), apart from `meeting` so they render only the meters. */
+  levels?: LiveLevels;
   onStop(): void;
   onCompact(): void;
   onDismiss(key: string): void;
@@ -631,7 +666,8 @@ export interface RecordingViewProps {
 /** The meeting while it records. */
 export function RecordingView({
   meeting,
-  now,
+  timer,
+  levels = QUIET_LEVELS,
   onStop,
   onCompact,
   onDismiss,
@@ -642,7 +678,7 @@ export function RecordingView({
   return (
     <section className={mergeClasses(styles.view, styles.recording)} aria-label="Meeting">
       <div className={styles.header} role="group" aria-label="Meeting controls">
-        <StatusLine meeting={meeting} now={now} />
+        <StatusLine meeting={meeting} timer={timer} />
         <div className={styles.buttons}>
           <Button
             appearance="primary"
@@ -661,7 +697,7 @@ export function RecordingView({
       <Banners banners={bannersNewestFirst(meeting)} onDismiss={onDismiss} />
       <div className={styles.meters} role="group" aria-label="Levels">
         {meeting.tracks.map((t) => (
-          <Meter key={t} track={t} meeting={meeting} />
+          <Meter key={t} track={t} meeting={meeting} levels={levels} />
         ))}
       </div>
       <div className={styles.tiles}>
@@ -684,7 +720,10 @@ export function RecordingView({
 
 export interface CompactCardProps {
   meeting: LiveMeeting;
-  now: number;
+  /** The injected clock, for the elapsed time. */
+  timer: Timer;
+  /** The meters' levels (default: none). */
+  levels?: LiveLevels;
   onStop(): void;
   onExpand(): void;
   onKeepRecording(): void;
@@ -694,7 +733,8 @@ export interface CompactCardProps {
 /** The small always-on-top listening card. */
 export function CompactCard({
   meeting,
-  now,
+  timer,
+  levels = QUIET_LEVELS,
   onStop,
   onExpand,
   onKeepRecording,
@@ -706,13 +746,11 @@ export function CompactCard({
       <div className={styles.status}>
         <span className={styles.recordingDot} aria-hidden="true" />
         <Subtitle2>Listening</Subtitle2>
-        <Subtitle2 className={styles.clock} aria-label="Elapsed">
-          {clock(now - meeting.startedAt)}
-        </Subtitle2>
+        <Elapsed timer={timer} startedAt={meeting.startedAt} className={styles.clock} />
       </div>
       <div className={styles.compactMeters} role="group" aria-label="Levels">
         {meeting.tracks.map((t) => (
-          <Meter key={t} track={t} meeting={meeting} compact />
+          <Meter key={t} track={t} meeting={meeting} levels={levels} compact />
         ))}
       </div>
       <Caption1 className={styles.muted}>

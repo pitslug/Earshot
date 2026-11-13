@@ -1403,7 +1403,8 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
     await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Use it" }));
     expect(await screen.findByText("The word was not changed")).toBeInTheDocument();
     expect(screen.getByText(/not in your dictionary or among the people you saved/)).toBeInTheDocument();
-    expect(lineCell().textContent).toBe(LINE8_TEXT);
+    // The popover just closed: tabster hides the page for its deferred pass, then shows it again.
+    await waitFor(() => expect(lineCell().textContent).toBe(LINE8_TEXT));
   });
 
   it("shows no marks on a draft transcript", async () => {
