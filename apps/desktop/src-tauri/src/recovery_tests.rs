@@ -103,7 +103,11 @@ fn recovery_that_panics_still_starts_retention_and_tells_nothing() {
         |_| retention.set(true),
     );
     assert!(retention.get() && !told.get());
-    assert_eq!(problem.get(), Some(RECOVERY_DID_NOT_RUN), "said on the Storage page");
+    assert_eq!(
+        problem.get(),
+        Some(RECOVERY_DID_NOT_RUN),
+        "said beside retention's problems"
+    );
 }
 
 #[test]

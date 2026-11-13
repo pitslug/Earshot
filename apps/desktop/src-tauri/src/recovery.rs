@@ -28,12 +28,12 @@ pub struct RecoveredRecording {
     pub saved_ms: u64,
 }
 
-/// What the Storage page says when recovery could not finish a recording it found (no paths,
+/// What the storage settings say when recovery could not finish a recording it found (no paths,
 /// no error text: the audio stays on disk for the next start).
 pub const RECOVERY_FAILED: &str = "Earshot could not finish saving a recording it was closed \
      during. Its audio stays on disk, and Earshot tries again at its next start.";
 
-/// What the Storage page says when recovery could not look for recordings at all.
+/// What the storage settings say when recovery could not look for recordings at all.
 pub const RECOVERY_DID_NOT_RUN: &str = "Earshot could not check for recordings it was closed \
      during. It tries again at its next start.";
 

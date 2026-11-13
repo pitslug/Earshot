@@ -1829,12 +1829,7 @@ fn cancel_driver_on(
     });
     let t0 = Instant::now();
     (
-        MeetingDriver::new(
-            prepare,
-            sink,
-            Arc::new(move || t0),
-            gate,
-        ),
+        MeetingDriver::new(prepare, sink, Arc::new(move || t0), gate),
         rx,
     )
 }

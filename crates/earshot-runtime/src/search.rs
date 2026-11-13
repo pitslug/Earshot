@@ -167,7 +167,11 @@ impl Searches {
     /// The search sent `sent`th has ended; nothing changes when another one runs.
     pub fn end_sent(&self, sent: u64) {
         let mut order = self.order();
-        if order.current.as_ref().is_some_and(|(running, _)| *running == sent) {
+        if order
+            .current
+            .as_ref()
+            .is_some_and(|(running, _)| *running == sent)
+        {
             order.current = None;
         }
     }

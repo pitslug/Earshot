@@ -225,7 +225,11 @@ fn update_a_panicking_automatic_check_says_nothing_and_keeps_the_offer() {
         Arc::new(move |end: &CheckEnd| heard.lock().unwrap().push(end.automatic)),
     );
     j.start_check(true).unwrap().join().unwrap();
-    assert_eq!(j.phase(), UpdatePhase::Idle, "nobody asked, so nothing to say");
+    assert_eq!(
+        j.phase(),
+        UpdatePhase::Idle,
+        "nobody asked, so nothing to say"
+    );
     assert!(
         !seen
             .lock()

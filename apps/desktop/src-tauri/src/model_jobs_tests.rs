@@ -767,8 +767,8 @@ fn model_job_transcription_download_ending_during_a_summary_download_starts_the_
 #[test]
 fn model_job_an_npu_version_download_is_waited_for_and_followed_by_the_check() {
     // The ARM64 catalogue, where NPU versions are offered (on x64 they are not downloadable).
-    let arm64 = Catalogue::parse_with(include_str!("../../../../models/manifest.toml"), true)
-        .unwrap();
+    let arm64 =
+        Catalogue::parse_with(include_str!("../../../../models/manifest.toml"), true).unwrap();
     let dir = TempDir::new("model-jobs");
     let models = earshot_runtime::backends::ModelDir::new(dir.0.join("models"));
     let npu: Vec<String> = arm64
@@ -777,7 +777,10 @@ fn model_job_an_npu_version_download_is_waited_for_and_followed_by_the_check() {
         .collect();
     assert!(!npu.is_empty(), "the manifest holds NPU versions");
     for name in &npu {
-        assert!(check_waits_for(&arm64, name), "{name}: the check waits for it");
+        assert!(
+            check_waits_for(&arm64, name),
+            "{name}: the check waits for it"
+        );
         assert!(
             check_follows_in(&arm64, &models, name),
             "{name}: its download starts the check"
@@ -788,7 +791,10 @@ fn model_job_an_npu_version_download_is_waited_for_and_followed_by_the_check() {
     assert!(!check_waits_for(&arm64, SUMMARY) && !check_follows_in(&arm64, &models, SUMMARY));
     let helpers = earshot_runtime::catalogue::HELPERS_MODEL;
     assert!(check_waits_for(&arm64, helpers));
-    assert!(!check_follows_in(&arm64, &models, helpers), "no model to check yet");
+    assert!(
+        !check_follows_in(&arm64, &models, helpers),
+        "no model to check yet"
+    );
 }
 
 #[test]

@@ -665,9 +665,9 @@ impl AfterWatch {
             AfterPhase::Steps => self.bounds.step,
             AfterPhase::Summary => return false,
         };
-        let graced = self.cancelled_at.is_some_and(|at| {
-            now.saturating_sub(self.since.max(at)) >= self.bounds.cancelled
-        });
+        let graced = self
+            .cancelled_at
+            .is_some_and(|at| now.saturating_sub(self.since.max(at)) >= self.bounds.cancelled);
         graced || now.saturating_sub(self.since) >= bound
     }
 }

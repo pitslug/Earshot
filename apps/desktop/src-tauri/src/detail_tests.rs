@@ -1329,10 +1329,7 @@ fn detail_speaker_sample_reads_the_speakers_longest_line_from_its_tracks_recordi
     );
     // The user's longest line (1.0 s to 1.9 s) comes from the mic's recording, which is silence.
     let silent = base64(&sample_wav(16_000, &[0; 14_400]).unwrap());
-    assert_eq!(
-        speaker_sample(&svc, f.meeting, f.me).unwrap(),
-        Some(silent)
-    );
+    assert_eq!(speaker_sample(&svc, f.meeting, f.me).unwrap(), Some(silent));
 }
 
 #[test]

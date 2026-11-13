@@ -1173,7 +1173,10 @@ fn cuda_transcription_refusal_names_a_developer_build_before_trying_the_folder()
         transcription_refusal_in(true, true, false, true, true),
         Some(CARD_TOO_SMALL)
     );
-    assert_eq!(transcription_refusal_in(false, true, true, true, true), None);
+    assert_eq!(
+        transcription_refusal_in(false, true, true, true, true),
+        None
+    );
     assert_eq!(
         transcription_refusal(true, true, true, true),
         transcription_refusal_in(cfg!(feature = "cuda"), true, true, true, true)
