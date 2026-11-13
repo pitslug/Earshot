@@ -1633,12 +1633,12 @@ mod local {
         }
     }
 
-    /// A CPU summary with its GPU limits at 300 ms and its load limit at `cpu_load_limit`.
-    fn cpu_stall_service(on_cpu: OnCpu, cpu_load_limit: Duration) -> SummaryService {
+    /// A CPU summary with all its limits at 300 ms.
+    fn cpu_stall_service(on_cpu: OnCpu) -> SummaryService {
         let mut cfg = config();
         cfg.stall_limit = Duration::from_millis(300);
         cfg.load_stall_limit = Duration::from_millis(300);
-        cfg.cpu_load_limit = cpu_load_limit;
+        cfg.cpu_load_limit = Duration::from_millis(300);
         let flag: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
         SummaryService::local_flagged(
             &cfg,
@@ -1656,8 +1656,7 @@ mod local {
         let (svc, _) = services(&dir);
         let id = meeting(&svc, "", 181);
         let stuck = Stuck::default();
-        let service =
-            cpu_stall_service(OnCpu::StuckLoad(stuck.clone()), Duration::from_millis(300));
+        let service = cpu_stall_service(OnCpu::StuckLoad(stuck.clone()));
         let result = service.summarize(
             &svc,
             id,
@@ -1678,18 +1677,12 @@ mod local {
 
     #[test]
     fn summary_a_slow_cpu_run_is_never_cut() {
-        // Negative control: each request is quiet for longer than every limit, and only the load
-        // is watched on the CPU. The load limit is counted from before the thread's spawn, so on
-        // a saturated host a 300 ms one could cut the fake's instant load itself, which is not
-        // what this judges (TODO 145): it gets room for that, and the requests stay longer
-        // than it (and five times the GPU limits).
+        // Negative control: each request is quiet for three times the limits, and only the load
+        // is watched on the CPU.
         let dir = TempDir::new("summary");
         let (svc, _) = services(&dir);
         let id = meeting(&svc, "", 183);
-        let load_limit = Duration::from_secs(1);
-        let quiet = Duration::from_millis(1_500);
-        assert!(quiet > load_limit);
-        let service = cpu_stall_service(OnCpu::QuietRun(quiet), load_limit);
+        let service = cpu_stall_service(OnCpu::QuietRun(Duration::from_millis(900)));
         let out = service
             .summarize(
                 &svc,
