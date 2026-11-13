@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use earshot_core::audio::read_wav;
 use earshot_core::capture::{
     AudioSource, CaptureEvent, DeviceTime, DiscontinuityKind, EndReason, RawTimeline,
-    ReplayBuilder, SourceStatus, TrackBuffer, TrackId,
+    RawTrackTimeline, ReplayBuilder, SourceStatus, TrackBuffer, TrackId,
 };
 
 #[path = "../../earshot-asr-whisper/examples/asr_eval/gate12_private.rs"]
@@ -46,6 +46,36 @@ fn load_wav(path: &Path, channels: u16) -> TrackBuffer {
     let wav = read_wav(BufReader::new(File::open(path).unwrap())).unwrap();
     assert_eq!(wav.channels(), channels, "{} channels", path.display());
     TrackBuffer::try_from(wav).unwrap()
+}
+
+/// `(lost, at_stream_start)`: the track's discontinuity flags on packets after a stream's
+/// first, and on a stream's first packet. WASAPI flags a stream's first packet (the
+/// track's first with kept frames, and the first with kept frames at or after each device
+/// change) on start, which is not lost data: the live emitter and the raw replay both
+/// leave it out (AGENTS.md). Written from that rule, not from the replay's code.
+fn flags_by_kind(track: &RawTrackTimeline) -> (u32, u32) {
+    let mut reopens: Vec<u64> = track.device_changes.iter().map(|d| d.track_frame).collect();
+    reopens.sort_unstable();
+    let mut next_reopen = 0;
+    let mut stream_start = true;
+    let (mut lost, mut at_start) = (0, 0);
+    for p in &track.packets {
+        while next_reopen < reopens.len() && p.track_frame >= reopens[next_reopen] {
+            stream_start = true;
+            next_reopen += 1;
+        }
+        if p.discontinuity {
+            if stream_start {
+                at_start += 1;
+            } else {
+                lost += 1;
+            }
+        }
+        if u64::from(p.frames) > p.trimmed_frames {
+            stream_start = false;
+        }
+    }
+    (lost, at_start)
 }
 
 #[test]
@@ -154,7 +184,12 @@ fn capture_replays_gate10_raw_recording() {
             "track {i}: delivered + synthesized == written"
         );
         let flagged = track.packets.iter().filter(|p| p.discontinuity).count() as u32;
-        assert_eq!(data_lost[i], flagged);
+        let (lost, at_stream_start) = flags_by_kind(track);
+        assert_eq!(lost + at_stream_start, flagged);
+        assert_eq!(
+            data_lost[i], lost,
+            "track {i}: one DataLost per flag after a stream start"
+        );
     }
     assert!(rebuilt[0] == wavs[0], "mic WAV reconstructed from replay");
     assert!(
