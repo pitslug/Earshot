@@ -1278,3 +1278,30 @@ Asked by the owner: does the 600 s chunking lose the items both arms missed? The
 - **Chunking does not lose the items.** Unchunked caught fewer decisions in both arms, and most of the loss was on r3. 2 decisions and 1 action on r1, and 1 action on r3, were missed by all four runs. The limit is the 4B, not the plan or the prompt length.
 - **Unchunked brief** made nothing up and caught the most actions, but it lost decisions on r1 and r3 against the rule's limit of one per meeting.
 - **Limits:** the judges differ between the rounds, so a total that moves by 1 or 2 is within judge noise; the decision drop is larger. Unchunked reads the whole meeting after hang-up, so it would cost more time at hang-up on the Surface than the chunked plan; not measured. GPU times at hang-up: 8.4 s (standard) and 5.8 s (brief) per meeting.
+
+## T12.25 part 2 rule: merge by selection (written before measuring)
+
+Written and committed on its own before any selection merge was run or any of its summaries read (2026-11-14). Evaluation only: nothing shipped changes, and the production grammar and summary path stay byte-identical.
+
+**The method.** The map partials of the chunked plan (600 s chunks, `earshot_core::prompt::time_chunks`) are made and kept exactly as today. The merge request is replaced by a selection request: it gets the meeting details, each part's `tldr`, and the numbered decisions (D1, D2, ...), action items (A1, ...) and open questions (Q1, ...) of every part in meeting order, each labelled with its part. It replies under a grammar of numbers only: for each of the three lists, a list of groups of item numbers (one number keeps that item as written; several numbers fold items that say the same thing into one, keeping the first number's wording and the citations of all of them, at most three; a number left out is dropped, which is how a superseded decision or an answered question goes), and a short `tldr`. Code builds the summary from the kept items, starting from `join_partials`: the first part's title, the reply's `tldr`, every part's notes and topics joined with exact repeats dropped, and the selected decisions, action items and open questions. Nothing is reworded: every kept item's text is a partial's own. The lists keep the production caps (12 items). A selection reply that is still invalid after the usual repair rounds falls back to `join_partials` (counted as joined, as today's merge does since T8.4d). The selection request's system message is one fixed text for both prompt arms (it carries the decision and action-item definitions, rules 5 and 6, which `system.md` and `brief.md` share word for word); the arms differ in the map partials. A meeting of one chunk is one request, as today. Flag `--merge-select`, format key part `-select`.
+
+**Conditions.** Qwen 3.5 4B (`qwen3.5-4b-q4_k_m`, the shipped local summary model), CUDA on the desktop GPU, S16, greedy, chunked 600 s, one build for every run. Both prompt arms for every condition:
+
+| Condition | Rules | Merge |
+|---|---|---|
+| control | `standard` (today's `system.md`) | today's merge |
+| brief | `brief` | today's merge |
+| standard-select | `standard` | selection |
+| brief-select | `brief` | selection |
+
+The control and brief runs are made again in this build; before anything is judged, `sum_eval --compare-summaries` must show them equal to the earlier stored runs of the same condition (greedy). A difference is reported, not hidden, and the fresh runs are the ones judged.
+
+**Deciding set: the owner's own meetings** (T12.25a store run `run-1`, labels r1 to r4, the real-item lists already fixed there before any summary was read). **Public check: the five judged AMI dev meetings** (ES2003c, ES2011c, IS1008c, TS3004c, TS3006c, reference source, the fixed real-item lists of `docs/summary-eval/prompt-rounds-2026-11-04.md`): reported beside the deciding set, deciding nothing.
+
+**Judging.** Blinded packets, four summaries per meeting (the four conditions), one Claude Code agent per meeting, marking every summary decision and action item as caught (with the real item's id), made up or duplicate under the judging rules of `docs/summary-eval/prompt-rounds-2026-11-04.md`, as in the T12.25a runs. An invalid summary is judged as catching nothing. Counts per meeting and condition: real decisions caught, real actions caught, made-up items.
+
+**Rule (the owner's trade-off, PLAN T12.25, stated unchanged).** A faster condition is worth shipping when, against `standard` with today's method (the control): time at hang-up on the Surface falls by at least 50%, and real decisions caught fall by at most 1 per meeting judged (on any one meeting and in total: at most N for N meetings), and real actions caught do not fall, and made-up items do not rise. A condition that loses nothing passes on any speed gain. Read here as: decisions are compared on every meeting and in total over the N meetings judged; actions caught and made-up items are compared in total over the meetings judged (per meeting reported). Each of `brief`, `standard-select` and `brief-select` is judged by this rule against the control, on the owner's meetings. Anything outside these numbers goes to the owner; it is not decided by the rule.
+
+**Time.** Reported per meeting from llama.cpp's counts and step times: requests, prompt and generated tokens, and `hangup_s` (the last map step plus the merge, the wait after the meeting ends). These runs are on the desktop GPU, possibly a shared host, so their seconds are not Surface times. The 50% criterion needs a Surface run on an idle machine, which comes later. So tonight's result can at most say "quality passes, speed not yet measured"; a condition that fails a quality part fails whatever its speed.
+
+**Limits, stated now.** Four of the owner's meetings, one run per condition, one judge per meeting; a total that moves by 1 or 2 between rounds can be judge noise. The selection merge keeps every part's notes, so its summaries can be longer than today's merge; words are reported, and length is not part of the rule.
