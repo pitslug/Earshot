@@ -387,7 +387,8 @@ impl From<ClaudeCodeError> for LlmError {
 /// # Errors
 /// Why the name is refused (plain words, never the name).
 pub fn check_model(name: &str) -> Result<(), &'static str> {
-    if name.len() > MAX_MODEL_NAME {
+    // Counted in characters, as the message says (a name outside ASCII fails the next rules).
+    if name.chars().count() > MAX_MODEL_NAME {
         return Err("it is longer than 200 characters");
     }
     if name.starts_with('-') {
@@ -1205,6 +1206,12 @@ mod tests {
         }
         assert!(check_model(&"a".repeat(MAX_MODEL_NAME)).is_ok());
         assert!(check_model(&"a".repeat(MAX_MODEL_NAME + 1)).is_err());
+        // The limit counts characters, as its message says: a short name of two-byte letters is
+        // refused for its letters, never as too long.
+        let why = check_model(&"\u{e9}".repeat(MAX_MODEL_NAME / 2 + 1)).unwrap_err();
+        assert!(why.starts_with("use only"), "{why}");
+        let why = check_model(&"\u{e9}".repeat(MAX_MODEL_NAME + 1)).unwrap_err();
+        assert!(why.contains("longer than"), "{why}");
     }
 
     #[test]

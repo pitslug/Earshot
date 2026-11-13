@@ -489,7 +489,12 @@ export function FirstRunWizard({ onDone }: FirstRunWizardProps) {
   const moving = running || finishing || saving;
   const downloading =
     models.load.status === "loaded"
-      ? [models.load.data.models.helpers, ...models.load.data.models.transcription, ...models.load.data.models.summary]
+      ? [
+          models.load.data.models.helpers,
+          ...models.load.data.models.transcription,
+          ...models.load.data.models.summary,
+          ...models.load.data.models.npu,
+        ]
           .filter((m) => m.downloading)
           .map((m) => m.title)
       : [];

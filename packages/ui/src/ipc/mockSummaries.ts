@@ -255,7 +255,8 @@ function validate(s: SummarySettingsValue): SummarySettingsValue {
     fail("invalid_setting", "The model name must be at most 200 characters, without line breaks.");
   }
   const claude_model = rustTrim(s.claude_model);
-  if (utf8Length(claude_model) > 200) {
+  // The agent CLIs' name limits count characters (Rust `chars().count()`), as their messages say.
+  if ([...claude_model].length > 200) {
     fail("invalid_setting", "This Claude Code model name cannot be used: it is longer than 200 characters.");
   }
   if (claude_model.startsWith("-")) {
@@ -270,7 +271,7 @@ function validate(s: SummarySettingsValue): SummarySettingsValue {
   // Codex (`earshot_llm::codex::check_model`): a letter or digit, then up to 63 of
   // letters, digits and `._-`.
   const codex_model = rustTrim(s.codex_model);
-  if (utf8Length(codex_model) > 64) {
+  if ([...codex_model].length > 64) {
     fail("invalid_setting", "This Codex model name cannot be used: it is longer than 64 characters.");
   }
   if (codex_model !== "" && !/^[A-Za-z0-9]/.test(codex_model)) {

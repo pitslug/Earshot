@@ -384,6 +384,10 @@ describe("First run wizard", () => {
       const npu = await screen.findByRole("region", { name: "NPU versions" });
       await s.user.click(within(npu).getByRole("button", { name: /^Download Parakeet 0\.6B v2 \(NPU version\)/ }));
       await waitFor(() => expect(start.mock.calls.map(([m]) => m)).toEqual(["parakeet-tdt-0.6b-v2-npu"]));
+      // The next steps say it is still downloading, as they do for the other models.
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[2].title);
+      expect(await screen.findByText(stillDownloading(["Parakeet 0.6B v2 (NPU version)"]))).toBeInTheDocument();
     });
 
     it("has no NPU versions on a computer without them", async () => {

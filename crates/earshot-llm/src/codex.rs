@@ -430,7 +430,8 @@ pub fn check_model(name: &str) -> Result<(), &'static str> {
     if name.is_empty() {
         return Ok(());
     }
-    if name.len() > MAX_MODEL_NAME {
+    // Counted in characters, as the message says (a name outside ASCII fails the next rules).
+    if name.chars().count() > MAX_MODEL_NAME {
         return Err("it is longer than 64 characters");
     }
     if !name.as_bytes()[0].is_ascii_alphanumeric() {
@@ -1041,6 +1042,12 @@ mod tests {
         }
         assert!(check_model(&"a".repeat(MAX_MODEL_NAME)).is_ok());
         assert!(check_model(&"a".repeat(MAX_MODEL_NAME + 1)).is_err());
+        // The limit counts characters, as its message says: a short name of two-byte letters is
+        // refused for its first letter, never as too long.
+        let why = check_model(&"\u{e9}".repeat(MAX_MODEL_NAME / 2 + 8)).unwrap_err();
+        assert!(why.starts_with("it must start"), "{why}");
+        let why = check_model(&"\u{e9}".repeat(MAX_MODEL_NAME + 1)).unwrap_err();
+        assert!(why.contains("longer than"), "{why}");
     }
 
     #[test]
