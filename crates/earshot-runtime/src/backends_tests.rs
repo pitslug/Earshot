@@ -2759,6 +2759,28 @@ fn backends_evaluation_only_onnx_pieces_are_not_used_inside_earshot_onnx() {
     assert!(read > 5, "earshot-onnx/src: {read} files read");
 }
 
+/// TODO 137: a preview's Parakeet load says it is a preview's (only a compiled NPU model, never
+/// recorded for the meeting's note) and the track's load says it is a track's. Whose load it is
+/// is said by the caller, so the callers are pinned here: no test can reach a QNN load off the
+/// Surface.
+#[test]
+fn backends_preview_parakeet_load_is_a_previews_and_the_tracks_a_tracks() {
+    let src = backends_source();
+    let preview = &src[item_span(&src, "fn load_preview_parakeet(")];
+    assert!(preview.contains("QnnLoadFor::Preview"), "{preview}");
+    assert!(!preview.contains("QnnLoadFor::Track"), "{preview}");
+    assert!(preview.contains("load_parakeet_with("), "{preview}");
+    let track = &src[item_span(&src, "pub fn load_parakeet(")];
+    assert!(track.contains("QnnLoadFor::Track"), "{track}");
+    assert!(!track.contains("QnnLoadFor::Preview"), "{track}");
+    // No other caller: each loader above is the only path of its kind.
+    let calls = code_lines(&src)
+        .into_iter()
+        .filter(|(_, l)| l.contains("load_parakeet_with(") && !l.starts_with("fn "))
+        .count();
+    assert_eq!(calls, 2);
+}
+
 /// `backends.rs` as written (its tests are in this file).
 fn backends_source() -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/backends.rs")).unwrap()
