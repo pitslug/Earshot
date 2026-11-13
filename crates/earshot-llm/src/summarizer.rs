@@ -1,5 +1,6 @@
 //! [`Summarizer`] over an OpenAI-compatible or Anthropic endpoint (PLAN.md 3.7, D19).
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
@@ -146,9 +147,25 @@ impl LlmSummarizer {
     /// [`LlmSummarizer::summarize_with_report`] with the wall time of every request step
     /// (evaluation: `sum_eval`).
     pub async fn summarize_timed(&self, input: &SummaryInput, cancel: &CancelToken) -> TimedRun {
+        let input = self.with_writer_rules(input);
         let mut run = self.run(cancel);
-        let result = run.summarize(input).await;
+        let result = run.summarize(&input).await;
         run.finish(result)
+    }
+
+    /// `input` with this writer's shared rules ([`LlmClient::summary_rules`], T12.17c), so
+    /// every request of the run (single, map, every merge, repair) starts with them; an
+    /// evaluation's prompt variant other than current still names its own rules file.
+    fn with_writer_rules<'i>(&self, input: &'i SummaryInput) -> Cow<'i, SummaryInput> {
+        let rules = self.client.summary_rules();
+        if input.rules == rules {
+            Cow::Borrowed(input)
+        } else {
+            Cow::Owned(SummaryInput {
+                rules,
+                ..input.clone()
+            })
+        }
     }
 
     /// Evaluation only (T7.4gb; production plans with [`earshot_core::prompt::plan`]): one
@@ -162,11 +179,12 @@ impl LlmSummarizer {
         ranges: &[Range<usize>],
         cancel: &CancelToken,
     ) -> TimedRun {
+        let input = self.with_writer_rules(input);
         let mut run = self.run(cancel);
         let result = if ranges.len() <= 1 {
-            run.summarize(input).await
+            run.summarize(&input).await
         } else {
-            run.summarize_chunks(input, ranges).await
+            run.summarize_chunks(&input, ranges).await
         };
         run.finish(result)
     }

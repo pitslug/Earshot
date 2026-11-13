@@ -1553,6 +1553,9 @@ fn input_of(view: &MeetingView, settings: &PromptSettings) -> SummaryInput {
             .collect(),
         template: m.template,
         prompt_variant: earshot_core::prompt::PromptVariant::Current,
+        // The writer sets its own rules (T12.17c, `earshot_llm::LlmClient::summary_rules`:
+        // brief for Claude Code and Codex); the local model keeps the standard ones.
+        rules: Default::default(),
         style: settings.style.clone(),
         style_preset: settings.style_preset,
         vocabulary: settings.vocabulary.clone(),

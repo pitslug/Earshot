@@ -16,12 +16,14 @@ use std::time::{Duration, Instant};
 
 use earshot_core::asr::{CancelToken, MeetingTime};
 use earshot_core::identity::{EntityId, ManualClock};
-use earshot_core::prompt::{MeetingInfo, PromptSegment, SummaryInput, Template};
+use earshot_core::prompt::{
+    MeetingInfo, PromptPlan, PromptSegment, SummaryInput, SummaryRules, Template, plan,
+};
 use earshot_core::summary::validate_summary;
 use earshot_llm::claude_code::{CliSearch, Effort, EffortProbe, MAX_CLI_OUTPUT, STATUS_TIMEOUT};
 use earshot_llm::{
     ClaudeCli, ClaudeCodeClient, ClaudeCodeConfig, ClaudeCodeError, Handover, HandoverOutcome,
-    HandoverSink, LlmError, LlmSummarizer, ResponseMode, SignIn, SummaryRun,
+    HandoverSink, LlmClient, LlmError, LlmSummarizer, ResponseMode, SignIn, SummaryRun,
 };
 use serde_json::json;
 
@@ -381,6 +383,7 @@ fn meeting(n: usize) -> SummaryInput {
         notes: vec![],
         template: Template::General,
         prompt_variant: Default::default(),
+        rules: Default::default(),
         style: Default::default(),
         style_preset: Default::default(),
         vocabulary: Default::default(),
@@ -470,6 +473,23 @@ fn claude_code_valid_reply_is_a_summary_after_one_run() {
     assert!(stdin.contains("===== user ====="));
     assert!(stdin.contains(&input.segments[2].text));
     assert!(stdin.contains(TITLE));
+    // T12.17c: Claude Code writes with the brief rules, though the input carried the
+    // standard ones: the system part is the plan of the input with brief rules.
+    assert_eq!(input.rules, SummaryRules::Standard);
+    assert_eq!(
+        LlmClient::from(client.clone()).summary_rules(),
+        SummaryRules::Brief
+    );
+    let brief = SummaryInput {
+        rules: SummaryRules::Brief,
+        ..input.clone()
+    };
+    let PromptPlan::Single(p) = plan(&brief, client.config().budget).unwrap() else {
+        panic!("a short meeting is one request");
+    };
+    assert!(stdin.contains(&format!("===== system =====\n{}\n", p.messages[0].content)));
+    assert!(stdin.contains("at most three sections of at most three bullets"));
+    assert!(!stdin.contains("Keep `tldr` to one to three sentences."));
 
     // An empty working folder of its own, under the temp root, removed afterwards.
     let cwd = s.read("call-1.cwd");

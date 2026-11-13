@@ -129,12 +129,16 @@ impl AgentCli {
         })
     }
 
-    /// The format key part of this candidate: `-claude-code`, `-codex`.
+    /// The format key part of this candidate: `-claude-code-brief`, `-codex-brief`. The
+    /// `-brief` names the agent CLIs' production rules since T12.17c
+    /// (`earshot_llm::LlmClient::summary_rules`), so a result file written with the earlier
+    /// standard rules (`-claude-code`, `-codex`) is never reused; the example's
+    /// `format_key` appends the same.
     #[must_use]
     pub fn key_suffix(self) -> &'static str {
         match self {
-            Self::ClaudeCode => "-claude-code",
-            Self::Codex => "-codex",
+            Self::ClaudeCode => "-claude-code-brief",
+            Self::Codex => "-codex-brief",
         }
     }
 
@@ -366,8 +370,9 @@ pub struct Options {
 /// The request format the `sum_eval` example records as `grammar` (its `format_key`): a
 /// stored report is reused only when it equals this. `-chunk<seconds>` marks forced
 /// chunking, `-twocall` the T6.20c two-call chunks, `-twotrack` the T8.3ja two-track
-/// chunks, `-claude-code` the T7.4gb Claude Code candidate or `-codex` the T7.4gc Codex
-/// candidate ([`AgentCli::key_suffix`]), `-think<cap>` T12.10 thinking on with that token
+/// chunks, `-claude-code-brief` the T7.4gb Claude Code candidate or `-codex-brief` the
+/// T7.4gc Codex candidate on their T12.17c brief rules ([`AgentCli::key_suffix`]; before
+/// T12.17c `-claude-code`, `-codex`), `-think<cap>` T12.10 thinking on with that token
 /// cap, `-prompt-<variant>` a T6.20b prompt variant other than the production one.
 #[must_use]
 pub fn format_key(
@@ -2759,7 +2764,7 @@ mod tests {
         };
         assert_eq!(
             o.format_key(),
-            "indented-numbered-r5-claude-code-prompt-short-template-brief"
+            "indented-numbered-r5-claude-code-brief-prompt-short-template-brief"
         );
         check_claude_code(&o).unwrap();
         let standard = Options {
@@ -2768,7 +2773,7 @@ mod tests {
         };
         assert_eq!(
             standard.format_key(),
-            "indented-numbered-r5-claude-code-prompt-short"
+            "indented-numbered-r5-claude-code-brief-prompt-short"
         );
         let args: Vec<String> = agent_cli_args(
             AgentCli::ClaudeCode,
@@ -2913,10 +2918,10 @@ mod tests {
             ..after.clone()
         };
         assert!(after.is_claude_code() && !Options::default().is_claude_code());
-        assert_eq!(after.format_key(), "indented-numbered-r5-claude-code");
+        assert_eq!(after.format_key(), "indented-numbered-r5-claude-code-brief");
         assert_eq!(
             chunked.format_key(),
-            "indented-numbered-r5-chunk600-claude-code"
+            "indented-numbered-r5-chunk600-claude-code-brief"
         );
         assert_eq!(
             format_key(
@@ -3133,8 +3138,11 @@ mod tests {
         };
         assert!(after.is_codex() && !after.is_claude_code());
         assert_eq!(after.agent_cli(), Some(AgentCli::Codex));
-        assert_eq!(after.format_key(), "indented-numbered-r5-codex");
-        assert_eq!(chunked.format_key(), "indented-numbered-r5-chunk600-codex");
+        assert_eq!(after.format_key(), "indented-numbered-r5-codex-brief");
+        assert_eq!(
+            chunked.format_key(),
+            "indented-numbered-r5-chunk600-codex-brief"
+        );
         // Codex's production budget, not --context / --max-output.
         let b = earshot_llm::codex::CODEX_BUDGET;
         assert_eq!(

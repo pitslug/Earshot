@@ -9,7 +9,7 @@ use earshot_core::asr::{CancelToken, MeetingTime};
 use earshot_core::identity::{EntityId, ManualClock};
 use earshot_core::prompt::{
     ContextBudget, MeetingInfo, PromptPlan, PromptSegment, REPAIR_MAX_TOKENS, Role, SummaryInput,
-    Template, plan, plan_chunks, reduce_groups, time_chunks,
+    SummaryRules, Template, plan, plan_chunks, reduce_groups, time_chunks,
 };
 use earshot_core::summary::{Summarizer, SummaryV1, validate_summary};
 use earshot_llm::{
@@ -45,6 +45,7 @@ fn meeting(n: usize) -> SummaryInput {
         notes: vec![],
         template: Template::General,
         prompt_variant: Default::default(),
+        rules: Default::default(),
         style: Default::default(),
         style_preset: Default::default(),
         vocabulary: Default::default(),
@@ -166,6 +167,22 @@ async fn valid_reply_is_accepted_after_one_strict_json_schema_request() {
         })
         .collect();
     assert_eq!(messages(r), expected);
+    // T12.17c: an API writer keeps the standard rules (system.md), byte for byte the plan
+    // of an input built with them.
+    assert_eq!(
+        s.summarizer.client().summary_rules(),
+        SummaryRules::Standard
+    );
+    assert!(
+        expected[0]
+            .1
+            .contains("Keep `tldr` to one to three sentences.")
+    );
+    assert!(
+        !expected[0]
+            .1
+            .contains("at most three sections of at most three bullets")
+    );
 
     let log = s.audit.entries();
     assert_eq!(log.len(), 1);

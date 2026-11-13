@@ -2,7 +2,7 @@
 //! and the Claude Code CLI (T7.4ga).
 
 use earshot_core::asr::CancelToken;
-use earshot_core::prompt::{ChatMessage, ContextBudget};
+use earshot_core::prompt::{ChatMessage, ContextBudget, SummaryRules};
 use earshot_net::NetClient;
 
 use crate::anthropic::MessagesClient;
@@ -77,6 +77,18 @@ impl LlmClient {
             LlmClient::OpenAi(_) => Some(Provider::OpenAi),
             LlmClient::Anthropic(_) => Some(Provider::Anthropic),
             LlmClient::ClaudeCode(_) | LlmClient::Codex(_) => None,
+        }
+    }
+
+    /// The shared rules this writer's summaries follow (T12.17c, docs/summary-eval.md): the
+    /// agent CLIs (Claude Code, Codex) write with [`SummaryRules::Brief`], which on Claude
+    /// kept meaning coverage at about 60% fewer words; the OpenAI-compatible and Anthropic
+    /// API writers keep [`SummaryRules::Standard`] (system.md). The one place a writer's
+    /// rules are chosen; [`crate::LlmSummarizer`] applies it to every request of a run.
+    pub fn summary_rules(&self) -> SummaryRules {
+        match self {
+            LlmClient::ClaudeCode(_) | LlmClient::Codex(_) => SummaryRules::Brief,
+            LlmClient::OpenAi(_) | LlmClient::Anthropic(_) => SummaryRules::Standard,
         }
     }
 

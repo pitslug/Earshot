@@ -77,8 +77,10 @@ const GRAMMAR: &str = "indented-numbered-r5";
 /// plus `-twotrack` for the T8.3ja two-track chunks (`two_track.rs`), plus
 /// `-prompt-<variant>` for a T6.20b prompt variant other than the production one, so rows
 /// made with different chunking, calls or rules are never reused for each other, plus
-/// `-claude-code` for the T7.4gb Claude Code candidate or `-codex` for the T7.4gc Codex
-/// candidate (same place), plus `-think<cap>` for T12.10 thinking on with that token cap
+/// `-claude-code-brief` for the T7.4gb Claude Code candidate or `-codex-brief` for the
+/// T7.4gc Codex candidate (same place; `-brief` is their T12.17c production rules,
+/// `earshot_llm::LlmClient::summary_rules`, so files from the earlier standard rules,
+/// `-claude-code` and `-codex`, are never reused), plus `-think<cap>` for T12.10 thinking on with that token cap
 /// (after the agent suffix, before the prompt variant). xtask's `sum_eval::format_key` builds
 /// the same string.
 /// An agent-CLI candidate (`claude_cli.rs`).
@@ -119,8 +121,8 @@ fn format_key(
         key.push_str("-twotrack");
     }
     match agent {
-        Some(AgentCli::ClaudeCode) => key.push_str("-claude-code"),
-        Some(AgentCli::Codex) => key.push_str("-codex"),
+        Some(AgentCli::ClaudeCode) => key.push_str("-claude-code-brief"),
+        Some(AgentCli::Codex) => key.push_str("-codex-brief"),
         None => {}
     }
     if let Some(cap) = thinking {
@@ -603,6 +605,7 @@ fn reference_input_timed(
             notes: Vec::new(),
             template: Template::General,
             prompt_variant: PromptVariant::Current,
+            rules: Default::default(),
             style: Default::default(),
             style_preset: Default::default(),
             vocabulary: Default::default(),
@@ -2025,7 +2028,7 @@ mod tests {
                 Some(AgentCli::ClaudeCode),
                 None
             ),
-            "indented-numbered-r5-claude-code"
+            "indented-numbered-r5-claude-code-brief"
         );
         assert_eq!(
             format_key(
@@ -2036,7 +2039,7 @@ mod tests {
                 Some(AgentCli::ClaudeCode),
                 None
             ),
-            "indented-numbered-r5-chunk600-claude-code"
+            "indented-numbered-r5-chunk600-claude-code-brief"
         );
         // A prompt variant on Claude Code (T12.17, evaluation only) comes after it.
         assert_eq!(
@@ -2048,7 +2051,7 @@ mod tests {
                 Some(AgentCli::ClaudeCode),
                 None
             ),
-            "indented-numbered-r5-claude-code-prompt-short"
+            "indented-numbered-r5-claude-code-brief-prompt-short"
         );
     }
 
@@ -2194,7 +2197,7 @@ mod tests {
         let current = PromptVariant::Current;
         assert_eq!(
             format_key(None, current, false, false, Some(AgentCli::Codex), None),
-            "indented-numbered-r5-codex"
+            "indented-numbered-r5-codex-brief"
         );
         assert_eq!(
             format_key(
@@ -2205,7 +2208,7 @@ mod tests {
                 Some(AgentCli::Codex),
                 None
             ),
-            "indented-numbered-r5-chunk600-codex"
+            "indented-numbered-r5-chunk600-codex-brief"
         );
         let codex = |extra: &[&str]| {
             let mut a = claude_args(extra);
