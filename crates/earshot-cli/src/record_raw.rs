@@ -140,6 +140,47 @@ pub fn describe_mic_warning(w: &earshot_capture_wasapi::HandsFreeMic) -> String 
     crate::session::format_warning(&earshot_runtime::backends::hands_free_warning(w.clone()))
 }
 
+/// Writes lines on a thread of its own. `record_raw` calls its mic-warning callback on the
+/// capture thread, inside a re-open, so the callback only hands its line over here: a console
+/// that blocks the write (a QuickEdit selection) stalls this thread, never the capture.
+struct LinePrinter {
+    lines: Option<std::sync::mpsc::Sender<String>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl LinePrinter {
+    /// Starts the thread, which passes each line to `write` in order.
+    fn spawn(mut write: impl FnMut(&str) + Send + 'static) -> std::io::Result<Self> {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let thread = std::thread::Builder::new()
+            .name("earshot-record-raw-print".into())
+            .spawn(move || {
+                for line in rx {
+                    write(&line);
+                }
+            })?;
+        Ok(Self {
+            lines: Some(tx),
+            thread: Some(thread),
+        })
+    }
+
+    /// A handle that queues a line and never waits for the write.
+    fn sender(&self) -> std::sync::mpsc::Sender<String> {
+        self.lines.clone().expect("open until dropped")
+    }
+}
+
+impl Drop for LinePrinter {
+    /// Waits until every queued line is written, so they come before whatever follows.
+    fn drop(&mut self) {
+        drop(self.lines.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// What `--mic-raw` asks of the mic stream: raw only when given.
 pub fn mic_processing(mic_raw: bool) -> MicProcessing {
     if mic_raw {
@@ -206,6 +247,9 @@ pub fn run(
     dir: &Path,
 ) -> Result<Outputs> {
     check_seconds(seconds)?;
+    let printer = LinePrinter::spawn(|line| eprintln!("{line}"))
+        .context("cannot start the warning printer")?;
+    let warnings = printer.sender();
     let rec = earshot_capture_wasapi::record_raw(
         seconds,
         mic_role,
@@ -220,9 +264,15 @@ pub fn run(
             eprintln!("{}", describe_loopback_source(src));
             eprintln!("record-raw: recording {seconds} s ...");
         },
-        |w| eprintln!("{}", describe_mic_warning(w)),
-    )
-    .context("raw capture failed")?;
+        // On the capture thread: queue the line, never write it here. It owns the sender, so
+        // the printer's queue closes when record_raw returns.
+        move |w| {
+            let _ = warnings.send(describe_mic_warning(w));
+        },
+    );
+    // Every warning is written before the lines that follow.
+    drop(printer);
+    let rec = rec.context("raw capture failed")?;
     for refused in &rec.refused_call_outputs {
         eprintln!("warning: the call plays on an output that could not be opened: {refused}");
     }
@@ -689,5 +739,44 @@ mod tests {
         assert!(check_seconds(-1.0).is_err());
         assert!(check_seconds(f64::NAN).is_err());
         assert!(check_seconds(5.0).is_ok());
+    }
+
+    #[test]
+    fn record_raw_warnings_never_wait_for_a_blocked_console() {
+        use std::sync::{Arc, Mutex, mpsc};
+        let (release, gate) = mpsc::channel::<()>();
+        let (started_tx, started) = mpsc::channel::<()>();
+        let written = Arc::new(Mutex::new(Vec::<String>::new()));
+        let out = Arc::clone(&written);
+        let printer = LinePrinter::spawn(move |line| {
+            // The first write blocks, as a console with a selection does.
+            if out.lock().unwrap().is_empty() {
+                let _ = started_tx.send(());
+                gate.recv().unwrap();
+            }
+            out.lock().unwrap().push(line.to_owned());
+        })
+        .unwrap();
+        let lines = printer.sender();
+        lines.send("first invented warning".into()).unwrap();
+        started
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the printer took the first line");
+        // The writer is blocked; queuing more returns at once.
+        lines.send("second invented warning".into()).unwrap();
+        lines.send("third invented warning".into()).unwrap();
+        assert!(written.lock().unwrap().is_empty(), "nothing written yet");
+        drop(lines);
+        release.send(()).unwrap();
+        // Dropping waits for every queued line.
+        drop(printer);
+        assert_eq!(
+            *written.lock().unwrap(),
+            [
+                "first invented warning",
+                "second invented warning",
+                "third invented warning"
+            ]
+        );
     }
 }

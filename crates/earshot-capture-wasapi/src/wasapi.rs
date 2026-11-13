@@ -2328,6 +2328,8 @@ fn open_loopback<'com>(
 /// each re-open that switches onto one (the [`HandsFreeFollower`](crate::endpoint::HandsFreeFollower)
 /// rule of the live mic track), as it happens; the latter are also logged in the
 /// change's [`DeviceChange::hands_free`](crate::recording::DeviceChange::hands_free).
+/// During the recording it runs inside the capture loop, so it must not block: a caller that
+/// prints hands the line to a thread of its own (`earshot-cli record-raw` does).
 ///
 /// The mic track is mono; the loopback track keeps its channels (interleaved, stereo
 /// on a desktop and for process loopback).
