@@ -165,7 +165,12 @@ fn runner(work: Arc<Fake>) -> (JobRunner, Receiver<JobEvent>) {
         let _ = tx.lock().unwrap().send(e);
     });
     (
-        JobRunner::new(work, sink, crate::activity::WorkGate::new()),
+        JobRunner::new(
+            work,
+            sink,
+            crate::activity::WorkGate::new(),
+            &crate::cuda_settings::CudaLatch::resolved_off(),
+        ),
         rx,
     )
 }
@@ -457,7 +462,12 @@ fn jobs_and_the_model_check_exclude_each_other() {
     let sink: JobSink = Arc::new(move |e| {
         let _ = tx.lock().unwrap().send(e);
     });
-    let jobs = JobRunner::new(fake, sink, gate.clone());
+    let jobs = JobRunner::new(
+        fake,
+        sink,
+        gate.clone(),
+        &crate::cuda_settings::CudaLatch::resolved_off(),
+    );
     let checks =
         crate::model_jobs::ModelJobs::new(Arc::new(NoCheck), Arc::new(|_| {}), gate.clone());
     // A check runs: no job starts, and the meeting is not leased.

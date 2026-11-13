@@ -243,11 +243,16 @@ pub struct MeetingDriver(Arc<Inner>);
 impl MeetingDriver {
     /// A driver with `prepare`, sending events to `sink`, levels throttled on `now`; a
     /// meeting holds a pass of `gate` for its thread's life (no model check meanwhile).
+    ///
+    /// `_cuda` is the app's CUDA start ([`crate::cuda_settings::begin`]), asked for only so a
+    /// driver cannot exist before the start has closed its gates: a meeting may reach llama.cpp
+    /// or ONNX Runtime.
     pub fn new(
         prepare: Arc<dyn Prepare>,
         sink: Sink,
         now: Now,
         gate: crate::activity::WorkGate,
+        _cuda: &crate::cuda_settings::CudaLatch,
     ) -> Self {
         let sink: Sink = Arc::new(move |e| sink(crate::plain_text::plain_meeting_event(e)));
         Self(Arc::new(Inner {

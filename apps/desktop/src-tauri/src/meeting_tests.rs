@@ -338,7 +338,13 @@ fn driver(prepare: Arc<FakePrepare>) -> (MeetingDriver, Receiver<MeetingEvent>) 
     let t0 = Instant::now();
     let now: Now = Arc::new(move || t0);
     (
-        MeetingDriver::new(prepare, sink, now, crate::activity::WorkGate::new()),
+        MeetingDriver::new(
+            prepare,
+            sink,
+            now,
+            crate::activity::WorkGate::new(),
+            &crate::cuda_settings::CudaLatch::resolved_off(),
+        ),
         rx,
     )
 }
@@ -415,7 +421,13 @@ fn call_end_driver() -> (MeetingDriver, Receiver<MeetingEvent>, CallScript) {
         let _ = tx.lock().unwrap().send(e);
     });
     (
-        MeetingDriver::new(prepare, sink, now, crate::activity::WorkGate::new()),
+        MeetingDriver::new(
+            prepare,
+            sink,
+            now,
+            crate::activity::WorkGate::new(),
+            &crate::cuda_settings::CudaLatch::resolved_off(),
+        ),
         rx,
         CallScript { readings, seconds },
     )
@@ -1014,6 +1026,7 @@ fn meeting_driver_and_the_model_check_exclude_each_other() {
         sink,
         Arc::new(move || t0),
         gate.clone(),
+        &crate::cuda_settings::CudaLatch::resolved_off(),
     );
     // A check runs: no meeting starts, and nothing is recorded.
     let check = gate.enter_check().unwrap();
@@ -1230,6 +1243,7 @@ fn queue_driver(
             sink,
             Arc::new(move || t0),
             crate::activity::WorkGate::new(),
+            &crate::cuda_settings::CudaLatch::resolved_off(),
         ),
         rx,
     )
@@ -1869,7 +1883,13 @@ fn cancel_driver_on(
     });
     let t0 = Instant::now();
     (
-        MeetingDriver::new(prepare, sink, Arc::new(move || t0), gate),
+        MeetingDriver::new(
+            prepare,
+            sink,
+            Arc::new(move || t0),
+            gate,
+            &crate::cuda_settings::CudaLatch::resolved_off(),
+        ),
         rx,
     )
 }

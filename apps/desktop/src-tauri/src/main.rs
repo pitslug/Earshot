@@ -224,6 +224,7 @@ fn main() {
                 sink,
                 Arc::new(Instant::now),
                 gate.clone(),
+                &cuda_latch,
             ));
             let handle = app.handle().clone();
             let job_sink: jobs::JobSink = Arc::new(move |e: jobs::JobEvent| {
@@ -236,6 +237,7 @@ fn main() {
                 Arc::new(jobs::HostJobs),
                 job_sink,
                 gate.clone(),
+                &cuda_latch,
             ));
             let handle = app.handle().clone();
             let model_sink: model_jobs::ModelSink =
