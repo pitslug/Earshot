@@ -477,3 +477,78 @@ fn edit_mark_me_leaves_a_person_the_user_named_after_themselves() {
         EditError::PersonIsTheUser(user)
     );
 }
+
+/// Gives `voice`'s row and identity entry person `person`, as a pass naming it by
+/// voiceprint leaves them.
+fn named_by_the_pass(svc: &Services, meeting: EntityId, voice: EntityId, person: EntityId) {
+    let clock = Arc::clone(&svc.clock);
+    let mut db = svc.store();
+    let mut row = db
+        .speakers(meeting)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == voice)
+        .unwrap();
+    let (store, hlc) = db.parts();
+    row.person_id = Some(person);
+    row.display_name = "Robin".into();
+    row.meta.touch(hlc, &*clock);
+    store.put_speaker(row.clone()).unwrap();
+    let key = record_key(meeting);
+    let Some(StoredIdentities::Record(mut record)) =
+        store.local_value(key.as_str()).unwrap().map(|b| decode(&b))
+    else {
+        panic!("a record");
+    };
+    for i in &mut record.speakers {
+        if i.speaker == voice {
+            i.given_person = Some(person);
+            i.given_name.clone_from(&row.display_name);
+            i.given_stamp = Some(row.meta.updated_at);
+        }
+    }
+    // Test set-up only: production writes this record through the runtime's registry.
+    store
+        .set_local_value(key.as_str(), &encode(&record))
+        .unwrap();
+}
+
+#[test]
+fn edit_mark_me_entry_is_the_users_not_the_person_the_pass_named() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let user = new_person(&svc, "Casey", true, 930);
+    let robin = new_person(&svc, "Robin", false, 931);
+    let (m, voice, other) = in_room_meeting(&svc, 932);
+    named_by_the_pass(&svc, m, voice, robin);
+    assert_eq!(mark_me(&svc, m, voice).unwrap(), user);
+    assert_eq!(entry_of(&svc, m, voice).given_person, Some(user));
+    // Removing the person the pass had named keeps the mark's entry: it is the user's now.
+    remove_person(&svc, robin).unwrap();
+    let entry = entry_of(&svc, m, voice);
+    assert!(entry.user_edited);
+    assert!(entry.edited(&row_of(&svc, m, voice)));
+    assert_eq!(me_rows(&svc, m), [voice]);
+    // Undo reads as the pass's own naming again, linked to nobody.
+    unmark_me(&svc, m, voice).unwrap();
+    assert_eq!(entry_of(&svc, m, voice).given_person, None);
+    assert!(entries_of(&svc, m).iter().any(|i| i.speaker == other));
+}
+
+#[test]
+fn edit_mark_me_entry_goes_when_the_user_forgets_their_voice() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let user = new_person(&svc, "Casey", true, 933);
+    let (m, voice, other) = in_room_meeting(&svc, 934);
+    assert_eq!(mark_me(&svc, m, voice).unwrap(), user);
+    crate::my_voice::forget_my_voice(&svc).unwrap();
+    let left: Vec<EntityId> = entries_of(&svc, m).iter().map(|i| i.speaker).collect();
+    assert_eq!(
+        left,
+        [other],
+        "the marked voice's centroid is biometric and goes"
+    );
+    // The mark itself, a row edit, stays.
+    assert_eq!(me_rows(&svc, m), [voice]);
+}

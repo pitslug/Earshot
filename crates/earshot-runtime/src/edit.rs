@@ -1186,8 +1186,11 @@ pub fn can_unmark_me(tracks: &[Track], row: &Speaker) -> bool {
 /// [`remember_voices`] keeps refusing the row. The voice's existing entry in the identity
 /// record (the centroid the final pass already stored) stays, marked as the user's edit, so a
 /// re-run can match the voice again (`crate::post`, step 4): the one kind of "Me" row with an
-/// entry. Like any edit the mark goes with the voice when a re-run does not match it. Written
-/// summaries are not touched.
+/// entry. Like any edit the mark goes with the voice when a re-run does not match it; a voice
+/// with no entry (an invalid centroid, or an unreadable record) is marked too, but no re-run
+/// can match it, so its mark goes at the next re-transcription. The entry names the user as
+/// its person from then on, so forgetting the user's voice drops it and removing a person
+/// the pass had matched to the voice does not. Written summaries are not touched.
 ///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting or speaker, [`EditError::NotInRoom`],
@@ -1218,7 +1221,10 @@ pub fn mark_me(
         row.display_name.clone_from(&me.display_name);
         row.meta.touch(stamp.hlc, stamp.clock);
         tx.put_speaker(row)?;
+        // The entry is the user's voice now: forgetting the user's voice drops it, and
+        // removing a person the pass had matched to the voice does not.
         update_identity_entry(tx, meeting, speaker, |i| {
+            i.given_person = Some(me.id);
             i.user_edited = true;
             i.enrolled = false;
             i.ignored = false;
