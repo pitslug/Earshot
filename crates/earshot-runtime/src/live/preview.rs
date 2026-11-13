@@ -44,6 +44,13 @@
 //! behind; for a chunker session, which has partials; for a backend the loader refuses. Each is
 //! reported in [`PreviewReport::off`], and none affects recording or stored transcripts. Previews
 //! that take too long pause and try again ([`PreviewReport::slow_pauses`]).
+//!
+//! **Telling the user (T12.33).** As it happens, each track with previews says whether they run
+//! or why not, as a kind ([`PreviewOffReason`]) in [`super::RuntimeEvent::LivePreviewState`], once
+//! per change: waiting for the transcript to catch up, running once the model is loaded, off for
+//! the meeting. A track without previews (the mic in a call without `own_voice`) says nothing.
+//! [`LivePreviews::rule`] is asked before a wait or the battery is said, so neither is said for
+//! previews this computer would not run anyway (turned off, off by default, another model).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -79,8 +86,15 @@ pub const COVERED_SLACK: Duration = Duration::from_millis(100);
 /// Why previews stop on battery.
 pub const ON_BATTERY_REASON: &str = "off on battery";
 
+/// What a report says of a preview thread that panicked.
+const PREVIEW_THREAD_CRASHED: &str = "the preview thread crashed";
+
 /// Why previews stop for a slow track.
 pub const FELL_BEHIND_REASON: &str = "the live transcript fell behind";
+
+fn on_battery() -> PreviewRefusal {
+    PreviewRefusal::new(PreviewOffReason::OnBattery, ON_BATTERY_REASON)
+}
 
 /// Previews this slow in a row pause them ([`LivePreviews::slow_pause`]).
 pub const SLOW_PREVIEWS: u32 = 3;
@@ -89,10 +103,117 @@ pub const SLOW_PREVIEWS: u32 = 3;
 /// this it is stuck, and audio is dropped rather than held.
 const AUDIO_QUEUE: usize = 4096;
 
+/// Why a track has no provisional words now, as a kind (T12.33): a host picks its own words for
+/// each, and never shows the text beside it ([`PreviewRefusal::text`], [`PreviewReport::off`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PreviewOffReason {
+    /// The computer runs on battery.
+    OnBattery,
+    /// The live transcript is catching up after a hold (T9.1l); previews start once it is up to
+    /// date. Said only once the track's backend is known and nothing else would keep them off.
+    CatchingUp,
+    /// The track's live transcript fell behind ([`LivePreviews::fell_behind`]).
+    FellBehind,
+    /// The live transcript stopped for this meeting.
+    TranscriptStopped,
+    /// On the NPU a preview loads only the model compiled on this computer, and it did not load.
+    NeedsCompiledModel,
+    /// The user's own voice has no previews beside the NPU yet.
+    OwnVoiceOnNpu,
+    /// The user asked for their own voice too, and this computer has too little memory for it.
+    NotEnoughMemory,
+    /// Off by default on a computer with this little memory; the user did not turn them on.
+    OffByDefault,
+    /// The meeting's transcription model or the part it runs on has no previews.
+    Model,
+    /// Turned off in Settings.
+    TurnedOff,
+    /// The track is one the user did not ask previews for.
+    NotAsked,
+    /// The session has nothing a preview could run beside (a chunker session, which has partials;
+    /// no live transcript on the track).
+    NotApplicable,
+    /// The preview model did not load.
+    LoadFailed,
+    /// Previews stopped working (a failed decode, a crashed thread, a priority that cannot be
+    /// lowered).
+    Failed,
+    /// The meeting ended before previews started.
+    MeetingEnded,
+}
+
+/// Why a track's previews are off: the kind for a host's own words, and the runtime's text for
+/// reports and developer tools ([`PreviewReport::off`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewRefusal {
+    /// The kind.
+    pub reason: PreviewOffReason,
+    /// The runtime's words: never shown in a window.
+    pub text: String,
+}
+
+impl PreviewRefusal {
+    /// A refusal of kind `reason` in the runtime's words `text`.
+    #[must_use]
+    pub fn new(reason: PreviewOffReason, text: impl Into<String>) -> Self {
+        Self {
+            reason,
+            text: text.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for PreviewRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+/// Reads as its text, so code that reported the reason as a string still does.
+impl std::ops::Deref for PreviewRefusal {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl PartialEq<&str> for PreviewRefusal {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+/// A loader's plain words are a load that failed.
+impl From<String> for PreviewRefusal {
+    fn from(text: String) -> Self {
+        Self::new(PreviewOffReason::LoadFailed, text)
+    }
+}
+
+impl From<&str> for PreviewRefusal {
+    fn from(text: &str) -> Self {
+        Self::new(PreviewOffReason::LoadFailed, text)
+    }
+}
+
+/// The runtime's text alone, for callers that report a reason and need no kind.
+impl From<PreviewRefusal> for String {
+    fn from(refusal: PreviewRefusal) -> Self {
+        refusal.text
+    }
+}
+
 /// Loads a track's preview model (its own session, never the track's) for the backend the track
 /// runs on. An `Err` says why this meeting has no previews.
 pub type PreviewLoader =
-    Arc<dyn Fn(&BackendInfo) -> Result<Box<dyn Transcriber + Send>, String> + Send + Sync>;
+    Arc<dyn Fn(&BackendInfo) -> Result<Box<dyn Transcriber + Send>, PreviewRefusal> + Send + Sync>;
+
+/// Whether this computer runs a track's previews on the backend the track runs on, without
+/// loading anything: `Some` says why not ([`LivePreviews::rule`], T12.33). The same answer the
+/// loader would give, known before the load, so the session never tells the user about a wait or
+/// a battery for previews this computer would not run anyway.
+pub type PreviewRule = Arc<dyn Fn(&BackendInfo) -> Option<PreviewRefusal> + Send + Sync>;
 
 /// Evaluation only (T12.23): a streaming model fed a track's audio once, as it comes
 /// ([`LivePreviews::stream`]).
@@ -116,8 +237,9 @@ pub trait StreamingPreview {
 
 /// Loads a track's streaming model (its own session) for the backend the track runs on
 /// ([`LivePreviews::stream`]). An `Err` says why this meeting has no previews.
-pub type StreamLoader =
-    Arc<dyn Fn(&BackendInfo) -> Result<Box<dyn StreamingPreview + Send>, String> + Send + Sync>;
+pub type StreamLoader = Arc<
+    dyn Fn(&BackendInfo) -> Result<Box<dyn StreamingPreview + Send>, PreviewRefusal> + Send + Sync,
+>;
 
 /// Previews of a session (module docs); [`super::LiveConfig::previews`].
 #[derive(Clone)]
@@ -127,6 +249,11 @@ pub struct LivePreviews {
     /// Loads a second session for the user's own track (the mic) in a call (T9.14; `None`: the
     /// other people only). Ignored in the room, where `load` serves the mic.
     pub own_voice: Option<PreviewLoader>,
+    /// What `load` would refuse, asked first and without loading ([`PreviewRule`]; `None`: only
+    /// the loader says).
+    pub rule: Option<PreviewRule>,
+    /// The same for `own_voice`.
+    pub own_voice_rule: Option<PreviewRule>,
     /// How often the unfinished stretch is decoded (a starting value, default 1 s).
     pub interval: Duration,
     /// How much of it (a starting value, default 12 s).
@@ -157,6 +284,8 @@ impl LivePreviews {
         Self {
             load,
             own_voice: None,
+            rule: None,
+            own_voice_rule: None,
             interval: Duration::from_secs(1),
             window: Duration::from_secs(12),
             slow: Duration::from_secs(3),
@@ -185,12 +314,19 @@ impl PartialEq for LivePreviews {
         let same = |a: &PreviewLoader, b: &PreviewLoader| {
             std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
         };
+        let same_rule = |a: &Option<PreviewRule>, b: &Option<PreviewRule>| match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b)),
+            _ => false,
+        };
         same(&self.load, &other.load)
             && match (&self.own_voice, &other.own_voice) {
                 (None, None) => true,
                 (Some(a), Some(b)) => same(a, b),
                 _ => false,
             }
+            && same_rule(&self.rule, &other.rule)
+            && same_rule(&self.own_voice_rule, &other.own_voice_rule)
             && match (&self.stream, &other.stream) {
                 (None, None) => true,
                 (Some(a), Some(b)) => std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b)),
@@ -232,6 +368,8 @@ pub struct PreviewReport {
     pub backend: Option<earshot_core::asr::BackendKind>,
     /// Why previews stopped or never ran (`None`: they ran to the end).
     pub off: Option<String>,
+    /// The kind of [`PreviewReport::off`] (`None` exactly when it is).
+    pub reason: Option<PreviewOffReason>,
 }
 
 /// The words shown for one unfinished stretch (module docs). Only grows, except for what the real
@@ -319,8 +457,10 @@ enum ToPreview {
 enum FromPreview {
     /// The words to show now.
     Words(Vec<Word>),
+    /// The model is loaded: previews run from here on.
+    Running,
     /// Previews stopped for the meeting, and why.
-    Off(String),
+    Off(PreviewRefusal),
     Done,
 }
 
@@ -352,9 +492,10 @@ impl PreviewWork {
         let _ = self.out.send(FromPreview::Done);
     }
 
-    fn decode_until_stopped(&self) -> Result<(), String> {
+    fn decode_until_stopped(&self) -> Result<(), PreviewRefusal> {
+        let failed = |text: String| PreviewRefusal::new(PreviewOffReason::Failed, text);
         if self.previews.background {
-            crate::priority::lower_current_thread()?;
+            crate::priority::lower_current_thread().map_err(failed)?;
         }
         if let Some(load) = &self.previews.stream {
             return self.stream_until_stopped(load);
@@ -366,6 +507,7 @@ impl PreviewWork {
             r.load_s = loading.elapsed().as_secs_f64();
             r.backend = Some(ran);
         });
+        let _ = self.out.send(FromPreview::Running);
         let keep = PIPELINE_RATE.frames_for(self.previews.window);
         let min = PIPELINE_RATE.frames_for(MIN_PREVIEW_AUDIO) as u64;
         let options = TranscribeOptions::live();
@@ -428,7 +570,7 @@ impl PreviewWork {
                     self.add(|r| r.cancelled += 1);
                     continue;
                 }
-                Err(e) => return Err(e.to_string()),
+                Err(e) => return Err(failed(e.to_string())),
             };
             self.add(|r| {
                 r.decodes += 1;
@@ -472,7 +614,7 @@ impl PreviewWork {
     /// Evaluation only (T12.23, module docs): every packet of the track's audio goes to the
     /// streaming model once, and the words it finished are shown until settled text covers them
     /// ([`StreamFeed`]). Covered words leave on every turn of the loop, during a slow pause too.
-    fn stream_until_stopped(&self, load: &StreamLoader) -> Result<(), String> {
+    fn stream_until_stopped(&self, load: &StreamLoader) -> Result<(), PreviewRefusal> {
         let loading = Instant::now();
         let model = load(&self.backend)?;
         let ran = model.backend_info().kind;
@@ -480,6 +622,7 @@ impl PreviewWork {
             r.load_s = loading.elapsed().as_secs_f64();
             r.backend = Some(ran);
         });
+        let _ = self.out.send(FromPreview::Running);
         let mut feed = StreamFeed::new(model);
         let mut slow = 0u32;
         let mut paused_until: Option<Instant> = None;
@@ -511,7 +654,9 @@ impl PreviewWork {
             } else if let Some(audio) = feed.take_pending() {
                 let audio = quantise_pcm16(&audio);
                 let began = Instant::now();
-                let steps = feed.push(&audio)?;
+                let steps = feed
+                    .push(&audio)
+                    .map_err(|e| PreviewRefusal::new(PreviewOffReason::Failed, e))?;
                 let took = began.elapsed();
                 if steps > 0 {
                     self.add(|r| {
@@ -786,7 +931,8 @@ impl PreviewThread {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         if crashed {
-            report.off = Some("the preview thread crashed".to_owned());
+            report.off = Some(PREVIEW_THREAD_CRASHED.to_owned());
+            report.reason = Some(PreviewOffReason::Failed);
         }
         report
     }
@@ -814,14 +960,17 @@ impl LivePreviews {
             return [PreviewState::None, PreviewState::None];
         };
         let own_voice = previews.own_voice.clone();
+        let own_voice_rule = previews.own_voice_rule.clone();
         let first = Self {
             own_voice: None,
+            own_voice_rule: None,
             ..previews
         };
         if has_reference {
             let mic = own_voice.map_or(PreviewState::None, |load| {
                 PreviewState::Pending(Self {
                     load,
+                    rule: own_voice_rule,
                     ..first.clone()
                 })
             });
@@ -859,8 +1008,18 @@ where
         }
     }
 
+    /// Tells the host that `track`'s previews run (`None`) or why they do not, once per change
+    /// (T12.33).
+    fn say_previews(&mut self, track: TrackId, off: Option<PreviewOffReason>) {
+        if self.preview_said[slot(track)] != Some(off) {
+            self.preview_said[slot(track)] = Some(off);
+            self.emit(RuntimeEvent::LivePreviewState { track, off });
+        }
+    }
+
     /// Stops `track`'s previews for the meeting; the other track's go on.
-    fn previews_off(&mut self, track: TrackId, why: String) {
+    fn previews_off(&mut self, track: TrackId, why: impl Into<PreviewRefusal>) {
+        let why = why.into();
         let report = match std::mem::take(&mut self.previews[slot(track)]) {
             PreviewState::Running(p) => {
                 let shown = !p.sent.is_empty();
@@ -880,9 +1039,11 @@ where
             },
         };
         self.previews[slot(track)] = PreviewState::Off(PreviewReport {
-            off: Some(why),
+            off: Some(why.text),
+            reason: Some(why.reason),
             ..report
         });
+        self.say_previews(track, Some(why.reason));
     }
 
     /// Between two pumps, never waiting: starts each track's previews once nothing holds them
@@ -904,7 +1065,13 @@ where
         if matches!(self.transcript_state, Some(LiveTranscriptState::Stopped)) {
             for track in TRACKS {
                 if active[slot(track)] {
-                    self.previews_off(track, "the live transcript stopped".to_owned());
+                    self.previews_off(
+                        track,
+                        PreviewRefusal::new(
+                            PreviewOffReason::TranscriptStopped,
+                            "the live transcript stopped",
+                        ),
+                    );
                 }
             }
             return;
@@ -918,16 +1085,30 @@ where
                     .find(|w| w.track() == track)
                     .is_some_and(|w| w.backlog() > limit);
                 if behind {
-                    self.previews_off(track, FELL_BEHIND_REASON.to_owned());
+                    self.previews_off(
+                        track,
+                        PreviewRefusal::new(PreviewOffReason::FellBehind, FELL_BEHIND_REASON),
+                    );
                 }
             }
         }
         self.check_preview_power();
         let mut messages: [Vec<FromPreview>; 2] = [Vec::new(), Vec::new()];
+        let mut crashed = [false; 2];
         for track in TRACKS {
             if let PreviewState::Running(p) = &self.previews[slot(track)] {
                 p.yield_to_real_decode();
-                messages[slot(track)] = p.from.try_iter().collect();
+                // Read before the messages: a thread that ended has sent all it will.
+                let ended = p.thread.as_ref().is_some_and(JoinHandle::is_finished);
+                let said: Vec<FromPreview> = p.from.try_iter().collect();
+                // It ended unasked and without a word: it crashed, and the user hears it now
+                // rather than never (the report at the end says the same).
+                crashed[slot(track)] = ended
+                    && !p.stop.load(Ordering::Acquire)
+                    && !said
+                        .iter()
+                        .any(|m| matches!(m, FromPreview::Off(_) | FromPreview::Done));
+                messages[slot(track)] = said;
             }
         }
         // A thread trims words after the worker's frontier moved, and a worker sends a decode's
@@ -943,8 +1124,10 @@ where
             };
             let mut shows = Vec::new();
             let mut off = None;
+            let mut running = false;
             for message in messages {
                 match message {
+                    FromPreview::Running => running = true,
                     FromPreview::Words(words) => {
                         if let Some(words) = p.changed_show(words) {
                             shows.push(words);
@@ -954,8 +1137,17 @@ where
                     FromPreview::Done => {}
                 }
             }
+            if running {
+                self.say_previews(track, None);
+            }
             for words in shows {
                 self.emit(RuntimeEvent::LivePreview { track, words });
+            }
+            if crashed[slot(track)] {
+                off = Some(PreviewRefusal::new(
+                    PreviewOffReason::Failed,
+                    PREVIEW_THREAD_CRASHED,
+                ));
             }
             if let Some(why) = off {
                 self.previews_off(track, why);
@@ -975,9 +1167,22 @@ where
             .collect();
         if !running.is_empty() && self.policy.power.supply() == PowerSupply::Battery {
             for track in running {
-                self.previews_off(track, ON_BATTERY_REASON.to_owned());
+                self.previews_off(track, on_battery());
             }
         }
+    }
+
+    /// What the session's rule ([`LivePreviews::rule`]) refuses for `track`'s waiting previews
+    /// on `backend`, if it was given one.
+    fn preview_rule_refusal(
+        &self,
+        track: TrackId,
+        backend: &BackendInfo,
+    ) -> Option<PreviewRefusal> {
+        let PreviewState::Pending(previews) = &self.previews[slot(track)] else {
+            return None;
+        };
+        previews.rule.as_ref().and_then(|rule| rule(backend))
     }
 
     /// Starts `track`'s thread when nothing holds it back any more (module docs).
@@ -989,26 +1194,49 @@ where
                 Some(LiveTranscriptState::Held(_) | LiveTranscriptState::CatchingUp)
             )
         {
+            // The wait is said only where previews would start after it: once the track's
+            // backend is known, where the computer's rule runs them on it, and not on battery.
+            let backend = self
+                .stretch_records
+                .iter()
+                .find(|(t, _)| *t == track)
+                .map(|(_, record)| record.backend.clone());
+            if let Some(backend) = backend
+                && matches!(self.policy.transcription, LiveTranscription::Stretches(_))
+            {
+                if let Some(why) = self.preview_rule_refusal(track, &backend) {
+                    self.previews_off(track, why);
+                } else if self.policy.power.supply() != PowerSupply::Battery {
+                    self.say_previews(track, Some(PreviewOffReason::CatchingUp));
+                }
+            }
             return;
         }
+        let not_applicable =
+            |text: &str| PreviewRefusal::new(PreviewOffReason::NotApplicable, text);
         if !matches!(self.policy.transcription, LiveTranscription::Stretches(_)) {
-            self.previews_off(track, "the live chunker has partials".to_owned());
+            self.previews_off(track, not_applicable("the live chunker has partials"));
             return;
         }
         let Some(worker) = self.workers.iter().find(|w| w.track() == track) else {
-            self.previews_off(track, "no live transcript on the track".to_owned());
+            self.previews_off(track, not_applicable("no live transcript on the track"));
             return;
         };
         let Some((_, record)) = self.stretch_records.iter().find(|(t, _)| *t == track) else {
-            self.previews_off(track, "no live stretches on the track".to_owned());
+            self.previews_off(track, not_applicable("no live stretches on the track"));
             return;
         };
-        if self.policy.power.supply() == PowerSupply::Battery {
-            self.previews_off(track, ON_BATTERY_REASON.to_owned());
-            return;
-        }
         let backend = record.backend.clone();
         let (frontier, queued) = (worker.frontier_source(), worker.queue_source());
+        // First what this computer would refuse anyway: the battery is not why then.
+        if let Some(why) = self.preview_rule_refusal(track, &backend) {
+            self.previews_off(track, why);
+            return;
+        }
+        if self.policy.power.supply() == PowerSupply::Battery {
+            self.previews_off(track, on_battery());
+            return;
+        }
         let speaking = self.speaking[slot(track)];
         let PreviewState::Pending(previews) = std::mem::take(&mut self.previews[slot(track)])
         else {
@@ -1024,7 +1252,10 @@ where
                 }
                 self.previews[slot(track)] = PreviewState::Running(Box::new(thread));
             }
-            Err(e) => self.previews_off(track, e.to_string()),
+            Err(e) => self.previews_off(
+                track,
+                PreviewRefusal::new(PreviewOffReason::Failed, e.to_string()),
+            ),
         }
     }
 
@@ -1046,6 +1277,7 @@ where
                 PreviewState::Pending(_) => PreviewReport {
                     track: Some(track),
                     off: Some("the meeting ended before previews started".to_owned()),
+                    reason: Some(PreviewOffReason::MeetingEnded),
                     ..PreviewReport::default()
                 },
                 PreviewState::Off(report) => report,

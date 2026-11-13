@@ -193,7 +193,9 @@ impl EventLog {
             }
             RuntimeEvent::Ended(o) => self.line("ended", json!({ "end_ms": o.end.as_millis() })),
             // Provisional text is never logged, here or anywhere; the CLI runs no previews.
-            RuntimeEvent::LivePreview { .. } | RuntimeEvent::LivePreviewReport(_) => {}
+            RuntimeEvent::LivePreview { .. }
+            | RuntimeEvent::LivePreviewState { .. }
+            | RuntimeEvent::LivePreviewReport(_) => {}
             RuntimeEvent::Transcript { .. }
             | RuntimeEvent::Levels(_)
             | RuntimeEvent::VoiceActivity { .. }

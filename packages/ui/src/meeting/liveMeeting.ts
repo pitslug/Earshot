@@ -162,6 +162,11 @@ export function reduce(
       const banner: Banner = { key: event.key, kind: event.kind, message: event.message, seq };
       return { ...state, seq, banners: [...state.banners.filter((b) => b.key !== event.key), banner] };
     }
+    // The condition is over (T12.33): the banner goes, dismissed or not.
+    case "WarningCleared":
+      return state.banners.some((b) => b.key === event.key)
+        ? { ...state, banners: state.banners.filter((b) => b.key !== event.key) }
+        : state;
     case "CallEndOffer":
       return { ...state, callEndOffer: event.open };
     case "CallEndStopped":

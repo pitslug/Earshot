@@ -151,7 +151,10 @@ pub use hold::{
 };
 use hold::{HoldState, held_entry};
 use preview::PreviewState;
-pub use preview::{LivePreviews, PreviewLoader, PreviewReport, StreamLoader, StreamingPreview};
+pub use preview::{
+    LivePreviews, PreviewLoader, PreviewOffReason, PreviewRefusal, PreviewReport, PreviewRule,
+    StreamLoader, StreamingPreview,
+};
 pub use speaker_thread::SPEAKER_MAX_BUFFER;
 use speaker_thread::{SpeakerThread, SpeakerTrack};
 use summary_thread::{Job, SummaryThread};
@@ -501,6 +504,15 @@ pub enum RuntimeEvent {
         track: TrackId,
         /// In time order; each is shown until settled text reaches it.
         words: Vec<earshot_core::asr::Word>,
+    },
+    /// A track's previews run now (`off` is `None`) or do not, and why (T12.33): once per change,
+    /// as it happens, only for a track that has previews ([`LiveConfig::previews`]). A kind, never
+    /// text: a host shows its own words.
+    LivePreviewState {
+        /// Track.
+        track: TrackId,
+        /// Why there are none now; `None` once they run.
+        off: Option<PreviewOffReason>,
     },
     /// What a track's previews did, counts and times only: once per track that had previews
     /// ([`PreviewReport::track`]), after the live transcript finished, in a session configured
@@ -1196,6 +1208,7 @@ where
         problems: Vec::new(),
         gaps: gaps::GapWatch::default(),
         previews,
+        preview_said: [None, None],
         next_preview_power: None,
         speaking: [false, false],
         recording_stopped: [false, false],
@@ -1377,6 +1390,8 @@ struct Session<S> {
     gaps: gaps::GapWatch,
     /// Each track's previews (by [`slot`], `preview` module docs).
     previews: [PreviewState; 2],
+    /// What each track last said of its previews in [`RuntimeEvent::LivePreviewState`].
+    preview_said: [Option<Option<PreviewOffReason>>; 2],
     /// When the running previews next read the power supply.
     next_preview_power: Option<Instant>,
     /// Each track's voice activity now (by [`slot`]).

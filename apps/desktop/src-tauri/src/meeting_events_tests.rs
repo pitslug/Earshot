@@ -12,7 +12,7 @@ use earshot_core::pipeline::{Levels, PipelineError};
 use earshot_core::summary::{ActionItem, Decision, SummaryV1};
 use earshot_runtime::RuntimeError;
 use earshot_runtime::host::{HostOutcome, HostPost, HostStep, SkipReason, SummaryResult};
-use earshot_runtime::live::{LiveOutcome, RuntimeEvent, RuntimeWarning};
+use earshot_runtime::live::{LiveOutcome, PreviewOffReason, RuntimeEvent, RuntimeWarning};
 use earshot_runtime::post::{CleanupWork, PostSpeaker, PostStage};
 
 use super::*;
@@ -1133,4 +1133,179 @@ fn meeting_events_a_failed_recording_save_shows_fixed_copy_and_no_path() {
         }
         assert!(message.contains("next time Earshot starts"), "{message}");
     }
+}
+
+fn preview_state(track: TrackId, off: Option<PreviewOffReason>) -> RuntimeEvent {
+    RuntimeEvent::LivePreviewState { track, off }
+}
+
+/// The message of the one provisional-words banner in `events`.
+fn preview_banner(events: &[MeetingEvent]) -> String {
+    match events {
+        [MeetingEvent::Warning { key, kind, message }] => {
+            assert_eq!(key, PROVISIONAL_WORDS_KEY);
+            assert_eq!(*kind, WarningKind::ProvisionalWords);
+            assert_copy(message);
+            message.clone()
+        }
+        other => panic!("not one banner: {other:?}"),
+    }
+}
+
+fn preview_cleared() -> Vec<MeetingEvent> {
+    vec![MeetingEvent::WarningCleared {
+        key: PROVISIONAL_WORDS_KEY.into(),
+    }]
+}
+
+/// T12.33: on battery the meeting screen says why there are no provisional words, in fixed copy,
+/// once: the same state again says nothing.
+#[test]
+fn meeting_events_provisional_words_on_battery_are_one_banner_said_once() {
+    use crate::plain_text::{PreviewScope, provisional_words_copy};
+    let mut m = EventMapper::new(CaptureMode::Call);
+    let now = Instant::now();
+    let battery = Some(PreviewOffReason::OnBattery);
+    let all = provisional_words_copy(PreviewOffReason::OnBattery, PreviewScope::All).unwrap();
+    // "Other people only": the mic says nothing, so the sentence is about all of them.
+    let said = m.map(&preview_state(TrackId::Reference, battery), now);
+    assert_eq!(preview_banner(&said), all);
+    assert!(
+        m.map(&preview_state(TrackId::Reference, battery), now)
+            .is_empty()
+    );
+    // "Everyone": the mic is off for the same reason, and the banner does not change.
+    assert!(m.map(&preview_state(TrackId::Mic, battery), now).is_empty());
+    // In the room the mic is the only track.
+    let mut room = EventMapper::new(CaptureMode::InRoom);
+    assert_eq!(
+        preview_banner(&room.map(&preview_state(TrackId::Mic, battery), now)),
+        all
+    );
+}
+
+/// T12.33: the wait for the catch-up is a banner that is taken back when provisional words
+/// start; words that just start never had one and clear nothing.
+#[test]
+fn meeting_events_provisional_words_banner_is_taken_back_when_they_start() {
+    let mut m = EventMapper::new(CaptureMode::Call);
+    let now = Instant::now();
+    let waiting = m.map(
+        &preview_state(TrackId::Reference, Some(PreviewOffReason::CatchingUp)),
+        now,
+    );
+    assert_eq!(
+        preview_banner(&waiting),
+        "Provisional words start once the live transcript has caught up."
+    );
+    assert_eq!(
+        m.map(&preview_state(TrackId::Reference, None), now),
+        preview_cleared()
+    );
+    // A later turn-off is a new banner under the same key.
+    let behind = m.map(
+        &preview_state(TrackId::Reference, Some(PreviewOffReason::FellBehind)),
+        now,
+    );
+    assert!(preview_banner(&behind).contains("fell behind"));
+    let mut fresh = EventMapper::new(CaptureMode::Call);
+    assert!(
+        fresh
+            .map(&preview_state(TrackId::Reference, None), now)
+            .is_empty()
+    );
+}
+
+/// T12.33: under Everyone on a computer that refuses the user's own voice, the banner says so
+/// once while the other people's words run, and it is not an error.
+#[test]
+fn meeting_events_provisional_words_refused_for_your_own_voice_say_so_once() {
+    use crate::plain_text::{PREVIEWS_OWN_VOICE_MEMORY, PREVIEWS_OWN_VOICE_NPU};
+    for (reason, copy) in [
+        (PreviewOffReason::OwnVoiceOnNpu, PREVIEWS_OWN_VOICE_NPU),
+        (PreviewOffReason::NotEnoughMemory, PREVIEWS_OWN_VOICE_MEMORY),
+    ] {
+        let mut m = EventMapper::new(CaptureMode::Call);
+        let now = Instant::now();
+        assert!(
+            m.map(&preview_state(TrackId::Reference, None), now)
+                .is_empty()
+        );
+        let said = m.map(&preview_state(TrackId::Mic, Some(reason)), now);
+        assert_eq!(preview_banner(&said), copy);
+        assert!(
+            m.map(&preview_state(TrackId::Mic, Some(reason)), now)
+                .is_empty()
+        );
+    }
+}
+
+/// T12.33: one track off while the other runs names whose words are off; two different reasons
+/// are two sentences in one banner, other people first.
+#[test]
+fn meeting_events_provisional_words_banner_names_whose_words_are_off() {
+    use crate::plain_text::{PREVIEWS_OWN_VOICE_NPU, PreviewScope, provisional_words_copy};
+    let behind = |scope| provisional_words_copy(PreviewOffReason::FellBehind, scope).unwrap();
+    let said = |you, them| provisional_words_banner([you, them]);
+    let fell = Some(Some(PreviewOffReason::FellBehind));
+    let running = Some(None);
+    assert_eq!(said(running, fell), Some(behind(PreviewScope::Them)));
+    assert_eq!(said(fell, running), Some(behind(PreviewScope::You)));
+    assert_eq!(said(fell, fell), Some(behind(PreviewScope::All)));
+    assert_eq!(said(None, fell), Some(behind(PreviewScope::All)));
+    assert_eq!(said(fell, None), Some(behind(PreviewScope::All)));
+    assert_eq!(
+        said(Some(Some(PreviewOffReason::OwnVoiceOnNpu)), fell),
+        Some(format!(
+            "{} {PREVIEWS_OWN_VOICE_NPU}",
+            behind(PreviewScope::Them)
+        ))
+    );
+    assert_eq!(said(running, running), None);
+    assert_eq!(said(None, None), None);
+}
+
+/// T12.33: nothing is shown for what the user did not ask for or cannot act on: the setting off,
+/// a computer where they are off by default, a meeting with none by design, a track nobody
+/// asked them for, a stopped live transcript (which has its own banner).
+#[test]
+fn meeting_events_provisional_words_say_nothing_when_nobody_asked_for_them() {
+    let now = Instant::now();
+    for reason in [
+        PreviewOffReason::TurnedOff,
+        PreviewOffReason::OffByDefault,
+        PreviewOffReason::NotAsked,
+        PreviewOffReason::NotApplicable,
+        PreviewOffReason::TranscriptStopped,
+        PreviewOffReason::MeetingEnded,
+    ] {
+        let mut m = EventMapper::new(CaptureMode::Call);
+        for track in [TrackId::Reference, TrackId::Mic] {
+            assert!(
+                m.map(&preview_state(track, Some(reason)), now).is_empty(),
+                "{reason:?} {track:?}"
+            );
+        }
+    }
+    // A banner about a wait goes away when the reason becomes one that needs no word.
+    let mut m = EventMapper::new(CaptureMode::Call);
+    let waiting = Some(PreviewOffReason::CatchingUp);
+    preview_banner(&m.map(&preview_state(TrackId::Reference, waiting), now));
+    assert_eq!(
+        m.map(
+            &preview_state(
+                TrackId::Reference,
+                Some(PreviewOffReason::TranscriptStopped)
+            ),
+            now
+        ),
+        preview_cleared()
+    );
+    // The report at the end still maps to nothing.
+    let report = RuntimeEvent::LivePreviewReport(earshot_runtime::live::PreviewReport {
+        off: Some("off on battery".into()),
+        reason: Some(PreviewOffReason::OnBattery),
+        ..Default::default()
+    });
+    assert!(m.map(&report, now).is_empty());
 }

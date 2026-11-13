@@ -16,7 +16,9 @@ use earshot_core::pipeline::PipelineError;
 use earshot_core::summary::SummaryV1;
 use earshot_runtime::RuntimeError;
 use earshot_runtime::host::{HostOutcome, HostPost, HostStep, SkipReason, SummaryResult};
-use earshot_runtime::live::{HoldReason, LiveTranscriptState, RuntimeEvent, RuntimeWarning};
+use earshot_runtime::live::{
+    HoldReason, LiveTranscriptState, PreviewOffReason, RuntimeEvent, RuntimeWarning,
+};
 use earshot_runtime::post::{PostSpeaker, PostStage};
 use earshot_runtime::summary::{LocalSummaryError, SummaryRunReport};
 use serde::Serialize;
@@ -103,6 +105,8 @@ pub enum WarningKind {
     Storage,
     /// The recording stopped by itself because the call seemed to have ended.
     CallEnded,
+    /// Provisional words are off or waiting (T12.33).
+    ProvisionalWords,
 }
 
 /// A step of the work after the meeting.
@@ -285,6 +289,12 @@ pub enum MeetingEvent {
         /// Plain copy.
         message: String,
     },
+    /// The condition of the banner `key` is over: the banner goes away (T12.33). Nothing happens
+    /// when no such banner is shown.
+    WarningCleared {
+        /// The banner's key.
+        key: String,
+    },
     /// The question "the call seems to have ended: stop recording?" appears or goes away (T9.4).
     CallEndOffer {
         /// Whether it is being asked.
@@ -390,6 +400,11 @@ pub struct EventMapper {
     words: u32,
     lag: [Option<Duration>; 2],
     levels: Throttle,
+    /// What each track last said of its provisional words (`None`: nothing, so nobody asked for
+    /// them there; `Some(None)`: they run).
+    previews: [Option<Option<PreviewOffReason>>; 2],
+    /// The provisional-words banner now shown.
+    preview_banner: Option<String>,
 }
 
 fn slot(track: TrackId) -> usize {
@@ -410,6 +425,8 @@ impl EventMapper {
             words: 0,
             lag: [None, None],
             levels: Throttle::per_second(LEVELS_PER_SECOND),
+            previews: [None, None],
+            preview_banner: None,
         }
     }
 
@@ -490,6 +507,24 @@ impl EventMapper {
                     })
                     .collect(),
             }],
+            RuntimeEvent::LivePreviewState { track, off } => {
+                self.previews[slot(*track)] = Some(*off);
+                let banner = provisional_words_banner(self.previews);
+                if banner == self.preview_banner {
+                    return Vec::new();
+                }
+                self.preview_banner.clone_from(&banner);
+                vec![match banner {
+                    Some(message) => MeetingEvent::Warning {
+                        key: PROVISIONAL_WORDS_KEY.into(),
+                        kind: WarningKind::ProvisionalWords,
+                        message,
+                    },
+                    None => MeetingEvent::WarningCleared {
+                        key: PROVISIONAL_WORDS_KEY.into(),
+                    },
+                }]
+            }
             RuntimeEvent::LiveSpeakersOff { reason } => vec![MeetingEvent::Warning {
                 key: "speakers".into(),
                 kind: WarningKind::SpeakersOff,
@@ -552,12 +587,50 @@ impl EventMapper {
             | RuntimeEvent::Resynced { .. }
             | RuntimeEvent::LivePartials { .. }
             | RuntimeEvent::LiveTranscriptFinished { .. }
-            // Counts for a report; a turn-off of previews needs no banner.
+            // Counts for a report; `LivePreviewState` said why there were none, as it happened.
             | RuntimeEvent::LivePreviewReport(_)
             // A mapped window is reported by the summary after the meeting.
             | RuntimeEvent::LiveSummaryMapped { .. } => Vec::new(),
         }
     }
+}
+
+/// The one banner key for provisional words that are off or waiting (T12.33).
+pub const PROVISIONAL_WORDS_KEY: &str = "provisional-words";
+
+/// The words of the provisional-words banner (T12.33) for what each track last said (mic, then
+/// the computer's audio), `None` when there is nothing to say: fixed copy by kind
+/// ([`crate::plain_text::provisional_words_copy`]). Both tracks off for one reason is one
+/// sentence about all of them; otherwise each track's sentence says whose words it is about,
+/// other people first.
+#[must_use]
+pub fn provisional_words_banner(said: [Option<Option<PreviewOffReason>>; 2]) -> Option<String> {
+    use crate::plain_text::{PreviewScope, provisional_words_copy};
+    let [you, them] = said;
+    type Said = Option<Option<PreviewOffReason>>;
+    let copy = |reason: Said, other: Said, scope| {
+        let reason = reason??;
+        // A track nobody asked provisional words for takes no part: the sentence is about all.
+        let scope = if other.is_none() || other == Some(Some(reason)) {
+            PreviewScope::All
+        } else {
+            scope
+        };
+        provisional_words_copy(reason, scope)
+    };
+    let mut sentences: Vec<String> = Vec::new();
+    for sentence in [
+        copy(them, you, PreviewScope::Them),
+        copy(you, them, PreviewScope::You),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !sentences.contains(&sentence) {
+            sentences.push(sentence);
+        }
+    }
+    (!sentences.is_empty()).then(|| sentences.join(" "))
 }
 
 /// A recording gap in words: whole seconds under a minute, then minutes and seconds.
