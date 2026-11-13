@@ -426,6 +426,38 @@ describe("a meeting started while the previous one finishes", () => {
     });
     expect(screen.getByText("Your previous meeting is still finishing")).toBeInTheDocument();
   }, 30_000);
+
+  it("offers Cancel when the next meeting's start arrives before the older one's end", async () => {
+    const handlers: ((e: MeetingEvent) => void)[] = [];
+    const s = setup({
+      wrap: (ipc) => {
+        const real = ipc.onMeetingEvent.bind(ipc);
+        ipc.onMeetingEvent = (handler) => {
+          handlers.push(handler);
+          return real(handler);
+        };
+      },
+    });
+    await startMeeting(s);
+    const olderId = (await s.ipc.listMeetings())[0].id;
+    // The driver frees the next start just before the older meeting's end goes out, so a start
+    // from the tray can overtake it.
+    act(() => {
+      for (const h of handlers) {
+        h({ type: "Started", meeting: "newer-meeting", mode: "Call", tracks: ["You", "Them"] });
+      }
+    });
+    expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull();
+    act(() => {
+      for (const h of handlers) h({ type: "Ended", meeting: olderId, reason: "Stopped" });
+    });
+    expect(screen.getByText("Your previous meeting is still finishing")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop meeting" })).toBeEnabled();
+    act(() => {
+      for (const h of handlers) h({ type: "Summary", meeting: olderId, result: { kind: "Cancelled" } });
+    });
+    expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull();
+  }, 30_000);
 });
 
 describe("provisional words", () => {

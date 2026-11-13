@@ -500,6 +500,10 @@ export function AppShell({
     // Followed here, not on a render: an end and the next start can arrive before React draws.
     if (event.type === "Ended" && lastMeeting.current?.id === event.meeting) {
       lastMeeting.current = { id: event.meeting, finishing: true };
+    } else if (event.type === "Ended" && lastMeeting.current !== null) {
+      // A newer meeting's start overtook this end (the driver frees the next start just before
+      // sending it): this meeting finishes behind the newer one until its result.
+      setBehindId(event.meeting);
     }
     if (event.type === "Summary" && lastMeeting.current?.id === event.meeting) {
       lastMeeting.current = { id: event.meeting, finishing: false };
