@@ -1407,11 +1407,13 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
 
   it("gives focus to the line's Edit button after Keep", async () => {
     const { user } = await transcript();
+    // Held from before: the popover's modal hides the page from role queries for a moment.
+    const edit = screen.getByRole("button", { name: "Edit line 8" });
     screen.getByRole("button", { name: "Suggestion for Reed" }).focus();
     await user.keyboard("{Enter}");
     await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Keep" }));
     await waitFor(() => expect(marks()).toEqual([]));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Edit line 8" })).toHaveFocus());
+    await waitFor(() => expect(edit).toHaveFocus());
   });
 
   it("keeps focus on the word's mark after Use it", async () => {
@@ -1574,28 +1576,35 @@ describe("MeetingDetailView, words to the Dictionary (T12.15f)", () => {
     expect(calls.some((c) => c[0] === "addDictionaryWord")).toBe(false);
   });
 
-  it("gives focus to the line's Edit button when the bar closes with Not now or Escape", async () => {
+  it("gives focus to the line's Edit button when the bar closes with Not now", async () => {
     const { user } = await transcript();
     await editLine1(user);
     const offer = await screen.findByRole("group", { name: "Add to Dictionary" });
+    const edit = screen.getByRole("button", { name: "Edit line 1" });
     await user.click(within(offer).getByRole("button", { name: "Not now" }));
     expect(bar()).toBeNull();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Edit line 1" })).toHaveFocus());
+    await waitFor(() => expect(edit).toHaveFocus());
+  });
 
-    await editLine1(user, "So the lead time on the Tarnwick pump set is now looking like eleven weeks.");
-    (await screen.findByRole("button", { name: 'Add "Tarnwick" to Dictionary' })).focus();
+  it("gives focus to the line's Edit button when the bar closes with Escape", async () => {
+    const { user } = await transcript();
+    await editLine1(user);
+    const edit = screen.getByRole("button", { name: "Edit line 1" });
+    (await screen.findByRole("button", { name: 'Add "Quillmarsh" to Dictionary' })).focus();
     await user.keyboard("{Escape}");
     expect(bar()).toBeNull();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Edit line 1" })).toHaveFocus());
+    await waitFor(() => expect(edit).toHaveFocus());
   });
 
   it("gives focus to the line's Edit button when a plain word's menu closes", async () => {
     const { user } = await transcript();
+    // Held from before: the open menu hides the page from role queries for a moment.
+    const edit = screen.getByRole("button", { name: "Edit line 1" });
     fireEvent.contextMenu(word("lead")!, { clientX: 40, clientY: 40 });
     await screen.findByRole("menuitem", { name: 'Add "lead" to Dictionary' });
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
-    await waitFor(() => expect(screen.getByRole("button", { name: "Edit line 1" })).toHaveFocus());
+    await waitFor(() => expect(edit).toHaveFocus());
   });
 
   it("keeps the bar while another line's menu is open, and closes it when that menu adds a word", async () => {
