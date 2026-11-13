@@ -78,7 +78,7 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::time::Duration;
 
 use earshot_core::asr::CancelToken;
@@ -106,6 +106,9 @@ pub const CLAUDE_CODE_BUDGET: ContextBudget = ContextBudget {
 
 /// Deadline of `claude --version` and `claude auth status`.
 pub const STATUS_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How often a run waiting for another run's `--effort` answer looks at its own cancel.
+const EFFORT_WAIT_POLL: Duration = Duration::from_millis(20);
 
 /// Most bytes of each CLI output kept; a longer output is a cut-off failure.
 pub const MAX_CLI_OUTPUT: usize = 8 * 1024 * 1024;
@@ -894,8 +897,10 @@ pub struct ClaudeCodeClient {
     log: HandoverLog,
     sink: Arc<Mutex<Option<Arc<dyn HandoverSink>>>>,
     /// What the CLI's help said of `--effort`, asked once (only when an effort is set); a help
-    /// stopped by a cancel leaves it unasked.
+    /// stopped by a cancel leaves it unasked. Locked only to read or store the answer.
     effort_probe: Arc<Mutex<Option<EffortProbe>>>,
+    /// Held by the one run asking the help, so clones ask once; never held by a reader.
+    effort_asking: Arc<Mutex<()>>,
 }
 
 impl fmt::Debug for ClaudeCodeClient {
@@ -915,6 +920,7 @@ impl ClaudeCodeClient {
             log: HandoverLog::new(),
             sink: Arc::new(Mutex::new(None)),
             effort_probe: Arc::new(Mutex::new(None)),
+            effort_asking: Arc::new(Mutex::new(())),
         }
     }
 
@@ -930,12 +936,24 @@ impl ClaudeCodeClient {
         let Some(effort) = self.config.effort else {
             return Ok(None);
         };
-        // Held across the help so clones ask once; a run waits at most the help's deadline.
-        let mut probe = self
-            .effort_probe
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let answer = match *probe {
+        if let Some(answer) = self.stored_effort_probe() {
+            return Ok((answer == EffortProbe::Listed).then_some(effort));
+        }
+        // One run asks at a time, so clones ask once; a run waiting for another's answer stops
+        // on its own cancel, and readers of the answer never wait for the help.
+        let _asking = loop {
+            match self.effort_asking.try_lock() {
+                Ok(guard) => break guard,
+                Err(TryLockError::Poisoned(p)) => break p.into_inner(),
+                Err(TryLockError::WouldBlock) => {
+                    if cancel.is_cancelled() {
+                        return Err(LlmError::Cancelled);
+                    }
+                    std::thread::sleep(EFFORT_WAIT_POLL);
+                }
+            }
+        };
+        let answer = match self.stored_effort_probe() {
             Some(p) => p,
             None => {
                 let p = self
@@ -943,11 +961,22 @@ impl ClaudeCodeClient {
                     .cli
                     .effort_probe(STATUS_TIMEOUT, &|| cancel.is_cancelled())
                     .ok_or(LlmError::Cancelled)?;
-                *probe = Some(p);
+                *self
+                    .effort_probe
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(p);
                 p
             }
         };
         Ok((answer == EffortProbe::Listed).then_some(effort))
+    }
+
+    /// The stored answer of the help, read under a short lock.
+    fn stored_effort_probe(&self) -> Option<EffortProbe> {
+        *self
+            .effort_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What the CLI's help said of `--effort` for the chosen effort: `None` when no effort is
@@ -956,10 +985,7 @@ impl ClaudeCodeClient {
     #[must_use]
     pub fn effort_probe(&self) -> Option<EffortProbe> {
         self.config.effort?;
-        *self
-            .effort_probe
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.stored_effort_probe()
     }
 
     /// Sets (or clears) where handovers are reported as they happen; shared by clones.
