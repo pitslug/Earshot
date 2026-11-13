@@ -75,7 +75,9 @@ use windows::core::{BOOL, HRESULT, IUnknown, Interface, PCWSTR, PWSTR, Ref, impl
 use crate::call_output::{CallOutput, CallOutputFollower};
 use crate::devices::{AudioDevice, DeviceChoice, DeviceFallback, DeviceList, DeviceSelection};
 use crate::endpoint::{EndpointProperties, HandsFreeMic};
-use crate::follow::{self, DefaultDeviceChange, Flow, ReopenReason, Role, StreamFollower};
+use crate::follow::{
+    self, DefaultDeviceChange, Flow, OpenFailure, ReopenReason, Role, StreamFollower,
+};
 use crate::format::{
     ChannelMode, FormatError, MixFormat, check_delivered, conversion_target, float_waveformat_bytes,
 };
@@ -151,6 +153,24 @@ impl CaptureError {
     /// True when the error means the stream's device went away (re-open it).
     pub fn is_device_loss(&self) -> bool {
         matches!(self, Self::Windows { source, .. } if follow::is_device_loss(source.code().0))
+    }
+
+    /// What a log keeps of this error: for a Windows API error the call and its error as a
+    /// number only ([`follow::windows_error_detail`]), never Windows' message text; any other
+    /// error's own text.
+    fn detail(&self) -> String {
+        match self.windows_failure() {
+            Some((context, hresult)) => follow::windows_error_detail(context, hresult),
+            None => self.to_string(),
+        }
+    }
+
+    /// The failed call and its HRESULT, for a Windows API error.
+    fn windows_failure(&self) -> Option<(&'static str, i32)> {
+        match self {
+            Self::Windows { context, source } => Some((context, source.code().0)),
+            _ => None,
+        }
     }
 
     /// True when a chosen endpoint is not there (not listed, not active, or the wrong
@@ -1508,9 +1528,130 @@ fn wait_any(events: &[HANDLE], timeout: Duration) -> Result<(), CaptureError> {
     Ok(())
 }
 
+/// One stream as the capture loop uses it (T9.21a): [`CaptureStream`] in production, a fake in
+/// the loop's tests. Opened by [`LoopDriver::open`], not started.
+trait LoopStream {
+    /// The event the stream signals when a packet is ready.
+    fn event(&self) -> HANDLE;
+    /// [`CaptureStream::start`].
+    fn start(&self) -> Result<(), CaptureError>;
+    /// [`CaptureStream::stop`].
+    fn stop(&self) -> Result<(), CaptureError>;
+    /// [`CaptureStream::drain`].
+    fn drain(&mut self, sink: &mut dyn FnMut(PacketInfo, &[f32])) -> Result<(), CaptureError>;
+    /// [`CaptureStream::format`].
+    fn format(&self) -> MixFormat;
+    /// [`CaptureStream::device_format`].
+    fn device_format(&self) -> MixFormat;
+    /// [`CaptureStream::device_name`].
+    fn device_name(&self) -> &str;
+    /// [`CaptureStream::device_id`].
+    fn device_id(&self) -> Option<&str>;
+    /// [`CaptureStream::endpoint_properties`].
+    fn endpoint_properties(&self) -> Option<&EndpointProperties>;
+}
+
+impl LoopStream for CaptureStream<'_> {
+    fn event(&self) -> HANDLE {
+        self.event.0
+    }
+
+    fn start(&self) -> Result<(), CaptureError> {
+        CaptureStream::start(self)
+    }
+
+    fn stop(&self) -> Result<(), CaptureError> {
+        CaptureStream::stop(self)
+    }
+
+    fn drain(&mut self, sink: &mut dyn FnMut(PacketInfo, &[f32])) -> Result<(), CaptureError> {
+        CaptureStream::drain(self, sink)
+    }
+
+    fn format(&self) -> MixFormat {
+        CaptureStream::format(self)
+    }
+
+    fn device_format(&self) -> MixFormat {
+        CaptureStream::device_format(self)
+    }
+
+    fn device_name(&self) -> &str {
+        CaptureStream::device_name(self)
+    }
+
+    fn device_id(&self) -> Option<&str> {
+        CaptureStream::device_id(self)
+    }
+
+    fn endpoint_properties(&self) -> Option<&EndpointProperties> {
+        CaptureStream::endpoint_properties(self)
+    }
+}
+
+/// Everything else the capture loop asks of the platform (T9.21a): the wait, the clock,
+/// opening a stream again, the default output's id and the default-device notifications.
+/// [`Wasapi`] in production; the loop's tests drive a fake that can fail any call.
+trait LoopDriver {
+    /// The streams it opens.
+    type Stream: LoopStream;
+    /// [`wait_any`].
+    fn wait_any(&mut self, events: &[HANDLE], timeout: Duration) -> Result<(), CaptureError>;
+    /// [`qpc_now`].
+    fn qpc_now(&mut self) -> Result<u64, CaptureError>;
+    /// [`CaptureStream::open_on`].
+    fn open(
+        &mut self,
+        endpoint: Endpoint,
+        device: Option<&str>,
+        rate: Option<u32>,
+        channels: Option<u16>,
+    ) -> Result<Self::Stream, CaptureError>;
+    /// The id of the default render endpoint ([`output_endpoint_id`]).
+    fn default_output_id(&mut self) -> Option<String>;
+    /// The default-device changes queued since the last call ([`DeviceNotifications::take`]).
+    fn take_changes(&mut self) -> Vec<DefaultDeviceChange>;
+}
+
+/// The production [`LoopDriver`]: the WASAPI calls, unchanged.
+struct Wasapi<'com, 'n> {
+    com: &'com ComApartment,
+    notifications: &'n DeviceNotifications<'com>,
+}
+
+impl<'com> LoopDriver for Wasapi<'com, '_> {
+    type Stream = CaptureStream<'com>;
+
+    fn wait_any(&mut self, events: &[HANDLE], timeout: Duration) -> Result<(), CaptureError> {
+        wait_any(events, timeout)
+    }
+
+    fn qpc_now(&mut self) -> Result<u64, CaptureError> {
+        qpc_now()
+    }
+
+    fn open(
+        &mut self,
+        endpoint: Endpoint,
+        device: Option<&str>,
+        rate: Option<u32>,
+        channels: Option<u16>,
+    ) -> Result<Self::Stream, CaptureError> {
+        CaptureStream::open_on(self.com, endpoint, device, rate, channels)
+    }
+
+    fn default_output_id(&mut self) -> Option<String> {
+        output_endpoint_id(self.com, &DeviceChoice::Default)
+    }
+
+    fn take_changes(&mut self) -> Vec<DefaultDeviceChange> {
+        self.notifications.take()
+    }
+}
+
 /// One captured track: its stream (absent while the device is lost), re-open
 /// bookkeeping and the observer that receives its packets and re-opens.
-struct Track<'com, O> {
+struct Track<S, O> {
     endpoint: Endpoint,
     /// The endpoint opened: the chosen one (T7.4i), or the default after a fallback.
     device: DeviceChoice,
@@ -1522,14 +1663,19 @@ struct Track<'com, O> {
     /// Channels every re-opened stream is asked to deliver when the track keeps them
     /// (a loopback: the first stream's channels); `None` for the downmixed mic.
     channels: Option<u16>,
-    stream: Option<CaptureStream<'com>>,
+    stream: Option<S>,
     follower: StreamFollower,
+    /// The last stream error that was neither a device loss nor a programming fault (T9.21):
+    /// the failed call and its HRESULT.
+    stream_error: Option<(&'static str, i32)>,
+    /// The observer has heard that the track ended.
+    end_reported: bool,
     observer: O,
 }
 
-impl<'com, O: TrackObserver> Track<'com, O> {
+impl<S: LoopStream, O: TrackObserver> Track<S, O> {
     fn new(
-        stream: CaptureStream<'com>,
+        stream: S,
         endpoint: Endpoint,
         device: DeviceChoice,
         mut follower: StreamFollower,
@@ -1548,29 +1694,76 @@ impl<'com, O: TrackObserver> Track<'com, O> {
             channels,
             stream: Some(stream),
             follower,
+            stream_error: None,
+            end_reported: false,
             observer,
         }
     }
 
     fn event(&self) -> Option<HANDLE> {
-        self.stream.as_ref().map(|s| s.event.0)
+        self.stream.as_ref().map(LoopStream::event)
     }
 
-    /// Drains pending packets into the observer; packets stamped after `horizon` are
-    /// bogus. A device loss marks the stream for re-open instead of failing capture.
-    fn drain(&mut self, horizon: u64) -> Result<(), CaptureError> {
+    /// Drains pending packets into the observer at `now`; packets stamped later than `now`
+    /// plus a margin are bogus. A device loss marks the stream for re-open instead of failing
+    /// capture, and so does any other Windows error except a programming fault
+    /// ([`follow::PROGRAMMING_FAULTS`]), but those only for
+    /// [`follow::STREAM_ERROR_GRACE_QPC`], after which this track ends (T9.21). A programming
+    /// fault, or an error that is not Windows' (a malformed packet), ends the capture.
+    fn drain(&mut self, now: u64) -> Result<(), CaptureError> {
         let Some(stream) = self.stream.as_mut() else {
             return Ok(());
         };
         let observer = &mut self.observer;
-        observer.set_horizon(horizon);
-        match stream.drain(|p, s| observer.packet(p, s)) {
+        observer.set_horizon(now.saturating_add(QPC_LIMIT_MARGIN));
+        match stream.drain(&mut |p, s| observer.packet(p, s)) {
+            Ok(()) => {
+                self.follower.stream_ran(now);
+                Ok(())
+            }
             Err(e) if e.is_device_loss() => {
                 self.follower.on_stream_error();
                 Ok(())
             }
-            r => r,
+            Err(e) => match e.windows_failure() {
+                Some(failure) if !follow::is_programming_fault(failure.1) => {
+                    self.stream_error = Some(failure);
+                    self.follower.on_unknown_stream_error(now);
+                    self.end_if_over(now);
+                    Ok(())
+                }
+                _ => Err(e),
+            },
         }
+    }
+
+    /// Once the follower has ended the track: closes its stream (keeping its last packets)
+    /// and tells the observer, once.
+    fn end_if_over(&mut self, now: u64) {
+        if !self.follower.ended() || self.end_reported {
+            return;
+        }
+        if let Some(mut old) = self.stream.take() {
+            let _ = old.stop();
+            let observer = &mut self.observer;
+            observer.set_horizon(now.saturating_add(QPC_LIMIT_MARGIN));
+            let _ = old.drain(&mut |p, s| observer.packet(p, s));
+        }
+        self.end_reported = true;
+        let hresult = self.stream_error.map_or(0, |(_, hr)| hr);
+        self.observer.track_ended(now, hresult);
+    }
+
+    /// The error that ended the track (T9.21), as a [`CaptureError`]; `None` while it records.
+    fn ended_error(&self) -> Option<CaptureError> {
+        if !self.follower.ended() {
+            return None;
+        }
+        let (context, hresult) = self.stream_error?;
+        Some(CaptureError::Windows {
+            context,
+            source: windows::core::Error::from_hresult(HRESULT(hresult)),
+        })
     }
 
     /// Closes the current stream (keeping its last packets) and opens `endpoint` again
@@ -1582,24 +1775,29 @@ impl<'com, O: TrackObserver> Track<'com, O> {
     /// is opened on the next pass of the loop, followed from then on, and that re-open names
     /// the chosen endpoint it replaces ([`ReopenOutcome::Opened::gave_up`];
     /// [`crate::devices`] module docs).
-    fn reopen(&mut self, com: &'com ComApartment, reason: ReopenReason, now: u64) {
+    fn reopen<D: LoopDriver<Stream = S>>(
+        &mut self,
+        driver: &mut D,
+        reason: ReopenReason,
+        now: u64,
+    ) {
         if let Some(mut old) = self.stream.take() {
             let _ = old.stop();
             let observer = &mut self.observer;
             observer.set_horizon(now.saturating_add(QPC_LIMIT_MARGIN));
-            let _ = old.drain(|p, s| observer.packet(p, s));
+            let _ = old.drain(&mut |p, s| observer.packet(p, s));
         }
-        let opened = CaptureStream::open_on(
-            com,
-            self.endpoint,
-            self.device.id(),
-            Some(self.rate),
-            self.channels,
-        )
-        .and_then(|s| {
-            s.start()?;
-            Ok(s)
-        });
+        let opened = driver
+            .open(
+                self.endpoint,
+                self.device.id(),
+                Some(self.rate),
+                self.channels,
+            )
+            .and_then(|s| {
+                s.start()?;
+                Ok(s)
+            });
         match opened {
             Ok(s) => {
                 self.follower.opened(s.device_id().map(str::to_owned));
@@ -1618,10 +1816,16 @@ impl<'com, O: TrackObserver> Track<'com, O> {
                 self.stream = Some(s);
             }
             Err(e) => {
-                self.follower.open_failed(now);
-                let error = e.to_string();
+                let failure = if e.is_device_gone() {
+                    OpenFailure::DeviceGone
+                } else {
+                    OpenFailure::Other
+                };
+                self.follower.open_failed(now, failure);
+                let error = e.detail();
                 self.observer
                     .reopened(now, reason, ReopenOutcome::Failed { error: &error });
+                self.end_if_over(now);
                 if self.follower.give_up_chosen(now)
                     && let DeviceChoice::Endpoint { name, .. } = std::mem::take(&mut self.device)
                 {
@@ -1636,14 +1840,13 @@ impl<'com, O: TrackObserver> Track<'com, O> {
     /// nothing: the error is returned and the track goes on recording where it was. From then on
     /// the track stays on that output like a chosen one, or follows the default if it is the
     /// default; a lost output is given up for the default ([`follow::CHOSEN_DEVICE_GRACE_QPC`]).
-    fn move_output(
+    fn move_output<D: LoopDriver<Stream = S>>(
         &mut self,
-        com: &'com ComApartment,
+        driver: &mut D,
         target: &CallOutput,
         now: u64,
     ) -> Result<(), CaptureError> {
-        let new = CaptureStream::open_on(
-            com,
+        let new = driver.open(
             self.endpoint,
             Some(&target.id),
             Some(self.rate),
@@ -1654,10 +1857,9 @@ impl<'com, O: TrackObserver> Track<'com, O> {
             let _ = old.stop();
             let observer = &mut self.observer;
             observer.set_horizon(now.saturating_add(QPC_LIMIT_MARGIN));
-            let _ = old.drain(|p, s| observer.packet(p, s));
+            let _ = old.drain(&mut |p, s| observer.packet(p, s));
         }
-        let on_default =
-            output_endpoint_id(com, &DeviceChoice::Default).as_deref() == Some(&target.id);
+        let on_default = driver.default_output_id().as_deref() == Some(&target.id);
         (self.device, self.follower) = if on_default {
             (
                 DeviceChoice::Default,
@@ -1697,9 +1899,9 @@ impl<'com, O: TrackObserver> Track<'com, O> {
 
     /// After [`stop`](Self::stop): drains what the stream had already captured (errors
     /// ignored: the capture is over).
-    fn flush(&mut self) {
-        let horizon = qpc_now().map_or(u64::MAX, |now| now.saturating_add(QPC_LIMIT_MARGIN));
-        let _ = self.drain(horizon);
+    fn flush<D: LoopDriver>(&mut self, driver: &mut D) {
+        let now = driver.qpc_now().unwrap_or(u64::MAX);
+        let _ = self.drain(now);
     }
 }
 
@@ -1721,7 +1923,7 @@ impl<'com> OpenedLoopback<'com> {
     /// The loopback track of the started stream: default-device loopback follows the
     /// console render default, a chosen output stays on it, process loopback (device
     /// independent) only recovers from stream errors.
-    fn into_track<O: TrackObserver>(self, observer: O) -> Track<'com, O> {
+    fn into_track<O: TrackObserver>(self, observer: O) -> Track<CaptureStream<'com>, O> {
         let follower = match (&self.device, self.endpoint) {
             (DeviceChoice::Endpoint { .. }, _) => {
                 StreamFollower::chosen(Flow::Render, Role::Console)
@@ -1751,10 +1953,10 @@ impl CallOutputFollow {
 
     /// Acts on the newest reading, if there is one. An output that cannot be opened is reported
     /// once and the track stays where it is.
-    fn step<'com, O: TrackObserver>(
+    fn step<D: LoopDriver, O: TrackObserver>(
         &mut self,
-        com: &'com ComApartment,
-        loopback: &mut Track<'com, O>,
+        driver: &mut D,
+        loopback: &mut Track<D::Stream, O>,
         now: u64,
     ) {
         let sessions = match self.poller.latest() {
@@ -1768,9 +1970,9 @@ impl CallOutputFollow {
         let Some(target) = self.rule.reading(loopback.follower.current_id(), &sessions) else {
             return;
         };
-        if let Err(e) = loopback.move_output(com, &target, now) {
+        if let Err(e) = loopback.move_output(driver, &target, now) {
             self.rule.refused(&target.id);
-            let used = loopback.stream.as_ref().map(CaptureStream::device_name);
+            let used = loopback.stream.as_ref().map(LoopStream::device_name);
             loopback
                 .observer
                 .call_output_refused(now, &target.name, used, &e.to_string());
@@ -1831,7 +2033,7 @@ fn mic_track<'com, O: TrackObserver>(
     mic_role: MicRole,
     device: DeviceChoice,
     observer: O,
-) -> Track<'com, O> {
+) -> Track<CaptureStream<'com>, O> {
     let role = mic_follow_role(mic_role);
     let follower = match device {
         DeviceChoice::Default => StreamFollower::new(Flow::Capture, role, true),
@@ -1866,11 +2068,10 @@ fn start_streams(
 /// followers and re-opens streams as they decide. Returns the QPC time at which
 /// `done(now)` held or an observer stopped wanting packets. Streams are left running;
 /// the caller closes the tracks.
-fn run_capture<'com, M: TrackObserver, L: TrackObserver>(
-    com: &'com ComApartment,
-    notifications: &DeviceNotifications<'_>,
-    mic: &mut Track<'com, M>,
-    mut loopback: Option<&mut Track<'com, L>>,
+fn run_capture<D: LoopDriver, M: TrackObserver, L: TrackObserver>(
+    driver: &mut D,
+    mic: &mut Track<D::Stream, M>,
+    mut loopback: Option<&mut Track<D::Stream, L>>,
     mut call_output: Option<CallOutputFollow>,
     mut done: impl FnMut(u64) -> bool,
 ) -> Result<u64, CaptureError> {
@@ -1879,33 +2080,40 @@ fn run_capture<'com, M: TrackObserver, L: TrackObserver>(
             .into_iter()
             .flatten()
             .collect();
-        wait_any(&events, Duration::from_millis(u64::from(WAIT_MS)))?;
-        let horizon = qpc_now()?.saturating_add(QPC_LIMIT_MARGIN);
-        mic.drain(horizon)?;
+        driver.wait_any(&events, Duration::from_millis(u64::from(WAIT_MS)))?;
+        let drained_at = driver.qpc_now()?;
+        mic.drain(drained_at)?;
         if let Some(lb) = loopback.as_deref_mut() {
-            lb.drain(horizon)?;
+            lb.drain(drained_at)?;
         }
-        for change in notifications.take() {
+        for change in driver.take_changes() {
             mic.follower.on_default_changed(&change);
             if let Some(lb) = loopback.as_deref_mut() {
                 lb.follower.on_default_changed(&change);
             }
         }
-        let now = qpc_now()?;
+        let now = driver.qpc_now()?;
         let loopback_done = loopback.as_ref().is_some_and(|t| !t.observer.wants_more());
         if done(now) || !mic.observer.wants_more() || loopback_done {
             return Ok(now);
         }
         if let Some(reason) = mic.follower.take_reopen(now) {
-            mic.reopen(com, reason, now);
+            mic.reopen(driver, reason, now);
         }
         if let Some(lb) = loopback.as_deref_mut()
             && let Some(reason) = lb.follower.take_reopen(now)
         {
-            lb.reopen(com, reason, now);
+            lb.reopen(driver, reason, now);
         }
         if let (Some(follow), Some(lb)) = (call_output.as_mut(), loopback.as_deref_mut()) {
-            follow.step(com, lb, now);
+            follow.step(driver, lb, now);
+        }
+        // A track ended by stream errors (T9.21) leaves the other recording; with none left
+        // the capture has failed.
+        if let Some(e) = mic.ended_error()
+            && loopback.as_ref().is_none_or(|t| t.follower.ended())
+        {
+            return Err(e);
         }
     }
 }
@@ -2061,20 +2269,19 @@ pub fn record_raw(
         .transpose()?;
     let mut lb = opened.into_track(lb_obs);
 
-    let captured = run_capture(
-        &com,
-        &notifications,
-        &mut mic,
-        Some(&mut lb),
-        follow,
-        |now| now >= deadline,
-    );
+    let mut driver = Wasapi {
+        com: &com,
+        notifications: &notifications,
+    };
+    let captured = run_capture(&mut driver, &mut mic, Some(&mut lb), follow, |now| {
+        now >= deadline
+    });
     mic.stop();
     lb.stop();
     let end = captured?;
     // Packets already captured before the stop.
-    mic.flush();
-    lb.flush();
+    mic.flush(&mut driver);
+    lb.flush(&mut driver);
     let mic = mic.observer.into_track().finish(end);
     let refused_call_outputs = lb.observer.refused_call_outputs().to_vec();
     let lb = lb.observer.finish(end);
@@ -2424,21 +2631,20 @@ fn live_capture(
     let mut mic = mic_track(mic_stream, request.mic_role, mic_device, mic_obs);
     // `opened` and `lb_obs` are both present exactly when a loopback was requested.
     let mut lb = opened.zip(lb_obs).map(|(o, obs)| o.into_track(obs));
-    let result = run_capture(
+    let mut driver = Wasapi {
         com,
-        &notifications,
-        &mut mic,
-        lb.as_mut(),
-        call_output,
-        |_| stop.load(Ordering::Acquire),
-    );
+        notifications: &notifications,
+    };
+    let result = run_capture(&mut driver, &mut mic, lb.as_mut(), call_output, |_| {
+        stop.load(Ordering::Acquire)
+    });
     mic.stop();
     if let Some(lb) = &lb {
         lb.stop();
     }
-    mic.flush();
+    mic.flush(&mut driver);
     if let Some(lb) = &mut lb {
-        lb.flush();
+        lb.flush(&mut driver);
     }
     let last = mic
         .observer
@@ -2629,6 +2835,9 @@ pub fn power_supply() -> Result<crate::power::PowerSupply, CaptureError> {
         status.BatteryFlag,
     ))
 }
+
+#[cfg(test)]
+mod loop_tests;
 
 #[cfg(test)]
 mod device_tests {
@@ -3061,6 +3270,11 @@ mod device_tests {
     #[ignore = "needs a render device; opens its loopback, plays nothing"]
     fn call_output_a_move_that_cannot_open_leaves_the_stream_recording() {
         let com = ComApartment::init_mta().unwrap();
+        let notifications = DeviceNotifications::register(&com).unwrap();
+        let mut driver = Wasapi {
+            com: &com,
+            notifications: &notifications,
+        };
         let stream = CaptureStream::open(&com, Endpoint::Loopback, None, None).unwrap();
         stream.start().unwrap();
         let on = stream.device_id().map(str::to_owned).unwrap();
@@ -3076,7 +3290,7 @@ mod device_tests {
             id: "{no-such-output}".into(),
             name: "Gone".into(),
         };
-        assert!(track.move_output(&com, &gone, 1).is_err());
+        assert!(track.move_output(&mut driver, &gone, 1).is_err());
         assert!(track.stream.is_some(), "still recording");
         assert_eq!(track.follower.current_id(), Some(on.as_str()));
         assert!(!track.follower.is_lost());
@@ -3089,7 +3303,7 @@ mod device_tests {
             id: on.clone(),
             name: "Here".into(),
         };
-        track.move_output(&com, &here, 3).unwrap();
+        track.move_output(&mut driver, &here, 3).unwrap();
         assert!(track.stream.is_some());
         assert_eq!(track.follower.current_id(), Some(on.as_str()));
         assert!(track.follower.follows_default());
