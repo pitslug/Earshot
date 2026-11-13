@@ -642,6 +642,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       afterOlder = null;
       processing = true;
       for (const c of cancel) c();
+      // As the runtime's stop of a held session: the live work that never started is abandoned,
+      // so the lines said during the hold never land; the final pass transcribes them.
+      if (held) emit({ type: "Transcript", state: "Stopped" });
       for (const track of ["You", "Them"] as LiveTrack[]) {
         if (speakingNow?.[track]) emit({ type: "VoiceActivity", track, speaking: false });
       }

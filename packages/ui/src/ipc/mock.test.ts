@@ -98,6 +98,27 @@ describe("mock IPC", () => {
     expect(landed.length).toBe(SCRIPT_LINES.filter((l) => l.at < olderEnds).length);
   });
 
+  it("abandons a held meeting's lines when it stops before the older one ends", async () => {
+    const timer = createManualTimer(0);
+    const ipc = createMockIpc({ meetings: [], timer });
+    await ipc.startMeeting("Call", null, false);
+    timer.advance(1_000);
+    await ipc.stopMeeting();
+    const events: MeetingEvent[] = [];
+    await ipc.onMeetingEvent((e) => events.push(e));
+    const held = await ipc.startMeeting("Call", null, false);
+    const olderEnds = (POST_STEPS.length + 1) * POST_STEP_MS;
+    timer.advance(SCRIPT_LINES[1].at);
+    await ipc.stopMeeting();
+    const ended = events.findIndex((e) => e.type === "Ended" && e.meeting === held);
+    expect(events.slice(0, ended)).toContainEqual({ type: "Transcript", state: "Stopped" });
+    // Past the older meeting's end and the held one's own finishing: no line ever lands.
+    timer.advance(olderEnds * 3);
+    expect(events).toContainEqual(expect.objectContaining({ type: "Summary", meeting: held }));
+    expect(events.filter((e) => e.type === "Landed" || e.type === "Provisional")).toEqual([]);
+    expect(events.some((e) => e.type === "Transcript" && e.state === "CatchingUp")).toBe(false);
+  });
+
   it("plays a room meeting with one track and refuses a second start", async () => {
     const timer = createManualTimer(0);
     const ipc = createMockIpc({ meetings: [], timer });
