@@ -1247,3 +1247,19 @@ All four runs from one build (CUDA, RTX 5080, 20 dev meetings, chunked 600 s, S1
 3. `cargo xtask sum-eval --model qwen3.5-4b-q4_k_m --split dev --source reference --chunk-seconds 600 --backend cpu --meeting ES2003c,ES2011c,IS1008c,TS3004c,TS3006c --prefix-reuse --out target/sum-eval/t1225-surface-on`
 4. `cargo run --release -p earshot-llm-local --example sum_eval -- --compare-summaries target/sum-eval/t1225-surface-off/qwen3.5-4b-q4_k_m-cpu.json target/sum-eval/t1225-surface-on/qwen3.5-4b-q4_k_m-cpu.json`
 5. Report the printed `identical`, `prompt_s`, `hangup_s` and `seconds` of both runs. The Surface identity check is informational (the rule was judged on the GPU); a difference there is reported to the owner before anything ships.
+
+## T12.25a first run: standard against brief on the owner's meetings (2026-11-13, counts only)
+
+Qwen 3.5 4B on CUDA (desktop GPU, not Surface timings), the production local plan (600 s chunks), the 4 meetings the pick rule found (r1 to r4: 22, 45, 39 and 17 minutes), one run each. Real items fixed by one Claude Code agent per meeting before any summary existed (9 decisions, 14 actions in all; r2 and r4 have no decision), then the same agent judged both blinded summaries of its meeting. The rule is PLAN T12.25's (committed before this run, ba119f7).
+
+| Meeting | Real D / A | Decisions caught (standard / brief) | Actions caught | Made up | Duplicates |
+|---|---|---|---|---|---|
+| r1 | 3 / 5 | 1 / 1 | 4 / 3 | 2 / 2 | 1 / 0 |
+| r2 | 0 / 3 | - | 1 / 2 | 0 / 0 | 1 / 0 |
+| r3 | 6 / 4 | 5 / 5 | 2 / 2 | 7 / 2 | 1 / 2 |
+| r4 | 0 / 2 | - | 2 / 2 | 1 / 1 | 0 / 0 |
+| Total | 9 / 14 | 6 / 6 | 9 / 9 | 10 / 5 | 3 / 2 |
+
+- **Quality parts of the rule pass:** no meeting loses a decision, actions caught are level in total (r1 one fewer, r2 one more), made-up items halve (all of it on r3).
+- **Time:** at hang-up 15.7 s against 8.8 s per meeting on the GPU (-44%), words -62%. The rule's 50% is a Surface figure and is not measured yet.
+- **Limits:** four meetings, 9 real decisions, one judge per meeting, one run per arm. This differs from the AMI 4B round (brief lost decisions there); the owner's meetings decide (T12.25a).
