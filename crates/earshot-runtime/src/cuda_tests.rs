@@ -996,6 +996,35 @@ fn cuda_a_read_only_file_held_open_is_in_use() {
     remove_part(&f.catalogue, &models, CudaPart::Summaries).unwrap();
 }
 
+/// TODO 40: a link in the CUDA folder named like a pinned file is removed as a link: the file it
+/// points at, held open elsewhere and read-only, neither stops the removal nor changes.
+#[cfg(windows)]
+#[test]
+#[ignore = "creates a file symlink: run with `-- --ignored` from a shell with Developer Mode on or elevated"]
+fn cuda_a_link_in_the_folder_is_removed_without_touching_its_target() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let f = complete();
+    let dir = TempDir::new("cuda-link");
+    let models = models_in(&dir);
+    f.download(&models, CudaPart::Summaries).unwrap();
+    let link = folder(&models).join("ggml.dll");
+    let target = dir.0.join("elsewhere.dll");
+    std::fs::rename(&link, &target).unwrap();
+    std::os::windows::fs::symlink_file(&target, &link).unwrap();
+    set_read_only(&target);
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&target)
+        .unwrap();
+    remove_part(&f.catalogue, &models, CudaPart::Summaries).unwrap();
+    assert!(std::fs::symlink_metadata(&link).is_err(), "the link went");
+    drop(handle);
+    let kept = std::fs::metadata(&target).unwrap();
+    assert!(kept.permissions().readonly(), "the target is untouched");
+}
+
 /// A read-only file whose removal is stopped by a later held file keeps its attribute: the check
 /// that asked changes nothing about a file it then leaves.
 #[cfg(windows)]
