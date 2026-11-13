@@ -2068,7 +2068,8 @@ pub fn select_asr<L: WhisperLoader + ?Sized>(
 ///
 /// `load_verified` installs the process-wide log capture (whisper.cpp's backend log is the
 /// evidence), so a host that wants verified backends must not install another `log`
-/// logger, and loads must not run concurrently with other whisper.cpp loads.
+/// logger. The evidence is the loading thread's own lines, so a load on a thread left
+/// behind by an earlier meeting (T9.22) cannot spoil the next meeting's load.
 #[derive(Debug, Clone, Default)]
 pub struct EvidenceLoader {
     /// CPU threads for whisper.cpp (`None`: `WhisperConfig`'s default).
@@ -2146,9 +2147,8 @@ impl WhisperLoader for EvidenceLoader {
 /// the CPU with the reason, so the fallback is never silent (the post-meeting processor
 /// warns and records it).
 ///
-/// The check reads the whisper lines logged during the call; whisper.cpp work of another
-/// model in the process at the same time can make it report a fallback that did not
-/// happen (the safe direction).
+/// The check reads the whisper lines this thread logged during the call, so whisper.cpp
+/// work of another model on another thread at the same time does not change it.
 #[derive(Debug)]
 pub struct VerifiedWhisper {
     inner: WhisperTranscriber,
@@ -2249,7 +2249,9 @@ impl Transcriber for VerifiedWhisper {
     ) -> Result<Transcription, AsrError> {
         let mark = evidence::log_mark();
         let mut result = self.inner.transcribe(audio, options, cancel);
-        let lines = evidence::logs_since_complete(mark).ok_or_else(|| {
+        // Only this thread's lines: a whisper.cpp load or call of a thread left behind by
+        // an earlier meeting (T9.22) is not this call's evidence.
+        let lines = evidence::logs_since_complete_on_this_thread(mark).ok_or_else(|| {
             AsrError::Backend("the whisper log of this call overflowed the capture".into())
         })?;
         if let Some(actual) = degraded_backend(&self.reported, self.expected, &lines)? {
