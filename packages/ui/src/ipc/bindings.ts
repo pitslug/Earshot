@@ -16,9 +16,13 @@ export const commands = {
 	/**
 	 *  The live meetings whose title, transcript or summary contains `query`, newest first (T9.7).
 	 *  Runs off the main thread; the store lock is held only for each meeting's read. A newer
-	 *  search stops this one, which then fails with kind [`SEARCH_SUPERSEDED_KIND`] (T9.24).
+	 *  search stops this one, which then fails with kind [`SEARCH_SUPERSEDED_KIND`] (T9.24). `sent`
+	 *  numbers the window's searches in the order it sent them, so a newer one is never replaced by
+	 *  an older one that happened to begin later, and `page` is a number the window picks at random
+	 *  each time it loads, so a reloaded window's searches replace one still running from before
+	 *  ([`Searches::begin_sent`]).
 	 */
-	searchMeetings: (query: string) => typedError<SearchResultsView, IpcError>(__TAURI_INVOKE("search_meetings", { query })),
+	searchMeetings: (query: string, page: number, sent: number) => typedError<SearchResultsView, IpcError>(__TAURI_INVOKE("search_meetings", { query, page, sent })),
 	/**
 	 *  Starts a meeting in `mode` with an optional title and returns its id once it records.
 	 *  `keep_local` keeps its summary on this computer (T12.13; asked only here).

@@ -596,9 +596,26 @@ pub fn decide_summaries(
 pub const CARD_TOO_SMALL: &str =
     "your graphics card has less than 12 GB of memory, so transcription runs on the processor";
 
+/// Why a developer's `cuda` build never takes the folder for transcription: it runs on its own
+/// toolkit (`earshot_runtime::cuda::use_for_transcription` refuses it with the same words).
+pub const DEVELOPER_BUILD: &str = "this developer build runs on its own CUDA toolkit";
+
 /// Why transcription cannot even be tried on this machine, this build or with these models.
 #[must_use]
 pub fn transcription_refusal(
+    offered: bool,
+    card_fits: bool,
+    built: bool,
+    has_model: bool,
+) -> Option<&'static str> {
+    transcription_refusal_in(cfg!(feature = "cuda"), offered, card_fits, built, has_model)
+}
+
+/// [`transcription_refusal`] for a build that is (`developer`) or is not a developer's `cuda`
+/// build.
+#[must_use]
+pub fn transcription_refusal_in(
+    developer: bool,
     offered: bool,
     card_fits: bool,
     built: bool,
@@ -608,6 +625,8 @@ pub fn transcription_refusal(
         Some("this computer's graphics card cannot use it")
     } else if !card_fits {
         Some(CARD_TOO_SMALL)
+    } else if developer {
+        Some(DEVELOPER_BUILD)
     } else if !built {
         Some("this version of Earshot cannot use it")
     } else if !has_model {
@@ -721,19 +740,39 @@ pub fn check_after_start(
     let spawned = std::thread::Builder::new()
         .name("earshot-cuda-check".into())
         .spawn(move || {
-            let start = latch.wait();
-            let models = earshot_runtime::host::model_dir(&services.data);
-            let follows = check_state(&services, &models)
-                .is_ok_and(|(automatic, current)| check_follows_start(&start, automatic, current));
-            if follows && let Err(e) = checks.start_check_giving_way(&services) {
-                sink(CudaEvent::Warning {
-                    part: CudaPartChoice::Transcription,
-                    message: crate::model_jobs::check_not_started_message(&e.message),
-                });
-            }
+            check_once_started(&latch, &services, &checks, &sink);
         });
     // Nothing waits for it: the Models page says the check is out of date and offers it.
     drop(spawned);
+}
+
+/// The step of [`check_after_start`] on the calling thread: waits for the start, then starts the
+/// model check through `checks` if [`check_follows_start`] says so, or tells `sink` why it could
+/// not. Returns whether a check started (its end comes as `checks`' own events). The replay's
+/// proof of the switch runs this same step (`crate::headless`).
+pub fn check_once_started(
+    latch: &CudaLatch,
+    services: &Services,
+    checks: &ModelJobs,
+    sink: &CudaSink,
+) -> bool {
+    let start = latch.wait();
+    let models = earshot_runtime::host::model_dir(&services.data);
+    let follows = check_state(services, &models)
+        .is_ok_and(|(automatic, current)| check_follows_start(&start, automatic, current));
+    if !follows {
+        return false;
+    }
+    match checks.start_check_giving_way(services) {
+        Ok(()) => true,
+        Err(e) => {
+            sink(CudaEvent::Warning {
+                part: CudaPartChoice::Transcription,
+                message: crate::model_jobs::check_not_started_message(&e.message),
+            });
+            false
+        }
+    }
 }
 
 fn installed(state: PartState) -> Installed {

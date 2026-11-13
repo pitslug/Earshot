@@ -507,39 +507,57 @@ fn report_cuda_switch(
     for note in &view.in_use.notes {
         line(format!("note: {note}"))?;
     }
-    // The real check's child, recorded as the app records it: does the parent read its answer?
-    if crate::cuda_settings::chose_cuda(&start) {
-        struct Quiet;
-        impl crate::check_child::LineEvents for Quiet {
-            fn warning(&mut self, _: String) {}
-            fn trial(
-                &mut self,
-                _: &str,
-                _: earshot_core::asr::BackendKind,
-                _: Option<earshot_runtime::model_check::Verdict>,
-            ) {
+    // The check the app runs after this start, by its own step (`check_once_started`: the same
+    // decision, gate and model jobs), recorded as the app records it: does the parent read its
+    // answer?
+    let (events, heard) = std::sync::mpsc::channel();
+    let events = std::sync::Mutex::new(events);
+    let checks = crate::model_jobs::ModelJobs::new(
+        Arc::new(crate::model_jobs::HostModelWork),
+        Arc::new(move |e| {
+            let _ = events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .send(e);
+        }),
+        crate::activity::WorkGate::for_app(),
+    );
+    let refusals = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink: crate::cuda_settings::CudaSink = {
+        let refusals = Arc::clone(&refusals);
+        Arc::new(move |e| {
+            if let crate::cuda_settings::CudaEvent::Warning { message, .. } = e {
+                refusals
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(message);
             }
-        }
-        let languages = model_settings::model_settings(&services.store())
-            .map_err(|e| e.to_string())?
-            .0
-            .languages;
-        let outcome = crate::check_child::run_child(
-            &languages,
-            models.root(),
-            &earshot_core::asr::CancelToken::new(),
-            &mut Quiet,
-        )
-        .map_err(|e| ipc_text(&e))?;
-        let done = crate::model_jobs::record_outcome(services, &models, &languages, &outcome)
-            .map_err(|e| ipc_text(&e))?;
-        let (_, current) =
-            crate::cuda_settings::check_state(services, &models).map_err(|e| ipc_text(&e))?;
-        line(format!(
-            "model check: {:?}, current for this run: {current}",
-            done.answer
-        ))?;
+        })
+    };
+    if !crate::cuda_settings::check_once_started(latch, services, &checks, &sink) {
+        let refused = refusals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        line(match refused.first() {
+            Some(why) => format!("model check: not started ({why})"),
+            None => "model check: not needed for this run".into(),
+        })?;
+        return Ok(());
     }
+    let end = loop {
+        use crate::model_jobs::ModelJobEvent as E;
+        match heard.recv() {
+            Ok(e @ (E::Checked { .. } | E::Failed { .. } | E::CheckGaveWay)) => break e,
+            Ok(_) => {}
+            Err(_) => return Err("the model check ended without a result".into()),
+        }
+    };
+    let (_, current) =
+        crate::cuda_settings::check_state(services, &models).map_err(|e| ipc_text(&e))?;
+    line(format!(
+        "model check: {end:?}, current for this run: {current}"
+    ))?;
     Ok(())
 }
 

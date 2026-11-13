@@ -1460,6 +1460,18 @@ enum Finish {
         inside: mpsc::Sender<()>,
         release: mpsc::Receiver<()>,
     },
+    /// The work after the meeting loads slowly, polling nothing, until the test releases it; then
+    /// it sees its cancel and returns as a cancelled final pass.
+    SlowLoadThenCancelled {
+        inside: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    },
+    /// A final-pass step that polls its token until it is cancelled, then hangs without polling
+    /// until the test releases it.
+    StepPollsThenHangs {
+        inside: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    },
     /// The live model load on the hold thread hangs until the test releases it, the hold's load
     /// bound `stall` (T9.22b). Says when it is loading.
     LoadHangs {
@@ -1793,6 +1805,34 @@ impl Prepare for CancelPrepare {
                         .push(format!("{id} returned, cancelled {cancelled}"));
                     outcome_of(Ok(HostPost::Skipped), SummaryResult::Cancelled)
                 }
+                Finish::SlowLoadThenCancelled { inside, release } => {
+                    inside.send(()).unwrap();
+                    let _ = release.recv();
+                    assert!(cancel.is_cancelled(), "cancelled while it loaded");
+                    let post = Ok(HostPost::Cancelled {
+                        speaker_windows_deleted: Ok(0),
+                    });
+                    progress(HostStep::PostFinished(&post));
+                    outcome_of(post, SummaryResult::Cancelled)
+                }
+                Finish::StepPollsThenHangs { inside, release } => {
+                    progress(HostStep::PostStarting {
+                        fallbacks: &[],
+                        work: &[],
+                        asr_backend: BackendKind::Fake,
+                    });
+                    inside.send(()).unwrap();
+                    while !cancel.is_cancelled() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    // One poll well after the cancel (the driver reads the count right after
+                    // cancelling, so a poll in that instant could be taken for one before it).
+                    std::thread::sleep(Duration::from_millis(20));
+                    assert!(cancel.is_cancelled());
+                    let _ = release.recv();
+                    log.lock().unwrap().push(format!("{id} returned"));
+                    outcome_of(Ok(HostPost::Skipped), SummaryResult::Cancelled)
+                }
                 Finish::Logs => outcome_of(
                     Ok(HostPost::Skipped),
                     SummaryResult::Skipped {
@@ -1814,6 +1854,14 @@ impl Prepare for CancelPrepare {
 }
 
 fn cancel_driver(prepare: Arc<CancelPrepare>) -> (MeetingDriver, Receiver<MeetingEvent>) {
+    cancel_driver_on(prepare, crate::activity::WorkGate::new())
+}
+
+/// [`cancel_driver`] whose meetings take their passes from `gate`.
+fn cancel_driver_on(
+    prepare: Arc<CancelPrepare>,
+    gate: crate::activity::WorkGate,
+) -> (MeetingDriver, Receiver<MeetingEvent>) {
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);
     let sink: Sink = Arc::new(move |e| {
@@ -1821,12 +1869,7 @@ fn cancel_driver(prepare: Arc<CancelPrepare>) -> (MeetingDriver, Receiver<Meetin
     });
     let t0 = Instant::now();
     (
-        MeetingDriver::new(
-            prepare,
-            sink,
-            Arc::new(move || t0),
-            crate::activity::WorkGate::new(),
-        ),
+        MeetingDriver::new(prepare, sink, Arc::new(move || t0), gate),
         rx,
     )
 }
@@ -1969,6 +2012,7 @@ fn meeting_with_a_stalled_live_catch_up_is_left_and_the_next_one_goes() {
 const SHORT_AFTER: AfterBounds = AfterBounds {
     load: Duration::from_millis(200),
     step: Duration::from_millis(200),
+    cancelled: Duration::from_millis(200),
 };
 
 /// Waits until the log holds `line`: a thread left behind ends on its own.
@@ -2026,6 +2070,68 @@ fn after_that_stops_answering_is_left(in_step: bool) {
     );
     release.send(()).unwrap();
     logged_eventually(&prepare, &format!("{meeting} returned, cancelled true"));
+}
+
+#[test]
+fn meeting_after_work_left_behind_keeps_its_pass_until_it_ends() {
+    // A left thread may still wake and load models: until it ends, nothing that runs models or
+    // removes the CUDA files starts beside it. An update's restart may, since a stuck thread may
+    // never end and the restart ends the process anyway.
+    use crate::activity::{
+        MEETING_RUNNING, MEETING_RUNNING_FOR_AUDIO_CHECK, WORK_RUNNING, WORK_RUNNING_FOR_BENCHMARK,
+        WORK_RUNNING_FOR_CUDA_REMOVAL, WorkGate,
+    };
+    let dir = TempDir::new("after-left-pass");
+    let svc = services(&dir);
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::AfterHangs {
+        in_step: true,
+        inside: inside_tx,
+        release: release_rx,
+    }]);
+    let gate = WorkGate::new();
+    let (d, rx) = cancel_driver_on(Arc::clone(&prepare), gate.clone());
+    let d = d.with_after_bounds(SHORT_AFTER);
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert!(matches!(
+        result_of(&events, &meeting),
+        SummaryEvent::Failed { .. }
+    ));
+    d.join();
+    assert_eq!(d.phase(), DriverPhase::Idle);
+    assert_eq!(gate.enter_check().unwrap_err().message, WORK_RUNNING);
+    assert_eq!(
+        gate.enter_benchmark().unwrap_err().message,
+        WORK_RUNNING_FOR_BENCHMARK
+    );
+    assert_eq!(gate.enter_voice().unwrap_err().message, MEETING_RUNNING);
+    assert_eq!(
+        gate.enter_audio_check().unwrap_err().message,
+        MEETING_RUNNING_FOR_AUDIO_CHECK
+    );
+    assert_eq!(
+        gate.enter_cuda_removal().unwrap_err().message,
+        WORK_RUNNING_FOR_CUDA_REMOVAL
+    );
+    drop(gate.enter_restart().unwrap());
+    // A new meeting may start beside it, as before.
+    assert!(gate.enter_meeting().is_ok());
+    release.send(()).unwrap();
+    logged_eventually(&prepare, &format!("{meeting} returned, cancelled true"));
+    let deadline = Instant::now() + MEET_GUARD;
+    let check = loop {
+        match gate.enter_check() {
+            Ok(check) => break check,
+            Err(e) => assert_eq!(e.message, WORK_RUNNING),
+        }
+        assert!(Instant::now() < deadline, "the left thread kept its pass");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    drop(check);
 }
 
 #[test]
@@ -2192,35 +2298,144 @@ fn meeting_after_watch_rule_is_no_sign_of_life_for_the_phase_bound() {
     let bounds = AfterBounds::default();
     assert_eq!((bounds.load, bounds.step), (s(600), s(120)));
     let mut w = AfterWatch::new(bounds);
-    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0)));
-    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(599)));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0), None));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(599), None));
     assert!(
-        w.stalled(AfterPhase::Loading, 0, 0, s(600)),
+        w.stalled(AfterPhase::Loading, 0, 0, s(600), None),
         "a load that never returns"
     );
     // A step starts the step bound afresh, whatever time it came at.
-    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(700)));
-    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(819)));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(700), None));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(819), None));
     assert!(
-        w.stalled(AfterPhase::Steps, 1, 0, s(820)),
+        w.stalled(AfterPhase::Steps, 1, 0, s(820), None),
         "a step that never returns"
     );
     // Any sign of life starts it again: a poll of the token, a step.
     let mut w = AfterWatch::new(bounds);
     for (k, (steps, polls)) in [(1, 0), (1, 1), (2, 1)].into_iter().enumerate() {
         let at = s(1000 * k as u64);
-        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at));
-        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at + s(119)));
+        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at, None));
+        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at + s(119), None));
     }
     // A decode that polls slowly but steadily is never cut, however long it takes.
     let mut slow = AfterWatch::new(bounds);
     for minute in 0..600u64 {
-        assert!(!slow.stalled(AfterPhase::Steps, 1, minute, s(60 * minute)));
+        assert!(!slow.stalled(AfterPhase::Steps, 1, minute, s(60 * minute), None));
     }
     // Nor is a summary, whatever it does: its own watch decides.
     let mut summary = AfterWatch::new(bounds);
-    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0)));
-    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400)));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0), None));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400), None));
+}
+
+#[test]
+fn meeting_after_watch_gives_cancelled_work_a_short_grace() {
+    // Clock-free: the grace applies only to a step that polled its token after the cancel (so it
+    // has seen it), counted from its last sign of life. A load, and a step that has not polled
+    // since the cancel, keep their phase's bound.
+    let s = Duration::from_secs;
+    let bounds = AfterBounds::default();
+    assert_eq!(bounds.cancelled, s(30));
+    // A cancelled load that polls nothing: only the load bound.
+    let mut w = AfterWatch::new(bounds);
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0), Some(0)));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(599), Some(0)));
+    assert!(w.stalled(AfterPhase::Loading, 0, 0, s(600), Some(0)));
+    // Nor does a poll shorten a load's bound.
+    let mut w = AfterWatch::new(bounds);
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0), Some(0)));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 1, s(10), Some(0)));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 1, s(609), Some(0)));
+    assert!(w.stalled(AfterPhase::Loading, 0, 1, s(610), Some(0)));
+    // A cancelled step inside one long engine call (no poll since the cancel): the step bound.
+    let mut w = AfterWatch::new(bounds);
+    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(0), None));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(50), Some(3)));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(119), Some(3)));
+    assert!(w.stalled(AfterPhase::Steps, 1, 3, s(120), Some(3)));
+    // A step that polled after the cancel and then went silent: the grace, from that poll.
+    let mut w = AfterWatch::new(bounds);
+    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(0), Some(3)));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 4, s(20), Some(3)));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 4, s(49), Some(3)));
+    assert!(w.stalled(AfterPhase::Steps, 1, 4, s(50), Some(3)));
+    // The summary keeps its own watch, cancelled or not.
+    let mut summary = AfterWatch::new(bounds);
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0), Some(0)));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400), Some(0)));
+}
+
+#[test]
+fn meeting_cancel_on_after_work_that_stopped_answering_leaves_it_after_the_grace() {
+    // A Cancel on a step that polls once after it and then hangs does not wait for the step bound
+    // (an hour here).
+    let dir = TempDir::new("after-cancel-grace");
+    let svc = services(&dir);
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::StepPollsThenHangs {
+        inside: inside_tx,
+        release: release_rx,
+    }]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let hour = Duration::from_secs(3600);
+    let d = d.with_after_bounds(AfterBounds {
+        load: hour,
+        step: hour,
+        cancelled: Duration::from_millis(200),
+    });
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    d.cancel_finishing(&meeting);
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert_eq!(
+        result_of(&events, &meeting),
+        SummaryEvent::Failed {
+            message: POST_STALLED_MESSAGE.into(),
+            retryable: false,
+        }
+    );
+    d.join();
+    assert_eq!(d.phase(), DriverPhase::Idle);
+    release.send(()).unwrap();
+    logged_eventually(&prepare, &format!("{meeting} returned"));
+}
+
+#[test]
+fn meeting_cancel_during_a_slow_load_waits_for_it_and_ends_cancelled() {
+    // A model load polls nothing and cannot be interrupted: a Cancel during one is not taken for
+    // a stall, however short the cancel grace, and the meeting ends as cancelled when it returns.
+    let dir = TempDir::new("after-cancel-load");
+    let svc = services(&dir);
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::SlowLoadThenCancelled {
+        inside: inside_tx,
+        release: release_rx,
+    }]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let hour = Duration::from_secs(3600);
+    let d = d.with_after_bounds(AfterBounds {
+        load: hour,
+        step: hour,
+        cancelled: Duration::from_millis(1),
+    });
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    d.cancel_finishing(&meeting);
+    // Many cancel graces pass while it loads; nothing is decided meanwhile.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        rx.try_iter().all(|e| !is_summary_of(&meeting, &e)),
+        "no result while it loads"
+    );
+    release.send(()).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert_eq!(result_of(&events, &meeting), SummaryEvent::PostCancelled);
 }
 
 #[test]

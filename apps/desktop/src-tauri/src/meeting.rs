@@ -185,7 +185,7 @@ struct Inner {
     /// The meeting the screen follows: the newest that started recording.
     shown: AtomicU64,
     /// What cancels each meeting past its recording, by meeting id ([`Finishing`]).
-    finishing: Mutex<BTreeMap<String, CancelToken>>,
+    finishing: Mutex<BTreeMap<String, MeetingCancel>>,
     /// The most a stop and wait waits ([`STOP_CEILING`]).
     stop_ceiling: Duration,
     /// When the work after a meeting is given up ([`AfterBounds`]).
@@ -315,6 +315,7 @@ impl MeetingDriver {
             let svc = services.clone();
             let keep = Arc::new(AtomicBool::new(false));
             let flags = RunFlags {
+                pass,
                 stop: Arc::clone(&stop),
                 keep: Arc::clone(&keep),
                 recording: Arc::clone(&recording),
@@ -324,7 +325,7 @@ impl MeetingDriver {
                 .name("earshot-meeting".into())
                 .spawn(move || {
                     run_guarded(&inner, &svc, &request, &flags, &tx, seq);
-                    drop(pass);
+                    drop(flags);
                 })
                 .map_err(|_| IpcError {
                     kind: "internal".into(),
@@ -580,6 +581,13 @@ pub struct AfterBounds {
     /// (`LiveConfig::catch_up_stall`), since every decode polls its token many times a minute and
     /// no single engine call may take that long.
     pub step: Duration,
+    /// Once the meeting is cancelled and a step has polled its token since (so it has seen the
+    /// cancel): work that answers then returns, so silence this long after that poll is a stall,
+    /// without waiting for the step bound. Never in `load`: a model load polls nothing and cannot
+    /// be interrupted, and a step that has not polled since the cancel may be inside one long
+    /// engine call; both keep their phase's bound. 30 seconds, a judgement: the grace a cancelled
+    /// local summary gets (`summary::STALL_CANCEL_GRACE`).
+    pub cancelled: Duration,
 }
 
 impl Default for AfterBounds {
@@ -587,6 +595,7 @@ impl Default for AfterBounds {
         Self {
             load: Duration::from_secs(600),
             step: Duration::from_secs(120),
+            cancelled: Duration::from_secs(30),
         }
     }
 }
@@ -631,8 +640,16 @@ impl AfterWatch {
     }
 
     /// Whether the work in `phase` has stalled at `now`, given `steps` heard and `polls` of its
-    /// token. Every step changes the count, so a new phase always starts its bound afresh.
-    fn stalled(&mut self, phase: AfterPhase, steps: u64, polls: u64, now: Duration) -> bool {
+    /// token, and the token's polls right after the user's Cancel (`None`: not cancelled). Every
+    /// step changes the count, so a new phase always starts its bound afresh.
+    fn stalled(
+        &mut self,
+        phase: AfterPhase,
+        steps: u64,
+        polls: u64,
+        now: Duration,
+        polls_at_cancel: Option<u64>,
+    ) -> bool {
         let sign = [steps, polls];
         if self.sign != Some(sign) {
             self.sign = Some(sign);
@@ -644,7 +661,12 @@ impl AfterWatch {
             AfterPhase::Steps => self.bounds.step,
             AfterPhase::Summary => return false,
         };
-        now.saturating_sub(self.since) >= bound
+        // Counted from the last sign of life, which is that poll or later.
+        let polled_since_cancel = polls_at_cancel.is_some_and(|at| polls > at);
+        let graced = phase == AfterPhase::Steps
+            && polled_since_cancel
+            && now.saturating_sub(self.since) >= self.bounds.cancelled;
+        graced || now.saturating_sub(self.since) >= bound
     }
 }
 
@@ -659,19 +681,57 @@ enum FromAfter {
     Done(Box<HostOutcome>),
 }
 
+/// `after` holding `pass` until it returns: a thread running it that is left behind still counts as
+/// a meeting job for [`crate::activity::WorkGate`].
+fn with_pass(after: AfterFn, pass: crate::activity::WorkPass) -> AfterFn {
+    Box::new(move |svc, outcome, cancel, progress| {
+        let _pass = pass;
+        after(svc, outcome, cancel, progress)
+    })
+}
+
+/// What cancels a meeting past its recording: its token, and the token's poll count right after
+/// the user's Cancel, so the watch of the work after the meeting can tell polls made after the
+/// Cancel (the work has seen it) without polling the token itself.
+#[derive(Clone)]
+struct MeetingCancel {
+    token: CancelToken,
+    polls_at_cancel: Arc<OnceLock<u64>>,
+}
+
+impl MeetingCancel {
+    fn new() -> Self {
+        Self {
+            token: CancelToken::new(),
+            polls_at_cancel: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// The user's Cancel. The count is read after the cancel, so a poll it misses came after the
+    /// cancel too: the watch then keeps the phase's own bound, never a shorter one.
+    fn cancel(&self) {
+        self.token.cancel();
+        let _ = self.polls_at_cancel.set(self.token.polls());
+    }
+}
+
 /// Runs `after` on a thread of its own and watches it ([`AfterBounds`]); forwards what the UI
 /// hears of each step through `send`. `None`: it stopped answering and was left, its token
 /// cancelled, so it stops if its call ever returns (its result then goes nowhere). The meeting's
-/// thread itself never polls `cancel` here: its polls are the work's sign of life.
+/// thread never polls the token here: its polls are the work's sign of life, and the user's
+/// Cancel is read from `cancel.polls_at_cancel`. The caller
+/// hands `after` a pass of its own ([`with_pass`]), so a thread left behind keeps the model check
+/// and the benchmark out until it ends.
 fn run_after_watched(
     after: AfterFn,
     svc: &Services,
     outcome: &LiveOutcome,
-    cancel: &CancelToken,
+    meeting_cancel: &MeetingCancel,
     ticket: &Arc<QueueTicket>,
     bounds: AfterBounds,
     send: &dyn Fn(MeetingEvent),
 ) -> Option<HostOutcome> {
+    let cancel = &meeting_cancel.token;
     let (tx, rx) = mpsc::channel();
     let work = {
         let (svc, outcome, cancel) = (svc.clone(), outcome.clone(), cancel.clone());
@@ -721,7 +781,8 @@ fn run_after_watched(
                 };
             }
         }
-        if watch.stalled(phase, steps, cancel.polls(), started.elapsed()) {
+        let at_cancel = meeting_cancel.polls_at_cancel.get().copied();
+        if watch.stalled(phase, steps, cancel.polls(), started.elapsed(), at_cancel) {
             cancel.cancel();
             drop(worker);
             return None;
@@ -742,6 +803,8 @@ impl Drop for EndTicket<'_> {
 
 /// The flags a meeting's thread shares with the driver.
 struct RunFlags {
+    /// The meeting's pass, held for its thread's life.
+    pass: crate::activity::WorkPass,
     stop: Arc<AtomicBool>,
     keep: Arc<AtomicBool>,
     recording: Arc<AtomicBool>,
@@ -752,11 +815,11 @@ struct RunFlags {
 struct Finishing<'a> {
     inner: &'a Inner,
     meeting: String,
-    cancel: CancelToken,
+    cancel: MeetingCancel,
 }
 
 impl Finishing<'_> {
-    fn entries(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, CancelToken>> {
+    fn entries(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, MeetingCancel>> {
         self.inner
             .finishing
             .lock()
@@ -902,11 +965,12 @@ fn run(
     inner.shown.store(seq, Ordering::SeqCst);
     let _ = started.send(Ok(id.to_string()));
 
-    let cancel = CancelToken::new();
+    let meeting_cancel = MeetingCancel::new();
+    let cancel = meeting_cancel.token.clone();
     let finishing = Finishing {
         inner,
         meeting: id.to_string(),
-        cancel: cancel.clone(),
+        cancel: meeting_cancel.clone(),
     };
     // Taken when the recording is saved, so the meeting never reads as idle while it waits.
     let mut waiting = None;
@@ -1028,10 +1092,10 @@ fn run(
         HostOutcome::cancelled(svc, id)
     } else {
         let watched = run_after_watched(
-            prepared.after,
+            with_pass(prepared.after, flags.pass.after_meeting_beside()),
             svc,
             &outcome,
-            &cancel,
+            &meeting_cancel,
             &ticket,
             inner.after_bounds,
             &send,
@@ -1057,6 +1121,10 @@ fn run(
         };
         host
     };
+    // Once the outcome is known, whatever the path: a cancel before the turn, or before the final
+    // pass's first step, never reached `PostFinished`, and newer meetings' speaker work need not
+    // wait for this thread's end to start (calling it twice changes nothing).
+    ticket.final_pass_done();
     if let Ok(earshot_runtime::host::HostPost::Done(post)) = &host.post {
         for (key, message) in crate::plain_text::post_warning_copy(&post.warnings) {
             send(MeetingEvent::Warning {

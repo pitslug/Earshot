@@ -18,10 +18,18 @@ export function isTauri(): boolean {
 
 /** `Ipc` over the app's Rust commands and events. */
 export function createTauriIpc(): Ipc {
+  // Numbers the searches in the order they are sent, so Rust never lets an older one replace a
+  // newer one that began first; the page number tells this page's searches from those of the
+  // page before a reload, which counted from 1 too.
+  const searchPage = crypto.getRandomValues(new Uint32Array(1))[0];
+  let searchesSent = 0;
   return {
     appInfo: () => commands.appInfo(),
     listMeetings: async () => unwrap(await commands.listMeetings()),
-    searchMeetings: async (query) => unwrap(await commands.searchMeetings(query)),
+    searchMeetings: async (query) => {
+      searchesSent += 1;
+      return unwrap(await commands.searchMeetings(query, searchPage, searchesSent));
+    },
     startMeeting: async (mode, title, keepLocal) =>
       unwrap(await commands.startMeeting(mode, title, keepLocal)),
     stopMeeting: async () => {

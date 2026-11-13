@@ -1274,6 +1274,63 @@ fn detail_speaker_sample_without_audio_is_none() {
     assert_eq!(e.kind, "speaker_not_found");
 }
 
+/// Stores a FLAC for each of `meeting`'s tracks: on the far end a pattern that differs from
+/// sample to sample, on the mic silence, both 8 s at 16 kHz. Returns the far end's samples.
+fn store_recordings(svc: &Services, meeting: EntityId, seed: u64) -> Vec<i16> {
+    let far: Vec<i16> = (0..128_000)
+        .map(|i: i32| ((i * 37) % 4_000 - 2_000) as i16)
+        .collect();
+    let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, _) = db.parts();
+    for track in store.tracks(meeting).unwrap() {
+        let samples: Vec<f32> = match track.kind {
+            TrackId::Reference => far.iter().map(|&s| i16_to_f32(s)).collect(),
+            _ => vec![0.0; far.len()],
+        };
+        let mut w = svc.data.track_writer(meeting, track.kind, 16_000).unwrap();
+        w.write(&samples).unwrap();
+        store
+            .finalize_track_audio(
+                w,
+                &svc.data,
+                &track,
+                earshot_store::AudioProvenance {
+                    pipeline_version: "test".into(),
+                    aec_version: None,
+                },
+                &*clock,
+                &mut rng,
+            )
+            .unwrap();
+    }
+    far
+}
+
+#[test]
+fn detail_speaker_sample_reads_the_speakers_longest_line_from_its_tracks_recording() {
+    let dir = TempDir::new("detail-sample-flac");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 41);
+    let far = store_recordings(&svc, f.meeting, 42);
+    // Priya's one line runs from 6.0 s to 6.9 s on the far end.
+    let want = base64(&sample_wav(16_000, &far[96_000..110_400]).unwrap());
+    assert_eq!(
+        speaker_sample(&svc, f.meeting, f.priya).unwrap(),
+        Some(want)
+    );
+    // Another voice on the same track: its own line, 3.0 s to 3.9 s.
+    let want = base64(&sample_wav(16_000, &far[48_000..62_400]).unwrap());
+    assert_eq!(
+        speaker_sample(&svc, f.meeting, f.unnamed).unwrap(),
+        Some(want)
+    );
+    // The user's longest line (1.0 s to 1.9 s) comes from the mic's recording, which is silence.
+    let silent = base64(&sample_wav(16_000, &[0; 14_400]).unwrap());
+    assert_eq!(speaker_sample(&svc, f.meeting, f.me).unwrap(), Some(silent));
+}
+
 #[test]
 fn detail_says_whether_the_recordings_are_still_kept() {
     let dir = TempDir::new("detail-audio");

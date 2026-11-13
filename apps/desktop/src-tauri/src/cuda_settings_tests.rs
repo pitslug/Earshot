@@ -1161,6 +1161,41 @@ fn cuda_settings_transcription_tries_then_chooses_and_reports_the_trials_backend
     );
 }
 
+#[test]
+fn cuda_transcription_refusal_names_a_developer_build_before_trying_the_folder() {
+    // A developer's `cuda` build never takes the folder: its note says so, rather than the trial's.
+    assert_eq!(
+        transcription_refusal_in(true, true, true, true, true),
+        Some(DEVELOPER_BUILD)
+    );
+    // The machine's own reasons still come first.
+    assert_eq!(
+        transcription_refusal_in(true, true, false, true, true),
+        Some(CARD_TOO_SMALL)
+    );
+    assert_eq!(
+        transcription_refusal_in(false, true, true, true, true),
+        None
+    );
+    assert_eq!(
+        transcription_refusal(true, true, true, true),
+        transcription_refusal_in(cfg!(feature = "cuda"), true, true, true, true)
+    );
+    // In such a build the runtime refuses the folder with the same words (it returns before
+    // touching anything; other builds would go on to choose, so they are not asked here).
+    #[cfg(feature = "cuda")]
+    {
+        let refused = earshot_runtime::cuda::use_for_transcription(
+            &earshot_runtime::backends::ModelDir::new(std::env::temp_dir()),
+            true,
+        );
+        assert!(
+            refused.is_err_and(|e| e.to_string().contains(DEVELOPER_BUILD)),
+            "the runtime's refusal"
+        );
+    }
+}
+
 /// A start whose thread cannot start tells the page like any other.
 #[test]
 fn cuda_settings_start_that_cannot_spawn_still_resolves_and_tells() {

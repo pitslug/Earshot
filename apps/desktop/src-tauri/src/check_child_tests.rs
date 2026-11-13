@@ -272,3 +272,18 @@ fn model_check_child_job_kills_its_process_when_closed() {
         started.elapsed()
     );
 }
+
+#[test]
+fn check_child_that_cannot_keep_the_cuda_choice_runs_no_check() {
+    // A child told to use CUDA whose library then fell back would record an answer the parent
+    // reads as out of date at every start; it runs none, as when it cannot make the choice.
+    assert_eq!(choice_not_kept(true, true), Some(CUDA_CHOICE_NOT_KEPT));
+    assert_eq!(choice_not_kept(true, false), None);
+    assert_eq!(choice_not_kept(false, true), None, "no choice to keep");
+    assert_eq!(choice_not_kept(false, false), None);
+    assert!(CUDA_CHOICE_NOT_KEPT.ends_with('.'));
+    assert!(
+        !CUDA_CHOICE_NOT_KEPT.contains("  "),
+        "{CUDA_CHOICE_NOT_KEPT}"
+    );
+}

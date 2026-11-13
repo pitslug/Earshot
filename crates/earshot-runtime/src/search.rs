@@ -122,21 +122,65 @@ pub fn search_meetings_unless(
 
 /// The searches of one window (T9.24): each new search supersedes the one before, which stops
 /// between two meetings and gives no answer. Typing runs a search per pause, and only the
-/// newest text is wanted.
+/// newest text is wanted. "Newest" is the order the window sent them in ([`Searches::begin_sent`]),
+/// never the order they begin here, which can differ for two searches sent a few ms apart.
 #[derive(Debug, Default)]
 pub struct Searches {
-    current: Mutex<Option<CancelToken>>,
+    state: Mutex<SearchOrder>,
+}
+
+#[derive(Debug, Default)]
+struct SearchOrder {
+    /// The running search: the page that sent it, the number the page sent it with, and its
+    /// token.
+    current: Option<(u32, u64, CancelToken)>,
 }
 
 impl Searches {
-    /// The token of a new search, cancelling the search before it.
+    /// The token of a new search sent after every other, cancelling the search before it.
     pub fn begin(&self) -> CancelToken {
+        let (page, next) = self
+            .order()
+            .current
+            .as_ref()
+            .map_or((0, 1), |(page, sent, _)| (*page, sent.saturating_add(1)));
+        self.begin_sent(page, next)
+    }
+
+    /// The token of the search page `page` (a number the window picks at random each time it
+    /// loads) sent `sent`th (its numbers grow in the order it sends). Within one page it cancels
+    /// the running search when that was sent before it, and is itself cancelled at once (so it
+    /// gives no answer) when the running one was sent after it. A search from another page always
+    /// replaces the running one: a reloaded window counts from 1 again, and only its searches are
+    /// wanted. Call [`Searches::end_sent`] when it ends.
+    pub fn begin_sent(&self, page: u32, sent: u64) -> CancelToken {
         let token = CancelToken::new();
-        let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(older) = current.replace(token.clone()) {
-            older.cancel();
+        let mut order = self.order();
+        match &order.current {
+            Some((p, running, _)) if *p == page && *running >= sent => token.cancel(),
+            _ => {
+                if let Some((_, _, older)) = order.current.replace((page, sent, token.clone())) {
+                    older.cancel();
+                }
+            }
         }
         token
+    }
+
+    /// The search page `page` sent `sent`th has ended; nothing changes when another one runs.
+    pub fn end_sent(&self, page: u32, sent: u64) {
+        let mut order = self.order();
+        if order
+            .current
+            .as_ref()
+            .is_some_and(|(p, running, _)| *p == page && *running == sent)
+        {
+            order.current = None;
+        }
+    }
+
+    fn order(&self) -> std::sync::MutexGuard<'_, SearchOrder> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

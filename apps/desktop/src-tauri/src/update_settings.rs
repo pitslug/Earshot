@@ -14,12 +14,12 @@
 //! when [`earshot_runtime::update::next_due`] says so. Off means no request. Every finished check,
 //! the button's too, is stored as the last one ([`after_check`]); an automatic check that finds a
 //! version not yet notified shows one notification when the window is not watched. No check
-//! starts while an update installs: [`UpdateJobs::install`] closes the jobs to checks before it
-//! takes [`WorkGate::enter_restart`], for good once the installer started.
+//! starts while an update installs: [`UpdateJobs::install`] runs only from the `Ready` phase,
+//! which refuses checks and which only a failed start leaves, so the jobs stay closed to checks
+//! for good once the installer started.
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -306,8 +306,6 @@ struct Inner {
     recorder: CheckRecorder,
     phase: Mutex<UpdatePhase>,
     cancel: Mutex<Option<CancelToken>>,
-    /// An install is starting, or started: no check from then on.
-    installing: AtomicBool,
 }
 
 impl Inner {
@@ -331,13 +329,12 @@ impl Inner {
     /// Moves to `next` if no step is running, as one decision: two presses start one thread.
     fn claim(&self, next: UpdatePhase) -> Result<UpdatePhase, IpcError> {
         let mut phase = self.phase.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.installing.load(Ordering::SeqCst)
-            || matches!(
-                *phase,
-                // Ready too: the offer behind it is what an install will run, so no check replaces it.
-                UpdatePhase::Checking | UpdatePhase::Downloading { .. } | UpdatePhase::Ready { .. }
-            )
-        {
+        if matches!(
+            *phase,
+            // Ready too: the offer behind it is what an install will run, so no check replaces it,
+            // and an install that started keeps the jobs in Ready.
+            UpdatePhase::Checking | UpdatePhase::Downloading { .. } | UpdatePhase::Ready { .. }
+        ) {
             return Err(IpcError {
                 kind: "busy".into(),
                 message: ALREADY_RUNNING.into(),
@@ -377,7 +374,6 @@ impl UpdateJobs {
             recorder,
             phase: Mutex::new(UpdatePhase::Idle),
             cancel: Mutex::new(None),
-            installing: AtomicBool::new(false),
         }))
     }
 
@@ -427,8 +423,19 @@ impl UpdateJobs {
                     _ => None,
                 },
             };
+            // What a quiet check that failed or panicked leaves: the offer the work keeps behind
+            // it when a check fails, else nothing to say.
+            let quietly = |before: UpdatePhase| match before {
+                UpdatePhase::Available { .. } => before,
+                _ => UpdatePhase::Idle,
+            };
             let result = match result {
                 Ok(result) => result,
+                Err(_) if quiet => {
+                    inner.set(quietly(before));
+                    inner.recorded(&end);
+                    return;
+                }
                 Err(panic) => {
                     inner.recorded(&end);
                     std::panic::resume_unwind(panic);
@@ -437,11 +444,7 @@ impl UpdateJobs {
             let next = match result {
                 Ok(None) => UpdatePhase::UpToDate,
                 Ok(Some((version, size))) => UpdatePhase::Available { version, size },
-                Err(_) if quiet => match before {
-                    // The work keeps the offer behind it when a check fails.
-                    UpdatePhase::Available { .. } => before,
-                    _ => UpdatePhase::Idle,
-                },
+                Err(_) if quiet => quietly(before),
                 Err(e) => UpdatePhase::Failed {
                     message: failure_copy(&e).into(),
                 },
@@ -511,36 +514,27 @@ impl UpdateJobs {
     /// # Errors
     /// `update_not_ready`, `busy`; a failed start reaches the page as a phase too.
     pub fn install(&self, gate: &WorkGate, downloading: bool) -> Result<(), IpcError> {
-        {
-            // One decision with the check's claim: from here no check starts (T12.22).
-            let phase = self.0.phase.lock().unwrap_or_else(PoisonError::into_inner);
-            if !matches!(*phase, UpdatePhase::Ready { .. }) {
-                return Err(IpcError::new("update_not_ready", NOT_READY));
-            }
-            self.0.installing.store(true, Ordering::SeqCst);
+        // Only from Ready, which the check's claim refuses and nothing but a failed start below
+        // leaves, so no check starts from here (T12.22).
+        if !matches!(self.0.phase(), UpdatePhase::Ready { .. }) {
+            return Err(IpcError::new("update_not_ready", NOT_READY));
         }
-        let reopen = || self.0.installing.store(false, Ordering::SeqCst);
         let busy = |message: &str| IpcError {
             kind: "busy".into(),
             message: message.into(),
             retryable: true,
         };
         if downloading {
-            reopen();
             return Err(busy(DOWNLOADS_RUNNING));
         }
-        let pass = gate.enter_restart().map_err(|_| {
-            reopen();
-            busy(WORK_RUNNING)
-        })?;
+        let pass = gate.enter_restart().map_err(|_| busy(WORK_RUNNING))?;
         match self.0.work.launch() {
             Ok(()) => {
-                // Both stay closed until the process ends.
+                // The gate stays closed, and the jobs stay in Ready, until the process ends.
                 std::mem::forget(pass);
                 Ok(())
             }
             Err(e) => {
-                reopen();
                 let message = match e {
                     UpdateError::InstallerChanged => INSTALLER_CHANGED,
                     _ => COULD_NOT_START,
@@ -620,8 +614,12 @@ pub fn schedule_tick(
     now_ms: u64,
     ran: &mut Option<u64>,
 ) -> Result<Duration, RuntimeError> {
-    let (on, (schedule, _), last) = {
+    let ((schedule, _), last) = {
         let mut store = services.store();
+        // Off is no request at all, whatever the schedule says, and no write either.
+        if !earshot_runtime::update::auto_check(&store)? {
+            return Ok(SCHEDULE_STEP);
+        }
         let mut last = earshot_runtime::update::last_check(&store)?;
         // The wall clock moved back past the last check: count from now, once, or each wake
         // would put the check one interval further away.
@@ -629,16 +627,8 @@ pub fn schedule_tick(
             earshot_runtime::update::record_check(&mut store, now_ms)?;
             last = Some(now_ms);
         }
-        (
-            earshot_runtime::update::auto_check(&store)?,
-            earshot_runtime::update::update_schedule(&store)?,
-            last,
-        )
+        (earshot_runtime::update::update_schedule(&store)?, last)
     };
-    // Off is no request at all, whatever the schedule says.
-    if !on {
-        return Ok(SCHEDULE_STEP);
-    }
     // The same for this thread's own memory of its last check.
     if ran.is_some_and(|r| r > now_ms) {
         *ran = Some(now_ms);

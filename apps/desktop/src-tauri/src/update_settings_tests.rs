@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use earshot_update::VerifyError;
 
@@ -204,6 +204,49 @@ fn update_a_panic_ends_in_a_phase_the_page_can_leave() {
             message: SOMETHING_WENT_WRONG.into()
         }
     );
+}
+
+#[test]
+fn update_a_panicking_automatic_check_says_nothing_and_keeps_the_offer() {
+    // An automatic check that fails says nothing, a panicking one too; the recorder still hears
+    // it, and an offer the page shows stays.
+    let fake = Arc::new(Fake {
+        panic_in_check: true,
+        ..Fake::default()
+    });
+    let ends = Arc::new(Mutex::new(Vec::new()));
+    let heard = Arc::clone(&ends);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    let sink: UpdateSink = Arc::new(move |e: UpdateEvent| log.lock().unwrap().push(e.phase));
+    let j = UpdateJobs::with_recorder(
+        fake,
+        sink,
+        Arc::new(move |end: &CheckEnd| heard.lock().unwrap().push(end.automatic)),
+    );
+    j.start_check(true).unwrap().join().unwrap();
+    assert_eq!(
+        j.phase(),
+        UpdatePhase::Idle,
+        "nobody asked, so nothing to say"
+    );
+    assert!(
+        !seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| matches!(p, UpdatePhase::Failed { .. })),
+        "{seen:?}"
+    );
+    assert_eq!(*ends.lock().unwrap(), [true]);
+
+    let offer = UpdatePhase::Available {
+        version: "9.9.9".into(),
+        size: 100,
+    };
+    j.0.set(offer.clone());
+    j.start_check(true).unwrap().join().unwrap();
+    assert_eq!(j.phase(), offer);
 }
 
 #[test]
@@ -450,6 +493,21 @@ fn update_schedule_clock_moved_back_waits_no_more_than_one_interval() {
         1,
         "one interval from now"
     );
+}
+
+#[test]
+fn update_schedule_off_leaves_a_last_check_ahead_of_the_clock_alone() {
+    // Off is no work at all: the clock-back rewrite waits until checks are on.
+    let dir = crate::testutil::TempDir::new("update-schedule-back-off");
+    let services = crate::testutil::services(&dir);
+    let ahead = T0 + 365 * 24 * HOUR_MS;
+    earshot_runtime::update::record_check(&mut services.store(), ahead).unwrap();
+    let fake = Arc::new(Fake::default());
+    let j = scheduled(Arc::clone(&fake), &services, at(T0), never_notify());
+    let mut ran = None;
+    schedule_tick(&services, &j, T0, &mut ran).unwrap();
+    assert_eq!(last(&services), Some(ahead));
+    assert_eq!(fake.checks.load(Ordering::SeqCst), 0);
 }
 
 #[test]

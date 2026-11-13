@@ -810,7 +810,8 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             dictionary,
         )
     };
-    let in_room = !view.tracks.iter().any(|t| t.kind == TrackId::Reference);
+    // The final pass's own rule, as the Speakers panel's offers use it.
+    let in_room = earshot_runtime::edit::records_in_room(&view.tracks);
     let track_of = |segment: &Segment| match view
         .tracks
         .iter()
