@@ -1356,6 +1356,34 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
     expect(screen.getByRole("button", { name: "Changed word Reidar" })).toBeInTheDocument();
   });
 
+  it("leaves the written word out of Another word whatever its case", async () => {
+    // "Reid" was written while the list held it so; the Dictionary now lists it as "reid".
+    const base = sampleDetail(ITEM);
+    const detail = {
+      ...base,
+      transcript: base.transcript.map((r, i) =>
+        i === 7
+          ? {
+              ...r,
+              text: "Fine by us. I'll send it to Tom Reid in writing.",
+              suggestions: [],
+              changed_words: [{ token: 8, decoded: "Reed", written: "Reid" }],
+            }
+          : r,
+      ),
+    };
+    const { user } = await transcript({
+      details: { [ITEM.id]: detail },
+      summaries: { vocabulary: ["reid", "Quillan"] },
+    });
+    await user.click(screen.getByRole("button", { name: "Changed word Reid" }));
+    const dialog = await screen.findByRole("dialog", { name: "Changed word Reid" });
+    await user.click(within(dialog).getByRole("combobox", { name: "Another word" }));
+    expect(await screen.findByRole("option", { name: "Quillan" })).toBeInTheDocument();
+    const offered = screen.getAllByRole("option").map((o) => o.textContent?.toLowerCase());
+    expect(offered).not.toContain("reid");
+  });
+
   it("keeps the word with Keep: the mark goes and the line is unchanged", async () => {
     const { user, calls } = await transcript();
     await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));

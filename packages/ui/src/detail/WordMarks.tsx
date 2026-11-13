@@ -215,9 +215,11 @@ function WordMark(props: MarkProps) {
     </Button>
   );
   const wanted = query.trim().toLowerCase();
+  // The list is deduplicated without case, so the written word is left out the same way.
+  const written = props.word.toLowerCase();
   const others =
     props.kind === "changed"
-      ? props.wordList.filter((w) => w !== props.word && w.toLowerCase().includes(wanted))
+      ? props.wordList.filter((w) => w.toLowerCase() !== written && w.toLowerCase().includes(wanted))
       : [];
   return (
     <Popover
@@ -237,8 +239,6 @@ function WordMark(props: MarkProps) {
           {...{ [WORD_ATTRIBUTE]: props.word }}
           aria-label={name}
           className={mergeClasses(styles.mark, props.kind === "suggestion" ? styles.suggestion : styles.changed)}
-          // The word is not the line: a click here never starts a line edit.
-          onClick={(e) => e.stopPropagation()}
         >
           {props.word}
         </button>
@@ -270,7 +270,7 @@ function WordMark(props: MarkProps) {
               </Button>
               {dictionaryButton}
             </div>
-            {props.wordList.some((w) => w !== props.word) && (
+            {props.wordList.some((w) => w.toLowerCase() !== written) && (
               <Field label="Another word" size="small">
                 <Combobox
                   size="small"
