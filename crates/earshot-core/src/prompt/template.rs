@@ -41,6 +41,8 @@ const VARIANT_ASSIGNMENTS: &str = include_str!("templates/variants/assignments.m
 const VARIANT_HANDED: &str = include_str!("templates/variants/handed.md");
 const VARIANT_CHECKED: &str = include_str!("templates/variants/checked.md");
 const VARIANT_PREVIOUS: &str = include_str!("templates/variants/previous.md");
+const VARIANT_SHORT: &str = include_str!("templates/variants/short.md");
+const VARIANT_BRIEF: &str = include_str!("templates/variants/brief.md");
 
 const GENERAL: &str = include_str!("templates/general.md");
 const ONE_ON_ONE: &str = include_str!("templates/one-on-one.md");
@@ -150,11 +152,18 @@ pub enum PromptVariant {
     /// The production rules before T6.20f (T6.20e round 0), kept as a baseline: action
     /// owners are the speaker, no rule for what a decision is.
     Previous,
+    /// T12.17: the production rules with shorter notes (at most four sections of four
+    /// one-sentence bullets, only what the decisions, actions and open questions need), a
+    /// one- or two-sentence tldr, and every decision and action item still listed.
+    Short,
+    /// T12.17: [`PromptVariant::Short`], tighter (three sections of three bullets, a
+    /// one-sentence tldr, items of about fifteen words at most).
+    Brief,
 }
 
 impl PromptVariant {
     /// Every variant, the production one first.
-    pub const ALL: [PromptVariant; 9] = [
+    pub const ALL: [PromptVariant; 11] = [
         PromptVariant::Current,
         PromptVariant::Owners,
         PromptVariant::Decisions,
@@ -164,6 +173,8 @@ impl PromptVariant {
         PromptVariant::Handed,
         PromptVariant::Checked,
         PromptVariant::Previous,
+        PromptVariant::Short,
+        PromptVariant::Brief,
     ];
 
     /// The variant's name as used on the command line and in format keys.
@@ -179,6 +190,8 @@ impl PromptVariant {
             PromptVariant::Handed => "handed",
             PromptVariant::Checked => "checked",
             PromptVariant::Previous => "previous",
+            PromptVariant::Short => "short",
+            PromptVariant::Brief => "brief",
         }
     }
 
@@ -202,6 +215,8 @@ impl PromptVariant {
             PromptVariant::Handed => VARIANT_HANDED,
             PromptVariant::Checked => VARIANT_CHECKED,
             PromptVariant::Previous => VARIANT_PREVIOUS,
+            PromptVariant::Short => VARIANT_SHORT,
+            PromptVariant::Brief => VARIANT_BRIEF,
         }
     }
 }

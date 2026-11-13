@@ -483,10 +483,12 @@ fn check_agent_cli(a: &Args, agent: AgentCli) -> Result<(), String> {
                  (--job <split>:reference, no --earshot-inputs)"
         ));
     }
-    if a.two_call || a.two_track || !a.prompt_variant.is_current() || a.gpu {
+    // A prompt variant is allowed (T12.17, evaluation only): the rules change, the plan
+    // does not, and the format key names the variant.
+    if a.two_call || a.two_track || a.gpu {
         return Err(format!(
             "{flag} runs the production prompt and plan only (no --two-call, \
-                 --two-track, --prompt-variant or --gpu)"
+                 --two-track or --gpu)"
         ));
     }
     if !a.rescore.is_empty()
@@ -956,6 +958,21 @@ fn aggregate(meetings: &[Value]) -> Value {
         "actions_rr": items("actions_rr"),
         "decisions_cov": items("decisions_cov"),
         "actions_cov": items("actions_cov"),
+        // T12.17: summed over meetings (a failed meeting counts zero).
+        "length": {
+            "words": sum("length", "words"),
+            "notes_words": sum("length", "notes_words"),
+            "sections": sum("length", "sections"),
+            "bullets": sum("length", "bullets"),
+            "decisions": sum("length", "decisions"),
+            "actions": sum("length", "actions"),
+            "lists_at_cap": sum("length", "lists_at_cap"),
+            "item_lists_at_cap": sum("length", "item_lists_at_cap"),
+            "meetings_with_item_list_at_cap": meetings
+                .iter()
+                .filter(|m| m["score"]["length"]["item_lists_at_cap"].as_u64().unwrap_or(0) > 0)
+                .count(),
+        },
         "seconds_total": seconds,
         "seconds_per_meeting": seconds / n,
         "generated_tokens_per_s": if gen_s > 0.0 { rsum("generated_tokens") / gen_s } else { 0.0 },
@@ -1990,6 +2007,18 @@ mod tests {
             ),
             "indented-numbered-r5-chunk600-claude-code"
         );
+        // A prompt variant on Claude Code (T12.17, evaluation only) comes after it.
+        assert_eq!(
+            format_key(
+                None,
+                PromptVariant::Short,
+                false,
+                false,
+                Some(AgentCli::ClaudeCode),
+                None
+            ),
+            "indented-numbered-r5-claude-code-prompt-short"
+        );
     }
 
     #[test]
@@ -2107,7 +2136,8 @@ mod tests {
         refused(&["earshot"], "reference transcripts");
         refused(&["remote"], "exactly one");
         refused(&["two-call"], "production prompt");
-        refused(&["variant"], "production prompt");
+        // A prompt variant is allowed (T12.17, evaluation only: its own format key).
+        check_claude_code(&claude_args(&["variant"])).unwrap();
         refused(&["rescore"], "summary run");
         refused(&["bad-model"], "--claude-model");
         let mut with_inputs = claude_args(&[]);
@@ -2165,7 +2195,8 @@ mod tests {
         );
         refused(&["remote"], "exactly one");
         refused(&["two-call"], "production prompt");
-        refused(&["variant"], "production prompt");
+        // A prompt variant is allowed (T12.17, evaluation only).
+        check_agent_cli(&codex(&["variant"]), AgentCli::Codex).unwrap();
         refused(&["rescore"], "summary run");
         refused(&["bad-model"], "--codex-model");
         let mut both = codex(&[]);

@@ -1126,6 +1126,7 @@ pub fn table(report: &Value) -> String {
          that list together hold at least half of its content tokens (many-to-one; defined \
          after seeing data; `items::covered_items`).\n",
     );
+    length_table(report, &mut s);
     let chunked: Vec<&Value> = report["candidates"]
         .as_array()
         .into_iter()
@@ -1167,6 +1168,53 @@ pub fn table(report: &Value) -> String {
 
 /// A report's candidate name, with its prompt variant when that is not the production one
 /// and "two-call" for a T6.20c run.
+/// The T12.17 length table (docs/summary-eval.md): words, notes and items written, summed
+/// over a job's meetings, and lists at the local grammar's item cap. Only for reports whose
+/// aggregates carry the length block.
+fn length_table(report: &Value, s: &mut String) {
+    let rows: Vec<(&Value, &Value)> = report["candidates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|c| {
+            c["jobs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(move |j| (c, j))
+        })
+        .filter(|(_, j)| j["aggregate"]["length"].is_object())
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    s.push_str(
+        "\n| candidate | split | source | ok | words | notes words (tldr, headings, bullets) | sections | bullets | decisions written | actions written | lists at the cap | decision or action lists at the cap | meetings with one |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
+    );
+    for (c, j) in rows {
+        let g = &j["aggregate"];
+        let l = &g["length"];
+        let _ = writeln!(
+            s,
+            "| {} | {} | {} | {}/{} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            candidate_label(c),
+            j["split"].as_str().unwrap_or("?"),
+            j["source"].as_str().unwrap_or("?"),
+            g["ok"],
+            g["meetings"],
+            l["words"],
+            l["notes_words"],
+            l["sections"],
+            l["bullets"],
+            l["decisions"],
+            l["actions"],
+            l["lists_at_cap"],
+            l["item_lists_at_cap"],
+            l["meetings_with_item_list_at_cap"],
+        );
+    }
+}
+
 fn candidate_label(c: &Value) -> String {
     let mut name = c["candidate"].as_str().unwrap_or("?").to_owned();
     if c["two_call"] == true {
@@ -1348,8 +1396,8 @@ pub fn result_file_name(id: &str, backend: &str) -> String {
 
 /// Refuses a Claude Code run that is not the T7.4gb shape: the candidate alone, only the
 /// public AMI reference transcripts (`--source reference`: Earshot's replays and private
-/// data are never handed to Claude Code), the production prompt and Claude Code's own
-/// budget (no `--prompt-variant`, `--two-call`, `--two-track`, `--context`,
+/// data are never handed to Claude Code), the production plan and Claude Code's own
+/// budget (no `--two-call`, `--two-track`, `--context`,
 /// `--max-output`, `--threads` or `--backend`), and no replay or prompt export/import.
 /// `--chunk-seconds` is allowed: the "chunks during the meeting" condition.
 ///
@@ -1378,10 +1426,11 @@ pub fn check_agent_cli(opts: &Options, agent: AgentCli) -> Result<()> {
          --source reference"
     );
     let defaults = Options::default();
+    // A prompt variant is allowed (T12.17, evaluation only): the rules change, the plan
+    // does not, and the format key names the variant.
     ensure!(
-        opts.prompt_variant.is_current() && !opts.two_call && !opts.two_track,
-        "--model {id} runs the production prompt (no --prompt-variant, --two-call or \
-         --two-track)"
+        !opts.two_call && !opts.two_track,
+        "--model {id} runs the production plan (no --two-call or --two-track)"
     );
     ensure!(
         opts.context == defaults.context
@@ -1415,6 +1464,7 @@ pub fn claude_code_args(
     id: &str,
     model: Option<&str>,
     chunk_seconds: Option<u32>,
+    prompt_variant: PromptVariant,
     out: &Path,
 ) -> Vec<OsString> {
     agent_cli_args(
@@ -1425,6 +1475,7 @@ pub fn claude_code_args(
         id,
         model,
         chunk_seconds,
+        prompt_variant,
         None,
         out,
     )
@@ -1445,6 +1496,7 @@ pub fn agent_cli_args(
     id: &str,
     model: Option<&str>,
     chunk_seconds: Option<u32>,
+    prompt_variant: PromptVariant,
     codex_cli: Option<&Path>,
     out: &Path,
 ) -> Vec<OsString> {
@@ -1466,6 +1518,9 @@ pub fn agent_cli_args(
     }
     if let Some(s) = chunk_seconds {
         a.extend(["--chunk-seconds".into(), s.to_string().into()]);
+    }
+    if !prompt_variant.is_current() {
+        a.extend(["--prompt-variant".into(), prompt_variant.name().into()]);
     }
     a.extend(["--out".into(), out.into()]);
     a
@@ -1599,6 +1654,7 @@ pub fn run_agent_cli(root: &Path, opts: &Options, agent: AgentCli) -> Result<()>
                 &id,
                 model.as_deref(),
                 opts.chunk_seconds,
+                opts.prompt_variant,
                 opts.codex_cli.as_deref(),
                 &file,
             ))
@@ -2661,6 +2717,26 @@ mod tests {
         let t = table(&report);
         assert!(t.contains("| qwen3.5-9b-q4_k_m (prompt lean) |"), "{t}");
         assert!(t.contains("| qwen3.5-9b-q4_k_m | ? |"), "{t}");
+        // No length block in these aggregates: no length table.
+        assert!(!t.contains("notes words"), "{t}");
+    }
+
+    #[test]
+    fn sum_eval_table_lists_the_t1217_lengths() {
+        let length = json!({
+            "words": 812, "notes_words": 500, "sections": 9, "bullets": 31,
+            "decisions": 14, "actions": 7, "lists_at_cap": 2, "item_lists_at_cap": 1,
+            "meetings_with_item_list_at_cap": 1,
+        });
+        let report = json!({"candidates": [
+            {"candidate": "claude-code", "prompt_variant": "short", "jobs": [{"split": "dev", "source": "reference", "aggregate": {"ok": 20, "meetings": 20, "length": length}}]},
+        ]});
+        let t = table(&report);
+        assert!(t.contains("| words |"), "{t}");
+        assert!(
+            t.contains("| claude-code (prompt short) | dev | reference | 20/20 | 812 | 500 | 9 | 31 | 14 | 7 | 2 | 1 | 1 |"),
+            "{t}"
+        );
     }
 
     #[test]
@@ -2878,20 +2954,19 @@ mod tests {
             );
         }
         let c = || claude(&["claude-code"]);
-        refused(
-            Options {
-                prompt_variant: PromptVariant::Lean,
-                ..c()
-            },
-            "production prompt",
-        );
+        // A prompt variant is allowed (T12.17, evaluation only).
+        check_claude_code(&Options {
+            prompt_variant: PromptVariant::Lean,
+            ..c()
+        })
+        .unwrap();
         refused(
             Options {
                 two_call: true,
                 chunk_seconds: Some(600),
                 ..c()
             },
-            "production prompt",
+            "production plan",
         );
         refused(
             Options {
@@ -2939,20 +3014,24 @@ mod tests {
 
     #[test]
     fn sum_eval_claude_code_args_name_the_engine_model_and_chunks() {
-        let s = |model: Option<&str>, chunk: Option<u32>| -> Vec<String> {
-            claude_code_args(
-                Path::new("a"),
-                &[("dev".into(), "reference".into())],
-                &[("dev".into(), vec!["ES2003c".into()])],
-                "claude-code",
-                model,
-                chunk,
-                Path::new("o.json"),
-            )
-            .into_iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
-        };
+        let s_with =
+            |model: Option<&str>, chunk: Option<u32>, variant: PromptVariant| -> Vec<String> {
+                claude_code_args(
+                    Path::new("a"),
+                    &[("dev".into(), "reference".into())],
+                    &[("dev".into(), vec!["ES2003c".into()])],
+                    "claude-code",
+                    model,
+                    chunk,
+                    variant,
+                    Path::new("o.json"),
+                )
+                .into_iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+            };
+        let s =
+            |model: Option<&str>, chunk: Option<u32>| s_with(model, chunk, PromptVariant::Current);
         let after = s(None, None);
         assert!(after.iter().any(|a| a == "--claude-code"));
         assert!(after.windows(2).any(|w| w == ["--job", "dev:reference"]));
@@ -2971,6 +3050,10 @@ mod tests {
         let chunked = s(Some("opus"), Some(600));
         assert!(chunked.windows(2).any(|w| w == ["--chunk-seconds", "600"]));
         assert!(chunked.windows(2).any(|w| w == ["--claude-model", "opus"]));
+        assert!(!after.iter().any(|a| a == "--prompt-variant"));
+        // A prompt variant is passed on (T12.17, evaluation only).
+        let short = s_with(None, None, PromptVariant::Short);
+        assert!(short.windows(2).any(|w| w == ["--prompt-variant", "short"]));
     }
 
     #[test]
@@ -3055,13 +3138,14 @@ mod tests {
             },
             "reference transcripts",
         );
-        refused(
-            Options {
+        check_agent_cli(
+            &Options {
                 prompt_variant: PromptVariant::Lean,
                 ..c()
             },
-            "production prompt",
-        );
+            AgentCli::Codex,
+        )
+        .unwrap();
         refused(
             Options {
                 context: 32_768,
@@ -3099,6 +3183,7 @@ mod tests {
                 "codex",
                 model,
                 chunk,
+                PromptVariant::Current,
                 cli,
                 Path::new("o.json"),
             )
@@ -3145,6 +3230,7 @@ mod tests {
             "claude-code",
             None,
             None,
+            PromptVariant::Current,
             Some(Path::new("codex.exe")),
             Path::new("o.json"),
         );
