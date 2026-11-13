@@ -1278,3 +1278,70 @@ Asked by the owner: does the 600 s chunking lose the items both arms missed? The
 - **Chunking does not lose the items.** Unchunked caught fewer decisions in both arms, and most of the loss was on r3. 2 decisions and 1 action on r1, and 1 action on r3, were missed by all four runs. The limit is the 4B, not the plan or the prompt length.
 - **Unchunked brief** made nothing up and caught the most actions, but it lost decisions on r1 and r3 against the rule's limit of one per meeting.
 - **Limits:** the judges differ between the rounds, so a total that moves by 1 or 2 is within judge noise; the decision drop is larger. Unchunked reads the whole meeting after hang-up, so it would cost more time at hang-up on the Surface than the chunked plan; not measured. GPU times at hang-up: 8.4 s (standard) and 5.8 s (brief) per meeting.
+
+## T12.25 part 2 rule: merge by selection (written before measuring)
+
+Written and committed on its own before any selection merge was run or any of its summaries read (2026-11-14). Evaluation only: nothing shipped changes, and the production grammar and summary path stay byte-identical.
+
+**The method** (the reply format below was amended before any judging; see "Method amended before any result was judged" further down for the format that was run). The map partials of the chunked plan (600 s chunks, `earshot_core::prompt::time_chunks`) are made and kept exactly as today. The merge request is replaced by a selection request: it gets the meeting details, each part's `tldr`, and the numbered decisions (D1, D2, ...), action items (A1, ...) and open questions (Q1, ...) of every part in meeting order, each labelled with its part. It replies under a grammar of numbers only: for each of the three lists, a list of groups of item numbers (one number keeps that item as written; several numbers fold items that say the same thing into one, keeping the first number's wording and the citations of all of them, at most three; a number left out is dropped, which is how a superseded decision or an answered question goes), and a short `tldr`. Code builds the summary from the kept items, starting from `join_partials`: the first part's title, the reply's `tldr`, every part's notes and topics joined with exact repeats dropped, and the selected decisions, action items and open questions. Nothing is reworded: every kept item's text is a partial's own. The lists keep the production caps (12 items). A selection reply that is still invalid after the usual repair rounds falls back to `join_partials` (counted as joined, as today's merge does since T8.4d). The selection request's system message is one fixed text for both prompt arms (it carries the decision and action-item definitions, rules 5 and 6, which `system.md` and `brief.md` share word for word); the arms differ in the map partials. A meeting of one chunk is one request, as today. Flag `--merge-select`, format key part `-select`.
+
+**Conditions.** Qwen 3.5 4B (`qwen3.5-4b-q4_k_m`, the shipped local summary model), CUDA on the desktop GPU, S16, greedy, chunked 600 s, one build for every run. Both prompt arms for every condition:
+
+| Condition | Rules | Merge |
+|---|---|---|
+| control | `standard` (today's `system.md`) | today's merge |
+| brief | `brief` | today's merge |
+| standard-select | `standard` | selection |
+| brief-select | `brief` | selection |
+
+The control and brief runs are made again in this build; before anything is judged, `sum_eval --compare-summaries` must show them equal to the earlier stored runs of the same condition (greedy). A difference is reported, not hidden, and the fresh runs are the ones judged.
+
+**Deciding set: the owner's own meetings** (T12.25a store run `run-1`, labels r1 to r4, the real-item lists already fixed there before any summary was read). **Public check: the five judged AMI dev meetings** (ES2003c, ES2011c, IS1008c, TS3004c, TS3006c, reference source, the fixed real-item lists of `docs/summary-eval/prompt-rounds-2026-11-04.md`): reported beside the deciding set, deciding nothing.
+
+**Judging.** Blinded packets, four summaries per meeting (the four conditions), one Claude Code agent per meeting, marking every summary decision and action item as caught (with the real item's id), made up or duplicate under the judging rules of `docs/summary-eval/prompt-rounds-2026-11-04.md`, as in the T12.25a runs. An invalid summary is judged as catching nothing. Counts per meeting and condition: real decisions caught, real actions caught, made-up items.
+
+**Rule (the owner's trade-off, PLAN T12.25, stated unchanged).** A faster condition is worth shipping when, against `standard` with today's method (the control): time at hang-up on the Surface falls by at least 50%, and real decisions caught fall by at most 1 per meeting judged (on any one meeting and in total: at most N for N meetings), and real actions caught do not fall, and made-up items do not rise. A condition that loses nothing passes on any speed gain. Read here as: decisions are compared on every meeting and in total over the N meetings judged; actions caught and made-up items are compared in total over the meetings judged (per meeting reported). Each of `brief`, `standard-select` and `brief-select` is judged by this rule against the control, on the owner's meetings. Anything outside these numbers goes to the owner; it is not decided by the rule.
+
+**Time.** Reported per meeting from llama.cpp's counts and step times: requests, prompt and generated tokens, and `hangup_s` (the last map step plus the merge, the wait after the meeting ends). These runs are on the desktop GPU, possibly a shared host, so their seconds are not Surface times. The 50% criterion needs a Surface run on an idle machine, which comes later. So tonight's result can at most say "quality passes, speed not yet measured"; a condition that fails a quality part fails whatever its speed.
+
+**Limits, stated now.** Four of the owner's meetings, one run per condition, one judge per meeting; a total that moves by 1 or 2 between rounds can be judge noise. The selection merge keeps every part's notes, so its summaries can be longer than today's merge; words are reported, and length is not part of the rule.
+
+**Method amended before any result was judged (2026-11-14).** The first selection runs (both arms, the five AMI dev meetings and the owner's four) put nearly every number of a list into one group, which the reply format reads as "fold all of these into one": every summary kept one decision and one action item (AMI: 5 decisions and 5 actions written over five meetings in each arm, against 35 and 18 for the control; the owner's meetings: one action per meeting). That is the model misreading the reply format, not a selection, so those runs were stopped, are not judged and are kept aside (`target/sum-eval/t1225s-*-select`, and in the private run folder). The reply format is now a flat list of the numbers kept per list (`decisions`, `action_items`, `open_questions`) plus separate fold groups (`same_decisions`, `same_action_items`, groups of two or more numbers that are one item in other words): each kept number is one item in the order kept, the other members of its group are folded into it (their citations kept, at most three), a kept number already folded into an earlier one gives no item, and a group with no kept member changes nothing. Everything else in the method, the conditions, the judging and the rule are unchanged. The format key stays `-select`; the amended runs go to new folders, and the control and `brief` runs were made again in the amended build so all four conditions come from one build.
+
+### Runs (2026-11-14, counts only): generation done, judging pending
+
+One build (CUDA, RTX 5080, S16, greedy, chunked 600 s). **Today's method reproduces:** `--compare-summaries` of the control and `brief` runs against the stored runs gave 5 of 5 AMI meetings identical in each arm (against `t1217-4b-current` and `t1217-4b-brief`) and 4 of 4 of the owner's meetings identical in each arm (against the T12.25a first run), both before and after the amendment above. Every summary of every condition is valid; no selection reply needed a repair and none was joined. Seconds are desktop GPU seconds on a possibly shared host, not Surface times.
+
+| Set | Condition | Valid | Requests | Prompt tokens | Generated tokens | At hang-up, s per meeting (GPU) | Decisions / actions written |
+|---|---|---|---|---|---|---|---|
+| AMI (5) | control | 5/5 | 25 | 121,837 | 28,349 | 17.9 | 35 / 18 |
+| AMI (5) | brief | 5/5 | 25 | 120,818 | 19,215 | 10.7 | 36 / 17 |
+| AMI (5) | standard-select | 5/5 | 25 | 112,957 | 18,272 | 5.5 | 31 / 18 |
+| AMI (5) | brief-select | 5/5 | 25 | 114,122 | 13,202 | 4.3 | 28 / 14 |
+| Owner's (4) | control | 4/4 | 18 | 66,039 | 20,703 | 15.0 | 4 / 20 |
+| Owner's (4) | brief | 4/4 | 18 | 64,020 | 10,559 | 8.4 | 6 / 13 |
+| Owner's (4) | standard-select | 4/4 | 18 | 59,355 | 11,800 | 4.6 | 3 / 14 |
+| Owner's (4) | brief-select | 4/4 | 18 | 60,047 | 6,426 | 3.8 | 5 / 12 |
+
+- The selection merge cuts the GPU wait at hang-up by about 70% against the control in both sets (the merge itself drops from about 14 s to under 1 s per meeting); whether that holds on the Surface is not measured. Quality is not judged yet: the blinded packets (four summaries per meeting) are written, the AMI set under `target/sum-eval/judge-dev-t1225s`, the owner's in the private run folder.
+
+### Judged (2026-11-14, counts only)
+
+One Claude Code agent per meeting judged the four blinded summaries against the fixed real-item lists, by the judging rules of `docs/summary-eval/prompt-rounds-2026-11-04.md`; the key was read only after every verdict was written. Real items: the owner's four meetings hold 9 decisions and 14 actions; the five AMI meetings 42 decisions and 18 actions.
+
+| Set | Condition | Decisions caught | Actions caught | Made up | Duplicates |
+|---|---|---|---|---|---|
+| Owner's (4, deciding) | control | 4 | 9 | 8 | 3 |
+| Owner's (4, deciding) | brief | 4 | 9 | 2 | 2 |
+| Owner's (4, deciding) | standard-select | 4 | 9 | 4 | 3 |
+| Owner's (4, deciding) | brief-select | 4 | 9 | 2 | 1 |
+| AMI (5, public check) | control | 25 | 13 | 10 | 4 |
+| AMI (5, public check) | brief | 22 | 10 | 13 | 4 |
+| AMI (5, public check) | standard-select | 22 | 13 | 12 | 3 |
+| AMI (5, public check) | brief-select | 20 | 9 | 10 | 1 |
+
+Per meeting on the owner's set, every condition caught the same decisions as the control on each meeting (r1 0, r2 0, r3 4, r4 0). Actions caught are equal in total (9 each); per meeting the brief arms caught one fewer on r1 and one more on r2. Made-up items fell from the control's 8 (6 of them on r3) in all three conditions.
+
+**By the rule (the owner's meetings decide):** `brief`, `standard-select` and `brief-select` each pass every quality part against the control (decisions caught not lower on any meeting, actions caught not lower in total, made-up items not higher). The speed part is not measured: the Surface timing at hang-up is still to run. On the desktop GPU the wait at hang-up fell 44% (`brief`), 69% (`standard-select`) and 75% (`brief-select`); `brief` alone would miss the 50% on these GPU numbers. So tonight's result is "quality passes, speed not yet measured" for the two selection conditions.
+
+**Limits.** The control's summaries here are byte-identical to the T12.25a first run's, yet this round's judge gave them 4 of 9 decisions where that round's judge gave 6: a judge moves a total by 2 on the same text, as the rule's limits warned, so these small totals are within judge noise; each meeting's four summaries were judged by one agent together, which keeps the comparison inside a meeting fair. On the public AMI check `standard-select` lost 3 decisions in total (2 of them on TS3006c) and made up 2 more than the control, and `brief-select` lost 4 actions; it decides nothing, but it is the larger set and points the same way as T12.17's AMI rounds: on the 4B, `brief` rules lose items on AMI. The owner's meetings are few and decision-light (two of four have no real decision).

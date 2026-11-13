@@ -381,6 +381,10 @@ pub struct Options {
     /// Prompt prefix reuse on (T12.25 part 1, evaluation): local candidates without
     /// thinking; format key `-reuse`.
     pub prefix_reuse: bool,
+    /// Merge by selection (T12.25 part 2, evaluation only): the chunked map steps as today,
+    /// then a selection request instead of the merge. Needs [`Options::chunk_seconds`]; local
+    /// summary runs only; format key `-select`.
+    pub merge_select: bool,
 }
 
 /// The request format the `sum_eval` example records as `grammar` (its `format_key`): a
@@ -507,6 +511,11 @@ impl Options {
         if self.prefix_reuse {
             key.push_str("-reuse");
         }
+        // T12.25 part 2: the merge by selection after `-reuse` and before the template, as
+        // the example's `merge_suffix`.
+        if self.merge_select {
+            key.push_str("-select");
+        }
         // T12.17: the summary template last, as the example's `template_suffix`.
         if !self.style_preset.is_standard() {
             key.push_str("-template-");
@@ -589,6 +598,7 @@ impl Default for Options {
             store_min_minutes: 15,
             store_exclude: Vec::new(),
             prefix_reuse: false,
+            merge_select: false,
         }
     }
 }
@@ -1067,6 +1077,9 @@ pub fn eval_args(
     if opts.prefix_reuse && model.is_some() {
         a.push("--prefix-reuse".into());
     }
+    if opts.merge_select && model.is_some() {
+        a.push("--merge-select".into());
+    }
     a.extend([
         "--context".into(),
         opts.context.to_string().into(),
@@ -1277,6 +1290,9 @@ fn candidate_label(c: &Value) -> String {
     }
     if c["two_track"] == true {
         name.push_str(" (two-track)");
+    }
+    if c["merge_select"] == true {
+        name.push_str(" (select)");
     }
     if let Some(cap) = c["thinking_cap"].as_u64() {
         name.push_str(&format!(" (thinking {cap})"));
@@ -1514,6 +1530,10 @@ pub fn check_agent_cli(opts: &Options, agent: AgentCli) -> Result<()> {
     ensure!(
         !opts.prefix_reuse,
         "--prefix-reuse is for local candidates only, not --model {id}"
+    );
+    ensure!(
+        !opts.merge_select,
+        "--merge-select is for local candidates only, not --model {id}"
     );
     check_variant_differs_from_writer_rules(opts)
 }
@@ -1913,6 +1933,14 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
             || (opts.thinking.is_none()
                 && !(opts.stored_only() || opts.rescore || opts.replay_only)),
         "--prefix-reuse applies to local summary runs without --thinking only"
+    );
+    ensure!(
+        !opts.merge_select
+            || (opts.chunk_seconds.is_some()
+                && !opts.two_call
+                && !opts.two_track
+                && !(opts.stored_only() || opts.rescore || opts.replay_only)),
+        "--merge-select needs --chunk-seconds, not --two-call or --two-track, and applies to local summary runs only"
     );
     let report = crate::doctor::collect();
     let cuda = crate::doctor::cuda_for_backend_choice(&report, opts.backend.as_deref())?;
@@ -3050,6 +3078,77 @@ mod tests {
             ..Options::default()
         };
         assert!(check_claude_code(&agent).is_err());
+    }
+
+    #[test]
+    fn sum_eval_merge_select_has_its_own_format_key() {
+        let o = Options {
+            models: vec!["qwen3.5-4b-q4_k_m".into()],
+            chunk_seconds: Some(600),
+            prompt_variant: PromptVariant::Brief,
+            style_preset: StylePreset::Brief,
+            prefix_reuse: true,
+            merge_select: true,
+            ..Options::default()
+        };
+        // After `-reuse`, before the template, as the example's `merge_suffix`.
+        assert_eq!(
+            o.format_key(),
+            "indented-numbered-r5-chunk600-prompt-brief-reuse-select-template-brief"
+        );
+        let plain = Options {
+            models: vec!["qwen3.5-4b-q4_k_m".into()],
+            chunk_seconds: Some(600),
+            merge_select: true,
+            ..Options::default()
+        };
+        assert_eq!(plain.format_key(), "indented-numbered-r5-chunk600-select");
+        let today = Options {
+            merge_select: false,
+            ..plain.clone()
+        };
+        assert_eq!(today.format_key(), "indented-numbered-r5-chunk600");
+        // The flag reaches local runs only.
+        let c = select_candidates(&plain.models).unwrap().remove(0);
+        let args = |opts: &Options, model: bool| -> Vec<String> {
+            eval_args(
+                Path::new("a"),
+                Path::new("e"),
+                &[],
+                &[],
+                model.then_some((Path::new("m.gguf"), &c)),
+                true,
+                opts,
+                Path::new("o.json"),
+            )
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+        };
+        assert!(args(&plain, true).iter().any(|a| a == "--merge-select"));
+        assert!(!args(&today, true).iter().any(|a| a == "--merge-select"));
+        assert!(!args(&plain, false).iter().any(|a| a == "--merge-select"));
+        // Never an agent CLI.
+        let agent = Options {
+            models: vec!["claude-code".into()],
+            sources: vec!["reference".into()],
+            merge_select: true,
+            ..Options::default()
+        };
+        assert!(
+            check_claude_code(&agent)
+                .unwrap_err()
+                .to_string()
+                .contains("--merge-select")
+        );
+        // The table names it.
+        let report = json!({"candidates": [
+            {"candidate": "qwen3.5-4b-q4_k_m", "merge_select": true, "prompt_variant": "current", "jobs": []},
+        ]});
+        assert_eq!(
+            candidate_label(&report["candidates"][0]),
+            "qwen3.5-4b-q4_k_m (select)"
+        );
     }
 
     #[test]

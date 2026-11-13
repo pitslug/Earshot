@@ -312,6 +312,12 @@ enum Cmd {
         /// without --thinking; use its own --out.
         #[arg(long, conflicts_with = "thinking")]
         prefix_reuse: bool,
+        /// Merge by selection (T12.25 part 2, evaluation only): the map steps as today, then
+        /// one request that chooses by number which items to keep and fold, the summary built
+        /// in code (format key `-select`). Needs --chunk-seconds; local candidates; use its
+        /// own --out.
+        #[arg(long, requires = "chunk_seconds", conflicts_with_all = ["two_call", "two_track"])]
+        merge_select: bool,
     },
     /// Build the NPU conversion of a Parakeet TDT model (T8.3): static 30 s input shape,
     /// QDQ quantisation for Qualcomm's HTP backend, into <models>/parakeet-qnn/<name>.
@@ -592,6 +598,7 @@ fn main() -> ExitCode {
             store_min_minutes,
             store_exclude,
             prefix_reuse,
+            merge_select,
         } => xtask::sum_eval::run(
             &root,
             &xtask::sum_eval::Options {
@@ -625,6 +632,7 @@ fn main() -> ExitCode {
                 store_min_minutes,
                 store_exclude,
                 prefix_reuse,
+                merge_select,
             },
         )
         .map(|()| true),
