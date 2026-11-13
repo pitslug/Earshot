@@ -6277,7 +6277,6 @@ dependencies = [
  "earshot-llm",
  "earshot-llm-replay",
  "earshot-net",
- "earshot-proc",
  "earshot-store",
  "earshot-update",
  "flate2",

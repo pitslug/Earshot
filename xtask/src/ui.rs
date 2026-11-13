@@ -3,7 +3,7 @@
 //! Runs first in `cargo xtask ci`, because the desktop app's `tauri::generate_context!`
 //! needs the built front end (`apps/desktop/dist`) when the workspace compiles. Installs
 //! from the committed lockfile, builds every package (type-check, Vite build) and runs
-//! every package's tests. Each command goes through [`run_in_job_with_timeout`]; a result counts
+//! every package's tests. Each command goes through [`run_with_timeout`]; a result counts
 //! only with exit 0 and completely captured output.
 
 use std::path::Path;
@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use crate::proc::{CmdOutput, run_in_job_with_timeout};
+use crate::proc::{CmdOutput, run_with_timeout};
 
 /// One pnpm command of the step: name, pnpm arguments, deadline.
 pub type UiStep = (&'static str, &'static [&'static str], Duration);
@@ -61,8 +61,9 @@ pub fn run(root: &Path) -> Result<()> {
     for (name, args, deadline) in UI_STEPS {
         println!("ui: {name}: pnpm {}", args.join(" "));
         let mut cmd = pnpm_command(root, args);
-        // In a kill-on-close job: a timeout stops pnpm and node too, not only `cmd`.
-        let Some(out) = run_in_job_with_timeout(&mut cmd, *deadline) else {
+        // On a timeout only `cmd` is killed (no job object): a pnpm or node grandchild may
+        // outlive it and must be stopped by its process id.
+        let Some(out) = run_with_timeout(&mut cmd, *deadline) else {
             bail!(
                 "ui: `pnpm {}` could not start or exceeded {} s (is pnpm on PATH?)",
                 args.join(" "),
