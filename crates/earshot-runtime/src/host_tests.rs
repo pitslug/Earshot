@@ -1282,3 +1282,41 @@ fn host_after_meeting_says_claude_code_used_its_default_effort_only_for_a_stored
         ));
     }
 }
+
+/// T12.12e: NPU refusals reach device record `npu-compiled`, each replacing the older entry of its
+/// kind; a record this version cannot read is replaced, never an error.
+#[test]
+fn host_npu_refusals_are_stored_by_kind() {
+    use crate::npu_compiled::{LoadFor, Refused, Step};
+    let dir = TempDir::new("host-npu-refusals");
+    let (svc, _) = services(&dir);
+    assert_eq!(stored_npu_refusals(&svc.store()), None);
+    store_npu_refusals_from(&svc, Vec::new());
+    assert_eq!(stored_npu_refusals(&svc.store()), None, "nothing to store");
+    let refused = |load_for, steps| Refused {
+        at_ms: 7,
+        load_for,
+        steps,
+    };
+    crate::local::set(
+        &mut svc.store(),
+        &crate::local::DeviceRecord::NpuCompiled.key(),
+        b"damaged",
+    )
+    .unwrap();
+    store_npu_refusals_from(&svc, vec![refused(LoadFor::Track, vec![Step::Helper])]);
+    store_npu_refusals_from(
+        &svc,
+        vec![refused(LoadFor::Preview, vec![Step::NotCompiled])],
+    );
+    let record = stored_npu_refusals(&svc.store()).unwrap();
+    assert_eq!(record.track.unwrap().steps, [Step::Helper]);
+    assert_eq!(record.preview.unwrap().steps, [Step::NotCompiled]);
+    store_npu_refusals_from(
+        &svc,
+        vec![refused(LoadFor::Track, vec![Step::CompiledLoad])],
+    );
+    let record = stored_npu_refusals(&svc.store()).unwrap();
+    assert_eq!(record.track.unwrap().steps, [Step::CompiledLoad]);
+    assert_eq!(record.preview.unwrap().steps, [Step::NotCompiled], "kept");
+}

@@ -12,6 +12,7 @@ mod audio_check;
 mod audio_settings;
 mod benchmark;
 mod check_child;
+mod child_modes;
 mod crash;
 mod credentials;
 #[cfg(windows)]
@@ -74,26 +75,11 @@ fn main() {
         #[cfg(windows)]
         wer_win::opt_out();
     }
-    if let Some(code) = check_child::child_main(&args) {
-        std::process::exit(code);
-    }
-    // So does the trial of a set of llama.cpp's DLLs, which may end its process.
-    if let Some(code) = llama_probe::child_main(&args) {
-        std::process::exit(code);
-    }
-    // And the trial of the CUDA transcription folder, for the same reason.
-    if let Some(code) = transcription_probe::child_main(&args) {
-        std::process::exit(code);
-    }
-    // And a summary on the graphics card, so a driver crash costs only that summary (T9.3).
-    if let Some(code) = earshot_runtime::summary_child::child_main(&args) {
+    // The hidden child modes (model check, llama.cpp and CUDA trials, GPU summary, NPU compile).
+    if let Some(code) = child_modes::run(&args) {
         std::process::exit(code);
     }
     earshot_runtime::summary_child::use_this_exe();
-    // And an NPU compile (T12.12b): the app itself never closes the session that compiled.
-    if let Some(code) = earshot_runtime::npu_compiled::child_main(&args) {
-        std::process::exit(code);
-    }
     earshot_runtime::npu_compiled::use_this_exe();
     // So does the replay mode of `accept m7`: no window or webview exists in it.
     if let Some(code) = headless::main_if_asked(&args) {

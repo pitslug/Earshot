@@ -208,6 +208,7 @@ impl MeetingModels {
                 }
             };
             let loaded = f(track, entity);
+            store_npu_refusals(&me.services);
             // An NPU load that could not use its compiled model (T12.12a), once per process. One
             // made by a final pass or a preview shows at the next track load.
             if let Some(message) = crate::npu_compiled::take_note() {
@@ -413,6 +414,53 @@ pub fn prepare_npu_model(
     })
     .map(Some)
     .map_err(|e| RuntimeError::Asr(earshot_core::asr::AsrError::Backend(e)))
+}
+
+/// Stores the NPU loads of this process that did not use their compiled model and are not stored
+/// yet ([`crate::npu_compiled::take_unstored`]) in device record `npu-compiled` (T12.12e), each
+/// replacing the older entry of its kind, so a refusal can be diagnosed after the app has closed:
+/// steps and times only, never a path or error text. Best effort: a store that cannot be read or
+/// written loses the entry, and never costs a meeting. Called after each live track load, when a
+/// meeting's work after recording starts (previews have loaded by then) and after it ends (the
+/// final pass's own load).
+pub fn store_npu_refusals(services: &Services) {
+    store_npu_refusals_from(services, crate::npu_compiled::take_unstored());
+}
+
+/// [`store_npu_refusals`] for the refusals given.
+pub(crate) fn store_npu_refusals_from(
+    services: &Services,
+    refused: Vec<crate::npu_compiled::Refused>,
+) {
+    use crate::npu_compiled::{REFUSALS_KEY, RefusalRecord};
+    if refused.is_empty() {
+        return;
+    }
+    let mut db = services.store();
+    let old = db
+        .local_value(REFUSALS_KEY)
+        .ok()
+        .flatten()
+        .and_then(|bytes| RefusalRecord::decode(&bytes))
+        .unwrap_or_default();
+    if let Ok(bytes) = old.with(refused).encode() {
+        let _ = crate::local::set(
+            &mut db,
+            &crate::local::DeviceRecord::NpuCompiled.key(),
+            &bytes,
+        );
+    }
+}
+
+/// The NPU refusals stored by [`store_npu_refusals`] (`None`: none, or a record this version cannot
+/// read).
+#[must_use]
+pub fn stored_npu_refusals(store: &Store) -> Option<crate::npu_compiled::RefusalRecord> {
+    store
+        .local_value(crate::npu_compiled::REFUSALS_KEY)
+        .ok()
+        .flatten()
+        .and_then(|bytes| crate::npu_compiled::RefusalRecord::decode(&bytes))
 }
 
 /// The transcription of an app run, from the Models page settings
@@ -1696,7 +1744,10 @@ pub fn after_meeting(
             fallbacks: setup.fallbacks,
         })
     };
-    after_meeting_with(services, outcome, run, load, progress)
+    let done = after_meeting_with(services, outcome, run, load, progress);
+    // The final pass's own NPU load, so it is kept even if the app closes after this meeting.
+    store_npu_refusals(services);
+    done
 }
 
 /// A loaded final-pass processor and how its model was verified.
@@ -1724,6 +1775,8 @@ where
     E: SpeakerEmbedder + Send,
 {
     let meeting = outcome.meeting;
+    // The meeting's previews have loaded or given up by now.
+    store_npu_refusals(services);
     // Refused while the meeting is being deleted: nothing runs, no step is reported.
     let _lease = match services.lease_meeting_for(meeting, MeetingJob::Processing) {
         Ok(lease) => lease,

@@ -202,6 +202,9 @@ pub(crate) enum DeviceRecord {
     Vocabulary,
     /// `settings/summary-template`: the summary template (T12.17).
     SummaryTemplate,
+    /// `npu-compiled`: the latest NPU load of each kind that did not use the compiled model, path
+    /// free (T12.12e; [`crate::npu_compiled::RefusalRecord`]).
+    NpuCompiled,
 }
 
 impl DeviceRecord {
@@ -244,6 +247,7 @@ impl DeviceRecord {
         DeviceRecord::UpdateLastCheck,
         DeviceRecord::UpdateNotified,
         DeviceRecord::Vocabulary,
+        DeviceRecord::NpuCompiled,
     ];
 
     /// Its key.
@@ -292,6 +296,7 @@ impl DeviceRecord {
                 DeviceRecord::UpdateLastCheck => crate::update::LAST_CHECK_KEY,
                 DeviceRecord::UpdateNotified => crate::update::NOTIFIED_KEY,
                 DeviceRecord::Vocabulary => crate::vocabulary::VOCABULARY_KEY,
+                DeviceRecord::NpuCompiled => crate::npu_compiled::REFUSALS_KEY,
             }
             .to_owned(),
         )

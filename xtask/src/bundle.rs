@@ -320,9 +320,10 @@ pub const QNN_ARTEFACT: &str = "qnn-ep-win-arm64";
 /// Its `cargo xtask fetch-models` set.
 pub const QNN_SET: &str = "qnn";
 /// The QNN libraries an ARM64 install holds beside the exe (T8.4e): exactly the libraries the
-/// manifest pins for the plugin, which `earshot_onnx::qnn::QNN_ARM64` checks before loading.
-/// The `.cat` catalogue files stay out until the Surface shows they are needed.
-pub const QNN_LIBRARIES: [&str; 8] = [
+/// manifest pins for the plugin, which `earshot_onnx::qnn::QNN_ARM64` checks before loading, and
+/// the skels' signing catalogs (T12.12e: without them a context model compiled with them fails to
+/// load, so the install's plugin folder matches the models folder's).
+pub const QNN_LIBRARIES: [&str; 10] = [
     "onnxruntime_providers_qnn.dll",
     "QnnHtp.dll",
     "QnnHtpPrepare.dll",
@@ -331,6 +332,8 @@ pub const QNN_LIBRARIES: [&str; 8] = [
     "libQnnHtpV73Skel.so",
     "QnnHtpV81Stub.dll",
     "libQnnHtpV81Skel.so",
+    "libqnnhtpv73.cat",
+    "libqnnhtpv81.cat",
 ];
 /// The plugin's MIT licence (`LICENSE` in the zip) in an install, renamed so it says whose it is.
 pub const QNN_LICENSE_IN_INSTALL: &str = "QNN-LICENSE.txt";
@@ -355,6 +358,8 @@ pub fn qnn_install_files() -> &'static [(&'static str, &'static str)] {
         ("libQnnHtpV73Skel.so", "libQnnHtpV73Skel.so"),
         ("QnnHtpV81Stub.dll", "QnnHtpV81Stub.dll"),
         ("libQnnHtpV81Skel.so", "libQnnHtpV81Skel.so"),
+        ("libqnnhtpv73.cat", "libqnnhtpv73.cat"),
+        ("libqnnhtpv81.cat", "libqnnhtpv81.cat"),
         ("Qualcomm_LICENSE.pdf", "Qualcomm_LICENSE.pdf"),
         ("LICENSE", QNN_LICENSE_IN_INSTALL),
         ("ThirdPartyNotices.txt", QNN_NOTICES_IN_INSTALL),

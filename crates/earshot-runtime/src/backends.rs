@@ -1849,7 +1849,13 @@ fn load_parakeet_qnn(
             compile,
             ordinary,
         )?,
-        Err(why) => (ordinary()?, How::Ordinary { why }),
+        Err(why) => (
+            ordinary()?,
+            How::Ordinary {
+                steps: vec![npu_compiled::Step::NoKey],
+                why,
+            },
+        ),
     };
     Ok(recorded_qnn_load(load_for, loaded, npu_compiled::record))
 }
@@ -1878,12 +1884,16 @@ pub(crate) type OrdinaryLoad<'a, S> = Box<dyn FnOnce() -> Result<S, AsrError> + 
 
 /// What an NPU load may do besides load a compiled model ([`crate::npu_compiled::load`]). A track's
 /// load compiles a missing model (in the helper process, else in this one) and falls back to the
-/// ordinary load. A preview's ([`QnnLoadFor::Preview`], T12.12c) never compiles, in this process
-/// or the helper (T12.30: about 30 s of NPU and CPU beside the meeting's track, holding the one
-/// NPU load lock, never measured), and never takes the ordinary load, which holds the about 2 GiB
-/// of an ordinary session for the process's life (a QNN session is never closed, T12.12b), for
-/// words that are display only. Its refusal is [`PREVIEW_NEEDS_COMPILED`], and the meeting goes
-/// on without previews.
+/// ordinary load. A preview's ([`QnnLoadFor::Preview`], T12.12c) is [`Compile::Never`]: it never
+/// compiles, in this process or the helper (T12.30: about 30 s of NPU and CPU beside the meeting's
+/// track, holding the one NPU load lock, never measured), never takes the ordinary load, which
+/// holds the about 2 GiB of an ordinary session for the process's life (a QNN session is never
+/// closed, T12.12b), for words that are display only, and never puts a refused folder aside, which
+/// is the track's to replace (T12.12e). Its refusal is [`PREVIEW_NEEDS_COMPILED`], its steps are
+/// recorded for the device record ([`crate::npu_compiled::record_preview_refusal`]; the ordinary
+/// load stands in only when the conversion gives no key), and the meeting goes on without previews.
+///
+/// [`Compile::Never`]: crate::npu_compiled::Compile::Never
 pub(crate) fn qnn_load_steps<'a, S: 'a>(
     load_for: QnnLoadFor,
     compile: crate::npu_compiled::Compile<'a, S, AsrError>,
@@ -1892,15 +1902,24 @@ pub(crate) fn qnn_load_steps<'a, S: 'a>(
     crate::npu_compiled::Compile<'a, S, AsrError>,
     OrdinaryLoad<'a, S>,
 ) {
-    use crate::npu_compiled::Compile;
+    use crate::npu_compiled::{Compile, Step, record_preview_refusal};
     if load_for == QnnLoadFor::Track {
         return (compile, Box::new(ordinary));
     }
     let refused = || AsrError::Backend(PREVIEW_NEEDS_COMPILED.to_owned());
-    // Whichever compile was offered, nothing compiles: the compile step fails at once.
+    // Whichever compile was offered, nothing compiles.
     drop(compile);
-    let compile = Compile::InProcess(Box::new(move |_: &Path| Err(refused())));
-    (compile, Box::new(move || Err(refused())))
+    let compile = Compile::Never(Box::new(move |steps: Vec<Step>| {
+        record_preview_refusal(steps);
+        refused()
+    }));
+    (
+        compile,
+        Box::new(move || {
+            record_preview_refusal(vec![Step::NoKey]);
+            Err(refused())
+        }),
+    )
 }
 
 /// The work of the [`crate::npu_compiled`] helper process (T12.12b): initialises ONNX Runtime with
