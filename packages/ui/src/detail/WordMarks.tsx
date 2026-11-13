@@ -109,12 +109,15 @@ export function LineText({
   row,
   wordList,
   actions,
+  locked = false,
   dictionary,
   tinted = [],
 }: {
   row: TranscriptRow;
   wordList: string[];
   actions: WordActions;
+  /** The meeting is busy: the marks show, but no choice changes the line. */
+  locked?: boolean;
   dictionary: DictionaryState;
   tinted?: string[];
 }): ReactNode {
@@ -157,6 +160,7 @@ export function LineText({
             word={word}
             decoded={changed.decoded}
             wordList={wordList}
+            locked={locked}
             listed={listed}
             onDictionary={() => dictionary.onToggle(word)}
             onUse={(w) => actions.onUse(t, w)}
@@ -167,6 +171,7 @@ export function LineText({
             kind="suggestion"
             word={word}
             suggested={suggestion?.listed ?? ""}
+            locked={locked}
             listed={listed}
             onDictionary={() => dictionary.onToggle(word)}
             onUse={(w) => actions.onUse(t, w)}
@@ -184,6 +189,8 @@ interface MarkBase {
   word: string;
   /** The word is a Dictionary entry: the popover offers Remove rather than Add. */
   listed: boolean;
+  /** The meeting is busy: the choices that change the line are off. */
+  locked: boolean;
   onDictionary(): void;
 }
 
@@ -250,10 +257,15 @@ function WordMark(props: MarkProps) {
               Your dictionary has <Body1Strong>{props.suggested}</Body1Strong>
             </Body1>
             <div className={styles.buttons}>
-              <Button appearance="primary" size="small" onClick={() => choose(() => props.onUse(props.suggested))}>
+              <Button
+                appearance="primary"
+                size="small"
+                disabled={props.locked}
+                onClick={() => choose(() => props.onUse(props.suggested))}
+              >
                 Use it
               </Button>
-              <Button size="small" onClick={() => choose(props.onKeep)}>
+              <Button size="small" disabled={props.locked} onClick={() => choose(props.onKeep)}>
                 Keep
               </Button>
               {dictionaryButton}
@@ -265,7 +277,7 @@ function WordMark(props: MarkProps) {
               Changed from <Body1Strong>{props.decoded}</Body1Strong>
             </Body1>
             <div className={styles.buttons}>
-              <Button size="small" onClick={() => choose(props.onPutBack)}>
+              <Button size="small" disabled={props.locked} onClick={() => choose(props.onPutBack)}>
                 Put back {props.decoded}
               </Button>
               {dictionaryButton}
@@ -274,6 +286,7 @@ function WordMark(props: MarkProps) {
               <Field label="Another word" size="small">
                 <Combobox
                   size="small"
+                  disabled={props.locked}
                   placeholder="Find a word"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}

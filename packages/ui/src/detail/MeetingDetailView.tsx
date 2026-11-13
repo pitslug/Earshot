@@ -640,6 +640,10 @@ export function MeetingDetailView({
   // A new summary being written replaces the one shown, so there is nothing settled to copy.
   const writingSummary = job !== undefined && job.job === "Resummarise" && !isTerminal(job.last);
   const summaryText = detail?.summary && !writingSummary ? summaryMarkdown(detail.summary) : "";
+  // The runtime refuses line and word edits while the meeting is busy (recording, finishing, a
+  // job on it): they are off here too, and a refusal that still comes is shown as before.
+  const linesLocked =
+    finishing || item.state === "Recording" || (job !== undefined && !isTerminal(job.last));
 
   return (
     <section ref={view} className={styles.root} aria-label="Meeting detail">
@@ -809,6 +813,7 @@ export function MeetingDetailView({
                 <TranscriptTab
                   detail={detail}
                   cited={cited}
+                  locked={linesLocked}
                   onEdit={async (segment, text) => {
                     let offer: string[] = [];
                     const saved = await save(async () => {
@@ -1323,9 +1328,12 @@ function TranscriptTab({
   onAddWord,
   onRemoveWord,
   rowRef,
+  locked,
 }: {
   detail: MeetingDetail;
   cited: string | null;
+  /** Line edits and word choices are off: the meeting is busy. */
+  locked: boolean;
   /** Saves a line's new text; the words the Dictionary bar offers, or `null` when it was
    * refused. */
   onEdit(segment: string, text: string): Promise<string[] | null>;
@@ -1519,6 +1527,7 @@ function TranscriptTab({
             cited={r.segment_id === cited}
             editing={editing === r.segment_id}
             canEdit={canEdit}
+            locked={locked}
             wordList={detail.word_list}
             dictionary={detail.dictionary}
             offered={offer?.segment === r.segment_id ? offer.words : null}
@@ -1584,6 +1593,7 @@ const TranscriptLine = memo(function TranscriptLine({
   cited,
   editing,
   canEdit,
+  locked,
   wordList,
   dictionary,
   offered,
@@ -1597,6 +1607,8 @@ const TranscriptLine = memo(function TranscriptLine({
   cited: boolean;
   editing: boolean;
   canEdit: boolean;
+  /** The meeting is busy: Edit and the word choices are off. */
+  locked: boolean;
   wordList: string[];
   dictionary: string[];
   /** The words the bar under this line offers, `null` without the bar. */
@@ -1655,6 +1667,7 @@ const TranscriptLine = memo(function TranscriptLine({
               row={r}
               wordList={wordList}
               actions={actions}
+              locked={locked}
               dictionary={lineDictionary}
               tinted={offered?.filter((w) => !inDictionary(dictionary, w))}
             />
@@ -1673,6 +1686,8 @@ const TranscriptLine = memo(function TranscriptLine({
             className={mergeClasses(styles.lineEdit, "earshot-line-edit")}
             aria-label={`Edit line ${i + 1}`}
             data-line-edit={segment}
+            // Focusable, so focus that comes back to it after a word's choice stays in the line.
+            disabledFocusable={locked}
             onClick={() => h.startEdit(segment)}
           >
             Edit

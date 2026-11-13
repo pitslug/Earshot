@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type Ipc,
   IpcFailure,
+  type JobKind,
   MISSING_SEGMENT,
   type MeetingListItem,
   type MockIpcData,
@@ -21,7 +22,7 @@ import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppShell } from "../shell/AppShell";
 import { COPIED_MS, handoverLine, savedText, summaryMarkdown } from "./detail";
-import { MeetingDetailView } from "./MeetingDetailView";
+import { type JobView, MeetingDetailView } from "./MeetingDetailView";
 
 const ITEM: MeetingListItem = { ...sampleMeetings()[1], started_at_ms: 2_000 };
 /** An older meeting, so `ITEM` is shown first. */
@@ -1725,7 +1726,7 @@ describe("MeetingDetailView, words to the Dictionary (T12.15f)", () => {
 });
 
 describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
-  function show(finishing: boolean, ipc: Ipc) {
+  function show(finishing: boolean, ipc: Ipc, job?: JobView) {
     return (
       <EarshotThemeProvider>
         <IpcProvider ipc={ipc}>
@@ -1735,6 +1736,7 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
             onJobStarted={() => {}}
             onJobDismissed={() => {}}
             finishing={finishing}
+            job={job}
           />
         </IpcProvider>
       </EarshotThemeProvider>
@@ -1778,5 +1780,46 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
     expect(within(speakerRow("Speaker 3")).getByRole("textbox", { name: "Name of Speaker 3" })).toBeEnabled();
     await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Ignore" }));
     expect(calls).toContainEqual(["ignoreSpeaker", ITEM.id, SAMPLE_SPEAKERS.third]);
+  });
+
+  it("keeps line edits and word choices off while the meeting is busy (TODO 95)", async () => {
+    const calls: unknown[][] = [];
+    const ipc = createMockIpc({
+      timer: createManualTimer(10_000),
+      meetings: [ITEM, OTHER],
+      onCall: (c) => calls.push(c),
+    });
+    const user = userEvent.setup();
+    const busy = (job: JobKind): JobView => ({ job, last: null, seq: 1 });
+    const offWhile = async (finishing: boolean, job?: JobView) => {
+      const view = render(show(finishing, ipc, job));
+      await user.click(await screen.findByRole("tab", { name: "Transcript" }));
+      const edit = screen.getByRole("button", { name: "Edit line 8" });
+      expect(edit).toHaveAttribute("aria-disabled", "true");
+      await user.click(edit);
+      expect(screen.queryByRole("textbox", { name: "Line 8" })).toBeNull();
+      // The mark still opens: its Dictionary action changes no line, its choices are off.
+      await user.click(screen.getByRole("button", { name: "Suggestion for Reed" }));
+      const dialog = await screen.findByRole("dialog", { name: "Suggestion for Reed" });
+      expect(within(dialog).getByRole("button", { name: "Use it" })).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "Keep" })).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "Add to Dictionary" })).toBeEnabled();
+      view.unmount();
+    };
+    await offWhile(true);
+    await offWhile(false, busy("Retranscribe"));
+    await offWhile(false, busy("Resummarise"));
+    const edits = ["editSegment", "useWord", "keepWord", "putBackWord"];
+    expect(calls.filter((c) => edits.includes(c[0] as string))).toEqual([]);
+
+    // A finished job leaves them on.
+    const failed: JobView = {
+      job: "Retranscribe",
+      last: { type: "Failed", meeting: ITEM.id, job: "Retranscribe", message: "Invented.", retryable: true },
+      seq: 2,
+    };
+    render(show(false, ipc, failed));
+    await user.click(await screen.findByRole("tab", { name: "Transcript" }));
+    expect(screen.getByRole("button", { name: "Edit line 8" })).not.toHaveAttribute("aria-disabled");
   });
 });
