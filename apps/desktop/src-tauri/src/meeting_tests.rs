@@ -1825,6 +1825,10 @@ impl Prepare for CancelPrepare {
                     while !cancel.is_cancelled() {
                         std::thread::sleep(Duration::from_millis(1));
                     }
+                    // One poll well after the cancel (the driver reads the count right after
+                    // cancelling, so a poll in that instant could be taken for one before it).
+                    std::thread::sleep(Duration::from_millis(20));
+                    assert!(cancel.is_cancelled());
                     let _ = release.recv();
                     log.lock().unwrap().push(format!("{id} returned"));
                     outcome_of(Ok(HostPost::Skipped), SummaryResult::Cancelled)
@@ -2294,35 +2298,35 @@ fn meeting_after_watch_rule_is_no_sign_of_life_for_the_phase_bound() {
     let bounds = AfterBounds::default();
     assert_eq!((bounds.load, bounds.step), (s(600), s(120)));
     let mut w = AfterWatch::new(bounds);
-    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0), false));
-    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(599), false));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0), None));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(599), None));
     assert!(
-        w.stalled(AfterPhase::Loading, 0, 0, s(600), false),
+        w.stalled(AfterPhase::Loading, 0, 0, s(600), None),
         "a load that never returns"
     );
     // A step starts the step bound afresh, whatever time it came at.
-    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(700), false));
-    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(819), false));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(700), None));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 0, s(819), None));
     assert!(
-        w.stalled(AfterPhase::Steps, 1, 0, s(820), false),
+        w.stalled(AfterPhase::Steps, 1, 0, s(820), None),
         "a step that never returns"
     );
     // Any sign of life starts it again: a poll of the token, a step.
     let mut w = AfterWatch::new(bounds);
     for (k, (steps, polls)) in [(1, 0), (1, 1), (2, 1)].into_iter().enumerate() {
         let at = s(1000 * k as u64);
-        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at, false));
-        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at + s(119), false));
+        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at, None));
+        assert!(!w.stalled(AfterPhase::Steps, steps, polls, at + s(119), None));
     }
     // A decode that polls slowly but steadily is never cut, however long it takes.
     let mut slow = AfterWatch::new(bounds);
     for minute in 0..600u64 {
-        assert!(!slow.stalled(AfterPhase::Steps, 1, minute, s(60 * minute), false));
+        assert!(!slow.stalled(AfterPhase::Steps, 1, minute, s(60 * minute), None));
     }
     // Nor is a summary, whatever it does: its own watch decides.
     let mut summary = AfterWatch::new(bounds);
-    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0), false));
-    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400), false));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0), None));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400), None));
 }
 
 #[test]
@@ -2335,31 +2339,31 @@ fn meeting_after_watch_gives_cancelled_work_a_short_grace() {
     assert_eq!(bounds.cancelled, s(30));
     // A cancelled load that polls nothing: only the load bound.
     let mut w = AfterWatch::new(bounds);
-    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0), true));
-    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(599), true));
-    assert!(w.stalled(AfterPhase::Loading, 0, 0, s(600), true));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0), Some(0)));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(599), Some(0)));
+    assert!(w.stalled(AfterPhase::Loading, 0, 0, s(600), Some(0)));
     // Nor does a poll shorten a load's bound.
     let mut w = AfterWatch::new(bounds);
-    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0), true));
-    assert!(!w.stalled(AfterPhase::Loading, 0, 1, s(10), true));
-    assert!(!w.stalled(AfterPhase::Loading, 0, 1, s(609), true));
-    assert!(w.stalled(AfterPhase::Loading, 0, 1, s(610), true));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 0, s(0), Some(0)));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 1, s(10), Some(0)));
+    assert!(!w.stalled(AfterPhase::Loading, 0, 1, s(609), Some(0)));
+    assert!(w.stalled(AfterPhase::Loading, 0, 1, s(610), Some(0)));
     // A cancelled step inside one long engine call (no poll since the cancel): the step bound.
     let mut w = AfterWatch::new(bounds);
-    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(0), false));
-    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(50), true));
-    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(119), true));
-    assert!(w.stalled(AfterPhase::Steps, 1, 3, s(120), true));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(0), None));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(50), Some(3)));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(119), Some(3)));
+    assert!(w.stalled(AfterPhase::Steps, 1, 3, s(120), Some(3)));
     // A step that polled after the cancel and then went silent: the grace, from that poll.
     let mut w = AfterWatch::new(bounds);
-    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(0), true));
-    assert!(!w.stalled(AfterPhase::Steps, 1, 4, s(20), true));
-    assert!(!w.stalled(AfterPhase::Steps, 1, 4, s(49), true));
-    assert!(w.stalled(AfterPhase::Steps, 1, 4, s(50), true));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 3, s(0), Some(3)));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 4, s(20), Some(3)));
+    assert!(!w.stalled(AfterPhase::Steps, 1, 4, s(49), Some(3)));
+    assert!(w.stalled(AfterPhase::Steps, 1, 4, s(50), Some(3)));
     // The summary keeps its own watch, cancelled or not.
     let mut summary = AfterWatch::new(bounds);
-    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0), true));
-    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400), true));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(0), Some(0)));
+    assert!(!summary.stalled(AfterPhase::Summary, 3, 0, s(86_400), Some(0)));
 }
 
 #[test]
