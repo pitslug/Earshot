@@ -376,7 +376,7 @@ pub fn install_state(
                 // Downloaded and not extracted yet.
                 FileState::Present => artefact.size,
                 FileState::Partial(n) => n.min(artefact.size),
-                FileState::WrongSize(_) | FileState::Missing => 0,
+                FileState::WrongSize(_) | FileState::Missing | FileState::Damaged => 0,
             }
         };
         files.extend(states);

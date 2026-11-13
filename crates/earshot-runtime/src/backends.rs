@@ -827,12 +827,27 @@ pub fn init_onnx(models: &ModelDir, accel: Accelerator) -> Result<PathBuf, Runti
             models.require(&f)?;
         }
     }
-    earshot_onnx::init(&library, sha).map_err(RuntimeError::Onnx)?;
+    earshot_onnx::init(&library, sha).map_err(|e| {
+        check_refused_file(models, &library);
+        RuntimeError::Onnx(e)
+    })?;
     if let Some(dir) = qnn_dir {
         earshot_onnx::qnn::register_qnn_in(&dir, &earshot_onnx::qnn::QNN_HOST)
             .map_err(RuntimeError::Onnx)?;
     }
     Ok(library)
+}
+
+/// After a load of `file` from `models` was refused: the full check of the model that holds it
+/// ([`Catalogue::check_after_refused_load`]), so a damaged file of the right size reads as not
+/// installed and its download is offered again (TODO 30). Reads every byte of that model, only
+/// on this failure path; a file no model holds checks nothing.
+pub(crate) fn check_refused_file(models: &ModelDir, file: &Path) {
+    if let Ok(catalogue) = crate::catalogue::Catalogue::embedded()
+        && let Some(model) = catalogue.model_of_file(file)
+    {
+        let _ = catalogue.check_after_refused_load(models, &model.name);
+    }
 }
 
 /// Silero VAD on `accel` (after [`init_onnx`]) with [`VAD_THREADS`].
