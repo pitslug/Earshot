@@ -437,9 +437,11 @@ const ENDPOINT_FILTER_PATH: PROPERTYKEY = PROPERTYKEY {
 
 /// Reads what [`crate::endpoint::classify_mic`] needs from `device`'s property store.
 /// Every property is optional: one that is missing or unreadable is `None`, never an
-/// error (the classification only ever warns).
+/// error (the classification only ever warns). `id` is the endpoint id the caller already
+/// read ([`device_id`]), so one open reads it once and the stream and its properties agree.
 fn endpoint_properties(
     device: &IMMDevice,
+    id: Option<String>,
     name: &str,
     sample_rate: Option<u32>,
 ) -> crate::endpoint::EndpointProperties {
@@ -486,7 +488,7 @@ fn endpoint_properties(
         form_factor,
         filter_path,
         sample_rate,
-        id: device_id(device).filter(|id| !id.is_empty()),
+        id: id.filter(|id| !id.is_empty()),
         raw_processing,
     }
 }
@@ -585,8 +587,8 @@ impl RenderSessionPoller {
         Self::start_with(interval, || {
             let com = ComApartment::init_mta();
             move || match &com {
-                Ok(com) => render_session_peaks(com).map_err(|e| e.to_string()),
-                Err(e) => Err(e.to_string()),
+                Ok(com) => render_session_peaks(com).map_err(|e| e.detail()),
+                Err(e) => Err(e.detail()),
             }
         })
     }
@@ -733,7 +735,7 @@ fn endpoints_of(
             .ok()
             .and_then(|client| mix_format(&client).ok())
             .map(|(mix, _)| mix.sample_rate);
-        let properties = endpoint_properties(&device, &name, rate);
+        let properties = endpoint_properties(&device, Some(id.clone()), &name, rate);
         out.push(AudioDevice {
             is_default: default_id.as_deref() == Some(id.as_str()),
             id,
@@ -1051,7 +1053,7 @@ impl<'com> CaptureStream<'com> {
                             "activate IAudioClient"
                         },
                     )?;
-                    let mut properties = endpoint_properties(&device, &name, None);
+                    let mut properties = endpoint_properties(&device, id.clone(), &name, None);
                     if raw {
                         if let Some(refusal) = raw_refusal(&properties) {
                             return Err(CaptureError::RawMic(refusal));
@@ -1737,6 +1739,9 @@ struct Track<S, O> {
     /// The chosen endpoint's name, from when it is given up until the default opens (that
     /// re-open reports it).
     gave_up: Option<String>,
+    /// `device` is an output the track followed a call onto (T6.15), not one the user chose:
+    /// giving it up names no choice.
+    followed_call: bool,
     /// Rate every re-opened stream is asked to deliver (the first stream's rate).
     rate: u32,
     /// Channels every re-opened stream is asked to deliver when the track keeps them
@@ -1773,6 +1778,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             endpoint,
             device,
             gave_up: None,
+            followed_call: false,
             rate: stream.format().sample_rate,
             channels,
             processing: MicProcessing::Default,
@@ -1923,6 +1929,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                 self.end_if_over(now);
                 if self.follower.give_up_chosen(now)
                     && let DeviceChoice::Endpoint { name, .. } = std::mem::take(&mut self.device)
+                    && !std::mem::take(&mut self.followed_call)
                 {
                     self.gave_up = Some(name);
                 }
@@ -1934,7 +1941,8 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
     /// and started before the old one is touched, so an output that cannot be used changes
     /// nothing: the error is returned and the track goes on recording where it was. From then on
     /// the track stays on that output like a chosen one, or follows the default if it is the
-    /// default; a lost output is given up for the default ([`follow::CHOSEN_DEVICE_GRACE_QPC`]).
+    /// default; a lost output is given up for the default ([`follow::CHOSEN_DEVICE_GRACE_QPC`]),
+    /// and that re-open names no chosen endpoint, because the user chose none.
     fn move_output<D: LoopDriver<Stream = S>>(
         &mut self,
         driver: &mut D,
@@ -1971,6 +1979,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             )
         };
         self.follower.opened(new.device_id().map(str::to_owned));
+        self.followed_call = !on_default;
         self.gave_up = None;
         self.observer.reopened(
             now,
@@ -2047,32 +2056,45 @@ impl CallOutputFollow {
         })
     }
 
-    /// Acts on the newest reading, if there is one. An output that cannot be opened is reported
-    /// once and the track stays where it is.
+    /// Acts on the newest reading, if there is one.
     fn step<D: LoopDriver, O: TrackObserver>(
         &mut self,
         driver: &mut D,
         loopback: &mut Track<D::Stream, O>,
         now: u64,
     ) {
-        let sessions = match self.poller.latest() {
-            None => return,
-            Some(Err(_)) => {
-                self.rule.no_reading();
-                return;
-            }
-            Some(Ok(sessions)) => sessions,
-        };
-        let Some(target) = self.rule.reading(loopback.follower.current_id(), &sessions) else {
+        let reading = self.poller.latest();
+        follow_call_reading(&mut self.rule, reading, driver, loopback, now);
+    }
+}
+
+/// [`CallOutputFollow::step`] on `reading` (`None`: nothing new). An output that cannot be
+/// opened is reported once, its error as [`CaptureError::detail`] (never Windows' message
+/// text), and the track stays where it is.
+fn follow_call_reading<D: LoopDriver, O: TrackObserver>(
+    rule: &mut CallOutputFollower,
+    reading: Option<SessionReading>,
+    driver: &mut D,
+    loopback: &mut Track<D::Stream, O>,
+    now: u64,
+) {
+    let sessions = match reading {
+        None => return,
+        Some(Err(_)) => {
+            rule.no_reading();
             return;
-        };
-        if let Err(e) = loopback.move_output(driver, &target, now) {
-            self.rule.refused(&target.id);
-            let used = loopback.stream.as_ref().map(LoopStream::device_name);
-            loopback
-                .observer
-                .call_output_refused(now, &target.name, used, &e.to_string());
         }
+        Some(Ok(sessions)) => sessions,
+    };
+    let Some(target) = rule.reading(loopback.follower.current_id(), &sessions) else {
+        return;
+    };
+    if let Err(e) = loopback.move_output(driver, &target, now) {
+        rule.refused(&target.id);
+        let used = loopback.stream.as_ref().map(LoopStream::device_name);
+        loopback
+            .observer
+            .call_output_refused(now, &target.name, used, &e.detail());
     }
 }
 
@@ -2104,7 +2126,7 @@ fn open_chosen<'com>(
                 track,
                 choice,
                 e.is_device_gone(),
-                &e.to_string(),
+                &e.detail(),
                 stream.device_name(),
             );
             Ok((stream, DeviceChoice::Default, fallback))
@@ -2238,7 +2260,7 @@ fn open_loopback<'com>(
         _ => match list_render_sessions(com) {
             Ok(sessions) => choose_loopback(request, &sessions).map_err(CaptureError::Selection)?,
             Err(e) if auto => {
-                LoopbackChoice::DefaultDevice(FallbackReason::SessionQueryFailed(e.to_string()))
+                LoopbackChoice::DefaultDevice(FallbackReason::SessionQueryFailed(e.detail()))
             }
             Err(_) if matches!(request, LoopbackRequest::Pid(_)) => {
                 choose_loopback(request, &[]).map_err(CaptureError::Selection)?
@@ -2283,7 +2305,7 @@ fn open_loopback<'com>(
                     })
                 }
                 Err(e) if auto => default_device(LoopbackChoice::DefaultDevice(
-                    FallbackReason::ProcessLoopbackUnavailable(e.to_string()),
+                    FallbackReason::ProcessLoopbackUnavailable(e.detail()),
                 )),
                 Err(e) => Err(e),
             }
@@ -2306,6 +2328,8 @@ fn open_loopback<'com>(
 /// each re-open that switches onto one (the [`HandsFreeFollower`](crate::endpoint::HandsFreeFollower)
 /// rule of the live mic track), as it happens; the latter are also logged in the
 /// change's [`DeviceChange::hands_free`](crate::recording::DeviceChange::hands_free).
+/// During the recording it runs inside the capture loop, so it must not block: a caller that
+/// prints hands the line to a thread of its own (`earshot-cli record-raw` does).
 ///
 /// The mic track is mono; the loopback track keeps its channels (interleaved, stereo
 /// on a desktop and for process loopback).
@@ -2335,7 +2359,8 @@ pub fn record_raw(
     mut on_mic_warning: impl FnMut(&HandsFreeMic),
 ) -> Result<RawRecording, CaptureError> {
     // As for a live session; see `capture_thread`.
-    let _awake = KeepAwake::hold();
+    let awake = KeepAwake::hold();
+    let sleep_not_prevented = sleep_refusal(&awake);
     let com = ComApartment::init_mta()?;
     // Registered before the streams open so no change in between is missed.
     let notifications = DeviceNotifications::register(&com)?;
@@ -2417,6 +2442,7 @@ pub fn record_raw(
         mic_processing,
         requested_seconds: seconds,
         refused_call_outputs,
+        sleep_not_prevented,
         start_qpc: start,
         end_qpc: end,
         loopback_source,
@@ -2438,6 +2464,8 @@ struct Started {
     /// The render endpoint the reference belongs to (T7.4j,
     /// [`WasapiSource::output_endpoint_id`]).
     output_endpoint: Option<String>,
+    /// Why Windows refused to keep the computer awake ([`sleep_refusal`]); `None` when it agreed.
+    sleep_not_prevented: Option<String>,
 }
 
 fn track_info(s: &CaptureStream<'_>) -> Result<TrackInfo, CaptureError> {
@@ -2500,6 +2528,7 @@ pub struct WasapiSource {
     loopback: Option<(DeviceDescription, LoopbackSource)>,
     fallbacks: Vec<DeviceFallback>,
     output_endpoint: Option<String>,
+    sleep_not_prevented: Option<String>,
 }
 
 impl fmt::Debug for WasapiSource {
@@ -2511,6 +2540,7 @@ impl fmt::Debug for WasapiSource {
             .field("loopback", &self.loopback)
             .field("fallbacks", &self.fallbacks)
             .field("output_endpoint", &self.output_endpoint)
+            .field("sleep_not_prevented", &self.sleep_not_prevented)
             .finish()
     }
 }
@@ -2573,6 +2603,7 @@ impl WasapiSource {
             loopback: started.loopback,
             fallbacks: started.fallbacks,
             output_endpoint: started.output_endpoint,
+            sleep_not_prevented: started.sleep_not_prevented,
         })
     }
 
@@ -2589,6 +2620,13 @@ impl WasapiSource {
     /// default one (empty when every choice was used or nothing was chosen).
     pub fn fallbacks(&self) -> &[DeviceFallback] {
         &self.fallbacks
+    }
+
+    /// Why Windows refused to keep the computer awake for this capture (T9.16,
+    /// [`KeepAwake::hold`]): the failed call and its error number, never Windows' message text;
+    /// `None` when it agreed. Capture runs either way, but a sleep leaves a gap.
+    pub fn sleep_not_prevented(&self) -> Option<&str> {
+        self.sleep_not_prevented.as_deref()
     }
 
     /// The microphone endpoint and the format it delivered when capture started.
@@ -2652,9 +2690,10 @@ fn capture_thread(
 ) {
     // Held for as long as capture runs. A refusal costs nothing but the protection: a recording
     // never depends on it, and any gap a sleep leaves is reported by the runtime.
-    let _awake = KeepAwake::hold();
+    let awake = KeepAwake::hold();
+    let sleep_not_prevented = sleep_refusal(&awake);
     match ComApartment::init_mta() {
-        Ok(com) => live_capture(&com, request, stop, ready, tx, gauge),
+        Ok(com) => live_capture(&com, request, stop, ready, tx, gauge, sleep_not_prevented),
         Err(e) => {
             let _ = ready.send(Err(e));
         }
@@ -2676,6 +2715,7 @@ fn live_capture(
     ready: &ReadyTx,
     tx: mpsc::Sender<LiveMsg<CaptureError>>,
     gauge: QueueGauge,
+    sleep_not_prevented: Option<String>,
 ) {
     let setup = (|| {
         // Registered before the streams open so no change in between is missed.
@@ -2709,6 +2749,7 @@ fn live_capture(
                     .map(str::to_owned)
                     .or_else(|| output_endpoint_id(com, &request.devices.output))
             }),
+            sleep_not_prevented,
         };
         Ok::<_, CaptureError>((
             notifications,
@@ -2901,6 +2942,13 @@ impl Drop for KeepAwake {
             let _ = CloseHandle(self.0);
         }
     }
+}
+
+/// What is kept of a refused [`KeepAwake::hold`]: the failed call and its error number
+/// ([`CaptureError::detail`]); `None` when the request is held. A refusal never stops a
+/// recording, but the caller reports it, so a later gap has a reason.
+fn sleep_refusal(held: &Result<KeepAwake, CaptureError>) -> Option<String> {
+    held.as_ref().err().map(CaptureError::detail)
 }
 
 /// `POWER_REQUEST_CONTEXT_VERSION`, not generated by `windows` 0.62 under the features used here.
@@ -3750,7 +3798,7 @@ mod device_tests {
                 // SAFETY: COM is initialised; the client is an owned interface.
                 let client: IAudioClient = unsafe { d.Activate(CLSCTX_ALL, None) }.unwrap();
                 let (mix, _) = mix_format(&client).unwrap();
-                endpoint_properties(&d, &name, Some(mix.sample_rate))
+                endpoint_properties(&d, device_id(&d), &name, Some(mix.sample_rate))
             })
             .collect()
     }

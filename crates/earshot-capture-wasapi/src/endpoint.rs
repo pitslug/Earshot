@@ -251,7 +251,10 @@ pub fn hands_free_warning(p: &EndpointProperties) -> Option<HandsFreeMic> {
 /// Decides when a mic track warns about a Bluetooth hands-free mic after a re-open
 /// (T6.24): once per switch onto such a mic. Two endpoints are the same mic when both
 /// carry an endpoint id and the ids are equal or, when either id is unknown, when their
-/// friendly names are equal. The mic opened at the start is warned about by the caller of
+/// friendly names are equal; a re-open judged the same mic by name keeps the id it had, so the
+/// rule does not lose ids. That carried id can only add warnings, never hide one: if the mic
+/// whose id went unread was in fact an identical headset, the next re-open on the first one
+/// compares ids and warns once more. The mic opened at the start is warned about by the caller of
 /// `WasapiSource::start` (`WasapiSource::mic_warning`), so a follower starting on a
 /// hands-free mic does not warn again until the track has been on another mic in between;
 /// a switch from one hands-free mic straight to another warns. A failed re-open (no
@@ -303,9 +306,17 @@ impl HandsFreeFollower {
     pub fn opened(&mut self, endpoint: Option<&EndpointProperties>) -> Option<HandsFreeMic> {
         let now = endpoint.and_then(EndpointKey::hands_free);
         let was = std::mem::replace(&mut self.warned, now);
-        let is_new = match (&was, &self.warned) {
+        let is_new = match (&was, &mut self.warned) {
             (_, None) => false,
-            (Some(was), Some(now)) => !was.same(now),
+            (Some(was), Some(now)) => {
+                let same = was.same(now);
+                // The same mic by name with its id unread this time: it keeps the id it had,
+                // so a later switch to an identical headset is still told apart.
+                if same && now.id.is_none() {
+                    now.id.clone_from(&was.id);
+                }
+                !same
+            }
             (None, Some(_)) => true,
         };
         if is_new {
@@ -602,6 +613,21 @@ mod tests {
             ..bluetooth_hands_free()
         };
         assert_eq!(f.opened(Some(&other)), hands_free_warning(&other));
+    }
+
+    #[test]
+    fn endpoint_follower_keeps_the_known_id_across_a_reopen_that_lost_it() {
+        let (a, b) = (with_id("{a}"), with_id("{b}"));
+        let unknown = bluetooth_hands_free();
+        // On `a`; one re-open cannot read the id (the same mic by name); then a switch to
+        // an identical headset `b` is still a switch.
+        let mut f = HandsFreeFollower::new(Some(&a));
+        assert_eq!(f.opened(Some(&unknown)), None);
+        assert_eq!(f.opened(Some(&b)), hands_free_warning(&b));
+        // And back on `a` after another unread id: the same as before.
+        let mut g = HandsFreeFollower::new(Some(&a));
+        assert_eq!(g.opened(Some(&unknown)), None);
+        assert_eq!(g.opened(Some(&a)), None);
     }
 
     fn raw(says: Option<bool>) -> EndpointProperties {

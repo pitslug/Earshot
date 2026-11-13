@@ -650,6 +650,300 @@ fn capture_loop_a_failed_reopen_logs_the_error_as_a_number_only() {
     );
 }
 
+/// Hears what [`TrackObserver::call_output_refused`] is told.
+#[derive(Default)]
+struct RefusalEar {
+    refused: Vec<(String, Option<String>, String)>,
+}
+
+impl TrackObserver for RefusalEar {
+    fn packet(&mut self, _: PacketInfo, _: &[f32]) {}
+
+    fn reopened(&mut self, _: u64, _: ReopenReason, _: ReopenOutcome<'_>) {}
+
+    fn call_output_refused(&mut self, _: u64, wanted: &str, used: Option<&str>, error: &str) {
+        self.refused
+            .push((wanted.into(), used.map(str::to_owned), error.into()));
+    }
+}
+
+/// A reading with a call app sounding on the output `id`.
+fn call_on(id: &str) -> SessionReading {
+    Ok(vec![crate::session::SessionPeak {
+        endpoint: "Invented headset".into(),
+        endpoint_id: id.into(),
+        pid: 100,
+        process_name: "ms-teams.exe".into(),
+        active: true,
+        peak: Some(0.2),
+    }])
+}
+
+#[test]
+fn capture_loop_a_refused_call_output_logs_the_error_as_a_number_only() {
+    let platform = Rc::new(Platform {
+        faults: vec![Fault::from(
+            Call::Open(TrackId::Reference),
+            1,
+            AUDCLNT_E_CPUUSAGE_EXCEEDED,
+        )],
+        ..Platform::default()
+    });
+    let mut driver = FakeDriver {
+        platform: Rc::clone(&platform),
+    };
+    let stream = FakeStream::new(&platform, Endpoint::Loopback, 2);
+    stream.start().unwrap();
+    let mut lb = Track::new(
+        stream,
+        Endpoint::Loopback,
+        DeviceChoice::Default,
+        StreamFollower::new(Flow::Render, Role::Console, true),
+        RefusalEar::default(),
+    );
+    let mut rule = CallOutputFollower::new();
+    for n in 1..=crate::call_output::POLLS_TO_MOVE {
+        follow_call_reading(
+            &mut rule,
+            Some(call_on("headset")),
+            &mut driver,
+            &mut lb,
+            u64::from(n),
+        );
+    }
+    assert_eq!(platform.count(Call::Open(TrackId::Reference)), 1);
+    assert_eq!(
+        lb.observer.refused,
+        [(
+            "Invented headset".to_owned(),
+            Some("Fake output".to_owned()),
+            "fake: error 0x88890017".to_owned()
+        )]
+    );
+    assert!(lb.stream.is_some(), "still recording where it was");
+}
+
+/// Hears which chosen endpoint each successful re-open says it gave up.
+#[derive(Default)]
+struct GiveUpEar {
+    opened: Vec<Option<String>>,
+}
+
+impl TrackObserver for GiveUpEar {
+    fn packet(&mut self, _: PacketInfo, _: &[f32]) {}
+
+    fn reopened(&mut self, _: u64, _: ReopenReason, outcome: ReopenOutcome<'_>) {
+        if let ReopenOutcome::Opened { gave_up, .. } = outcome {
+            self.opened.push(gave_up.map(str::to_owned));
+        }
+    }
+}
+
+/// A loopback on `device` (moved onto the call's output first when `follow_call`) whose output
+/// is lost on the third pass and cannot be opened for 15 s, so it is given up for the default.
+/// What each successful re-open said it gave up.
+fn lose_output(device: DeviceChoice, follow_call: bool) -> Vec<Option<String>> {
+    let lost_until = 15 * QPC_UNITS_PER_SEC / follow::RETRY_INTERVAL_QPC;
+    let platform = Rc::new(Platform {
+        faults: vec![
+            Fault::on(
+                Call::Drain(TrackId::Reference),
+                4,
+                follow::AUDCLNT_E_DEVICE_INVALIDATED,
+            ),
+            Fault {
+                call: Call::Open(TrackId::Reference),
+                first: usize::from(follow_call) + 1,
+                last: usize::from(follow_call) + lost_until as usize,
+                hresult: follow::AUDCLNT_E_DEVICE_INVALIDATED,
+            },
+        ],
+        ..Platform::default()
+    });
+    let mut driver = FakeDriver {
+        platform: Rc::clone(&platform),
+    };
+    let stream = FakeStream::new(&platform, Endpoint::Loopback, 2);
+    stream.start().unwrap();
+    let follower = match device {
+        DeviceChoice::Default => StreamFollower::new(Flow::Render, Role::Console, true),
+        DeviceChoice::Endpoint { .. } => StreamFollower::chosen(Flow::Render, Role::Console),
+    };
+    let mut lb = Track::new(
+        stream,
+        Endpoint::Loopback,
+        device,
+        follower,
+        GiveUpEar::default(),
+    );
+    if follow_call {
+        let mut rule = CallOutputFollower::new();
+        for n in 1..=crate::call_output::POLLS_TO_MOVE {
+            follow_call_reading(
+                &mut rule,
+                Some(call_on("headset")),
+                &mut driver,
+                &mut lb,
+                u64::from(n),
+            );
+        }
+        assert_eq!(platform.count(Call::Open(TrackId::Reference)), 1, "moved");
+    }
+    let mic_stream = FakeStream::new(&platform, Endpoint::Microphone(MicRole::Console), 1);
+    mic_stream.start().unwrap();
+    let mut mic = Track::new(
+        mic_stream,
+        Endpoint::Microphone(MicRole::Console),
+        DeviceChoice::Default,
+        StreamFollower::new(Flow::Capture, Role::Console, true),
+        Ear::default(),
+    );
+    let end = 30 * QPC_UNITS_PER_SEC;
+    run_capture(&mut driver, &mut mic, Some(&mut lb), None, |now| now >= end).unwrap();
+    assert!(lb.stream.is_some(), "recording the default at the end");
+    assert!(lb.follower.follows_default());
+    lb.observer.opened
+}
+
+#[test]
+fn capture_loop_a_lost_call_output_is_not_reported_as_a_chosen_device() {
+    // The control: an output chosen on the Audio page is named when it is given up.
+    let chosen = DeviceChoice::Endpoint {
+        id: "headset".into(),
+        name: "Invented headset".into(),
+    };
+    assert_eq!(
+        lose_output(chosen, false),
+        [Some("Invented headset".to_owned())]
+    );
+    // An output the recording followed a call onto was never the user's choice: its loss
+    // moves the track to the default without saying a choice was given up.
+    let followed = lose_output(DeviceChoice::Default, true);
+    assert_eq!(followed.len(), 2, "{followed:?}");
+    assert_eq!(followed[0], None, "the move itself");
+    assert_eq!(followed[1], None, "the default after the loss");
+}
+
+#[test]
+fn capture_loop_a_refused_keep_awake_is_kept_as_a_number() {
+    const E_ACCESSDENIED: i32 = 0x8007_0005_u32 as i32;
+    let refused: Result<KeepAwake, CaptureError> = Err(CaptureError::Windows {
+        context: "PowerSetRequest",
+        source: windows::core::Error::from_hresult(HRESULT(E_ACCESSDENIED)),
+    });
+    assert_eq!(
+        sleep_refusal(&refused).as_deref(),
+        Some("PowerSetRequest: error 0x80070005")
+    );
+    // Both capture paths keep what a refusal says instead of dropping it.
+    let source = include_str!("../wasapi.rs");
+    assert!(!source.contains("let _awake = KeepAwake::hold()"));
+    assert_eq!(source.matches("sleep_refusal(&awake)").count(), 2);
+}
+
+/// The places in `src` (shipped code of `wasapi.rs`) that may turn an error into text other
+/// than through [`CaptureError::detail`]: any `.to_string()` except the two `PWSTR`
+/// conversions (which return a `Result`, so their `.unwrap_or_default()` / `.ok()` would not
+/// compile on an error's `String`), any `ToString::to_string`, and any format argument that
+/// names an error binding, inline (`{e}`, `{source:?}`) or positional (`"{}", e`). The one
+/// place allowed to format the Windows error is `CaptureError`'s own `Display` (what `detail`
+/// avoids), which is cut out first, with `detail` itself.
+fn windows_text_leaks(src: &str) -> Vec<String> {
+    const ERROR_NAMES: [&str; 5] = ["e", "err", "error", "source", "why"];
+    const ALLOWED_TO_STRING: [&str; 2] =
+        ["p.to_string().unwrap_or_default()", "id.to_string() }.ok()"];
+    let cut = |text: &str, from: &str, to: &str| -> String {
+        match text.find(from) {
+            Some(start) => {
+                let end = text[start..]
+                    .find(to)
+                    .map_or(text.len(), |n| start + n + to.len());
+                format!("{}{}", &text[..start], &text[end..])
+            }
+            None => text.to_owned(),
+        }
+    };
+    let text = cut(src, "impl fmt::Display for CaptureError", "\n}\n");
+    let text = cut(&text, "    fn detail(&self) -> String {", "\n    }\n");
+    let mut leaks = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or_default();
+        let mut rest = code;
+        while let Some(at) = rest.find(".to_string()") {
+            let around = &rest[at.saturating_sub(3)..];
+            if !ALLOWED_TO_STRING.iter().any(|ok| around.contains(ok)) {
+                leaks.push(format!("{n}: {line}"));
+            }
+            rest = &rest[at + 1..];
+        }
+        if code.contains("ToString::to_string") {
+            leaks.push(format!("{n}: {line}"));
+        }
+        let formats = [
+            "format!(",
+            "write!(",
+            "writeln!(",
+            "print!(",
+            "println!(",
+            "panic!(",
+        ]
+        .iter()
+        .any(|m| code.contains(m));
+        for name in ERROR_NAMES {
+            let inline = [format!("{{{name}}}"), format!("{{{name}:")];
+            let positional = [format!(", {name})"), format!(", {name},")];
+            if inline.iter().any(|p| code.contains(p.as_str()))
+                || (formats && positional.iter().any(|p| code.contains(p.as_str())))
+            {
+                leaks.push(format!("{n}: {line}"));
+            }
+        }
+    }
+    leaks
+}
+
+#[test]
+fn capture_loop_logs_no_windows_message_text() {
+    // Every error the capture crate keeps as text goes through `CaptureError::detail`.
+    let source = include_str!("../wasapi.rs");
+    let shipped = source
+        .split_once("\n#[cfg(test)]")
+        .map_or(source, |(code, _)| code);
+    assert!(
+        shipped.contains("impl fmt::Display for CaptureError")
+            && shipped.contains("    fn detail(&self) -> String {"),
+        "the allowed places are where the scan expects them"
+    );
+    let leaks = windows_text_leaks(shipped);
+    assert!(leaks.is_empty(), "errors kept as message text: {leaks:#?}");
+
+    // The negative control: each way an error becomes its message text is caught.
+    for leak in [
+        "        Err(e) => Err(e.to_string()),",
+        "        .map_err(|err| err.to_string())",
+        "        let s = ToString::to_string(&e);",
+        "        observer.note(&format!(\"open failed: {e}\"));",
+        "        observer.note(&format!(\"open failed: {source:?}\"));",
+        "        observer.note(&format!(\"{}\", e));",
+        "        observer.note(&format!(\"{} {}\", what, error));",
+        "        let text = failure.to_string();",
+    ] {
+        let found = windows_text_leaks(&format!("fn f() {{\n{leak}\n}}\n"));
+        assert_eq!(found.len(), 1, "missed: {leak}");
+    }
+    // And the allowed forms pass.
+    for ok in [
+        "        let s = p.to_string().unwrap_or_default();",
+        "            unsafe { id.to_string() }.ok()",
+        "        Err(e) => Err(e.detail()),",
+    ] {
+        assert!(
+            windows_text_leaks(&format!("fn f() {{\n{ok}\n}}\n")).is_empty(),
+            "{ok}"
+        );
+    }
+}
+
 #[test]
 fn capture_loop_every_programming_fault_on_a_drain_ends_the_capture() {
     for code in follow::PROGRAMMING_FAULTS {

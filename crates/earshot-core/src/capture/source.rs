@@ -212,6 +212,10 @@ pub enum EndpointWarning {
     /// delivered is kept and nothing after it is recorded. Sent as a `Note` right before the
     /// source's substitute end.
     StoppedAnswering,
+    /// The track's stream kept failing, so the source ended this track for the rest of the
+    /// capture (T9.21): nothing more is recorded on it and the other track goes on. Sent as a
+    /// `Note` on the ended track.
+    TrackEnded,
 }
 
 /// Why a source ended.

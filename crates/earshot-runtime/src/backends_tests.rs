@@ -841,6 +841,26 @@ fn backends_a_bluetooth_hands_free_mic_becomes_a_session_warning() {
 
 #[cfg(windows)]
 #[test]
+fn backends_a_refused_keep_awake_is_a_start_warning_without_its_reason() {
+    use crate::live::RuntimeWarning;
+    assert!(start_warnings(None, &[], None).is_empty());
+    let mic = earshot_capture_wasapi::HandsFreeMic {
+        device_name: "Invented headset".into(),
+        sample_rate: Some(16_000),
+    };
+    let warnings = start_warnings(
+        Some(mic.clone()),
+        &[],
+        Some("PowerSetRequest: error 0x80070005"),
+    );
+    assert_eq!(
+        warnings,
+        [hands_free_warning(mic), RuntimeWarning::SleepNotPrevented]
+    );
+}
+
+#[cfg(windows)]
+#[test]
 #[ignore = "needs a microphone"]
 fn backends_wasapi_in_room_session_records_the_mic_only() {
     use std::time::Duration;

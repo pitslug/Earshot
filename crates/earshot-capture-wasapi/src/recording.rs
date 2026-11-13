@@ -373,6 +373,9 @@ pub struct RawRecording {
     pub requested_seconds: f64,
     /// The outputs the call played on that could not be opened (T6.15), each with why.
     pub refused_call_outputs: Vec<String>,
+    /// Why Windows refused to keep the computer awake during the recording (T9.16: the failed
+    /// call and its error number); `None` when it agreed. A sleep then leaves a gap.
+    pub sleep_not_prevented: Option<String>,
     /// Origin QPC (100 ns units), taken just before the streams were started. Frame 0 of
     /// both WAVs is at this position.
     pub start_qpc: u64,
@@ -503,6 +506,7 @@ pub(crate) mod tests {
             mic_processing: MicProcessing::Default,
             requested_seconds: 1.0,
             refused_call_outputs: Vec::new(),
+            sleep_not_prevented: None,
             start_qpc: t0,
             end_qpc: end,
             loopback_source: LoopbackSource {
