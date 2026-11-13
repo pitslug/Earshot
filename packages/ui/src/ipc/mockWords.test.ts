@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { IpcFailure, type MeetingDetail, type PersonItem } from "./ipc";
 import { createMockIpc } from "./mock";
+import { sampleDetail } from "./mockDetail";
 import table from "../../../../fixtures/ui/words_to_offer_cases.json";
 import { splitPunctuation, tokensOf, wordListOf, wordsToOffer } from "./mockWords";
 
@@ -63,6 +64,20 @@ describe("mock suggested words (T12.15e)", () => {
     expect(draft.transcript.every((r) => r.suggestions.length === 0 && r.changed_words.length === 0)).toBe(true);
     expect(await kind(ipc.useWord("m2", LINE8, 8, "Reid"))).toBe("draft_transcript");
     expect(await kind(ipc.keepWord("m2", LINE8, 8))).toBe("draft_transcript");
+  });
+
+  it("keeps the line's own white space when it writes a word, as Rust replaces the token in place", async () => {
+    const base = sampleDetail(READY);
+    const spaced = "Fine by us.  I'll send it to Tom\u00a0Reed in writing.";
+    const detail = {
+      ...base,
+      transcript: base.transcript.map((r) => (r.segment_id === LINE8 ? { ...r, text: spaced } : r)),
+    };
+    const ipc = createMockIpc({ meetings: [READY], details: { m1: detail } });
+    await ipc.useWord("m1", LINE8, 8, "Reid");
+    expect(row(await ipc.getMeeting("m1")).text).toBe("Fine by us.  I'll send it to Tom\u00a0Reid in writing.");
+    await ipc.putBackWord("m1", LINE8, 8);
+    expect(row(await ipc.getMeeting("m1")).text).toBe(spaced);
   });
 
   it("uses a word, another word, then puts the decoded word back", async () => {
