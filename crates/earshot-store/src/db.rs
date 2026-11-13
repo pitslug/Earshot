@@ -191,6 +191,34 @@ impl ReadOnlyStore {
     }
 }
 
+/// Pause between tries of the WAL switch while another connection holds the file.
+const WAL_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// Sets `journal_mode = WAL` and returns the mode SQLite reports.
+///
+/// On a brand-new file still in rollback mode the switch needs an exclusive lock, and
+/// SQLite can answer `SQLITE_BUSY` at once without calling the busy handler while
+/// another connection opening the same file holds a lock. Such an answer is retried
+/// until [`BUSY_TIMEOUT`]; once any opener has switched the file the pragma reports
+/// `wal` without a lock.
+fn switch_to_wal(conn: &Connection) -> Result<String, StoreError> {
+    let deadline = std::time::Instant::now() + BUSY_TIMEOUT;
+    loop {
+        match conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0)) {
+            Ok(mode) => return Ok(mode),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if matches!(
+                    e.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(WAL_RETRY_PAUSE);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 impl Store {
     /// Opens (creating if needed) the database at `path`: WAL journal, foreign keys on,
     /// migrations applied.
@@ -216,8 +244,7 @@ impl Store {
         // linger in free pages (PLAN.md 3.9 #4).
         conn.pragma_update(None, "secure_delete", true)?;
         if wal {
-            let mode: String =
-                conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
+            let mode = switch_to_wal(&conn)?;
             if !mode.eq_ignore_ascii_case("wal") {
                 return Err(StoreError::Corrupt(format!(
                     "journal_mode WAL not accepted (got {mode})"

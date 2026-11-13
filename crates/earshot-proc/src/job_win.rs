@@ -3,8 +3,9 @@
 //! crate lives here, each call with its SAFETY comment. [`peak_memory`] (T8.1) shares the
 //! file because it is the crate's other Windows call.
 //!
-//! The five job kernel32 functions and the two structures are declared by hand (`Cargo.toml`:
-//! `windows-sys` would need a feature nothing else in the workspace builds). A process
+//! The five job kernel32 functions and the three job structures are declared by hand, as are
+//! the two calls and one structure of [`peak_memory`] (`Cargo.toml`: `windows-sys` would need
+//! features nothing else in the workspace builds). A process
 //! started between the spawn and [`KillOnClose::assign`] is not in the job (crate docs). Layouts follow
 //! `winnt.h` (`JOBOBJECT_BASIC_LIMIT_INFORMATION`, `IO_COUNTERS`,
 //! `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`); `SetInformationJobObject` refuses a wrong size

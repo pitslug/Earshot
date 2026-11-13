@@ -263,11 +263,32 @@ fn build_bundle_arm64_install_holds_exactly_the_qnn_files_and_their_licences() {
     assert!(!arm.contains(&PathBuf::from("LICENSE")));
     // Exactly these on top of what x64 and ARM64 share, the skels' catalogs among them (T12.12e).
     assert_eq!(qnn_install_files().len(), APPROVED_QNN_LIBRARIES.len() + 3);
-    let base = expected_files(ARM64_WINDOWS)
+    // The shared part comes from the x64 list, less what only x64 holds: the Vulkan summaries'
+    // files and the C++ runtime library ARM64 does not have.
+    let x64_only: Vec<&str> = ["ggml-vulkan.dll", VULKAN_LOADER, VULKAN_LICENCE]
         .into_iter()
-        .filter(|f| !names.contains(&f.to_str().unwrap()) && f != Path::new(QNN_NOTICE))
-        .count();
-    assert_eq!(arm.len(), base + qnn_install_files().len() + 1);
+        .chain(
+            VC_RUNTIME_DLLS
+                .into_iter()
+                .filter(|d| !vc_runtime_dlls(ARM64_WINDOWS).contains(d)),
+        )
+        .collect();
+    let base: Vec<PathBuf> = x64
+        .iter()
+        .filter(|f| !x64_only.contains(&f.to_str().unwrap()))
+        .cloned()
+        .collect();
+    assert_eq!(base.len(), x64.len() - x64_only.len(), "{x64_only:?}");
+    let mut want: Vec<PathBuf> = base
+        .into_iter()
+        .chain(names.iter().map(PathBuf::from))
+        .chain([PathBuf::from(QNN_NOTICE)])
+        .collect();
+    let mut have = arm.clone();
+    want.sort();
+    have.sort();
+    assert_eq!(have, want);
+    assert_eq!(arm.len(), want.len(), "no duplicates");
     let catalogs: Vec<&PathBuf> = arm
         .iter()
         .filter(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("cat")))
@@ -1182,6 +1203,25 @@ fn build_bundle_install_notice_credits_the_common_words() {
     assert!(text.is_ascii());
 }
 
+/// T12.15ee: the notice the bundle run writes beside the exe is this checkout's assembled text,
+/// and it is the file the overlay installs as the meeting's notice.
+#[test]
+fn build_bundle_install_notice_is_written_beside_the_exe_and_installed_by_the_overlay() {
+    let root = crate::repo_root();
+    let exe_dir = tmp("notice");
+    let notice = write_install_notice(&root, &exe_dir).unwrap();
+    assert_eq!(notice, exe_dir.join(INSTALL_NOTICE_BUILT));
+    let text = std::fs::read_to_string(&notice).unwrap();
+    assert_eq!(text, install_notice_text(&root).unwrap());
+    assert!(notice_missing_credits(&text).is_empty());
+    let c = bundle_config(&exe_dir, &notice, Path::new("h.nsh"), &["nsis"], X64, &[]);
+    assert_eq!(
+        c["bundle"]["resources"][notice.display().to_string()],
+        MEETING_NOTICE_IN_INSTALL
+    );
+    let _ = std::fs::remove_dir_all(&exe_dir);
+}
+
 #[test]
 fn bundle_check_refuses_a_notice_without_the_common_words() {
     let root = crate::repo_root();
@@ -1193,6 +1233,7 @@ fn bundle_check_refuses_a_notice_without_the_common_words() {
     assert!(!notice_check(&meeting, &text).0);
     // So does a section with its licence cut, and an empty or missing file.
     let cut = text.replace(COMMON_WORDS_LICENCE_URL, "");
+    assert_eq!(notice_missing_credits(&cut), [COMMON_WORDS_LICENCE_URL]);
     assert!(!notice_check(&cut, &text).0);
     assert!(!notice_check("", &text).0);
     // The bundle's own text passes.

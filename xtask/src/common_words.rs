@@ -14,7 +14,10 @@
 //! attribution and licence, CC BY 4.0, the source archive's SHA-256) are written to
 //! [`OUT_DIR`]; with it they are generated in memory and compared byte for byte with the
 //! committed ones. The committed list's SHA-256 is pinned in [`FILE_SHA256`] and checked by
-//! `common_words_committed_files_match_their_pins` (no fixtures needed).
+//! `common_words_committed_files_match_their_pins` (no fixtures needed). The words files it
+//! reads are not members of `ami_annotation_members()` (there are hundreds): their names and
+//! bytes are pinned together by [`INPUTS_SHA256`] over [`INPUT_FILES`] files, checked on every
+//! generation before anything is counted.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -42,6 +45,26 @@ pub const FILE: &str = "common_words.txt";
 pub const NOTICE_FILE: &str = "common_words.txt.NOTICE";
 /// SHA-256 of the committed list.
 pub const FILE_SHA256: &str = "1776b4a476c59092adf7b4dbffbb1294baaf160ece1859edfd8f77d907e86801";
+
+/// How many AMI words files outside [`HELD_SERIES`] the list is made from.
+pub const INPUT_FILES: usize = 527;
+/// [`inputs_digest`] of those files: they are read outside `ami_annotation_members()`, so
+/// their names and bytes are pinned here by one digest instead of one entry each.
+pub const INPUTS_SHA256: &str = "4351f547c0b5f8d2727ab853a4f5a769e55610479bdf7965d62e5d2f3243a246";
+
+/// SHA-256 over `<name> <sha256>\n` of every `(file name, SHA-256 of its bytes)` input, in the
+/// order given (sorted by name in [`ami_common`]).
+#[must_use]
+pub fn inputs_digest(inputs: &[(String, String)]) -> String {
+    let mut text = String::new();
+    for (name, sha) in inputs {
+        text.push_str(name);
+        text.push(' ');
+        text.push_str(sha);
+        text.push('\n');
+    }
+    sha256_hex(text.as_bytes())
+}
 
 /// Normalised tokens of `text` (the WER normaliser, split on white space).
 fn tokens(text: &str) -> Vec<String> {
@@ -91,9 +114,11 @@ pub fn ami_common(words_dir: &Path) -> Result<Vec<String>> {
         names.len()
     );
     let mut texts = Vec::with_capacity(names.len());
+    let mut inputs = Vec::with_capacity(names.len());
     for name in &names {
         let p = words_dir.join(name);
         let bytes = std::fs::read(&p).with_context(|| p.display().to_string())?;
+        inputs.push((name.clone(), sha256_hex(&bytes)));
         let words = refs::parse_ami_words(&refs::with_start_times(&refs::latin1(&bytes)))
             .map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
         texts.push(
@@ -104,6 +129,15 @@ pub fn ami_common(words_dir: &Path) -> Result<Vec<String>> {
                 .join(" "),
         );
     }
+    let digest = inputs_digest(&inputs);
+    ensure!(
+        inputs.len() == INPUT_FILES && digest == INPUTS_SHA256,
+        "{}: the AMI words files read ({} files, digest {digest}) are not the pinned ones \
+         ({INPUT_FILES} files, digest {INPUTS_SHA256}); run `cargo xtask fetch-fixtures --set ami \
+         --verify`",
+        words_dir.display(),
+        inputs.len()
+    );
     let common = most_frequent(texts, COMMON_WORDS);
     ensure!(
         common.len() == COMMON_WORDS,
@@ -219,6 +253,24 @@ mod tests {
             .parent()
             .expect("xtask sits in the repo root")
             .to_path_buf()
+    }
+
+    #[test]
+    fn common_words_inputs_digest_covers_every_name_and_byte() {
+        let one = |name: &str, bytes: &[u8]| (name.to_owned(), sha256_hex(bytes));
+        let inputs = [one("a.A.words.xml", b"x"), one("b.B.words.xml", b"y")];
+        let base = inputs_digest(&inputs);
+        assert_eq!(base.len(), 64);
+        // A changed byte, a renamed file, a missing file or another order: another digest.
+        for other in [
+            vec![one("a.A.words.xml", b"z"), inputs[1].clone()],
+            vec![one("c.A.words.xml", b"x"), inputs[1].clone()],
+            vec![inputs[0].clone()],
+            vec![inputs[1].clone(), inputs[0].clone()],
+        ] {
+            assert_ne!(inputs_digest(&other), base, "{other:?}");
+        }
+        assert_eq!(INPUTS_SHA256.len(), 64);
     }
 
     #[test]

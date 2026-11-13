@@ -196,13 +196,23 @@ pub fn exe_dir() -> Option<PathBuf> {
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
 }
 
-fn verify(path: &Path, expected: &str) -> Result<(), OnnxError> {
+/// The refusal for a library of `package` that is not at `path`. Only an ARM64 install holds
+/// the files beside the exe (T8.4e), so only the ARM64 package says so.
+fn missing_library(path: &Path, package: &QnnPackage) -> String {
+    let install = if package.dir == QNN_ARM64.dir {
+        " (an ARM64 install holds it beside the exe)"
+    } else {
+        ""
+    };
+    format!(
+        "{} not found; run `cargo xtask fetch-models --set {QNN_HOST_SET}`{install}",
+        path.display()
+    )
+}
+
+fn verify(path: &Path, expected: &str, package: &QnnPackage) -> Result<(), OnnxError> {
     if !path.is_file() {
-        return Err(OnnxError::Library(format!(
-            "{} not found; run `cargo xtask fetch-models --set {QNN_HOST_SET}` (an ARM64 \
-             install holds it beside the exe)",
-            path.display()
-        )));
+        return Err(OnnxError::Library(missing_library(path, package)));
     }
     let actual =
         file_sha256(path).map_err(|e| OnnxError::Library(format!("{}: {e}", path.display())))?;
@@ -273,10 +283,14 @@ pub fn register_qnn_in(
     if let Some(r) = QNN.get() {
         return same(r);
     }
-    verify(&dir.join(QNN_PROVIDER_LIB), package.provider_sha256)?;
-    verify(&dir.join(QNN_HTP_LIB), package.htp_sha256)?;
+    verify(
+        &dir.join(QNN_PROVIDER_LIB),
+        package.provider_sha256,
+        package,
+    )?;
+    verify(&dir.join(QNN_HTP_LIB), package.htp_sha256, package)?;
     for (name, sha) in package.libraries {
-        verify(&dir.join(name), sha)?;
+        verify(&dir.join(name), sha, package)?;
     }
     let env = environment()?;
     let library = env
@@ -574,6 +588,19 @@ mod tests {
             models.join(QNN_ARM64.dir)
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn qnn_missing_library_names_an_install_only_for_the_arm64_package() {
+        let path = Path::new("pkg").join(QNN_PROVIDER_LIB);
+        let arm = missing_library(&path, &QNN_ARM64);
+        assert!(arm.contains("an ARM64 install holds it"), "{arm}");
+        let x64 = missing_library(&path, &QNN_X64);
+        assert!(!x64.contains("install holds"), "{x64}");
+        assert!(
+            x64.contains(QNN_PROVIDER_LIB) && x64.contains("fetch-models"),
+            "{x64}"
+        );
     }
 
     #[test]

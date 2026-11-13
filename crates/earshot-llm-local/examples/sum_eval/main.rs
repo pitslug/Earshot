@@ -420,6 +420,7 @@ fn parse_args() -> Result<Args, String> {
     if let Some(agent) = a.agent_cli() {
         check_agent_cli(&a, agent)?;
     }
+    check_variant_differs_from_writer_rules(&a)?;
     if a.chunk_seconds.is_some()
         && (a.remote
             || a.export_prompts.is_some()
@@ -627,6 +628,24 @@ fn check_agent_cli(a: &Args, agent: AgentCli) -> Result<(), String> {
     }
     if let Some(m) = &a.codex_model {
         earshot_llm::codex::check_model(m).map_err(|why| format!("--codex-model: {why}"))?;
+    }
+    Ok(())
+}
+
+/// Refuses a prompt variant that names the writer's own production rules (T12.17c, as xtask's
+/// `check_variant_differs_from_writer_rules`): `brief` on an agent CLI and `standard` on any
+/// other writer send exactly what `current` sends, under another format key.
+fn check_variant_differs_from_writer_rules(a: &Args) -> Result<(), String> {
+    let own = if a.agent_cli().is_some() {
+        PromptVariant::Brief
+    } else {
+        PromptVariant::Standard
+    };
+    if a.prompt_variant == own {
+        return Err(format!(
+            "--prompt-variant {} is this writer's own rules: use the current variant",
+            own.name()
+        ));
     }
     Ok(())
 }
@@ -2395,6 +2414,22 @@ mod tests {
             }
         }
         a
+    }
+
+    #[test]
+    fn sum_eval_prompt_variant_naming_the_writers_own_rules_is_refused() {
+        let with = |mut a: Args, v: PromptVariant| {
+            a.prompt_variant = v;
+            check_variant_differs_from_writer_rules(&a)
+        };
+        let e = with(claude_args(&[]), PromptVariant::Brief).unwrap_err();
+        assert!(e.contains("own rules"), "{e}");
+        with(claude_args(&[]), PromptVariant::Standard).unwrap();
+        with(claude_args(&[]), PromptVariant::Current).unwrap();
+        let e = with(local_args(&[]), PromptVariant::Standard).unwrap_err();
+        assert!(e.contains("own rules"), "{e}");
+        with(local_args(&[]), PromptVariant::Brief).unwrap();
+        with(local_args(&[]), PromptVariant::Current).unwrap();
     }
 
     #[test]

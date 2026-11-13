@@ -72,3 +72,81 @@ fn prefix_reuse_gives_the_fresh_reply_and_decodes_less() {
         on.reused_tokens
     );
 }
+
+/// Every `.rs` file under the `src` folder of each workspace crate and of the desktop app,
+/// except the test-support crate (examples, tests and xtask are not shipped).
+fn shipped_sources() -> Vec<std::path::PathBuf> {
+    fn scan(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        let entries = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+            .flatten();
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                scan(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut roots = vec![repo.join("apps/desktop/src-tauri/src")];
+    for krate in std::fs::read_dir(repo.join("crates")).unwrap().flatten() {
+        if krate.file_name() != "earshot-llm-replay" {
+            roots.push(krate.path().join("src"));
+        }
+    }
+    let mut found = Vec::new();
+    for root in roots.iter().filter(|r| r.is_dir()) {
+        scan(root, &mut found);
+    }
+    assert!(
+        found
+            .iter()
+            .any(|p| p.ends_with(std::path::Path::new("earshot-llm-local/src/lib.rs"))),
+        "the scan must reach this crate's own sources"
+    );
+    found
+}
+
+/// Whether `text` calls `set_prefix_reuse`, as a method or by path (UFCS); its definition is
+/// not a call.
+fn calls_prefix_reuse(text: &str) -> bool {
+    [
+        concat!(".set_prefix_", "reuse("),
+        concat!("::set_prefix_", "reuse("),
+    ]
+    .iter()
+    .any(|c| text.contains(c))
+}
+
+/// The scan's rule catches both call forms (negative control) and not the definition.
+#[test]
+fn prefix_reuse_scan_catches_method_and_ufcs_calls() {
+    assert!(calls_prefix_reuse(concat!(
+        "llm.set_prefix_",
+        "reuse(true);"
+    )));
+    assert!(calls_prefix_reuse(concat!(
+        "LocalLlm::set_prefix_",
+        "reuse(&mut llm, true);"
+    )));
+    assert!(!calls_prefix_reuse(concat!(
+        "pub fn set_prefix_",
+        "reuse(&mut self, on: bool) {"
+    )));
+}
+
+/// T12.25: prefix reuse is evaluation only (`sum_eval --prefix-reuse`) until the owner turns it
+/// on: no shipped file calls `set_prefix_reuse`, the one that defines it included.
+#[test]
+fn prefix_reuse_is_used_by_no_shipped_code() {
+    let found: Vec<_> = shipped_sources()
+        .into_iter()
+        .filter(|p| calls_prefix_reuse(&std::fs::read_to_string(p).unwrap()))
+        .collect();
+    assert!(
+        found.is_empty(),
+        "shipped code turns prefix reuse on: {found:?}"
+    );
+}
