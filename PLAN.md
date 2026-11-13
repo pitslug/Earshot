@@ -1479,13 +1479,13 @@ M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go
   - found: pre-1.0 review, 2026-11-12 (path read, the stall itself not observed). The session thread calls `source.stop()`, which joins the capture thread with no timeout (`ChannelSource::stop` in `crates/earshot-capture-wasapi/src/wasapi.rs`); a capture thread blocked in a COM call (a stalled Bluetooth endpoint or audio service: re-open, `move_output`, `IAudioClient::Stop`) holds Stop, and `MeetingDriver::stop_and_wait` then holds Quit, before `save_recording` has run.
   - do: the audio already delivered is saved whatever the capture thread does. Stop waits for the capture thread's `End` for a bound (a field, with a clock-free test of the rule; a judgement of a few seconds), then abandons the thread (leaked, never joined, as the `ActivateAudioInterfaceAsync` timeout does), delivers the one substitute `End`, and reports `RuntimeWarning` copy that the audio device stopped answering. `save_recording` runs either way. `stop_and_wait` gets the same ceiling so Quit always ends. Keep "End exactly once, last" and `ChannelSource` drop semantics for the normal path. Tests with a fake source whose stop never returns: the session ends, the FLACs are finished, `Ended` is last. Reviewer required (capture contract).
   - accept: `cargo test -p earshot-capture-wasapi`; `cargo test -p earshot-runtime --lib live`; `cargo test -p earshot-desktop --bin earshot meeting`
-- [ ] T9.21a A fake stream seam for the capture loop
+- [x] T9.21a A fake stream seam for the capture loop
   - status (2026-11-13): merged into main after a lane-merge review (one blocker fixed: a device loss after an unknown error ended the track; now only unknown errors advance the 10 s run) and re-review clear; accepts pass on the lane; batch ci at the end of the night.
   - deps: T9.20
   - found: T9.21 (2026-11-13): its tests need "the existing fake stream seam", but `wasapi::run_capture` has none; building one means refactoring the unsafe capture loop.
   - do: put the stream calls `run_capture` makes (`drain`, `wait_any`, `qpc_now`, re-open) behind a trait with the WASAPI implementation unchanged and a fake that can inject an HRESULT on the Nth call; keep all `unsafe` in `wasapi.rs` and one capture loop (AGENTS.md). Existing device-following tests keep passing.
   - accept: `cargo test -p earshot-capture-wasapi`
-- [ ] T9.21 Try to re-open the stream on any stream error
+- [x] T9.21 Try to re-open the stream on any stream error
   - status (2026-11-13): merged into main after a lane-merge review (one blocker fixed: a device loss after an unknown error ended the track; now only unknown errors advance the 10 s run) and re-review clear; accepts pass on the lane; batch ci at the end of the night.
   - deps: T9.20, T9.21a
   - found: pre-1.0 review, 2026-11-12. `follow.rs` treats only `DEVICE_INVALIDATED`, `SERVICE_NOT_RUNNING` and `RESOURCES_INVALIDATED` as a lost device; any other error from `drain`, `wait_any` or `qpc_now` leaves `run_capture` and ends both tracks (`EndReason::Failed`) with no re-open. Which codes occur on real machines is not known.
@@ -1495,12 +1495,12 @@ M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go
   - deps: T9.20
   - split from T9.22 (2026-11-13): one cancel token from `RecordingSaved` on reaches the live catch-up; `worker::StallWatch` gives the catch-up up after `LiveConfig::catch_up_stall` (120 s, a judgement) with no frontier, token poll or message; `wait_turn` and `resolve()` poll the meeting's token.
   - accept: `cargo test -p earshot-runtime --lib live`; `cargo test -p earshot-runtime meeting_queue`; `cargo test -p earshot-desktop --bin earshot meeting`
-- [ ] T9.22b No-progress watchdogs for the final pass, a local summary load and a held live model load
+- [x] T9.22b No-progress watchdogs for the final pass, a local summary load and a held live model load
   - status (2026-11-13): merged into main after the required lane-merge review (clear, 6 advisories, 4 in TODO.md); accepts pass on the lane and in review (`--lib live` run twice); batch ci at the end of the night.
   - deps: T9.22a
   - do: the rest of T9.22 (2): a final-pass step, a local summary load and a live model load on the hold thread that make no progress for a bound (fields, clock-free tests, judgements) give up the queue ticket, leave the meeting Unprocessed with a banner and abandon the thread as T8.4ab does. A model load does not poll the token, so loads need their own bound or heartbeat. Reviewer required (pipeline state machine).
   - accept: `cargo test -p earshot-runtime --lib live`; `cargo test -p earshot-runtime meeting_queue`; `cargo test -p earshot-desktop --bin earshot meeting`
-- [ ] T9.22 A stuck meeting never blocks the ones after it
+- [x] T9.22 A stuck meeting never blocks the ones after it
   - status (2026-11-13): merged into main after the required lane-merge review (clear, 6 advisories, 4 in TODO.md); accepts pass on the lane and in review (`--lib live` run twice); batch ci at the end of the night.
   - deps: T9.20, T9.22a, T9.22b (done when both are)
   - found: pre-1.0 review, 2026-11-12, and TODO.md (`finish_workers` has no watchdog; `ticket.wait_turn` has no cancel; `meeting_models.resolve()` waits on the CUDA start with no cancel). A hung live decode never sends `Ended`, so its `QueueTicket` is never dropped: later meetings record, but their live transcript stops at the 30 min backlog and their final passes wait until a restart. Cancel cannot reach it because the token is first read after `Ended`.
@@ -1515,7 +1515,7 @@ M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go
   - deps: T9.1
   - do: the two fixes of T9.24 that need no profile: throttle `ModelJobEvent::Progress` at the source (at most 4 a second per download, the last one always sent), and answer "has a final transcript" for the meeting list with an existence query rather than loading segments. Each keeps its screen's tests; a test that N progress chunks in 100 ms give at most one event, and one that the list's answer equals the old one on a store with final, draft and empty meetings.
   - accept: `cargo test -p earshot-runtime download`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`
-- [ ] T9.24 Keep the window light while it works
+- [x] T9.24 Keep the window light while it works
   - status (2026-11-13, after): merged into main after a lane-merge review (clear, 4 advisories in TODO.md). After-profile on the desktop (docs/ui-profile/t924-after.md: idle commits 10 -> 0 per 10 s, typing a search about 6x cheaper); the Surface after-profile is not taken yet. No virtualisation (rows cost only on first mount). Batch ci at the end of the night.
   - deps: T9.1, T9.24a
   - status (2026-11-13): before-profile taken on the Surface (lane/ui-profile, merged; numbers in docs/ui-profile/t924-before.md, preview-only page `apps/desktop/profile/`, React development build). Largest costs: a whole-app commit about once a second while idle (the clock), the 10 Hz Levels events re-rendering far beyond the meter, and every commit about 280 ms with a 3-hour transcript open. No fix started.
@@ -1810,7 +1810,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the owner: correct a title and fix words in the transcript or summary. Today only speakers can be edited. Edits go through `edit::write`; an edit to a transcript segment keeps its id and times so citations still work, and its word times stay honest about what changed. Decide with the owner what a re-transcribe does to edited text (keep, warn or replace) and whether a changed transcript marks the summary out of date. A replaced summary keeps today's undo. Exports follow the edited text.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`; screenshot light and dark
 
-- [ ] T12.17 A few summary templates, shorter by default
+- [x] T12.17 A few summary templates, shorter by default
   - status (2026-11-13): merged into main after a lane-merge review (clear, 6 advisories). The rule (docs/summary-eval.md, committed before measuring) kept the default: `short` (-48% words) and `brief` (-61%) both missed the action-coverage guard by less than Claude's own spread between two identical runs, so system.md, the format key and the 12-item cap are unchanged; the test split was not run (no new format), a deviation from rule 6. Shipped: four templates on the Summaries page (Standard, Brief, Decisions and actions, Detailed notes). Open for the owner: a blinded meaning-judge round on `short` before deciding on a shorter default. Batch ci at the end of the night.
   - deps: T7.4b
   - decided (the owner, 2026-11-13): "optimise what we get before how we get it": unblocked now and judged on the writer in use (Claude); the local 4B must only not get worse under the new templates. The wait for the next local model below no longer applies. T12.25 and T12.26 stay parked and are re-run against these templates if a better local model arrives.
