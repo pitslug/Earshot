@@ -1794,6 +1794,9 @@ where
                 );
                 tx.put_segment(row)?;
             }
+            // Word choices on lines this run replaced go with them (transcript words);
+            // choices on kept lines (edited, or another track's) stay.
+            crate::word_choices::drop_stale_tx(tx, meeting)?;
 
             let mut enrolled_me = None;
             if config.enroll_me

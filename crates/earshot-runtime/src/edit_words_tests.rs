@@ -364,6 +364,10 @@ fn edit_retranscribe_keeps_a_changed_word_and_drops_a_kept_one() {
         !v.segments.iter().any(|s| s.id == second),
         "the line was replaced"
     );
+    // The final pass drops the replaced line's choice (transcript words) in its own write.
+    let left = stored(&svc, m);
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!((left[0].segment, left[0].token), (first, 0));
     // The changed word survives with its line; the kept one went with its line, harmlessly.
     assert_eq!(
         line(&svc, m, first).changed,

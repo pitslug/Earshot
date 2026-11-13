@@ -22,13 +22,14 @@
 //! of the final transcript, or whose token no longer reads as recorded (the written token for
 //! [`Choice::Changed`], the decoded token for [`Choice::Kept`]), is ignored, and dropped at
 //! the next write: a re-transcription that replaced a line, or a hand edit of the line, ends
-//! it harmlessly. The edits themselves are `crate::edit::use_word`, `put_back_word` and
+//! it harmlessly. The final pass drops such choices in its own write transaction
+//! (`drop_stale_tx`), so a replaced line's words do not outlive it. The edits themselves are `crate::edit::use_word`, `put_back_word` and
 //! `keep_word`.
 
 use std::collections::{BTreeMap, HashSet};
 
 use earshot_core::identity::EntityId;
-use earshot_core::model::TranscriptPass;
+use earshot_core::model::{MeetingRepo, TranscriptPass};
 use earshot_core::vocabulary::suggest::{Suggester, split_punctuation};
 use earshot_core::voiceprint::{DEFAULT_ME_NAME, Person, VoiceprintRepo};
 use earshot_store::Store;
@@ -113,6 +114,48 @@ pub(crate) fn decode(bytes: &[u8]) -> Vec<WordChoice> {
         return Vec::new();
     }
     serde_json::from_slice(body).unwrap_or_default()
+}
+
+/// Drops from `meeting`'s record every choice that no longer holds for its live final
+/// transcript (module doc): the final pass calls it in its write transaction, after writing
+/// the new lines, so the words of lines it replaced do not stay on this computer. A record
+/// left with no choice is erased, and one this version cannot read is left alone (the next
+/// choice replaces it).
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn drop_stale_tx(
+    tx: &mut earshot_store::StoreTx<'_>,
+    meeting: EntityId,
+) -> Result<(), RuntimeError> {
+    let key = record_key(meeting);
+    let Some(bytes) = tx.local_value(key.as_str())? else {
+        return Ok(());
+    };
+    let choices = decode(&bytes);
+    if choices.is_empty() {
+        return Ok(());
+    }
+    let rows = tx.segments(meeting)?;
+    let lines: BTreeMap<EntityId, &str> = rows
+        .iter()
+        .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
+        .map(|r| (r.segment.id, r.segment.text.as_str()))
+        .collect();
+    let holding: Vec<WordChoice> = choices
+        .iter()
+        .filter(|c| c.holds(&lines))
+        .cloned()
+        .collect();
+    if holding.len() == choices.len() {
+        return Ok(());
+    }
+    if holding.is_empty() {
+        tx.delete_local_value(key.as_str())?;
+    } else {
+        crate::local::set_tx(tx, &key, &encode(&holding)?)?;
+    }
+    Ok(())
 }
 
 /// The list from the Dictionary's entries and the saved persons (module doc).
