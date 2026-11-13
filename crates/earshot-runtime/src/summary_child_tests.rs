@@ -49,6 +49,13 @@ fn titled(title: &str) -> SummaryV1 {
     }
 }
 
+/// The file the fake child writes once it holds its "model file" (`model` beside it).
+fn hold_marker(model: &std::path::Path) -> PathBuf {
+    let mut name = model.as_os_str().to_owned();
+    name.push(".held");
+    PathBuf::from(name)
+}
+
 /// Runs in the child's process: never returns to libtest. It holds the "model file" open with no
 /// sharing, so a test can see from outside when this process is gone.
 #[test]
@@ -73,6 +80,8 @@ fn summary_child_fake_child_for_the_tests() {
         .share_mode(0)
         .open(&job.model_path)
         .unwrap();
+    // Says so itself, so a test never has to catch the hold from outside in time (TODO 109).
+    std::fs::write(hold_marker(&job.model_path), b"held").unwrap();
     let out = Mutex::new(std::io::stdout());
     let loaded = ChildLine::Loaded {
         backend: BackendLine::Vulkan,
@@ -327,6 +336,12 @@ impl Fixture {
             .collect()
     }
 
+    /// Whether the fake child said it held its file (it writes [`hold_marker`] only while it
+    /// holds it).
+    fn reported_hold(&self) -> bool {
+        hold_marker(&self.file).is_file()
+    }
+
     /// Whether the fake child holds its file now.
     fn held(&self) -> bool {
         use std::os::windows::fs::OpenOptionsExt;
@@ -427,23 +442,11 @@ fn summary_child_that_cannot_start_moves_to_the_cpu() {
 /// A child that stalls after `at` is gone after the kill: its exclusive hold on a file ends,
 /// which only its exit does. The control: it held that file while it ran.
 fn assert_stalled_child_is_gone(mode: &str, edit: impl FnOnce(&mut LocalSummaryConfig)) {
-    let f = Arc::new(fixture_with(mode, edit));
-    let watcher = {
-        let f = Arc::clone(&f);
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            while started.elapsed() < Duration::from_secs(60) {
-                if f.held() {
-                    return true;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            false
-        })
-    };
+    let f = fixture_with(mode, edit);
+    assert!(!f.reported_hold());
     let out = f.summarize().unwrap();
-    let held_while_running = watcher.join().unwrap();
-    assert!(held_while_running, "{mode}: the control saw the child run");
+    // The control, from the child itself: it held its file while it ran.
+    assert!(f.reported_hold(), "{mode}: the child said it held its file");
     assert!(
         !f.held(),
         "{mode}: the stalled child is gone after the kill"

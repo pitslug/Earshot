@@ -2879,6 +2879,89 @@ fn failing_second_piece(panic: bool) -> (crate::stretches::StretchRecord, Vec<St
     )
 }
 
+/// TODO 51 through a session: a mic worker that crashes (a panicking transcriber) or whose
+/// live ASR fails stops keeping reference words. The replay keeps its end until the session
+/// has said so (a rendezvous, never a wait on time).
+fn mic_stop_of(panic: bool) -> Vec<super::MicStop> {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let root = svc.data.root().to_owned();
+    let mut w = words("a", 1000, 5);
+    w.extend(words("b", 9000, 5));
+    let audio = speech(&w, 12_000, 175);
+    let mut slot = Some((audio.clone(), w));
+    let factory: LiveAsrFactory = Box::new(move |t, entity| {
+        if t != TrackId::Mic {
+            return Ok(None);
+        }
+        let Some((audio, w)) = slot.take() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            LiveAsr {
+                transcriber: Box::new(FailOn {
+                    inner: crate::testutil::timeline(audio, w),
+                    on: 1,
+                    panic,
+                    calls: 0,
+                }),
+                vad: Box::new(EnergyVad::default()),
+                config: ChunkerConfig::default(),
+                track_entity: entity,
+                segment_ids: ids(),
+            }
+            .into(),
+        ))
+    });
+    let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let told = root.clone();
+    let source = HoldSource {
+        inner: ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, audio.clone()))
+            .build()
+            .unwrap(),
+        hold_at: audio.len(),
+        delivered: 0,
+        release: Box::new(move || !super::mic_stops::of(&told).is_empty()),
+        held_since: None,
+        released: false,
+        timed_out: Arc::clone(&timed_out),
+    };
+    let session = start_live(
+        source,
+        svc.clone(),
+        stretch_config(earshot_core::model::ClockDomain::Replay),
+        Some(factory),
+        Box::new(ChaCha8Rng::seed_from_u64(176)),
+    )
+    .unwrap();
+    let _ = collect(session);
+    assert!(
+        !timed_out.load(Ordering::SeqCst),
+        "the session never said so"
+    );
+    super::mic_stops::of(&root)
+}
+
+#[test]
+fn live_echo_a_crashed_mic_worker_stops_holding_reference_words() {
+    let stops = mic_stop_of(true);
+    assert_eq!(
+        stops.first(),
+        Some(&super::MicStop::WorkerEnded),
+        "{stops:?}"
+    );
+}
+
+#[test]
+fn live_echo_a_failed_mic_asr_stops_holding_reference_words() {
+    let stops = mic_stop_of(false);
+    assert_eq!(
+        stops.first(),
+        Some(&super::MicStop::LiveAsrError),
+        "{stops:?}"
+    );
+}
+
 /// Answers like `inner`, reporting CUDA until its first call and the CPU after it (a
 /// per-call GPU fallback, as `VerifiedWhisper` reports one).
 struct FallsBackToCpu {
@@ -4149,6 +4232,76 @@ fn live_recording_a_panic_on_the_session_thread_saves_the_recording_and_ends_onc
             .unwrap()
             .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".part"))
     );
+}
+
+#[test]
+fn live_recording_a_second_panic_while_saving_after_a_panic_still_ends_once() {
+    // T9.18 review: the session thread panics mid-recording, then the loopback's finish panics
+    // again inside the save that follows. The mic is still saved, the meeting gets its
+    // duration, the loopback is said to be saved at the next start, and RecordingSaved then
+    // Ended (Failed) still come exactly once each, Ended last.
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    super::finalize_panics::set(&svc.data, TrackId::Reference);
+    let talk = words("a", 500, 27);
+    let far = words("r", 700, 27);
+    let replay = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, speech(&talk, 12_000, 320)))
+        .reference(MonoBuffer::new(R16, speech(&far, 12_000, 321)))
+        .build()
+        .unwrap();
+    let mut session = start_live(
+        PanicSource {
+            inner: replay,
+            pumps: 0,
+            panic_at: 200,
+        },
+        svc.clone(),
+        config(earshot_core::model::ClockDomain::Replay),
+        None,
+        Box::new(ChaCha8Rng::seed_from_u64(322)),
+    )
+    .unwrap();
+    let meeting = session.meeting();
+    let events_rx = session.take_events().unwrap();
+    let result = session.wait();
+    assert!(matches!(result, Err(RuntimeError::Poisoned)), "{result:?}");
+    let events: Vec<RuntimeEvent> = events_rx.try_iter().collect();
+    let saved: Vec<&Vec<RuntimeWarning>> = events
+        .iter()
+        .filter_map(|e| match e {
+            RuntimeEvent::RecordingSaved { problems, .. } => Some(problems),
+            _ => None,
+        })
+        .collect();
+    let ended = events
+        .iter()
+        .filter(|e| matches!(e, RuntimeEvent::Ended(_)))
+        .count();
+    assert_eq!((saved.len(), ended), (1, 1), "{events:?}");
+    assert!(matches!(events.last(), Some(RuntimeEvent::Ended(_))));
+    let told = saved[0]
+        .iter()
+        .filter(|p| {
+            matches!(
+                p,
+                RuntimeWarning::Recording {
+                    track: TrackId::Reference,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(told, 1, "{:?}", saved[0]);
+    let duration = svc.store().meeting(meeting).unwrap().unwrap().duration_ms;
+    assert!(duration.is_some_and(|d| d > 0), "{duration:?}");
+    assert_eq!(
+        svc.store().audio_files(meeting).unwrap().len(),
+        1,
+        "the mic"
+    );
+    let report = crate::recover::recover_interrupted(&svc);
+    assert_eq!(report.leftovers_finished, [meeting], "{report:?}");
+    assert_eq!(svc.store().audio_files(meeting).unwrap().len(), 2);
 }
 
 #[test]

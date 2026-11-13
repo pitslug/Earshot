@@ -1083,9 +1083,33 @@ impl Catalogue {
     pub fn install_state(&self, models: &ModelDir, name: &str) -> Result<Install, CatalogueError> {
         let mut entries = Vec::new();
         for a in self.artefacts_of(name)? {
-            entries.push((a.id.clone(), a.size, artefact_state(a, models)?));
+            let mut state = artefact_state(a, models)?;
+            if state == FileState::Present && damaged::holds(models, &a.id) {
+                state = FileState::Damaged;
+            }
+            entries.push((a.id.clone(), a.size, state));
         }
         Ok(Install::from_files(entries))
+    }
+
+    /// After a load of model `name`'s files was refused: the full check ([`Self::verify`]), and
+    /// each artefact it finds damaged reads as [`FileState::Damaged`] in this process until a
+    /// download of it succeeds, so a file of the right size with other bytes is offered for
+    /// download again (TODO 30) while install state stays a size check. True when something
+    /// was found.
+    ///
+    /// # Errors
+    /// As [`Self::verify`].
+    pub fn check_after_refused_load(
+        &self,
+        models: &ModelDir,
+        name: &str,
+    ) -> Result<bool, CatalogueError> {
+        let problems = self.verify(models, name)?;
+        for p in &problems {
+            damaged::mark(models, &p.artefact);
+        }
+        Ok(!problems.is_empty())
     }
 
     /// Puts back every extraction a crash left aside in `models` (`archive::restore_aside`), so
@@ -1368,6 +1392,7 @@ impl Catalogue {
                     .member_problems(models)
                     .map_err(ModelDownloadError::Catalogue)?;
                 if problems.is_empty() {
+                    damaged::clear(models, &a.id);
                     finished += a.size;
                     progress(finished, total);
                     continue;
@@ -1394,6 +1419,7 @@ impl Catalogue {
             if let Some(x) = &a.extract {
                 extract_download(a, x, &dest, models, cancel)?;
             }
+            damaged::clear(models, &a.id);
             finished += a.size;
             progress(finished, total);
         }
@@ -1427,6 +1453,52 @@ fn extract_download(
     Ok(())
 }
 
+/// Artefacts a refused load found damaged ([`Catalogue::check_after_refused_load`]), by models
+/// folder: process-wide, cleared by a successful download of the artefact.
+mod damaged {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    use crate::backends::ModelDir;
+
+    static FOUND: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
+
+    fn found() -> std::sync::MutexGuard<'static, Vec<(PathBuf, String)>> {
+        FOUND
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The models folder as one key however it was named (relative, another case, a link):
+    /// its canonical path, or the path as given when it cannot be resolved (a folder that does
+    /// not exist holds nothing marked).
+    fn root(models: &ModelDir) -> PathBuf {
+        std::fs::canonicalize(models.root()).unwrap_or_else(|_| models.root().to_owned())
+    }
+
+    pub(super) fn mark(models: &ModelDir, artefact: &str) {
+        let root = root(models);
+        let mut f = found();
+        if !f.iter().any(|(r, a)| *r == root && a == artefact) {
+            f.push((root, artefact.to_owned()));
+        }
+    }
+
+    pub(super) fn holds(models: &ModelDir, artefact: &str) -> bool {
+        // Nothing marked, the usual case: no path to resolve.
+        if found().is_empty() {
+            return false;
+        }
+        let root = root(models);
+        found().iter().any(|(r, a)| *r == root && a == artefact)
+    }
+
+    pub(super) fn clear(models: &ModelDir, artefact: &str) {
+        let root = root(models);
+        found().retain(|(r, a)| !(*r == root && a == artefact));
+    }
+}
+
 /// One artefact's file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileState {
@@ -1438,6 +1510,9 @@ pub enum FileState {
     WrongSize(u64),
     /// Neither the file nor a `.part`.
     Missing,
+    /// The manifest size, but a refused load found other bytes in it
+    /// ([`Catalogue::check_after_refused_load`]): replaced by the next download.
+    Damaged,
 }
 
 pub(crate) fn file_state(path: &Path, size: u64) -> FileState {
@@ -1502,7 +1577,7 @@ impl Install {
             .map(|(_, size, f)| match f {
                 FileState::Present => *size,
                 FileState::Partial(n) => (*n).min(*size),
-                FileState::WrongSize(_) | FileState::Missing => 0,
+                FileState::WrongSize(_) | FileState::Missing | FileState::Damaged => 0,
             })
             .sum();
         let state = if installed {

@@ -313,6 +313,22 @@ fn backends_qnn_package_is_the_models_folder_unless_the_exe_folder_holds_the_plu
         qnn_package_dir(&models),
         Some(models.root().join(earshot_onnx::qnn::QNN_HOST.dir))
     );
+    // The wrapper is the rule for this exe and build, so the exe-folder branch is the one
+    // `backends_qnn_install_only_takes_the_plugin_from_beside_the_exe_alone` pins with a
+    // folder that holds the plugin (TODO 73).
+    assert_eq!(
+        qnn_package_dir(&models),
+        qnn_package_dir_in(&models, Some(&exe), QNN_INSTALL_ONLY)
+    );
+    let install = std::env::temp_dir().join(format!("earshot-qnn-beside-{}", std::process::id()));
+    std::fs::create_dir_all(&install).unwrap();
+    std::fs::write(install.join(earshot_onnx::qnn::QNN_PROVIDER_LIB), b"plugin").unwrap();
+    assert_eq!(
+        qnn_package_dir_in(&models, Some(&install), QNN_INSTALL_ONLY),
+        Some(install.clone()),
+        "a folder beside the exe that holds the plugin wins"
+    );
+    std::fs::remove_dir_all(&install).unwrap();
 }
 
 #[test]
@@ -2634,6 +2650,172 @@ fn backends_nemotron_preview_load_is_used_by_no_shipped_code() {
     assert!(mod_rs.contains("#[cfg(test)]\npub(crate) mod tests;"));
     let tests_rs = std::fs::read_to_string(live.join("tests.rs")).unwrap();
     assert!(tests_rs.contains("#[path = \"preview_tests.rs\"]\nmod preview_tests;"));
+}
+
+/// TODO 86: the seams that take any `Hardware` are called only by `backends.rs` itself (with this
+/// computer's hardware, or inside the evaluation loader) and by `#[cfg(test)]` code: a shipped call
+/// with other hardware would skip the rule for this computer.
+#[test]
+fn backends_preview_hardware_seams_take_this_computers_hardware_in_shipped_code() {
+    for name in [
+        concat!("load_preview_", "with("),
+        concat!("load_preview_", "second_with("),
+    ] {
+        // `live/preview_tests.rs` is compiled only under `#[cfg(test)]` (see the nemotron scan).
+        let found: Vec<PathBuf> = shipped_files_naming(name)
+            .into_iter()
+            .filter(|p| p.file_name().is_none_or(|f| f != "preview_tests.rs"))
+            .collect();
+        assert!(found.is_empty(), "shipped code calls {name}: {found:?}");
+        let src = backends_source();
+        let evaluation = item_span(&src, concat!("pub fn load_preview_", "on_hardware("));
+        let mut calls = 0;
+        for (at, line) in code_lines(&src) {
+            if line.contains(name) && !line.contains("fn load_preview_") {
+                calls += 1;
+                assert!(
+                    line.contains("&crate::hardware()") || evaluation.contains(&at),
+                    "{name} with other hardware outside the evaluation loader: {line}"
+                );
+            }
+        }
+        assert!(
+            calls >= 2,
+            "{name}: {calls} calls found, the scan reads nothing"
+        );
+    }
+}
+
+/// TODO 93: inside `backends.rs`, the evaluation-only loaders and their types are named only by
+/// evaluation-only items, so no production loader there reaches them either.
+#[test]
+fn backends_evaluation_only_items_are_named_only_by_evaluation_items_in_backends() {
+    let src = backends_source();
+    let items = [
+        concat!("pub fn load_preview_", "unrefused("),
+        concat!("pub fn load_preview_", "on_hardware("),
+        concat!("pub const NEMOTRON_", "STREAM_DIR"),
+        concat!("const NEMOTRON_", "STREAM_FILES"),
+        concat!("pub struct Evaluated", "Stream {"),
+        concat!("struct Nemotron", "Preview {"),
+        concat!("impl crate::live::StreamingPreview for Nemotron", "Preview"),
+        concat!("pub fn load_nemotron_", "preview("),
+        concat!("pub struct SharedEncoder", "Pair {"),
+        concat!("pub fn load_preview_", "sharing_encoder("),
+    ];
+    let spans: Vec<std::ops::Range<usize>> = items.iter().map(|h| item_span(&src, h)).collect();
+    let names = [
+        concat!("load_preview_", "unrefused"),
+        concat!("load_preview_", "on_hardware"),
+        concat!("load_nemotron_", "preview"),
+        concat!("nemotron", "::"),
+        concat!("NEMOTRON_", "STREAM"),
+        concat!("Nemotron", "Preview"),
+        concat!("Evaluated", "Stream"),
+        concat!("load_preview_", "sharing_encoder"),
+        concat!("SharedEncoder", "Pair"),
+        concat!("share_", "encoder("),
+        concat!("load_", "sharing("),
+    ];
+    for (at, line) in code_lines(&src) {
+        for name in names {
+            assert!(
+                !line.contains(name) || spans.iter().any(|s| s.contains(&at)),
+                "backends.rs names {name} outside an evaluation item: {line}"
+            );
+        }
+    }
+}
+
+/// TODO 93: earshot-onnx calls its evaluation-only pieces nowhere itself: the shared encoder
+/// only at its definitions, the streaming model only inside its own module.
+#[test]
+fn backends_evaluation_only_onnx_pieces_are_not_used_inside_earshot_onnx() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../earshot-onnx/src");
+    let mut read = 0;
+    for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        read += 1;
+        let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (_, line) in code_lines(&text) {
+            for name in [concat!("share_", "encoder("), concat!("load_", "sharing(")] {
+                assert!(
+                    !line.contains(name) || line.contains(&format!("fn {name}")),
+                    "{file} calls {name}: {line}"
+                );
+            }
+            if file != "nemotron.rs" {
+                assert!(
+                    !line.contains("nemotron") || line == concat!("pub mod nemo", "tron;"),
+                    "{file} uses the streaming model: {line}"
+                );
+            }
+        }
+    }
+    assert!(read > 5, "earshot-onnx/src: {read} files read");
+}
+
+/// TODO 137: a preview's Parakeet load says it is a preview's (only a compiled NPU model, never
+/// recorded for the meeting's note) and the track's load says it is a track's. Whose load it is
+/// is said by the caller, so the callers are pinned here: no test can reach a QNN load off the
+/// Surface.
+#[test]
+fn backends_preview_parakeet_load_is_a_previews_and_the_tracks_a_tracks() {
+    let src = backends_source();
+    let preview = &src[item_span(&src, "fn load_preview_parakeet(")];
+    assert!(preview.contains("QnnLoadFor::Preview"), "{preview}");
+    assert!(!preview.contains("QnnLoadFor::Track"), "{preview}");
+    assert!(preview.contains("load_parakeet_with("), "{preview}");
+    let track = &src[item_span(&src, "pub fn load_parakeet(")];
+    assert!(track.contains("QnnLoadFor::Track"), "{track}");
+    assert!(!track.contains("QnnLoadFor::Preview"), "{track}");
+    // No other caller: each loader above is the only path of its kind.
+    let calls = code_lines(&src)
+        .into_iter()
+        .filter(|(_, l)| l.contains("load_parakeet_with(") && !l.starts_with("fn "))
+        .count();
+    assert_eq!(calls, 2);
+}
+
+/// `backends.rs` as written (its tests are in this file).
+fn backends_source() -> String {
+    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/backends.rs")).unwrap()
+}
+
+/// The byte offset and trimmed text of every line of `src` that is not a comment.
+fn code_lines(src: &str) -> Vec<(usize, &str)> {
+    let mut at = 0;
+    let mut out = Vec::new();
+    for line in src.split_inclusive('\n') {
+        let t = line.trim();
+        if !t.is_empty() && !t.starts_with("//") {
+            out.push((at, t));
+        }
+        at += line.len();
+    }
+    out
+}
+
+/// The bytes of the top-level item that starts with `header` in `src`: up to its closing line
+/// (`}` or `];` at the start of a line), or the end of its line for a one-line item.
+fn item_span(src: &str, header: &str) -> std::ops::Range<usize> {
+    let start = src
+        .find(header)
+        .unwrap_or_else(|| panic!("backends.rs has no `{header}`"));
+    let line_end = src[start..].find('\n').map_or(src.len(), |i| start + i);
+    if src[start..line_end].trim_end().ends_with(';') {
+        return start..line_end;
+    }
+    let end = ["\n}\n", "\n];\n"]
+        .iter()
+        .filter_map(|close| src[start..].find(close).map(|i| start + i + close.len()))
+        .min()
+        .unwrap_or_else(|| panic!("`{header}` has no end"));
+    start..end
 }
 
 /// The shipped source files (runtime, CLI, desktop) other than `backends.rs` and its tests that

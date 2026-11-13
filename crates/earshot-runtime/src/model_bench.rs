@@ -694,10 +694,38 @@ fn without_drivers(fingerprint: &str) -> String {
 }
 
 /// What a check's answer depends on: this build (version and accelerators), the hardware
-/// (cores, memory, GPU driver versions), the meeting languages and the installed models.
-/// Any change means the check runs again.
+/// (cores, memory, GPU driver versions), the meeting languages, the installed models and the
+/// installed NPU versions (ARM64: whether a model can run on the NPU, TODO 77). Any change
+/// means the check runs again.
 #[must_use]
 pub fn check_fingerprint(models: &ModelDir, facts: &HardwareFacts, languages: &[&str]) -> String {
+    let npu = crate::catalogue::Catalogue::embedded()
+        .map(|c| installed_npu_versions(c, models))
+        .unwrap_or_default();
+    check_fingerprint_with(models, facts, languages, &npu)
+}
+
+/// The NPU versions of `catalogue` installed in `models` (sizes only), in manifest order;
+/// always empty where NPU versions are not offered.
+fn installed_npu_versions(
+    catalogue: &crate::catalogue::Catalogue,
+    models: &ModelDir,
+) -> Vec<String> {
+    catalogue
+        .models_of(crate::catalogue::ModelKind::NpuVersion)
+        .filter(|m| catalogue.is_installed(models, &m.name))
+        .map(|m| m.name.clone())
+        .collect()
+}
+
+/// [`check_fingerprint`] with the installed NPU versions given: none adds no field, so a
+/// fingerprint where no NPU version is installed is the one stored before they counted.
+fn check_fingerprint_with(
+    models: &ModelDir,
+    facts: &HardwareFacts,
+    languages: &[&str],
+    npu: &[String],
+) -> String {
     let installed: Vec<&str> = MODELS
         .iter()
         .map(|m| m.name)
@@ -726,7 +754,11 @@ pub fn check_fingerprint(models: &ModelDir, facts: &HardwareFacts, languages: &[
             .map_or_else(|| UNKNOWN_DRIVERS.to_owned(), |d| d.join(",")),
         langs.join(","),
         installed.join(",")
-    )
+    ) + &if npu.is_empty() {
+        String::new()
+    } else {
+        format!("|npu {}", npu.join(","))
+    }
 }
 
 /// Records `check` in the device-local state.

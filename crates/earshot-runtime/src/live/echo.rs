@@ -114,6 +114,9 @@ pub struct LiveEchoFilter {
     reference_done: Option<MeetingTime>,
     /// How far the mic has been decoded, when its live ASR runs behind capture.
     mic_done: Option<MeetingTime>,
+    /// The mic's live ASR stopped for the rest of the meeting (failed, cut or crashed): no
+    /// mic final is coming, so its frozen progress no longer keeps reference words.
+    mic_stopped: bool,
     /// Mic words removed as echo so far.
     removed: usize,
 }
@@ -166,7 +169,18 @@ impl LiveEchoFilter {
     /// How far the mic's live ASR has decoded: reference words a coming mic final may repeat
     /// are kept until it has passed them, however far capture is ahead (a catch-up, T9.1l).
     pub fn mic_progress(&mut self, done: MeetingTime) {
+        if self.mic_stopped {
+            return;
+        }
         self.mic_done = Some(self.mic_done.map_or(done, |d| d.max(done)));
+    }
+
+    /// The mic's live ASR stopped for good (its worker failed or crashed): reference words
+    /// are kept only for the mic finals still held, so they no longer grow for the rest of
+    /// the meeting behind a frozen mic frontier (TODO 51).
+    pub fn mic_stopped(&mut self) {
+        self.mic_stopped = true;
+        self.mic_done = None;
     }
 
     /// Pipeline progress (level meters and stats).
@@ -231,7 +245,7 @@ impl LiveEchoFilter {
                 self.reference.extend(s.words.iter().cloned());
                 self.reference.sort_by_key(|w| w.start);
                 // Behind the slowest of capture and both tracks' decoding (T9.1l).
-                let oldest = [self.reference_done, self.mic_done]
+                let oldest = [self.reference_done, self.mic_done, self.held_from()]
                     .into_iter()
                     .flatten()
                     .fold(self.now, MeetingTime::min);
@@ -653,6 +667,48 @@ mod tests {
         f.reference(&TranscriptEvent::Final(seg(1, words(spoken, 5_000, 400))));
         f.mic_final(seg(2, words(spoken, 5_100, 400)));
         assert_eq!(texts(&f.release(false)), ["<dropped>"]);
+    }
+
+    /// TODO 51: a mic worker that stopped (failed or crashed) left its frontier frozen, so
+    /// every later reference word was kept for the rest of the meeting.
+    #[test]
+    fn live_echo_a_stopped_mic_no_longer_keeps_reference_words() {
+        let feed = |f: &mut LiveEchoFilter| {
+            for k in 0..60u64 {
+                let at = 10_000 * k;
+                f.progress(MeetingTime::from_millis(at));
+                f.reference_progress(MeetingTime::from_millis(at));
+                f.reference(&TranscriptEvent::Final(seg(1, words("one two", at, 400))));
+            }
+        };
+        let mut frozen = LiveEchoFilter::new();
+        frozen.mic_progress(MeetingTime::ZERO);
+        feed(&mut frozen);
+        assert_eq!(
+            frozen.reference.len(),
+            120,
+            "every word kept behind the mic"
+        );
+
+        let mut stopped = LiveEchoFilter::new();
+        stopped.mic_progress(MeetingTime::ZERO);
+        stopped.mic_stopped();
+        stopped.mic_progress(MeetingTime::ZERO);
+        feed(&mut stopped);
+        // Kept: the last REFERENCE_KEEP (120 s) of 590 s, in words two per 10 s.
+        assert!(
+            stopped.reference.len() <= 2 * 13,
+            "{}",
+            stopped.reference.len()
+        );
+
+        // A mic final still held keeps the reference words it may repeat.
+        let mut held = LiveEchoFilter::new();
+        held.stats(&stats(1_000, Some(100.0)));
+        held.mic_final(seg(2, words("one two", 1_100, 400)));
+        held.mic_stopped();
+        feed(&mut held);
+        assert!(held.reference.iter().any(|w| w.start.as_millis() <= 1_000));
     }
 
     #[test]

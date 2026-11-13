@@ -324,6 +324,12 @@ impl LiveWorker {
         earshot_core::asr::MeetingTime::from_pipeline_frames(self.decoded.load(Ordering::SeqCst))
     }
 
+    /// Whether the worker's thread has ended. Before [`LiveWorker::finish`] that means it
+    /// crashed: its frontier stays where it was for the rest of the meeting.
+    pub(super) fn ended(&self) -> bool {
+        self.thread.as_ref().is_some_and(JoinHandle::is_finished)
+    }
+
     /// The counter behind [`LiveWorker::decoded_through`] (pipeline frames), read by the track's
     /// previews (`preview` module docs). Only the worker writes it.
     pub(super) fn frontier_source(&self) -> Arc<AtomicU64> {

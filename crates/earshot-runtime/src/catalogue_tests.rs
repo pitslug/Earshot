@@ -974,6 +974,67 @@ fn catalogue_helpers_are_not_installed_until_extracted_and_a_damaged_member_is_d
     assert_eq!(c.verify(&models, HELPERS_MODEL).unwrap(), []);
 }
 
+#[test]
+fn catalogue_helpers_found_damaged_by_a_refused_load_read_as_missing_until_downloaded_again() {
+    // TODO 30: a same-size damaged helper read as installed, so the app offered no download and
+    // every meeting was refused. A load that was refused checks the files; a damaged one then
+    // reads as not installed (the app offers the download), and the download repairs it.
+    let h = small_helpers();
+    let dir = TempDir::new("catalogue-helpers");
+    let models = ModelDir::new(dir.0.join("models"));
+    let c = &h.catalogue;
+    let asked = std::cell::RefCell::new(Vec::new());
+    let mut fetch =
+        |url: &Url, dest: &Path, _: &Expected<'_>, _: &CancelToken, _: &mut dyn FnMut(u64, u64)| {
+            fake_fetch(&h.files, &asked, url, dest)
+        };
+    c.download(
+        &models,
+        HELPERS_MODEL,
+        &CancelToken::new(),
+        &mut |_, _| {},
+        &mut fetch,
+    )
+    .unwrap();
+    // An intact install stays installed after a refusal that was not about its bytes.
+    assert!(!c.check_after_refused_load(&models, HELPERS_MODEL).unwrap());
+    assert!(c.is_installed(&models, HELPERS_MODEL));
+
+    let member = "ort-dir/ort/lib/library.dll";
+    let size = std::fs::metadata(models.root().join(member)).unwrap().len();
+    put(&models, member, &vec![b'!'; usize::try_from(size).unwrap()]);
+    assert!(c.is_installed(&models, HELPERS_MODEL), "by size alone");
+    assert!(c.check_after_refused_load(&models, HELPERS_MODEL).unwrap());
+    let state = c.install_state(&models, HELPERS_MODEL).unwrap();
+    assert_ne!(state.state, InstallState::Installed);
+    assert_eq!(state.files[2], ("ort".to_owned(), FileState::Damaged));
+    assert_eq!(state.files[0].1, FileState::Present, "only the damaged one");
+    assert_eq!(state.held, state.total - h.files[2].1.len() as u64);
+    // The same folder named another way reads the same (TODO 30 review).
+    let dotted = ModelDir::new(dir.0.join("models").join("seg-dir").join(".."));
+    assert_eq!(
+        c.install_state(&dotted, HELPERS_MODEL).unwrap().files[2].1,
+        FileState::Damaged
+    );
+    // Another models folder is not affected.
+    let other = ModelDir::new(dir.0.join("other"));
+    assert_eq!(
+        c.install_state(&other, HELPERS_MODEL).unwrap().files[2].1,
+        FileState::Missing
+    );
+
+    c.download(
+        &models,
+        HELPERS_MODEL,
+        &CancelToken::new(),
+        &mut |_, _| {},
+        &mut fetch,
+    )
+    .unwrap();
+    assert_eq!(c.verify(&models, HELPERS_MODEL).unwrap(), []);
+    assert!(c.is_installed(&models, HELPERS_MODEL), "repaired");
+}
+
 /// A crash between `publish`'s two renames: the start, or the next download, puts the good copy
 /// back with no request.
 #[test]

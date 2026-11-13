@@ -486,9 +486,15 @@ fn live_summaries_thread_that_stops_itself_is_reported_with_or_without_a_record(
     w.extend(words("b", 5000, 5));
     let audio = speech(&w, 8_000, 231);
     let mapper = FakeMapper::new(2, Behaviour::Panics);
-    let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, audio.clone()))
-        .build()
-        .unwrap();
+    // The meeting ends only once the model was called (a rendezvous, never a wait on time):
+    // under load the session could otherwise stop before the first window reached the thread.
+    let in_model = Arc::clone(&mapper);
+    let source = HoldEndUntil::new(
+        ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, audio.clone()))
+            .build()
+            .unwrap(),
+        move || !in_model.seen().is_empty(),
+    );
     let session = start_live(
         source,
         svc.clone(),

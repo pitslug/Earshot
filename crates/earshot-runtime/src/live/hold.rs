@@ -177,10 +177,11 @@ pub(super) fn held_entry(
     }
 }
 
-/// A track's queued audio.
+/// A track's queued audio. A chunk held for transcription and for speaker work is one
+/// allocation shared by both queues (TODO 50: two copies cost about 230 MB at the cap).
 #[derive(Debug, Default)]
 struct TrackQueue {
-    chunks: Vec<Vec<Sample>>,
+    chunks: Vec<Arc<Vec<Sample>>>,
     frames: u64,
 }
 
@@ -193,17 +194,18 @@ pub(super) struct HeldAudio {
 }
 
 impl HeldAudio {
-    /// Queues `samples`; the track's length after it.
-    fn push(&mut self, track: TrackId, samples: &[Sample]) -> u64 {
+    /// Queues `samples` (shared with the other queue that holds them); the track's length after
+    /// it.
+    fn push(&mut self, track: TrackId, samples: Arc<Vec<Sample>>) -> u64 {
         let q = &mut self.tracks[slot(track)];
-        q.chunks.push(samples.to_vec());
         q.frames += samples.len() as u64;
+        q.chunks.push(samples);
         self.gauge[slot(track)].store(q.frames, Ordering::SeqCst);
         q.frames
     }
 
     /// Takes `track`'s queue, frames in order.
-    fn take(&mut self, track: TrackId) -> (Vec<Vec<Sample>>, u64) {
+    fn take(&mut self, track: TrackId) -> (Vec<Arc<Vec<Sample>>>, u64) {
         let q = std::mem::take(&mut self.tracks[slot(track)]);
         self.gauge[slot(track)].store(0, Ordering::SeqCst);
         (q.chunks, q.frames)
@@ -448,13 +450,17 @@ where
         let Some(hold) = &mut self.hold else {
             return;
         };
+        if !hold.transcript_held && !hold.speakers_held {
+            return;
+        }
+        let chunk = Arc::new(samples.to_vec());
         let mut transcript_over = false;
         if hold.transcript_held {
-            transcript_over = hold.transcript_audio.push(track, samples) > hold.max_held;
+            transcript_over = hold.transcript_audio.push(track, Arc::clone(&chunk)) > hold.max_held;
         }
         let mut speakers_over = false;
         if hold.speakers_held {
-            speakers_over = hold.speaker_audio.push(track, samples) > hold.max_speaker_buffer;
+            speakers_over = hold.speaker_audio.push(track, chunk) > hold.max_speaker_buffer;
         }
         if speakers_over {
             let seconds = hold.hold.max_speaker_buffer.as_secs();
@@ -606,7 +612,8 @@ where
             let (chunks, frames) = audio.take(track);
             queued = queued.max(frames);
             for chunk in chunks {
-                worker.send_owned(chunk);
+                // Copied only while speaker work still holds the same chunk.
+                worker.send_owned(Arc::try_unwrap(chunk).unwrap_or_else(|c| c.to_vec()));
             }
             self.sent[slot(track)] = frames;
             over_cap |= worker.backlog() > self.worker_cap;
@@ -786,5 +793,30 @@ where
         {
             self.set_transcript_state(LiveTranscriptState::UpToDate);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TODO 50: audio held for both kinds of work is one allocation, and a queue taken last
+    /// gets it without a copy.
+    #[test]
+    fn meeting_queue_held_audio_is_kept_once_for_both_queues() {
+        let (mut transcript, mut speakers) = (HeldAudio::default(), HeldAudio::default());
+        let chunk = Arc::new(vec![0.25; 160]);
+        let data = chunk.as_ptr();
+        assert_eq!(transcript.push(TrackId::Mic, Arc::clone(&chunk)), 160);
+        assert_eq!(speakers.push(TrackId::Mic, chunk), 160);
+        let (held_for_speakers, frames) = speakers.take(TrackId::Mic);
+        assert_eq!(frames, 160);
+        assert!(std::ptr::eq(held_for_speakers[0].as_ptr(), data), "shared");
+        drop(held_for_speakers);
+        let (held, frames) = transcript.take(TrackId::Mic);
+        assert_eq!(frames, 160);
+        let owned = Arc::try_unwrap(held.into_iter().next().unwrap()).unwrap();
+        assert!(std::ptr::eq(owned.as_ptr(), data), "no copy");
+        assert_eq!(transcript.take(TrackId::Mic).1, 0);
     }
 }

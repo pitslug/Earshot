@@ -376,7 +376,7 @@ pub fn install_state(
                 // Downloaded and not extracted yet.
                 FileState::Present => artefact.size,
                 FileState::Partial(n) => n.min(artefact.size),
-                FileState::WrongSize(_) | FileState::Missing => 0,
+                FileState::WrongSize(_) | FileState::Missing | FileState::Damaged => 0,
             }
         };
         files.extend(states);
@@ -675,7 +675,9 @@ fn exclusive(dir: &Path, name: &str) -> Result<(), CudaError> {
         path: path.clone(),
         error: e.to_string(),
     };
-    let metadata = match std::fs::metadata(&path) {
+    // The entry itself, never what a link points at: removing a link deletes only the link, so
+    // a file it points at elsewhere is neither asked for nor has its attribute changed (TODO 40).
+    let metadata = match std::fs::symlink_metadata(&path) {
         Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(other(e)),

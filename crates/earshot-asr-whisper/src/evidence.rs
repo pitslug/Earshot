@@ -20,6 +20,7 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::ThreadId;
 
 use earshot_core::asr::{AsrError, BackendInfo, BackendKind, Transcriber};
 
@@ -212,6 +213,8 @@ const CAPTURED_TARGET: &str = "whisper_rs";
 /// stay valid while old lines are dropped.
 struct Ring {
     lines: VecDeque<String>,
+    /// The thread that logged each line of `lines` (same index).
+    threads: VecDeque<ThreadId>,
     start: usize,
 }
 
@@ -236,8 +239,10 @@ impl log::Log for LogCapture {
         }
         if let Ok(mut ring) = self.ring.lock() {
             ring.lines.push_back(line);
+            ring.threads.push_back(std::thread::current().id());
             while ring.lines.len() > MAX_CAPTURED_LINES {
                 ring.lines.pop_front();
+                ring.threads.pop_front();
                 ring.start += 1;
             }
         }
@@ -249,6 +254,7 @@ impl log::Log for LogCapture {
 static CAPTURE: LogCapture = LogCapture {
     ring: Mutex::new(Ring {
         lines: VecDeque::new(),
+        threads: VecDeque::new(),
         start: 0,
     }),
     echo: AtomicBool::new(false),
@@ -315,6 +321,29 @@ pub fn logs_since_complete(mark: usize) -> Option<Vec<String>> {
     Some(ring.lines.iter().skip(mark - ring.start).cloned().collect())
 }
 
+/// [`logs_since_complete`] limited to the lines the calling thread logged: the window of
+/// one load or call, which whisper.cpp logs on the thread that runs it. A whisper.cpp load
+/// or call on another thread at the same time (a meeting thread left behind, T9.22) then
+/// neither adds lines to this window nor takes lines from it.
+#[must_use]
+pub fn logs_since_complete_on_this_thread(mark: usize) -> Option<Vec<String>> {
+    let ring = CAPTURE.ring.lock().ok()?;
+    if mark < ring.start {
+        return None;
+    }
+    let me = std::thread::current().id();
+    let skip = mark - ring.start;
+    Some(
+        ring.lines
+            .iter()
+            .zip(ring.threads.iter())
+            .skip(skip)
+            .filter(|(_, t)| **t == me)
+            .map(|(l, _)| l.clone())
+            .collect(),
+    )
+}
+
 /// Every line still kept.
 #[must_use]
 pub fn captured_logs() -> Vec<String> {
@@ -323,8 +352,9 @@ pub fn captured_logs() -> Vec<String> {
 
 /// Loads a model with the log captured and checks the backend with [`check_backend`].
 /// Installs the capture if needed (without changing its echo setting). The evidence covers
-/// the lines logged during this call, so loads that need evidence must not run
-/// concurrently with other whisper.cpp loads in the process.
+/// the lines this thread logged during this call
+/// ([`logs_since_complete_on_this_thread`]), so a whisper.cpp load on another thread at
+/// the same time does not change the verdict.
 ///
 /// # Errors
 /// Any [`WhisperTranscriber::load`] error; [`AsrError::Backend`] if the capture cannot be
@@ -336,7 +366,7 @@ pub fn load_verified(
     install()?;
     let mark = log_mark();
     let transcriber = WhisperTranscriber::load(config)?;
-    let window = logs_since_complete(mark).ok_or_else(|| {
+    let window = logs_since_complete_on_this_thread(mark).ok_or_else(|| {
         AsrError::Backend("the whisper log of this load overflowed the capture".into())
     })?;
     let (log, lines) = classify_whisper_log(&window);
@@ -583,6 +613,40 @@ mod tests {
     }
 
     #[test]
+    fn evidence_a_window_on_this_thread_leaves_out_another_threads_load() {
+        let _serial = serial();
+        let mark = log_mark();
+        emit(
+            "whisper_rs::whisper_logging_hook",
+            "whisper_backend_init_gpu: no GPU found",
+        );
+        // A left thread's load wakes in the middle of this one (T9.22 review).
+        std::thread::spawn(|| {
+            emit(
+                "whisper_rs::whisper_logging_hook",
+                "whisper_backend_init_gpu: using CUDA0 backend",
+            );
+            emit(
+                "whisper_rs::whisper_logging_hook",
+                "whisper_model_load:    CUDA0 total size =    77.11 MB",
+            );
+        })
+        .join()
+        .unwrap();
+        emit(
+            "whisper_rs::whisper_logging_hook",
+            "whisper_model_load:      CPU total size =    77.11 MB",
+        );
+        // The whole window mixes the two loads and proves nothing.
+        let all = logs_since_complete(mark).unwrap();
+        assert_eq!(classify_whisper_log(&all).0, LogBackend::Unknown, "{all:?}");
+        // This thread's window is this load's own evidence.
+        let mine = logs_since_complete_on_this_thread(mark).unwrap();
+        assert_eq!(mine.len(), 2, "{mine:?}");
+        assert_eq!(classify_whisper_log(&mine).0, LogBackend::Cpu, "{mine:?}");
+    }
+
+    #[test]
     fn evidence_capture_is_bounded_and_refuses_incomplete_windows() {
         let _serial = serial();
         let mark = log_mark();
@@ -603,5 +667,8 @@ mod tests {
         let recent = log_mark();
         emit("whisper_rs::ggml_logging_hook", "fresh");
         assert_eq!(logs_since_complete(recent), Some(vec!["fresh".to_owned()]));
+        assert_eq!(logs_since_complete_on_this_thread(mark), None);
+        let ring = CAPTURE.ring.lock().unwrap();
+        assert_eq!(ring.lines.len(), ring.threads.len());
     }
 }
