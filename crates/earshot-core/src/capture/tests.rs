@@ -752,6 +752,7 @@ fn drifted_timeline(packets: u64, late: u64) -> RawTimeline {
         synthesized_silence_frames: 0,
         packets,
         device_changes: Vec::new(),
+        processing: RawProcessing::Default,
     };
     RawTimeline {
         schema_version: 1,
@@ -827,7 +828,7 @@ fn capture_raw_timestamp_error_first_packet_uses_track_position() {
 #[test]
 fn capture_raw_timeline_rejects_unknown_schema_versions() {
     let ok = MonoBuffer::new(SR48, ramp(2_000, 0.0));
-    for v in [0, 5, 99] {
+    for v in [0, 6, 99] {
         let mut t = raw_timeline();
         t.schema_version = v;
         assert_eq!(
@@ -835,8 +836,8 @@ fn capture_raw_timeline_rejects_unknown_schema_versions() {
             ReplayError::UnsupportedSchema(v)
         );
     }
-    assert_eq!(SUPPORTED_SCHEMAS, [1, 2, 3, 4]);
-    for v in [2, 3, 4] {
+    assert_eq!(SUPPORTED_SCHEMAS, [1, 2, 3, 4, 5]);
+    for v in [2, 3, 4, 5] {
         let mut t = raw_timeline();
         t.schema_version = v;
         assert!(ReplayBuilder::from_raw_timeline(&t, ok.clone(), ok.clone()).is_ok());
@@ -1150,6 +1151,78 @@ fn capture_raw_replay_of_a_v4_hands_free_change_keeps_the_warning_off() {
             (Some("USB Mic".into()), None)
         ]
     );
+}
+
+/// [`raw_json`] at `version`, its mic section carrying `processing` (a JSON value) when given.
+fn raw_json_with_processing(version: u32, processing: Option<&str>) -> String {
+    let json = raw_json().replacen(
+        "\"schema_version\": 1",
+        &format!("\"schema_version\": {version}"),
+        1,
+    );
+    match processing {
+        Some(value) => json.replacen(
+            "\"device_name\": \"Mic (Test)\",",
+            &format!("\"device_name\": \"Mic (Test)\", \"processing\": {value},"),
+            1,
+        ),
+        None => json,
+    }
+}
+
+#[test]
+fn capture_raw_timeline_v5_reads_whether_the_mic_was_opened_raw() {
+    let raw: RawTimeline =
+        serde_json::from_str(&raw_json_with_processing(5, Some("\"raw\""))).unwrap();
+    assert_eq!(raw.schema_version, 5);
+    assert_eq!(raw.mic.processing, RawProcessing::Raw);
+    assert_eq!(raw.loopback.processing, RawProcessing::Default);
+    // Absent: the default stream, in v5 and in every older version.
+    for version in [1, 2, 3, 4, 5] {
+        let t: RawTimeline =
+            serde_json::from_str(&raw_json_with_processing(version, None)).unwrap();
+        assert_eq!(t.mic.processing, RawProcessing::Default, "v{version}");
+        assert_eq!(t.loopback.processing, RawProcessing::Default, "v{version}");
+    }
+    let v4: RawTimeline = serde_json::from_str(&raw_json_with_changes(4, "")).unwrap();
+    assert_eq!(v4.mic.processing, RawProcessing::Default);
+    // The default written out reads as the default.
+    let named: RawTimeline =
+        serde_json::from_str(&raw_json_with_processing(5, Some("\"default\""))).unwrap();
+    assert_eq!(named.mic.processing, RawProcessing::Default);
+}
+
+#[test]
+fn capture_raw_timeline_refuses_an_unknown_processing_of_the_mic() {
+    // A take whose mic was opened some other way cannot be read as either kind.
+    for value in ["\"agc\"", "\"Raw\"", "true", "null", "1"] {
+        let json = raw_json_with_processing(5, Some(value));
+        assert!(
+            serde_json::from_str::<RawTimeline>(&json).is_err(),
+            "{value} was accepted"
+        );
+    }
+}
+
+#[test]
+fn capture_raw_replay_of_a_raw_take_equals_the_default_take() {
+    // The field is informational: the replay of a raw take is the replay of the same take
+    // recorded with the default stream, event for event.
+    let replay = |processing: Option<&str>| {
+        let t: RawTimeline =
+            serde_json::from_str(&raw_json_with_processing(5, processing)).unwrap();
+        let mic = MonoBuffer::new(SR48, ramp(2_000, 0.0));
+        let lb = MonoBuffer::new(SR48, ramp(2_000, 10_000.0));
+        let mut src = ReplayBuilder::from_raw_timeline(&t, mic, lb)
+            .unwrap()
+            .build()
+            .unwrap();
+        let session = src.session().clone();
+        (session, run(&mut src))
+    };
+    let raw = replay(Some("\"raw\""));
+    assert!(!raw.1.is_empty());
+    assert_eq!(raw, replay(None));
 }
 
 #[test]

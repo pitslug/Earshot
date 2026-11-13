@@ -104,3 +104,78 @@ After the canceller, the short pieces left in far-only speech are garbled residu
 ### What a rule of this kind could catch
 
 On these dev runs, nothing: the leak this kind of text rule targets (2 in-order repeats, isolated, inside far-end talk) does not occur after the canceller, and every leaked word on dev is either inside near-end talk or a lone word. For a longer stretch of garbled far-end speech under "Me", a text rule of any run length catches only the words the recogniser reproduces exactly and in order; on dev the garbled residue repeats almost none (1 word in 23 across both aec runs). Such residue is the speaker check's and the echo-cluster rules' job (`diar::speaker_echo_spans`, `drop_echo_clusters` rules 2 and 3), which judge the voice and level, not the words. The GATE-02 fragment matched the far end word for word, which the dev simulator does not produce; finding out whether a text rule earns its place for that shape needs dev scenarios that produce it, defined before measuring, as round 1 already said.
+
+## The Surface mic with and without Windows' own processing (T12.32)
+
+The question: is the echo residue on the Surface's built-in mic there because Windows or the device has already processed the mic stream (noise suppression, perhaps its own echo control), which a linear canceller cannot model? `earshot-cli record-raw --mic-raw` opens the mic in raw mode (`AUDCLNT_STREAMOPTIONS_RAW`); without the flag the stream is opened as the app opens it. Measurement only: nothing shipped changes here, and the result goes to the owner.
+
+### The rule (written and committed 2026-11-14, before any take was recorded)
+
+Setup:
+
+- The Surface's built-in mic and speakers, on mains, the lid and the machine where the owner uses it, the speaker volume as the owner set it and not touched between takes.
+- The far end is public speech: the first 60 s of the bundled benchmark meeting's reference track (AMI ES2004a, CC BY 4.0), played on the default output. Each take is 70 s of `earshot-cli record-raw`: 5 s with nothing playing, the 60 s of speech, 5 s with nothing playing.
+- Four takes: far end only (nobody talking in the room) and talk-over (the owner reads a fixed public text, the `fixtures/smoke/transcripts.txt` lines of speaker 121, starting about 10 s into the playback), each recorded once as the app opens the mic ("default") and once raw. A refused raw open ends the task with the refusal as the result.
+- The takes are private recordings: they stay under `fixtures/private/`, and only counts, levels and times are written here.
+
+Measured per take:
+
+1. **Mic floor**: the level of the recorded mic over the first 4 s (nothing playing, nobody talking), as the 10th and 50th percentile of 100 ms RMS windows, in dBFS.
+2. **Echo at the mic**: the median level of the recorded mic while the far end plays, and its difference from the reference's median level.
+3. **Canceller, committed tool**: `aec_eval --private <take>`: median segmental ERLE and the final delay.
+4. **Canceller over time**: from `earshot-cli replay --timeline` of the take (the production pipeline on the take's real device stamps): the time of the first echo lock, the number of lock stretches and the share of the 60 s of playback inside one; and ERLE above 100 Hz per 10 s of playback, the recorded mic's power over the cleaned mic's (the replay's stored FLAC), both high-passed at 100 Hz, over the 100 ms windows where the reference plays. The levels in 1, 2 and this ERLE come from a scratch script that prints levels only; they are not reproducible from a committed tool and are labelled so in the result.
+5. **Mic words**: from the same replay, the mic words the live echo filter removed and the mic words stored after the final pass (counts only). On the far-end-only takes every stored mic word is echo.
+6. **Talk-over**: of the words the owner read, how many are in the stored mic transcript after Whisper normalisation (in order, counted once each), and how many stored mic words are not from the text.
+
+What counts as raw helping (judgements, not derived): on the far-end-only takes raw leaves at most half the stored mic words the default take leaves and at least 3 fewer, its median ERLE above 100 Hz is at least 3 dB higher, and on the talk-over takes raw keeps at least as many of the read words as the default take less 2. Raw hurting is the mirror image of the first two, or 3 or more read words fewer. Anything between is "no clear difference".
+
+One take per condition cannot separate a real difference from take-to-take variation, so a "helps" or "hurts" verdict here is a reason for the owner to choose a next step (raw by default, raw on listed devices, a setting, or no change, each needing its own task), never a default by itself. A measurement that contradicts this rule is reported as it is; the rule is not changed after measuring.
+
+### Result (2026-11-14): raw helps with the far end alone and hurts in talk-over
+
+The rule above unchanged. One take per condition, recorded back to back on mains with the volume untouched; the raw open was accepted. Canceller state and word counts come from `earshot-cli replay --timeline` of each take (transcription on the NPU) and `aec_eval --private`; the levels and the ERLE above 100 Hz come from a scratch script (levels only, not reproducible from a committed tool). The 5 s status lines are the replay's own, 12 per take from 11 s to 66 s.
+
+Far end only (nobody talking):
+
+| | default | raw |
+|---|---|---|
+| mic floor, first 4 s (p10 / median, dBFS) | -52.3 / -49.3 | -46.0 / -44.9 |
+| mic while the far end plays (median dBFS; reference minus mic) | -43.7; 15.8 dB | -35.6; 7.8 dB |
+| canceller delay | 61 ms | 21 ms |
+| status lines locked / converged / bypass / double talk (of 12) | 11 / 2 / 4 / 6 | 11 / 11 / 1 / 7 |
+| lock stretches; first status line locked | 1; 16 s | 1; 16 s |
+| ERLE above 100 Hz per 10 s of the take (dB) | 4.5, 7.7, 4.2, 2.1, 10.2, 5.8 | 13.2, 24.6, 24.9, 29.4, 10.3, 8.7 |
+| ERLE above 100 Hz, median over windows | 5.0 dB | 32.2 dB |
+| `aec_eval` median segmental ERLE (whole take, full band) | 9.8 dB | 8.3 dB |
+| mic words removed by the live echo filter | 14 | 0 |
+| mic words stored after the final pass (all echo) | 11 | 0 |
+
+Talk-over (53 read words):
+
+| | default | raw |
+|---|---|---|
+| mic floor, first 4 s (p10 / median, dBFS) | -52.9 / -50.2 | -44.7 / -43.6 |
+| canceller delay | 61 ms | 21 ms |
+| status lines locked / converged / bypass / double talk (of 12) | 9 / 4 / 5 / 4 | 10 / 7 / 2 / 6 |
+| lock stretches | 2 | 2 |
+| mic words removed (live filter and final pass) | 0 | 0 |
+| mic words stored | 53 | 52 |
+| read words kept, in order | 46 | 40 |
+| stored mic words not from the text | 7 | 12 |
+
+Under the rule:
+
+- **Far end only: raw helps.** 0 stored mic words against 11 (at most half and at least 3 fewer) and 27 dB more median ERLE above 100 Hz (at least 3 dB).
+- **Talk-over: raw hurts.** 6 fewer read words kept (3 or more), and 5 more stored words that are not from the text.
+- So the verdict is neither "helps" nor "no clear difference": the two halves point opposite ways, and raw is not a default on this evidence.
+
+What the numbers say beside the verdict (not a decision):
+
+- The default stream is processed before the app sees it: the echo arrives 8 dB lower and 40 ms later than on the raw stream, the floor is about 5 dB lower, and the canceller converged on 2 of 12 status lines against 11 of 12 on raw. That fits the T12.11 finding that the residue is not something a linear canceller can model. It is the cause of the echo words under "Me" with the far end alone.
+- The whole-take full-band ERLE does not show it (9.8 against 8.3 dB): it includes the 10 s with nothing playing and the raw mic's higher floor. Full-band ERLE hiding a working canceller is the rumble caveat already recorded for real rooms.
+- On the raw far-end-only take the ERLE fell to about 10 dB over the last 15 s of playback and the canceller called double talk on 7 of 12 status lines with nobody talking. Not explained here; no word came through.
+- In talk-over the raw mic lost read words. Two candidate reasons, not separated by these takes: the raw mic's own-voice level and noise are what Windows' processing would have cleaned for the recogniser, and the canceller in double talk cuts near-end speech (the known cost measured on `--leak-dev`). The readings were also two separate performances by one reader, so a difference of 6 words in 53 is within what a second pair of takes could reverse.
+
+Reproduce (the takes are private; from the repo root on the Surface): `earshot-cli record-raw --seconds 70 --out <take> [--mic-raw]` while the speech plays, then `earshot-cli replay --mic <take>\mic.wav --ref <take>\loopback.wav --timeline <take>\timestamps.json --out <dir> --no-summary` and `cargo run --release -p earshot-core --example aec_eval -- . --private <take>`.
+
+**The owner's reading (2026-11-14, after the measurement, so not part of the rule):** people in a meeting mostly take turns, so talking over the far end is the rare case and the far end alone is the common one. On that weighting the far-end-only half matters most, and the half these takes did not measure is the other common case: the owner talking with the far end silent, default against raw (does the recogniser lose words without Windows' processing when there is no echo to cancel?). That take pair, under a rule written before it, is what a decision on raw needs next.

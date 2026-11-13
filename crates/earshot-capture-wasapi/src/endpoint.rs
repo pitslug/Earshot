@@ -66,6 +66,101 @@ pub struct EndpointProperties {
     /// The endpoint id (`IMMDevice::GetId`), unique per endpoint where friendly names
     /// are not (two identical headsets).
     pub id: Option<String>,
+    /// `PKEY_Devices_AudioDevice_RawProcessingSupported` (a `VT_BOOL`): whether the endpoint
+    /// can deliver a stream without the signal processing Windows or the device's driver
+    /// applies by default ([`raw_support`]). `None` when the store has no such boolean.
+    pub raw_processing: Option<bool>,
+}
+
+/// What signal processing a microphone stream is opened with (T12.32). Serialised as
+/// `default` or `raw` (a raw recording's `timestamps.json`, schema v5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MicProcessing {
+    /// The stream declares nothing: Windows applies the endpoint's default processing
+    /// (on some machines the vendor's noise suppression or echo control). What the app and
+    /// every live session use.
+    #[default]
+    Default,
+    /// `AUDCLNT_STREAMOPTIONS_RAW`: the stream asks for the endpoint's signal without that
+    /// processing. An explicit request of the raw recorder for measurements: an endpoint
+    /// that cannot deliver it refuses the stream ([`raw_refusal`]) and is never opened
+    /// with the default processing instead.
+    Raw,
+}
+
+/// Whether an endpoint can be opened raw, as its property store says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawSupport {
+    /// The endpoint says it supports raw processing.
+    Supported,
+    /// The endpoint says it does not.
+    NotSupported,
+    /// The property is missing or could not be read.
+    Unknown,
+}
+
+/// What `p` says about raw capture (Microsoft Learn, "Audio Signal Processing Modes":
+/// `PKEY_Devices_AudioDevice_RawProcessingSupported` is true when the endpoint supports the
+/// raw signal processing mode). Platform independent.
+#[must_use]
+pub fn raw_support(p: &EndpointProperties) -> RawSupport {
+    match p.raw_processing {
+        Some(true) => RawSupport::Supported,
+        Some(false) => RawSupport::NotSupported,
+        None => RawSupport::Unknown,
+    }
+}
+
+/// Why a raw microphone stream was refused. Raw is asked for explicitly, so every refusal
+/// fails the open: nothing falls back to the processed stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RawRefusal {
+    /// The endpoint says it does not support raw processing.
+    NotSupported {
+        /// The endpoint's friendly name.
+        device_name: String,
+    },
+    /// The endpoint does not say whether it supports raw processing.
+    Unknown {
+        /// The endpoint's friendly name.
+        device_name: String,
+    },
+    /// Raw was asked for on a stream that is not a microphone (a loopback).
+    NotAMicrophone,
+}
+
+impl fmt::Display for RawRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotSupported { device_name } => write!(
+                f,
+                "the mic {device_name:?} cannot be opened raw: Windows says it does not \
+                 support raw processing"
+            )?,
+            Self::Unknown { device_name } => write!(
+                f,
+                "the mic {device_name:?} cannot be opened raw: Windows does not say whether \
+                 it supports raw processing"
+            )?,
+            Self::NotAMicrophone => {
+                return f.write_str("only a microphone stream can be opened raw");
+            }
+        }
+        f.write_str("; raw was asked for, so it is not opened with Windows' processing instead")
+    }
+}
+
+/// The refusal for a raw stream on the microphone `p`, or `None` when it may be opened raw:
+/// only an endpoint that says it supports raw processing may.
+#[must_use]
+pub fn raw_refusal(p: &EndpointProperties) -> Option<RawRefusal> {
+    let device_name = p.name.clone();
+    match raw_support(p) {
+        RawSupport::Supported => None,
+        RawSupport::NotSupported => Some(RawRefusal::NotSupported { device_name }),
+        RawSupport::Unknown => Some(RawRefusal::Unknown { device_name }),
+    }
 }
 
 /// Enumerators of Bluetooth devices.
@@ -264,6 +359,7 @@ mod tests {
             ),
             sample_rate: Some(48_000),
             id: None,
+            raw_processing: None,
         }
     }
 
@@ -280,6 +376,7 @@ mod tests {
             ),
             sample_rate: Some(48_000),
             id: None,
+            raw_processing: None,
         }
     }
 
@@ -294,6 +391,7 @@ mod tests {
             ),
             sample_rate: Some(48_000),
             id: None,
+            raw_processing: None,
         }
     }
 
@@ -311,6 +409,7 @@ mod tests {
             ),
             sample_rate: Some(48_000),
             id: None,
+            raw_processing: None,
         }
     }
 
@@ -329,6 +428,7 @@ mod tests {
             ),
             sample_rate: Some(16_000),
             id: None,
+            raw_processing: None,
         }
     }
 
@@ -398,6 +498,7 @@ mod tests {
             filter_path: None,
             sample_rate: Some(32_000),
             id: None,
+            raw_processing: None,
         };
         assert_eq!(classify_mic(&le_audio), MicKind::Bluetooth);
         assert_eq!(hands_free_warning(&le_audio), None);
@@ -501,5 +602,75 @@ mod tests {
             ..bluetooth_hands_free()
         };
         assert_eq!(f.opened(Some(&other)), hands_free_warning(&other));
+    }
+
+    fn raw(says: Option<bool>) -> EndpointProperties {
+        EndpointProperties {
+            raw_processing: says,
+            ..laptop_array()
+        }
+    }
+
+    #[test]
+    fn endpoint_raw_support_is_what_the_property_says() {
+        assert_eq!(raw_support(&raw(Some(true))), RawSupport::Supported);
+        assert_eq!(raw_support(&raw(Some(false))), RawSupport::NotSupported);
+        assert_eq!(raw_support(&raw(None)), RawSupport::Unknown);
+        // Nothing else about the endpoint decides it.
+        let bluetooth = EndpointProperties {
+            raw_processing: Some(true),
+            ..bluetooth_hands_free()
+        };
+        assert_eq!(raw_support(&bluetooth), RawSupport::Supported);
+        assert_eq!(
+            raw_support(&EndpointProperties::default()),
+            RawSupport::Unknown
+        );
+    }
+
+    #[test]
+    fn endpoint_raw_is_refused_unless_the_endpoint_says_it_supports_it() {
+        assert_eq!(raw_refusal(&raw(Some(true))), None);
+        let name = laptop_array().name;
+        assert_eq!(
+            raw_refusal(&raw(Some(false))),
+            Some(RawRefusal::NotSupported {
+                device_name: name.clone()
+            })
+        );
+        assert_eq!(
+            raw_refusal(&raw(None)),
+            Some(RawRefusal::Unknown { device_name: name }),
+            "an unreadable property is a refusal, never a guess"
+        );
+    }
+
+    #[test]
+    fn endpoint_raw_refusals_name_the_mic_and_say_nothing_falls_back() {
+        let no = raw_refusal(&raw(Some(false))).unwrap().to_string();
+        assert_eq!(
+            no,
+            "the mic \"Microphone Array (Realtek(R) Audio)\" cannot be opened raw: Windows says \
+             it does not support raw processing; raw was asked for, so it is not opened with \
+             Windows' processing instead"
+        );
+        let unknown = raw_refusal(&raw(None)).unwrap().to_string();
+        assert!(
+            unknown.contains("does not say whether it supports raw processing"),
+            "{unknown}"
+        );
+        assert!(
+            unknown.ends_with("Windows' processing instead"),
+            "{unknown}"
+        );
+        assert_eq!(
+            RawRefusal::NotAMicrophone.to_string(),
+            "only a microphone stream can be opened raw"
+        );
+    }
+
+    #[test]
+    fn endpoint_mic_processing_defaults_to_windows_own() {
+        assert_eq!(MicProcessing::default(), MicProcessing::Default);
     }
 }

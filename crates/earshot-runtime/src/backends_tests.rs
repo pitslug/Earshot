@@ -806,6 +806,7 @@ fn backends_a_bluetooth_hands_free_mic_becomes_a_session_warning() {
         filter_path: None,
         sample_rate: Some(16_000),
         id: None,
+        raw_processing: None,
     };
     let found = classify(&headset).expect("a hands-free mic");
     assert_eq!(

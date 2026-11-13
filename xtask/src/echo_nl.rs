@@ -871,7 +871,7 @@ fn read_track(path: &Path) -> Result<(Vec<f32>, u32)> {
 }
 
 /// Loads `mic.wav`, `loopback.wav` and `timestamps.json` (any schema in
-/// `earshot_core::capture::SUPPORTED_SCHEMAS`, v1 to v4) from `dir`.
+/// `earshot_core::capture::SUPPORTED_SCHEMAS`, v1 to v5) from `dir`.
 ///
 /// # Errors
 /// Missing or malformed files, or an unsupported schema.
@@ -1468,6 +1468,7 @@ mod tests {
             synthesized_silence_frames: 0,
             packets: vec![p(72, 480, true), p(552, 480, false), p(1_200, 480, false)],
             device_changes: Vec::new(),
+            processing: earshot_core::capture::RawProcessing::Default,
         };
         assert_eq!(
             track_excluded(&t),
@@ -1515,7 +1516,7 @@ mod tests {
     }
 
     #[test]
-    fn echo_nl_load_recording_reads_schema_v3_and_v4() {
+    fn echo_nl_load_recording_reads_schema_v3_to_v5() {
         let root = std::env::temp_dir().join(format!("earshot-echo-nl-{}", std::process::id()));
         let v3 = root.join("v3");
         write_recording(&v3, 3, "");
@@ -1526,21 +1527,35 @@ mod tests {
             4,
             r#", "hands_free": {"sample_rate": 16000}, "unknown": 1"#,
         );
+        // v5: a take whose mic was opened raw loads as any other.
         let v5 = root.join("v5");
         write_recording(&v5, 5, "");
-        let (a, b, c) = (
+        let ts = v5.join("timestamps.json");
+        let json = std::fs::read_to_string(&ts).unwrap();
+        let marked = json.replacen(
+            r#""device_name": "d","#,
+            r#""device_name": "d", "processing": "raw","#,
+            1,
+        );
+        assert_ne!(marked, json, "the mic section was marked");
+        std::fs::write(&ts, marked).unwrap();
+        let v6 = root.join("v6");
+        write_recording(&v6, 6, "");
+        let (a, b, c, d) = (
             load_recording(&v3),
             load_recording(&v4),
             load_recording(&v5),
+            load_recording(&v6),
         );
         let _ = std::fs::remove_dir_all(&root);
-        let (a, b) = (a.unwrap(), b.unwrap());
+        let (a, b, c) = (a.unwrap(), b.unwrap(), c.unwrap());
         assert_eq!(a.excluded.mic, vec![800..801], "the device change");
         assert_eq!(a, b, "v3 and v4 load the same");
+        assert_eq!(b, c, "v4 and a raw v5 take load the same");
         assert_eq!(b.loopback.len(), 1_600, "the stereo loopback mixed to mono");
-        let err = format!("{:#}", c.unwrap_err());
+        let err = format!("{:#}", d.unwrap_err());
         assert!(
-            err.contains("unsupported timestamps.json schema 5"),
+            err.contains("unsupported timestamps.json schema 6"),
             "{err}"
         );
     }
