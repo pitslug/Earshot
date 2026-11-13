@@ -174,6 +174,12 @@ pub enum CheckLine {
         /// The trial.
         trial: TrialLine,
     },
+    /// Files a refused load in the child found damaged (`Catalogue::found_damaged`), written
+    /// just before the final line, so the app marks them too.
+    Damaged {
+        /// The artefact ids.
+        artefacts: Vec<String>,
+    },
     /// The check finished (final line).
     Done {
         /// The facts it ran on.
@@ -289,8 +295,19 @@ pub fn child_main(args: &[OsString]) -> Option<i32> {
             return Some(2);
         }
     };
-    Some(match run_in_child(&args, &mut out) {
-        Ok(()) => 0,
+    let result = run_in_child(&args, &mut out);
+    // A refused load marked these in this process only: the app hears them before the end.
+    let artefacts = earshot_runtime::catalogue::Catalogue::found_damaged(
+        &earshot_runtime::backends::ModelDir::new(args.models.clone()),
+    );
+    if !artefacts.is_empty() {
+        emit(&mut out, &CheckLine::Damaged { artefacts });
+    }
+    Some(match result {
+        Ok(done) => {
+            emit(&mut out, &done);
+            0
+        }
         Err(message) => {
             emit(&mut out, &CheckLine::Error { message });
             1
@@ -298,7 +315,8 @@ pub fn child_main(args: &[OsString]) -> Option<i32> {
     })
 }
 
-fn run_in_child(args: &ChildArgs, out: &mut dyn Write) -> Result<(), String> {
+/// Runs the check and returns its final `done` line (written by the caller).
+fn run_in_child(args: &ChildArgs, out: &mut dyn Write) -> Result<CheckLine, String> {
     use earshot_runtime::backends::{ModelDir, accelerator_order};
     use earshot_runtime::host;
     let models = ModelDir::new(args.models.clone());
@@ -335,8 +353,7 @@ fn run_in_child(args: &ChildArgs, out: &mut dyn Write) -> Result<(), String> {
         );
     })
     .map_err(|e| crate::plain_text::runtime_text(&e))?;
-    emit(out, &done_line(&outcome));
-    Ok(())
+    Ok(done_line(&outcome))
 }
 
 /// What a child says when it cannot keep the parent's CUDA choice ([`choice_not_kept`]).
@@ -468,6 +485,8 @@ pub trait LineEvents {
     fn warning(&mut self, message: String);
     /// A `testing` or `tested` line.
     fn trial(&mut self, model: &str, backend: BackendKind, verdict: Option<Verdict>);
+    /// A `damaged` line: files the child found damaged, to be marked in this process.
+    fn damaged(&mut self, artefacts: Vec<String>);
 }
 
 /// Reads the child's stdout until its final line: `warning`, `testing` and `tested` go to
@@ -504,6 +523,10 @@ pub fn read_lines(
             }
             CheckLine::Tested { trial } => {
                 events.trial(&trial.model, trial.backend, Some(trial.verdict.verdict()));
+                continue;
+            }
+            CheckLine::Damaged { artefacts } => {
+                events.damaged(artefacts);
                 continue;
             }
             CheckLine::Done {
