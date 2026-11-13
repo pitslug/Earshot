@@ -498,6 +498,15 @@ fn meeting_events_an_ended_track_replaces_its_unavailable_banner() {
 }
 
 #[test]
+fn meeting_events_a_refused_keep_awake_is_one_fixed_banner() {
+    let (key, kind, message) = banner(&RuntimeWarning::SleepNotPrevented);
+    assert_eq!(key, "keep-awake");
+    assert_eq!(kind, WarningKind::Audio);
+    assert_copy(&message);
+    assert!(message.contains("goes to sleep"), "{message}");
+}
+
+#[test]
 fn meeting_events_a_stopped_recording_says_when_and_why_in_plain_words() {
     // T9.17: once per track (one key per track), the time it stopped and a full disk named.
     let stopped = |track, ms, disk_full| {

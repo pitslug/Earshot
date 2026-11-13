@@ -632,6 +632,10 @@ pub enum RuntimeWarning {
         /// Track.
         track: TrackId,
     },
+    /// Windows refused to keep the computer awake for this recording (T9.16), so a sleep during
+    /// it leaves a gap ([`RuntimeWarning::RecordingGap`]). The recording goes on. Sent once, at
+    /// the start.
+    SleepNotPrevented,
     /// At the end a track's live catch-up showed no sign of life for
     /// [`LiveConfig::catch_up_stall`], so it was given up (T9.22): the recording is saved and the
     /// track's live transcript stops where it got to. Hosts leave the meeting unprocessed: whatever

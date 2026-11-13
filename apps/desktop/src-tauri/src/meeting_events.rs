@@ -977,6 +977,13 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
                 ),
             )
         }
+        RuntimeWarning::SleepNotPrevented => warning(
+            "keep-awake".into(),
+            WarningKind::Audio,
+            "Windows did not agree to keep this computer awake while Earshot records. If it goes \
+             to sleep, speech in that time is lost: keep it switched on until the meeting ends."
+                .into(),
+        ),
         RuntimeWarning::Persistence(m) => warning(
             "storage".into(),
             WarningKind::Storage,

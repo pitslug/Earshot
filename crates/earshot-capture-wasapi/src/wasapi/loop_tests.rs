@@ -825,6 +825,23 @@ fn capture_loop_a_lost_call_output_is_not_reported_as_a_chosen_device() {
 }
 
 #[test]
+fn capture_loop_a_refused_keep_awake_is_kept_as_a_number() {
+    const E_ACCESSDENIED: i32 = 0x8007_0005_u32 as i32;
+    let refused: Result<KeepAwake, CaptureError> = Err(CaptureError::Windows {
+        context: "PowerSetRequest",
+        source: windows::core::Error::from_hresult(HRESULT(E_ACCESSDENIED)),
+    });
+    assert_eq!(
+        sleep_refusal(&refused).as_deref(),
+        Some("PowerSetRequest: error 0x80070005")
+    );
+    // Both capture paths keep what a refusal says instead of dropping it.
+    let source = include_str!("../wasapi.rs");
+    assert!(!source.contains("let _awake = KeepAwake::hold()"));
+    assert_eq!(source.matches("sleep_refusal(&awake)").count(), 2);
+}
+
+#[test]
 fn capture_loop_logs_no_windows_message_text() {
     // Every error the capture crate keeps as text goes through `CaptureError::detail`.
     let source = include_str!("../wasapi.rs");

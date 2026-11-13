@@ -614,6 +614,9 @@ pub(crate) fn format_warning(w: &RuntimeWarning) -> String {
             "warning: the {} device kept failing, so its track ended; the audio before it is kept",
             track_name(*track)
         ),
+        RuntimeWarning::SleepNotPrevented => "warning: Windows did not agree to keep the \
+             computer awake; a sleep during the recording leaves a gap"
+            .to_owned(),
         RuntimeWarning::Persistence(m) => format!("warning: storing failed: {m}"),
         RuntimeWarning::LiveLoadFailed { error } => {
             format!("warning: live transcription did not start: {error}")

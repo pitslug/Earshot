@@ -2653,13 +2653,29 @@ pub fn start_wasapi_session_on(
                 .ok()
                 .flatten();
     }
-    let warnings = source
-        .mic_warning()
-        .map(hands_free_warning)
-        .into_iter()
-        .chain(source.fallbacks().iter().map(device_fallback_warning))
-        .collect();
+    let warnings = start_warnings(
+        source.mic_warning(),
+        source.fallbacks(),
+        source.sleep_not_prevented(),
+    );
     crate::live::start_live_with_warnings(source, services, config, live_asr, rng, warnings)
+}
+
+/// The warnings a WASAPI session starts with, in order: a Bluetooth hands-free mic, each chosen
+/// endpoint replaced by the default, and Windows refusing to keep the computer awake (T9.16; only
+/// that it refused reaches the session, never why).
+#[cfg(windows)]
+#[must_use]
+pub fn start_warnings(
+    mic: Option<earshot_capture_wasapi::HandsFreeMic>,
+    fallbacks: &[earshot_capture_wasapi::DeviceFallback],
+    sleep_not_prevented: Option<&str>,
+) -> Vec<crate::live::RuntimeWarning> {
+    mic.map(hands_free_warning)
+        .into_iter()
+        .chain(fallbacks.iter().map(device_fallback_warning))
+        .chain(sleep_not_prevented.map(|_| crate::live::RuntimeWarning::SleepNotPrevented))
+        .collect()
 }
 
 /// The session warning for a chosen endpoint replaced by the default (T7.4i).

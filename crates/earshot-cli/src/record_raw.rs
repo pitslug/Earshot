@@ -215,6 +215,16 @@ pub fn describe_reopen(label: &str, c: &DeviceChange) -> String {
     format!("{label}: re-opened ({:?}) -> {to}{why}", c.reason)
 }
 
+/// The stderr line for a take during which Windows refused to keep the computer awake (T9.16),
+/// or `None` when it agreed.
+pub fn describe_sleep_not_prevented(rec: &RawRecording) -> Option<String> {
+    rec.sleep_not_prevented.as_deref().map(|why| {
+        format!(
+            "warning: Windows did not agree to keep the computer awake ({why}); a sleep during the take left a gap"
+        )
+    })
+}
+
 /// The final line of a raw take whose mic track holds silence because a re-open was refused
 /// raw processing (T12.32), or `None`. `earshot-cli record-raw` prints it last and exits with
 /// an error after writing the files, so the gap cannot go unnoticed.
@@ -275,6 +285,9 @@ pub fn run(
     let rec = rec.context("raw capture failed")?;
     for refused in &rec.refused_call_outputs {
         eprintln!("warning: the call plays on an output that could not be opened: {refused}");
+    }
+    if let Some(line) = describe_sleep_not_prevented(&rec) {
+        eprintln!("{line}");
     }
     for (label, track) in [("mic", &rec.mic), ("loopback", &rec.loopback)] {
         for c in &track.device_changes {
@@ -339,6 +352,7 @@ mod tests {
             mic_processing: MicProcessing::Default,
             requested_seconds: 0.5,
             refused_call_outputs: Vec::new(),
+            sleep_not_prevented: None,
             start_qpc: t0,
             end_qpc: end,
             loopback_source: LoopbackSource {
@@ -739,6 +753,16 @@ mod tests {
         assert!(check_seconds(-1.0).is_err());
         assert!(check_seconds(f64::NAN).is_err());
         assert!(check_seconds(5.0).is_ok());
+    }
+
+    #[test]
+    fn record_raw_says_when_the_computer_was_not_kept_awake() {
+        let mut rec = canned();
+        assert_eq!(describe_sleep_not_prevented(&rec), None);
+        rec.sleep_not_prevented = Some("PowerSetRequest: error 0x80070005".into());
+        let line = describe_sleep_not_prevented(&rec).unwrap();
+        assert!(line.starts_with("warning: "), "{line}");
+        assert!(line.contains("PowerSetRequest: error 0x80070005"), "{line}");
     }
 
     #[test]
