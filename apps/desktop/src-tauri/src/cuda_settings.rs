@@ -596,9 +596,26 @@ pub fn decide_summaries(
 pub const CARD_TOO_SMALL: &str =
     "your graphics card has less than 12 GB of memory, so transcription runs on the processor";
 
+/// Why a developer's `cuda` build never takes the folder for transcription: it runs on its own
+/// toolkit (`earshot_runtime::cuda::use_for_transcription` refuses it with the same words).
+pub const DEVELOPER_BUILD: &str = "this developer build runs on its own CUDA toolkit";
+
 /// Why transcription cannot even be tried on this machine, this build or with these models.
 #[must_use]
 pub fn transcription_refusal(
+    offered: bool,
+    card_fits: bool,
+    built: bool,
+    has_model: bool,
+) -> Option<&'static str> {
+    transcription_refusal_in(cfg!(feature = "cuda"), offered, card_fits, built, has_model)
+}
+
+/// [`transcription_refusal`] for a build that is (`developer`) or is not a developer's `cuda`
+/// build.
+#[must_use]
+pub fn transcription_refusal_in(
+    developer: bool,
     offered: bool,
     card_fits: bool,
     built: bool,
@@ -608,6 +625,8 @@ pub fn transcription_refusal(
         Some("this computer's graphics card cannot use it")
     } else if !card_fits {
         Some(CARD_TOO_SMALL)
+    } else if developer {
+        Some(DEVELOPER_BUILD)
     } else if !built {
         Some("this version of Earshot cannot use it")
     } else if !has_model {
