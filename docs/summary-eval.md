@@ -1024,3 +1024,36 @@ Means per meeting; seconds from a shared host (other lanes building), not timing
 ### Recommendation
 
 Keep the local writer paused on Qwen 3.5 (4B and 9B as shipped). None of the three candidates earned a judged round under the rule written before generation: Granite 4.2 3B barely writes decisions or actions, Granite 4.2 8B is longer, slower and overruns the production context on two merges, and Ornith 1.5 9B trades decisions for actions at the same speed. T12.25 and T12.26 can be unparked on the Qwen 4B, as their tasks assume. No test split was run and no default changed. The 3B's Surface timing against the 4B (if run) can only show a faster model that does not summarise decisions or actions, so it decides nothing.
+
+## T12.17: shorter by default, plus a few templates
+
+Written and committed before any run, 2026-11-13. The owner (2026-11-10, 2026-11-13): summaries are too long; decisions and actions are the priority, not minutiae; "optimise what we get before how we get it". Judged on the writer in use, Claude through Claude Code; the local Qwen 3.5 4B must only not get worse. No owner meeting is read or used: AMI dev for every choice, AMI test once at the end, reference source only (public AMI text is the only text sent to Claude).
+
+**What can change.** The schema keeps `decisions` and `action_items` required and every decision and action item stays required by rules 5 and 6; nothing here removes either. Only the notes, the tldr and the wording of items can get shorter. Two kinds of change:
+
+1. **The default rules** (`templates/system.md`), measured first as evaluation-only prompt variants (`PromptVariant`, T6.20b), each a complete rules file in `src/prompt/templates/variants/` that changes only rules 4, 7 and 8 of the current rules:
+   - **`short`.** Rule 4: the notes hold only what a reader needs to understand the decisions, action items and open questions, plus anything important said that is in none of them: at most four sections of at most four bullets, each bullet one short sentence, following the structure of the user's notes when they have one; who said what, figures and options discussed but not chosen, and anything already listed as a decision or action item are left out. Rule 7: `tldr` one or two sentences. Rule 8 adds: every decision and every action item is listed, each in one short sentence; shortness never drops one.
+   - **`brief`.** As `short`, tighter: at most three sections of at most three bullets, `tldr` one sentence, each decision and action item at most about fifteen words.
+2. **Templates on the Summaries page**, chosen like any other choice (applies at once) and composed with the summary style (T7.4b): fixed text placed in the style block before the user's own style, so it can never remove the fixed rules (`prompt_style_cannot_remove_the_fixed_rules_*`). Texts fixed now:
+   - **Standard:** nothing (the default rules alone).
+   - **Brief:** "Keep it short: a one-sentence summary and no more than three note bullets in all. Still list every decision and action item, each in a few words."
+   - **Decisions and actions:** "Focus on what was decided and who will do what. Keep the notes to the background a reader needs for those, and leave out the rest of the discussion."
+   - **Detailed:** "Give fuller notes: cover each topic that was discussed, with the main points and the reasons given for each decision."
+
+**Counts (committed tool).** `sum_eval`'s score gains a length block per meeting, summed in the aggregate: **words** (whitespace-separated words of the tldr, every section heading, every note bullet, every decision, every action item's task and every open question; the title, owners, due dates and topics are left out), note **sections** and **bullets**, decisions and action items written, and lists at the 12-item cap (any list, and decisions or action items alone). A meeting without a valid summary counts zero words and stays in the sums.
+
+**Runs, every parameter fixed now.** Dev split, all 20 dev meetings, reference source, one `--out` per run under `target/sum-eval/t1217-<run>`, one build for every run of a round.
+
+- Claude: `cargo xtask sum-eval --model claude-code --split dev --source reference --out target/sum-eval/t1217-claude-<variant>` (the production plan, unchunked, the CLI's default model and effort, `CLAUDE_CODE_BUDGET`), with `--prompt-variant <variant>` for a variant (evaluation-only, allowed for `claude-code` by this task, format key `...-claude-code-prompt-<variant>`). Claude is not deterministic, so the current rules run **twice** (`current-1`, `current-2`) and the control is the mean of the two.
+- Qwen 3.5 4B: `cargo xtask sum-eval --model qwen3.5-4b-q4_k_m --split dev --source reference --chunk-seconds 600 --backend cuda --target-dir C:\eb\lane-sum-cu --out target/sum-eval/t1217-4b-<variant>` (the production chunking, S16 defaults, greedy, one run each; GPU because only quality is read here).
+
+**Rule (judgements, fixed now).**
+
+1. **Claude, each variant against the Claude control:** valid meetings not below the control's lower run; at least **25% fewer words** in total over the 20 meetings; coverage-rule items caught (`decisions_cov` + `actions_cov`, of 83 + 41) not more than 3 below the control mean, and neither list more than 2 below its control mean.
+2. **Qwen 3.5 4B, each variant passing 1, against the 4B current run:** valid meetings not lower, coverage total not more than 3 below, and words not more than the current run's (it must not get longer).
+3. **Winner:** among variants passing 1 and 2, the one with the fewest Claude words; if none passes, `system.md` stays as it is and only the templates ship. The winner becomes `system.md` (format key bump, `cargo xtask accept m4` re-run).
+4. **The 12-item cap** (`SummaryLimits::max_items`, local grammar only; Claude has no cap). Lowering it can only drop decisions or actions, so it is never lowered. It is raised to 16 only if, in the 4B run of the shipped rules, a final `decisions` or `action_items` list holds 12 items in at least 2 of the 20 dev meetings; the raise is then measured by rule 2 again. Every run reports its lists at the cap.
+5. **Templates, informational:** with the shipped rules, each template runs once on Claude over the five judged dev meetings (ES2003c, ES2011c, IS1008c, TS3004c, TS3006c) beside a Standard run on the same five; words and coverage are reported. A template whose coverage total there is more than 3 below Standard's is reworded once (labelled) or dropped. Nothing else is decided by these runs.
+6. **Test split, once, at the end:** Claude and the 4B, current rules and the shipped rules, 20 test meetings, reference source, same settings. Reported to the owner; it cannot change the outcome of the dev rule. An invalid summary there is reported as a finding.
+
+Meaning judgements (blinded packets, `--judge-packets --blind-key`) are not part of the rule; packets of the five judged dev meetings for the winner and the control can be written for the owner or agents to judge later.
