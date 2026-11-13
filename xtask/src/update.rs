@@ -106,6 +106,36 @@ pub fn sign_installer(
     Ok(file)
 }
 
+/// Where the installer `name` (relative to a `bundle` folder) may be, in the order
+/// `bundle-check` looks ([`bundle::built_release_dirs`]): cargo puts any explicit `--target`
+/// build under `<dir>\<triple>\release`, the host's own triple included, and a build without
+/// one under `<dir>\release`.
+#[must_use]
+pub fn installer_candidates(
+    root: &Path,
+    target_dir: Option<&Path>,
+    system_drive: Option<std::ffi::OsString>,
+    target: Option<&str>,
+    host: &str,
+    name: &Path,
+) -> Vec<PathBuf> {
+    bundle::built_release_dirs(root, target_dir, system_drive, target, host)
+        .into_iter()
+        .map(|d| d.join("bundle").join(name))
+        .collect()
+}
+
+/// The first of `candidates` that `exists`, else the first (whose absence the signing step
+/// reports).
+fn installer_to_sign(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> PathBuf {
+    candidates
+        .iter()
+        .find(|p| exists(p))
+        .or(candidates.first())
+        .cloned()
+        .unwrap_or_default()
+}
+
 /// `cargo xtask sign-update`: writes the version file beside the installer and prints both, the
 /// two files a release needs. Returns the version file's path.
 ///
@@ -119,15 +149,17 @@ pub fn run_sign(
 ) -> Result<PathBuf> {
     let triple = bundle::effective_target(target).to_owned();
     let version = bundle::workspace_version(root)?;
-    let dir =
-        crate::build::short_target_dir(root, target_dir, std::env::var_os("SystemDrive"), target);
-    let release_dir = match target {
-        Some(t) if t != crate::accept::host_triple().as_str() => dir.join(t).join("release"),
-        _ => dir.join("release"),
-    };
-    let installer = release_dir
-        .join("bundle")
-        .join(bundle::installer_path(&version, &triple)?);
+    let installer = installer_to_sign(
+        &installer_candidates(
+            root,
+            target_dir,
+            std::env::var_os("SystemDrive"),
+            target,
+            &crate::accept::host_triple(),
+            &bundle::installer_path(&version, &triple)?,
+        ),
+        Path::is_file,
+    );
     let arch = if triple.starts_with("aarch64") {
         "arm64"
     } else {
@@ -152,6 +184,38 @@ pub fn run_sign(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_sign_looks_where_cargo_puts_an_explicit_target_build_of_the_host() {
+        let root = Path::new(r"C:\repo");
+        let dir = Some(Path::new(r"C:\eb\host"));
+        let name = Path::new(r"nsis\Earshot.exe");
+        let host = "x86_64-pc-windows-msvc";
+        let at = |d: &str| PathBuf::from(d).join("bundle").join(name);
+        // The host's own triple named: cargo's triple folder first, then the plain one.
+        let both = installer_candidates(root, dir, None, Some(host), host, name);
+        assert_eq!(
+            both,
+            [
+                at(r"C:\eb\host\x86_64-pc-windows-msvc\release"),
+                at(r"C:\eb\host\release")
+            ]
+        );
+        // Another triple: only its folder; no --target: only the plain one.
+        let arm = "aarch64-pc-windows-msvc";
+        assert_eq!(
+            installer_candidates(root, dir, None, Some(arm), host, name),
+            [at(r"C:\eb\host\aarch64-pc-windows-msvc\release")]
+        );
+        assert_eq!(
+            installer_candidates(root, dir, None, None, host, name),
+            [at(r"C:\eb\host\release")]
+        );
+        // The one that exists is signed, else the first is reported missing.
+        assert_eq!(installer_to_sign(&both, |p| *p == both[1]), both[1]);
+        assert_eq!(installer_to_sign(&both, |p| *p == both[0]), both[0]);
+        assert_eq!(installer_to_sign(&both, |_| false), both[0]);
+    }
 
     /// A folder outside the repo, removed on drop.
     struct Scratch(PathBuf);
