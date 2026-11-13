@@ -131,32 +131,35 @@ pub struct Searches {
 
 #[derive(Debug, Default)]
 struct SearchOrder {
-    /// The running search: the number the window sent it with, and its token.
-    current: Option<(u64, CancelToken)>,
-    /// The highest number any search was sent with.
-    last: u64,
+    /// The running search: the page that sent it, the number the page sent it with, and its
+    /// token.
+    current: Option<(u32, u64, CancelToken)>,
 }
 
 impl Searches {
     /// The token of a new search sent after every other, cancelling the search before it.
     pub fn begin(&self) -> CancelToken {
-        let next = self.order().last.saturating_add(1);
-        self.begin_sent(next)
+        let (page, next) = self
+            .order()
+            .current
+            .as_ref()
+            .map_or((0, 1), |(page, sent, _)| (*page, sent.saturating_add(1)));
+        self.begin_sent(page, next)
     }
 
-    /// The token of the search the window sent `sent`th (its numbers grow in the order it sends):
-    /// it cancels the running search when that was sent before it, and is itself cancelled at once
-    /// (so it gives no answer) when the running one was sent after it. Call
-    /// [`Searches::end_sent`] when it ends, so a window that counts from 1 again after a reload is
-    /// not taken for an older one.
-    pub fn begin_sent(&self, sent: u64) -> CancelToken {
+    /// The token of the search page `page` (a number the window picks at random each time it
+    /// loads) sent `sent`th (its numbers grow in the order it sends). Within one page it cancels
+    /// the running search when that was sent before it, and is itself cancelled at once (so it
+    /// gives no answer) when the running one was sent after it. A search from another page always
+    /// replaces the running one: a reloaded window counts from 1 again, and only its searches are
+    /// wanted. Call [`Searches::end_sent`] when it ends.
+    pub fn begin_sent(&self, page: u32, sent: u64) -> CancelToken {
         let token = CancelToken::new();
         let mut order = self.order();
-        order.last = order.last.max(sent);
         match &order.current {
-            Some((running, _)) if *running >= sent => token.cancel(),
+            Some((p, running, _)) if *p == page && *running >= sent => token.cancel(),
             _ => {
-                if let Some((_, older)) = order.current.replace((sent, token.clone())) {
+                if let Some((_, _, older)) = order.current.replace((page, sent, token.clone())) {
                     older.cancel();
                 }
             }
@@ -164,13 +167,13 @@ impl Searches {
         token
     }
 
-    /// The search sent `sent`th has ended; nothing changes when another one runs.
-    pub fn end_sent(&self, sent: u64) {
+    /// The search page `page` sent `sent`th has ended; nothing changes when another one runs.
+    pub fn end_sent(&self, page: u32, sent: u64) {
         let mut order = self.order();
         if order
             .current
             .as_ref()
-            .is_some_and(|(running, _)| *running == sent)
+            .is_some_and(|(p, running, _)| *p == page && *running == sent)
         {
             order.current = None;
         }

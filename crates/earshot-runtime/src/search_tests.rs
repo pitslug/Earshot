@@ -480,8 +480,8 @@ fn search_order_is_the_order_the_window_sent_them_not_the_order_they_began() {
     // Two searches sent a few ms apart can begin in either order; the one sent later wins
     // whichever began first.
     let searches = Searches::default();
-    let newer = searches.begin_sent(2);
-    let older = searches.begin_sent(1);
+    let newer = searches.begin_sent(7, 2);
+    let older = searches.begin_sent(7, 1);
     assert!(
         older.is_cancelled(),
         "a search sent before the running one has no answer"
@@ -491,7 +491,7 @@ fn search_order_is_the_order_the_window_sent_them_not_the_order_they_began() {
         "the newer search is not replaced by an older one"
     );
     // In send order, each replaces the one before, as `begin` does.
-    let third = searches.begin_sent(3);
+    let third = searches.begin_sent(7, 3);
     assert!(newer.is_cancelled());
     assert!(!third.is_cancelled());
 }
@@ -501,22 +501,38 @@ fn search_order_starts_afresh_once_the_running_search_ended() {
     // A reloaded window counts from 1 again: once the search before it has ended, nothing it sent
     // is older than a running search.
     let searches = Searches::default();
-    let before_reload = searches.begin_sent(40);
-    searches.end_sent(40);
-    let after_reload = searches.begin_sent(1);
+    let before_reload = searches.begin_sent(7, 40);
+    searches.end_sent(7, 40);
+    let after_reload = searches.begin_sent(7, 1);
     assert!(!after_reload.is_cancelled());
     assert!(
         !before_reload.is_cancelled(),
         "an ended search is not cancelled afterwards"
     );
     // Ending a search that was replaced leaves the running one in place.
-    let next = searches.begin_sent(2);
-    searches.end_sent(1);
-    let stale = searches.begin_sent(1);
+    let next = searches.begin_sent(7, 2);
+    searches.end_sent(7, 1);
+    let stale = searches.begin_sent(7, 1);
     assert!(stale.is_cancelled());
     assert!(!next.is_cancelled());
     // `begin` is a search sent after every other.
     let unnumbered = searches.begin();
     assert!(next.is_cancelled());
     assert!(!unnumbered.is_cancelled());
+}
+
+#[test]
+fn search_from_a_reloaded_window_replaces_one_still_running_from_before() {
+    // The window reloads while its 40th search runs; the new page counts from 1 again.
+    let searches = Searches::default();
+    let before_reload = searches.begin_sent(7, 40);
+    let after_reload = searches.begin_sent(9, 1);
+    assert!(before_reload.is_cancelled(), "the old page's search goes");
+    assert!(!after_reload.is_cancelled(), "the new page's is answered");
+    // The old page's search ending changes nothing for the new page's order.
+    searches.end_sent(7, 40);
+    let older = searches.begin_sent(9, 0);
+    assert!(older.is_cancelled());
+    let newer = searches.begin_sent(9, 2);
+    assert!(after_reload.is_cancelled() && !newer.is_cancelled());
 }

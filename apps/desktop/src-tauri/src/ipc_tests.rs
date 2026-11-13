@@ -277,8 +277,8 @@ fn search_sent_later_keeps_its_answer_when_an_older_one_begins_after_it() {
     let svc = services(&dir);
     meeting(&svc, "Orchard review", T0, Some(60_000), 43);
     let searches = earshot_runtime::search::Searches::default();
-    let newer = searches.begin_sent(8);
-    let older = searches.begin_sent(7);
+    let newer = searches.begin_sent(3, 8);
+    let older = searches.begin_sent(3, 7);
     assert_eq!(
         meeting_search(&svc, "orchard", &older).unwrap_err().kind,
         SEARCH_SUPERSEDED_KIND
