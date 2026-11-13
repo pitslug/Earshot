@@ -1206,3 +1206,25 @@ Every request of a local summary decodes its whole prompt again, although map re
 - **Reported, deciding nothing.** Prompt tokens decoded with and without reuse (llama.cpp's counts), requests, and prompt and total seconds on the desktop GPU, labelled as a GPU on a possibly shared host, not Surface timings. Time saved on the Surface is a separate run by the owner on an idle Surface, steps written below with the results.
 - **What a pass means.** The part may ship on identity alone (PLAN T12.25); turning it on in the app is a follow-up the owner approves.
 - **Method amended before any result was judged (2026-11-13).** The first reuse-on run kept no token at all: Qwen 3.5 is a hybrid model (recurrent layers beside attention), and llama.cpp refuses to cut a recurrent sequence back (`llama_memory_seq_rm` returns false), so every request fell back to a fresh prompt and the comparison was trivially identical. Those runs were stopped and are not reported. The method now saves the sequence state (`llama_state_seq_get_data`) at micro-batch boundaries while a prompt is decoded (the boundary it shares with the context before it, and its last one; the newest two kept) and loads the longest saved state that starts the next prompt (`llama_state_seq_set_data`); decode calls are also cut at the save points, which are micro-batch boundaries, so the micro-batches are still a fresh prompt's. The runs and the rule above are unchanged, and all four runs are made again from one build.
+
+### Results: prefix reuse passes on identity (2026-11-13, `target/sum-eval/t1225-*`)
+
+All four runs from one build (CUDA, RTX 5080, 20 dev meetings, chunked 600 s, S16), compared with `sum_eval --compare-summaries` (`target/sum-eval/t1225-<arm>-compare.json`):
+
+| Arm | Meetings identical (reuse on against off) | Requests | Prompt tokens | Decoded with reuse | Saved | Prompt s off / on (GPU) | Total s off / on (GPU) |
+|---|---|---|---|---|---|---|---|
+| today's rules | 20 / 20 | 92 | 444,040 | 385,672 | 58,368 (13.1%) | 44.6 / 40.8 | 605.8 / 582.1 |
+| `brief` | 20 / 20 | 91 | 432,043 | 379,819 | 52,224 (12.1%) | 42.3 / 43.4 | 385.4 / 409.8 |
+
+- **The rule passes in both arms**: every meeting's `ok`, failure text and stored summary are the same with reuse on (generated tokens equal too: 104,477 and 65,637). By the rule, prefix reuse may ship; turning it on in the app is the owner's call.
+- **What it saves.** About an eighth of the prompt tokens: the shared rules and schema of each map request after the first two of a meeting (kept to a whole 512-token micro-batch, so about 1,024 of each request's roughly 1,500 shared tokens), plus whole prompts on repair rounds. The merge request shares only the rules with the maps.
+- **GPU seconds decide nothing.** Prompt time is 7% of a GPU run, and the on and off differences (-3.8 s and +1.1 s of prompt time, -24 s and +24 s in total) are within the run-to-run spread of a possibly shared host; they are not Surface timings. On the Surface, where the 4B reads about 93 prompt tokens a second, 58,368 tokens would be about 10 minutes over the 20 meetings, roughly 30 s per meeting, most of it during the meeting (map steps) rather than at hang-up: an estimate from token counts, to be replaced by the Surface run below.
+- **An earlier attempt, kept as an aside** (`target/sum-eval/t1225r1-*`, same build otherwise): keeping only the two newest saved states let each prompt's last state push out the shared one, so it saved 37,888 and 30,720 tokens (8.5% and 7.1%); also identical in both arms. The final method keeps the shared state in a slot of its own.
+
+**Surface timing (for the owner, on an idle Surface, mains power, nothing else running):**
+
+1. `cd <the Earshot checkout>`
+2. `cargo xtask sum-eval --model qwen3.5-4b-q4_k_m --split dev --source reference --chunk-seconds 600 --backend cpu --meeting ES2003c,ES2011c,IS1008c,TS3004c,TS3006c --out target/sum-eval/t1225-surface-off`
+3. `cargo xtask sum-eval --model qwen3.5-4b-q4_k_m --split dev --source reference --chunk-seconds 600 --backend cpu --meeting ES2003c,ES2011c,IS1008c,TS3004c,TS3006c --prefix-reuse --out target/sum-eval/t1225-surface-on`
+4. `cargo run --release -p earshot-llm-local --example sum_eval -- --compare-summaries target/sum-eval/t1225-surface-off/qwen3.5-4b-q4_k_m-cpu.json target/sum-eval/t1225-surface-on/qwen3.5-4b-q4_k_m-cpu.json`
+5. Report the printed `identical`, `prompt_s`, `hangup_s` and `seconds` of both runs. The Surface identity check is informational (the rule was judged on the GPU); a difference there is reported to the owner before anything ships.

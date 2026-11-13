@@ -374,6 +374,9 @@ pub struct Options {
     pub store_min_minutes: u64,
     /// Meeting ids it leaves out.
     pub store_exclude: Vec<String>,
+    /// Prompt prefix reuse on (T12.25 part 1, evaluation): local candidates without
+    /// thinking; format key `-reuse`.
+    pub prefix_reuse: bool,
 }
 
 /// The request format the `sum_eval` example records as `grammar` (its `format_key`): a
@@ -495,6 +498,10 @@ impl Options {
             self.agent_cli(),
             self.thinking,
         );
+        // T12.25: prefix reuse before the template, as the example's `reuse_suffix`.
+        if self.prefix_reuse {
+            key.push_str("-reuse");
+        }
         // T12.17: the summary template last, as the example's `template_suffix`.
         if !self.style_preset.is_standard() {
             key.push_str("-template-");
@@ -576,6 +583,7 @@ impl Default for Options {
             store_count: 6,
             store_min_minutes: 15,
             store_exclude: Vec::new(),
+            prefix_reuse: false,
         }
     }
 }
@@ -1051,6 +1059,9 @@ pub fn eval_args(
     if let Some(cap) = opts.thinking {
         a.extend(["--thinking".into(), cap.to_string().into()]);
     }
+    if opts.prefix_reuse && model.is_some() {
+        a.push("--prefix-reuse".into());
+    }
     a.extend([
         "--context".into(),
         opts.context.to_string().into(),
@@ -1495,6 +1506,10 @@ pub fn check_agent_cli(opts: &Options, agent: AgentCli) -> Result<()> {
         opts.thinking.is_none(),
         "--thinking is for local Qwen candidates only, not --model {id}"
     );
+    ensure!(
+        !opts.prefix_reuse,
+        "--prefix-reuse is for local candidates only, not --model {id}"
+    );
     Ok(())
 }
 
@@ -1867,6 +1882,12 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
         "--two-track needs --chunk-seconds and --source reference, not --two-call, and applies to local summary runs only"
     );
     check_thinking(opts)?;
+    ensure!(
+        !opts.prefix_reuse
+            || (opts.thinking.is_none()
+                && !(opts.stored_only() || opts.rescore || opts.replay_only)),
+        "--prefix-reuse applies to local summary runs without --thinking only"
+    );
     let report = crate::doctor::collect();
     let cuda = crate::doctor::cuda_for_backend_choice(&report, opts.backend.as_deref())?;
     // Vulkan (T8.3h) applies to the summaries only: Earshot-source replays are built as
@@ -2907,6 +2928,56 @@ mod tests {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
         assert!(args.windows(2).any(|w| w == ["--style-preset", "detailed"]));
+    }
+
+    #[test]
+    fn sum_eval_prefix_reuse_has_its_own_key_part_and_reaches_only_local_runs() {
+        let o = Options {
+            models: vec!["qwen3.5-4b-q4_k_m".into()],
+            chunk_seconds: Some(600),
+            prompt_variant: PromptVariant::Brief,
+            style_preset: StylePreset::Brief,
+            prefix_reuse: true,
+            ..Options::default()
+        };
+        // After the prompt variant, before the template, as the example's `reuse_suffix`.
+        assert_eq!(
+            o.format_key(),
+            "indented-numbered-r5-chunk600-prompt-brief-reuse-template-brief"
+        );
+        let off = Options {
+            prefix_reuse: false,
+            ..o.clone()
+        };
+        assert_ne!(off.format_key(), o.format_key());
+        let c = select_candidates(&o.models).unwrap().remove(0);
+        let args = |opts: &Options, model: bool| -> Vec<String> {
+            eval_args(
+                Path::new("a"),
+                Path::new("e"),
+                &[],
+                &[],
+                model.then_some((Path::new("m.gguf"), &c)),
+                true,
+                opts,
+                Path::new("o.json"),
+            )
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+        };
+        assert!(args(&o, true).iter().any(|a| a == "--prefix-reuse"));
+        assert!(!args(&off, true).iter().any(|a| a == "--prefix-reuse"));
+        // The remote ceiling has no llama.cpp context.
+        assert!(!args(&o, false).iter().any(|a| a == "--prefix-reuse"));
+        // Never an agent CLI.
+        let agent = Options {
+            models: vec!["claude-code".into()],
+            sources: vec!["reference".into()],
+            prefix_reuse: true,
+            ..Options::default()
+        };
+        assert!(check_claude_code(&agent).is_err());
     }
 
     #[test]

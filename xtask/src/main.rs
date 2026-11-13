@@ -304,6 +304,11 @@ enum Cmd {
         /// Meeting ids --store-db leaves out, comma-separated.
         #[arg(long, value_delimiter = ',')]
         store_exclude: Vec<String>,
+        /// Prompt prefix reuse (T12.25 part 1, evaluation only): keep the shared start of a
+        /// summary run's prompts in llama.cpp's cache (format key `-reuse`). Local candidates
+        /// without --thinking; use its own --out.
+        #[arg(long, conflicts_with = "thinking")]
+        prefix_reuse: bool,
     },
     /// Build the NPU conversion of a Parakeet TDT model (T8.3): static 30 s input shape,
     /// QDQ quantisation for Qualcomm's HTP backend, into <models>/parakeet-qnn/<name>.
@@ -583,6 +588,7 @@ fn main() -> ExitCode {
             store_count,
             store_min_minutes,
             store_exclude,
+            prefix_reuse,
         } => xtask::sum_eval::run(
             &root,
             &xtask::sum_eval::Options {
@@ -615,6 +621,7 @@ fn main() -> ExitCode {
                 store_count,
                 store_min_minutes,
                 store_exclude,
+                prefix_reuse,
             },
         )
         .map(|()| true),

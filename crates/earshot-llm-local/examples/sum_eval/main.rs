@@ -29,6 +29,7 @@
 mod ami;
 mod claude;
 mod claude_cli;
+mod compare;
 mod facts;
 mod judge;
 mod score;
@@ -56,7 +57,7 @@ use earshot_llm_local::thinking::{
     QWEN_THINKING_OFF_PREFIX, QWEN_THINKING_PREFIX, ThinkingLlm, ThinkingStats,
     thinking_load_context,
 };
-use earshot_llm_local::{LoadOptions, LocalLlm};
+use earshot_llm_local::{LoadOptions, LocalLlm, ReuseStats};
 use serde_json::{Value, json};
 
 const FETCH: &str = "cargo xtask fetch-fixtures --set ami-sum";
@@ -132,6 +133,14 @@ fn format_key(
         key.push_str(variant.name());
     }
     key
+}
+
+/// The format key part of prompt prefix reuse (T12.25 part 1, evaluation): `-reuse` after
+/// the prompt variant and before the template, nothing when off. Its replies are meant to be
+/// byte-identical, but its rows are never reused for a run without it, so a difference
+/// cannot hide. xtask's `Options::format_key` appends the same.
+fn reuse_suffix(on: bool) -> &'static str {
+    if on { "-reuse" } else { "" }
 }
 
 /// The format key part of a summary template (T12.17, evaluation): `-template-<name>`
@@ -231,6 +240,11 @@ struct Args {
     /// The run folder of the owner's own meetings (T12.25a, `store.rs`): the inputs of
     /// `--job <split>:store` jobs and the transcripts of their judge packets.
     store_inputs: Option<PathBuf>,
+    /// Prompt prefix reuse on (T12.25 part 1, evaluation; `LocalLlm::set_prefix_reuse`).
+    /// Local models without thinking only.
+    prefix_reuse: bool,
+    /// Compare the summaries of two finished result files (`compare.rs`).
+    compare: Option<(PathBuf, PathBuf)>,
 }
 
 impl Args {
@@ -344,10 +358,21 @@ fn parse_args() -> Result<Args, String> {
                 a.thinking = Some(val()?.parse().map_err(|e| format!("--thinking: {e}"))?);
             }
             "--store-inputs" => a.store_inputs = Some(val()?.into()),
+            "--prefix-reuse" => a.prefix_reuse = true,
+            "--compare-summaries" => {
+                let first = val()?;
+                let second = it
+                    .next()
+                    .ok_or("--compare-summaries needs two result files")?;
+                a.compare = Some((first.into(), second.into()));
+            }
             other => return Err(format!("unknown argument {other}")),
         }
     }
     check_store(&a)?;
+    if a.compare.is_some() {
+        return Ok(a);
+    }
     if a.split_facts.is_some() {
         if a.annotations.as_os_str().is_empty()
             || a.meetings.is_empty()
@@ -475,6 +500,9 @@ fn parse_args() -> Result<Args, String> {
         return Err("give exactly one of --model, --remote, --claude-code and --codex".into());
     }
     check_thinking(&a)?;
+    if a.prefix_reuse && (a.model.is_none() || a.thinking.is_some()) {
+        return Err("--prefix-reuse is for local models without --thinking".into());
+    }
     Ok(a)
 }
 
@@ -806,6 +834,32 @@ impl LocalModel {
             Self::Thinking(llm) => Some(llm.take_stats()),
         }
     }
+
+    /// Forgets the context and the prompt counts before a meeting (a plain model).
+    fn start_meeting(&mut self) {
+        if let Self::Plain(llm) = self {
+            llm.forget_prefix();
+            llm.take_reuse_stats();
+        }
+    }
+
+    /// The prompt counts since [`LocalModel::start_meeting`] (a plain model), reset.
+    fn take_reuse(&mut self) -> Option<ReuseStats> {
+        match self {
+            Self::Plain(llm) => Some(llm.take_reuse_stats()),
+            Self::Thinking(_) => None,
+        }
+    }
+}
+
+/// A meeting's prompt counts (T12.25): tokens only.
+fn reuse_json(r: &ReuseStats) -> Value {
+    json!({
+        "requests": r.requests,
+        "prompt_tokens": r.prompt_tokens,
+        "reused_tokens": r.reused_tokens,
+        "decoded_tokens": r.decoded_tokens(),
+    })
 }
 
 /// A meeting's thinking counts: token counts only, never the thinking text.
@@ -886,10 +940,16 @@ impl Engine {
                 two_call,
             } => {
                 llm.take_thinking();
+                // Production loads the model once per summary: nothing carries over from
+                // the meeting before (T12.25 prefix reuse).
+                llm.start_meeting();
                 let (result, mut report) =
                     summarise_local(llm.generate(), input, options, *chunk_seconds, *two_call);
                 if let Some(t) = llm.take_thinking() {
                     report["thinking"] = thinking_json(&t);
+                }
+                if let Some(r) = llm.take_reuse() {
+                    report["prefix_reuse"] = reuse_json(&r);
                 }
                 (result, report)
             }
@@ -1678,6 +1738,9 @@ fn import_replies(a: &Args, dir: &Path) -> Result<(), String> {
 
 fn run() -> Result<(), String> {
     let a = parse_args()?;
+    if let Some((first, second)) = &a.compare {
+        return compare::run(first, second);
+    }
     if a.has_store_jobs() {
         // The result file and its checkpoint (`<out>.partial.jsonl`, beside it).
         store::check_private(&a.out, "--out")?;
@@ -1736,11 +1799,15 @@ fn run() -> Result<(), String> {
                 QWEN_THINKING_PREFIX.to_owned(),
                 a.context,
             ),
-            None => (
-                LocalModel::Plain(Box::new(llm)),
-                a.assistant_prefix.clone(),
-                load.context_tokens,
-            ),
+            None => {
+                let mut llm = llm;
+                llm.set_prefix_reuse(a.prefix_reuse);
+                (
+                    LocalModel::Plain(Box::new(llm)),
+                    a.assistant_prefix.clone(),
+                    load.context_tokens,
+                )
+            }
         };
         eprintln!(
             "sum_eval: {} on {} (load {:.1} s): {}",
@@ -1763,7 +1830,8 @@ fn run() -> Result<(), String> {
             "max_output_tokens": a.max_output,
             "assistant_prefix": assistant_prefix,
             "thinking_cap": a.thinking,
-            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking) + &template_suffix(a.style_preset),
+            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking) + reuse_suffix(a.prefix_reuse) + &template_suffix(a.style_preset),
+            "prefix_reuse": a.prefix_reuse,
             "chunk_seconds": a.chunk_seconds,
             "two_call": a.two_call,
             "two_track": a.two_track,
@@ -1852,7 +1920,8 @@ fn run() -> Result<(), String> {
             a.two_track,
             a.agent_cli(),
             a.thinking,
-        ) + &template_suffix(a.style_preset)
+        ) + reuse_suffix(a.prefix_reuse)
+            + &template_suffix(a.style_preset)
     );
     let partial = a.out.with_extension("partial.jsonl");
     let mut done: BTreeMap<(String, String, String), Value> = BTreeMap::new();
@@ -2807,5 +2876,35 @@ mod store_tests {
         };
         assert!(judge_packets(&summaries_outside, &dir).is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// Prompt prefix reuse (T12.25 part 1).
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+
+    #[test]
+    fn sum_eval_prefix_reuse_key_part_sits_before_the_template_as_in_xtask() {
+        let key = format_key(Some(600), PromptVariant::Brief, false, false, None, None)
+            + reuse_suffix(true)
+            + &template_suffix(StylePreset::Brief);
+        assert_eq!(
+            key,
+            "indented-numbered-r5-chunk600-prompt-brief-reuse-template-brief"
+        );
+        assert_eq!(reuse_suffix(false), "");
+    }
+
+    #[test]
+    fn sum_eval_reuse_counts_are_tokens_only() {
+        let r = ReuseStats {
+            requests: 3,
+            prompt_tokens: 5000,
+            reused_tokens: 1536,
+        };
+        let v = reuse_json(&r);
+        assert_eq!(v["decoded_tokens"], 3464);
+        assert_eq!(v.as_object().unwrap().len(), 4);
     }
 }
