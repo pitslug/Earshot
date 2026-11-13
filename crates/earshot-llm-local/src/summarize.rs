@@ -28,14 +28,17 @@ use earshot_core::prompt::{
     ChatMessage, ContextBudget, MapChunk, MergeLevel, Prompt, PromptError, PromptPlan,
     REPAIR_MAX_TOKENS, Role, SummaryInput, grown_reply_tokens, plan, plan_chunks,
     plan_chunks_two_call, reduce_groups, reduce_groups_two_call, reduce_prompt,
-    reduce_prompt_two_call, repair_message, segment_numbers,
+    reduce_prompt_two_call, repair_message, segment_numbers, select_prompt,
+    selection_repair_message,
 };
 use earshot_core::summary::{
-    SegmentNumbers, SummaryError, SummaryErrorKind, SummaryV1, drop_repeated_actions,
-    join_partials, validate_reply,
+    SegmentNumbers, SelectCounts, SummaryError, SummaryErrorKind, SummaryV1, build_from_selection,
+    drop_repeated_actions, join_partials, parse_selection, validate_reply,
 };
 
-use crate::grammar::{GrammarError, SummaryLimits, SummaryPart, summary_part_grammar};
+use crate::grammar::{
+    GrammarError, SummaryLimits, SummaryPart, selection_grammar, summary_part_grammar,
+};
 use crate::{Generation, LlmError, LocalLlm, Stop};
 
 use SummaryPart::Whole;
@@ -450,6 +453,30 @@ fn map_reduce(
     options: &SummaryOptions,
     report: &mut SummaryReport,
 ) -> Result<SummaryV1, SummaryFailure> {
+    let partials = map_parts(model, chunks, done, numbers, options, report)?;
+    reduce_levels(
+        model,
+        input,
+        partials,
+        budget,
+        numbers,
+        options,
+        report,
+        Merge::Plain,
+        &mut |_| {},
+    )
+}
+
+/// The map steps of `chunks`, in order, skipping those `done` already holds: one partial
+/// summary per chunk.
+fn map_parts(
+    model: &mut dyn Generate,
+    chunks: Vec<MapChunk>,
+    done: Vec<Option<SummaryV1>>,
+    numbers: &SegmentNumbers,
+    options: &SummaryOptions,
+    report: &mut SummaryReport,
+) -> Result<Vec<SummaryV1>, SummaryFailure> {
     report.map_parts = chunks.len();
     let mut partials = Vec::with_capacity(chunks.len());
     for (chunk, ready) in chunks.into_iter().zip(done) {
@@ -468,17 +495,7 @@ fn map_reduce(
             report,
         )?);
     }
-    reduce_levels(
-        model,
-        input,
-        partials,
-        budget,
-        numbers,
-        options,
-        report,
-        Merge::Plain,
-        &mut |_| {},
-    )
+    Ok(partials)
 }
 
 /// The reduce a merge uses: the production one, or the two-call merge (T6.20c, evaluation
@@ -677,6 +694,127 @@ fn two_call(
     )
 }
 
+/// Item counts of a merge by selection ([`summarize_chunks_select`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SelectStats {
+    /// Items the partials held: the numbers the selection could use.
+    pub given: SelectCounts,
+    /// Items of the final summary; `None` when the run failed.
+    pub kept: Option<SelectCounts>,
+    /// Items folded into another (numbers after the first of a group).
+    pub folded: usize,
+}
+
+/// The outcome of [`summarize_chunks_select`].
+#[derive(Debug, Clone)]
+pub struct SelectRun {
+    /// The summary, or why there is none.
+    pub result: Result<SummaryV1, SummaryFailure>,
+    /// What was done (steps `map`, and `reduce` for the selection request).
+    pub report: SummaryReport,
+    /// Item counts.
+    pub selection: SelectStats,
+}
+
+/// Merge by selection (T12.25 part 2, evaluation only; production never calls it): the map
+/// steps of [`summarize_chunks`] over `ranges`, unchanged, then one selection request
+/// ([`select_prompt`], step `reduce`, under [`selection_grammar`]) whose reply chooses by
+/// number which decisions, action items and open questions to keep and fold, and a `tldr`;
+/// the summary is built from the kept items in code ([`build_from_selection`]), nothing
+/// reworded. The request is validated ([`parse_selection`]) and repaired as any step; when
+/// it is still invalid the parts are joined ([`join_partials`], counted in
+/// [`SummaryReport::joined_parts`]), as a failed production merge is. One range is the
+/// ordinary single request.
+///
+/// # Panics
+/// When `ranges` do not cover the segments consecutively (see `plan_chunks`).
+pub fn summarize_chunks_select(
+    model: &mut dyn Generate,
+    input: &SummaryInput,
+    options: &SummaryOptions,
+    ranges: &[std::ops::Range<usize>],
+) -> SelectRun {
+    let mut report = SummaryReport::default();
+    let mut selection = SelectStats::default();
+    let result = if ranges.len() <= 1 {
+        run(model, input, options, &mut report)
+    } else {
+        let budget = chunk_budget(model, options);
+        report.planner_window = budget.context_window;
+        match plan_chunks(input, budget, ranges) {
+            Ok(chunks) => select_merge(
+                model,
+                input,
+                chunks,
+                &segment_numbers(input),
+                options,
+                &mut report,
+                &mut selection,
+            ),
+            Err(e) => Err(SummaryFailure::Plan(e)),
+        }
+    };
+    selection.kept = result.as_ref().ok().map(SelectCounts::of_summary);
+    SelectRun {
+        result,
+        report,
+        selection,
+    }
+}
+
+fn select_merge(
+    model: &mut dyn Generate,
+    input: &SummaryInput,
+    chunks: Vec<MapChunk>,
+    numbers: &SegmentNumbers,
+    options: &SummaryOptions,
+    report: &mut SummaryReport,
+    stats: &mut SelectStats,
+) -> Result<SummaryV1, SummaryFailure> {
+    let done = vec![None; chunks.len()];
+    let partials = map_parts(model, chunks, done, numbers, options, report)?;
+    let counts = SelectCounts::of_parts(&partials);
+    stats.given = counts;
+    let prompt = select_prompt(
+        input,
+        &partials,
+        options.limits.max_items,
+        options.max_output_tokens,
+    );
+    let limits = options.limits;
+    report.reduce_steps += 1;
+    let built = step_with(
+        model,
+        "reduce",
+        &|| selection_grammar(counts, limits),
+        prompt,
+        options,
+        report,
+        &mut |text, truncated, _| {
+            let value: serde_json::Value =
+                serde_json::from_str(text).map_err(|e| vec![json_error(&e, truncated)])?;
+            let selection = parse_selection(&value, counts)?;
+            Ok((
+                build_from_selection(&partials, &selection),
+                selection.folded(),
+            ))
+        },
+        &|errors, truncated| selection_repair_message(errors, truncated, MAX_REPAIR_ERRORS),
+    );
+    match built {
+        Ok((summary, folded)) => {
+            stats.folded = folded;
+            Ok(summary)
+        }
+        // A rougher summary rather than none, as a failed production merge (T8.4d).
+        Err(SummaryFailure::Invalid { .. }) => {
+            report.joined_parts = partials.len();
+            Ok(join_partials(&partials))
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// `reply` cut to at most `max_bytes` on a character boundary, with a marker.
 fn cap_echo(reply: &str, max_bytes: usize) -> String {
     if reply.len() <= max_bytes {
@@ -702,9 +840,61 @@ fn step(
     options: &SummaryOptions,
     report: &mut SummaryReport,
 ) -> Result<SummaryV1, SummaryFailure> {
+    let cites = prompt.cites.clone();
+    step_with(
+        model,
+        step,
+        &|| summary_part_grammar(&cites, options.limits, part),
+        prompt,
+        options,
+        report,
+        &mut |text, truncated, report| match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(value) => match validate_reply(&value, numbers, &cites) {
+                Ok(checked) => {
+                    report.duplicates_dropped += checked.duplicates_dropped;
+                    Ok(checked.summary)
+                }
+                Err(errors) => Err(errors),
+            },
+            Err(e) => Err(vec![json_error(&e, truncated)]),
+        },
+        &|errors, truncated| repair_message(errors, truncated, MAX_REPAIR_ERRORS),
+    )
+}
+
+/// The error of a reply that is not JSON; a `truncated` one says it was cut off.
+fn json_error(e: &serde_json::Error, truncated: bool) -> SummaryError {
+    SummaryError {
+        path: String::new(),
+        kind: SummaryErrorKind::Json(if truncated {
+            CUT_OFF_JSON.to_string()
+        } else {
+            e.to_string()
+        }),
+    }
+}
+
+/// Checks a reply's text (trimmed; whether it was cut off at its budget) for [`step_with`].
+type ParseReply<'a, T> =
+    dyn FnMut(&str, bool, &mut SummaryReport) -> Result<T, Vec<SummaryError>> + 'a;
+
+/// [`step`] for any reply: `grammar` builds the step's grammar, `parse` checks a reply's text
+/// (trimmed; whether it was cut off at its budget) and `repair` writes a repair round's
+/// message.
+#[allow(clippy::too_many_arguments)]
+fn step_with<T>(
+    model: &mut dyn Generate,
+    step: &'static str,
+    grammar: &dyn Fn() -> Result<String, GrammarError>,
+    prompt: Prompt,
+    options: &SummaryOptions,
+    report: &mut SummaryReport,
+    parse: &mut ParseReply<'_, T>,
+    repair: &dyn Fn(&[SummaryError], bool) -> ChatMessage,
+) -> Result<T, SummaryFailure> {
     let started = Instant::now();
     let before = report.requests;
-    let result = step_requests(model, step, part, prompt, numbers, options, report);
+    let result = step_requests(model, step, grammar, prompt, options, report, parse, repair);
     report.steps.push(StepTime {
         step,
         wall: started.elapsed(),
@@ -713,17 +903,18 @@ fn step(
     result
 }
 
-fn step_requests(
+#[allow(clippy::too_many_arguments)]
+fn step_requests<T>(
     model: &mut dyn Generate,
     step: &'static str,
-    part: SummaryPart,
+    grammar: &dyn Fn() -> Result<String, GrammarError>,
     prompt: Prompt,
-    numbers: &SegmentNumbers,
     options: &SummaryOptions,
     report: &mut SummaryReport,
-) -> Result<SummaryV1, SummaryFailure> {
-    let grammar = summary_part_grammar(&prompt.cites, options.limits, part)
-        .map_err(SummaryFailure::Grammar)?;
+    parse: &mut ParseReply<'_, T>,
+    repair: &dyn Fn(&[SummaryError], bool) -> ChatMessage,
+) -> Result<T, SummaryFailure> {
+    let grammar = grammar().map_err(SummaryFailure::Grammar)?;
     let mut reply_budget = prompt.max_output_tokens;
     report.max_reply_budget = report.max_reply_budget.max(reply_budget);
     let original = prompt.messages;
@@ -773,24 +964,9 @@ fn step_requests(
                 kind: SummaryErrorKind::Repetition,
             }]
         } else {
-            match serde_json::from_str::<serde_json::Value>(g.text.trim()) {
-                Ok(value) => match validate_reply(&value, numbers, &prompt.cites) {
-                    Ok(checked) => {
-                        report.duplicates_dropped += checked.duplicates_dropped;
-                        return Ok(checked.summary);
-                    }
-                    Err(errors) => errors,
-                },
-                Err(e) => vec![SummaryError {
-                    path: String::new(),
-                    kind: SummaryErrorKind::Json(if truncated {
-                        "the reply was cut off at the output limit before the JSON object was \
-                         complete"
-                            .to_string()
-                    } else {
-                        e.to_string()
-                    }),
-                }],
+            match parse(g.text.trim(), truncated, report) {
+                Ok(value) => return Ok(value),
+                Err(errors) => errors,
             }
         };
         report.invalid_replies += 1;
@@ -820,7 +996,7 @@ fn step_requests(
                 continue;
             }
         }
-        let repair = repair_message(&errors, truncated, MAX_REPAIR_ERRORS);
+        let repair = repair(&errors, truncated);
         let echo = ChatMessage::new(
             Role::Assistant,
             cap_echo(&g.text, ECHO_BYTES_PER_TOKEN * reply_budget),
@@ -838,6 +1014,10 @@ fn step_requests(
         }
     }
 }
+
+/// The error text of a reply cut off before its JSON object was complete.
+const CUT_OFF_JSON: &str =
+    "the reply was cut off at the output limit before the JSON object was complete";
 
 #[cfg(test)]
 mod tests {
@@ -1777,5 +1957,234 @@ mod tests {
         assert_eq!(run.result, Err(SummaryFailure::Cancelled));
         assert_eq!(m.0.calls.len(), 1);
         assert_eq!(run.report.requests, 1);
+    }
+
+    /// A map reply with one decision `text` citing `cite`, an action and a question.
+    fn select_part_reply(text: &str, cite: u64) -> Option<(String, Stop)> {
+        Some((
+            format!(
+                r#"{{"title":"T{cite}","tldr":"Part {cite}.","enhanced_notes":[{{"heading":"H{cite}","bullets":[{{"text":"n{cite}","source_segment_ids":[{cite}]}}]}}],"decisions":[{{"text":"{text}","source_segment_ids":[{cite}]}}],"action_items":[{{"owner":"A","task":"task {cite}","due":null,"source_segment_ids":[{cite}]}}],"open_questions":["q{cite}?"],"topics":["t{cite}"]}}"#
+            ),
+            Stop::EndOfGeneration,
+        ))
+    }
+
+    fn select_reply(text: &str) -> Option<(String, Stop)> {
+        Some((text.to_owned(), Stop::EndOfGeneration))
+    }
+
+    /// Three scripted map replies for the chunks `0..10, 10..25, 25..30` of `input(30)`.
+    fn three_parts(m: &mut Fake) {
+        m.script
+            .push_back(select_part_reply("The case is plastic.", 1));
+        m.script
+            .push_back(select_part_reply("The remote is grey.", 11));
+        m.script
+            .push_back(select_part_reply("The remote is yellow.", 26));
+    }
+
+    const RANGES: [std::ops::Range<usize>; 3] = [0..10, 10..25, 25..30];
+
+    #[test]
+    fn summarize_select_maps_as_today_then_selects_by_number_and_builds_the_summary() {
+        let inp = input(30);
+        let mut m = Fake::new(16_384, 1.0);
+        three_parts(&mut m);
+        m.script.push_back(select_reply(
+            r#"{"decisions":[[1],[3]],"action_items":[[1,3]],"open_questions":[[3]],"tldr":"A yellow plastic remote."}"#,
+        ));
+        let run = summarize_chunks_select(&mut m, &inp, &options(), &RANGES);
+        let s = run.result.unwrap();
+        // Superseded grey dropped by number; nothing reworded.
+        let texts: Vec<&str> = s.decisions.iter().map(|d| d.text.as_str()).collect();
+        assert_eq!(texts, ["The case is plastic.", "The remote is yellow."]);
+        assert_eq!(s.decisions[1].source_segment_ids, [id(26)]);
+        // Folded actions: the first one's words, both citations.
+        assert_eq!(s.action_items.len(), 1);
+        assert_eq!(s.action_items[0].task, "task 1");
+        assert_eq!(s.action_items[0].source_segment_ids, [id(1), id(26)]);
+        assert_eq!(s.open_questions, ["q26?"]);
+        assert_eq!(s.tldr, "A yellow plastic remote.");
+        assert_eq!(s.title, "T1");
+        // Every part's notes and topics are kept.
+        assert_eq!(s.enhanced_notes.len(), 3);
+        assert_eq!(s.topics, ["t1", "t11", "t26"]);
+        let r = &run.report;
+        assert_eq!(
+            (r.map_parts, r.reduce_steps, r.requests, r.joined_parts),
+            (3, 1, 4, 0)
+        );
+        let kinds: Vec<&str> = r.steps.iter().map(|st| st.step).collect();
+        assert_eq!(kinds, ["map", "map", "map", "reduce"]);
+        assert_eq!(
+            run.selection,
+            SelectStats {
+                given: SelectCounts {
+                    decisions: 3,
+                    action_items: 3,
+                    open_questions: 3
+                },
+                kept: Some(SelectCounts {
+                    decisions: 2,
+                    action_items: 1,
+                    open_questions: 1
+                }),
+                folded: 1,
+            }
+        );
+        // The selection request: the numbered items under the grammar of numbers.
+        let (msgs, _, grammar, budget) = m.calls.last().unwrap();
+        assert!(
+            msgs[1]
+                .content
+                .contains("D2 (part 2): The remote is grey.\n")
+        );
+        assert!(
+            msgs[0]
+                .content
+                .contains("Keep at most 12 items in each list.")
+        );
+        assert_eq!(
+            *grammar,
+            selection_grammar(run.selection.given, SummaryLimits::default()).unwrap()
+        );
+        assert_eq!(*budget, 256 + 12 * 9);
+        // The map requests are exactly today's chunked run's.
+        let mut today = Fake::new(16_384, 1.0);
+        three_parts(&mut today);
+        summarize_chunks(&mut today, &inp, &options(), &RANGES)
+            .result
+            .unwrap();
+        assert_eq!(m.calls[..3], today.calls[..3]);
+    }
+
+    #[test]
+    fn summarize_select_repairs_in_selection_words_then_joins_the_parts() {
+        let mut m = Fake::new(16_384, 1.0);
+        three_parts(&mut m);
+        for _ in 0..=MAX_REPAIRS {
+            m.script.push_back(select_reply(
+                r#"{"decisions":[[1],[1]],"action_items":[],"open_questions":[],"tldr":"x"}"#,
+            ));
+        }
+        let run = summarize_chunks_select(&mut m, &input(30), &options(), &RANGES);
+        let s = run.result.unwrap();
+        assert!(
+            s.tldr
+                .starts_with(earshot_core::summary::JOINED_SUMMARY_NOTICE)
+        );
+        assert_eq!(s.decisions.len(), 3);
+        let r = &run.report;
+        assert_eq!(
+            (r.requests, r.repairs, r.joined_parts),
+            (3 + MAX_REPAIRS + 1, MAX_REPAIRS, 3)
+        );
+        let repair = &m.calls[4].0.last().unwrap().content;
+        assert!(repair.contains("not a valid selection"), "{repair}");
+        assert!(
+            repair.contains("/decisions/1/0: this number is used twice"),
+            "{repair}"
+        );
+    }
+
+    #[test]
+    fn summarize_select_asks_again_with_more_room_when_cut_off() {
+        let mut m = Fake::new(16_384, 1.0);
+        three_parts(&mut m);
+        m.script
+            .push_back(Some((r#"{"decisions":[[1"#.into(), Stop::MaxTokens)));
+        m.script.push_back(select_reply(
+            r#"{"decisions":[[1]],"action_items":[],"open_questions":[],"tldr":"x"}"#,
+        ));
+        let run = summarize_chunks_select(&mut m, &input(30), &options(), &RANGES);
+        assert_eq!(run.result.unwrap().decisions.len(), 1);
+        assert_eq!(run.report.truncated, 1);
+        assert!(m.calls[4].3 > m.calls[3].3, "the budget grew");
+        assert_eq!(m.calls[4].0, m.calls[3].0, "the original messages again");
+    }
+
+    #[test]
+    fn summarize_select_one_range_is_the_ordinary_single_request() {
+        let mut a = Fake::new(16_384, 1.0);
+        let mut b = Fake::new(16_384, 1.0);
+        let inp = input(5);
+        let sel = summarize_chunks_select(&mut a, &inp, &options(), std::slice::from_ref(&(0..5)));
+        let one = summarize(&mut b, &inp, &options());
+        assert_eq!(sel.result.unwrap(), one.result.unwrap());
+        assert_eq!(a.calls, b.calls);
+        assert_eq!(sel.selection.given, SelectCounts::default());
+    }
+
+    /// T12.25 part 2: the merge by selection is evaluation only. No shipped crate names it;
+    /// in this crate only the summarizer and the grammar do (definitions and tests), and the
+    /// production summary paths never call it. The `sum_eval` example may.
+    #[test]
+    fn summarize_merge_by_selection_is_used_by_no_shipped_code() {
+        fn scan(dir: &std::path::Path, names: &[&str], found: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    scan(&p, names, found);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let text = std::fs::read_to_string(&p).unwrap_or_default();
+                    for n in names {
+                        if text.contains(n) {
+                            found.push(format!("{} names {n}", p.display()));
+                        }
+                    }
+                }
+            }
+        }
+        let names = [
+            concat!("summarize_chunks_", "select"),
+            concat!("select_", "prompt"),
+            concat!("selection_", "grammar"),
+            concat!("build_from_", "selection"),
+            concat!("parse_", "selection"),
+            concat!("selection_repair_", "message"),
+        ];
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut found = Vec::new();
+        for dir in [
+            "crates/earshot-runtime/src",
+            "crates/earshot-cli/src",
+            "crates/earshot-llm/src",
+            "crates/earshot-store/src",
+            "apps/desktop/src-tauri/src",
+        ] {
+            let dir = repo.join(dir);
+            assert!(dir.is_dir(), "{} is not a folder", dir.display());
+            scan(&dir, &names, &mut found);
+        }
+        assert!(
+            found.is_empty(),
+            "shipped code names the selection merge: {found:?}"
+        );
+        let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut here = Vec::new();
+        scan(&own, &names, &mut here);
+        assert!(
+            here.iter()
+                .all(|f| f.contains("summarize.rs") || f.contains("grammar.rs")),
+            "{here:?}"
+        );
+        let src = std::fs::read_to_string(own.join("summarize.rs")).unwrap();
+        for f in [
+            "fn run(",
+            "fn map_reduce(",
+            "fn map_parts(",
+            "fn reduce_levels(",
+            "fn two_call(",
+            "fn step(",
+        ] {
+            let body = &src[src.find(f).unwrap()..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            for n in names {
+                assert!(!body.contains(n), "{f} names {n}");
+            }
+        }
     }
 }

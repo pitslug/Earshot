@@ -13,6 +13,10 @@
 //!   two-call chunked evaluation (T6.20c, evaluation only): per chunk one request for the
 //!   action items and one for everything else, then a merge that also folds reworded
 //!   action items. Production never uses them.
+//! - [`select_prompt`], [`selection_repair_message`]: the merge by selection (T12.25 part 2,
+//!   evaluation only): the merge request shows the numbered items of every partial and the
+//!   reply chooses which to keep and fold ([`crate::summary::Selection`]). Production never
+//!   uses them.
 //! - [`SummaryStyle`]: the user's style (T7.4b), one block at the end of the system message
 //!   of the request that writes the summary the user sees (the single request and the last
 //!   merge, [`MergeLevel::Last`]), after the fixed rules; never in a map request.
@@ -35,6 +39,7 @@
 
 mod builder;
 mod chunks;
+mod select;
 mod style;
 mod template;
 mod tokens;
@@ -49,6 +54,9 @@ pub use builder::{
     segment_numbers,
 };
 pub use chunks::{TimeChunkError, time_chunks};
+pub use select::{
+    SELECT_REPLY_BASE_TOKENS, SELECT_REPLY_PER_ITEM_TOKENS, select_prompt, selection_repair_message,
+};
 pub use style::{
     MAX_STYLE_CHARS, STYLE_LINE_PREFIX, StyleError, StylePreset, SummaryStyle, UnknownStylePreset,
 };

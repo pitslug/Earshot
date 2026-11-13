@@ -10,11 +10,14 @@
 //! - [`validate_reply`]: model replies cite segment numbers ([`llm_json_schema`],
 //!   committed as `schemas/summary-llm.v1.json`); they are mapped back to segment ids and
 //!   checked, including repetition.
+//! - [`Selection`], [`parse_selection`], [`build_from_selection`]: the merge by selection
+//!   (T12.25 part 2, evaluation only; production never calls them).
 //! - [`Summarizer`]: the backend trait that produces a validated summary from a
 //!   [`crate::prompt::SummaryInput`].
 
 mod cite;
 mod recite;
+mod select;
 mod summarizer;
 mod validate;
 
@@ -29,6 +32,9 @@ pub use cite::{
     llm_json_schema, repetition_errors, to_numbered, to_numbered_json, validate_reply,
 };
 pub use recite::{ReciteError, Recited, TimedSegment, recite};
+pub use select::{
+    SELECTION_FIELDS, SelectCounts, SelectItems, Selection, build_from_selection, parse_selection,
+};
 pub use summarizer::Summarizer;
 pub use validate::{
     SegmentIds, SummaryError, SummaryErrorKind, parse_summary, validate_summary, validate_value,

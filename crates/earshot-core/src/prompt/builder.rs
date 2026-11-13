@@ -322,7 +322,11 @@ pub struct Prompt {
 }
 
 impl Prompt {
-    fn new(messages: Vec<ChatMessage>, max_output_tokens: usize, cites: Citable) -> Self {
+    pub(super) fn new(
+        messages: Vec<ChatMessage>,
+        max_output_tokens: usize,
+        cites: Citable,
+    ) -> Self {
         Prompt {
             estimated_tokens: estimate_messages(&messages),
             messages,
@@ -968,7 +972,7 @@ fn clock(t: MeetingTime) -> String {
     format!("{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
 }
 
-fn one_line(text: &str) -> String {
+pub(super) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -988,7 +992,7 @@ fn segment_line(number: usize, seg: &PromptSegment) -> String {
     )
 }
 
-fn meeting_block(m: &MeetingInfo) -> String {
+pub(super) fn meeting_block(m: &MeetingInfo) -> String {
     let mut s = String::from("Meeting\n");
     let title = m.title.as_deref().map(one_line).unwrap_or_default();
     let _ = writeln!(

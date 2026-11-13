@@ -46,12 +46,12 @@ use earshot_core::identity::EntityId;
 use earshot_core::prompt::{
     MeetingInfo, PromptSegment, PromptVariant, StylePreset, SummaryInput, Template, time_chunks,
 };
-use earshot_core::summary::SummaryV1;
+use earshot_core::summary::{SelectCounts, SummaryV1};
 use earshot_llm_local::grammar::SummaryLimits;
 use earshot_llm_local::summarize::Generate;
 use earshot_llm_local::summarize::{
-    StepTime, SummaryFailure, SummaryOptions, SummaryReport, TwoCallActions, summarize,
-    summarize_chunks, summarize_chunks_two_call,
+    SelectStats, StepTime, SummaryFailure, SummaryOptions, SummaryReport, TwoCallActions,
+    summarize, summarize_chunks, summarize_chunks_select, summarize_chunks_two_call,
 };
 use earshot_llm_local::thinking::{
     QWEN_THINKING_OFF_PREFIX, QWEN_THINKING_PREFIX, ThinkingLlm, ThinkingStats,
@@ -143,6 +143,13 @@ fn format_key(
 /// cannot hide. xtask's `Options::format_key` appends the same.
 fn reuse_suffix(on: bool) -> &'static str {
     if on { "-reuse" } else { "" }
+}
+
+/// The format key part of the merge by selection (T12.25 part 2, evaluation): `-select`
+/// after `-reuse` and before the template, nothing for today's merge. xtask's
+/// `Options::format_key` appends the same.
+fn merge_suffix(select: bool) -> &'static str {
+    if select { "-select" } else { "" }
 }
 
 /// The format key part of a summary template (T12.17, evaluation): `-template-<name>`
@@ -247,6 +254,11 @@ struct Args {
     prefix_reuse: bool,
     /// Compare the summaries of two finished result files (`compare.rs`).
     compare: Option<(PathBuf, PathBuf)>,
+    /// Merge by selection (T12.25 part 2, evaluation only): the chunked map steps as today,
+    /// then a selection request instead of the merge
+    /// (`earshot_llm_local::summarize::summarize_chunks_select`). Needs `--chunk-seconds`;
+    /// local models only.
+    merge_select: bool,
 }
 
 impl Args {
@@ -361,6 +373,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--store-inputs" => a.store_inputs = Some(val()?.into()),
             "--prefix-reuse" => a.prefix_reuse = true,
+            "--merge-select" => a.merge_select = true,
             "--compare-summaries" => {
                 let first = val()?;
                 let second = it
@@ -505,7 +518,23 @@ fn parse_args() -> Result<Args, String> {
     if a.prefix_reuse && (a.model.is_none() || a.thinking.is_some()) {
         return Err("--prefix-reuse is for local models without --thinking".into());
     }
+    check_merge_select(&a)?;
     Ok(a)
+}
+
+/// What a `--merge-select` run (T12.25 part 2) refuses: anything but a local summary run
+/// with `--chunk-seconds`, and `--two-call` or `--two-track` (they have merges of their own).
+fn check_merge_select(a: &Args) -> Result<(), String> {
+    if !a.merge_select {
+        return Ok(());
+    }
+    if a.model.is_none() || a.chunk_seconds.is_none() {
+        return Err("--merge-select needs a local --model and --chunk-seconds".into());
+    }
+    if a.two_call || a.two_track {
+        return Err("--merge-select is not combined with --two-call or --two-track".into());
+    }
+    Ok(())
 }
 
 /// What a run over the owner's own meetings (T12.25a, `store.rs`) refuses: store jobs
@@ -606,10 +635,10 @@ fn check_agent_cli(a: &Args, agent: AgentCli) -> Result<(), String> {
     }
     // A prompt variant is allowed (T12.17, evaluation only): the rules change, the plan
     // does not, and the format key names the variant.
-    if a.two_call || a.two_track || a.gpu {
+    if a.two_call || a.two_track || a.gpu || a.merge_select {
         return Err(format!(
             "{flag} runs the production prompt and plan only (no --two-call, \
-                 --two-track or --gpu)"
+                 --two-track, --merge-select or --gpu)"
         ));
     }
     if !a.rescore.is_empty()
@@ -815,6 +844,22 @@ fn actions_json(a: &TwoCallActions) -> Value {
     })
 }
 
+/// The item counts of a merge by selection (`summarize_chunks_select`): counts only.
+fn selection_json(s: &SelectStats) -> Value {
+    let counts = |c: &SelectCounts| {
+        json!({
+            "decisions": c.decisions,
+            "action_items": c.action_items,
+            "open_questions": c.open_questions,
+        })
+    };
+    json!({
+        "given": counts(&s.given),
+        "kept": s.kept.as_ref().map(counts),
+        "folded": s.folded,
+    })
+}
+
 /// A local model: as loaded, or thinking first (T12.10).
 enum LocalModel {
     Plain(Box<LocalLlm>),
@@ -883,7 +928,30 @@ fn summarise_local(
     options: &SummaryOptions,
     chunk_seconds: Option<u32>,
     two_call: bool,
+    merge_select: bool,
 ) -> (Result<SummaryV1, String>, Value) {
+    if merge_select {
+        let Some(s) = chunk_seconds else {
+            return (
+                Err("--merge-select needs --chunk-seconds".into()),
+                json!({}),
+            );
+        };
+        let ranges = match time_chunks(input, s) {
+            Ok(r) => r,
+            Err(e) => return (Err(e.to_string()), json!({})),
+        };
+        let run = summarize_chunks_select(llm, input, options, &ranges);
+        let mut report = report_json(&run.report, true);
+        report["selection"] = selection_json(&run.selection);
+        if let Err(SummaryFailure::Invalid {
+            last_reply_tail, ..
+        }) = &run.result
+        {
+            report["last_reply_tail"] = json!(last_reply_tail);
+        }
+        return (run.result.map_err(|e| e.to_string()), report);
+    }
     if two_call {
         let Some(s) = chunk_seconds else {
             return (Err("--two-call needs --chunk-seconds".into()), json!({}));
@@ -927,6 +995,7 @@ enum Engine {
         options: SummaryOptions,
         chunk_seconds: Option<u32>,
         two_call: bool,
+        merge_select: bool,
     },
     Remote(Box<remote::Remote>),
     AgentCli(Box<claude_cli::AgentCliRun>),
@@ -941,13 +1010,20 @@ impl Engine {
                 options,
                 chunk_seconds,
                 two_call,
+                merge_select,
             } => {
                 llm.take_thinking();
                 // Production loads the model once per summary: nothing carries over from
                 // the meeting before (T12.25 prefix reuse).
                 llm.start_meeting();
-                let (result, mut report) =
-                    summarise_local(llm.generate(), input, options, *chunk_seconds, *two_call);
+                let (result, mut report) = summarise_local(
+                    llm.generate(),
+                    input,
+                    options,
+                    *chunk_seconds,
+                    *two_call,
+                    *merge_select,
+                );
                 if let Some(t) = llm.take_thinking() {
                     report["thinking"] = thinking_json(&t);
                 }
@@ -1835,8 +1911,9 @@ fn run() -> Result<(), String> {
             "max_output_tokens": a.max_output,
             "assistant_prefix": assistant_prefix,
             "thinking_cap": a.thinking,
-            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking) + reuse_suffix(a.prefix_reuse) + &template_suffix(a.style_preset),
+            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking) + reuse_suffix(a.prefix_reuse) + merge_suffix(a.merge_select) + &template_suffix(a.style_preset),
             "prefix_reuse": a.prefix_reuse,
+            "merge_select": a.merge_select,
             "chunk_seconds": a.chunk_seconds,
             "two_call": a.two_call,
             "two_track": a.two_track,
@@ -1854,6 +1931,7 @@ fn run() -> Result<(), String> {
             },
             chunk_seconds: a.chunk_seconds,
             two_call: a.two_call,
+            merge_select: a.merge_select,
         };
         (engine, header)
     } else if let Some(agent) = a.agent_cli() {
@@ -1926,6 +2004,7 @@ fn run() -> Result<(), String> {
             a.agent_cli(),
             a.thinking,
         ) + reuse_suffix(a.prefix_reuse)
+            + merge_suffix(a.merge_select)
             + &template_suffix(a.style_preset)
     );
     let partial = a.out.with_extension("partial.jsonl");
@@ -2901,6 +2980,100 @@ mod reuse_tests {
             "indented-numbered-r5-chunk600-prompt-brief-reuse-template-brief"
         );
         assert_eq!(reuse_suffix(false), "");
+    }
+
+    /// T12.25 part 2: `-select` sits after `-reuse` and before the template, as xtask's
+    /// `Options::format_key` builds it (`sum_eval_merge_select_has_its_own_format_key`).
+    #[test]
+    fn sum_eval_merge_select_key_part_sits_after_reuse_and_before_the_template() {
+        let key = format_key(Some(600), PromptVariant::Brief, false, false, None, None)
+            + reuse_suffix(true)
+            + merge_suffix(true)
+            + &template_suffix(StylePreset::Brief);
+        assert_eq!(
+            key,
+            "indented-numbered-r5-chunk600-prompt-brief-reuse-select-template-brief"
+        );
+        assert_eq!(
+            format_key(Some(600), PromptVariant::Current, false, false, None, None)
+                + merge_suffix(true),
+            "indented-numbered-r5-chunk600-select"
+        );
+        assert_eq!(merge_suffix(false), "");
+    }
+
+    #[test]
+    fn sum_eval_merge_select_needs_a_local_chunked_run_without_other_merges() {
+        let ok = Args {
+            model: Some("m.gguf".into()),
+            chunk_seconds: Some(600),
+            merge_select: true,
+            ..Args::default()
+        };
+        assert_eq!(check_merge_select(&ok), Ok(()));
+        for bad in [
+            Args {
+                chunk_seconds: None,
+                ..clone_args(&ok)
+            },
+            Args {
+                model: None,
+                ..clone_args(&ok)
+            },
+            Args {
+                two_call: true,
+                ..clone_args(&ok)
+            },
+            Args {
+                two_track: true,
+                ..clone_args(&ok)
+            },
+        ] {
+            assert!(check_merge_select(&bad).is_err(), "{bad:?}");
+        }
+        // Off, nothing is checked.
+        assert_eq!(check_merge_select(&Args::default()), Ok(()));
+        // An agent CLI refuses it.
+        let agent = Args {
+            claude_code: true,
+            jobs: vec![("dev".into(), "reference".into())],
+            merge_select: true,
+            ..Args::default()
+        };
+        assert!(
+            check_claude_code(&agent)
+                .unwrap_err()
+                .contains("--merge-select")
+        );
+    }
+
+    /// The fields [`check_merge_select`] reads.
+    fn clone_args(a: &Args) -> Args {
+        Args {
+            model: a.model.clone(),
+            chunk_seconds: a.chunk_seconds,
+            merge_select: a.merge_select,
+            two_call: a.two_call,
+            two_track: a.two_track,
+            ..Args::default()
+        }
+    }
+
+    #[test]
+    fn sum_eval_selection_counts_are_counts_only() {
+        let v = selection_json(&SelectStats {
+            given: SelectCounts {
+                decisions: 9,
+                action_items: 4,
+                open_questions: 2,
+            },
+            kept: None,
+            folded: 3,
+        });
+        assert_eq!(v["given"]["decisions"], 9);
+        assert!(v["kept"].is_null());
+        assert_eq!(v["folded"], 3);
+        assert_eq!(v.as_object().unwrap().len(), 3);
     }
 
     #[test]
