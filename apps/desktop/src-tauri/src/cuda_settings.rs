@@ -1076,6 +1076,7 @@ impl CudaJobs {
             ));
         }
         self.0.checks.without_check(|| {
+            self.0.checks.refuse_while_restarting()?;
             let mut downloads = self.downloads();
             downloads.retain(|_, d| !d.thread.is_finished());
             if downloads.contains_key(&part) {
@@ -1136,6 +1137,17 @@ impl CudaJobs {
     pub fn any_downloading(&self) -> bool {
         self.downloads().values().any(|d| !d.thread.is_finished())
             || self.0.checks.any_downloading()
+    }
+
+    /// [`claim_for_restart`] with the look at the downloads and the claim in one step: under the
+    /// check slot, which every download start holds, and no download starts after it.
+    ///
+    /// # Errors
+    /// As [`claim_for_restart`].
+    pub fn claim_for_restart(&self, gate: &WorkGate) -> Result<(), IpcError> {
+        self.0
+            .checks
+            .claim_restart(|| claim_for_restart(gate, self.any_downloading()))
     }
 
     /// [`set_switch`] with no removal running: a part cannot be switched on while it is removed.
@@ -1403,7 +1415,7 @@ pub fn restart_app(
     gate: State<'_, WorkGate>,
     jobs: State<'_, CudaJobs>,
 ) -> Result<(), IpcError> {
-    claim_for_restart(gate.inner(), jobs.any_downloading())?;
+    jobs.claim_for_restart(gate.inner())?;
     // Through the normal exit, so the single-instance plugin lets the new process start.
     app.request_restart();
     Ok(())

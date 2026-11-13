@@ -8,7 +8,7 @@ use earshot_runtime::cuda_switch::{NOT_AVAILABLE_YET, PartFiles};
 use earshot_runtime::earshot_hardware::{ComputeCapability, Gpu, NVIDIA_VENDOR_ID};
 
 use super::*;
-use crate::model_jobs::{CheckDone, CheckStep, DownloadEnd, ModelSink, ModelWork};
+use crate::model_jobs::{CheckDone, CheckStep, DownloadEnd, ModelSink, ModelWork, RESTARTING};
 use crate::testutil::{TempDir, services};
 
 const VULKAN: &[Accelerator] = &[Accelerator::Vulkan, Accelerator::Cpu];
@@ -1786,6 +1786,40 @@ fn cuda_settings_restart_is_refused_while_anything_runs_and_then_holds_the_gate(
     claim_for_restart(&gate, false).unwrap();
     // Nothing long starts between the claim and the end of the process.
     assert_eq!(gate.enter_meeting().unwrap_err().kind, "busy");
+}
+
+/// The restart's download check and its claim are one step: no download starts after the claim,
+/// so none is cut by the restart.
+#[test]
+fn cuda_settings_no_download_starts_once_a_restart_is_claimed() {
+    let dir = TempDir::new("cuda-restart-download");
+    let svc = services(&dir);
+    let files = Arc::new(FakeFiles::new(PartState::Missing, PartState::Missing));
+    let r = rig(Arc::clone(&files));
+    // A running download refuses the claim and takes no pass.
+    let (wait, held) = mpsc::channel::<()>();
+    *files.download_wait.lock().unwrap() = Some(held);
+    r.jobs
+        .start_download(&svc, &desktop(), CudaPartChoice::Summaries, true)
+        .unwrap();
+    let e = r.jobs.claim_for_restart(&r.gate).unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str()),
+        ("busy", RESTART_DOWNLOADING)
+    );
+    assert_eq!(r.gate.enter_work().map(drop), Ok(()));
+    drop(wait);
+    r.jobs.join();
+    r.jobs.claim_for_restart(&r.gate).unwrap();
+    let e = r
+        .jobs
+        .start_download(&svc, &desktop(), CudaPartChoice::Summaries, true)
+        .unwrap_err();
+    assert_eq!((e.kind.as_str(), e.message.as_str()), ("busy", RESTARTING));
+    let e = r.checks.start_download(&svc, "tiny.en").unwrap_err();
+    assert_eq!((e.kind.as_str(), e.message.as_str()), ("busy", RESTARTING));
+    assert!(!r.jobs.any_downloading());
+    assert_eq!(files.downloads.load(Ordering::SeqCst), 1);
 }
 
 #[test]
