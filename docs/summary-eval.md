@@ -1144,3 +1144,13 @@ Five Claude Code agents (Opus 5.5), one per meeting, judged the 35 blinded packe
 - **Templates (decide nothing).** Brief and Decisions and actions keep meaning coverage; the Brief template made one item up (a closing proposal written as a decision).
 - **Limits.** Near the ceiling: TS3006c was perfect for all seven and most differences are one or two items, so the round shows the shorter rules lose nothing measurable here, not that they are better. Claude judged Claude.
 - **Not settled by this round.** `system.md` is shared by every writer, and on Qwen 3.5 4B `brief` cut the token coverage by 5 and wrote fewer action items (rule 2 above); the 4B was not in this judged round. Nothing has changed yet: adopting `brief` is the owner's call, and the steps are those of the rule (format key bump, `accept m4`, the test split once).
+
+### T12.17 judged round on Qwen 3.5 4B (written before any packet, 2026-11-13)
+
+Asked by the owner after the Claude round: does `brief` hold up on the local writer, and is it faster there? Written and committed before any 4B packet was written or any 4B summary was read.
+
+- **Summaries, three per meeting, blinded:** `qwen3.5-4b-current`, `-short` and `-brief`, the five judged dev meetings of the stored runs `t1217-4b-current`, `-short`, `-brief` (CUDA, chunked 600 s, S16, greedy; nothing generated again). Greedy decoding gives one control run with no spread. Packets `target\sum-eval\judge-dev-t1217q`, key `target\sum-eval\judge-dev-t1217q-key.json`, real-item marks `target\sum-eval\judge-dev-t1217q-real`.
+- **Judges and measures:** as in the Claude round above (one agent per meeting, the meaning-judge verdict and the real-item marks, the coordinator checks every made-up mark).
+- **Rule (judgements).** A variant passes on the 4B if: (1) meaning covered at least the control minus 2 and actions covered at least the control minus 1; (2) real items caught at least the control minus 2; (3) made up at most the control's; (4) contradicted at most the control's. "Better coverage" is claimed only for a variant at least 3 above the control on meaning covered or real caught.
+- **Time (informational, decides nothing here).** Prompt and generated tokens per meeting from llama.cpp's counts, over all 20 dev meetings and the five, and generated tokens of the last step (what a person waits for at hang-up). These are GPU runs: tokens stand in for Surface CPU time; a Surface timing is a separate run on an idle machine.
+- **What a pass means.** With the Claude round, `brief` for every writer becomes a candidate for `system.md`; adopting it is still the owner's call (format key bump, `accept m4`, the test split once).
