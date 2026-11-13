@@ -130,6 +130,8 @@ export {
   MAX_VOCABULARY_WORDS,
   MAX_VOCABULARY_WORD_CHARS,
   MOCK_ANTHROPIC_URL,
+  SUMMARY_TEMPLATES,
+  UNKNOWN_TEMPLATE,
   createSummariesMock,
 } from "./mockSummaries";
 export type { SummariesMock, SummariesMockData } from "./mockSummaries";
@@ -148,7 +150,7 @@ export type {
 } from "./benchmark";
 export { BENCHMARK_MEETING_MS, BENCHMARK_STEP_MS, MOCK_BENCHMARK_FAILURE, createBenchmarkMock, mockBenchmarkResult } from "./mockBenchmark";
 export type { BenchmarkMockData, MockBenchmarkEnd } from "./mockBenchmark";
-export type { SummaryStyleCommands, SummaryStyleView } from "./summaryStyle";
+export type { SummaryStyleCommands, SummaryStyleView, SummaryTemplateOption } from "./summaryStyle";
 export type { SummaryVocabularyCommands, SummaryVocabularyView } from "./summaryVocabulary";
 export type { FirstRunCommands, FirstRunView } from "./firstRun";
 export type { FolderCommands, FolderDeleted, FolderListItem } from "./folders";

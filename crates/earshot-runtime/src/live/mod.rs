@@ -1798,6 +1798,7 @@ where
                 // Map windows never carry the user's style (T7.4b), but do carry the user's
                 // own words: spelling help belongs wherever the transcript is (T12.15a).
                 style: Default::default(),
+                style_preset: Default::default(),
                 vocabulary: self.summary_vocabulary.clone(),
                 user_name: None,
             };

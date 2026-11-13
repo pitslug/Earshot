@@ -47,7 +47,9 @@ pub use builder::{
     segment_numbers,
 };
 pub use chunks::{TimeChunkError, time_chunks};
-pub use style::{MAX_STYLE_CHARS, STYLE_LINE_PREFIX, StyleError, SummaryStyle};
+pub use style::{
+    MAX_STYLE_CHARS, STYLE_LINE_PREFIX, StyleError, StylePreset, SummaryStyle, UnknownStylePreset,
+};
 pub use template::{PromptVariant, Template, UnknownPromptVariant, UnknownTemplate};
 pub use tokens::{TOKENS_PER_MESSAGE, TOKENS_PER_REQUEST, estimate_tokens};
 pub use vocabulary::{

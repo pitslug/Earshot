@@ -16,7 +16,7 @@ import {
   type SummarySettingsView,
 } from "./ipc";
 import type { SampleMachine } from "./mockModels";
-import type { SummaryStyleView } from "./summaryStyle";
+import type { SummaryStyleView, SummaryTemplateOption } from "./summaryStyle";
 import type { SummaryVocabularyView } from "./summaryVocabulary";
 
 /** The Anthropic API address the app offers. */
@@ -39,12 +39,30 @@ export interface SummariesMockData {
   codex?: CodexStatusView;
   /** The stored summary style (T7.4b; default: none). */
   style?: string;
+  /** The chosen summary template (T12.17; default: "standard"). */
+  template?: string;
   /** The stored Dictionary words (T12.15a; default: none). */
   vocabulary?: string[];
 }
 
 /** The longest summary style the app accepts (`earshot_core::prompt::MAX_STYLE_CHARS`). */
 export const MAX_STYLE_CHARS = 1000;
+
+/** The summary templates the app offers, in its order, with its words (the app's copy,
+ * `earshot_core::prompt::StylePreset` and `summary_style::template_options`, T12.17). */
+export const SUMMARY_TEMPLATES: SummaryTemplateOption[] = [
+  { value: "standard", label: "Standard", description: "Short notes with every decision and action item." },
+  { value: "brief", label: "Brief", description: "A one-sentence summary and at most three note bullets." },
+  {
+    value: "decisions",
+    label: "Decisions and actions",
+    description: "What was decided and who will do what, with only the background needed.",
+  },
+  { value: "detailed", label: "Detailed notes", description: "Fuller notes on every topic, with the reasons for each decision." },
+];
+
+/** What the app says about a template it does not offer. */
+export const UNKNOWN_TEMPLATE = "This summary template is not one this version offers.";
 
 /** The most Dictionary words the app accepts (`earshot_core::prompt::MAX_VOCABULARY_WORDS`). */
 export const MAX_VOCABULARY_WORDS = 100;
@@ -115,6 +133,7 @@ export interface SummariesMock {
   codexStatus(): Promise<CodexStatusView>;
   summaryStyle(): Promise<SummaryStyleView>;
   setSummaryStyle(style: string): Promise<SummaryStyleView>;
+  setSummaryTemplate(template: string): Promise<SummaryStyleView>;
   summaryVocabulary(): Promise<SummaryVocabularyView>;
   setSummaryVocabulary(words: string[]): Promise<SummaryVocabularyView>;
 }
@@ -302,7 +321,14 @@ export function createSummariesMock(
   };
   let keySaved = data.apiKeySaved ?? false;
   let style = data.style ?? "";
-  const styleView = (): SummaryStyleView => ({ style, unknown: [], max_chars: MAX_STYLE_CHARS });
+  let template = data.template ?? "standard";
+  const styleView = (): SummaryStyleView => ({
+    style,
+    unknown: [],
+    max_chars: MAX_STYLE_CHARS,
+    template,
+    templates: SUMMARY_TEMPLATES.map((t) => ({ ...t })),
+  });
   let vocabulary = checkVocabulary(data.vocabulary ?? []);
   const vocabularyView = (): SummaryVocabularyView => ({
     words: [...vocabulary],
@@ -344,6 +370,11 @@ export function createSummariesMock(
     summaryStyle: async () => styleView(),
     setSummaryStyle: async (text) => {
       style = checkStyle(text);
+      return styleView();
+    },
+    setSummaryTemplate: async (value) => {
+      if (!SUMMARY_TEMPLATES.some((t) => t.value === value)) fail("invalid_setting", UNKNOWN_TEMPLATE);
+      template = value;
       return styleView();
     },
     summaryVocabulary: async () => vocabularyView(),

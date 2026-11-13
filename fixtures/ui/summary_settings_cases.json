@@ -500,6 +500,15 @@
    "error": null
   }
  ],
+ "templates": {
+  "options": [
+   {"value": "standard", "label": "Standard", "description": "Short notes with every decision and action item."},
+   {"value": "brief", "label": "Brief", "description": "A one-sentence summary and at most three note bullets."},
+   {"value": "decisions", "label": "Decisions and actions", "description": "What was decided and who will do what, with only the background needed."},
+   {"value": "detailed", "label": "Detailed notes", "description": "Fuller notes on every topic, with the reasons for each decision."}
+  ],
+  "unknown_error": "This summary template is not one this version offers."
+ },
  "style": [
   {
    "name": "trimmed, with CR LF as LF",

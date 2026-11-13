@@ -622,6 +622,9 @@ pub fn summary_from_settings(
         if let (_, Some(refused)) = crate::summary_style::summary_style(store)? {
             notes.push(refused.to_string());
         }
+        if let (_, Some(refused)) = crate::summary_style::summary_template(store)? {
+            notes.push(refused.to_string());
+        }
         if let (_, Some(refused)) = crate::vocabulary::vocabulary(store)? {
             notes.push(refused.to_string());
         }

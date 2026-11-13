@@ -114,6 +114,7 @@ fn input(template: Template) -> SummaryInput {
         template,
         prompt_variant: PromptVariant::Current,
         style: SummaryStyle::default(),
+        style_preset: Default::default(),
         vocabulary: Vocabulary::default(),
         user_name: None,
     }
@@ -323,6 +324,7 @@ fn long_input(n: usize) -> SummaryInput {
         template: Template::General,
         prompt_variant: PromptVariant::Current,
         style: SummaryStyle::default(),
+        style_preset: Default::default(),
         vocabulary: Vocabulary::default(),
         user_name: None,
     }

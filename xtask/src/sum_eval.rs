@@ -47,7 +47,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use earshot_core::prompt::PromptVariant;
+use earshot_core::prompt::{PromptVariant, StylePreset};
 use serde_json::{Value, json};
 
 use crate::ci::cargo_command;
@@ -338,6 +338,9 @@ pub struct Options {
     /// The shared prompt rules (T6.20b prompt tuning, docs/summary-eval.md): the production
     /// rules unless set; local summary runs only.
     pub prompt_variant: PromptVariant,
+    /// A summary template in every input (T12.17, evaluation): Standard (none) unless set;
+    /// summary runs only. Its format key part `-template-<name>` comes last.
+    pub style_preset: StylePreset,
     /// Two-call chunks (T6.20c, evaluation only): per chunk one request for the action items
     /// and one for everything else, then a merge that folds reworded actions. Needs
     /// [`Options::chunk_seconds`]; local summary runs only.
@@ -471,14 +474,20 @@ impl Options {
     /// [`format_key`] of this run.
     #[must_use]
     pub fn format_key(&self) -> String {
-        format_key(
+        let mut key = format_key(
             self.chunk_seconds,
             self.prompt_variant,
             self.two_call,
             self.two_track,
             self.agent_cli(),
             self.thinking,
-        )
+        );
+        // T12.17: the summary template last, as the example's `template_suffix`.
+        if !self.style_preset.is_standard() {
+            key.push_str("-template-");
+            key.push_str(self.style_preset.name());
+        }
+        key
     }
 
     /// The agent-CLI candidate of this run (`--model claude-code[/<model>]` or
@@ -543,6 +552,7 @@ impl Default for Options {
             target_dir: None,
             chunk_seconds: None,
             prompt_variant: PromptVariant::Current,
+            style_preset: StylePreset::Standard,
             two_call: false,
             two_track: false,
             meetings: Vec::new(),
@@ -1002,6 +1012,9 @@ pub fn eval_args(
     }
     if !opts.prompt_variant.is_current() {
         a.extend(["--prompt-variant".into(), opts.prompt_variant.name().into()]);
+    }
+    if !opts.style_preset.is_standard() {
+        a.extend(["--style-preset".into(), opts.style_preset.name().into()]);
     }
     if opts.two_track {
         a.push("--two-track".into());
@@ -1476,6 +1489,7 @@ pub fn claude_code_args(
         model,
         chunk_seconds,
         prompt_variant,
+        StylePreset::Standard,
         None,
         out,
     )
@@ -1497,6 +1511,7 @@ pub fn agent_cli_args(
     model: Option<&str>,
     chunk_seconds: Option<u32>,
     prompt_variant: PromptVariant,
+    style_preset: StylePreset,
     codex_cli: Option<&Path>,
     out: &Path,
 ) -> Vec<OsString> {
@@ -1521,6 +1536,9 @@ pub fn agent_cli_args(
     }
     if !prompt_variant.is_current() {
         a.extend(["--prompt-variant".into(), prompt_variant.name().into()]);
+    }
+    if !style_preset.is_standard() {
+        a.extend(["--style-preset".into(), style_preset.name().into()]);
     }
     a.extend(["--out".into(), out.into()]);
     a
@@ -1655,6 +1673,7 @@ pub fn run_agent_cli(root: &Path, opts: &Options, agent: AgentCli) -> Result<()>
                 model.as_deref(),
                 opts.chunk_seconds,
                 opts.prompt_variant,
+                opts.style_preset,
                 opts.codex_cli.as_deref(),
                 &file,
             ))
@@ -1745,6 +1764,10 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
     ensure!(
         opts.prompt_variant.is_current() || !(opts.stored_only() || opts.rescore),
         "--prompt-variant applies to local summary runs only"
+    );
+    ensure!(
+        opts.style_preset.is_standard() || !(opts.stored_only() || opts.rescore),
+        "--style-preset applies to summary runs only"
     );
     ensure!(
         !opts.two_call || (opts.chunk_seconds.is_some() && !(opts.stored_only() || opts.rescore)),
@@ -2722,6 +2745,47 @@ mod tests {
     }
 
     #[test]
+    fn sum_eval_style_preset_comes_last_in_the_format_key_and_reaches_the_example() {
+        let o = Options {
+            models: vec!["claude-code".into()],
+            sources: vec!["reference".into()],
+            prompt_variant: PromptVariant::Short,
+            style_preset: StylePreset::Brief,
+            ..Options::default()
+        };
+        assert_eq!(
+            o.format_key(),
+            "indented-numbered-r5-claude-code-prompt-short-template-brief"
+        );
+        check_claude_code(&o).unwrap();
+        let standard = Options {
+            style_preset: StylePreset::Standard,
+            ..o.clone()
+        };
+        assert_eq!(
+            standard.format_key(),
+            "indented-numbered-r5-claude-code-prompt-short"
+        );
+        let args: Vec<String> = agent_cli_args(
+            AgentCli::ClaudeCode,
+            Path::new("a"),
+            &[],
+            &[],
+            "claude-code",
+            None,
+            None,
+            PromptVariant::Current,
+            StylePreset::Detailed,
+            None,
+            Path::new("o.json"),
+        )
+        .into_iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+        assert!(args.windows(2).any(|w| w == ["--style-preset", "detailed"]));
+    }
+
+    #[test]
     fn sum_eval_table_lists_the_t1217_lengths() {
         let length = json!({
             "words": 812, "notes_words": 500, "sections": 9, "bullets": 31,
@@ -3184,6 +3248,7 @@ mod tests {
                 model,
                 chunk,
                 PromptVariant::Current,
+                StylePreset::Standard,
                 cli,
                 Path::new("o.json"),
             )
@@ -3231,6 +3296,7 @@ mod tests {
             None,
             None,
             PromptVariant::Current,
+            StylePreset::Standard,
             Some(Path::new("codex.exe")),
             Path::new("o.json"),
         );

@@ -42,7 +42,7 @@ use std::time::Instant;
 use earshot_core::asr::{CancelToken, MeetingTime};
 use earshot_core::identity::EntityId;
 use earshot_core::prompt::{
-    MeetingInfo, PromptSegment, PromptVariant, SummaryInput, Template, time_chunks,
+    MeetingInfo, PromptSegment, PromptVariant, StylePreset, SummaryInput, Template, time_chunks,
 };
 use earshot_core::summary::SummaryV1;
 use earshot_llm_local::grammar::SummaryLimits;
@@ -133,6 +133,17 @@ fn format_key(
     key
 }
 
+/// The format key part of a summary template (T12.17, evaluation): `-template-<name>`
+/// after everything else, nothing for Standard. xtask's `Options::format_key` appends the
+/// same.
+fn template_suffix(preset: StylePreset) -> String {
+    if preset.is_standard() {
+        String::new()
+    } else {
+        format!("-template-{}", preset.name())
+    }
+}
+
 #[derive(Debug, Default)]
 struct Args {
     annotations: PathBuf,
@@ -167,6 +178,8 @@ struct Args {
     chunk_seconds: Option<u32>,
     /// The shared prompt rules (T6.20b); the production rules unless set.
     prompt_variant: PromptVariant,
+    /// The summary template every input carries (T12.17, evaluation; Standard by default).
+    style_preset: StylePreset,
     /// Two-call chunks (T6.20c): per chunk one request for the action items and one for
     /// everything else, then a merge that folds reworded actions. Needs `--chunk-seconds`.
     two_call: bool,
@@ -288,6 +301,9 @@ fn parse_args() -> Result<Args, String> {
                         .map_err(|e| format!("--chunk-seconds: {e}"))?,
                 );
             }
+            "--style-preset" => {
+                a.style_preset = val()?.parse().map_err(|e| format!("--style-preset: {e}"))?;
+            }
             "--prompt-variant" => {
                 a.prompt_variant = val()?
                     .parse()
@@ -386,6 +402,15 @@ fn parse_args() -> Result<Args, String> {
     }
     if !a.prior_packets.is_empty() && (a.judge_packets.is_none() || a.prior_key.is_none()) {
         return Err("--prior-packets needs --judge-packets and --prior-key".into());
+    }
+    if !a.style_preset.is_standard()
+        && (a.remote
+            || a.export_prompts.is_some()
+            || a.import_replies.is_some()
+            || a.judge_packets.is_some()
+            || !a.rescore.is_empty())
+    {
+        return Err("--style-preset is for summary runs only".into());
     }
     if !a.prompt_variant.is_current()
         && (a.remote
@@ -579,6 +604,7 @@ fn reference_input_timed(
             template: Template::General,
             prompt_variant: PromptVariant::Current,
             style: Default::default(),
+            style_preset: Default::default(),
             vocabulary: Default::default(),
             user_name: None,
         },
@@ -1615,11 +1641,12 @@ fn run() -> Result<(), String> {
             "max_output_tokens": a.max_output,
             "assistant_prefix": assistant_prefix,
             "thinking_cap": a.thinking,
-            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking),
+            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking) + &template_suffix(a.style_preset),
             "chunk_seconds": a.chunk_seconds,
             "two_call": a.two_call,
             "two_track": a.two_track,
             "prompt_variant": a.prompt_variant.name(),
+            "style_preset": a.style_preset.name(),
             "system_info": earshot_llm_local::system_info(),
         });
         let engine = Engine::Local {
@@ -1651,16 +1678,19 @@ fn run() -> Result<(), String> {
         };
         let mut header = c.header();
         header["candidate"] = json!(a.model_id);
-        header["grammar"] = json!(format_key(
-            a.chunk_seconds,
-            a.prompt_variant,
-            false,
-            false,
-            Some(agent),
-            None,
-        ));
+        header["grammar"] = json!(
+            format_key(
+                a.chunk_seconds,
+                a.prompt_variant,
+                false,
+                false,
+                Some(agent),
+                None,
+            ) + &template_suffix(a.style_preset)
+        );
         header["chunk_seconds"] = json!(a.chunk_seconds);
         header["prompt_variant"] = json!(a.prompt_variant.name());
+        header["style_preset"] = json!(a.style_preset.name());
         eprintln!(
             "sum_eval: {} through {name} {} (model {})",
             a.model_id,
@@ -1700,7 +1730,7 @@ fn run() -> Result<(), String> {
             a.two_track,
             a.agent_cli(),
             a.thinking,
-        )
+        ) + &template_suffix(a.style_preset)
     );
     let partial = a.out.with_extension("partial.jsonl");
     let mut done: BTreeMap<(String, String, String), Value> = BTreeMap::new();
@@ -1764,6 +1794,7 @@ fn run() -> Result<(), String> {
                 }
             };
             input.prompt_variant = a.prompt_variant;
+            input.style_preset = a.style_preset;
             let started = Instant::now();
             let (result, report) = if a.two_track {
                 engine.summarise_two_track(&input, &ends)
@@ -2019,6 +2050,19 @@ mod tests {
             ),
             "indented-numbered-r5-claude-code-prompt-short"
         );
+    }
+
+    #[test]
+    fn sum_eval_style_preset_has_its_own_key_part_and_claude_code_takes_it() {
+        assert_eq!(template_suffix(StylePreset::Standard), "");
+        assert_eq!(template_suffix(StylePreset::Brief), "-template-brief");
+        let names: std::collections::BTreeSet<String> =
+            StylePreset::ALL.into_iter().map(template_suffix).collect();
+        assert_eq!(names.len(), StylePreset::ALL.len());
+        // Allowed for a Claude Code run.
+        let mut a = claude_args(&[]);
+        a.style_preset = StylePreset::Detailed;
+        check_claude_code(&a).unwrap();
     }
 
     #[test]

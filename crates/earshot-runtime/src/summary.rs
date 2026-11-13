@@ -914,6 +914,8 @@ impl SummaryService {
 struct PromptSettings {
     /// The summary style ([`crate::summary_style`]).
     style: SummaryStyle,
+    /// The summary template ([`crate::summary_style::summary_template`], T12.17).
+    style_preset: earshot_core::prompt::StylePreset,
     /// The user's own words ([`crate::vocabulary`]).
     vocabulary: Vocabulary,
 }
@@ -930,8 +932,16 @@ fn load_input(
     let view =
         MeetingView::load(&**db, meeting)?.ok_or(RuntimeError::Internal("no such meeting"))?;
     let (style, _refused) = crate::summary_style::summary_style(&db)?;
+    let (style_preset, _refused) = crate::summary_style::summary_template(&db)?;
     let (vocabulary, _refused) = crate::vocabulary::vocabulary(&db)?;
-    Ok((view, PromptSettings { style, vocabulary }))
+    Ok((
+        view,
+        PromptSettings {
+            style,
+            style_preset,
+            vocabulary,
+        },
+    ))
 }
 
 /// The partials a live session recorded for the meeting of `view`, with the live segments
@@ -1513,6 +1523,7 @@ fn input_of(view: &MeetingView, settings: &PromptSettings) -> SummaryInput {
         template: m.template,
         prompt_variant: earshot_core::prompt::PromptVariant::Current,
         style: settings.style.clone(),
+        style_preset: settings.style_preset,
         vocabulary: settings.vocabulary.clone(),
         user_name: view.user_name(),
     }

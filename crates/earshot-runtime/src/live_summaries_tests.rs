@@ -71,6 +71,7 @@ fn fin() -> (Vec<TimedSegment>, SummaryInput) {
         template: Template::General,
         prompt_variant: PromptVariant::Current,
         style: Default::default(),
+        style_preset: Default::default(),
         vocabulary: Default::default(),
         user_name: None,
     };

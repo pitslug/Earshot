@@ -14,6 +14,8 @@ fn summary_style_view_starts_empty_and_saves_trimmed_text() {
             style: String::new(),
             unknown: vec![],
             max_chars: 1000,
+            template: "standard".into(),
+            templates: template_options(),
         }
     );
     let saved = set_style(&svc, "  Short and plain.\r\nSpell out acronyms. ").unwrap();
@@ -45,10 +47,18 @@ fn summary_style_refusals_are_plain_sentences_and_store_nothing() {
 
 #[test]
 fn summary_style_the_view_serialises_for_the_ui() {
-    let json = serde_json::to_value(view("Short.", vec![])).unwrap();
+    let json = serde_json::to_value(view("Short.", StylePreset::Brief, vec![])).unwrap();
+    assert_eq!(json["style"], "Short.");
+    assert_eq!(json["unknown"], serde_json::json!([]));
+    assert_eq!(json["max_chars"], 1000);
+    assert_eq!(json["template"], "brief");
     assert_eq!(
-        json,
-        serde_json::json!({"style": "Short.", "unknown": [], "max_chars": 1000})
+        json["templates"][1],
+        serde_json::json!({
+            "value": "brief",
+            "label": "Brief",
+            "description": "A one-sentence summary and at most three note bullets.",
+        })
     );
 }
 
@@ -79,4 +89,40 @@ fn summary_style_follows_the_shared_case_table() {
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn summary_style_template_applies_at_once_and_keeps_the_style() {
+    let dir = TempDir::new("summary-style");
+    let svc = services(&dir);
+    set_style(&svc, "Spell out acronyms.").unwrap();
+    let v = set_template(&svc, "decisions").unwrap();
+    assert_eq!(
+        (v.template.as_str(), v.style.as_str()),
+        ("decisions", "Spell out acronyms.")
+    );
+    assert_eq!(style_view(&svc).unwrap(), v);
+    // Saving the style keeps the template.
+    assert_eq!(set_style(&svc, "Plain.").unwrap().template, "decisions");
+    let err = set_template(&svc, "terse").unwrap_err();
+    assert_eq!(
+        (err.kind.as_str(), err.message.as_str()),
+        ("invalid_setting", UNKNOWN_TEMPLATE)
+    );
+    assert_eq!(style_view(&svc).unwrap().template, "decisions");
+    // Every option is one the runtime stores.
+    for o in template_options() {
+        assert_eq!(set_template(&svc, &o.value).unwrap().template, o.value);
+    }
+}
+
+#[test]
+fn summary_style_templates_follow_the_shared_case_table() {
+    let table = crate::testutil::summary_cases();
+    let want = &table["templates"];
+    assert_eq!(
+        serde_json::to_value(template_options()).unwrap(),
+        want["options"]
+    );
+    assert_eq!(want["unknown_error"], UNKNOWN_TEMPLATE);
 }

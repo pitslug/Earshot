@@ -15,6 +15,8 @@ import {
   MAX_VOCABULARY_WORDS,
   MAX_VOCABULARY_WORD_CHARS,
   MOCK_ANTHROPIC_URL,
+  SUMMARY_TEMPLATES,
+  UNKNOWN_TEMPLATE,
   createSummariesMock,
 } from "./mockSummaries";
 
@@ -76,6 +78,17 @@ describe("the Summaries mock against the app's case table", () => {
       if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push(`${c.name}: ${JSON.stringify(got)}`);
     }
     expect(wrong).toEqual([]);
+  });
+
+  it("offers the app's summary templates and refuses others with its words (T12.17)", async () => {
+    expect(SUMMARY_TEMPLATES).toEqual(table.templates.options);
+    expect(UNKNOWN_TEMPLATE).toBe(table.templates.unknown_error);
+    const mock = createSummariesMock();
+    expect((await mock.summaryStyle()).template).toBe("standard");
+    for (const t of table.templates.options) {
+      expect((await mock.setSummaryTemplate(t.value)).template).toBe(t.value);
+    }
+    expect(await outcome(() => mock.setSummaryTemplate("terse"))).toEqual({ error: table.templates.unknown_error });
   });
 
   it("says what the app says, with its limits", async () => {

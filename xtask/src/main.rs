@@ -259,6 +259,10 @@ enum Cmd {
         /// (the production prompt), owners, decisions, items, lean, assignments, handed, checked or previous (the production prompt before T6.20f). Local runs only.
         #[arg(long, default_value = "current")]
         prompt_variant: earshot_core::prompt::PromptVariant,
+        /// A summary template in every input (T12.17, evaluation; docs/summary-eval.md):
+        /// standard (none), brief, decisions or detailed. Summary runs only.
+        #[arg(long, default_value = "standard")]
+        style_preset: earshot_core::prompt::StylePreset,
         /// Two-call chunks (T6.20c, evaluation only): per chunk one request for the action
         /// items and one for everything else, then a merge that folds reworded actions.
         /// Needs --chunk-seconds.
@@ -549,6 +553,7 @@ fn main() -> ExitCode {
             target_dir,
             chunk_seconds,
             prompt_variant,
+            style_preset,
             two_call,
             two_track,
             meeting,
@@ -575,6 +580,7 @@ fn main() -> ExitCode {
                 target_dir,
                 chunk_seconds,
                 prompt_variant,
+                style_preset,
                 two_call,
                 two_track,
                 meetings: meeting,

@@ -2,12 +2,20 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { type Ipc, IpcFailure, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
+import {
+  type Ipc,
+  IpcFailure,
+  IpcProvider,
+  type MockIpcData,
+  SUMMARY_TEMPLATES,
+  UNKNOWN_TEMPLATE,
+  createMockIpc,
+} from "../ipc";
 import { AppShell } from "../shell/AppShell";
 import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
-import { STYLE_HINT, STYLE_PLACEHOLDER } from "./SummaryStyleSection";
+import { STYLE_HINT, STYLE_PLACEHOLDER, TEMPLATE_HINT } from "./SummaryStyleSection";
 
 interface Setup {
   ipc: Ipc;
@@ -111,6 +119,8 @@ describe("Settings, Summaries, Summary style", () => {
         style: "",
         unknown: ["The stored setting settings/summary-style is not known to this version."],
         max_chars: 1000,
+        template: "standard",
+        templates: SUMMARY_TEMPLATES,
       }),
     }));
     expect(await screen.findByText("The stored summary style is not used")).toBeInTheDocument();
@@ -126,6 +136,50 @@ describe("Settings, Summaries, Summary style", () => {
     }));
     expect(await screen.findByText("The summary style could not be read")).toBeInTheDocument();
     expect(screen.getByText("The database is locked.")).toBeInTheDocument();
+  });
+
+  it("starts on the Standard template, with every template the app offers", async () => {
+    await open();
+    const select = await screen.findByRole("combobox", { name: "Template" });
+    expect(select).toHaveValue("standard");
+    const options = within(select).getAllByRole("option").map((o) => o.textContent);
+    expect(options).toEqual(["Standard", "Brief", "Decisions and actions", "Detailed notes"]);
+    expect(
+      screen.getByText(`Short notes with every decision and action item. ${TEMPLATE_HINT}`),
+    ).toBeInTheDocument();
+  });
+
+  it("applies a template at once and keeps the text being edited", async () => {
+    const s = await open({ summaries: { style: "Spell out acronyms." } });
+    const box = await field();
+    await s.user.type(box, " Be plain.");
+    const select = screen.getByRole("combobox", { name: "Template" });
+    await s.user.selectOptions(select, "brief");
+    await waitFor(async () => expect((await s.ipc.summaryStyle()).template).toBe("brief"));
+    expect(select).toHaveValue("brief");
+    expect(
+      screen.getByText(`A one-sentence summary and at most three note bullets. ${TEMPLATE_HINT}`),
+    ).toBeInTheDocument();
+    // The typed text is not saved by the choice, and still waits for Save.
+    expect(box).toHaveValue("Spell out acronyms. Be plain.");
+    expect((await s.ipc.summaryStyle()).style).toBe("Spell out acronyms.");
+    expect(save()).toBeEnabled();
+    // The choice sits outside the part Save stores.
+    const words = screen.getByRole("group", { name: "Your own words" });
+    expect(within(words).queryByRole("combobox")).toBeNull();
+    expect(within(words).getByRole("button", { name: "Save" })).toBe(save());
+  });
+
+  it("shows a refused template under the choice", async () => {
+    await open({}, (ipc) => ({
+      ...ipc,
+      setSummaryTemplate: async () => {
+        throw new IpcFailure({ kind: "invalid_setting", message: UNKNOWN_TEMPLATE, retryable: false });
+      },
+    }));
+    const user = userEvent.setup();
+    await user.selectOptions(await screen.findByRole("combobox", { name: "Template" }), "detailed");
+    expect(await screen.findByText(UNKNOWN_TEMPLATE)).toBeInTheDocument();
   });
 
   it("refuses control characters in the mock as the app does", async () => {

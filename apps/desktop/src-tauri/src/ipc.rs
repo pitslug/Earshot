@@ -132,6 +132,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::benchmark::cancel_benchmark,
             crate::summary_style::summary_style,
             crate::summary_style::set_summary_style,
+            crate::summary_style::set_summary_template,
             crate::summary_vocabulary::summary_vocabulary,
             crate::summary_vocabulary::set_summary_vocabulary,
             crate::first_run::first_run_state,

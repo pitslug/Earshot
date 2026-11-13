@@ -200,6 +200,8 @@ pub(crate) enum DeviceRecord {
     UpdateNotified,
     /// `settings/vocabulary`: the user's own words for summaries (T12.15a).
     Vocabulary,
+    /// `settings/summary-template`: the summary template (T12.17).
+    SummaryTemplate,
 }
 
 impl DeviceRecord {
@@ -232,6 +234,7 @@ impl DeviceRecord {
         DeviceRecord::AudioCheck,
         DeviceRecord::Benchmark,
         DeviceRecord::SummaryStyle,
+        DeviceRecord::SummaryTemplate,
         DeviceRecord::FirstRun,
         DeviceRecord::CudaSummaries,
         DeviceRecord::CudaTranscription,
@@ -279,6 +282,7 @@ impl DeviceRecord {
                 DeviceRecord::AudioCheck => crate::audio_check::AUDIO_CHECK_KEY,
                 DeviceRecord::Benchmark => crate::benchmark::BENCHMARK_KEY,
                 DeviceRecord::SummaryStyle => crate::summary_style::SUMMARY_STYLE_KEY,
+                DeviceRecord::SummaryTemplate => crate::summary_style::SUMMARY_TEMPLATE_KEY,
                 DeviceRecord::FirstRun => crate::first_run::FIRST_RUN_KEY,
                 DeviceRecord::CudaSummaries => crate::cuda_switch::CUDA_SUMMARIES_KEY,
                 DeviceRecord::CudaTranscription => crate::cuda_switch::CUDA_TRANSCRIPTION_KEY,
