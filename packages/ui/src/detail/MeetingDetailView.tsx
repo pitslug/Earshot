@@ -833,7 +833,7 @@ export function MeetingDetailView({
                       void save(() => ipc.useWord(id, segment, token, word), "The word was not changed"),
                     onPutBack: (token) =>
                       void save(() => ipc.putBackWord(id, segment, token), "The word was not put back"),
-                    onKeep: (token) => void save(() => ipc.keepWord(id, segment, token), "The word was not kept"),
+                    onKeep: (token) => save(() => ipc.keepWord(id, segment, token), "The word was not kept"),
                   })}
                   rowRef={(segment, el) => {
                     if (el) rows.current.set(segment, el);
@@ -1320,13 +1320,22 @@ function TranscriptTab({
     back: HTMLElement | null;
   } | null>(null);
   // Where focus goes once the detail shows an action's result (the clicked button may be gone).
-  const [focusNext, setFocusNext] = useState<{ undo: true } | { word: string } | null>(null);
+  // `edit`: the line's Edit button, only when focus fell to the page (the control that had it
+  // left the DOM).
+  const [focusNext, setFocusNext] = useState<{ undo: true } | { word: string } | { edit: string } | null>(
+    null,
+  );
   const undoRef = useRef<HTMLButtonElement | null>(null);
   const tableRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (focusNext === null) return;
     if ("undo" in focusNext) undoRef.current?.focus();
-    else
+    else if ("edit" in focusNext) {
+      const at = document.activeElement;
+      if (at === null || at === document.body || !at.isConnected) {
+        lineEditButton(tableRef.current, focusNext.edit)?.focus();
+      }
+    } else
       tableRef.current
         ?.querySelector<HTMLElement>(`[data-offered-word="${CSS.escape(focusNext.word)}"]`)
         ?.focus();
@@ -1345,7 +1354,8 @@ function TranscriptTab({
       cancelEdit: () => latest.current?.cancelEdit(),
       toggle: (segment, word) => latest.current?.toggle(segment, word),
       addFromBar: (segment, word) => latest.current?.addFromBar(segment, word),
-      closeBar: () => latest.current?.closeBar(),
+      closeBar: (segment) => latest.current?.closeBar(segment),
+      keep: (segment, token) => latest.current?.keep(segment, token),
       undo: (segment, word) => latest.current?.undo(segment, word),
       rowRef: (segment, el) => latest.current?.rowRef(segment, el),
       wordActions: (segment) =>
@@ -1409,7 +1419,9 @@ function TranscriptTab({
     const word = el?.getAttribute(WORD_ATTRIBUTE);
     if (!el || !word) return;
     e.preventDefault();
-    openMenu(r.segment_id, [word], pointTarget(e.clientX, e.clientY), el.tagName === "BUTTON" ? el : null);
+    // A plain word takes no focus: the menu gives it back to the line's Edit button.
+    const back = el.tagName === "BUTTON" ? el : lineEditButton(e.currentTarget, r.segment_id);
+    openMenu(r.segment_id, [word], pointTarget(e.clientX, e.clientY), back);
   };
   /** The Menu key or Shift+F10: on a marked word, that word's menu; anywhere else in the row
    * (its Edit button), a menu of every word of the line. */
@@ -1441,10 +1453,13 @@ function TranscriptTab({
     cancelEdit: () => setEditing(null),
     toggle,
     addFromBar: (segment, word) => void add(segment, word, true),
-    closeBar: () => {
+    closeBar: (segment) => {
       setOffer(null);
       setNote(null);
+      setFocusNext({ edit: segment });
     },
+    keep: (segment, token) =>
+      void Promise.resolve(wordActions(segment).onKeep(token)).then(() => setFocusNext({ edit: segment })),
     undo: (segment, word) => void undo(segment, word),
     rowRef,
     wordActions,
@@ -1499,6 +1514,12 @@ function TranscriptTab({
 
 const noop = () => {};
 
+/** The Edit button of line `segment` inside `root`: where focus goes when the control that had
+ * it is gone or took none. */
+function lineEditButton(root: Element | null, segment: string): HTMLElement | null {
+  return root?.querySelector<HTMLElement>(`[data-line-edit="${CSS.escape(segment)}"]`) ?? null;
+}
+
 /** What a transcript line does; each call reaches `TranscriptTab`'s current state. */
 interface LineHandlers {
   contextMenu(r: TranscriptRow, e: MouseEvent<HTMLDivElement>): void;
@@ -1508,7 +1529,9 @@ interface LineHandlers {
   cancelEdit(): void;
   toggle(segment: string, word: string): void;
   addFromBar(segment: string, word: string): void;
-  closeBar(): void;
+  closeBar(segment: string): void;
+  /** "Keep" on a suggestion: the mark leaves the line, so focus goes to its Edit button. */
+  keep(segment: string, token: number): void;
   undo(segment: string, word: string): void;
   rowRef(segment: string, el: HTMLDivElement | null): void;
   wordActions(segment: string): WordActions;
@@ -1553,7 +1576,7 @@ const TranscriptLine = memo(function TranscriptLine({
     () => ({
       onUse: (token, word) => h.wordActions(segment).onUse(token, word),
       onPutBack: (token) => h.wordActions(segment).onPutBack(token),
-      onKeep: (token) => h.wordActions(segment).onKeep(token),
+      onKeep: (token) => h.keep(segment, token),
     }),
     [h, segment],
   );
@@ -1611,6 +1634,7 @@ const TranscriptLine = memo(function TranscriptLine({
             appearance="subtle"
             className={mergeClasses(styles.lineEdit, "earshot-line-edit")}
             aria-label={`Edit line ${i + 1}`}
+            data-line-edit={segment}
             onClick={() => h.startEdit(segment)}
           >
             Edit
@@ -1624,7 +1648,7 @@ const TranscriptLine = memo(function TranscriptLine({
               words={offered}
               dictionary={dictionary}
               onAdd={(w) => h.addFromBar(segment, w)}
-              onClose={h.closeBar}
+              onClose={() => h.closeBar(segment)}
             />
           )}
           {note !== null && (

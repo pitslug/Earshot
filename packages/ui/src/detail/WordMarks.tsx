@@ -83,8 +83,8 @@ export interface WordActions {
   onUse(token: number, word: string): void;
   /** "Put back": token `token` reads as decoded again. */
   onPutBack(token: number): void;
-  /** "Keep": the suggestion for token `token` goes. */
-  onKeep(token: number): void;
+  /** "Keep": the suggestion for token `token` goes; resolves once the detail was read again. */
+  onKeep(token: number): void | Promise<unknown>;
 }
 
 /** The Dictionary as a line's words see it (T12.15f). */
