@@ -306,7 +306,9 @@ fn run_in_child(args: &ChildArgs, out: &mut dyn Write) -> Result<(), String> {
     // Before anything reads the order. `false` changes nothing.
     earshot_runtime::cuda::use_for_transcription(&models, args.cuda_transcription)
         .map_err(|e| crate::plain_text::runtime_text(&e))?;
+    let mut fell_back = false;
     host::init_onnx_for_check(&models, &accelerator_order(), &mut |library, e| {
+        fell_back = true;
         emit(
             out,
             &CheckLine::Warning {
@@ -315,6 +317,9 @@ fn run_in_child(args: &ChildArgs, out: &mut dyn Write) -> Result<(), String> {
         );
     })
     .map_err(|e| crate::plain_text::runtime_text(&e))?;
+    if let Some(message) = choice_not_kept(args.cuda_transcription, fell_back) {
+        return Err(message.into());
+    }
     let outcome = earshot_runtime::model_bench::run_check(&models, &languages, &mut |p| {
         emit(
             out,
@@ -332,6 +337,19 @@ fn run_in_child(args: &ChildArgs, out: &mut dyn Write) -> Result<(), String> {
     .map_err(|e| crate::plain_text::runtime_text(&e))?;
     emit(out, &done_line(&outcome));
     Ok(())
+}
+
+/// What a child says when it cannot keep the parent's CUDA choice ([`choice_not_kept`]).
+pub const CUDA_CHOICE_NOT_KEPT: &str = "The model check could not load the CUDA libraries this \
+     start chose for transcription, so it did not run. Restart Earshot to try again.";
+
+/// Why the child runs no check: the parent chose CUDA for transcription (`cuda_transcription`) but
+/// the library then fell back to the processor's. Its answer would hold a fingerprint without
+/// CUDA, which the parent, holding CUDA, reads as out of date at every start, so the whole check
+/// would run again each time; as for a child that cannot make the choice, it runs none.
+#[must_use]
+pub fn choice_not_kept(cuda_transcription: bool, fell_back: bool) -> Option<&'static str> {
+    (cuda_transcription && fell_back).then_some(CUDA_CHOICE_NOT_KEPT)
 }
 
 /// The final line of a finished check.
