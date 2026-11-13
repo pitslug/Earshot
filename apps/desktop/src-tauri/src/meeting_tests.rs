@@ -1814,6 +1814,14 @@ impl Prepare for CancelPrepare {
 }
 
 fn cancel_driver(prepare: Arc<CancelPrepare>) -> (MeetingDriver, Receiver<MeetingEvent>) {
+    cancel_driver_on(prepare, crate::activity::WorkGate::new())
+}
+
+/// [`cancel_driver`] whose meetings take their passes from `gate`.
+fn cancel_driver_on(
+    prepare: Arc<CancelPrepare>,
+    gate: crate::activity::WorkGate,
+) -> (MeetingDriver, Receiver<MeetingEvent>) {
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);
     let sink: Sink = Arc::new(move |e| {
@@ -1825,7 +1833,7 @@ fn cancel_driver(prepare: Arc<CancelPrepare>) -> (MeetingDriver, Receiver<Meetin
             prepare,
             sink,
             Arc::new(move || t0),
-            crate::activity::WorkGate::new(),
+            gate,
         ),
         rx,
     )
@@ -2026,6 +2034,53 @@ fn after_that_stops_answering_is_left(in_step: bool) {
     );
     release.send(()).unwrap();
     logged_eventually(&prepare, &format!("{meeting} returned, cancelled true"));
+}
+
+#[test]
+fn meeting_after_work_left_behind_keeps_its_pass_until_it_ends() {
+    // A left thread may still wake and load models: until it ends, no model check or benchmark
+    // starts beside it, as for a meeting job; the voice sample may run beside it, as beside a job.
+    use crate::activity::{WORK_RUNNING, WORK_RUNNING_FOR_BENCHMARK, WorkGate};
+    let dir = TempDir::new("after-left-pass");
+    let svc = services(&dir);
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::AfterHangs {
+        in_step: true,
+        inside: inside_tx,
+        release: release_rx,
+    }]);
+    let gate = WorkGate::new();
+    let (d, rx) = cancel_driver_on(Arc::clone(&prepare), gate.clone());
+    let d = d.with_after_bounds(SHORT_AFTER);
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert!(matches!(
+        result_of(&events, &meeting),
+        SummaryEvent::Failed { .. }
+    ));
+    d.join();
+    assert_eq!(d.phase(), DriverPhase::Idle);
+    assert_eq!(gate.enter_check().unwrap_err().message, WORK_RUNNING);
+    assert_eq!(
+        gate.enter_benchmark().unwrap_err().message,
+        WORK_RUNNING_FOR_BENCHMARK
+    );
+    drop(gate.enter_voice().unwrap());
+    release.send(()).unwrap();
+    logged_eventually(&prepare, &format!("{meeting} returned, cancelled true"));
+    let deadline = Instant::now() + MEET_GUARD;
+    let check = loop {
+        match gate.enter_check() {
+            Ok(check) => break check,
+            Err(e) => assert_eq!(e.message, WORK_RUNNING),
+        }
+        assert!(Instant::now() < deadline, "the left thread kept its pass");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    drop(check);
 }
 
 #[test]

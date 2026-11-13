@@ -366,6 +366,21 @@ impl WorkGate {
     }
 }
 
+impl WorkPass {
+    /// A meeting job's pass beside this one, for work this pass's thread hands to a thread that
+    /// may outlive it (a meeting's work after the meeting, left behind for stopping answering,
+    /// may still wake and load models). Never refused: while this pass is held, nothing it keeps
+    /// out can be running.
+    #[must_use]
+    pub fn job_beside(&self) -> WorkPass {
+        self.gate.state().work += 1;
+        WorkPass {
+            gate: self.gate.clone(),
+            meeting: false,
+        }
+    }
+}
+
 impl Drop for WorkPass {
     fn drop(&mut self) {
         let mut s = self.gate.state();

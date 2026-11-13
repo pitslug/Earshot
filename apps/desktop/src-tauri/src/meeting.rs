@@ -315,6 +315,7 @@ impl MeetingDriver {
             let svc = services.clone();
             let keep = Arc::new(AtomicBool::new(false));
             let flags = RunFlags {
+                pass,
                 stop: Arc::clone(&stop),
                 keep: Arc::clone(&keep),
                 recording: Arc::clone(&recording),
@@ -324,7 +325,7 @@ impl MeetingDriver {
                 .name("earshot-meeting".into())
                 .spawn(move || {
                     run_guarded(&inner, &svc, &request, &flags, &tx, seq);
-                    drop(pass);
+                    drop(flags);
                 })
                 .map_err(|_| IpcError {
                     kind: "internal".into(),
@@ -659,10 +660,21 @@ enum FromAfter {
     Done(Box<HostOutcome>),
 }
 
+/// `after` holding `pass` until it returns: a thread running it that is left behind still counts as
+/// a meeting job for [`crate::activity::WorkGate`].
+fn with_pass(after: AfterFn, pass: crate::activity::WorkPass) -> AfterFn {
+    Box::new(move |svc, outcome, cancel, progress| {
+        let _pass = pass;
+        after(svc, outcome, cancel, progress)
+    })
+}
+
 /// Runs `after` on a thread of its own and watches it ([`AfterBounds`]); forwards what the UI
 /// hears of each step through `send`. `None`: it stopped answering and was left, its token
 /// cancelled, so it stops if its call ever returns (its result then goes nowhere). The meeting's
-/// thread itself never polls `cancel` here: its polls are the work's sign of life.
+/// thread itself never polls `cancel` here: its polls are the work's sign of life. The caller
+/// hands `after` a pass of its own ([`with_pass`]), so a thread left behind keeps the model check
+/// and the benchmark out until it ends.
 fn run_after_watched(
     after: AfterFn,
     svc: &Services,
@@ -742,6 +754,8 @@ impl Drop for EndTicket<'_> {
 
 /// The flags a meeting's thread shares with the driver.
 struct RunFlags {
+    /// The meeting's pass, held for its thread's life.
+    pass: crate::activity::WorkPass,
     stop: Arc<AtomicBool>,
     keep: Arc<AtomicBool>,
     recording: Arc<AtomicBool>,
@@ -1028,7 +1042,7 @@ fn run(
         HostOutcome::cancelled(svc, id)
     } else {
         let watched = run_after_watched(
-            prepared.after,
+            with_pass(prepared.after, flags.pass.job_beside()),
             svc,
             &outcome,
             &cancel,
