@@ -414,7 +414,7 @@ Rules learned while building. One bullet per rule; history lives in commits.
 ### Conventions
 - Workspace uses edition 2024 and resolver 3. Every crate takes version, edition, rust-version and publish from the workspace and sets `[lints] workspace = true`.
 - External dependencies go only in adapter crates and xtask, never in `earshot-core` unless they pass the purity check.
-- Follow-ups (advisory review findings) go in `TODO.md` at the repo root, one line each with `file:line`.
+- Follow-ups (advisory review findings) go in `TODO.md` at the repo root, one line each with `file:line`. TODO.md is not a parking place (the owner, 2026-11-13, after 156 lines piled up): every merge batch either fixes its own advisories before it is called done or adds a sweep task to PLAN.md naming them; a line that is a design question goes to the owner.
 - xtask logic lives in its lib target (`xtask/src/lib.rs`); `main.rs` stays a thin clap front end.
 - On Windows, invoke pnpm as `cmd /c pnpm ...`.
 - Clippy at the pinned 1.99 toolchain denies constant-size `chunks_exact(_mut)` (`chunks_exact_to_as_chunks`) and `% n != 0` checks (`manual_is_multiple_of`); use `as_chunks(_mut)::<N>()` and `is_multiple_of`.
