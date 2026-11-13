@@ -387,6 +387,10 @@ fn edit_word_choices_are_erased_with_the_meeting() {
     );
 }
 
+fn id_of_in(v: &MeetingView, text: &str) -> EntityId {
+    v.segments.iter().find(|s| s.text == text).unwrap().id
+}
+
 #[test]
 fn edit_retranscribe_keeps_a_changed_word_and_drops_a_kept_one() {
     let dir = TempDir::new("edit");
@@ -426,6 +430,13 @@ fn edit_retranscribe_keeps_a_changed_word_and_drops_a_kept_one() {
         line(&svc, m, first).changed,
         [changed(0, "first", "Fyrstan")]
     );
+    // A kept choice that went stale without a write (its line read another word since):
+    // the next word write drops it.
+    let new_second = id_of_in(&view(&svc, m), "second");
+    decoded(&svc, m, new_second, "sekonda");
+    assert!(keep_word(&svc, m, new_second, 0).unwrap());
+    decoded(&svc, m, new_second, "second");
+    assert_eq!(stored(&svc, m).len(), 2, "the stale choice is still stored");
     assert!(put_back_word(&svc, m, first, 0).unwrap());
     assert_eq!(text_of(&svc, m, first), "first");
     assert!(
