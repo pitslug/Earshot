@@ -1255,6 +1255,28 @@ fn has_stalled(silent: Duration, limit: Duration, cancelled: bool) -> bool {
     silent >= limit || (cancelled && silent >= STALL_CANCEL_GRACE)
 }
 
+/// What a try watches: whether it is a GPU try that can fall back (watched to the end), and
+/// the limit on its load (every try's load is watched).
+fn watch_of(config: &LocalSummaryConfig) -> (bool, Duration) {
+    let gpu_watched = config.gpu && config.cpu_fallback;
+    let load = if gpu_watched {
+        config.load_stall_limit
+    } else {
+        config.cpu_load_limit
+    };
+    (gpu_watched, load)
+}
+
+/// The limit once the model loaded on `backend`: only a watched GPU try still on a GPU keeps
+/// one (`run_limit`); a CPU run, refused and retried or a CPU try, is never cut.
+fn limit_after_load(
+    gpu_watched: bool,
+    backend: LlamaBackend,
+    run_limit: Duration,
+) -> Option<Duration> {
+    (gpu_watched && backend != LlamaBackend::Cpu).then_some(run_limit)
+}
+
 /// One try on a thread of its own. A GPU try that can fall back is watched: with no progress
 /// for its limit the thread is left behind (`Attempt::Stalled`) with its token cancelled, so
 /// it stops and frees the model if the call ever returns, and its answer goes nowhere. Nothing
@@ -1266,12 +1288,8 @@ fn attempt_local(job: LocalJob, cancel: &CancelToken) -> Result<Attempt, Runtime
     let (tx, rx) = std::sync::mpsc::channel();
     let token = CancelToken::new();
     let options = options_of(&job.config, &token);
-    let gpu_watched = job.config.gpu && job.config.cpu_fallback;
-    let mut limit = Some(if gpu_watched {
-        job.config.load_stall_limit
-    } else {
-        job.config.cpu_load_limit
-    });
+    let (gpu_watched, load_limit) = watch_of(&job.config);
+    let mut limit = Some(load_limit);
     let run_limit = job.config.stall_limit;
     let worker = std::thread::Builder::new()
         .name("earshot-summary".into())
@@ -1309,7 +1327,7 @@ fn attempt_local(job: LocalJob, cancel: &CancelToken) -> Result<Attempt, Runtime
         match rx.recv_timeout(STALL_POLL) {
             Ok(Progress::Loaded(backend, beat)) => {
                 // Refused and retried on the CPU, or a CPU try: nothing to watch from here.
-                limit = (gpu_watched && backend != LlamaBackend::Cpu).then_some(run_limit);
+                limit = limit_after_load(gpu_watched, backend, run_limit);
                 last_count = beat.count();
                 heartbeat = Some(beat);
                 since = std::time::Instant::now();

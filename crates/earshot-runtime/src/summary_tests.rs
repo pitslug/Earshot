@@ -1537,6 +1537,35 @@ mod local {
     }
 
     #[test]
+    fn summary_only_the_load_is_watched_on_the_cpu() {
+        // The clock-free half of `summary_a_slow_cpu_run_is_never_cut`: which limit applies
+        // before and after the load, for every kind of try.
+        let mut c = config();
+        c.stall_limit = Duration::from_secs(1);
+        c.load_stall_limit = Duration::from_secs(2);
+        c.cpu_load_limit = Duration::from_secs(3);
+        let run = c.stall_limit;
+        // A CPU try: its load is watched by the CPU limit, its run by nothing.
+        c.gpu = false;
+        c.cpu_fallback = true;
+        assert_eq!(watch_of(&c), (false, Duration::from_secs(3)));
+        assert_eq!(limit_after_load(false, LlamaBackend::Cpu, run), None);
+        // A GPU try with no fallback is not a watched GPU try.
+        c.gpu = true;
+        c.cpu_fallback = false;
+        assert_eq!(watch_of(&c), (false, Duration::from_secs(3)));
+        assert_eq!(limit_after_load(false, LlamaBackend::Cuda, run), None);
+        assert_eq!(limit_after_load(false, LlamaBackend::Vulkan, run), None);
+        // A GPU try that can fall back: its load and, on a GPU, its run are watched; refused
+        // and retried on the CPU, the run is not.
+        c.cpu_fallback = true;
+        assert_eq!(watch_of(&c), (true, Duration::from_secs(2)));
+        assert_eq!(limit_after_load(true, LlamaBackend::Cuda, run), Some(run));
+        assert_eq!(limit_after_load(true, LlamaBackend::Vulkan, run), Some(run));
+        assert_eq!(limit_after_load(true, LlamaBackend::Cpu, run), None);
+    }
+
+    #[test]
     fn summary_a_stalled_gpu_moves_to_the_cpu_and_says_so() {
         let dir = TempDir::new("summary");
         let (svc, _) = services(&dir);
