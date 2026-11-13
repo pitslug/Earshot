@@ -263,11 +263,32 @@ fn build_bundle_arm64_install_holds_exactly_the_qnn_files_and_their_licences() {
     assert!(!arm.contains(&PathBuf::from("LICENSE")));
     // Exactly these on top of what x64 and ARM64 share, the skels' catalogs among them (T12.12e).
     assert_eq!(qnn_install_files().len(), APPROVED_QNN_LIBRARIES.len() + 3);
-    let base = expected_files(ARM64_WINDOWS)
+    // The shared part comes from the x64 list, less what only x64 holds: the Vulkan summaries'
+    // files and the C++ runtime library ARM64 does not have.
+    let x64_only: Vec<&str> = ["ggml-vulkan.dll", VULKAN_LOADER, VULKAN_LICENCE]
         .into_iter()
-        .filter(|f| !names.contains(&f.to_str().unwrap()) && f != Path::new(QNN_NOTICE))
-        .count();
-    assert_eq!(arm.len(), base + qnn_install_files().len() + 1);
+        .chain(
+            VC_RUNTIME_DLLS
+                .into_iter()
+                .filter(|d| !vc_runtime_dlls(ARM64_WINDOWS).contains(d)),
+        )
+        .collect();
+    let base: Vec<PathBuf> = x64
+        .iter()
+        .filter(|f| !x64_only.contains(&f.to_str().unwrap()))
+        .cloned()
+        .collect();
+    assert_eq!(base.len(), x64.len() - x64_only.len(), "{x64_only:?}");
+    let mut want: Vec<PathBuf> = base
+        .into_iter()
+        .chain(names.iter().map(PathBuf::from))
+        .chain([PathBuf::from(QNN_NOTICE)])
+        .collect();
+    let mut have = arm.clone();
+    want.sort();
+    have.sort();
+    assert_eq!(have, want);
+    assert_eq!(arm.len(), want.len(), "no duplicates");
     let catalogs: Vec<&PathBuf> = arm
         .iter()
         .filter(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("cat")))
