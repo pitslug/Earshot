@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import { IpcFailure, type MeetingDetail, type PersonItem } from "./ipc";
 import { createMockIpc } from "./mock";
-import { splitPunctuation, tokensOf, wordListOf } from "./mockWords";
+import table from "../../../../fixtures/ui/words_to_offer_cases.json";
+import { splitPunctuation, tokensOf, wordListOf, wordsToOffer } from "./mockWords";
 
 const READY = {
   id: "m1",
@@ -112,5 +113,14 @@ describe("mock suggested words (T12.15e)", () => {
     await fresh.editSegment("m1", LINE8, "Fine. I'll send it to Tom Reid in writing.");
     d = await fresh.getMeeting("m1");
     expect(row(d).changed_words).toEqual([]);
+  });
+});
+
+describe("the mock's words to offer", () => {
+  it("follows the shared case table, which the runtime's tests run too", () => {
+    expect(table.cases.length).toBeGreaterThanOrEqual(8);
+    for (const c of table.cases) {
+      expect([c.after, wordsToOffer(c.before, c.after, c.listed)]).toEqual([c.after, c.offer]);
+    }
   });
 });
