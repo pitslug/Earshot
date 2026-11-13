@@ -1469,24 +1469,33 @@ mod damaged {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The models folder as one key however it was named (relative, another case, a link):
+    /// its canonical path, or the path as given when it cannot be resolved (a folder that does
+    /// not exist holds nothing marked).
+    fn root(models: &ModelDir) -> PathBuf {
+        std::fs::canonicalize(models.root()).unwrap_or_else(|_| models.root().to_owned())
+    }
+
     pub(super) fn mark(models: &ModelDir, artefact: &str) {
+        let root = root(models);
         let mut f = found();
-        if !f
-            .iter()
-            .any(|(r, a)| r.as_path() == models.root() && a == artefact)
-        {
-            f.push((models.root().to_owned(), artefact.to_owned()));
+        if !f.iter().any(|(r, a)| *r == root && a == artefact) {
+            f.push((root, artefact.to_owned()));
         }
     }
 
     pub(super) fn holds(models: &ModelDir, artefact: &str) -> bool {
-        found()
-            .iter()
-            .any(|(r, a)| r.as_path() == models.root() && a == artefact)
+        // Nothing marked, the usual case: no path to resolve.
+        if found().is_empty() {
+            return false;
+        }
+        let root = root(models);
+        found().iter().any(|(r, a)| *r == root && a == artefact)
     }
 
     pub(super) fn clear(models: &ModelDir, artefact: &str) {
-        found().retain(|(r, a)| !(r.as_path() == models.root() && a == artefact));
+        let root = root(models);
+        found().retain(|(r, a)| !(*r == root && a == artefact));
     }
 }
 

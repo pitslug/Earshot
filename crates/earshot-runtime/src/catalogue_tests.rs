@@ -1010,6 +1010,12 @@ fn catalogue_helpers_found_damaged_by_a_refused_load_read_as_missing_until_downl
     assert_eq!(state.files[2], ("ort".to_owned(), FileState::Damaged));
     assert_eq!(state.files[0].1, FileState::Present, "only the damaged one");
     assert_eq!(state.held, state.total - h.files[2].1.len() as u64);
+    // The same folder named another way reads the same (TODO 30 review).
+    let dotted = ModelDir::new(dir.0.join("models").join("seg-dir").join(".."));
+    assert_eq!(
+        c.install_state(&dotted, HELPERS_MODEL).unwrap().files[2].1,
+        FileState::Damaged
+    );
     // Another models folder is not affected.
     let other = ModelDir::new(dir.0.join("other"));
     assert_eq!(
