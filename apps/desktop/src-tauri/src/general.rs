@@ -363,13 +363,15 @@ fn previews_view_on(
     hardware: &earshot_runtime::earshot_hardware::Hardware,
 ) -> Result<PreviewsView, IpcError> {
     use earshot_runtime::backends::Accelerator;
-    let (choice, unknown, setup) = {
+    // Only the stored settings are read under the store lock; the model files are looked at
+    // with it free.
+    let (choice, unknown, reads) = {
         let db = services.store();
         let (choice, unknown) = earshot_runtime::preview_settings::preview_choice(&db)?;
-        let setup = earshot_runtime::host::transcription_setup(&db, models, order, hardware)?;
-        (choice, unknown, setup)
+        let reads = earshot_runtime::host::TranscriptionReads::read(&db)?;
+        (choice, unknown, reads)
     };
-    // Its NPU files are looked at with the store lock free.
+    let setup = earshot_runtime::host::transcription_setup_from(reads, models, order, hardware)?;
     let runs_on =
         earshot_runtime::recommend::runs_on_here(models, &setup.choice.model, &setup.order);
     let lead = Accelerator::of(runs_on).unwrap_or(Accelerator::Cpu);
