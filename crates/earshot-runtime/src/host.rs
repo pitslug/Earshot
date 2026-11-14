@@ -194,6 +194,60 @@ impl MeetingModels {
         Some(self.resolve())
     }
 
+    /// What [`Self::resolve`] decides or decided, read without waiting and without loading
+    /// anything (T12.39): `None` while the CUDA start has not decided, while a resolve is in
+    /// progress, or when the settings cannot be read.
+    #[must_use]
+    pub fn planned(&self) -> Option<ResolvedModels> {
+        match self.resolved.try_lock() {
+            Ok(slot) => {
+                if let Some(resolved) = &*slot {
+                    return Some((**resolved).clone());
+                }
+            }
+            Err(std::sync::TryLockError::Poisoned(p)) => {
+                if let Some(resolved) = &*p.into_inner() {
+                    return Some((**resolved).clone());
+                }
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        }
+        if crate::cuda::onnx_held() {
+            return None;
+        }
+        let build = crate::backends::accelerator_order();
+        let (checked_build, checked) = &self.checked;
+        if build == *checked_build {
+            return Some(checked.clone());
+        }
+        let setup = {
+            let db = self.services.store();
+            transcription_setup(&db, &self.models, &build, &crate::hardware()).ok()?
+        };
+        Some(ResolvedModels {
+            model: setup.choice.model,
+            order: setup.order,
+        })
+    }
+
+    /// What the meeting's live work needs beside an older meeting's summary (T12.39,
+    /// [`crate::meeting_queue::MeetingHold::beside`]): where [`Self::planned`] runs its
+    /// transcription, the model's size (unknown: too big for any card), and whether it summarises
+    /// during the meeting.
+    pub fn live_needs(self: &Arc<Self>, live_summaries: bool) -> crate::meeting_queue::NeedsFn {
+        let me = Arc::clone(self);
+        Box::new(move || {
+            let planned = me.planned()?;
+            let first = *planned.order.first()?;
+            Some(crate::meeting_queue::LiveNeeds {
+                device: crate::meeting_queue::Device::of(first),
+                model_size: crate::model_check::model_facts(&planned.model)
+                    .map_or(u64::MAX, |f| f.size),
+                live_summaries,
+            })
+        })
+    }
+
     /// Live transcription of the meeting, on what [`Self::resolve`] decides at its first call.
     pub fn live_factory(self: &Arc<Self>) -> LiveAsrFactory {
         let me = Arc::clone(self);
