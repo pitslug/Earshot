@@ -71,6 +71,7 @@ pub mod replay;
 pub mod retention;
 pub mod search;
 pub mod services;
+pub mod shared_encoders;
 pub mod speaker_timing;
 pub mod speakers;
 pub mod stretches;

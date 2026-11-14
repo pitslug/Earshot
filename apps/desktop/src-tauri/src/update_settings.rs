@@ -339,20 +339,12 @@ impl Inner {
             // and an install that started keeps the jobs in Ready.
             UpdatePhase::Checking | UpdatePhase::Downloading { .. } | UpdatePhase::Ready { .. }
         ) {
-            return Err(IpcError {
-                kind: "busy".into(),
-                message: ALREADY_RUNNING.into(),
-                retryable: true,
-            });
+            return Err(IpcError::busy(ALREADY_RUNNING));
         }
         // A restart would cut a download started now.
         if matches!(next, UpdatePhase::Downloading { .. }) && self.restarting.load(Ordering::SeqCst)
         {
-            return Err(IpcError {
-                kind: "busy".into(),
-                message: crate::model_jobs::RESTARTING.into(),
-                retryable: true,
-            });
+            return Err(IpcError::busy(crate::model_jobs::RESTARTING));
         }
         let before = std::mem::replace(&mut *phase, next.clone());
         drop(phase);
@@ -549,15 +541,12 @@ impl UpdateJobs {
         if !matches!(self.0.phase(), UpdatePhase::Ready { .. }) {
             return Err(IpcError::new("update_not_ready", NOT_READY));
         }
-        let busy = |message: &str| IpcError {
-            kind: "busy".into(),
-            message: message.into(),
-            retryable: true,
-        };
         if downloading {
-            return Err(busy(DOWNLOADS_RUNNING));
+            return Err(IpcError::busy(DOWNLOADS_RUNNING));
         }
-        let pass = gate.enter_restart().map_err(|_| busy(WORK_RUNNING))?;
+        let pass = gate
+            .enter_restart()
+            .map_err(|_| IpcError::busy(WORK_RUNNING))?;
         match self.0.work.launch() {
             Ok(()) => {
                 // The gate stays closed, and the jobs stay in Ready, until the process ends.

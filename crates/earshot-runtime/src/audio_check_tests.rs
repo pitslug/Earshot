@@ -677,3 +677,32 @@ fn audio_check_device_run_plays_chirps_and_reports() {
         "the chirps were not played"
     );
 }
+
+#[test]
+fn audio_check_record_bytes_are_pinned() {
+    // T12.52: the exact stored form of a fixed record, so a change to the framing shows.
+    let checks = vec![StoredCheck {
+        microphone: CheckedEndpoint {
+            id: "mic-id".into(),
+            name: "Mic".into(),
+        },
+        output: CheckedEndpoint {
+            id: "out-id".into(),
+            name: "Speakers".into(),
+        },
+        checked_at_ms: 1_700_000_000_000,
+        outcome: StoredOutcome::NoEcho,
+        too_quiet: false,
+        clipping: true,
+    }];
+    let pinned_json = r#"[{"microphone":{"id":"mic-id","name":"Mic"},"output":{"id":"out-id","name":"Speakers"},"checked_at_ms":1700000000000,"outcome":{"kind":"no-echo"},"too_quiet":false,"clipping":true}]"#;
+    let bytes = encode(&checks).unwrap();
+    assert_eq!(bytes[..4], [1, 0, 0, 0]);
+    assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), pinned_json);
+    let mut pinned = vec![1, 0, 0, 0];
+    pinned.extend_from_slice(pinned_json.as_bytes());
+    assert_eq!(decode(&pinned), Some(checks));
+    assert_eq!(decode(&[1, 0]), None);
+    assert_eq!(decode(&[2, 0, 0, 0, b'[', b']']), None);
+    assert_eq!(decode(&[1, 0, 0, 0, b'[']), None);
+}

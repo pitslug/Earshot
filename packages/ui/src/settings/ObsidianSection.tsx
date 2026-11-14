@@ -11,23 +11,16 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
-  Spinner,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-import { type ObsidianSettingsView, useIpc } from "../ipc";
+import { type ObsidianSettingsView, errorText, useIpc } from "../ipc";
+import { NotLoaded, UnknownSettings, useLoad, usePageStyles } from "./parts";
 import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
-import { errorText } from "./useModels";
 
 const useStyles = makeStyles({
-  page: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
-  },
   text: {
     maxWidth: "70ch",
   },
@@ -50,11 +43,6 @@ export function exportPlace(vault: string, folder: string): string {
   return folder === "" ? `Notes go to the top folder of ${vault}.` : `Notes go to ${folder} in ${vault}.`;
 }
 
-type Load =
-  | { status: "loading" }
-  | { status: "failed"; message: string }
-  | { status: "loaded"; view: ObsidianSettingsView };
-
 export interface ObsidianSectionProps {
   /** The first-run wizard saves with its Next, so no Save button shows. */
   saveOnNext?: SaveOnNext;
@@ -64,10 +52,15 @@ export interface ObsidianSectionProps {
  * wizard. The heading is the caller's. */
 export function ObsidianSection({ saveOnNext }: ObsidianSectionProps) {
   const styles = useStyles();
+  const page = usePageStyles();
   const ipc = useIpc();
-  const [load, setLoad] = useState<Load>({ status: "loading" });
   const [vault, setVault] = useState("");
   const [folder, setFolder] = useState("");
+  const fill = (view: ObsidianSettingsView) => {
+    setVault(view.value.vault);
+    setFolder(view.value.folder);
+  };
+  const [load, setLoad] = useLoad((ipc) => ipc.obsidianSettings(), fill);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -76,24 +69,8 @@ export function ObsidianSection({ saveOnNext }: ObsidianSectionProps) {
 
   const show = (view: ObsidianSettingsView) => {
     setLoad({ status: "loaded", view });
-    setVault(view.value.vault);
-    setFolder(view.value.folder);
+    fill(view);
   };
-
-  useEffect(() => {
-    let live = true;
-    void ipc.obsidianSettings().then(
-      (view) => {
-        if (live) show(view);
-      },
-      (e: unknown) => {
-        if (live) setLoad({ status: "failed", message: errorText(e) });
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [ipc]);
 
   const unsaved = load.status === "loaded" && (vault !== load.view.value.vault || folder !== load.view.value.folder);
 
@@ -114,15 +91,13 @@ export function ObsidianSection({ saveOnNext }: ObsidianSectionProps) {
   };
   useSaveOnNext(saveOnNext, async () => !unsaved || save());
 
-  if (load.status === "loading") return <Spinner label="Reading the Obsidian settings" />;
-  if (load.status === "failed") {
+  if (load.status !== "loaded") {
     return (
-      <MessageBar intent="error">
-        <MessageBarBody>
-          <MessageBarTitle>The Obsidian settings could not be read</MessageBarTitle>
-          {load.message}
-        </MessageBarBody>
-      </MessageBar>
+      <NotLoaded
+        load={load}
+        loading="Reading the Obsidian settings"
+        failed="The Obsidian settings could not be read"
+      />
     );
   }
   const stored = load.view.value;
@@ -145,16 +120,9 @@ export function ObsidianSection({ saveOnNext }: ObsidianSectionProps) {
   };
 
   return (
-    <div className={styles.page}>
+    <div className={page.page}>
       <Body1 className={styles.text}>{EXPORT_EXPLAINED}</Body1>
-      {load.view.unknown.length > 0 && (
-        <MessageBar intent="warning">
-          <MessageBarBody>
-            <MessageBarTitle>A stored setting could not be used</MessageBarTitle>
-            {load.view.unknown.join(" ")}
-          </MessageBarBody>
-        </MessageBar>
-      )}
+      <UnknownSettings unknown={load.view.unknown} title="A stored setting could not be used" />
       {pickError !== null && (
         <MessageBar intent="warning">
           <MessageBarBody>{pickError}</MessageBarBody>

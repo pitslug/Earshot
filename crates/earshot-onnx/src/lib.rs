@@ -13,6 +13,7 @@ pub mod parakeet;
 pub mod qnn;
 pub mod runtime;
 pub mod segment;
+pub mod shared_encoder;
 pub mod shared_weights;
 pub mod silero;
 
@@ -20,6 +21,6 @@ pub use runtime::{
     CPU_EP, CUDA_EP, ORT_CPU_DYLIB, ORT_CPU_DYLIB_ARM64, ORT_CPU_DYLIB_ARM64_SHA256,
     ORT_CPU_DYLIB_SHA256, ORT_CPU_DYLIB_X64, ORT_CPU_DYLIB_X64_SHA256, ORT_CPU_SET, ORT_CUDA_DYLIB,
     ORT_CUDA_DYLIB_SHA256, ORT_VERSION, OnnxError, OnnxSession, Placement, Provider, QNN_EP,
-    SessionBackend, SessionConfig, ThreadStart, environment, idle_qnn_sessions, init,
+    SessionBackend, SessionConfig, ThreadStart, environment, file_sha256, idle_qnn_sessions, init,
     loaded_library, preload_library,
 };

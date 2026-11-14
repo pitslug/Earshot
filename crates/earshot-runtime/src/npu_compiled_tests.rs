@@ -1031,3 +1031,21 @@ fn npu_compiled_idle_battery() {
     );
     drop(held);
 }
+
+#[test]
+fn npu_compiled_refusal_record_bytes_are_pinned() {
+    // T12.52: the exact stored form of a fixed record, so a change to the framing shows.
+    let record = RefusalRecord::default().with(vec![Refused {
+        at_ms: 5,
+        load_for: LoadFor::Preview,
+        steps: vec![Step::NotCompiled],
+    }]);
+    let bytes = record.encode().unwrap();
+    assert_eq!(bytes[..4], [1, 0, 0, 0]);
+    let pinned_json =
+        r#"{"track":null,"preview":{"at_ms":5,"load_for":"preview","steps":["not-compiled"]}}"#;
+    assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), pinned_json);
+    let mut pinned = vec![1, 0, 0, 0];
+    pinned.extend_from_slice(pinned_json.as_bytes());
+    assert_eq!(RefusalRecord::decode(&pinned), Some(record));
+}

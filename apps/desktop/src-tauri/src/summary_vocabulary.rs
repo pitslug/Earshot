@@ -88,11 +88,9 @@ pub fn set_words(services: &Services, words: &[String]) -> Result<SummaryVocabul
 pub fn refusal(e: SetVocabularyError) -> IpcError {
     match e {
         SetVocabularyError::Store(e) => e.into(),
-        SetVocabularyError::Refused(_) | SetVocabularyError::NotAWord => IpcError {
-            kind: "invalid_setting".into(),
-            message: sentence(&e.to_string()),
-            retryable: false,
-        },
+        SetVocabularyError::Refused(_) | SetVocabularyError::NotAWord => {
+            IpcError::invalid(sentence(&e.to_string()))
+        }
     }
 }
 

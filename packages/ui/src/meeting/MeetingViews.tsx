@@ -31,7 +31,8 @@ import {
 } from "@fluentui/react-components";
 import { type FormEvent, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { useIpc } from "../ipc";
+import { errorText, useIpc } from "../ipc";
+import { NoticeBar } from "../settings/parts";
 import type { Timer } from "../time";
 import { type LiveLevels, QUIET_LEVELS, useLevel, useNow } from "./hooks";
 import type { CaptureMode, LiveTrack, MessageBarIntent } from "./types";
@@ -321,7 +322,7 @@ export function NewMeetingView({ onStart, onCancel }: NewMeetingViewProps) {
     const trimmed = title.trim();
     onStart(mode, trimmed === "" ? null : trimmed, keepLocal).catch((e: unknown) => {
       setStarting(false);
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     });
   };
 
@@ -410,21 +411,7 @@ function Banners({ banners, onDismiss }: { banners: Banner[]; onDismiss(key: str
   return (
     <div className={styles.banners}>
       {banners.map((b) => (
-        <MessageBar key={b.key} intent={bannerIntent(b)}>
-          <MessageBarBody>{b.message}</MessageBarBody>
-          <MessageBarActions
-            containerAction={
-              <Button
-                appearance="transparent"
-                aria-label="Dismiss"
-                size="small"
-                onClick={() => onDismiss(b.key)}
-              >
-                Dismiss
-              </Button>
-            }
-          />
-        </MessageBar>
+        <NoticeBar key={b.key} intent={bannerIntent(b)} message={b.message} onDismiss={() => onDismiss(b.key)} />
       ))}
     </div>
   );

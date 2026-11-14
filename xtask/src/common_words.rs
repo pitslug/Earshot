@@ -22,11 +22,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::ami_refs as refs;
 use crate::archive;
 use crate::bench_meeting::sha256_hex;
 use crate::fixtures::{AMI_ANNOTATIONS_DIR, AMI_ANNOTATIONS_PATH};
 use crate::manifest::Manifest;
-use crate::t613::ami_refs as refs;
 use anyhow::{Context, Result, bail, ensure};
 use earshot_core::metrics::normalize::normalize_english;
 

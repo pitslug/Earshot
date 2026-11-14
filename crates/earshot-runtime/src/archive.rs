@@ -408,6 +408,13 @@ impl<'a> Entries<'a> {
     /// Writes member `m` from `src` under the temp folder, never past `m.size` bytes, and
     /// checks its size and SHA-256.
     fn write(&mut self, m: &'a Member, src: &mut dyn Read) -> Result<(), ExtractError> {
+        // Never more than the size (+1 byte to detect an overrun).
+        let limit = m.size.checked_add(1).ok_or_else(|| {
+            refused(format!(
+                "archive entry `{}`: its size of {} bytes is too large",
+                m.path, m.size
+            ))
+        })?;
         let dest = jail_join(self.tmp, &m.path)
             .map_err(|e| refused(format!("archive entry `{}`: {e}", m.path)))?;
         if let Some(parent) = dest.parent() {
@@ -420,7 +427,7 @@ impl<'a> Entries<'a> {
             .map_err(io_at(|| format!("create {}", dest.display())))?;
         let mut hash = Sha256::new();
         let mut buf = vec![0u8; 1 << 16];
-        let mut src = src.take(m.size + 1);
+        let mut src = src.take(limit);
         let mut written = 0u64;
         loop {
             if self.cancel.is_cancelled() {
@@ -528,7 +535,9 @@ struct ZipEntry {
 }
 
 /// Reads the central directory (PKWARE APPNOTE.TXT: end of central directory record 4.3.16,
-/// central file header 4.3.12). zip64 archives are refused.
+/// central file header 4.3.12), with an entry's zip64 extra field ([`zip64_fields`]). An
+/// archive whose end record needs zip64 (over 65,535 entries or a directory past 4 GiB) is
+/// refused.
 fn zip_directory<R: Read + Seek>(r: &mut R) -> Result<Vec<ZipEntry>, ExtractError> {
     let read_err = |e: io::Error| refused(format!("the zip archive is damaged: {e}"));
     let corrupt = || refused("the zip archive has a corrupt central directory");
@@ -563,17 +572,65 @@ fn zip_directory<R: Read + Seek>(r: &mut R) -> Result<Vec<ZipEntry>, ExtractErro
         }
         let (n, e, c) = (le16(&cd, at + 28), le16(&cd, at + 30), le16(&cd, at + 32));
         let name = cd.get(at + 46..at + 46 + n).ok_or_else(corrupt)?;
+        let extra = cd.get(at + 46 + n..at + 46 + n + e).ok_or_else(corrupt)?;
+        let name = String::from_utf8_lossy(name).into_owned();
+        let [size, compressed, local_offset] = zip64_fields(
+            [le32(&cd, at + 24), le32(&cd, at + 20), le32(&cd, at + 42)],
+            extra,
+        )
+        .map_err(|why| refused(format!("archive entry `{name}`: {why}")))?;
         out.push(ZipEntry {
-            name: String::from_utf8_lossy(name).into_owned(),
+            name,
             flags: le16(&cd, at + 8),
             method: le16(&cd, at + 10),
             crc: le32(&cd, at + 16),
-            compressed: u64::from(le32(&cd, at + 20)),
-            size: u64::from(le32(&cd, at + 24)),
+            compressed,
+            size,
             unix_mode: le32(&cd, at + 38) >> 16,
-            local_offset: u64::from(le32(&cd, at + 42)),
+            local_offset,
         });
         at += 46 + n + e + c;
+    }
+    Ok(out)
+}
+
+/// The uncompressed size, compressed size and local header offset of a central-directory
+/// entry: each field of `fields` (in that order) that reads `0xFFFFFFFF` is replaced by the
+/// next 8 bytes of the zip64 extended information extra field (header id 1) of `extra`, in
+/// that order (APPNOTE 4.5.3). Python's `zipfile` writes such offsets for every entry past
+/// 2 GiB, even in an archive smaller than 4 GiB. The rule of xtask's `archive::zip64_fields`.
+///
+/// # Errors
+/// A field marked for zip64 with no zip64 extra field, or one too short to hold it.
+fn zip64_fields(fields: [u32; 3], extra: &[u8]) -> Result<[u64; 3], &'static str> {
+    let mut out = fields.map(u64::from);
+    if !fields.contains(&u32::MAX) {
+        return Ok(out);
+    }
+    let mut p = 0usize;
+    let data = loop {
+        let header = extra
+            .get(p..p + 4)
+            .ok_or("a zip64 field without its zip64 extra field")?;
+        let (id, len) = (le16(header, 0), le16(header, 2));
+        let body = extra
+            .get(p + 4..p + 4 + len)
+            .ok_or("a zip extra field runs past its entry")?;
+        if id == 1 {
+            break body;
+        }
+        p += 4 + len;
+    };
+    let mut q = 0usize;
+    for (value, raw) in out.iter_mut().zip(fields) {
+        if raw == u32::MAX {
+            let bytes: [u8; 8] = data
+                .get(q..q + 8)
+                .and_then(|b| b.try_into().ok())
+                .ok_or("a zip64 extra field too short for its fields")?;
+            *value = u64::from_le_bytes(bytes);
+            q += 8;
+        }
     }
     Ok(out)
 }

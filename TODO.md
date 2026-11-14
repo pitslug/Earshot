@@ -1,5 +1,9 @@
 # Follow-ups
 Advisory review findings, one per line. Each line says what it waits on: `[owner]` a decision or a run only the owner can make, `[waits: <task> merge]` a file another host has claimed, `[open]` work nobody has picked up yet (a sweep task takes these; see AGENTS.md conventions). Research and hardware runs that need no decision live in PLAN.md, section "Parked".
+- [open] crates/earshot-onnx/src/shared_encoder.rs `STALL_LIMIT`: the clock may count through a system sleep, so a final pass in flight when the computer sleeps can come back marked stalled and fail (T12.58c); check and, if so, judge the run by time awake.
+- [open] crates/earshot-onnx/src/shared_encoder.rs `run`: the wait log allocates the asking thread's name on every encoder call in shipped code (bounded at 8192); store fixed names or keep it for evaluation only (T12.58).
+- [open] crates/earshot-cli and `m2_prod`: neither takes the `shared-encoder` note, so a fallback to an own encoder is silent there (T12.58).
+- [open] crates/earshot-runtime/src/shared_encoders.rs: the fallback, a broken encoder and a stalled encoder have run only on fakes, and a final pass sharing with the next meeting's tracks is unmeasured (T12.58).
 - [open] acceptance/results/m2.json records `7bafff9-dirty`: re-run `cargo xtask accept m2` on a clean tree for a clean stamp, on an idle host.
 - [open] acceptance/results/bench-*.json: these figures carry a shared-host note and a `-dirty` commit: re-run `cargo xtask bench asr|diar|aec --backend cpu` and `asr --backend vulkan`, no `--note`, on an idle host for a baseline.
 - [open] apps/desktop/src-tauri/src/summary_settings.rs: the endpoint model name limit counts UTF-8 bytes while the agent CLI names now count characters (T12.36); aligning it changes what is accepted.

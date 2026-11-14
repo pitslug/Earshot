@@ -232,11 +232,7 @@ pub fn audio_page(
 pub fn settings_error(e: AudioSettingsError) -> IpcError {
     match e {
         AudioSettingsError::Store(e) => IpcError::from(e),
-        other => IpcError {
-            kind: "invalid_setting".into(),
-            message: sentence(&other.to_string()),
-            retryable: false,
-        },
+        other => IpcError::invalid(sentence(&other.to_string())),
     }
 }
 
@@ -306,11 +302,7 @@ async fn blocking<T: Send + 'static>(
 ) -> Result<T, IpcError> {
     tauri::async_runtime::spawn_blocking(f)
         .await
-        .map_err(|_| IpcError {
-            kind: "internal".into(),
-            message: "the task stopped".into(),
-            retryable: false,
-        })?
+        .map_err(|_| IpcError::new("internal", "the task stopped"))?
 }
 
 #[cfg(test)]

@@ -940,10 +940,8 @@ pub struct StoredBenchmark {
 /// # Errors
 /// Store errors.
 pub fn record_benchmark(store: &mut Store, record: &BenchmarkRecord) -> Result<(), RuntimeError> {
-    let json = serde_json::to_vec(record)
+    let value = earshot_store::encode_versioned(RECORD_VERSION, record)
         .map_err(|_| RuntimeError::Internal("the benchmark result does not serialise"))?;
-    let mut value = RECORD_VERSION.to_le_bytes().to_vec();
-    value.extend_from_slice(&json);
     crate::local::set(store, &DeviceRecord::Benchmark.key(), &value)?;
     Ok(())
 }
@@ -956,9 +954,8 @@ pub fn stored_benchmark(store: &Store) -> Result<StoredBenchmark, RuntimeError> 
     let Some(value) = store.local_value(BENCHMARK_KEY)? else {
         return Ok(StoredBenchmark::default());
     };
-    let record = value
-        .split_first_chunk::<4>()
-        .filter(|(v, _)| u32::from_le_bytes(**v) == RECORD_VERSION)
+    let record = earshot_store::split_version(&value)
+        .filter(|(v, _)| *v == RECORD_VERSION)
         .and_then(|(_, json)| serde_json::from_slice(json).ok());
     Ok(StoredBenchmark {
         unreadable: record.is_none(),

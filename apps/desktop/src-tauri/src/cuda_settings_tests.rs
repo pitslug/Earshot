@@ -1908,3 +1908,28 @@ fn cuda_settings_nothing_the_page_shows_holds_a_developer_command() {
     assert!(!crate::plain_text::names_developer_tool(&json), "{json}");
     assert_eq!(earshot_runtime::catalogue::manifest_id_in(&json), None);
 }
+
+fn no_threads(
+    _: &'static str,
+    _: Box<dyn FnOnce() + Send>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    Err(std::io::Error::other("no threads left (os error 8)"))
+}
+
+/// A download whose thread cannot start says fixed copy, never the operating system's words.
+#[test]
+fn cuda_settings_a_download_thread_that_cannot_start_reports_fixed_copy() {
+    let dir = TempDir::new("cuda-no-thread");
+    let svc = services(&dir);
+    let files = Arc::new(FakeFiles::new(PartState::Missing, PartState::Missing));
+    let r = rig(Arc::clone(&files));
+    let jobs = r.jobs.with_spawn(no_threads);
+    let part = CudaPartChoice::Summaries;
+    let e = jobs
+        .start_download(&svc, &desktop(), part, true)
+        .unwrap_err();
+    assert_eq!(e, IpcError::internal());
+    assert!(!jobs.downloading(part.part()));
+    assert_eq!(files.downloads.load(Ordering::SeqCst), 0);
+    assert!(drain(&r.events).is_empty());
+}

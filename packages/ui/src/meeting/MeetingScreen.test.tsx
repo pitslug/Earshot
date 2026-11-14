@@ -1,12 +1,11 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   CATCH_UP_MS,
   type Ipc,
   IpcFailure,
-  IpcProvider,
   type MeetingEvent,
   type MockIpcData,
   POST_STEPS,
@@ -18,8 +17,7 @@ import {
   createMockIpc,
   sampleMeetings,
 } from "../ipc";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
+import { renderApp } from "../test/app";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
 import { MAX_TITLE, RecordingView, finishingExplanation } from "./MeetingViews";
@@ -44,13 +42,7 @@ function setup({ wrap, ...data }: MockIpcData & { wrap?: (ipc: Ipc) => void } = 
     ...data,
   });
   wrap?.(ipc);
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   return { timer, ipc, compactCalls, user: userEvent.setup() };
 }
 
@@ -139,10 +131,6 @@ async function startMeeting(s: Setup, mode: "Call" | "InRoom" = "Call", title = 
   });
   return screen.findByRole("region", { name: "Meeting" });
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 /** What the page of a meeting that has ended says about its finishing and its result. */
 const meetingStatus = () => screen.getByRole("region", { name: "Meeting status" });

@@ -16,7 +16,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::future::Future;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -25,7 +25,6 @@ use earshot_core::asr::CancelToken;
 pub use earshot_net::{Allowlist, Url};
 use earshot_net::{AuditLog, NetClient, NetConfig, NetError, NetRequest, UrlError, redact};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use crate::SharedClock;
 
@@ -349,25 +348,8 @@ pub fn part_path(dest: &Path) -> PathBuf {
     dest.with_file_name(name)
 }
 
-/// Lower-case hex SHA-256 of a file.
-pub(crate) fn sha256_file(path: &Path) -> io::Result<String> {
-    let mut f = File::open(path)?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    let mut s = String::with_capacity(64);
-    for b in h.finalize() {
-        use std::fmt::Write as _;
-        let _ = write!(s, "{b:02x}");
-    }
-    Ok(s)
-}
+/// Lower-case hex SHA-256 of a file (the workspace's one file hasher).
+pub(crate) use earshot_onnx::file_sha256 as sha256_file;
 
 /// Checks size and SHA-256 of `path`: `Ok(None)` when they match, else what differs.
 fn verify_file(path: &Path, exp: &Expected) -> Result<Option<String>, DownloadError> {

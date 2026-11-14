@@ -1,12 +1,10 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { type Ipc, IpcProvider, type MockIpcData, type PreviewsChoice, createMockIpc } from "../ipc";
+import { type Ipc, type MockIpcData, type PreviewsChoice, createMockIpc } from "../ipc";
 import { AFTER_CALL_WARNING } from "../ipc/mockSettings";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { openSettings, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
 import { NEXT_MEETING } from "./PeoplePage";
 import {
@@ -19,26 +17,14 @@ import {
 async function open(data: MockIpcData = {}): Promise<{ ipc: Ipc; user: ReturnType<typeof userEvent.setup> }> {
   const timer = createManualTimer(1_000_000);
   const ipc = createMockIpc({ meetings: [], timer, ...data });
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "Settings" }));
-  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "Transcription" }));
+  await openSettings(user, "Transcription");
   await screen.findByRole("heading", { level: 1, name: "Transcription" });
   await screen.findByRole("radiogroup", { name: PREVIEWS_HEADING });
   await screen.findByRole("radiogroup", { name: "When speakers are found" });
   return { ipc, user };
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings, Transcription, provisional words", () => {
   const group = async () => screen.findByRole("radiogroup", { name: PREVIEWS_HEADING });

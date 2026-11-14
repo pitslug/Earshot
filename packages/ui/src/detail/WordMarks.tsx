@@ -24,7 +24,7 @@ import {
 import { Fragment, type ReactNode, useState } from "react";
 
 import type { TranscriptRow } from "../ipc";
-import { dictionaryWord, inDictionary } from "./dictionaryWord";
+import { dictionaryWord, inDictionary, tokenPieces } from "./dictionaryWord";
 
 const useStyles = makeStyles({
   // A button that reads as the word it marks.
@@ -122,11 +122,8 @@ export function LineText({
   tinted?: string[];
 }): ReactNode {
   const styles = useStyles();
-  let token = -1;
-  return row.text.split(/(\p{White_Space}+)/u).map((piece, i) => {
-    if (piece === "" || /^\p{White_Space}+$/u.test(piece)) return piece;
-    token += 1;
-    const t = token;
+  return tokenPieces(row.text).map(({ piece, token: t }, i) => {
+    if (t < 0) return piece;
     const suggestion = row.suggestions.find((s) => s.token === t);
     const changed = row.changed_words.find((c) => c.token === t);
     const word = changed?.written ?? suggestion?.decoded;

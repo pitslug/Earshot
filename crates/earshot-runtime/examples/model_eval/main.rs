@@ -72,7 +72,7 @@
 //!   with the final pass's settings. Since 2026-11-01; before, only the text rule per recorded
 //!   stretch ran. Script recall and echo residue are scored after cleaning. Echo residue: mic
 //!   words in the windows the private settings file names. `bridged_gaps_with_echo_path` (informational) counts the bridged lock
-//!   gaps in which the two quantised tracks show the echo path (`echo::gap_has_echo_path`,
+//!   gaps in which the two quantised tracks show the echo path (`gaps::gap_has_echo_path`,
 //!   not used by the final pass). Counts only: the report never carries mic transcript
 //!   text. `--gate12-dir`
 //!   replays another GATE-12 take instead (by its folder);
@@ -96,6 +96,9 @@ mod gate12_private;
 #[allow(dead_code)] // shared with asr_eval; only the AMI functions are used here
 #[path = "../../../earshot-asr-whisper/examples/asr_eval/refs.rs"]
 mod refs;
+
+mod gaps;
+use gaps::{bridged_gaps_with, gap_has_echo_path};
 
 use std::fs::File;
 use std::io::BufReader;
@@ -124,7 +127,7 @@ use earshot_runtime::backends::{
     Accelerator, EvidenceLoader, ModelDir, SILERO, WhisperLoader, check_qnn_parakeet, init_onnx,
     live_whisper_threads, load_diarisation, whisper_model,
 };
-use earshot_runtime::echo::{EchoLock, cleaning_stretches_with, gap_has_echo_path, gaps_bridged};
+use earshot_runtime::echo::EchoLock;
 use earshot_runtime::live::LiveConfig;
 use earshot_runtime::live::echo::LiveEchoFilter;
 use earshot_runtime::post::{MicEcho, PostConfig, clean_mic_echo};
@@ -988,7 +991,7 @@ struct Gate12 {
     /// The canceller's lock stretches, as the live session records them.
     locks: Vec<EchoLock>,
     /// Informational (T6.23 follow-up, evaluation only): the bridged gaps in which the
-    /// stored recordings show the echo path (`echo::gap_has_echo_path`). It depends only
+    /// stored recordings show the echo path (`gaps::gap_has_echo_path`). It depends only
     /// on the tracks and the locks, so it is computed once when the corpus loads.
     bridged_gaps_with_echo_path: usize,
     script: String,
@@ -1116,12 +1119,9 @@ fn gate12(args: &Args, vad: &mut SileroVad) -> Option<Gate12> {
     let bridged_gaps_with_echo_path = {
         let mic_audio = MonoBuffer::new(PIPELINE_RATE, mic.clone());
         let far_audio = MonoBuffer::new(PIPELINE_RATE, far.clone());
-        gaps_bridged(
-            &locks,
-            &cleaning_stretches_with(&locks, |prev, next| {
-                gap_has_echo_path(&mic_audio, &far_audio, prev, next)
-            }),
-        )
+        bridged_gaps_with(&locks, |prev, next| {
+            gap_has_echo_path(&mic_audio, &far_audio, prev, next)
+        })
         .len()
     };
     eprintln!("model_eval: gate12: diarising both tracks (production speaker models, CPU)");

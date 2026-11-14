@@ -3,15 +3,12 @@
 // and Delete apply at once); the rules (trimming, repeats, limits) are the app's, so nothing
 // is decided here: a repeat is noticed only because the stored list did not grow.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
-import { type SummaryVocabularyView, useIpc } from "../ipc";
-import { errorText } from "./useModels";
+import { type SummaryVocabularyView, errorText, useIpc } from "../ipc";
+import { type Load, useLoad } from "./parts";
 
-export type DictionaryLoad =
-  | { status: "loading" }
-  | { status: "failed"; message: string }
-  | { status: "loaded"; view: SummaryVocabularyView };
+export type DictionaryLoad = Load<SummaryVocabularyView>;
 
 export interface DictionaryState {
   load: DictionaryLoad;
@@ -35,26 +32,11 @@ export const ALREADY_THERE = "That word is already in your dictionary.";
 /** Loads the Dictionary words and changes them. */
 export function useDictionary(): DictionaryState {
   const ipc = useIpc();
-  const [load, setLoad] = useState<DictionaryLoad>({ status: "loading" });
+  const [load, setLoad] = useLoad((ipc) => ipc.summaryVocabulary());
   const [draft, setDraftText] = useState("");
   const [addMessage, setAddMessage] = useState<DictionaryState["addMessage"]>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let live = true;
-    ipc.summaryVocabulary().then(
-      (view) => {
-        if (live) setLoad({ status: "loaded", view });
-      },
-      (e: unknown) => {
-        if (live) setLoad({ status: "failed", message: errorText(e) });
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [ipc]);
 
   const words = load.status === "loaded" ? load.view.words : [];
 

@@ -7,16 +7,13 @@ import {
   Button,
   Caption1,
   Field,
-  MessageBar,
-  MessageBarBody,
-  MessageBarTitle,
   Select,
-  Spinner,
   Textarea,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
 
+import { NotLoaded, UnknownSettings } from "./parts";
 import { useSummaryStyle } from "./useSummaryStyle";
 
 const useStyles = makeStyles({
@@ -55,15 +52,14 @@ export function SummaryStyleSection() {
   const state = useSummaryStyle();
   const { load } = state;
 
-  if (load.status === "loading") return <Spinner size="small" label="Reading the summary style" />;
-  if (load.status === "failed") {
+  if (load.status !== "loaded") {
     return (
-      <MessageBar intent="error">
-        <MessageBarBody>
-          <MessageBarTitle>The summary style could not be read</MessageBarTitle>
-          {load.message}
-        </MessageBarBody>
-      </MessageBar>
+      <NotLoaded
+        load={load}
+        size="small"
+        loading="Reading the summary style"
+        failed="The summary style could not be read"
+      />
     );
   }
   const { view } = load;
@@ -72,22 +68,8 @@ export function SummaryStyleSection() {
 
   return (
     <div className={styles.body}>
-      {view.unknown.length > 0 && (
-        <MessageBar intent="warning">
-          <MessageBarBody>
-            <MessageBarTitle>The stored summary style is not used</MessageBarTitle>
-            {view.unknown.join(" ")}
-          </MessageBarBody>
-        </MessageBar>
-      )}
-      {view.unknown_template.length > 0 && (
-        <MessageBar intent="warning">
-          <MessageBarBody>
-            <MessageBarTitle>The stored summary template is not used</MessageBarTitle>
-            {view.unknown_template.join(" ")}
-          </MessageBarBody>
-        </MessageBar>
-      )}
+      <UnknownSettings unknown={view.unknown} title="The stored summary style is not used" />
+      <UnknownSettings unknown={view.unknown_template} title="The stored summary template is not used" />
       <Field
         label="Template"
         hint={`${view.templates.find((t) => t.value === view.template)?.description ?? ""} ${TEMPLATE_HINT}`.trim()}

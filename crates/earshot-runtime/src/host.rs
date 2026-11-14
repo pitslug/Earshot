@@ -297,6 +297,17 @@ impl MeetingModels {
                         message: message.to_owned(),
                     });
             }
+            // A CUDA load that could not share the encoder (T12.58), once per process; one made by
+            // a final pass or a preview shows at the next track load.
+            if let Some(message) = crate::shared_encoders::take_note() {
+                me.notes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(crate::live::RuntimeWarning::HostNote {
+                        key: "shared-encoder".to_owned(),
+                        message: message.to_owned(),
+                    });
+            }
             loaded
         })
     }

@@ -2,10 +2,9 @@
 
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { type Ipc, IpcFailure, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
-import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { ADD_LABEL, DICTIONARY_INTRO, DictionaryPage } from "./DictionaryPage";
 import { ALREADY_THERE } from "./useDictionary";
@@ -29,10 +28,6 @@ function shown(): string[] {
     .getAllByRole("listitem")
     .map((li) => li.firstChild?.textContent ?? "");
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Dictionary", () => {
   it("says what the words are for and starts with none", async () => {

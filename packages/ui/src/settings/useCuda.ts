@@ -3,9 +3,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { type CudaPartChoice, type CudaSwitchValue, type CudaTerms, type CudaView, useIpc } from "../ipc";
+import { type CudaPartChoice, type CudaSwitchValue, type CudaTerms, type CudaView, errorText, useIpc } from "../ipc";
 import { formatSize } from "./copy";
-import { type Notice, errorText } from "./useModels";
+import { type Notice } from "./useModels";
 
 const NAME: Record<CudaPartChoice, string> = {
   Summaries: "Summaries on CUDA",

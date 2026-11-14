@@ -141,27 +141,24 @@ pub fn record_key(meeting: EntityId) -> String {
 /// The stored form of `record` (module docs).
 #[must_use]
 pub fn encode(record: &IdentityRecord) -> Vec<u8> {
-    // Plain data (ids, names, finite floats): serialising cannot fail.
-    let payload = serde_json::to_vec(record).unwrap_or_default();
-    let mut out = Vec::with_capacity(4 + payload.len());
-    out.extend_from_slice(&IDENTITY_RECORD_VERSION.to_le_bytes());
-    out.extend_from_slice(&payload);
-    out
+    // Plain data (ids, names, finite floats): serialising cannot fail; if it did, the version
+    // alone is stored, which reads as unreadable.
+    crate::encode_versioned(IDENTITY_RECORD_VERSION, record)
+        .unwrap_or_else(|_| IDENTITY_RECORD_VERSION.to_le_bytes().to_vec())
 }
 
 /// Reads [`encode`]: the record, or why it cannot be used.
 #[must_use]
 pub fn decode(bytes: &[u8]) -> StoredIdentities {
-    let Some(head) = bytes.get(..4) else {
+    let Some((version, payload)) = crate::split_version(bytes) else {
         return StoredIdentities::Unreadable("the speaker identity record is truncated".into());
     };
-    let version = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
     if !READABLE_VERSIONS.contains(&version) {
         return StoredIdentities::Unreadable(format!(
             "speaker identity record version {version}, this build reads {READABLE_VERSIONS:?}"
         ));
     }
-    match serde_json::from_slice(&bytes[4..]) {
+    match serde_json::from_slice(payload) {
         Ok(record) => StoredIdentities::Record(record),
         Err(e) => StoredIdentities::Unreadable(format!("the speaker identity record: {e}")),
     }

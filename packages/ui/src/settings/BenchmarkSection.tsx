@@ -12,7 +12,6 @@ import {
   MessageBarBody,
   MessageBarTitle,
   ProgressBar,
-  Spinner,
   Subtitle2,
   makeStyles,
   tokens,
@@ -21,6 +20,7 @@ import { useId } from "react";
 
 import type { BenchmarkResultView, BenchmarkRow } from "../ipc";
 import { clockTime } from "../shell/meetings";
+import { NotLoaded } from "./parts";
 import { type BenchmarkRun, benchmarkRunning, useBenchmark } from "./useBenchmark";
 
 /** What the benchmark does. */
@@ -169,16 +169,8 @@ export function BenchmarkSection() {
   const headingId = useId();
   const { load, run } = state;
 
-  if (load.status === "loading") return <Spinner label="Reading the last benchmark" />;
-  if (load.status === "failed") {
-    return (
-      <MessageBar intent="error">
-        <MessageBarBody>
-          <MessageBarTitle>The benchmark could not be read</MessageBarTitle>
-          {load.message}
-        </MessageBarBody>
-      </MessageBar>
-    );
+  if (load.status !== "ready") {
+    return <NotLoaded load={load} loading="Reading the last benchmark" failed="The benchmark could not be read" />;
   }
   const { view } = load;
   const running = benchmarkRunning(run);

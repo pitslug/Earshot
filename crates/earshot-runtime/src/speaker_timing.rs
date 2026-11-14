@@ -139,14 +139,15 @@ impl StoredTiming {
 /// # Errors
 /// Store errors.
 pub fn speaker_timing(store: &Store) -> Result<StoredTiming, RuntimeError> {
-    let Some(bytes) = store.local_value(SPEAKER_TIMING_KEY)? else {
-        return Ok(StoredTiming::Absent);
-    };
-    let name = String::from_utf8_lossy(&bytes).into_owned();
-    Ok(match SpeakerTiming::parse(&name) {
-        Some(t) => StoredTiming::Set(t),
-        None => StoredTiming::Unknown(name),
-    })
+    Ok(
+        match crate::local::read_setting(store, SPEAKER_TIMING_KEY, |name| {
+            SpeakerTiming::parse(&name).ok_or(name)
+        })? {
+            crate::local::Setting::Absent => StoredTiming::Absent,
+            crate::local::Setting::Known(t) => StoredTiming::Set(t),
+            crate::local::Setting::Unknown(u) => StoredTiming::Unknown(u.stored),
+        },
+    )
 }
 
 /// Stores the preference (replacing an earlier one).

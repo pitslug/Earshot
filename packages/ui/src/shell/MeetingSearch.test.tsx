@@ -1,11 +1,10 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   type Ipc,
   IpcFailure,
-  IpcProvider,
   type MeetingEvent,
   type MeetingListItem,
   type SearchResultsView,
@@ -13,10 +12,8 @@ import {
 } from "../ipc";
 import { sampleDetail } from "../ipc/mockDetail";
 import { SEARCH_MAX_RESULTS, searchSample } from "../ipc/mockSearch";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { renderApp } from "../test/app";
 import { createManualTimer } from "../time";
-import { AppShell } from "./AppShell";
 import { SEARCH_DEBOUNCE_MS, SEARCH_SUPERSEDED_KIND, resultLine } from "./MeetingSearch";
 
 const at = (day: number, hour: number) => new Date(2026, 10, day, hour, 0).getTime();
@@ -39,13 +36,7 @@ const MEETINGS: MeetingListItem[] = [
 
 function setup(ipc: Ipc = createMockIpc({ meetings: MEETINGS })) {
   const timer = createManualTimer(NOW);
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell now={() => NOW} timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { now: () => NOW, timer });
   const settle = () => act(async () => timer.advance(SEARCH_DEBOUNCE_MS));
   return { timer, settle, user: userEvent.setup() };
 }
@@ -57,10 +48,6 @@ const resultTitles = () =>
   within(screen.getByRole("list", { name: "Search results" }))
     .getAllByRole("listitem")
     .map((item) => item.querySelector("button span span")?.textContent);
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("meeting search", () => {
   it("search finds meetings after typing pauses, and only then", async () => {

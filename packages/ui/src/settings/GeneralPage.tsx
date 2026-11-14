@@ -11,29 +11,22 @@ import {
   MessageBarTitle,
   Radio,
   RadioGroup,
-  Spinner,
   Subtitle2,
   Switch,
   Title2,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 
-import { type GeneralView, useIpc } from "../ipc";
+import { errorText, useIpc } from "../ipc";
 import { type ThemeChoice, useThemeChoice } from "../theme/EarshotThemeProvider";
 import { UpdatesSection } from "./UpdatesSection";
-import { errorText } from "./useModels";
+import { NotLoaded, Section, useLoad, usePageStyles } from "./parts";
 
 const useStyles = makeStyles({
   action: {
     alignSelf: "flex-start",
-  },
-  page: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
   },
   section: {
     display: "flex",
@@ -94,24 +87,6 @@ function ThemeSection() {
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  const styles = useStyles();
-  const id = useId();
-  return (
-    <section className={styles.section} aria-labelledby={id}>
-      <Subtitle2 as="h2" id={id} className={styles.heading}>
-        {title}
-      </Subtitle2>
-      {children}
-    </section>
-  );
-}
-
-type Load =
-  | { status: "loading" }
-  | { status: "failed"; message: string }
-  | { status: "loaded"; view: GeneralView };
-
 export interface GeneralPageProps {
   /** Opens the first-run wizard again. */
   onOpenSetup?: () => void;
@@ -120,35 +95,19 @@ export interface GeneralPageProps {
 /** The General page of Settings. */
 export function GeneralPage({ onOpenSetup }: GeneralPageProps) {
   const styles = useStyles();
+  const page = usePageStyles();
   const ipc = useIpc();
-  const [load, setLoad] = useState<Load>({ status: "loading" });
+  const [load, setLoad] = useLoad((ipc) => ipc.generalSettings());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let live = true;
-    void ipc.generalSettings().then(
-      (view) => {
-        if (live) setLoad({ status: "loaded", view });
-      },
-      (e: unknown) => {
-        if (live) setLoad({ status: "failed", message: errorText(e) });
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [ipc]);
-
-  if (load.status === "loading") return <Spinner label="Reading the general settings" />;
-  if (load.status === "failed") {
+  if (load.status !== "loaded") {
     return (
-      <MessageBar intent="error">
-        <MessageBarBody>
-          <MessageBarTitle>The general settings could not be read</MessageBarTitle>
-          {load.message}
-        </MessageBarBody>
-      </MessageBar>
+      <NotLoaded
+        load={load}
+        loading="Reading the general settings"
+        failed="The general settings could not be read"
+      />
     );
   }
   const { view } = load;
@@ -166,7 +125,7 @@ export function GeneralPage({ onOpenSetup }: GeneralPageProps) {
   };
 
   return (
-    <div className={styles.page}>
+    <div className={page.page}>
       <Title2 as="h1" className={styles.heading}>
         General
       </Title2>

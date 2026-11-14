@@ -503,7 +503,8 @@ pub fn read_lines(
 ) -> Result<CheckOutcome, IpcError> {
     let mut lines = reader.lines();
     while let Some(line) = lines.next() {
-        let line = line.map_err(|e| child_failed(format!("the model check's output: {e}")))?;
+        // The operating system's words never reach the page (T12.53).
+        let line = line.map_err(|_| child_failed(crate::plain_text::INTERNAL))?;
         if line.trim().is_empty() {
             continue;
         }
@@ -534,11 +535,7 @@ pub fn read_lines(
                 trials,
                 answer,
             } => outcome_of(&facts, &trials, answer.as_ref()),
-            CheckLine::Error { message } => Err(IpcError {
-                kind: "model_check".into(),
-                message,
-                retryable: false,
-            }),
+            CheckLine::Error { message } => Err(IpcError::new("model_check", message)),
         };
         if lines.any(|l| l.is_ok_and(|l| !l.trim().is_empty())) {
             return Err(child_failed(
@@ -550,6 +547,19 @@ pub fn read_lines(
     Err(child_failed(
         "The model check stopped before it finished (it may have crashed or been stopped).",
     ))
+}
+
+/// How the child's exit reaches the page: a success is nothing, anything else fixed copy, never
+/// the exit code's or the operating system's words (T12.53).
+///
+/// # Errors
+/// A failed exit or wait, retryable.
+#[cfg(windows)]
+fn exit_verdict(status: std::io::Result<std::process::ExitStatus>) -> Result<(), IpcError> {
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(_) | Err(_) => Err(child_failed(crate::plain_text::INTERNAL)),
+    }
 }
 
 /// Runs the check in a child process (module docs) for `languages` and `models`: the
@@ -572,10 +582,11 @@ pub fn run_child(
         /// `CREATE_NO_WINDOW`: the child gets no console window.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-        let exe = std::env::current_exe()
-            .map_err(|e| child_failed(format!("cannot find Earshot's own program: {e}")))?;
+        // A child that cannot start says fixed copy, never the operating system's words
+        // (T12.53).
+        let exe = std::env::current_exe().map_err(|_| child_failed(crate::plain_text::INTERNAL))?;
         let job = earshot_proc::KillOnClose::new()
-            .map_err(|e| child_failed(format!("cannot set up the model check: {e}")))?;
+            .map_err(|_| child_failed(crate::plain_text::INTERNAL))?;
         let mut command = std::process::Command::new(exe);
         command
             .args(child_args(
@@ -589,14 +600,7 @@ pub fn run_child(
         // Started suspended and resumed only once in the job: nothing it starts runs outside.
         let mut child = job
             .spawn(&mut command, CREATE_NO_WINDOW)
-            .map_err(|e| match e {
-                earshot_proc::SpawnError::Start(e) => {
-                    child_failed(format!("cannot start the model check: {e}"))
-                }
-                earshot_proc::SpawnError::Job(e) => {
-                    child_failed(format!("cannot set up the model check: {e}"))
-                }
-            })?;
+            .map_err(|_| child_failed(crate::plain_text::INTERNAL))?;
         let Some(stdout) = child.stdout.take() else {
             drop(job);
             let _ = child.wait();
@@ -624,20 +628,15 @@ pub fn run_child(
             return Err(cancelled());
         }
         let outcome = result?;
-        match status {
-            Ok(s) if s.success() => Ok(outcome),
-            Ok(s) => Err(child_failed(format!("the model check ended with {s}"))),
-            Err(e) => Err(child_failed(format!("the model check: {e}"))),
-        }
+        exit_verdict(status).map(|()| outcome)
     }
     #[cfg(not(windows))]
     {
         let _ = (languages, models, cancel, events);
-        Err(IpcError {
-            kind: "unsupported".into(),
-            message: "the model check runs on Windows only".into(),
-            retryable: false,
-        })
+        Err(IpcError::new(
+            "unsupported",
+            "the model check runs on Windows only",
+        ))
     }
 }
 

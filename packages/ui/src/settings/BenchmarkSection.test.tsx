@@ -1,20 +1,17 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   BENCHMARK_MEETING_MS,
   BENCHMARK_STEP_MS,
   type Ipc,
-  IpcProvider,
   MOCK_BENCHMARK_FAILURE,
   type MockIpcData,
   createMockIpc,
   mockBenchmarkResult,
 } from "../ipc";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { openSettings, renderApp } from "../test/app";
 import { type ManualTimer, createManualTimer } from "../time";
 import { BENCHMARK_EXPLAINED, BENCHMARK_PRIVATE, lengthNote, minutesText, progressText } from "./BenchmarkSection";
 
@@ -27,17 +24,9 @@ interface Setup {
 async function open(data: MockIpcData = {}): Promise<Setup> {
   const timer = createManualTimer(1_000_000);
   const ipc = createMockIpc({ meetings: [], timer, ...data });
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "Settings" }));
-  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "System" }));
+  await openSettings(user, "System");
   await screen.findByRole("heading", { level: 1, name: "System" });
   await screen.findByRole("region", { name: "How fast Earshot is on this computer" });
   return { ipc, timer, user };
@@ -49,10 +38,6 @@ function steps(timer: ManualTimer, n: number) {
     act(() => timer.advance(BENCHMARK_STEP_MS));
   }
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings, System, the benchmark", () => {
   it("is the last section of the System page, and no page of its own", async () => {

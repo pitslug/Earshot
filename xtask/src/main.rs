@@ -263,9 +263,8 @@ enum Cmd {
         chunk_seconds: Option<u32>,
         /// The shared prompt rules (T6.20b prompt tuning; docs/summary-eval.md): current
         /// (the production prompt: brief for claude-code and codex, standard for the rest,
-        /// T12.17c), owners, decisions, items, lean, assignments, handed, checked, previous
-        /// (the production prompt before T6.20f), short, brief or standard (system.md
-        /// whatever the writer). Summary runs only.
+        /// T12.17c), brief or standard (system.md whatever the writer). The rejected
+        /// variants were removed in T12.49. Summary runs only.
         #[arg(long, default_value = "current")]
         prompt_variant: earshot_core::prompt::PromptVariant,
         /// A summary template in every input (T12.17, evaluation; docs/summary-eval.md):
@@ -289,11 +288,6 @@ enum Cmd {
         /// Codex is found as the app finds it (PATH, then npm's global folder).
         #[arg(long, value_name = "PATH")]
         codex_cli: Option<std::path::PathBuf>,
-        /// Qwen thinking on (T12.10, evaluation only): every reply may think first, up to
-        /// this many tokens beside the reply budget (format key `-think<TOKENS>`). Qwen 3 and
-        /// 3.5 candidates only; use its own --out.
-        #[arg(long, value_name = "TOKENS", conflicts_with_all = ["two_call", "two_track"])]
-        thinking: Option<u32>,
         /// Prepare a run of the owner's own meetings (T12.25a, evaluation only) from this
         /// Earshot database: copy it into fixtures/private/real-meetings/<--store-run> and
         /// write the picked meetings' summary inputs there (counts printed only). No summaries.
@@ -313,9 +307,9 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         store_exclude: Vec<String>,
         /// Prompt prefix reuse (T12.25 part 1, evaluation only): keep the shared start of a
-        /// summary run's prompts in llama.cpp's cache (format key `-reuse`). Local candidates
-        /// without --thinking; use its own --out.
-        #[arg(long, conflicts_with = "thinking")]
+        /// summary run's prompts in llama.cpp's cache (format key `-reuse`). Local candidates;
+        /// use its own --out.
+        #[arg(long)]
         prefix_reuse: bool,
         /// Merge by selection (T12.25 part 2, evaluation only): the map steps as today, then
         /// one request that chooses by number which items to keep and fold, the summary built
@@ -603,7 +597,6 @@ fn main() -> ExitCode {
             two_track,
             meeting,
             codex_cli,
-            thinking,
             store_db,
             store_run,
             store_count,
@@ -638,7 +631,6 @@ fn main() -> ExitCode {
                 two_track,
                 meetings: meeting,
                 codex_cli,
-                thinking,
                 store_db,
                 store_run,
                 store_count,
@@ -911,35 +903,6 @@ mod tests {
         // Vulkan summaries were added for T8.3h; a backend sum-eval cannot run is still refused.
         assert!(Cli::try_parse_from(["xtask", "sum-eval", "--backend", "vulkan"]).is_ok());
         assert!(Cli::try_parse_from(["xtask", "sum-eval", "--backend", "qnn"]).is_err());
-    }
-
-    #[test]
-    fn sum_eval_thinking_takes_a_token_cap_and_is_off_by_default() {
-        let thinking_of = |args: &[&str]| {
-            let cli = Cli::try_parse_from(args).unwrap();
-            let Cmd::SumEval { thinking, .. } = cli.command else {
-                panic!("expected sum-eval");
-            };
-            thinking
-        };
-        assert_eq!(thinking_of(&["xtask", "sum-eval"]), None);
-        assert_eq!(
-            thinking_of(&["xtask", "sum-eval", "--thinking", "2048"]),
-            Some(2048)
-        );
-        assert!(Cli::try_parse_from(["xtask", "sum-eval", "--thinking", "-1"]).is_err());
-        assert!(
-            Cli::try_parse_from([
-                "xtask",
-                "sum-eval",
-                "--thinking",
-                "2048",
-                "--chunk-seconds",
-                "600",
-                "--two-call",
-            ])
-            .is_err()
-        );
     }
 
     #[test]

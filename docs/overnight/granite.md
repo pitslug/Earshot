@@ -40,7 +40,7 @@ All wall times were taken while other lanes built on the desktop: not timing fig
 
 - PLAN T12.27's premise "has not been screened here" was half wrong: Granite 4.2 8B was already a T6.20 candidate (pinned identically) and failed 13 of 20 in the earlier format. Recorded in the rule; it had never run in the production format.
 - Granite 4.2 8B's two failures are planning failures: its map summaries are long enough that a merge needs just over the 16,384-token production context.
-- `sum_eval --thinking` supports only the Qwen prefix, so a labelled Granite thinking-on run (PLAN's optional separate condition) was not run.
+- `sum_eval --thinking` supported only the Qwen prefix, so a labelled Granite thinking-on run (PLAN's optional separate condition) was not run. (The option was removed in T12.49.)
 - The Surface's 3B timing (Surface queue item 2) can only time a model that writes almost no decisions or actions; it decides nothing now.
 
 ## For PLAN.md (coordinator)

@@ -1,19 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import {
-  type Ipc,
-  IpcFailure,
-  IpcProvider,
-  type MockIpcData,
-  SUMMARY_TEMPLATES,
-  UNKNOWN_TEMPLATE,
-  createMockIpc,
-} from "../ipc";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { type Ipc, IpcFailure, type MockIpcData, SUMMARY_TEMPLATES, UNKNOWN_TEMPLATE, createMockIpc } from "../ipc";
+import { openSettings, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
 import { STYLE_HINT, STYLE_PLACEHOLDER, TEMPLATE_HINT } from "./SummaryStyleSection";
 
@@ -26,17 +16,9 @@ async function open(data: MockIpcData = {}, ipcOverride?: (ipc: Ipc) => Ipc): Pr
   const timer = createManualTimer(1_000_000);
   const base = createMockIpc({ meetings: [], timer, ...data });
   const ipc = ipcOverride ? ipcOverride(base) : base;
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "Settings" }));
-  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "Summaries" }));
+  await openSettings(user, "Summaries");
   await screen.findByRole("heading", { level: 1, name: "Summaries" });
   return { ipc, user };
 }
@@ -44,10 +26,6 @@ async function open(data: MockIpcData = {}, ipcOverride?: (ipc: Ipc) => Ipc): Pr
 const field = () => screen.findByRole("textbox", { name: "How the summary should read" });
 const save = () => screen.getByRole("button", { name: "Save" });
 const reset = () => screen.getByRole("button", { name: "Reset to default" });
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings, Summaries, Summary style", () => {
   it("starts empty with an example, the hint and nothing to save", async () => {

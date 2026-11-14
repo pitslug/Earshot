@@ -1,9 +1,9 @@
 {
   "milestone": "m2",
   "requested_backend": null,
-  "timestamp": "2026-11-06T23:53:59Z",
+  "timestamp": "2026-11-14T17:45:52Z",
   "host": "x86_64-pc-windows-msvc",
-  "commit": "7850fdd-dirty",
+  "commit": "4e5768e-dirty",
   "backends": [
     "cpu",
     "cuda"
@@ -148,12 +148,12 @@
     {
       "name": "asr.wer_aec_delta per scenario: seeds, near-end word counts and per-seed spread",
       "pass": true,
-      "detail": "double-talk-ser-0 (gating): +2.90 points over 310 words, seeds [103, 1103, 2103, 3103, 4103, 5103, 6103, 7103, 8103, 9103]; per seed 103 +2.86 (35 words, unscored clean 0 / aec 0), 1103 +12.50 (32 words, unscored clean 1 / aec 1), 2103 -7.14 (28 words, unscored clean 6 / aec 6), 3103 +3.12 (32 words, unscored clean 1 / aec 1), 4103 -7.14 (28 words, unscored clean 4 / aec 4), 5103 +10.00 (30 words, unscored clean 1 / aec 1), 6103 +9.68 (31 words, unscored clean 0 / aec 0), 7103 -3.23 (31 words, unscored clean 2 / aec 2), 8103 +3.12 (32 words, unscored clean 1 / aec 1), 9103 +3.23 (31 words, unscored clean 1 / aec 3); spread -7.14 to +12.50, mean +2.70, sd 6.89; double-talk-ser-10 (informational): +17.86 points over 308 words, seeds [104, 1104, 2104, 3104, 4104, 5104, 6104, 7104, 8104, 9104]; per seed 104 +37.50 (32 words, unscored clean 0 / aec 2), 1104 +20.00 (30 words, unscored clean 4 / aec 4), 2104 +12.12 (33 words, unscored clean 2 / aec 3), 3104 +0.00 (29 words, unscored clean 3 / aec 2), 4104 +22.86 (35 words, unscored clean 0 / aec 0), 5104 +7.41 (27 words, unscored clean 7 / aec 7), 6104 +16.67 (30 words, unscored clean 1 / aec 1), 7104 +19.35 (31 words, unscored clean 3 / aec 4), 8104 +25.81 (31 words, unscored clean 0 / aec 0), 9104 +13.33 (30 words, unscored clean 4 / aec 5); spread +0.00 to +37.50, mean +17.50, sd 10.34"
+      "detail": "double-talk-ser-0 (gating): +2.90 points over 310 words, seeds [103, 1103, 2103, 3103, 4103, 5103, 6103, 7103, 8103, 9103]; per seed 103 +2.86 (35 words, unscored clean 0 / aec 0), 1103 +12.50 (32 words, unscored clean 1 / aec 1), 2103 -7.14 (28 words, unscored clean 6 / aec 6), 3103 +3.12 (32 words, unscored clean 1 / aec 1), 4103 -7.14 (28 words, unscored clean 4 / aec 4), 5103 +10.00 (30 words, unscored clean 1 / aec 1), 6103 +9.68 (31 words, unscored clean 0 / aec 0), 7103 -3.23 (31 words, unscored clean 2 / aec 2), 8103 +3.12 (32 words, unscored clean 1 / aec 1), 9103 +3.23 (31 words, unscored clean 1 / aec 3); spread -7.14 to +12.50, mean +2.70, sd 6.89; double-talk-ser-10 (informational): +17.53 points over 308 words, seeds [104, 1104, 2104, 3104, 4104, 5104, 6104, 7104, 8104, 9104]; per seed 104 +37.50 (32 words, unscored clean 0 / aec 2), 1104 +20.00 (30 words, unscored clean 4 / aec 4), 2104 +9.09 (33 words, unscored clean 2 / aec 3), 3104 +0.00 (29 words, unscored clean 3 / aec 2), 4104 +22.86 (35 words, unscored clean 0 / aec 0), 5104 +7.41 (27 words, unscored clean 7 / aec 7), 6104 +16.67 (30 words, unscored clean 1 / aec 1), 7104 +19.35 (31 words, unscored clean 3 / aec 4), 8104 +25.81 (31 words, unscored clean 0 / aec 0), 9104 +13.33 (30 words, unscored clean 4 / aec 5); spread +0.00 to +37.50, mean +17.20, sd 10.56"
     },
     {
       "name": "informational: AMI SDM (Array1-01) far-field WER with the asr.wer_ami_ihm oracle segments (not a threshold)",
       "pass": true,
-      "detail": "SDM 28.44% (IHM 10.35%) over 4550 reference words (495 substitutions, 398 deletions, 401 insertions); IS1009a 24.83%, ES2004a 31.07%; production default parakeet-tdt-0.6b-v2 on cuda, no temperature fallback: Parakeet decodes greedily whatever the options ask"
+      "detail": "SDM 28.42% (IHM 10.35%) over 4550 reference words (495 substitutions, 398 deletions, 400 insertions); IS1009a 24.83%, ES2004a 31.03%; production default parakeet-tdt-0.6b-v2 on cuda, no temperature fallback: Parakeet decodes greedily whatever the options ask"
     },
     {
       "name": "informational: asr.wer_stream_delta on base.en, streaming chunker vs batch (the definition until 2026-10-24; not a threshold)",

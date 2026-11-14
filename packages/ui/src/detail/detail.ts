@@ -7,6 +7,7 @@ import {
   type RememberOutcome,
   type SpeakerCard,
   type SummaryView,
+  errorText,
 } from "../ipc";
 import { clock } from "../meeting/liveMeeting";
 import { clockTime } from "../shell/meetings";
@@ -148,7 +149,7 @@ export function failureText(e: unknown): string {
     }
     return e.error.message;
   }
-  return e instanceof Error ? e.message : String(e);
+  return errorText(e);
 }
 
 /** What "Save" on a voice did, in plain copy, by the name it was saved as. Only a

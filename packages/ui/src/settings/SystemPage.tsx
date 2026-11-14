@@ -3,22 +3,17 @@
 // each task runs, the model check, NVIDIA's CUDA libraries where offered, and the benchmark. The
 // model parts share the `useModels` state Settings holds.
 
-import { Title2, makeStyles, tokens } from "@fluentui/react-components";
+import { Title2, makeStyles } from "@fluentui/react-components";
 
 import { BenchmarkSection } from "./BenchmarkSection";
 import { CudaParts } from "./CudaSection";
-import { CheckSection, HelpersSection, ModelNotices, ModelsNotLoaded, Section } from "./ModelSections";
+import { CheckSection, HelpersSection, ModelNotices, ModelsNotLoaded } from "./ModelSections";
 import { HardwareSection, Recommendation, WhereItRuns } from "./ModelsParts";
+import { Section, usePageStyles } from "./parts";
 import { useCuda } from "./useCuda";
 import type { ModelsPageState } from "./useModels";
 
 const useStyles = makeStyles({
-  page: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
-  },
   heading: {
     margin: 0,
   },
@@ -67,8 +62,9 @@ export interface SystemPageProps {
 /** The System page of Settings. */
 export function SystemPage({ models }: SystemPageProps) {
   const styles = useStyles();
+  const page = usePageStyles();
   return (
-    <div className={styles.page}>
+    <div className={page.page}>
       <Title2 as="h1" className={styles.heading}>
         System
       </Title2>

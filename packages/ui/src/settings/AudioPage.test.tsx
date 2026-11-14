@@ -1,14 +1,12 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { type Ipc, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
+import { type Ipc, type MockIpcData, createMockIpc } from "../ipc";
 import cases from "../../../../fixtures/audio/device_available_cases.json";
 import { SAMPLE_DEVICES, deviceAvailable } from "../ipc/mockAudio";
 import { MODE_LABEL } from "../meeting/liveMeeting";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { openSettings, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
 import {
   DEFAULT_VALUE,
@@ -26,21 +24,13 @@ interface Setup {
 function mount(data: MockIpcData = {}): Setup {
   const timer = createManualTimer(1_000_000);
   const ipc = createMockIpc({ meetings: [], timer, ...data });
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   return { ipc, user: userEvent.setup() };
 }
 
 async function open(data: MockIpcData = {}): Promise<Setup> {
   const s = mount(data);
-  await s.user.click(await screen.findByRole("button", { name: "Settings" }));
-  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await s.user.click(within(nav).getByRole("button", { name: "Audio" }));
+  await openSettings(s.user, "Audio");
   await screen.findByRole("heading", { level: 1, name: "Audio" });
   await screen.findByRole("combobox", { name: "Microphone" });
   return s;
@@ -57,10 +47,6 @@ const [, headphones] = surface.outputs;
 function pageText(): string {
   return document.body.textContent ?? "";
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings, Audio", () => {
   it("lists the devices with the Windows default first on both sample machines", async () => {
@@ -175,13 +161,7 @@ describe("Settings, Audio", () => {
         return s.ipc.defaultCaptureMode();
       },
     };
-    render(
-      <EarshotThemeProvider>
-        <IpcProvider ipc={counting}>
-          <AppShell timer={createManualTimer(1_000_000)} />
-        </IpcProvider>
-      </EarshotThemeProvider>,
-    );
+    renderApp(counting, { timer: createManualTimer(1_000_000) });
     const user = userEvent.setup();
     await user.click((await screen.findAllByRole("button", { name: "New meeting" }))[0]);
     await waitFor(() => expect(screen.getByRole("radio", { name: MODE_LABEL.InRoom })).toBeChecked());
@@ -207,17 +187,9 @@ describe("Settings, Audio", () => {
       },
     };
     cleanup();
-    render(
-      <EarshotThemeProvider>
-        <IpcProvider ipc={failing}>
-          <AppShell timer={createManualTimer(1_000_000)} />
-        </IpcProvider>
-      </EarshotThemeProvider>,
-    );
+    renderApp(failing, { timer: createManualTimer(1_000_000) });
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Settings" }));
-    const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-    await user.click(within(nav).getByRole("button", { name: "Audio" }));
+    await openSettings(user, "Audio");
     await user.selectOptions(await screen.findByRole("combobox", { name: "Microphone" }), builtIn.name);
     expect(await screen.findByText("This setting was not saved")).toBeInTheDocument();
     expect(pageText()).toContain("its id is not usable");
@@ -237,17 +209,9 @@ describe("Settings, Audio", () => {
       },
     };
     cleanup();
-    render(
-      <EarshotThemeProvider>
-        <IpcProvider ipc={counting}>
-          <AppShell timer={createManualTimer(1_000_000)} />
-        </IpcProvider>
-      </EarshotThemeProvider>,
-    );
+    renderApp(counting, { timer: createManualTimer(1_000_000) });
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Settings" }));
-    const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-    await user.click(within(nav).getByRole("button", { name: "Audio" }));
+    await openSettings(user, "Audio");
     await screen.findByRole("combobox", { name: "Microphone" });
     const before = calls;
     await user.click(screen.getByRole("button", { name: "Refresh devices" }));

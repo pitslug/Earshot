@@ -1,19 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import {
-  type Ipc,
-  IpcFailure,
-  IpcProvider,
-  type MockIpcData,
-  RETENTION_CHOICES,
-  SOME_LEFT_MESSAGE,
-  createMockIpc,
-} from "../ipc";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { type Ipc, IpcFailure, type MockIpcData, RETENTION_CHOICES, SOME_LEFT_MESSAGE, createMockIpc } from "../ipc";
+import { openSettings, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
 import { RETENTION_DESCRIPTION, RETENTION_NEEDED } from "./RetentionSection";
 
@@ -28,17 +18,9 @@ interface Setup {
 async function open(data: MockIpcData = {}): Promise<Setup> {
   const timer = createManualTimer(1_000_000);
   const ipc = createMockIpc({ meetings: [], timer, ...data });
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "Settings" }));
-  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "Notes and storage" }));
+  await openSettings(user, "Notes and storage");
   await screen.findByRole("heading", { level: 1, name: "Notes and storage" });
   await screen.findByRole("combobox", { name: "Keep recordings for" });
   return { ipc, user };
@@ -47,10 +29,6 @@ async function open(data: MockIpcData = {}): Promise<Setup> {
 /** The list. After a dialog closes the page can stay aria-hidden for a moment (tabster's
  * deferred pass), so checks after a dialog wait for it. */
 const select = () => screen.getByRole<HTMLSelectElement>("combobox", { name: "Keep recordings for" });
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings, Notes and storage, Recordings", () => {
   it("lists every choice, shortest first, with 7 days chosen by default", async () => {
@@ -141,17 +119,9 @@ describe("Settings, Notes and storage, Recordings", () => {
         throw new IpcFailure({ kind: "store", message: "the database is busy", retryable: true });
       },
     };
-    render(
-      <EarshotThemeProvider>
-        <IpcProvider ipc={ipc}>
-          <AppShell timer={timer} />
-        </IpcProvider>
-      </EarshotThemeProvider>,
-    );
+    renderApp(ipc, { timer });
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Settings" }));
-    const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-    await user.click(within(nav).getByRole("button", { name: "Notes and storage" }));
+    await openSettings(user, "Notes and storage");
     await screen.findByRole("combobox", { name: "Keep recordings for" });
     await user.selectOptions(select(), "forever");
     expect(await screen.findByText("This setting was not saved")).toBeInTheDocument();
@@ -178,17 +148,9 @@ describe("Settings, Notes and storage, Recordings", () => {
   it("shows why the settings could not be read", async () => {
     const timer = createManualTimer(1_000_000);
     const ipc = createMockIpc({ meetings: [], timer, storage: { error: "the database is locked" } });
-    render(
-      <EarshotThemeProvider>
-        <IpcProvider ipc={ipc}>
-          <AppShell timer={timer} />
-        </IpcProvider>
-      </EarshotThemeProvider>,
-    );
+    renderApp(ipc, { timer });
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Settings" }));
-    const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-    await user.click(within(nav).getByRole("button", { name: "Notes and storage" }));
+    await openSettings(user, "Notes and storage");
     expect(await screen.findByText("The storage settings could not be read")).toBeInTheDocument();
     expect(screen.getByText("the database is locked")).toBeInTheDocument();
   });

@@ -52,18 +52,15 @@ pub enum PreviewSetting {
 /// # Errors
 /// Store errors.
 pub fn preview_choice(store: &Store) -> Result<(PreviewChoice, Option<String>), RuntimeError> {
-    let Some(bytes) = store.local_value(PREVIEWS_KEY)? else {
-        return Ok((PreviewChoice::Automatic, None));
-    };
-    Ok(match bytes.as_slice() {
-        b"on" => (PreviewChoice::On, None),
-        b"everyone" => (PreviewChoice::Everyone, None),
-        b"off" => (PreviewChoice::Off, None),
-        other => (
-            PreviewChoice::Automatic,
-            Some(String::from_utf8_lossy(other).into_owned()),
-        ),
-    })
+    let (choice, unknown) =
+        crate::local::read_setting(store, PREVIEWS_KEY, |text| match text.as_str() {
+            "on" => Ok(PreviewChoice::On),
+            "everyone" => Ok(PreviewChoice::Everyone),
+            "off" => Ok(PreviewChoice::Off),
+            _ => Err(text),
+        })?
+        .or_default_with(|| PreviewChoice::Automatic);
+    Ok((choice, unknown.map(|u| u.stored)))
 }
 
 /// Stores the user's choice.

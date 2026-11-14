@@ -11,6 +11,8 @@
 //!   records, device-local records the caller names, a truncating checkpoint).
 //! - [`export_note`], [`validate_vault`]: atomic Obsidian export with re-export merge and
 //!   find-by-`earshot_id`.
+//! - [`encode_versioned`], [`split_version`]: the `version u32 LE | JSON` framing of the
+//!   device-local records.
 
 mod audio;
 mod db;
@@ -23,6 +25,7 @@ mod layout;
 mod repo;
 mod schema;
 mod sync;
+mod versioned;
 
 pub use audio::{
     AudioProvenance, DAY_MS, DueAudio, HOUR_MS, MeetingAudio, ORPHAN_GRACE_MS,
@@ -44,3 +47,4 @@ pub use flac::{
 pub use fsutil::total_memory;
 pub use layout::DataDir;
 pub use sync::{Applied, ApplyRules, Held, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, SyncedRow};
+pub use versioned::{encode_versioned, split_version};

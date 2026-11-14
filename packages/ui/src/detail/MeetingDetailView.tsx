@@ -73,7 +73,7 @@ import {
   otherLinesSuggesting,
   pointTarget,
 } from "./DictionaryWords";
-import { dictionaryWord, inDictionary } from "./dictionaryWord";
+import { dictionaryWord, inDictionary, tokensOf } from "./dictionaryWord";
 import { LineText, WORD_ATTRIBUTE, type WordActions } from "./WordMarks";
 import {
   COPIED_MS,
@@ -1494,7 +1494,7 @@ function TranscriptTab({
   const wordsOf = (r: TranscriptRow): string[] => {
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const t of r.text.split(/\p{White_Space}+/u)) {
+    for (const t of tokensOf(r.text)) {
       const w = dictionaryWord(t);
       if (w === null || seen.has(w.toLowerCase())) continue;
       seen.add(w.toLowerCase());

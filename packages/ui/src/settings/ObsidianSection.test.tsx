@@ -1,11 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { type Ipc, IpcFailure, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { type Ipc, IpcFailure, type MockIpcData, createMockIpc } from "../ipc";
+import { openSettings, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
 import { PICKED_VAULT } from "../ipc/mockSettings";
 import { EXPORT_EXPLAINED, exportPlace } from "./ObsidianSection";
@@ -18,17 +16,9 @@ interface Setup {
 async function open(data: MockIpcData = {}): Promise<Setup> {
   const timer = createManualTimer(1_000_000);
   const ipc = createMockIpc({ timer, ...data });
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "Settings" }));
-  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "Notes and storage" }));
+  await openSettings(user, "Notes and storage");
   await screen.findByRole("heading", { level: 1, name: "Notes and storage" });
   await screen.findByRole("region", { name: "Obsidian" });
   await screen.findByLabelText("Vault folder");
@@ -39,10 +29,6 @@ const vault = () => screen.getByLabelText("Vault folder");
 const folder = () => screen.getByLabelText("Subfolder");
 const save = () => screen.getByRole("button", { name: "Save" });
 const choose = () => screen.getByRole("button", { name: "Choose folder..." });
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings, Notes and storage, Obsidian", () => {
   it("starts with no vault and the default subfolder, and saves a checked vault that export then uses", async () => {

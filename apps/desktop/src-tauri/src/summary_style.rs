@@ -144,11 +144,7 @@ pub fn set_style(services: &Services, style: &str) -> Result<SummaryStyleView, I
     match stored {
         Ok(_) => style_view(services),
         Err(SummaryStyleError::Store(e)) => Err(e.into()),
-        Err(SummaryStyleError::Refused(e)) => Err(IpcError {
-            kind: "invalid_setting".into(),
-            message: sentence(&e.to_string()),
-            retryable: false,
-        }),
+        Err(SummaryStyleError::Refused(e)) => Err(IpcError::invalid(sentence(&e.to_string()))),
     }
 }
 
@@ -178,11 +174,9 @@ pub async fn set_summary_style(
 /// # Errors
 /// `invalid_setting` ([`UNKNOWN_TEMPLATE`]; nothing stored); store errors.
 pub fn set_template(services: &Services, template: &str) -> Result<SummaryStyleView, IpcError> {
-    let preset: StylePreset = template.parse().map_err(|_| IpcError {
-        kind: "invalid_setting".into(),
-        message: UNKNOWN_TEMPLATE.into(),
-        retryable: false,
-    })?;
+    let preset: StylePreset = template
+        .parse()
+        .map_err(|_| IpcError::invalid(UNKNOWN_TEMPLATE))?;
     summary_style::set_summary_template(&mut services.store(), preset)?;
     style_view(services)
 }

@@ -213,22 +213,6 @@ pub const RESTARTING: &str = "Earshot is restarting. Try again once it has start
 /// What a model job that panicked reports.
 pub const MODEL_JOB_PANIC_MESSAGE: &str = "The model job stopped unexpectedly.";
 
-fn busy(message: &str) -> IpcError {
-    IpcError {
-        kind: "busy".into(),
-        message: message.into(),
-        retryable: true,
-    }
-}
-
-fn spawn_error(_: &std::io::Error) -> IpcError {
-    IpcError {
-        kind: "internal".into(),
-        message: crate::plain_text::INTERNAL.into(),
-        retryable: false,
-    }
-}
-
 /// `unknown_model` unless `model` is a catalogue model (transcription or summary).
 ///
 /// # Errors
@@ -237,11 +221,7 @@ pub fn require_catalogue_model(model: &str) -> Result<(), IpcError> {
     if Catalogue::embedded().is_ok_and(|c| c.model(model).is_some()) {
         Ok(())
     } else {
-        Err(IpcError {
-            kind: "unknown_model".into(),
-            message: crate::models::UNKNOWN_MODEL.into(),
-            retryable: false,
-        })
+        Err(IpcError::new("unknown_model", crate::models::UNKNOWN_MODEL))
     }
 }
 
@@ -274,7 +254,7 @@ impl ModelJobs {
     /// `busy` while the check holds its slot (`slot` is the locked slot).
     fn refuse_while_checking(slot: &Option<(CancelToken, JoinHandle<()>)>) -> Result<(), IpcError> {
         if slot.as_ref().is_some_and(|(_, t)| !t.is_finished()) {
-            Err(busy(CHECK_RUNNING_MESSAGE))
+            Err(IpcError::busy(CHECK_RUNNING_MESSAGE))
         } else {
             Ok(())
         }
@@ -295,7 +275,7 @@ impl ModelJobs {
         let mut downloads = self.downloads();
         downloads.retain(|_, d| !d.thread.is_finished());
         if downloads.contains_key(model) {
-            return Err(busy("This model is already downloading."));
+            return Err(IpcError::busy("This model is already downloading."));
         }
         let cancel = CancelToken::new();
         let writing = Arc::new(AtomicBool::new(true));
@@ -316,7 +296,7 @@ impl ModelJobs {
                     jobs.check_after_download(&svc, &name);
                 }
             })
-            .map_err(|e| spawn_error(&e))?;
+            .map_err(|_| IpcError::internal())?;
         downloads.insert(
             model.to_owned(),
             Download {
@@ -342,11 +322,10 @@ impl ModelJobs {
                 d.cancel.cancel();
                 Ok(())
             }
-            _ => Err(IpcError {
-                kind: "not_downloading".into(),
-                message: "This model is not downloading.".into(),
-                retryable: false,
-            }),
+            _ => Err(IpcError::new(
+                "not_downloading",
+                "This model is not downloading.",
+            )),
         }
     }
 
@@ -369,7 +348,7 @@ impl ModelJobs {
             .get(model)
             .is_some_and(|d| !d.thread.is_finished())
         {
-            return Err(busy(
+            return Err(IpcError::busy(
                 "This model is downloading; cancel the download first.",
             ));
         }
@@ -400,7 +379,7 @@ impl ModelJobs {
     /// As described.
     pub fn refuse_while_restarting(&self) -> Result<(), IpcError> {
         if self.0.restarting.load(Ordering::SeqCst) {
-            Err(busy(RESTARTING))
+            Err(IpcError::busy(RESTARTING))
         } else {
             Ok(())
         }
@@ -488,14 +467,14 @@ impl ModelJobs {
     fn start_check_with(&self, services: &Services, gives_way: bool) -> Result<(), IpcError> {
         let mut check = self.check_slot();
         if check.as_ref().is_some_and(|(_, t)| !t.is_finished()) {
-            return Err(busy("The model check is already running."));
+            return Err(IpcError::busy("The model check is already running."));
         }
         let downloads = self.downloads();
         if downloads
             .values()
             .any(|d| d.in_check && d.writing.load(Ordering::SeqCst))
         {
-            return Err(busy(DOWNLOADING_MESSAGE));
+            return Err(IpcError::busy(DOWNLOADING_MESSAGE));
         }
         let pass = self.0.gate.enter_check()?;
         let cancel = CancelToken::new();
@@ -509,7 +488,7 @@ impl ModelJobs {
                 check_guarded(&inner, &svc, &token, gives_way);
                 drop(pass);
             })
-            .map_err(|e| spawn_error(&e))?;
+            .map_err(|_| IpcError::internal())?;
         *check = Some((cancel, thread));
         drop(downloads);
         Ok(())
@@ -526,11 +505,10 @@ impl ModelJobs {
                 cancel.cancel();
                 Ok(())
             }
-            _ => Err(IpcError {
-                kind: "not_checking".into(),
-                message: "the model check is not running".into(),
-                retryable: false,
-            }),
+            _ => Err(IpcError::new(
+                "not_checking",
+                "the model check is not running",
+            )),
         }
     }
 
@@ -791,11 +769,7 @@ impl ModelWork for HostModelWork {
         // Its own current-thread runtime; this is a plain thread, never inside another one.
         // The error's words name the manifest: the page gets fixed copy (T9.23).
         let downloader = Downloader::for_manifest(Arc::clone(&svc.clock)).map_err(|_| {
-            DownloadEnd::Failed(IpcError {
-                kind: "download".into(),
-                message: crate::models::MODEL_FILES_FAILED.into(),
-                retryable: false,
-            })
+            DownloadEnd::Failed(IpcError::new("download", crate::models::MODEL_FILES_FAILED))
         })?;
         let result = host::download_model(&downloader, &models, model, cancel, progress);
         result.map_err(|e| {

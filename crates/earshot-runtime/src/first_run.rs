@@ -36,16 +36,13 @@ struct Record {
 }
 
 fn encode(record: &Record) -> Result<Vec<u8>, RuntimeError> {
-    let json = serde_json::to_vec(record)
-        .map_err(|_| RuntimeError::Internal("the first-run record could not be written"))?;
-    let mut out = RECORD_VERSION.to_le_bytes().to_vec();
-    out.extend_from_slice(&json);
-    Ok(out)
+    earshot_store::encode_versioned(RECORD_VERSION, record)
+        .map_err(|_| RuntimeError::Internal("the first-run record could not be written"))
 }
 
 fn decode(bytes: &[u8]) -> Option<Record> {
-    let (version, json) = bytes.split_first_chunk::<4>()?;
-    if u32::from_le_bytes(*version) != RECORD_VERSION {
+    let (version, json) = earshot_store::split_version(bytes)?;
+    if version != RECORD_VERSION {
         return None;
     }
     serde_json::from_slice(json).ok()

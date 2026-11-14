@@ -48,8 +48,8 @@ pub fn encode_voiceprint_me(speaker: EntityId) -> Vec<u8> {
 /// bytes (read as no evidence: "This isn't me" stays allowed).
 #[must_use]
 pub fn decode_voiceprint_me(bytes: &[u8]) -> Option<EntityId> {
-    let (version, rest) = bytes.split_first_chunk::<4>()?;
-    if u32::from_le_bytes(*version) != VOICEPRINT_ME_VERSION {
+    let (version, rest) = earshot_store::split_version(bytes)?;
+    if version != VOICEPRINT_ME_VERSION {
         return None;
     }
     std::str::from_utf8(rest).ok()?.parse().ok()
@@ -139,6 +139,66 @@ mod tests {
             centroid: e,
             edited,
         }
+    }
+
+    #[test]
+    fn post_identity_record_bytes_are_pinned() {
+        // T12.52: the exact stored form of a fixed record, so a change to the framing shows.
+        let record = IdentityRecord {
+            speakers: vec![SpeakerIdentity {
+                speaker: EntityId::from_bytes([7; 16]),
+                track: TrackId::Reference,
+                centroid: emb(&[0.5, 0.25]),
+                given_name: "Speaker 1".into(),
+                given_person: None,
+                given_stamp: None,
+                user_edited: true,
+                enrolled: false,
+                ignored: false,
+            }],
+        };
+        let pinned_json = concat!(
+            r#"{"speakers":[{"speaker":"07070707-0707-0707-0707-070707070707","#,
+            r#""track":"reference","centroid":{"model":"m@1","vector":[0.5,0.25]},"#,
+            r#""given_name":"Speaker 1","given_person":null,"given_stamp":null,"#,
+            r#""user_edited":true,"enrolled":false,"ignored":false}]}"#,
+        );
+        let bytes = encode(&record);
+        assert_eq!(bytes[..4], [2, 0, 0, 0]);
+        assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), pinned_json);
+        let mut pinned = vec![2, 0, 0, 0];
+        pinned.extend_from_slice(pinned_json.as_bytes());
+        assert_eq!(decode(&pinned), StoredIdentities::Record(record));
+        // The messages of an unreadable record.
+        let unreadable = |b: &[u8]| match decode(b) {
+            StoredIdentities::Unreadable(why) => why,
+            StoredIdentities::Record(_) => panic!("must not read"),
+        };
+        assert_eq!(
+            unreadable(&[2, 0]),
+            "the speaker identity record is truncated"
+        );
+        assert_eq!(
+            unreadable(&[7, 0, 0, 0, b'{', b'}']),
+            "speaker identity record version 7, this build reads [1, 2]"
+        );
+        assert!(unreadable(&[2, 0, 0, 0, b'{']).starts_with("the speaker identity record: "));
+    }
+
+    #[test]
+    fn post_voiceprint_me_record_bytes_are_pinned() {
+        // T12.52: version, then the row id as text.
+        let id = EntityId::from_bytes([7; 16]);
+        let bytes = encode_voiceprint_me(id);
+        let mut pinned = vec![1, 0, 0, 0];
+        pinned.extend_from_slice(id.to_string().as_bytes());
+        assert_eq!(bytes, pinned);
+        assert_eq!(decode_voiceprint_me(&pinned), Some(id));
+        assert_eq!(decode_voiceprint_me(&[1, 0]), None);
+        let mut other = pinned.clone();
+        other[0] = 2;
+        assert_eq!(decode_voiceprint_me(&other), None);
+        assert_eq!(decode_voiceprint_me(&[1, 0, 0, 0, b'x']), None);
     }
 
     #[test]

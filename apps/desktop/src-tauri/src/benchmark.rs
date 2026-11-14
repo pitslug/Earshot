@@ -19,9 +19,7 @@
 //! `Done`, `Cancelled` or `Failed` (a panic in the work becomes `Failed`). Tests drive it
 //! through [`BenchmarkWork`] fakes.
 
-use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::thread::JoinHandle;
 
 use earshot_core::asr::CancelToken;
 use earshot_runtime::benchmark::{
@@ -38,6 +36,7 @@ use tauri_specta::Event;
 
 use crate::activity::WorkGate;
 use crate::ipc::IpcError;
+use crate::slot_job::SlotJob;
 
 /// The benchmark meeting's mic track (the Project Manager's headset).
 const MIC_FLAC: &[u8] = include_bytes!("../resources/benchmark/mic.flac");
@@ -384,18 +383,27 @@ pub trait BenchmarkWork: Send + Sync {
 /// Where benchmark events go.
 pub type BenchmarkSink = Arc<dyn Fn(BenchmarkEvent) + Send + Sync>;
 
-struct Running {
-    cancel: CancelToken,
-    thread: JoinHandle<()>,
-}
-
 struct Inner {
     work: Arc<dyn BenchmarkWork>,
     sink: BenchmarkSink,
     gate: WorkGate,
-    slot: Mutex<Option<Running>>,
+    job: SlotJob,
     /// Where the run under way is (`None`: none).
     current: Mutex<Option<BenchmarkRunning>>,
+}
+
+/// Clears where the run is when dropped: held with the gate pass and dropped after it, before
+/// the terminal event (or with the pass when the thread cannot start).
+struct ClearCurrent(Arc<Inner>);
+
+impl Drop for ClearCurrent {
+    fn drop(&mut self) {
+        *self
+            .0
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
 }
 
 /// Runs at most one benchmark (cheap to clone; clones share it).
@@ -412,13 +420,22 @@ impl BenchmarkJobs {
             work,
             sink,
             gate,
-            slot: Mutex::new(None),
+            job: SlotJob::new(
+                "earshot-benchmark",
+                crate::activity::BENCHMARK_ALREADY_RUNNING,
+            ),
             current: Mutex::new(None),
         }))
     }
 
-    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Running>> {
-        self.0.slot.lock().unwrap_or_else(PoisonError::into_inner)
+    /// The jobs with their thread started by `spawn` (before any clone is made).
+    #[cfg(test)]
+    pub fn with_spawn(mut self, spawn: crate::slot_job::Spawn) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("not yet shared")
+            .job
+            .set_spawn(spawn);
+        self
     }
 
     /// Where the run under way is, for a page opened during it.
@@ -437,66 +454,41 @@ impl BenchmarkJobs {
     /// `busy` (retryable) while a run, a meeting, a meeting job, the model check, the voice
     /// sample or the audio check runs.
     pub fn start(&self, services: &Services) -> Result<(), IpcError> {
-        let mut slot = self.slot();
-        if let Some(old) = slot.take() {
-            if !old.thread.is_finished() {
-                *slot = Some(old);
-                return Err(IpcError {
-                    kind: "busy".into(),
-                    message: crate::activity::BENCHMARK_ALREADY_RUNNING.into(),
-                    retryable: true,
-                });
-            }
-            let _ = old.thread.join();
-        }
-        let pass = self.0.gate.enter_benchmark()?;
-        *self
-            .0
-            .current
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(BenchmarkRunning {
-            phase: BenchmarkPhase::Replaying,
-            heard_ms: 0,
-            total_ms: meeting_ms().unwrap_or(0),
-        });
-        let cancel = CancelToken::new();
         let inner = Arc::clone(&self.0);
         let svc = services.clone();
-        let token = cancel.clone();
-        let thread = std::thread::Builder::new()
-            .name("earshot-benchmark".into())
-            .spawn(move || {
-                let event =
-                    std::panic::catch_unwind(AssertUnwindSafe(|| run(&inner, &svc, &token)))
-                        .unwrap_or_else(|_| BenchmarkEvent::Failed {
-                            message: BENCHMARK_PANIC_MESSAGE.into(),
-                        });
-                drop(pass);
-                *inner.current.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                (inner.sink)(event);
-            })
-            .map_err(|e| IpcError {
-                kind: "internal".into(),
-                message: format!("cannot start the benchmark thread: {e}"),
-                retryable: false,
-            })?;
-        *slot = Some(Running { cancel, thread });
-        Ok(())
+        let sink = Arc::clone(&self.0.sink);
+        self.0.job.start(
+            || {
+                let pass = self.0.gate.enter_benchmark()?;
+                *self
+                    .0
+                    .current
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(BenchmarkRunning {
+                    phase: BenchmarkPhase::Replaying,
+                    heard_ms: 0,
+                    total_ms: meeting_ms().unwrap_or(0),
+                });
+                // Dropped in this order: the pass, then where the run is.
+                Ok((pass, ClearCurrent(Arc::clone(&self.0))))
+            },
+            move |token| run(&inner, &svc, token),
+            || BenchmarkEvent::Failed {
+                message: BENCHMARK_PANIC_MESSAGE.into(),
+            },
+            move |event| sink(event),
+        )
     }
 
     /// Cancels the running benchmark (a `Cancelled` follows unless it already ended).
     pub fn cancel(&self) {
-        if let Some(r) = self.slot().as_ref() {
-            r.cancel.cancel();
-        }
+        self.0.job.cancel();
     }
 
     /// Waits for the running benchmark.
     #[cfg(test)]
     pub fn join(&self) {
-        if let Some(r) = self.slot().take() {
-            let _ = r.thread.join();
-        }
+        self.0.job.join();
     }
 }
 
@@ -625,11 +617,7 @@ pub async fn benchmark(
     let running = jobs.current();
     tauri::async_runtime::spawn_blocking(move || benchmark_view(&services, running))
         .await
-        .map_err(|_| IpcError {
-            kind: "internal".into(),
-            message: "the task stopped".into(),
-            retryable: false,
-        })?
+        .map_err(|_| IpcError::new("internal", "the task stopped"))?
 }
 
 /// Starts the benchmark with the current settings (`BenchmarkEvent`s follow). `busy` while a

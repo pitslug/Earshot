@@ -1372,11 +1372,11 @@ mod tests {
 
     #[test]
     fn summarize_chunks_sends_the_inputs_prompt_variant_in_every_request() {
-        let owner_rule = "the owner is the person addressed or named";
+        // Only the brief rules shorten the tldr to one sentence.
+        let brief_rule = "Keep `tldr` to one sentence.";
         for (variant, expected) in [
-            // The production rules carry the owner rule since T6.20f; the earlier ones do not.
-            (earshot_core::prompt::PromptVariant::Previous, false),
-            (earshot_core::prompt::PromptVariant::Current, true),
+            (earshot_core::prompt::PromptVariant::Brief, true),
+            (earshot_core::prompt::PromptVariant::Current, false),
         ] {
             let mut m = Fake::new(16_384, 1.0);
             // The first map reply is not JSON, so a repair round is sent too.
@@ -1392,7 +1392,7 @@ mod tests {
             for call in &m.calls {
                 assert_eq!(call.0[0].role, Role::System);
                 assert_eq!(
-                    call.0[0].content.contains(owner_rule),
+                    call.0[0].content.contains(brief_rule),
                     expected,
                     "{variant}"
                 );
@@ -1878,7 +1878,7 @@ mod tests {
     fn summarize_passes_the_assistant_prefix_and_counts_it() {
         let mut m = Fake::new(16_384, 1.0);
         let mut o = options();
-        o.assistant_prefix = "<think>\n\n</think>\n\n".into();
+        o.assistant_prefix = earshot_core::prompt::QWEN_NO_THINK.into();
         summarize(&mut m, &input(3), &o).result.unwrap();
         assert_eq!(m.calls[0].1, o.assistant_prefix);
     }
