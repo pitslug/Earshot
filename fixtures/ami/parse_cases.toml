@@ -1,8 +1,8 @@
-# Shared AMI annotation parse cases (T2.5b). Two parsers read the same files: the
-# `fetch-fixtures --verify` check in xtask (`fixtures::ami_headset_speakers`,
-# `fixtures::ami_segments`) and the asr_eval example (`refs::parse_ami_channels`,
-# `refs::parse_ami_segments`). Both test suites run every case below and must produce
-# exactly the expected result, so the two parsers follow one rule:
+# Shared AMI annotation parse cases (T2.5b). One parser reads these files: the asr_eval
+# example's `refs::parse_ami_channels` and `refs::parse_ami_segments`, which xtask compiles
+# too (`crate::ami_refs`, since T12.51) and calls from the `fetch-fixtures --verify` check
+# (`fixtures::ami_headset_speakers`, `fixtures::ami_segments`). Both test suites run every
+# case below and must produce exactly the expected result. The rule:
 # - meetings.xml: the meeting's block lists one speaker on each headset 0-3, and the
 #   speaker letters are exactly A-D; result sorted by headset.
 # - segments file: at least one <segment>, all on one channel, every span 0 <= start < end;

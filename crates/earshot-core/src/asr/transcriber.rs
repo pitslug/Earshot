@@ -1,7 +1,7 @@
 //! The batch and streaming transcriber traits, their options and errors.
 //!
-//! Backends (whisper.cpp in `earshot-asr-whisper`, QNN in `earshot-asr-qnn`) implement
-//! [`Transcriber`]. Calls are blocking and synchronous: the runtime decides which thread
+//! Backends (whisper.cpp in `earshot-asr-whisper`, Parakeet on ONNX Runtime in `earshot-onnx`)
+//! implement [`Transcriber`]. Calls are blocking and synchronous: the runtime decides which thread
 //! runs them, core never spawns one (PLAN.md 3.2). A long decode is stopped from another
 //! thread through a [`CancelToken`].
 

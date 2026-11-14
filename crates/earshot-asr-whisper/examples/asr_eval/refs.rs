@@ -418,8 +418,8 @@ pub fn ami_reference(speakers: &[Vec<AmiWord>], from: f64, to: f64) -> String {
 
 /// The `(headset channel, speaker letter)` pairs of `meeting` from the AMI corpus resource
 /// `corpusResources/meetings.xml` (`<speaker ... channel="0" nxt_agent="A" .../>` inside
-/// `<meeting ... observation="<meeting>">`), sorted by channel. Same rule as xtask's
-/// `fixtures::ami_headset_speakers` (shared cases in `fixtures/ami/parse_cases.toml`).
+/// `<meeting ... observation="<meeting>">`), sorted by channel. xtask compiles this file and its
+/// `fixtures::ami_headset_speakers` calls it (shared cases in `fixtures/ami/parse_cases.toml`).
 ///
 /// # Errors
 /// The meeting is missing, or its speakers are not one per headset 0-3 with the letters
@@ -478,7 +478,8 @@ pub struct AmiSegments {
 /// Parses an AMI manual annotations v1.6.2 segments file
 /// (`segments/<meeting>.<spk>.segments.xml`): every `<segment channel="n"
 /// transcriber_start="s" transcriber_end="e">`. These are the oracle segments the standard
-/// AMI IHM condition decodes (Kaldi `egs/ami`, ESPnet `egs2/ami`).
+/// AMI IHM condition decodes (Kaldi `egs/ami`, ESPnet `egs2/ami`). xtask's
+/// `fixtures::ami_segments` calls it (shared cases in `fixtures/ami/parse_cases.toml`).
 ///
 /// # Errors
 /// No segment, a segment without a parseable channel or time, an empty span, or segments

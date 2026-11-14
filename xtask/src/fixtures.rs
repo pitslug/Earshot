@@ -1215,8 +1215,8 @@ pub const AMI_CHANNELS: [&str; 6] = [
     "Headset-3",
 ];
 
-/// AMI participants per meeting (both meetings have four).
-pub const AMI_SPEAKERS: [&str; 4] = ["A", "B", "C", "D"];
+/// AMI participants per meeting (both meetings have four): the asr_eval rule's letters.
+pub const AMI_SPEAKERS: [&str; 4] = crate::ami_refs::AMI_SPEAKERS;
 /// AMI manual annotations v1.6.2: the word-level references of `asr.wer_ami_ihm` (T2.5).
 pub const AMI_ANNOTATIONS_URL: &str =
     "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip";
@@ -1695,98 +1695,30 @@ pub fn ami_words_file_looks_valid(bytes: &[u8]) -> bool {
     bytes.starts_with(b"<?xml") && bytes.windows(3).any(|w| w == b"<w ")
 }
 
-/// Value of `name="..."` inside one XML start tag.
-fn xml_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let key = format!(" {name}=\"");
-    let at = tag.find(&key)? + key.len();
-    let len = tag[at..].find('"')?;
-    Some(&tag[at..at + len])
-}
-
 /// The `(headset channel, speaker letter)` pairs of `meeting` in the AMI corpus resource
 /// [`AMI_MEETINGS_XML`] (`<speaker channel="n" nxt_agent="X" .../>` inside
 /// `<meeting ... observation="<meeting>">`), sorted by channel. `asr.wer_ami_ihm` scores
-/// `<meeting>.Headset-<n>.wav` against the words of speaker `X` (T2.5b).
+/// `<meeting>.Headset-<n>.wav` against the words of speaker `X` (T2.5b). The asr_eval
+/// example's rule, `refs::parse_ami_channels` (cases in `fixtures/ami/parse_cases.toml`).
 ///
 /// # Errors
 /// The meeting is missing, or its speakers are not one per headset 0-3 with the letters
 /// [`AMI_SPEAKERS`].
 pub fn ami_headset_speakers(xml: &str, meeting: &str) -> Result<Vec<(u8, String)>> {
-    let open = format!(" observation=\"{meeting}\"");
-    let at = xml
-        .find(&open)
-        .with_context(|| format!("meeting {meeting} not in {AMI_MEETINGS_XML}"))?;
-    let body = &xml[at..];
-    let body = &body[..body.find("</meeting>").context("unterminated <meeting>")?];
-    let mut speakers = Vec::new();
-    let mut rest = body;
-    while let Some(i) = rest.find("<speaker ") {
-        rest = &rest[i..];
-        let end = rest.find('>').context("unterminated <speaker>")?;
-        let tag = &rest[..end];
-        rest = &rest[end..];
-        let channel: u8 = xml_attr(tag, "channel")
-            .with_context(|| format!("speaker without channel: {tag}"))?
-            .parse()
-            .with_context(|| format!("bad channel in {tag}"))?;
-        let agent = xml_attr(tag, "nxt_agent")
-            .with_context(|| format!("speaker without nxt_agent: {tag}"))?;
-        speakers.push((channel, agent.to_owned()));
-    }
-    speakers.sort();
-    let channels: Vec<u8> = speakers.iter().map(|(c, _)| *c).collect();
-    ensure!(
-        channels == [0, 1, 2, 3],
-        "{meeting}: expected one speaker on each headset 0-3, got channels {channels:?}"
-    );
-    let mut letters: Vec<&str> = speakers.iter().map(|(_, a)| a.as_str()).collect();
-    letters.sort_unstable();
-    ensure!(
-        letters == AMI_SPEAKERS,
-        "{meeting}: expected speakers {AMI_SPEAKERS:?}, got {letters:?}"
-    );
-    Ok(speakers)
+    crate::ami_refs::parse_ami_channels(xml, meeting).map_err(anyhow::Error::msg)
 }
 
 /// Parses one AMI segments file (`segments/<meeting>.<speaker>.segments.xml`, the oracle
 /// segments `asr.wer_ami_ihm` decodes, T2.5b) into its headset channel and
-/// `(transcriber_start, transcriber_end)` spans sorted by start. Same rule as the asr_eval
-/// example's `refs::parse_ami_segments` (shared cases in `fixtures/ami/parse_cases.toml`).
+/// `(transcriber_start, transcriber_end)` spans sorted by start. The asr_eval example's
+/// rule, `refs::parse_ami_segments` (cases in `fixtures/ami/parse_cases.toml`).
 ///
 /// # Errors
 /// No `<segment>`, a missing or unparseable channel or time, an empty or negative span,
 /// or segments on more than one channel.
 pub fn ami_segments(xml: &str) -> Result<(u8, Vec<(f64, f64)>)> {
-    let mut channel = None;
-    let mut spans = Vec::new();
-    let mut rest = xml;
-    while let Some(i) = rest.find("<segment ") {
-        rest = &rest[i..];
-        let end = rest.find('>').context("unterminated <segment>")?;
-        let tag = &rest[..end];
-        rest = &rest[end..];
-        let c: u8 = xml_attr(tag, "channel")
-            .with_context(|| format!("segment without channel: {tag}"))?
-            .parse()
-            .with_context(|| format!("bad channel in {tag}"))?;
-        let first = *channel.get_or_insert(c);
-        ensure!(c == first, "segments on channels {first} and {c}");
-        let time = |name: &str| -> Result<f64> {
-            xml_attr(tag, name)
-                .with_context(|| format!("segment without {name}: {tag}"))?
-                .parse()
-                .with_context(|| format!("bad {name} in {tag}"))
-        };
-        let (a, b) = (time("transcriber_start")?, time("transcriber_end")?);
-        ensure!(
-            a >= 0.0 && a < b,
-            "segment with an empty or negative span: {tag}"
-        );
-        spans.push((a, b));
-    }
-    let channel = channel.context("no <segment> in segments file")?;
-    spans.sort_by(|x, y| x.0.total_cmp(&y.0));
-    Ok((channel, spans))
+    let segments = crate::ami_refs::parse_ami_segments(xml).map_err(anyhow::Error::msg)?;
+    Ok((segments.channel, segments.spans))
 }
 
 /// Checks one AMI segments file against the speaker's headset `channel` from
