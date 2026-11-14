@@ -45,10 +45,19 @@
 //! reported in [`PreviewReport::off`], and none affects recording or stored transcripts. Previews
 //! that take too long pause and try again ([`PreviewReport::slow_pauses`]).
 //!
+//! **The battery is a pause (T12.37).** Only the battery and the wait for a hold are not final:
+//! on battery a track's running thread stops (its model session dropped with it, so a QNN one
+//! goes back to the idle pool), the words it showed leave, and the track waits again; when the
+//! supply, read at most every [`super::LiveConfig::power_poll`], says mains, previews start as at
+//! the meeting's start (the same rule, the same loader, a new thread once the old one has
+//! stopped), and say they run. Every other reason (falling behind, a refused or failed load, a
+//! stopped transcript) is for the rest of the meeting. The report goes on counting across pauses.
+//!
 //! **Telling the user (T12.33).** As it happens, each track with previews says whether they run
 //! or why not, as a kind ([`PreviewOffReason`]) in [`super::RuntimeEvent::LivePreviewState`], once
 //! per change: waiting for the transcript to catch up, running once the model is loaded, off for
-//! the meeting. A track without previews (the mic in a call without `own_voice`) says nothing.
+//! the meeting, or paused on battery. A track without previews (the mic in a call without
+//! `own_voice`) says nothing.
 //! [`LivePreviews::rule`] is asked before a wait or the battery is said, once per track (its
 //! backend and model never change once known), so neither is said for previews this computer
 //! would not run anyway: turned off, off by default, a part without them, and in the app a whisper
@@ -88,7 +97,7 @@ pub const MIN_PREVIEW_AUDIO: Duration = Duration::from_secs(1);
 /// shorter than this can show twice until the next preview.
 pub const COVERED_SLACK: Duration = Duration::from_millis(100);
 
-/// Why previews stop on battery.
+/// Why previews wait on battery (until the computer is on mains again, T12.37).
 pub const ON_BATTERY_REASON: &str = "off on battery";
 
 /// What a report says of a preview thread that panicked.
@@ -116,7 +125,7 @@ const AUDIO_QUEUE: usize = 4096;
 /// each, and never shows the text beside it ([`PreviewRefusal::text`], [`PreviewReport::off`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PreviewOffReason {
-    /// The computer runs on battery.
+    /// The computer runs on battery: previews start (again) once it is on mains (T12.37).
     OnBattery,
     /// The live transcript is catching up after a hold (T9.1l); previews start once it is up to
     /// date. Said only once the track's backend is known and nothing else would keep them off.
@@ -378,7 +387,8 @@ pub struct PreviewReport {
     pub words_shown: u64,
     /// Decodes that showed nothing new (two decodes disagreeing, or a decode on blank).
     pub decodes_adding_nothing: u64,
-    /// Seconds the model took to load, on the preview thread.
+    /// Seconds the model took to load, on the preview thread: every load, when previews came back
+    /// after a pause on battery (T12.37).
     pub load_s: f64,
     /// Where the loaded session runs, as it reports itself (ONNX Runtime's placement for a real
     /// model; `None`: no session loaded). It can differ from the track's: beside CUDA the user's own
@@ -522,7 +532,7 @@ impl PreviewWork {
         let mut transcriber = (self.previews.load)(&self.backend)?;
         let ran = transcriber.backend_info().kind;
         self.add(|r| {
-            r.load_s = loading.elapsed().as_secs_f64();
+            r.load_s += loading.elapsed().as_secs_f64();
             r.backend = Some(ran);
         });
         let _ = self.out.send(FromPreview::Running);
@@ -637,7 +647,7 @@ impl PreviewWork {
         let model = load(&self.backend)?;
         let ran = model.backend_info().kind;
         self.add(|r| {
-            r.load_s = loading.elapsed().as_secs_f64();
+            r.load_s += loading.elapsed().as_secs_f64();
             r.backend = Some(ran);
         });
         let _ = self.out.send(FromPreview::Running);
@@ -837,6 +847,8 @@ enum StopAt {
 
 /// The session's end of a running preview thread.
 pub(super) struct PreviewThread {
+    /// What it was started from, for a start again after a pause on battery (T12.37).
+    previews: LivePreviews,
     to: SyncSender<ToPreview>,
     from: Receiver<FromPreview>,
     stop: Arc<AtomicBool>,
@@ -860,19 +872,17 @@ impl PreviewThread {
         backend: BackendInfo,
         frontier: Arc<AtomicU64>,
         queued: Arc<AtomicU64>,
+        report: Arc<Mutex<PreviewReport>>,
     ) -> std::io::Result<Self> {
         let (to, inbox) = std::sync::mpsc::sync_channel(AUDIO_QUEUE);
         let (out, from) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let decode = Arc::new(Mutex::new(CancelToken::new()));
-        let report = Arc::new(Mutex::new(PreviewReport {
-            track: Some(track),
-            ..PreviewReport::default()
-        }));
+        report.lock().unwrap_or_else(PoisonError::into_inner).track = Some(track);
         let busy = PIPELINE_RATE.frames_for(REAL_DECODE_QUEUE) as u64;
         let fell_behind = PIPELINE_RATE.frames_for(previews.fell_behind) as u64;
         let work = PreviewWork {
-            previews,
+            previews: previews.clone(),
             backend,
             frontier,
             queued: Arc::clone(&queued),
@@ -887,6 +897,7 @@ impl PreviewThread {
             .name("earshot-live-preview".into())
             .spawn(move || work.run())?;
         Ok(Self {
+            previews,
             to,
             from,
             stop,
@@ -939,10 +950,13 @@ impl PreviewThread {
             .cancel();
         let until = Instant::now() + wait;
         // A decode in progress ends on its own: this never makes the end of a meeting wait longer.
+        let mut gave_up = None;
         let done = loop {
             let left = until.saturating_duration_since(Instant::now());
             match self.from.recv_timeout(left) {
                 Ok(FromPreview::Done) | Err(RecvTimeoutError::Disconnected) => break true,
+                // A thread that gave up before it saw the stop keeps its own reason.
+                Ok(FromPreview::Off(why)) => gave_up = Some(why),
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => break false,
             }
@@ -960,6 +974,11 @@ impl PreviewThread {
         if crashed {
             report.off = Some(PREVIEW_THREAD_CRASHED.to_owned());
             report.reason = Some(PreviewOffReason::Failed);
+        } else if let Some(why) = gave_up
+            && report.off.is_none()
+        {
+            report.off = Some(why.text);
+            report.reason = Some(why.reason);
         } else if !done && at == StopAt::MeetingEnd && report.off.is_none() {
             // Left in a decode at the end, whatever the wait: never a report of previews that
             // ran to the end. A stop during the meeting has its caller's reason.
@@ -970,13 +989,37 @@ impl PreviewThread {
     }
 }
 
+/// What a track's previews did before the battery paused them (T12.37): the report they go on
+/// adding to, and their thread (told to stop) until it is seen to have ended, with when it was
+/// told.
+#[derive(Default)]
+pub(super) struct Paused {
+    report: Option<Arc<Mutex<PreviewReport>>>,
+    thread: Option<(Box<PreviewThread>, Instant)>,
+}
+
+impl Paused {
+    /// The report so far (nothing for previews that never started).
+    fn report(&self, track: TrackId) -> PreviewReport {
+        self.report.as_ref().map_or_else(
+            || PreviewReport {
+                track: Some(track),
+                ..PreviewReport::default()
+            },
+            |r| r.lock().unwrap_or_else(PoisonError::into_inner).clone(),
+        )
+    }
+}
+
 /// A track's previews: not started, running, or off and why.
 #[derive(Default)]
 pub(super) enum PreviewState {
     /// This track has none.
     #[default]
     None,
-    Pending(LivePreviews),
+    /// Waiting to start: at the meeting's start, for a hold, or on battery (then also what they
+    /// did before the pause).
+    Pending(LivePreviews, Paused),
     Running(Box<PreviewThread>),
     /// Stopped or never run; what it did, and why.
     Off(PreviewReport),
@@ -1000,15 +1043,21 @@ impl LivePreviews {
         };
         if has_reference {
             let mic = own_voice.map_or(PreviewState::None, |load| {
-                PreviewState::Pending(Self {
-                    load,
-                    rule: own_voice_rule,
-                    ..first.clone()
-                })
+                PreviewState::Pending(
+                    Self {
+                        load,
+                        rule: own_voice_rule,
+                        ..first.clone()
+                    },
+                    Paused::default(),
+                )
             });
-            [mic, PreviewState::Pending(first)]
+            [mic, PreviewState::Pending(first, Paused::default())]
         } else {
-            [PreviewState::Pending(first), PreviewState::None]
+            [
+                PreviewState::Pending(first, Paused::default()),
+                PreviewState::None,
+            ]
         }
     }
 }
@@ -1065,7 +1114,8 @@ where
                 report
             }
             PreviewState::Off(report) => report,
-            PreviewState::None | PreviewState::Pending(_) => PreviewReport {
+            PreviewState::Pending(_, paused) => paused.report(track),
+            PreviewState::None => PreviewReport {
                 track: Some(track),
                 ..PreviewReport::default()
             },
@@ -1078,6 +1128,44 @@ where
         self.say_previews(track, Some(why.reason));
     }
 
+    /// The computer went on battery: `track`'s running previews stop and wait to start again
+    /// (T12.37, module docs). Never waits: the thread is told to stop and its decode cancelled,
+    /// and the next start waits for it to have stopped, reading what it said last. A thread that
+    /// gave up, now or before it stopped, keeps its own reason for the rest of the meeting.
+    fn previews_pause(&mut self, track: TrackId) {
+        let PreviewState::Running(p) = std::mem::take(&mut self.previews[slot(track)]) else {
+            return;
+        };
+        let gave_up = p.from.try_iter().find_map(|message| match message {
+            FromPreview::Off(why) => Some(why),
+            _ => None,
+        });
+        if let Some(why) = gave_up {
+            self.previews[slot(track)] = PreviewState::Running(p);
+            self.previews_off(track, why);
+            return;
+        }
+        p.stop.store(true, Ordering::Release);
+        p.decode
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .cancel();
+        let shown = !p.sent.is_empty();
+        let previews = p.previews.clone();
+        let paused = Paused {
+            report: Some(Arc::clone(&p.report)),
+            thread: Some((p, Instant::now())),
+        };
+        if shown {
+            self.emit(RuntimeEvent::LivePreview {
+                track,
+                words: Vec::new(),
+            });
+        }
+        self.previews[slot(track)] = PreviewState::Pending(previews, paused);
+        self.say_previews(track, Some(PreviewOffReason::OnBattery));
+    }
+
     /// Between two pumps, never waiting: starts each track's previews once nothing holds them
     /// back, gives way to a real decode, passes on what the threads found, and stops a track's
     /// previews when they should stop.
@@ -1086,7 +1174,7 @@ where
         for track in TRACKS {
             match &self.previews[slot(track)] {
                 PreviewState::None | PreviewState::Off(_) => continue,
-                PreviewState::Pending(_) => self.start_previews(track),
+                PreviewState::Pending(..) => self.start_previews(track),
                 PreviewState::Running(_) => {}
             }
             active[slot(track)] = true;
@@ -1195,9 +1283,15 @@ where
             .into_iter()
             .filter(|t| matches!(self.previews[slot(*t)], PreviewState::Running(_)))
             .collect();
-        if !running.is_empty() && self.policy.power.supply() == PowerSupply::Battery {
+        if running.is_empty() {
+            return;
+        }
+        let supply = self.policy.power.supply();
+        if supply == PowerSupply::Battery {
+            // The waiting tracks start from this reading, never an older one.
+            self.waiting_power = Some((supply, now + self.policy.power_poll));
             for track in running {
-                self.previews_off(track, on_battery());
+                self.previews_pause(track);
             }
         }
     }
@@ -1214,7 +1308,7 @@ where
         if self.preview_rule_allowed[slot(track)] {
             return None;
         }
-        let PreviewState::Pending(previews) = &self.previews[slot(track)] else {
+        let PreviewState::Pending(previews, _) = &self.previews[slot(track)] else {
             return None;
         };
         let Some(why) = previews.rule.as_ref().and_then(|rule| rule(backend)) else {
@@ -1297,16 +1391,46 @@ where
             self.previews_off(track, why);
             return;
         }
-        if self.policy.power.supply() == PowerSupply::Battery {
-            self.previews_off(track, on_battery());
+        // On battery they wait, and start when the supply is read as mains (T12.37).
+        if self.waiting_supply() == PowerSupply::Battery {
+            self.say_previews(track, Some(PreviewOffReason::OnBattery));
             return;
         }
+        // After a pause the old thread stops first, so its model session is gone (a QNN one back
+        // in the idle pool) before another loads.
+        // A thread that has not stopped within the end wait never will in time: off, and the
+        // battery is not why.
+        let stop_wait = self.policy.speaker_stop_wait;
+        let PreviewState::Pending(_, paused) = &mut self.previews[slot(track)] else {
+            return;
+        };
+        if let Some((old, since)) = &paused.thread
+            && old.thread.as_ref().is_some_and(|t| !t.is_finished())
+        {
+            if since.elapsed() >= stop_wait {
+                self.previews_off(
+                    track,
+                    PreviewRefusal::new(PreviewOffReason::Failed, PREVIEW_THREAD_LEFT),
+                );
+            }
+            return;
+        }
+        // Ended: what it said last counts (a failed load or decode, a crash stay final).
+        if let Some((old, _)) = paused.thread.take() {
+            let ended = old.finish(Duration::ZERO, StopAt::DuringMeeting);
+            if let (Some(text), Some(reason)) = (ended.off, ended.reason) {
+                self.previews_off(track, PreviewRefusal::new(reason, text));
+                return;
+            }
+        }
         let speaking = self.speaking[slot(track)];
-        let PreviewState::Pending(previews) = std::mem::take(&mut self.previews[slot(track)])
+        let PreviewState::Pending(previews, paused) =
+            std::mem::take(&mut self.previews[slot(track)])
         else {
             return;
         };
-        match PreviewThread::spawn(previews, track, backend, frontier, queued) {
+        let report = paused.report.unwrap_or_default();
+        match PreviewThread::spawn(previews, track, backend, frontier, queued, report) {
             Ok(thread) => {
                 if speaking {
                     thread.send(ToPreview::Voice {
@@ -1338,12 +1462,38 @@ where
         for track in TRACKS {
             let report = match std::mem::take(&mut self.previews[slot(track)]) {
                 PreviewState::None => continue,
-                PreviewState::Pending(_) => PreviewReport {
-                    track: Some(track),
-                    off: Some("the meeting ended before previews started".to_owned()),
-                    reason: Some(PreviewOffReason::MeetingEnded),
-                    ..PreviewReport::default()
-                },
+                PreviewState::Pending(_, paused) => {
+                    // A paused thread gets the end wait a running one gets: one that did not stop
+                    // or that crashed says so, never the battery.
+                    let base = paused.report(track);
+                    let ended = paused.thread.map(|(old, _)| {
+                        old.finish(self.policy.speaker_stop_wait, StopAt::MeetingEnd)
+                    });
+                    let base = match ended {
+                        Some(report) if report.off.is_some() => {
+                            self.emit(RuntimeEvent::LivePreviewReport(report));
+                            continue;
+                        }
+                        Some(report) => report,
+                        None => base,
+                    };
+                    // Waiting on battery at the end says the battery, as the meeting screen did.
+                    let why = if self.preview_said[slot(track)]
+                        == Some(Some(PreviewOffReason::OnBattery))
+                    {
+                        on_battery()
+                    } else {
+                        PreviewRefusal::new(
+                            PreviewOffReason::MeetingEnded,
+                            "the meeting ended before previews started",
+                        )
+                    };
+                    PreviewReport {
+                        off: Some(why.text),
+                        reason: Some(why.reason),
+                        ..base
+                    }
+                }
                 PreviewState::Off(report) => report,
                 PreviewState::Running(p) => {
                     let shown = !p.sent.is_empty();
