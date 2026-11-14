@@ -761,7 +761,7 @@ describe("meeting screen", () => {
     expect(within(view).queryByText(/hands-free mode/)).toBeNull();
   });
 
-  it("says why provisional words are off, for the whole meeting on battery", async () => {
+  it("says why provisional words are off, while the computer is on battery", async () => {
     const s = setup({ provisionalWords: "battery" });
     const view = await startMeeting(s);
     expect(within(view).getByText(PROVISIONAL_WORDS_COPY.battery)).toBeInTheDocument();

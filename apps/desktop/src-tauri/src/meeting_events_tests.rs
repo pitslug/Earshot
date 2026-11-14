@@ -1207,6 +1207,25 @@ fn meeting_events_provisional_words_on_battery_are_one_banner_said_once() {
     );
 }
 
+/// T12.37: unplugged, plugged in, unplugged, plugged in: the battery banner comes and goes with
+/// each change, one event per change.
+#[test]
+fn meeting_events_provisional_words_battery_banner_comes_and_goes_with_the_power() {
+    use crate::plain_text::{PreviewScope, provisional_words_copy};
+    let mut m = EventMapper::new(CaptureMode::Call);
+    let now = Instant::now();
+    let battery = Some(PreviewOffReason::OnBattery);
+    let all = provisional_words_copy(PreviewOffReason::OnBattery, PreviewScope::All).unwrap();
+    for _ in 0..2 {
+        let said = m.map(&preview_state(TrackId::Reference, battery), now);
+        assert_eq!(preview_banner(&said), all);
+        assert_eq!(
+            m.map(&preview_state(TrackId::Reference, None), now),
+            preview_cleared()
+        );
+    }
+}
+
 /// T12.33: the wait for the catch-up is a banner that is taken back when provisional words
 /// start; words that just start never had one and clear nothing.
 #[test]
@@ -1359,9 +1378,8 @@ fn meeting_events_provisional_words_own_voice_refused_and_others_on_battery() {
     assert_eq!(
         banner,
         format!(
-            "Provisional words for other people are off for this meeting because the computer is \
-             on battery. Plug it in before a meeting starts to see them. \
-             {PREVIEWS_OWN_VOICE_NPU_ALONE}"
+            "Provisional words for other people are paused because the computer is on battery. \
+             They start again when it is plugged in. {PREVIEWS_OWN_VOICE_NPU_ALONE}"
         )
     );
 }

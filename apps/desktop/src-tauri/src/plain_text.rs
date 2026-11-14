@@ -221,8 +221,8 @@ pub fn own_voice_alone_copy(reason: PreviewOffReason) -> Option<&'static str> {
 pub fn provisional_words_copy(reason: PreviewOffReason, scope: PreviewScope) -> Option<String> {
     let rest = match reason {
         PreviewOffReason::OnBattery => {
-            "are off for this meeting because the computer is on battery. Plug it in before a \
-             meeting starts to see them."
+            "are paused because the computer is on battery. They start again when it is \
+             plugged in."
         }
         PreviewOffReason::CatchingUp => "start once the live transcript has caught up.",
         PreviewOffReason::FellBehind => {
@@ -891,8 +891,8 @@ mod provisional_words_tests {
         assert_eq!(per_kind(PreviewOffReason::NotEnoughMemory), 1);
         assert_eq!(
             provisional_words_copy(PreviewOffReason::OnBattery, PreviewScope::All).unwrap(),
-            "Provisional words are off for this meeting because the computer is on battery. \
-             Plug it in before a meeting starts to see them."
+            "Provisional words are paused because the computer is on battery. They start again \
+             when it is plugged in."
         );
         assert_eq!(
             provisional_words_copy(PreviewOffReason::FellBehind, PreviewScope::Them).unwrap(),

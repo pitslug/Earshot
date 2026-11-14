@@ -135,7 +135,7 @@ export const SCRIPT_WARNING_AT = 2_500;
  * `plain_text::provisional_words_copy` words them. */
 export const PROVISIONAL_WORDS_COPY = {
   battery:
-    "Provisional words are off for this meeting because the computer is on battery. Plug it in before a meeting starts to see them.",
+    "Provisional words are paused because the computer is on battery. They start again when it is plugged in.",
   waiting: "Provisional words start once the live transcript has caught up.",
 } as const;
 
