@@ -20,8 +20,19 @@ export function splitToken(token: string): [string, string, string] {
 /** The word `token` adds: its core, when the core holds a letter; `null` for punctuation or a
  * number. */
 export function dictionaryWord(token: string): string | null {
-  const core = splitToken(token.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ""))[1];
+  const core = withoutSingleQuotes(splitToken(token.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ""))[1]);
   return LETTER.test(core) ? core : null;
+}
+
+/** `core` without leading and trailing single quotes (T12.45: `'Zorbek'` adds `Zorbek`), split
+ * again after each strip so punctuation inside the quotes goes too; an apostrophe inside the
+ * word stays. The app's rule is `vocabulary::without_single_quotes`. */
+export function withoutSingleQuotes(core: string): string {
+  for (;;) {
+    const stripped = core.replace(/^'+|'+$/g, "");
+    if (stripped.length === core.length) return core;
+    core = splitToken(stripped)[1];
+  }
 }
 
 /** Whether `word` is an entry of the Dictionary (case ignored, as the Dictionary drops a

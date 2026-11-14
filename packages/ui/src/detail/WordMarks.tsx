@@ -24,7 +24,7 @@ import {
 import { Fragment, type ReactNode, useState } from "react";
 
 import type { TranscriptRow } from "../ipc";
-import { dictionaryWord, inDictionary, splitToken } from "./dictionaryWord";
+import { dictionaryWord, inDictionary } from "./dictionaryWord";
 
 const useStyles = makeStyles({
   // A button that reads as the word it marks.
@@ -134,17 +134,18 @@ export function LineText({
     if (word === undefined || at < 0) {
       const plain = dictionaryWord(piece);
       if (plain === null) return piece;
-      const [pre, core, post] = splitToken(piece);
+      // The word the menu adds is wrapped, quotes and other punctuation left outside.
+      const from = piece.indexOf(plain);
       return (
         <Fragment key={i}>
-          {pre}
+          {piece.slice(0, from)}
           <span
             {...{ [WORD_ATTRIBUTE]: plain }}
             className={tinted.includes(plain) ? styles.tinted : undefined}
           >
-            {core}
+            {plain}
           </span>
-          {post}
+          {piece.slice(from + plain.length)}
         </Fragment>
       );
     }

@@ -121,8 +121,21 @@ pub fn set_vocabulary<S: AsRef<str>>(
 /// (`fixtures/ui/dictionary_word_cases.json`, which both suites run).
 #[must_use]
 pub fn dictionary_word(token: &str) -> Option<&str> {
-    let (_, core, _) = split_punctuation(token.trim());
+    let core = without_single_quotes(split_punctuation(token.trim()).1);
     core.chars().any(char::is_alphabetic).then_some(core)
+}
+
+/// `core` without leading and trailing single quotes (T12.45: `'Zorbek'` adds `Zorbek`), split
+/// again after each strip so punctuation inside the quotes goes too (`'Zorbek.'`). An
+/// apostrophe inside the word stays (`don't`). Kept apart from the list's own checks.
+fn without_single_quotes(mut core: &str) -> &str {
+    loop {
+        let stripped = core.trim_matches('\'');
+        if stripped.len() == core.len() {
+            return core;
+        }
+        core = split_punctuation(stripped).1;
+    }
 }
 
 /// Whether `word` is an entry of `entries` (case ignored, as [`Vocabulary::new`] drops a
@@ -142,7 +155,7 @@ fn listed_in<S: AsRef<str>>(entries: &[S], word: &str) -> bool {
 pub fn words_to_offer<S: AsRef<str>>(before: &str, after: &str, listed: &[S]) -> Vec<String> {
     let before: HashSet<&str> = before
         .split_whitespace()
-        .map(|t| split_punctuation(t).1)
+        .map(|t| without_single_quotes(split_punctuation(t).1))
         .collect();
     let mut seen = HashSet::new();
     after
