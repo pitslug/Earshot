@@ -244,7 +244,7 @@ fn need_child(
 
 // ---- meeting ----
 
-const MEETING: [&str; 7] = [
+const MEETING: [&str; 8] = [
     "title",
     "started_unix_ms",
     "utc_offset_minutes",
@@ -252,6 +252,7 @@ const MEETING: [&str; 7] = [
     "tags",
     "template",
     "folder_id",
+    "summary_kept_local",
 ];
 
 fn meeting_row(r: &Row<'_>) -> rusqlite::Result<Meeting> {
@@ -268,6 +269,7 @@ fn meeting_row(r: &Row<'_>) -> rusqlite::Result<Meeting> {
             .parse()
             .map_err(|_| conv_err(REST + 5, Type::Text, BadValue(template.clone())))?,
         folder_id: get_opt_id(r, REST + 6)?,
+        summary_kept_local: r.get::<_, i64>(REST + 7)? != 0,
     })
 }
 
@@ -297,6 +299,7 @@ fn put_meeting(c: &Connection, m: &Meeting) -> Result<(), RepoError> {
             json(&m.tags)?,
             text(m.template.name()),
             opt_id(m.folder_id),
+            Value::Integer(i64::from(m.summary_kept_local)),
         ],
     )?;
     exec(c, &upsert_sql("meeting", &synced_cols(&MEETING), "id"), &v)?;

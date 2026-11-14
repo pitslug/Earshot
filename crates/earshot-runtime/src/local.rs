@@ -68,7 +68,9 @@ meeting_records! {
     /// format in `earshot_store::encode_retention_clock`, [`crate::retention`]).
     AudioRetention => "audio-retention/", meeting at 0;
     /// `summary-kept-local/<meeting>`: the meeting's summary stays on this computer (T12.13;
-    /// presence is the answer, [`crate::keep_local`]).
+    /// presence is the answer, [`crate::keep_local`]). Never written since T11.1a, which made
+    /// it the synced field `Meeting::summary_kept_local`: read only for meetings from before
+    /// store migration 5, and removable once no store predates it.
     KeptLocal => "summary-kept-local/", meeting at 0;
     /// `word-choices/<meeting>`: the user's choices on suggested words (content, T12.15ec;
     /// [`crate::word_choices`]).

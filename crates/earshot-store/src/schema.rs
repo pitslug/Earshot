@@ -155,6 +155,21 @@ const V4: &str = "
 CREATE INDEX segment_live ON segment(meeting_id, pass, deleted);
 ";
 
+/// Migration 5: a meeting kept on this computer as a synced meeting field (T11.1a,
+/// docs/sync-spec.md section 5.1), so every synced copy of the meeting carries it. Filled from
+/// T12.13's device-local record `summary-kept-local/<meeting>` (the meeting id in hyphenated
+/// lower-case hex); the record stays, and the runtime reads either as kept. The rows are not
+/// re-stamped: the field records what this device already knew, not an edit.
+const V5: &str = "
+ALTER TABLE meeting ADD COLUMN summary_kept_local INTEGER NOT NULL DEFAULT 0;
+UPDATE meeting SET summary_kept_local = 1 WHERE EXISTS (
+    SELECT 1 FROM local_state WHERE key = 'summary-kept-local/' || lower(
+        substr(hex(meeting.id), 1, 8) || '-' || substr(hex(meeting.id), 9, 4) || '-' ||
+        substr(hex(meeting.id), 13, 4) || '-' || substr(hex(meeting.id), 17, 4) || '-' ||
+        substr(hex(meeting.id), 21, 12))
+);
+";
+
 /// Tables with sync metadata (the HLC high-water mark is the greatest `updated_*` in them).
 pub(crate) const SYNCED_TABLES: [&str; 9] = [
     "meeting",
@@ -170,7 +185,7 @@ pub(crate) const SYNCED_TABLES: [&str; 9] = [
 
 /// The migrations, in order, with `{META}` expanded.
 pub(crate) fn migrations() -> Vec<String> {
-    [V1, V2, V3, V4]
+    [V1, V2, V3, V4, V5]
         .iter()
         .map(|m| m.replace("{META}", META))
         .collect()
@@ -188,6 +203,7 @@ mod tests {
         "3994bcb0037913aeecece98d816f969dd6d5ba90f0a3a0d55f144403ed633107",
         "46159521b8052eff5fba4622c74f0f91717db9ec39170deba1757f35e48602d4",
         "85a4c55bdbd320805308174fdb3a2f531d9dfae9262659b726437b8caa14603b",
+        "a682b36a9b8d6bd831f0f4865fa7554dd79330f35e80f10c7512389e3bcc1df4",
     ];
 
     /// `(type, name, tbl_name, sql)` of every schema object, sorted.
@@ -272,6 +288,28 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, 3);
+    }
+
+    /// The committed schema-4 fixture (`tests/data/schema_v4.sql`, used by
+    /// `tests/kept_local.rs`) creates exactly the objects migrations 1 to 4 create, so the
+    /// kept-local migration (5) is tested on a real schema-4 database.
+    #[test]
+    fn store_kept_local_v4_fixture_has_exactly_the_schema_of_migrations_1_to_4() {
+        let fixture = rusqlite::Connection::open_in_memory().unwrap();
+        fixture
+            .execute_batch(include_str!("../tests/data/schema_v4.sql"))
+            .unwrap();
+        let fresh = rusqlite::Connection::open_in_memory().unwrap();
+        for m in &super::migrations()[..4] {
+            fresh.execute_batch(m).unwrap();
+        }
+        let want = objects(&fresh);
+        assert!(want.iter().any(|o| o.1 == "segment_live"), "{want:?}");
+        assert_eq!(objects(&fixture), want);
+        let version: u32 = fixture
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
     }
 
     /// The query plan of `has_live_segment` on a database after `upto` migrations.
