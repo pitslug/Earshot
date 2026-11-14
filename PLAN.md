@@ -2004,32 +2004,38 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: (1) triage every line against today's code: stale lines (already fixed, or the code is gone) are removed; each survivor is labelled real bug, test or guard gap, or tidy-up. (2) Fix the survivors by area in lanes, real bugs first, each fix with a test where it changes behaviour; lines in files claimed by another host (T12.31, T12.32, T12.33) wait for those merges. (3) A line that turns out to be a design question goes to the owner, not into code. From now on every merge batch fixes its own advisories or adds a sweep task (AGENTS.md conventions).
   - accept: `cargo xtask ci` on main after the batch; TODO.md holds only lines waiting on a claimed file or the owner, each saying which
 
-- [ ] T12.41 Cancel a re-transcription or re-summary
+- [x] T12.41 Cancel a re-transcription or re-summary
+  - status (2026-11-14): merged after review (3 advisories fixed).
   - found (the owner, 2026-11-14, TODO decision 1): jobs have no cancel, so a meeting with a job running cannot be stopped or deleted (T12.38 gives Close only).
   - do: a Cancel on a running re-transcribe or re-summarise job (one `CancelToken` per job through `jobs::JobRunner`, polled as the final pass and summary already poll), ending in one terminal `JobEvent` (cancelled, nothing written beyond what a cancelled final pass or summary writes today); the T12.38 delete dialog then offers Stop and delete for a job too. Tests through the job fakes; UI test and screenshots light and dark.
   - accept: `cargo test -p earshot-desktop --bin earshot`; `cargo test -p earshot-runtime` for anything touched; `cmd /c pnpm --filter @earshot/ui test`
 
 - [ ] T12.42 Update files carry a signed date
+  - status (2026-11-14): built on `lane/t1242` (1b6e24e) and held: the build date only refuses releases older than the copy, which the version check already refuses, and old copies' strict parser makes each release publish a second version file per architecture. Waiting on the owner to drop or keep it.
   - found (the owner, 2026-11-14, TODO decision 2): a version file has no date, so someone controlling the host could re-serve an older signed release to an older copy.
   - do: the signed version file gains a release date covered by the signature (`earshot-update`, `sign-update`); a copy refuses an offer whose date is older than its own build's (the build date baked in at build time), with fixed copy; an older file without a date is still read by older copies (forward only, docs/updates.md). Tests in earshot-update and the update settings.
   - accept: `cargo test -p earshot-update`; `cargo test -p xtask update`; `cargo test -p earshot-desktop --bin earshot update`
 
-- [ ] T12.43 An edited summary says so, and models have friendly names
+- [x] T12.43 An edited summary says so, and models have friendly names
+  - status (2026-11-14): merged after review.
   - found (the owner, 2026-11-14, TODO decision 3): after a summary edit the header still says "Summary by <model>", and the model shows by its id.
   - do: the summary header says it was edited (keeping undo at one step, as today), and every place a summary's writer is shown uses a friendly name (`catalogue::display_name` for local models; "Claude (Claude Code)", "Codex", the endpoint's model name for an API), never a manifest id. UI test and screenshots light and dark.
   - accept: `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`
 
-- [ ] T12.44 Speakers panel: say who a name links to, merge a self-named person, protect a recognised Me
+- [x] T12.44 Speakers panel: say who a name links to, merge a self-named person, protect a recognised Me
+  - status (2026-11-14): merged after review (blocked once: merged-person links and a false recognised Me; fixed and re-reviewed).
   - found (the owner, 2026-11-14, TODO decisions 4 to 6).
   - do: (1) a typed name matching an existing person shows "Links to <name>" before Save; (2) when the user marks a voice as themselves and a separate person named after them exists, offer to merge that person into the user (through the existing identity rules; the user's voiceprints never enrolled from a marked row); (3) "This isn't me" is refused on a voiceprint-named Me row with a tooltip pointing to forgetting the user's voice in Settings. Runtime and UI tests; screenshots light and dark.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`
 
-- [ ] T12.45 Small settings and list fixes
+- [x] T12.45 Small settings and list fixes
+  - status (2026-11-14): merged after review.
   - found (the owner, 2026-11-14, TODO decisions 7 to 12).
   - do: strip leading and trailing single quotes from a Dictionary word; refuse "allow the summary writer" while the meeting is still finishing, with the reason; "Other" with an empty name shows the stored model; folder rows get a visible menu button (the open meeting stays as it is when a folder is chosen); folders sort locale-aware (Rust and the mock together); the ARM64 "runs on the processor" note shows once until something about it changes. Shared case tables where both suites have a rule.
   - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; screenshots light and dark
 
-- [ ] T12.46 Hardening and removals
+- [~] T12.46 Hardening and removals
+  - status (2026-11-14): merged after review (Codex now disables only the features the installed CLI lists). Open: `accept m7` on main.
   - found (the owner, 2026-11-14, TODO decisions 13 to 19).
   - do: replay mode passes no provisional words (`accept m7`, `bundle-check`); `earshot_llm::ApiKey` and the request header copy are wiped on drop; zero-width and bidi format characters are refused in Dictionary words and the summary style together; remove `cleanup_stale_parts` and the final pass's enrolment path that served only pre-T9.12 data (nobody has an older database before v1; the owner can start fresh); disable Codex 0.166's daemon_auto_start, code_mode_host, incremental_tools, plugin_discovery_prefetch, in_app_local_automation, system_proxy_fallback, unified_exec_tty and write_stdin_approval in `DISABLED_FEATURES` (checked against the installed CLI's own feature list); put the first fact-judge prompt into docs/summary-eval.md (the owner approved publishing it; if the old transcript cannot be read, say so).
   - accept: tests of each touched crate; `cargo test -p xtask`; `cargo xtask accept m7` unchanged in result
@@ -2039,7 +2045,8 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: upgrade with every re-check AGENTS.md names for an ort upgrade (init slot workaround, shared weights, device selection, QNN registration and the removed `unregister`, `ThreadManager: Send + Sync`, the CUDA and QNN load tests on real hardware, `live_lag --memory`).
   - accept: `cargo xtask ci`; the ignored real-hardware tests AGENTS.md lists, on the desktop and the Surface
 
-- [ ] T12.48 Retired CUDA libraries can be removed
+- [x] T12.48 Retired CUDA libraries can be removed
+  - status (2026-11-14): merged after review (retired files also deleted before every load).
   - found (the owner, 2026-11-14, TODO decision 21): renaming a pinned library in a later manifest leaves the old DLL unpinned, and every CUDA load then refuses with no way out in the app.
   - do: the manifest can list retired CUDA member names; `verify_part` ignores and `remove_part`/the next download deletes exactly those (both manifest parsers and the CUDA folder case table change together), before the first CUDA manifest bump.
   - accept: `cargo test -p earshot-runtime cuda`; `cargo test -p xtask models`
