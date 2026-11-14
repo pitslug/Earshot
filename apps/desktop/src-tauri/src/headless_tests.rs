@@ -193,3 +193,12 @@ fn headless_can_write_the_summary_locally_from_another_folder_of_llama_dlls() {
     // Off loopback stays refused.
     assert!(with(&["--llm-url", "http://example.com/v1"]).is_err());
 }
+
+#[test]
+fn headless_replay_runs_no_provisional_words() {
+    let replay = replay_prepare(Box::new(|_, _| unreachable!("no meeting starts here")));
+    assert!(!replay.runs_previews());
+    // The negative control: the app's own pre-flight keeps them.
+    let app = HostPrepare::with_source(Box::new(|_, _| unreachable!("no meeting starts here")));
+    assert!(app.runs_previews());
+}

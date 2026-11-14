@@ -1555,9 +1555,11 @@ pub type SourceFn =
 /// The production pre-flight (module docs, step 1): the CLI's `record` checks through
 /// `earshot_runtime::host`; the capture source is its one variable, WASAPI on the Audio page's
 /// devices in the app ([`HostPrepare::wasapi`]) and a replay in `accept m7`
-/// (`crate::headless`).
+/// (`crate::headless`), which also runs no provisional words ([`HostPrepare::without_previews`]).
 pub struct HostPrepare {
     source: SourceFn,
+    /// Whether the meeting may run provisional words (T9.1m); off only in the hidden replay.
+    previews: bool,
 }
 
 impl HostPrepare {
@@ -1570,7 +1572,25 @@ impl HostPrepare {
     /// Everything of a real meeting except where the audio comes from.
     #[must_use]
     pub fn with_source(source: SourceFn) -> Self {
-        Self { source }
+        Self {
+            source,
+            previews: true,
+        }
+    }
+
+    /// No provisional words, whatever the setting says (T12.46): the hidden replay shows no
+    /// window, so preview sessions would only add load to what it measures.
+    #[must_use]
+    pub fn without_previews(mut self) -> Self {
+        self.previews = false;
+        self
+    }
+
+    /// Whether this pre-flight lets a meeting run provisional words.
+    #[cfg(test)]
+    #[must_use]
+    pub fn runs_previews(&self) -> bool {
+        self.previews
     }
 }
 
@@ -1670,9 +1690,12 @@ mod production {
                     &earshot_runtime::codex::InstalledCodex::meeting_start(),
                 ),
             )?;
-            // A setting never costs a recording: one that cannot be read is automatic.
-            let previews = earshot_runtime::preview_settings::preview_choice(&svc.store())
-                .map_or_else(|_| Default::default(), |(choice, _)| choice);
+            // A setting never costs a recording: one that cannot be read is automatic. The hidden
+            // replay runs none (T12.46).
+            let previews = self.previews.then(|| {
+                earshot_runtime::preview_settings::preview_choice(&svc.store())
+                    .map_or_else(|_| Default::default(), |(choice, _)| choice)
+            });
             // "Where it runs" not honoured, or a stored setting this version does not know.
             let mut notices =
                 super::setup_notices(setup.notes.into_iter().chain(summary_notes).collect());
@@ -1716,7 +1739,7 @@ mod production {
                 speaker_timing: timing,
                 live_summaries,
                 hold: Some(hold),
-                previews: Some(host::live_previews(&models, previews)),
+                previews: previews.map(|choice| host::live_previews(&models, choice)),
                 keep_summary_local,
                 ..LiveConfig::default()
             };
