@@ -420,6 +420,123 @@ fn person(n: u8, deleted: bool, updated: HlcTimestamp) -> Person {
 }
 
 #[test]
+fn store_sync_outbox_leaves_out_a_recording_meeting_and_switched_off_voiceprints() {
+    let mut e = env("sync-outbox-except");
+    // Meeting 1 is being recorded: its rows are the oldest and outnumber the limit.
+    e.store
+        .put_meeting(meeting(1, "Recording", at(T0 + 1, 0, HERE)))
+        .unwrap();
+    for n in 10..16 {
+        e.store
+            .put_track(track(n, 1, at(T0 + 2 + u64::from(n), 0, HERE)))
+            .unwrap();
+    }
+    e.store
+        .put_meeting(meeting(2, "Saved", at(T0 + 100, 0, HERE)))
+        .unwrap();
+    e.store
+        .put_track(track(3, 2, at(T0 + 101, 0, HERE)))
+        .unwrap();
+    e.store
+        .put_person(person(4, false, at(T0 + 102, 0, HERE)))
+        .unwrap();
+    e.store
+        .put_voiceprint(voiceprint(5, 4, at(T0 + 103, 0, HERE)))
+        .unwrap();
+    let ids = |rows: Vec<SyncedRow>| rows.iter().map(SyncedRow::id).collect::<Vec<_>>();
+    // A limit of 2 still reaches the saved meeting: the recording's rows are not read at all.
+    assert_eq!(
+        ids(e.store.outbox_except(2, &[id(1)], true).unwrap()),
+        [id(2), id(3)]
+    );
+    assert_eq!(
+        ids(e.store.outbox_except(10, &[id(1)], true).unwrap()),
+        [id(2), id(3), id(4), id(5)]
+    );
+    assert_eq!(
+        ids(e.store.outbox_except(10, &[id(1)], false).unwrap()),
+        [id(2), id(3), id(4)],
+        "voiceprints wait while their switch is off"
+    );
+    // Nothing left out: every row, oldest first, as `outbox` reads them.
+    let all = ids(e.store.outbox_except(100, &[], true).unwrap());
+    assert_eq!(all, ids(e.store.outbox(100).unwrap()));
+    assert_eq!(all.len(), 11);
+    assert_eq!(all[0], id(1));
+    // The skipped rows stay queued.
+    assert_eq!(e.store.outbox_len().unwrap(), 11);
+}
+
+#[test]
+fn store_sync_queue_everything_requeues_sent_rows_and_drops_held_ones() {
+    let mut e = env("sync-queue-all");
+    e.store
+        .put_meeting(meeting(1, "Sent before", at(T0 + 1, 0, HERE)))
+        .unwrap();
+    e.store.put_track(track(2, 1, at(T0 + 2, 0, HERE))).unwrap();
+    let sent: Vec<(&str, EntityId, HlcTimestamp)> = e
+        .store
+        .outbox(10)
+        .unwrap()
+        .iter()
+        .map(|r| (r.table(), r.id(), r.meta().updated_at))
+        .collect();
+    assert_eq!(e.store.outbox_sent(&sent).unwrap(), 2);
+    assert_eq!(e.store.outbox_len().unwrap(), 0);
+    // A row held under the old vault.
+    let orphan = incoming(9, SyncedRow::Track(track(3, 7, at(T0 + 3, 0, THERE))));
+    let a = e.apply(&[orphan], &rules(false));
+    assert_eq!(a.held, held(1, HoldReason::Parent));
+    assert_eq!(e.store.queue_everything().unwrap(), 2);
+    assert_eq!(e.outbox_ids(), [id(1), id(2)]);
+    assert!(e.store.held_rows().unwrap().is_empty());
+    // Queued once only.
+    assert_eq!(e.store.queue_everything().unwrap(), 0);
+    assert_eq!(e.store.outbox_len().unwrap(), 2);
+}
+
+#[test]
+fn store_sync_a_live_meeting_never_overwrites_a_deletion_here() {
+    let mut e = env("sync-deletion-final");
+    let mut gone = meeting(1, "Deleted here", at(T0 + 5, 0, HERE));
+    gone.meta.deleted = true;
+    e.store.put_meeting(gone).unwrap();
+    let sent: Vec<(&str, EntityId, HlcTimestamp)> = e
+        .store
+        .outbox(10)
+        .unwrap()
+        .iter()
+        .map(|r| (r.table(), r.id(), r.meta().updated_at))
+        .collect();
+    e.store.outbox_sent(&sent).unwrap();
+    // Edited elsewhere after the deletion: a later stamp, live.
+    let edited = incoming(
+        1,
+        SyncedRow::Meeting(meeting(1, "Renamed there", at(T0 + 9, 0, THERE))),
+    );
+    let a = e.apply(std::slice::from_ref(&edited), &rules(false));
+    assert_eq!((a.written, a.deletions_kept), (0, 1), "{a:?}");
+    let here = e.store.meeting(id(1)).unwrap().unwrap();
+    assert!(here.meta.deleted, "the meeting stays deleted");
+    assert!(
+        here.meta.updated_at > at(T0 + 9, 0, THERE),
+        "the tombstone is stamped after the edit, so it wins at the relay"
+    );
+    assert_eq!(e.outbox_ids(), [id(1)], "and it goes out again");
+    // The same edit again, now older than the tombstone: nothing to do.
+    let a = e.apply(&[edited], &rules(false));
+    assert_eq!((a.ignored, a.deletions_kept), (1, 0), "{a:?}");
+    // A tombstone pulled over a live row still applies as ever.
+    let mut del = meeting(2, "Live here", at(T0 + 1, 0, HERE));
+    e.store.put_meeting(del.clone()).unwrap();
+    del.meta.deleted = true;
+    del.meta.updated_at = at(T0 + 2, 0, THERE);
+    let a = e.apply(&[incoming(2, SyncedRow::Meeting(del))], &rules(false));
+    assert_eq!(a.written, 1);
+    assert!(e.store.meeting(id(2)).unwrap().unwrap().meta.deleted);
+}
+
+#[test]
 fn store_sync_voiceprints_apply_only_when_switched_on() {
     let mut e = env("sync-voiceprint");
     let v = incoming(

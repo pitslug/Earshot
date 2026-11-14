@@ -1,0 +1,476 @@
+//! One sync tick (docs/sync-spec.md section 6.2): push the outbox, try held rows again, pull
+//! after the cursor and apply.
+//!
+//! The store lock is taken only for a read, a [`Store::apply_remote`] transaction or a record
+//! write, and never across a request. A pulled meeting deletion runs this device's own
+//! deletion first ([`Services::delete_meeting`]), so its audio goes before its rows as a local
+//! deletion's does.
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp};
+use earshot_net::{AuditLog, Url};
+use earshot_store::{ApplyRules, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, Store, SyncedRow};
+use earshot_sync::wire::{B64, PullResponse, PulledRow, PushRequest, WireRow};
+use earshot_sync::{
+    ENVELOPE_FORMAT, Keys, Opened, ROW_KEY_LEN, RowKey, SealError, SealedRow, open_row, seal_row,
+};
+
+use super::client::Relay;
+use super::{
+    SyncProblem, SyncVault, advance_cursor, check_address, pull_cursor, set_sync_status,
+    sync_settings, sync_status,
+};
+use crate::services::Services;
+
+/// Outbox rows read per push request.
+const PUSH_PAGE: usize = 200;
+/// The most push requests in one tick, so a tick ends even when rows keep changing.
+const MAX_PUSH_PAGES: usize = 50;
+/// The most pull pages in one tick.
+const MAX_PULL_PAGES: usize = 50;
+/// The most held rows tried again in one tick.
+const MAX_RETRY: usize = 500;
+/// Sealed bytes per push request, under the relay's 4 MiB request limit after base64 and JSON.
+const PUSH_BYTES: usize = 2 * 1024 * 1024;
+
+/// What one tick did. Counts only.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TickReport {
+    /// Rows sent and stored by the relay.
+    pub pushed: usize,
+    /// Rows sent that the relay already held at the same or a later stamp.
+    pub superseded: usize,
+    /// Rows left queued because they could not be sealed (over the size limit, or audio).
+    pub refused: usize,
+    /// Rows pulled (held rows tried again not included).
+    pub pulled: usize,
+    /// Rows written here.
+    pub written: usize,
+    /// Rows not newer than the copy here.
+    pub ignored: usize,
+    /// Rows held for later ([`earshot_store::HoldReason`]).
+    pub held: usize,
+    /// Rows that could not be opened or read.
+    pub unreadable: usize,
+    /// Meetings deleted here because they were deleted on another device.
+    pub deleted_meetings: usize,
+}
+
+/// The sync client of one device: the relay at the stored address and the device's vault.
+pub struct SyncClient {
+    services: Services,
+    vault: std::sync::Arc<dyn SyncVault>,
+    relay: Relay,
+    device: DeviceId,
+    /// Set by the sync thread's stop: a tick ends at its next page.
+    stop: Arc<AtomicBool>,
+    /// Whether rows held for a newer format or a far clock were tried again yet (once per
+    /// client: they clear only after an update or with time).
+    retried_all: AtomicBool,
+}
+
+impl std::fmt::Debug for SyncClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncClient").finish_non_exhaustive()
+    }
+}
+
+/// The sealed row of any synced table.
+fn seal(keys: &Keys, row: &SyncedRow) -> Result<SealedRow, SealError> {
+    match row {
+        SyncedRow::Meeting(r) => seal_row(keys, r),
+        SyncedRow::Track(r) => seal_row(keys, r),
+        SyncedRow::Segment(r) => seal_row(keys, r),
+        SyncedRow::Speaker(r) => seal_row(keys, r),
+        SyncedRow::Note(r) => seal_row(keys, r),
+        SyncedRow::Summary(r) => seal_row(keys, r),
+        SyncedRow::Person(r) => seal_row(keys, r),
+        SyncedRow::Voiceprint(r) => seal_row(keys, r),
+        SyncedRow::Folder(r) => seal_row(keys, r),
+    }
+}
+
+fn wire_row(sealed: SealedRow) -> WireRow {
+    WireRow {
+        key: B64(sealed.key.0.to_vec()),
+        wall_ms: sealed.stamp.wall_ms,
+        logical: sealed.stamp.logical,
+        node: B64(sealed.stamp.node.as_uuid().as_bytes().to_vec()),
+        body: B64(sealed.body),
+    }
+}
+
+/// A pulled row opened with `keys`: `Ok(Incoming)` to apply or hold, `Err(())` when it
+/// cannot be opened or read (counted and skipped).
+fn open(
+    keys: &Keys,
+    seq: u64,
+    key: &[u8],
+    stamp: HlcTimestamp,
+    body: Vec<u8>,
+) -> Result<Incoming, ()> {
+    let key: [u8; ROW_KEY_LEN] = key.try_into().map_err(|_| ())?;
+    let row = match open_row(keys, RowKey(key), stamp, &body).map_err(|_| ())? {
+        Opened::NewerFormat(_) => None,
+        Opened::Row(row) => SyncedRow::decode(&row.entity, row.record).map_err(|_| ())?,
+    };
+    Ok(Incoming {
+        key,
+        seq,
+        stamp,
+        body,
+        row,
+    })
+}
+
+fn stamp_of(row: &PulledRow) -> Option<HlcTimestamp> {
+    let node: [u8; 16] = row.node.0.as_slice().try_into().ok()?;
+    Some(HlcTimestamp {
+        wall_ms: row.wall_ms,
+        logical: row.logical,
+        node: DeviceId::from_bytes(node),
+    })
+}
+
+impl SyncClient {
+    /// The client for the address stored in the settings.
+    ///
+    /// # Errors
+    /// [`SyncProblem::Address`] when no usable address is stored; [`SyncProblem::Store`];
+    /// [`SyncProblem::Internal`] when the HTTP client cannot be built.
+    pub fn new(
+        services: Services,
+        vault: std::sync::Arc<dyn SyncVault>,
+    ) -> Result<Self, SyncProblem> {
+        let (address, device) = {
+            let db = services.store();
+            let settings = sync_settings(&db)?;
+            let address = match settings.address {
+                Some(Ok(url)) => url,
+                _ => return Err(SyncProblem::Address),
+            };
+            (address, db.device())
+        };
+        Self::at(services, vault, address, device)
+    }
+
+    pub(crate) fn at(
+        services: Services,
+        vault: std::sync::Arc<dyn SyncVault>,
+        address: Url,
+        device: DeviceId,
+    ) -> Result<Self, SyncProblem> {
+        let address = check_address(address.as_str()).map_err(|_| SyncProblem::Address)?;
+        let relay = Relay::new(address, std::sync::Arc::clone(&services.clock))?;
+        Ok(Self {
+            services,
+            vault,
+            relay,
+            device,
+            stop: Arc::new(AtomicBool::new(false)),
+            retried_all: AtomicBool::new(false),
+        })
+    }
+
+    /// Every request this client made, one entry per hop.
+    #[must_use]
+    pub fn audit_log(&self) -> AuditLog {
+        self.relay.audit_log()
+    }
+
+    /// This device's id.
+    #[must_use]
+    pub fn device(&self) -> DeviceId {
+        self.device
+    }
+
+    pub(crate) fn services(&self) -> &Services {
+        &self.services
+    }
+
+    pub(crate) fn relay(&self) -> &Relay {
+        &self.relay
+    }
+
+    /// The flag that ends a tick at its next page.
+    pub(crate) fn stop_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stop)
+    }
+
+    fn stopping(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    /// One tick: push, then pull and apply. Records the outcome in `sync-status`.
+    ///
+    /// # Errors
+    /// The first [`SyncProblem`]; what was pushed or applied before it stays done.
+    pub fn tick(&self) -> Result<TickReport, SyncProblem> {
+        let mut report = TickReport::default();
+        let outcome = self.tick_into(&mut report);
+        let mut db = self.services.store();
+        let mut status = sync_status(&db).unwrap_or_default();
+        status.unreadable = status
+            .unreadable
+            .saturating_add(u64::try_from(report.unreadable).unwrap_or(u64::MAX));
+        match &outcome {
+            Ok(()) => {
+                status.problem = None;
+                status.last_success_unix_ms = Some(self.services.clock.now_unix_ms());
+            }
+            Err(p) => status.problem = Some(*p),
+        }
+        let _ = set_sync_status(&mut db, &status);
+        outcome.map(|()| report)
+    }
+
+    fn tick_into(&self, report: &mut TickReport) -> Result<(), SyncProblem> {
+        let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
+        let keys = secrets.key.keys();
+        let voiceprints = sync_settings(&self.services.store())?.voiceprints;
+        self.push(&keys, &secrets.token, voiceprints, report)?;
+        self.retry_held(&keys, voiceprints, report)?;
+        self.pull(&keys, &secrets.token, report)
+    }
+
+    fn push(
+        &self,
+        keys: &Keys,
+        token: &super::DeviceToken,
+        voiceprints: bool,
+        report: &mut TickReport,
+    ) -> Result<(), SyncProblem> {
+        for _ in 0..MAX_PUSH_PAGES {
+            if self.stopping() {
+                return Ok(());
+            }
+            let recording = self.services.recording_meetings();
+            let mut rows =
+                self.services
+                    .store()
+                    .outbox_except(PUSH_PAGE, &recording, voiceprints)?;
+            if rows.is_empty() {
+                return Ok(());
+            }
+            let full = rows.len() == PUSH_PAGE;
+            // A recording that started while the page was read: its rows wait too.
+            let now_recording = self.services.recording_meetings();
+            rows.retain(|r| r.meeting().is_none_or(|m| !now_recording.contains(&m)));
+            let mut sent: Vec<(&'static str, EntityId, HlcTimestamp)> = Vec::new();
+            let mut batch = Vec::new();
+            let mut bytes = 0;
+            for row in &rows {
+                let sealed = match seal(keys, row) {
+                    Ok(s) => s,
+                    Err(SealError::Refused(_)) => {
+                        report.refused += 1;
+                        continue;
+                    }
+                    Err(_) => return Err(SyncProblem::Internal),
+                };
+                if bytes + sealed.body.len() > PUSH_BYTES && !batch.is_empty() {
+                    self.send(token, std::mem::take(&mut batch), &mut sent, report)?;
+                    bytes = 0;
+                }
+                bytes += sealed.body.len();
+                batch.push((row.table(), row.id(), wire_row(sealed)));
+            }
+            if !batch.is_empty() {
+                self.send(token, batch, &mut sent, report)?;
+            }
+            if sent.is_empty() || !full {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends one request and marks its rows sent (a superseded row too: the newer copy comes
+    /// back in the pull).
+    fn send(
+        &self,
+        token: &super::DeviceToken,
+        batch: Vec<(&'static str, EntityId, WireRow)>,
+        sent: &mut Vec<(&'static str, EntityId, HlcTimestamp)>,
+        report: &mut TickReport,
+    ) -> Result<(), SyncProblem> {
+        let mut marks = Vec::with_capacity(batch.len());
+        let mut rows = Vec::with_capacity(batch.len());
+        for (table, id, row) in batch {
+            let node: [u8; 16] = row
+                .node
+                .0
+                .as_slice()
+                .try_into()
+                .map_err(|_| SyncProblem::Internal)?;
+            marks.push((
+                table,
+                id,
+                HlcTimestamp {
+                    wall_ms: row.wall_ms,
+                    logical: row.logical,
+                    node: DeviceId::from_bytes(node),
+                },
+            ));
+            rows.push(row);
+        }
+        let keys: BTreeSet<Vec<u8>> = rows.iter().map(|r| r.key.0.clone()).collect();
+        let resp = self.relay.push(
+            token,
+            &PushRequest {
+                format: ENVELOPE_FORMAT,
+                rows,
+            },
+        )?;
+        // Every row sent is stored or superseded; any other answer is not a relay's, and the
+        // rows stay queued.
+        let accepted = usize::try_from(resp.accepted).unwrap_or(usize::MAX);
+        if accepted.checked_add(resp.superseded.len()) != Some(marks.len())
+            || resp.superseded.iter().any(|k| !keys.contains(&k.0))
+        {
+            return Err(SyncProblem::Server);
+        }
+        report.superseded += resp.superseded.len();
+        report.pushed += accepted;
+        self.services.store().outbox_sent(&marks)?;
+        sent.extend(marks);
+        Ok(())
+    }
+
+    /// Opens held rows again and applies them as one page: rows held because their meeting was
+    /// in use or a parent was missing, every tick; rows held for a newer format or a clock far
+    /// ahead, once per client (they clear only after an update or with time). A held row that
+    /// no longer opens (sealed under a vault this device left) is not retried.
+    fn retry_held(
+        &self,
+        keys: &Keys,
+        voiceprints: bool,
+        report: &mut TickReport,
+    ) -> Result<(), SyncProblem> {
+        let held = self.services.store().held_rows()?;
+        let all = !self.retried_all.swap(true, Ordering::Relaxed);
+        let page: Vec<Incoming> = held
+            .into_iter()
+            .filter(|h| all || matches!(h.reason, HoldReason::Busy | HoldReason::Parent))
+            .take(MAX_RETRY)
+            .filter_map(|h| open(keys, h.seq, &h.key, h.stamp, h.body).ok())
+            .collect();
+        self.apply(&page, voiceprints, report)
+    }
+
+    fn pull(
+        &self,
+        keys: &Keys,
+        token: &super::DeviceToken,
+        report: &mut TickReport,
+    ) -> Result<(), SyncProblem> {
+        for _ in 0..MAX_PULL_PAGES {
+            if self.stopping() {
+                return Ok(());
+            }
+            // The cursor and the voiceprint switch are read together: turning the switch on
+            // resets the cursor, and the page is applied under the switch it was pulled for.
+            let (after, voiceprints) = {
+                let db = self.services.store();
+                (pull_cursor(&db)?, sync_settings(&db)?.voiceprints)
+            };
+            let PullResponse {
+                rows,
+                more,
+                vault_format,
+            } = self.relay.pull(token, after)?;
+            if vault_format > ENVELOPE_FORMAT {
+                return Err(SyncProblem::UpdateNeeded);
+            }
+            let last = rows.iter().map(|r| r.seq).max();
+            report.pulled += rows.len();
+            let mut page = Vec::with_capacity(rows.len());
+            for r in rows {
+                let opened = stamp_of(&r)
+                    .ok_or(())
+                    .and_then(|stamp| open(keys, r.seq, &r.key.0, stamp, r.body.0));
+                match opened {
+                    Ok(inc) => page.push(inc),
+                    Err(()) => report.unreadable += 1,
+                }
+            }
+            self.apply(&page, voiceprints, report)?;
+            if let Some(last) = last
+                && last > after
+                && !advance_cursor(&mut self.services.store(), after, last)?
+            {
+                // The cursor was reset meanwhile (a switch turned on): read from there next tick.
+                return Ok(());
+            }
+            if !more || last.is_none() {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs this device's deletion of every meeting the page deletes, then applies the page.
+    fn apply(
+        &self,
+        page: &[Incoming],
+        voiceprints: bool,
+        report: &mut TickReport,
+    ) -> Result<(), SyncProblem> {
+        if page.is_empty() {
+            return Ok(());
+        }
+        for meeting in self.meetings_deleted_elsewhere(page)? {
+            match self.services.delete_meeting(meeting) {
+                Ok(_) => report.deleted_meetings += 1,
+                // In use here: the apply holds its rows until it is free.
+                Err(crate::RuntimeError::MeetingBusy(_)) => {}
+                Err(_) => return Err(SyncProblem::Store),
+            }
+        }
+        let leased: BTreeSet<EntityId> = self.services.leased_meetings();
+        let is_leased = |m: EntityId| leased.contains(&m);
+        let rules = ApplyRules {
+            voiceprints,
+            leased: &is_leased,
+            now_ms: self.services.clock.now_unix_ms(),
+        };
+        let clock = std::sync::Arc::clone(&self.services.clock);
+        let mut db = self.services.store();
+        let (store, hlc) = db.parts();
+        let applied = store.apply_remote(page, &rules, hlc, &*clock)?;
+        if applied.biometrics_forgotten > 0 {
+            // A Busy here means the forgetting is committed; the next checkpoint erases it.
+            let _ = store.flush_erasures();
+        }
+        report.written += applied.written;
+        report.ignored += applied.ignored + applied.skipped;
+        report.held += applied.held.iter().sum::<usize>();
+        Ok(())
+    }
+
+    /// Meetings this page deletes that are live here, whatever the stamps: a meeting row
+    /// edited here after the deletion would otherwise stay live over children the deletion
+    /// cleared. The deletion here is stamped now, so it wins everywhere. A tombstone stamped
+    /// further ahead than [`MAX_CLOCK_AHEAD_MS`] deletes nothing (its row is held, as any).
+    fn meetings_deleted_elsewhere(&self, page: &[Incoming]) -> Result<Vec<EntityId>, SyncProblem> {
+        use earshot_core::model::MeetingRepo;
+        let now = self.services.clock.now_unix_ms();
+        let db = self.services.store();
+        let store: &Store = &db;
+        let mut out = Vec::new();
+        for inc in page {
+            if let Some(SyncedRow::Meeting(m)) = &inc.row
+                && m.meta.deleted
+                && let Some(local) = store.meeting(m.id)?
+                && !local.meta.deleted
+                && m.meta.updated_at.wall_ms <= now.saturating_add(MAX_CLOCK_AHEAD_MS)
+            {
+                out.push(m.id);
+            }
+        }
+        Ok(out)
+    }
+}

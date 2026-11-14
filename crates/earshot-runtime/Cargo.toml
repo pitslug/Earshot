@@ -43,6 +43,9 @@ earshot-hardware = { path = "../earshot-hardware" }
 earshot-store = { path = "../earshot-store" }
 # Verifying an in-app update (T9.1b).
 earshot-update = { path = "../earshot-update" }
+# Sync (T11.3): sealing and opening rows, the relay's wire types. No HTTP of its own: the
+# client sends through earshot-net.
+earshot-sync = { path = "../earshot-sync" }
 # Summaries: the OpenAI-compatible client. All HTTP goes through earshot-net (PLAN.md 3.9,
 # D14): allowlist of the configured endpoint only, audit log.
 earshot-llm = { path = "../earshot-llm" }
@@ -104,6 +107,9 @@ earshot-update = { path = "../earshot-update", features = ["sign"] }
 earshot-llm-replay = { path = "../earshot-llm-replay" }
 # Peak memory in the `bench` example (T8.1).
 earshot-proc = { path = "../earshot-proc" }
+# The sync tests run the real relay in process (`LocalRelay`, T11.3). A dev edge only: the ci
+# `net` step refuses a normal or build edge to it.
+earshot-sync-server = { path = "../earshot-sync-server" }
 
 # M2 on the production setup (`asr.stream_determinism`, `asr.wer_aec_delta`), built and run by
 # `cargo xtask accept m2`; its unit tests run with the crate's tests.

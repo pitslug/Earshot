@@ -1,0 +1,523 @@
+//! The sync client (T11.3; docs/sync.md section 6, docs/sync-spec.md section 6).
+//!
+//! One background thread ([`SyncThread`]) runs [`SyncClient::tick`]: push this device's
+//! changed rows (the store's outbox), then pull what other devices pushed after the stored
+//! cursor and apply it ([`earshot_store::Store::apply_remote`]). Every request goes through
+//! one `earshot-net` client whose allowlist is exactly the sync server, so each hop is in its
+//! audit log. Rows leave sealed ([`earshot_sync::seal_row`]); the relay never holds a key.
+//!
+//! - A meeting being recorded is not pushed: its rows stay queued until the recording is
+//!   saved ([`crate::services::MeetingJob::Recording`]).
+//! - A server that cannot be reached is a status ([`SyncStatus`]) and a retry with back-off
+//!   ([`backoff`]); it never reaches a meeting.
+//! - The vault key and the device token are reached only through [`SyncVault`]: Credential
+//!   Manager in the desktop app, a file on a summary worker, memory in tests. Neither, nor a
+//!   pairing code after it is used, nor the setup secret, is ever stored elsewhere, logged or
+//!   returned to a window.
+//! - Voiceprints sync only while `settings/sync-voiceprints` is on (off by default); turning
+//!   it on reads every earlier row again ([`set_sync_voiceprints`]).
+//!
+//! Setting up a device is [`set_up_first_device`], [`offer_pairing_code`] and
+//! [`join_with_code`]; [`remove_this_device`] undoes it.
+
+mod client;
+mod engine;
+mod setup;
+mod thread;
+
+use std::fmt;
+use std::sync::Mutex;
+
+use earshot_net::Url;
+use earshot_store::{Store, encode_versioned, split_version};
+use earshot_sync::VaultKey;
+use serde::{Deserialize, Serialize};
+
+use crate::local::{self, DeviceRecord};
+use crate::services::Services;
+
+pub use engine::{SyncClient, TickReport};
+pub use setup::{
+    PairingOffer, join_with_code, offer_pairing_code, remove_this_device, set_up_first_device,
+};
+pub use thread::{SyncThread, SyncTiming, backoff};
+
+/// `settings/sync-server`: the sync server's address.
+pub(crate) const SYNC_SERVER_KEY: &str = "settings/sync-server";
+/// `settings/sync`: whether sync runs (`on`/`off`; absent is off).
+pub(crate) const SYNC_ON_KEY: &str = "settings/sync";
+/// `settings/sync-voiceprints`: whether voiceprints sync (`on`/`off`; absent is off).
+pub(crate) const SYNC_VOICEPRINTS_KEY: &str = "settings/sync-voiceprints";
+/// `sync-cursor`: the relay sequence number pulled up to.
+pub(crate) const SYNC_CURSOR_KEY: &str = "sync-cursor";
+/// `sync-status`: the last tick's outcome (times, a problem word, counts; never content).
+pub(crate) const SYNC_STATUS_KEY: &str = "sync-status";
+
+/// The longest address accepted.
+pub const MAX_ADDRESS: usize = 2048;
+
+const CURSOR_VERSION: u32 = 1;
+const STATUS_VERSION: u32 = 1;
+
+/// What went wrong, as a fixed word. Nothing a server or a person typed is carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncProblem {
+    /// The server could not be reached (connection, TLS, timeout).
+    Unreachable,
+    /// The server answered something a relay would not, or its own error.
+    Server,
+    /// The relay does not know this device's token: it was removed (stops the loop).
+    UnknownDevice,
+    /// This device's key is not the vault's: join with a pairing code (stops the loop).
+    KeyMismatch,
+    /// The vault holds rows from a newer Earshot: update this one (stops the loop).
+    UpdateNeeded,
+    /// Too many failed attempts at the server: wait a minute.
+    SlowDown,
+    /// A request was over the server's size limit.
+    TooLarge,
+    /// The setup secret is not the server's.
+    BadSecret,
+    /// The pairing code is not one the server holds (wrong, used or expired).
+    NoSlot,
+    /// The pairing code is mistyped (its own check failed).
+    BadCode,
+    /// This device is already registered; only the setup secret registers it again.
+    DeviceExists,
+    /// The stored or typed server address is refused (stops the loop).
+    Address,
+    /// The vault key or device token is missing or cannot be read (stops the loop).
+    Vault,
+    /// This device's store failed.
+    Store,
+    /// Something inside sync failed that should not (a panic, a sealing failure).
+    Internal,
+}
+
+impl SyncProblem {
+    /// Every problem.
+    pub const ALL: [Self; 15] = [
+        Self::Unreachable,
+        Self::Server,
+        Self::UnknownDevice,
+        Self::KeyMismatch,
+        Self::UpdateNeeded,
+        Self::SlowDown,
+        Self::TooLarge,
+        Self::BadSecret,
+        Self::NoSlot,
+        Self::BadCode,
+        Self::DeviceExists,
+        Self::Address,
+        Self::Vault,
+        Self::Store,
+        Self::Internal,
+    ];
+
+    /// The stored word.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Unreachable => "unreachable",
+            Self::Server => "server",
+            Self::UnknownDevice => "unknown_device",
+            Self::KeyMismatch => "key_mismatch",
+            Self::UpdateNeeded => "update_needed",
+            Self::SlowDown => "slow_down",
+            Self::TooLarge => "too_large",
+            Self::BadSecret => "bad_secret",
+            Self::NoSlot => "no_slot",
+            Self::BadCode => "bad_code",
+            Self::DeviceExists => "device_exists",
+            Self::Address => "address",
+            Self::Vault => "vault",
+            Self::Store => "store",
+            Self::Internal => "internal",
+        }
+    }
+
+    /// Whether the loop stops until the person acts, rather than retrying.
+    #[must_use]
+    pub const fn stops(self) -> bool {
+        matches!(
+            self,
+            Self::UnknownDevice
+                | Self::KeyMismatch
+                | Self::UpdateNeeded
+                | Self::Address
+                | Self::Vault
+        )
+    }
+}
+
+impl fmt::Display for SyncProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.word())
+    }
+}
+
+impl std::error::Error for SyncProblem {}
+
+impl From<earshot_store::StoreError> for SyncProblem {
+    fn from(_: earshot_store::StoreError) -> Self {
+        Self::Store
+    }
+}
+
+impl From<earshot_core::model::RepoError> for SyncProblem {
+    fn from(_: earshot_core::model::RepoError) -> Self {
+        Self::Store
+    }
+}
+
+impl From<crate::RuntimeError> for SyncProblem {
+    fn from(_: crate::RuntimeError) -> Self {
+        Self::Store
+    }
+}
+
+/// A device token as the relay issued it. `Debug` shows nothing; wiped on drop.
+pub struct DeviceToken(String);
+
+impl DeviceToken {
+    /// A token as stored.
+    #[must_use]
+    pub fn new(token: String) -> Self {
+        Self(token)
+    }
+
+    /// The token, for storing it or sending it as a bearer token. Keep the borrow short.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for DeviceToken {
+    fn drop(&mut self) {
+        earshot_net::wipe_string(&mut self.0);
+    }
+}
+
+impl fmt::Debug for DeviceToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DeviceToken(..)")
+    }
+}
+
+/// The vault key and this device's token, read from a [`SyncVault`] for one tick.
+#[derive(Debug)]
+pub struct SyncSecrets {
+    /// The vault key.
+    pub key: VaultKey,
+    /// The device token.
+    pub token: DeviceToken,
+}
+
+/// Why a [`SyncVault`] failed. Says nothing about what it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultError {
+    /// The credential store failed.
+    Store,
+    /// This host has no credential store.
+    Unsupported,
+}
+
+/// A credential store that fails to answer is a retry ([`SyncProblem::Store`]); only a
+/// missing key or token is [`SyncProblem::Vault`], which stops the loop.
+impl From<VaultError> for SyncProblem {
+    fn from(_: VaultError) -> Self {
+        Self::Store
+    }
+}
+
+/// Where a device keeps its vault key and token: Credential Manager (`Earshot/sync-key`,
+/// `Earshot/sync-token`) in the desktop app. A window never reads either back.
+pub trait SyncVault: Send + Sync {
+    /// Stores both, replacing what was there.
+    ///
+    /// # Errors
+    /// [`VaultError`].
+    fn save(&self, key: &VaultKey, token: &DeviceToken) -> Result<(), VaultError>;
+    /// Whether both are stored.
+    ///
+    /// # Errors
+    /// [`VaultError`].
+    fn has(&self) -> Result<bool, VaultError>;
+    /// Deletes both.
+    ///
+    /// # Errors
+    /// [`VaultError`].
+    fn remove(&self) -> Result<(), VaultError>;
+    /// Both, for the sync thread; `None` when either is missing.
+    ///
+    /// # Errors
+    /// [`VaultError`].
+    fn load(&self) -> Result<Option<SyncSecrets>, VaultError>;
+}
+
+/// A [`SyncVault`] in memory (tests, and hosts that set sync up for one run).
+#[derive(Default)]
+pub struct MemoryVault(Mutex<Option<([u8; 32], DeviceToken)>>);
+
+impl fmt::Debug for MemoryVault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MemoryVault(..)")
+    }
+}
+
+impl MemoryVault {
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<([u8; 32], DeviceToken)>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl SyncVault for MemoryVault {
+    fn save(&self, key: &VaultKey, token: &DeviceToken) -> Result<(), VaultError> {
+        *self.slot() = Some((*key.as_bytes(), DeviceToken::new(token.as_str().to_owned())));
+        Ok(())
+    }
+
+    fn has(&self) -> Result<bool, VaultError> {
+        Ok(self.slot().is_some())
+    }
+
+    fn remove(&self) -> Result<(), VaultError> {
+        *self.slot() = None;
+        Ok(())
+    }
+
+    fn load(&self) -> Result<Option<SyncSecrets>, VaultError> {
+        Ok(self.slot().as_ref().map(|(key, token)| SyncSecrets {
+            key: VaultKey::from_bytes(*key),
+            token: DeviceToken::new(token.as_str().to_owned()),
+        }))
+    }
+}
+
+/// Why an address cannot be the sync server's. Never names the address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressRefused {
+    /// Nothing was entered.
+    Empty,
+    /// Longer than [`MAX_ADDRESS`].
+    TooLong,
+    /// Not a web address with a host.
+    NotAnAddress,
+    /// `http` to a host that is not this computer: only `https` crosses a network.
+    NotHttps,
+    /// It holds a user name or password.
+    Credentials,
+    /// It has a path, a query or a fragment: the server is reached at its root.
+    NotTheRoot,
+}
+
+impl AddressRefused {
+    /// Fixed copy for the person.
+    #[must_use]
+    pub const fn copy(self) -> &'static str {
+        match self {
+            Self::Empty => "Enter the sync server's address.",
+            Self::TooLong => "The address is too long.",
+            Self::NotAnAddress => "That is not a web address.",
+            Self::NotHttps => {
+                "The address must start with https:// (http:// only for this computer)."
+            }
+            Self::Credentials => "The address must not hold a user name or password.",
+            Self::NotTheRoot => {
+                "Enter the server's address without a path, for example https://sync.example.com"
+            }
+        }
+    }
+}
+
+/// The sync server's address from typed or stored text: `https://<host>[:port]`, or `http`
+/// to this computer (`localhost`, `127.0.0.0/8`, `::1`), with no user name, path, query or
+/// fragment.
+///
+/// # Errors
+/// [`AddressRefused`].
+pub fn check_address(text: &str) -> Result<Url, AddressRefused> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(AddressRefused::Empty);
+    }
+    if text.len() > MAX_ADDRESS {
+        return Err(AddressRefused::TooLong);
+    }
+    let url = Url::parse(text).map_err(|_| AddressRefused::NotAnAddress)?;
+    if earshot_net::check_url_shape(&url).is_err() {
+        return Err(if !url.username().is_empty() || url.password().is_some() {
+            AddressRefused::Credentials
+        } else {
+            AddressRefused::NotAnAddress
+        });
+    }
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return Err(AddressRefused::NotTheRoot);
+    }
+    let host = url.host_str().unwrap_or("");
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    match url.scheme() {
+        "https" => Ok(url),
+        "http" if loopback => Ok(url),
+        _ => Err(AddressRefused::NotHttps),
+    }
+}
+
+/// The stored sync settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncSettings {
+    /// The server address; `Err` names why a stored one is refused (never its text).
+    pub address: Option<Result<Url, AddressRefused>>,
+    /// Whether sync runs.
+    pub on: bool,
+    /// Whether voiceprints sync.
+    pub voiceprints: bool,
+}
+
+fn on_setting(store: &Store, key: &str) -> Result<bool, SyncProblem> {
+    Ok(store
+        .local_value(key)?
+        .and_then(|b| local::on_off(&String::from_utf8_lossy(&b)))
+        .unwrap_or(false))
+}
+
+/// The stored sync settings (an unreadable switch reads as off).
+///
+/// # Errors
+/// [`SyncProblem::Store`].
+pub fn sync_settings(store: &Store) -> Result<SyncSettings, SyncProblem> {
+    let address = store
+        .local_value(SYNC_SERVER_KEY)?
+        .map(|b| check_address(&String::from_utf8_lossy(&b)));
+    Ok(SyncSettings {
+        address,
+        on: on_setting(store, SYNC_ON_KEY)?,
+        voiceprints: on_setting(store, SYNC_VOICEPRINTS_KEY)?,
+    })
+}
+
+fn on_off_word(on: bool) -> &'static [u8] {
+    if on { b"on" } else { b"off" }
+}
+
+/// Turns sync on or off. Off stops nothing by itself (the host stops its [`SyncThread`]);
+/// local data, the key and the token stay, so turning it on again resumes.
+///
+/// # Errors
+/// [`SyncProblem::Store`].
+pub fn set_sync_on(services: &Services, on: bool) -> Result<(), SyncProblem> {
+    let mut db = services.store();
+    local::set(&mut db, &DeviceRecord::SyncOn.key(), on_off_word(on))?;
+    Ok(())
+}
+
+/// Turns voiceprint sync on or off. Turning it on resets the pull cursor, so voiceprints
+/// pushed while it was off are read; rows already here are ignored as not newer.
+///
+/// # Errors
+/// [`SyncProblem::Store`].
+pub fn set_sync_voiceprints(services: &Services, on: bool) -> Result<(), SyncProblem> {
+    let mut db = services.store();
+    let was = on_setting(&db, SYNC_VOICEPRINTS_KEY)?;
+    db.transaction(|tx| -> Result<(), SyncProblem> {
+        local::set_tx(tx, &DeviceRecord::SyncVoiceprints.key(), on_off_word(on))?;
+        if on && !was {
+            local::set_tx(tx, &DeviceRecord::SyncCursor.key(), &encode_cursor(0))?;
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+struct Cursor {
+    pull_seq: u64,
+}
+
+fn encode_cursor(pull_seq: u64) -> Vec<u8> {
+    encode_versioned(CURSOR_VERSION, &Cursor { pull_seq }).expect("a cursor serialises")
+}
+
+/// The relay sequence number pulled up to; 0 when none is stored or it cannot be read (a
+/// pull from the start applies nothing twice: rows already here are not newer).
+///
+/// # Errors
+/// [`SyncProblem::Store`].
+pub fn pull_cursor(store: &Store) -> Result<u64, SyncProblem> {
+    Ok(store
+        .local_value(SYNC_CURSOR_KEY)?
+        .and_then(|b| {
+            let (v, payload) = split_version(&b)?;
+            (v == CURSOR_VERSION)
+                .then(|| serde_json::from_slice::<Cursor>(payload).ok())
+                .flatten()
+        })
+        .map_or(0, |c| c.pull_seq))
+}
+
+/// Moves the cursor from `after` to `to` only if it still reads `after` (the caller holds the
+/// store lock across both): a reset made while the page was on the way wins. Returns whether
+/// it moved.
+fn advance_cursor(store: &mut Store, after: u64, to: u64) -> Result<bool, SyncProblem> {
+    if pull_cursor(store)? != after {
+        return Ok(false);
+    }
+    local::set(store, &DeviceRecord::SyncCursor.key(), &encode_cursor(to))?;
+    Ok(true)
+}
+
+/// The last tick's outcome. Times, a problem word and counts; never content.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncStatus {
+    /// When a tick last finished without a problem (Unix ms).
+    pub last_success_unix_ms: Option<u64>,
+    /// The last tick's problem; `None` after a tick without one.
+    pub problem: Option<SyncProblem>,
+    /// Pulled rows that could not be opened or read, in all.
+    pub unreadable: u64,
+}
+
+/// The stored status (the default when none is stored or it cannot be read).
+///
+/// # Errors
+/// [`SyncProblem::Store`].
+pub fn sync_status(store: &Store) -> Result<SyncStatus, SyncProblem> {
+    Ok(store
+        .local_value(SYNC_STATUS_KEY)?
+        .and_then(|b| {
+            let (v, payload) = split_version(&b)?;
+            (v == STATUS_VERSION)
+                .then(|| serde_json::from_slice(payload).ok())
+                .flatten()
+        })
+        .unwrap_or_default())
+}
+
+fn set_sync_status(store: &mut Store, status: &SyncStatus) -> Result<(), SyncProblem> {
+    let bytes = encode_versioned(STATUS_VERSION, status).expect("a status serialises");
+    local::set(store, &DeviceRecord::SyncStatus.key(), &bytes)?;
+    Ok(())
+}
+
+/// Records `problem` as the last tick's outcome, keeping the last success and the counts.
+fn record_problem(services: &Services, problem: SyncProblem) {
+    let mut db = services.store();
+    if let Ok(mut status) = sync_status(&db) {
+        status.problem = Some(problem);
+        let _ = set_sync_status(&mut db, &status);
+    }
+}
+
+#[cfg(test)]
+#[path = "../sync_tests.rs"]
+mod tests;

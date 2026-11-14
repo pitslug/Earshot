@@ -229,6 +229,9 @@ pub struct Applied {
     pub held: [usize; 4],
     /// Voiceprints and centroids forgotten because a person was deleted elsewhere.
     pub biometrics_forgotten: usize,
+    /// Live meeting rows refused because the meeting is deleted here (its tombstone was
+    /// stamped again, so it goes out and wins at the relay).
+    pub deletions_kept: usize,
 }
 
 impl Applied {
@@ -287,16 +290,54 @@ impl Store {
     /// # Errors
     /// Store errors.
     pub fn outbox(&self, limit: usize) -> Result<Vec<SyncedRow>, StoreError> {
+        self.outbox_except(limit, &[], true)
+    }
+
+    /// [`Store::outbox`] leaving out, in the query itself, the rows of the meetings in
+    /// `meetings` (a meeting being recorded: its rows wait until it is saved) and, when
+    /// `voiceprints` is false, every voiceprint. Left out in SQL rather than after reading, so
+    /// a long recording's rows cannot fill every page and keep other rows from going.
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn outbox_except(
+        &self,
+        limit: usize,
+        meetings: &[EntityId],
+        voiceprints: bool,
+    ) -> Result<Vec<SyncedRow>, StoreError> {
         let mut rows = Vec::new();
         let limit_sql = i64::try_from(limit).unwrap_or(i64::MAX);
+        let skip: Vec<Vec<u8>> = meetings
+            .iter()
+            .map(|m| m.as_uuid().as_bytes().to_vec())
+            .collect();
+        let marks = vec!["?"; skip.len()].join(", ");
         for table in SYNCED_TABLES {
+            if table == "voiceprint" && !voiceprints {
+                continue;
+            }
+            let meeting_col = match table {
+                "meeting" => Some("id"),
+                "track" | "segment" | "speaker" | "note" | "summary" => Some("meeting_id"),
+                _ => None,
+            };
+            let except = match meeting_col {
+                Some(col) if !skip.is_empty() => format!(" AND r.{col} NOT IN ({marks})"),
+                _ => String::new(),
+            };
             let sql = format!(
-                "SELECT o.id FROM sync_outbox o JOIN {table} r ON r.id = o.id WHERE o.tbl = ?1 \
-                 ORDER BY r.updated_wall, r.updated_logical, r.updated_node LIMIT ?2"
+                "SELECT o.id FROM sync_outbox o JOIN {table} r ON r.id = o.id WHERE o.tbl = ?{except} \
+                 ORDER BY r.updated_wall, r.updated_logical, r.updated_node LIMIT ?"
             );
+            let mut values: Vec<&dyn rusqlite::ToSql> = vec![&table];
+            if !except.is_empty() {
+                values.extend(skip.iter().map(|b| b as &dyn rusqlite::ToSql));
+            }
+            values.push(&limit_sql);
             let mut st = self.conn.prepare(&sql)?;
             let ids: Vec<[u8; 16]> = st
-                .query_map(params![table, limit_sql], |r| r.get(0))?
+                .query_map(values.as_slice(), |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
             for id in ids {
                 if let Some(row) =
@@ -309,6 +350,29 @@ impl Store {
         rows.sort_by_key(|r| r.meta().updated_at);
         rows.truncate(limit);
         Ok(rows)
+    }
+
+    /// Queues every synced row to be sent and drops every held row, in one transaction: for a
+    /// device joining a vault (its first, or a new one after leaving another), whose earlier
+    /// sends went elsewhere and whose held rows were sealed under another key.
+    ///
+    /// # Errors
+    /// Store errors; nothing changes then.
+    pub fn queue_everything(&mut self) -> Result<u64, StoreError> {
+        self.immediate(|tx| {
+            let mut queued = 0;
+            for table in SYNCED_TABLES {
+                queued += tx.conn.execute(
+                    &format!(
+                        "INSERT INTO sync_outbox (tbl, id) SELECT ?1, r.id FROM {table} r \
+                         WHERE NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.tbl = ?1 AND o.id = r.id)"
+                    ),
+                    params![table],
+                )?;
+            }
+            tx.conn.execute("DELETE FROM sync_pending", [])?;
+            Ok(u64::try_from(queued).unwrap_or(u64::MAX))
+        })
     }
 
     /// How many rows wait to be sent.
@@ -434,6 +498,26 @@ impl Store {
                     continue;
                 }
                 let local = crate::repo::synced_by_id(&tx.conn, row.table(), row.id())?;
+                // A meeting deletion is final: a live copy edited elsewhere after it (pushed
+                // before that device heard of the deletion, so the relay kept the edit) never
+                // brings the meeting back. The tombstone here is stamped again, after the edit,
+                // and goes out to win at the relay; the other device then deletes its copy.
+                if let (Some(SyncedRow::Meeting(here)), SyncedRow::Meeting(there)) = (&local, row)
+                    && here.meta.deleted
+                    && !there.meta.deleted
+                {
+                    let _ = hlc.observe(inc.stamp, clock);
+                    if here.meta.updated_at < row.meta().updated_at {
+                        let mut again = here.clone();
+                        again.meta.touch(hlc, clock);
+                        crate::repo::put_synced(&tx.conn, &SyncedRow::Meeting(again))?;
+                        out.deletions_kept += 1;
+                    } else {
+                        out.ignored += 1;
+                    }
+                    unhold(tx, inc)?;
+                    continue;
+                }
                 if local
                     .as_ref()
                     .is_some_and(|l| l.meta().updated_at >= row.meta().updated_at)

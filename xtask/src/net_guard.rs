@@ -16,7 +16,9 @@
 //! The sync relay ([`SERVER_PACKAGE`], GATE-08 item 5) serves HTTP, so it is left out of
 //! that run and checked on its own: its graph may hold [`SERVER_SERVES_WITH`] (axum's
 //! server, `hyper` and `hyper-util`) and no other HTTP client crate, and no workspace member
-//! may depend on it in any edge kind, so its server stack cannot reach a shipped binary.
+//! may depend on it through a normal or build edge, so its server stack cannot reach a shipped
+//! binary. A dev-dependency is allowed: the runtime's sync tests run the real relay in process
+//! (T11.3), and a test build never ships.
 //!
 //! This replaces a crate-level `clippy.toml` `disallowed_types` rule: those are only
 //! enforced by dedicated xtask steps (AGENTS.md section 11), and a dependency-graph check
@@ -137,8 +139,8 @@ pub fn server_tree_args() -> Vec<&'static str> {
     ]
 }
 
-/// Arguments of the inverted run listing every workspace member that depends on the relay,
-/// in any edge kind, on any target.
+/// Arguments of the inverted run listing every workspace member that depends on the relay
+/// through a normal or build edge, on any target (a dev-dependency never ships).
 pub fn server_dependents_args() -> Vec<&'static str> {
     vec![
         "tree",
@@ -146,7 +148,7 @@ pub fn server_dependents_args() -> Vec<&'static str> {
         "-i",
         SERVER_PACKAGE,
         "-e",
-        "normal,build,dev",
+        "normal,build",
         "--all-features",
         "--target",
         "all",
@@ -707,6 +709,8 @@ mod tests {
     #[test]
     fn net_no_member_may_depend_on_the_relay() {
         let args = server_dependents_args();
+        // Normal and build edges are judged; only a dev edge (a test build) is left out.
+        assert!(args.windows(2).any(|w| w == ["-e", "normal,build"]));
         let alone = "0earshot-sync-server v0.1.0 (C:\\repo\\crates\\earshot-sync-server)\n";
         assert_eq!(
             evaluate_server_dependents(&args, &captured(alone, true, true)).unwrap(),

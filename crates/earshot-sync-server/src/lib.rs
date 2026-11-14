@@ -210,6 +210,64 @@ impl Relay {
     }
 }
 
+/// A relay serving on a loopback port inside the calling process, on its own tokio runtime:
+/// the in-process server that sync clients are tested against (T11.3). It is the relay's
+/// own router, not a copy. Stops when dropped; drop it outside any async context.
+pub struct LocalRelay {
+    addr: SocketAddr,
+    _runtime: tokio::runtime::Runtime,
+}
+
+impl LocalRelay {
+    /// Serves `relay` on `127.0.0.1` at a free port.
+    ///
+    /// # Errors
+    /// The runtime cannot start or the port cannot be bound.
+    pub fn start(relay: Relay) -> std::io::Result<Self> {
+        Self::start_on(relay, 0)
+    }
+
+    /// Serves `relay` on `127.0.0.1:<port>` (0: a free port). A test that stops a relay and
+    /// starts it again on the same port uses this.
+    ///
+    /// # Errors
+    /// The runtime cannot start or the port cannot be bound.
+    pub fn start_on(relay: Relay, port: u16) -> std::io::Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("earshot-local-relay")
+            .enable_all()
+            .build()?;
+        let bound = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))?;
+        bound.set_nonblocking(true)?;
+        let addr = bound.local_addr()?;
+        let listener = {
+            let _entered = runtime.enter();
+            tokio::net::TcpListener::from_std(bound)?
+        };
+        let app = router(relay).into_make_service_with_connect_info::<SocketAddr>();
+        runtime.spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok(Self {
+            addr,
+            _runtime: runtime,
+        })
+    }
+
+    /// Where it listens.
+    #[must_use]
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Its address as a client is given it: `http://127.0.0.1:<port>`.
+    #[must_use]
+    pub fn url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+}
+
 /// The relay's routes (docs/sync-spec.md section 3).
 pub fn router(relay: Relay) -> Router {
     Router::new()

@@ -119,7 +119,7 @@ vault(format INTEGER, key_check BLOB, next_seq INTEGER)
 - Logs hold a method, a path (no query), a status and a duration. Never a body, a token, a secret, a slot or a device id.
 - Release (T11.2b, the owner, 2026-11-14): the relay lives in this repo and ships with every Windows release under the same version, as `ghcr.io/pitslug/earshot-sync-server:<version>` and `latest`, built for linux/amd64 by a GitHub Actions workflow that runs only on a release tag and builds nothing else. It is a registry image, not a file on the release, so the in-app updater's files are unchanged; `docker-compose.yml` is attached to the release.
 - Deliverables: the crate, a `Dockerfile` (multi-stage, non-root user, data volume), a `docker-compose.yml` with the relay only.
-- Net guard (GATE-08 item 5): the crate is left out of the app's check and gets its own ci step: its graph holds no HTTP client crate other than the `hyper` and `hyper-util` axum serves with, and no shipped crate depends on it.
+- Net guard (GATE-08 item 5): the crate is left out of the app's check and gets its own ci step: its graph holds no HTTP client crate other than the `hyper` and `hyper-util` axum serves with, and no workspace member depends on it through a normal or build edge. A dev-dependency is allowed (T11.3: the runtime's sync tests run the real relay in process through `LocalRelay`); a test build never ships.
 
 ## 5. Store changes (T11.1a, T11.1b)
 
@@ -164,7 +164,7 @@ Returned: counts of applied, ignored, pending by reason and unreadable. Never ro
 
 ### 5.4 Side effects
 
-- **Meeting tombstone** (remote `deleted`, local row live): before the page is applied, the client (T11.3) runs the ordinary `Services::delete_meeting` for that meeting, so audio files go before rows, device-local keys are erased and a lease refuses it (the row is then held `busy`) exactly as a local deletion. Its own tombstone, stamped here, is newer than the pulled one, which is then ignored; both say deleted. The rows the other device cleared arrive in the same pull and apply as ordinary rows.
+- **Meeting tombstone** (remote `deleted`, local row live, whatever the two stamps: a meeting row edited here after the deletion must not stay live over the children the deletion cleared; a tombstone stamped more than 24 h ahead deletes nothing and is held): before the page is applied, the client (T11.3) runs the ordinary `Services::delete_meeting` for that meeting, so audio files go before rows, device-local keys are erased and a lease refuses it (the row is then held `busy`) exactly as a local deletion. Its own tombstone, stamped here, is newer than the pulled one, which is then ignored; both say deleted. The rows the other device cleared arrive in the same pull and apply as ordinary rows.
 - **Person tombstone**: `forget_identity_biometrics` for that identity.
 - **Voiceprint tombstone**: the local row's `sum` is zeroed as `forget_voiceprints` does.
 - After a page that erased anything: `Store::flush_erasures`.
@@ -182,6 +182,7 @@ A `Busy` after the commit means the page is committed.
 | Credential Manager | `Earshot/sync-key` | the vault key |
 | Credential Manager | `Earshot/sync-token` | the device token |
 | `local_state` (`DeviceRecord`) | `settings/sync-server` | the server address |
+| | `settings/sync` | `on`/`off`: whether the loop runs (absent is off; set on by setting up or joining) |
 | | `settings/device-name` | this device's shown name (default: the computer name) |
 | | `settings/sync-voiceprints` | off by default |
 | | `settings/sync-dictionary` | on by default (phase 2) |
@@ -201,12 +202,20 @@ every tick (30 s, or at once after a local write, debounced 2 s):
            A row of a kind whose switch is off (voiceprints, Dictionary words) is left too.
            After the response, in one transaction: delete each entry whose row still has
            the updated_at that was sent.
-  2. pull: GET rows after the cursor; open each; Store::apply_remote; repeat while more.
+  2. pull: try every held row again (opened anew, one page); GET rows after the cursor; open
+           each; Store::apply_remote; store the cursor; repeat while more.
   3. presence: every 60 s (section 8).
 ```
 
+- The recording meeting's rows and switched-off kinds are left out by the outbox query itself (`Store::outbox_except`), so a long recording cannot fill every page.
+- The cursor is written right after its page's transaction, not inside it (the store does not know the runtime's record keys): a page applied twice after a crash between the two changes nothing, as its rows are no longer newer.
+- Local writes are found by reading the outbox's length every 2 s and ticking once it stops changing: no writer has to know about sync.
 - A failed request ends the tick, records a problem word and backs off: 30 s, 1 min, 2 min, up to 15 min, back to 30 s on the first success.
-- `update_needed` and `key_mismatch` stop the loop until the user acts; the Sync page says which.
+- `update_needed`, `key_mismatch`, `unknown_device` (this device was removed), a refused address and a missing key or token stop the loop until the user acts; the Sync page says which. A credential store that fails to answer is a retry.
+- A push response must account for every row sent (`accepted` plus `superseded`, each superseded key one that was sent); anything else is `server` and the rows stay queued.
+- Held rows are tried again every tick when held as `busy` or `parent`, and once per app start when held as `format` or `clock`, at most 500 a tick.
+- The cursor moves only from the value the page was pulled after, under the store lock (a reset made meanwhile, by turning a kind on, wins).
+- Stopping the thread ends a tick at its next page.
 - The thread holds the store lock only inside the two transactions and the short reads. Never across a request.
 - It takes no `WorkPass`: it loads no model. `WorkGate::enter_restart` must wait for a tick in progress to end (a new long job joins the restart rule).
 - A meeting is never delayed, failed or warned by sync. A recording computer still pulls; rows for the meeting being recorded cannot exist on another device.
@@ -216,8 +225,9 @@ every tick (30 s, or at once after a local write, debounced 2 s):
 - **First device**: address and setup secret. Generate `K`, register with `key_check`, store key and token, start the loop.
 - **Show a pairing code**: generate the code, `POST /v1/pairing`, show it with a 10 minute countdown.
 - **Join**: address and code. `pairing/take`, unwrap `K`, register with `slot` and `key_check`, store, reset the cursor to 0, start the loop.
+- Setting up or joining queues every synced row again and drops every held row (`Store::queue_everything`): earlier sends went to no vault or another one, and held rows were sealed under another key.
 - **Turn off**: stop the loop. Local data, key and token stay, so turning it on again resumes.
-- **Remove this device**: revoke its token, delete key, token, address, cursor and status. Local meetings stay.
+- **Remove this device**: revoke its token, delete key, token, address, cursor and status. Local meetings stay. The host stops the sync thread first.
 
 ## 7. Convergence rules (T11.3b)
 

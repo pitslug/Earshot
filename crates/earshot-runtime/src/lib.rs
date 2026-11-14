@@ -81,6 +81,7 @@ pub mod summary_edits;
 pub mod summary_model;
 pub mod summary_settings;
 pub mod summary_style;
+pub mod sync;
 pub mod update;
 pub mod view;
 pub mod vocabulary;

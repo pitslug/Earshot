@@ -223,6 +223,16 @@ pub(crate) enum DeviceRecord {
     /// `npu-note-shown`: the "no NPU version, runs on the processor" note last shown at a
     /// meeting or job start (T12.45; [`crate::host::npu_note_once`]).
     NpuNoteShown,
+    /// `settings/sync-server`: the sync server's address (T11.3).
+    SyncServer,
+    /// `settings/sync`: whether sync runs (T11.3).
+    SyncOn,
+    /// `settings/sync-voiceprints`: whether voiceprints sync (T11.3).
+    SyncVoiceprints,
+    /// `sync-cursor`: the relay sequence number pulled up to (T11.3).
+    SyncCursor,
+    /// `sync-status`: the last sync tick's outcome; times, a problem word, counts (T11.3).
+    SyncStatus,
 }
 
 impl DeviceRecord {
@@ -267,6 +277,11 @@ impl DeviceRecord {
         DeviceRecord::Vocabulary,
         DeviceRecord::NpuCompiled,
         DeviceRecord::NpuNoteShown,
+        DeviceRecord::SyncServer,
+        DeviceRecord::SyncOn,
+        DeviceRecord::SyncVoiceprints,
+        DeviceRecord::SyncCursor,
+        DeviceRecord::SyncStatus,
     ];
 
     /// Its key.
@@ -317,6 +332,11 @@ impl DeviceRecord {
                 DeviceRecord::Vocabulary => crate::vocabulary::VOCABULARY_KEY,
                 DeviceRecord::NpuCompiled => crate::npu_compiled::REFUSALS_KEY,
                 DeviceRecord::NpuNoteShown => crate::host::NPU_NOTE_SHOWN_KEY,
+                DeviceRecord::SyncServer => crate::sync::SYNC_SERVER_KEY,
+                DeviceRecord::SyncOn => crate::sync::SYNC_ON_KEY,
+                DeviceRecord::SyncVoiceprints => crate::sync::SYNC_VOICEPRINTS_KEY,
+                DeviceRecord::SyncCursor => crate::sync::SYNC_CURSOR_KEY,
+                DeviceRecord::SyncStatus => crate::sync::SYNC_STATUS_KEY,
             }
             .to_owned(),
         )
