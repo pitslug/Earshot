@@ -40,11 +40,19 @@ export function clockTime(ms: number): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-/** The list's second line: start time, length and where the meeting is in its life:
- * "HH:MM · Recording...", "HH:MM · N min · Processing", "HH:MM · Interrupted",
- * "HH:MM · N min · Draft transcript" or "HH:MM · N min". */
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Local `D Mon YYYY` ("14 Nov 2026"), fixed English month names whatever the locale. */
+export function recordedDate(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+/** The list's second line: the date and start time it was recorded, its length and where the
+ * meeting is in its life: "D Mon YYYY HH:MM · Recording...", "... · N min · Processing",
+ * "... · Interrupted", "... · N min · Draft transcript" or "D Mon YYYY HH:MM · N min". */
 export function secondaryLine(m: MeetingListItem): string {
-  const parts = [clockTime(m.started_at_ms)];
+  const parts = [`${recordedDate(m.started_at_ms)} ${clockTime(m.started_at_ms)}`];
   if (m.state === "Recording") return `${parts[0]} · Recording...`;
   if (m.duration_ms !== null) {
     parts.push(`${Math.max(1, Math.round(m.duration_ms / 60_000))} min`);

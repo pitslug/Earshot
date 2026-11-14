@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { MeetingListItem } from "../ipc";
-import { clockTime, displayTitle, groupByDay, recoveredText, secondaryLine } from "./meetings";
+import { clockTime, displayTitle, groupByDay, recordedDate, recoveredText, secondaryLine } from "./meetings";
 
 // Local times, so the tests hold in any time zone.
 const at = (day: number, hour: number, minute = 0) =>
@@ -45,27 +45,32 @@ describe("groupByDay", () => {
 });
 
 describe("secondaryLine", () => {
-  it("shows the local start time and the length in minutes", () => {
-    expect(secondaryLine(meeting("a", at(2, 9, 5), 47 * 60_000))).toBe("09:05 · 47 min");
-    expect(secondaryLine(meeting("a", at(2, 14, 30), 20_000))).toBe("14:30 · 1 min");
-    expect(secondaryLine(meeting("a", at(2, 14, 30), 90 * 60_000 + 29_000))).toBe("14:30 · 90 min");
+  it("shows the local date, start time and the length in minutes", () => {
+    expect(secondaryLine(meeting("a", at(2, 9, 5), 47 * 60_000))).toBe("2 Nov 2026 09:05 · 47 min");
+    expect(secondaryLine(meeting("a", at(2, 14, 30), 20_000))).toBe("2 Nov 2026 14:30 · 1 min");
+    expect(secondaryLine(meeting("a", at(2, 14, 30), 90 * 60_000 + 29_000))).toBe("2 Nov 2026 14:30 · 90 min");
   });
 
   it("says where the meeting is in its life", () => {
     const m = meeting("a", at(2, 7, 0), 47 * 60_000);
     expect(secondaryLine({ ...m, duration_ms: null, state: "Recording" })).toBe(
-      "07:00 · Recording...",
+      "2 Nov 2026 07:00 · Recording...",
     );
-    expect(secondaryLine({ ...m, state: "Processing" })).toBe("07:00 · 47 min · Processing");
+    expect(secondaryLine({ ...m, state: "Processing" })).toBe("2 Nov 2026 07:00 · 47 min · Processing");
     expect(secondaryLine({ ...m, duration_ms: null, state: "Interrupted" })).toBe(
-      "07:00 · Interrupted",
+      "2 Nov 2026 07:00 · Interrupted",
     );
-    expect(secondaryLine({ ...m, state: "Unprocessed" })).toBe("07:00 · 47 min · Draft transcript");
-    expect(secondaryLine({ ...m, state: "Ready" })).toBe("07:00 · 47 min");
+    expect(secondaryLine({ ...m, state: "Unprocessed" })).toBe("2 Nov 2026 07:00 · 47 min · Draft transcript");
+    expect(secondaryLine({ ...m, state: "Ready" })).toBe("2 Nov 2026 07:00 · 47 min");
   });
 
   it("pads the clock", () => {
     expect(clockTime(at(2, 0, 3))).toBe("00:03");
+  });
+
+  it("names the local recording date with English month names", () => {
+    expect(recordedDate(at(2, 0, 3))).toBe("2 Nov 2026");
+    expect(recordedDate(new Date(2025, 0, 31, 23, 59).getTime())).toBe("31 Jan 2025");
   });
 });
 

@@ -40,7 +40,7 @@ beforeEach(() => {
 });
 
 describe("AppShell", () => {
-  it("lists meetings grouped by day with their time and length", async () => {
+  it("lists meetings grouped by day with their date, time and length", async () => {
     renderShell(createMockIpc({ meetings: MEETINGS }));
     const list = await screen.findByRole("list", { name: "Meetings" });
     const headings = within(list).getAllByRole("heading").map((h) => h.textContent);
@@ -50,11 +50,11 @@ describe("AppShell", () => {
     const rowsOnly = { name: /^(?!Delete )/ };
     const rows = within(today).getAllByRole("button", rowsOnly);
     expect(rows.map((r) => r.textContent)).toEqual([
-      "Design review14:00 · 34 min",
-      "Untitled meeting09:30 · 47 min",
+      "Design review2 Nov 2026 14:00 · 34 min",
+      "Untitled meeting2 Nov 2026 09:30 · 47 min",
     ]);
     const yesterday = within(list).getByRole("group", { name: "Yesterday" });
-    expect(within(yesterday).getByRole("button", rowsOnly).textContent).toBe("Supplier call11:05 · 22 min");
+    expect(within(yesterday).getByRole("button", rowsOnly).textContent).toBe("Supplier call1 Nov 2026 11:05 · 22 min");
     const earlier = within(list).getByRole("group", { name: "Earlier" });
     expect(within(earlier).getByRole("button", rowsOnly).textContent).toContain("Quarterly planning");
     expect(screen.getByRole("button", { name: "New meeting" })).toBeInTheDocument();
