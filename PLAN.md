@@ -2134,23 +2134,51 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
 
 ### M11 - Future: sync container
 
-- [ ] T11.1 Sync design
-  - deps: GATE-07
+- [x] T11.1 Sync design
+  - deps: GATE-07 (open; the owner asked for the design ahead of it, 2026-11-14)
   - do: `docs/sync.md`: entity coverage, HLC last-writer-wins + tombstones, `Person.merged_into` handling, cursor pull/push API, device auth (tokens; OIDC via a self-hosted provider optional), encryption options, voiceprint opt-in flow, how audio exclusion is enforced, and write/lock discipline between the sync client and the runtime on the shared SQLite database.
   - accept: document exists and covers every bullet above
 - [ ] GATE-08 Approve sync design
   - deps: T11.1
-- [ ] T11.2 Sync server
+- [ ] T11.1a Kept-local as a synced meeting field
   - deps: GATE-08
-  - do: `earshot-sync-server` (axum + SQLite), Dockerfile, `docker-compose.yml`, request size limits, rejects binary payloads other than bounded voiceprint vectors.
+  - do: docs/sync.md section 8. `meeting.summary_kept_local` by an appended migration (filled from the `summary-kept-local/*` records, `APPLIED` pin, a migration test from the committed older fixture); set in the transaction that creates the meeting, cleared only by `keep_local::allow_writer`; `keep_local::summary_privacy` reads kept when the column or the old record says so, and an unreadable value counts as kept. Both decision points keep their tests. Reviewer required (data model, privacy).
+  - accept: `cargo test -p earshot-store kept_local` and `cargo test -p earshot-runtime keep_local`
+- [ ] T11.1b Outbox and remote apply in the store
+  - deps: T11.1a
+  - do: docs/sync.md 6.1 and 6.3. Device-local `sync_outbox` filled by triggers on every `SYNCED_TABLES` table (appended migration, pinned to `SYNCED_TABLES` by a test); `Store::apply_remote` in one transaction: later `updated_at` wins whole rows, the HLC observes remote stamps, a stamp over 24 h ahead is set aside, a row without its parent or for a leased meeting waits, its own outbox entries removed; a meeting tombstone runs the local deletion (audio files, local keys) and a person tombstone forgets that identity's biometrics. Table-driven cases for each rule. Reviewer required (data model, migrations).
+  - accept: `cargo test -p earshot-store sync`
+- [ ] T11.2 Sync server
+  - deps: T11.1b
+  - do: docs/sync.md section 5. `earshot-sync-server` (axum + SQLite), Dockerfile, `docker-compose.yml`: device tokens stored as hashes, the setup secret, pairing slots (one use, 10 minutes), row push and pull by server sequence keeping the newest per row key, presence blobs with server-side ages, token revocation, the vault format refusal, 256 KiB per row and 4 MiB per request. It holds ciphertext only and no HTTP client; its net guard treatment is as GATE-08 decided. Reviewer required (network code, privacy).
   - accept: `cargo test -p earshot-sync-server`
+- [ ] T11.2a `earshot-sync` crate: sealing, wire types, pairing code
+  - deps: GATE-08
+  - do: docs/sync.md section 4. An adapter crate: XChaCha20-Poly1305 over a `SyncEnvelope` with row key, `updated_at` and format as associated data; the HMAC row key; the 128-bit pairing code and its HKDF wrap of the vault key; key material from the operating system's generator, redacted `Debug`, wiped on drop; the plaintext audio-signature and size check before sealing. No HTTP, nothing in core. Reviewer required (privacy).
+  - accept: `cargo test -p earshot-sync`
 - [ ] T11.3 Sync client
-  - deps: T11.2
-  - do: client in runtime, background sync, voiceprint sync setting (default off), UI status.
+  - deps: T11.2, T11.2a
+  - do: docs/sync.md 6.2 and section 9. `earshot_runtime::sync` on one background thread: push the outbox, pull after the `sync-cursor` record, apply; all HTTP through `earshot-net` with the sync host on the allowlist; key and token in Credential Manager; a meeting being recorded is not pushed; an unreachable server is a status and a retry, never a meeting's problem; `settings/sync-voiceprints` (default off; on resets the pull cursor). Two simulated devices against an in-process server converge. Reviewer required (network code, privacy).
   - accept: `cargo test -p earshot-runtime sync`
-- [ ] T11.4 M11 acceptance
+- [ ] T11.3a Sync page and pairing
   - deps: T11.3
-  - do: `accept m11`: server via Docker if available else the binary; two simulated clients; sync.convergence; sync.no_audio (type-level check plus a scan of every payload and server table for RIFF, fLaC and OggS signatures and oversized blobs).
+  - do: docs/sync.md section 7 and "Pairing". Settings page Sync: server address and setup secret for a first device, show a pairing code, join with a code, device list, last sync, rows waiting and unreadable, voiceprint switch, turn off, remove this device. No IPC response carries the key, token, code after it is used, or setup secret. Mock IPC, page-name fixtures and screenshots in light and dark.
+  - accept: `cargo test -p earshot-desktop sync` and `cmd /c pnpm -r test`
+- [ ] T11.3b Convergence rules
+  - deps: T11.3
+  - do: docs/sync.md 6.4, inside the apply transaction: the earliest-created `is_me` person stays and the others are `merged_into` it; of two live summaries for one meeting the later-created stays and the other is tombstoned with its body. Three simulated devices reach the same rows in any delivery order.
+  - accept: `cargo test -p earshot-runtime sync_converge`
+- [ ] T11.3c Device presence
+  - deps: T11.3
+  - do: docs/sync.md section 10 "Presence". The encrypted blob (name, version, offers summaries, writer kind, recording), sent every 60 s and "gone" on sleep or quit; online is a server-reported age of at most 150 s; the helper's switch "Write summaries for my other devices" (default off); the Sync page's device list shows it. Clock-free tests of the online rule.
+  - accept: `cargo test -p earshot-runtime presence`
+- [ ] T11.3d Summary offload
+  - deps: T11.3b, T11.3c
+  - do: docs/sync.md section 10. Synced `SummaryRequest` (`syncable_row!`, migration, repo contract, trybuild snapshot regenerated); the Summaries page lists offering devices as "On <device> (<writer kind>)"; at summary time an online, offering, not-recording target gets a request and the meeting shows "Waiting for <device>", otherwise this device's writer runs with a banner; the target claims, waits for the counted transcript, writes through its ordinary summary path and re-reads the request in its write transaction; unclaimed after 90 s or a claimed target stale for 5 minutes is withdrawn and written here; a kept-local meeting is written only by a local model on either device. Fake presence and clock. Reviewer required (privacy).
+  - accept: `cargo test -p earshot-runtime offload`
+- [ ] T11.4 M11 acceptance
+  - deps: T11.3a, T11.3d
+  - do: `accept m11`: server via Docker if available else the binary; two simulated clients; sync.convergence; sync.no_audio (type-level check plus a scan of every plaintext at the client boundary for RIFF, fLaC and OggS signatures, and of every server table for rows over the size limit; wording as GATE-08 approves).
   - accept: `cargo xtask accept m11`
 - [ ] GATE-09 Self-hosted deployment
   - deps: T11.4
