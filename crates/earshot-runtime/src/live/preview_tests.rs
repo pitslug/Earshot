@@ -2878,15 +2878,28 @@ fn power_run(
     previews: LivePreviews,
     battery: &Arc<AtomicBool>,
     seed: u64,
+    react: impl FnMut(&RuntimeEvent),
+) -> (Vec<RuntimeEvent>, Stored) {
+    power_run_with(scene, previews, battery, seed, |_| {}, react)
+}
+
+/// [`power_run`] with the session's config changed by `tweak`.
+fn power_run_with(
+    scene: &Scene,
+    previews: LivePreviews,
+    battery: &Arc<AtomicBool>,
+    seed: u64,
+    tweak: impl FnOnce(&mut LiveConfig),
     mut react: impl FnMut(&RuntimeEvent),
 ) -> (Vec<RuntimeEvent>, Stored) {
     let dir = TempDir::new();
     let svc = services(&dir);
-    let config = LiveConfig {
+    let mut config = LiveConfig {
         power: PowerProbe::new(CountingPower(Arc::default(), Arc::clone(battery))),
         power_poll: Duration::from_millis(1),
         ..config_with(Some(previews))
     };
+    tweak(&mut config);
     let mut session = start_live(
         fast_source(scene),
         svc.clone(),
@@ -2996,6 +3009,155 @@ fn live_preview_battery_pauses_them_and_mains_brings_them_back() {
     assert_eq!(with, without);
 }
 
+/// Waits (at most `GUARD`) until `flag` is set.
+fn wait_for(flag: &AtomicBool) {
+    let limit = Instant::now() + GUARD;
+    while !flag.load(Ordering::SeqCst) && Instant::now() < limit {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// T12.37 review: a paused thread that does not stop (a decode that never returns) does not keep
+/// the track paused on mains under the battery banner: past the end wait it is off, said as a
+/// failure, and nothing loads again.
+#[test]
+fn live_preview_a_paused_thread_that_never_stops_is_off_on_mains_not_on_battery() {
+    let scene = scene_of(40);
+    let seen = Arc::new(Seen::default());
+    let battery = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    // The first decode unplugs the computer and stays in its decode until let go.
+    let script = {
+        let (battery, release) = (Arc::clone(&battery), Arc::clone(&release));
+        move |call: usize, cancel: &CancelToken| {
+            if call == 0 {
+                battery.store(true, Ordering::SeqCst);
+                wait_for(&release);
+            }
+            marker_words(call, cancel)
+        }
+    };
+    let (events, _) = power_run_with(
+        &scene,
+        previews(loader(&seen, script)),
+        &battery,
+        399,
+        |c| c.speaker_stop_wait = Duration::from_millis(200),
+        |event| {
+            if is_state(event, Some(PreviewOffReason::OnBattery)) {
+                battery.store(false, Ordering::SeqCst);
+            }
+            if is_state(event, Some(PreviewOffReason::Failed)) {
+                release.store(true, Ordering::SeqCst);
+            }
+        },
+    );
+    release.store(true, Ordering::SeqCst);
+    assert_eq!(
+        states_of(&events),
+        vec![
+            (TrackId::Reference, None),
+            (TrackId::Reference, Some(PreviewOffReason::OnBattery)),
+            (TrackId::Reference, Some(PreviewOffReason::Failed)),
+        ]
+    );
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 1);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.reason, Some(PreviewOffReason::Failed));
+    assert_eq!(report.off.as_deref(), Some(PREVIEW_THREAD_LEFT));
+}
+
+/// T12.37 review: a paused thread that crashes while the computer stays on battery is reported
+/// as a crash at the end, never as the battery.
+#[test]
+fn live_preview_a_paused_thread_that_crashes_is_reported_as_a_crash_not_the_battery() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let battery = Arc::new(AtomicBool::new(false));
+    let paused = Arc::new(AtomicBool::new(false));
+    // The first decode unplugs the computer, and crashes once the pause has been said.
+    let script = {
+        let (battery, paused) = (Arc::clone(&battery), Arc::clone(&paused));
+        move |_: usize, _: &CancelToken| -> Result<Vec<Word>, AsrError> {
+            battery.store(true, Ordering::SeqCst);
+            wait_for(&paused);
+            panic!("a test crash after the pause");
+        }
+    };
+    let (events, with) = power_run(
+        &scene,
+        previews(loader(&seen, script)),
+        &battery,
+        401,
+        |event| {
+            if is_state(event, Some(PreviewOffReason::OnBattery)) {
+                paused.store(true, Ordering::SeqCst);
+            }
+        },
+    );
+    paused.store(true, Ordering::SeqCst);
+    assert_eq!(
+        states_of(&events),
+        vec![
+            (TrackId::Reference, None),
+            (TrackId::Reference, Some(PreviewOffReason::OnBattery)),
+        ]
+    );
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.reason, Some(PreviewOffReason::Failed));
+    assert_eq!(report.off.as_deref(), Some("the preview thread crashed"));
+    let (without, ..) = run_with(&scene, None, 401);
+    assert_eq!(with, without);
+}
+
+/// T12.37 review: a load that fails after the pause was asked for stays final: on mains nothing
+/// loads again.
+#[test]
+fn live_preview_a_load_failing_after_the_pause_is_not_retried_on_mains() {
+    let scene = scene_of(40);
+    let battery = Arc::new(AtomicBool::new(false));
+    let paused = Arc::new(AtomicBool::new(false));
+    let loads = Arc::new(AtomicUsize::new(0));
+    // The load unplugs the computer, then fails once the pause has been said.
+    let load: PreviewLoader = {
+        let (battery, paused, loads) = (
+            Arc::clone(&battery),
+            Arc::clone(&paused),
+            Arc::clone(&loads),
+        );
+        Arc::new(move |_: &BackendInfo| {
+            loads.fetch_add(1, Ordering::SeqCst);
+            battery.store(true, Ordering::SeqCst);
+            wait_for(&paused);
+            Err("not on this backend".into())
+        })
+    };
+    let mut meters: Option<u32> = None;
+    let (events, _) = power_run(&scene, previews(load), &battery, 403, |event| {
+        if is_state(event, Some(PreviewOffReason::OnBattery)) {
+            paused.store(true, Ordering::SeqCst);
+            battery.store(false, Ordering::SeqCst);
+            meters = Some(0);
+        }
+        if let (RuntimeEvent::Levels(_), Some(n)) = (event, meters.as_mut()) {
+            *n += 1;
+        }
+    });
+    paused.store(true, Ordering::SeqCst);
+    assert!(meters.is_some_and(|n| n > 20), "the meeting ended too soon");
+    assert_eq!(
+        states_of(&events),
+        vec![
+            (TrackId::Reference, Some(PreviewOffReason::OnBattery)),
+            (TrackId::Reference, Some(PreviewOffReason::LoadFailed)),
+        ]
+    );
+    assert_eq!(loads.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        report_of(&events).expect("a report").reason,
+        Some(PreviewOffReason::LoadFailed)
+    );
+}
 /// T12.37: previews off for another reason stay off whatever the power supply does, and nothing
 /// loads again: refused by the computer's rule (never loaded) or by a failed load (loaded once).
 #[test]

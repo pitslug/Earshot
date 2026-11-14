@@ -42,7 +42,7 @@ export const PREVIEWS_HEADING = "Show words while someone is talking";
 
 /** What provisional words are, on the Transcription page. */
 export const PREVIEWS_EXPLAINED =
-  "Shows grey words within a few seconds while someone is talking, then replaces them with the settled text. It uses more of your computer during a meeting and changes nothing that is saved. Only with a Parakeet model, and not on battery.";
+  "Shows grey words within a few seconds while someone is talking, then replaces them with the settled text. It uses more of your computer during a meeting and changes nothing that is saved. Only with a Parakeet model, and paused while the computer is on battery.";
 
 /** Whose words "Other people only" shows. */
 export const PREVIEWS_OTHER_PEOPLE_EXPLAINED =

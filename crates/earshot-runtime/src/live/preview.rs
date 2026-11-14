@@ -950,10 +950,13 @@ impl PreviewThread {
             .cancel();
         let until = Instant::now() + wait;
         // A decode in progress ends on its own: this never makes the end of a meeting wait longer.
+        let mut gave_up = None;
         let done = loop {
             let left = until.saturating_duration_since(Instant::now());
             match self.from.recv_timeout(left) {
                 Ok(FromPreview::Done) | Err(RecvTimeoutError::Disconnected) => break true,
+                // A thread that gave up before it saw the stop keeps its own reason.
+                Ok(FromPreview::Off(why)) => gave_up = Some(why),
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => break false,
             }
@@ -971,6 +974,11 @@ impl PreviewThread {
         if crashed {
             report.off = Some(PREVIEW_THREAD_CRASHED.to_owned());
             report.reason = Some(PreviewOffReason::Failed);
+        } else if let Some(why) = gave_up
+            && report.off.is_none()
+        {
+            report.off = Some(why.text);
+            report.reason = Some(why.reason);
         } else if !done && at == StopAt::MeetingEnd && report.off.is_none() {
             // Left in a decode at the end, whatever the wait: never a report of previews that
             // ran to the end. A stop during the meeting has its caller's reason.
@@ -982,11 +990,12 @@ impl PreviewThread {
 }
 
 /// What a track's previews did before the battery paused them (T12.37): the report they go on
-/// adding to, and their thread until it has stopped.
+/// adding to, and their thread (told to stop) until it is seen to have ended, with when it was
+/// told.
 #[derive(Default)]
 pub(super) struct Paused {
     report: Option<Arc<Mutex<PreviewReport>>>,
-    thread: Option<JoinHandle<()>>,
+    thread: Option<(Box<PreviewThread>, Instant)>,
 }
 
 impl Paused {
@@ -1121,10 +1130,10 @@ where
 
     /// The computer went on battery: `track`'s running previews stop and wait to start again
     /// (T12.37, module docs). Never waits: the thread is told to stop and its decode cancelled,
-    /// and the next start waits for it to have stopped. A thread that already gave up keeps its
-    /// own reason, for the rest of the meeting.
+    /// and the next start waits for it to have stopped, reading what it said last. A thread that
+    /// gave up, now or before it stopped, keeps its own reason for the rest of the meeting.
     fn previews_pause(&mut self, track: TrackId) {
-        let PreviewState::Running(mut p) = std::mem::take(&mut self.previews[slot(track)]) else {
+        let PreviewState::Running(p) = std::mem::take(&mut self.previews[slot(track)]) else {
             return;
         };
         let gave_up = p.from.try_iter().find_map(|message| match message {
@@ -1142,12 +1151,11 @@ where
             .unwrap_or_else(PoisonError::into_inner)
             .cancel();
         let shown = !p.sent.is_empty();
+        let previews = p.previews.clone();
         let paused = Paused {
             report: Some(Arc::clone(&p.report)),
-            thread: p.thread.take(),
+            thread: Some((p, Instant::now())),
         };
-        let previews = p.previews.clone();
-        drop(p);
         if shown {
             self.emit(RuntimeEvent::LivePreview {
                 track,
@@ -1390,22 +1398,30 @@ where
         }
         // After a pause the old thread stops first, so its model session is gone (a QNN one back
         // in the idle pool) before another loads.
+        // A thread that has not stopped within the end wait never will in time: off, and the
+        // battery is not why.
+        let stop_wait = self.policy.speaker_stop_wait;
         let PreviewState::Pending(_, paused) = &mut self.previews[slot(track)] else {
             return;
         };
-        if paused.thread.as_ref().is_some_and(|t| !t.is_finished()) {
+        if let Some((old, since)) = &paused.thread
+            && old.thread.as_ref().is_some_and(|t| !t.is_finished())
+        {
+            if since.elapsed() >= stop_wait {
+                self.previews_off(
+                    track,
+                    PreviewRefusal::new(PreviewOffReason::Failed, PREVIEW_THREAD_LEFT),
+                );
+            }
             return;
         }
-        if paused
-            .thread
-            .take()
-            .is_some_and(|thread| thread.join().is_err())
-        {
-            self.previews_off(
-                track,
-                PreviewRefusal::new(PreviewOffReason::Failed, PREVIEW_THREAD_CRASHED),
-            );
-            return;
+        // Ended: what it said last counts (a failed load or decode, a crash stay final).
+        if let Some((old, _)) = paused.thread.take() {
+            let ended = old.finish(Duration::ZERO, StopAt::DuringMeeting);
+            if let (Some(text), Some(reason)) = (ended.off, ended.reason) {
+                self.previews_off(track, PreviewRefusal::new(reason, text));
+                return;
+            }
         }
         let speaking = self.speaking[slot(track)];
         let PreviewState::Pending(previews, paused) =
@@ -1447,6 +1463,20 @@ where
             let report = match std::mem::take(&mut self.previews[slot(track)]) {
                 PreviewState::None => continue,
                 PreviewState::Pending(_, paused) => {
+                    // A paused thread gets the end wait a running one gets: one that did not stop
+                    // or that crashed says so, never the battery.
+                    let base = paused.report(track);
+                    let ended = paused.thread.map(|(old, _)| {
+                        old.finish(self.policy.speaker_stop_wait, StopAt::MeetingEnd)
+                    });
+                    let base = match ended {
+                        Some(report) if report.off.is_some() => {
+                            self.emit(RuntimeEvent::LivePreviewReport(report));
+                            continue;
+                        }
+                        Some(report) => report,
+                        None => base,
+                    };
                     // Waiting on battery at the end says the battery, as the meeting screen did.
                     let why = if self.preview_said[slot(track)]
                         == Some(Some(PreviewOffReason::OnBattery))
@@ -1461,7 +1491,7 @@ where
                     PreviewReport {
                         off: Some(why.text),
                         reason: Some(why.reason),
-                        ..paused.report(track)
+                        ..base
                     }
                 }
                 PreviewState::Off(report) => report,
