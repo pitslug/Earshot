@@ -474,16 +474,20 @@ impl JobWork for HostJobs {
         let models = host::model_dir(&svc.data);
         // Waits for this start's choice of ONNX Runtime's library, if it is still being made.
         let build = host::settled_order();
-        let setup = {
+        let mut setup = {
             let db = svc.store();
             host::transcription_setup(&db, &models, &build, &earshot_runtime::hardware())?
         };
+        host::require_models(&models, &setup.choice.model, true)?;
+        // "Runs on the processor" for want of an NPU version: once until it changes (T12.45),
+        // recorded once the warnings went out.
+        let npu_note = host::npu_note_once(&svc.store(), &mut setup);
         let choice = setup.choice;
-        host::require_models(&models, &choice.model, true)?;
         let order = setup.order;
         for note in setup.notes {
             warn(note);
         }
+        npu_note.record(&mut svc.store());
         // A library that cannot load falls back to the CPU one, told as the meeting driver does.
         host::init_onnx_for(&models, &choice.model, &order, &mut |library, e| {
             warn(crate::meeting::onnx_fallback_message(library, e));

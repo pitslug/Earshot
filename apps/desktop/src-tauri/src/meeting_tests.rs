@@ -181,6 +181,8 @@ struct FakePrepare {
     effort_unread: std::sync::atomic::AtomicBool,
     /// Holds a [`Script::StopHangs`] or [`Script::CaptureThreadHangs`] stop.
     stop_gate: StopGate,
+    /// Handed to the next meeting: the NPU note to record once its banners went out (T12.45).
+    npu_note: Mutex<Option<earshot_runtime::host::NpuNoteShown>>,
 }
 
 impl FakePrepare {
@@ -192,6 +194,7 @@ impl FakePrepare {
             call_signal: Mutex::new(None),
             effort_unread: false.into(),
             stop_gate: Arc::default(),
+            npu_note: Mutex::new(None),
         })
     }
 }
@@ -325,6 +328,7 @@ impl Prepare for FakePrepare {
             .chain(super::setup_notices(vec![PLACEMENT_NOTE.into()]))
             .collect(),
             call_signal: self.call_signal.lock().unwrap().take(),
+            npu_note: self.npu_note.lock().unwrap().take(),
         })
     }
 }
@@ -977,6 +981,49 @@ fn meeting_driver_says_when_claude_code_ran_at_its_default_effort() {
     );
 }
 
+/// What `host::npu_note_once` leaves to record for a setup holding `note`.
+fn npu_note_to_record(svc: &Services, note: &str) -> earshot_runtime::host::NpuNoteShown {
+    let mut setup = earshot_runtime::host::TranscriptionSetup {
+        choice: earshot_runtime::host::ModelChoice {
+            model: "parakeet-tdt-0.6b-v3".into(),
+            backend: None,
+        },
+        source: earshot_runtime::host::TranscriptionSource::Setting,
+        order: vec![],
+        languages: vec!["en".into()],
+        notes: vec![note.into()],
+        npu_note: Some(note.into()),
+    };
+    earshot_runtime::host::npu_note_once(&svc.store(), &mut setup)
+}
+
+#[test]
+fn meeting_driver_records_the_npu_note_only_after_a_start_that_succeeded() {
+    let dir = TempDir::new("driver-npu-note");
+    let svc = services(&dir);
+    let note = "Model A has no NPU version installed, so it runs on the processor.";
+    let stored = || {
+        svc.store()
+            .local_value(earshot_runtime::host::NPU_NOTE_SHOWN_KEY)
+            .unwrap()
+    };
+    // A start that fails leaves it unshown, so the next meeting shows it.
+    let failing = FakePrepare::new(Script::StartFails);
+    *failing.npu_note.lock().unwrap() = Some(npu_note_to_record(&svc, note));
+    let (d, _rx) = driver(failing);
+    assert!(d.start(&svc, request(CaptureMode::Call)).is_err());
+    d.join();
+    assert_eq!(stored(), None);
+    // A meeting that starts records it once its banners went out.
+    let fake = FakePrepare::new(Script::Ends);
+    *fake.npu_note.lock().unwrap() = Some(npu_note_to_record(&svc, note));
+    let (d, rx) = driver(fake);
+    d.start(&svc, request(CaptureMode::Call)).unwrap();
+    let _ = until_summary(&rx);
+    d.join();
+    assert!(stored().is_some_and(|v| v.ends_with(note.as_bytes())));
+}
+
 #[test]
 fn meeting_driver_shows_a_setup_note_after_started() {
     let dir = TempDir::new("driver-note");
@@ -1222,6 +1269,7 @@ impl Prepare for QueuePrepare {
             after,
             notices: Vec::new(),
             call_signal: None,
+            npu_note: None,
         })
     }
 }
@@ -1732,6 +1780,7 @@ impl Prepare for CancelPrepare {
                 after,
                 notices: Vec::new(),
                 call_signal: None,
+                npu_note: None,
             });
         }
         let mut hold = hold;
@@ -1876,6 +1925,7 @@ impl Prepare for CancelPrepare {
             after,
             notices: Vec::new(),
             call_signal: None,
+            npu_note: None,
         })
     }
 }

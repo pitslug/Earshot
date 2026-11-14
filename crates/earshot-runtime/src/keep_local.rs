@@ -24,7 +24,7 @@ use earshot_core::model::MeetingRepo;
 use earshot_store::Store;
 
 use crate::local::{LocalKey, MeetingRecord};
-use crate::{RuntimeError, Services};
+use crate::{MeetingActivity, RuntimeError, Services};
 
 /// The record's version, written before its marker.
 pub const RECORD_VERSION: u32 = 1;
@@ -81,8 +81,21 @@ pub fn summary_privacy(store: &Store, meeting: EntityId) -> SummaryPrivacy {
 /// nothing.
 ///
 /// # Errors
-/// [`crate::edit::EditError::MeetingNotFound`] for an unknown or deleted meeting; store errors.
+/// [`crate::edit::EditError::MeetingNotFound`] for an unknown or deleted meeting;
+/// [`crate::edit::EditError::MeetingStillWorking`] while it records, waits, is finished or has a
+/// re-transcribe or re-summarise running (nothing changes); store errors.
 pub fn allow_writer(services: &Services, meeting: EntityId) -> Result<(), RuntimeError> {
+    // The work after a meeting chose its summary writer when the meeting started, and a
+    // re-summarise when it started: allowing now would change nothing for it (T12.45). Read
+    // before the store lock (`meeting_activity` takes the activity lock, then the store's).
+    if matches!(
+        services.meeting_activity(meeting)?,
+        Some(MeetingActivity::Recording | MeetingActivity::Waiting | MeetingActivity::Processing)
+    ) {
+        return Err(RuntimeError::Edit(
+            crate::edit::EditError::MeetingStillWorking(meeting),
+        ));
+    }
     let mut db = services.store();
     match db.meeting(meeting)? {
         Some(m) if !m.meta.deleted => {}

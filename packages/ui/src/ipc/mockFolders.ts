@@ -36,6 +36,60 @@ const fail = (kind: string, message: string): never => {
 
 const fold = (name: string) => name.toLocaleLowerCase();
 
+/** `earshot_core::metrics::normalize::fold_diacritic`: a lowercase Latin letter with a
+ * diacritic and its base letters. */
+const BASE_LETTERS: [string, string][] = [
+  ["àáâãäåāăą", "a"],
+  ["çćĉċč", "c"],
+  ["ďđð", "d"],
+  ["èéêëēĕėęě", "e"],
+  ["ĝğġģ", "g"],
+  ["ĥ", "h"],
+  ["ìíîïĩīĭį", "i"],
+  ["ĵ", "j"],
+  ["ķ", "k"],
+  ["ĺļľł", "l"],
+  ["ñńņň", "n"],
+  ["òóôõöøōŏő", "o"],
+  ["ŕŗř", "r"],
+  ["śŝşš", "s"],
+  ["ţť", "t"],
+  ["ùúûüũūŭůűų", "u"],
+  ["ŵ", "w"],
+  ["ýÿŷ", "y"],
+  ["źżž", "z"],
+  ["æ", "ae"],
+  ["œ", "oe"],
+  ["ß", "ss"],
+  ["þ", "th"],
+];
+/** Each letter of `BASE_LETTERS` and its base letters; pinned to core's whole table by
+ * `fixtures/ui/base_letter_cases.json`, generated from it by the runtime's tests. */
+export const BASE_OF = new Map(BASE_LETTERS.flatMap(([letters, base]) => [...letters].map((l) => [l, base] as const)));
+
+/** Rust's `char::to_lowercase` per character (`search::fold_case`), not a locale's. */
+const foldCase = (name: string) => [...name].map((c) => c.toLowerCase()).join("");
+
+/** Compares by code point, as Rust compares strings (`<` on JS strings compares UTF-16 units). */
+function compareCodePoints(a: string, b: string): number {
+  const x = [...a].map((c) => c.codePointAt(0)!);
+  const y = [...b].map((c) => c.codePointAt(0)!);
+  for (let i = 0; i < Math.min(x.length, y.length); i += 1) {
+    if (x[i] !== y[i]) return x[i] - y[i];
+  }
+  return x.length - y.length;
+}
+
+/** The folder list's order (T12.45), `folders::name_order`: the case-folded name with Latin
+ * diacritics folded to their base letters, then the case-folded name; by code point.
+ * `fixtures/ui/folder_sort_cases.json` (both suites run it) keeps the two the same. */
+export function folderOrder(a: string, b: string): number {
+  const fa = foldCase(a);
+  const fb = foldCase(b);
+  const base = (s: string) => [...s].map((c) => BASE_OF.get(c) ?? c).join("");
+  return compareCodePoints(base(fa), base(fb)) || compareCodePoints(fa, fb);
+}
+
 /** The folder commands of the mock `Ipc`, over `meetings` (shared with the mock, changed in
  * place). */
 export function createFoldersMock(
@@ -45,8 +99,7 @@ export function createFoldersMock(
 ): FolderCommands {
   let folders = start.map((f) => ({ ...f }));
   let seq = 0;
-  const sorted = () =>
-    [...folders].sort((a, b) => fold(a.name).localeCompare(fold(b.name)) || a.id.localeCompare(b.id));
+  const sorted = () => [...folders].sort((a, b) => folderOrder(a.name, b.name) || a.id.localeCompare(b.id));
   const cleanName = (name: string) => {
     const n = name.trim();
     if (n === "") fail("invalid_name", "Enter a name.");

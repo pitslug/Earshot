@@ -234,6 +234,35 @@ fn vocabulary_dictionary_word_follows_the_shared_case_table() {
 }
 
 #[test]
+fn vocabulary_an_entry_stored_with_quotes_reads_as_its_stripped_form() {
+    let dir = TempDir::new("summary-vocabulary");
+    let mut s = store(&dir);
+    // As a word added from the transcript before T12.45 was stored (written raw).
+    s.set_local_value(
+        VOCABULARY_KEY,
+        br#"["'Zorbek'", "zorbek", "''", "(Velmora)", "Quill 'n' Marsh"]"#,
+    )
+    .unwrap();
+    let (words, refused) = vocabulary(&s).unwrap();
+    assert_eq!(refused, None);
+    assert_eq!(words.words(), ["Zorbek", "(Velmora)", "Quill 'n' Marsh"]);
+    // It matches the stripped word: not added twice, and removable.
+    let added = add_word(&mut s, "'Zorbek'").unwrap();
+    assert_eq!(
+        added,
+        AddedWord {
+            word: "Zorbek".into(),
+            added: false
+        }
+    );
+    assert!(remove_word(&mut s, "Zorbek").unwrap());
+    assert_eq!(
+        vocabulary(&s).unwrap().0.words(),
+        ["(Velmora)", "Quill 'n' Marsh"]
+    );
+}
+
+#[test]
 fn vocabulary_words_to_offer_follows_the_shared_case_table() {
     let table: serde_json::Value = serde_json::from_str(include_str!(
         "../../../fixtures/ui/words_to_offer_cases.json"

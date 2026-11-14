@@ -22,6 +22,7 @@ import {
   CODEX_PRIVACY,
   LIVE_DESCRIPTION,
   MODEL_PLACEHOLDER,
+  otherKeepsText,
   remoteWarning,
 } from "./SummariesPage";
 import { partName, titleOf } from "./copy";
@@ -337,6 +338,31 @@ describe("Settings, Summaries", () => {
     await s.user.type(within(other).getByRole("textbox", { name: /^Model name/ }), "   ");
     expect(save).toBeDisabled();
     expect((await s.ipc.summarySettings()).value.claude_model).toBe("sonnet");
+    // T12.45: while the name is empty the card says which model is still stored, and no
+    // "Saved." beside an empty name.
+    expect(within(other).getByText(otherKeepsText("Sonnet"))).toBeInTheDocument();
+    expect(within(other).queryByText("Saved.")).toBeNull();
+    const name = within(other).getByRole("textbox", { name: /^Model name/ });
+    await s.user.type(name, "claude-x");
+    expect(within(other).queryByText(otherKeepsText("Sonnet"))).toBeNull();
+    await s.user.clear(name);
+    expect(within(other).getByText(otherKeepsText("Sonnet"))).toBeInTheDocument();
+  });
+
+  it("names a stored typed model or the CLI's default under an empty Other name", async () => {
+    const s = await open({ summaries: { settings: { writer: "ClaudeCode", claude_model: "claude-x-1" } } });
+    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    const other = within(card).getByRole("group", { name: "Other model" });
+    expect(within(other).queryByText(otherKeepsText("claude-x-1"))).toBeNull();
+    await s.user.clear(within(other).getByRole("textbox", { name: /^Model name/ }));
+    expect(within(other).getByText(otherKeepsText("claude-x-1"))).toBeInTheDocument();
+    cleanup();
+    const t = await open({ summaries: { settings: { writer: "Codex" } } });
+    const codex = await screen.findByRole("group", { name: "OpenAI through Codex" });
+    await t.user.selectOptions(within(codex).getByRole("combobox", { name: "Model" }), "Other");
+    const codexOther = within(codex).getByRole("group", { name: "Other model" });
+    expect(within(codexOther).getByText(otherKeepsText("Codex's default"))).toBeInTheDocument();
+    expect(otherKeepsText("Sonnet")).not.toMatch(/—|please|!/i);
   });
 
   it("chooses Claude Code's effort from a list, applied at once", async () => {

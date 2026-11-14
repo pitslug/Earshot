@@ -65,6 +65,15 @@ pub fn vocabulary(store: &Store) -> Result<(Vocabulary, Option<UnknownSetting>),
     Ok(vocabulary_of(store.local_value(VOCABULARY_KEY)?.as_deref()))
 }
 
+/// Stored entries read without leading and trailing single quotes (T12.45): a word added from
+/// the transcript before quotes were stripped (`'Zorbek'`) reads as `Zorbek`, so it matches,
+/// is found for removal and is not added twice; [`Vocabulary::new`] then drops the repeat a
+/// stripped entry may make. Only quotes at the ends of a whole entry go: other punctuation the
+/// user typed stays.
+fn stored_without_quotes(words: &[String]) -> Vec<&str> {
+    words.iter().map(|w| w.trim().trim_matches('\'')).collect()
+}
+
 /// [`vocabulary`] from the stored bytes (`None`: nothing stored), so a store transaction can
 /// read the words too (`crate::word_choices`).
 pub(crate) fn vocabulary_of(bytes: Option<&[u8]>) -> (Vocabulary, Option<UnknownSetting>) {
@@ -83,7 +92,7 @@ pub(crate) fn vocabulary_of(bytes: Option<&[u8]>) -> (Vocabulary, Option<Unknown
     // Parsed as plain strings first, so the reason names the rule broken (the core check),
     // never a word.
     match serde_json::from_slice::<Vec<String>>(bytes) {
-        Ok(words) => match Vocabulary::new(&words) {
+        Ok(words) => match Vocabulary::new(stored_without_quotes(&words)) {
             Ok(v) => (v, None),
             Err(e) => refused(e.to_string()),
         },
@@ -121,8 +130,21 @@ pub fn set_vocabulary<S: AsRef<str>>(
 /// (`fixtures/ui/dictionary_word_cases.json`, which both suites run).
 #[must_use]
 pub fn dictionary_word(token: &str) -> Option<&str> {
-    let (_, core, _) = split_punctuation(token.trim());
+    let core = without_single_quotes(split_punctuation(token.trim()).1);
     core.chars().any(char::is_alphabetic).then_some(core)
+}
+
+/// `core` without leading and trailing single quotes (T12.45: `'Zorbek'` adds `Zorbek`), split
+/// again after each strip so punctuation inside the quotes goes too (`'Zorbek.'`). An
+/// apostrophe inside the word stays (`don't`). Kept apart from the list's own checks.
+fn without_single_quotes(mut core: &str) -> &str {
+    loop {
+        let stripped = core.trim_matches('\'');
+        if stripped.len() == core.len() {
+            return core;
+        }
+        core = split_punctuation(stripped).1;
+    }
 }
 
 /// Whether `word` is an entry of `entries` (case ignored, as [`Vocabulary::new`] drops a
@@ -142,7 +164,7 @@ fn listed_in<S: AsRef<str>>(entries: &[S], word: &str) -> bool {
 pub fn words_to_offer<S: AsRef<str>>(before: &str, after: &str, listed: &[S]) -> Vec<String> {
     let before: HashSet<&str> = before
         .split_whitespace()
-        .map(|t| split_punctuation(t).1)
+        .map(|t| without_single_quotes(split_punctuation(t).1))
         .collect();
     let mut seen = HashSet::new();
     after

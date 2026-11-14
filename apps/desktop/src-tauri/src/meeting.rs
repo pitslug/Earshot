@@ -116,6 +116,9 @@ pub struct Prepared {
     pub notices: Vec<MeetingEvent>,
     /// What the call app's render sessions do (T9.4); `None`: this meeting has no offer to stop.
     pub call_signal: Option<CallSignal>,
+    /// The NPU note to record as shown once `notices` went out (T12.45): never on a start that
+    /// failed.
+    pub npu_note: Option<host::NpuNoteShown>,
 }
 
 /// The pre-flight of a meeting. Runs on the meeting thread, before any capture starts.
@@ -1040,6 +1043,7 @@ fn run(
     let mut saved_seen = false;
     let mut mapper = EventMapper::new(request.mode);
     let mut notices = Some(prepared.notices);
+    let mut npu_note = prepared.npu_note;
     // Calls only: in the room nothing ends when a call app does.
     let mut call_end = prepared
         .call_signal
@@ -1110,6 +1114,9 @@ fn run(
                         && let Some(n) = notices.take()
                     {
                         n.into_iter().for_each(send);
+                        if let Some(shown) = npu_note.take() {
+                            shown.record(&mut svc.store());
+                        }
                     }
                     if is_end {
                         break;
@@ -1643,11 +1650,14 @@ mod production {
             // a meeting whose files are missing. What it runs on is read when its turn comes
             // (`MeetingModels`), so it keeps what the start decides.
             let build = earshot_runtime::backends::accelerator_order();
-            let setup = {
+            let mut setup = {
                 let db = svc.store();
                 host::transcription_setup(&db, &models, &build, &earshot_runtime::hardware())?
             };
             host::require_models(&models, &setup.choice.model, true)?;
+            // "Runs on the processor" for want of an NPU version: once until it changes,
+            // recorded only once the meeting started and its banners went out (T12.45).
+            let npu_note = host::npu_note_once(&svc.store(), &mut setup);
             let checked = host::ResolvedModels {
                 model: setup.choice.model.clone(),
                 order: setup.order.clone(),
@@ -1760,6 +1770,7 @@ mod production {
                 after,
                 notices,
                 call_signal,
+                npu_note: Some(npu_note),
             })
         }
     }

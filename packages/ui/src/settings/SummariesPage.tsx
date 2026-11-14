@@ -372,6 +372,17 @@ export const EFFORT_LABEL: Record<EffortChoice, string> = {
 /** The list value of Other: never a model name (both CLIs refuse brackets). */
 const OTHER_MODEL = "(other)";
 
+/** How the stored model reads: its list label, or the typed name it was saved as. */
+export function storedModelLabel(models: ModelOption[], stored: string): string {
+  return models.find((m) => m.value === stored)?.label ?? stored;
+}
+
+/** Under Other while its name is empty (T12.45): choosing Other stores nothing, so the line
+ * names the model still stored. */
+export function otherKeepsText(label: string): string {
+  return `Until you save a name, the model stays ${label}.`;
+}
+
 /** The effort list (Claude Code only, T12.18): a choice, applied at once. */
 function EffortField({
   state,
@@ -532,6 +543,9 @@ function AgentCliCard({
                 spellCheck={false}
               />
             </Field>
+            {typed.trim() === "" && (
+              <Caption1 className={styles.muted}>{otherKeepsText(storedModelLabel(models, stored))}</Caption1>
+            )}
             {saveOnNext === undefined && (
               <div className={styles.row}>
                 <Button
@@ -541,7 +555,9 @@ function AgentCliCard({
                 >
                   Save model
                 </Button>
-                {inUse && !changed && stored !== "" && <Caption1 className={styles.muted}>Saved.</Caption1>}
+                {inUse && !changed && stored !== "" && typed.trim() !== "" && (
+                  <Caption1 className={styles.muted}>Saved.</Caption1>
+                )}
               </div>
             )}
           </div>

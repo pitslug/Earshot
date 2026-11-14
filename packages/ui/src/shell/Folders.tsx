@@ -1,6 +1,6 @@
 // The Folders group of the side panel (T9.5c, docs/folders-design.md): "All meetings", then
-// the folders by name, each with a menu (right-click, the Menu key or Shift+F10) to rename or
-// delete it; with no folders only a quiet "New folder". The folder chosen filters the dated
+// the folders by name, each with a menu (its menu button, right-click, the Menu key or
+// Shift+F10) to rename or delete it; with no folders only a quiet "New folder". The folder chosen filters the dated
 // list below it. Every change goes through `AppShell`, which owns the delete dialog.
 
 import {
@@ -50,6 +50,30 @@ const useStyles = makeStyles({
   },
   rowSelected: {
     backgroundColor: tokens.colorSubtleBackgroundSelected,
+  },
+  // The menu button stays out of the way until the pointer or keyboard focus is on the row (the
+  // meeting rows' trash can, T9.1o); a touch screen has no hover, so it always shows there.
+  rowItem: {
+    position: "relative",
+    ":hover .earshot-folder-more": { opacity: 1 },
+    ":has(:focus-visible) .earshot-folder-more": { opacity: 1 },
+    ":has([aria-expanded=true]) .earshot-folder-more": { opacity: 1 },
+    ":hover .earshot-folder-name": { paddingRight: "24px" },
+    ":has(:focus-visible) .earshot-folder-name": { paddingRight: "24px" },
+    "@media (hover: none)": {
+      "& .earshot-folder-more": { opacity: 1 },
+      "& .earshot-folder-name": { paddingRight: "24px" },
+    },
+  },
+  more: {
+    position: "absolute",
+    top: "50%",
+    right: tokens.spacingHorizontalXS,
+    transform: "translateY(-50%)",
+    opacity: 0,
+    transitionProperty: "opacity",
+    transitionDuration: tokens.durationFaster,
+    "@media (prefers-reduced-motion: reduce)": { transitionDuration: "0.01ms" },
   },
   name: {
     overflow: "hidden",
@@ -113,6 +137,21 @@ function AllIcon() {
   );
 }
 
+function MoreIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <circle cx="3.5" cy="8" r="1.1" />
+      <circle cx="8" cy="8" r="1.1" />
+      <circle cx="12.5" cy="8" r="1.1" />
+    </svg>
+  );
+}
+
+/** The accessible name of a folder's menu button. */
+export function folderMenuLabel(name: string): string {
+  return `Rename or delete ${name}`;
+}
+
 function PlusIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
@@ -138,6 +177,14 @@ export function FolderGroup({
   const headingId = useId();
   // The delete dialog opens with no trigger of its own: on Cancel it hands focus back here.
   const restoreFocus = useRestoreFocusTarget();
+  const folderMenu = (f: FolderListItem) => (
+    <MenuPopover>
+      <MenuList>
+        <MenuItem onClick={() => onRename(f)}>Rename</MenuItem>
+        <MenuItem onClick={() => onDelete(f)}>Delete...</MenuItem>
+      </MenuList>
+    </MenuPopover>
+  );
   const newField =
     edit?.kind === "new" ? (
       <FolderNameField
@@ -186,7 +233,7 @@ export function FolderGroup({
               <FolderNameField label="Folder name" initial={f.name} onSubmit={onSubmitName} onCancel={onCancelEdit} />
             </li>
           ) : (
-            <li key={f.id}>
+            <li key={f.id} className={styles.rowItem}>
               <Menu openOnContext>
                 <MenuTrigger disableButtonEnhancement>
                   <Button
@@ -199,15 +246,25 @@ export function FolderGroup({
                     onClick={() => onSelect(f.id)}
                     onKeyDown={openMenuFromKeyboard}
                   >
-                    <span className={styles.name}>{f.name}</span>
+                    <span className={mergeClasses("earshot-folder-name", styles.name)}>{f.name}</span>
                   </Button>
                 </MenuTrigger>
-                <MenuPopover>
-                  <MenuList>
-                    <MenuItem onClick={() => onRename(f)}>Rename</MenuItem>
-                    <MenuItem onClick={() => onDelete(f)}>Delete...</MenuItem>
-                  </MenuList>
-                </MenuPopover>
+                {folderMenu(f)}
+              </Menu>
+              {/* The same menu from a button of its own (T12.45): a pointer, a touch or Tab
+                  reaches it without knowing about right-click or Shift+F10. */}
+              <Menu>
+                <MenuTrigger>
+                  <Button
+                    {...restoreFocus}
+                    appearance="subtle"
+                    size="small"
+                    icon={<MoreIcon />}
+                    aria-label={folderMenuLabel(f.name)}
+                    className={mergeClasses("earshot-folder-more", styles.more)}
+                  />
+                </MenuTrigger>
+                {folderMenu(f)}
               </Menu>
             </li>
           ),

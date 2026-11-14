@@ -208,6 +208,9 @@ pub(crate) enum DeviceRecord {
     /// `npu-compiled`: the latest NPU load of each kind that did not use the compiled model, path
     /// free (T12.12e; [`crate::npu_compiled::RefusalRecord`]).
     NpuCompiled,
+    /// `npu-note-shown`: the "no NPU version, runs on the processor" note last shown at a
+    /// meeting or job start (T12.45; [`crate::host::npu_note_once`]).
+    NpuNoteShown,
 }
 
 impl DeviceRecord {
@@ -251,6 +254,7 @@ impl DeviceRecord {
         DeviceRecord::UpdateNotified,
         DeviceRecord::Vocabulary,
         DeviceRecord::NpuCompiled,
+        DeviceRecord::NpuNoteShown,
     ];
 
     /// Its key.
@@ -300,6 +304,7 @@ impl DeviceRecord {
                 DeviceRecord::UpdateNotified => crate::update::NOTIFIED_KEY,
                 DeviceRecord::Vocabulary => crate::vocabulary::VOCABULARY_KEY,
                 DeviceRecord::NpuCompiled => crate::npu_compiled::REFUSALS_KEY,
+                DeviceRecord::NpuNoteShown => crate::host::NPU_NOTE_SHOWN_KEY,
             }
             .to_owned(),
         )

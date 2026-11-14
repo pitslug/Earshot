@@ -10,8 +10,13 @@ use serde::Serialize;
 use specta::Type;
 use tauri::State;
 
+use earshot_core::identity::EntityId;
+use earshot_runtime::edit::EditError;
+
 use crate::detail::parse_id;
 use crate::ipc::{AppState, IpcError, blocking};
+use crate::jobs::JobRunner;
+use crate::meeting::MeetingDriver;
 
 #[cfg(test)]
 #[path = "keep_local_tests.rs"]
@@ -54,14 +59,35 @@ pub fn kept_local_view(
     Some(KeptLocalView { writer })
 }
 
+/// The refusal of "Allow" while work Earshot gave up on (T9.22) still holds the meeting: that
+/// work never finishes, so waiting would not help (T12.45).
+pub const ALLOW_NEEDS_RESTART: &str = "Earshot could not stop earlier work on this meeting, and \
+     that work keeps the summary on this computer. Restart Earshot, then allow the summary writer.";
+
 /// Lets the summary writer summarise `meeting` from now on. Sends nothing: the next summary
-/// does, when the user asks for it.
+/// does, when the user asks for it. `left_behind` says whether a meeting still being worked on
+/// is held by work Earshot gave up on (`deletion::ask`'s `NeedsRestart`), which only a restart
+/// ends.
 ///
 /// # Errors
-/// An unknown meeting (`detail::edit_error`); store errors.
-pub fn allow(services: &Services, meeting: &str) -> Result<(), IpcError> {
+/// An unknown meeting or one still worked on (`detail::edit_error`); `meeting_needs_restart`
+/// ([`ALLOW_NEEDS_RESTART`]) when that work was left behind; store errors.
+pub fn allow(
+    services: &Services,
+    meeting: &str,
+    left_behind: &dyn Fn(EntityId) -> bool,
+) -> Result<(), IpcError> {
     let id = parse_id(meeting)?;
     allow_writer(services, id).map_err(|e| match e {
+        earshot_runtime::RuntimeError::Edit(EditError::MeetingStillWorking(_))
+            if left_behind(id) =>
+        {
+            IpcError {
+                kind: "meeting_needs_restart".into(),
+                message: ALLOW_NEEDS_RESTART.into(),
+                retryable: false,
+            }
+        }
         earshot_runtime::RuntimeError::Edit(e) => crate::detail::edit_error(&e),
         e => IpcError::from(e),
     })
@@ -73,8 +99,18 @@ pub fn allow(services: &Services, meeting: &str) -> Result<(), IpcError> {
 #[specta::specta]
 pub async fn allow_summary_writer(
     state: State<'_, AppState>,
+    driver: State<'_, MeetingDriver>,
+    jobs: State<'_, JobRunner>,
     meeting: String,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    blocking(move || allow(&services, &meeting)).await
+    let (driver, jobs) = (driver.inner().clone(), jobs.inner().clone());
+    blocking(move || {
+        let left_behind = |id: EntityId| {
+            crate::deletion::ask(&services, &driver, &jobs, id)
+                .is_ok_and(|a| a == crate::deletion::DeleteAsk::NeedsRestart)
+        };
+        allow(&services, &meeting, &left_behind)
+    })
+    .await
 }

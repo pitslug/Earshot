@@ -163,6 +163,11 @@ export const POST_STEP_MS = 400;
 /** The refusals of a meeting deletion (T12.38): the UI's one copy of `deletion.rs`'s words. */
 export const MOCK_DELETE_COPY = DELETE_COPY;
 
+/** `detail::edit_error`'s copy for `EditError::MeetingStillWorking` (T12.45), kept by hand. */
+export const MOCK_STILL_WORKING_COPY =
+  "Earshot is still working on this meeting, and that work keeps the summary on this computer. " +
+  "Allow the summary writer once it has finished.";
+
 const DEFAULT_SUMMARY: SummaryEvent = {
   kind: "Stored",
   title: "Vendor review: pumps",
@@ -1203,6 +1208,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     allowSummaryWriter: async (meeting) => {
       call("allowSummaryWriter", meeting);
       detailOf(meeting);
+      // `keep_local::allow_writer` (T12.45): refused while the meeting is still worked on.
+      if (deletionAsk(meeting) !== "Free") fail("meeting_still_working", MOCK_STILL_WORKING_COPY);
       keptLocal.delete(meeting);
     },
     resummarise: async (meeting) => {

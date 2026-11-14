@@ -7,6 +7,7 @@ import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppShell } from "./AppShell";
+import { folderMenuLabel } from "./Folders";
 import { SEARCH_DEBOUNCE_MS } from "./MeetingSearch";
 
 const at = (day: number, hour: number) => new Date(2026, 10, day, hour, 0).getTime();
@@ -60,7 +61,7 @@ const folderList = () => screen.findByRole("list", { name: "Folders" });
 /** The folder buttons, in order. */
 const folderNames = async () =>
   within(await folderList())
-    .getAllByRole("button")
+    .getAllByRole("button", { name: /^(?!Rename or delete )/ })
     .map((b) => b.textContent);
 const folderButton = (name: string) => screen.getByRole("button", { name });
 /** The titles of the meeting rows shown, grouped by their day heading. */
@@ -195,6 +196,36 @@ describe("folders", () => {
     fireEvent.contextMenu(folderButton("Orchard"), { button: 0 });
     expect(await screen.findByRole("menuitem", { name: "Rename" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Delete..." })).toBeInTheDocument();
+  });
+
+  it("each folder has a menu button of its own, reached with Tab and named for the folder", async () => {
+    const { user } = setup();
+    await folderList();
+    const more = screen.getByRole("button", { name: folderMenuLabel("Orchard") });
+    expect(more).toHaveAttribute("aria-haspopup", "menu");
+    // "All meetings" has no menu.
+    expect(screen.queryByRole("button", { name: folderMenuLabel("All meetings") })).toBeNull();
+    // Tab goes from the folder to its menu button, then to the next folder.
+    folderButton("Orchard").focus();
+    await user.tab();
+    expect(more).toHaveFocus();
+    await user.tab();
+    expect(folderButton("Pears")).toHaveFocus();
+    // The button opens the same menu; Rename works from it.
+    await user.click(more);
+    expect(await screen.findByRole("menuitem", { name: "Delete..." })).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    expect(await screen.findByRole("textbox", { name: "Folder name" })).toHaveValue("Orchard");
+  });
+
+  it("choosing a folder leaves the open meeting as it is", async () => {
+    const { user } = setup();
+    await folderList();
+    await user.click(await screen.findByRole("button", { name: /^Budget review/ }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Budget review" })).toBeInTheDocument();
+    await user.click(folderButton("Orchard"));
+    expect(shownByDay()).toEqual({ Today: ["Pruning plan"], Yesterday: ["Grafting notes"] });
+    expect(screen.getByRole("heading", { level: 1, name: "Budget review" })).toBeInTheDocument();
   });
 
   it("moves a meeting to a folder and out again from the row menu", async () => {

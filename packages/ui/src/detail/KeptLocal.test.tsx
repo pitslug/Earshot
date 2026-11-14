@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { type Ipc, type MeetingListItem, type MockIpcData, createMockIpc, sampleMeetings } from "../ipc";
+import { MOCK_STILL_WORKING_COPY } from "../ipc/mock";
 import { IpcProvider } from "../ipc/context";
 import { KEEP_LOCAL_HINT } from "../meeting/MeetingViews";
 import { installMatchMedia } from "../test/matchMedia";
@@ -95,6 +96,21 @@ describe("keeping a meeting on this computer", () => {
     // The page stays usable after the dialog closes (tabster's hide pass).
     await act(() => new Promise((r) => setTimeout(r, 400)));
     expect(screen.getByRole("tab", { name: "Summary" })).toBeInTheDocument();
+  });
+
+  it("refuses the writer while the meeting is still worked on, with the reason", async () => {
+    const { calls, ipc, user } = await setup({ keptLocal: [ITEM.id], summaries: claudeCode });
+    await ipc.resummarise(ITEM.id);
+    await user.click(await screen.findByRole("button", { name: "Let Claude Code summarise it" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "Allow" }));
+    expect(await screen.findByText(MOCK_STILL_WORKING_COPY)).toBeInTheDocument();
+    expect(screen.getByText("The meeting could not be changed")).toBeInTheDocument();
+    expect(calls.filter((c) => c[0] === "allowSummaryWriter")).toEqual([["allowSummaryWriter", ITEM.id]]);
+    expect((await ipc.getMeeting(ITEM.id)).kept_local).not.toBeNull();
+    expect(screen.getByText("Kept on this computer")).toBeInTheDocument();
+    expect(MOCK_STILL_WORKING_COPY).not.toMatch(/—|please|!/i);
+    await act(() => new Promise((r) => setTimeout(r, 400)));
   });
 
   it("is not shown on a meeting that is not kept", async () => {
