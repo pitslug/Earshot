@@ -46,6 +46,10 @@ pub const BESIDE_MIN_MEMORY: u64 = 14 * 1024 * 1024 * 1024;
 /// machine, each switched on only after its measurement passed the rule in docs/live-previews.md
 /// (T12.39). A summary written off this computer needs no pair; two work on the CPU never run
 /// together whatever is listed, and two on the graphics card only with room for both.
+///
+/// Empty on x64: measured 2026-11-14 on the desktop (docs/live-previews.md), CUDA transcription
+/// beside the card's summary failed lag, summary time and memory, and CPU transcription beside it
+/// failed the memory margin only.
 #[cfg(target_arch = "x86_64")]
 pub const BESIDE_PAIRS: &[(Device, Device)] = &[];
 

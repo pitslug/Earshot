@@ -840,3 +840,25 @@ cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --
 ```
 
 The second `off` and `beside` runs end their file names in `-2`. Reports go to `docs/live-previews/t1239/`, counts and times only. If both beside runs pass, the ARM64 entry of `BESIDE_PAIRS` gains the pair (NPU, CPU).
+
+### Result on the desktop (measured 2026-11-14)
+
+Idle host: before each run the runner waited for 60 s with no cargo, rustc, linker, cmake, ninja or test binary in the process list and sampled it every 5 s during the run; all nine runs read clean, machine load median 1-4%. The Earshot app sat idle in the tray. Build: `live_lag` in release with `--features onnx-cuda,vulkan-summaries` (Ninja, Visual Studio x64 environment). Summary: Qwen 3.5 9B on the card through llama.cpp on Vulkan, every summary on Vulkan with no fallback; the older meeting is the bundled meeting's own live transcript, so one summary is short (7.2 s median alone, model load included) and the loop ran 3 to 21 of them. Reports, unmodified: `docs/live-previews/t1239/`.
+
+| run | mic / ref settled median (s) | ref on-screen median (s) | catch-up (s) | summary median (s) | private peak (GiB) | card peak (GiB) |
+|---|---|---|---|---|---|---|
+| summary alone | | | | 7.2 | 1.7 | 8.3 |
+| CUDA off (mean of 2) | 13.5 / 13.9 | 2.13 | 0.44 | | 15.4 | 12.4, 12.0 |
+| CUDA beside 1 | 16.0 / 15.6 | **6.76** | **2.70** | **43.8** | **22.6** | **15.48** |
+| CUDA beside 2 | 15.7 / 15.1 | **5.91** | **2.54** | **47.5** | **22.2** | 15.40 |
+| CPU off (mean of 2) | 14.1 / 14.6 | 2.77 | 1.26 | | 5.8 | 0.7 |
+| CPU beside 1 | 14.3 / 14.7 | 3.13 | 1.40 | 8.6 | **12.4** | 6.6 |
+| CPU beside 2 | 14.1 / 14.6 | 2.98 | 1.26 | 8.6 | **12.5** | 6.6 |
+
+Stored words identical to `off` in all four beside runs (both tracks), no audio dropped, no preview turned off or paused.
+
+**(c) The same graphics card (CUDA transcription beside the card's summary): fails** points 1 (settled median +2.5 s and +1.6 s against +1 s), 2 (on-screen median 6.8 and 5.9 s against 2.6 s), 3 (catch-up 2.7 and 2.5 s against 2.4 s), 5 (summaries 6 to 7 times slower than alone, against 1.25), 6 (private memory +7 GiB; the card at 15.48 of 15.92 GiB in run 1, inside the 0.5 GiB margin). `fits_graphics_card` says both models fit this card (2 x 8.2 GB = 15.3 GiB of 15.9), but a CUDA meeting with previews already uses 12 GiB of it, so the card is effectively full. **Left off.**
+
+**(b) Another device (CPU transcription beside the card's summary): fails point 6 only.** Lag, on-screen, catch-up, words and the summary's time all pass with room (summary 8.6 s against 7.2 s alone, 1.19 times; settled and on-screen within 0.4 s of `off`). Private memory rose 6.6 GiB against the 2 GiB margin. Part of that is the method itself: `off` makes no older meeting, while `beside` first replays the older meeting through a second live session in the same process, whose allocations stay with the process, so the figure does not separate the summary's cost from the setup's. The rule fixed both the method and the margin before measuring, so under it this case fails and is **left off**; whether to accept it, or to re-measure with the older meeting made in another process (a method change, written down first), is the owner's.
+
+**Decision under the rule:** on x64 `BESIDE_PAIRS` stays empty. What ships: (a), a summary written off this computer (or none), lets a newer meeting's transcript start as soon as the older final pass is over, on every machine. The Surface's pair (NPU, CPU) stays off until the commands above are run there.
