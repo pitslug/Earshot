@@ -19,7 +19,7 @@ use earshot_core::metrics::normalize::normalize_english;
 use earshot_core::metrics::wer::{align_tokens, corpus_wer};
 use earshot_onnx::SessionConfig;
 use earshot_onnx::nemo_mel::NemoMel;
-use earshot_onnx::parakeet::{OnnxNemoMel, ParakeetTdt, TokenBias};
+use earshot_onnx::parakeet::{OnnxNemoMel, ParakeetTdt, TokenBias, load_shared_encoder};
 
 const MAX_ABS_DIFF: f32 = 5e-3;
 const MAX_MEAN_DIFF: f32 = 1e-4;
@@ -207,21 +207,29 @@ fn parakeet_tdt_models_transcribe_the_smoke_clips() {
     }
 }
 
-/// T12.3b (evaluation only): a model borrowing another's encoder through
-/// `ParakeetTdt::share_encoder` gives the same words as the one that shared it, both count their
-/// lock waits, and two threads decoding at once through the one encoder finish with the same
-/// words they give alone.
+/// T12.58: two models borrowing one shared encoder (`load_shared_encoder`, run by its own
+/// thread) give the words a model with its own encoder gives, alone and with both decoding at
+/// once, and count their waits; the encoder ends with its last borrower.
 #[test]
 #[ignore = "needs the ci model set (cargo xtask fetch-models --set ci): cargo test --release -p earshot-onnx --test parakeet -- --include-ignored"]
 fn parakeet_tdt_shared_encoder_gives_the_same_words() {
     let dir = common::fetched(common::PARAKEET_TDT_110M_DIR, "ci");
     let name = "parakeet-tdt_ctc-110m (TDT)";
-    let own = ParakeetTdt::load(&dir, &config(), name, true).expect("load");
-    let (mut track, encoder) = own.share_encoder();
+    let mut own = ParakeetTdt::load(&dir, &config(), name, true).expect("load");
+    assert!(!own.borrows_encoder());
+    let encoder = load_shared_encoder(&dir, &config()).expect("load the shared encoder");
+    let mut track =
+        ParakeetTdt::load_sharing(&dir, &encoder, &config(), name, true).expect("load sharing");
     let mut preview =
         ParakeetTdt::load_sharing(&dir, &encoder, &config(), name, true).expect("load sharing");
+    assert!(track.borrows_encoder() && preview.borrows_encoder());
     assert_eq!(encoder.users(), 3, "the handle, the track and the preview");
     assert_eq!(preview.backends()[0], encoder.backend());
+    assert_eq!(
+        track.backends()[0],
+        own.backends()[0],
+        "the encoder's real placement"
+    );
 
     let opts = TranscribeOptions::live();
     let cancel = CancelToken::new();
@@ -235,16 +243,24 @@ fn parakeet_tdt_shared_encoder_gives_the_same_words() {
             .expect("transcribe")
             .words()
     };
-    let alone: Vec<_> = clips.iter().map(|c| words(&mut track, c)).collect();
+    let alone: Vec<_> = clips.iter().map(|c| words(&mut own, c)).collect();
     assert!(
         alone.iter().all(|w| !w.is_empty()),
         "smoke clips have words"
     );
-    let waits = track.take_encoder_waits();
-    assert_eq!(waits.len(), clips.len(), "one encoder call per short clip");
+    assert!(
+        own.take_encoder_waits().is_empty(),
+        "an own encoder records no waits"
+    );
     for (clip, want) in clips.iter().zip(&alone) {
+        assert_eq!(&words(&mut track, clip), want, "the track's words");
         assert_eq!(&words(&mut preview, clip), want, "the preview's words");
     }
+    assert_eq!(
+        track.take_encoder_waits().len(),
+        clips.len(),
+        "one call per short clip"
+    );
     assert_eq!(preview.take_encoder_waits().len(), clips.len());
 
     // Both at once: each thread gets the words it got alone.
@@ -274,11 +290,14 @@ fn parakeet_tdt_shared_encoder_gives_the_same_words() {
     let want: Vec<_> = (0..3).flat_map(|_| alone.clone()).collect();
     assert_eq!(track_words, want);
     assert_eq!(preview_words, want);
+    assert!(!encoder.is_broken());
 
-    // An own encoder records no waits.
-    let mut plain = ParakeetTdt::load(&dir, &config(), name, true).expect("load");
-    let _ = words(&mut plain, &clips[0]);
-    assert!(plain.take_encoder_waits().is_empty());
+    let weak = encoder.downgrade();
+    drop((track, preview, encoder));
+    assert!(
+        weak.upgrade().is_none(),
+        "the encoder ends with its last borrower"
+    );
 }
 
 /// A bias that changes nothing (T12.15b): it only counts what it hears.

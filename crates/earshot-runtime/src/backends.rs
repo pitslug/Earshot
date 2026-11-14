@@ -1752,12 +1752,26 @@ pub fn load_preview_sharing_encoder(
     let Ok(AsrModel::Parakeet(parakeet)) = asr_model(model) else {
         return Err("previews run on Parakeet only".to_owned());
     };
-    let ParakeetTranscriber::Tdt(track) =
-        load_parakeet(models, parakeet, accel, threads).map_err(|e| e.to_string())?
-    else {
+    if parakeet.decoder != ParakeetDecoder::Tdt {
         return Err("a shared encoder needs a Parakeet TDT model".to_owned());
+    }
+    let dir = models.root().join(parakeet.dir);
+    // The track's session as `load_parakeet` loads it, its encoder now run by its own thread.
+    let track_config = SessionConfig {
+        intra_threads: threads,
+        ..session_config(accel).map_err(|e| e.to_string())?
     };
-    let (track, encoder) = track.share_encoder();
+    let encoder = earshot_onnx::parakeet::load_shared_encoder(&dir, &track_config)
+        .map_err(|e| format!("{}: {e}", parakeet.name))?;
+    let track = ParakeetTdt::load_sharing(
+        &dir,
+        &encoder,
+        &track_config,
+        parakeet.name,
+        parakeet.english_only,
+    )
+    .map_err(|e| format!("{}: {e}", parakeet.name))?;
+    check_placement(&track.backends(), accel.backend()).map_err(|e| e.to_string())?;
     let steps = SessionConfig {
         intra_threads: Some(onnx_cpu_threads(cores(), 2)),
         background: Some(earshot_onnx::ThreadStart(
