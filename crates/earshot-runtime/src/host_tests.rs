@@ -1006,6 +1006,64 @@ fn host_live_summaries_setting_says_where_it_came_from_and_needs_a_local_model()
     assert!(live.background, "production runs it below normal priority");
 }
 
+/// T12.39: what a meeting's live work needs is read from what its pre-flight checked, without a
+/// load and without waiting; an unknown model is too big for any card.
+#[test]
+fn host_meeting_queue_live_needs_follow_the_checked_order_and_model() {
+    use crate::meeting_queue::{Device, LiveNeeds};
+    let dir = TempDir::new("host");
+    let (svc, _) = services(&dir);
+    let build = crate::backends::accelerator_order();
+    let needs_of = |model: &str, order: Vec<Accelerator>, live_summaries: bool| {
+        let models = Arc::new(MeetingModels::new(
+            &svc,
+            ModelDir::new(dir.0.join("models")),
+            (
+                build.clone(),
+                ResolvedModels {
+                    model: model.to_owned(),
+                    order,
+                },
+            ),
+            Arc::default(),
+            Box::new(|_, _| String::new()),
+        ));
+        (models.live_needs(live_summaries))()
+    };
+    let size = crate::model_check::model_facts("parakeet-tdt-0.6b-v2")
+        .unwrap()
+        .size;
+    assert_eq!(
+        needs_of("parakeet-tdt-0.6b-v2", vec![Accelerator::Cpu], false),
+        Some(LiveNeeds {
+            device: Device::Cpu,
+            model_size: size,
+            live_summaries: false,
+        })
+    );
+    assert_eq!(
+        needs_of(
+            "parakeet-tdt-0.6b-v2",
+            vec![Accelerator::Qnn, Accelerator::Cpu],
+            true
+        ),
+        Some(LiveNeeds {
+            device: Device::Npu,
+            model_size: size,
+            live_summaries: true,
+        })
+    );
+    assert_eq!(
+        needs_of("no-such-model", vec![Accelerator::Cuda], false),
+        Some(LiveNeeds {
+            device: Device::GraphicsCard,
+            model_size: u64::MAX,
+            live_summaries: false,
+        })
+    );
+    assert_eq!(needs_of("parakeet-tdt-0.6b-v2", vec![], false), None);
+}
+
 #[test]
 fn host_speaker_timing_says_where_it_came_from() {
     let dir = TempDir::new("host");

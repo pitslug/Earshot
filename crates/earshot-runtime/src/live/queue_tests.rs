@@ -1318,3 +1318,139 @@ fn meeting_queue_a_failed_save_is_in_the_event_and_in_the_outcome() {
     );
     assert_eq!(outcome.problems, told);
 }
+
+/// T12.39: a session held by [`MeetingHold::beside`] behind an older meeting whose final pass is
+/// over and whose summary holds `summary`, its transcription on `device`, on a machine with the
+/// pairs (NPU, CPU) and (CPU, graphics card) on. Returns the factory's calls before the older
+/// ticket ended and the transcript states.
+fn beside_run(
+    summary: crate::meeting_queue::SummaryHold,
+    device: crate::meeting_queue::Device,
+    seed: u64,
+) -> (usize, Vec<LiveTranscriptState>) {
+    use crate::meeting_queue::{Beside, Device, LiveNeeds, Machine};
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let scene = scene();
+    let queue = MeetingQueue::new();
+    let older = queue.enter();
+    older.set_summary(summary);
+    older.final_pass_done();
+    let needs = LiveNeeds {
+        device,
+        model_size: 1,
+        live_summaries: false,
+    };
+    let hold = MeetingHold::beside(
+        Arc::new(queue.enter()),
+        Beside {
+            needs: Box::new(move || Some(needs)),
+            machine: Machine {
+                hardware: earshot_hardware::Hardware {
+                    total_memory: Some(64 << 30),
+                    ..Default::default()
+                },
+                pairs: vec![
+                    (Device::Npu, Device::Cpu),
+                    (Device::Cpu, Device::GraphicsCard),
+                ],
+                card_summary_fell_back: false,
+            },
+            card_summary_fell_back: || false,
+        },
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (source, handles) = source_of(&scene);
+    let mut session = start_live(
+        source,
+        svc.clone(),
+        held_config(Arc::new(hold)),
+        Some(factory_of(&scene, Arc::clone(&calls))),
+        Box::new(ChaCha8Rng::seed_from_u64(seed)),
+    )
+    .unwrap();
+    let events = session.take_events().unwrap();
+    wait_for(&handles.delivered);
+    // Everything is recorded; a load that may start has its time, then the older ticket ends.
+    let limit = Instant::now() + Duration::from_secs(2);
+    while calls.load(Ordering::SeqCst) == 0 && Instant::now() < limit {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let before_end = calls.load(Ordering::SeqCst);
+    drop(older);
+    let limit = Instant::now() + GUARD;
+    while calls.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < limit, "its turn never came");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    handles.released.store(true, Ordering::SeqCst);
+    session.wait().unwrap();
+    let events: Vec<RuntimeEvent> = events.try_iter().collect();
+    (before_end, transcript_states(&events))
+}
+
+#[test]
+fn meeting_queue_beside_a_summary_on_another_device_the_transcript_starts_with_no_banner() {
+    use crate::meeting_queue::{Device, SummaryHold};
+    for (summary, device) in [
+        (SummaryHold::OffThisComputer, Device::Cpu),
+        (
+            SummaryHold::Local {
+                device: Device::Cpu,
+                size: 1,
+            },
+            Device::Npu,
+        ),
+        (
+            SummaryHold::Local {
+                device: Device::GraphicsCard,
+                size: 1,
+            },
+            Device::Cpu,
+        ),
+    ] {
+        let (before_end, states) = beside_run(summary, device, 240);
+        assert!(before_end > 0, "{summary:?}: the transcript waited");
+        assert!(
+            !states
+                .iter()
+                .any(|s| matches!(s, LiveTranscriptState::Held(_))),
+            "{summary:?}: {states:?}"
+        );
+    }
+}
+
+#[test]
+fn meeting_queue_beside_a_summary_on_its_own_device_the_banner_shows_until_the_summary_ends() {
+    use crate::meeting_queue::{Device, SummaryHold};
+    for (summary, device) in [
+        (
+            SummaryHold::Local {
+                device: Device::Cpu,
+                size: 1,
+            },
+            Device::Cpu,
+        ),
+        // Another device whose pair is not switched on.
+        (
+            SummaryHold::Local {
+                device: Device::Cpu,
+                size: 1,
+            },
+            Device::GraphicsCard,
+        ),
+        (SummaryHold::Unknown, Device::Npu),
+    ] {
+        let (before_end, states) = beside_run(summary, device, 241);
+        assert_eq!(before_end, 0, "{summary:?}: no model during the hold");
+        assert_eq!(
+            states.first(),
+            Some(&LiveTranscriptState::Held(HoldReason::PreviousMeeting)),
+            "{summary:?}: {states:?}"
+        );
+        assert!(
+            states.contains(&LiveTranscriptState::CatchingUp),
+            "{summary:?}: {states:?}"
+        );
+    }
+}

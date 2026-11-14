@@ -101,7 +101,13 @@ pub struct MeetingModels {
     /// The banner of an ONNX Runtime library that did not load.
     library_note: LibraryNote,
     resolved: std::sync::Mutex<Option<Arc<ResolvedModels>>>,
+    /// Told where a live load landed when it fell back to another device (T12.39), before the
+    /// track decodes anything; it may block until that device is free.
+    after_fallback: std::sync::OnceLock<LiveFallbackHook>,
 }
+
+/// What [`MeetingModels::on_live_fallback`] calls with the device a live load fell back to.
+pub type LiveFallbackHook = Box<dyn Fn(crate::meeting_queue::Device) + Send + Sync>;
 
 /// The banner of an ONNX Runtime library that did not load ([`MeetingModels`]).
 pub type LibraryNote = Box<dyn Fn(Accelerator, &RuntimeError) -> String + Send + Sync>;
@@ -133,6 +139,7 @@ impl MeetingModels {
             notes,
             library_note,
             resolved: std::sync::Mutex::new(None),
+            after_fallback: std::sync::OnceLock::new(),
         }
     }
 
@@ -194,6 +201,67 @@ impl MeetingModels {
         Some(self.resolve())
     }
 
+    /// What [`Self::resolve`] decides or decided, read without waiting and without loading
+    /// anything (T12.39): `None` while the CUDA start has not decided, while a resolve is in
+    /// progress, or when the settings cannot be read.
+    #[must_use]
+    pub fn planned(&self) -> Option<ResolvedModels> {
+        match self.resolved.try_lock() {
+            Ok(slot) => {
+                if let Some(resolved) = &*slot {
+                    return Some((**resolved).clone());
+                }
+            }
+            Err(std::sync::TryLockError::Poisoned(p)) => {
+                if let Some(resolved) = &*p.into_inner() {
+                    return Some((**resolved).clone());
+                }
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        }
+        if crate::cuda::onnx_held() {
+            return None;
+        }
+        let build = crate::backends::accelerator_order();
+        let (checked_build, checked) = &self.checked;
+        if build == *checked_build {
+            return Some(checked.clone());
+        }
+        let setup = {
+            let db = self.services.store();
+            transcription_setup(&db, &self.models, &build, &crate::hardware()).ok()?
+        };
+        Some(ResolvedModels {
+            model: setup.choice.model,
+            order: setup.order,
+        })
+    }
+
+    /// What the meeting's live work needs beside an older meeting's summary (T12.39,
+    /// [`crate::meeting_queue::MeetingHold::beside`]): where [`Self::planned`] runs its
+    /// transcription, the model's size (unknown: too big for any card), and whether it summarises
+    /// during the meeting.
+    pub fn live_needs(self: &Arc<Self>, live_summaries: bool) -> crate::meeting_queue::NeedsFn {
+        let me = Arc::clone(self);
+        Box::new(move || {
+            let planned = me.planned()?;
+            let first = *planned.order.first()?;
+            Some(crate::meeting_queue::LiveNeeds {
+                device: crate::meeting_queue::Device::of(first),
+                model_size: crate::model_check::model_facts(&planned.model)
+                    .map_or(u64::MAX, |f| f.size),
+                live_summaries,
+            })
+        })
+    }
+
+    /// Sets what a live load that fell back to another device calls (T12.39): the meeting's hold
+    /// re-checks the device then ([`crate::meeting_queue::MeetingHold::recheck_after_load`]).
+    /// Set once; a second call changes nothing.
+    pub fn on_live_fallback(&self, hook: LiveFallbackHook) {
+        let _ = self.after_fallback.set(hook);
+    }
+
     /// Live transcription of the meeting, on what [`Self::resolve`] decides at its first call.
     pub fn live_factory(self: &Arc<Self>) -> LiveAsrFactory {
         let me = Arc::clone(self);
@@ -208,6 +276,15 @@ impl MeetingModels {
                 }
             };
             let loaded = f(track, entity);
+            // A fallback moved the track to another device: the hold re-checks it (T12.39).
+            if let Ok(Some(t)) = &loaded
+                && !t.fallbacks.is_empty()
+                && let Some(hook) = me.after_fallback.get()
+                && let Some(device) =
+                    crate::meeting_queue::Device::of_backend(t.asr.transcriber.backend_info().kind)
+            {
+                hook(device);
+            }
             store_npu_refusals(&me.services);
             // An NPU load that could not use its compiled model (T12.12a), once per process. One
             // made by a final pass or a preview shows at the next track load.

@@ -789,3 +789,80 @@ Found on 0.3.3 on the Surface (2026-11-13): every first meeting after a start sh
 What the change does cover, by the rule and its tests, not by this measurement: speech that runs a little past one window and then stops. The first piece then goes out when its window is heard rather than when the short remainder has settled.
 
 Not explained: T12.24's 30 s run of this audio (2026-11-13, previews off, the same stored words) read a first-word wait of 48.6 s, one piece later than main reads today, with or without `--max-piece 30`. The stretch planner did not change between the two.
+
+## A new meeting's transcript beside an older meeting's summary (T12.39)
+
+A meeting started while the previous one was summarising showed no transcript until the summary finished: the meeting queue (`meeting_queue`, T9.1l) gave a newer meeting's live decoding its turn only after every older ticket had ended, and a ticket holds through its summary wherever that summary runs. The owner decided (2026-11-14) that the hold depends on the hardware, not on who writes the summary: the transcript waits only when the two would share a device that cannot hold or run both, with the existing banner saying the transcript begins after the summary.
+
+### The rule, written and committed 2026-11-14 before any measurement
+
+Judgements, not derived. What a newer meeting's live decoding waits for:
+
+1. **Older final passes, always** (as today, and as live speaker work does): a final pass runs on the transcription device, and final passes keep their order. A meeting's own final pass and summary still take their turn after every older ticket has ended, so one summary model runs at a time and the final pass order is unchanged.
+2. **An older meeting's summary, unless one of these holds.** Each ticket records what its summary will hold, decided in the meeting's pre-flight from the same `PreparedSummary` its summary then uses; a ticket that records nothing holds as today.
+   - **(a) Written off this computer.** Claude Code, Codex or an API endpoint, or no summary at all: no model on this computer, so nothing is shared. On everywhere from the start; there is nothing to measure.
+   - **(b) Another device.** The summary's device (the CPU, or the graphics card when `PreparedSummary::local` asks for it, as `model_settings::summary_placement` decided) is not the live transcription's (the first accelerator of the order `host::transcription_setup` gives, read once the CUDA start has decided: the CPU, the graphics card for CUDA or Vulkan, the NPU for QNN), and system memory holds both (below).
+   - **(c) The same graphics card with room for both.** Both on the graphics card, `model_settings::fits_graphics_card` holds for the two model files together (the summary model's size plus the transcription model's), and system memory holds both.
+   - In every other case (both on the CPU, memory unknown or too small, a card without room) the transcript waits, as today.
+3. **Never two summary models at once.** A newer meeting that summarises during the meeting (live summaries, which run only on a local model) waits for any older summary written on this computer, whatever the devices.
+
+**System memory: `BESIDE_MIN_MEMORY`, 14 GiB of reported physical memory.** A meeting on the CPU or the NPU peaks under 6 GiB of private memory (5.8 GiB with previews on the CPU, above), and a 16 GB machine summarises on the CPU with the 4B (T8.3f), whose 2.6 GiB file is mapped whole with a context cache of about 1 GiB beside it. With the call app, a browser and Windows beside them, a 16 GB machine has room for both and must pass (`total_memory()` reports under 16 GiB there, so 14, not 16), and an 8 GB one has not. A summary on the graphics card keeps its weights on the card. Unknown memory holds.
+
+**Switched on per machine kind only after its measurement passes.** (a) is on everywhere. (b) and (c) are implemented for every machine and switched on per architecture (`meeting_queue::BESIDE_PAIRS`: pairs of live transcription device and summary device): on x64 only for the pairs the desktop measured and passed, on ARM64 none until the Surface measures (commands below).
+
+**What is measured.** `live_lag` (evaluation only) gets `--summary off|alone|beside`, `--summary-on cpu|gpu` and `--summary-model <id>`. Before the replay it makes the older meeting: the same audio through the same live session, decoded as fast as it goes (not paced), speaker work off, stored in the run's throwaway store. `beside` then starts the older meeting's summary (`SummaryService::local` on the planned device, the model loaded per summary as in the app) at the moment the paced replay starts, the hang-up, and starts it again each time it finishes until capture ends, so the card or CPU is busy for the whole replay, as with a long meeting's summary. `alone` runs the same loop for the same length with no replay. Each summary's wall time (load included), the backend its report names and whether it fell back to the CPU are recorded, nothing of its text. The report also gives the host's load and peak private memory as before.
+
+**Runs on the desktop** (RTX 5080, 16 GiB; `--audio bundled`, real time, previews `on`; the summary on the graphics card with the app's choice for this machine, Qwen 3.5 9B, through llama.cpp on Vulkan, the shipped default): live transcription on CUDA (Parakeet 0.6B v2 from the CUDA download) for (c), and on the CPU for (b) (the summary on the card, transcription on the processor). For each: two runs `--summary off`, two runs `--summary beside`; once `--summary alone`. The card is read once a second with `nvidia-smi` during every run. Only on an idle host: no other lane, build, test or ci running (checked in the process list before each run) and not while the owner is in a meeting; a busy host decides nothing.
+
+**The pass margin, per case: each beside run against the mean of its two `off` runs, the summaries against `alone`.**
+
+1. **Settled lag.** `mic.word_lag_s` and `reference.word_lag_s`: median at most `off`'s plus 1 s, p95 at most `off`'s plus 3 s.
+2. **On-screen lag.** `reference.on_screen_lag_s` median at most `off`'s plus 0.5 s; no preview turned off, at most 2 slow pauses per track.
+3. **Catch-up.** `catch_up_after_end_s` at most `off`'s plus 2 s; capture lag under 30 s and no audio dropped.
+4. **The same words.** `stored_sha256` of both tracks equals `off`'s.
+5. **The older meeting's summary.** The median summary wall time beside at most 1.25 times `alone`'s; every summary stored, on the planned device (no CPU fallback, no stall).
+6. **Memory.** Peak private memory at most `off`'s plus 2 GiB; with transcription on the card, the card's peak during the run at least 0.5 GiB under its total (a card that spills into shared memory has no room, whatever the lag says).
+
+A case passes only if both its beside runs pass every point. A pass switches on its pair on x64 (CUDA beside the card's summary: (c); the CPU beside the card's summary: (b) for that pair); a failure leaves it off and the numbers go here.
+
+**The Surface, to run there** (ARM64 build with `--features qnn`, on mains, Earshot closed; live transcription on the NPU, the 4B summary on the CPU: case (b), the pair NPU and CPU), two runs each of `off` and `beside`, one `alone`, judged by the same margin (point 6 without the card):
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio bundled --previews on --summary off --out target\live-lag\t1239-qnn-off-1.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio bundled --previews on --summary beside --summary-on cpu --out target\live-lag\t1239-qnn-beside-1.json
+```
+
+```powershell
+cargo run --release -p earshot-runtime --features qnn --example live_lag -- . --backend qnn --audio bundled --previews on --summary alone --summary-on cpu --out target\live-lag\t1239-qnn-alone.json
+```
+
+The second `off` and `beside` runs end their file names in `-2`. Reports go to `docs/live-previews/t1239/`, counts and times only. If both beside runs pass, the ARM64 entry of `BESIDE_PAIRS` gains the pair (NPU, CPU).
+
+### Result on the desktop (measured 2026-11-14)
+
+Idle host: before each run the runner waited for 60 s with no cargo, rustc, linker, cmake, ninja or test binary in the process list and sampled it every 5 s during the run; all nine runs read clean, machine load median 1-4%. The Earshot app sat idle in the tray. Build: `live_lag` in release with `--features onnx-cuda,vulkan-summaries` (Ninja, Visual Studio x64 environment). Summary: Qwen 3.5 9B on the card through llama.cpp on Vulkan, every summary on Vulkan with no fallback; the older meeting is the bundled meeting's own live transcript, so one summary is short (7.2 s median alone, model load included) and the loop ran 3 to 21 of them. Reports, unmodified: `docs/live-previews/t1239/`.
+
+| run | mic / ref settled median (s) | ref on-screen median (s) | catch-up (s) | summary median (s) | private peak (GiB) | card peak (GiB) |
+|---|---|---|---|---|---|---|
+| summary alone | | | | 7.2 | 1.7 | 8.3 |
+| CUDA off (mean of 2) | 13.5 / 13.9 | 2.13 | 0.44 | | 15.4 | 12.4, 12.0 |
+| CUDA beside 1 | 16.0 / 15.6 | **6.76** | **2.70** | **43.8** | **22.6** | **15.48** |
+| CUDA beside 2 | 15.7 / 15.1 | **5.91** | **2.54** | **47.5** | **22.2** | 15.40 |
+| CPU off (mean of 2) | 14.1 / 14.6 | 2.77 | 1.26 | | 5.8 | 0.7 |
+| CPU beside 1 | 14.3 / 14.7 | 3.13 | 1.40 | 8.6 | **12.4** | 6.6 |
+| CPU beside 2 | 14.1 / 14.6 | 2.98 | 1.26 | 8.6 | **12.5** | 6.6 |
+
+Stored words identical to `off` in all four beside runs (both tracks), no audio dropped, no preview turned off or paused.
+
+**(c) The same graphics card (CUDA transcription beside the card's summary): fails** points 1 (settled median +2.5 s and +1.6 s against +1 s), 2 (on-screen median 6.8 and 5.9 s against 2.6 s), 3 (catch-up 2.7 and 2.5 s against 2.4 s), 5 (summaries 6 to 7 times slower than alone, against 1.25), 6 (private memory +7 GiB; the card at 15.48 of 15.92 GiB in run 1, inside the 0.5 GiB margin). `fits_graphics_card` says both models fit this card (2 x 8.2 GB = 15.3 GiB of 15.9), but a CUDA meeting with previews already uses 12 GiB of it, so the card is effectively full. **Left off.**
+
+**(b) Another device (CPU transcription beside the card's summary): fails point 6 only.** Lag, on-screen, catch-up, words and the summary's time all pass with room (summary 8.6 s against 7.2 s alone, 1.19 times; settled and on-screen within 0.4 s of `off`). Private memory rose 6.6 GiB against the 2 GiB margin. Part of that is the method itself: `off` makes no older meeting, while `beside` first replays the older meeting through a second live session in the same process, whose allocations stay with the process, so the figure does not separate the summary's cost from the setup's. The rule fixed both the method and the margin before measuring, so under it this case fails and is **left off**; whether to accept it, or to re-measure with the older meeting made in another process (a method change, written down first), is the owner's.
+
+*Note added after measuring (2026-11-14, from the lane review; no margin or verdict changes):* `live_lag` runs the older meeting's summary in its own process, while the app runs a GPU summary in a child process (`--summary-child`, T9.3), whose memory is not the meeting's. So point 6's private-memory figure overstates what the app's own process would add beside a card summary; the figure is kept as measured.
+
+**Fallbacks (added after measuring, from the same review).** A hold is decided on planned devices, and two fallbacks can move work after it: a card summary that ends on the CPU (a refused load, a dead or stalled child), and a live load that falls back to another device. Both end the beside decision in code: after any card summary of the process has run on the CPU, every card summary counts as on the CPU (`summary::card_summary_fell_back`, read at each decision), and a live load that fell back waits again as live work on the device it landed on before it decodes (`MeetingHold::recheck_after_load`, called from `MeetingModels::live_factory`). A newer meeting already decoding when an older summary falls back is not stopped.
+
+**Decision under the rule:** on x64 `BESIDE_PAIRS` stays empty. What ships: (a), a summary written off this computer (or none), lets a newer meeting's transcript start as soon as the older final pass is over, on every machine. The Surface's pair (NPU, CPU) stays off until the commands above are run there.

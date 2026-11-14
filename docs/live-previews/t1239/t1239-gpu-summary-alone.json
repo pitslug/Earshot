@@ -1,0 +1,201 @@
+{
+  "audio": "bundled",
+  "card": {
+    "first_gib": 0.6123046875,
+    "peak_used_gib": 8.2841796875,
+    "readings": 158,
+    "total_gib": 15.9208984375
+  },
+  "host": {
+    "logical_cores": 32,
+    "machine_load_percent": [
+      0.0,
+      1.0
+    ],
+    "peak_private_gib": 1.66949462890625
+  },
+  "length_s": 150.0,
+  "requested_backend": "Cuda",
+  "summaries": {
+    "count": 21,
+    "mode": "Alone",
+    "model": null,
+    "on": "gpu",
+    "runs": [
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.6522887,
+        "stored": true,
+        "took_s": 7.162199
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.4079414,
+        "stored": true,
+        "took_s": 7.2075607999999995
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.5086325,
+        "stored": true,
+        "took_s": 7.0488503
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.4803391,
+        "stored": true,
+        "took_s": 7.0102409
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.4852429,
+        "stored": true,
+        "took_s": 7.0422416
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.5001678,
+        "stored": true,
+        "took_s": 7.034624
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.4163124,
+        "stored": true,
+        "took_s": 7.0154929
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.3706592,
+        "stored": true,
+        "took_s": 7.0034728
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.5162845000000003,
+        "stored": true,
+        "took_s": 7.1773058
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.6817647,
+        "stored": true,
+        "took_s": 7.3031153
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.4189405,
+        "stored": true,
+        "took_s": 7.0564074
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.5044006,
+        "stored": true,
+        "took_s": 7.0729149
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.5212779,
+        "stored": true,
+        "took_s": 7.3241294
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.5994419,
+        "stored": true,
+        "took_s": 7.1690987
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.5277971,
+        "stored": true,
+        "took_s": 7.2327595
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.5026278,
+        "stored": true,
+        "took_s": 7.2021943
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.4286887,
+        "stored": true,
+        "took_s": 7.1424774
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.6214277,
+        "stored": true,
+        "took_s": 7.4545512
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.5788035000000002,
+        "stored": true,
+        "took_s": 7.2107637
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.4019563,
+        "stored": true,
+        "took_s": 7.1493617
+      },
+      {
+        "backend": "vulkan",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 2.5441337,
+        "stored": true,
+        "took_s": 7.1824996
+      }
+    ],
+    "took_s": {
+      "max": 7.4545512,
+      "median": 7.162199,
+      "n": 21,
+      "p95": 7.3241294
+    }
+  }
+}

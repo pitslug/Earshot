@@ -1626,7 +1626,7 @@ mod production {
     use earshot_runtime::Services;
     use earshot_runtime::host::{self, AfterMeeting, HostOutcome, MeetingModels};
     use earshot_runtime::live::{LiveConfig, LiveHold};
-    use earshot_runtime::meeting_queue::{MeetingHold, QueueTicket};
+    use earshot_runtime::meeting_queue::{Beside, MeetingHold, QueueTicket, SummaryHold};
 
     use super::{HostPrepare, Prepare, Prepared, StartRequest};
     use crate::ipc::IpcError;
@@ -1684,14 +1684,31 @@ mod production {
             // The capture source: where the audio comes from is its only say.
             let source = (self.source)(svc, request)?;
             notices.extend(source.notices);
-            let mut hold = LiveHold::new(Arc::new(MeetingHold::new(Arc::clone(ticket))));
+            let notes = earshot_runtime::live::HoldNotes::default();
             let meeting_models = Arc::new(MeetingModels::new(
                 svc,
                 models.clone(),
                 (build, checked),
-                Arc::clone(&hold.notes),
+                Arc::clone(&notes),
                 Box::new(super::onnx_fallback_message),
             ));
+            // What this meeting's summary will hold, from the summary its `after` runs, and what
+            // its live work needs: a newer meeting's transcript waits only for an older summary on
+            // a device it needs (T12.39).
+            ticket.set_summary(SummaryHold::of(summary.as_ref()));
+            let gates = Arc::new(MeetingHold::beside(
+                Arc::clone(ticket),
+                Beside::this_machine(meeting_models.live_needs(live_summaries.is_some())),
+            ));
+            // A live load that fell back to another device waits again for that device.
+            let weak = Arc::downgrade(&gates);
+            meeting_models.on_live_fallback(Box::new(move |device| {
+                if let Some(gates) = weak.upgrade() {
+                    gates.recheck_after_load(device, &CancelToken::new());
+                }
+            }));
+            let mut hold = LiveHold::new(gates);
+            hold.notes = notes;
             hold.speakers = Some(meeting_models.speaker_factory());
             let config = LiveConfig {
                 title: request.title.clone(),
