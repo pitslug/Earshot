@@ -1031,22 +1031,105 @@ describe("MeetingDetailView", () => {
     await waitFor(() => expect(trash).toHaveFocus());
   });
 
-  it("says when a meeting being processed cannot be deleted, keeps it and leaves the page usable", async () => {
+  it("says when a meeting with a job running cannot be deleted, keeps it and leaves the page usable", async () => {
     const { user, calls } = await setup();
     await screen.findByText(/TL;DR/);
-    // A job is running on the meeting: the app refuses, whichever way the delete started.
+    // A job is running on the meeting: jobs have no cancel, so the question says why and offers
+    // nothing to confirm (T12.38).
     await user.click(screen.getByRole("button", { name: "Re-summarise" }));
     expect(screen.getByText("Writing a new summary")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
     const dialog = await accessibleDialog();
-    await user.click(within(dialog).getByRole("button", { name: "Delete meeting" }));
-    expect(await screen.findByText("The meeting was not deleted")).toBeInTheDocument();
-    expect(calls).toContainEqual(["deleteMeeting", ITEM.id]);
+    expect(
+      within(dialog).getByText("This meeting is being summarised again. Delete it when that has finished."),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Delete meeting" })).toBeNull();
+    const close = within(dialog).getByRole("button", { name: "Close" });
+    expect(close).toHaveFocus();
+    await user.click(close);
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(calls.some((c) => c[0] === "deleteMeeting")).toBe(false);
     // The closed modal's aria-hidden on the page lifts on tabster's deferred pass.
     expect(await screen.findByRole("button", { name: new RegExp(`^${ITEM.title}`) })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: ITEM.title })).toBeInTheDocument();
+  });
+
+  it("still shows a refusal that comes only at the delete, with its own words", async () => {
+    const { user, ipc } = await setup();
+    await screen.findByText(/TL;DR/);
+    const refusal = "Earshot is still stopping the work on this meeting, so it was not deleted yet. Try again in a minute.";
+    ipc.deleteMeeting = async () => {
+      throw new IpcFailure({ kind: "meeting_stopping", message: refusal, retryable: true });
+    };
+    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
+    await user.click(within(await accessibleDialog()).getByRole("button", { name: "Delete meeting" }));
+    expect(await screen.findByText("The meeting was not deleted")).toBeInTheDocument();
+    expect(screen.getByText(refusal)).toBeInTheDocument();
     await user.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
     expect(screen.queryByText("The meeting was not deleted")).toBeNull();
+  });
+
+  it("asks before stopping a meeting that is still finishing, then stops it and deletes it", async () => {
+    const { user, calls, ipc } = await setup();
+    await screen.findByText(/TL;DR/);
+    // The mock finishes only meetings it recorded (`mockDelete.test.ts` covers that flow).
+    ipc.meetingDeletion = async () => "StopsFinishing";
+    let finish = () => {};
+    const real = ipc.deleteMeeting;
+    ipc.deleteMeeting = async (meeting, stop) => {
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      await real(meeting, stop);
+    };
+    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
+    const dialog = await accessibleDialog();
+    expect(within(dialog).getByText(`Delete "${ITEM.title}"?`)).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        "Earshot is still finishing this meeting's transcript and summary. Deleting the meeting stops that work first, then deletes its recording, transcript, summary and speaker names from this computer. The note in your Obsidian vault stays.",
+      ),
+    ).toBeInTheDocument();
+    const stop = within(dialog).getByRole("button", { name: "Stop and delete" });
+    expect(stop).toHaveFocus();
+    expect(within(dialog).queryByRole("button", { name: "Delete meeting" })).toBeNull();
+    // Cancel stops nothing.
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(calls.some((c) => c[0] === "deleteMeeting")).toBe(false);
+
+    await user.click(await screen.findByRole("button", { name: trashName(ITEM) }));
+    const again = await accessibleDialog();
+    await user.click(within(again).getByRole("button", { name: "Stop and delete" }));
+    // While the work stops, the dialog says so and holds its buttons.
+    expect(within(again).getByRole("status")).toHaveTextContent("Stopping the work on this meeting, then deleting it.");
+    expect(within(again).getByRole("button", { name: "Cancel" })).toHaveAttribute("aria-disabled", "true");
+    await act(async () => finish());
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(calls).toContainEqual(["deleteMeeting", ITEM.id, true]);
+    await screen.findByRole("heading", { level: 1, name: OTHER.title });
+    expect(screen.queryByText("The meeting was not deleted")).toBeNull();
+  });
+
+  it.each([
+    ["Recording", "This meeting is still recording. Stop the recording first, then delete the meeting."],
+    [
+      "NeedsRestart",
+      "Earshot could not stop earlier work on this meeting, and that work still holds it. Restart Earshot, then delete the meeting.",
+    ],
+    ["Retranscribing", "This meeting is being transcribed again. Delete it when that has finished."],
+  ] as const)("says why a meeting cannot be deleted now (%s) and deletes nothing", async (ask, text) => {
+    const { user, calls, ipc } = await setup();
+    await screen.findByText(/TL;DR/);
+    ipc.meetingDeletion = async () => ask;
+    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
+    const dialog = await accessibleDialog();
+    expect(within(dialog).getByText(text)).toBeInTheDocument();
+    expect(within(dialog).getAllByRole("button").map((b) => b.textContent)).toEqual(["Close"]);
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(calls.some((c) => c[0] === "deleteMeeting")).toBe(false);
+    expect(await screen.findByRole("button", { name: new RegExp(`^${ITEM.title}`) })).toBeInTheDocument();
   });
 
   it("puts the actions at the top, with no More menu", async () => {

@@ -52,6 +52,7 @@ import {
 import {
   type CaptureMode,
   DATA_FOLDER_KIND,
+  type DeleteAsk,
   type FolderListItem,
   IpcFailure,
   type JobKind,
@@ -79,6 +80,7 @@ import { ALL_MEETINGS_KEY, type FolderEdit, FolderGroup, NEW_FOLDER_KEY } from "
 import { folderDeletionCopy, meetingCount, meetingsInFolder } from "./folderRules";
 import { type DayGroup, displayTitle, groupByDay, recoveredText, secondaryLine } from "./meetings";
 import { openMenuFromKeyboard } from "./menuKeys";
+import { STOPPING_TEXT, deleteQuestion } from "./deleteQuestion";
 import { DataFolderScreen } from "./DataFolderScreen";
 import { NewerDataScreen } from "./NewerDataScreen";
 
@@ -374,7 +376,8 @@ export function AppShell({
   const [reload, setReload] = useState(0);
   const [nameVoices, setNameVoices] = useState(0);
   // The meeting the delete dialog asks about, and why a delete was refused.
-  const [deleting, setDeleting] = useState<MeetingListItem | null>(null);
+  // With what deleting it means now (T12.38), asked before the dialog opens.
+  const [deleting, setDeleting] = useState<{ item: MeetingListItem; ask: DeleteAsk } | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   // A delete on its way: the ref refuses a second click before the buttons have re-rendered (the
   // second call would fail on a meeting now gone and report a delete that worked as refused).
@@ -670,7 +673,7 @@ export function AppShell({
   useLayoutEffect(() => {
     rowLatest.current = {
       select,
-      remove: setDeleting,
+      remove: (item) => void askDelete(item),
       move: (item, folder) => void moveMeeting(item, folder),
       newFolderFor: (item) => setFolderEdit({ kind: "new", moveMeeting: item.id }),
     };
@@ -704,12 +707,23 @@ export function AppShell({
     setNameVoices((n) => n + 1);
     onNameVoices(id);
   };
-  const confirmDelete = async (item: MeetingListItem) => {
+  // What deleting it means now decides the question; when that cannot be read, the plain question,
+  // and the deletion itself says what stands in its way.
+  const askDelete = async (item: MeetingListItem) => {
+    let ask: DeleteAsk = "Free";
+    try {
+      ask = await ipc.meetingDeletion(item.id);
+    } catch {
+      // The plain question.
+    }
+    setDeleting({ item, ask });
+  };
+  const confirmDelete = async (item: MeetingListItem, ask: DeleteAsk) => {
     if (deleteRunning.current) return;
     deleteRunning.current = true;
     setDeletePending(true);
     try {
-      await ipc.deleteMeeting(item.id);
+      await ipc.deleteMeeting(item.id, ask === "StopsFinishing");
       setDeleting(null);
       setDeleteError(null);
       refocusAfterDelete.current = item.id;
@@ -803,6 +817,7 @@ export function AppShell({
       setFolderDeletePending(false);
     }
   };
+  const deleteAsked = deleteQuestion(deleting?.ask ?? "Free");
   const deletingCount =
     deletingFolder === null ? 0 : meetings.filter((m) => m.folder_id === deletingFolder.id).length;
 
@@ -1238,25 +1253,39 @@ export function AppShell({
       >
         <DialogSurface>
           <DialogBody>
-            <DialogTitle>Delete &quot;{deleting !== null ? displayTitle(deleting) : ""}&quot;?</DialogTitle>
+            <DialogTitle>
+              Delete &quot;{deleting !== null ? displayTitle(deleting.item) : ""}&quot;?
+            </DialogTitle>
             <DialogContent>
-              This deletes the recording, transcript, summary and speaker names of this meeting
-              from this computer. The note in your Obsidian vault stays.
+              <Body1 as="p">{deleteAsked.text}</Body1>
+              {deletePending && deleting?.ask === "StopsFinishing" && (
+                <Body1 as="p" role="status">
+                  {STOPPING_TEXT}
+                </Body1>
+              )}
             </DialogContent>
             <DialogActions>
-              {/* Focusable while disabled: focus must not fall out of the open modal. */}
-              <Button
-                appearance="primary"
-                disabledFocusable={deletePending}
-                onClick={() => {
-                  if (deleting !== null) void confirmDelete(deleting);
-                }}
-              >
-                Delete meeting
-              </Button>
-              <Button disabledFocusable={deletePending} onClick={() => setDeleting(null)}>
-                Cancel
-              </Button>
+              {deleteAsked.confirm === null ? (
+                <Button appearance="primary" onClick={() => setDeleting(null)}>
+                  Close
+                </Button>
+              ) : (
+                <>
+                  {/* Focusable while disabled: focus must not fall out of the open modal. */}
+                  <Button
+                    appearance="primary"
+                    disabledFocusable={deletePending}
+                    onClick={() => {
+                      if (deleting !== null) void confirmDelete(deleting.item, deleting.ask);
+                    }}
+                  >
+                    {deleteAsked.confirm}
+                  </Button>
+                  <Button disabledFocusable={deletePending} onClick={() => setDeleting(null)}>
+                    Cancel
+                  </Button>
+                </>
+              )}
             </DialogActions>
           </DialogBody>
         </DialogSurface>
