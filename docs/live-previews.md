@@ -718,6 +718,25 @@ No preview turned off, no slow pause, no audio dropped, and each shared encoder 
 
 **Not covered.** No card smaller than 16 GB has run this; the holder leaves free memory of the right size, not a smaller card's driver behaviour. A summary on the card while the next meeting records (its own fit rule, `fits_graphics_card`, does not count transcription) is not measured here. The CUDA page's runs used one 6 minute recording; the recording of 2026-11-06 is not named anywhere kept, so the two measurements may be of different recordings.
 
+## Your own provisional words on the card when it has room (T12.60)
+
+Under Everyone the user's own previews have run on the CPU beside CUDA since T12.3a, so that the card held no fourth encoder. Since T12.58 a further CUDA session borrows the one shared encoder and adds only its prediction network and joint. T12.60 runs the second session on CUDA when the track is on CUDA and the first preview session runs there (a card at or above `PREVIEW_MIN_CARD_MEMORY`); below that limit, and on every other backend, nothing changes.
+
+### The rule, from PLAN.md, committed here before any run (2026-11-15)
+
+On an idle desktop, bundled and continuous audio, Everyone, the own previews on the card against the same build with them on the CPU: (1) `stored_sha256` equal per track; (2) each track's real decode rtf at most 1.5 times the CPU column's, catch-up at most 2 s more, no audio dropped, no real decode waiting more than 250 ms for the encoder; (3) the own track's on-screen median at most 3 s and no worse than the CPU column's, the far end's at most 3 s, no preview turned off, at most 2 slow pauses per track; (4) the card's peak above baseline at most 0.5 GiB over Other people only, and `PREVIEW_MIN_CARD_MEMORY` under T12.59's rule unchanged by it (if it would rise, the result goes to the owner before anything ships). A narrow miss is repeated once and both runs reported.
+
+If the rule fails, the code change is reverted, the measurement and tooling stay, and the result goes to the owner, as T12.3c's did.
+
+How the terms are read, fixed with the rule:
+
+- **The CPU column on the same build:** `live_lag --previews everyone --own-voice-cpu` (evaluation only, added with the code): the user's own preview session loads on the CPU exactly as before T12.60 (T12.3a's placement), through a separate named evaluation loader pinned out of shipped code by a scan test; everything else is the app's loaders.
+- **Real decode waiting for the encoder:** the largest wait of the tracks' own threads (`earshot-live-mic`, `earshot-live-reference`) in the shared encoder's wait log (`shared_encoder.wait_s_by_thread`); the preview threads' waits are reported beside it, not judged.
+- **On-screen median:** `mic.on_screen_lag_s.median` for the own track (bundled only: the continuous audio's mic is silent), `reference.on_screen_lag_s.median` for the far end.
+- **Card peak above baseline:** as in T12.59 (`nvidia-smi` once a second, baseline just before the run). "Other people only" is `--previews on` run again on this task's build, same audio.
+- **`PREVIEW_MIN_CARD_MEMORY` unchanged:** T12.59's rule applied to the larger of the card-column Everyone peaks and the Other people only peaks; it is unchanged when that still gives an 8 GB card, 7.5 GiB.
+- **Idle:** as in T12.59; one run at a time.
+
 ## Provisional words from a streaming model (T12.23, spike, evaluation only)
 
 Today's previews decode the last 12 s of a stretch again every second with a second copy of the transcription model. A cache-aware streaming model reads each new piece of audio once. This spike measures one: NVIDIA Nemotron Speech Streaming 0.6B English (cache-aware FastConformer RNNT), sherpa-onnx's 560 ms int8 export (manifest set `stream-eval`, 662 MB). The NVIDIA Open Model License is agreed by the owner for evaluation only (2026-11-12): nothing ships, and no shipped crate names the model (`backends_nemotron_preview_load_is_used_by_no_shipped_code`).
