@@ -520,8 +520,10 @@ const SLOT_BROKEN_MESSAGE: &str = "an earlier load failed; ONNX Runtime needs a 
 /// The oldest ONNX Runtime minor version [`ORT_VERSION`] accepts (ort's `MINOR_VERSION`, api-31).
 const ORT_MINOR: u32 = 31;
 
-/// Lower-case hex SHA-256 of a file, read in 1 MiB blocks (the workspace's one file hasher,
-/// T12.52: the runtime's model, download and NPU checks call it too).
+/// Lower-case hex SHA-256 of a file, read in 1 MiB blocks: the shipped crates' one hasher for
+/// the plain "hash this file" case (T12.52; the runtime's model, download and NPU checks call
+/// it too). Two hash files their own way: `earshot_runtime::update::verify_installer`, which
+/// counts the size in the same pass, and xtask, which ships nothing.
 ///
 /// # Errors
 /// Opening or reading the file.
