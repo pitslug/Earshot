@@ -4,6 +4,7 @@ export {
   EVENT_METHODS,
   IpcFailure,
   NEWER_DATA_KIND,
+  RECOGNISED_ME_COPY,
   everyCommandIsInIpc,
 } from "./ipc";
 export type {

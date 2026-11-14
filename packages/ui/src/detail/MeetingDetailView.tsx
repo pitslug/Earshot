@@ -472,6 +472,8 @@ export function MeetingDetailView({
   const [notice, setNotice] = useState<Notice | null>(null);
   const [noAudio, setNoAudio] = useState<Set<string>>(new Set());
   const [editingTitle, setEditingTitle] = useState(false);
+  // Separate persons named after the user, offered one at a time after "This is me" (T12.44).
+  const [mergeOffers, setMergeOffers] = useState<PersonItem[]>([]);
   // The Speakers panel: `null` until the meeting loads, then open by itself only when a
   // voice needs a name (T12.19); the header's Speakers button toggles it.
   const [speakersOpen, setSpeakersOpen] = useState<boolean | null>(null);
@@ -890,8 +892,25 @@ export function MeetingDetailView({
                     onLink={(s, choice: LinkChoice) =>
                       run(() => ipc.linkSpeaker(id, s, choice), "The speaker was not linked")
                     }
-                    onMarkMe={(s) => run(() => ipc.markMe(id, s), "The voice was not marked as you")}
-                    onUnmarkMe={(s) => run(() => ipc.unmarkMe(id, s), "The voice was not changed")}
+                    onMarkMe={(s) =>
+                      run(async () => setMergeOffers(await ipc.markMe(id, s)), "The voice was not marked as you")
+                    }
+                    mergeOffer={mergeOffers[0] ?? null}
+                    onMergeIntoMe={(person) =>
+                      run(async () => {
+                        await ipc.mergeIntoMe(person);
+                        const name = mergeOffers.find((p) => p.id === person)?.name ?? "";
+                        setMergeOffers((offers) => offers.filter((p) => p.id !== person));
+                        setNotice({ key: "edit", intent: "success", text: `${name} is now merged into you.` });
+                      }, "The person was not merged into you")
+                    }
+                    onKeepSeparate={() => setMergeOffers((offers) => offers.slice(1))}
+                    onUnmarkMe={(s) =>
+                      run(async () => {
+                        await ipc.unmarkMe(id, s);
+                        setMergeOffers([]);
+                      }, "The voice was not changed")
+                    }
                     onMerge={(keep, merge) =>
                       run(() => ipc.mergeSpeakers(id, keep, merge), "The speakers were not merged")
                     }

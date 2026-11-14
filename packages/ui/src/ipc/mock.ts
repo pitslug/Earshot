@@ -5,6 +5,7 @@
 
 import { type Timer, realTimer } from "../time";
 import {
+  RECOGNISED_ME_COPY,
   type AppInfo,
   type CaptureMode,
   type DeleteAsk,
@@ -43,6 +44,7 @@ import {
   resummarised,
   sampleDetail,
   sampleInRoomDetail,
+  sampleRecognisedInRoomDetail,
   samplePersons,
   unmarkedMe,
 } from "./mockDetail";
@@ -199,7 +201,7 @@ export interface MockIpcData {
   details?: Record<string, MeetingDetail>;
   /** Finished meetings without a detail of their own were recorded in the room, with no
    * saved voice (`sampleInRoomDetail`). */
-  inRoom?: boolean;
+  inRoom?: boolean | "recognised";
   /** The persons (default: `samplePersons()`). */
   persons?: PersonItem[];
   /** The vault exports go to (the stored Obsidian vault); without one `exportMeeting`
@@ -336,6 +338,14 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const jobs = new Map<string, "Retranscribing" | "Resummarising">();
   const persons: PersonItem[] = (data.persons ?? samplePersons()).map((p) => ({ ...p }));
   let personSeq = 0;
+  // `edit::named_after_me`: separate persons with the user's own name (not the default "Me"),
+  // case ignored.
+  const namedAfterMe = (): PersonItem[] => {
+    const user = persons.find((p) => p.is_me);
+    const name = user?.name.trim().toLowerCase() ?? "";
+    if (name === "" || user?.name.trim() === "Me") return [];
+    return persons.filter((p) => !p.is_me && p.name.trim().toLowerCase() === name);
+  };
   const call = (...args: unknown[]) => data.onCall?.(args);
   const emit = (event: MeetingEvent) => {
     for (const l of [...listeners]) l(event);
@@ -499,7 +509,12 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     if (!row) return fail("meeting_not_found", "This meeting no longer exists.");
     let d = details.get(id);
     if (!d) {
-      d = data.inRoom && row.state === "Ready" ? sampleInRoomDetail(row) : sampleDetail(row);
+      d =
+        data.inRoom && row.state === "Ready"
+          ? data.inRoom === "recognised"
+            ? sampleRecognisedInRoomDetail(row)
+            : sampleInRoomDetail(row)
+          : sampleDetail(row);
       details.set(id, d);
     }
     return d;
@@ -1070,6 +1085,26 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       const me = user;
       update(meeting, (x) => markedMe(x, speaker, me));
+      return namedAfterMe().map((p) => ({ ...p }));
+    },
+    mergeIntoMe: async (person) => {
+      call("mergeIntoMe", person);
+      const p =
+        persons.find((x) => x.id === person) ??
+        fail("person_not_found", "This person no longer exists.");
+      if (!namedAfterMe().includes(p)) {
+        fail("not_named_after_user", "Only a person with your name can be merged into you.");
+      }
+      const user = persons.find((x) => x.is_me);
+      if (user && p.has_voiceprint) user.has_voiceprint = true;
+      persons.splice(persons.indexOf(p), 1);
+      // As `detail::speaker_cards`: a link to a merged-away person shows no person.
+      for (const [id, d] of details) {
+        details.set(id, {
+          ...d,
+          speakers: d.speakers.map((s) => (s.person?.id === person ? { ...s, person: null } : s)),
+        });
+      }
     },
     unmarkMe: async (meeting, speaker) => {
       call("unmarkMe", meeting, speaker);
@@ -1082,6 +1117,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         );
       }
       if (card.kind !== "Me") fail("not_me", "This voice is not marked as you.");
+      if (card.recognised_me) fail("recognised_me", RECOGNISED_ME_COPY);
       update(meeting, (x) => unmarkedMe(x, speaker));
     },
     renamePerson: async (person, name) => {

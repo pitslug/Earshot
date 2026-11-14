@@ -60,6 +60,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             merge_speakers,
             link_speaker,
             mark_me,
+            merge_into_me,
             unmark_me,
             rename_person,
             list_persons,
@@ -827,18 +828,28 @@ async fn link_speaker(
     blocking(move || detail::link(&services, meeting, speaker, &choice)).await
 }
 
-/// Says a voice of an in-room meeting is the user's ("This is me").
+/// Says a voice of an in-room meeting is the user's ("This is me"); returns the separate
+/// persons named after the user, to offer merging them into the user (T12.44).
 #[tauri::command]
 #[specta::specta]
 async fn mark_me(
     state: State<'_, AppState>,
     meeting: String,
     speaker: String,
-) -> Result<(), IpcError> {
+) -> Result<Vec<PersonItem>, IpcError> {
     let services = state.services()?;
     let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || detail::mark_me(&services, meeting, speaker)).await
+}
+
+/// Merges a separate person named after the user into the user (T12.44).
+#[tauri::command]
+#[specta::specta]
+async fn merge_into_me(state: State<'_, AppState>, person: String) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let person = parse_id(&person)?;
     blocking(move || {
-        earshot_runtime::edit::mark_me(&services, meeting, speaker)?;
+        earshot_runtime::edit::merge_into_me(&services, person)?;
         Ok(())
     })
     .await

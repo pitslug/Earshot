@@ -10,6 +10,7 @@ import {
   type MeetingListItem,
   type MockIpcData,
   POST_STEP_MS,
+  RECOGNISED_ME_COPY,
   SAMPLE_SPEAKERS,
   createMockIpc,
   sampleDetail,
@@ -578,6 +579,72 @@ describe("MeetingDetailView", () => {
     });
     await expect(ipc.unmarkMe(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
       error: { kind: "not_me" },
+    });
+  });
+
+  it("says which person a typed name links to before Save", async () => {
+    const { user } = await setup();
+    const field = await screen.findByRole("textbox", { name: "Name of Speaker 2" });
+    await user.type(field, "  priya SHAH ");
+    const hint = within(speakerRow("Speaker 2")).getByText("Links to Priya Shah");
+    expect(field).toHaveAttribute("aria-describedby", hint.id);
+    // A new name, or the user's own, links to nobody yet.
+    await user.clear(field);
+    await user.type(field, "Ana Diaz");
+    expect(within(speakerRow("Speaker 2")).queryByText(/^Links to/)).toBeNull();
+    expect(field).not.toHaveAttribute("aria-describedby");
+    await user.clear(field);
+    await user.type(field, "Casey");
+    expect(within(speakerRow("Speaker 2")).queryByText(/^Links to/)).toBeNull();
+  });
+
+  const TWIN = { id: "9e000000-0000-7000-8000-000000000009", name: "casey", has_voiceprint: true, is_me: false };
+
+  it("offers to merge a person named after the user after This is me", async () => {
+    const { user, calls } = await setup({ inRoom: true, persons: [...samplePersons(), TWIN] });
+    await screen.findByRole("textbox", { name: "Name of Speaker 1" });
+    expect(screen.queryByRole("button", { name: "Merge into me" })).toBeNull();
+    await user.click(within(speakerRow("Speaker 2")).getByRole("button", { name: "This is me" }));
+    const merge = await within(panel()).findByRole("button", { name: "Merge into me" });
+    expect(
+      within(panel()).getByText(
+        "There is also a person called casey. If that is you, merge them into you. Earshot will then recognise you by the voice saved for them.",
+      ),
+    ).toBeInTheDocument();
+    await user.click(merge);
+    expect(calls).toContainEqual(["mergeIntoMe", TWIN.id]);
+    await screen.findByText("casey is now merged into you.");
+    expect(within(panel()).queryByRole("button", { name: "Merge into me" })).toBeNull();
+  });
+
+  it("keeps a person named after the user separate when asked", async () => {
+    const { user, calls, ipc } = await setup({ inRoom: true, persons: [...samplePersons(), TWIN] });
+    await screen.findByRole("textbox", { name: "Name of Speaker 1" });
+    await user.click(within(speakerRow("Speaker 2")).getByRole("button", { name: "This is me" }));
+    await user.click(await within(panel()).findByRole("button", { name: "Keep separate" }));
+    expect(within(panel()).queryByRole("button", { name: "Merge into me" })).toBeNull();
+    expect(calls.some((c) => c[0] === "mergeIntoMe")).toBe(false);
+    expect((await ipc.listPersons()).some((p) => p.id === TWIN.id)).toBe(true);
+    // The mock refuses anyone else, as the runtime does.
+    await expect(ipc.mergeIntoMe(samplePersons()[1].id)).rejects.toMatchObject({
+      error: { kind: "not_named_after_user" },
+    });
+  });
+
+  it("refuses This isn't me on a voice the user's voiceprint named, and says how to change it", async () => {
+    const { user, calls, ipc } = await setup({ inRoom: "recognised" });
+    await screen.findByRole("textbox", { name: "Name of Speaker 2" });
+    await openNamed(user);
+    const mine = within(panel()).getByRole("listitem", { name: "Casey" });
+    const button = within(mine).getByRole("button", { name: "This isn't me" });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    await user.hover(button);
+    expect(await screen.findByText(RECOGNISED_ME_COPY)).toBeInTheDocument();
+    expect(RECOGNISED_ME_COPY).toContain("Settings, People");
+    await user.click(button);
+    expect(calls.some((c) => c[0] === "unmarkMe")).toBe(false);
+    await expect(ipc.unmarkMe(ITEM.id, SAMPLE_SPEAKERS.me)).rejects.toMatchObject({
+      error: { kind: "recognised_me", message: RECOGNISED_ME_COPY },
     });
   });
 

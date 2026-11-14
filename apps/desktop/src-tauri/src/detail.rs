@@ -223,7 +223,15 @@ pub struct SpeakerCard {
     pub can_mark_me: bool,
     /// The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`).
     pub can_unmark_me: bool,
+    /// This in-room "Me" row was named by the user's own voiceprint, so "This isn't me" is
+    /// refused until the user's voice is forgotten (`edit::recognised_me`, T12.44).
+    pub recognised_me: bool,
 }
+
+/// Why "This isn't me" is refused on a "Me" row the user's voiceprint named (T12.44): the
+/// refusal's copy and the Speakers panel's tooltip (mirrored in TypeScript).
+pub const RECOGNISED_ME_COPY: &str = "Earshot recognised your voice here from your voiceprint. \
+     To change this, forget your voice in Settings, People, then choose \"This isn't me\".";
 
 /// The meeting's header line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
@@ -502,6 +510,12 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "One voice in this meeting is already you. Choose \"This isn't me\" on it first.",
         ),
         EditError::NotMe(_) => err("not_me", "This voice is not marked as you."),
+        // T12.44.
+        EditError::RecognisedMe(_) => err("recognised_me", RECOGNISED_ME_COPY),
+        EditError::NotNamedAfterUser(_) => err(
+            "not_named_after_user",
+            "Only a person with your name can be merged into you.",
+        ),
         EditError::NoPreviousSummary => err("no_previous_summary", "There is no previous summary."),
         EditError::PreviousSummaryStale => err(
             "previous_summary_stale",
@@ -687,6 +701,9 @@ fn speaker_cards(
     identities: &[SpeakerIdentity],
 ) -> Vec<SpeakerCard> {
     let total: u64 = view.segments.iter().map(duration_ms).sum();
+    // `list_persons_in` counts the voiceprints of everyone merged into a person, as
+    // `edit::user_has_voiceprint` does.
+    let user_print = persons.iter().any(|p| p.is_me && p.has_voiceprint);
     view.speakers
         .iter()
         .filter_map(|s| {
@@ -737,7 +754,8 @@ fn speaker_cards(
                 ignored,
                 can_ignore: edit::can_ignore(s, identities),
                 can_mark_me: edit::can_mark_me(&view.tracks, &view.speakers, s),
-                can_unmark_me: edit::can_unmark_me(&view.tracks, s),
+                can_unmark_me: edit::can_unmark_me(&view.tracks, s, identities, user_print),
+                recognised_me: edit::recognised_me(&view.tracks, s, identities, user_print),
                 person,
                 source,
                 share_percent,
@@ -978,6 +996,24 @@ fn token_index(token: usize) -> u32 {
 /// Store errors.
 pub fn persons(services: &Services) -> Result<Vec<PersonItem>, IpcError> {
     Ok(edit::list_persons(services)?
+        .iter()
+        .map(PersonItem::of)
+        .collect())
+}
+
+/// "This is me" on voice `speaker` of `meeting` (T9.12); returns the separate persons
+/// named after the user, whom the panel then offers to merge into the user (T12.44,
+/// `edit::named_after_me`), read after the mark is written.
+///
+/// # Errors
+/// Edit refusals ([`edit_error`]); store errors.
+pub fn mark_me(
+    services: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<Vec<PersonItem>, IpcError> {
+    edit::mark_me(services, meeting, speaker)?;
+    Ok(edit::named_after_me(services)?
         .iter()
         .map(PersonItem::of)
         .collect())

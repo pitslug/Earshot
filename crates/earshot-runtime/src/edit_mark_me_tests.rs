@@ -209,7 +209,7 @@ fn edit_mark_me_refuses_a_call_meeting_and_writes_nothing() {
     let v = view(&svc, m);
     for row in &v.speakers {
         assert!(!can_mark_me(&v.tracks, &v.speakers, row));
-        assert!(!can_unmark_me(&v.tracks, row));
+        assert!(!can_unmark_me(&v.tracks, row, &[], false));
     }
 }
 
@@ -279,11 +279,12 @@ fn edit_mark_me_keeps_one_me_row_per_meeting() {
     mark_me(&svc, m, other).unwrap();
     assert_eq!(me_rows(&svc, m), [other]);
     let v = view(&svc, m);
+    let identities = identities_in(&svc.store(), m).unwrap();
     let can = |id| {
         let row = v.speakers.iter().find(|s| s.id == id).unwrap();
         (
             can_mark_me(&v.tracks, &v.speakers, row),
-            can_unmark_me(&v.tracks, row),
+            can_unmark_me(&v.tracks, row, &identities, false),
         )
     };
     assert_eq!(can(other), (false, true));
@@ -551,4 +552,210 @@ fn edit_mark_me_entry_goes_when_the_user_forgets_their_voice() {
     );
     // The mark itself, a row edit, stays.
     assert_eq!(me_rows(&svc, m), [voice]);
+}
+
+/// Enrols one voiceprint for `person` (test set-up: the explicit enrolment paths).
+fn enrol_print(svc: &Services, person: EntityId, seed: u64) {
+    let clock = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    enroll(
+        &mut *store,
+        person,
+        &[Embedding::new(
+            EmbeddingModelId::new("level@1"),
+            vec![1.0, 0.0],
+        )],
+        Duration::from_secs(60),
+        &EnrolmentConfig::default(),
+        &mut stamp,
+    )
+    .unwrap();
+}
+
+/// Makes `voice` the meeting's "Me" row as a final pass naming it by the user's voiceprint
+/// leaves it: role Me, the user's person and name, and no identity entry ("Me" is never
+/// recorded by the pass).
+fn me_by_voiceprint(svc: &Services, meeting: EntityId, voice: EntityId, user: EntityId) {
+    let clock = Arc::clone(&svc.clock);
+    let mut db = svc.store();
+    let name = db.person(user).unwrap().unwrap().display_name;
+    let mut row = db
+        .speakers(meeting)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == voice)
+        .unwrap();
+    let (store, hlc) = db.parts();
+    row.role = SpeakerRole::Me;
+    row.person_id = Some(user);
+    row.display_name = name;
+    row.meta.touch(hlc, &*clock);
+    store.put_speaker(row).unwrap();
+    let key = record_key(meeting);
+    let Some(StoredIdentities::Record(mut record)) =
+        store.local_value(key.as_str()).unwrap().map(|b| decode(&b))
+    else {
+        panic!("a record");
+    };
+    record.speakers.retain(|i| i.speaker != voice);
+    // Test set-up only: production writes this record through the runtime's registry.
+    store
+        .set_local_value(key.as_str(), &encode(&record))
+        .unwrap();
+}
+
+fn ids(persons: &[PersonInfo]) -> Vec<EntityId> {
+    persons.iter().map(|p| p.id).collect()
+}
+
+/// `recognised_me` and `can_unmark_me` of `voice`, from the store as the meeting detail
+/// reads them.
+fn unmark_offer(svc: &Services, meeting: EntityId, voice: EntityId) -> (bool, bool) {
+    let v = view(svc, meeting);
+    let row = v.speakers.iter().find(|s| s.id == voice).unwrap().clone();
+    let db = svc.store();
+    let store: &earshot_store::Store = &db;
+    let identities = identities_in(store, meeting).unwrap();
+    let has = user_has_voiceprint(store).unwrap();
+    (
+        recognised_me(&v.tracks, &row, &identities, has),
+        can_unmark_me(&v.tracks, &row, &identities, has),
+    )
+}
+
+#[test]
+fn edit_mark_me_offers_a_person_named_after_the_user() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let (m, voice, _) = in_room_meeting(&svc, 940);
+    // A user without a name of their own ("Me") has nobody named after them, even a person
+    // called "Me".
+    let called_me = new_person(&svc, DEFAULT_ME_NAME, false, 941);
+    let user = mark_me(&svc, m, voice).unwrap();
+    assert!(named_after_me(&svc).unwrap().is_empty());
+    remove_person(&svc, called_me).unwrap();
+
+    crate::my_voice::set_my_name(&svc, "Casey Lane").unwrap();
+    let twin = new_person(&svc, "casey LANE", false, 942);
+    new_person(&svc, "Robin", false, 943);
+    new_person(&svc, "Casey", false, 944);
+    let offered = named_after_me(&svc).unwrap();
+    assert_eq!(ids(&offered), [twin], "the whole name, case ignored");
+    assert!(offered.iter().all(|p| p.id != user && !p.is_me));
+    // Merged away, it is offered no more.
+    merge_into_me(&svc, twin).unwrap();
+    assert!(named_after_me(&svc).unwrap().is_empty());
+}
+
+#[test]
+fn edit_merge_into_me_merges_the_person_and_keeps_their_voiceprints_as_the_users() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let user = new_person(&svc, "Casey", true, 945);
+    let (m, voice, other) = in_room_meeting(&svc, 946);
+    // Before marking existed, the user named a voice after themselves and saved its voice.
+    let twin = link_speaker(
+        &svc,
+        m,
+        other,
+        &PersonChoice::New {
+            name: "Casey".into(),
+        },
+    )
+    .unwrap();
+    enrol_print(&svc, twin, 947);
+    mark_me(&svc, m, voice).unwrap();
+    assert_eq!(ids(&named_after_me(&svc).unwrap()), [twin]);
+
+    assert_eq!(merge_into_me(&svc, twin).unwrap(), user);
+    let gone = svc.store().person(twin).unwrap().unwrap();
+    assert_eq!(gone.merged_into, Some(user), "merged by the identity rule");
+    assert!(!gone.meta.deleted);
+    let persons = list_persons(&svc).unwrap();
+    assert!(persons.iter().all(|p| p.id != twin), "no longer listed");
+    // The existing merge rule: the print stays on the merged person and counts as the user's.
+    assert_eq!(print_count(&svc, twin), Some(1));
+    assert!(svc.store().voiceprints_of(user).unwrap().is_empty());
+    assert!(persons.iter().any(|p| p.id == user && p.has_voiceprint));
+    // Nothing was enrolled from the marked row, and it is still the user's row.
+    let row = row_of(&svc, m, voice);
+    assert_eq!(row.role, SpeakerRole::Me);
+    assert_eq!(row.person_id, Some(user));
+    // The other row keeps its link and name; written text is not rewritten.
+    let linked = row_of(&svc, m, other);
+    assert_eq!(linked.person_id, Some(twin));
+    assert_eq!(linked.display_name, "Casey");
+    // Forgetting the user's voice forgets the merged person's print too.
+    assert_eq!(crate::my_voice::forget_my_voice(&svc).unwrap(), 1);
+    assert_eq!(print_count(&svc, twin), None);
+}
+
+#[test]
+fn edit_merge_into_me_refuses_anyone_not_named_after_the_user() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let robin = new_person(&svc, "Robin", false, 948);
+    // No user yet: nobody is named after them.
+    assert_eq!(
+        refused(merge_into_me(&svc, robin)),
+        EditError::NotNamedAfterUser(robin)
+    );
+    let user = new_person(&svc, "Casey", true, 949);
+    assert_eq!(
+        refused(merge_into_me(&svc, robin)),
+        EditError::NotNamedAfterUser(robin)
+    );
+    assert_eq!(
+        refused(merge_into_me(&svc, user)),
+        EditError::NotNamedAfterUser(user)
+    );
+    let nobody = EntityId::from_bytes([9; 16]);
+    assert_eq!(
+        refused(merge_into_me(&svc, nobody)),
+        EditError::PersonNotFound(nobody)
+    );
+    let twin = new_person(&svc, "Casey", false, 950);
+    merge_into_me(&svc, twin).unwrap();
+    assert_eq!(
+        refused(merge_into_me(&svc, twin)),
+        EditError::PersonNotFound(twin),
+        "already merged"
+    );
+    assert!(svc.store().person(robin).unwrap().unwrap().is_live());
+}
+
+#[test]
+fn edit_unmark_me_refuses_a_me_row_the_users_voiceprint_named() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let user = new_person(&svc, "Casey", true, 951);
+    enrol_print(&svc, user, 952);
+    let (m, voice, other) = in_room_meeting(&svc, 953);
+    me_by_voiceprint(&svc, m, voice, user);
+    assert_eq!(unmark_offer(&svc, m, voice), (true, false));
+    let before = row_of(&svc, m, voice);
+    assert_eq!(
+        refused(unmark_me(&svc, m, voice)),
+        EditError::RecognisedMe(voice)
+    );
+    assert_eq!(row_of(&svc, m, voice).meta, before.meta, "nothing written");
+
+    // Once the user's voice is forgotten, no voiceprint names it again: undo is allowed.
+    crate::my_voice::forget_my_voice(&svc).unwrap();
+    assert_eq!(unmark_offer(&svc, m, voice), (false, true));
+    unmark_me(&svc, m, voice).unwrap();
+    assert_eq!(row_of(&svc, m, voice).role, SpeakerRole::Room);
+
+    // A voice the user marked is theirs to undo, voiceprint or not.
+    enrol_print(&svc, user, 954);
+    mark_me(&svc, m, other).unwrap();
+    assert_eq!(unmark_offer(&svc, m, other), (false, true));
+    unmark_me(&svc, m, other).unwrap();
 }

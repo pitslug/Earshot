@@ -74,8 +74,9 @@ export function createTauriIpc(): Ipc {
     },
     linkSpeaker: async (meeting, speaker, choice) =>
       unwrap(await commands.linkSpeaker(meeting, speaker, choice)),
-    markMe: async (meeting, speaker) => {
-      unwrap(await commands.markMe(meeting, speaker));
+    markMe: async (meeting, speaker) => unwrap(await commands.markMe(meeting, speaker)),
+    mergeIntoMe: async (person) => {
+      unwrap(await commands.mergeIntoMe(person));
     },
     unmarkMe: async (meeting, speaker) => {
       unwrap(await commands.unmarkMe(meeting, speaker));
