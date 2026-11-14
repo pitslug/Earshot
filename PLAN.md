@@ -2004,6 +2004,76 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: (1) triage every line against today's code: stale lines (already fixed, or the code is gone) are removed; each survivor is labelled real bug, test or guard gap, or tidy-up. (2) Fix the survivors by area in lanes, real bugs first, each fix with a test where it changes behaviour; lines in files claimed by another host (T12.31, T12.32, T12.33) wait for those merges. (3) A line that turns out to be a design question goes to the owner, not into code. From now on every merge batch fixes its own advisories or adds a sweep task (AGENTS.md conventions).
   - accept: `cargo xtask ci` on main after the batch; TODO.md holds only lines waiting on a claimed file or the owner, each saying which
 
+- [ ] T12.41 Cancel a re-transcription or re-summary
+  - found (the owner, 2026-11-14, TODO decision 1): jobs have no cancel, so a meeting with a job running cannot be stopped or deleted (T12.38 gives Close only).
+  - do: a Cancel on a running re-transcribe or re-summarise job (one `CancelToken` per job through `jobs::JobRunner`, polled as the final pass and summary already poll), ending in one terminal `JobEvent` (cancelled, nothing written beyond what a cancelled final pass or summary writes today); the T12.38 delete dialog then offers Stop and delete for a job too. Tests through the job fakes; UI test and screenshots light and dark.
+  - accept: `cargo test -p earshot-desktop --bin earshot`; `cargo test -p earshot-runtime` for anything touched; `cmd /c pnpm --filter @earshot/ui test`
+
+- [ ] T12.42 Update files carry a signed date
+  - found (the owner, 2026-11-14, TODO decision 2): a version file has no date, so someone controlling the host could re-serve an older signed release to an older copy.
+  - do: the signed version file gains a release date covered by the signature (`earshot-update`, `sign-update`); a copy refuses an offer whose date is older than its own build's (the build date baked in at build time), with fixed copy; an older file without a date is still read by older copies (forward only, docs/updates.md). Tests in earshot-update and the update settings.
+  - accept: `cargo test -p earshot-update`; `cargo test -p xtask update`; `cargo test -p earshot-desktop --bin earshot update`
+
+- [ ] T12.43 An edited summary says so, and models have friendly names
+  - found (the owner, 2026-11-14, TODO decision 3): after a summary edit the header still says "Summary by <model>", and the model shows by its id.
+  - do: the summary header says it was edited (keeping undo at one step, as today), and every place a summary's writer is shown uses a friendly name (`catalogue::display_name` for local models; "Claude (Claude Code)", "Codex", the endpoint's model name for an API), never a manifest id. UI test and screenshots light and dark.
+  - accept: `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`
+
+- [ ] T12.44 Speakers panel: say who a name links to, merge a self-named person, protect a recognised Me
+  - found (the owner, 2026-11-14, TODO decisions 4 to 6).
+  - do: (1) a typed name matching an existing person shows "Links to <name>" before Save; (2) when the user marks a voice as themselves and a separate person named after them exists, offer to merge that person into the user (through the existing identity rules; the user's voiceprints never enrolled from a marked row); (3) "This isn't me" is refused on a voiceprint-named Me row with a tooltip pointing to forgetting the user's voice in Settings. Runtime and UI tests; screenshots light and dark.
+  - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`
+
+- [ ] T12.45 Small settings and list fixes
+  - found (the owner, 2026-11-14, TODO decisions 7 to 12).
+  - do: strip leading and trailing single quotes from a Dictionary word; refuse "allow the summary writer" while the meeting is still finishing, with the reason; "Other" with an empty name shows the stored model; folder rows get a visible menu button (the open meeting stays as it is when a folder is chosen); folders sort locale-aware (Rust and the mock together); the ARM64 "runs on the processor" note shows once until something about it changes. Shared case tables where both suites have a rule.
+  - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; screenshots light and dark
+
+- [ ] T12.46 Hardening and removals
+  - found (the owner, 2026-11-14, TODO decisions 13 to 19).
+  - do: replay mode passes no provisional words (`accept m7`, `bundle-check`); `earshot_llm::ApiKey` and the request header copy are wiped on drop; zero-width and bidi format characters are refused in Dictionary words and the summary style together; remove `cleanup_stale_parts` and the final pass's enrolment path that served only pre-T9.12 data (nobody has an older database before v1; the owner can start fresh); disable Codex 0.166's daemon_auto_start, code_mode_host, incremental_tools, plugin_discovery_prefetch, in_app_local_automation, system_proxy_fallback, unified_exec_tty and write_stdin_approval in `DISABLED_FEATURES` (checked against the installed CLI's own feature list); put the first fact-judge prompt into docs/summary-eval.md (the owner approved publishing it; if the old transcript cannot be read, say so).
+  - accept: tests of each touched crate; `cargo test -p xtask`; `cargo xtask accept m7` unchanged in result
+
+- [ ] T12.47 Upgrade ort to 2.0.0-rc.15
+  - found (the owner, 2026-11-14, TODO decision 20): rc.15 fixes over 30 undefined-behaviour instances.
+  - do: upgrade with every re-check AGENTS.md names for an ort upgrade (init slot workaround, shared weights, device selection, QNN registration and the removed `unregister`, `ThreadManager: Send + Sync`, the CUDA and QNN load tests on real hardware, `live_lag --memory`).
+  - accept: `cargo xtask ci`; the ignored real-hardware tests AGENTS.md lists, on the desktop and the Surface
+
+- [ ] T12.48 Retired CUDA libraries can be removed
+  - found (the owner, 2026-11-14, TODO decision 21): renaming a pinned library in a later manifest leaves the old DLL unpinned, and every CUDA load then refuses with no way out in the app.
+  - do: the manifest can list retired CUDA member names; `verify_part` ignores and `remove_part`/the next download deletes exactly those (both manifest parsers and the CUDA folder case table change together), before the first CUDA manifest bump.
+  - accept: `cargo test -p earshot-runtime cuda`; `cargo test -p xtask models`
+
+### Parked (the owner, 2026-11-14)
+
+Research and hardware runs moved out of TODO.md: no decision is needed now. Each comes back as a task when the hardware, a recording or a better approach exists.
+
+- Mono double-talk root cause still open: a reverberation-tail term in the linear witness was measured and rejected on 2026-10-24 (reverb_decay 0.8 fails the robustness grid at 9.91 dB; 0.4 keeps every headline but does not remove the false calls); the coherence veto stays. Needs another approach (e.g. a better late-reverberation estimate in the linear stage) (T1.5f follow-up) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d). - crates/earshot-core/src/aec/canceller.rs:727
+- The 9.34-9.47 s leak on double-talk-ser-0 (softclip-3 distortion in bins where the linear estimate is weak): the postfilter's per-bin residual ratio is clamped at 1, and raising the clamp costs double-talk SI-SDR below the robustness bar (measured 2026-10-24); needs a cross-bin (harmonic) nonlinear model (T1.5f follow-up) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d). - crates/earshot-core/src/aec/postfilter.rs:307
+- Record the live speaker-window reuse rate on a multi-party recording (three or more far-end voices) before calling live speakers done (T6.13d3 review; the Surface thread question is settled by the T6.13d4 setting) - crates/earshot-runtime/src/backends.rs
+- The positive Bluetooth hands-free fixture is constructed from docs, not recorded; replace it with a recorded property set at GATE-01b, and a 16 kHz LE Audio mic would be classified hands-free (T6.24 review) - crates/earshot-capture-wasapi/src/endpoint.rs:248
+- Final-pass echo bridging has no live evidence of the echo path inside a gap; the offline check (`echo::gap_has_echo_path`) was built and measured on 2026-11-01 and does not help (on the cancelled mic it finds no echo path in simulated double talk), so it is evaluation only. Remaining options: lock hysteresis in the delay estimator, or run the check on the raw mic, which the final pass does not store (T6.23 review) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d). - crates/earshot-runtime/src/echo.rs:77
+- Apply the DTW decision rule on a quiet host (CUDA ami and CPU smoke, commands in docs/word-times.md) once whisper.cpp's DTW end() read is fixed upstream (T2.2d)
+- The low-frequency product gain gamma can climb to its ceiling (4) when the cube is near zero and then suppress near-end content at the product's level (synthetic gain 0.03); a learning gate tied on dev and made held-out worse (withdrawn, cc9fe13); needs a dev-justified fix that keeps held-out (T1.6c review) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d). - crates/earshot-core/src/aec/postfilter.rs:374
+- Remaining dev-wide / held-out misses after T1.6c: false linear-stage divergence resets in quiet passages (a relevance gate fixed stereo 84/174 but slowed delay-jump recovery 2.5 -> 6.6 s), applied delay drifting from the true delay under clock drift (drift erle_linear 8.5 dB dev-wide, 10.5 held-out), double-talk SI-SDR limited by postfilter near-end distortion (held-out 9.95 mono, 5.50 stereo vs 10) (T1.6c lane) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d).
+- The skipped-speech recovery lives in the shared piece protocol behind `may_skip_speech`; the deeper fix is inside `ParakeetTdt::transcribe` (detect a chunk that stayed on blank over speech and re-decode its tail) so every caller (chunker live path, single calls) is covered (the worst case is now documented in pieces.rs) (T2.5d review; kept here by the owner: step 5 covers the defaults) - crates/earshot-onnx/src/parakeet.rs:632
+- crates/earshot-runtime/src/edit.rs: re-transcription uses the default language (TranscribeOptions::batch()); store a per-meeting language when multilingual models ship.
+- crates/earshot-core/src/asr/pieces.rs:278: speech that diarisation found but Silero missed is never transcribed (a quiet voice below Silero's threshold; large-v3-turbo on the window alone hears it). Candidate: the final pass also decodes diarised turns no speech piece covers; decide the rule and minimum length on dev data (AMI SDM), never on this clip.
+- crates/earshot-core/src/diar/cluster.rs:320: in short meetings the large-cluster size is round(0.1 x embeddings) (about 3 for a very short meeting), so one voice in sub-second turns splits into several speakers. Re-check on a 10 min meeting before changing anything; any change is chosen on dev data.
+- `MeetingDetail.test.tsx` "asks before deleting and names the meeting" fails every run on the Surface on battery (the page stays aria-hidden after the delete dialog closes) and passes on AC power (full `cargo xtask ci` passed plugged in, 2026-11-04): the T7.3d tabster timing area; diagnose on battery before trusting it - packages/ui/src/detail/MeetingDetail.test.tsx:233
+- TS3006d's merge repeats one task per owner until the loop guard stops it, on the settled prompt, and now ends in a joined summary (TS3007b on the test split failed on a repeated item earlier); a cause in the prompt or the merge request would give a better summary than joining (T8.4d) - crates/earshot-core/src/prompt/templates/reduce.md
+- A cold-disk CUDA start is calculated, not measured: USB 2 with only Parakeet 0.6B v2 installed would pass `START_TRIAL_LIMIT` (120 s) and stay off CUDA with a note.
+- docs/arm64-cuda.md: T8.4b's compile probe was not run (research only); run it when an RTX Spark machine exists.
+- apps/desktop/src-tauri/src/wer_win.rs: WebView2's own processes can still report crashes under Windows' consent settings (PRIVACY.md); Microsoft's `IsCustomCrashReportingEnabled` environment option would stop that, and neither Tauri nor wry was found to expose it (not checked in their source).
+- Chunk latency p95 was about 25 s on both CPU and Vulkan, though Vulkan caught up in 0.44 s, so stretch length rather than decode speed looks like the limit on live lag (shared host; T9.1m's question).
+- docs/far-speakers/word-changes.md: snapping a change to the nearest supported boundary did the useful work on AMI dev (unsupported changes 173 -> 47) and merging alone was worse; a new trial of snapping alone needs a rule committed before measuring. T6.9a's criterion 3 could never pass on split B, which has no flips.
+- crates/earshot-runtime/src/live/preview.rs: a preview session takes `onnx_cpu_threads(cores, 2)`, a third 4-thread session beside two tracks; on 16 cores that is 12 of 16, past the half-the-cores rule. Measured only on 32 cores.
+- crates/earshot-core/src/diar/policy.rs:174: in a call, the mic track split a handful of the user's short words (single words, a sentence end) into a second mic voice ("Speaker 1") beside a voiceprint-matched Me; consider folding a tiny mic cluster (few seconds, close to Me) into Me before naming, judged on AMI dev and a two-track dev set, never a private recording (owner's 0.3.3 call, 2026-11-13).
+- crates/earshot-llm-local/tests/prefix_reuse.rs: the ignored identity test is not in any accept, and no scan pins that shipped code never calls `set_prefix_reuse` (`*_is_used_by_no_shipped_code`) (T12.25 review).
+- crates/earshot-llm-local/src/lib.rs prefix reuse: two full sequence-state snapshots, each copied up to twice per request; measure memory before enabling it on a 16 GB Surface (T12.25 review).
+- crates/earshot-runtime/src/cuda_tests.rs: the symlink case of `exclusive` (T12.36) is ignored and has never run here (needs symlink rights): run it once with Developer Mode on.
+- crates/earshot-runtime/src/live/preview.rs: whether ONNX Runtime creates its pool threads at session creation (the preview thread budget relies on it) is unverified; needs a run on real hardware (T12.36).
+
 ### M13 - Lower-spec hardware optimisation
 
 Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids keep their original milestone numbers.
