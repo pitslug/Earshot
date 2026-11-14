@@ -128,6 +128,43 @@ fn summary_kept_local_record_presence_is_the_answer() {
 }
 
 #[test]
+fn summary_kept_local_allow_is_refused_while_the_meeting_is_still_worked_on() {
+    use crate::MeetingJob;
+    let dir = TempDir::new("summary-kept-local-busy");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "", 1);
+    for job in [
+        MeetingJob::Recording,
+        MeetingJob::Waiting,
+        MeetingJob::Processing,
+    ] {
+        crate::local::set(&mut svc.store(), &record_key(m), &encode()).unwrap();
+        let lease = svc.lease_meeting_for(m, job).unwrap();
+        assert!(
+            matches!(
+                allow_writer(&svc, m),
+                Err(RuntimeError::Edit(crate::edit::EditError::MeetingStillWorking(id))) if id == m
+            ),
+            "{job:?}"
+        );
+        // Refused means nothing changed: the meeting is still kept here.
+        assert_eq!(
+            summary_privacy(&svc.store(), m),
+            SummaryPrivacy::KeptLocal,
+            "{job:?}"
+        );
+        drop(lease);
+        allow_writer(&svc, m).unwrap();
+        assert_eq!(summary_privacy(&svc.store(), m), SummaryPrivacy::Writer);
+    }
+    // A lease that is not a meeting's own work (an export) does not refuse it.
+    crate::local::set(&mut svc.store(), &record_key(m), &encode()).unwrap();
+    let _export = svc.lease_meeting(m).unwrap();
+    allow_writer(&svc, m).unwrap();
+    assert_eq!(summary_privacy(&svc.store(), m), SummaryPrivacy::Writer);
+}
+
+#[test]
 fn summary_kept_local_record_is_version_then_marker() {
     let mut want = RECORD_VERSION.to_le_bytes().to_vec();
     want.extend_from_slice(b"local");

@@ -177,6 +177,11 @@ pub enum EditError {
     /// The word at that position of the line (the id) was not changed from a suggestion, or
     /// the line changed since: there is nothing to put back ([`put_back_word`]).
     NoWordChoice(EntityId),
+    /// The meeting (the id) is still recording, waiting for its turn, being finished, or being
+    /// re-transcribed or re-summarised: its summary writer was chosen when that work started, so
+    /// allowing the writer now would change nothing for it
+    /// ([`crate::keep_local::allow_writer`], T12.45).
+    MeetingStillWorking(EntityId),
 }
 
 /// What is wrong with a title or transcript text.
@@ -291,6 +296,11 @@ impl fmt::Display for EditError {
                     "segment {id} has no changed word at that position to put back"
                 )
             }
+            Self::MeetingStillWorking(id) => write!(
+                f,
+                "meeting {id} is still being recorded or processed; allow the summary writer \
+                 once it has finished"
+            ),
         }
     }
 }

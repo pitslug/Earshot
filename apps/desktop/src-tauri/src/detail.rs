@@ -584,6 +584,12 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "no_word_choice",
             "There is nothing to put back for this word. The line may have been edited.",
         ),
+        // T12.45: the summary writer of the work in progress was chosen when it started.
+        EditError::MeetingStillWorking(_) => err(
+            "meeting_still_working",
+            "Earshot is still working on this meeting, and that work keeps the summary on this \
+             computer. Allow the summary writer once it has finished.",
+        ),
     }
 }
 

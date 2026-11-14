@@ -991,6 +991,7 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::WordNotFound(id), "word_not_found"),
         (EditError::WordNotListed, "word_not_listed"),
         (EditError::NoWordChoice(id), "no_word_choice"),
+        (EditError::MeetingStillWorking(id), "meeting_still_working"),
     ];
     for (e, kind) in all {
         let ipc = IpcError::from(RuntimeError::Edit(e.clone()));
