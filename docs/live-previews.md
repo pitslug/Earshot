@@ -612,6 +612,22 @@ Runs left out of the table and why:
 
 **What it led to (the owner, 2026-11-15):** T12.57 (the arena setting for every CUDA session) and T12.58 (one shared encoder for everything that transcribes on CUDA, run by its own thread so no preview thread ever holds it, with a fallback to an own session).
 
+## CUDA sessions grow their memory by what is asked (T12.57)
+
+Every CUDA session `earshot_onnx` creates sets ONNX Runtime's `arena_extend_strategy` to `kSameAsRequested` (`runtime::cuda_provider_options`); every other CUDA provider option keeps ONNX Runtime's default. By default the arena grows by powers of two, so a Parakeet 0.6B v2 session holding 2.27 GiB of encoder weights reserved far more.
+
+**Measured before this task existed** (2026-11-14/15, the desktop, RTX 5080, scratch switches in a worktree, one run each, raw runs not committed). `live_lag --contention` (one track's real decodes, card peak above the pre-run baseline):
+
+| Provider setting | alone (GiB) | own preview session (GiB) | shared encoder (GiB) | real decode median / largest (ms) | words |
+|---|---|---|---|---|---|
+| ONNX Runtime defaults | 3.75 | 7.48 | 4.34 | 71 / 85 | - |
+| arena `kSameAsRequested` | 3.31 | 6.46 | 3.90 | 73 / 90 | equal |
+| + device-allocated initialisers | 3.31 | 6.46 | 3.90 | 72 / 88 | equal |
+| + cuDNN heuristic search | 3.31 | 6.46 | 3.90 | 74 / 99 | equal |
+| + cuDNN default search | 3.30 | 6.46 | 3.90 | 462 / 480 | equal |
+
+Whole calls (bundled audio, real time): 7.69 -> 6.82 GiB on the card with previews off and 11.24 -> 10.18 GiB with them on, stored words equal on both tracks, real decode rtf and catch-up unchanged within run-to-run noise, and peak private memory down by about the same amount (11.70 -> 10.82 and 15.41 -> 14.36 GiB). The first decode of a new input length cost the same with either arena setting (100-120 ms). Device-allocated initialisers and the cuDNN heuristic search saved nothing more, and the cuDNN default search was about 6.5 times slower, so only the arena setting was taken.
+
 ## Provisional words from a streaming model (T12.23, spike, evaluation only)
 
 Today's previews decode the last 12 s of a stretch again every second with a second copy of the transcription model. A cache-aware streaming model reads each new piece of audio once. This spike measures one: NVIDIA Nemotron Speech Streaming 0.6B English (cache-aware FastConformer RNNT), sherpa-onnx's 560 ms int8 export (manifest set `stream-eval`, 662 MB). The NVIDIA Open Model License is agreed by the owner for evaluation only (2026-11-12): nothing ships, and no shipped crate names the model (`backends_nemotron_preview_load_is_used_by_no_shipped_code`).

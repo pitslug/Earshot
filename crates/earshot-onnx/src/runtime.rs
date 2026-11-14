@@ -195,12 +195,16 @@ impl Provider {
             // The CPU provider is always appended by ONNX Runtime; nothing to register.
             Provider::Cpu => None,
             #[cfg(feature = "cuda")]
-            Provider::Cuda { device_id } => Some(
-                ort::ep::CUDA::default()
-                    .with_device_id(device_id)
+            Provider::Cuda { device_id } => Some({
+                use ort::ep::ArbitrarilyConfigurableExecutionProvider;
+                cuda_provider_options(device_id)
+                    .into_iter()
+                    .fold(ort::ep::CUDA::default(), |ep, (key, value)| {
+                        ep.with_arbitrary_config(key, value)
+                    })
                     .build()
-                    .error_on_failure(),
-            ),
+                    .error_on_failure()
+            }),
             // The QNN plugin goes through the device API, not a provider dispatch
             // (`crate::qnn::with_qnn_device`).
             Provider::Qnn => None,
@@ -208,6 +212,22 @@ impl Provider {
             _ => return Err(OnnxError::ProviderNotBuilt(self)),
         })
     }
+}
+
+/// The options every CUDA session's provider is built with, as ONNX Runtime's own keys and values
+/// (T12.57); everything not listed keeps ONNX Runtime's default.
+///
+/// `arena_extend_strategy = kSameAsRequested`: by default the CUDA arena grows by powers of two, so
+/// a session asking for its 2.27 GiB of encoder weights reserved far more. Measured on the desktop
+/// (RTX 5080, Parakeet 0.6B v2, docs/live-previews.md, before this setting existed): the same stored
+/// words and placement, real decode median 73 against 71 ms, and a whole call 7.69 -> 6.82 GiB on
+/// the card with previews off, 11.24 -> 10.18 GiB with them on.
+#[must_use]
+pub fn cuda_provider_options(device_id: i32) -> Vec<(&'static str, String)> {
+    vec![
+        ("device_id", device_id.to_string()),
+        ("arena_extend_strategy", "kSameAsRequested".to_owned()),
+    ]
 }
 
 impl fmt::Display for Provider {
@@ -1003,6 +1023,24 @@ impl OnnxSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T12.57: every CUDA session's arena grows by what is asked, and nothing else differs from
+    /// ONNX Runtime's defaults.
+    #[test]
+    fn runtime_cuda_provider_grows_its_arena_by_what_is_asked() {
+        assert_eq!(
+            cuda_provider_options(1),
+            vec![
+                ("device_id", "1".to_owned()),
+                ("arena_extend_strategy", "kSameAsRequested".to_owned()),
+            ]
+        );
+        // The value is ort's own spelling of the strategy.
+        assert_eq!(
+            ort::ep::ArenaExtendStrategy::SameAsRequested.to_string(),
+            cuda_provider_options(0)[1].1
+        );
+    }
 
     #[test]
     fn onnx_init_after_a_broken_slot_never_says_another_library_is_loaded() {
