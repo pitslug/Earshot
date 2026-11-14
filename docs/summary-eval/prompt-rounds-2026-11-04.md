@@ -285,7 +285,7 @@ Reference source, the 20 AMI test meetings, 600 s chunks, CUDA, `--prompt-varian
 
 ## Decision
 
-The owner adopted `settled` as the production prompt (T6.20f): `system.md` now holds its rules, the `settled` variant is gone, and the earlier production rules are `--prompt-variant previous`. The sum-eval format key is `indented-numbered-r5`, so runs from before the switch are never reused. The 9B repetition risk on the test series stands as measured.
+The owner adopted `settled` as the production prompt (T6.20f): `system.md` now holds its rules, the `settled` variant is gone, and the earlier production rules are `--prompt-variant previous` (removed in T12.49; reproducible from history). The sum-eval format key is `indented-numbered-r5`, so runs from before the switch are never reused. The 9B repetition risk on the test series stands as measured.
 ## Every item
 
 Each run's summary items (S-D decisions, S-A actions, in summary order) with the judge's verdict, then the real items missed and the counts. Segment numbers are the reference transcript's.

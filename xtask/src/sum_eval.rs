@@ -1244,6 +1244,11 @@ fn candidate_label(c: &Value) -> String {
     if c["merge_select"] == true {
         name.push_str(" (select)");
     }
+    // T12.10 thinking runs (the option was removed in T12.49): their stored result files
+    // still name the cap, so their rows never read as thinking-off rows.
+    if let Some(cap) = c["thinking_cap"].as_u64() {
+        name.push_str(&format!(" (thinking {cap})"));
+    }
     match c["prompt_variant"].as_str() {
         Some(v) if v != PromptVariant::Current.name() => format!("{name} (prompt {v})"),
         _ => name,
@@ -2477,7 +2482,7 @@ mod tests {
             chunk_seconds: Some(600),
             ..Options::default()
         };
-        let lean = Options {
+        let brief = Options {
             prompt_variant: PromptVariant::Brief,
             ..current.clone()
         };
@@ -2488,7 +2493,7 @@ mod tests {
             "jobs": [{"split": "dev", "source": "reference", "meetings": [{"meeting": "ES2003a"}]}],
         });
         assert!(covers(&control, &jobs, &meetings, &current));
-        assert!(!covers(&control, &jobs, &meetings, &lean));
+        assert!(!covers(&control, &jobs, &meetings, &brief));
         let mut variant = control.clone();
         variant["grammar"] = json!(format_key(
             Some(600),
@@ -2497,16 +2502,16 @@ mod tests {
             false,
             None
         ));
-        assert!(covers(&variant, &jobs, &meetings, &lean));
+        assert!(covers(&variant, &jobs, &meetings, &brief));
         assert!(!covers(&variant, &jobs, &meetings, &current));
         // A variant run never overwrites the control's file, nor the reverse.
         assert_eq!(other_format(&control, &current), None);
         assert_eq!(
-            other_format(&control, &lean).as_deref(),
+            other_format(&control, &brief).as_deref(),
             Some("indented-numbered-r5-chunk600")
         );
         assert!(other_format(&variant, &current).is_some());
-        assert_eq!(other_format(&json!({}), &lean), None);
+        assert_eq!(other_format(&json!({}), &brief), None);
     }
 
     #[test]
@@ -2638,14 +2643,14 @@ mod tests {
     #[test]
     fn sum_eval_a_finished_file_without_a_format_key_is_protected() {
         let current = Options::default();
-        let lean = Options {
+        let brief = Options {
             prompt_variant: PromptVariant::Brief,
             ..Options::default()
         };
         // A finished result from older scoring (jobs, no `grammar`) is not overwritten by
         // any run, the production format included.
         let older = json!({"jobs": [{"split": "dev", "source": "reference", "meetings": []}]});
-        assert!(other_format(&older, &lean).is_some());
+        assert!(other_format(&older, &brief).is_some());
         assert!(other_format(&older, &current).is_some());
         // Something that is not a finished result is not a reason to refuse.
         assert_eq!(other_format(&json!({}), &current), None);
@@ -2781,6 +2786,15 @@ mod tests {
         ]});
         let t = table(&report);
         assert!(t.contains("| qwen3.5-9b-q4_k_m (prompt lean) |"), "{t}");
+        // A stored T12.10 thinking run keeps its label; a header without the cap (or with a
+        // null one, as thinking-off runs wrote) gets none.
+        let report = json!({"candidates": [
+            {"candidate": "qwen3.5-4b-q4_k_m", "thinking_cap": 2048, "prompt_variant": "current", "jobs": [{"split": "dev", "source": "reference", "aggregate": {}}]},
+            {"candidate": "qwen3.5-9b-q4_k_m", "thinking_cap": null, "prompt_variant": "current", "jobs": [{"split": "dev", "source": "reference", "aggregate": {}}]},
+        ]});
+        let t = table(&report);
+        assert!(t.contains("| qwen3.5-4b-q4_k_m (thinking 2048) |"), "{t}");
+        assert!(t.contains("| qwen3.5-9b-q4_k_m | ? |"), "{t}");
         assert!(t.contains("| qwen3.5-9b-q4_k_m | ? |"), "{t}");
         // No length block in these aggregates: no length table.
         assert!(!t.contains("notes words"), "{t}");

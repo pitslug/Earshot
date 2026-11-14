@@ -931,11 +931,12 @@ fn prompt_variants_change_only_the_shared_rules() {
     }
     // T12.17's variants shorten the notes and the tldr and still require every item.
     let every = "Still list every decision and every action item";
-    for (v, notes, tldr) in [(
-        PromptVariant::Brief,
-        "at most three sections of at most three bullets",
-        "Keep `tldr` to one sentence.",
-    )] {
+    {
+        let (v, notes, tldr) = (
+            PromptVariant::Brief,
+            "at most three sections of at most three bullets",
+            "Keep `tldr` to one sentence.",
+        );
         let rules = v.rules();
         assert!(
             rules.contains(notes) && rules.contains(tldr) && rules.contains(every),
