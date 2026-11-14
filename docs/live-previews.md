@@ -562,6 +562,56 @@ By point, both runs: 1 passes (every session placed on CUDA, ONNX Runtime's usua
 
 **Under the rule:** all pass, so the next step is a follow-up replay task (a T12.3c-style rule on whole meetings) before the owner chooses default on, a setting or default off. No shipped change.
 
+**A correction found in T12.3d:** the "lock wait" above is not the wait alone. `SharedEncoder`'s timing read the clock after the encoder run, so every figure in the "Longest lock wait" column is the wait plus one encoder run. T12.3d measured the wait alone (the clock read once the lock is held) and found real decodes waiting at most 1 µs on whole meetings. Point 3 of T12.3b still holds: the corrected wait can only be smaller.
+
+## One shared CUDA encoder on whole meetings (T12.3d)
+
+T12.3b showed on contention runs that a preview can borrow its track's encoder. T12.3d asked the whole-meeting question: one encoder session on the card, borrowed by both tracks' live transcribers and every preview session (the far end's and, under Everyone, the user's own), each with its own prediction network and joint. Evaluation only, in a scratch worktree (`live_lag --share-encoder`, nothing shipped). Both columns ran with ONNX Runtime's CUDA arena set to `kSameAsRequested` through a scratch switch (it became T12.57).
+
+**How the rule came about, said plainly:** the rule below was written in the session by the coordinator before any T12.3d measurement, but it was not committed first, unlike T12.3b's and T12.3c's. And the runs shared the desktop with other lanes' builds: every run started only after three idle checks in a row (no build processes, CPU under 15%, nothing holding the microphone), but other lanes started work during some runs. Each run's own host-load field is given where it matters.
+
+### The rule (fixed before measuring, not committed first)
+
+Desktop, RTX 5080, Parakeet 0.6B v2 on CUDA, bundled (about 150 s) and continuous (120 s) audio, previews off / on / everyone. Shared is judged against "B" (each session its own encoder, same arena setting, same audio and preview setting), and passes a setting only if it passes on both audios:
+
+1. **Where it ran.** Every session on CUDA from ONNX Runtime's placement, and every track and preview reports it borrowed the one encoder.
+2. **Stored words identical.** `stored_sha256` equal to B's for every track.
+3. **The main transcript does not slow.** Per track real decode rtf at most 1.5 times B's, `catch_up_after_end_s` at most B's plus 2 s, no audio dropped, and the longest encoder lock wait of any real decode at most 250 ms.
+4. **Previews stay worth having.** On-screen median of each previewed track at most 3 s, no preview turned off, at most 2 slow pauses per track. For Everyone the mic comparison is B's mic preview, which runs on the CPU (T12.3a).
+5. **Card memory.** The peak above the pre-run baseline (`nvidia-smi` once a second), expected at most 5 GiB with previews on and 5.5 GiB with Everyone. A miss is reported as a miss.
+
+A narrow miss is repeated once and both runs reported, never averaged.
+
+### Method
+
+The scratch build added `backends::SharedCallEncoder` (the first track's model made shareable, the second track and every preview borrowing its encoder through T12.3b's `SharedEncoder`) and `live_lag --share-encoder`, which reported each borrower's placement and its lock waits per encoder call and per decode. Before the measured round the lock wait was corrected to read the clock before the run (see the correction above); the first shared round, which still timed wait plus run, was kept aside and agrees with the re-runs on everything but the waits. One run at a time; `nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -l 1` logged beside each run, its baseline read just before. The raw reports stayed in the scratch worktree.
+
+### Result (measured 2026-11-15)
+
+Card figures are peak minus that run's baseline; private memory is `host.peak_private_gib`. "Wait" is the longest a real decode waited for the encoder lock (the wait alone).
+
+| Setting / audio | Card B -> shared (GiB) | Private B -> shared (GiB) | Words | rtf mic B / shared | rtf ref B / shared | Catch-up B / shared (s) | Wait | On-screen median B / shared (s) | Points 1 2 3 4 5 |
+|---|---|---|---|---|---|---|---|---|---|
+| bundled off | 6.82 -> 4.25 | 10.82 -> 8.12 | equal | .0163 / .0208 (1.28x) | .0118 / .0153 (1.30x) | 0.48 / 0.43 | 1 µs | - | pass pass pass - (4.25) |
+| bundled on, run 1 | 10.18 -> 5.06 | 14.37 -> 8.99 | equal | .0115 / .0198 (**1.72x**) | .0088 / .0223 (**2.53x**) | 0.45 / 0.33 | 1 µs | ref 2.23 / **3.03** | pass pass **fail** **fail** **miss** |
+| bundled on, repeat | 10.19 -> 5.02 | 14.38 -> 8.95 | equal | .0112 / .0121 (1.08x) | .0103 / .0094 (0.91x) | 0.56 / 0.30 | 1 µs | ref 2.13 / 2.25 | pass pass pass pass **miss** (5.02) |
+| bundled everyone | 10.18 -> 5.58 | 16.90 -> 9.53 | equal | .0110 / .0114 (1.04x) | .0093 / .0104 (1.12x) | 0.49 / 0.31 | 1 µs | ref 2.96 / 2.06; mic (B on the CPU) 2.42 / 1.97 | pass pass pass pass **miss** (5.58) |
+| continuous off | 6.28 -> 3.91 | 9.89 -> 7.42 | equal | - | .0148 / .0122 (0.82x) | 0.26 / 0.16 | 1 µs | - | pass pass pass - (3.91) |
+| continuous on | 9.68 -> 4.82 | 13.53 -> 8.46 | equal | - | .0069 / .0072 (1.04x) | 0.32 / 0.15 | 1 µs | ref 1.51 / 1.51 | pass pass pass pass pass |
+| continuous everyone | 9.65 -> 5.03 | 15.91 -> 8.68 | equal | - | .0083 / .0072 (0.87x) | 0.39 / 0.15 | 1 µs | ref 1.56 / 1.46 (the mic is silent) | pass pass pass pass pass |
+
+In every shared run every borrower (`track:Mic`, `track:Reference`, `preview:first` and, under Everyone, `preview:own_voice`) reported borrowing the one encoder, the encoder placed 1515 nodes on CUDA (ONNX Runtime's usual 482 CPU shape nodes aside) and every borrower's prediction network and joint ran on CUDA. No audio dropped, no preview turned off and no slow pause anywhere. Real decodes never waited measurably (at most 1 µs); previews waited at most 7 to 47 ms, behind a real decode.
+
+Runs left out of the table and why:
+
+- **B, continuous everyone, first run:** the host was busy (load up to 25%): the reference rtf was 0.105, ten times usual, and its preview turned off ("the live transcript fell behind"). Run again; the table holds the re-run.
+- **Shared, continuous everyone, first round:** host load median 43% during the run. Replaced by the corrected-wait round anyway.
+- **Bundled on, run 1** stays in the table because the rule says both runs of a repeated pair are reported. Its host-load field read 3% median, yet one reference decode took 1.08 s and everything, the preview included, ran about 2.5 times slower than usual; other lanes were working on the desktop that night, possibly on the card. The cause is not known. The repeat passed points 3 and 4.
+
+**Under the rule:** points 1 to 4 pass on every setting and audio except bundled on's first run (points 3 and 4), whose repeat passes. Point 5 misses on bundled audio by a little (5.02 and 5.06 GiB against 5.0 with previews on, 5.58 against 5.5 with Everyone) and passes on continuous audio. The saving is large either way: with previews on the card holds about 5 GiB instead of 10, and under Everyone the user's own preview moves from the CPU to the card while private memory falls by 7.4 GiB.
+
+**What it led to (the owner, 2026-11-15):** T12.57 (the arena setting for every CUDA session) and T12.58 (one shared encoder for everything that transcribes on CUDA, run by its own thread so no preview thread ever holds it, with a fallback to an own session).
+
 ## Provisional words from a streaming model (T12.23, spike, evaluation only)
 
 Today's previews decode the last 12 s of a stretch again every second with a second copy of the transcription model. A cache-aware streaming model reads each new piece of audio once. This spike measures one: NVIDIA Nemotron Speech Streaming 0.6B English (cache-aware FastConformer RNNT), sherpa-onnx's 560 ms int8 export (manifest set `stream-eval`, 662 MB). The NVIDIA Open Model License is agreed by the owner for evaluation only (2026-11-12): nothing ships, and no shipped crate names the model (`backends_nemotron_preview_load_is_used_by_no_shipped_code`).

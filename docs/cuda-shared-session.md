@@ -17,4 +17,6 @@ Only a hand-written `unsafe` call of the C API's `Run` on the shared session's r
 
 ## Recommendation
 
+Superseded: the whole-meeting measurement (T12.3d, docs/live-previews.md) halved the card's share of a call with previews, so the owner chose to build a shared encoder (T12.58). The original reading follows.
+
 Not worth building yet. T12.3a (the mic preview on the CPU beside CUDA) adds no card memory at all, so the shared session would only save the one far-end preview session (about 3.7 GiB) on CUDA. If that saving is wanted later, the decision measurement is a small probe in earshot-onnx (one encoder on CUDA called from two threads through the wrapper, card memory read with `nvidia-smi`) plus a "real decode waited" timing in `live_lag`, with the bound committed before measuring. Unsafe FFI needs the owner's go-ahead and a reviewer (AGENTS 3.5).
