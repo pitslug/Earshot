@@ -1,0 +1,35 @@
+{
+  "name": "cuda-2",
+  "cuda": true,
+  "exit": 1,
+  "process_cpu_s": 105.8,
+  "wall_s": 28.2,
+  "peak_private_gb": 8.16,
+  "peak_working_set_gb": 3.31,
+  "samples": 126,
+  "sample_errors": 0,
+  "idle_checks": [
+    {
+      "load": 9.0,
+      "builds": 0
+    },
+    {
+      "load": 7.8,
+      "builds": 0
+    },
+    {
+      "load": 6.7,
+      "builds": 0
+    }
+  ],
+  "backend_lines": [
+    "cuda transcription: tried on cuda, chosen",
+    "live asr mic: GPU (CUDA)",
+    "live asr reference: GPU (CUDA)",
+    "live placement Mic: ONNX Runtime placement: requested cuda:0, placed: CPUExecutionProvider=482 CUDAExecutionProvider=1515; requested cuda:0, placed: CUDAExecutionProvider=13; requested cuda:0, placed: CUDAExecutionProvider=10",
+    "live placement Reference: ONNX Runtime placement: requested cuda:0, placed: CPUExecutionProvider=482 CUDAExecutionProvider=1515; requested cuda:0, placed: CUDAExecutionProvider=13; requested cuda:0, placed: CUDAExecutionProvider=10",
+    "post: final pass ran on GPU (CUDA)",
+    "network: POST http://127.0.0.1:9/v1/chat/completions status None (Failed(\"request failed: error sending request\"))",
+    "error: no summary was stored: Failed { message: \"The summary could not be written: Earshot could not reach the summary service. Check the network and the address in Settings, Summaries, then try again.\", retryable: false }"
+  ]
+}

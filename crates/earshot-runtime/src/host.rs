@@ -1605,7 +1605,7 @@ pub fn live_factory(
 /// too small for them, T12.3c), and never costs the meeting anything. With
 /// [`PreviewChoice::Everyone`](crate::preview_settings::PreviewChoice::Everyone) the user's own
 /// track in a call gets a second session of its own, where `backends::second_preview_backend`
-/// says (T9.14; the CPU, also beside CUDA: T12.3a). Each loader's rule is also given as
+/// says (T9.14; with the first on CUDA, T12.60, else the CPU). Each loader's rule is also given as
 /// [`LivePreviews::rule`](crate::live::LivePreviews), so the session knows what the computer
 /// refuses before it tells the user about a wait or the battery (T12.33).
 #[must_use]

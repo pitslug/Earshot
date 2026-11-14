@@ -16,7 +16,7 @@
 //! **Which tracks.** Each track has previews of its own ([`PreviewState`] by track), each with its
 //! own thread and model session: the far end in a call and the mic in the room
 //! ([`LivePreviews::load`]), plus the mic in a call when the user chose it for their own voice
-//! ([`LivePreviews::own_voice`], T9.14; on the CPU even when the track runs on CUDA, T12.3a). A
+//! ([`LivePreviews::own_voice`], T9.14; where `backends::second_preview_backend` says, T12.60). A
 //! track's previews stopping never stops the other's, and each track sends its own [`PreviewReport`]. Without `own_voice` a mic in a call shows nothing:
 //! far-end words leak into it until the echo filter removes them, and that filter works on settled
 //! text (`live_preview_mic_in_a_call_without_own_voice_gets_no_previews`).
@@ -391,8 +391,8 @@ pub struct PreviewReport {
     /// after a pause on battery (T12.37).
     pub load_s: f64,
     /// Where the loaded session runs, as it reports itself (ONNX Runtime's placement for a real
-    /// model; `None`: no session loaded). It can differ from the track's: beside CUDA the user's own
-    /// track runs on the CPU (T12.3a).
+    /// model; `None`: no session loaded). It can differ from the track's: beside a card too small for
+    /// them a CUDA track's previews run on the CPU (T12.3c).
     pub backend: Option<earshot_core::asr::BackendKind>,
     /// Why previews stopped or never ran (`None`: they ran to the end).
     pub off: Option<String>,

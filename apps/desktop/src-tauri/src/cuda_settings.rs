@@ -594,7 +594,7 @@ pub fn decide_summaries(
 
 /// Why a card is not offered transcription (`cuda_switch::TRANSCRIPTION_MIN_CARD_MEMORY`).
 pub const CARD_TOO_SMALL: &str =
-    "your graphics card has less than 12 GB of memory, so transcription runs on the processor";
+    "your graphics card has less than 8 GB of memory, so transcription runs on the processor";
 
 /// Why a developer's `cuda` build never takes the folder for transcription: it runs on its own
 /// toolkit (`earshot_runtime::cuda::use_for_transcription` refuses it with the same words).

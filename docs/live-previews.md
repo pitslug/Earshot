@@ -658,6 +658,123 @@ In every shared run the shared encoder reported its 1515 nodes on CUDA (ONNX Run
 
 **Under the rule:** points 1, 2, 3 and 5 pass everywhere (the card holds 4.75 to 4.89 GiB with previews on or Everyone, against 9.6 to 10.2 GiB with own encoders, inside the expected 5.1 GiB). Point 4 misses on bundled Everyone, narrowly and in both runs: the user's own provisional words, which run on the CPU in both columns (T12.3a, unchanged here), show 3.03 and 3.15 s against 3 s; the own-encoder column misses the same way (3.03 and 3.05 s), as T12.3c's Everyone run did (3.30 s). The far end's previews pass everywhere. Whether to accept that miss, and whether to lower `PREVIEW_MIN_CARD_MEMORY` or move the user's own words to the card now that a preview session costs the card next to nothing, is the owner's.
 
+## Graphics card memory limits after the shared encoder (T12.59)
+
+`TRANSCRIPTION_MIN_CARD_MEMORY` (12 GiB), `PREVIEW_MIN_CARD_MEMORY` (14 GiB) and `PREVIEW_MIN_MEMORY_CUDA` (20 GiB of system memory) rest on numbers from before one encoder was shared (7.8 GiB on the card for a call with previews off, 11.5 GiB with a preview session, 15.4 GiB of private memory). T12.58 measured 4.18 and 4.89 GiB on the card. This task sets the three limits again from a measurement under the rule below, and re-measures the CUDA page's sentence (`cuda_switch::MEASURED_CPU_SAVED`).
+
+### The rule, from PLAN.md, committed here before any run (2026-11-15)
+
+On an idle desktop, bundled and continuous audio, on this task's build. A card's need is the largest peak above the card's baseline over both audios, plus 2.5 GiB (1.5 GiB taken by other programs, the 1.3 measured on the desktop rounded up, and 1 GiB to spare): `TRANSCRIPTION_MIN_CARD_MEMORY` from previews off, `PREVIEW_MIN_CARD_MEMORY` from previews on. The limit is the smallest card size sold (6, 8, 10, 12, 16 GB) at or above that need, less 0.5 GiB, because a card may report just under its nominal size. Expected needs 6.7 and 7.4 GiB, so both limits 7.5 GiB: an 8 GB card runs transcription and previews on the card (the owner, 2026-11-15: the measured peak fits, so the card is not refused by rounding). `PREVIEW_MIN_MEMORY_CUDA` becomes 12 GiB (the CPU's limit) if a call with previews on peaks at no more private memory than the 5.81 GiB the CPU's limit was judged on, else it stays 20. Each card limit is then checked with the holder at that limit: (a) stored words equal to the run without the holder, per track; (b) every session on CUDA, none fallen back; (c) real decode rtf at most 1.5 times the run without the holder, no audio dropped; (d) with previews on, the on-screen median at most 3 s and no preview turned off. A limit whose check fails goes up 1 GiB and is checked again, and both runs are reported. Informational, never deciding: one run with the holder 2 GiB under the transcription limit, reporting what an over-full card does (slower, a fallback, or a failed session). A narrow miss is repeated once and both runs reported.
+
+Not covered (to be said in the result): no card smaller than 16 GB has run this; the holder leaves free memory of the right size, not a smaller card's driver behaviour. A summary on the card while the next meeting records (its own fit rule, `fits_graphics_card`, does not count transcription) is not measured here.
+
+How the terms are read, fixed with the rule:
+
+- **Peak above the card's baseline:** `nvidia-smi --query-gpu=memory.used` once a second beside the run; the baseline is the reading just before the run's process starts, the peak the largest reading while it runs.
+- **Card sizes in GiB:** a card sold as `s` GB is taken as `s` GiB for the size list, as the rule's expected values do (an 8 GB card gives a limit of 7.5 GiB).
+- **The holder at a limit `n`:** `live_lag --hold-card-gib <n>` starts a second process that loads own encoders on the card until `nvidia-smi`'s free memory is at most `n - 1.5` GiB, as close under as it can get, and keeps them until the run ends; the free memory it left is in the report and is what the check is judged on. Previews in a holder run load through the app's rule on this machine, so they go where an `n` GiB card at or above the limit puts them.
+- **The run without the holder:** the same build, setting and audio, from the need runs.
+- **Private memory of a call with previews on:** `host.peak_private_gib` of the previews-on runs, the larger of the two audios.
+- **Idle:** before each run three checks in a row a few seconds apart, no build or test process of this lane, machine load under 15% and the card at its idle use; each run's own host-load field is reported.
+
+The CUDA page's sentence is measured as docs/cuda-install.md did: the app's own exe in its hidden replay mode (`--replay`, a two-track recording of about 6 minutes, as fast as it reads, the summary endpoint's port closed so no summary runs), three runs with transcription on CUDA (`--cuda-transcription`) and three without, process CPU time, wall time, peak private memory and peak working set. If the gain or the cost changed, the page says the new figures.
+
+### Result (measured 2026-11-15, idle desktop, commit b770d21 plus the limits)
+
+Reports, card logs and card summaries: `docs/live-previews/t1259/` (`<run>.json` is live_lag's report, `<run>-card.json` the idle checks, baseline and peak, `<run>-smi.txt` the card once a second). One run at a time; every run passed three idle checks first (machine load 2 to 9%, no build process), and every report's own host-load field reads at most 12%.
+
+**What the card reports.** `earshot_hardware` reads the RTX 5080 (sold as 16 GB) as 16,753,098,752 bytes of dedicated memory, 15.60 GiB; `nvidia-smi` gives 16,303 MiB total (15.92 GiB). So a card does read under its nominal size: 2.5% under here, which the 0.5 GiB margin covers for an 8 GB card (about 7.8 GiB at the same ratio).
+
+**The need runs** (this build, shared encoder, no holder):
+
+| Run | Card peak above baseline (GiB) | Baseline (MiB) | Private peak (GiB) | rtf mic / ref | Catch-up (s) | Far-end on-screen median (s) |
+|---|---|---|---|---|---|---|
+| previews off, bundled | 4.18 | 903 | 8.06 | .0168 / .0117 | 0.39 | - |
+| previews off, continuous | 3.91 | 903 | 7.43 | - / .0125 | 0.13 | - |
+| previews on, bundled | 4.63 | 1166 | 8.81 | .0117 / .0097 | 0.26 | 1.91 |
+| previews on, bundled, again | 4.90 | 905 | 8.81 | .0127 / .0092 | 0.25 | 2.09 |
+| previews on, continuous | 4.75 | 905 | 8.39 | - / .0062 | 0.12 | 1.45 |
+
+The first previews-on bundled run started with 263 MiB more on the card than idle (something else held it for the whole run: its lowest reading equals its baseline), so it was run again; both are shown, and the larger peak (4.90) is the one used.
+
+- `TRANSCRIPTION_MIN_CARD_MEMORY`: need 4.18 + 2.5 = 6.68 GiB, smallest card at or above it 8 GB, limit **7.5 GiB** (was 12).
+- `PREVIEW_MIN_CARD_MEMORY`: need 4.90 + 2.5 = 7.40 GiB, smallest card 8 GB, limit **7.5 GiB** (was 14).
+- `PREVIEW_MIN_MEMORY_CUDA`: a call with previews on peaked at 8.81 GiB of private memory, above 5.81, so it **stays 20 GiB**.
+
+**The checks at 7.5 GiB.** The holder aims at 6.0 GiB free (7.5 less 1.5). Its steps are coarse (0.6B sessions of about 2.6 GiB, 110M sessions of about 0.66 GiB), so it left 5.39 to 5.43 GiB free, 0.57 to 0.61 GiB under the target, a little more than the 0.5 GiB asked: each check is judged on that free memory, a slightly smaller card than the limit.
+
+| Check run | Free left by the holder (GiB) | Words vs no holder | Sessions | rtf mic / ref (vs no holder) | Capture lag (s) | Far-end on-screen median (s) | (a) (b) (c) (d) |
+|---|---|---|---|---|---|---|---|
+| previews off, bundled | 5.43 | equal | both tracks CUDA, 0 warnings | .0127 / .0101 (0.75x / 0.86x) | 0.011 | - | pass pass pass - |
+| previews off, continuous | 5.41 | equal | both tracks CUDA, 0 warnings | - / .0142 (1.13x) | 0.010 | - | pass pass pass - |
+| previews on, bundled | 5.39 | equal | both tracks and the far-end preview CUDA, 0 warnings | .0115 / .0084 (at most 0.99x of either no-holder run) | 0.011 | 2.02 | pass pass pass pass |
+| previews on, continuous | 5.39 | equal | both tracks and the far-end preview CUDA, 0 warnings | - / .0055 (0.89x) | 0.010 | 1.51 | pass pass pass pass |
+
+No preview turned off, no slow pause, no audio dropped, and each shared encoder reported its 1515 nodes on CUDA and never broken. Both limits pass their check at the first try, so neither went up.
+
+**Informational, never deciding: the holder 2 GiB under the transcription limit** (`--hold-card-gib 5.5`, previews off, bundled). The holder left 3.47 GiB free, less than the 4.18 GiB the call peaked at alone. The call still ran: both tracks on CUDA, no fallback, no warning, the same stored words, real decodes somewhat slower (rtf .0156 / .0142 against .0168 / .0117 alone, catch-up 0.41 s), and the card read 15.50 GiB (15,874 MiB) of 15.92 GiB at its peak. So on this driver an over-full card did not fail a session; whether a real 6 GB card would page, slow down more or fail is not shown.
+
+**The CUDA page's sentence.** Three runs each way of the shipped exe's replay (docs/cuda-install.md has every figure): about a third less processor time with CUDA (166.6 to 169.6 s against 105.6 to 105.8 s), and peak private memory 8.16 GB against 5.32 GB, about 3 GB more instead of about 5. `MEASURED_CPU_SAVED` now says 3 GB.
+
+**Not covered.** No card smaller than 16 GB has run this; the holder leaves free memory of the right size, not a smaller card's driver behaviour. A summary on the card while the next meeting records (its own fit rule, `fits_graphics_card`, does not count transcription) is not measured here. The CUDA page's runs used one 6 minute recording; the recording of 2026-11-06 is not named anywhere kept, so the two measurements may be of different recordings.
+
+## Your own provisional words on the card when it has room (T12.60)
+
+Under Everyone the user's own previews have run on the CPU beside CUDA since T12.3a, so that the card held no fourth encoder. Since T12.58 a further CUDA session borrows the one shared encoder and adds only its prediction network and joint. T12.60 runs the second session on CUDA when the track is on CUDA and the first preview session runs there (a card at or above `PREVIEW_MIN_CARD_MEMORY`); below that limit, and on every other backend, nothing changes.
+
+### The rule, from PLAN.md, committed here before any run (2026-11-15)
+
+On an idle desktop, bundled and continuous audio, Everyone, the own previews on the card against the same build with them on the CPU: (1) `stored_sha256` equal per track; (2) each track's real decode rtf at most 1.5 times the CPU column's, catch-up at most 2 s more, no audio dropped, no real decode waiting more than 250 ms for the encoder; (3) the own track's on-screen median at most 3 s and no worse than the CPU column's, the far end's at most 3 s, no preview turned off, at most 2 slow pauses per track; (4) the card's peak above baseline at most 0.5 GiB over Other people only, and `PREVIEW_MIN_CARD_MEMORY` under T12.59's rule unchanged by it (if it would rise, the result goes to the owner before anything ships). A narrow miss is repeated once and both runs reported.
+
+If the rule fails, the code change is reverted, the measurement and tooling stay, and the result goes to the owner, as T12.3c's did.
+
+How the terms are read, fixed with the rule:
+
+- **The CPU column on the same build:** `live_lag --previews everyone --own-voice-cpu` (evaluation only, added with the code): the user's own preview session loads on the CPU exactly as before T12.60 (T12.3a's placement), through a separate named evaluation loader pinned out of shipped code by a scan test; everything else is the app's loaders.
+- **Real decode waiting for the encoder:** the largest wait of the tracks' own threads (`earshot-live-mic`, `earshot-live-reference`) in the shared encoder's wait log (`shared_encoder.wait_s_by_thread`); the preview threads' waits are reported beside it, not judged.
+- **On-screen median:** `mic.on_screen_lag_s.median` for the own track (bundled only: the continuous audio's mic is silent), `reference.on_screen_lag_s.median` for the far end.
+- **Card peak above baseline:** as in T12.59 (`nvidia-smi` once a second, baseline just before the run). "Other people only" is `--previews on` run again on this task's build, same audio.
+- **`PREVIEW_MIN_CARD_MEMORY` unchanged:** T12.59's rule applied to the larger of the card-column Everyone peaks and the Other people only peaks; it is unchanged when that still gives an 8 GB card, 7.5 GiB.
+- **Idle:** as in T12.59; one run at a time.
+
+### Result (measured 2026-11-15, idle desktop, one run per condition)
+
+Reports, card logs and card summaries: `docs/live-previews/t1260/`. Every run passed three idle checks first; every report's host-load field reads at most 4%. The card's baseline was 1111 MiB in all six runs (about 200 MiB of something else held for the whole series), so the peaks compare with each other, not with T12.59's to the last 0.2 GiB.
+
+| Run | Own preview | Words | rtf mic / ref | Catch-up (s) | Largest real-decode wait | Own on-screen median (s) | Far-end on-screen median (s) | Card peak above baseline (GiB) | Private peak (GiB) |
+|---|---|---|---|---|---|---|---|---|---|
+| Everyone, card, bundled | CUDA | equal | .0106 / .0092 | 0.26 | 34 ms | **2.00** | 2.02 | 5.38 | 9.33 |
+| Everyone, CPU, bundled | CPU | equal | .0126 / .0102 | 0.32 | 0.02 ms | 2.96 | 2.06 | 4.89 | 11.36 |
+| Other people only, bundled | - | equal | .0118 / .0095 | 0.25 | 56 ms | - | 1.97 | 4.89 | 8.82 |
+| Everyone, card, continuous | CUDA | equal | - / .0066 | 0.12 | 0.01 ms | - (the mic is silent) | 1.45 | 4.96 | 8.61 |
+| Everyone, CPU, continuous | CPU | equal | - / .0074 | 0.12 | 55 ms | - | 1.52 | 4.75 | 10.80 |
+| Other people only, continuous | - | equal | - / .0069 | 0.11 | 69 ms | - | 1.51 | 4.75 | 8.39 |
+
+Both tracks' sessions on CUDA in every run, the far-end preview on CUDA in every run, the user's own preview session reporting CUDA in the card column and the CPU in the CPU column (`previews[].backend`, `preview_sessions`). No audio dropped (capture lag at most 0.016 s), no preview turned off, no slow pause, no warning.
+
+By point:
+
+1. **Stored words** equal per track between the card and CPU columns on both audios (and equal to Other people only).
+2. **The main transcript:** the card column's rtf is 0.84 to 0.90 times the CPU column's, catch-up no longer, nothing dropped, and the longest a real decode waited for the encoder is 34 ms (bundled reference). **Pass.**
+3. **The previews:** the user's own words on screen at a median of 2.00 s on the card against 2.96 s on the CPU (bundled), the far end's at 2.02 and 1.45 s, nothing turned off, no slow pauses. **Pass**, and it clears T12.58's narrow miss (3.03 and 3.15 s on the CPU then; 2.96 here).
+4. **Card memory:** Everyone on the card peaked 0.49 GiB over Other people only on bundled audio (5.38 against 4.89) and 0.21 GiB on continuous, within 0.5 GiB; **a pass by 0.008 GiB on bundled audio**, close enough that a repeat could land either side (the rule repeats only a miss, so it was not repeated). Under T12.59's rule the largest peak, 5.38 GiB, needs 7.88 GiB, still an 8 GB card, so `PREVIEW_MIN_CARD_MEMORY` stays 7.5 GiB. **Pass.**
+
+**Under the rule the code stays:** with transcription on CUDA and a card at or above `PREVIEW_MIN_CARD_MEMORY`, Everyone runs the user's own previews on the card, borrowing the shared encoder; private memory falls by about 2 GiB against the CPU column (9.33 against 11.36 GiB). Said plainly for the owner: an 8 GB card that reads about 7.8 GiB is now asked for up to 5.38 GiB under Everyone plus the 1.5 GiB the rule leaves for other programs, so it keeps about 0.9 GiB to spare rather than the rule's 1 GiB; the 1 GiB is counted against the nominal 8. As first built, the second session beside CUDA needed `PREVIEW_MIN_MEMORY_CUDA` (20 GiB of system memory), so a 16 GB machine with a card with room lost the user's own previews; the review changed that (After review, below).
+
+### After review (2026-11-15, T12.59 and T12.60)
+
+The lane's review found that the two tasks, as first built, took previews away from machines that had them. Two rule changes, no limit value changed:
+
+- **The first session (T12.59).** With the card limit at 7.5 GiB, a CUDA track beside a card of 7.5 GiB or more ran its previews on CUDA under `PREVIEW_MIN_MEMORY_CUDA` (20 GiB). Under Automatic, a machine with 12 to 20 GiB of memory and an 8 to 14 GB card had had previews on the CPU (T12.3c, on by default) and now had them off by default, although T12.59 was to change nothing else about where previews run. Now a card with room runs them on CUDA only when the user turned them on (Other people only or Everyone) or the machine has at least 20 GiB; otherwise they take the small card's CPU placement exactly (the CPU, `PREVIEW_MIN_MEMORY`, off by default below it or with memory unknown), and the Settings page says they run on the processor because the computer has too little memory for them on the graphics card (a separate note from the small card's).
+- **The second session (T12.60).** Beside a first session on CUDA the user's own session needed 20 GiB, so under Everyone a 16 GB machine lost the user's own previews where it had run them on the CPU at 12 GiB. It now needs `PREVIEW_BOTH_MIN_MEMORY` (12 GiB) on the card as on the CPU: under Everyone the card placement peaked at less private memory than the CPU placement that limit admitted (9.33 against 11.36 GiB on bundled audio, 8.61 against 10.80 GiB on continuous; `t1260/t1260-card-*.json` against `t1260/t1260-cpu-*.json`). It still runs where the first runs.
+
+No measurement was re-run for these: they change the rule's logic only, and in every measured column the sessions land where they landed. The desktop has 61.61 GiB of memory (`Win32_ComputerSystem`), above 20 GiB, and the committed reports show it: with `--previews on` (the automatic choice) the build measured, whose card placement needed 20 GiB, put the first session on CUDA (`preview_refusal.app_first_on` is `Cuda` and `app_first` null in `t1259/t1259-on-bundled-2.json` and `t1260/t1260-on-bundled.json`). Under Everyone the 12 GiB limit is met as the 20 GiB one was.
+
+Not covered:
+
+- Everyone with the user's own previews on the card was never run with the holder at 7.5 GiB. Its peak, 5.38 GiB above the baseline, is just under the 5.39 to 5.43 GiB the holder left free in T12.59's checks, so whether an 8 GB card holds it with room is not shown.
+- Whether `PREVIEW_MIN_MEMORY_CUDA` should drop below 20 GiB, now that the card placement uses less private memory than the CPU placement beside CUDA that 12 GiB admitted. T12.59's committed rule keeps 20; the owner decides.
+
 ## Provisional words from a streaming model (T12.23, spike, evaluation only)
 
 Today's previews decode the last 12 s of a stretch again every second with a second copy of the transcription model. A cache-aware streaming model reads each new piece of audio once. This spike measures one: NVIDIA Nemotron Speech Streaming 0.6B English (cache-aware FastConformer RNNT), sherpa-onnx's 560 ms int8 export (manifest set `stream-eval`, 662 MB). The NVIDIA Open Model License is agreed by the owner for evaluation only (2026-11-12): nothing ships, and no shipped crate names the model (`backends_nemotron_preview_load_is_used_by_no_shipped_code`).

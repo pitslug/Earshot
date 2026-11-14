@@ -1,0 +1,27 @@
+{
+  "name": "t1259-off-bundled",
+  "args": "--backend cuda --audio bundled --previews off",
+  "exit": 0,
+  "started": "2026-11-15T07:39:16",
+  "idle_checks": [
+    {
+      "load": 8.7,
+      "card_mib": 903,
+      "builds": 0
+    },
+    {
+      "load": 7.3,
+      "card_mib": 903,
+      "builds": 0
+    },
+    {
+      "load": 6.9,
+      "card_mib": 903,
+      "builds": 0
+    }
+  ],
+  "baseline_mib": 903,
+  "peak_mib": 5184.0,
+  "peak_above_baseline_gib": 4.181,
+  "readings": 154
+}
