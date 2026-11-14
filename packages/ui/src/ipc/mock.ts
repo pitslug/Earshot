@@ -7,6 +7,7 @@ import { type Timer, realTimer } from "../time";
 import {
   type AppInfo,
   type CaptureMode,
+  type DeleteAsk,
   type Ipc,
   type UpdateEvent,
   type UpdatePhase,
@@ -157,6 +158,15 @@ export const POST_STEPS: PostStep[] = [
 
 /** Time between scripted post-meeting steps (and before the summary). */
 export const POST_STEP_MS = 400;
+
+/** The refusals of a meeting deletion, as `deletion.rs` words them (hand-kept, T12.38). */
+export const MOCK_DELETE_COPY = {
+  recording: "This meeting is still recording. Stop the recording first, then delete the meeting.",
+  finishing:
+    "This meeting is still being finished. Delete it again to stop that work and delete the meeting.",
+  retranscribing: "This meeting is being transcribed again. Delete it when that has finished.",
+  resummarising: "This meeting is being summarised again. Delete it when that has finished.",
+} as const;
 
 const DEFAULT_SUMMARY: SummaryEvent = {
   kind: "Stored",
@@ -328,7 +338,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const details = new Map<string, MeetingDetail>(Object.entries(data.details ?? {}));
   const recovered: RecoveredRecording[] = (data.recovered ?? []).map((r) => ({ ...r }));
   const previous = new Map<string, SummaryView>();
-  const jobs = new Set<string>();
+  const jobs = new Map<string, "Retranscribing" | "Resummarising">();
   const persons: PersonItem[] = (data.persons ?? samplePersons()).map((p) => ({ ...p }));
   let personSeq = 0;
   const call = (...args: unknown[]) => data.onCall?.(args);
@@ -481,7 +491,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   };
 
   // What Cancel does to each meeting past its recording, until its summary event.
-  const finishing = new Map<string, () => void>();
+  // Cancels a meeting's finishing; `now`: as a deletion that waits for it, the cancelled end comes at once.
+  const finishing = new Map<string, (now?: boolean) => void>();
   // A meeting that started while an older one finishes: its transcript starts when that ends.
   let afterOlder: (() => void) | null = null;
   let speakingNow: Record<LiveTrack, boolean> | null = null;
@@ -579,12 +590,19 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     update(meeting, (d) => linked(d, speaker, linkedTo));
     return person.id;
   };
-  const startJob = (meeting: string) => {
+  const deletionAsk = (meeting: string): DeleteAsk => {
+    if (live !== null && live.row.id === meeting) return "Recording";
+    const job = jobs.get(meeting);
+    if (job !== undefined) return job;
+    // Only a meeting this mock is finishing: a sample row's state may be older than its events.
+    return finishing.has(meeting) ? "StopsFinishing" : "Free";
+  };
+  const startJob = (meeting: string, kind: "Retranscribing" | "Resummarising") => {
     detailOf(meeting);
     if (jobs.has(meeting)) {
       fail("busy", "This meeting is already being re-transcribed or re-summarised.", true);
     }
-    jobs.add(meeting);
+    jobs.set(meeting, kind);
   };
 
   const foldersMock = createFoldersMock(meetings, data.folders ?? (data.meetings ? [] : SAMPLE_FOLDERS), {
@@ -718,16 +736,22 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         () => end(data.summary ?? DEFAULT_SUMMARY),
         (POST_STEPS.length + 1) * POST_STEP_MS,
       );
-      finishing.set(row.id, () => {
+      finishing.set(row.id, (now) => {
         for (const c of steps) c();
         last();
-        // A second press has nothing more to stop.
-        finishing.set(row.id, () => {});
+        const result: SummaryEvent = { kind: stored ? "Cancelled" : "PostCancelled" };
+        if (now) {
+          end(result);
+          return;
+        }
         // The model call in progress ends first.
-        timer.setTimeout(
-          () => end({ kind: stored ? "Cancelled" : "PostCancelled" }),
-          POST_STEP_MS,
-        );
+        const pending = timer.setTimeout(() => end(result), POST_STEP_MS);
+        // A second press has nothing more to stop; a deletion waits for the end.
+        finishing.set(row.id, (again) => {
+          if (!again) return;
+          pending();
+          end(result);
+        });
       });
     },
     cancelFinishing: async (meeting) => {
@@ -1126,7 +1150,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     retranscribe: async (meeting) => {
       call("retranscribe", meeting);
-      startJob(meeting);
+      startJob(meeting, "Retranscribing");
       const steps: PostStep[] = POST_STEPS.filter((s) => s.kind !== "Summarising");
       steps.forEach((step, i) => {
         timer.setTimeout(
@@ -1160,7 +1184,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     resummarise: async (meeting) => {
       call("resummarise", meeting);
-      startJob(meeting);
+      startJob(meeting, "Resummarising");
       timer.setTimeout(() => {
         jobs.delete(meeting);
         const d = detailOf(meeting);
@@ -1205,15 +1229,22 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       const folder = target.folder === "" ? "" : `${target.folder}/`;
       return { note_path: `${folder}${title.replace(/[:\\/]/g, " -")}.md` };
     },
-    deleteMeeting: async (meeting) => {
-      call("deleteMeeting", meeting);
+    // T12.38: the rules of `deletion::ask` and `deletion::delete`, with their copy.
+    meetingDeletion: async (meeting) => {
+      call("meetingDeletion", meeting);
+      return deletionAsk(meeting);
+    },
+    deleteMeeting: async (meeting, stopFinishing) => {
+      if (stopFinishing === true) call("deleteMeeting", meeting, true);
+      else call("deleteMeeting", meeting);
       detailOf(meeting);
-      if (jobs.has(meeting) || (live !== null && live.row.id === meeting)) {
-        fail(
-          "meeting_busy",
-          `meeting ${meeting} is being recorded, processed, exported or deleted; try again when it has finished`,
-          true,
-        );
+      const ask = deletionAsk(meeting);
+      if (ask === "Recording") fail("meeting_recording", MOCK_DELETE_COPY.recording);
+      if (ask === "Retranscribing") fail("meeting_job", MOCK_DELETE_COPY.retranscribing, true);
+      if (ask === "Resummarising") fail("meeting_job", MOCK_DELETE_COPY.resummarising, true);
+      if (ask === "StopsFinishing") {
+        if (stopFinishing !== true) fail("meeting_finishing", MOCK_DELETE_COPY.finishing, true);
+        finishing.get(meeting)?.(true);
       }
       const i = meetings.findIndex((m) => m.id === meeting);
       meetings.splice(i, 1);

@@ -210,6 +210,60 @@ fn jobs_resummarise_holds_the_meeting_and_reports_the_summary() {
     svc.delete_meeting(m).unwrap();
 }
 
+/// A meeting driver with no meeting (its pre-flight is never asked).
+fn idle_driver() -> crate::meeting::MeetingDriver {
+    struct NoMeeting;
+    impl crate::meeting::Prepare for NoMeeting {
+        fn prepare(
+            &self,
+            _: &Services,
+            _: &crate::meeting::StartRequest,
+            _: &Arc<earshot_runtime::meeting_queue::QueueTicket>,
+        ) -> Result<crate::meeting::Prepared, IpcError> {
+            unreachable!("no meeting starts here")
+        }
+    }
+    crate::meeting::MeetingDriver::new(
+        Arc::new(NoMeeting),
+        Arc::new(|_| {}),
+        Arc::new(std::time::Instant::now),
+        crate::activity::WorkGate::new(),
+        &crate::cuda_settings::CudaLatch::resolved_off(),
+    )
+}
+
+#[test]
+fn jobs_a_meeting_with_a_job_running_is_not_deleted_and_says_which() {
+    // T12.38: jobs have no cancel, so a deletion is refused with the job named, whether or not
+    // the user agreed to stop the meeting's finishing; once the job ends it goes through.
+    use crate::deletion::{DeleteAsk, ask, delete, job_copy};
+    let dir = TempDir::new("jobs-delete");
+    let svc = services(&dir);
+    let driver = idle_driver();
+    for (job, asked, seed) in [
+        (JobKind::Resummarise, DeleteAsk::Resummarising, 11),
+        (JobKind::Retranscribe, DeleteAsk::Retranscribing, 12),
+    ] {
+        let m = meeting(&svc, seed);
+        let (fake, go) = Fake::new(false);
+        let (jobs, rx) = runner(Arc::clone(&fake));
+        jobs.start(&svc, m, job).unwrap();
+        assert_eq!(ask(&svc, &driver, &jobs, m).unwrap(), asked);
+        for stop in [false, true] {
+            let e = delete(&svc, &driver, &jobs, m, stop, GUARD).unwrap_err();
+            assert_eq!(e.kind, "meeting_job");
+            assert_eq!(e.message, job_copy(job));
+            assert!(e.retryable);
+        }
+        go.send(()).unwrap();
+        let _ = rx.recv_timeout(GUARD).unwrap();
+        jobs.join();
+        assert_eq!(ask(&svc, &driver, &jobs, m).unwrap(), DeleteAsk::Free);
+        delete(&svc, &driver, &jobs, m, false, GUARD).unwrap();
+        assert_eq!(svc.meeting_activity(m).unwrap(), None);
+    }
+}
+
 #[test]
 fn jobs_retranscribe_carries_the_final_pass_warnings_on_its_last_event() {
     let dir = TempDir::new("jobs-re-warn");

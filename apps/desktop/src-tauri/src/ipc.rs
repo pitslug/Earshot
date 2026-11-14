@@ -73,7 +73,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             resummarise,
             undo_summary,
             export_meeting,
-            delete_meeting,
+            crate::deletion::meeting_deletion,
+            crate::deletion::delete_meeting,
             crate::keep_local::allow_summary_writer,
             crate::recovery::recovered_recordings,
             crate::folders::list_folders,
@@ -1023,20 +1024,6 @@ async fn export_meeting(
     let services = state.services()?;
     let meeting = parse_id(&meeting)?;
     blocking(move || detail::export(&services, meeting)).await
-}
-
-/// Deletes `meeting` with its audio, transcript and summaries (`meeting_busy` while a job
-/// holds it).
-#[tauri::command]
-#[specta::specta]
-async fn delete_meeting(state: State<'_, AppState>, meeting: String) -> Result<(), IpcError> {
-    let services = state.services()?;
-    let meeting = parse_id(&meeting)?;
-    blocking(move || {
-        services.delete_meeting(meeting)?;
-        Ok(())
-    })
-    .await
 }
 
 /// This computer's hardware as read (processor, graphics, NPU, memory) and the parts this

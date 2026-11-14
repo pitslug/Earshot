@@ -125,7 +125,7 @@ pub type JobSink = Arc<dyn Fn(JobEvent) + Send + Sync>;
 struct Inner {
     work: Arc<dyn JobWork>,
     sink: JobSink,
-    running: Mutex<BTreeMap<EntityId, JoinHandle<()>>>,
+    running: Mutex<BTreeMap<EntityId, (JobKind, JoinHandle<()>)>>,
     gate: crate::activity::WorkGate,
 }
 
@@ -179,7 +179,7 @@ impl JobRunner {
             .running
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        running.retain(|_, t| !t.is_finished());
+        running.retain(|_, (_, t)| !t.is_finished());
         if running.contains_key(&meeting) {
             return Err(busy());
         }
@@ -207,7 +207,7 @@ impl JobRunner {
                 message: crate::plain_text::INTERNAL.into(),
                 retryable: false,
             })?;
-        running.insert(meeting, thread);
+        running.insert(meeting, (job, thread));
         Ok(())
     }
 
@@ -215,12 +215,20 @@ impl JobRunner {
     #[cfg(test)]
     #[must_use]
     pub fn running(&self, meeting: EntityId) -> bool {
+        self.running_job(meeting).is_some()
+    }
+
+    /// The job of `meeting` that runs, if any (T12.38: a meeting deletion names it). Jobs have no
+    /// cancel, so a deletion is refused while one runs.
+    #[must_use]
+    pub fn running_job(&self, meeting: EntityId) -> Option<JobKind> {
         self.0
             .running
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&meeting)
-            .is_some_and(|t| !t.is_finished())
+            .filter(|(_, t)| !t.is_finished())
+            .map(|(job, _)| *job)
     }
 
     /// Waits for every job.
@@ -234,6 +242,7 @@ impl JobRunner {
                 .unwrap_or_else(PoisonError::into_inner),
         )
         .into_values()
+        .map(|(_, t)| t)
         .collect();
         for t in all {
             let _ = t.join();

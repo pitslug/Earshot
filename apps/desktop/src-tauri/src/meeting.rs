@@ -406,6 +406,19 @@ impl MeetingDriver {
         }
     }
 
+    /// Whether `meeting` is past its recording and its thread has not ended: its final pass or
+    /// summary runs or waits, and [`MeetingDriver::cancel_finishing`] reaches it (T12.38). A
+    /// thread left behind (T9.22) is not the meeting's thread, so its meeting reads false here
+    /// while that thread may still hold the meeting.
+    #[must_use]
+    pub fn is_finishing(&self, meeting: &str) -> bool {
+        self.0
+            .finishing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(meeting)
+    }
+
     /// Where the meetings are.
     #[must_use]
     pub fn phase(&self) -> DriverPhase {

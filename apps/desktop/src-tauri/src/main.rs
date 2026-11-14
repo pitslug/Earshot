@@ -19,6 +19,7 @@ mod credentials;
 mod credentials_win;
 mod cuda_files;
 mod cuda_settings;
+mod deletion;
 mod detail;
 mod first_run;
 #[cfg(windows)]
