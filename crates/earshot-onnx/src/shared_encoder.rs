@@ -1,4 +1,5 @@
-//! One Parakeet TDT encoder session that several models borrow (T12.58).
+//! One Parakeet TDT encoder session that several models borrow (T12.58), and the registry a host
+//! keeps them in ([`Registry`]).
 //!
 //! The session is run only by its own thread (named [`THREAD_NAME`]). A borrower sends owned
 //! inputs and waits for owned outputs, answered in the order asked, so no borrower's thread (a
@@ -8,14 +9,25 @@
 //! thread: on Windows a new thread starts at normal priority whatever the priority of the thread
 //! that created it, so a preview asking first cannot lower it. No `unsafe`.
 //!
-//! **Broken:** a run that fails or panics marks the encoder broken. That call gets the error, and
-//! every later call (queued or new) gets an error at once, never a hang; the session is never run
-//! again. A host that keeps encoders (`earshot_runtime::backends`) replaces a broken one.
+//! **Inputs** are checked on the caller's side ([`EncoderInput::check`]) and a tensor that cannot
+//! be built is that caller's error alone: neither touches the session or breaks the encoder.
 //!
-//! **Life:** the thread holds the session and ends when the last [`SharedEncoder`] handle is
-//! dropped (the job channel closes), after the run in progress; the session, and the graphics
-//! memory it holds, is freed then. A drop never waits for the thread: a borrower dropped mid-run
-//! returns at once and the thread finishes that run alone.
+//! **Broken:** a session run that fails or panics marks the encoder broken. That call gets the
+//! error, and every later call (queued or new) gets an error at once, never a hang; the session is
+//! never run again. A [`Registry`] replaces a broken encoder at the next borrow.
+//!
+//! **Stalled:** a run still going [`STALL_LIMIT`] after it started marks the encoder stalled
+//! (checked by waiting callers and by [`SharedEncoder::is_broken`], so by every registry borrow):
+//! callers waiting behind it get an error instead of waiting for ever (a stuck meeting never
+//! blocks the next, T9.22), and the registry loads a fresh encoder for the next load. The hung run
+//! cannot be stopped without `unsafe`: its thread and session stay until the run returns or the
+//! process ends, so two encoders can sit on the graphics card in that state.
+//!
+//! **Life:** the thread holds the session and ends after the last [`SharedEncoder`] handle is
+//! dropped (the job channel closes): the session, and the graphics memory it holds, is freed on
+//! the encoder thread after any run in progress, not at the drop itself. A file removal or an
+//! immediate reload right after the last borrower lets go can briefly still see the old session. A
+//! drop never waits for the thread.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::panic::AssertUnwindSafe;
@@ -23,10 +35,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant};
 
-use crate::runtime::{OnnxError, SessionBackend};
+use crate::runtime::{OnnxError, SessionBackend, SessionConfig};
 
 /// The encoder thread's name (fixed text: thread names reach crash logs).
 pub const THREAD_NAME: &str = "earshot-shared-encoder";
+
+/// How long one encoder run may take before the encoder counts as stalled. A judgement, not
+/// measured: a run of one 30 s chunk is well under a second on CUDA (T12.3d), and T9.22's per-step
+/// limit for the work after a meeting is 120 s, so a stalled encoder is replaced well inside it.
+pub const STALL_LIMIT: Duration = Duration::from_secs(60);
+
+/// How often a waiting caller looks whether the run it waits behind has stalled. An answer that
+/// comes is taken at once; this only bounds how late a stall is noticed.
+const STALL_POLL: Duration = Duration::from_millis(100);
 
 /// How many calls the wait log keeps; older ones are dropped.
 const KEPT_LOG: usize = 8192;
@@ -41,13 +62,48 @@ pub(crate) struct EncoderInput {
     pub valid: usize,
 }
 
+impl EncoderInput {
+    /// Whether the input has the shape the encoder takes: `n_mels * frames` features, at most
+    /// `frames` valid frames, and a valid count that fits the encoder's `i64` length.
+    ///
+    /// # Errors
+    /// [`OnnxError::Signature`] naming what is wrong.
+    pub(crate) fn check(&self) -> Result<(), OnnxError> {
+        let wrong = |m: String| Err(OnnxError::Signature(format!("encoder input: {m}")));
+        if self.n_mels == 0 || self.features.len() != self.n_mels * self.frames {
+            return wrong(format!(
+                "{} features for {} mels by {} frames",
+                self.features.len(),
+                self.n_mels,
+                self.frames
+            ));
+        }
+        if self.valid > self.frames || i64::try_from(self.valid).is_err() {
+            return wrong(format!("{} valid of {} frames", self.valid, self.frames));
+        }
+        Ok(())
+    }
+}
+
 /// One encoder call's output: `(values [T'][D], T', D)`.
 pub(crate) type EncoderOutput = (Vec<f32>, usize, usize);
 
+/// Why an encoder call failed: its input (that caller's error alone), or the session.
+#[derive(Debug)]
+pub(crate) enum RunError {
+    /// The input tensors could not be built: the session was not run.
+    Input(OnnxError),
+    /// The session's run, or reading its outputs, failed: the encoder is broken.
+    Session(OnnxError),
+}
+
 /// What runs encoder calls on the encoder thread: the session, or a fake in tests.
 pub(crate) trait EncoderRun: Send + 'static {
-    fn run(&mut self, input: EncoderInput) -> Result<EncoderOutput, OnnxError>;
+    fn run(&mut self, input: EncoderInput) -> Result<EncoderOutput, RunError>;
 }
+
+/// Where the encoder reads the time: the real clock, or a fake in tests.
+pub(crate) type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// The answer to one call, and how long it waited from asked to started.
 type Reply = (Result<EncoderOutput, OnnxError>, Duration);
@@ -58,10 +114,49 @@ struct Job {
     reply: mpsc::SyncSender<Reply>,
 }
 
+/// What the encoder thread and every handle share.
+struct State {
+    broken: AtomicBool,
+    stalled: AtomicBool,
+    /// When the run in progress started (`None` between runs).
+    running_since: Mutex<Option<Instant>>,
+    clock: Clock,
+}
+
+impl State {
+    fn now(&self) -> Instant {
+        (self.clock)()
+    }
+
+    /// Whether the encoder may no longer be used: broken, or stalled (checked now, so a run past
+    /// [`STALL_LIMIT`] marks it stalled here).
+    fn unusable(&self) -> bool {
+        if self.broken.load(Ordering::SeqCst) || self.stalled.load(Ordering::SeqCst) {
+            return true;
+        }
+        let since = *self
+            .running_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if since.is_some_and(|t| self.now().saturating_duration_since(t) > STALL_LIMIT) {
+            self.stalled.store(true, Ordering::SeqCst);
+            return true;
+        }
+        false
+    }
+
+    fn set_running(&self, since: Option<Instant>) {
+        *self
+            .running_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = since;
+    }
+}
+
 /// What every handle shares; dropping the last one closes the job channel.
 struct Inner {
     jobs: mpsc::Sender<Job>,
-    broken: Arc<AtomicBool>,
+    state: Arc<State>,
     /// The latest [`KEPT_LOG`] calls: the asking thread's name and its wait ([`SharedEncoder::wait_log`]).
     log: Mutex<VecDeque<(String, Duration)>>,
     backend: SessionBackend,
@@ -101,6 +196,10 @@ fn broken_error() -> OnnxError {
     OnnxError::Runtime("the shared encoder is broken: an earlier run failed".to_owned())
 }
 
+fn stalled_error() -> OnnxError {
+    OnnxError::Runtime("the shared encoder stopped answering: a run did not end".to_owned())
+}
+
 fn gone_error() -> OnnxError {
     OnnxError::Runtime("the shared encoder's thread has ended".to_owned())
 }
@@ -117,17 +216,39 @@ impl SharedEncoder {
         metadata: BTreeMap<String, String>,
         audio_shape: Option<Vec<i64>>,
     ) -> Result<Self, OnnxError> {
+        Self::spawn_with_clock(
+            runner,
+            backend,
+            metadata,
+            audio_shape,
+            Arc::new(Instant::now),
+        )
+    }
+
+    /// [`Self::spawn`] reading the time from `clock`.
+    fn spawn_with_clock(
+        runner: impl EncoderRun,
+        backend: SessionBackend,
+        metadata: BTreeMap<String, String>,
+        audio_shape: Option<Vec<i64>>,
+        clock: Clock,
+    ) -> Result<Self, OnnxError> {
         let (jobs, rx) = mpsc::channel::<Job>();
-        let broken = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&broken);
+        let state = Arc::new(State {
+            broken: AtomicBool::new(false),
+            stalled: AtomicBool::new(false),
+            running_since: Mutex::new(None),
+            clock,
+        });
+        let shared = Arc::clone(&state);
         std::thread::Builder::new()
             .name(THREAD_NAME.to_owned())
-            .spawn(move || serve(runner, &rx, &flag))
+            .spawn(move || serve(runner, &rx, &shared))
             .map_err(|_| OnnxError::Runtime("the shared encoder's thread did not start".into()))?;
         Ok(Self {
             inner: Arc::new(Inner {
                 jobs,
-                broken,
+                state,
                 log: Mutex::new(VecDeque::new()),
                 backend,
                 metadata,
@@ -142,10 +263,12 @@ impl SharedEncoder {
         &self.inner.backend
     }
 
-    /// Whether a run failed or panicked; a broken encoder answers every call with an error.
+    /// Whether the encoder may no longer be used: a run failed or panicked, or the run in progress
+    /// has gone past [`STALL_LIMIT`] (checked now). Such an encoder answers every call with an
+    /// error.
     #[must_use]
     pub fn is_broken(&self) -> bool {
-        self.inner.broken.load(Ordering::SeqCst)
+        self.inner.state.unusable()
     }
 
     /// How many handles exist now (each borrowing model holds one).
@@ -169,15 +292,15 @@ impl SharedEncoder {
     }
 
     /// Runs one call on the encoder thread and waits for it: the output and how long the call
-    /// waited before its run started (zero when it never reached the thread).
+    /// waited before its run started (zero when it never reached the thread). An input of the
+    /// wrong shape is refused here, before the thread sees it.
     pub(crate) fn run(&self, input: EncoderInput) -> Reply {
-        let reply = match self.submit(input) {
-            // The thread answers every job it takes; one that ended without answering dropped
-            // the reply sender, so this never waits on a thread that is gone.
-            Ok(answer) => answer
-                .recv()
-                .unwrap_or_else(|_| (Err(gone_error()), Duration::ZERO)),
-            Err(reply) => reply,
+        let reply = match input.check() {
+            Err(e) => (Err(e), Duration::ZERO),
+            Ok(()) => match self.submit(input) {
+                Ok(answer) => self.wait(&answer),
+                Err(reply) => reply,
+            },
         };
         let name = std::thread::current()
             .name()
@@ -209,21 +332,51 @@ impl SharedEncoder {
             .collect()
     }
 
-    /// Queues one call: where its answer will come, or the answer now (broken, or no thread).
+    /// Queues one call: where its answer will come, or the answer now (unusable, or no thread).
     fn submit(&self, input: EncoderInput) -> Result<mpsc::Receiver<Reply>, Reply> {
-        if self.is_broken() {
-            return Err((Err(broken_error()), Duration::ZERO));
+        if self.inner.state.unusable() {
+            return Err((Err(self.unusable_error()), Duration::ZERO));
         }
         let (reply, answer) = mpsc::sync_channel(1);
         let job = Job {
             input,
-            asked: Instant::now(),
+            asked: self.inner.state.now(),
             reply,
         };
         if self.inner.jobs.send(job).is_err() {
             return Err((Err(gone_error()), Duration::ZERO));
         }
         Ok(answer)
+    }
+
+    /// Waits for a queued call's answer. The thread answers every job it takes, and one that
+    /// ended without answering dropped the reply sender; a run that stalls ends the wait with an
+    /// error. So this never waits for ever on a thread that is gone or stuck.
+    fn wait(&self, answer: &mpsc::Receiver<Reply>) -> Reply {
+        loop {
+            match answer.recv_timeout(STALL_POLL) {
+                Ok(reply) => return reply,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return (Err(gone_error()), Duration::ZERO);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // Marks a run past the limit stalled. A broken encoder still answers this
+                    // job (with an error), so only a stall ends the wait here.
+                    let _ = self.inner.state.unusable();
+                    if self.inner.state.stalled.load(Ordering::SeqCst) {
+                        return (Err(stalled_error()), Duration::ZERO);
+                    }
+                }
+            }
+        }
+    }
+
+    fn unusable_error(&self) -> OnnxError {
+        if self.inner.state.stalled.load(Ordering::SeqCst) {
+            stalled_error()
+        } else {
+            broken_error()
+        }
     }
 }
 
@@ -236,20 +389,28 @@ impl WeakSharedEncoder {
 }
 
 /// The encoder thread: answers jobs in the order they came until every handle is gone.
-fn serve(mut runner: impl EncoderRun, jobs: &mpsc::Receiver<Job>, broken: &AtomicBool) {
+fn serve(mut runner: impl EncoderRun, jobs: &mpsc::Receiver<Job>, state: &State) {
     while let Ok(job) = jobs.recv() {
-        let waited = job.asked.elapsed();
-        let result = if broken.load(Ordering::SeqCst) {
+        let started = state.now();
+        let waited = started.saturating_duration_since(job.asked);
+        let result = if state.broken.load(Ordering::SeqCst) {
             Err(broken_error())
+        } else if state.stalled.load(Ordering::SeqCst) {
+            Err(stalled_error())
         } else {
-            match std::panic::catch_unwind(AssertUnwindSafe(|| runner.run(job.input))) {
+            state.set_running(Some(started));
+            let ran = std::panic::catch_unwind(AssertUnwindSafe(|| runner.run(job.input)));
+            state.set_running(None);
+            match ran {
                 Ok(Ok(out)) => Ok(out),
-                Ok(Err(e)) => {
-                    broken.store(true, Ordering::SeqCst);
+                // The session was not run: that caller's error alone.
+                Ok(Err(RunError::Input(e))) => Err(e),
+                Ok(Err(RunError::Session(e))) => {
+                    state.broken.store(true, Ordering::SeqCst);
                     Err(e)
                 }
                 Err(_) => {
-                    broken.store(true, Ordering::SeqCst);
+                    state.broken.store(true, Ordering::SeqCst);
                     Err(OnnxError::Runtime(
                         "the shared encoder panicked in a run".to_owned(),
                     ))
@@ -261,219 +422,85 @@ fn serve(mut runner: impl EncoderRun, jobs: &mpsc::Receiver<Job>, broken: &Atomi
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::{Placement, Provider};
-    use std::sync::Mutex;
+/// What a [`Registry`] keeps: a handle it can hold weakly and ask whether it may still be used.
+pub trait Borrowable: Clone {
+    /// The weak form of the handle.
+    type Weak: Clone;
+    /// A weak handle that keeps nothing alive.
+    fn downgrade(&self) -> Self::Weak;
+    /// The handle, while any strong one lives.
+    fn upgrade(weak: &Self::Weak) -> Option<Self>;
+    /// Whether it may no longer be used (broken, or stalled).
+    fn is_broken(&self) -> bool;
+}
 
-    fn backend() -> SessionBackend {
-        SessionBackend {
-            requested: Provider::Cpu,
-            placement: Placement::default(),
-        }
+impl Borrowable for SharedEncoder {
+    type Weak = WeakSharedEncoder;
+
+    fn downgrade(&self) -> WeakSharedEncoder {
+        SharedEncoder::downgrade(self)
     }
 
-    fn input(tag: usize) -> EncoderInput {
-        EncoderInput {
-            features: vec![tag as f32],
-            n_mels: 1,
-            frames: 1,
-            valid: 1,
-        }
+    fn upgrade(weak: &WeakSharedEncoder) -> Option<Self> {
+        weak.upgrade()
     }
 
-    /// A fake session: records the order of the calls it ran, fails or panics on a chosen call,
-    /// and says when it is dropped.
-    struct Fake {
-        ran: Arc<Mutex<Vec<usize>>>,
-        fail_on: Option<usize>,
-        panic_on: Option<usize>,
-        hold: Option<mpsc::Receiver<()>>,
-        dropped: Arc<AtomicBool>,
-    }
-
-    impl Fake {
-        fn new() -> (Self, Arc<Mutex<Vec<usize>>>, Arc<AtomicBool>) {
-            let ran = Arc::new(Mutex::new(Vec::new()));
-            let dropped = Arc::new(AtomicBool::new(false));
-            let fake = Fake {
-                ran: Arc::clone(&ran),
-                fail_on: None,
-                panic_on: None,
-                hold: None,
-                dropped: Arc::clone(&dropped),
-            };
-            (fake, ran, dropped)
-        }
-    }
-
-    impl Drop for Fake {
-        fn drop(&mut self) {
-            self.dropped.store(true, Ordering::SeqCst);
-        }
-    }
-
-    impl EncoderRun for Fake {
-        fn run(&mut self, input: EncoderInput) -> Result<EncoderOutput, OnnxError> {
-            if let Some(hold) = &self.hold {
-                let _ = hold.recv_timeout(Duration::from_secs(10));
-            }
-            let tag = input.features[0] as usize;
-            self.ran.lock().unwrap().push(tag);
-            if self.fail_on == Some(tag) {
-                return Err(OnnxError::Runtime("fake run failed".into()));
-            }
-            assert!(self.panic_on != Some(tag), "fake run panicked");
-            Ok((vec![tag as f32], 1, 1))
-        }
-    }
-
-    fn shared(fake: Fake) -> SharedEncoder {
-        SharedEncoder::spawn(fake, backend(), BTreeMap::new(), None).unwrap()
-    }
-
-    /// Runs `f` on its own thread and fails the test if it does not return within 10 s.
-    fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(f());
-        });
-        rx.recv_timeout(Duration::from_secs(10))
-            .expect("a shared encoder call hung")
-    }
-
-    #[test]
-    fn shared_encoder_answers_each_call_with_its_own_output_in_the_order_asked() {
-        let (mut fake, ran, _) = Fake::new();
-        let (release, hold) = mpsc::channel();
-        fake.hold = Some(hold);
-        let enc = shared(fake);
-        // Five borrowers queue calls 1..=5, in that order, while the thread is held.
-        let answers: Vec<_> = (1..=5)
-            .map(|tag| enc.clone().submit(input(tag)).ok().unwrap())
-            .collect();
-        for _ in 1..=5 {
-            release.send(()).unwrap();
-        }
-        let answers = within(move || {
-            answers
-                .into_iter()
-                .map(|a| a.recv().unwrap())
-                .collect::<Vec<_>>()
-        });
-        for (tag, (out, waited)) in (1..=5).zip(answers) {
-            assert_eq!(
-                out.unwrap().0,
-                vec![tag as f32],
-                "each borrower gets its own answer"
-            );
-            assert!(waited <= Duration::from_secs(10));
-        }
-        assert_eq!(*ran.lock().unwrap(), vec![1, 2, 3, 4, 5]);
-        assert!(!enc.is_broken());
-    }
-
-    #[test]
-    fn shared_encoder_after_a_failed_run_answers_every_call_with_an_error() {
-        let (mut fake, ran, _) = Fake::new();
-        fake.fail_on = Some(2);
-        let enc = shared(fake);
-        let e = enc.clone();
-        let results = within(move || {
-            (1..=4)
-                .map(|t| e.run(input(t)).0.is_ok())
-                .collect::<Vec<_>>()
-        });
-        assert_eq!(results, vec![true, false, false, false]);
-        assert!(enc.is_broken());
-        assert_eq!(
-            *ran.lock().unwrap(),
-            vec![1, 2],
-            "a broken encoder never runs again"
-        );
-    }
-
-    #[test]
-    fn shared_encoder_a_panicking_run_reaches_the_caller_and_every_waiter() {
-        let (mut fake, _, _) = Fake::new();
-        fake.panic_on = Some(1);
-        let (release, hold) = mpsc::channel();
-        fake.hold = Some(hold);
-        let enc = shared(fake);
-        // Three calls queued behind the one that will panic.
-        let waiters: Vec<_> = (1..=3)
-            .map(|t| enc.submit(input(t)).ok().unwrap())
-            .collect();
-        for _ in 0..3 {
-            let _ = release.send(());
-        }
-        let errors = within(move || {
-            waiters
-                .into_iter()
-                .map(|a| a.recv().unwrap().0.is_err())
-                .collect::<Vec<_>>()
-        });
-        assert_eq!(errors, vec![true, true, true]);
-        assert!(enc.is_broken());
-        let e = enc.clone();
-        assert!(within(move || e.run(input(9)).0.is_err()));
-    }
-
-    #[test]
-    fn shared_encoder_thread_ends_and_frees_the_session_with_its_last_handle() {
-        let (fake, _, dropped) = Fake::new();
-        let enc = shared(fake);
-        let weak = enc.downgrade();
-        let second = enc.clone();
-        assert_eq!(enc.users(), 2);
-        drop(enc);
-        assert!(weak.upgrade().is_some(), "a borrower still holds it");
-        assert!(!dropped.load(Ordering::SeqCst));
-        drop(second);
-        assert!(weak.upgrade().is_none());
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !dropped.load(Ordering::SeqCst) {
-            assert!(
-                Instant::now() < deadline,
-                "the session outlived its last borrower"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    #[test]
-    fn shared_encoder_thread_is_named_with_fixed_text() {
-        struct Name(Arc<Mutex<Option<String>>>);
-        impl EncoderRun for Name {
-            fn run(&mut self, _: EncoderInput) -> Result<EncoderOutput, OnnxError> {
-                *self.0.lock().unwrap() = std::thread::current().name().map(str::to_owned);
-                Ok((Vec::new(), 0, 0))
-            }
-        }
-        let seen = Arc::new(Mutex::new(None));
-        let enc = SharedEncoder::spawn(Name(Arc::clone(&seen)), backend(), BTreeMap::new(), None)
-            .unwrap();
-        let e = enc.clone();
-        within(move || {
-            std::thread::Builder::new()
-                .name("a-borrower".into())
-                .spawn(move || e.run(input(0)).0.unwrap())
-                .unwrap()
-                .join()
-                .unwrap()
-        });
-        assert_eq!(seen.lock().unwrap().as_deref(), Some(THREAD_NAME));
-        let log = enc.wait_log();
-        assert_eq!(log.len(), 1);
-        assert_eq!(
-            log[0].0, "a-borrower",
-            "the wait is logged under the asking thread"
-        );
-        assert_ne!(
-            std::thread::current().name(),
-            Some(THREAD_NAME),
-            "the call ran on the encoder thread, not the caller's"
-        );
+    fn is_broken(&self) -> bool {
+        SharedEncoder::is_broken(self)
     }
 }
+
+/// Shared encoders by key, held weakly ([`Registry::borrow`]). A host keeps one per process.
+pub struct Registry<K, H: Borrowable> {
+    slots: Mutex<Vec<(K, H::Weak)>>,
+    config: fn() -> SessionConfig,
+}
+
+impl<K: PartialEq + Clone, H: Borrowable> Registry<K, H> {
+    /// An empty registry whose first loads use `config()`.
+    pub const fn new(config: fn() -> SessionConfig) -> Self {
+        Self {
+            slots: Mutex::new(Vec::new()),
+            config,
+        }
+    }
+
+    /// The configuration every first load of this registry uses.
+    #[must_use]
+    pub fn configuration(&self) -> SessionConfig {
+        (self.config)()
+    }
+
+    /// The live, usable encoder of `key`, or one `load`ed now with the registry's fixed
+    /// configuration. Gone, broken and stalled entries are dropped first, so such an encoder is
+    /// replaced. The lock is held across the lookup and the load only, so two first asks give
+    /// one load.
+    ///
+    /// # Errors
+    /// `load`'s error; nothing is kept then.
+    pub fn borrow<E>(
+        &self,
+        key: &K,
+        load: impl FnOnce(&SessionConfig) -> Result<H, E>,
+    ) -> Result<H, E> {
+        let mut slots = self
+            .slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slots.retain(|(_, weak)| H::upgrade(weak).is_some_and(|h| !h.is_broken()));
+        if let Some(h) = slots
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, weak)| H::upgrade(weak))
+        {
+            return Ok(h);
+        }
+        let h = load(&self.configuration())?;
+        slots.push((key.clone(), h.downgrade()));
+        Ok(h)
+    }
+}
+
+#[cfg(test)]
+#[path = "shared_encoder_tests.rs"]
+mod tests;

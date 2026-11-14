@@ -8,12 +8,16 @@
 //! prediction network and joint with the threads it had. The encoder is run only by its own
 //! thread (`earshot_onnx::shared_encoder`).
 //!
-//! The registry holds encoders weakly: an encoder is freed with its last borrower, and a broken
-//! one (a run failed or panicked) leaves the registry so the next load makes a new one. A first
-//! load always uses [`encoder_config`], whoever asks first (never a preview's background
-//! threads). The registry's lock is held across the lookup and the load only, so two first asks
-//! give one load; it is never taken holding the store, a `WorkGate` pass or any other lock, and
-//! the load itself takes none of them.
+//! The registry (`earshot_onnx::shared_encoder::Registry`) holds encoders weakly: an encoder is
+//! freed after its last borrower lets go, and a broken one (a session run failed or panicked) or a
+//! stalled one (a run still going after `earshot_onnx::shared_encoder::STALL_LIMIT`) leaves the
+//! registry so the next load makes a new one; a stalled encoder's hung thread and session stay on
+//! the card beside the new one until its run returns. A first load always uses
+//! [`encoder_config`], whoever asks first (never a preview's background threads). The registry's
+//! lock is held across the lookup and the load only, so two first asks give one load. Its holder
+//! may already hold a `WorkGate` pass (a meeting's loads, the benchmark's), but while holding the
+//! lock it never waits on a pass, the store, `ModelJobs`, `log::LOADS` or the CUDA start's gates:
+//! the load takes none of them.
 //!
 //! Saving memory never costs a meeting: a borrow or load that fails falls back to the model's own
 //! encoder ([`on_shared_encoder`]) and says so once per process ([`take_note`]).
@@ -22,81 +26,15 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use earshot_core::asr::AsrError;
-use earshot_onnx::parakeet::{SharedEncoder, WeakSharedEncoder};
+use earshot_onnx::parakeet::SharedEncoder;
+use earshot_onnx::shared_encoder::Registry;
 use earshot_onnx::{Provider, SessionConfig};
-
-/// What a registry keeps: a handle it can hold weakly and ask whether it is broken.
-pub(crate) trait Borrowable: Clone {
-    type Weak: Clone;
-    fn downgrade(&self) -> Self::Weak;
-    fn upgrade(weak: &Self::Weak) -> Option<Self>;
-    fn is_broken(&self) -> bool;
-}
-
-impl Borrowable for SharedEncoder {
-    type Weak = WeakSharedEncoder;
-
-    fn downgrade(&self) -> WeakSharedEncoder {
-        SharedEncoder::downgrade(self)
-    }
-
-    fn upgrade(weak: &WeakSharedEncoder) -> Option<Self> {
-        weak.upgrade()
-    }
-
-    fn is_broken(&self) -> bool {
-        SharedEncoder::is_broken(self)
-    }
-}
 
 /// Which encoder: one per model and models folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EncoderKey {
     pub models: PathBuf,
     pub model: &'static str,
-}
-
-/// Encoders by key, held weakly ([`Registry::borrow`]).
-pub(crate) struct Registry<H: Borrowable> {
-    slots: Mutex<Vec<(EncoderKey, H::Weak)>>,
-    config: fn() -> SessionConfig,
-}
-
-impl<H: Borrowable> Registry<H> {
-    /// An empty registry whose first loads use `config()`.
-    pub(crate) const fn new(config: fn() -> SessionConfig) -> Self {
-        Self {
-            slots: Mutex::new(Vec::new()),
-            config,
-        }
-    }
-
-    /// The live, unbroken encoder of `key`, or one `load`ed now with the registry's fixed
-    /// configuration. Gone and broken entries are dropped first, so a broken encoder is replaced.
-    ///
-    /// # Errors
-    /// `load`'s error; nothing is kept then.
-    pub(crate) fn borrow<E>(
-        &self,
-        key: &EncoderKey,
-        load: impl FnOnce(&SessionConfig) -> Result<H, E>,
-    ) -> Result<H, E> {
-        let mut slots = self
-            .slots
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        slots.retain(|(_, weak)| H::upgrade(weak).is_some_and(|h| !h.is_broken()));
-        if let Some(h) = slots
-            .iter()
-            .find(|(k, _)| k == key)
-            .and_then(|(_, weak)| H::upgrade(weak))
-        {
-            return Ok(h);
-        }
-        let h = load(&(self.config)())?;
-        slots.push((key.clone(), h.downgrade()));
-        Ok(h)
-    }
 }
 
 /// The one configuration every shared encoder is loaded with: CUDA, normal (never background)
@@ -115,11 +53,14 @@ pub(crate) fn encoder_config() -> SessionConfig {
 }
 
 /// The process's shared CUDA encoders.
-pub(crate) static ENCODERS: Registry<SharedEncoder> = Registry::new(encoder_config);
+pub(crate) static ENCODERS: Registry<EncoderKey, SharedEncoder> = Registry::new(encoder_config);
 
-/// What the user is told, once per process, when a load could not share the encoder.
+/// What the user is told, once per process, when a load could not share the encoder. Past tense
+/// with no claim about the present: it can be shown at a later meeting than the fallback (a preview
+/// or final pass that fell back shows at the next track load).
 pub const NOTE: &str = "Earshot could not share one copy of the speech model on the graphics \
-                        card, so it loaded a copy of its own and uses more graphics memory for now.";
+                        card this time, so it loaded a copy of its own, which used more graphics \
+                        memory.";
 
 /// Whether a note waits to be shown, and whether one was.
 static NOTE_STATE: Mutex<(bool, bool)> = Mutex::new((false, false));
@@ -180,144 +121,7 @@ fn on_shared_encoder_with<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::{Arc, Weak};
-
-    /// A fake encoder: an id, a broken flag and the configuration it was loaded with.
-    #[derive(Clone)]
-    struct Fake(Arc<(usize, AtomicBool, SessionConfig)>);
-
-    impl Borrowable for Fake {
-        type Weak = Weak<(usize, AtomicBool, SessionConfig)>;
-        fn downgrade(&self) -> Self::Weak {
-            Arc::downgrade(&self.0)
-        }
-        fn upgrade(weak: &Self::Weak) -> Option<Self> {
-            weak.upgrade().map(Fake)
-        }
-        fn is_broken(&self) -> bool {
-            self.0.1.load(Ordering::SeqCst)
-        }
-    }
-
-    fn fixed() -> SessionConfig {
-        SessionConfig {
-            provider: Provider::Cpu,
-            intra_threads: Some(7),
-            background: None,
-        }
-    }
-
-    fn key(model: &'static str) -> EncoderKey {
-        EncoderKey {
-            models: PathBuf::from("models"),
-            model,
-        }
-    }
-
-    /// A loader that counts its loads and numbers the encoders it makes.
-    fn counting(loads: &AtomicUsize) -> impl FnOnce(&SessionConfig) -> Result<Fake, String> + '_ {
-        move |config| {
-            let n = loads.fetch_add(1, Ordering::SeqCst);
-            Ok(Fake(Arc::new((n, AtomicBool::new(false), config.clone()))))
-        }
-    }
-
-    #[test]
-    fn shared_encoders_two_asks_give_one_load_with_the_fixed_configuration() {
-        let registry: Registry<Fake> = Registry::new(fixed);
-        let loads = AtomicUsize::new(0);
-        let a = registry.borrow(&key("m"), counting(&loads)).unwrap();
-        let b = registry.borrow(&key("m"), counting(&loads)).unwrap();
-        assert_eq!(loads.load(Ordering::SeqCst), 1);
-        assert!(Arc::ptr_eq(&a.0, &b.0));
-        assert_eq!(a.0.2, fixed(), "loaded with the registry's configuration");
-        // Another model, or the same model in another folder, is another encoder.
-        let other = registry.borrow(&key("n"), counting(&loads)).unwrap();
-        assert_eq!(other.0.0, 1);
-        let elsewhere = registry
-            .borrow(
-                &EncoderKey {
-                    models: PathBuf::from("other"),
-                    model: "m",
-                },
-                counting(&loads),
-            )
-            .unwrap();
-        assert_eq!(elsewhere.0.0, 2);
-    }
-
-    #[test]
-    fn shared_encoders_two_first_asks_at_once_give_one_load() {
-        let registry: Arc<Registry<Fake>> = Arc::new(Registry::new(fixed));
-        let loads = Arc::new(AtomicUsize::new(0));
-        let handles: Vec<_> = (0..8)
-            .map(|_| {
-                let (registry, loads) = (Arc::clone(&registry), Arc::clone(&loads));
-                std::thread::spawn(move || {
-                    registry
-                        .borrow(&key("m"), |config| {
-                            std::thread::sleep(std::time::Duration::from_millis(20));
-                            counting(&loads)(config)
-                        })
-                        .unwrap()
-                })
-            })
-            .collect();
-        let got: Vec<Fake> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        assert_eq!(loads.load(Ordering::SeqCst), 1);
-        assert!(got.iter().all(|f| Arc::ptr_eq(&f.0, &got[0].0)));
-    }
-
-    #[test]
-    fn shared_encoders_an_encoder_is_freed_with_its_last_borrower() {
-        let registry: Registry<Fake> = Registry::new(fixed);
-        let loads = AtomicUsize::new(0);
-        let a = registry.borrow(&key("m"), counting(&loads)).unwrap();
-        let weak = Arc::downgrade(&a.0);
-        drop(a);
-        assert!(weak.upgrade().is_none(), "the registry holds it weakly");
-        let b = registry.borrow(&key("m"), counting(&loads)).unwrap();
-        assert_eq!(
-            (loads.load(Ordering::SeqCst), b.0.0),
-            (2, 1),
-            "loaded again"
-        );
-    }
-
-    /// A broken encoder (a run failed mid-meeting) leaves the registry: its borrowers keep their
-    /// errors, and the next load (a final pass) gets a fresh encoder.
-    #[test]
-    fn shared_encoders_a_broken_encoder_is_replaced_for_the_next_load() {
-        let registry: Registry<Fake> = Registry::new(fixed);
-        let loads = AtomicUsize::new(0);
-        let track = registry.borrow(&key("m"), counting(&loads)).unwrap();
-        let preview = registry.borrow(&key("m"), counting(&loads)).unwrap();
-        track.0.1.store(true, Ordering::SeqCst);
-        assert!(preview.is_broken(), "every borrower of it sees it broken");
-        let final_pass = registry.borrow(&key("m"), counting(&loads)).unwrap();
-        assert_eq!(loads.load(Ordering::SeqCst), 2);
-        assert!(!final_pass.is_broken());
-        assert!(!Arc::ptr_eq(&final_pass.0, &track.0));
-        let again = registry.borrow(&key("m"), counting(&loads)).unwrap();
-        assert!(
-            Arc::ptr_eq(&again.0, &final_pass.0),
-            "the fresh one is shared"
-        );
-    }
-
-    #[test]
-    fn shared_encoders_a_failed_load_keeps_nothing() {
-        let registry: Registry<Fake> = Registry::new(fixed);
-        let loads = AtomicUsize::new(0);
-        assert!(
-            registry
-                .borrow(&key("m"), |_| Err::<Fake, _>("no card".to_owned()))
-                .is_err()
-        );
-        let a = registry.borrow(&key("m"), counting(&loads)).unwrap();
-        assert_eq!((loads.load(Ordering::SeqCst), a.0.0), (1, 0));
-    }
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn shared_encoders_a_failed_borrow_falls_back_to_an_own_load_and_says_so() {
@@ -342,6 +146,16 @@ mod tests {
             || panic!("no note when nothing loaded"),
         );
         assert!(matches!(got, Err(AsrError::Backend(m)) if m == "own failed"));
+    }
+
+    /// Review finding 1: the note can be taken at a later meeting than the fallback, so it says
+    /// what happened and claims nothing about now.
+    #[test]
+    fn shared_encoders_the_note_speaks_of_the_past_only() {
+        assert!(NOTE.contains("this time") && NOTE.contains("used more"));
+        for present in ["for now", "uses more", " now", "is using", "currently"] {
+            assert!(!NOTE.contains(present), "{present:?} in {NOTE:?}");
+        }
     }
 
     #[test]
@@ -375,9 +189,10 @@ mod tests {
                 .get()
             )
         );
-        assert!(std::ptr::fn_addr_eq(
-            ENCODERS.config,
-            encoder_config as fn() -> SessionConfig
-        ));
+        assert_eq!(
+            ENCODERS.configuration(),
+            config,
+            "the registry loads with it"
+        );
     }
 }

@@ -32,7 +32,7 @@ use ort::value::Tensor;
 
 use crate::nemo_mel::NemoMel;
 use crate::runtime::{OnnxError, OnnxSession, SessionBackend, SessionConfig, runtime_err};
-use crate::shared_encoder::{EncoderInput, EncoderOutput, EncoderRun};
+use crate::shared_encoder::{EncoderInput, EncoderOutput, EncoderRun, RunError};
 pub use crate::shared_encoder::{SharedEncoder, WeakSharedEncoder};
 
 /// Encoder frame (FastConformer 8x subsampling of 10 ms frames).
@@ -396,7 +396,7 @@ pub struct ParakeetTdt {
     encoder_waits: VecDeque<Duration>,
 }
 
-/// An encoder's custom metadata and udio_signal shape.
+/// An encoder's custom metadata and `audio_signal` shape.
 type EncoderDescription = (BTreeMap<String, String>, Option<Vec<i64>>);
 
 /// The encoder session of a [`ParakeetTdt`]: its own, or one it borrows ([`SharedEncoder`]).
@@ -426,7 +426,10 @@ impl Encoder {
     /// One encoder call, and for a shared encoder how long it waited for the encoder thread.
     fn run(&mut self, input: EncoderInput) -> (Result<EncoderOutput, OnnxError>, Option<Duration>) {
         match self {
-            Self::Own(s) => (run_encoder(s, input), None),
+            Self::Own(s) => (
+                run_encoder(s, input).map_err(|(RunError::Input(e) | RunError::Session(e))| e),
+                None,
+            ),
             Self::Shared(s) => {
                 let (result, waited) = s.run(input);
                 (result, Some(waited))
@@ -450,7 +453,7 @@ fn describe_encoder(encoder: &OnnxSession) -> Result<EncoderDescription, OnnxErr
 }
 
 impl EncoderRun for OnnxSession {
-    fn run(&mut self, input: EncoderInput) -> Result<EncoderOutput, OnnxError> {
+    fn run(&mut self, input: EncoderInput) -> Result<EncoderOutput, RunError> {
         run_encoder(self, input)
     }
 }
@@ -721,29 +724,34 @@ impl ParakeetTdt {
     }
 }
 
-/// One encoder call on `encoder`: `(values [T'][D], T', D)`.
-fn run_encoder(encoder: &mut OnnxSession, input: EncoderInput) -> Result<EncoderOutput, OnnxError> {
+/// One encoder call on `encoder`: `(values [T'][D], T', D)`. Building the input tensors is the
+/// input's failure ([`RunError::Input`]); the session's run and reading its outputs are the
+/// session's ([`RunError::Session`]).
+fn run_encoder(encoder: &mut OnnxSession, input: EncoderInput) -> Result<EncoderOutput, RunError> {
     let audio = Tensor::from_array(([1usize, input.n_mels, input.frames], input.features))
-        .map_err(runtime_err)?;
+        .map_err(|e| RunError::Input(runtime_err(e)))?;
     let length = Tensor::from_array(([1usize], vec![i64::try_from(input.valid).unwrap_or(0)]))
-        .map_err(runtime_err)?;
+        .map_err(|e| RunError::Input(runtime_err(e)))?;
+    let session = |e: ort::Error| RunError::Session(runtime_err(e));
     let outputs = encoder
         .session
         .run(ort::inputs!["audio_signal" => audio, "length" => length])
-        .map_err(runtime_err)?;
+        .map_err(session)?;
     let (shape, values) = outputs["outputs"]
         .try_extract_tensor::<f32>()
-        .map_err(runtime_err)?;
+        .map_err(session)?;
     let dims: Vec<usize> = shape
         .iter()
         .map(|d| usize::try_from(*d).unwrap_or(0))
         .collect();
     let [1, d, t] = dims[..] else {
-        return Err(OnnxError::Signature(format!("TDT encoder output {dims:?}")));
+        return Err(RunError::Session(OnnxError::Signature(format!(
+            "TDT encoder output {dims:?}"
+        ))));
     };
     let (_, lens) = outputs["encoded_lengths"]
         .try_extract_tensor::<i64>()
-        .map_err(runtime_err)?;
+        .map_err(session)?;
     let valid_t = lens
         .first()
         .map_or(t, |v| usize::try_from(*v).unwrap_or(0).min(t));

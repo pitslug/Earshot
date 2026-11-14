@@ -1249,12 +1249,14 @@ pub fn load_parakeet(
 /// them on anyway (`preview_settings`).
 pub const PREVIEW_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 
-/// The same on CUDA, where sessions do not share their weights and a meeting reaches 15.4 GiB.
+/// The same on CUDA, where sessions did not share their weights and a meeting reached 15.4 GiB
+/// (measured before T12.58, when each session held its own encoder; the value is unchanged).
 pub const PREVIEW_MIN_MEMORY_CUDA: u64 = 20 * 1024 * 1024 * 1024;
 
 /// A graphics card with less dedicated memory than this (or of unknown memory) runs no preview
-/// session on CUDA: a third session took a meeting's use of the card from 7.8 to 11.5 GiB (measured,
-/// docs/live-previews.md). A judgement: the 11.5 and room for the rest of the desktop. Below it a
+/// session on CUDA: a third session took a meeting's use of the card from 7.8 to 11.5 GiB (measured
+/// before T12.58, when each session held its own encoder, docs/live-previews.md; the value is
+/// unchanged). A judgement: the 11.5 and room for the rest of the desktop. Below it a
 /// CUDA track's previews run on the CPU instead (T12.3c, [`preview_backend`]).
 pub const PREVIEW_MIN_CARD_MEMORY: u64 = 14 * 1024 * 1024 * 1024;
 

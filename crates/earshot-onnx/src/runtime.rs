@@ -1042,6 +1042,34 @@ mod tests {
         );
     }
 
+    /// Review finding 4: `Provider::dispatch` is `cfg(feature = "cuda")`, so a source check pins
+    /// that it builds the CUDA provider only from [`cuda_provider_options`] and sets nothing else.
+    #[test]
+    fn runtime_cuda_provider_is_built_only_from_its_options() {
+        let src = include_str!("runtime.rs");
+        let code = &src[..src
+            .find("#[cfg(test)]\nmod tests")
+            .expect("the tests module")];
+        let start = code
+            .find("Provider::Cuda { device_id } => Some(")
+            .expect("the CUDA arm of Provider::dispatch");
+        let arm = &code[start..start + code[start..].find("}),").expect("the arm's end")];
+        assert!(arm.contains("cuda_provider_options(device_id)"), "{arm}");
+        assert!(arm.contains("with_arbitrary_config(key, value)"), "{arm}");
+        // The one CUDA provider of the crate, with no typed option beside the list.
+        assert_eq!(code.matches("ort::ep::CUDA::default()").count(), 1);
+        for setter in [
+            "with_device_id(",
+            "with_arena_extend_strategy(",
+            "with_conv_algorithm_search(",
+        ] {
+            assert!(
+                !code.contains(setter),
+                "{setter} outside cuda_provider_options"
+            );
+        }
+    }
+
     #[test]
     fn onnx_init_after_a_broken_slot_never_says_another_library_is_loaded() {
         let (first, second) = (Path::new("first.dll"), Path::new("second.dll"));

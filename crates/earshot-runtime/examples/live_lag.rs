@@ -1717,10 +1717,10 @@ fn main() {
     let evidence = Arc::new(Mutex::new(Vec::new()));
     // T12.58: the shared encoder every CUDA session borrows, held for the report (loaded here, as
     // the first track's load would load it).
-    let held = (args.backend == BackendKind::Cuda && !args.own_encoders).then(|| {
-        earshot_runtime::backends::hold_shared_encoder_for_evaluation(&models, model)
-            .unwrap_or_else(|e| fail(format!("shared encoder: {e}")))
-    });
+    // A model with no shared encoder (not a Parakeet TDT model) still runs, reported as such.
+    let held = (args.backend == BackendKind::Cuda && !args.own_encoders)
+        .then(|| earshot_runtime::backends::hold_shared_encoder_for_evaluation(&models, model).ok())
+        .flatten();
     let factory = timed(
         host::live_factory(&models, model, &order, clock, args.speakers),
         logs.clone(),
@@ -1977,7 +1977,10 @@ fn main() {
         "stopped_with": format!("{:?}", outcome.reason),
         "capture_max_lag_s": state.max_lag().as_secs_f64(),
         "own_encoders": args.own_encoders,
-        "shared_encoder": held.as_ref().map(|e| shared_encoder_report(e, users_at_finish)),
+        "shared_encoder": held.as_ref().map_or_else(
+            || json!("no shared encoder"),
+            |e| shared_encoder_report(e, users_at_finish),
+        ),
         "catch_up_after_end_s": catch_up,
         "previews": preview_reports,
         "preview_refusal": refusal,
