@@ -1,6 +1,6 @@
 # Sync design (T11.1, for GATE-08)
 
-Status: proposed. Nothing here is built. GATE-08 approves or changes it.
+Status: approved at GATE-08 (the owner, 2026-11-14), as written. Nothing here is built yet. PLAN D25 records the decision.
 
 Decisions already taken by the owner (2026-11-14):
 
@@ -244,9 +244,9 @@ Open, and measured before the worker is promised: `earshot-store` and the summar
 - Offload: fake presence and a fake clock; claim window, stale target, withdrawn then finished, declined.
 - Server: `cargo test -p earshot-sync-server`; limits, token checks, slot expiry and single use.
 
-## 13. What GATE-08 approves
+## 13. What GATE-08 approved
 
-Changes outside this document that need the owner's agreement (AGENTS 6.2). None is made until the gate passes.
+Changes outside this document that needed the owner's agreement (AGENTS 6.2). All ten were approved on 2026-11-14 and the PLAN edits were made in the gate's commit. Item 5 was approved with both options open; the one taken is its own check (the server crate is left out of the shipped check and may hold `hyper` only as axum's server).
 
 1. PLAN 3.9 item 2: conversation content may also leave the device as ciphertext to the sync server the user configured, readable only by devices holding the vault key.
 2. PLAN 3.9 item 3: "(future) the configured sync server" becomes current.

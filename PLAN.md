@@ -25,9 +25,10 @@ This file is the single source of truth for **what** to build and **in what orde
 - Obsidian export to a vault folder on the device.
 
 ### Future - Sync container
-- Optional self-hosted Docker container that syncs transcripts, notes, summaries and speaker metadata across devices.
+- Optional self-hosted Docker container that syncs transcripts, notes, summaries, speaker metadata and folders across devices, end-to-end encrypted (D25, docs/sync.md).
 - **Never stores or transports audio.**
-- Voiceprints are local-only until this exists; once it is running, voiceprint sync becomes an opt-in setting.
+- Voiceprints are local-only until this exists; once it is running, voiceprint sync becomes an opt-in setting. The Dictionary syncs by its own switch, on by default.
+- Devices show whether each other is online, and one can hand a summary to another that is; a later worker container lets the server write summaries too, on a graphics card or the processor.
 
 ### Later (features list)
 - Notes during and after a meeting, including handwriting (pen on the Surface) converted to text on the device (GATE-11).
@@ -199,9 +200,9 @@ Crash safety: the `AudioFile` row is written only after its FLAC file is finalis
 
 ### 3.9 Privacy invariants (tested where possible)
 1. Audio never leaves the device: no network code path accepts audio types.
-2. No telemetry from Earshot, no crash upload. Logs are local. Conversation content (audio, transcripts, summaries, speaker and meeting names, prompts) never leaves the device except text to the configured LLM endpoint the user chose. System-information telemetry that third-party runtimes offer to the operating system's diagnostic channel (runtime version, CPU, memory, driver names and versions; measured for ONNX Runtime and the D3D12 loader) is accepted; any such event that could carry content is not.
-3. Network access only for: model/fixture downloads (checksum-verified), the configured LLM endpoint, the update host when the user checks for updates or has turned automatic checks on (D24; signature-verified, carries no conversation content), and (future) the configured sync server.
-4. Voiceprints are biometric data: local-only until sync exists, then opt-in, deletable per person.
+2. No telemetry from Earshot, no crash upload. Logs are local. Conversation content (audio, transcripts, summaries, speaker and meeting names, prompts) never leaves the device except text to the configured LLM endpoint the user chose and, when the user sets up sync, the synced rows as ciphertext to the sync server they configured, readable only by devices holding the vault key (D25; a paired summary worker is such a device). System-information telemetry that third-party runtimes offer to the operating system's diagnostic channel (runtime version, CPU, memory, driver names and versions; measured for ONNX Runtime and the D3D12 loader) is accepted; any such event that could carry content is not.
+3. Network access only for: model/fixture downloads (checksum-verified), the configured LLM endpoint, the update host when the user checks for updates or has turned automatic checks on (D24; signature-verified, carries no conversation content), and the sync server the user configured (D25; ciphertext, row clocks and presence only).
+4. Voiceprints are biometric data: local-only unless the user turns voiceprint sync on (off by default, then ciphertext like any synced row), deletable per person on every device that syncs them.
 
 Enforcement: all HTTP goes through `earshot-net` (host allowlist + audit log); the ci `net` step (`xtask/src/net_guard.rs`) fails if any HTTP client crate appears in a shipped crate's dependency tree outside `earshot-net` (on every target; app crates such as `earshot-desktop` on the targets they ship to, `net_guard::SHIPPED_TARGETS`), or a test-support crate appears as a normal dependency (xtask, a dev tool, is exempt); the Tauri CSP limits `connect-src` to IPC and self; `e2e.replay` asserts from the audit log that nothing went anywhere except the mock endpoint. One exception, chosen by the owner: the opt-in summary providers that run the user's own installed agent CLI on its own sign-in, "Claude through Claude Code" (T7.4ga, Anthropic, Claude.ai sign-in) and OpenAI Codex (T7.4gc, OpenAI, ChatGPT sign-in), hand the summary prompt text to that CLI, which connects to its vendor itself; Earshot cannot audit that request, so it records locally that it handed text to the CLI (when, how many characters, never the text), and each provider is off unless the user picks it.
 
@@ -282,7 +283,7 @@ WER is computed after Whisper-style English text normalisation. DER uses a 0.25 
 | exp.idempotent | M5 | re-export is byte-identical and preserves user edits | pass |
 | e2e.replay | M6 | replayed two-track meeting -> valid summary + export, all invariants | pass |
 | asr.wer_ami_sdm | M10 | AMI SDM, in-person pipeline, small.en q5 CPU | <= 40% (provisional) |
-| sync.no_audio | M11 | no audio types/bytes in any sync payload or server table | pass |
+| sync.no_audio | M11 | no audio types/bytes in any sync plaintext; no server row over the size limit | pass |
 | sync.convergence | M11 | two clients converge after concurrent edits | pass |
 
 Hardware-measured numbers (live latency, RTF per backend, battery, real-world ERLE from GATE-10 recordings) are recorded at gates or reported as informational, not enforced headlessly.
@@ -338,6 +339,7 @@ A gate is a hard stop that waits for the human. The protocol (how gates are open
 | D22 | Tests use only the default models | Defaults are the English ladders in `models/manifest.toml` (CUDA and CPU: Parakeet TDT 0.6B v2 -> 110M -> base.en; QNN: 0.6B v2; Vulkan: small.en -> base.en) and the `summary` models. Any other model (large-v3-turbo, Parakeet v3, small.en off Vulkan) stays a user choice in the app, offered as recommended for the hardware, and is never tested, measured by a threshold or fetched for ci. Evaluation tools that choose the defaults (`model-eval`, `sum-eval`) stay, outside ci and every `accept`. |
 | D23 | One install per architecture; Vulkan by default on x64, CUDA as an opt-in download | One x64 install and one ARM64 install, never a separate CUDA install and no choice of version at install time. On x64 summaries run on a discrete GPU through llama.cpp on Vulkan, with nothing to download from NVIDIA; transcription runs on what the model check keeps (Parakeet on the CPU, 0.03 of real time on 4 threads). The owner accepted Vulkan's measured cost (T8.4c: about 1.2 times CUDA's time, 91.8 to 93.9 s per hour of meeting, past that task's 90 s rule). On a machine with a suitable NVIDIA GPU, Settings offers a switch to CUDA: an in-app download through the checksum-pinned downloader, showing the size, from NVIDIA's own server (`developer.download.nvidia.com`); before a public release NVIDIA is asked in writing whether end users may fetch these files (`docs/cuda-libraries.md`). A machine without such a GPU never sees the offer. Replaces the earlier forms: libraries inside every install, then the CUDA build as the default. |
 | D24 | In-app update, checked only when the user allows it | The app can update itself from one host the owner owns, through `earshot-net` (allowlist and audit log), never through Tauri's updater plugin. A "Check for updates" button in Settings; automatic checks are a device-local setting, off by default. A check sends no conversation content; the host sees the machine's IP address and the version asked for. A release is verified against a public key built into the app, not only by checksum. An update never installs during a meeting or a meeting job, and asks before restarting. Built in T9.1b. |
+| D25 | Sync is an end-to-end encrypted relay; summaries can be handed to another device | GATE-08 (the owner, 2026-11-14), docs/sync.md. A self-hosted container stores only ciphertext, row clocks and last-seen times; devices share one vault key by a pairing code and merge on the client (whole-row last writer wins). Audio never syncs. The Dictionary syncs by default once sync is on, voiceprints only when switched on. A device can hand a summary to another device that is online and writes it itself when that device is not. The server may also summarise, through a separate paired worker container that holds the key; the relay never does. |
 
 ## 7. Open questions (agents ask the owner when they reach one)
 
@@ -358,7 +360,7 @@ A gate is a hard stop that waits for the human. The protocol (how gates are open
 - (Resolved, the owner: the opt-in CUDA download has two parts, in T8.4a.)
 - (Resolved, the owner: our CUDA set is published in `pitslug/Earshot`'s releases, without waiting for NVIDIA's written answer. T9.1b's release host stays its own decision.)
 - Installers (T9.1c, T9.1p): NSIS carries CPL-1.0 on its LZMA stub (clear, not permissive; OK it before an installer leaves the owner's machines); the Visual C++ runtime's four DLLs are bundled beside the exe (T9.1w, the owner), because downloading Microsoft's installer would need an admin prompt and a new network destination; WebView2 is `skip` because every other mode contacts Microsoft (Windows 11 ships it); the default per-user NSIS folder is the data folder, `%LOCALAPPDATA%\Earshot`, and the owner chose to keep it per-user.
-- Sync encryption: TLS-only behind a reverse proxy vs end-to-end encrypted payloads (GATE-08).
+- (Resolved at GATE-08, the owner, 2026-11-14: sync payloads are end-to-end encrypted, D25.)
 
 ---
 
@@ -2145,8 +2147,9 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - deps: GATE-07 (open; the owner asked for the design ahead of it, 2026-11-14)
   - do: `docs/sync.md`: entity coverage, HLC last-writer-wins + tombstones, `Person.merged_into` handling, cursor pull/push API, device auth (tokens; OIDC via a self-hosted provider optional), encryption options, voiceprint opt-in flow, how audio exclusion is enforced, and write/lock discipline between the sync client and the runtime on the shared SQLite database.
   - accept: document exists and covers every bullet above
-- [ ] GATE-08 Approve sync design
+- [x] GATE-08 Approve sync design
   - deps: T11.1
+  - passed 2026-11-14 (the owner): docs/sync.md approved as written, section 13 items 1 to 10 and the version-one limits; D25.
 - [ ] T11.1a Kept-local as a synced meeting field
   - deps: GATE-08
   - do: docs/sync.md section 8. `meeting.summary_kept_local` by an appended migration (filled from the `summary-kept-local/*` records, `APPLIED` pin, a migration test from the committed older fixture); set in the transaction that creates the meeting, cleared only by `keep_local::allow_writer`; `keep_local::summary_privacy` reads kept when the column or the old record says so, and an unreadable value counts as kept. Both decision points keep their tests. Reviewer required (data model, privacy).
@@ -2157,7 +2160,7 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - accept: `cargo test -p earshot-store sync`
 - [ ] T11.2 Sync server
   - deps: T11.1b
-  - do: docs/sync.md section 5. `earshot-sync-server` (axum + SQLite), Dockerfile, `docker-compose.yml`: device tokens stored as hashes, the setup secret, pairing slots (one use, 10 minutes), row push and pull by server sequence keeping the newest per row key, presence blobs with server-side ages, token revocation, the vault format refusal, 256 KiB per row and 4 MiB per request. It holds ciphertext only and no HTTP client; its net guard treatment is as GATE-08 decided. Reviewer required (network code, privacy).
+  - do: docs/sync.md section 5. `earshot-sync-server` (axum + SQLite), Dockerfile, `docker-compose.yml`: device tokens stored as hashes, the setup secret, pairing slots (one use, 10 minutes), row push and pull by server sequence keeping the newest per row key, presence blobs with server-side ages, token revocation, the vault format refusal, 256 KiB per row and 4 MiB per request. It holds ciphertext only and no HTTP client. Net guard (GATE-08 item 5): the crate is not part of the app, so it is left out of the shipped check like xtask and gets its own ci check that its graph holds no HTTP client crate other than the `hyper` and `hyper-util` axum serves with, and that no shipped crate depends on it. Reviewer required (network code, privacy).
   - accept: `cargo test -p earshot-sync-server`
 - [ ] T11.2a `earshot-sync` crate: sealing, wire types, pairing code
   - deps: GATE-08
