@@ -2144,7 +2144,7 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
 ### M11 - Future: sync container
 
 - [x] T11.1 Sync design
-  - deps: GATE-07 (open; the owner asked for the design ahead of it, 2026-11-14)
+  - deps: none (was GATE-07; the owner, 2026-11-14: sync comes before Android, so the Surface and the desktop talk to each other before a third device is added)
   - do: `docs/sync.md`: entity coverage, HLC last-writer-wins + tombstones, `Person.merged_into` handling, cursor pull/push API, device auth (tokens; OIDC via a self-hosted provider optional), encryption options, voiceprint opt-in flow, how audio exclusion is enforced, and write/lock discipline between the sync client and the runtime on the shared SQLite database.
   - accept: document exists and covers every bullet above
 - [x] GATE-08 Approve sync design
