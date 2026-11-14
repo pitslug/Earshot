@@ -76,6 +76,9 @@ meeting_records! {
     /// `recovered-recording/<meeting>`: how much of an interrupted recording start-up recovery
     /// saved, until the app has said so once (T9.18; no content, [`crate::recover`]).
     RecoveredRecording => "recovered-recording/", meeting at 0;
+    /// `voiceprint-me/<meeting>`: the in-room "Me" row the final pass named by the user's
+    /// voiceprint (T12.44; no biometric data, [`crate::identities::voiceprint_me_key`]).
+    VoiceprintMe => "voiceprint-me/", meeting at 0;
 }
 
 impl MeetingRecord {

@@ -588,14 +588,30 @@ describe("MeetingDetailView", () => {
     await user.type(field, "  priya SHAH ");
     const hint = within(speakerRow("Speaker 2")).getByText("Links to Priya Shah");
     expect(field).toHaveAttribute("aria-describedby", hint.id);
-    // A new name, or the user's own, links to nobody yet.
+    // A new name links to nobody yet.
     await user.clear(field);
     await user.type(field, "Ana Diaz");
     expect(within(speakerRow("Speaker 2")).queryByText(/^Links to/)).toBeNull();
     expect(field).not.toHaveAttribute("aria-describedby");
+    // The user's own name links to nobody either, and says why (only the user's row is them).
     await user.clear(field);
-    await user.type(field, "Casey");
+    await user.type(field, "casey");
     expect(within(speakerRow("Speaker 2")).queryByText(/^Links to/)).toBeNull();
+    const own = within(speakerRow("Speaker 2")).getByText(
+      "This is your name. Save makes a separate person called Casey, because only your own row can be you.",
+    );
+    expect(field).toHaveAttribute("aria-describedby", own.id);
+  });
+
+  it("points to This is me when the user's own name is typed in the room", async () => {
+    const { user } = await setup({ inRoom: true });
+    const field = await screen.findByRole("textbox", { name: "Name of Speaker 2" });
+    await user.type(field, "Casey");
+    expect(
+      within(speakerRow("Speaker 2")).getByText(
+        'This is your name. Save makes a separate person called Casey. To show this voice as you, choose "This is me".',
+      ),
+    ).toBeInTheDocument();
   });
 
   const TWIN = { id: "9e000000-0000-7000-8000-000000000009", name: "casey", has_voiceprint: true, is_me: false };

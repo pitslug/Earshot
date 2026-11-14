@@ -24,6 +24,37 @@ pub(crate) fn record_key(meeting: EntityId) -> LocalKey {
     MeetingRecord::SpeakerIdentities.key(&[], meeting, &[])
 }
 
+/// The version of the `voiceprint-me/<meeting>` record (`version u32 LE | speaker id`).
+pub const VOICEPRINT_ME_VERSION: u32 = 1;
+
+/// The key of `meeting`'s voiceprint-named "Me" record (T12.44): the in-room "Me" row the
+/// last final pass named by the user's voiceprint, the positive evidence `edit::recognised_me`
+/// reads. Written or deleted by every final pass in its write transaction; holds no
+/// biometric data, so forgetting the user's voice keeps it (a recognised row also needs a
+/// live voiceprint of the user). A marked row is never in it.
+pub(crate) fn voiceprint_me_key(meeting: EntityId) -> LocalKey {
+    MeetingRecord::VoiceprintMe.key(&[], meeting, &[])
+}
+
+/// The bytes of a voiceprint-named "Me" record for row `speaker`.
+#[must_use]
+pub fn encode_voiceprint_me(speaker: EntityId) -> Vec<u8> {
+    let mut v = VOICEPRINT_ME_VERSION.to_le_bytes().to_vec();
+    v.extend_from_slice(speaker.to_string().as_bytes());
+    v
+}
+
+/// The row a voiceprint-named "Me" record names; `None` for another version or damaged
+/// bytes (read as no evidence: "This isn't me" stays allowed).
+#[must_use]
+pub fn decode_voiceprint_me(bytes: &[u8]) -> Option<EntityId> {
+    let (version, rest) = bytes.split_first_chunk::<4>()?;
+    if u32::from_le_bytes(*version) != VOICEPRINT_ME_VERSION {
+        return None;
+    }
+    std::str::from_utf8(rest).ok()?.parse().ok()
+}
+
 /// An earlier speaker that a new cluster may take over.
 #[derive(Debug, Clone, Copy)]
 pub struct Candidate<'a> {

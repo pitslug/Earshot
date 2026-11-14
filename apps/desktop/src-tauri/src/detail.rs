@@ -699,6 +699,8 @@ fn speaker_cards(
     view: &MeetingView,
     persons: &[PersonInfo],
     identities: &[SpeakerIdentity],
+    voiceprint_me: Option<EntityId>,
+    resolved: &BTreeMap<EntityId, EntityId>,
 ) -> Vec<SpeakerCard> {
     let total: u64 = view.segments.iter().map(duration_ms).sum();
     // `list_persons_in` counts the voiceprints of everyone merged into a person, as
@@ -726,8 +728,10 @@ fn speaker_cards(
                 .max_by_key(|seg| (duration_ms(seg), std::cmp::Reverse(seg.start)))
                 .map(|seg| sample_line(&seg.text))
                 .unwrap_or_default();
-            let person = s.person_id.and_then(|id| {
-                persons.iter().find(|p| p.id == id).map(|p| PersonRef {
+            // A link to a person merged into another (T12.44, `merged_into`) stands for that
+            // other person, as voiceprint matching and renames treat it.
+            let person = s.person_id.and_then(|id| resolved.get(&id)).and_then(|id| {
+                persons.iter().find(|p| p.id == *id).map(|p| PersonRef {
                     id: p.id.to_string(),
                     name: p.name.clone(),
                     has_voiceprint: p.has_voiceprint,
@@ -754,8 +758,8 @@ fn speaker_cards(
                 ignored,
                 can_ignore: edit::can_ignore(s, identities),
                 can_mark_me: edit::can_mark_me(&view.tracks, &view.speakers, s),
-                can_unmark_me: edit::can_unmark_me(&view.tracks, s, identities, user_print),
-                recognised_me: edit::recognised_me(&view.tracks, s, identities, user_print),
+                can_unmark_me: edit::can_unmark_me(&view.tracks, s, voiceprint_me, user_print),
+                recognised_me: edit::recognised_me(&view.tracks, s, voiceprint_me, user_print),
                 person,
                 source,
                 share_percent,
@@ -801,7 +805,19 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         let view = MeetingView::load(&**db, meeting)
             .map_err(RuntimeError::from)?
             .ok_or_else(not_found)?;
-        let identities = edit::identities_in(&db, meeting)?;
+        // The identity entries, the voiceprint-named "Me" row and where each linked person
+        // resolves to (T12.44), read in the same snapshot.
+        let mut resolved = BTreeMap::new();
+        for id in view.speakers.iter().filter_map(|s| s.person_id) {
+            if let Some(to) = edit::resolved_person(&**db, id)? {
+                resolved.insert(id, to);
+            }
+        }
+        let identities = (
+            edit::identities_in(&db, meeting)?,
+            edit::voiceprint_me_in(&db, meeting)?,
+            resolved,
+        );
         let backend = match view.pass {
             Some(TranscriptPass::Final) => pass_backend(&db, meeting, TranscriptPass::Final, None)?,
             Some(TranscriptPass::Live) => {
@@ -904,7 +920,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             summary_model: view.summary.as_ref().and_then(|s| s.model.clone()),
             transcript_backend: backend.map(|b| backend_label(b.kind).to_owned()),
         },
-        speakers: speaker_cards(&view, &persons, &identities),
+        speakers: speaker_cards(&view, &persons, &identities.0, identities.1, &identities.2),
         summary,
         transcript,
         can_undo_summary,

@@ -1196,41 +1196,85 @@ pub fn can_mark_me(tracks: &[Track], speakers: &[Speaker], row: &Speaker) -> boo
             .any(|s| s.role == SpeakerRole::Me && !s.meta.deleted)
 }
 
-/// Whether [`unmark_me`] would accept `row` of a meeting with these `tracks`, its speaker
-/// identity entries `identities` ([`identities_in`]) and whether the user has a live
-/// voiceprint ([`user_has_voiceprint`]).
+/// Whether [`unmark_me`] would accept `row` of a meeting with these `tracks`, the row its
+/// last final pass named by the user's voiceprint (`voiceprint_me`, [`voiceprint_me_in`])
+/// and whether the user has a live voiceprint ([`user_has_voiceprint`]).
 #[must_use]
 pub fn can_unmark_me(
     tracks: &[Track],
     row: &Speaker,
-    identities: &[crate::identities::SpeakerIdentity],
+    voiceprint_me: Option<EntityId>,
     user_has_voiceprint: bool,
 ) -> bool {
     records_in_room(tracks)
         && row.role == SpeakerRole::Me
-        && !recognised_me(tracks, row, identities, user_has_voiceprint)
+        && !recognised_me(tracks, row, voiceprint_me, user_has_voiceprint)
 }
 
 /// Whether `row` is an in-room meeting's "Me" row that the user's own voiceprint named
 /// (T12.44), so "This isn't me" is refused ([`EditError::RecognisedMe`]): a re-run would
-/// name it again by that voiceprint. In the room a "Me" row comes from the user's voiceprint
-/// or from the user's mark, and a mark is the one kind of "Me" row with an identity entry
-/// marked as the user's edit (`crate::post`, step 4), so a "Me" row without one counts as
-/// recognised while the user has a voiceprint. Without a voiceprint nothing can name it
-/// again, and the undo is the user's: that is also the way out after forgetting the voice.
+/// name it again by that voiceprint. Decided only on positive evidence: the final pass's
+/// `voiceprint-me/<meeting>` record names the row (a mark is never in it), and the user still
+/// has a voiceprint. A missing or unreadable record allows the undo; so does a forgotten
+/// voice, the way out the refusal points to.
 #[must_use]
 pub fn recognised_me(
     tracks: &[Track],
     row: &Speaker,
-    identities: &[crate::identities::SpeakerIdentity],
+    voiceprint_me: Option<EntityId>,
     user_has_voiceprint: bool,
 ) -> bool {
     records_in_room(tracks)
         && row.role == SpeakerRole::Me
         && user_has_voiceprint
-        && !identities
-            .iter()
-            .any(|i| i.speaker == row.id && i.user_edited)
+        && voiceprint_me == Some(row.id)
+}
+
+/// The "Me" row of `meeting` its last final pass named by the user's voiceprint (T12.44;
+/// `None` without one or when the record cannot be read).
+///
+/// # Errors
+/// Store errors.
+pub fn voiceprint_me_in(
+    store: &earshot_store::Store,
+    meeting: EntityId,
+) -> Result<Option<EntityId>, RuntimeError> {
+    Ok(store
+        .local_value(crate::identities::voiceprint_me_key(meeting).as_str())?
+        .and_then(|b| crate::identities::decode_voiceprint_me(&b)))
+}
+
+/// Deletes `meeting`'s voiceprint-named "Me" record inside `tx` when it names `speaker` (the
+/// user just marked or unmarked that row: it is theirs now).
+fn drop_voiceprint_me(
+    tx: &mut StoreTx<'_>,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<(), RuntimeError> {
+    let key = crate::identities::voiceprint_me_key(meeting);
+    if tx
+        .local_value(key.as_str())?
+        .and_then(|b| crate::identities::decode_voiceprint_me(&b))
+        == Some(speaker)
+    {
+        tx.delete_local_value(key.as_str())?;
+    }
+    Ok(())
+}
+
+/// The live person a speaker row's `person_id` stands for: `person` itself, or the person it
+/// was merged into (`merged_into`, as voiceprint matching resolves it). `None` for a deleted
+/// person or a broken chain.
+///
+/// # Errors
+/// Store errors.
+pub fn resolved_person<R: VoiceprintRepo + ?Sized>(
+    repo: &R,
+    person: EntityId,
+) -> Result<Option<EntityId>, RuntimeError> {
+    Ok(resolve_person(repo, person)
+        .map_err(voiceprint_err)?
+        .map(|p| p.id))
 }
 
 /// Whether the user (every `is_me` person and everyone merged into them) has a live
@@ -1370,6 +1414,8 @@ pub fn mark_me(
             return Err(EditError::NotInRoom(meeting).into());
         }
         let me = me_person(tx, stamp).map_err(voiceprint_err)?;
+        // A mark is the user's, never the voiceprint's (T12.44).
+        drop_voiceprint_me(tx, meeting, speaker)?;
         row.role = SpeakerRole::Me;
         row.person_id = Some(me.id);
         row.display_name.clone_from(&me.display_name);
@@ -1410,17 +1456,13 @@ pub fn unmark_me(
         if row.role != SpeakerRole::Me {
             return Err(EditError::NotMe(speaker).into());
         }
-        let identities = match tx
-            .local_value(crate::identities::record_key(meeting).as_str())?
-            .map(|b| crate::identities::decode(&b))
-        {
-            Some(StoredIdentities::Record(r)) => r.speakers,
-            None | Some(StoredIdentities::Unreadable(_)) => Vec::new(),
-        };
+        let voiceprint_me = tx
+            .local_value(crate::identities::voiceprint_me_key(meeting).as_str())?
+            .and_then(|b| crate::identities::decode_voiceprint_me(&b));
         if recognised_me(
             &tx.tracks(meeting)?,
             &row,
-            &identities,
+            voiceprint_me,
             user_has_voiceprint(&*tx)?,
         ) {
             return Err(EditError::RecognisedMe(speaker).into());
@@ -1434,6 +1476,7 @@ pub fn unmark_me(
         row.role = SpeakerRole::Room;
         row.person_id = None;
         row.display_name = first_free_speaker_name(&taken);
+        drop_voiceprint_me(tx, meeting, speaker)?;
         row.meta.touch(stamp.hlc, stamp.clock);
         tx.put_speaker(row.clone())?;
         update_identity_entry(tx, meeting, speaker, |i| {

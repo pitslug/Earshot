@@ -168,6 +168,22 @@ export interface SpeakersPanelProps {
   onKeepSeparate?(): void;
 }
 
+/** The user's person when `name` is the user's own name (not the default "Me"), case
+ * ignored as `personNamed` does; else null. */
+export function userNamed(name: string, persons: PersonItem[]): PersonItem | null {
+  const n = name.trim().toLowerCase();
+  const user = persons.find((p) => p.is_me);
+  if (!user || user.name.trim() === "Me") return null;
+  return user.name.trim().toLowerCase() === n ? user : null;
+}
+
+/** Why typing the user's own name does not link the voice to them (T12.44). */
+export function ownNameHint(user: PersonItem, canMarkMe: boolean): string {
+  return canMarkMe
+    ? `This is your name. Save makes a separate person called ${user.name}. To show this voice as you, choose "This is me".`
+    : `This is your name. Save makes a separate person called ${user.name}, because only your own row can be you.`;
+}
+
 /** The offer after "This is me" when a separate person has the user's name (T12.44). */
 export function mergeOfferText(person: PersonItem): string {
   const voice = person.has_voiceprint ? " Earshot will then recognise you by the voice saved for them." : "";
@@ -370,6 +386,14 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
   // The person Save would link to (T12.44): said before Save, so a typed name that is
   // already someone's is never a surprise.
   const linksTo = typed === "" ? null : personNamed(typed, persons);
+  // The user's own name links to nobody: only the meeting's own row can be the user (the
+  // runtime refuses linking any other voice to them), so Save would make a separate person.
+  const ownName = typed === "" ? null : userNamed(typed, persons);
+  const hint = linksTo
+    ? `Links to ${linksTo.name}`
+    : ownName
+      ? ownNameHint(ownName, card.can_mark_me)
+      : null;
   const hintId = `${card.id}-links-to`;
   // Saving makes a person (an existing one with exactly that name) and remembers the voice,
   // so only on Save or Enter: leaving the field keeps the draft.
@@ -397,7 +421,7 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
           value={value}
           placeholder={placeholder}
           aria-label={`Name of ${card.name}`}
-          aria-describedby={linksTo ? hintId : undefined}
+          aria-describedby={hint ? hintId : undefined}
           disabled={locked}
           ref={nameRef}
           onChange={(_, d) => setValue(d.value)}
@@ -415,9 +439,9 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
           Save
         </Button>
       </div>
-      {linksTo && (
+      {hint && (
         <Caption1 id={hintId} className={styles.muted}>
-          Links to {linksTo.name}
+          {hint}
         </Caption1>
       )}
       <RowFacts {...props} />

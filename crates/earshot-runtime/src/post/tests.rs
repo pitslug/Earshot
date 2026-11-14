@@ -465,6 +465,12 @@ fn post_in_person_mic_voice_matching_the_users_voiceprint_is_me() {
         ]
     );
     assert!(outcome.enrolled_me.is_none(), "enrolment stays opt-in");
+    // The pass leaves positive evidence that the voiceprint named this Me row (T12.44).
+    let me_row = outcome.speakers[1].id;
+    assert_eq!(
+        crate::edit::voiceprint_me_in(&svc.store(), meeting).unwrap(),
+        Some(me_row)
+    );
 }
 
 #[test]

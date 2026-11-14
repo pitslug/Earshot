@@ -1096,13 +1096,17 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         fail("not_named_after_user", "Only a person with your name can be merged into you.");
       }
       const user = persons.find((x) => x.is_me);
-      if (user && p.has_voiceprint) user.has_voiceprint = true;
+      if (!user) return fail("not_named_after_user", "Only a person with your name can be merged into you.");
+      if (p.has_voiceprint) user.has_voiceprint = true;
       persons.splice(persons.indexOf(p), 1);
-      // As `detail::speaker_cards`: a link to a merged-away person shows no person.
+      // As `detail::speaker_cards`: a link to a merged-away person stands for the user now.
+      const me = { id: user.id, name: user.name, has_voiceprint: user.has_voiceprint };
       for (const [id, d] of details) {
         details.set(id, {
           ...d,
-          speakers: d.speakers.map((s) => (s.person?.id === person ? { ...s, person: null } : s)),
+          speakers: d.speakers.map((s) =>
+            s.person?.id === person || s.person?.id === user.id ? { ...s, person: me } : s,
+          ),
         });
       }
     },

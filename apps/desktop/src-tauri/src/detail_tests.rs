@@ -978,6 +978,14 @@ fn detail_this_isnt_me_is_refused_on_a_voice_the_users_voiceprint_named() {
         row.display_name = "Casey".into();
         row.meta.touch(hlc, &*clock);
         store.put_speaker(row).unwrap();
+        // The pass's evidence that the voiceprint named it (test set-up: production writes it
+        // through the runtime's registry).
+        store
+            .set_local_value(
+                &format!("voiceprint-me/{m}"),
+                &earshot_runtime::identities::encode_voiceprint_me(voice),
+            )
+            .unwrap();
     }
     let d = meeting_detail(&svc, m).unwrap();
     let mine = card(&d, voice);
@@ -1019,14 +1027,23 @@ fn detail_mark_me_returns_the_persons_named_after_the_user_to_merge() {
     person_with(&svc, "Casey Lane", true, false, 62);
     let twin = person_with(&svc, "Casey Lane", false, true, 63);
     person_with(&svc, "Robin", false, false, 64);
-    let (m, voice, _) = in_room_meeting(&svc, 65);
+    let (m, voice, other) = in_room_meeting(&svc, 65);
+    edit::link_speaker(&svc, m, other, &PersonChoice::Existing(twin)).unwrap();
     let offered = super::mark_me(&svc, m, voice).unwrap();
     assert_eq!(offered.len(), 1);
     assert_eq!(offered[0].id, twin.to_string());
     assert_eq!(offered[0].name, "Casey Lane");
     assert!(offered[0].has_voiceprint && !offered[0].is_me);
 
-    edit::merge_into_me(&svc, twin).unwrap();
+    let user = edit::merge_into_me(&svc, twin).unwrap();
+    // The row linked to the merged person shows the user as its person: it has a name and
+    // never asks for one again.
+    let d = meeting_detail(&svc, m).unwrap();
+    let theirs = card(&d, other);
+    assert_eq!(theirs.person.as_ref().unwrap().id, user.to_string());
+    assert!(theirs.person.as_ref().unwrap().has_voiceprint);
+    assert!(!theirs.needs_name && !theirs.can_ignore);
+    assert_eq!(theirs.name, "Casey Lane");
     let listed = persons(&svc).unwrap();
     assert!(listed.iter().all(|p| p.id != twin.to_string()));
     assert!(listed.iter().any(|p| p.is_me && p.has_voiceprint));
