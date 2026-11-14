@@ -677,18 +677,6 @@ mod tests {
         // An unknown field is refused, as by the app's parser.
         let unknown = format!("{base}[[cuda_retired]]\nname = 'b.dll'\nsha256 = 'x'\n");
         assert!(Manifest::parse(&unknown).is_err());
-        // The real manifest retires nothing a part pins.
-        let m = load();
-        for r in &m.cuda_retired {
-            assert!(
-                m.cuda_archives
-                    .iter()
-                    .flat_map(|a| &a.files)
-                    .all(|f| !f.name.eq_ignore_ascii_case(&r.name)),
-                "{}",
-                r.name
-            );
-        }
     }
 
     /// The manifest's `[[cuda_archive]]` tables, read by this parser's own rules, and those

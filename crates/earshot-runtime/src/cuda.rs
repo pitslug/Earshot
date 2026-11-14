@@ -30,9 +30,12 @@
 //!   retry after a restart works. A read-only file is simply removed. Files no part pins are never
 //!   deleted: [`Removed::left_in_folder`] names them, and the folder stays while they are there.
 //! - **Retired names** (`[[cuda_retired]]`, T12.48): a file an earlier manifest pinned under a
-//!   name no part pins now. A load ignores exactly those names ([`unexpected_libraries`]), and a
-//!   removal of either part or the next download deletes exactly those ([`remove_retired`]), so a
-//!   renamed library in a manifest bump never leaves every CUDA load refused.
+//!   name no part pins now. The full check deletes exactly those names before it looks at the
+//!   folder, so Windows can never resolve an import to one, and a held one fails the check
+//!   ([`verify_part_in`]); a removal of either part or the next download deletes them too
+//!   ([`remove_retired`]). So a renamed library in a manifest bump never leaves every CUDA load
+//!   refused. [`unexpected_libraries`] does not count them, so the size-only install state of a
+//!   folder still holding one reads as it will after the check.
 //!
 //! ONNX Runtime is one library per process, so transcription's choice is made once, at start and
 //! before ONNX Runtime loads: [`use_for_transcription`], which runs the full check. An app that
@@ -470,6 +473,29 @@ pub fn remove_retired(c: &Catalogue, models: &ModelDir) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Deletes the retired files in `dir`, and only those, before a load (T12.48): each is asked for
+/// exclusively first, so a held one is [`CudaError::InUse`] with nothing deleted.
+fn remove_retired_before_load(c: &Catalogue, dir: &Path) -> Result<(), CudaError> {
+    let retired = retired_in(c, dir);
+    for name in &retired {
+        exclusive(dir, name)?;
+    }
+    for name in &retired {
+        let path = jail_join(dir, name)?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(CudaError::Remove {
+                    path,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The `.dll` files directly in the folder that no part pins and that are not retired, sorted.
 /// The loader lets Windows resolve imports from this folder, so such a file could be loaded with
 /// no digest check. Anything else, and anything inside a staging folder, cannot be reached that
@@ -534,8 +560,9 @@ pub(crate) fn child_folder_problem(
     }
 }
 
-/// The full check of `part` in `c`: every required file pinned, no [`unexpected_libraries`] in
-/// the folder, then every byte of each of its files and of the pinned files of the part it needs.
+/// The full check of `part` in `c`: every required file pinned, the retired files deleted (a held
+/// one fails it), no [`unexpected_libraries`] in the folder, then every byte of each of its files
+/// and of the pinned files of the part it needs.
 ///
 /// # Errors
 /// [`CudaError`], the first problem found, naming the file.
@@ -545,6 +572,7 @@ pub fn verify_part_in(c: &Catalogue, models: &ModelDir, part: CudaPart) -> Resul
         return Err(CudaError::NotAvailableYet { part, files: gap });
     }
     let dir = folder(models);
+    remove_retired_before_load(c, &dir)?;
     let unexpected = unexpected_libraries(c, models).map_err(|e| CudaError::Unreadable {
         name: dir.display().to_string(),
         error: e.to_string(),

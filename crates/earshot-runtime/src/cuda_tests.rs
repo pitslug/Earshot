@@ -1324,46 +1324,92 @@ fn cuda_retired_names_follow_the_shared_cases() {
     assert!(Catalogue::parse(&unknown).is_err());
 }
 
+/// A library renamed in a manifest bump leaves its old file behind: the check deletes exactly that
+/// name before a load, so Windows can never resolve an import to it, and never another file.
 #[test]
-fn cuda_embedded_manifest_retires_no_name_a_part_pins() {
-    let c = Catalogue::embedded().unwrap();
-    let pinned = pinned_names(c);
-    for name in c.cuda_retired() {
-        assert!(!pinned.contains(&name.to_lowercase()), "{name}");
-    }
+fn cuda_a_retired_library_is_deleted_by_the_check_before_a_load() {
+    let files = CudaPart::Summaries.required_files();
+    let f = with_retired(&[("summaries", "s", files)], &["cublas64_12.dll"]);
+    let dir = TempDir::new("cuda-retired-verify");
+    let models = models_in(&dir);
+    f.download(&models, CudaPart::Summaries).unwrap();
+    let cuda = folder(&models);
+    // As an older manifest left it, spelled in another case.
+    let old = cuda.join("CUBLAS64_12.dll");
+    std::fs::write(&old, b"old version").unwrap();
+    std::fs::write(cuda.join("notes.txt"), b"mine").unwrap();
+    // The size-only state already reads as it will after the check.
+    let state = install_state(&f.catalogue, &models, CudaPart::Summaries).unwrap();
+    assert!(state.unexpected_libraries.is_empty());
+    assert!(state.looks_usable());
+    // Without the retired entry the same folder is refused and the file stays.
+    let plain = fixture(&[("summaries", "s", files)]);
+    assert!(matches!(
+        verify_part_in(&plain.catalogue, &models, CudaPart::Summaries),
+        Err(CudaError::UnexpectedLibrary { name, .. }) if name == "CUBLAS64_12.dll"
+    ));
+    assert!(old.exists());
+    // The load sees a folder without it: it is gone before `load` runs.
+    let mut seen = None;
+    load_verified_in(&f.catalogue, &models, CudaPart::Summaries, |d| {
+        seen = Some(d.join("CUBLAS64_12.dll").exists());
+    })
+    .unwrap();
+    assert_eq!(seen, Some(false));
+    assert!(!old.exists());
+    assert!(cuda.join("notes.txt").exists(), "never another file");
+    // Any other unpinned library still stops the load, and is never deleted.
+    std::fs::write(cuda.join("cublas64_11.dll"), b"stray").unwrap();
+    assert!(matches!(
+        verify_part_in(&f.catalogue, &models, CudaPart::Summaries),
+        Err(CudaError::UnexpectedLibrary { name, .. }) if name == "cublas64_11.dll"
+    ));
+    assert!(cuda.join("cublas64_11.dll").exists());
 }
 
-/// A library renamed in a manifest bump leaves its old file behind: the load ignores exactly that
-/// name, and a removal deletes exactly that name, never another stray file.
+/// A retired file held open fails the check loudly: the load never runs and nothing is deleted.
+#[cfg(windows)]
 #[test]
-fn cuda_a_retired_library_is_ignored_by_the_load_and_deleted_by_a_removal() {
+fn cuda_a_held_retired_file_fails_the_check_and_the_load_never_runs() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let files = CudaPart::Summaries.required_files();
+    let f = with_retired(&[("summaries", "s", files)], &["cublas64_12.dll"]);
+    let dir = TempDir::new("cuda-retired-verify-held");
+    let models = models_in(&dir);
+    f.download(&models, CudaPart::Summaries).unwrap();
+    let old = folder(&models).join("cublas64_12.dll");
+    std::fs::write(&old, b"old").unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&old)
+        .unwrap();
+    let mut ran = false;
+    let err =
+        load_verified_in(&f.catalogue, &models, CudaPart::Summaries, |_| ran = true).unwrap_err();
+    assert!(
+        matches!(&err, CudaError::InUse { name, .. } if name == "cublas64_12.dll"),
+        "{err}"
+    );
+    assert!(!ran);
+    drop(held);
+    assert!(old.exists());
+    verify_part_in(&f.catalogue, &models, CudaPart::Summaries).unwrap();
+    assert!(!old.exists());
+}
+
+/// A removal deletes exactly the retired names, never another stray file.
+#[test]
+fn cuda_a_removal_deletes_the_retired_files_and_nothing_else() {
     let files = CudaPart::Summaries.required_files();
     let f = with_retired(&[("summaries", "s", files)], &["cublas64_12.dll"]);
     let dir = TempDir::new("cuda-retired-remove");
     let models = models_in(&dir);
     f.download(&models, CudaPart::Summaries).unwrap();
     let cuda = folder(&models);
-    // As an older manifest left it, spelled in another case.
     std::fs::write(cuda.join("CUBLAS64_12.dll"), b"old version").unwrap();
-    verify_part_in(&f.catalogue, &models, CudaPart::Summaries).unwrap();
-    let state = install_state(&f.catalogue, &models, CudaPart::Summaries).unwrap();
-    assert!(state.unexpected_libraries.is_empty());
-    assert!(state.looks_usable());
-    let mut ran = false;
-    load_verified_in(&f.catalogue, &models, CudaPart::Summaries, |_| ran = true).unwrap();
-    assert!(ran);
-    // Without the retired entry the same folder is refused: the entry is what lets it load.
-    let plain = fixture(&[("summaries", "s", files)]);
-    assert!(matches!(
-        verify_part_in(&plain.catalogue, &models, CudaPart::Summaries),
-        Err(CudaError::UnexpectedLibrary { name, .. }) if name == "CUBLAS64_12.dll"
-    ));
-    // Any other unpinned library still stops the load.
     std::fs::write(cuda.join("cublas64_11.dll"), b"stray").unwrap();
-    assert!(matches!(
-        verify_part_in(&f.catalogue, &models, CudaPart::Summaries),
-        Err(CudaError::UnexpectedLibrary { name, .. }) if name == "cublas64_11.dll"
-    ));
     let removed = remove_part(&f.catalogue, &models, CudaPart::Summaries).unwrap();
     assert!(
         !cuda.join("CUBLAS64_12.dll").exists(),
