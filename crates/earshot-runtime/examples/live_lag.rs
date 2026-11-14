@@ -6,7 +6,8 @@
 //!     [--audio bundled|continuous] [--backend cpu|cuda|qnn] [--models <dir>] [--speakers on|off]
 //!     [--seconds <n>] [--previews off|on|everyone] [--force-previews] [--card-memory-gib <n>]
 //!     [--window <s>] [--interval <s>] [--max-piece <s>] [--stream nemotron]
-//!     [--stream-threads <n>] [--out <file.json>]
+//!     [--stream-threads <n>] [--summary off|alone|beside [--summary-on cpu|gpu]
+//!     [--summary-model <id>]] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root> --memory
 //!     [--backend cpu|cuda|qnn] [--card-memory-gib <n>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- <repo-root>
@@ -69,12 +70,24 @@
 //! whole machine in use, read about every 30 s, and this process's own CPU time and memory. A
 //! number measured with a loaded host is reported as such, never as an idle-host result.
 //!
+//! `--summary off|alone|beside` (evaluation only, T12.39, docs/live-previews.md) measures a new
+//! meeting's transcript beside an older meeting's summary. Before the replay the older meeting is
+//! made: the same audio through the same live session, not paced, speaker work off. `beside` starts
+//! the older meeting's summary (prepared as the app prepares it: `host::summary_plan` and
+//! `host::prepare_summary_on`, on the graphics card with `--summary-on gpu`, the model chosen as the
+//! app chooses unless `--summary-model`) when the paced replay starts, and again each time it ends,
+//! until the session ends; `alone` runs the same loop for the replay's length with no replay; `off`
+//! runs none. With any of them the card is read once a second (`nvidia-smi`, when present). Each
+//! summary's wall time (load included), its backend from its own report and whether it fell back to
+//! the CPU are recorded, never its text.
+//!
 //! `--max-piece <s>` (evaluation only, T12.24) runs the live stretches with `PieceConfig::max_piece`
 //! at `s` seconds and every other field at its default; the report records it (`max_piece_s`,
 //! `pieces`). Without it the session runs `LiveConfig::default()`'s stretches unchanged.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -145,6 +158,21 @@ struct Args {
     /// Evaluation only (T12.24): the live stretches' `PieceConfig::max_piece` in seconds, every
     /// other field at its default ([`stretch_pieces`]); `None` is production's config unchanged.
     max_piece: Option<u64>,
+    /// Evaluation only (T12.39): an older meeting's summary beside the replay, alone, or none
+    /// (with the card read); `None` is the run without it.
+    summary: Option<SummaryMode>,
+    /// That summary on the graphics card.
+    summary_gpu: bool,
+    /// That summary's model by id (`None`: the app's choice for this machine).
+    summary_model: Option<String>,
+}
+
+/// What `--summary` runs (T12.39).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SummaryMode {
+    Off,
+    Alone,
+    Beside,
 }
 
 fn parse_args() -> Args {
@@ -174,6 +202,9 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         stream: None,
         stream_threads: 2,
         max_piece: None,
+        summary: None,
+        summary_gpu: false,
+        summary_model: None,
     };
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -242,6 +273,22 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
                 args.stream_threads = n;
             }
+            "--summary" => {
+                args.summary = Some(match value()?.as_str() {
+                    "off" => SummaryMode::Off,
+                    "alone" => SummaryMode::Alone,
+                    "beside" => SummaryMode::Beside,
+                    other => return Err(format!("unknown --summary {other}")),
+                });
+            }
+            "--summary-on" => {
+                args.summary_gpu = match value()?.as_str() {
+                    "cpu" => false,
+                    "gpu" => true,
+                    other => return Err(format!("unknown --summary-on {other}")),
+                }
+            }
+            "--summary-model" => args.summary_model = Some(value()?),
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -284,6 +331,14 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
              --backend cuda and no --memory, --previews, --force-previews or --card-memory-gib"
                 .to_owned(),
         );
+    }
+    if args.summary.is_some() && (args.memory || args.contention.is_some()) {
+        return Err("--summary applies to a replay: not with --memory or --contention".to_owned());
+    }
+    if args.summary.is_none_or(|m| m == SummaryMode::Off)
+        && (args.summary_gpu || args.summary_model.is_some())
+    {
+        return Err("--summary-on and --summary-model need --summary alone|beside".to_owned());
     }
     if args.max_piece.is_some() && (args.memory || args.contention.is_some()) {
         return Err(
@@ -1308,6 +1363,199 @@ fn contention_report(
     })
 }
 
+/// T12.39: the older meeting, made from the same audio through the same live session as fast as it
+/// decodes (not paced), speaker work off; its live words are what its summary reads.
+fn older_meeting(
+    services: &Services,
+    factory: LiveAsrFactory,
+    mic: &[f32],
+    reference: &[f32],
+) -> earshot_core::identity::EntityId {
+    let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(PIPELINE_RATE, mic.to_vec()))
+        .reference(MonoBuffer::new(PIPELINE_RATE, reference.to_vec()))
+        .build()
+        .unwrap_or_else(|e| fail(format!("older replay: {e:?}")));
+    let paced = Paced::new(
+        source,
+        Arc::new(WallClock::new()),
+        false,
+        Arc::new(PaceState::default()),
+    );
+    let config = LiveConfig {
+        title: "older".into(),
+        clock_domain: ClockDomain::Replay,
+        ..LiveConfig::default()
+    };
+    let mut session = start_live(
+        paced,
+        services.clone(),
+        config,
+        Some(factory),
+        os_seeded_rng(),
+    )
+    .unwrap_or_else(|e| fail(format!("older session: {e}")));
+    let meeting = session.meeting();
+    let events = session
+        .take_events()
+        .unwrap_or_else(|| fail("no event stream"));
+    while let Ok(e) = events.recv() {
+        if matches!(e, RuntimeEvent::Ended(_)) {
+            break;
+        }
+    }
+    session
+        .wait()
+        .unwrap_or_else(|e| fail(format!("older session: {e}")));
+    meeting
+}
+
+/// T12.39: the older meeting's summary, prepared as the app prepares a local one
+/// (`host::summary_plan`, `host::prepare_summary_on`) on the card when `gpu`.
+fn older_summary(
+    models: &ModelDir,
+    model: Option<&str>,
+    gpu: bool,
+    clock: earshot_runtime::SharedClock,
+) -> host::PreparedSummary {
+    let hardware = earshot_runtime::hardware();
+    let request = host::SummaryRequest {
+        local_model: model.map(str::to_owned),
+        graphics_memory: hardware
+            .gpus
+            .iter()
+            .filter(|g| g.integrated != Some(true))
+            .filter_map(|g| g.dedicated_memory)
+            .max(),
+        ..host::SummaryRequest::default()
+    };
+    let plan = host::summary_plan(&request, earshot_store::total_memory(), gpu, models)
+        .unwrap_or_else(|e| fail(format!("summary plan: {e:?}")));
+    let prepared = host::prepare_summary_on(&plan, models, clock, &host::dll_search_dirs(), gpu)
+        .unwrap_or_else(|e| fail(format!("summary setup: {e:?}")))
+        .unwrap_or_else(|| fail("no local summary model installed (fetch-models --set summary)"));
+    match &prepared.local {
+        Some((_, asked)) if *asked == gpu => prepared,
+        _ => fail("the summary is not where --summary-on asked"),
+    }
+}
+
+/// T12.39: summaries of `meeting`, one after another from `go` until `stop`; per summary its wall
+/// time (load included), whether it was stored, its backend and load time from its own report, and
+/// whether the card was refused. Never its text; an error by its kind only.
+fn summary_loop(
+    services: Services,
+    meeting: earshot_core::identity::EntityId,
+    prepared: host::PreparedSummary,
+    go: std::sync::mpsc::Receiver<()>,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<Vec<Value>> {
+    std::thread::Builder::new()
+        .name("live_lag-summary".into())
+        .spawn(move || {
+            let mut runs = Vec::new();
+            if go.recv().is_err() {
+                return runs;
+            }
+            let mut rng = os_seeded_rng();
+            while !stop.load(Ordering::SeqCst) {
+                let began = Instant::now();
+                let result =
+                    prepared
+                        .service
+                        .summarize(&services, meeting, &mut *rng, &CancelToken::new());
+                let took = began.elapsed().as_secs_f64();
+                runs.push(match result {
+                    Ok(outcome) => match &outcome.report {
+                        earshot_runtime::summary::SummaryRunReport::Local(local) => json!({
+                            "took_s": took,
+                            "stored": true,
+                            "backend": local.backend.name(),
+                            "gpu_refused": local.gpu_refused.is_some(),
+                            "load_s": local.load_time.as_secs_f64(),
+                            "chunks": local.chunks,
+                        }),
+                        _ => json!({ "took_s": took, "stored": true, "backend": "not local" }),
+                    },
+                    Err(e) => json!({
+                        "took_s": took,
+                        "stored": false,
+                        "error": format!("{e:?}").split(['(', ' ', '{']).next().unwrap_or("?"),
+                    }),
+                });
+            }
+            runs
+        })
+        .unwrap_or_else(|e| fail(format!("summary thread: {e}")))
+}
+
+/// The summaries' report: every run and the median wall time.
+fn summaries_json(mode: SummaryMode, gpu: bool, model: Option<&str>, runs: &[Value]) -> Value {
+    let mut took: Vec<f64> = runs
+        .iter()
+        .filter_map(|r| r.get("took_s").and_then(Value::as_f64))
+        .collect();
+    took.sort_by(f64::total_cmp);
+    json!({
+        "mode": format!("{mode:?}"),
+        "on": if gpu { "gpu" } else { "cpu" },
+        "model": model,
+        "count": runs.len(),
+        "took_s": spread(&took),
+        "runs": runs,
+    })
+}
+
+/// The card's memory once a second from a running `nvidia-smi -l 1` (one child for the run, read
+/// on its own thread); `None` when it cannot start.
+struct CardLog {
+    child: std::process::Child,
+    reader: std::thread::JoinHandle<Vec<(f64, f64)>>,
+}
+
+impl CardLog {
+    fn start() -> Option<Self> {
+        use std::io::BufRead;
+        let mut child = Command::new("nvidia-smi")
+            .args([
+                "--query-gpu=memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+                "-l",
+                "1",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let out = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            std::io::BufReader::new(out)
+                .lines()
+                .map_while(Result::ok)
+                .filter_map(|l| {
+                    let mut parts = l.split(',').map(|p| p.trim().parse::<f64>().ok());
+                    Some((parts.next()??, parts.next()??))
+                })
+                .collect()
+        });
+        Some(Self { child, reader })
+    }
+
+    /// Stops the child this run started (by its own handle) and reports the readings in GiB.
+    fn finish(mut self) -> Value {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let readings = self.reader.join().unwrap_or_default();
+        let peak = readings.iter().map(|r| r.0).fold(0.0f64, f64::max);
+        let total = readings.iter().map(|r| r.1).fold(0.0f64, f64::max);
+        json!({
+            "readings": readings.len(),
+            "first_gib": readings.first().map(|r| r.0 / 1024.0),
+            "peak_used_gib": peak / 1024.0,
+            "total_gib": total / 1024.0,
+        })
+    }
+}
+
 fn main() {
     // NPU compiles in a helper, as in the app (T12.12b).
     let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
@@ -1384,6 +1632,60 @@ fn main() {
     let clock: earshot_runtime::SharedClock = Arc::new(earshot_runtime::SystemClock);
     let services = Services::new(store, data, Arc::clone(&clock)).unwrap_or_else(|e| fail(e));
 
+    // T12.39 (evaluation only): an older meeting's summary beside the replay, or alone.
+    let card = args.summary.and_then(|_| CardLog::start());
+    let mut summary_run = None;
+    if let Some(mode) = args.summary.filter(|m| *m != SummaryMode::Off) {
+        let older = older_meeting(
+            &services,
+            host::live_factory(&models, model, &order, Arc::clone(&clock), false),
+            &mic,
+            &reference,
+        );
+        let prepared = older_summary(
+            &models,
+            args.summary_model.as_deref(),
+            args.summary_gpu,
+            Arc::clone(&clock),
+        );
+        let (go, go_rx) = std::sync::mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = summary_loop(services.clone(), older, prepared, go_rx, Arc::clone(&stop));
+        if mode == SummaryMode::Alone {
+            let first = host_reading();
+            let _ = go.send(());
+            std::thread::sleep(length);
+            stop.store(true, Ordering::SeqCst);
+            let runs = thread
+                .join()
+                .unwrap_or_else(|_| fail("the summary thread panicked"));
+            let end = host_reading();
+            let report = json!({
+                "audio": args.audio,
+                "length_s": length.as_secs_f64(),
+                "requested_backend": format!("{:?}", args.backend),
+                "summaries": summaries_json(mode, args.summary_gpu, args.summary_model.as_deref(), &runs),
+                "card": card.map(CardLog::finish),
+                "host": {
+                    "machine_load_percent": [first.map(|r| r.0), end.map(|r| r.0)],
+                    "peak_private_gib": end.map(|r| r.2 / 1024.0 / 1024.0 / 1024.0),
+                    "logical_cores": std::thread::available_parallelism().map_or(0, std::num::NonZero::get),
+                },
+            });
+            let text = serde_json::to_string_pretty(&report).unwrap_or_else(|e| fail(e));
+            println!("{text}");
+            if let Some(out) = &args.out {
+                if let Some(dir) = out.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                std::fs::write(out, &text).unwrap_or_else(|e| fail(e));
+            }
+            let _ = std::fs::remove_dir_all(&scratch);
+            return;
+        }
+        summary_run = Some((mode, thread, stop, go));
+    }
+
     let logs = [
         Arc::new(Mutex::new(Vec::new())),
         Arc::new(Mutex::new(Vec::new())),
@@ -1403,8 +1705,13 @@ fn main() {
     let state = Arc::new(PaceState::default());
     let started: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let start_flag = Arc::clone(&started);
+    let go = summary_run.as_ref().map(|r| r.3.clone());
     let paced = Paced::new(source, pace, true, Arc::clone(&state)).on_start(move || {
         *start_flag.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+        // The hang-up: the older meeting's summary starts as the newer meeting does.
+        if let Some(go) = go {
+            let _ = go.send(());
+        }
     });
     let preview_sessions = Arc::new(Mutex::new(Vec::new()));
     // What the app would decide on this machine, whatever this run does.
@@ -1486,7 +1793,12 @@ fn main() {
         .unwrap_or_else(|e| fail(format!("host reading thread: {e}")));
     loop {
         match events.recv_timeout(Duration::from_millis(200)) {
-            Ok(RuntimeEvent::Ended(_)) => break,
+            Ok(RuntimeEvent::Ended(_)) => {
+                if let Some(r) = &summary_run {
+                    r.2.store(true, Ordering::SeqCst);
+                }
+                break;
+            }
             Ok(RuntimeEvent::LiveBackend { track, backend, .. }) => {
                 backends.push(json!({
                     "track": format!("{track:?}"),
@@ -1571,6 +1883,15 @@ fn main() {
     let outcome = session
         .wait()
         .unwrap_or_else(|e| fail(format!("session: {e}")));
+    let summaries = summary_run.map(|(mode, thread, stop, go)| {
+        stop.store(true, Ordering::SeqCst);
+        drop(go);
+        let runs = thread
+            .join()
+            .unwrap_or_else(|_| fail("the summary thread panicked"));
+        summaries_json(mode, args.summary_gpu, args.summary_model.as_deref(), &runs)
+    });
+    let card = card.map(CardLog::finish);
     drop(stop_readings);
     let readings = sampler
         .join()
@@ -1603,6 +1924,9 @@ fn main() {
         "requested_backend": format!("{:?}", args.backend),
         "simulated_card_gib": simulated.as_ref().and_then(simulated_card_gib),
         "max_piece_s": args.max_piece,
+        "summary": args.summary.map(|m| format!("{m:?}")),
+        "summaries": summaries,
+        "card": card,
         "pieces": format!("{:?}", stretch_pieces(args.max_piece).unwrap_or_else(|e| fail(e))),
         "live_backends": backends,
         "onnx_placement": *evidence.lock().unwrap_or_else(PoisonError::into_inner),
@@ -2049,6 +2373,36 @@ mod tests {
         drop(records);
         let p = streaming_previews(&empty_models(), PreviewChoice::Everyone, 3, &log);
         assert!(p.own_voice.is_some_and(|l| l(&npu_track()).is_err()));
+    }
+
+    #[test]
+    fn live_lag_parses_the_older_summary_and_refuses_it_outside_a_replay() {
+        let a = parse(&[]).unwrap();
+        assert_eq!(a.summary, None);
+        assert!(!a.summary_gpu);
+        let a = parse(&["--summary", "off"]).unwrap();
+        assert_eq!(a.summary, Some(SummaryMode::Off));
+        let a = parse(&[
+            "--summary",
+            "beside",
+            "--summary-on",
+            "gpu",
+            "--summary-model",
+            "qwen3.5-4b-q4_k_m",
+        ])
+        .unwrap();
+        assert_eq!(a.summary, Some(SummaryMode::Beside));
+        assert!(a.summary_gpu);
+        assert_eq!(a.summary_model.as_deref(), Some("qwen3.5-4b-q4_k_m"));
+        assert_eq!(
+            parse(&["--summary", "alone"]).unwrap().summary,
+            Some(SummaryMode::Alone)
+        );
+        assert!(parse(&["--summary", "sometimes"]).is_err());
+        assert!(parse(&["--summary", "beside", "--summary-on", "npu"]).is_err());
+        assert!(parse(&["--summary", "beside", "--memory"]).is_err());
+        assert!(parse(&["--summary-on", "gpu"]).is_err());
+        assert!(parse(&["--summary", "off", "--summary-model", "x"]).is_err());
     }
 
     #[test]
