@@ -348,9 +348,14 @@ fn jobs_cancel_after_the_job_finished_changes_nothing() {
             "{last:?}"
         );
         assert!(rx.try_recv().is_err(), "no second terminal event");
-        // A new job afterwards gets a token of its own, not the old one.
-        let (fake, go) = Fake::new(false);
-        let (jobs, rx) = runner(fake);
+        // On the same runner: a job cancelled while it runs, then a new job, which gets a token
+        // of its own (a reused, already-set token would cancel it at once).
+        jobs.start(&svc, m, job).unwrap();
+        wait_for_the_work(&rx, job);
+        assert_eq!(jobs.cancel(m), Some(job));
+        let (_, last) = until_terminal(&rx);
+        assert!(matches!(last, JobEvent::Cancelled { .. }), "{last:?}");
+        jobs.join();
         jobs.start(&svc, m, job).unwrap();
         go.send(()).unwrap();
         let (_, last) = until_terminal(&rx);

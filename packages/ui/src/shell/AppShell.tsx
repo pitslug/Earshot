@@ -405,6 +405,13 @@ export function AppShell({
   // Jobs on stored meetings, followed here so an ending is seen whatever meeting is shown.
   const [jobs, setJobs] = useState<Record<string, JobView>>({});
   const jobSeq = useRef(0);
+  // A job the user asked to stop (its Cancel, or a Stop and delete) says so until its last event.
+  const markJobCancelling = useCallback((id: string, cancelling: boolean) => {
+    setJobs((all) => {
+      const job = all[id];
+      return job === undefined || isTerminal(job.last) ? all : { ...all, [id]: { ...job, cancelling } };
+    });
+  }, []);
   // Whether an update waits for the user (available, downloading or ready): a mark beside Settings.
   const [updateWaiting, setUpdateWaiting] = useState(false);
 
@@ -728,6 +735,9 @@ export function AppShell({
     if (deleteRunning.current) return;
     deleteRunning.current = true;
     setDeletePending(true);
+    // A Stop and delete cancels the meeting's job first: its notice says it is stopping.
+    const stopsJob = ask === "Retranscribing" || ask === "Resummarising";
+    if (stopsJob) markJobCancelling(item.id, true);
     try {
       await ipc.deleteMeeting(item.id, stopsWork(ask));
       setDeleting(null);
@@ -741,6 +751,10 @@ export function AppShell({
       }
       refresh();
     } catch (e) {
+      // Only a deletion still waiting for the cancelled job (`meeting_stopping`) leaves it stopping;
+      // any other refusal stopped nothing.
+      const stillStopping = e instanceof IpcFailure && e.error.kind === "meeting_stopping";
+      if (stopsJob && !stillStopping) markJobCancelling(item.id, false);
       setDeleting(null);
       setDeleteError(failureText(e));
     } finally {
@@ -1248,14 +1262,9 @@ export function AppShell({
               })
             }
             onJobCancel={(id) => {
-              const mark = (cancelling: boolean) =>
-                setJobs((all) => {
-                  const job = all[id];
-                  return job === undefined || isTerminal(job.last) ? all : { ...all, [id]: { ...job, cancelling } };
-                });
-              mark(true);
+              markJobCancelling(id, true);
               // The job's last event says how it ended; a cancel that could not be sent leaves it running.
-              ipc.cancelJob(id).catch(() => mark(false));
+              ipc.cancelJob(id).catch(() => markJobCancelling(id, false));
             }}
           />
         )}

@@ -21,6 +21,7 @@ import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppShell } from "../shell/AppShell";
+import { DELETE_COPY } from "../shell/deleteCopy";
 import { COPIED_MS, handoverLine, savedText, summaryMarkdown } from "./detail";
 import { type JobView, MeetingDetailView } from "./MeetingDetailView";
 
@@ -1150,6 +1151,46 @@ describe("MeetingDetailView", () => {
     // The cancelled job never ends on its own afterwards.
     act(() => timer.advance(10 * POST_STEP_MS));
     expect(screen.queryByText(/New summary ready/)).toBeNull();
+  });
+
+  it("shows the job as stopping while a Stop and delete waits for it, also after a still-stopping refusal", async () => {
+    const { user, ipc } = await setup();
+    await screen.findByText(/TL;DR/);
+    let refuse = () => {};
+    ipc.deleteMeeting = async () => {
+      await new Promise<void>((resolve) => {
+        refuse = resolve;
+      });
+      throw new IpcFailure({ kind: "meeting_stopping", message: DELETE_COPY.still_stopping, retryable: true });
+    };
+    await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
+    await user.click(within(await accessibleDialog()).getByRole("button", { name: "Stop and delete" }));
+    const stopping = "Stopping. This can take a moment if a model is still working or loading.";
+    expect(screen.getByText(stopping)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel the new summary", hidden: true })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await act(async () => refuse());
+    expect(await screen.findByText("The meeting was not deleted")).toBeInTheDocument();
+    // The job was cancelled and has not ended yet: still stopping.
+    expect(screen.getByText(stopping)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel the new summary" })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("puts the job back as running when a Stop and delete is refused for another reason", async () => {
+    const { user, ipc } = await setup();
+    await screen.findByText(/TL;DR/);
+    ipc.deleteMeeting = async () => {
+      throw new IpcFailure({ kind: "store", message: "The meeting could not be deleted.", retryable: true });
+    };
+    await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
+    await user.click(within(await accessibleDialog()).getByRole("button", { name: "Stop and delete" }));
+    expect(await screen.findByText("The meeting was not deleted")).toBeInTheDocument();
+    expect(screen.getByText("Writing a new summary")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel the new summary" })).not.toHaveAttribute("aria-disabled");
   });
 
   describe("cancelling a job (T12.41)", () => {
