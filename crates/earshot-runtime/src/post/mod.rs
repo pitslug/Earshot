@@ -194,7 +194,7 @@ use earshot_core::model::{
 use earshot_core::pipeline::FinalPassRequest;
 use earshot_core::voiceprint::{
     EnrolmentConfig, InMemoryVoiceprintRepo, MatchOutcome, VoiceprintError, VoiceprintRepo,
-    calibrated_threshold, enroll, enroll_me, match_embedding_with_report, me_person,
+    calibrated_threshold, enroll_me, match_embedding_with_report, me_person,
 };
 use earshot_store::read_flac;
 use rand_core::Rng;
@@ -1833,26 +1833,16 @@ where
                 && let Some(k) = meeting_diar.me()
             {
                 let me = &meeting_diar.speakers[k];
-                // The reused "Me" row's person (the user may have re-linked it), else the
-                // user's person.
-                let result = match reusable_me.as_ref().and_then(|(_, person, _)| *person) {
-                    Some(person) => enroll(
-                        tx,
-                        person,
-                        std::slice::from_ref(&me.centroid),
-                        me.speech,
-                        &config.enrolment,
-                        &mut stamp,
-                    ),
-                    None => enroll_me(
-                        tx,
-                        std::slice::from_ref(&me.centroid),
-                        me.speech,
-                        &config.enrolment,
-                        &mut stamp,
-                    )
-                    .map(|(_, voiceprint)| voiceprint),
-                };
+                // Always the user's person: a Me row is linked to no one else (`link_speaker`
+                // refuses it), so nothing is enrolled into another person.
+                let result = enroll_me(
+                    tx,
+                    std::slice::from_ref(&me.centroid),
+                    me.speech,
+                    &config.enrolment,
+                    &mut stamp,
+                )
+                .map(|(_, voiceprint)| voiceprint);
                 match result {
                     Ok(voiceprint) => enrolled_me = Some(voiceprint),
                     Err(VoiceprintError::NotEnoughSpeech { needed, got }) => {
