@@ -2693,6 +2693,74 @@ fn backends_own_encoders_switch_is_used_by_no_shipped_code() {
     assert_eq!(reads.len(), 1, "{reads:?}");
 }
 
+/// T12.59: the card holder (`live_lag --hold-card-gib`) is evaluation only: nothing shipped
+/// fills the card with sessions it never uses.
+#[test]
+fn backends_card_hold_is_used_by_no_shipped_code() {
+    for name in [
+        concat!("hold_card_", "for_evaluation"),
+        concat!("CardHold", "Load"),
+        concat!("card_hold_", "step"),
+    ] {
+        let found = shipped_files_naming(name);
+        assert!(found.is_empty(), "shipped code names {name}: {found:?}");
+    }
+}
+
+/// T12.59: the holder ends under the free memory asked by less than one small load: large loads
+/// while one more stays above the target, then small ones until it is at most the target. A
+/// simulated card with fixed costs per load, clock-free.
+#[test]
+fn backends_card_hold_step_ends_just_under_the_target() {
+    use crate::backends::{CardHoldStep, card_hold_step};
+    const MIB: u64 = 1024 * 1024;
+    let (large, small) = (2_330 * MIB, 470 * MIB);
+    for (free, target) in [
+        (15_000 * MIB, 6_144 * MIB),
+        (15_000 * MIB, 4_096 * MIB),
+        (15_000 * MIB, 14_900 * MIB),
+        (6_000 * MIB, 6_144 * MIB),
+        (9_000 * MIB, 4_000 * MIB),
+    ] {
+        let mut now = free;
+        let mut steps = Vec::new();
+        loop {
+            match card_hold_step(now, target, large) {
+                CardHoldStep::Done => break,
+                CardHoldStep::Large => now -= large,
+                CardHoldStep::Small => now -= small,
+            }
+            steps.push(now);
+            assert!(steps.len() < 64, "no end: {free} {target}");
+        }
+        assert!(now <= target, "{free} {target}: ended at {now}");
+        if free > target {
+            assert!(
+                now + small > target,
+                "{free} {target}: ended {now}, a small load under"
+            );
+        } else {
+            assert!(
+                steps.is_empty(),
+                "a card already under the target loads nothing"
+            );
+        }
+    }
+    // Only a large load that stays above the target is taken.
+    assert_eq!(
+        card_hold_step(10 * GIB, 5 * GIB, 2 * GIB),
+        CardHoldStep::Large
+    );
+    assert_eq!(
+        card_hold_step(7 * GIB, 5 * GIB, 2 * GIB),
+        CardHoldStep::Small
+    );
+    assert_eq!(
+        card_hold_step(5 * GIB, 5 * GIB, 2 * GIB),
+        CardHoldStep::Done
+    );
+}
+
 /// T12.23: nothing shipped loads the streaming model (licence agreed for evaluation only); only
 /// examples may. Its one [`crate::live::StreamingPreview`] is private to `backends.rs` and made
 /// only by that loader, so nothing shipped can give a live session a streaming preview either.

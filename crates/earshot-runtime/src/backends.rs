@@ -1898,6 +1898,142 @@ pub fn own_encoders_for_evaluation() {
     OWN_ENCODERS.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// The model [`hold_card_for_evaluation`] fills the card with in large steps (about 2.3 GiB each).
+pub const CARD_HOLD_LARGE: &str = "parakeet-tdt-0.6b-v2";
+/// The model it fills the rest with (about 0.5 GiB each), so the card ends within one of these
+/// under the free memory asked.
+pub const CARD_HOLD_SMALL: &str = "parakeet-tdt-110m";
+/// At most this many loads in one hold, so a load that takes nothing measurable cannot loop.
+const CARD_HOLD_MAX_LOADS: usize = 64;
+
+/// The next load of a card hold ([`card_hold_step`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CardHoldStep {
+    /// Load [`CARD_HOLD_LARGE`].
+    Large,
+    /// Load [`CARD_HOLD_SMALL`].
+    Small,
+    /// The card's free memory is at most the target.
+    Done,
+}
+
+/// The rule of [`hold_card_for_evaluation`]: large loads while one more still leaves the free
+/// memory above `target`, then small loads until it is at most `target`, so the hold ends under
+/// the target by less than one small load. `large` is what one large load is expected to take
+/// (bytes).
+pub(crate) fn card_hold_step(free: u64, target: u64, large: u64) -> CardHoldStep {
+    if free <= target {
+        CardHoldStep::Done
+    } else if free.saturating_sub(large) > target {
+        CardHoldStep::Large
+    } else {
+        CardHoldStep::Small
+    }
+}
+
+/// One load of a card hold: the model and the card's free memory (bytes) before and after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardHoldLoad {
+    /// The model loaded ([`CARD_HOLD_LARGE`] or [`CARD_HOLD_SMALL`]).
+    pub model: &'static str,
+    /// Free memory before the load, as read.
+    pub free_before: u64,
+    /// Free memory after it, as read.
+    pub free_after: u64,
+}
+
+/// What [`hold_card_for_evaluation`] holds: own-encoder CUDA sessions, kept until dropped.
+pub struct CardHold {
+    /// The sessions, held only to keep their memory on the card.
+    held: Vec<ParakeetTranscriber>,
+    /// Every load, in order.
+    pub loads: Vec<CardHoldLoad>,
+    /// The card's free memory after the last load (bytes), as read.
+    pub free_left: Option<u64>,
+    /// Why the hold stopped before reaching the target, when it did (a load that failed, a free
+    /// reading that failed, or too many loads).
+    pub stopped: Option<String>,
+}
+
+impl CardHold {
+    /// How many sessions are held.
+    #[must_use]
+    pub fn sessions(&self) -> usize {
+        self.held.len()
+    }
+}
+
+/// Evaluation only (T12.59, `live_lag --hold-card-gib`): fills the graphics card with CUDA
+/// Parakeet sessions, each with its own encoder ([`own_encoders_for_evaluation`] is set for this
+/// process first, so nothing is shared), until `free()` (the card's free memory in bytes, read
+/// after each load) is at most `target_free`, by [`card_hold_step`]: [`CARD_HOLD_LARGE`] while one
+/// more leaves the card above the target, then [`CARD_HOLD_SMALL`]. It makes the card look like a
+/// smaller one in free memory only, for a run in another process. ONNX Runtime must be
+/// initialised with its CUDA library ([`init_onnx`]). No shipped code calls it (pinned by
+/// `backends_card_hold_is_used_by_no_shipped_code`).
+///
+/// # Errors
+/// The first free reading failed, or a hold model is unknown to this build. A load failing later
+/// stops the hold with the reason in [`CardHold::stopped`].
+pub fn hold_card_for_evaluation(
+    models: &ModelDir,
+    target_free: u64,
+    mut free: impl FnMut() -> Option<u64>,
+) -> Result<CardHold, String> {
+    own_encoders_for_evaluation();
+    let parakeet = |name: &str| match asr_model(name) {
+        Ok(AsrModel::Parakeet(p)) => Ok(p),
+        _ => Err(format!("{name} is not a Parakeet model of this build")),
+    };
+    let (large_model, small_model) = (parakeet(CARD_HOLD_LARGE)?, parakeet(CARD_HOLD_SMALL)?);
+    // Expected costs until one load of each is measured.
+    let mut large = 2_500 * 1024 * 1024u64;
+    let mut now = free().ok_or("the card's free memory cannot be read")?;
+    let mut hold = CardHold {
+        held: Vec::new(),
+        loads: Vec::new(),
+        free_left: Some(now),
+        stopped: None,
+    };
+    loop {
+        let step = card_hold_step(now, target_free, large);
+        let model = match step {
+            CardHoldStep::Done => break,
+            CardHoldStep::Large => large_model,
+            CardHoldStep::Small => small_model,
+        };
+        if hold.loads.len() >= CARD_HOLD_MAX_LOADS {
+            hold.stopped = Some(format!("stopped after {CARD_HOLD_MAX_LOADS} loads"));
+            break;
+        }
+        let session = match load_parakeet(models, model, Accelerator::Cuda, Some(1)) {
+            Ok(s) => s,
+            Err(e) => {
+                hold.stopped = Some(format!("{}: {e}", model.name));
+                break;
+            }
+        };
+        hold.held.push(session);
+        let Some(after) = free() else {
+            hold.stopped = Some("the card's free memory cannot be read".into());
+            hold.free_left = None;
+            break;
+        };
+        let took = now.saturating_sub(after);
+        if step == CardHoldStep::Large && took > 0 {
+            large = took;
+        }
+        hold.loads.push(CardHoldLoad {
+            model: model.name,
+            free_before: now,
+            free_after: after,
+        });
+        now = after;
+        hold.free_left = Some(now);
+    }
+    Ok(hold)
+}
+
 /// [`load_parakeet`] on QNN: the NPU conversion with its documented partition, the encoder from
 /// a context model compiled on this computer when there is a current one, else compiled now and
 /// kept for the next load ([`crate::npu_compiled`], T12.12a). However the encoder loads, the same
