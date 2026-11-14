@@ -32,6 +32,7 @@ import {
   type TranscriptRow,
 } from "./ipc";
 import { dictionaryWord } from "../detail/dictionaryWord";
+import { DELETE_COPY } from "../shell/deleteCopy";
 import { marksAfterEdit, splitPunctuation, tokensOf, withWord, wordListOf, wordsToOffer } from "./mockWords";
 import {
   ignoredVoice,
@@ -159,14 +160,8 @@ export const POST_STEPS: PostStep[] = [
 /** Time between scripted post-meeting steps (and before the summary). */
 export const POST_STEP_MS = 400;
 
-/** The refusals of a meeting deletion, as `deletion.rs` words them (hand-kept, T12.38). */
-export const MOCK_DELETE_COPY = {
-  recording: "This meeting is still recording. Stop the recording first, then delete the meeting.",
-  finishing:
-    "This meeting is still being finished. Delete it again to stop that work and delete the meeting.",
-  retranscribing: "This meeting is being transcribed again. Delete it when that has finished.",
-  resummarising: "This meeting is being summarised again. Delete it when that has finished.",
-} as const;
+/** The refusals of a meeting deletion (T12.38): the UI's one copy of `deletion.rs`'s words. */
+export const MOCK_DELETE_COPY = DELETE_COPY;
 
 const DEFAULT_SUMMARY: SummaryEvent = {
   kind: "Stored",

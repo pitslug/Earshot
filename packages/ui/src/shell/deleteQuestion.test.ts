@@ -1,13 +1,21 @@
-// T12.38: the delete question and the mock say what `deletion.rs` says, from one table
+// T12.38: the UI's one copy of the deletion refusals (`deleteCopy.ts`, read by the delete
+// question and the mock) says what `deletion.rs` says, pinned to one table
 // (`fixtures/ui/delete_copy_cases.json`, also run by the desktop's Rust tests).
 
 import { describe, expect, it } from "vitest";
 
 import table from "../../../../fixtures/ui/delete_copy_cases.json";
 import { MOCK_DELETE_COPY } from "../ipc";
+import { DELETE_COPY } from "./deleteCopy";
 import { deleteQuestion } from "./deleteQuestion";
 
 describe("delete question copy", () => {
+  it("is the shared table, word for word", () => {
+    const { _comment: _, ...copy } = table;
+    expect(DELETE_COPY).toEqual(copy);
+    expect(MOCK_DELETE_COPY).toBe(DELETE_COPY);
+  });
+
   it("says why a meeting cannot be deleted now in the app's words", () => {
     expect(deleteQuestion("Recording")).toEqual({ text: table.recording, confirm: null });
     expect(deleteQuestion("NeedsRestart")).toEqual({ text: table.needs_restart, confirm: null });
@@ -17,19 +25,10 @@ describe("delete question copy", () => {
     expect(deleteQuestion("StopsFinishing").confirm).toBe("Stop and delete");
   });
 
-  it("keeps the mock's refusals in step", () => {
-    expect(MOCK_DELETE_COPY).toEqual({
-      recording: table.recording,
-      finishing: table.finishing,
-      retranscribing: table.retranscribing,
-      resummarising: table.resummarising,
-    });
-  });
-
   it("uses no em dash and no run of spaces", () => {
     const all = (["Free", "StopsFinishing", "Recording", "Retranscribing", "Resummarising", "NeedsRestart"] as const)
       .map((a) => deleteQuestion(a).text)
-      .concat(Object.values(table).filter((v) => typeof v === "string"));
+      .concat(Object.values(DELETE_COPY));
     for (const text of all) {
       expect(text).not.toMatch(/—|  /);
     }

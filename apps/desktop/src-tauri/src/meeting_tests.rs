@@ -3006,6 +3006,7 @@ fn meeting_delete_of_work_slow_to_stop_is_refused_as_retryable_and_cancels_it() 
     let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
     d.stop().unwrap();
     inside.recv_timeout(MEET_GUARD).unwrap();
+    assert!(d.owns(&meeting));
     let e = delete_now(&svc, &d, &meeting, true, Duration::from_millis(200)).unwrap_err();
     assert_eq!(e.kind, "meeting_stopping");
     assert_eq!(e.message, crate::deletion::STILL_STOPPING);
@@ -3018,4 +3019,63 @@ fn meeting_delete_of_work_slow_to_stop_is_refused_as_retryable_and_cancels_it() 
     assert_eq!(delete_ask(&svc, &d, &meeting), DeleteAsk::Free);
     delete_now(&svc, &d, &meeting, false, MEET_GUARD).unwrap();
     assert!(is_gone(&svc, &meeting));
+}
+
+#[test]
+fn meeting_delete_between_the_recording_saved_and_its_cancel_opening_stops_it() {
+    // Review of T12.38: the session swaps its lease when the recording is saved, before the
+    // meeting's thread hears it and opens its cancel. The thread is held in that moment (its call
+    // signal blocks), so the question must still say the work stops, never "restart", and a
+    // deletion must wait for the thread rather than delete under it.
+    use crate::deletion::DeleteAsk;
+    let dir = TempDir::new("delete-gap");
+    let svc = services(&dir);
+    let prepare = FakePrepare::new(Script::Ends);
+    let hold = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (held_tx, held) = mpsc::channel::<()>();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let signal_hold = Arc::clone(&hold);
+    let (held_tx, release_rx) = (Mutex::new(held_tx), Mutex::new(release_rx));
+    *prepare.call_signal.lock().unwrap() = Some(Box::new(move || {
+        if signal_hold.swap(false, Ordering::SeqCst) {
+            let _ = held_tx.lock().unwrap().send(());
+            let _ = release_rx.lock().unwrap().recv_timeout(MEET_GUARD);
+        }
+        None
+    }));
+    let (d, rx) = driver(prepare);
+    let meeting = d.start(&svc, request(CaptureMode::Call)).unwrap();
+    hold.store(true, Ordering::SeqCst);
+    held.recv_timeout(MEET_GUARD).unwrap();
+    // The session saves the recording while the meeting's thread is held.
+    let deadline = Instant::now() + MEET_GUARD;
+    while svc.meeting_activity(id_of(&meeting)).unwrap()
+        == Some(earshot_runtime::MeetingActivity::Recording)
+    {
+        assert!(Instant::now() < deadline, "the recording was never saved");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!d.is_finishing(&meeting), "the cancel is not open yet");
+    assert!(d.owns(&meeting));
+    assert_eq!(delete_ask(&svc, &d, &meeting), DeleteAsk::StopsFinishing);
+
+    let deleting = {
+        let (svc, d, meeting) = (svc.clone(), d.clone(), meeting.clone());
+        std::thread::spawn(move || delete_now(&svc, &d, &meeting, true, MEET_GUARD))
+    };
+    several_looks();
+    assert!(
+        !is_gone(&svc, &meeting),
+        "nothing is deleted under the meeting's thread"
+    );
+    release.send(()).unwrap();
+    deleting.join().unwrap().unwrap();
+    assert!(is_gone(&svc, &meeting));
+    let events = until_summary(&rx);
+    assert!(matches!(
+        events.last(),
+        Some(MeetingEvent::Summary { meeting: m, .. }) if *m == meeting
+    ));
+    d.join();
+    assert!(!d.owns(&meeting));
 }

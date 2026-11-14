@@ -98,7 +98,9 @@ pub fn ask(
             JobKind::Resummarise => DeleteAsk::Resummarising,
         });
     }
-    if driver.is_finishing(&meeting.to_string()) {
+    // Not recording, and its thread runs: past its recording, including the moment between the
+    // session's lease swap and the thread opening its cancel (review of T12.38).
+    if driver.owns(&meeting.to_string()) {
         return Ok(DeleteAsk::StopsFinishing);
     }
     Ok(match activity {
@@ -151,24 +153,29 @@ pub fn delete(
             Err(refused("meeting_finishing", FINISHING, true))
         }
         DeleteAsk::StopsFinishing => {
+            // Bounded, not cancellable: a window closed meanwhile does not end it early, and the
+            // command returns within `wait` plus one try whatever happens (review of T12.38).
             let id = meeting.to_string();
-            driver.cancel_finishing(&id);
             let started = Instant::now();
             loop {
-                match svc.delete_meeting(meeting) {
-                    Ok(_) => return Ok(()),
-                    Err(RuntimeError::MeetingBusy(_)) => {}
-                    Err(e) => return Err(e.into()),
-                }
-                // The meeting's thread has ended (it lets go of the meeting before it ends), so
-                // work that still holds it was left behind: no need to wait any longer.
-                if !driver.is_finishing(&id)
-                    && matches!(
+                // Again on every round: in the moment before the meeting's thread opens its
+                // cancel there is nothing to reach yet, and a second cancel changes nothing.
+                driver.cancel_finishing(&id);
+                // Only once the meeting's thread has ended: it may not hold a lease yet, and it
+                // lets go of its own leases before it ends.
+                if !driver.owns(&id) {
+                    match svc.delete_meeting(meeting) {
+                        Ok(_) => return Ok(()),
+                        Err(RuntimeError::MeetingBusy(_)) => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                    // Work that still holds it was left behind: no need to wait any longer.
+                    if matches!(
                         svc.meeting_activity(meeting)?,
                         Some(MeetingActivity::Processing | MeetingActivity::Waiting)
-                    )
-                {
-                    return Err(refused("meeting_needs_restart", NEEDS_RESTART, false));
+                    ) {
+                        return Err(refused("meeting_needs_restart", NEEDS_RESTART, false));
+                    }
                 }
                 if started.elapsed() >= wait {
                     return Err(refused("meeting_stopping", STILL_STOPPING, true));

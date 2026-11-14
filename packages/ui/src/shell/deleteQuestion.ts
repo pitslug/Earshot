@@ -2,6 +2,7 @@
 // (`deletion::ask` in Rust). A meeting that cannot go now gets the reason and a Close button only.
 
 import type { DeleteAsk } from "../ipc/ipc";
+import { DELETE_COPY } from "./deleteCopy";
 
 /** The question's text and its confirming button (`null`: nothing to confirm). */
 export type DeleteQuestion = { text: string; confirm: string | null };
@@ -24,27 +25,13 @@ export function deleteQuestion(ask: DeleteAsk): DeleteQuestion {
         confirm: "Stop and delete",
       };
     case "Recording":
-      return {
-        text: "This meeting is still recording. Stop the recording first, then delete the meeting.",
-        confirm: null,
-      };
+      return { text: DELETE_COPY.recording, confirm: null };
     case "Retranscribing":
-      return {
-        text: "This meeting is being transcribed again. Delete it when that has finished.",
-        confirm: null,
-      };
+      return { text: DELETE_COPY.retranscribing, confirm: null };
     case "Resummarising":
-      return {
-        text: "This meeting is being summarised again. Delete it when that has finished.",
-        confirm: null,
-      };
+      return { text: DELETE_COPY.resummarising, confirm: null };
     case "NeedsRestart":
-      return {
-        text:
-          "Earshot could not stop earlier work on this meeting, and that work still holds it. " +
-          "Restart Earshot, then delete the meeting.",
-        confirm: null,
-      };
+      return { text: DELETE_COPY.needs_restart, confirm: null };
   }
 }
 
