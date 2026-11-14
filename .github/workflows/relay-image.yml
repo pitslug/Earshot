@@ -1,0 +1,60 @@
+# The sync relay's image (T11.2b): built when a release tag is pushed, from that tag only,
+# and pushed to ghcr.io/<owner>/earshot-sync-server as the version and as `latest`.
+#
+# No third-party or GitHub actions: every step is a shell command on the runner, so there is
+# nothing to pin and nothing else runs with the token. The token can read the repository
+# and write packages, nothing more. This log is public: no step prints anything but the
+# build.
+name: relay-image
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Fetch the tagged commit
+        run: |
+          git init -q src
+          cd src
+          git fetch -q --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+
+      - name: Check the tag names the workspace version
+        working-directory: src
+        run: |
+          version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)"
+          if [ -z "${version}" ] || [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "The tag ${GITHUB_REF_NAME} does not name the workspace version (${version})."
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "${GITHUB_ENV}"
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-sync-server" >> "${GITHUB_ENV}"
+
+      - name: Build the relay image
+        working-directory: src
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            -f crates/earshot-sync-server/Dockerfile \
+            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" .
+
+      - name: Push the relay image
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "${TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:latest"
+          docker logout ghcr.io
