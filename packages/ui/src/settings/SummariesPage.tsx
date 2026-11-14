@@ -555,7 +555,9 @@ function AgentCliCard({
                 >
                   Save model
                 </Button>
-                {inUse && !changed && stored !== "" && <Caption1 className={styles.muted}>Saved.</Caption1>}
+                {inUse && !changed && stored !== "" && typed.trim() !== "" && (
+                  <Caption1 className={styles.muted}>Saved.</Caption1>
+                )}
               </div>
             )}
           </div>

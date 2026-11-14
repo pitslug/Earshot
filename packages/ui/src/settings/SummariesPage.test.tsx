@@ -338,8 +338,10 @@ describe("Settings, Summaries", () => {
     await s.user.type(within(other).getByRole("textbox", { name: /^Model name/ }), "   ");
     expect(save).toBeDisabled();
     expect((await s.ipc.summarySettings()).value.claude_model).toBe("sonnet");
-    // T12.45: while the name is empty the card says which model is still stored.
+    // T12.45: while the name is empty the card says which model is still stored, and no
+    // "Saved." beside an empty name.
     expect(within(other).getByText(otherKeepsText("Sonnet"))).toBeInTheDocument();
+    expect(within(other).queryByText("Saved.")).toBeNull();
     const name = within(other).getByRole("textbox", { name: /^Model name/ });
     await s.user.type(name, "claude-x");
     expect(within(other).queryByText(otherKeepsText("Sonnet"))).toBeNull();
