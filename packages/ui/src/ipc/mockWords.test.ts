@@ -7,7 +7,8 @@ import { IpcFailure, type MeetingDetail, type PersonItem } from "./ipc";
 import { createMockIpc } from "./mock";
 import { sampleDetail } from "./mockDetail";
 import table from "../../../../fixtures/ui/words_to_offer_cases.json";
-import { splitPunctuation, tokensOf, wordListOf, wordsToOffer } from "./mockWords";
+import { splitToken, tokensOf } from "../detail/dictionaryWord";
+import { wordListOf, wordsToOffer } from "./mockWords";
 
 const READY = {
   id: "m1",
@@ -56,8 +57,8 @@ describe("mock suggested words (T12.15e)", () => {
       "Vale",
     ]);
     expect(tokensOf(" a b  c ")).toEqual(["a", "b", "c"]);
-    expect(splitPunctuation("(sorbeck's),")).toEqual(["(", "sorbeck's", "),"]);
-    expect(splitPunctuation("--")).toEqual(["--", "", ""]);
+    expect(splitToken("(sorbeck's),")).toEqual(["(", "sorbeck's", "),"]);
+    expect(splitToken("--")).toEqual(["--", "", ""]);
   });
 
   it("serves the list and the sample suggestion on a final transcript only", async () => {

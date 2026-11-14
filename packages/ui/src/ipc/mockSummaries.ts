@@ -6,8 +6,9 @@
 // with ChatGPT on the desktop, not installed on the Surface. The rules, messages and limits
 // copied from Rust are pinned by `fixtures/ui/summary_settings_cases.json`, which this mock's
 // tests and the app's own run (T12.20): a Rust change that alters one fails both until the table
-// and this copy follow.
+// and this copy follow. Fixed messages, limits and templates are read from that table itself.
 
+import table from "../../../../fixtures/ui/summary_settings_cases.json";
 import {
   type ClaudeCodeStatusView,
   type CodexStatusView,
@@ -20,10 +21,13 @@ import type { SummaryStyleView, SummaryTemplateOption } from "./summaryStyle";
 import type { SummaryVocabularyView } from "./summaryVocabulary";
 
 /** The Anthropic API address the app offers. */
-export const MOCK_ANTHROPIC_URL = "https://api.anthropic.com";
+export const MOCK_ANTHROPIC_URL = table.messages.anthropic_url;
 
 /** The reason the app gives when summarising during the meeting cannot be used. */
-const LIVE_NEEDS_LOCAL = "Summarising during the meeting needs a local summary model.";
+const LIVE_NEEDS_LOCAL = table.messages.live_needs_local;
+
+/** What the app says when a token of the transcript holds no word (T12.15f). */
+export const NOT_A_WORD = table.messages.not_a_word;
 
 /** What the Summaries mock starts with. */
 export interface SummariesMockData {
@@ -46,35 +50,25 @@ export interface SummariesMockData {
 }
 
 /** The longest summary style the app accepts (`earshot_core::prompt::MAX_STYLE_CHARS`). */
-export const MAX_STYLE_CHARS = 1000;
+export const MAX_STYLE_CHARS = table.limits.max_style_chars;
 
 /** The summary templates the app offers, in its order, with its words (the app's copy,
  * `earshot_core::prompt::StylePreset` and `summary_style::template_options`, T12.17). */
-export const SUMMARY_TEMPLATES: SummaryTemplateOption[] = [
-  { value: "standard", label: "Standard", description: "Short notes with every decision and action item." },
-  { value: "brief", label: "Brief", description: "A one-sentence summary and at most three note bullets." },
-  {
-    value: "decisions",
-    label: "Decisions and actions",
-    description: "What was decided and who will do what, with only the background needed.",
-  },
-  { value: "detailed", label: "Detailed notes", description: "Fuller notes on every topic, with the reasons for each decision." },
-];
+export const SUMMARY_TEMPLATES: SummaryTemplateOption[] = table.templates.options;
 
 /** What the app says about a template it does not offer. */
-export const UNKNOWN_TEMPLATE = "This summary template is not one this version offers.";
+export const UNKNOWN_TEMPLATE = table.templates.unknown_error;
 
 /** The most Dictionary words the app accepts (`earshot_core::prompt::MAX_VOCABULARY_WORDS`). */
-export const MAX_VOCABULARY_WORDS = 100;
+export const MAX_VOCABULARY_WORDS = table.limits.max_vocabulary_words;
 /** The longest Dictionary word (`earshot_core::prompt::MAX_VOCABULARY_WORD_CHARS`). */
-export const MAX_VOCABULARY_WORD_CHARS = 40;
+export const MAX_VOCABULARY_WORD_CHARS = table.limits.max_vocabulary_word_chars;
 /** The longest Dictionary in all (`earshot_core::prompt::MAX_VOCABULARY_CHARS`). */
-export const MAX_VOCABULARY_CHARS = 1000;
+export const MAX_VOCABULARY_CHARS = table.limits.max_vocabulary_chars;
 
 /** What the page says when the installed Claude Code has no `--effort` (the app's copy,
  * `summaries::EFFORT_NEEDS_NEWER`, T12.18). */
-export const CLAUDE_CODE_EFFORT_NEEDS_NEWER =
-  "Choosing the effort needs a newer Claude Code. This one runs at its own default effort; update Claude Code to choose it.";
+export const CLAUDE_CODE_EFFORT_NEEDS_NEWER = table.messages.effort_needs_newer;
 
 /** Claude Code's status on each sample machine (the app's copy, `summaries::claude_code_status`). */
 export const CLAUDE_CODE_STATUS: Record<SampleMachine, ClaudeCodeStatusView> = {
@@ -98,8 +92,8 @@ export const CLAUDE_CODE_STATUS: Record<SampleMachine, ClaudeCodeStatusView> = {
 export const CLAUDE_CODE_NOT_INSTALLED: ClaudeCodeStatusView = {
   state: "NotInstalled",
   version: null,
-  message: "Claude Code is not installed on this computer.",
-  fix: "Install Claude Code and sign in to it, then check again.",
+  message: table.messages.claude_code_not_installed.message,
+  fix: table.messages.claude_code_not_installed.fix,
   effort_note: null,
 };
 
@@ -107,8 +101,8 @@ export const CLAUDE_CODE_NOT_INSTALLED: ClaudeCodeStatusView = {
 export const CODEX_NOT_INSTALLED: CodexStatusView = {
   state: "NotInstalled",
   version: null,
-  message: "Codex is not installed on this computer.",
-  fix: "Install the Codex CLI (in a terminal, run npm install -g @openai/codex) and sign in to it, then check again.",
+  message: table.messages.codex_not_installed.message,
+  fix: table.messages.codex_not_installed.fix,
 };
 
 /** Codex's status on each sample machine. */

@@ -14,7 +14,6 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
-  Spinner,
   Subtitle2,
   Title2,
   makeStyles,
@@ -22,15 +21,10 @@ import {
 } from "@fluentui/react-components";
 import { useId } from "react";
 
+import { NotLoaded, UnknownSettings, usePageStyles } from "./parts";
 import { useDictionary } from "./useDictionary";
 
 const useStyles = makeStyles({
-  page: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
-  },
   heading: {
     margin: 0,
   },
@@ -91,12 +85,13 @@ export function sortedWords(words: readonly string[]): string[] {
 /** The Dictionary page. */
 export function DictionaryPage() {
   const styles = useStyles();
+  const page = usePageStyles();
   const state = useDictionary();
   const headingId = useId();
   const { load } = state;
 
   return (
-    <div className={styles.page}>
+    <div className={page.page}>
       <Title2 as="h1" className={styles.heading}>
         Dictionary
       </Title2>
@@ -105,25 +100,16 @@ export function DictionaryPage() {
         <Subtitle2 as="h2" id={headingId} className={styles.heading}>
           Your words
         </Subtitle2>
-        {load.status === "loading" ? (
-          <Spinner size="small" label="Reading your dictionary" />
-        ) : load.status === "failed" ? (
-          <MessageBar intent="error">
-            <MessageBarBody>
-              <MessageBarTitle>Your dictionary could not be read</MessageBarTitle>
-              {load.message}
-            </MessageBarBody>
-          </MessageBar>
+        {load.status !== "loaded" ? (
+          <NotLoaded
+            load={load}
+            size="small"
+            loading="Reading your dictionary"
+            failed="Your dictionary could not be read"
+          />
         ) : (
           <>
-            {load.view.unknown.length > 0 && (
-              <MessageBar intent="warning">
-                <MessageBarBody>
-                  <MessageBarTitle>The stored dictionary is not used</MessageBarTitle>
-                  {load.view.unknown.join(" ")}
-                </MessageBarBody>
-              </MessageBar>
-            )}
+            <UnknownSettings unknown={load.view.unknown} title="The stored dictionary is not used" />
             <form
               aria-label={ADD_LABEL}
               onSubmit={(e) => {

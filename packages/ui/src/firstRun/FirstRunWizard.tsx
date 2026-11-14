@@ -26,10 +26,10 @@ import {
 } from "@fluentui/react-components";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
-import { type ModelItem, useIpc } from "../ipc";
+import { type ModelItem, errorText, useIpc } from "../ipc";
 import { AudioCheckSection } from "../settings/AudioCheckSection";
 import { LanguagesPicker, Notices, Recommendation } from "../settings/ModelsParts";
-import { ModelChoices, ModelsNotLoaded, UnknownModelSettings } from "../settings/ModelSections";
+import { ModelChoices, ModelsNotLoaded } from "../settings/ModelSections";
 import { ObsidianSection } from "../settings/ObsidianSection";
 import {
   MyNameField,
@@ -40,9 +40,10 @@ import {
 } from "../settings/PeoplePage";
 import { SummaryWriterChoices } from "../settings/SummariesPage";
 import { formatSize } from "../settings/copy";
+import { UnknownSettings, usePageStyles } from "../settings/parts";
 import { type SaveOnNext, type SaveStep, saveStep } from "../settings/saveOnNext";
 import { checkRunning, useAudioCheck } from "../settings/useAudioCheck";
-import { type ModelsData, type ModelsLoad, type ModelsPageState, errorText, useModels } from "../settings/useModels";
+import { type ModelsData, type ModelsLoad, type ModelsPageState, useModels } from "../settings/useModels";
 import { sampleRunning, useSpeakers } from "../settings/useSpeakers";
 
 /** The steps, in order, with what each one says first. */
@@ -185,12 +186,6 @@ const useStyles = makeStyles({
     overflowY: "auto",
     padding: tokens.spacingHorizontalXXL,
   },
-  column: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
-  },
   intro: {
     display: "flex",
     flexDirection: "column",
@@ -311,7 +306,7 @@ function DownloadStep({ state }: { state: ModelsPageState }) {
   const { models, settings } = load.data;
   return (
     <>
-      <UnknownModelSettings unknown={settings.unknown} />
+      <UnknownSettings unknown={settings.unknown} />
       <LanguagesPicker
         models={models}
         value={settings.value.languages}
@@ -424,6 +419,7 @@ export interface FirstRunWizardProps {
 /** The first-run wizard. */
 export function FirstRunWizard({ onDone }: FirstRunWizardProps) {
   const styles = useStyles();
+  const page = usePageStyles();
   const ipc = useIpc();
   // Held here, not in the step: the one subscriber to model job events outlives the steps, so
   // the wizard can say what still downloads and the voice sample can follow the helpers.
@@ -523,7 +519,7 @@ export function FirstRunWizard({ onDone }: FirstRunWizardProps) {
         </ol>
       </header>
       <main className={styles.body}>
-        <div className={styles.column}>
+        <div className={page.page}>
           <div className={styles.intro}>
             <Caption1 className={styles.muted}>
               Step {step + 1} of {STEPS.length}

@@ -14,17 +14,15 @@ import {
   DialogTitle,
   Field,
   MessageBar,
-  MessageBarActions,
   MessageBarBody,
-  MessageBarTitle,
   Select,
-  Spinner,
   Subtitle2,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
 import { useId } from "react";
 
+import { NotLoaded, NoticeBar, UnknownSettings } from "./parts";
 import { deleteText, useStorage } from "./useStorage";
 
 /** What the page says the setting does. */
@@ -63,15 +61,9 @@ export function RetentionSection() {
   const headingId = useId();
   const { load, pending } = state;
 
-  if (load.status === "loading") return <Spinner label="Reading the storage settings" />;
-  if (load.status === "failed") {
+  if (load.status !== "loaded") {
     return (
-      <MessageBar intent="error">
-        <MessageBarBody>
-          <MessageBarTitle>The storage settings could not be read</MessageBarTitle>
-          {load.message}
-        </MessageBarBody>
-      </MessageBar>
+      <NotLoaded load={load} loading="Reading the storage settings" failed="The storage settings could not be read" />
     );
   }
   const { view } = load;
@@ -79,33 +71,19 @@ export function RetentionSection() {
   return (
     <>
       {state.notice !== null && (
-        <MessageBar intent={state.notice.intent}>
-          <MessageBarBody>
-            {state.notice.title !== undefined && <MessageBarTitle>{state.notice.title}</MessageBarTitle>}
-            {state.notice.message}
-          </MessageBarBody>
-          <MessageBarActions
-            containerAction={
-              <Button size="small" appearance="transparent" onClick={state.dismiss}>
-                Dismiss
-              </Button>
-            }
-          />
-        </MessageBar>
+        <NoticeBar
+          intent={state.notice.intent}
+          title={state.notice.title}
+          message={state.notice.message}
+          onDismiss={state.dismiss}
+        />
       )}
       {view.problem !== null && (
         <MessageBar intent="warning">
           <MessageBarBody>{view.problem}</MessageBarBody>
         </MessageBar>
       )}
-      {view.unknown.length > 0 && (
-        <MessageBar intent="warning">
-          <MessageBarBody>
-            <MessageBarTitle>Some stored settings are not known to this version</MessageBarTitle>
-            {view.unknown.join(" ")}
-          </MessageBarBody>
-        </MessageBar>
-      )}
+      <UnknownSettings unknown={view.unknown} />
       <section className={styles.section} aria-labelledby={headingId}>
         <Subtitle2 as="h2" id={headingId} className={styles.heading}>
           Recordings

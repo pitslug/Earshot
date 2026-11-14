@@ -7,19 +7,7 @@ import { describe, expect, it } from "vitest";
 import table from "../../../../fixtures/ui/summary_settings_cases.json";
 import { IpcFailure, type SummarySettingsValue } from "./ipc";
 import { createMockIpc } from "./mock";
-import {
-  CLAUDE_CODE_EFFORT_NEEDS_NEWER,
-  CLAUDE_CODE_NOT_INSTALLED,
-  CODEX_NOT_INSTALLED,
-  MAX_STYLE_CHARS,
-  MAX_VOCABULARY_CHARS,
-  MAX_VOCABULARY_WORDS,
-  MAX_VOCABULARY_WORD_CHARS,
-  MOCK_ANTHROPIC_URL,
-  SUMMARY_TEMPLATES,
-  UNKNOWN_TEMPLATE,
-  createSummariesMock,
-} from "./mockSummaries";
+import { createSummariesMock } from "./mockSummaries";
 
 type Outcome<T> = { stored: T } | { error: string };
 
@@ -82,8 +70,6 @@ describe("the Summaries mock against the app's case table", () => {
   });
 
   it("offers the app's summary templates and refuses others with its words (T12.17)", async () => {
-    expect(SUMMARY_TEMPLATES).toEqual(table.templates.options);
-    expect(UNKNOWN_TEMPLATE).toBe(table.templates.unknown_error);
     const mock = createSummariesMock();
     expect((await mock.summaryStyle()).template).toBe("standard");
     for (const t of table.templates.options) {
@@ -93,21 +79,21 @@ describe("the Summaries mock against the app's case table", () => {
   });
 
   it("says what the app says, with its limits", async () => {
+    // The fixed messages and limits are read from the table itself; what the mock builds
+    // from them is checked here.
     const m = table.messages;
-    expect(CLAUDE_CODE_EFFORT_NEEDS_NEWER).toBe(m.effort_needs_newer);
-    expect(MOCK_ANTHROPIC_URL).toBe(m.anthropic_url);
-    expect(CLAUDE_CODE_NOT_INSTALLED.message).toBe(m.claude_code_not_installed.message);
-    expect(CLAUDE_CODE_NOT_INSTALLED.fix).toBe(m.claude_code_not_installed.fix);
-    expect(CODEX_NOT_INSTALLED.message).toBe(m.codex_not_installed.message);
-    expect(CODEX_NOT_INSTALLED.fix).toBe(m.codex_not_installed.fix);
     const mock = createSummariesMock();
     const view = await mock.setSummarySettings({ ...base, writer: "ClaudeCode" });
     expect(view.live_unavailable).toBe(m.live_needs_local);
     expect(view.anthropic_url).toBe(m.anthropic_url);
-    expect(MAX_STYLE_CHARS).toBe(table.limits.max_style_chars);
-    expect(MAX_VOCABULARY_WORDS).toBe(table.limits.max_vocabulary_words);
-    expect(MAX_VOCABULARY_WORD_CHARS).toBe(table.limits.max_vocabulary_word_chars);
-    expect(MAX_VOCABULARY_CHARS).toBe(table.limits.max_vocabulary_chars);
+    const style = await mock.summaryStyle();
+    expect(style.max_chars).toBe(table.limits.max_style_chars);
+    const words = await mock.summaryVocabulary();
+    expect([words.max_words, words.max_word_chars, words.max_chars]).toEqual([
+      table.limits.max_vocabulary_words,
+      table.limits.max_vocabulary_word_chars,
+      table.limits.max_vocabulary_chars,
+    ]);
   });
 
   it("refuses a token with no word as the app does (T12.15f)", async () => {

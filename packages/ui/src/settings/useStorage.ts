@@ -3,15 +3,12 @@
 // preview (the plan of the deletion); nothing is decided here. After every save, whatever
 // its outcome, the page shows the choice the app reports as stored.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
-import { type RetentionCount, type StorageView, useIpc } from "../ipc";
-import { errorText } from "./useModels";
+import { type RetentionCount, type StorageView, errorText, useIpc } from "../ipc";
+import { type Load, useLoad } from "./parts";
 
-export type StorageLoad =
-  | { status: "loading" }
-  | { status: "failed"; message: string }
-  | { status: "loaded"; view: StorageView };
+export type StorageLoad = Load<StorageView>;
 
 /** A choice that deletes recordings, waiting for Delete or Cancel. */
 export interface PendingChoice {
@@ -62,25 +59,10 @@ export function deletedText(deleted: number): string {
 /** Loads the Storage page and saves its changes. */
 export function useStorage(): StoragePageState {
   const ipc = useIpc();
-  const [load, setLoad] = useState<StorageLoad>({ status: "loading" });
+  const [load, setLoad] = useLoad((ipc) => ipc.storageSettings());
   const [pending, setPending] = useState<PendingChoice | null>(null);
   const [notice, setNotice] = useState<StorageNotice | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let live = true;
-    ipc.storageSettings().then(
-      (view) => {
-        if (live) setLoad({ status: "loaded", view });
-      },
-      (e: unknown) => {
-        if (live) setLoad({ status: "failed", message: errorText(e) });
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [ipc]);
 
   const save = useCallback(
     async (value: string) => {

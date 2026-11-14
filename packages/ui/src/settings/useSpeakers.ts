@@ -4,8 +4,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { type SpeakerTimingChoice, type SpeakersView, type VoiceEvent, type VoiceResult, useIpc } from "../ipc";
-import { errorText } from "./useModels";
+import {
+  type SpeakerTimingChoice,
+  type SpeakersView,
+  type VoiceEvent,
+  type VoiceResult,
+  errorText,
+  useIpc,
+} from "../ipc";
 
 export type SpeakersLoad =
   | { status: "loading" }

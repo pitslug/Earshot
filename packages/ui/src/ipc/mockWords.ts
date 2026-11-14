@@ -2,26 +2,8 @@
 // `earshot_runtime::word_choices` and `edit::use_word`, so a rule change edits both. The
 // sound matcher itself is not mirrored: the sample's suggestions are fixed data.
 
-import { dictionaryWord, withoutSingleQuotes } from "../detail/dictionaryWord";
+import { dictionaryWord, splitToken, tokenPieces, tokensOf, withoutSingleQuotes } from "../detail/dictionaryWord";
 import type { MeetingDetail, PersonItem } from "./ipc";
-
-/** The white-space tokens of `text` (Rust `split_whitespace`: Unicode White_Space). */
-export function tokensOf(text: string): string[] {
-  return text.split(/\p{White_Space}+/u).filter((t) => t !== "");
-}
-
-const WORD_CHAR = /[\p{Alphabetic}\p{N}']/u;
-
-/** `token` split into leading punctuation, its core (first to last letter, digit or
- * apostrophe) and trailing punctuation, as core `vocabulary::suggest::split_punctuation`. */
-export function splitPunctuation(token: string): [string, string, string] {
-  const chars = [...token];
-  const first = chars.findIndex((c) => WORD_CHAR.test(c));
-  if (first < 0) return [token, "", ""];
-  let last = chars.length - 1;
-  while (!WORD_CHAR.test(chars[last])) last -= 1;
-  return [chars.slice(0, first).join(""), chars.slice(first, last + 1).join(""), chars.slice(last + 1).join("")];
-}
 
 /** Rust's `to_ascii_lowercase`: only A-Z fold. */
 function asciiLower(s: string): string {
@@ -65,14 +47,10 @@ export function withWord(
     transcript: detail.transcript.map((r) => {
       if (r.segment_id !== segment) return r;
       // The token is replaced in place, the line's own white space kept (Rust `token_ranges`).
-      let at = -1;
-      const next = r.text
-        .split(/(\p{White_Space}+)/u)
-        .map((piece) => {
-          if (piece === "" || /^\p{White_Space}+$/u.test(piece)) return piece;
-          at += 1;
+      const next = tokenPieces(r.text)
+        .map(({ piece, token: at }) => {
           if (at !== token) return piece;
-          const [pre, , post] = splitPunctuation(piece);
+          const [pre, , post] = splitToken(piece);
           return `${pre}${word}${post}`;
         })
         .join("");
@@ -97,7 +75,7 @@ export function marksAfterEdit(detail: MeetingDetail, segment: string): MeetingD
     transcript: detail.transcript.map((r) => {
       if (r.segment_id !== segment) return r;
       const tokens = tokensOf(r.text);
-      const core = (i: number) => (tokens[i] === undefined ? undefined : splitPunctuation(tokens[i])[1]);
+      const core = (i: number) => (tokens[i] === undefined ? undefined : splitToken(tokens[i])[1]);
       return {
         ...r,
         suggestions: r.suggestions.filter((s) => core(s.token) === s.decoded),
@@ -121,7 +99,7 @@ export const MOCK_COMMON_WORDS = new Set(
  * core of a token of `before`, leaving out common words (`MOCK_COMMON_WORDS`), words on
  * `listed` (case ignored) and repeats in another case; in line order. */
 export function wordsToOffer(before: string, after: string, listed: string[]): string[] {
-  const was = new Set(tokensOf(before).map((t) => withoutSingleQuotes(splitPunctuation(t)[1])));
+  const was = new Set(tokensOf(before).map((t) => withoutSingleQuotes(splitToken(t)[1])));
   const onList = new Set(listed.map((w) => w.toLowerCase()));
   const seen = new Set<string>();
   const out: string[] = [];

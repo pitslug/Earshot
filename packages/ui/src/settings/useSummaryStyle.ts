@@ -2,15 +2,12 @@
 // refusal to show. The rules (length, characters, trimming) are the app's; nothing is
 // decided here.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
-import { type SummaryStyleView, useIpc } from "../ipc";
-import { errorText } from "./useModels";
+import { type SummaryStyleView, errorText, useIpc } from "../ipc";
+import { type Load, useLoad } from "./parts";
 
-export type SummaryStyleLoad =
-  | { status: "loading" }
-  | { status: "failed"; message: string }
-  | { status: "loaded"; view: SummaryStyleView };
+export type SummaryStyleLoad = Load<SummaryStyleView>;
 
 export interface SummaryStyleState {
   load: SummaryStyleLoad;
@@ -37,28 +34,14 @@ export interface SummaryStyleState {
 /** Loads the summary style and saves it. */
 export function useSummaryStyle(): SummaryStyleState {
   const ipc = useIpc();
-  const [load, setLoad] = useState<SummaryStyleLoad>({ status: "loading" });
   const [draft, setDraftText] = useState("");
+  const [load, setLoad] = useLoad(
+    (ipc) => ipc.summaryStyle(),
+    (view) => setDraftText(view.style),
+  );
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let live = true;
-    ipc.summaryStyle().then(
-      (view) => {
-        if (!live) return;
-        setLoad({ status: "loaded", view });
-        setDraftText(view.style);
-      },
-      (e: unknown) => {
-        if (live) setLoad({ status: "failed", message: errorText(e) });
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [ipc]);
 
   const store = useCallback(
     async (text: string) => {

@@ -8,13 +8,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type HardwareView,
-  IpcFailure,
   type ModelItem,
   type ModelJobEvent,
   type ModelSettingsValue,
   type ModelSettingsView,
   type ModelsView,
   type RunsOn,
+  errorText,
   useIpc,
 } from "../ipc";
 import { formatSize, titleOf } from "./copy";
@@ -61,13 +61,6 @@ export interface ModelsPageState {
   remove(model: string): Promise<void>;
   runCheck(): Promise<void>;
   cancelCheck(): Promise<void>;
-}
-
-/** The text of a failed IPC call. */
-export function errorText(e: unknown): string {
-  if (e instanceof IpcFailure) return e.error.message;
-  if (e instanceof Error) return e.message;
-  return String(e);
 }
 
 function patchItem(models: ModelsView, name: string, patch: (i: ModelItem) => ModelItem): ModelsView {

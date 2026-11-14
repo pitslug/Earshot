@@ -24,6 +24,7 @@ import { useState } from "react";
 import type { CudaPartView, CudaView } from "../ipc";
 import { Notices } from "./ModelsParts";
 import { formatSize } from "./copy";
+import { UnknownSettings } from "./parts";
 import type { CudaState } from "./useCuda";
 
 /** What the libraries are, for the card that earned the offer. */
@@ -268,14 +269,7 @@ export function CudaParts({ state, view }: { state: CudaState; view: CudaView })
     <div className={styles.parts}>
       <Caption1 className={styles.why}>{cudaIntro(view.card)}</Caption1>
       <Notices notices={state.notices} onDismiss={state.dismiss} />
-      {view.unknown.length > 0 && (
-        <MessageBar intent="warning">
-          <MessageBarBody>
-            <MessageBarTitle>Some stored settings are not known to this version</MessageBarTitle>
-            {view.unknown.join(" ")}
-          </MessageBarBody>
-        </MessageBar>
-      )}
+      <UnknownSettings unknown={view.unknown} />
       {view.this_run.checking && (
         <div role="status">
           <Spinner className={styles.checking} size="tiny" labelPosition="after" label={CUDA_CHECKING_LINE} />

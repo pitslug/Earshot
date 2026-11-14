@@ -92,9 +92,9 @@ impl LiveFolders {
 ///
 /// There is no ICU here, so this is not a language's collation (a Swedish `å` sorts with `a`,
 /// not after `z`): the base-letter table is core's Latin table for Whisper's normaliser
-/// (`earshot_core::metrics::normalize::fold_diacritic`). The UI mock's copy is `folderOrder` in
-/// `packages/ui/src/ipc/mockFolders.ts`; `fixtures/ui/folder_sort_cases.json` (both suites
-/// run it) keeps the two the same.
+/// (`earshot_core::metrics::normalize::fold_diacritic`). `fixtures/ui/folder_sort_cases.json`
+/// pins the order. The UI lists folders in the order sent and never sorts them; the UI mock
+/// sorts by lower-case code point only (T12.54).
 #[must_use]
 pub fn name_order(name: &str) -> (String, String) {
     let folded: String = fold_case(name).collect();
