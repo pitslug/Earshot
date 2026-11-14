@@ -70,5 +70,11 @@ pub use vocabulary::{
     Vocabulary, VocabularyError,
 };
 
+/// The assistant prefix of the Qwen 3 (hybrid) and Qwen 3.5 chat templates with thinking off
+/// (`enable_thinking` false, Qwen 3.5's default): an empty think block. The shipped summary
+/// models use it (T6.20, `earshot_runtime::summary_model`), as do the Qwen candidates of
+/// `cargo xtask sum-eval`.
+pub const QWEN_NO_THINK: &str = "<think>\n\n</think>\n\n";
+
 #[cfg(test)]
 mod tests;

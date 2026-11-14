@@ -31,6 +31,7 @@ mod claude;
 mod claude_cli;
 mod compare;
 mod facts;
+mod format_key;
 mod judge;
 mod score;
 mod store;
@@ -53,38 +54,12 @@ use earshot_llm_local::summarize::{
     SelectStats, StepTime, SummaryFailure, SummaryOptions, SummaryReport, TwoCallActions,
     summarize, summarize_chunks, summarize_chunks_select, summarize_chunks_two_call,
 };
-use earshot_llm_local::thinking::{
-    QWEN_THINKING_OFF_PREFIX, QWEN_THINKING_PREFIX, ThinkingLlm, ThinkingStats,
-    thinking_load_context,
-};
 use earshot_llm_local::{LoadOptions, LocalLlm, ReuseStats};
+use format_key::{FormatKey, GRAMMAR, KeyAgent};
 use serde_json::{Value, json};
 
 const FETCH: &str = "cargo xtask fetch-fixtures --set ami-sum";
 
-/// The request format: indented JSON replies (`earshot_llm_local::grammar::summary_grammar`;
-/// compact JSON was tried on 2026-10-25 and dropped, see its docs), transcript segments cited
-/// by number, content-sized reply budgets and the loop guard. Recorded in
-/// the report and part of the checkpoint key, so rows made with an earlier format (segment
-/// ids in the prompt, one fixed reply budget, the first reply ratios) are never reused. `-r2`
-/// is the second set of reply ratios (`earshot_core::prompt::REPLY_PER_*`), `-r3` adds
-/// dropping duplicate items (`earshot_core::summary::drop_repeats`), `-r4` the review fixes
-/// (action items keyed on owner and task, bullets per section, merges citing only their
-/// partials' segments, a number cited twice rejected), `-r5` the T6.20e `settled` rules as
-/// the production prompt (T6.20f; the earlier rules are `--prompt-variant previous`).
-const GRAMMAR: &str = "indented-numbered-r5";
-
-/// The format key of a run: [`GRAMMAR`], plus `-chunk<seconds>` for forced chunking
-/// (`earshot_core::prompt::time_chunks`), plus `-twocall` for the T6.20c two-call chunks,
-/// plus `-twotrack` for the T8.3ja two-track chunks (`two_track.rs`), plus
-/// `-prompt-<variant>` for a T6.20b prompt variant other than the production one, so rows
-/// made with different chunking, calls or rules are never reused for each other, plus
-/// `-claude-code-brief` for the T7.4gb Claude Code candidate or `-codex-brief` for the
-/// T7.4gc Codex candidate (same place; `-brief` is their T12.17c production rules,
-/// `earshot_llm::LlmClient::summary_rules`, so files from the earlier standard rules,
-/// `-claude-code` and `-codex`, are never reused), plus `-think<cap>` for T12.10 thinking on with that token cap
-/// (after the agent suffix, before the prompt variant). xtask's `sum_eval::format_key` builds
-/// the same string.
 /// An agent-CLI candidate (`claude_cli.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentCli {
@@ -102,72 +77,14 @@ impl AgentCli {
             Self::Codex => "--codex",
         }
     }
-}
 
-fn format_key(
-    chunk_seconds: Option<u32>,
-    variant: PromptVariant,
-    two_call: bool,
-    two_track: bool,
-    agent: Option<AgentCli>,
-    thinking: Option<usize>,
-) -> String {
-    let mut key = match chunk_seconds {
-        Some(s) => format!("{GRAMMAR}-chunk{s}"),
-        None => GRAMMAR.to_owned(),
-    };
-    if two_call {
-        key.push_str("-twocall");
+    /// The format key part (`format_key.rs`).
+    fn key(self) -> KeyAgent {
+        match self {
+            Self::ClaudeCode => KeyAgent::ClaudeCode,
+            Self::Codex => KeyAgent::Codex,
+        }
     }
-    if two_track {
-        key.push_str("-twotrack");
-    }
-    match agent {
-        Some(AgentCli::ClaudeCode) => key.push_str("-claude-code-brief"),
-        Some(AgentCli::Codex) => key.push_str("-codex-brief"),
-        None => {}
-    }
-    if let Some(cap) = thinking {
-        key.push_str(&format!("-think{cap}"));
-    }
-    if !variant.is_current() {
-        key.push_str("-prompt-");
-        key.push_str(variant.name());
-    }
-    key
-}
-
-/// The format key part of prompt prefix reuse (T12.25 part 1, evaluation): `-reuse` after
-/// the prompt variant and before the template, nothing when off. Its replies are meant to be
-/// byte-identical, but its rows are never reused for a run without it, so a difference
-/// cannot hide. xtask's `Options::format_key` appends the same.
-fn reuse_suffix(on: bool) -> &'static str {
-    if on { "-reuse" } else { "" }
-}
-
-/// The format key part of the merge by selection (T12.25 part 2, evaluation): `-select`
-/// after `-reuse` and before the template, nothing for today's merge. xtask's
-/// `Options::format_key` appends the same.
-fn merge_suffix(select: bool) -> &'static str {
-    if select { "-select" } else { "" }
-}
-
-/// The format key part of a summary template (T12.17, evaluation): `-template-<name>`
-/// after everything but the item cap, nothing for Standard. xtask's `Options::format_key`
-/// appends the same.
-fn template_suffix(preset: StylePreset) -> String {
-    if preset.is_standard() {
-        String::new()
-    } else {
-        format!("-template-{}", preset.name())
-    }
-}
-
-/// The format key part of the item cap (`--max-items`, T12.36, evaluation): `-items<n>`
-/// last, after the template; nothing for the grammar's own cap. xtask's
-/// `Options::format_key` appends the same.
-fn items_suffix(max_items: Option<u32>) -> String {
-    max_items.map_or_else(String::new, |n| format!("-items{n}"))
 }
 
 /// Writes a `--max-items` run's cap into the result header as `max_items`, which
@@ -257,16 +174,11 @@ struct Args {
     /// The Codex CLI to run (evaluation only; without it `CodexCli::find`, as production).
     /// Needs `--codex`.
     codex_cli: Option<PathBuf>,
-    /// Qwen thinking on (T12.10, evaluation only): every reply may think first, up to this
-    /// many tokens beside its reply budget (`earshot_llm_local::thinking`). Needs `--model`
-    /// and the empty thinking block as `--assistant-prefix`, which it replaces with the opened
-    /// section.
-    thinking: Option<usize>,
     /// The run folder of the owner's own meetings (T12.25a, `store.rs`): the inputs of
     /// `--job <split>:store` jobs and the transcripts of their judge packets.
     store_inputs: Option<PathBuf>,
     /// Prompt prefix reuse on (T12.25 part 1, evaluation; `LocalLlm::set_prefix_reuse`).
-    /// Local models without thinking only.
+    /// Local models only.
     prefix_reuse: bool,
     /// Compare the summaries of two finished result files (`compare.rs`).
     compare: Option<(PathBuf, PathBuf)>,
@@ -392,9 +304,6 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--codex" => a.codex = true,
             "--codex-model" => a.codex_model = Some(val()?),
             "--codex-cli" => a.codex_cli = Some(val()?.into()),
-            "--thinking" => {
-                a.thinking = Some(val()?.parse().map_err(|e| format!("--thinking: {e}"))?);
-            }
             "--store-inputs" => a.store_inputs = Some(val()?.into()),
             "--prefix-reuse" => a.prefix_reuse = true,
             "--merge-select" => a.merge_select = true,
@@ -546,9 +455,8 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     {
         return Err("give exactly one of --model, --remote, --claude-code and --codex".into());
     }
-    check_thinking(&a)?;
-    if a.prefix_reuse && (a.model.is_none() || a.thinking.is_some()) {
-        return Err("--prefix-reuse is for local models without --thinking".into());
+    if a.prefix_reuse && a.model.is_none() {
+        return Err("--prefix-reuse is for local models only".into());
     }
     check_merge_select(&a)?;
     if a.max_items.is_some() && a.model.is_none() {
@@ -562,6 +470,22 @@ impl Args {
     /// `--max-items`).
     fn item_cap(&self) -> usize {
         self.max_items.map_or_else(score::item_cap, |n| n as usize)
+    }
+
+    /// The format key of this run (`format_key.rs`), with `agent` as its candidate.
+    fn format_key(&self, agent: Option<AgentCli>) -> String {
+        FormatKey {
+            chunk_seconds: self.chunk_seconds,
+            two_call: self.two_call,
+            two_track: self.two_track,
+            agent: agent.map(AgentCli::key),
+            prompt_variant: self.prompt_variant,
+            prefix_reuse: self.prefix_reuse,
+            merge_select: self.merge_select,
+            style_preset: self.style_preset,
+            max_items: self.max_items,
+        }
+        .key()
     }
 }
 
@@ -623,29 +547,6 @@ fn check_store(a: &Args) -> Result<(), String> {
         );
     }
     Ok(())
-}
-
-/// What a `--thinking` run (T12.10) refuses: anything but a local summary run of a model
-/// whose prompt ends with the empty thinking block (`--assistant-prefix`, the Qwen 3 and 3.5
-/// candidates), `--two-call` and `--two-track`, and a cap outside the module's range.
-fn check_thinking(a: &Args) -> Result<(), String> {
-    let Some(cap) = a.thinking else {
-        return Ok(());
-    };
-    if a.model.is_none() || a.remote || a.agent_cli().is_some() {
-        return Err("--thinking needs a local --model".into());
-    }
-    if a.assistant_prefix != QWEN_THINKING_OFF_PREFIX {
-        return Err(
-            "--thinking needs a model whose prompt ends with the empty thinking block \
-             (--assistant-prefix as xtask's Qwen candidates pass it)"
-                .into(),
-        );
-    }
-    if a.two_call || a.two_track {
-        return Err("--thinking is not combined with --two-call or --two-track".into());
-    }
-    thinking_load_context(a.context, cap).map(|_| ())
 }
 
 /// What a `--claude-code` run refuses: anything but summary jobs over the public AMI
@@ -921,43 +822,24 @@ fn selection_json(s: &SelectStats) -> Value {
     })
 }
 
-/// A local model: as loaded, or thinking first (T12.10).
-enum LocalModel {
-    Plain(Box<LocalLlm>),
-    Thinking(Box<ThinkingLlm>),
-}
+/// A local model, as loaded.
+struct LocalModel(Box<LocalLlm>);
 
 impl LocalModel {
     /// The model as the summarizer drives it.
     fn generate(&mut self) -> &mut dyn Generate {
-        match self {
-            Self::Plain(llm) => llm.as_mut(),
-            Self::Thinking(llm) => llm.as_mut(),
-        }
+        self.0.as_mut()
     }
 
-    /// The thinking counts since the last call (none for a plain model), reset.
-    fn take_thinking(&mut self) -> Option<ThinkingStats> {
-        match self {
-            Self::Plain(_) => None,
-            Self::Thinking(llm) => Some(llm.take_stats()),
-        }
-    }
-
-    /// Forgets the context and the prompt counts before a meeting (a plain model).
+    /// Forgets the context and the prompt counts before a meeting.
     fn start_meeting(&mut self) {
-        if let Self::Plain(llm) = self {
-            llm.forget_prefix();
-            llm.take_reuse_stats();
-        }
+        self.0.forget_prefix();
+        self.0.take_reuse_stats();
     }
 
-    /// The prompt counts since [`LocalModel::start_meeting`] (a plain model), reset.
-    fn take_reuse(&mut self) -> Option<ReuseStats> {
-        match self {
-            Self::Plain(llm) => Some(llm.take_reuse_stats()),
-            Self::Thinking(_) => None,
-        }
+    /// The prompt counts since [`LocalModel::start_meeting`], reset.
+    fn take_reuse(&mut self) -> ReuseStats {
+        self.0.take_reuse_stats()
     }
 }
 
@@ -968,16 +850,6 @@ fn reuse_json(r: &ReuseStats) -> Value {
         "prompt_tokens": r.prompt_tokens,
         "reused_tokens": r.reused_tokens,
         "decoded_tokens": r.decoded_tokens(),
-    })
-}
-
-/// A meeting's thinking counts: token counts only, never the thinking text.
-fn thinking_json(t: &ThinkingStats) -> Value {
-    json!({
-        "requests": t.requests,
-        "thinking_tokens": t.thinking_tokens,
-        "max_thinking_tokens": t.max_thinking_tokens,
-        "forced_closes": t.forced_closes,
     })
 }
 
@@ -1073,7 +945,6 @@ impl Engine {
                 two_call,
                 merge_select,
             } => {
-                llm.take_thinking();
                 // Production loads the model once per summary: nothing carries over from
                 // the meeting before (T12.25 prefix reuse).
                 llm.start_meeting();
@@ -1085,12 +956,7 @@ impl Engine {
                     *two_call,
                     *merge_select,
                 );
-                if let Some(t) = llm.take_thinking() {
-                    report["thinking"] = thinking_json(&t);
-                }
-                if let Some(r) = llm.take_reuse() {
-                    report["prefix_reuse"] = reuse_json(&r);
-                }
+                report["prefix_reuse"] = reuse_json(&llm.take_reuse());
                 (result, report)
             }
             Engine::Remote(r) => r.summarise(input),
@@ -1203,30 +1069,8 @@ fn aggregate(meetings: &[Value]) -> Value {
                     .count(),
             })
         });
-    // Thinking runs (T12.10): token counts only.
-    let thsum = |k: &str| -> u64 {
-        meetings
-            .iter()
-            .map(|m| m["report"]["thinking"][k].as_u64().unwrap_or(0))
-            .sum()
-    };
-    let thinking = meetings
-        .iter()
-        .any(|m| m["report"]["thinking"].is_object())
-        .then(|| {
-            json!({
-                "requests": thsum("requests"),
-                "thinking_tokens": thsum("thinking_tokens"),
-                "max_thinking_tokens": meetings
-                    .iter()
-                    .filter_map(|m| m["report"]["thinking"]["max_thinking_tokens"].as_u64())
-                    .max(),
-                "forced_closes": thsum("forced_closes"),
-            })
-        });
     json!({
         "two_call_actions": two_call,
-        "thinking": thinking,
         "timing": {
             "audio_s": audio_s,
             "map_s": tsum("map_s"),
@@ -1922,36 +1766,19 @@ fn run() -> Result<(), String> {
                 path.display()
             ));
         }
-        // Thinking (T12.10) is loaded with its room on top of the run's budget, so the plan
-        // and every reply budget are the thinking-off run's.
-        let context_tokens = match a.thinking {
-            Some(cap) => thinking_load_context(a.context, cap)?,
-            None => a.context,
-        };
         let options = LoadOptions {
             gpu: a.gpu,
-            context_tokens,
+            context_tokens: a.context,
             threads: a.threads.unwrap_or_else(earshot_llm_local::default_threads),
         };
         let (llm, load) = LocalLlm::load(path, &options).map_err(|e| e.to_string())?;
-        let (llm, assistant_prefix, context) = match a.thinking {
-            Some(cap) => (
-                LocalModel::Thinking(Box::new(
-                    ThinkingLlm::new(llm, cap, a.context as usize).map_err(|e| e.to_string())?,
-                )),
-                QWEN_THINKING_PREFIX.to_owned(),
-                a.context,
-            ),
-            None => {
-                let mut llm = llm;
-                llm.set_prefix_reuse(a.prefix_reuse);
-                (
-                    LocalModel::Plain(Box::new(llm)),
-                    a.assistant_prefix.clone(),
-                    load.context_tokens,
-                )
-            }
-        };
+        let mut llm = llm;
+        llm.set_prefix_reuse(a.prefix_reuse);
+        let (llm, assistant_prefix, context) = (
+            LocalModel(Box::new(llm)),
+            a.assistant_prefix.clone(),
+            load.context_tokens,
+        );
         eprintln!(
             "sum_eval: {} on {} (load {:.1} s): {}",
             a.model_id,
@@ -1972,8 +1799,7 @@ fn run() -> Result<(), String> {
             "threads": options.threads,
             "max_output_tokens": a.max_output,
             "assistant_prefix": assistant_prefix,
-            "thinking_cap": a.thinking,
-            "grammar": format_key(a.chunk_seconds, a.prompt_variant, a.two_call, a.two_track, None, a.thinking) + reuse_suffix(a.prefix_reuse) + merge_suffix(a.merge_select) + &template_suffix(a.style_preset) + &items_suffix(a.max_items),
+            "grammar": a.format_key(None),
             "prefix_reuse": a.prefix_reuse,
             "merge_select": a.merge_select,
             "chunk_seconds": a.chunk_seconds,
@@ -2017,15 +1843,17 @@ fn run() -> Result<(), String> {
         };
         let mut header = c.header();
         header["candidate"] = json!(a.model_id);
+        // An agent run takes only chunking, the prompt variant and the template
+        // (`check_agent_cli` refuses the rest).
         header["grammar"] = json!(
-            format_key(
-                a.chunk_seconds,
-                a.prompt_variant,
-                false,
-                false,
-                Some(agent),
-                None,
-            ) + &template_suffix(a.style_preset)
+            FormatKey {
+                chunk_seconds: a.chunk_seconds,
+                agent: Some(agent.key()),
+                prompt_variant: a.prompt_variant,
+                style_preset: a.style_preset,
+                ..FormatKey::default()
+            }
+            .key()
         );
         header["chunk_seconds"] = json!(a.chunk_seconds);
         header["prompt_variant"] = json!(a.prompt_variant.name());
@@ -2062,17 +1890,7 @@ fn run() -> Result<(), String> {
         a.max_output,
         a.assistant_prefix,
         out_key(&header),
-        format_key(
-            a.chunk_seconds,
-            a.prompt_variant,
-            a.two_call,
-            a.two_track,
-            a.agent_cli(),
-            a.thinking,
-        ) + reuse_suffix(a.prefix_reuse)
-            + merge_suffix(a.merge_select)
-            + &template_suffix(a.style_preset)
-            + &items_suffix(a.max_items)
+        a.format_key(a.agent_cli())
     );
     let partial = a.out.with_extension("partial.jsonl");
     let mut done: BTreeMap<(String, String, String), Value> = BTreeMap::new();
@@ -2348,121 +2166,110 @@ mod remote {
 mod tests {
     use super::*;
 
+    /// The key of a run with these settings, as the run builds it (`Args::format_key`).
+    fn key(
+        chunk_seconds: Option<u32>,
+        prompt_variant: PromptVariant,
+        two_call: bool,
+        two_track: bool,
+        agent: Option<AgentCli>,
+    ) -> String {
+        Args {
+            chunk_seconds,
+            prompt_variant,
+            two_call,
+            two_track,
+            ..Args::default()
+        }
+        .format_key(agent)
+    }
+
     #[test]
     fn sum_eval_format_key_names_chunking_and_the_prompt_variant() {
         let current = PromptVariant::Current;
         assert_eq!(
-            format_key(None, current, false, false, None, None),
+            key(None, current, false, false, None),
             "indented-numbered-r5"
         );
         assert_eq!(
-            format_key(Some(600), current, false, false, None, None),
+            key(Some(600), current, false, false, None),
             "indented-numbered-r5-chunk600"
         );
         assert_eq!(
-            format_key(Some(600), PromptVariant::Lean, false, false, None, None),
-            "indented-numbered-r5-chunk600-prompt-lean"
+            key(Some(600), PromptVariant::Brief, false, false, None),
+            "indented-numbered-r5-chunk600-prompt-brief"
         );
         assert_eq!(
-            format_key(None, PromptVariant::Owners, false, false, None, None),
-            "indented-numbered-r5-prompt-owners"
+            key(None, PromptVariant::Standard, false, false, None),
+            "indented-numbered-r5-prompt-standard"
         );
         assert_eq!(
-            format_key(Some(600), current, true, false, None, None),
+            key(Some(600), current, true, false, None),
             "indented-numbered-r5-chunk600-twocall"
         );
         assert_eq!(
-            format_key(Some(600), PromptVariant::Lean, true, false, None, None),
-            "indented-numbered-r5-chunk600-twocall-prompt-lean"
+            key(Some(600), PromptVariant::Brief, true, false, None),
+            "indented-numbered-r5-chunk600-twocall-prompt-brief"
         );
         assert_eq!(
-            format_key(Some(600), current, false, true, None, None),
+            key(Some(600), current, false, true, None),
             "indented-numbered-r5-chunk600-twotrack"
         );
-        // Every variant and call mode has its own key, and xtask builds the same strings.
+        // Every variant and call mode has its own key; xtask builds it from the same file.
         let keys: std::collections::BTreeSet<String> = PromptVariant::ALL
             .into_iter()
             .flat_map(|v| {
                 [
-                    format_key(Some(600), v, false, false, None, None),
-                    format_key(Some(600), v, true, false, None, None),
-                    format_key(Some(600), v, false, true, None, None),
+                    key(Some(600), v, false, false, None),
+                    key(Some(600), v, true, false, None),
+                    key(Some(600), v, false, true, None),
                 ]
             })
             .collect();
         assert_eq!(keys.len(), 3 * PromptVariant::ALL.len());
         // The Claude Code candidate (T7.4gb), after the meeting and chunked.
         assert_eq!(
-            format_key(
-                None,
-                current,
-                false,
-                false,
-                Some(AgentCli::ClaudeCode),
-                None
-            ),
+            key(None, current, false, false, Some(AgentCli::ClaudeCode)),
             "indented-numbered-r5-claude-code-brief"
         );
         assert_eq!(
-            format_key(
-                Some(600),
-                current,
-                false,
-                false,
-                Some(AgentCli::ClaudeCode),
-                None
-            ),
+            key(Some(600), current, false, false, Some(AgentCli::ClaudeCode)),
             "indented-numbered-r5-chunk600-claude-code-brief"
         );
         // A prompt variant on Claude Code (T12.17, evaluation only) comes after it.
         assert_eq!(
-            format_key(
+            key(
                 None,
-                PromptVariant::Short,
+                PromptVariant::Standard,
                 false,
                 false,
-                Some(AgentCli::ClaudeCode),
-                None
+                Some(AgentCli::ClaudeCode)
             ),
-            "indented-numbered-r5-claude-code-brief-prompt-short"
+            "indented-numbered-r5-claude-code-brief-prompt-standard"
         );
     }
 
     #[test]
     fn sum_eval_style_preset_has_its_own_key_part_and_claude_code_takes_it() {
-        assert_eq!(template_suffix(StylePreset::Standard), "");
-        assert_eq!(template_suffix(StylePreset::Brief), "-template-brief");
+        let with = |style_preset| {
+            Args {
+                style_preset,
+                ..Args::default()
+            }
+            .format_key(None)
+        };
+        assert_eq!(with(StylePreset::Standard), "indented-numbered-r5");
+        assert_eq!(
+            with(StylePreset::Brief),
+            "indented-numbered-r5-template-brief"
+        );
         let names: std::collections::BTreeSet<String> =
-            StylePreset::ALL.into_iter().map(template_suffix).collect();
+            StylePreset::ALL.into_iter().map(with).collect();
         assert_eq!(names.len(), StylePreset::ALL.len());
         // Allowed for a Claude Code run.
         let mut a = claude_args(&[]);
         a.style_preset = StylePreset::Detailed;
         check_claude_code(&a).unwrap();
-    }
-
-    #[test]
-    fn sum_eval_thinking_has_its_own_format_key_after_every_other_mode() {
-        let current = PromptVariant::Current;
-        // Thinking (T12.10) after the chunking, before the prompt variant; xtask's
-        // `format_key` builds the same strings (`sum_eval_thinking_has_its_own_format_key_args_label_and_refusals`).
-        assert_eq!(
-            format_key(Some(600), current, false, false, None, Some(2048)),
-            "indented-numbered-r5-chunk600-think2048"
-        );
-        assert_eq!(
-            format_key(None, PromptVariant::Lean, false, false, None, Some(512)),
-            "indented-numbered-r5-think512-prompt-lean"
-        );
-        assert_ne!(
-            format_key(Some(600), current, false, false, None, Some(1024)),
-            format_key(Some(600), current, false, false, None, Some(2048)),
-        );
-        // Off is today's key.
-        assert_eq!(
-            format_key(Some(600), current, false, false, None, None),
-            "indented-numbered-r5-chunk600"
-        );
     }
 
     /// A local summary run of a Qwen candidate as xtask passes it, plus `extra`.
@@ -2472,7 +2279,7 @@ mod tests {
             out: "o.json".into(),
             model_id: "qwen3.5-9b-q4_k_m".into(),
             model: Some("m.gguf".into()),
-            assistant_prefix: QWEN_THINKING_OFF_PREFIX.into(),
+            assistant_prefix: earshot_core::prompt::QWEN_NO_THINK.into(),
             context: 16_384,
             max_output: 8192,
             chunk_seconds: Some(600),
@@ -2481,7 +2288,6 @@ mod tests {
         let mut it = extra.iter();
         while let Some(flag) = it.next() {
             match *flag {
-                "--thinking" => a.thinking = Some(it.next().unwrap().parse().unwrap()),
                 "--prefix" => a.assistant_prefix = (*it.next().unwrap()).into(),
                 "--two-call" => a.two_call = true,
                 "--two-track" => a.two_track = true,
@@ -2493,30 +2299,6 @@ mod tests {
             }
         }
         a
-    }
-
-    #[test]
-    fn sum_eval_thinking_needs_a_local_qwen_run_and_a_cap_that_fits() {
-        check_thinking(&local_args(&[])).unwrap();
-        check_thinking(&local_args(&["--thinking", "2048"])).unwrap();
-        for (extra, why) in [
-            (
-                &["--thinking", "2048", "--prefix", ""][..],
-                "empty thinking block",
-            ),
-            (&["--thinking", "2048", "--two-call"][..], "--two-call"),
-            (&["--thinking", "2048", "--two-track"][..], "--two-track"),
-            (&["--thinking", "2048", "--remote"][..], "local --model"),
-            (&["--thinking", "0"][..], "thinking cap"),
-            (&["--thinking", "40000"][..], "thinking cap"),
-        ] {
-            let e = check_thinking(&local_args(extra)).unwrap_err();
-            assert!(e.contains(why), "{extra:?}: {e}");
-        }
-        // A budget whose thinking room does not fit the load context is refused, not shrunk.
-        let mut huge = local_args(&["--thinking", "2048"]);
-        huge.context = u32::MAX - 100;
-        assert!(check_thinking(&huge).unwrap_err().contains("too large"));
     }
 
     fn claude_args(extra: &[&str]) -> Args {
@@ -2532,7 +2314,7 @@ mod tests {
                 "earshot" => a.jobs.push(("test".into(), "earshot".into())),
                 "remote" => a.remote = true,
                 "two-call" => a.two_call = true,
-                "variant" => a.prompt_variant = PromptVariant::Lean,
+                "variant" => a.prompt_variant = PromptVariant::Standard,
                 "chunk" => a.chunk_seconds = Some(600),
                 "bad-model" => a.claude_model = Some("--tools".into()),
                 "model" => a.claude_model = Some("opus".into()),
@@ -2585,18 +2367,11 @@ mod tests {
     fn sum_eval_codex_has_its_key_and_the_claude_code_rules() {
         let current = PromptVariant::Current;
         assert_eq!(
-            format_key(None, current, false, false, Some(AgentCli::Codex), None),
+            key(None, current, false, false, Some(AgentCli::Codex)),
             "indented-numbered-r5-codex-brief"
         );
         assert_eq!(
-            format_key(
-                Some(600),
-                current,
-                false,
-                false,
-                Some(AgentCli::Codex),
-                None
-            ),
+            key(Some(600), current, false, false, Some(AgentCli::Codex)),
             "indented-numbered-r5-chunk600-codex-brief"
         );
         let codex = |extra: &[&str]| {
@@ -3053,36 +2828,48 @@ mod store_tests {
 mod reuse_tests {
     use super::*;
 
+    /// A chunked local run with `prompt_variant`, for the key tests.
+    fn keyed(prompt_variant: PromptVariant) -> Args {
+        Args {
+            chunk_seconds: Some(600),
+            prompt_variant,
+            ..Args::default()
+        }
+    }
+
     #[test]
     fn sum_eval_prefix_reuse_key_part_sits_before_the_template_as_in_xtask() {
-        let key = format_key(Some(600), PromptVariant::Brief, false, false, None, None)
-            + reuse_suffix(true)
-            + &template_suffix(StylePreset::Brief);
+        let mut a = keyed(PromptVariant::Brief);
+        a.prefix_reuse = true;
+        a.style_preset = StylePreset::Brief;
         assert_eq!(
-            key,
+            a.format_key(None),
             "indented-numbered-r5-chunk600-prompt-brief-reuse-template-brief"
         );
-        assert_eq!(reuse_suffix(false), "");
+        a.prefix_reuse = false;
+        assert_eq!(
+            a.format_key(None),
+            "indented-numbered-r5-chunk600-prompt-brief-template-brief"
+        );
     }
 
     /// T12.25 part 2: `-select` sits after `-reuse` and before the template, as xtask's
     /// `Options::format_key` builds it (`sum_eval_merge_select_has_its_own_format_key`).
     #[test]
     fn sum_eval_merge_select_key_part_sits_after_reuse_and_before_the_template() {
-        let key = format_key(Some(600), PromptVariant::Brief, false, false, None, None)
-            + reuse_suffix(true)
-            + merge_suffix(true)
-            + &template_suffix(StylePreset::Brief);
+        let mut a = keyed(PromptVariant::Brief);
+        a.prefix_reuse = true;
+        a.merge_select = true;
+        a.style_preset = StylePreset::Brief;
         assert_eq!(
-            key,
+            a.format_key(None),
             "indented-numbered-r5-chunk600-prompt-brief-reuse-select-template-brief"
         );
-        assert_eq!(
-            format_key(Some(600), PromptVariant::Current, false, false, None, None)
-                + merge_suffix(true),
-            "indented-numbered-r5-chunk600-select"
-        );
-        assert_eq!(merge_suffix(false), "");
+        let mut b = keyed(PromptVariant::Current);
+        b.merge_select = true;
+        assert_eq!(b.format_key(None), "indented-numbered-r5-chunk600-select");
+        b.merge_select = false;
+        assert_eq!(b.format_key(None), "indented-numbered-r5-chunk600");
     }
 
     #[test]
@@ -3134,21 +2921,20 @@ mod reuse_tests {
     /// builds it (`sum_eval_max_items_has_its_own_format_key`).
     #[test]
     fn sum_eval_max_items_key_part_sits_after_the_template() {
-        let key = format_key(Some(600), PromptVariant::Brief, false, false, None, None)
-            + reuse_suffix(true)
-            + merge_suffix(true)
-            + &template_suffix(StylePreset::Brief)
-            + &items_suffix(Some(16));
+        let mut a = keyed(PromptVariant::Brief);
+        a.prefix_reuse = true;
+        a.merge_select = true;
+        a.style_preset = StylePreset::Brief;
+        a.max_items = Some(16);
         assert_eq!(
-            key,
+            a.format_key(None),
             "indented-numbered-r5-chunk600-prompt-brief-reuse-select-template-brief-items16"
         );
-        assert_eq!(
-            format_key(Some(600), PromptVariant::Current, false, false, None, None)
-                + &items_suffix(Some(16)),
-            "indented-numbered-r5-chunk600-items16"
-        );
-        assert_eq!(items_suffix(None), "");
+        let mut b = keyed(PromptVariant::Current);
+        b.max_items = Some(16);
+        assert_eq!(b.format_key(None), "indented-numbered-r5-chunk600-items16");
+        b.max_items = None;
+        assert_eq!(b.format_key(None), "indented-numbered-r5-chunk600");
     }
 
     #[test]
