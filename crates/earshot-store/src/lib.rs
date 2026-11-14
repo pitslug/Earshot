@@ -22,6 +22,7 @@ pub mod identities;
 mod layout;
 mod repo;
 mod schema;
+mod sync;
 
 pub use audio::{
     AudioProvenance, DAY_MS, DueAudio, HOUR_MS, MeetingAudio, ORPHAN_GRACE_MS,
@@ -42,3 +43,4 @@ pub use flac::{
 };
 pub use fsutil::total_memory;
 pub use layout::DataDir;
+pub use sync::{Applied, ApplyRules, Held, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, SyncedRow};

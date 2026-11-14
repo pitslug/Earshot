@@ -837,6 +837,63 @@ fn put_voiceprint(c: &Connection, v: &Voiceprint) -> Result<(), RepoError> {
     Ok(())
 }
 
+// ---- sync (T11.1b) ----
+
+/// The row `id` of the synced `table`, tombstones included; `None` when absent or for a
+/// table that is not synced.
+pub(crate) fn synced_by_id(
+    c: &Connection,
+    table: &str,
+    id: EntityId,
+) -> Result<Option<crate::sync::SyncedRow>, RepoError> {
+    use crate::sync::SyncedRow as R;
+    let sql = |cols: &[&'static str]| select_sql(table, &synced_cols(cols), "WHERE id = ?1");
+    let p = [id_value(id)];
+    Ok(match table {
+        "meeting" => query(c, &sql(&MEETING), &p, meeting_row)?
+            .pop()
+            .map(R::Meeting),
+        "track" => query(c, &sql(&TRACK), &p, track_row)?.pop().map(R::Track),
+        "segment" => query(c, &sql(&SEGMENT), &p, segment_row)?
+            .pop()
+            .map(R::Segment),
+        "speaker" => query(c, &sql(&SPEAKER), &p, speaker_row)?
+            .pop()
+            .map(R::Speaker),
+        "note" => query(c, &sql(&NOTE), &p, note_row)?.pop().map(R::Note),
+        "summary" => query(c, &sql(&SUMMARY), &p, summary_row)?
+            .pop()
+            .map(R::Summary),
+        "person" => query(c, &sql(&PERSON), &p, person_row)?
+            .pop()
+            .map(R::Person),
+        "voiceprint" => query(c, &sql(&VOICEPRINT), &p, voiceprint_row)?
+            .pop()
+            .map(R::Voiceprint),
+        "folder" => query(c, &sql(&FOLDER), &p, folder_row)?
+            .pop()
+            .map(R::Folder),
+        _ => None,
+    })
+}
+
+/// Writes `row` with the repository's own checks (a missing parent is
+/// [`RepoError::MissingParent`]).
+pub(crate) fn put_synced(c: &Connection, row: &crate::sync::SyncedRow) -> Result<(), RepoError> {
+    use crate::sync::SyncedRow as R;
+    match row {
+        R::Meeting(m) => put_meeting(c, m),
+        R::Track(t) => put_track(c, t),
+        R::Segment(s) => put_segment(c, s),
+        R::Speaker(s) => put_speaker(c, s),
+        R::Note(n) => put_note(c, n),
+        R::Summary(s) => put_summary(c, s),
+        R::Person(p) => put_person(c, p),
+        R::Voiceprint(v) => put_voiceprint(c, v),
+        R::Folder(f) => put_folder(c, f),
+    }
+}
+
 /// Implements the repository traits for a type with a `conn` field that derefs to a
 /// [`Connection`].
 macro_rules! impl_repos {

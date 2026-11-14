@@ -170,6 +170,118 @@ UPDATE meeting SET summary_kept_local = 1 WHERE EXISTS (
 );
 ";
 
+/// Migration 6: what sync pushes and what it holds back (T11.1b, docs/sync-spec.md section
+/// 5.2). `sync_outbox` names every synced row changed on this device, filled by a trigger
+/// pair on each table of [`SYNCED_TABLES`] whether or not sync is on, and here with every row
+/// that already exists, so turning sync on later sends them too. `sync_pending` holds pulled
+/// rows that cannot be applied yet, still sealed. Both are device-local (no sync metadata).
+/// The triggers insert only an absent entry rather than `INSERT OR IGNORE`: SQLite replaces a
+/// trigger's conflict clause with the firing statement's, and the store writes with upserts
+/// (`ON CONFLICT DO UPDATE`), so an ignored conflict would be an error on a row's second
+/// change. Written out table by table: a migration never changes, so a synced table added later
+/// brings its own triggers in its own migration (pinned by
+/// `store_sync_triggers_cover_every_synced_table`).
+const V6: &str = "
+CREATE TABLE sync_outbox (
+    tbl TEXT NOT NULL,
+    id BLOB NOT NULL,
+    PRIMARY KEY (tbl, id)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE sync_pending (
+    key BLOB PRIMARY KEY NOT NULL,
+    seq INTEGER NOT NULL,
+    wall_ms INTEGER NOT NULL,
+    logical INTEGER NOT NULL,
+    node BLOB NOT NULL,
+    body BLOB NOT NULL,
+    reason TEXT NOT NULL
+) STRICT;
+
+CREATE TRIGGER meeting_sync_insert AFTER INSERT ON meeting BEGIN
+    INSERT INTO sync_outbox SELECT 'meeting', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'meeting' AND id = NEW.id);
+END;
+CREATE TRIGGER meeting_sync_update AFTER UPDATE ON meeting BEGIN
+    INSERT INTO sync_outbox SELECT 'meeting', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'meeting' AND id = NEW.id);
+END;
+CREATE TRIGGER track_sync_insert AFTER INSERT ON track BEGIN
+    INSERT INTO sync_outbox SELECT 'track', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'track' AND id = NEW.id);
+END;
+CREATE TRIGGER track_sync_update AFTER UPDATE ON track BEGIN
+    INSERT INTO sync_outbox SELECT 'track', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'track' AND id = NEW.id);
+END;
+CREATE TRIGGER speaker_sync_insert AFTER INSERT ON speaker BEGIN
+    INSERT INTO sync_outbox SELECT 'speaker', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'speaker' AND id = NEW.id);
+END;
+CREATE TRIGGER speaker_sync_update AFTER UPDATE ON speaker BEGIN
+    INSERT INTO sync_outbox SELECT 'speaker', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'speaker' AND id = NEW.id);
+END;
+CREATE TRIGGER segment_sync_insert AFTER INSERT ON segment BEGIN
+    INSERT INTO sync_outbox SELECT 'segment', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'segment' AND id = NEW.id);
+END;
+CREATE TRIGGER segment_sync_update AFTER UPDATE ON segment BEGIN
+    INSERT INTO sync_outbox SELECT 'segment', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'segment' AND id = NEW.id);
+END;
+CREATE TRIGGER note_sync_insert AFTER INSERT ON note BEGIN
+    INSERT INTO sync_outbox SELECT 'note', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'note' AND id = NEW.id);
+END;
+CREATE TRIGGER note_sync_update AFTER UPDATE ON note BEGIN
+    INSERT INTO sync_outbox SELECT 'note', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'note' AND id = NEW.id);
+END;
+CREATE TRIGGER summary_sync_insert AFTER INSERT ON summary BEGIN
+    INSERT INTO sync_outbox SELECT 'summary', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'summary' AND id = NEW.id);
+END;
+CREATE TRIGGER summary_sync_update AFTER UPDATE ON summary BEGIN
+    INSERT INTO sync_outbox SELECT 'summary', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'summary' AND id = NEW.id);
+END;
+CREATE TRIGGER person_sync_insert AFTER INSERT ON person BEGIN
+    INSERT INTO sync_outbox SELECT 'person', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'person' AND id = NEW.id);
+END;
+CREATE TRIGGER person_sync_update AFTER UPDATE ON person BEGIN
+    INSERT INTO sync_outbox SELECT 'person', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'person' AND id = NEW.id);
+END;
+CREATE TRIGGER voiceprint_sync_insert AFTER INSERT ON voiceprint BEGIN
+    INSERT INTO sync_outbox SELECT 'voiceprint', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'voiceprint' AND id = NEW.id);
+END;
+CREATE TRIGGER voiceprint_sync_update AFTER UPDATE ON voiceprint BEGIN
+    INSERT INTO sync_outbox SELECT 'voiceprint', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'voiceprint' AND id = NEW.id);
+END;
+CREATE TRIGGER folder_sync_insert AFTER INSERT ON folder BEGIN
+    INSERT INTO sync_outbox SELECT 'folder', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'folder' AND id = NEW.id);
+END;
+CREATE TRIGGER folder_sync_update AFTER UPDATE ON folder BEGIN
+    INSERT INTO sync_outbox SELECT 'folder', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'folder' AND id = NEW.id);
+END;
+
+INSERT OR IGNORE INTO sync_outbox SELECT 'meeting', id FROM meeting;
+INSERT OR IGNORE INTO sync_outbox SELECT 'track', id FROM track;
+INSERT OR IGNORE INTO sync_outbox SELECT 'speaker', id FROM speaker;
+INSERT OR IGNORE INTO sync_outbox SELECT 'segment', id FROM segment;
+INSERT OR IGNORE INTO sync_outbox SELECT 'note', id FROM note;
+INSERT OR IGNORE INTO sync_outbox SELECT 'summary', id FROM summary;
+INSERT OR IGNORE INTO sync_outbox SELECT 'person', id FROM person;
+INSERT OR IGNORE INTO sync_outbox SELECT 'voiceprint', id FROM voiceprint;
+INSERT OR IGNORE INTO sync_outbox SELECT 'folder', id FROM folder;
+";
+
 /// Tables with sync metadata (the HLC high-water mark is the greatest `updated_*` in them).
 pub(crate) const SYNCED_TABLES: [&str; 9] = [
     "meeting",
@@ -185,7 +297,7 @@ pub(crate) const SYNCED_TABLES: [&str; 9] = [
 
 /// The migrations, in order, with `{META}` expanded.
 pub(crate) fn migrations() -> Vec<String> {
-    [V1, V2, V3, V4, V5]
+    [V1, V2, V3, V4, V5, V6]
         .iter()
         .map(|m| m.replace("{META}", META))
         .collect()
@@ -204,6 +316,7 @@ mod tests {
         "46159521b8052eff5fba4622c74f0f91717db9ec39170deba1757f35e48602d4",
         "85a4c55bdbd320805308174fdb3a2f531d9dfae9262659b726437b8caa14603b",
         "a682b36a9b8d6bd831f0f4865fa7554dd79330f35e80f10c7512389e3bcc1df4",
+        "964bd0e4d3a4bb7e505659731a7dea0a1774269734863714d7a23c4af756b466",
     ];
 
     /// `(type, name, tbl_name, sql)` of every schema object, sorted.
@@ -310,6 +423,80 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, 4);
+    }
+
+    /// The committed schema-5 fixture (`tests/data/schema_v5.sql`, used by
+    /// `tests/sync_apply.rs`) creates exactly the objects migrations 1 to 5 create, so the
+    /// sync migration (6) is tested on a real schema-5 database.
+    #[test]
+    fn store_sync_v5_fixture_has_exactly_the_schema_of_migrations_1_to_5() {
+        let fixture = rusqlite::Connection::open_in_memory().unwrap();
+        fixture
+            .execute_batch(include_str!("../tests/data/schema_v5.sql"))
+            .unwrap();
+        let fresh = rusqlite::Connection::open_in_memory().unwrap();
+        for m in &super::migrations()[..5] {
+            fresh.execute_batch(m).unwrap();
+        }
+        let want = objects(&fresh);
+        assert!(
+            want.iter().any(|o| o
+                .3
+                .as_deref()
+                .is_some_and(|sql| sql.contains("summary_kept_local"))),
+            "{want:?}"
+        );
+        assert_eq!(objects(&fixture), want);
+        let version: u32 = fixture
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+    }
+
+    /// Every synced table has its insert and update trigger feeding `sync_outbox`, and no
+    /// other table has one: a synced table added later brings its triggers in its own
+    /// migration, or this fails (T11.1b).
+    #[test]
+    fn store_sync_triggers_cover_every_synced_table() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        for m in super::migrations() {
+            c.execute_batch(&m).unwrap();
+        }
+        let mut st = c
+            .prepare(
+                "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger' \
+                 ORDER BY name",
+            )
+            .unwrap();
+        let got: Vec<(String, String, String)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let mut want: Vec<(String, String)> = Vec::new();
+        for t in super::SYNCED_TABLES {
+            want.push((format!("{t}_sync_insert"), t.to_owned()));
+            want.push((format!("{t}_sync_update"), t.to_owned()));
+        }
+        want.sort();
+        let names: Vec<(String, String)> =
+            got.iter().map(|(n, t, _)| (n.clone(), t.clone())).collect();
+        assert_eq!(names, want);
+        for (name, table, sql) in &got {
+            let event = if name.ends_with("_insert") {
+                "AFTER INSERT"
+            } else {
+                "AFTER UPDATE"
+            };
+            assert!(sql.contains(event), "{sql}");
+            assert!(
+                sql.contains(&format!("INSERT INTO sync_outbox SELECT '{table}', NEW.id"))
+                    && sql.contains(&format!(
+                        "WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = '{table}' AND id = NEW.id)"
+                    )),
+                "{sql}"
+            );
+        }
     }
 
     /// The query plan of `has_live_segment` on a database after `upto` migrations.
