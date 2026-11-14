@@ -1,0 +1,226 @@
+{
+  "audio": "bundled",
+  "capture_max_lag_s": 0.013,
+  "card": null,
+  "catch_up_after_end_s": 0.424166,
+  "decodes_mic": {
+    "audio_s": 100.63999999999999,
+    "calls": 11,
+    "rtf": 0.021516974364069956,
+    "took_s": {
+      "max": 0.2465603,
+      "median": 0.1886129,
+      "n": 11,
+      "p95": 0.2465603
+    }
+  },
+  "decodes_reference": {
+    "audio_s": 95.13600000000001,
+    "calls": 10,
+    "rtf": 0.02128695236293306,
+    "took_s": {
+      "max": 0.3117136,
+      "median": 0.1872161,
+      "n": 10,
+      "p95": 0.3117136
+    }
+  },
+  "echo_locks": 1,
+  "echo_words_removed": 0,
+  "host": {
+    "logical_cores": 12,
+    "machine_load_percent": {
+      "max": 28.0,
+      "median": 21.0,
+      "n": 4,
+      "p95": 28.0
+    },
+    "peak_private_gib": 2.709575653076172,
+    "peak_working_set_gib": 3.8522491455078125,
+    "process_cpu_s": 49.171875
+  },
+  "length_s": 150.0,
+  "live_backends": [
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Mic"
+    },
+    {
+      "device": "qnn:npu",
+      "kind": "Qnn",
+      "model": "parakeet-tdt-0.6b-v2",
+      "track": "Reference"
+    }
+  ],
+  "max_piece_s": null,
+  "mic": {
+    "first_word_lag_s": {
+      "max": 29.813008300000007,
+      "median": 6.941602700000001,
+      "n": 11,
+      "p95": 29.813008300000007
+    },
+    "last_word_lag_s": {
+      "max": 11.431051199999985,
+      "median": 2.221602700000002,
+      "n": 11,
+      "p95": 11.431051199999985
+    },
+    "on_screen_lag_s": {
+      "max": 29.813008300000007,
+      "median": 13.431051199999985,
+      "n": 244,
+      "p95": 24.957581500000003
+    },
+    "previews": {
+      "changed": 0,
+      "kept": 0,
+      "updates": 0,
+      "vanished": 0,
+      "word_lag_s": {
+        "max": null,
+        "median": null,
+        "n": 0,
+        "p95": null
+      }
+    },
+    "stored_sha256": "6d099ad857c667baf8080bf43a4de9cce88d36d0d20b1cedab21d623b02cb7dd",
+    "stretch_length_s": {
+      "max": 23.36,
+      "median": 4.96,
+      "n": 11,
+      "p95": 23.36
+    },
+    "stretches": 11,
+    "word_lag_s": {
+      "max": 29.813008300000007,
+      "median": 13.431051199999985,
+      "n": 244,
+      "p95": 24.957581500000003
+    },
+    "words": 244
+  },
+  "npu_refusals": [],
+  "onnx_placement": [
+    "Mic: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10",
+    "Reference: ONNX Runtime placement: requested qnn, placed: CPUExecutionProvider=2 QNNExecutionProvider=1; requested cpu, placed: CPUExecutionProvider=13; requested cpu, placed: CPUExecutionProvider=10"
+  ],
+  "pieces": "PieceConfig { threshold: 0.5, min_speech: 250ms, min_silence: 2s, speech_pad: 400ms, max_piece: 30s, merge_gap: 1s, context_gap: 10s, prompt_chars: 200, compression_ratio_threshold: 2.4, recover_speech: Some(2s) }",
+  "preview_refusal": {
+    "app_first": null,
+    "app_first_on": "Qnn",
+    "app_own_voice": null,
+    "app_own_voice_on": null,
+    "forced_past_it": false,
+    "simulated_card_gib": null,
+    "streaming_model_instead": false
+  },
+  "preview_sessions": [
+    {
+      "loaded": {
+        "device": "qnn:npu",
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2",
+        "placement": null
+      },
+      "refusal_bypassed": false,
+      "requested": {
+        "kind": "Qnn",
+        "model": "parakeet-tdt-0.6b-v2"
+      },
+      "slot": "first"
+    }
+  ],
+  "previews": [
+    {
+      "audio_dropped": 0,
+      "audio_s": 639.3359999999999,
+      "backend": "Qnn",
+      "cancelled": 0,
+      "decode_s": 15.385271499999993,
+      "decodes": 79,
+      "decodes_adding_nothing": 35,
+      "load_s": 2.9553802,
+      "off": null,
+      "rtf": 0.02406445358934894,
+      "skipped_busy": 0,
+      "slow_pauses": 0,
+      "slowest_s": 0.3302497,
+      "track": "Reference",
+      "words_shown": 201
+    }
+  ],
+  "reference": {
+    "first_word_lag_s": {
+      "max": 30.0259572,
+      "median": 15.006265800000023,
+      "n": 8,
+      "p95": 30.0259572
+    },
+    "last_word_lag_s": {
+      "max": 13.465957200000002,
+      "median": 2.963838199999998,
+      "n": 8,
+      "p95": 13.465957200000002
+    },
+    "on_screen_lag_s": {
+      "max": 29.7859572,
+      "median": 2.269888100000003,
+      "n": 213,
+      "p95": 6.317329900000001
+    },
+    "previews": {
+      "changed": 9,
+      "kept": 191,
+      "updates": 52,
+      "vanished": 1,
+      "word_lag_s": {
+        "max": 7.7580917,
+        "median": 2.2822955999999976,
+        "n": 201,
+        "p95": 5.032247499999997
+      }
+    },
+    "stored_sha256": "344ffab8e28dc4bbe1632f17b252d0d939d10ce1efad56c676db50c89efed77d",
+    "stretch_length_s": {
+      "max": 20.16,
+      "median": 14.64,
+      "n": 8,
+      "p95": 20.16
+    },
+    "stretches": 8,
+    "word_lag_s": {
+      "max": 30.0259572,
+      "median": 13.966265800000002,
+      "n": 213,
+      "p95": 25.0659572
+    },
+    "words": 213
+  },
+  "requested_backend": "Qnn",
+  "simulated_card_gib": null,
+  "speakers": true,
+  "stopped_with": "Finished",
+  "stream": null,
+  "summaries": null,
+  "summary": "Off",
+  "vanished_kinds": {
+    "mic": {
+      "near_ms": 2000,
+      "never_settled": 0,
+      "other_track_settled_nearby": 0,
+      "own_settled_after": 0,
+      "own_settled_before": 0
+    },
+    "reference": {
+      "near_ms": 2000,
+      "never_settled": 1,
+      "other_track_settled_nearby": 0,
+      "own_settled_after": 0,
+      "own_settled_before": 0
+    }
+  },
+  "warnings": 0
+}
