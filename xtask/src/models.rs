@@ -635,6 +635,62 @@ mod tests {
         assert!(err.contains("inside the CUDA folder"), "{err}");
     }
 
+    /// The retired-name rule (T12.48) exists in both manifest parsers; the shared table pins
+    /// them together.
+    #[test]
+    fn models_cuda_retired_names_follow_the_shared_cases() {
+        #[derive(serde::Deserialize)]
+        struct Cases {
+            retired: Vec<Retired>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Retired {
+            names: Vec<String>,
+            ok: bool,
+        }
+        let path = crate::repo_root().join("fixtures/models/cuda_folder_cases.toml");
+        let cases: Cases = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert!(cases.retired.iter().any(|c| c.ok) && cases.retired.iter().any(|c| !c.ok));
+        let sha = "0".repeat(64);
+        let base = format!(
+            "sets = [\"ci\"]\nhosts = [\"example.org\"]\n{}\
+             [[cuda_archive]]\npart = \"summaries\"\nartefact = \"x\"\nformat = \"zip\"\n\
+             [[cuda_archive.file]]\nname = \"a.dll\"\nmember = \"bin/a.dll\"\n\
+             sha256 = \"{sha}\"\nsize = 1\n\n",
+            guard_artefact("x", "archives/x.zip", "\"ci\"")
+        );
+        for c in cases.retired {
+            let mut text = base.clone();
+            for name in &c.names {
+                text.push_str(&format!(
+                    "[[cuda_retired]]\nname = {}\n\n",
+                    toml::Value::String(name.clone())
+                ));
+            }
+            let parsed = Manifest::parse(&text).map_err(|e| format!("{e:#}"));
+            assert_eq!(parsed.is_ok(), c.ok, "{:?}: {parsed:?}", c.names);
+            if let Ok(m) = parsed {
+                let names: Vec<&str> = m.cuda_retired.iter().map(|r| r.name.as_str()).collect();
+                assert_eq!(names, c.names);
+            }
+        }
+        // An unknown field is refused, as by the app's parser.
+        let unknown = format!("{base}[[cuda_retired]]\nname = 'b.dll'\nsha256 = 'x'\n");
+        assert!(Manifest::parse(&unknown).is_err());
+        // The real manifest retires nothing a part pins.
+        let m = load();
+        for r in &m.cuda_retired {
+            assert!(
+                m.cuda_archives
+                    .iter()
+                    .flat_map(|a| &a.files)
+                    .all(|f| !f.name.eq_ignore_ascii_case(&r.name)),
+                "{}",
+                r.name
+            );
+        }
+    }
+
     /// The manifest's `[[cuda_archive]]` tables, read by this parser's own rules, and those
     /// rules, with one artefact whose member pin is fixed.
     #[test]

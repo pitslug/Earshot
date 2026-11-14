@@ -42,3 +42,48 @@ inside = false
 [[case]]
 path = ""
 inside = false
+
+# Retired names (T12.48): `[[cuda_retired]]` entries in a manifest whose summaries part pins only
+# `a.dll`. Both parsers (earshot-runtime `Catalogue::cuda_retired_of`, xtask
+# `Manifest::validate_cuda`) run every case below and must accept exactly when `ok`: each name a
+# plain name (no folder, drive or dot entry), unique without regard to case, and pinned by no part.
+
+[[retired]]
+names = ["old.dll"]
+ok = true
+
+[[retired]]
+names = ["Old64_12.DLL", "notes.txt"]
+ok = true
+
+[[retired]]
+names = []
+ok = true
+
+[[retired]]
+names = ["A.DLL"]
+ok = false
+
+[[retired]]
+names = ["old.dll", "OLD.dll"]
+ok = false
+
+[[retired]]
+names = ["sub/old.dll"]
+ok = false
+
+[[retired]]
+names = ["sub\\old.dll"]
+ok = false
+
+[[retired]]
+names = ["c:old.dll"]
+ok = false
+
+[[retired]]
+names = [".."]
+ok = false
+
+[[retired]]
+names = [""]
+ok = false

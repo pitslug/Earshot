@@ -29,6 +29,10 @@
 //!   access first, so a held file is [`CudaError::InUse`], naming it, with nothing removed; a
 //!   retry after a restart works. A read-only file is simply removed. Files no part pins are never
 //!   deleted: [`Removed::left_in_folder`] names them, and the folder stays while they are there.
+//! - **Retired names** (`[[cuda_retired]]`, T12.48): a file an earlier manifest pinned under a
+//!   name no part pins now. A load ignores exactly those names ([`unexpected_libraries`]), and a
+//!   removal of either part or the next download deletes exactly those ([`remove_retired`]), so a
+//!   renamed library in a manifest bump never leaves every CUDA load refused.
 //!
 //! ONNX Runtime is one library per process, so transcription's choice is made once, at start and
 //! before ONNX Runtime loads: [`use_for_transcription`], which runs the full check. An app that
@@ -433,14 +437,50 @@ fn pinned_names(c: &Catalogue) -> BTreeSet<String> {
         .collect()
 }
 
-/// The `.dll` files directly in the folder that no part pins, sorted. The loader lets Windows
-/// resolve imports from this folder, so such a file could be loaded with no digest check.
-/// Anything else, and anything inside a staging folder, cannot be reached that way.
+/// The retired names (lower case): what an earlier manifest pinned and no part pins now.
+fn retired_names(c: &Catalogue) -> BTreeSet<String> {
+    c.cuda_retired().iter().map(|n| n.to_lowercase()).collect()
+}
+
+/// The entries directly in `dir` whose name is retired, as they are spelled on disk, sorted. A
+/// folder is never one of them.
+fn retired_in(c: &Catalogue, dir: &Path) -> Vec<String> {
+    let retired = retired_names(c);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| !t.is_dir()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| retired.contains(&name.to_lowercase()))
+        .collect();
+    found.sort();
+    found
+}
+
+/// Deletes the retired files in the folder (T12.48), and only those, returning the paths it
+/// deleted. Best effort: one that cannot be deleted stays, and a load still ignores it.
+pub fn remove_retired(c: &Catalogue, models: &ModelDir) -> Vec<PathBuf> {
+    let dir = folder(models);
+    retired_in(c, &dir)
+        .into_iter()
+        .map(|name| dir.join(name))
+        .filter(|path| std::fs::remove_file(path).is_ok())
+        .collect()
+}
+
+/// The `.dll` files directly in the folder that no part pins and that are not retired, sorted.
+/// The loader lets Windows resolve imports from this folder, so such a file could be loaded with
+/// no digest check. Anything else, and anything inside a staging folder, cannot be reached that
+/// way. A retired name is what an earlier manifest pinned and no current file imports; the next
+/// removal or download deletes it.
 ///
 /// # Errors
 /// The folder cannot be read (no folder is no files).
 pub fn unexpected_libraries(c: &Catalogue, models: &ModelDir) -> io::Result<Vec<String>> {
     let pinned = pinned_names(c);
+    let retired = retired_names(c);
     let entries = match std::fs::read_dir(folder(models)) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -451,7 +491,11 @@ pub fn unexpected_libraries(c: &Catalogue, models: &ModelDir) -> io::Result<Vec<
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let lower = name.to_lowercase();
-        if lower.ends_with(".dll") && !entry.file_type()?.is_dir() && !pinned.contains(&lower) {
+        if lower.ends_with(".dll")
+            && !entry.file_type()?.is_dir()
+            && !pinned.contains(&lower)
+            && !retired.contains(&lower)
+        {
             found.push(name);
         }
     }
@@ -563,8 +607,9 @@ fn catalogue_err(e: CatalogueError) -> ModelDownloadError {
 }
 
 /// Downloads what the manifest pins of `part` into `models`: each archive through `fetch`,
-/// `progress(done, total)` over the whole part (module docs). It does not bring the part's
-/// [`not_available_yet`] files, so check that before calling the part installed.
+/// `progress(done, total)` over the whole part (module docs), first deleting the retired files
+/// ([`remove_retired`]). It does not bring the part's [`not_available_yet`] files, so check that
+/// before calling the part installed.
 ///
 /// # Errors
 /// [`ModelDownloadError`]; the archives finished before stay.
@@ -577,6 +622,7 @@ pub fn download_part(
     fetch: &mut FetchFn<'_>,
 ) -> Result<(), ModelDownloadError> {
     let total = download_size(c, part).map_err(catalogue_err)?;
+    remove_retired(c, models);
     let dir = folder(models);
     let mut finished = 0u64;
     progress(0, total);
@@ -718,8 +764,8 @@ fn left_in_folder(c: &Catalogue, dir: &Path) -> Vec<String> {
     left
 }
 
-/// Removes `part` from `models` (module docs): its files and its archives' downloads, whole or
-/// partial.
+/// Removes `part` from `models` (module docs): its files, its archives' downloads, whole or
+/// partial, and the retired files (T12.48).
 ///
 /// # Errors
 /// [`CudaError::NeededBy`] and [`CudaError::InUse`], nothing removed; [`CudaError::Remove`] when
@@ -732,8 +778,13 @@ pub fn remove_part(c: &Catalogue, models: &ModelDir, part: CudaPart) -> Result<R
     }
     let dir = folder(models);
     let files = part_files(c, part);
-    for f in &files {
-        exclusive(&dir, &f.name)?;
+    let retired = retired_in(c, &dir);
+    for name in files
+        .iter()
+        .map(|f| f.name.as_str())
+        .chain(retired.iter().map(String::as_str))
+    {
+        exclusive(&dir, name)?;
     }
     let mut removed = Removed::default();
     let remove = |path: PathBuf, removed: &mut Removed| -> Result<(), CudaError> {
@@ -754,8 +805,12 @@ pub fn remove_part(c: &Catalogue, models: &ModelDir, part: CudaPart) -> Result<R
             }),
         }
     };
-    for f in &files {
-        remove(jail_join(&dir, &f.name)?, &mut removed)?;
+    for name in files
+        .iter()
+        .map(|f| f.name.as_str())
+        .chain(retired.iter().map(String::as_str))
+    {
+        remove(jail_join(&dir, name)?, &mut removed)?;
     }
     for a in archives_of(c, part) {
         let artefact = artefact_of(c, a)?;
