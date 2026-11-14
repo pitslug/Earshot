@@ -1643,11 +1643,13 @@ mod production {
             // a meeting whose files are missing. What it runs on is read when its turn comes
             // (`MeetingModels`), so it keeps what the start decides.
             let build = earshot_runtime::backends::accelerator_order();
-            let setup = {
+            let mut setup = {
                 let db = svc.store();
                 host::transcription_setup(&db, &models, &build, &earshot_runtime::hardware())?
             };
             host::require_models(&models, &setup.choice.model, true)?;
+            // "Runs on the processor" for want of an NPU version: once until it changes (T12.45).
+            host::npu_note_once(&mut svc.store(), &mut setup);
             let checked = host::ResolvedModels {
                 model: setup.choice.model.clone(),
                 order: setup.order.clone(),

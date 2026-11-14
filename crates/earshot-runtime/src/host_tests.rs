@@ -1378,3 +1378,76 @@ fn host_npu_refusals_are_stored_by_kind() {
     assert_eq!(record.track.unwrap().steps, [Step::CompiledLoad]);
     assert_eq!(record.preview.unwrap().steps, [Step::NotCompiled], "kept");
 }
+
+/// A setup whose notes hold `npu` (when given) after an unrelated note.
+fn setup_with_npu_note(npu: Option<&str>) -> TranscriptionSetup {
+    TranscriptionSetup {
+        choice: ModelChoice {
+            model: "parakeet-tdt-0.6b-v3".to_owned(),
+            backend: None,
+        },
+        source: TranscriptionSource::Setting,
+        order: vec![Accelerator::Cpu],
+        languages: vec!["en".to_owned()],
+        notes: std::iter::once("A stored setting is not known.".to_owned())
+            .chain(npu.map(str::to_owned))
+            .collect(),
+        npu_note: npu.map(str::to_owned),
+    }
+}
+
+#[test]
+fn host_npu_note_shows_once_until_something_about_it_changes() {
+    let dir = TempDir::new("host-npu-note");
+    let (svc, _) = services(&dir);
+    let first = "Model A has no NPU version installed, so it runs on the processor.";
+    let other = "Model B has no NPU version installed, so it runs on the processor.";
+    let shown = |npu: Option<&str>| {
+        let mut setup = setup_with_npu_note(npu);
+        npu_note_once(&mut svc.store(), &mut setup);
+        setup.notes
+    };
+    let unrelated = "A stored setting is not known.".to_owned();
+    // The first start shows it; the next ones do not, while every other note stays.
+    assert_eq!(shown(Some(first)), [unrelated.clone(), first.to_owned()]);
+    assert_eq!(shown(Some(first)), std::slice::from_ref(&unrelated));
+    assert_eq!(shown(Some(first)), std::slice::from_ref(&unrelated));
+    // Another model's note is a change: shown once.
+    assert_eq!(shown(Some(other)), [unrelated.clone(), other.to_owned()]);
+    assert_eq!(shown(Some(other)), std::slice::from_ref(&unrelated));
+    // No note (the NPU version installed, say) forgets it, so it shows again when it returns.
+    assert_eq!(shown(None), std::slice::from_ref(&unrelated));
+    assert_eq!(svc.store().local_value(NPU_NOTE_SHOWN_KEY).unwrap(), None);
+    assert_eq!(shown(Some(other)), [unrelated.clone(), other.to_owned()]);
+    // A record this version cannot read shows the note and is replaced.
+    svc.store()
+        .set_local_value(NPU_NOTE_SHOWN_KEY, b"\xff")
+        .unwrap();
+    assert_eq!(shown(Some(other)), [unrelated.clone(), other.to_owned()]);
+    assert_eq!(shown(Some(other)), [unrelated]);
+}
+
+#[test]
+fn host_transcription_setup_names_its_npu_note() {
+    let dir = TempDir::new("host-npu-note-setup");
+    let (svc, _) = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let mut db = svc.store();
+    crate::model_settings::set_model_settings(
+        &mut db,
+        &crate::model_settings::ModelSettings {
+            transcription: crate::model_settings::ModelPick::Named(
+                "parakeet-tdt-0.6b-v3".to_owned(),
+            ),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let hw = crate::hardware();
+    let npu = [Accelerator::Qnn, Accelerator::Cpu];
+    let with_npu = transcription_setup(&db, &models, &npu, &hw).unwrap();
+    let note = with_npu.npu_note.clone().expect("no NPU version here");
+    assert!(with_npu.notes.contains(&note), "{:?}", with_npu.notes);
+    let without = transcription_setup(&db, &models, &[Accelerator::Cpu], &hw).unwrap();
+    assert_eq!(without.npu_note, None);
+}
