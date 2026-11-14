@@ -103,9 +103,6 @@ pub const NOTE_EVERYONE_MEMORY: &str = "This computer shows them for the other p
 /// Everyone chosen with transcription on the NPU, which runs no session for the user's own voice
 /// (T12.12c, `backends::OWN_VOICE_NPU_REFUSED`).
 pub const NOTE_EVERYONE_NPU: &str = "On the NPU they show for the other people only for now: some provisional words of your own voice appeared there and then vanished, which is not understood yet.";
-/// Everyone chosen with transcription on the graphics card: the user's own words run on the
-/// processor (T12.3a).
-pub const NOTE_EVERYONE_PROCESSOR: &str = "Provisional words for your own voice run on the processor, so the graphics card keeps its room for the rest of the meeting.";
 
 /// The page for a machine whose transcription would lead with `lead`.
 #[must_use]
@@ -145,8 +142,9 @@ pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardwar
         ),
         PreviewChoice::Everyone => {
             let note = match second_preview_backend(backend, hardware, choice) {
+                // Beside a card too small for the first, both run on the processor (T12.3c);
+                // with room, both run on the card (T12.60), so the second runs with the first.
                 Ok(_) if card_note.is_some() => card_note,
-                Ok(second) if second != backend => Some(NOTE_EVERYONE_PROCESSOR),
                 Ok(_) => below_limit.then_some(NOTE_ON_BELOW_LIMIT),
                 // T12.12c: the NPU runs no session for the user's own voice, whatever the memory.
                 Err(_) if backend == BackendKind::Qnn => Some(NOTE_EVERYONE_NPU),
@@ -540,17 +538,49 @@ mod tests {
         );
     }
 
-    /// T12.3a: beside CUDA the user's own words run on the processor, and the page says so.
+    /// T12.60: beside a card with room the user's own words run on the card with the far end's,
+    /// so the page has nothing to add; beside a card one under the limit, or of unknown memory,
+    /// both run on the processor and the page says so (T12.3c).
     #[test]
-    fn preview_everyone_beside_the_graphics_card_says_your_words_run_on_the_processor() {
+    fn preview_everyone_beside_the_graphics_card_runs_where_the_first_runs() {
         let m = machine(Some(64 * GIB), Some(PREVIEW_MIN_CARD_MEMORY));
+        assert_eq!(
+            second_preview_backend(BackendKind::Cuda, &m, PreviewChoice::Everyone),
+            Ok(BackendKind::Cuda)
+        );
         assert_eq!(
             preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &m),
             PreviewPage {
                 shown: PreviewSetting::Everyone,
                 can_change: true,
-                note: Some(NOTE_EVERYONE_PROCESSOR)
+                note: None
             }
+        );
+        for card in [Some(PREVIEW_MIN_CARD_MEMORY - 1), None] {
+            let small = machine(Some(64 * GIB), card);
+            assert_eq!(
+                second_preview_backend(BackendKind::Cuda, &small, PreviewChoice::Everyone),
+                Ok(BackendKind::Cpu),
+                "{card:?}"
+            );
+            assert_eq!(
+                preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &small),
+                PreviewPage {
+                    shown: PreviewSetting::Everyone,
+                    can_change: true,
+                    note: Some(NOTE_CARD_PROCESSOR)
+                },
+                "{card:?}"
+            );
+        }
+        // On the card the second session needs CUDA's memory limit: below it the page says so.
+        let short = machine(
+            Some(PREVIEW_MIN_MEMORY_CUDA - 1),
+            Some(PREVIEW_MIN_CARD_MEMORY),
+        );
+        assert_eq!(
+            preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &short).note,
+            Some(NOTE_EVERYONE_MEMORY)
         );
         // On the CPU nothing moves, so nothing is said.
         assert_eq!(
@@ -619,7 +649,6 @@ mod tests {
             NOTE_CARD_PROCESSOR,
             NOTE_EVERYONE_MEMORY,
             NOTE_EVERYONE_NPU,
-            NOTE_EVERYONE_PROCESSOR,
         ] {
             assert_eq!(crate::catalogue::manifest_id_in(note), None, "{note}");
             assert!(!note.contains("not measured"), "{note}");
@@ -635,7 +664,6 @@ mod tests {
             NOTE_CARD_PROCESSOR,
             NOTE_EVERYONE_MEMORY,
             NOTE_EVERYONE_NPU,
-            NOTE_EVERYONE_PROCESSOR,
         ] {
             assert!(!note.contains('\u{2014}'), "{note}");
         }

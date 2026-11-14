@@ -884,11 +884,11 @@ fn live_preview_own_voice_in_a_call_shows_both_tracks_and_reports_each() {
     assert_eq!(with, without);
 }
 
-/// T12.3a: in a meeting transcribed on CUDA, the far end's previews load on the track's backend and
-/// the user's own track's session loads on the CPU (`backends::load_preview_second_with`, the rule's
-/// own decision); each track's report says where its session ran.
+/// T12.60: in a meeting transcribed on CUDA beside a card with room, the far end's previews and the
+/// user's own track's session both load on the track's backend (`backends::load_preview_second_with`,
+/// the rule's own decision); each track's report says where its session ran.
 #[test]
-fn live_preview_own_voice_beside_cuda_loads_on_the_cpu_and_reports_it() {
+fn live_preview_own_voice_beside_a_roomy_card_loads_on_cuda_and_reports_it() {
     use crate::preview_settings::PreviewChoice;
     use earshot_hardware::{Gpu, Hardware};
     let scene = scene_of(27);
@@ -949,7 +949,7 @@ fn live_preview_own_voice_beside_cuda_loads_on_the_cpu_and_reports_it() {
         vec![("far", BackendKind::Cuda), ("own", BackendKind::Cuda)]
     );
     let mic = report_for(&events, TrackId::Mic);
-    assert_eq!(mic.backend, Some(BackendKind::Cpu), "{mic:?}");
+    assert_eq!(mic.backend, Some(BackendKind::Cuda), "{mic:?}");
     assert_eq!(mic.off, None, "{mic:?}");
     assert!(mic.decodes > 0, "{mic:?}");
     let far_report = report_for(&events, TrackId::Reference);

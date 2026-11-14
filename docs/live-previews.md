@@ -737,6 +737,30 @@ How the terms are read, fixed with the rule:
 - **`PREVIEW_MIN_CARD_MEMORY` unchanged:** T12.59's rule applied to the larger of the card-column Everyone peaks and the Other people only peaks; it is unchanged when that still gives an 8 GB card, 7.5 GiB.
 - **Idle:** as in T12.59; one run at a time.
 
+### Result (measured 2026-11-15, idle desktop, one run per condition)
+
+Reports, card logs and card summaries: `docs/live-previews/t1260/`. Every run passed three idle checks first; every report's host-load field reads at most 4%. The card's baseline was 1111 MiB in all six runs (about 200 MiB of something else held for the whole series), so the peaks compare with each other, not with T12.59's to the last 0.2 GiB.
+
+| Run | Own preview | Words | rtf mic / ref | Catch-up (s) | Largest real-decode wait | Own on-screen median (s) | Far-end on-screen median (s) | Card peak above baseline (GiB) | Private peak (GiB) |
+|---|---|---|---|---|---|---|---|---|---|
+| Everyone, card, bundled | CUDA | equal | .0106 / .0092 | 0.26 | 34 ms | **2.00** | 2.02 | 5.38 | 9.33 |
+| Everyone, CPU, bundled | CPU | equal | .0126 / .0102 | 0.32 | 0.02 ms | 2.96 | 2.06 | 4.89 | 11.36 |
+| Other people only, bundled | - | equal | .0118 / .0095 | 0.25 | 56 ms | - | 1.97 | 4.89 | 8.82 |
+| Everyone, card, continuous | CUDA | equal | - / .0066 | 0.12 | 0.01 ms | - (the mic is silent) | 1.45 | 4.96 | 8.61 |
+| Everyone, CPU, continuous | CPU | equal | - / .0074 | 0.12 | 55 ms | - | 1.52 | 4.75 | 10.80 |
+| Other people only, continuous | - | equal | - / .0069 | 0.11 | 69 ms | - | 1.51 | 4.75 | 8.39 |
+
+Both tracks' sessions on CUDA in every run, the far-end preview on CUDA in every run, the user's own preview session reporting CUDA in the card column and the CPU in the CPU column (`previews[].backend`, `preview_sessions`). No audio dropped (capture lag at most 0.016 s), no preview turned off, no slow pause, no warning.
+
+By point:
+
+1. **Stored words** equal per track between the card and CPU columns on both audios (and equal to Other people only).
+2. **The main transcript:** the card column's rtf is 0.84 to 0.90 times the CPU column's, catch-up no longer, nothing dropped, and the longest a real decode waited for the encoder is 34 ms (bundled reference). **Pass.**
+3. **The previews:** the user's own words on screen at a median of 2.00 s on the card against 2.96 s on the CPU (bundled), the far end's at 2.02 and 1.45 s, nothing turned off, no slow pauses. **Pass**, and it clears T12.58's narrow miss (3.03 and 3.15 s on the CPU then; 2.96 here).
+4. **Card memory:** Everyone on the card peaked 0.49 GiB over Other people only on bundled audio (5.38 against 4.89) and 0.21 GiB on continuous, within 0.5 GiB; **a pass by 0.008 GiB on bundled audio**, close enough that a repeat could land either side (the rule repeats only a miss, so it was not repeated). Under T12.59's rule the largest peak, 5.38 GiB, needs 7.88 GiB, still an 8 GB card, so `PREVIEW_MIN_CARD_MEMORY` stays 7.5 GiB. **Pass.**
+
+**Under the rule the code stays:** with transcription on CUDA and a card at or above `PREVIEW_MIN_CARD_MEMORY`, Everyone runs the user's own previews on the card, borrowing the shared encoder; private memory falls by about 2 GiB against the CPU column (9.33 against 11.36 GiB). Said plainly for the owner: an 8 GB card that reads about 7.8 GiB is now asked for up to 5.38 GiB under Everyone plus the 1.5 GiB the rule leaves for other programs, so it keeps about 0.9 GiB to spare rather than the rule's 1 GiB; the 1 GiB is counted against the nominal 8. The second session beside CUDA now needs `PREVIEW_MIN_MEMORY_CUDA` (20 GiB of system memory), the first session's limit there: a machine with less (a 16 GB one) and a card with room no longer runs the user's own previews at all, where before T12.60 it ran them on the CPU above 12 GiB.
+
 ## Provisional words from a streaming model (T12.23, spike, evaluation only)
 
 Today's previews decode the last 12 s of a stretch again every second with a second copy of the transcription model. A cache-aware streaming model reads each new piece of audio once. This spike measures one: NVIDIA Nemotron Speech Streaming 0.6B English (cache-aware FastConformer RNNT), sherpa-onnx's 560 ms int8 export (manifest set `stream-eval`, 662 MB). The NVIDIA Open Model License is agreed by the owner for evaluation only (2026-11-12): nothing ships, and no shipped crate names the model (`backends_nemotron_preview_load_is_used_by_no_shipped_code`).

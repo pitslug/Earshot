@@ -1,0 +1,27 @@
+{
+  "name": "t1260-cpu-bundled",
+  "args": "--backend cuda --audio bundled --previews everyone --own-voice-cpu",
+  "exit": 0,
+  "started": "2026-11-15T08:48:25",
+  "idle_checks": [
+    {
+      "load": 5.3,
+      "card_mib": 1111,
+      "builds": 0
+    },
+    {
+      "load": 4.1,
+      "card_mib": 1111,
+      "builds": 0
+    },
+    {
+      "load": 4.4,
+      "card_mib": 1111,
+      "builds": 0
+    }
+  ],
+  "baseline_mib": 1111,
+  "peak_mib": 6116.0,
+  "peak_above_baseline_gib": 4.888,
+  "readings": 154
+}

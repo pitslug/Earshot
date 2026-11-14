@@ -1407,11 +1407,12 @@ pub const PREVIEW_BOTH_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 /// Where this computer runs the second preview session, for the user's own track in a call (T9.14),
 /// when the track runs on `backend`; `Err` says why it runs none. The one rule: only when the user
 /// chose everyone, only where the first session runs ([`previews_refused`]), never beside the NPU
-/// ([`OWN_VOICE_NPU_REFUSED`], T12.12c), and only with
-/// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there. It always runs on the CPU, with the CPU's shared
-/// weights: beside the CPU's own sessions, and beside CUDA too (T12.3a), so that the card holds no
-/// more sessions than with "Other people only"; beside a card too small for the first, with the
-/// first on the CPU too (T12.3c).
+/// ([`OWN_VOICE_NPU_REFUSED`], T12.12c). Where the first session runs on CUDA (a CUDA track and a
+/// card at or above [`PREVIEW_MIN_CARD_MEMORY`]) it runs on CUDA too (T12.60), borrowing the shared
+/// encoder like every CUDA session (T12.58), with [`PREVIEW_MIN_MEMORY_CUDA`] known to be there:
+/// the first session's limit on CUDA. Everywhere else it runs on the CPU, with the CPU's shared
+/// weights and [`PREVIEW_BOTH_MIN_MEMORY`] known to be there: beside the CPU's own sessions, and
+/// beside a card too small for the first, with the first on the CPU too (T12.3c).
 ///
 /// # Errors
 /// The reason no second session runs.
@@ -1438,7 +1439,7 @@ pub fn second_preview_backend_or_refusal(
     if choice != PreviewChoice::Everyone {
         return refused(PreviewOffReason::NotAsked, "only for the other people");
     }
-    preview_backend_or_refusal(backend, hardware, choice)?;
+    let first = preview_backend_or_refusal(backend, hardware, choice)?;
     if backend == BackendKind::Qnn {
         return refused(PreviewOffReason::OwnVoiceOnNpu, OWN_VOICE_NPU_REFUSED);
     }
@@ -1448,16 +1449,19 @@ pub fn second_preview_backend_or_refusal(
             "previews run on Parakeet on the CPU or CUDA only",
         );
     }
-    if hardware
-        .total_memory
-        .is_none_or(|m| m < PREVIEW_BOTH_MIN_MEMORY)
-    {
+    // T12.60: on the card beside a first session on the card, else on the CPU.
+    let (runs_on, memory_limit) = if first == BackendKind::Cuda {
+        (BackendKind::Cuda, PREVIEW_MIN_MEMORY_CUDA)
+    } else {
+        (BackendKind::Cpu, PREVIEW_BOTH_MIN_MEMORY)
+    };
+    if hardware.total_memory.is_none_or(|m| m < memory_limit) {
         return refused(
             PreviewOffReason::NotEnoughMemory,
             "not enough memory for a third session of the model",
         );
     }
-    Ok(BackendKind::Cpu)
+    Ok(runs_on)
 }
 
 /// Why this computer runs no second preview session (T9.14), or `None` when it does: the reason
@@ -1509,8 +1513,9 @@ pub(crate) fn load_preview_with<T, E: From<PreviewRefusal>>(
 }
 
 /// [`load_preview`] for the second session, the user's own track in a call (T9.14), loaded where
-/// [`second_preview_backend`] says (the CPU, also beside CUDA: T12.3a) or refused by it. It shares
-/// nothing with the first.
+/// [`second_preview_backend`] says (on CUDA beside a first session on CUDA, T12.60, borrowing the
+/// shared encoder through the same loader as the first; else the CPU) or refused by it. It has its
+/// own session and thread; on CUDA it shares only the encoder with the first.
 ///
 /// # Errors
 /// As [`load_preview`], with the second session's rule.
@@ -1609,6 +1614,34 @@ pub fn load_preview_on_hardware(
         PreviewSlot::First => load_preview_with(backend, hardware, choice, load),
         PreviewSlot::OwnVoice => load_preview_second_with(backend, hardware, choice, load),
     }
+}
+
+/// Evaluation only (T12.60, `live_lag --own-voice-cpu`): the user's own preview session loaded
+/// as [`load_preview_second`] loads it, the rule and its refusals included, except that it always
+/// loads on the CPU, where T12.3a put it beside CUDA, so the card and CPU columns of T12.60's rule
+/// run on one build. The app, the CLI and [`crate::host`] never call it (pinned by
+/// `backends_own_voice_cpu_load_is_used_by_no_shipped_code`).
+///
+/// # Errors
+/// As [`load_preview_second`].
+pub fn load_preview_second_on_cpu_for_evaluation(
+    models: &ModelDir,
+    backend: &BackendInfo,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<EvaluatedPreview, String> {
+    second_preview_rule(backend, &crate::hardware(), choice)?;
+    let session = load_preview_parakeet(
+        models,
+        &BackendInfo {
+            kind: BackendKind::Cpu,
+            ..backend.clone()
+        },
+    )?;
+    let placement = session.backends().iter().map(ToString::to_string).collect();
+    Ok(EvaluatedPreview {
+        transcriber: Box::new(session),
+        placement,
+    })
 }
 
 /// The streaming model of T12.23 under the models directory (manifest set `stream-eval`).

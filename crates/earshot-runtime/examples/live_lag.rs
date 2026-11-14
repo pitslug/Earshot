@@ -56,6 +56,11 @@
 //! what each graphics adapter reports as dedicated memory. The preview rule still reads the card's
 //! real size.
 //!
+//! `--own-voice-cpu` (evaluation only, T12.60, CUDA, `--previews everyone`) loads the user's own
+//! preview session on the CPU, where T12.3a put it beside CUDA, through
+//! `backends::load_preview_second_on_cpu_for_evaluation` (the app's rule and refusals, then the
+//! CPU), so the card and CPU columns of T12.60's rule run on one build.
+//!
 //! `--stream nemotron` (evaluation only, T12.23) gives each previewed track a streaming model
 //! instead of window decodes: NVIDIA's Nemotron Speech Streaming 0.6B (manifest set `stream-eval`,
 //! licence agreed for evaluation only) through `backends::load_nemotron_preview`, on
@@ -118,8 +123,8 @@ use earshot_core::capture::{DeviceTime, ReplayBuilder, TrackId};
 use earshot_core::model::ClockDomain;
 use earshot_runtime::backends::{
     Accelerator, ModelDir, PreviewSlot, init_onnx, load_nemotron_preview, load_preview_on_hardware,
-    load_preview_unrefused, onnx_library, preview_backend, previews_refused,
-    previews_refused_second, second_preview_backend,
+    load_preview_second_on_cpu_for_evaluation, load_preview_unrefused, onnx_library,
+    preview_backend, previews_refused, previews_refused_second, second_preview_backend,
 };
 use earshot_runtime::live::{
     LiveAsrFactory, LiveConfig, LivePreviews, LiveTranscription, PreviewLoader, RuntimeEvent,
@@ -192,6 +197,9 @@ struct Args {
     /// That second process: hold the card for a card of this many GiB until stdin closes
     /// ([`run_card_holder`]).
     card_holder: Option<f64>,
+    /// Evaluation only (T12.60): the user's own preview session on the CPU, where T12.3a put it,
+    /// through `backends::load_preview_second_on_cpu_for_evaluation` ([`own_voice_cpu_loader`]).
+    own_voice_cpu: bool,
 }
 
 /// What `--summary` runs (T12.39).
@@ -235,6 +243,7 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         own_encoders: false,
         hold_card_gib: None,
         card_holder: None,
+        own_voice_cpu: false,
     };
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -321,8 +330,23 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
             "--own-encoders" => args.own_encoders = true,
             "--hold-card-gib" => args.hold_card_gib = Some(card_gib(&flag, &value()?)?),
             "--card-holder" => args.card_holder = Some(card_gib(&flag, &value()?)?),
+            "--own-voice-cpu" => args.own_voice_cpu = true,
             other => return Err(format!("unknown flag {other}")),
         }
+    }
+    if args.own_voice_cpu
+        && (args.previews != Some(PreviewChoice::Everyone)
+            || args.backend != BackendKind::Cuda
+            || args.force_previews
+            || args.card_memory_gib.is_some()
+            || args.stream.is_some())
+    {
+        return Err(
+            "--own-voice-cpu moves the user's own previews of a CUDA replay to the CPU: it needs \
+             --backend cuda --previews everyone and no --force-previews, --card-memory-gib or \
+             --stream"
+                .to_owned(),
+        );
     }
     if args.hold_card_gib.is_some()
         && (args.backend != BackendKind::Cuda
@@ -567,6 +591,33 @@ fn simulated_loader(
                 .map_err(String::as_str),
         );
         record["simulated_card_gib"] = json!(simulated_card_gib(&machine));
+        log.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(record);
+        result.map(|p| p.transcriber).map_err(Into::into)
+    })
+}
+
+/// Evaluation only (`--own-voice-cpu`, T12.60): the user's own preview session through
+/// `backends::load_preview_second_on_cpu_for_evaluation` (the app's rule, then always the CPU), with
+/// the placement of every session written to `log`.
+fn own_voice_cpu_loader(
+    models: ModelDir,
+    choice: PreviewChoice,
+    log: Arc<Mutex<Vec<Value>>>,
+) -> PreviewLoader {
+    Arc::new(move |backend: &BackendInfo| {
+        let result = load_preview_second_on_cpu_for_evaluation(&models, backend, choice);
+        let mut record = preview_record(
+            "own_voice",
+            false,
+            backend,
+            result
+                .as_ref()
+                .map(|p| (p.transcriber.backend_info(), Some(p.placement.clone())))
+                .map_err(String::as_str),
+        );
+        record["own_voice_cpu"] = json!(true);
         log.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(record);
@@ -2011,7 +2062,7 @@ fn main() {
                 .map(|k| format!("{k:?}")),
             "app_own_voice": (choice == PreviewChoice::Everyone)
                 .then(|| previews_refused_second(args.backend, &machine, choice)),
-            // Where the app would run the user's own track's session (T12.3a: the CPU beside CUDA).
+            // Where the app would run the user's own track's session (T12.60: with the first).
             "app_own_voice_on": (choice == PreviewChoice::Everyone)
                 .then(|| second_preview_backend(args.backend, &machine, choice).ok())
                 .flatten()
@@ -2029,6 +2080,13 @@ fn main() {
         } else {
             previews_for(&models, choice, &loads, &preview_sessions)
         };
+        if args.own_voice_cpu {
+            p.own_voice = Some(own_voice_cpu_loader(
+                models.clone(),
+                choice,
+                Arc::clone(&preview_sessions),
+            ));
+        }
         if let Some(s) = args.window {
             p.window = Duration::from_secs_f64(s);
         }
@@ -2232,6 +2290,7 @@ fn main() {
         "stopped_with": format!("{:?}", outcome.reason),
         "capture_max_lag_s": state.max_lag().as_secs_f64(),
         "own_encoders": args.own_encoders,
+        "own_voice_cpu": args.own_voice_cpu,
         "shared_encoder": held.as_ref().map_or_else(
             || json!("no shared encoder"),
             |e| shared_encoder_report(e, users_at_finish),
@@ -2381,6 +2440,37 @@ mod tests {
         // A card of 7.5 GiB with 1.5 GiB used elsewhere has 6 GiB free.
         assert_eq!(holder_target_bytes(7.5), 6 * GIB);
         assert_eq!(holder_target_bytes(12.0), 21 * GIB / 2);
+    }
+
+    /// T12.60: the CPU column needs a CUDA replay under Everyone and the app's own rule.
+    #[test]
+    fn live_lag_own_voice_cpu_needs_everyone_on_cuda() {
+        let ok = [
+            "--backend",
+            "cuda",
+            "--previews",
+            "everyone",
+            "--own-voice-cpu",
+        ];
+        assert!(parse(&ok).unwrap().own_voice_cpu);
+        assert!(
+            !parse(&ok[..4]).unwrap().own_voice_cpu,
+            "never unless asked"
+        );
+        assert!(parse(&["--backend", "cuda", "--previews", "on", "--own-voice-cpu"]).is_err());
+        assert!(parse(&["--previews", "everyone", "--own-voice-cpu"]).is_err());
+        assert!(
+            parse(&[
+                "--backend",
+                "cuda",
+                "--previews",
+                "everyone",
+                "--own-voice-cpu",
+                "--card-memory-gib",
+                "6"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
