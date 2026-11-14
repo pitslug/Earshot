@@ -1,8 +1,8 @@
 # Sync specification
 
-Status: draft for the owner's review (2026-11-14). It implements the design approved at GATE-08 (`docs/sync.md`, PLAN D25) and adds nothing to it except the detail needed to build. `docs/sync.md` decides what sync does; this file decides exact formats, calls and names. One deliberate difference: the call table in section 3 replaces the one in `docs/sync.md` section 5 (the same calls, as `GET` and `POST` only). Any other difference is a mistake here and is fixed.
+Status: approved by the owner (2026-11-14), section 14 included. It implements the design approved at GATE-08 (`docs/sync.md`, PLAN D25) and adds nothing to it except the detail needed to build. `docs/sync.md` decides what sync does; this file decides exact formats, calls and names. One deliberate difference: the call table in section 3 replaces the one in `docs/sync.md` section 5 (the same calls, as `GET` and `POST` only). Any other difference is a mistake here and is fixed.
 
-No code is written until the owner has reviewed this file.
+Build work follows this file, task by task.
 
 ## 0. Scope and phases
 
@@ -14,7 +14,7 @@ The owner's order (2026-11-14): sync before Android, and the Surface and the des
 | 2 | Summary offload between devices; Dictionary sync | T11.3d, T11.3e |
 | 3 | The server writes summaries | T11.5, T11.6 |
 
-This moves T11.4 and GATE-09 ahead of T11.3d and T11.3e. Reordering tasks needs the owner's agreement (AGENTS 6.2); it is asked for in section 14 and not yet made in PLAN.md.
+This moves T11.4 and GATE-09 ahead of T11.3d and T11.3e. Reordering tasks needs the owner's agreement (AGENTS 6.2); it was agreed with this file and PLAN.md is in that order.
 
 Phase 1 is specified to the byte. Phases 2 and 3 are specified to the interface, enough that phase 1 leaves room for them; each gets its detail added to this file before its first task starts.
 
