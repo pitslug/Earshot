@@ -181,15 +181,28 @@ const BASE_LETTERS: &[(char, &str)] = &[
 fn folders_base_letters_are_cores_whole_table() {
     assert_eq!(base_letter_table(), BASE_LETTERS);
     assert!(BASE_LETTERS.len() > 50);
-    // `name_order` folds case first, then each letter of the table to its base letters.
+    // `name_order` folds case first, then each letter of the table to its base letters. Every
+    // letter is checked as itself (it is lower case), and some through their upper case too.
+    let (mut as_itself, mut through_upper) = (0, 0);
     for &(letter, base) in BASE_LETTERS {
         let upper: String = letter.to_uppercase().collect();
-        for name in [letter.to_string(), upper] {
+        for (n, name) in [letter.to_string(), upper].into_iter().enumerate() {
             if fold_case(&name).collect::<String>() == letter.to_string() {
                 assert_eq!(name_order(&name).0, base, "{name}");
+                if n == 0 {
+                    as_itself += 1;
+                } else {
+                    through_upper += 1;
+                }
             }
         }
     }
+    // A guard that skipped the assertions would pass silently: count what was checked.
+    assert_eq!(as_itself, BASE_LETTERS.len());
+    assert!(
+        through_upper > 50,
+        "{through_upper} upper-case letters checked"
+    );
 }
 
 #[test]

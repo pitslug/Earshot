@@ -32,10 +32,6 @@ const useStyles = makeStyles({
     flexDirection: "column",
     gap: tokens.spacingVerticalS,
   },
-  row: {
-    display: "flex",
-    gap: tokens.spacingHorizontalS,
-  },
   action: {
     alignSelf: "flex-start",
   },

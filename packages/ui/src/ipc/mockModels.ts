@@ -456,7 +456,9 @@ export function createModelsMock(
         if (missing.length > 0) {
           fail(
             "invalid_setting",
-            copy.templates.model_languages.replace("{model}", t.title).replace("{missing}", missing.join(", ")),
+            copy.templates.model_languages
+              .replace("{model}", () => t.title)
+              .replace("{missing}", () => missing.join(", ")),
           );
         }
       }
@@ -544,7 +546,10 @@ export function createModelsMock(
       if (checking) fail("busy", CHECK_RUNNING_MESSAGE, true);
       if (downloads.has(model)) fail("busy", "This model is downloading; cancel the download first.", true);
       if (protectedModels().has(model)) {
-        fail("model_in_use", copy.templates.chosen.replace("{model}", title(model)));
+        fail(
+          "model_in_use",
+          copy.templates.chosen.replace("{model}", () => title(model)),
+        );
       }
       const freed = i.held;
       i.held = 0;
