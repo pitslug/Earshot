@@ -18,8 +18,8 @@
 //! [`OnnxNemoMel`] runs a NeMo preprocessor exported to ONNX (onnx-asr's `nemo128.onnx`); it
 //! exists as the reference for [`NemoMel`] in the tests.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use earshot_core::asr::{
@@ -32,6 +32,8 @@ use ort::value::Tensor;
 
 use crate::nemo_mel::NemoMel;
 use crate::runtime::{OnnxError, OnnxSession, SessionBackend, SessionConfig, runtime_err};
+use crate::shared_encoder::{EncoderInput, EncoderOutput, EncoderRun, RunError};
+pub use crate::shared_encoder::{SharedEncoder, WeakSharedEncoder};
 
 /// Encoder frame (FastConformer 8x subsampling of 10 ms frames).
 pub const FRAME: Duration = Duration::from_millis(80);
@@ -389,9 +391,13 @@ pub struct ParakeetTdt {
     english_only: bool,
     /// `Some(STATIC_FRAMES)` for an encoder with a fixed input shape (converted for the NPU).
     static_frames: Option<usize>,
-    /// How long each encoder call waited for a [`SharedEncoder`]'s lock (empty with its own).
-    encoder_waits: Vec<Duration>,
+    /// How long each encoder call waited for a [`SharedEncoder`]'s thread (empty with its own),
+    /// the latest [`KEPT_WAITS`].
+    encoder_waits: VecDeque<Duration>,
 }
+
+/// An encoder's custom metadata and `audio_signal` shape.
+type EncoderDescription = (BTreeMap<String, String>, Option<Vec<i64>>);
 
 /// The encoder session of a [`ParakeetTdt`]: its own, or one it borrows ([`SharedEncoder`]).
 #[derive(Debug)]
@@ -400,74 +406,73 @@ enum Encoder {
     Shared(SharedEncoder),
 }
 
-/// A Parakeet TDT encoder session that several [`ParakeetTdt`]s use one call at a time
-/// (T12.3b, evaluation only: no shipped code shares an encoder). Made by
-/// [`ParakeetTdt::share_encoder`]; a model built on it with [`ParakeetTdt::load_sharing`] has
-/// its own prediction network and joint and borrows only the encoder, the session that holds
-/// the weights.
-///
-/// The lock is a plain [`Mutex`]: `ort::Session::run` takes `&mut self` (ort 2.0.0-rc.14,
-/// `src/session/mod.rs`: ONNX Runtime's `Run` is not thread safe in practice, whatever its
-/// documentation says), and a guard is exactly that, so sharing needs no `unsafe`. A caller
-/// waits for at most the rest of one encoder call (one chunk of at most [`MAX_CHUNK`]), never
-/// for another model's token loop, which runs on that model's own sessions.
-#[derive(Debug, Clone)]
-pub struct SharedEncoder {
-    session: Arc<Mutex<OnnxSession>>,
-    /// The session's backend, read once (a reference into the lock cannot be handed out).
-    backend: SessionBackend,
-}
-
-impl SharedEncoder {
-    /// The provider requested and where ONNX Runtime placed the encoder's nodes.
-    #[must_use]
-    pub fn backend(&self) -> &SessionBackend {
-        &self.backend
-    }
-
-    /// How many models use the session now (the one that shared it included).
-    #[must_use]
-    pub fn users(&self) -> usize {
-        Arc::strong_count(&self.session)
-    }
-}
-
 impl Encoder {
     fn backend(&self) -> &SessionBackend {
         match self {
             Self::Own(s) => s.backend(),
-            Self::Shared(s) => &s.backend,
+            Self::Shared(s) => s.backend(),
         }
     }
 
-    /// Runs `f` on the session, after the lock for a shared one; returns how long the lock took.
-    ///
-    /// # Errors
-    /// `f`'s error, or [`OnnxError::Runtime`] for a shared session whose lock is poisoned.
-    fn with<T>(
-        &mut self,
-        f: impl FnOnce(&mut OnnxSession) -> Result<T, OnnxError>,
-    ) -> (Result<T, OnnxError>, Option<Duration>) {
+    /// The encoder's custom metadata and `audio_signal` shape, after checking its signature
+    /// (a shared encoder's were read and checked when it was loaded).
+    fn description(&self) -> Result<EncoderDescription, OnnxError> {
         match self {
-            Self::Own(s) => (f(s), None),
+            Self::Own(s) => describe_encoder(s),
+            Self::Shared(s) => Ok((s.metadata().clone(), s.audio_shape())),
+        }
+    }
+
+    /// One encoder call, and for a shared encoder how long it waited for the encoder thread.
+    fn run(&mut self, input: EncoderInput) -> (Result<EncoderOutput, OnnxError>, Option<Duration>) {
+        match self {
+            Self::Own(s) => (
+                run_encoder(s, input).map_err(|(RunError::Input(e) | RunError::Session(e))| e),
+                None,
+            ),
             Self::Shared(s) => {
-                let asked = std::time::Instant::now();
-                let result = lock_shared(&s.session).and_then(|mut guard| f(&mut guard));
-                (result, Some(asked.elapsed()))
+                let (result, waited) = s.run(input);
+                (result, Some(waited))
             }
         }
     }
 }
 
-/// The lock of a shared encoder. A poisoned lock means another model panicked inside a run, so
-/// the session's state after that run is not known: an error, never a reuse.
-fn lock_shared<T>(lock: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, OnnxError> {
-    lock.lock().map_err(|_: PoisonError<_>| {
-        OnnxError::Runtime(
-            "the shared encoder's lock is poisoned: another model panicked inside a run".to_owned(),
-        )
-    })
+/// An encoder session's custom metadata and `audio_signal` shape, after checking it is a TDT
+/// encoder.
+fn describe_encoder(encoder: &OnnxSession) -> Result<EncoderDescription, OnnxError> {
+    encoder.expect_signature(
+        "Parakeet TDT encoder",
+        &["audio_signal", "length"],
+        &["outputs", "encoded_lengths"],
+    )?;
+    Ok((
+        encoder.custom_metadata()?,
+        encoder.input_shape("audio_signal"),
+    ))
 }
+
+impl EncoderRun for OnnxSession {
+    fn run(&mut self, input: EncoderInput) -> Result<EncoderOutput, RunError> {
+        run_encoder(self, input)
+    }
+}
+
+/// Loads a Parakeet TDT `encoder.onnx` from `dir` on `config` and starts its thread
+/// ([`crate::shared_encoder`]); models borrow it with [`ParakeetTdt::load_sharing`].
+///
+/// # Errors
+/// As [`OnnxSession::load`], a graph that is not a TDT encoder, or a thread that cannot start.
+pub fn load_shared_encoder(dir: &Path, config: &SessionConfig) -> Result<SharedEncoder, OnnxError> {
+    let session = OnnxSession::load(&dir.join("encoder.onnx"), config)?;
+    let (metadata, audio_shape) = describe_encoder(&session)?;
+    let backend = session.backend().clone();
+    SharedEncoder::spawn(session, backend, metadata, audio_shape)
+}
+
+/// How many encoder waits a model keeps for [`ParakeetTdt::take_encoder_waits`]; older ones are
+/// dropped, so a long meeting nobody reads them in keeps a fixed amount.
+const KEPT_WAITS: usize = 4096;
 
 impl ParakeetTdt {
     /// Loads `encoder.onnx` (with `encoder.weights` when the export has external data),
@@ -523,27 +528,10 @@ impl ParakeetTdt {
         )
     }
 
-    /// This model with its encoder session made shareable, and the handle other models borrow
-    /// it through ([`ParakeetTdt::load_sharing`]). Evaluation only (T12.3b): every encoder call
-    /// of this model then takes the lock too, and its waits are counted
-    /// ([`ParakeetTdt::take_encoder_waits`]). A model whose encoder is shared already returns
-    /// the same handle.
-    #[must_use]
-    pub fn share_encoder(mut self) -> (Self, SharedEncoder) {
-        let shared = match self.encoder {
-            Encoder::Shared(s) => s,
-            Encoder::Own(session) => SharedEncoder {
-                backend: session.backend().clone(),
-                session: Arc::new(Mutex::new(session)),
-            },
-        };
-        self.encoder = Encoder::Shared(shared.clone());
-        (self, shared)
-    }
-
-    /// A model of the same export in `dir` that borrows `encoder` (from
-    /// [`ParakeetTdt::share_encoder`]) and loads its own prediction network and joint on
-    /// `step_config`. Evaluation only (T12.3b).
+    /// A model of the export in `dir` that borrows `encoder` (from [`load_shared_encoder`] on
+    /// the same export) and loads its own prediction network and joint on `step_config`
+    /// (T12.58). Its encoder calls run on the encoder's thread; their waits are kept
+    /// ([`ParakeetTdt::take_encoder_waits`]).
     ///
     /// # Errors
     /// As [`ParakeetTdt::load_split`].
@@ -596,17 +584,33 @@ impl ParakeetTdt {
         )
     }
 
-    /// How long each encoder call since the last take waited for a shared encoder's lock, in
-    /// call order (empty for a model with its own encoder). Evaluation only (T12.3b).
+    /// How long each encoder call since the last take waited for a shared encoder's thread
+    /// (asked to started), in call order, at most the latest [`KEPT_WAITS`]; empty for a model
+    /// with its own encoder. For evaluation reports.
     pub fn take_encoder_waits(&mut self) -> Vec<Duration> {
-        std::mem::take(&mut self.encoder_waits)
+        std::mem::take(&mut self.encoder_waits).into()
+    }
+
+    /// Whether this model borrows a shared encoder ([`ParakeetTdt::load_sharing`]).
+    #[must_use]
+    pub fn borrows_encoder(&self) -> bool {
+        matches!(self.encoder, Encoder::Shared(_))
+    }
+
+    /// The shared encoder this model borrows, if it borrows one.
+    #[must_use]
+    pub fn shared_encoder(&self) -> Option<&SharedEncoder> {
+        match &self.encoder {
+            Encoder::Shared(s) => Some(s),
+            Encoder::Own(_) => None,
+        }
     }
 
     /// The rest of [`ParakeetTdt::load_split`] once the encoder exists: the step sessions, the
     /// signatures and the metadata checks.
     fn assemble(
         dir: &Path,
-        mut encoder: Encoder,
+        encoder: Encoder,
         vocab: Vocab,
         step_config: &SessionConfig,
         name: &str,
@@ -614,15 +618,7 @@ impl ParakeetTdt {
     ) -> Result<Self, OnnxError> {
         let decoder = OnnxSession::load(&dir.join("decoder.onnx"), step_config)?;
         let joiner = OnnxSession::load(&dir.join("joiner.onnx"), step_config)?;
-        let (read, _) = encoder.with(|e| -> Result<_, OnnxError> {
-            e.expect_signature(
-                "Parakeet TDT encoder",
-                &["audio_signal", "length"],
-                &["outputs", "encoded_lengths"],
-            )?;
-            Ok((e.custom_metadata()?, e.input_shape("audio_signal")))
-        });
-        let (meta, audio_shape) = read?;
+        let (meta, audio_shape) = encoder.description()?;
         joiner.expect_signature(
             "Parakeet TDT joiner",
             &["encoder_outputs", "decoder_outputs"],
@@ -672,7 +668,7 @@ impl ParakeetTdt {
             name: name.to_owned(),
             english_only,
             static_frames,
-            encoder_waits: Vec::new(),
+            encoder_waits: VecDeque::new(),
         })
     }
 
@@ -711,43 +707,51 @@ impl ParakeetTdt {
             let (frames, valid) = NemoMel::frames(samples.len());
             (self.mel.compute(samples), frames, valid)
         };
-        let audio = Tensor::from_array(([1usize, self.mel.n_mels(), frames], features))
-            .map_err(runtime_err)?;
-        let length = Tensor::from_array(([1usize], vec![i64::try_from(valid).unwrap_or(0)]))
-            .map_err(runtime_err)?;
-        let (encoded, waited) = self
-            .encoder
-            .with(|encoder| run_encoder(encoder, audio, length));
+        let input = EncoderInput {
+            features,
+            n_mels: self.mel.n_mels(),
+            frames,
+            valid,
+        };
+        let (encoded, waited) = self.encoder.run(input);
         if let Some(waited) = waited {
-            self.encoder_waits.push(waited);
+            if self.encoder_waits.len() == KEPT_WAITS {
+                self.encoder_waits.pop_front();
+            }
+            self.encoder_waits.push_back(waited);
         }
         encoded
     }
 }
 
-/// One encoder call on `encoder`: `(values [T'][D], T', D)`.
-fn run_encoder(
-    encoder: &mut OnnxSession,
-    audio: Tensor<f32>,
-    length: Tensor<i64>,
-) -> Result<(Vec<f32>, usize, usize), OnnxError> {
+/// One encoder call on `encoder`: `(values [T'][D], T', D)`. Building the input tensors is the
+/// input's failure ([`RunError::Input`]); the session's run and reading its outputs are the
+/// session's ([`RunError::Session`]).
+fn run_encoder(encoder: &mut OnnxSession, input: EncoderInput) -> Result<EncoderOutput, RunError> {
+    let audio = Tensor::from_array(([1usize, input.n_mels, input.frames], input.features))
+        .map_err(|e| RunError::Input(runtime_err(e)))?;
+    let length = Tensor::from_array(([1usize], vec![i64::try_from(input.valid).unwrap_or(0)]))
+        .map_err(|e| RunError::Input(runtime_err(e)))?;
+    let session = |e: ort::Error| RunError::Session(runtime_err(e));
     let outputs = encoder
         .session
         .run(ort::inputs!["audio_signal" => audio, "length" => length])
-        .map_err(runtime_err)?;
+        .map_err(session)?;
     let (shape, values) = outputs["outputs"]
         .try_extract_tensor::<f32>()
-        .map_err(runtime_err)?;
+        .map_err(session)?;
     let dims: Vec<usize> = shape
         .iter()
         .map(|d| usize::try_from(*d).unwrap_or(0))
         .collect();
     let [1, d, t] = dims[..] else {
-        return Err(OnnxError::Signature(format!("TDT encoder output {dims:?}")));
+        return Err(RunError::Session(OnnxError::Signature(format!(
+            "TDT encoder output {dims:?}"
+        ))));
     };
     let (_, lens) = outputs["encoded_lengths"]
         .try_extract_tensor::<i64>()
-        .map_err(runtime_err)?;
+        .map_err(session)?;
     let valid_t = lens
         .first()
         .map_or(t, |v| usize::try_from(*v).unwrap_or(0).min(t));
@@ -1034,22 +1038,6 @@ impl Transcriber for ParakeetTdt {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parakeet_shared_encoder_lock_poisoned_is_an_error() {
-        let lock = Arc::new(Mutex::new(1_u32));
-        assert_eq!(*lock_shared(&lock).unwrap(), 1);
-        let held = Arc::clone(&lock);
-        let _ = std::thread::spawn(move || {
-            let _guard = held.lock().unwrap();
-            panic!("a run panicked while holding the encoder");
-        })
-        .join();
-        match lock_shared(&lock) {
-            Err(OnnxError::Runtime(m)) => assert!(m.contains("poisoned"), "{m}"),
-            other => panic!("{:?}", other.map(|g| *g)),
-        }
-    }
 
     fn placed(lines: &[&str], requested: crate::Provider) -> SessionBackend {
         let mut placement = crate::runtime::Placement::default();

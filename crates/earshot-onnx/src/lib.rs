@@ -13,6 +13,7 @@ pub mod parakeet;
 pub mod qnn;
 pub mod runtime;
 pub mod segment;
+pub mod shared_encoder;
 pub mod shared_weights;
 pub mod silero;
 

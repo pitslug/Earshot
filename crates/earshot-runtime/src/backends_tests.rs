@@ -2673,17 +2673,24 @@ fn backends_preview_on_hardware_load_is_used_by_no_shipped_code() {
     assert!(found.is_empty(), "shipped code calls it: {found:?}");
 }
 
-/// T12.3b: nothing shipped shares a Parakeet encoder between sessions; only examples may.
+/// T12.58: CUDA sessions share one encoder in shipped code; only an example may turn that off or
+/// hold the encoder for a report.
 #[test]
-fn backends_preview_sharing_encoder_is_used_by_no_shipped_code() {
+fn backends_own_encoders_switch_is_used_by_no_shipped_code() {
     for name in [
-        concat!("load_preview_", "sharing_encoder"),
-        concat!("share_", "encoder"),
-        concat!("load_", "sharing("),
+        concat!("own_encoders_", "for_evaluation"),
+        concat!("hold_shared_encoder_", "for_evaluation"),
     ] {
         let found = shipped_files_naming(name);
         assert!(found.is_empty(), "shipped code calls {name}: {found:?}");
     }
+    // The switch is read only by the CUDA Parakeet load.
+    let src = backends_source();
+    let reads: Vec<_> = code_lines(&src)
+        .into_iter()
+        .filter(|(_, line)| line.contains("own_encoders()") && !line.contains("fn own_encoders"))
+        .collect();
+    assert_eq!(reads.len(), 1, "{reads:?}");
 }
 
 /// T12.23: nothing shipped loads the streaming model (licence agreed for evaluation only); only
@@ -2770,8 +2777,8 @@ fn backends_evaluation_only_items_are_named_only_by_evaluation_items_in_backends
         concat!("struct Nemotron", "Preview {"),
         concat!("impl crate::live::StreamingPreview for Nemotron", "Preview"),
         concat!("pub fn load_nemotron_", "preview("),
-        concat!("pub struct SharedEncoder", "Pair {"),
-        concat!("pub fn load_preview_", "sharing_encoder("),
+        concat!("pub fn own_encoders_", "for_evaluation("),
+        concat!("pub fn hold_shared_encoder_", "for_evaluation("),
     ];
     let spans: Vec<std::ops::Range<usize>> = items.iter().map(|h| item_span(&src, h)).collect();
     let names = [
@@ -2782,10 +2789,8 @@ fn backends_evaluation_only_items_are_named_only_by_evaluation_items_in_backends
         concat!("NEMOTRON_", "STREAM"),
         concat!("Nemotron", "Preview"),
         concat!("Evaluated", "Stream"),
-        concat!("load_preview_", "sharing_encoder"),
-        concat!("SharedEncoder", "Pair"),
-        concat!("share_", "encoder("),
-        concat!("load_", "sharing("),
+        concat!("own_encoders_", "for_evaluation"),
+        concat!("hold_shared_encoder_", "for_evaluation"),
     ];
     for (at, line) in code_lines(&src) {
         for name in names {
@@ -2797,8 +2802,7 @@ fn backends_evaluation_only_items_are_named_only_by_evaluation_items_in_backends
     }
 }
 
-/// TODO 93: earshot-onnx calls its evaluation-only pieces nowhere itself: the shared encoder
-/// only at its definitions, the streaming model only inside its own module.
+/// TODO 93: earshot-onnx uses its evaluation-only streaming model only inside its own module.
 #[test]
 fn backends_evaluation_only_onnx_pieces_are_not_used_inside_earshot_onnx() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../earshot-onnx/src");
@@ -2812,12 +2816,6 @@ fn backends_evaluation_only_onnx_pieces_are_not_used_inside_earshot_onnx() {
         let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let text = std::fs::read_to_string(&path).unwrap();
         for (_, line) in code_lines(&text) {
-            for name in [concat!("share_", "encoder("), concat!("load_", "sharing(")] {
-                assert!(
-                    !line.contains(name) || line.contains(&format!("fn {name}")),
-                    "{file} calls {name}: {line}"
-                );
-            }
             if file != "nemotron.rs" {
                 assert!(
                     !line.contains("nemotron") || line == concat!("pub mod nemo", "tron;"),
