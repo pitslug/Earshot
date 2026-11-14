@@ -555,6 +555,46 @@ fn relay_config_needs_a_long_secret_and_never_prints_it() {
 }
 
 #[test]
+fn relay_config_reads_the_secret_from_a_docker_secret_file() {
+    let file_env = |k: &str| match k {
+        "EARSHOT_SYNC_SETUP_SECRET_FILE" => Some("/run/secrets/earshot_sync_setup_secret".into()),
+        _ => None,
+    };
+    // A Docker secret file usually ends in a newline: it is not part of the secret.
+    let c = Config::from_env_reading(file_env, |p| {
+        assert_eq!(
+            p,
+            std::path::Path::new("/run/secrets/earshot_sync_setup_secret")
+        );
+        Ok(format!("{SECRET}\n"))
+    })
+    .unwrap();
+    assert_eq!(c.setup_secret.trim(), SECRET);
+    // A file that cannot be read, or one too short: refused without its text.
+    let e = Config::from_env_reading(file_env, |_| Err(std::io::ErrorKind::NotFound.into()))
+        .unwrap_err();
+    assert!(e.contains("EARSHOT_SYNC_SETUP_SECRET_FILE"), "{e}");
+    let e = Config::from_env_reading(file_env, |_| Ok("short-in-file".into())).unwrap_err();
+    assert!(!e.contains("short-in-file"), "{e}");
+    // Both set is ambiguous.
+    let both = |k: &str| match k {
+        "EARSHOT_SYNC_SETUP_SECRET" => Some(SECRET.to_owned()),
+        "EARSHOT_SYNC_SETUP_SECRET_FILE" => Some("/run/secrets/x".into()),
+        _ => None,
+    };
+    assert!(Config::from_env_reading(both, |_| Ok(SECRET.into())).is_err());
+}
+
+#[test]
+fn relay_health_check_connects_to_loopback_when_listening_everywhere() {
+    use earshot_sync_server::health_target;
+    let at = |s: &str| s.parse::<SocketAddr>().unwrap();
+    assert_eq!(health_target(at("0.0.0.0:8787")), at("127.0.0.1:8787"));
+    assert_eq!(health_target(at("[::]:8787")), at("[::1]:8787"));
+    assert_eq!(health_target(at("192.0.2.4:9000")), at("192.0.2.4:9000"));
+}
+
+#[test]
 fn relay_reopens_its_database_and_refuses_a_newer_one() {
     let dir = TempDir::new("reopen");
     let config = Config {

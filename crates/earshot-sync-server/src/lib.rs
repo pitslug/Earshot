@@ -66,23 +66,79 @@ impl Config {
     /// # Errors
     /// A message naming the variable (never its value) when one is missing or unusable.
     pub fn from_env(var: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
-        let setup_secret =
-            var("EARSHOT_SYNC_SETUP_SECRET").ok_or("EARSHOT_SYNC_SETUP_SECRET is not set")?;
+        Self::from_env_reading(var, |p| std::fs::read_to_string(p))
+    }
+
+    /// [`Config::from_env`] with the file reader given, for tests. The secret comes from
+    /// `EARSHOT_SYNC_SETUP_SECRET` or from the file `EARSHOT_SYNC_SETUP_SECRET_FILE` names (a
+    /// Docker secret), never both.
+    ///
+    /// # Errors
+    /// As [`Config::from_env`]; a message never holds the secret or the file's text.
+    pub fn from_env_reading(
+        var: impl Fn(&str) -> Option<String>,
+        read: impl Fn(&std::path::Path) -> std::io::Result<String>,
+    ) -> Result<Self, String> {
+        let setup_secret = match (
+            var("EARSHOT_SYNC_SETUP_SECRET"),
+            var("EARSHOT_SYNC_SETUP_SECRET_FILE"),
+        ) {
+            (Some(_), Some(_)) => {
+                return Err(
+                    "set EARSHOT_SYNC_SETUP_SECRET or EARSHOT_SYNC_SETUP_SECRET_FILE, \
+                            not both"
+                        .into(),
+                );
+            }
+            (Some(s), None) => s,
+            (None, Some(path)) => read(std::path::Path::new(&path))
+                .map_err(|_| "EARSHOT_SYNC_SETUP_SECRET_FILE cannot be read".to_owned())?,
+            (None, None) => {
+                return Err(
+                    "EARSHOT_SYNC_SETUP_SECRET or EARSHOT_SYNC_SETUP_SECRET_FILE is not set".into(),
+                );
+            }
+        };
         if setup_secret.trim().chars().count() < MIN_SECRET_CHARS {
             return Err(format!(
-                "EARSHOT_SYNC_SETUP_SECRET must be at least {MIN_SECRET_CHARS} characters"
+                "the setup secret must be at least {MIN_SECRET_CHARS} characters"
             ));
         }
         let data = var("EARSHOT_SYNC_DATA").unwrap_or_else(|| "/data".into());
-        let listen = var("EARSHOT_SYNC_LISTEN").unwrap_or_else(|| "0.0.0.0:8787".into());
-        let listen = listen
-            .parse()
-            .map_err(|_| "EARSHOT_SYNC_LISTEN is not an address and port".to_owned())?;
+        let listen = listen_of(&var)?;
         Ok(Self {
             setup_secret,
             data: data.into(),
             listen,
         })
+    }
+}
+
+/// `EARSHOT_SYNC_LISTEN` (default `0.0.0.0:8787`).
+///
+/// # Errors
+/// A message naming the variable when it is not an address and port.
+pub fn listen_of(var: &impl Fn(&str) -> Option<String>) -> Result<SocketAddr, String> {
+    var("EARSHOT_SYNC_LISTEN")
+        .unwrap_or_else(|| "0.0.0.0:8787".into())
+        .parse()
+        .map_err(|_| "EARSHOT_SYNC_LISTEN is not an address and port".to_owned())
+}
+
+/// Where `earshot-sync-server health` connects: the listening port on loopback when the relay
+/// listens on every address, else the address itself. The health check opens a TCP connection
+/// and closes it; it speaks no HTTP, so the image needs no HTTP client.
+#[must_use]
+pub fn health_target(listen: SocketAddr) -> SocketAddr {
+    if listen.ip().is_unspecified() {
+        let loopback: IpAddr = if listen.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        };
+        SocketAddr::new(loopback, listen.port())
+    } else {
+        listen
     }
 }
 

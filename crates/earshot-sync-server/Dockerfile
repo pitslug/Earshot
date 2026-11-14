@@ -22,5 +22,6 @@ COPY --from=build /earshot-sync-server /usr/local/bin/earshot-sync-server
 USER earshot
 VOLUME /data
 EXPOSE 8787
+HEALTHCHECK --interval=1m --timeout=10s --retries=2 --start-period=30s \n    CMD ["/usr/local/bin/earshot-sync-server", "health"]
 ENV EARSHOT_SYNC_DATA=/data EARSHOT_SYNC_LISTEN=0.0.0.0:8787
 ENTRYPOINT ["/usr/local/bin/earshot-sync-server"]
