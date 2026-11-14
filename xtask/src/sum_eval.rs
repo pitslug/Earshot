@@ -47,7 +47,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use earshot_core::prompt::{PromptVariant, StylePreset};
+use earshot_core::prompt::{PromptVariant, QWEN_NO_THINK, StylePreset};
 use serde_json::{Value, json};
 
 use crate::ci::cargo_command;
@@ -56,6 +56,10 @@ use crate::manifest::Manifest;
 use crate::proc::run_with_timeout;
 
 pub mod store;
+
+/// The format key, one source with the example (`format_key.rs`, T12.49).
+#[path = "../../crates/earshot-llm-local/examples/sum_eval/format_key.rs"]
+pub mod key;
 
 /// Transcription model of the Earshot source: the top of the English ladder for CUDA and
 /// the CPU in `models/manifest.toml`.
@@ -79,8 +83,6 @@ pub struct Candidate {
     pub prefix: &'static str,
 }
 
-/// Qwen3 (hybrid) and Qwen3.5 templates with `enable_thinking` false (Qwen3.5's default).
-const QWEN_NO_THINK: &str = "<think>\n\n</think>\n\n";
 /// Granite 4.2's template with thinking off (its default).
 const GRANITE_NO_THINK: &str = "<think></think>";
 /// Gemma 4 has no prefix: llama.cpp cannot format its template, so
@@ -131,16 +133,13 @@ impl AgentCli {
         })
     }
 
-    /// The format key part of this candidate: `-claude-code-brief`, `-codex-brief`. The
-    /// `-brief` names the agent CLIs' production rules since T12.17c
-    /// (`earshot_llm::LlmClient::summary_rules`), so a result file written with the earlier
-    /// standard rules (`-claude-code`, `-codex`) is never reused; the example's
-    /// `format_key` appends the same.
+    /// This candidate in the format key ([`key::KeyAgent::suffix`]: `-claude-code-brief`,
+    /// `-codex-brief`).
     #[must_use]
-    pub fn key_suffix(self) -> &'static str {
+    pub fn key(self) -> key::KeyAgent {
         match self {
-            Self::ClaudeCode => "-claude-code-brief",
-            Self::Codex => "-codex-brief",
+            Self::ClaudeCode => key::KeyAgent::ClaudeCode,
+            Self::Codex => key::KeyAgent::Codex,
         }
     }
 
@@ -363,10 +362,6 @@ pub struct Options {
     /// The Codex CLI of a `--model codex` run (evaluation only, T7.4gc): without it the CLI
     /// is found as production finds it (`earshot_llm::CodexCli::find`).
     pub codex_cli: Option<PathBuf>,
-    /// Qwen thinking on (T12.10, evaluation only): every reply may think first, up to this
-    /// many tokens counted apart from the reply budget (`earshot_llm_local::thinking`). Local
-    /// summary runs of the candidates whose prefix is the empty thinking block only.
-    pub thinking: Option<u32>,
     /// Prepare a run of the owner's own meetings from this database (T12.25a, [`store`]):
     /// copy it into the run folder and write the inputs; no summaries.
     pub store_db: Option<PathBuf>,
@@ -378,8 +373,8 @@ pub struct Options {
     pub store_min_minutes: u64,
     /// Meeting ids it leaves out.
     pub store_exclude: Vec<String>,
-    /// Prompt prefix reuse on (T12.25 part 1, evaluation): local candidates without
-    /// thinking; format key `-reuse`.
+    /// Prompt prefix reuse on (T12.25 part 1, evaluation): local candidates only; format key
+    /// `-reuse`.
     pub prefix_reuse: bool,
     /// Merge by selection (T12.25 part 2, evaluation only): the chunked map steps as today,
     /// then a selection request instead of the merge. Needs [`Options::chunk_seconds`]; local
@@ -388,45 +383,6 @@ pub struct Options {
     /// The local grammar's item cap of every list (T12.36, evaluation only; the example's
     /// `--max-items`, 12 when `None`). Local candidates only; format key `-items<n>`, last.
     pub max_items: Option<u32>,
-}
-
-/// The request format the `sum_eval` example records as `grammar` (its `format_key`): a
-/// stored report is reused only when it equals this. `-chunk<seconds>` marks forced
-/// chunking, `-twocall` the T6.20c two-call chunks, `-twotrack` the T8.3ja two-track
-/// chunks, `-claude-code-brief` the T7.4gb Claude Code candidate or `-codex-brief` the
-/// T7.4gc Codex candidate on their T12.17c brief rules ([`AgentCli::key_suffix`]; before
-/// T12.17c `-claude-code`, `-codex`), `-think<cap>` T12.10 thinking on with that token
-/// cap, `-prompt-<variant>` a T6.20b prompt variant other than the production one.
-#[must_use]
-pub fn format_key(
-    chunk_seconds: Option<u32>,
-    variant: PromptVariant,
-    two_call: bool,
-    two_track: bool,
-    agent: Option<AgentCli>,
-    thinking: Option<u32>,
-) -> String {
-    let mut key = match chunk_seconds {
-        Some(s) => format!("indented-numbered-r5-chunk{s}"),
-        None => "indented-numbered-r5".to_owned(),
-    };
-    if two_call {
-        key.push_str("-twocall");
-    }
-    if two_track {
-        key.push_str("-twotrack");
-    }
-    if let Some(a) = agent {
-        key.push_str(a.key_suffix());
-    }
-    if let Some(cap) = thinking {
-        key.push_str(&format!("-think{cap}"));
-    }
-    if !variant.is_current() {
-        key.push_str("-prompt-");
-        key.push_str(variant.name());
-    }
-    key
 }
 
 /// Whether a finished result file `v` was made with another format key than this run's,
@@ -499,36 +455,23 @@ pub fn dropped_meetings(
 }
 
 impl Options {
-    /// [`format_key`] of this run.
+    /// The request format the `sum_eval` example records as `grammar` for this run
+    /// ([`key::FormatKey`], the file the example builds it from): a stored report is reused
+    /// only when it equals this.
     #[must_use]
     pub fn format_key(&self) -> String {
-        let mut key = format_key(
-            self.chunk_seconds,
-            self.prompt_variant,
-            self.two_call,
-            self.two_track,
-            self.agent_cli(),
-            self.thinking,
-        );
-        // T12.25: prefix reuse before the template, as the example's `reuse_suffix`.
-        if self.prefix_reuse {
-            key.push_str("-reuse");
+        key::FormatKey {
+            chunk_seconds: self.chunk_seconds,
+            two_call: self.two_call,
+            two_track: self.two_track,
+            agent: self.agent_cli().map(AgentCli::key),
+            prompt_variant: self.prompt_variant,
+            prefix_reuse: self.prefix_reuse,
+            merge_select: self.merge_select,
+            style_preset: self.style_preset,
+            max_items: self.max_items,
         }
-        // T12.25 part 2: the merge by selection after `-reuse` and before the template, as
-        // the example's `merge_suffix`.
-        if self.merge_select {
-            key.push_str("-select");
-        }
-        // T12.17: the summary template, as the example's `template_suffix`.
-        if !self.style_preset.is_standard() {
-            key.push_str("-template-");
-            key.push_str(self.style_preset.name());
-        }
-        // T12.36: the item cap last, as the example's `items_suffix`.
-        if let Some(n) = self.max_items {
-            key.push_str(&format!("-items{n}"));
-        }
-        key
+        .key()
     }
 
     /// The agent-CLI candidate of this run (`--model claude-code[/<model>]` or
@@ -598,7 +541,6 @@ impl Default for Options {
             two_track: false,
             meetings: Vec::new(),
             codex_cli: None,
-            thinking: None,
             store_db: None,
             store_run: None,
             store_count: 6,
@@ -1079,9 +1021,6 @@ pub fn eval_args(
     if opts.two_call {
         a.push("--two-call".into());
     }
-    if let Some(cap) = opts.thinking {
-        a.extend(["--thinking".into(), cap.to_string().into()]);
-    }
     if opts.prefix_reuse && model.is_some() {
         a.push("--prefix-reuse".into());
     }
@@ -1304,9 +1243,6 @@ fn candidate_label(c: &Value) -> String {
     }
     if c["merge_select"] == true {
         name.push_str(" (select)");
-    }
-    if let Some(cap) = c["thinking_cap"].as_u64() {
-        name.push_str(&format!(" (thinking {cap})"));
     }
     match c["prompt_variant"].as_str() {
         Some(v) if v != PromptVariant::Current.name() => format!("{name} (prompt {v})"),
@@ -1533,10 +1469,6 @@ pub fn check_agent_cli(opts: &Options, agent: AgentCli) -> Result<()> {
     ensure!(
         opts.codex_cli.is_none() || agent == AgentCli::Codex,
         "--codex-cli is for --model codex only"
-    );
-    ensure!(
-        opts.thinking.is_none(),
-        "--thinking is for local Qwen candidates only, not --model {id}"
     );
     ensure!(
         !opts.prefix_reuse,
@@ -1868,39 +1800,6 @@ pub fn run_agent_cli(root: &Path, opts: &Options, agent: AgentCli) -> Result<()>
     Ok(())
 }
 
-/// Refuses a `--thinking` run (T12.10) that is not a local summary run of candidates whose
-/// prompt ends with the empty thinking block (the Qwen 3 and 3.5 candidates), or that adds
-/// `--two-call` or `--two-track`. The cap's own range is checked by the example.
-///
-/// # Errors
-/// What the run would do that a thinking run must not.
-pub fn check_thinking(opts: &Options) -> Result<()> {
-    if opts.thinking.is_none() {
-        return Ok(());
-    }
-    ensure!(
-        !(opts.stored_only() || opts.rescore || opts.replay_only),
-        "--thinking applies to local summary runs only"
-    );
-    ensure!(
-        !opts.two_call && !opts.two_track,
-        "--thinking is not combined with --two-call or --two-track"
-    );
-    let candidates = select_candidates(&opts.models)?;
-    let others: Vec<&str> = candidates
-        .iter()
-        .filter(|c| c.prefix != QWEN_NO_THINK)
-        .map(|c| c.id)
-        .collect();
-    ensure!(
-        others.is_empty(),
-        "--thinking needs candidates whose prompt ends with the empty thinking block (Qwen 3 \
-         and 3.5); pass --model with those only, not {}",
-        others.join(", ")
-    );
-    Ok(())
-}
-
 /// `cargo xtask sum-eval`.
 ///
 /// # Errors
@@ -1942,12 +1841,9 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
                 && !opts.sources.is_empty()),
         "--two-track needs --chunk-seconds and --source reference, not --two-call, and applies to local summary runs only"
     );
-    check_thinking(opts)?;
     ensure!(
-        !opts.prefix_reuse
-            || (opts.thinking.is_none()
-                && !(opts.stored_only() || opts.rescore || opts.replay_only)),
-        "--prefix-reuse applies to local summary runs without --thinking only"
+        !opts.prefix_reuse || !(opts.stored_only() || opts.rescore || opts.replay_only),
+        "--prefix-reuse applies to local summary runs only"
     );
     ensure!(
         !opts.merge_select
@@ -2258,6 +2154,25 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The format key of these settings, from the file the example builds it from.
+    fn format_key(
+        chunk_seconds: Option<u32>,
+        prompt_variant: PromptVariant,
+        two_call: bool,
+        two_track: bool,
+        agent: Option<AgentCli>,
+    ) -> String {
+        key::FormatKey {
+            chunk_seconds,
+            prompt_variant,
+            two_call,
+            two_track,
+            agent: agent.map(AgentCli::key),
+            ..key::FormatKey::default()
+        }
+        .key()
+    }
+
     #[test]
     fn sum_eval_store_jobs_never_pass_earshot_inputs() {
         let store = input_args(
@@ -2539,20 +2454,20 @@ mod tests {
     #[test]
     fn sum_eval_prompt_variants_have_their_own_format_key_and_never_share_reports() {
         assert_eq!(
-            format_key(None, PromptVariant::Current, false, false, None, None),
+            format_key(None, PromptVariant::Current, false, false, None),
             "indented-numbered-r5"
         );
         assert_eq!(
-            format_key(Some(600), PromptVariant::Current, false, false, None, None),
+            format_key(Some(600), PromptVariant::Current, false, false, None),
             "indented-numbered-r5-chunk600"
         );
         assert_eq!(
-            format_key(Some(600), PromptVariant::Items, false, false, None, None),
-            "indented-numbered-r5-chunk600-prompt-items"
+            format_key(Some(600), PromptVariant::Brief, false, false, None),
+            "indented-numbered-r5-chunk600-prompt-brief"
         );
         let keys: std::collections::BTreeSet<String> = PromptVariant::ALL
             .into_iter()
-            .map(|v| format_key(Some(600), v, false, false, None, None))
+            .map(|v| format_key(Some(600), v, false, false, None))
             .collect();
         assert_eq!(keys.len(), PromptVariant::ALL.len());
 
@@ -2563,7 +2478,7 @@ mod tests {
             ..Options::default()
         };
         let lean = Options {
-            prompt_variant: PromptVariant::Lean,
+            prompt_variant: PromptVariant::Brief,
             ..current.clone()
         };
         let control = json!({
@@ -2577,10 +2492,9 @@ mod tests {
         let mut variant = control.clone();
         variant["grammar"] = json!(format_key(
             Some(600),
-            PromptVariant::Lean,
+            PromptVariant::Brief,
             false,
             false,
-            None,
             None
         ));
         assert!(covers(&variant, &jobs, &meetings, &lean));
@@ -2598,12 +2512,12 @@ mod tests {
     #[test]
     fn sum_eval_two_call_has_its_own_format_key_args_and_label() {
         assert_eq!(
-            format_key(Some(600), PromptVariant::Current, true, false, None, None),
+            format_key(Some(600), PromptVariant::Current, true, false, None),
             "indented-numbered-r5-chunk600-twocall"
         );
         assert_eq!(
-            format_key(Some(600), PromptVariant::Lean, true, false, None, None),
-            "indented-numbered-r5-chunk600-twocall-prompt-lean"
+            format_key(Some(600), PromptVariant::Brief, true, false, None),
+            "indented-numbered-r5-chunk600-twocall-prompt-brief"
         );
         let one = Options {
             chunk_seconds: Some(600),
@@ -2667,8 +2581,8 @@ mod tests {
         };
         assert_eq!(two.format_key(), "indented-numbered-r5-chunk600-twotrack");
         assert_eq!(
-            format_key(Some(600), PromptVariant::Lean, false, true, None, None),
-            "indented-numbered-r5-chunk600-twotrack-prompt-lean"
+            format_key(Some(600), PromptVariant::Brief, false, true, None),
+            "indented-numbered-r5-chunk600-twotrack-prompt-brief"
         );
         // Neither reuses nor overwrites the other's file.
         let file = |key: String| {
@@ -2704,116 +2618,6 @@ mod tests {
     }
 
     #[test]
-    fn sum_eval_thinking_has_its_own_format_key_args_label_and_refusals() {
-        let off = Options {
-            models: vec!["qwen3.5-9b-q4_k_m".into(), "qwen3.5-4b-q4_k_m".into()],
-            splits: vec!["dev".into()],
-            sources: vec!["reference".into()],
-            chunk_seconds: Some(600),
-            ..Options::default()
-        };
-        let on = Options {
-            thinking: Some(2048),
-            ..off.clone()
-        };
-        // Off keeps today's key; on appends `-think<cap>` after the agent suffix and before
-        // the prompt variant, as the example does.
-        assert_eq!(off.format_key(), "indented-numbered-r5-chunk600");
-        assert_eq!(on.format_key(), "indented-numbered-r5-chunk600-think2048");
-        assert_eq!(
-            format_key(None, PromptVariant::Lean, false, false, None, Some(512)),
-            "indented-numbered-r5-think512-prompt-lean"
-        );
-        assert_ne!(
-            Options {
-                thinking: Some(1024),
-                ..off.clone()
-            }
-            .format_key(),
-            on.format_key(),
-            "another cap is another key"
-        );
-        // Neither reuses nor overwrites the other's file.
-        let file = |key: String| {
-            json!({
-                "grammar": key, "context_tokens": 16384, "max_output_tokens": 8192,
-                "jobs": [{"split": "dev", "source": "reference", "meetings": [{"meeting": "ES2003c"}]}],
-            })
-        };
-        let jobs = [("dev".to_string(), "reference".to_string())];
-        let meetings = [("dev".to_string(), vec!["ES2003c".to_string()])];
-        assert!(covers(&file(on.format_key()), &jobs, &meetings, &on));
-        assert!(!covers(&file(off.format_key()), &jobs, &meetings, &on));
-        assert!(!covers(&file(on.format_key()), &jobs, &meetings, &off));
-        let p = Path::new("r.json");
-        let refused = check_overwrite(p, &file(off.format_key()), &jobs, &meetings, &on)
-            .unwrap_err()
-            .to_string();
-        assert!(refused.contains("format key"), "{refused}");
-        assert!(check_overwrite(p, &file(on.format_key()), &jobs, &meetings, &off).is_err());
-        assert!(check_overwrite(p, &file(on.format_key()), &jobs, &meetings, &on).is_ok());
-        // The cap reaches the example only when set.
-        let c = CANDIDATES[7];
-        assert_eq!(c.id, "qwen3.5-9b-q4_k_m");
-        let args = |opts: &Options| -> Vec<String> {
-            eval_args(
-                Path::new("a"),
-                Path::new("e"),
-                &[],
-                &[],
-                Some((Path::new("m.gguf"), &c)),
-                true,
-                opts,
-                Path::new("o.json"),
-            )
-            .into_iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
-        };
-        assert!(args(&on).windows(2).any(|w| w == ["--thinking", "2048"]));
-        assert!(!args(&off).iter().any(|a| a == "--thinking"));
-        let report = json!({"candidates": [
-            {"candidate": "qwen3.5-9b-q4_k_m", "thinking_cap": 2048, "prompt_variant": "current", "jobs": [{"split": "dev", "source": "reference", "aggregate": {}}]},
-        ]});
-        assert!(table(&report).contains("| qwen3.5-9b-q4_k_m (thinking 2048) |"));
-        // Refused: candidates without the empty thinking block (here Phi-4-mini, and all
-        // candidates when none is named), stored-only runs, two-call and two-track.
-        check_thinking(&off).unwrap();
-        check_thinking(&on).unwrap();
-        for bad in [
-            Options {
-                models: vec!["phi-4-mini-instruct-q4_k_m".into()],
-                ..on.clone()
-            },
-            Options {
-                models: Vec::new(),
-                ..on.clone()
-            },
-            Options {
-                rescore: true,
-                ..on.clone()
-            },
-            Options {
-                two_call: true,
-                ..on.clone()
-            },
-            Options {
-                two_track: true,
-                ..on.clone()
-            },
-        ] {
-            assert!(check_thinking(&bad).is_err(), "{bad:?}");
-        }
-        let claude = Options {
-            models: vec!["claude-code".into()],
-            sources: vec!["reference".into()],
-            thinking: Some(2048),
-            ..Options::default()
-        };
-        assert!(check_agent_cli(&claude, AgentCli::ClaudeCode).is_err());
-    }
-
-    #[test]
     fn sum_eval_selected_meetings_must_exist_and_keep_split_order() {
         let all = vec![
             ("dev".to_string(), ami_sum_meetings("dev")),
@@ -2835,7 +2639,7 @@ mod tests {
     fn sum_eval_a_finished_file_without_a_format_key_is_protected() {
         let current = Options::default();
         let lean = Options {
-            prompt_variant: PromptVariant::Lean,
+            prompt_variant: PromptVariant::Brief,
             ..Options::default()
         };
         // A finished result from older scoring (jobs, no `grammar`) is not overwritten by
@@ -2958,14 +2762,14 @@ mod tests {
                 .iter()
                 .any(|a| a == "--prompt-variant")
         );
-        let owners = Options {
-            prompt_variant: PromptVariant::Owners,
+        let brief = Options {
+            prompt_variant: PromptVariant::Brief,
             ..Options::default()
         };
         assert!(
-            args(&owners)
+            args(&brief)
                 .windows(2)
-                .any(|w| w == ["--prompt-variant", "owners"])
+                .any(|w| w == ["--prompt-variant", "brief"])
         );
     }
 
@@ -3015,13 +2819,13 @@ mod tests {
         let o = Options {
             models: vec!["claude-code".into()],
             sources: vec!["reference".into()],
-            prompt_variant: PromptVariant::Short,
+            prompt_variant: PromptVariant::Standard,
             style_preset: StylePreset::Brief,
             ..Options::default()
         };
         assert_eq!(
             o.format_key(),
-            "indented-numbered-r5-claude-code-brief-prompt-short-template-brief"
+            "indented-numbered-r5-claude-code-brief-prompt-standard-template-brief"
         );
         check_claude_code(&o).unwrap();
         let standard = Options {
@@ -3030,7 +2834,7 @@ mod tests {
         };
         assert_eq!(
             standard.format_key(),
-            "indented-numbered-r5-claude-code-brief-prompt-short"
+            "indented-numbered-r5-claude-code-brief-prompt-standard"
         );
         let args: Vec<String> = agent_cli_args(
             AgentCli::ClaudeCode,
@@ -3373,8 +3177,7 @@ mod tests {
                 PromptVariant::Current,
                 false,
                 false,
-                Some(AgentCli::ClaudeCode),
-                None
+                Some(AgentCli::ClaudeCode)
             ),
             chunked.format_key()
         );
@@ -3473,7 +3276,7 @@ mod tests {
         let c = || claude(&["claude-code"]);
         // A prompt variant is allowed (T12.17, evaluation only).
         check_claude_code(&Options {
-            prompt_variant: PromptVariant::Lean,
+            prompt_variant: PromptVariant::Standard,
             ..c()
         })
         .unwrap();
@@ -3569,8 +3372,12 @@ mod tests {
         assert!(chunked.windows(2).any(|w| w == ["--claude-model", "opus"]));
         assert!(!after.iter().any(|a| a == "--prompt-variant"));
         // A prompt variant is passed on (T12.17, evaluation only).
-        let short = s_with(None, None, PromptVariant::Short);
-        assert!(short.windows(2).any(|w| w == ["--prompt-variant", "short"]));
+        let standard = s_with(None, None, PromptVariant::Standard);
+        assert!(
+            standard
+                .windows(2)
+                .any(|w| w == ["--prompt-variant", "standard"])
+        );
     }
 
     #[test]
@@ -3660,7 +3467,7 @@ mod tests {
         );
         check_agent_cli(
             &Options {
-                prompt_variant: PromptVariant::Lean,
+                prompt_variant: PromptVariant::Standard,
                 ..c()
             },
             AgentCli::Codex,

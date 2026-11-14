@@ -49,7 +49,7 @@ use crate::summary::LocalSummaryConfig;
 mod tests;
 
 /// Qwen 3.5's assistant prefix with an empty think block (no thinking; T6.20).
-pub const QWEN_NO_THINK: &str = "<think>\n\n</think>\n\n";
+pub use earshot_core::prompt::QWEN_NO_THINK;
 
 /// The manifest set holding the shipped summary models (`cargo xtask fetch-models --set
 /// summary`).

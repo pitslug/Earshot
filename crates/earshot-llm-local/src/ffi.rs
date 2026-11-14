@@ -345,12 +345,6 @@ impl Engine {
 
     /// The bytes of `token` (special tokens not rendered).
     pub(crate) fn piece(&self, token: sys::llama_token, out: &mut Vec<u8>) {
-        self.piece_with(token, out, false);
-    }
-
-    /// The bytes of `token`; `special` renders special tokens as their text (a thinking
-    /// section's `</think>`, evaluation only).
-    pub(crate) fn piece_with(&self, token: sys::llama_token, out: &mut Vec<u8>, special: bool) {
         let mut buf = [0u8; 128];
         let cap = i32::try_from(buf.len()).unwrap_or(i32::MAX);
         // SAFETY: live vocab; `buf` is writable for `cap` bytes.
@@ -361,7 +355,7 @@ impl Engine {
                 buf.as_mut_ptr().cast(),
                 cap,
                 0,
-                special,
+                false,
             )
         };
         if let Ok(n) = usize::try_from(n) {
@@ -378,7 +372,7 @@ impl Engine {
                 big.as_mut_ptr().cast(),
                 cap,
                 0,
-                special,
+                false,
             )
         };
         if let Ok(n) = usize::try_from(n) {

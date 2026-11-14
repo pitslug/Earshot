@@ -94,7 +94,7 @@ The owner narrowed the final comparison to Phi-4-mini, Qwen3 4B and Qwen3 8B. Th
   - Phi-4-mini went from ROUGE-Lsum 0.311 to 0.153;
   - Qwen2.5 1.5B went from 9 of 20 valid to 7 of 20.
 
-  `GrammarOptions::compact` stays available, off by default, with its test. The default grammar keeps llama.cpp's `SPACE_RULE`, which allows indentation.
+  `GrammarOptions::compact` stayed available, off by default, until T12.49 removed it (reproducible from history). The default grammar keeps llama.cpp's `SPACE_RULE`, which allows indentation.
 
 **Which rules the tables were measured under.** The settings-rule tables (dev S16/S32) and the first numbered test and CPU runs were measured before four validation changes made in the lane-merge review. These were safety fixes, not tuning:
 
@@ -590,7 +590,7 @@ Goal: better summaries from the prompt alone, on the shipped default only: Qwen 
 ### What a variant is
 
 - `earshot_core::prompt::PromptVariant`: `current` (the production rules, `templates/system.md`) or one of four alternative rules files in `src/prompt/templates/variants/`. A variant replaces only the shared rules of the system message; the template text, map and reduce instructions, transcript numbering, schema, grammar, validation and repairs are the same. It travels on `SummaryInput::prompt_variant` (left out of the JSON when `current`, so stored inputs are unchanged); production never sets it.
-- Selected for evaluation only: `cargo xtask sum-eval --prompt-variant <name>` (local runs; refused for exports, imports and re-scoring), passed to the `sum_eval` example as `--prompt-variant`. Each variant has its own format key, `indented-numbered-r4-chunk600-prompt-<name>`, built the same way in both places (`format_key` in `examples/sum_eval/main.rs` and `xtask::sum_eval`); the control keeps `indented-numbered-r4-chunk600`. xtask refuses to overwrite a result file made with another format key, so every variant runs into its own `--out`.
+- Selected for evaluation only: `cargo xtask sum-eval --prompt-variant <name>` (local runs; refused for exports, imports and re-scoring), passed to the `sum_eval` example as `--prompt-variant`. Each variant has its own format key, `indented-numbered-r4-chunk600-prompt-<name>`, built the same way in both places (`format_key` in `examples/sum_eval/main.rs` and `xtask::sum_eval`); the control keeps `indented-numbered-r4-chunk600`. xtask refuses to overwrite a result file made with another format key, so every variant runs into its own `--out`. Since T12.49 only `current`, `brief` and `standard` remain; the other variants were removed and their runs are reproducible from history, and the format key has one source (`examples/sum_eval/format_key.rs`, included by xtask).
 - Snapshots: `src/prompt/snapshots/variant_<name>_single_general.txt` (the general single request of the prompt tests); each differs from `single_general.txt` only in the rules lines and the token estimate.
 - Not possible through the prompt: listing decisions and actions before the notes (the grammar fixes the key order: title, tldr, enhanced_notes, decisions, action_items, ...), and a null owner (`owner` is a required string; "Unassigned" stays the empty value).
 
@@ -953,7 +953,7 @@ Written before measuring, 2026-11-09. Every evaluation so far ran Qwen 3.5 with 
 - **4B:** 7 more, so the "other model rises by at most 2" clause fails too: one meeting's thinking summary was invalid (TS3006c, 6 facts all missing) and its decisions not covered rose from 13 to 23, while its action items improved (contradicted 3 -> 0, covered 16 -> 19).
 - **Time:** thinking roughly doubles to triples the time at hang-up (both models on the RTX 5080).
 
-**Decision:** no follow-up task; production stays thinking off. Generated off and on in the same build (format keys `...-chunk600` and `...-chunk600-think2048`, prefixes checked in each result header).
+**Decision:** no follow-up task; production stays thinking off. Generated off and on in the same build (format keys `...-chunk600` and `...-chunk600-think2048`, prefixes checked in each result header). The `--thinking` option was removed in T12.49; these runs are reproducible from history.
 
 ## T12.27: Granite 4.2 screened as a local writer (evaluation only)
 
@@ -976,7 +976,7 @@ Note against the plan's premise: Granite 4.2 8B is not new here. It was a T6.20 
 cargo xtask sum-eval --model qwen3.5-4b-q4_k_m,qwen3.5-9b-q4_k_m,granite-4.2-3b-q4_k_m,granite-4.2-8b-q4_k_m --split dev --source reference --chunk-seconds 600 --backend cuda --target-dir C:\eb\granite --out target\sum-eval\t1227-dev
 ```
 
-A thinking-on run is a separate condition, never the deciding one, and is not part of this screen (`--thinking` supports only the Qwen prefix today).
+A thinking-on run is a separate condition, never the deciding one, and is not part of this screen (`--thinking` supported only the Qwen prefix; it was removed in T12.49).
 
 **Rule, fixed now (judgements).**
 

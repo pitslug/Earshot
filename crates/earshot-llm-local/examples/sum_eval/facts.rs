@@ -104,7 +104,6 @@ fn split_grammar() -> Result<String, String> {
         }),
         GrammarOptions {
             non_blank_strings: true,
-            compact: false,
         },
     )
     .map_err(|e| e.to_string())
@@ -124,7 +123,6 @@ fn judge_grammar() -> Result<String, String> {
         }),
         GrammarOptions {
             non_blank_strings: true,
-            compact: false,
         },
     )
     .map_err(|e| e.to_string())

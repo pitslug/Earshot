@@ -845,23 +845,7 @@ fn with_variant(template: Template, variant: PromptVariant) -> SummaryInput {
 #[test]
 fn prompt_variants_have_stable_names_and_current_is_the_default() {
     let names: Vec<&str> = PromptVariant::ALL.iter().map(|v| v.name()).collect();
-    assert_eq!(
-        names,
-        [
-            "current",
-            "owners",
-            "decisions",
-            "items",
-            "lean",
-            "assignments",
-            "handed",
-            "checked",
-            "previous",
-            "short",
-            "brief",
-            "standard"
-        ]
-    );
+    assert_eq!(names, ["current", "brief", "standard"]);
     for v in PromptVariant::ALL {
         assert_eq!(v.name().parse::<PromptVariant>(), Ok(v));
         assert_eq!(v.to_string(), v.name());
@@ -939,38 +923,19 @@ fn prompt_variants_change_only_the_shared_rules() {
         );
         assert_eq!(p.estimated_tokens, estimate_messages(&p.messages), "{v}");
     }
-    let owners = PromptVariant::Owners.rules();
-    let decisions = PromptVariant::Decisions.rules();
-    let lean = PromptVariant::Lean.rules();
-    let owner_rule = "the owner is the person addressed or named";
-    let decision_rule = "a decision is something the group settled";
-    let notes_rule = "at most four sections of at most five bullets";
-    assert!(owners.contains(owner_rule) && !owners.contains(decision_rule));
-    assert!(decisions.contains(decision_rule) && !decisions.contains(owner_rule));
-    let items = PromptVariant::Items.rules();
-    assert!(items.contains(owner_rule) && items.contains(decision_rule));
-    assert!(!items.contains(notes_rule));
-    assert!(lean.contains(owner_rule) && lean.contains(decision_rule) && lean.contains(notes_rule));
-    // Every variant but T12.17's keeps the tldr at one to three sentences.
+    // Every variant but `brief` keeps the tldr at one to three sentences.
     let three = "Keep `tldr` to one to three sentences.";
     for v in PromptVariant::ALL {
-        let shorter = matches!(v, PromptVariant::Short | PromptVariant::Brief);
+        let shorter = matches!(v, PromptVariant::Brief);
         assert_eq!(v.rules().contains(three), !shorter, "{v}");
     }
     // T12.17's variants shorten the notes and the tldr and still require every item.
     let every = "Still list every decision and every action item";
-    for (v, notes, tldr) in [
-        (
-            PromptVariant::Short,
-            "at most four sections of at most four bullets",
-            "Keep `tldr` to one or two sentences.",
-        ),
-        (
-            PromptVariant::Brief,
-            "at most three sections of at most three bullets",
-            "Keep `tldr` to one sentence.",
-        ),
-    ] {
+    for (v, notes, tldr) in [(
+        PromptVariant::Brief,
+        "at most three sections of at most three bullets",
+        "Keep `tldr` to one sentence.",
+    )] {
         let rules = v.rules();
         assert!(
             rules.contains(notes) && rules.contains(tldr) && rules.contains(every),
@@ -1016,76 +981,10 @@ fn prompt_variant_is_left_out_of_serialised_inputs_when_current() {
     // An input written before variants existed reads as the current prompt.
     let back: SummaryInput = serde_json::from_value(current).unwrap();
     assert_eq!(back, input(Template::General));
-    let lean = with_variant(Template::General, PromptVariant::Lean);
-    let json = serde_json::to_value(&lean).unwrap();
-    assert_eq!(json["prompt_variant"], "lean");
-    assert_eq!(serde_json::from_value::<SummaryInput>(json).unwrap(), lean);
-}
-
-#[test]
-fn prompt_variant_owners_single_pass_snapshot() {
-    assert_snapshot(
-        "variant_owners_single_general",
-        &render(&single(&with_variant(
-            Template::General,
-            PromptVariant::Owners,
-        ))),
-    );
-}
-
-#[test]
-fn prompt_variant_decisions_single_pass_snapshot() {
-    assert_snapshot(
-        "variant_decisions_single_general",
-        &render(&single(&with_variant(
-            Template::General,
-            PromptVariant::Decisions,
-        ))),
-    );
-}
-
-#[test]
-fn prompt_variant_items_single_pass_snapshot() {
-    assert_snapshot(
-        "variant_items_single_general",
-        &render(&single(&with_variant(
-            Template::General,
-            PromptVariant::Items,
-        ))),
-    );
-}
-
-#[test]
-fn prompt_variant_lean_single_pass_snapshot() {
-    assert_snapshot(
-        "variant_lean_single_general",
-        &render(&single(&with_variant(
-            Template::General,
-            PromptVariant::Lean,
-        ))),
-    );
-}
-
-#[test]
-fn prompt_variant_assignments_single_pass_snapshot() {
-    assert_snapshot(
-        "variant_assignments_single_general",
-        &render(&single(&with_variant(
-            Template::General,
-            PromptVariant::Assignments,
-        ))),
-    );
-}
-
-#[test]
-fn prompt_variant_short_single_pass_snapshot() {
-    assert_snapshot(
-        "variant_short_single_general",
-        &render(&single(&with_variant(
-            Template::General,
-            PromptVariant::Short,
-        ))),
-    );
+    let brief = with_variant(Template::General, PromptVariant::Brief);
+    let json = serde_json::to_value(&brief).unwrap();
+    assert_eq!(json["prompt_variant"], "brief");
+    assert_eq!(serde_json::from_value::<SummaryInput>(json).unwrap(), brief);
 }
 
 #[test]
@@ -1095,39 +994,6 @@ fn prompt_variant_brief_single_pass_snapshot() {
         &render(&single(&with_variant(
             Template::General,
             PromptVariant::Brief,
-        ))),
-    );
-}
-
-#[test]
-fn prompt_variant_previous_single_pass_snapshot() {
-    assert_snapshot(
-        "variant_previous_single_general",
-        &render(&single(&with_variant(
-            Template::General,
-            PromptVariant::Previous,
-        ))),
-    );
-}
-
-#[test]
-fn prompt_variant_handed_single_pass_snapshot() {
-    assert_snapshot(
-        "variant_handed_single_general",
-        &render(&single(&with_variant(
-            Template::General,
-            PromptVariant::Handed,
-        ))),
-    );
-}
-
-#[test]
-fn prompt_variant_checked_single_pass_snapshot() {
-    assert_snapshot(
-        "variant_checked_single_general",
-        &render(&single(&with_variant(
-            Template::General,
-            PromptVariant::Checked,
         ))),
     );
 }
