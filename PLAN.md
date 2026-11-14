@@ -2183,9 +2183,21 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - deps: T11.3b, T11.3c
   - do: docs/sync.md section 10. Synced `SummaryRequest` (`syncable_row!`, migration, repo contract, trybuild snapshot regenerated); the Summaries page lists offering devices as "On <device> (<writer kind>)"; at summary time an online, offering, not-recording target gets a request and the meeting shows "Waiting for <device>", otherwise this device's writer runs with a banner; the target claims, waits for the counted transcript, writes through its ordinary summary path and re-reads the request in its write transaction; unclaimed after 90 s or a claimed target stale for 5 minutes is withdrawn and written here; a kept-local meeting is written only by a local model on either device. Fake presence and clock. Reviewer required (privacy).
   - accept: `cargo test -p earshot-runtime offload`
+- [ ] T11.3e Dictionary sync
+  - deps: T11.3
+  - do: docs/sync.md section 9 "Dictionary". Synced `DictionaryWord` (`SyncableOptIn`, `syncable_row!`, migration, repo contract, trybuild snapshot regenerated), one row per word; `settings/sync-dictionary` (default on once sync is on; off keeps this device's list and neither pushes nor applies word rows); `vocabulary::add_word` / `remove_word` / `set_vocabulary` write rows in the record's transaction, and `settings/vocabulary` is rebuilt from the live rows after every apply; the same word twice (case-folded) counts once, earliest-created live; a joined list past the `Vocabulary::new` limits takes words in creation order and the Dictionary page says how many are not in use; nothing deleted to make room. Two devices adding different words keep both. The UI mock and `fixtures/ui/summary_settings_cases.json` change with it.
+  - accept: `cargo test -p earshot-runtime dictionary_sync` and `cmd /c pnpm -r test`
 - [ ] T11.4 M11 acceptance
-  - deps: T11.3a, T11.3d
+  - deps: T11.3a, T11.3d, T11.3e
   - do: `accept m11`: server via Docker if available else the binary; two simulated clients; sync.convergence; sync.no_audio (type-level check plus a scan of every plaintext at the client boundary for RIFF, fLaC and OggS signatures, and of every server table for rows over the size limit; wording as GATE-08 approves).
   - accept: `cargo xtask accept m11`
 - [ ] GATE-09 Self-hosted deployment
   - deps: T11.4
+- [ ] T11.5 Linux spike for the summary worker
+  - deps: GATE-09
+  - do: docs/sync.md section 10 "The server as a summary device", its open question. Build and test `earshot-store`, `earshot-sync`, `earshot-llm` and the summary path of `earshot-runtime` for `x86_64-unknown-linux-gnu` in a container (the store's `cfg(not(windows))` branches have never run); report what builds, what fails and why, and recommend whether the worker reuses the runtime or gets a small crate of its own. Nothing shipped changes. Docker is the owner's to install.
+  - accept: the findings in docs/sync.md with the recommendation; follow-ups become tasks
+- [ ] T11.6 Summary worker container
+  - deps: T11.5
+  - do: docs/sync.md section 10. `earshot-worker`: a headless paired device (its own pairing code and token, the vault key from a Docker secret or an owner-only file, never an environment variable or image layer) running the sync client, presence (kind "server") and the `SummaryRequest` target path; the model in a stock llama.cpp server container on the compose network, reached through `earshot-llm` as an OpenAI-compatible endpoint, with compose profiles `cpu` and `gpu`; an endpoint on its own compose network counts as its local model (kept-local meetings allowed), any other is remote (kept-local declined); it never applies voiceprints, holds no audio, and the relay container still holds no key. The Sync page's device list and the offload choice show it. Reviewer required (network code, privacy).
+  - accept: `cargo test -p earshot-worker` and a summary written by the worker for a simulated device's request, on the `cpu` profile

@@ -12,7 +12,12 @@ Decisions already taken by the owner (2026-11-14):
 
 Two or more of one person's devices hold the same meetings: titles, transcripts, speakers, people, summaries and folders. Audio stays on the device that recorded it. A device may ask another to write a summary, which comes back as an ordinary synced summary.
 
-Out of scope for this design: multi-user sharing, audio sync of any kind, syncing settings, key rotation, a phone client (the design does not block one).
+Also decided by the owner (2026-11-14, second round):
+
+- The Dictionary and voiceprints can each sync, each by its own switch.
+- The server can be a summary device too, on a graphics card or the processor. It is a later addition to the container, designed for now (section 10, "The server as a summary device").
+
+Out of scope for this design: multi-user sharing, audio sync of any kind, syncing settings other than the Dictionary, key rotation, a phone client (the design does not block one).
 
 ## 2. Shape
 
@@ -39,6 +44,7 @@ Out of scope for this design: multi-user sharing, audio sync of any kind, syncin
 | Summary | Syncable | yes | tombstones carry bodies until the meeting is deleted; they travel encrypted like any row |
 | Folder | Syncable | yes | |
 | SummaryRequest | Syncable | yes | new, section 10 |
+| DictionaryWord | SyncableOptIn | only while the device's Dictionary switch is on | new, section 9 |
 | Voiceprint | SyncableOptIn | only when the user turns it on | section 9 |
 | AudioFile, audio data, PCM, ExportRecord | NeverSync | never | section 11 |
 
@@ -46,7 +52,7 @@ Device-local records (`local_state`) do not sync. What that means on the other d
 
 - `speaker-identities/*` (biometric centroids): stays on the device with the audio, which is the only device that can run a final pass. An ignored voice is not shown as ignored elsewhere.
 - `word-choices/*`: suggestion marks the user answered on one device show again on the other.
-- Settings (writer, style, Dictionary, templates, devices): each device keeps its own.
+- Settings (writer, style, templates, devices): each device keeps its own. The Dictionary is the exception (section 9).
 - `summary-kept-local/*`: the one record that must not stay local. Section 8.
 
 On a device without a meeting's audio, `MeetingDetail.audio_kept` is already false, so re-transcribe and samples are disabled with no new rule.
@@ -148,9 +154,29 @@ A Sync page in Settings: server address, pair or add a device, the device list w
 - `keep_local::summary_privacy` reads kept when either the column or the old record says so, and an unreadable value counts as kept.
 - The flag is set when the meeting is created, so every copy has it. `allow_writer` clears it. A stale whole-row write can only put it back to kept, which is the safe direction.
 
-## 9. Voiceprints
+## 9. Voiceprints and the Dictionary
 
-Device-local setting `settings/sync-voiceprints`, off by default, per device (D6). Off: voiceprint rows are neither pushed nor applied. Turning it on resets the pull cursor so earlier voiceprint rows are read. Forgetting a person's voice tombstones and zeroes the rows as now, and the tombstones sync. `speaker-identities` centroids and live speaker windows never sync.
+Two switches on the Sync page, each per device. A row of a switched-off kind is neither pushed nor applied on that device, and turning a switch on resets the pull cursor so earlier rows of that kind are read.
+
+### Voiceprints
+
+`settings/sync-voiceprints`, off by default (D6: biometric).
+
+- Forgetting a person's voice tombstones and zeroes the rows as now, and the tombstones sync, so a voice forgotten on one device is forgotten on all that sync voiceprints.
+- A voiceprint carries its `EmbeddingModelId`; a print from a model this device does not use is stored and skipped when matching, as an unscorable print is today.
+- With the Me rule of 6.4, each device's own voice sample ends up on the one Me, so a meeting on either device recognises the user.
+- `speaker-identities` centroids and live speaker windows never sync.
+- A summary worker (section 10) never applies voiceprint rows, whatever any switch says: it has no use for them.
+
+### Dictionary
+
+`settings/sync-dictionary`, on by default once sync is on (words are not biometric, and the point of the list is that it is the same everywhere). Off keeps this device's own list.
+
+- One synced row per word (`DictionaryWord`), not one row for the list: a word added on each of two devices keeps both, and a removal is a tombstone that syncs.
+- `settings/vocabulary` stays the list a device reads at summary time. With the switch on it is rebuilt from the live rows after every apply, and `vocabulary::add_word` / `remove_word` / `set_vocabulary` write rows in the same transaction as the record. Turning the switch on makes a row for each word the device already has.
+- Two rows for the same word (case-folded) count once, the earliest-created staying live.
+- The limits of `Vocabulary::new` still hold on each device. If the joined list passes them, words are taken in creation order until a limit is reached; the rest stay stored and the Dictionary page says how many are not in use. Nothing is deleted to make room.
+- An offloaded summary uses the writing device's list, which is the same list when both sync it.
 
 ## 10. Presence and summary offload
 
@@ -182,6 +208,25 @@ Decided once, where `host::summary_from_settings` runs today:
 
 The transcript reaches whatever writer the helper uses, which may be a remote one. The label on the asker names the writer kind so the user knows where the text goes, and a kept-local meeting never goes to a remote writer on any device.
 
+### The server as a summary device
+
+A later addition (after GATE-09). The rest of the design leaves room for it: nothing in the protocol assumes a device is a desktop app, and the presence blob carries a device kind.
+
+It cannot be the relay itself. To write a summary a program must read the transcript, so it must hold the vault key, and the relay holding the key would undo section 4. So:
+
+- A second container, `earshot-worker`, joins the vault as an ordinary paired device with its own pairing code and token. The relay container stays unable to read anything. A user who does not want a key on the server does not start the worker.
+- The cost, stated plainly: once the worker is paired, whoever controls that host can read every synced meeting. End-to-end encryption then protects the relay's database, its backups and the network path, not the host.
+- The worker's key is a Docker secret or a file readable only by the container's user, never an environment variable or an image layer.
+- It runs the sync client, sends presence (always online while the container runs, kind "server") and answers `SummaryRequest`s like any helper. It has no UI, records nothing, never applies voiceprints, and holds no audio.
+- The model runs in a stock llama.cpp server container beside it, which the worker reaches as an OpenAI-compatible endpoint on the compose network through the existing `earshot-llm` client. The compose file offers two profiles: `cpu` (the plain image) and `gpu` (the CUDA image with the host's NVIDIA runtime). Moving from one to the other is a profile change, with no Earshot build involved.
+- An endpoint on the worker's own compose network counts as that device's local model, so the worker may write kept-local meetings. Any other endpoint is remote and a kept-local request is declined.
+- The presence label says which it is ("On <server> (local model, processor)" or "graphics card"), read from the profile the worker was started with.
+- Prompts, the summary schema, validation and the store transaction are the app's own code paths, so a worker summary is checked exactly like a desktop one.
+
+Rejected for the first version: llama.cpp built into the worker image. It needs its own CPU and CUDA builds of the DLL set for Linux, where the stock server image already has both.
+
+Open, and measured before the worker is promised: `earshot-store` and the summary path of `earshot-runtime` have only ever been built for Windows. The worker needs them on Linux (the store has `cfg(not(windows))` branches that no test has run). A spike decides whether the worker reuses the runtime or gets a small crate of its own over the store and `earshot-llm`.
+
 ## 11. Audio exclusion
 
 - Types: only `SyncPermitted` classes implement `SyncSerialize`; the trybuild case stays. The sync client accepts nothing but a `SyncEnvelope`.
@@ -208,7 +253,10 @@ Changes outside this document that need the owner's agreement (AGENTS 6.2). None
 5. Net guard: `earshot-sync-server` pulls in `hyper` through axum. It is not part of the desktop app, so it needs an exemption like xtask's, or its own check that it holds no HTTP client.
 6. The three judgements: online at 150 s, claim within 90 s, stale target at 5 minutes.
 7. Hosting: one container on the owner's server behind the existing reverse proxy, reached away from home over the owner's VPN.
+8. The Dictionary syncs by default once sync is on; voiceprints stay off by default.
+9. The summary worker holds the vault key on the server. This is the one place content is readable off the owner's own computers, and it exists only if the owner pairs the worker.
+10. An endpoint on the worker's compose network counts as a local model for kept-local meetings.
 
 ## 14. Task order
 
-T11.1 (this) -> GATE-08 -> T11.1a kept-local as a synced field -> T11.1b outbox and apply in the store -> T11.2 server -> T11.2a `earshot-sync` crate -> T11.3 client -> T11.3a Sync page and pairing -> T11.3b convergence rules -> T11.3c presence -> T11.3d summary offload -> T11.4 acceptance -> GATE-09.
+T11.1 (this) -> GATE-08 -> T11.1a kept-local as a synced field -> T11.1b outbox and apply in the store -> T11.2 server -> T11.2a `earshot-sync` crate -> T11.3 client -> T11.3a Sync page and pairing -> T11.3b convergence rules -> T11.3c presence -> T11.3d summary offload -> T11.3e Dictionary sync -> T11.4 acceptance -> GATE-09 -> T11.5 Linux spike for the worker -> T11.6 summary worker.
