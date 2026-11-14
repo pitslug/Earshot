@@ -2530,13 +2530,13 @@ mod tests {
             ],
             ..earshot_hardware::Hardware::default()
         };
-        let sim = simulated_machine(machine.clone(), 12).unwrap();
+        let sim = simulated_machine(machine.clone(), 6).unwrap();
         assert_eq!(sim.total_memory, machine.total_memory);
-        assert_eq!(sim.gpus[0].dedicated_memory, Some(12 * GIB));
+        assert_eq!(sim.gpus[0].dedicated_memory, Some(6 * GIB));
         assert_eq!(sim.gpus[1].dedicated_memory, Some(GIB / 2), "integrated");
-        assert_eq!(sim.gpus[2].dedicated_memory, Some(12 * GIB));
+        assert_eq!(sim.gpus[2].dedicated_memory, Some(6 * GIB));
         assert_eq!(sim.gpus[0].name, machine.gpus[0].name);
-        assert_eq!(simulated_card_gib(&sim), Some(12));
+        assert_eq!(simulated_card_gib(&sim), Some(6));
         // The rule sees a small card: a CUDA track's previews move to the CPU.
         assert_eq!(
             preview_backend(BackendKind::Cuda, &sim, PreviewChoice::Automatic),
@@ -2561,7 +2561,7 @@ mod tests {
     fn live_lag_simulated_preview_loads_apply_the_apps_rule_to_the_simulated_card() {
         let machine = earshot_hardware::Hardware {
             total_memory: Some(64 * GIB),
-            gpus: vec![a_card(Some(12 * GIB), Some(false))],
+            gpus: vec![a_card(Some(6 * GIB), Some(false))],
             ..earshot_hardware::Hardware::default()
         };
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -2593,7 +2593,7 @@ mod tests {
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 4);
         assert!(log.iter().all(|r| r["refusal_bypassed"] == false));
-        assert!(log.iter().all(|r| r["simulated_card_gib"] == 12));
+        assert!(log.iter().all(|r| r["simulated_card_gib"] == 6));
     }
 
     #[test]

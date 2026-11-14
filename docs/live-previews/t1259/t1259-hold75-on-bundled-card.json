@@ -1,0 +1,27 @@
+{
+  "name": "t1259-hold75-on-bundled",
+  "args": "--backend cuda --audio bundled --previews on --hold-card-gib 7.5",
+  "exit": 0,
+  "started": "2026-11-15T07:58:31",
+  "idle_checks": [
+    {
+      "load": 6.3,
+      "card_mib": 953,
+      "builds": 0
+    },
+    {
+      "load": 6.1,
+      "card_mib": 953,
+      "builds": 0
+    },
+    {
+      "load": 7.5,
+      "card_mib": 953,
+      "builds": 0
+    }
+  ],
+  "baseline_mib": 953,
+  "peak_mib": 15465.0,
+  "peak_above_baseline_gib": 14.172,
+  "readings": 164
+}

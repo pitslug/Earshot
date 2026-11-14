@@ -1249,16 +1249,20 @@ pub fn load_parakeet(
 /// them on anyway (`preview_settings`).
 pub const PREVIEW_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 
-/// The same on CUDA, where sessions did not share their weights and a meeting reached 15.4 GiB
-/// (measured before T12.58, when each session held its own encoder; the value is unchanged).
+/// The same on CUDA. Since T12.58 (one shared encoder) a call with previews on still peaked at
+/// 8.81 GiB of private memory (bundled audio; 8.39 continuous; measured 2026-11-15, T12.59 in
+/// docs/live-previews.md), above the 5.81 GiB the CPU's limit was judged on, so under T12.59's rule
+/// it stays 20 GiB.
 pub const PREVIEW_MIN_MEMORY_CUDA: u64 = 20 * 1024 * 1024 * 1024;
 
 /// A graphics card with less dedicated memory than this (or of unknown memory) runs no preview
-/// session on CUDA: a third session took a meeting's use of the card from 7.8 to 11.5 GiB (measured
-/// before T12.58, when each session held its own encoder, docs/live-previews.md; the value is
-/// unchanged). A judgement: the 11.5 and room for the rest of the desktop. Below it a
-/// CUDA track's previews run on the CPU instead (T12.3c, [`preview_backend`]).
-pub const PREVIEW_MIN_CARD_MEMORY: u64 = 14 * 1024 * 1024 * 1024;
+/// session on CUDA. T12.59's rule (docs/live-previews.md, measured 2026-11-15 with one shared
+/// encoder): a call with previews on peaked 4.75 GiB above the card's baseline, plus 2.5 GiB for
+/// other programs and room needs 7.25 GiB, so the smallest card sold that fits is 8 GB, less
+/// 0.5 GiB because a card can report just under its size; checked with the card filled to what a
+/// card of this size would have free. Below it a CUDA track's previews run on the CPU instead
+/// (T12.3c, [`preview_backend`]).
+pub const PREVIEW_MIN_CARD_MEMORY: u64 = 15 * 512 * 1024 * 1024;
 
 /// A machine with less memory than this has no previews by default on the NPU (T12.12c). A
 /// judgement: from the compiled NPU model a preview session added at most 0.77 GiB of working set

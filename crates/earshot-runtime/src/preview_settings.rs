@@ -241,7 +241,8 @@ mod tests {
         // The notes say "12 GB" for the NPU too.
         assert_eq!(PREVIEW_MIN_MEMORY_NPU, 12 * GIB);
         assert_eq!(PREVIEW_MIN_MEMORY_CUDA, 20 * GIB);
-        assert_eq!(PREVIEW_MIN_CARD_MEMORY, 14 * GIB);
+        // T12.59: 7.5 GiB, an 8 GB card less half a GiB.
+        assert_eq!(PREVIEW_MIN_CARD_MEMORY, 15 * GIB / 2);
     }
 
     #[test]
@@ -373,7 +374,7 @@ mod tests {
     /// on the processor, and the page says so for every choice that shows them.
     #[test]
     fn preview_beside_a_small_card_runs_on_the_processor_and_says_so() {
-        for card in [Some(8 * GIB), Some(PREVIEW_MIN_CARD_MEMORY - 1), None] {
+        for card in [Some(6 * GIB), Some(PREVIEW_MIN_CARD_MEMORY - 1), None] {
             let m = machine(Some(64 * GIB), card);
             assert_eq!(
                 previews_refused(BackendKind::Cuda, &m, PreviewChoice::On),
@@ -413,7 +414,7 @@ mod tests {
     /// T12.3c: beside a small card the CPU's memory limit applies, with the CPU's notes.
     #[test]
     fn preview_beside_a_small_card_keeps_the_cpus_memory_notes() {
-        let small_card = Some(8 * GIB);
+        let small_card = Some(6 * GIB);
         let below = machine(Some(PREVIEW_MIN_MEMORY - 1), small_card);
         assert_eq!(
             preview_page(PreviewChoice::Automatic, Accelerator::Cuda, &below),

@@ -195,16 +195,18 @@ fn cuda_transcription_fits_only_a_card_with_room_for_a_call() {
         }],
         ..Hardware::default()
     };
-    assert_eq!(TRANSCRIPTION_MIN_CARD_MEMORY, 12 * 1024 * 1024 * 1024);
+    const GIB: u64 = 1024 * 1024 * 1024;
+    // T12.59: 7.5 GiB, an 8 GB card less half a GiB.
+    assert_eq!(TRANSCRIPTION_MIN_CARD_MEMORY, 15 * GIB / 2);
     assert!(transcription_fits_card(&card(Some(
         TRANSCRIPTION_MIN_CARD_MEMORY
     ))));
     assert!(!transcription_fits_card(&card(Some(
         TRANSCRIPTION_MIN_CARD_MEMORY - 1
     ))));
-    assert!(!transcription_fits_card(&card(Some(
-        8 * 1024 * 1024 * 1024
-    ))));
+    // An 8 GB card reading just under its size, as the desktop's 16 GB card reads 15.6 GiB, fits.
+    assert!(transcription_fits_card(&card(Some(78 * GIB / 10))));
+    assert!(!transcription_fits_card(&card(Some(6 * GIB))));
     // Unknown is no offer, and no card is no offer.
     assert!(!transcription_fits_card(&card(None)));
     assert!(!transcription_fits_card(&Hardware::default()));

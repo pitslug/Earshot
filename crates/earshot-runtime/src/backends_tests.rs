@@ -1860,14 +1860,14 @@ fn backends_previews_second_session_beside_cuda_runs_on_the_cpu() {
     }
     // A card too small for a session on it runs the second on the CPU as well (T12.3c), with the
     // CPU's memory rule.
-    let small_card = machine(Some(64 * 1024 * 1024 * 1024), Some(8 * 1024 * 1024 * 1024));
+    let small_card = machine(Some(64 * 1024 * 1024 * 1024), Some(6 * 1024 * 1024 * 1024));
     assert_eq!(
         second_preview_backend(BackendKind::Cuda, &small_card, everyone),
         Ok(BackendKind::Cpu)
     );
     let small_both = machine(
         Some(PREVIEW_BOTH_MIN_MEMORY - 1),
-        Some(8 * 1024 * 1024 * 1024),
+        Some(6 * 1024 * 1024 * 1024),
     );
     assert_eq!(
         second_preview_backend(BackendKind::Cuda, &small_both, everyone),
@@ -1985,7 +1985,7 @@ fn backends_previews_beside_a_small_card_run_on_the_cpu() {
         PreviewChoice::Everyone,
     ];
     for choice in choices {
-        for card in [small, Some(8 * GIB), None] {
+        for card in [small, Some(6 * GIB), None] {
             let m = nvidia_machine(Some(64 * GIB), card);
             assert_eq!(
                 preview_backend(BackendKind::Cuda, &m, choice),
@@ -2118,7 +2118,7 @@ fn backends_preview_on_hardware_load_applies_the_rule_to_the_given_machine() {
     use crate::preview_settings::PreviewChoice;
     let empty = std::env::temp_dir().join(format!("earshot-preview-on-hw-{}", std::process::id()));
     let models = ModelDir::new(&empty);
-    let small = nvidia_machine(Some(64 * GIB), Some(12 * GIB));
+    let small = nvidia_machine(Some(64 * GIB), Some(6 * GIB));
     let cuda = BackendInfo {
         kind: BackendKind::Cuda,
         device: "CUDA0".to_owned(),
@@ -2847,6 +2847,12 @@ fn backends_evaluation_only_items_are_named_only_by_evaluation_items_in_backends
         concat!("pub fn load_nemotron_", "preview("),
         concat!("pub fn own_encoders_", "for_evaluation("),
         concat!("pub fn hold_shared_encoder_", "for_evaluation("),
+        concat!("pub fn hold_card_", "for_evaluation("),
+        concat!("pub(crate) fn card_hold_", "step("),
+        concat!("pub struct Card", "HoldLoad {"),
+        concat!("pub struct Card", "Hold {"),
+        concat!("impl Card", "Hold {"),
+        concat!("pub(crate) enum Card", "HoldStep {"),
     ];
     let spans: Vec<std::ops::Range<usize>> = items.iter().map(|h| item_span(&src, h)).collect();
     let names = [
@@ -2859,6 +2865,9 @@ fn backends_evaluation_only_items_are_named_only_by_evaluation_items_in_backends
         concat!("Evaluated", "Stream"),
         concat!("own_encoders_", "for_evaluation"),
         concat!("hold_shared_encoder_", "for_evaluation"),
+        concat!("hold_card_", "for_evaluation"),
+        concat!("card_hold_", "step"),
+        concat!("Card", "Hold"),
     ];
     for (at, line) in code_lines(&src) {
         for name in names {
