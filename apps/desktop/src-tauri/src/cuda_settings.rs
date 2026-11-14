@@ -979,6 +979,8 @@ struct Inner {
     sink: CudaSink,
     checks: ModelJobs,
     downloads: Mutex<BTreeMap<CudaPartChoice, Download>>,
+    /// How a download's thread is started (a seam: tests make it fail).
+    spawn: crate::slot_job::Spawn,
 }
 
 /// Runs the parts' downloads and removals, the only path to either (cheap to clone; clones share
@@ -997,7 +999,15 @@ impl CudaJobs {
             sink,
             checks,
             downloads: Mutex::new(BTreeMap::new()),
+            spawn: crate::slot_job::spawn_named,
         }))
+    }
+
+    /// The runner with its download threads started by `spawn` (before any clone is made).
+    #[cfg(test)]
+    pub fn with_spawn(mut self, spawn: crate::slot_job::Spawn) -> Self {
+        Arc::get_mut(&mut self.0).expect("not yet shared").spawn = spawn;
+        self
     }
 
     /// The files.
@@ -1068,10 +1078,11 @@ impl CudaJobs {
             }
             let cancel = CancelToken::new();
             let (jobs, svc, token) = (self.clone(), services.clone(), cancel.clone());
-            let thread = std::thread::Builder::new()
-                .name("earshot-cuda-download".into())
-                .spawn(move || jobs.run_download(&svc, part, &token))
-                .map_err(|_| IpcError::internal())?;
+            let thread = (self.0.spawn)(
+                "earshot-cuda-download",
+                Box::new(move || jobs.run_download(&svc, part, &token)),
+            )
+            .map_err(|_| IpcError::internal())?;
             downloads.insert(part, Download { cancel, thread });
             Ok(())
         })

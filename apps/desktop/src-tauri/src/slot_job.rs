@@ -20,7 +20,7 @@ use crate::ipc::IpcError;
 pub type Spawn = fn(&'static str, Box<dyn FnOnce() + Send>) -> std::io::Result<JoinHandle<()>>;
 
 /// The production [`Spawn`]: a thread named `name`.
-fn spawn_named(
+pub(crate) fn spawn_named(
     name: &'static str,
     body: Box<dyn FnOnce() + Send>,
 ) -> std::io::Result<JoinHandle<()>> {
@@ -57,8 +57,14 @@ impl SlotJob {
     /// The runner with its threads started by `spawn`.
     #[cfg(test)]
     pub fn with_spawn(mut self, spawn: Spawn) -> Self {
-        self.spawn = spawn;
+        self.set_spawn(spawn);
         self
+    }
+
+    /// Starts this runner's threads with `spawn` from now on.
+    #[cfg(test)]
+    pub fn set_spawn(&mut self, spawn: Spawn) {
+        self.spawn = spawn;
     }
 
     fn slot(&self) -> MutexGuard<'_, Option<Running>> {

@@ -428,6 +428,16 @@ impl BenchmarkJobs {
         }))
     }
 
+    /// The jobs with their thread started by `spawn` (before any clone is made).
+    #[cfg(test)]
+    pub fn with_spawn(mut self, spawn: crate::slot_job::Spawn) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("not yet shared")
+            .job
+            .set_spawn(spawn);
+        self
+    }
+
     /// Where the run under way is, for a page opened during it.
     #[must_use]
     pub fn current(&self) -> Option<BenchmarkRunning> {

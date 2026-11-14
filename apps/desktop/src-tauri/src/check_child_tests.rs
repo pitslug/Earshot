@@ -358,3 +358,24 @@ fn check_child_that_cannot_keep_the_cuda_choice_runs_no_check() {
         "{CUDA_CHOICE_NOT_KEPT}"
     );
 }
+
+/// The child's exit reaches the page as fixed copy, never the exit code or the operating
+/// system's words.
+#[cfg(windows)]
+#[test]
+fn model_check_a_failed_exit_reports_fixed_copy() {
+    use std::os::windows::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
+    assert_eq!(exit_verdict(Ok(ExitStatus::from_raw(0))), Ok(()));
+    for status in [
+        Ok(ExitStatus::from_raw(1)),
+        Ok(ExitStatus::from_raw(0xC000_0409)),
+        Err(std::io::Error::other("the handle is invalid (os error 6)")),
+    ] {
+        let e = exit_verdict(status).unwrap_err();
+        assert_eq!(e.kind, "model_check");
+        assert_eq!(e.message, crate::plain_text::INTERNAL);
+        assert!(e.retryable);
+    }
+}

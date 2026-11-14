@@ -549,6 +549,19 @@ pub fn read_lines(
     ))
 }
 
+/// How the child's exit reaches the page: a success is nothing, anything else fixed copy, never
+/// the exit code's or the operating system's words (T12.53).
+///
+/// # Errors
+/// A failed exit or wait, retryable.
+#[cfg(windows)]
+fn exit_verdict(status: std::io::Result<std::process::ExitStatus>) -> Result<(), IpcError> {
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(_) | Err(_) => Err(child_failed(crate::plain_text::INTERNAL)),
+    }
+}
+
 /// Runs the check in a child process (module docs) for `languages` and `models`: the
 /// app's own exe in the hidden mode, no console window, in a kill-on-close job; `cancel`
 /// kills it. Returns the outcome for the parent to record.
@@ -615,11 +628,7 @@ pub fn run_child(
             return Err(cancelled());
         }
         let outcome = result?;
-        match status {
-            Ok(s) if s.success() => Ok(outcome),
-            Ok(s) => Err(child_failed(format!("the model check ended with {s}"))),
-            Err(_) => Err(child_failed(crate::plain_text::INTERNAL)),
-        }
+        exit_verdict(status).map(|()| outcome)
     }
     #[cfg(not(windows))]
     {

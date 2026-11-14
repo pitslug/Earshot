@@ -520,3 +520,33 @@ fn benchmark_bundled_meeting_is_the_attributed_excerpt() {
         assert!(MEETING_ATTRIBUTION.contains(fact), "{fact}");
     }
 }
+
+fn no_threads(
+    _: &'static str,
+    _: Box<dyn FnOnce() + Send>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    Err(std::io::Error::other("no threads left (os error 8)"))
+}
+
+/// A run whose thread cannot start says fixed copy, shows no run under way and holds no pass.
+#[test]
+fn benchmark_a_thread_that_cannot_start_leaves_no_run_and_no_pass() {
+    let dir = TempDir::new("benchmark-no-thread");
+    let svc = services(&dir);
+    let gate = WorkGate::new();
+    let (jobs, events) = jobs(
+        Fake {
+            then: Box::new(|_, _| unreachable!("never ran")),
+        },
+        &gate,
+    );
+    let jobs = jobs.with_spawn(no_threads);
+    let e = jobs.start(&svc).unwrap_err();
+    assert_eq!(e, IpcError::internal());
+    assert_eq!(jobs.current(), None, "no run under way");
+    assert!(
+        taken(&events).is_empty(),
+        "no event for a run that never ran"
+    );
+    drop(gate.enter_meeting().expect("the pass was released"));
+}
