@@ -17,6 +17,8 @@ Also decided by the owner (2026-11-14, second round):
 - The Dictionary and voiceprints can each sync, each by its own switch.
 - The server can be a summary device too, on a graphics card or the processor. It is a later addition to the container, designed for now (section 10, "The server as a summary device").
 
+- The summary device on the server is a separate paired worker container, and a vault key on that host is accepted (section 13 item 9, agreed 2026-11-14).
+
 Out of scope for this design: multi-user sharing, audio sync of any kind, syncing settings other than the Dictionary, key rotation, a phone client (the design does not block one).
 
 ## 2. Shape
