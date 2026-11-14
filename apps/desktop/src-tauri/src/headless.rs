@@ -283,11 +283,7 @@ fn recording_placement(
 
 /// The replayed capture source: `mic.wav` and `loopback.wav`, as fast as the session reads them.
 fn replay_source(dir: &Path, record: Arc<Mutex<AfterRecord>>) -> Result<MeetingSource, IpcError> {
-    let bad = |message: String| IpcError {
-        kind: "replay".into(),
-        message,
-        retryable: false,
-    };
+    let bad = |message: String| IpcError::new("replay", message);
     let mic = read_wav_track(&dir.join("mic.wav")).map_err(bad)?;
     let reference = read_wav_track(&dir.join("loopback.wav")).map_err(bad)?;
     let source = ReplayBuilder::new(ORIGIN, mic)

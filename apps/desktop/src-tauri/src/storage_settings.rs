@@ -118,11 +118,7 @@ fn view(choice: AudioRetention, unknown: Vec<String>, status: &RetentionStatus) 
 }
 
 fn choice_of(value: &str) -> Result<AudioRetention, IpcError> {
-    AudioRetention::parse(value).ok_or_else(|| IpcError {
-        kind: "invalid_setting".into(),
-        message: "This is not one of the choices.".into(),
-        retryable: false,
-    })
+    AudioRetention::parse(value).ok_or_else(|| IpcError::invalid("This is not one of the choices."))
 }
 
 /// The stored setting.

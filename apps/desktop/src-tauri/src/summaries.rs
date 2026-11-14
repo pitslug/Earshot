@@ -227,11 +227,7 @@ pub fn settings_view(services: &Services) -> Result<SummarySettingsView, IpcErro
 pub fn settings_error(e: SummarySettingsError) -> IpcError {
     match e {
         SummarySettingsError::Store(e) => IpcError::from(e),
-        other => IpcError {
-            kind: "invalid_setting".into(),
-            message: sentence(&other.to_string()),
-            retryable: false,
-        },
+        other => IpcError::invalid(sentence(&other.to_string())),
     }
 }
 
@@ -253,15 +249,13 @@ pub fn set_settings(
 /// The UI error of a key that could not be stored, read or removed (never the key).
 #[must_use]
 pub fn key_error(e: &ApiKeyError) -> IpcError {
-    IpcError {
-        kind: match e {
+    IpcError::new(
+        match e {
             ApiKeyError::Invalid(_) => "invalid_setting",
             ApiKeyError::Missing | ApiKeyError::Unsupported | ApiKeyError::Store(_) => "api_key",
-        }
-        .into(),
-        message: sentence(&e.to_string()),
-        retryable: false,
-    }
+        },
+        sentence(&e.to_string()),
+    )
 }
 
 /// Stores the Anthropic API key in `vault` (replacing an earlier one).

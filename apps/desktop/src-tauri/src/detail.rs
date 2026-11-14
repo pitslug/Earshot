@@ -462,11 +462,7 @@ pub struct ExportDone {
 }
 
 fn err(kind: &str, message: &str) -> IpcError {
-    IpcError {
-        kind: kind.into(),
-        message: message.into(),
-        retryable: false,
-    }
+    IpcError::new(kind, message)
 }
 
 /// Plain user copy for an edit refusal. Exhaustive: a new refusal needs its copy here.

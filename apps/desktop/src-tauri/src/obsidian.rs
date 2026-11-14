@@ -82,11 +82,7 @@ pub fn set_settings(
     match export_settings::set_obsidian_settings(services, &value.vault, &value.folder) {
         Ok(s) => Ok(view(&s, Vec::new())),
         Err(ObsidianSettingsError::Store(e)) => Err(e.into()),
-        Err(other) => Err(IpcError {
-            kind: "invalid_setting".into(),
-            message: sentence(&other.to_string()),
-            retryable: false,
-        }),
+        Err(other) => Err(IpcError::invalid(sentence(&other.to_string()))),
     }
 }
 

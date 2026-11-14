@@ -142,14 +142,6 @@ pub const BENCHMARK_ALREADY_RUNNING: &str = "The benchmark is already running.";
 pub const WORK_RUNNING_FOR_BENCHMARK: &str =
     "A meeting or a meeting job is running; run the benchmark when it has finished.";
 
-fn busy(message: &str) -> IpcError {
-    IpcError {
-        kind: "busy".into(),
-        message: message.into(),
-        retryable: true,
-    }
-}
-
 impl WorkGate {
     /// A gate with nothing running.
     #[must_use]
@@ -180,7 +172,7 @@ impl WorkGate {
     fn refuse_during_cuda_start(s: &State, llama: bool) -> Result<(), IpcError> {
         let (onnx_held, llama_held) = s.start_gates.map_or((false, false), |gates| gates());
         if onnx_held || (llama && llama_held) {
-            return Err(busy(CUDA_START_RUNNING));
+            return Err(IpcError::busy(CUDA_START_RUNNING));
         }
         Ok(())
     }
@@ -196,10 +188,10 @@ impl WorkGate {
     pub fn enter_work(&self) -> Result<WorkPass, IpcError> {
         let mut s = self.state();
         if s.check {
-            return Err(busy(CHECK_RUNNING));
+            return Err(IpcError::busy(CHECK_RUNNING));
         }
         if s.benchmark {
-            return Err(busy(BENCHMARK_RUNNING));
+            return Err(IpcError::busy(BENCHMARK_RUNNING));
         }
         s.work += 1;
         Ok(WorkPass {
@@ -218,20 +210,20 @@ impl WorkGate {
         let mut s = self.state();
         if s.check {
             let Some(cancel) = s.check_gives_way.take() else {
-                return Err(busy(CHECK_RUNNING));
+                return Err(IpcError::busy(CHECK_RUNNING));
             };
             // Over from here for the gate: its pass's drop finds another holder, or none.
             cancel.cancel();
             s.check = false;
         }
         if s.voice {
-            return Err(busy(VOICE_RUNNING));
+            return Err(IpcError::busy(VOICE_RUNNING));
         }
         if s.audio_check {
-            return Err(busy(AUDIO_CHECK_RUNNING));
+            return Err(IpcError::busy(AUDIO_CHECK_RUNNING));
         }
         if s.benchmark {
-            return Err(busy(BENCHMARK_RUNNING));
+            return Err(IpcError::busy(BENCHMARK_RUNNING));
         }
         s.work += 1;
         s.meetings += 1;
@@ -251,19 +243,21 @@ impl WorkGate {
         let mut s = self.state();
         Self::refuse_during_cuda_start(&s, false)?;
         if s.meetings > 0 || s.left > 0 {
-            return Err(busy(MEETING_RUNNING));
+            return Err(IpcError::busy(MEETING_RUNNING));
         }
         if s.check {
-            return Err(busy(CHECK_RUNNING));
+            return Err(IpcError::busy(CHECK_RUNNING));
         }
         if s.voice {
-            return Err(busy("Your voice sample is already being recorded."));
+            return Err(IpcError::busy(
+                "Your voice sample is already being recorded.",
+            ));
         }
         if s.audio_check {
-            return Err(busy(AUDIO_CHECK_RUNNING));
+            return Err(IpcError::busy(AUDIO_CHECK_RUNNING));
         }
         if s.benchmark {
-            return Err(busy(BENCHMARK_RUNNING));
+            return Err(IpcError::busy(BENCHMARK_RUNNING));
         }
         s.voice = true;
         Ok(VoicePass(self.clone()))
@@ -278,19 +272,19 @@ impl WorkGate {
         let mut s = self.state();
         Self::refuse_during_cuda_start(&s, false)?;
         if s.work > 0 || s.left > 0 {
-            return Err(busy(WORK_RUNNING));
+            return Err(IpcError::busy(WORK_RUNNING));
         }
         if s.voice {
-            return Err(busy(VOICE_RUNNING));
+            return Err(IpcError::busy(VOICE_RUNNING));
         }
         if s.check {
-            return Err(busy("The model check is already running."));
+            return Err(IpcError::busy("The model check is already running."));
         }
         if s.audio_check {
-            return Err(busy(AUDIO_CHECK_RUNNING));
+            return Err(IpcError::busy(AUDIO_CHECK_RUNNING));
         }
         if s.benchmark {
-            return Err(busy(BENCHMARK_RUNNING));
+            return Err(IpcError::busy(BENCHMARK_RUNNING));
         }
         s.check = true;
         s.check_pass += 1;
@@ -314,7 +308,7 @@ impl WorkGate {
             s.work > 0 || s.left > 0
         };
         if busy_work {
-            return Err(busy(WORK_RUNNING_FOR_CUDA_REMOVAL));
+            return Err(IpcError::busy(WORK_RUNNING_FOR_CUDA_REMOVAL));
         }
         self.enter_check()
     }
@@ -328,19 +322,19 @@ impl WorkGate {
     pub fn enter_audio_check(&self) -> Result<AudioCheckPass, IpcError> {
         let mut s = self.state();
         if s.meetings > 0 || s.left > 0 {
-            return Err(busy(MEETING_RUNNING_FOR_AUDIO_CHECK));
+            return Err(IpcError::busy(MEETING_RUNNING_FOR_AUDIO_CHECK));
         }
         if s.check {
-            return Err(busy(CHECK_RUNNING));
+            return Err(IpcError::busy(CHECK_RUNNING));
         }
         if s.voice {
-            return Err(busy(VOICE_RUNNING));
+            return Err(IpcError::busy(VOICE_RUNNING));
         }
         if s.audio_check {
-            return Err(busy("The audio check is already running."));
+            return Err(IpcError::busy("The audio check is already running."));
         }
         if s.benchmark {
-            return Err(busy(BENCHMARK_RUNNING));
+            return Err(IpcError::busy(BENCHMARK_RUNNING));
         }
         s.audio_check = true;
         Ok(AudioCheckPass(self.clone()))
@@ -357,7 +351,7 @@ impl WorkGate {
             let s = self.state();
             Self::refuse_during_cuda_start(&s, true)?;
             if s.left > 0 {
-                return Err(busy(WORK_RUNNING_FOR_BENCHMARK));
+                return Err(IpcError::busy(WORK_RUNNING_FOR_BENCHMARK));
             }
         }
         self.enter_restart()
@@ -371,19 +365,19 @@ impl WorkGate {
     pub fn enter_restart(&self) -> Result<BenchmarkPass, IpcError> {
         let mut s = self.state();
         if s.work > 0 {
-            return Err(busy(WORK_RUNNING_FOR_BENCHMARK));
+            return Err(IpcError::busy(WORK_RUNNING_FOR_BENCHMARK));
         }
         if s.check {
-            return Err(busy(CHECK_RUNNING));
+            return Err(IpcError::busy(CHECK_RUNNING));
         }
         if s.voice {
-            return Err(busy(VOICE_RUNNING));
+            return Err(IpcError::busy(VOICE_RUNNING));
         }
         if s.audio_check {
-            return Err(busy(AUDIO_CHECK_RUNNING));
+            return Err(IpcError::busy(AUDIO_CHECK_RUNNING));
         }
         if s.benchmark {
-            return Err(busy(BENCHMARK_ALREADY_RUNNING));
+            return Err(IpcError::busy(BENCHMARK_ALREADY_RUNNING));
         }
         s.benchmark = true;
         Ok(BenchmarkPass(self.clone()))
