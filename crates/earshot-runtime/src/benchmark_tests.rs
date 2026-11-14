@@ -1068,3 +1068,61 @@ fn benchmark_real_run_with_the_installed_models() {
         Some(record)
     );
 }
+
+#[test]
+fn benchmark_record_bytes_are_pinned() {
+    // T12.52: the exact stored form of a fixed record (every field once), so a change to the
+    // framing or to a field name shows.
+    let r = BenchmarkRecord {
+        ran_at_ms: 1_700_000_000_000,
+        app_version: "0.1.0".into(),
+        settings: RecordSettings {
+            transcription_model: "parakeet".into(),
+            speaker_timing: "during".into(),
+            live_summaries: LiveSummariesRun::Off,
+        },
+        meeting_ms: 150_000,
+        live_backends: vec![RecordBackend {
+            kind: "cpu".into(),
+            device: "cpu".into(),
+        }],
+        lag_max_ms: Some(3_000),
+        lag_median_ms: None,
+        catch_up_ms: 1_200,
+        kept_up: true,
+        transcript_ready_ms: 9_000,
+        final_backend: Some(RecordBackend {
+            kind: "cuda".into(),
+            device: "gpu".into(),
+        }),
+        summary: RecordSummary::Stored {
+            ready_ms: 20_000,
+            model: "qwen".into(),
+            backend: "cpu".into(),
+        },
+        check: Some(StoredVerdict::TooSlow),
+        notes: vec!["a note".into()],
+    };
+    let pinned_json = concat!(
+        r#"{"ran_at_ms":1700000000000,"app_version":"0.1.0","#,
+        r#""settings":{"transcription_model":"parakeet","speaker_timing":"during","#,
+        r#""live_summaries":{"state":"off"}},"meeting_ms":150000,"#,
+        r#""live_backends":[{"kind":"cpu","device":"cpu"}],"lag_max_ms":3000,"#,
+        r#""lag_median_ms":null,"catch_up_ms":1200,"kept_up":true,"#,
+        r#""transcript_ready_ms":9000,"final_backend":{"kind":"cuda","device":"gpu"},"#,
+        r#""summary":{"kind":"stored","ready_ms":20000,"model":"qwen","backend":"cpu"},"#,
+        r#""check":"too_slow","notes":["a note"]}"#,
+    );
+    let dir = TempDir::new("benchmark-record");
+    let (svc, _) = services(&dir);
+    record_benchmark(&mut svc.store(), &r).unwrap();
+    let stored = svc.store().local_value(BENCHMARK_KEY).unwrap().unwrap();
+    assert_eq!(stored[..4], [1, 0, 0, 0]);
+    assert_eq!(std::str::from_utf8(&stored[4..]).unwrap(), pinned_json);
+    // The literal reads back as the record.
+    let mut pinned = vec![1, 0, 0, 0];
+    pinned.extend_from_slice(pinned_json.as_bytes());
+    crate::local::set(&mut svc.store(), &DeviceRecord::Benchmark.key(), &pinned).unwrap();
+    let read = stored_benchmark(&svc.store()).unwrap();
+    assert_eq!((read.record, read.unreadable), (Some(r), false));
+}

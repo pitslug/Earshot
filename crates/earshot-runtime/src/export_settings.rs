@@ -23,7 +23,7 @@ use earshot_core::export::ExportOptions;
 use earshot_core::model::VaultPath;
 use earshot_store::{Store, VaultError, validate_vault};
 
-use crate::local::DeviceRecord;
+use crate::local::{DeviceRecord, setting_of};
 pub use crate::model_settings::UnknownSetting;
 use crate::{RuntimeError, Services};
 
@@ -163,30 +163,31 @@ pub fn obsidian_settings(
 ) -> Result<(ObsidianSettings, Vec<UnknownSetting>), RuntimeError> {
     let mut out = ObsidianSettings::default();
     let mut unknown = Vec::new();
-    if let Some(bytes) = store.local_value(VAULT_KEY)? {
-        match String::from_utf8(bytes) {
-            Ok(text) => match vault_path(&text) {
-                Ok(v) => out.vault = v,
-                Err(_) => unknown.push(UnknownSetting {
-                    key: VAULT_KEY,
-                    stored: text,
-                }),
-            },
-            Err(e) => unknown.push(UnknownSetting {
-                key: VAULT_KEY,
-                stored: String::from_utf8_lossy(e.as_bytes()).into_owned(),
-            }),
-        }
+    // Both are read strictly: a stored value that is not UTF-8 is reported (lossily), never used.
+    let lossy = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    if let Some(v) = setting_of(
+        VAULT_KEY,
+        store.local_value(VAULT_KEY)?.as_deref(),
+        |bytes| match std::str::from_utf8(bytes) {
+            Ok(text) => vault_path(text).map_err(|_| text.to_owned()),
+            Err(_) => Err(lossy(bytes)),
+        },
+    )
+    .known(&mut unknown)
+    {
+        out.vault = v;
     }
-    if let Some(bytes) = store.local_value(FOLDER_KEY)? {
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        match std::str::from_utf8(&bytes).map(check_folder) {
-            Ok(Ok(f)) => out.folder = f,
-            _ => unknown.push(UnknownSetting {
-                key: FOLDER_KEY,
-                stored: text,
-            }),
-        }
+    if let Some(f) = setting_of(
+        FOLDER_KEY,
+        store.local_value(FOLDER_KEY)?.as_deref(),
+        |bytes| match std::str::from_utf8(bytes).map(check_folder) {
+            Ok(Ok(f)) => Ok(f),
+            _ => Err(lossy(bytes)),
+        },
+    )
+    .known(&mut unknown)
+    {
+        out.folder = f;
     }
     Ok((out, unknown))
 }

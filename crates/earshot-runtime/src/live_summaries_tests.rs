@@ -150,6 +150,36 @@ fn live_summary_record_round_trips_and_refuses_other_versions() {
 }
 
 #[test]
+fn live_summary_record_bytes_are_pinned() {
+    // T12.52: the exact stored form of a fixed record, so a change to the framing shows.
+    let r = LiveSummaryRecord {
+        model: "qwen".into(),
+        seconds: 600,
+        partials: Vec::new(),
+        stopped: Some("why".into()),
+        vocabulary: Some(vec!["Quillmarsh".into()]),
+    };
+    let pinned_json = r#"{"model":"qwen","seconds":600,"partials":[],"stopped":"why","vocabulary":["Quillmarsh"]}"#;
+    let bytes = encode(&r).unwrap();
+    assert_eq!(bytes[..4], [2, 0, 0, 0]);
+    assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), pinned_json);
+    let mut pinned = vec![2, 0, 0, 0];
+    pinned.extend_from_slice(pinned_json.as_bytes());
+    assert_eq!(decode(&pinned), StoredLiveSummaries::Record(Box::new(r)));
+    // The messages of an unreadable record.
+    let unreadable = |b: &[u8]| match decode(b) {
+        StoredLiveSummaries::Unreadable(why) => why,
+        StoredLiveSummaries::Record(_) => panic!("must not read"),
+    };
+    assert_eq!(unreadable(&[2, 0]), "the live summary record is truncated");
+    assert_eq!(
+        unreadable(&[7, 0, 0, 0, b'{', b'}']),
+        "live summary record version 7, this build reads 2"
+    );
+    assert!(unreadable(&[2, 0, 0, 0, b'{']).starts_with("the live summary record: "));
+}
+
+#[test]
 fn live_summary_record_of_version_1_reads_without_a_word_list() {
     // A version-1 record, from before the word list was kept: readable, and its words unknown.
     let v1 = serde_json::json!({

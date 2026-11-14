@@ -520,13 +520,19 @@ const SLOT_BROKEN_MESSAGE: &str = "an earlier load failed; ONNX Runtime needs a 
 /// The oldest ONNX Runtime minor version [`ORT_VERSION`] accepts (ort's `MINOR_VERSION`, api-31).
 const ORT_MINOR: u32 = 31;
 
-/// Lower-case hex SHA-256 of a file.
-pub(crate) fn file_sha256(path: &Path) -> std::io::Result<String> {
+/// Lower-case hex SHA-256 of a file, read in 1 MiB blocks: the shipped crates' one hasher for
+/// the plain "hash this file" case (T12.52; the runtime's model, download and NPU checks call
+/// it too). Two hash files their own way: `earshot_runtime::update::verify_installer`, which
+/// counts the size in the same pass, and xtask, which ships nothing.
+///
+/// # Errors
+/// Opening or reading the file.
+pub fn file_sha256(path: &Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
     let mut f = std::fs::File::open(path)?;
     let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
+    let mut buf = vec![0u8; 1 << 20];
     loop {
         let n = f.read(&mut buf)?;
         if n == 0 {
@@ -1089,6 +1095,35 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(loaded_library().is_none(), "nothing was loaded");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vad_runtime_file_sha256_is_lower_case_hex_across_blocks() {
+        let dir = std::env::temp_dir().join(format!("earshot-onnx-sha-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let small = dir.join("abc");
+        std::fs::write(&small, b"abc").unwrap();
+        assert_eq!(
+            file_sha256(&small).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // Longer than one read block: the same digest as hashing the bytes at once.
+        use sha2::{Digest, Sha256};
+        let bytes: Vec<u8> = (0..(1usize << 20) + 4097)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        let big = dir.join("big");
+        std::fs::write(&big, &bytes).unwrap();
+        let want: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(file_sha256(&big).unwrap(), want);
+        assert_eq!(
+            file_sha256(&dir.join("missing")).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

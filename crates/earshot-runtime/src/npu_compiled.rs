@@ -186,19 +186,7 @@ fn entries(folder: &Path) -> Result<Vec<(String, bool)>, String> {
 }
 
 fn sha256_of(path: &Path) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut hash = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    loop {
-        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buf[..n]);
-    }
-    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    earshot_onnx::file_sha256(path).map_err(|e| e.to_string())
 }
 
 /// Writes the record of what the plugin wrote into `folder`, for `key`.
@@ -941,16 +929,14 @@ impl RefusalRecord {
     /// # Errors
     /// Never in practice (serde_json on plain data).
     pub fn encode(&self) -> Result<Vec<u8>, String> {
-        let mut out = REFUSALS_VERSION.to_le_bytes().to_vec();
-        out.extend(serde_json::to_vec(self).map_err(|e| e.to_string())?);
-        Ok(out)
+        earshot_store::encode_versioned(REFUSALS_VERSION, self).map_err(|e| e.to_string())
     }
 
     /// The record in `bytes`; `None` for another version or a damaged one (it is then replaced).
     #[must_use]
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        let (version, json) = bytes.split_first_chunk::<4>()?;
-        if u32::from_le_bytes(*version) != REFUSALS_VERSION {
+        let (version, json) = earshot_store::split_version(bytes)?;
+        if version != REFUSALS_VERSION {
             return None;
         }
         serde_json::from_slice(json).ok()

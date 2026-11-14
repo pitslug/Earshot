@@ -44,7 +44,7 @@ use earshot_store::Store;
 
 use crate::RuntimeError;
 use crate::live_summaries::{LIVE_SUMMARIES_KEY, StoredSwitch, live_summaries_setting};
-use crate::local::DeviceRecord;
+use crate::local::{DeviceRecord, read_setting};
 pub use crate::model_settings::UnknownSetting;
 use crate::summary::{SummaryConfig, summary_allowlist};
 pub use earshot_llm::claude_code::Effort;
@@ -409,75 +409,80 @@ pub fn summary_settings(
 ) -> Result<(SummarySettings, Vec<UnknownSetting>), RuntimeError> {
     let mut unknown = Vec::new();
     let mut out = SummarySettings::default();
-    let text = |key: &str| -> Result<Option<String>, RuntimeError> {
-        Ok(store
-            .local_value(key)?
-            .map(|b| String::from_utf8_lossy(&b).into_owned()))
-    };
-    let mut writer = None;
-    if let Some(t) = text(SUMMARY_WRITER_KEY)? {
-        match SummaryWriter::parse(&t) {
-            Some(w) => writer = Some(w),
-            None => unknown.push(UnknownSetting {
-                key: SUMMARY_WRITER_KEY,
-                stored: t,
-            }),
-        }
+    let writer = read_setting(store, SUMMARY_WRITER_KEY, |t| {
+        SummaryWriter::parse(&t).ok_or(t)
+    })?
+    .known(&mut unknown);
+    if let Some(p) = read_setting(store, SUMMARY_PROVIDER_KEY, |t| {
+        EndpointProvider::parse(&t).ok_or(t)
+    })?
+    .known(&mut unknown)
+    {
+        out.provider = p;
     }
-    if let Some(t) = text(SUMMARY_PROVIDER_KEY)? {
-        match EndpointProvider::parse(&t) {
-            Some(p) => out.provider = p,
-            None => unknown.push(UnknownSetting {
-                key: SUMMARY_PROVIDER_KEY,
-                stored: t,
-            }),
-        }
-    }
-    if let Some(t) = text(SUMMARY_ENDPOINT_MODEL_KEY)? {
+    if let Some(m) = read_setting(store, SUMMARY_ENDPOINT_MODEL_KEY, |t| {
         if t.len() <= MAX_MODEL_NAME && !t.chars().any(char::is_control) {
-            out.model = t;
+            Ok(t)
         } else {
-            unknown.push(UnknownSetting {
-                key: SUMMARY_ENDPOINT_MODEL_KEY,
-                stored: "a model name this version refuses".into(),
-            });
+            Err("a model name this version refuses".into())
         }
+    })?
+    .known(&mut unknown)
+    {
+        out.model = m;
     }
-    if let Some(t) = text(SUMMARY_CLAUDE_CODE_MODEL_KEY)? {
+    if let Some(m) = read_setting(store, SUMMARY_CLAUDE_CODE_MODEL_KEY, |t| {
         match earshot_llm::claude_code::check_model(&t) {
-            Ok(()) => out.claude_model = t,
-            Err(why) => unknown.push(UnknownSetting {
-                key: SUMMARY_CLAUDE_CODE_MODEL_KEY,
-                stored: format!("a Claude Code model name this version refuses: {why}"),
-            }),
+            Ok(()) => Ok(t),
+            Err(why) => Err(format!(
+                "a Claude Code model name this version refuses: {why}"
+            )),
         }
+    })?
+    .known(&mut unknown)
+    {
+        out.claude_model = m;
     }
-    if let Some(t) = text(SUMMARY_CLAUDE_CODE_EFFORT_KEY)?.filter(|t| !t.is_empty()) {
-        match Effort::parse(&t) {
-            Some(e) => out.claude_effort = Some(e),
-            None => unknown.push(UnknownSetting {
-                key: SUMMARY_CLAUDE_CODE_EFFORT_KEY,
-                stored: t,
-            }),
+    // An empty effort is the CLI's default, as nothing stored is.
+    if let Some(e) = read_setting(store, SUMMARY_CLAUDE_CODE_EFFORT_KEY, |t| {
+        if t.is_empty() {
+            Ok(None)
+        } else {
+            Effort::parse(&t).map(Some).ok_or(t)
         }
+    })?
+    .known(&mut unknown)
+    .flatten()
+    {
+        out.claude_effort = Some(e);
     }
-    if let Some(t) = text(SUMMARY_CODEX_MODEL_KEY)? {
-        match earshot_llm::codex::check_model(&t) {
-            Ok(()) => out.codex_model = t,
-            Err(why) => unknown.push(UnknownSetting {
-                key: SUMMARY_CODEX_MODEL_KEY,
-                stored: format!("a Codex model name this version refuses: {why}"),
-            }),
-        }
+    if let Some(m) =
+        read_setting(
+            store,
+            SUMMARY_CODEX_MODEL_KEY,
+            |t| match earshot_llm::codex::check_model(&t) {
+                Ok(()) => Ok(t),
+                Err(why) => Err(format!("a Codex model name this version refuses: {why}")),
+            },
+        )?
+        .known(&mut unknown)
+    {
+        out.codex_model = m;
     }
-    if let Some(t) = text(SUMMARY_ENDPOINT_KEY)?.filter(|t| !t.is_empty()) {
-        match check_url(out.provider, &t) {
-            Ok(()) => out.url = t,
-            Err(why) => unknown.push(UnknownSetting {
-                key: SUMMARY_ENDPOINT_KEY,
-                stored: format!("an address this version refuses: {why}"),
-            }),
+    let provider = out.provider;
+    if let Some(u) = read_setting(store, SUMMARY_ENDPOINT_KEY, |t| {
+        if t.is_empty() {
+            return Ok(None);
         }
+        match check_url(provider, &t) {
+            Ok(()) => Ok(Some(t)),
+            Err(why) => Err(format!("an address this version refuses: {why}")),
+        }
+    })?
+    .known(&mut unknown)
+    .flatten()
+    {
+        out.url = u;
     }
     out.writer = match writer {
         Some(SummaryWriter::OwnEndpoint) if !out.has_endpoint() => {

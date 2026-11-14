@@ -143,20 +143,11 @@ fn stored(on: bool) -> &'static str {
 pub fn cuda_switch(store: &Store) -> Result<(CudaSwitch, Vec<UnknownSetting>), RuntimeError> {
     let mut unknown = Vec::new();
     let mut read = |key: &'static str| -> Result<bool, RuntimeError> {
-        let Some(bytes) = store.local_value(key)? else {
-            return Ok(false);
-        };
-        match bytes.as_slice() {
-            b"on" => Ok(true),
-            b"off" => Ok(false),
-            other => {
-                unknown.push(UnknownSetting {
-                    key,
-                    stored: String::from_utf8_lossy(other).into_owned(),
-                });
-                Ok(false)
-            }
-        }
+        Ok(
+            crate::local::read_setting(store, key, |t| crate::local::on_off(&t).ok_or(t))?
+                .known(&mut unknown)
+                .unwrap_or(false),
+        )
     };
     let summaries = read(CUDA_SUMMARIES_KEY)?;
     let mut transcription = read(CUDA_TRANSCRIPTION_KEY)?;
