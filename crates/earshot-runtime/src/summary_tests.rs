@@ -2521,31 +2521,40 @@ fn summary_a_load_on_an_integrated_gpu_counts_as_refused() {
 #[test]
 fn summary_writer_names_are_friendly_and_never_a_manifest_id() {
     use crate::catalogue::{DISPLAY_NAMES, display_name, manifest_id_in};
+    use crate::claude_code::HandoverCli::{ClaudeCode, Codex};
+    let both = [ClaudeCode, Codex];
     // Every local summary model by its display name.
     for m in crate::summary_model::SUMMARY_MODELS {
-        assert_eq!(writer_name(m.id), display_name(m.id));
-        assert_ne!(writer_name(m.id), m.id, "{} has a display name", m.id);
+        assert_eq!(writer_name(m.id, &both), display_name(m.id));
+        assert_ne!(writer_name(m.id, &[]), m.id, "{} has a display name", m.id);
     }
-    // The agent CLIs, with and without a model, as the runtime stores them.
+    // The agent CLIs, with and without a model, as the runtime stores them, in a meeting
+    // handed to that CLI.
     for model in [None, Some("opus"), Some("some-model")] {
         let claude = crate::claude_code::stored_model_name(model);
-        assert_eq!(writer_name(&claude), "Claude (Claude Code)");
-        assert_eq!(
-            writer_name(&crate::codex::stored_model_name(model)),
-            "Codex"
-        );
+        assert_eq!(writer_name(&claude, &[ClaudeCode]), "Claude (Claude Code)");
+        let codex = crate::codex::stored_model_name(model);
+        assert_eq!(writer_name(&codex, &[Codex]), "Codex");
+        // A handover to the other CLI, or none, does not make it a CLI's summary.
+        assert_eq!(writer_name(&claude, &[Codex]), claude);
+        assert_eq!(writer_name(&codex, &[]), codex);
     }
-    // An endpoint's model name is shown as it was sent.
-    assert_eq!(writer_name("gpt-test-mini"), "gpt-test-mini");
-    assert_eq!(writer_name("claude-codex"), "claude-codex");
-    assert_eq!(writer_name("codexical"), "codexical");
+    // An endpoint's model name is shown as it was sent, even one named like a CLI.
+    assert_eq!(writer_name("codex", &[]), "codex");
+    assert_eq!(writer_name("claude-code", &[]), "claude-code");
+    assert_eq!(writer_name("gpt-test-mini", &both), "gpt-test-mini");
+    assert_eq!(writer_name("claude-codex", &both), "claude-codex");
+    assert_eq!(writer_name("codexical", &both), "codexical");
+    assert_eq!(writer_name("codex/", &both), "codex/");
     // No stored name a model of the catalogue could leave is shown as a manifest id.
     let stored = DISPLAY_NAMES
         .iter()
         .map(|(id, _)| (*id).to_owned())
         .chain(["claude-code".into(), "codex/fable".into()]);
     for s in stored {
-        let shown = writer_name(&s);
-        assert_eq!(manifest_id_in(&shown), None, "{s} is shown as {shown}");
+        for handed in [&both[..], &[]] {
+            let shown = writer_name(&s, handed);
+            assert_eq!(manifest_id_in(&shown), None, "{s} is shown as {shown}");
+        }
     }
 }

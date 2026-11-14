@@ -885,6 +885,9 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         .map(|s| summary_view(s.id, &s.summary, &rows));
     let summary_stale = view.summary_out_of_date();
     let can_undo_summary = history.previous.is_some_and(|p| p.restorable);
+    // The CLIs this meeting was handed to: an agent-CLI writer name counts only with one.
+    let handed_to: Vec<earshot_runtime::claude_code::HandoverCli> =
+        handovers.entries.iter().map(|e| e.cli).collect();
     Ok(MeetingDetail {
         id: meeting.to_string(),
         state,
@@ -905,7 +908,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
                 .summary
                 .as_ref()
                 .and_then(|s| s.model.as_deref())
-                .map(earshot_runtime::summary::writer_name),
+                .map(|m| earshot_runtime::summary::writer_name(m, &handed_to)),
             summary_edited,
             transcript_backend: backend.map(|b| backend_label(b.kind).to_owned()),
         },

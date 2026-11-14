@@ -63,8 +63,6 @@ export function headerLine(d: MeetingDetail): string {
   if (h.transcript === "Draft") parts.push("Draft transcript");
   if (h.summary_writer !== null) {
     parts.push(`Summary by ${h.summary_writer}${h.summary_edited ? " (edited)" : ""}`);
-  } else if (d.summary !== null && h.summary_edited) {
-    parts.push("Edited summary");
   }
   if (h.transcript_backend !== null) parts.push(`Transcribed on ${h.transcript_backend}`);
   return parts.join(" · ");
