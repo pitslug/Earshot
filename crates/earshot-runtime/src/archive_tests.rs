@@ -471,6 +471,76 @@ fn download_archive_zip_reads_sizes_and_offsets_from_zip64_extra_fields() {
     assert_refused("zip64-no-field", &x, &cut, "zip64");
 }
 
+/// `fixtures/models/zip64_field_cases.toml`, also run by xtask's archive tests.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Zip64Case {
+    name: String,
+    fields: [u32; 3],
+    extra: String,
+    values: Option<Vec<String>>,
+    #[serde(default)]
+    refused: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Zip64Cases {
+    cases: Vec<Zip64Case>,
+}
+
+#[test]
+fn download_archive_zip64_field_cases_shared_with_xtask() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/models/zip64_field_cases.toml");
+    let file: Zip64Cases = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(file.cases.len() >= 13, "{} cases", file.cases.len());
+    for c in &file.cases {
+        assert!(c.extra.len().is_multiple_of(2), "{}: hex", c.name);
+        let extra: Vec<u8> = (0..c.extra.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&c.extra[i..i + 2], 16).unwrap())
+            .collect();
+        let got = zip64_fields(c.fields, &extra);
+        match (&c.values, c.refused) {
+            (None, true) => assert!(got.is_err(), "{}: {got:?}", c.name),
+            (Some(values), false) => {
+                let want: Vec<u64> = values.iter().map(|v| v.parse().unwrap()).collect();
+                assert_eq!(
+                    got.unwrap_or_else(|e| panic!("{}: {e}", c.name)).to_vec(),
+                    want,
+                    "{}",
+                    c.name
+                );
+            }
+            _ => panic!("{}: exactly one of `values` or `refused = true`", c.name),
+        }
+    }
+}
+
+/// A zip64 local header offset past the end of the file is refused, never a panic.
+#[test]
+fn download_archive_zip_refuses_a_zip64_local_header_offset_past_the_end() {
+    let plain = zip_bytes(&[("top/a.bin", b"some bytes", false, FILE, 0)]);
+    let mut z = with_zip64_fields(&plain, false, true);
+    // The zip64 field holds only the offset, 0 for the one entry: the 8 bytes after the
+    // id 1 header (`01 00 08 00`).
+    let id1 = z
+        .windows(4)
+        .rposition(|w| w == [1, 0, 8, 0])
+        .expect("the zip64 extra field");
+    assert_eq!(z[id1 + 4..id1 + 12], 0u64.to_le_bytes());
+    for (tag, offset) in [("past", 1u64 << 40), ("max", u64::MAX)] {
+        z[id1 + 4..id1 + 12].copy_from_slice(&offset.to_le_bytes());
+        assert_refused(
+            &format!("zip64-offset-{tag}"),
+            &extract("zip", vec![member("top/a.bin", b"some bytes")]),
+            &z,
+            "top/a.bin",
+        );
+    }
+}
+
 /// A zip64 size of `u64::MAX` (a hostile archive) is refused, never an overflow panic, even
 /// when the manifest claims the same size.
 #[test]

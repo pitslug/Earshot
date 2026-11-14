@@ -98,7 +98,7 @@ mod gate12_private;
 mod refs;
 
 mod gaps;
-use gaps::{cleaning_stretches_with, gap_has_echo_path, gaps_bridged};
+use gaps::{bridged_gaps_with, gap_has_echo_path};
 
 use std::fs::File;
 use std::io::BufReader;
@@ -1119,12 +1119,9 @@ fn gate12(args: &Args, vad: &mut SileroVad) -> Option<Gate12> {
     let bridged_gaps_with_echo_path = {
         let mic_audio = MonoBuffer::new(PIPELINE_RATE, mic.clone());
         let far_audio = MonoBuffer::new(PIPELINE_RATE, far.clone());
-        gaps_bridged(
-            &locks,
-            &cleaning_stretches_with(&locks, |prev, next| {
-                gap_has_echo_path(&mic_audio, &far_audio, prev, next)
-            }),
-        )
+        bridged_gaps_with(&locks, |prev, next| {
+            gap_has_echo_path(&mic_audio, &far_audio, prev, next)
+        })
         .len()
     };
     eprintln!("model_eval: gate12: diarising both tracks (production speaker models, CPU)");

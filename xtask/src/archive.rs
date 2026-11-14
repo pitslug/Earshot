@@ -713,6 +713,52 @@ mod tests {
         assert_eq!(zip64_fields([1, 2, 3], &[]).unwrap(), [1, 2, 3]);
     }
 
+    /// `fixtures/models/zip64_field_cases.toml`, also run by earshot-runtime's archive tests.
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Zip64Case {
+        name: String,
+        fields: [u32; 3],
+        extra: String,
+        values: Option<Vec<String>>,
+        #[serde(default)]
+        refused: bool,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Zip64Cases {
+        cases: Vec<Zip64Case>,
+    }
+
+    #[test]
+    fn zip64_field_cases_shared_with_the_app() {
+        let path = crate::repo_root().join("fixtures/models/zip64_field_cases.toml");
+        let file: Zip64Cases = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(file.cases.len() >= 13, "{} cases", file.cases.len());
+        for c in &file.cases {
+            assert!(c.extra.len().is_multiple_of(2), "{}: hex", c.name);
+            let extra: Vec<u8> = (0..c.extra.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&c.extra[i..i + 2], 16).unwrap())
+                .collect();
+            let got = zip64_fields(c.fields, &extra);
+            match (&c.values, c.refused) {
+                (None, true) => assert!(got.is_err(), "{}: {got:?}", c.name),
+                (Some(values), false) => {
+                    let want: Vec<u64> = values.iter().map(|v| v.parse().unwrap()).collect();
+                    assert_eq!(
+                        got.unwrap_or_else(|e| panic!("{}: {e:#}", c.name)).to_vec(),
+                        want,
+                        "{}",
+                        c.name
+                    );
+                }
+                _ => panic!("{}: exactly one of `values` or `refused = true`", c.name),
+            }
+        }
+    }
+
     /// A zip64 size of `u64::MAX` (a hostile archive) is an error, never an overflow panic.
     #[test]
     fn zip_refuses_a_declared_size_of_u64_max() {

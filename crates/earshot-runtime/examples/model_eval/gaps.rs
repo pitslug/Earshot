@@ -6,41 +6,48 @@
 
 use earshot_core::aec::delay::{DelayConfig, DelayEstimator, DelayState};
 use earshot_core::audio::MonoBuffer;
-use earshot_runtime::echo::{EchoLock, MAX_LOCK_GAP_MS};
+use earshot_runtime::echo::{EchoLock, bridged_gaps, cleaning_stretches};
 use earshot_runtime::live::echo::DELAY_STEP_MS;
 
-/// `earshot_runtime::echo::cleaning_stretches` with each candidate gap (one that meets its
-/// time and delay conditions and is longer than 0 ms) bridged only when `evidence(prev,
-/// next)` holds for the recorded stretches on either side, for example
-/// [`gap_has_echo_path`]. With evidence that always holds it equals `cleaning_stretches`
-/// (`post_echo_cleaning_stretches_with_ask_only_for_candidate_gaps`).
+/// [`cleaning_stretches`] with each gap it bridges kept only when `evidence(prev, next)`
+/// holds for the recorded stretches on either side, for example [`gap_has_echo_path`];
+/// `evidence` is asked about bridged gaps only, in order. The bridging rule is the
+/// runtime's alone: each pair of stretches is judged on its recorded values, so taking a
+/// bridge back changes no other pair.
 pub fn cleaning_stretches_with(
     locks: &[EchoLock],
     mut evidence: impl FnMut(&EchoLock, &EchoLock) -> bool,
 ) -> Vec<EchoLock> {
-    let mut out = locks.to_vec();
+    let mut out = cleaning_stretches(locks);
     for k in 1..out.len() {
-        let next = out[k];
-        let prev = &mut out[k - 1];
-        if next.from_ms > prev.to_ms
-            && next.from_ms - prev.to_ms <= MAX_LOCK_GAP_MS
-            && prev.delay_ms.abs_diff(next.delay_ms) <= DELAY_STEP_MS
-            && evidence(&locks[k - 1], &locks[k])
-        {
-            prev.to_ms = next.from_ms;
+        if out[k - 1].to_ms > locks[k - 1].to_ms && !evidence(&locks[k - 1], &locks[k]) {
+            out[k - 1].to_ms = locks[k - 1].to_ms;
         }
     }
     out
 }
 
-/// The gaps between the recorded `locks` that `stretches` (their cleaning stretches, one
-/// per lock, as [`cleaning_stretches_with`] returns) bridge, as `(from_ms, to_ms)`.
-pub fn gaps_bridged(locks: &[EchoLock], stretches: &[EchoLock]) -> Vec<(u64, u64)> {
-    locks
+/// The gaps of [`bridged_gaps`] that [`cleaning_stretches_with`] keeps under `evidence`, as
+/// `(from_ms, to_ms)`.
+pub fn bridged_gaps_with(
+    locks: &[EchoLock],
+    evidence: impl FnMut(&EchoLock, &EchoLock) -> bool,
+) -> Vec<(u64, u64)> {
+    let kept = cleaning_stretches_with(locks, evidence);
+    // `bridged_gaps` lists one gap per stretch that grew, in lock order.
+    let grew: Vec<usize> = cleaning_stretches(locks)
         .iter()
-        .zip(stretches)
-        .filter(|(recorded, cleaned)| cleaned.to_ms > recorded.to_ms)
-        .map(|(recorded, cleaned)| (recorded.to_ms, cleaned.to_ms))
+        .zip(locks)
+        .enumerate()
+        .filter(|(_, (cleaned, recorded))| cleaned.to_ms > recorded.to_ms)
+        .map(|(i, _)| i)
+        .collect();
+    let gaps = bridged_gaps(locks);
+    assert_eq!(grew.len(), gaps.len(), "one bridged gap per grown stretch");
+    grew.into_iter()
+        .zip(gaps)
+        .filter(|&(i, _)| kept[i].to_ms > locks[i].to_ms)
+        .map(|(_, gap)| gap)
         .collect()
 }
 
@@ -109,7 +116,7 @@ pub fn gap_has_echo_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use earshot_runtime::echo::cleaning_stretches;
+    use earshot_runtime::echo::MAX_LOCK_GAP_MS;
 
     fn lock(from_ms: u64, to_ms: u64, delay_ms: u64) -> EchoLock {
         EchoLock {
@@ -218,8 +225,20 @@ mod tests {
         // With evidence that always holds, the final pass's rule exactly.
         let all = cleaning_stretches_with(&locks, |_, _| true);
         assert_eq!(all, cleaning_stretches(&locks));
-        assert_eq!(gaps_bridged(&locks, &all), [(6_000, 9_000)]);
-        assert!(gaps_bridged(&locks, &none).is_empty());
+        assert_eq!(bridged_gaps_with(&locks, |_, _| true), [(6_000, 9_000)]);
+        assert!(bridged_gaps_with(&locks, |_, _| false).is_empty());
+        // Each pair is judged on its own: refusing the first bridge keeps the second.
+        let three = [
+            lock(0, 1_000, 150),
+            lock(5_000, 6_000, 150),
+            lock(9_000, 10_000, 150),
+        ];
+        let not_first = |p: &EchoLock, _: &EchoLock| p.from_ms != 0;
+        assert_eq!(
+            cleaning_stretches_with(&three, not_first),
+            [three[0], lock(5_000, 9_000, 150), three[2]]
+        );
+        assert_eq!(bridged_gaps_with(&three, not_first), [(6_000, 9_000)]);
         for locks in [
             vec![lock(41_000, 47_000, 200), lock(54_000, 86_000, 202)],
             vec![
@@ -243,6 +262,11 @@ mod tests {
             assert_eq!(
                 cleaning_stretches_with(&locks, |_, _| true),
                 cleaning_stretches(&locks),
+                "{locks:?}"
+            );
+            assert_eq!(
+                bridged_gaps_with(&locks, |_, _| true),
+                bridged_gaps(&locks),
                 "{locks:?}"
             );
         }
