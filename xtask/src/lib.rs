@@ -39,6 +39,13 @@ pub mod ui;
 pub mod update;
 pub mod vulkan_parity;
 
+/// The `asr_eval` reference rules (AMI words, headsets and segments: `refs::parse_ami_words`,
+/// `parse_ami_channels`, `parse_ami_segments`), compiled here too so the AMI rules of xtask and
+/// the evaluation examples are one copy (`fixtures`, `t613`, `common_words`).
+#[allow(dead_code, clippy::pedantic)]
+#[path = "../../crates/earshot-asr-whisper/examples/asr_eval/refs.rs"]
+pub(crate) mod ami_refs;
+
 use std::path::{Path, PathBuf};
 
 /// Repository root (the parent of the `xtask` crate directory).

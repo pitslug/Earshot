@@ -90,6 +90,12 @@ workspace = true
 name = "diar_eval"
 test = true
 
+# ASR model evaluation (docs/asr-models.md); its unit tests pin the offline gap evidence of the
+# gate12 corpus (`gaps.rs`, T12.51), among them a measured outcome on simulated double talk.
+[[example]]
+name = "model_eval"
+test = true
+
 [dev-dependencies]
 # Signing the releases the update tests serve.
 earshot-update = { path = "../earshot-update", features = ["sign"] }
