@@ -245,6 +245,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn api_key_is_wiped_when_dropped_and_so_is_its_input() {
+        let before = earshot_net::wipes_on_this_thread();
+        let k = ApiKey::new(" sk-invented ").unwrap();
+        assert_eq!(
+            earshot_net::wipes_on_this_thread() - before,
+            1,
+            "the untrimmed input"
+        );
+        let copy = k.clone();
+        drop(k);
+        assert_eq!(earshot_net::wipes_on_this_thread() - before, 2);
+        // A clone keeps its own copy until it is dropped too.
+        assert_eq!(copy.expose(), "sk-invented");
+        drop(copy);
+        assert_eq!(earshot_net::wipes_on_this_thread() - before, 3);
+    }
+
+    #[test]
     fn api_key_is_never_formatted() {
         let k = ApiKey::new("  sk-secret-123 ").unwrap();
         assert_eq!(k.expose(), "sk-secret-123");

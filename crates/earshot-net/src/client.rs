@@ -806,6 +806,10 @@ mod tests {
         assert_eq!(values, ["", "", "application/json"]);
         // A clone keeps its own copy until it is dropped too.
         assert_eq!(copy.headers[0].1, "sk-invented");
+        // Dropping a request wipes each secret header value, and only those.
+        let before = crate::wipes_on_this_thread();
+        drop(copy);
+        assert_eq!(crate::wipes_on_this_thread() - before, 2);
     }
 
     #[test]

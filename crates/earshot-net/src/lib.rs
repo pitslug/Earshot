@@ -32,6 +32,6 @@ pub use client::{
 };
 pub use reqwest::Method;
 pub use reqwest::header;
-pub use secret::wipe_string;
+pub use secret::{wipe_string, wipes_on_this_thread};
 pub use url::Url;
 pub use url_policy::{UrlError, check_url_shape, is_local_host, is_local_url, validate_url};

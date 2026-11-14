@@ -18,10 +18,25 @@ fn zero_allocation(bytes: &mut Vec<u8>) {
     compiler_fence(Ordering::SeqCst);
 }
 
+thread_local! {
+    /// How many times [`wipe_string`] ran on this thread (for tests of `Drop` impls, which
+    /// cannot read freed memory without `unsafe`).
+    static WIPES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Empties `secret`, zeroing its whole allocation before it is freed.
 pub fn wipe_string(secret: &mut String) {
     let mut bytes = std::mem::take(secret).into_bytes();
     zero_allocation(&mut bytes);
+    WIPES.with(|w| w.set(w.get() + 1));
+}
+
+/// How many times [`wipe_string`] has run on the calling thread: lets a test show that a
+/// `Drop` wiped its secret (reading the freed bytes would need `unsafe`).
+#[doc(hidden)]
+#[must_use]
+pub fn wipes_on_this_thread() -> u64 {
+    WIPES.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
