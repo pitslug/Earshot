@@ -80,7 +80,7 @@ import { ALL_MEETINGS_KEY, type FolderEdit, FolderGroup, NEW_FOLDER_KEY } from "
 import { folderDeletionCopy, meetingCount, meetingsInFolder } from "./folderRules";
 import { type DayGroup, displayTitle, groupByDay, recoveredText, secondaryLine } from "./meetings";
 import { openMenuFromKeyboard } from "./menuKeys";
-import { STOPPING_TEXT, deleteQuestion } from "./deleteQuestion";
+import { STOPPING_TEXT, deleteQuestion, stopsWork } from "./deleteQuestion";
 import { DataFolderScreen } from "./DataFolderScreen";
 import { NewerDataScreen } from "./NewerDataScreen";
 
@@ -405,6 +405,13 @@ export function AppShell({
   // Jobs on stored meetings, followed here so an ending is seen whatever meeting is shown.
   const [jobs, setJobs] = useState<Record<string, JobView>>({});
   const jobSeq = useRef(0);
+  // A job the user asked to stop (its Cancel, or a Stop and delete) says so until its last event.
+  const markJobCancelling = useCallback((id: string, cancelling: boolean) => {
+    setJobs((all) => {
+      const job = all[id];
+      return job === undefined || isTerminal(job.last) ? all : { ...all, [id]: { ...job, cancelling } };
+    });
+  }, []);
   // Whether an update waits for the user (available, downloading or ready): a mark beside Settings.
   const [updateWaiting, setUpdateWaiting] = useState(false);
 
@@ -448,8 +455,14 @@ export function AppShell({
         setJobs((all) => {
           const kind =
             all[e.meeting]?.job ??
-            (e.type === "Failed" ? e.job : e.type === "Summary" ? "Resummarise" : "Retranscribe");
-          return { ...all, [e.meeting]: { job: kind, last: e, seq } };
+            (e.type === "Failed" || e.type === "Cancelled"
+              ? e.job
+              : e.type === "Summary"
+                ? "Resummarise"
+                : "Retranscribe");
+          // A cancel pressed holds until the job's last event.
+          const cancelling = !isTerminal(e) && all[e.meeting]?.cancelling === true;
+          return { ...all, [e.meeting]: { job: kind, last: e, seq, cancelling } };
         });
         if (isTerminal(e)) refresh();
       })
@@ -722,8 +735,11 @@ export function AppShell({
     if (deleteRunning.current) return;
     deleteRunning.current = true;
     setDeletePending(true);
+    // A Stop and delete cancels the meeting's job first: its notice says it is stopping.
+    const stopsJob = ask === "Retranscribing" || ask === "Resummarising";
+    if (stopsJob) markJobCancelling(item.id, true);
     try {
-      await ipc.deleteMeeting(item.id, ask === "StopsFinishing");
+      await ipc.deleteMeeting(item.id, stopsWork(ask));
       setDeleting(null);
       setDeleteError(null);
       refocusAfterDelete.current = item.id;
@@ -735,6 +751,10 @@ export function AppShell({
       }
       refresh();
     } catch (e) {
+      // Only a deletion still waiting for the cancelled job (`meeting_stopping`) leaves it stopping;
+      // any other refusal stopped nothing.
+      const stillStopping = e instanceof IpcFailure && e.error.kind === "meeting_stopping";
+      if (stopsJob && !stillStopping) markJobCancelling(item.id, false);
       setDeleting(null);
       setDeleteError(failureText(e));
     } finally {
@@ -1241,6 +1261,11 @@ export function AppShell({
                 return rest;
               })
             }
+            onJobCancel={(id) => {
+              markJobCancelling(id, true);
+              // The job's last event says how it ended; a cancel that could not be sent leaves it running.
+              ipc.cancelJob(id).catch(() => markJobCancelling(id, false));
+            }}
           />
         )}
       </main>
@@ -1258,7 +1283,7 @@ export function AppShell({
             </DialogTitle>
             <DialogContent>
               <Body1 as="p">{deleteAsked.text}</Body1>
-              {deletePending && deleting?.ask === "StopsFinishing" && (
+              {deletePending && deleting !== null && stopsWork(deleting.ask) && (
                 <Body1 as="p" role="status">
                   {STOPPING_TEXT}
                 </Body1>
@@ -1500,6 +1525,7 @@ function Detail({
   jobs,
   onJobStarted,
   onJobDismissed,
+  onJobCancel,
 }: {
   load: Load;
   selected: MeetingListItem | null;
@@ -1513,6 +1539,7 @@ function Detail({
   jobs: Record<string, JobView>;
   onJobStarted: (id: string, job: JobKind) => void;
   onJobDismissed: (id: string) => void;
+  onJobCancel: (id: string) => void;
 }) {
   const styles = useStyles();
   if (load.status === "loading") {
@@ -1561,6 +1588,7 @@ function Detail({
       job={jobs[selected.id]}
       onJobStarted={(job) => onJobStarted(selected.id, job)}
       onJobDismissed={() => onJobDismissed(selected.id)}
+      onJobCancel={() => onJobCancel(selected.id)}
     />
   );
 }

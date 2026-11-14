@@ -128,6 +128,12 @@ export const commands = {
 	 *  kept for one undo (`JobEvent`s follow).
 	 */
 	resummarise: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("resummarise", { meeting })),
+	/**
+	 *  Cancels the re-transcription or re-summary of `meeting` (T12.41); its last `JobEvent` follows
+	 *  as usual (`Cancelled`, or what the job finished with if it had finished). No job is not an
+	 *  error.
+	 */
+	cancelJob: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("cancel_job", { meeting })),
 	/**  Swaps the current summary with the previous one. */
 	undoSummary: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("undo_summary", { meeting })),
 	/**
@@ -139,9 +145,9 @@ export const commands = {
 	meetingDeletion: (meeting: string) => typedError<DeleteAsk, IpcError>(__TAURI_INVOKE("meeting_deletion", { meeting })),
 	/**
 	 *  Deletes `meeting` with its audio, transcript and summaries. With `stop_finishing`, a final
-	 *  pass or summary that runs on it is stopped first (`meeting_finishing` without it). Refused
-	 *  while it records (`meeting_recording`), while a job runs on it (`meeting_job`), and while work
-	 *  given up on still holds it (`meeting_needs_restart`).
+	 *  pass, summary, re-transcription or re-summary that runs on it is stopped first
+	 *  (`meeting_finishing` or `meeting_job` without it). Refused while it records
+	 *  (`meeting_recording`) and while work given up on still holds it (`meeting_needs_restart`).
 	 */
 	deleteMeeting: (meeting: string, stopFinishing: boolean) => typedError<null, IpcError>(__TAURI_INVOKE("delete_meeting", { meeting, stopFinishing })),
 	/**
@@ -867,9 +873,9 @@ export type DeleteAsk =
 "StopsFinishing" | 
 /**  It is still recording: not deletable until the recording stops. */
 "Recording" | 
-/**  A re-transcription runs on it: not deletable until it ends. */
+/**  A re-transcription runs on it: deleting stops it first (T12.41). */
 "Retranscribing" | 
-/**  A re-summary runs on it: not deletable until it ends. */
+/**  A re-summary runs on it: deleting stops it first (T12.41). */
 "Resummarising" | 
 /**  Work Earshot gave up on (T9.22) still holds it: not deletable until Earshot restarts. */
 "NeedsRestart";
@@ -1082,7 +1088,7 @@ export type IpcError = {
 
 /**
  *  One event of a job on a stored meeting: `Progress` steps and `Warning`s (re-transcription
- *  only), then exactly one of `Retranscribed`, `Summary` or `Failed`.
+ *  only), then exactly one of `Retranscribed`, `Summary`, `Cancelled` or `Failed`.
  */
 export type JobEvent = 
 /**  A re-transcription step. */
@@ -1122,6 +1128,15 @@ result: SummaryEvent } |
 meeting: string; 
 /**  Plain copy. */
 message: string } | 
+/**
+ *  The job was cancelled ([`JobRunner::cancel`], T12.41): the transcript and the summary are
+ *  as they were.
+ */
+{ type: "Cancelled"; 
+/**  Meeting id. */
+meeting: string; 
+/**  Which job. */
+job: JobKind } | 
 /**  The job failed; nothing was changed by it (also a job that stopped unexpectedly). */
 { type: "Failed"; 
 /**  Meeting id. */

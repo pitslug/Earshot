@@ -337,6 +337,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   // the text, so undo swaps it too).
   const previousEdited = new Map<string, boolean>();
   const jobs = new Map<string, "Retranscribing" | "Resummarising">();
+  const jobTimers = new Map<string, (() => void)[]>();
   const persons: PersonItem[] = (data.persons ?? samplePersons()).map((p) => ({ ...p }));
   let personSeq = 0;
   const call = (...args: unknown[]) => data.onCall?.(args);
@@ -601,6 +602,21 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       fail("busy", "This meeting is already being re-transcribed or re-summarised.", true);
     }
     jobs.set(meeting, kind);
+    jobTimers.set(meeting, []);
+  };
+  // A job's timer, cancelled with the job (T12.41).
+  const jobTimer = (meeting: string, fn: () => void, ms: number) => {
+    jobTimers.get(meeting)?.push(timer.setTimeout(fn, ms));
+  };
+  // Cancels the job of `meeting`, as `JobRunner::cancel` does: its timers stop and its one last
+  // event says it was cancelled. No job changes nothing.
+  const cancelJob = (meeting: string) => {
+    const kind = jobs.get(meeting);
+    if (kind === undefined) return;
+    for (const stop of jobTimers.get(meeting) ?? []) stop();
+    jobTimers.delete(meeting);
+    jobs.delete(meeting);
+    emitJob({ type: "Cancelled", meeting, job: kind === "Retranscribing" ? "Retranscribe" : "Resummarise" });
   };
 
   const foldersMock = createFoldersMock(meetings, data.folders ?? (data.meetings ? [] : SAMPLE_FOLDERS), {
@@ -1157,14 +1173,17 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       startJob(meeting, "Retranscribing");
       const steps: PostStep[] = POST_STEPS.filter((s) => s.kind !== "Summarising");
       steps.forEach((step, i) => {
-        timer.setTimeout(
+        jobTimer(
+          meeting,
           () => emitJob({ type: "Progress", meeting, step, done: Math.max(0, i - 1), total: 6 }),
           (i + 1) * POST_STEP_MS,
         );
       });
-      timer.setTimeout(
+      jobTimer(
+        meeting,
         () => {
           jobs.delete(meeting);
+          jobTimers.delete(meeting);
           emitJob({
             type: "Retranscribed",
             meeting,
@@ -1189,8 +1208,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     resummarise: async (meeting) => {
       call("resummarise", meeting);
       startJob(meeting, "Resummarising");
-      timer.setTimeout(() => {
+      jobTimer(meeting, () => {
         jobs.delete(meeting);
+        jobTimers.delete(meeting);
         const d = detailOf(meeting);
         if (d.summary) previous.set(meeting, d.summary);
         if (d.summary) previousEdited.set(meeting, d.header.summary_edited);
@@ -1217,6 +1237,10 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
             : { kind: "Skipped", reason: "Summaries are turned off." },
         });
       }, POST_STEP_MS);
+    },
+    cancelJob: async (meeting) => {
+      call("cancelJob", meeting);
+      cancelJob(meeting);
     },
     undoSummary: async (meeting) => {
       call("undoSummary", meeting);
@@ -1252,8 +1276,16 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       detailOf(meeting);
       const ask = deletionAsk(meeting);
       if (ask === "Recording") fail("meeting_recording", MOCK_DELETE_COPY.recording);
-      if (ask === "Retranscribing") fail("meeting_job", MOCK_DELETE_COPY.retranscribing, true);
-      if (ask === "Resummarising") fail("meeting_job", MOCK_DELETE_COPY.resummarising, true);
+      if (ask === "Retranscribing" || ask === "Resummarising") {
+        if (stopFinishing !== true) {
+          fail(
+            "meeting_job",
+            ask === "Retranscribing" ? MOCK_DELETE_COPY.retranscribing : MOCK_DELETE_COPY.resummarising,
+            true,
+          );
+        }
+        cancelJob(meeting);
+      }
       if (ask === "StopsFinishing") {
         if (stopFinishing !== true) fail("meeting_finishing", MOCK_DELETE_COPY.finishing, true);
         finishing.get(meeting)?.(true);

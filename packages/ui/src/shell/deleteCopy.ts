@@ -11,6 +11,8 @@ export const DELETE_COPY = {
   needs_restart:
     "Earshot could not stop earlier work on this meeting, and that work still holds it. " +
     "Restart Earshot, then delete the meeting.",
-  retranscribing: "This meeting is being transcribed again. Delete it when that has finished.",
-  resummarising: "This meeting is being summarised again. Delete it when that has finished.",
+  retranscribing:
+    "This meeting is being transcribed again. Delete it again to stop that and delete the meeting.",
+  resummarising:
+    "This meeting is being summarised again. Delete it again to stop that and delete the meeting.",
 } as const;

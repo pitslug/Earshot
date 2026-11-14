@@ -2780,6 +2780,7 @@ impl crate::jobs::JobWork for NoJobs {
         &self,
         _: &Services,
         _: earshot_core::identity::EntityId,
+        _: &earshot_core::asr::CancelToken,
         _: &mut dyn FnMut(HostStep<'_>),
         _: &mut dyn FnMut(String),
     ) -> Result<earshot_runtime::edit::Retranscribed, IpcError> {
@@ -2790,6 +2791,7 @@ impl crate::jobs::JobWork for NoJobs {
         &self,
         _: &Services,
         _: earshot_core::identity::EntityId,
+        _: &earshot_core::asr::CancelToken,
         _: &mut dyn FnMut(String),
     ) -> Result<SummaryResult, IpcError> {
         unreachable!("no job runs here")

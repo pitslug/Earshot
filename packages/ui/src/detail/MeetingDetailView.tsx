@@ -351,6 +351,8 @@ export interface MeetingDetailViewProps {
   onJobStarted(job: JobKind): void;
   /** The job's notice was dismissed. */
   onJobDismissed(): void;
+  /** The user asked to cancel the running job (T12.41). */
+  onJobCancel(): void;
   /** Timers (injected by tests). */
   timer?: Timer;
   /** Shown at the top of the page: the meeting that has just ended says how its finishing goes
@@ -372,21 +374,31 @@ export interface MeetingDetailViewProps {
 const FINISHING_TIP = "Available when the summary is done.";
 
 /** A meeting's job: which one, and its latest event (`null` until the first). `seq` changes
- * with every event. */
+ * with every event. `cancelling`: the user asked to cancel it and its last event has not come. */
 export interface JobView {
   job: JobKind;
   last: JobEvent | null;
   seq: number;
+  cancelling?: boolean;
 }
 
 /** Whether `e` ends its job. */
 export function isTerminal(e: JobEvent | null): boolean {
-  return e !== null && (e.type === "Retranscribed" || e.type === "Summary" || e.type === "Failed");
+  return (
+    e !== null &&
+    (e.type === "Retranscribed" || e.type === "Summary" || e.type === "Cancelled" || e.type === "Failed")
+  );
 }
+
+/** What a job's notice says while it stops (as the meeting's own Cancel finishing says). */
+export const JOB_STOPPING_TEXT = "Stopping. This can take a moment if a model is still working or loading.";
 
 /** The notice of a job. */
 export function jobNotice(view: JobView): Notice {
   const e = view.last;
+  if (view.cancelling === true && !isTerminal(e)) {
+    return { key: "job", intent: "info", text: JOB_STOPPING_TEXT, busy: true };
+  }
   if (e === null) {
     return view.job === "Retranscribe"
       ? { key: "job", intent: "info", text: "Re-transcribing from the recording", busy: true }
@@ -435,6 +447,15 @@ export function jobNotice(view: JobView): Notice {
           return unhandled;
         }
       }
+    case "Cancelled":
+      return {
+        key: "job",
+        intent: "info",
+        text:
+          e.job === "Retranscribe"
+            ? "The re-transcription was cancelled. The transcript has not changed."
+            : "The new summary was cancelled. Nothing was changed.",
+      };
     case "Failed":
       return {
         key: "job",
@@ -454,6 +475,7 @@ export function MeetingDetailView({
   job,
   onJobStarted,
   onJobDismissed,
+  onJobCancel,
   timer = realTimer,
   status,
   finishing = false,
@@ -752,7 +774,18 @@ export function MeetingDetailView({
           </MessageBarBody>
           <MessageBarActions>
             {jobBar.busy ? (
-              <Spinner size="extra-tiny" aria-label="Working" />
+              <>
+                <Spinner size="extra-tiny" aria-label="Working" />
+                {/* Focusable while disabled, so focus stays on it after the press. */}
+                <Button
+                  size="small"
+                  aria-label={job?.job === "Resummarise" ? "Cancel the new summary" : "Cancel the re-transcription"}
+                  disabledFocusable={job?.cancelling === true}
+                  onClick={onJobCancel}
+                >
+                  Cancel
+                </Button>
+              </>
             ) : (
               <Button size="small" appearance="transparent" onClick={onJobDismissed}>
                 Dismiss

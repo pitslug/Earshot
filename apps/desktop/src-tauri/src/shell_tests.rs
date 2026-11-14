@@ -262,11 +262,20 @@ fn shell_a_resummary_notifies_like_a_meetings_summary() {
         assert_eq!(meeting, id);
         assert!(!format!("{toast:?}").contains("Sam"));
     }
-    // Nothing for a summary nobody asked for, a re-transcription or a job's steps.
+    // Nothing for a summary nobody asked for, a re-transcription, a job's steps or a job the
+    // user cancelled (T12.41).
     for e in [
         JobEvent::Summary {
             meeting: id.clone(),
             result: SummaryEvent::Cancelled,
+        },
+        JobEvent::Cancelled {
+            meeting: id.clone(),
+            job: JobKind::Resummarise,
+        },
+        JobEvent::Cancelled {
+            meeting: id.clone(),
+            job: JobKind::Retranscribe,
         },
         JobEvent::Failed {
             meeting: id.clone(),

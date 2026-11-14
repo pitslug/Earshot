@@ -265,6 +265,7 @@ fn meeting_kept_local_resummarise_fails_and_sends_nothing() {
         let e = crate::jobs::summarise_with(
             &svc,
             id,
+            &earshot_core::asr::CancelToken::new(),
             &models,
             &keys,
             &NeverClaude,

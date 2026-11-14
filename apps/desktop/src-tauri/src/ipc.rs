@@ -71,6 +71,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             speaker_sample,
             retranscribe,
             resummarise,
+            cancel_job,
             undo_summary,
             export_meeting,
             crate::deletion::meeting_deletion,
@@ -998,6 +999,16 @@ fn resummarise(
 ) -> Result<(), IpcError> {
     let services = state.services()?;
     jobs.start(&services, parse_id(&meeting)?, JobKind::Resummarise)
+}
+
+/// Cancels the re-transcription or re-summary of `meeting` (T12.41); its last `JobEvent` follows
+/// as usual (`Cancelled`, or what the job finished with if it had finished). No job is not an
+/// error.
+#[tauri::command]
+#[specta::specta]
+fn cancel_job(jobs: State<'_, JobRunner>, meeting: String) -> Result<(), IpcError> {
+    jobs.cancel(parse_id(&meeting)?);
+    Ok(())
 }
 
 /// Swaps the current summary with the previous one.

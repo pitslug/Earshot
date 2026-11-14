@@ -316,6 +316,9 @@ export interface IpcCommands
   retranscribe(meeting: string): Promise<void>;
   /** Starts a re-summary; `JobEvent`s follow. Rejects with `busy` / `meeting_busy`. */
   resummarise(meeting: string): Promise<void>;
+  /** Cancels the meeting's re-transcription or re-summary (T12.41); its last `JobEvent` follows
+   * (`Cancelled`, or what it finished with). No job is not an error. */
+  cancelJob(meeting: string): Promise<void>;
   /** Swaps the current summary with the previous one. */
   undoSummary(meeting: string): Promise<void>;
   /** Lets the summary writer summarise a meeting kept on this computer from now on (T12.13).
