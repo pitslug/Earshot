@@ -1716,88 +1716,6 @@ pub fn load_nemotron_preview(models: &ModelDir, threads: usize) -> Result<Evalua
     })
 }
 
-/// A track's own Parakeet TDT session with its encoder made shareable, and a preview session that
-/// borrows that encoder ([`load_preview_sharing_encoder`]).
-pub struct SharedEncoderPair {
-    /// The track's session, loaded as [`load_parakeet`] loads it; its encoder calls now take the
-    /// lock too.
-    pub track: ParakeetTdt,
-    /// The preview's: the track's encoder, its own prediction network and joint on the preview's
-    /// background threads.
-    pub preview: ParakeetTdt,
-    /// The shared encoder, for its backend and user count.
-    pub encoder: earshot_onnx::parakeet::SharedEncoder,
-}
-
-/// Evaluation only (T12.3b, `live_lag --contention shared`): a track's session of the Parakeet TDT
-/// `model` on `accel` (as [`load_parakeet`] with `threads`), and a preview session that borrows its
-/// encoder through a lock ([`earshot_onnx::parakeet::SharedEncoder`]) instead of loading its own
-/// copy, with its own prediction network and joint on background threads as [`load_preview`]
-/// loads them. CUDA only: the CPU already shares weights (T9.1ma) and the NPU cannot (T12.4). The
-/// app, the CLI and [`crate::host`] never call it (pinned by
-/// `backends_preview_sharing_encoder_is_used_by_no_shipped_code`).
-///
-/// # Errors
-/// A backend other than CUDA, a model other than a Parakeet TDT one, a failed load or placement
-/// check, or a preview thread that cannot lower its priority.
-pub fn load_preview_sharing_encoder(
-    models: &ModelDir,
-    model: &str,
-    accel: Accelerator,
-    threads: Option<usize>,
-) -> Result<SharedEncoderPair, String> {
-    if accel != Accelerator::Cuda {
-        return Err("a shared encoder is evaluated on CUDA only".to_owned());
-    }
-    let Ok(AsrModel::Parakeet(parakeet)) = asr_model(model) else {
-        return Err("previews run on Parakeet only".to_owned());
-    };
-    if parakeet.decoder != ParakeetDecoder::Tdt {
-        return Err("a shared encoder needs a Parakeet TDT model".to_owned());
-    }
-    let dir = models.root().join(parakeet.dir);
-    // The track's session as `load_parakeet` loads it, its encoder now run by its own thread.
-    let track_config = SessionConfig {
-        intra_threads: threads,
-        ..session_config(accel).map_err(|e| e.to_string())?
-    };
-    let encoder = earshot_onnx::parakeet::load_shared_encoder(&dir, &track_config)
-        .map_err(|e| format!("{}: {e}", parakeet.name))?;
-    let track = ParakeetTdt::load_sharing(
-        &dir,
-        &encoder,
-        &track_config,
-        parakeet.name,
-        parakeet.english_only,
-    )
-    .map_err(|e| format!("{}: {e}", parakeet.name))?;
-    check_placement(&track.backends(), accel.backend()).map_err(|e| e.to_string())?;
-    let steps = SessionConfig {
-        intra_threads: Some(onnx_cpu_threads(cores(), 2)),
-        background: Some(earshot_onnx::ThreadStart(
-            crate::priority::lower_preview_pool_thread,
-        )),
-        ..session_config(accel).map_err(|e| e.to_string())?
-    };
-    let preview = ParakeetTdt::load_sharing(
-        &models.root().join(parakeet.dir),
-        &encoder,
-        &steps,
-        parakeet.name,
-        parakeet.english_only,
-    )
-    .map_err(|e| format!("{}: {e}", parakeet.name))?;
-    check_placement(&preview.backends(), accel.backend()).map_err(|e| e.to_string())?;
-    if crate::priority::preview_pool_failed() {
-        return Err("a preview thread could not lower its priority".to_owned());
-    }
-    Ok(SharedEncoderPair {
-        track,
-        preview,
-        encoder,
-    })
-}
-
 fn load_preview_session(
     models: &ModelDir,
     backend: &BackendInfo,
@@ -1890,16 +1808,92 @@ fn load_parakeet_with(
     }
     let dir = models.root().join(model.dir);
     let onnx = |e: earshot_onnx::OnnxError| AsrError::Backend(format!("{}: {e}", model.name));
+    let own_tdt = || -> Result<ParakeetTranscriber, AsrError> {
+        Ok(ParakeetTranscriber::Tdt(Box::new(
+            ParakeetTdt::load(&dir, &config, model.name, model.english_only).map_err(onnx)?,
+        )))
+    };
     let t = match model.decoder {
         ParakeetDecoder::Ctc => {
             ParakeetTranscriber::Ctc(Box::new(ParakeetCtc::load(&dir, &config).map_err(onnx)?))
         }
-        ParakeetDecoder::Tdt => ParakeetTranscriber::Tdt(Box::new(
-            ParakeetTdt::load(&dir, &config, model.name, model.english_only).map_err(onnx)?,
-        )),
+        // One encoder on the card for every CUDA session of the model (T12.58).
+        ParakeetDecoder::Tdt if accel == Accelerator::Cuda && !own_encoders() => {
+            crate::shared_encoders::on_shared_encoder(
+                || borrow_shared_tdt(models, model, &dir, &config),
+                own_tdt,
+            )?
+        }
+        ParakeetDecoder::Tdt => own_tdt()?,
     };
     check_placement(&t.backends(), accel.backend())?;
     Ok(t)
+}
+
+/// A Parakeet TDT model on CUDA borrowing the process's shared encoder of `model` (loaded now with
+/// the one fixed configuration when none is alive, `shared_encoders::ENCODERS`), its own prediction
+/// network and joint on `steps` (T12.58).
+fn borrow_shared_tdt(
+    models: &ModelDir,
+    model: &ParakeetModel,
+    dir: &Path,
+    steps: &SessionConfig,
+) -> Result<ParakeetTranscriber, String> {
+    use crate::shared_encoders::{ENCODERS, EncoderKey};
+    let key = EncoderKey {
+        models: models.root().to_path_buf(),
+        model: model.name,
+    };
+    let encoder = ENCODERS.borrow(&key, |config| {
+        earshot_onnx::parakeet::load_shared_encoder(dir, config).map_err(|e| e.to_string())
+    })?;
+    let t = ParakeetTdt::load_sharing(dir, &encoder, steps, model.name, model.english_only)
+        .map_err(|e| e.to_string())?;
+    check_placement(&t.backends(), BackendKind::Cuda).map_err(|e| e.to_string())?;
+    Ok(ParakeetTranscriber::Tdt(Box::new(t)))
+}
+
+/// Evaluation only (`live_lag`, T12.58): the process's shared CUDA encoder of the Parakeet TDT
+/// `model`, borrowed as a CUDA load borrows it, so a report can read its placement, user count and
+/// wait log ([`earshot_onnx::parakeet::SharedEncoder::wait_log`]) after the meeting. Holding it
+/// keeps it loaded. No shipped code calls it (pinned by
+/// `backends_own_encoders_switch_is_used_by_no_shipped_code`).
+///
+/// # Errors
+/// A model that is not a Parakeet TDT model, or a failed load.
+pub fn hold_shared_encoder_for_evaluation(
+    models: &ModelDir,
+    model: &str,
+) -> Result<earshot_onnx::parakeet::SharedEncoder, String> {
+    let Ok(AsrModel::Parakeet(parakeet)) = asr_model(model) else {
+        return Err("a shared encoder is a Parakeet model's".to_owned());
+    };
+    if parakeet.decoder != ParakeetDecoder::Tdt {
+        return Err("a shared encoder is a Parakeet TDT model's".to_owned());
+    }
+    let dir = models.root().join(parakeet.dir);
+    let key = crate::shared_encoders::EncoderKey {
+        models: models.root().to_path_buf(),
+        model: parakeet.name,
+    };
+    crate::shared_encoders::ENCODERS.borrow(&key, |config| {
+        earshot_onnx::parakeet::load_shared_encoder(&dir, config).map_err(|e| e.to_string())
+    })
+}
+
+/// Set only by [`own_encoders_for_evaluation`].
+static OWN_ENCODERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn own_encoders() -> bool {
+    OWN_ENCODERS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Evaluation only (`live_lag --own-encoders`, T12.58): every CUDA Parakeet session of this
+/// process loads its own encoder again, as before T12.58, for a comparison run. Process-wide and
+/// never undone. No shipped code calls it (pinned by
+/// `backends_own_encoders_switch_is_used_by_no_shipped_code`).
+pub fn own_encoders_for_evaluation() {
+    OWN_ENCODERS.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// [`load_parakeet`] on QNN: the NPU conversion with its documented partition, the encoder from

@@ -32,11 +32,18 @@
 //! records it (`simulated_card_gib`). With `--memory` the two preview sessions load where the rule
 //! puts them on that machine (Everyone), not past the refusal.
 //!
-//! `--contention alone|own|shared` (evaluation only, T12.3b, CUDA) replays nothing: it times a
+//! `--contention alone|preview` (evaluation only, T12.3b, CUDA) replays nothing: it times a
 //! track's real decodes of the reference track while previews run at the app's cadence on another
-//! thread, with no preview (`alone`), the preview on its own session (`own`, today) or borrowing
-//! the track's encoder through `backends::load_preview_sharing_encoder` (`shared`). It reports
-//! every real decode's time, its wait for the shared encoder's lock and a hash of its words.
+//! thread (`preview`) or with no preview (`alone`). Both load as the app loads, so the preview
+//! borrows the track's encoder (T12.58; T12.3b's `shared`); with `--own-encoders` it has its own
+//! (T12.3b's `own`). It reports every real decode's time, its wait for the shared encoder and a
+//! hash of its words.
+//!
+//! `--own-encoders` (evaluation only, T12.58, CUDA) gives every CUDA Parakeet session its own
+//! encoder, as before T12.58 (`backends::own_encoders_for_evaluation`), for a comparison run.
+//! Without it a CUDA replay holds the shared encoder (`backends::hold_shared_encoder_for_evaluation`)
+//! and reports its placement, its handles when the live transcript finished and each thread's
+//! waits for it (`shared_encoder`).
 //!
 //! `--stream nemotron` (evaluation only, T12.23) gives each previewed track a streaming model
 //! instead of window decodes: NVIDIA's Nemotron Speech Streaming 0.6B (manifest set `stream-eval`,
@@ -165,6 +172,9 @@ struct Args {
     summary_gpu: bool,
     /// That summary's model by id (`None`: the app's choice for this machine).
     summary_model: Option<String>,
+    /// Evaluation only (T12.58): every CUDA Parakeet session loads its own encoder, as before one
+    /// was shared (`backends::own_encoders_for_evaluation`), for a comparison run.
+    own_encoders: bool,
 }
 
 /// What `--summary` runs (T12.39).
@@ -205,6 +215,7 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         summary: None,
         summary_gpu: false,
         summary_model: None,
+        own_encoders: false,
     };
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -253,8 +264,7 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
             "--contention" => {
                 args.contention = Some(match value()?.as_str() {
                     "alone" => Contention::Alone,
-                    "own" => Contention::Own,
-                    "shared" => Contention::Shared,
+                    "preview" => Contention::Preview,
                     other => return Err(format!("unknown --contention {other}")),
                 });
             }
@@ -289,8 +299,15 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
             }
             "--summary-model" => args.summary_model = Some(value()?),
+            "--own-encoders" => args.own_encoders = true,
             other => return Err(format!("unknown flag {other}")),
         }
+    }
+    if args.own_encoders && args.backend != BackendKind::Cuda {
+        return Err(
+            "--own-encoders compares encoders on the graphics card: it needs --backend cuda"
+                .to_owned(),
+        );
     }
     if args.stream.is_some()
         && (args.memory
@@ -725,6 +742,32 @@ impl Transcriber for Timed {
     }
 }
 
+/// T12.58: the shared encoder in a replay report: where it ran, how many handles it had when the
+/// live transcript finished (this tool's own handle plus one per borrowing session), and each
+/// asking thread's waits for it (`earshot-live-mic` and `earshot-live-reference` are the tracks'
+/// real decodes, `earshot-live-preview` the previews). Times only.
+fn shared_encoder_report(
+    encoder: &earshot_onnx::parakeet::SharedEncoder,
+    users_at_finish: Option<usize>,
+) -> Value {
+    let mut by_thread: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
+    for (thread, waited) in encoder.wait_log() {
+        by_thread
+            .entry(thread)
+            .or_default()
+            .push(waited.as_secs_f64());
+    }
+    json!({
+        "placement": encoder.backend().to_string(),
+        "broken": encoder.is_broken(),
+        "handles_at_transcript_finished": users_at_finish,
+        "wait_s_by_thread": by_thread
+            .iter()
+            .map(|(thread, waits)| (thread.clone(), spread(waits)))
+            .collect::<serde_json::Map<_, _>>(),
+    })
+}
+
 /// `factory` with every track's transcriber timed into `logs`.
 fn timed(
     mut factory: LiveAsrFactory,
@@ -1118,15 +1161,15 @@ fn memory_report(
     })
 }
 
-/// The set-ups `--contention` compares (T12.3b, evaluation only).
+/// The set-ups `--contention` compares (T12.3b, evaluation only). Both load as the app loads, so
+/// on CUDA the preview borrows the track's encoder (T12.58); with `--own-encoders` each session
+/// has its own, as T12.3b's `own` set-up had (T12.3b's `shared` is today's `preview`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Contention {
     /// The track's session alone: the reference times.
     Alone,
-    /// Today: a preview on its own session, loaded as the app loads one.
-    Own,
-    /// The preview borrowing the track's encoder (`backends::load_preview_sharing_encoder`).
-    Shared,
+    /// A preview session beside the track, loaded as the app loads one.
+    Preview,
 }
 
 /// Length of a track's real decode in `--contention` (a speech stretch's piece).
@@ -1164,7 +1207,7 @@ fn plain_decode(mut t: Box<dyn Transcriber + Send>) -> ContentionDecode {
     })
 }
 
-fn sharing_decode(mut t: earshot_onnx::parakeet::ParakeetTdt) -> ContentionDecode {
+fn waiting_decode(mut t: earshot_onnx::parakeet::ParakeetTdt) -> ContentionDecode {
     let options = TranscribeOptions::live();
     let cancel = CancelToken::new();
     Box::new(move |audio| {
@@ -1176,8 +1219,7 @@ fn sharing_decode(mut t: earshot_onnx::parakeet::ParakeetTdt) -> ContentionDecod
 }
 
 /// Evaluation only (T12.3b): how long a track's real decodes take while previews run at the app's
-/// cadence on another thread, with the preview on its own session (`own`), on the track's encoder
-/// (`shared`) or absent (`alone`). Real decodes are consecutive [`CONTENTION_PIECE_S`] pieces of
+/// cadence on another thread (`preview`) or with no preview (`alone`). Real decodes are consecutive [`CONTENTION_PIECE_S`] pieces of
 /// `audio`, [`CONTENTION_PASSES`] times after an untimed warm-up pass, [`CONTENTION_GAP`] apart;
 /// previews decode a [`CONTENTION_WINDOW_S`] window moving 1 s at a time and wait the longer of
 /// [`CONTENTION_INTERVAL`] and their own decode. Counts, times and word hashes only.
@@ -1208,59 +1250,38 @@ fn contention_report(
     let mut placements = serde_json::Map::new();
     let mut encoder_users = None;
     let began = Instant::now();
-    let (mut track, preview): (ContentionDecode, Option<ContentionDecode>) = match setup {
-        Contention::Alone | Contention::Own => {
-            let earshot_runtime::backends::AsrModel::Parakeet(parakeet) =
-                earshot_runtime::backends::asr_model(model).unwrap_or_else(|e| fail(e))
-            else {
-                fail("the contention report is for Parakeet")
-            };
-            let t =
-                earshot_runtime::backends::load_parakeet(models, parakeet, accel, Some(threads))
-                    .unwrap_or_else(|e| fail(e));
-            placements.insert(
-                "track".into(),
-                json!(
-                    t.backends()
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                ),
-            );
-            let preview = (setup == Contention::Own).then(|| {
-                let p = load_preview_unrefused(models, &requested).unwrap_or_else(|e| fail(e));
-                placements.insert("preview".into(), json!(p.placement));
-                plain_decode(p.transcriber)
-            });
-            (plain_decode(Box::new(t)), preview)
-        }
-        Contention::Shared => {
-            let pair = earshot_runtime::backends::load_preview_sharing_encoder(
-                models,
-                model,
-                accel,
-                Some(threads),
-            )
-            .unwrap_or_else(|e| fail(e));
-            let names = |t: &earshot_onnx::parakeet::ParakeetTdt| {
-                t.backends()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-            };
-            placements.insert("track".into(), json!(names(&pair.track)));
-            placements.insert("preview".into(), json!(names(&pair.preview)));
-            placements.insert(
-                "shared_encoder".into(),
-                json!(pair.encoder.backend().to_string()),
-            );
-            encoder_users = Some(pair.encoder.users());
-            (
-                sharing_decode(pair.track),
-                Some(sharing_decode(pair.preview)),
-            )
-        }
+    let earshot_runtime::backends::AsrModel::Parakeet(parakeet) =
+        earshot_runtime::backends::asr_model(model).unwrap_or_else(|e| fail(e))
+    else {
+        fail("the contention report is for Parakeet")
     };
+    let t = earshot_runtime::backends::load_parakeet(models, parakeet, accel, Some(threads))
+        .unwrap_or_else(|e| fail(e));
+    placements.insert(
+        "track".into(),
+        json!(
+            t.backends()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        ),
+    );
+    let earshot_runtime::backends::ParakeetTranscriber::Tdt(t) = t else {
+        fail("the contention report is for a Parakeet TDT model")
+    };
+    let preview = (setup == Contention::Preview).then(|| {
+        let p = load_preview_unrefused(models, &requested).unwrap_or_else(|e| fail(e));
+        placements.insert("preview".into(), json!(p.placement));
+        plain_decode(p.transcriber)
+    });
+    if let Some(encoder) = t.shared_encoder() {
+        placements.insert(
+            "shared_encoder".into(),
+            json!(encoder.backend().to_string()),
+        );
+        encoder_users = Some(encoder.users());
+    }
+    let mut track = waiting_decode(*t);
     let load_s = began.elapsed().as_secs_f64();
     let loaded_memory = memory();
 
@@ -1564,6 +1585,9 @@ fn main() {
     }
     earshot_runtime::npu_compiled::use_this_exe();
     let args = parse_args();
+    if args.own_encoders {
+        earshot_runtime::backends::own_encoders_for_evaluation();
+    }
     let models = args.models.clone().map_or_else(
         || {
             let root = std::env::var_os("EARSHOT_MODELS")
@@ -1691,6 +1715,12 @@ fn main() {
         Arc::new(Mutex::new(Vec::new())),
     ];
     let evidence = Arc::new(Mutex::new(Vec::new()));
+    // T12.58: the shared encoder every CUDA session borrows, held for the report (loaded here, as
+    // the first track's load would load it).
+    let held = (args.backend == BackendKind::Cuda && !args.own_encoders).then(|| {
+        earshot_runtime::backends::hold_shared_encoder_for_evaluation(&models, model)
+            .unwrap_or_else(|e| fail(format!("shared encoder: {e}")))
+    });
     let factory = timed(
         host::live_factory(&models, model, &order, clock, args.speakers),
         logs.clone(),
@@ -1773,6 +1803,7 @@ fn main() {
     let mut backends = Vec::new();
     let mut problems = 0usize;
     let mut catch_up = None;
+    let mut users_at_finish = None;
     let mut preview_reports = Vec::new();
     let first = host_reading();
     let first_cpu = first.map(|r| r.1);
@@ -1867,6 +1898,9 @@ fn main() {
             }
             Ok(RuntimeEvent::LiveTranscriptFinished { after_capture_end }) => {
                 catch_up = Some(after_capture_end.as_secs_f64());
+                users_at_finish = held
+                    .as_ref()
+                    .map(earshot_onnx::parakeet::SharedEncoder::users);
             }
             Ok(RuntimeEvent::Warning(w)) => {
                 problems += 1;
@@ -1942,6 +1976,8 @@ fn main() {
             .collect::<Vec<_>>(),
         "stopped_with": format!("{:?}", outcome.reason),
         "capture_max_lag_s": state.max_lag().as_secs_f64(),
+        "own_encoders": args.own_encoders,
+        "shared_encoder": held.as_ref().map(|e| shared_encoder_report(e, users_at_finish)),
         "catch_up_after_end_s": catch_up,
         "previews": preview_reports,
         "preview_refusal": refusal,
@@ -2409,20 +2445,23 @@ mod tests {
     fn live_lag_contention_needs_cuda_and_no_other_mode() {
         for (value, setup) in [
             ("alone", Contention::Alone),
-            ("own", Contention::Own),
-            ("shared", Contention::Shared),
+            ("preview", Contention::Preview),
         ] {
             let a = parse(&["--backend", "cuda", "--contention", value]).unwrap();
             assert_eq!(a.contention, Some(setup));
         }
-        assert!(parse(&["--contention", "shared"]).is_err(), "the CPU");
+        assert!(parse(&["--contention", "preview"]).is_err(), "the CPU");
         assert!(parse(&["--backend", "cuda", "--contention", "both"]).is_err());
+        assert!(
+            parse(&["--backend", "cuda", "--contention", "shared"]).is_err(),
+            "T12.3b's set-ups are gone"
+        );
         for extra in [
             &["--memory"][..],
             &["--previews", "on"],
             &["--card-memory-gib", "12"],
         ] {
-            let mut a = vec!["--backend", "cuda", "--contention", "shared"];
+            let mut a = vec!["--backend", "cuda", "--contention", "preview"];
             a.extend_from_slice(extra);
             assert!(parse(&a).is_err(), "{extra:?}");
         }
