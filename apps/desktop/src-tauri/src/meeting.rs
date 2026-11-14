@@ -1586,11 +1586,21 @@ impl HostPrepare {
         self
     }
 
-    /// Whether this pre-flight lets a meeting run provisional words.
-    #[cfg(test)]
+    /// The provisional words a meeting gets from this pre-flight: `None` in the hidden
+    /// replay, else the stored choice (a setting never costs a recording: one that cannot be
+    /// read is automatic). [`Prepare::prepare`] puts exactly this in `LiveConfig::previews`.
     #[must_use]
-    pub fn runs_previews(&self) -> bool {
-        self.previews
+    pub fn live_previews(
+        &self,
+        svc: &Services,
+        models: &ModelDir,
+    ) -> Option<earshot_runtime::live::LivePreviews> {
+        if !self.previews {
+            return None;
+        }
+        let choice = earshot_runtime::preview_settings::preview_choice(&svc.store())
+            .map_or_else(|_| Default::default(), |(choice, _)| choice);
+        Some(host::live_previews(models, choice))
     }
 }
 
@@ -1690,12 +1700,8 @@ mod production {
                     &earshot_runtime::codex::InstalledCodex::meeting_start(),
                 ),
             )?;
-            // A setting never costs a recording: one that cannot be read is automatic. The hidden
-            // replay runs none (T12.46).
-            let previews = self.previews.then(|| {
-                earshot_runtime::preview_settings::preview_choice(&svc.store())
-                    .map_or_else(|_| Default::default(), |(choice, _)| choice)
-            });
+            // None in the hidden replay (T12.46).
+            let previews = self.live_previews(svc, &models);
             // "Where it runs" not honoured, or a stored setting this version does not know.
             let mut notices =
                 super::setup_notices(setup.notes.into_iter().chain(summary_notes).collect());
@@ -1739,7 +1745,7 @@ mod production {
                 speaker_timing: timing,
                 live_summaries,
                 hold: Some(hold),
-                previews: previews.map(|choice| host::live_previews(&models, choice)),
+                previews,
                 keep_summary_local,
                 ..LiveConfig::default()
             };

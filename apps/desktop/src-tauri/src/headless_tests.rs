@@ -196,9 +196,13 @@ fn headless_can_write_the_summary_locally_from_another_folder_of_llama_dlls() {
 
 #[test]
 fn headless_replay_runs_no_provisional_words() {
+    // What `Prepare::prepare` puts in `LiveConfig::previews`, from the stored settings.
+    let dir = crate::testutil::TempDir::new("headless-previews");
+    let svc = crate::testutil::services(&dir);
+    let models = earshot_runtime::host::model_dir(&svc.data);
     let replay = replay_prepare(Box::new(|_, _| unreachable!("no meeting starts here")));
-    assert!(!replay.runs_previews());
+    assert!(replay.live_previews(&svc, &models).is_none());
     // The negative control: the app's own pre-flight keeps them.
     let app = HostPrepare::with_source(Box::new(|_, _| unreachable!("no meeting starts here")));
-    assert!(app.runs_previews());
+    assert!(app.live_previews(&svc, &models).is_some());
 }
