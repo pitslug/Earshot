@@ -1354,7 +1354,9 @@ fn beside_run(
                     (Device::Npu, Device::Cpu),
                     (Device::Cpu, Device::GraphicsCard),
                 ],
+                card_summary_fell_back: false,
             },
+            card_summary_fell_back: || false,
         },
     );
     let calls = Arc::new(AtomicUsize::new(0));

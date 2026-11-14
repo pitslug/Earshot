@@ -125,7 +125,12 @@ fn machine(memory: Option<u64>, card: Option<u64>, pairs: &[(Device, Device)]) -
             ..Hardware::default()
         },
         pairs: pairs.to_vec(),
+        card_summary_fell_back: false,
     }
+}
+
+fn no_fallback() -> bool {
+    false
 }
 
 /// Every pair, as if every measurement had passed.
@@ -466,6 +471,7 @@ fn meeting_queue_the_hold_says_previous_meeting_only_while_the_transcript_waits_
         Beside {
             needs: needs_of(&needs),
             machine: machine(Some(15 * GIB), None, &[(Device::Npu, Device::Cpu)]),
+            card_summary_fell_back: no_fallback,
         },
     ));
     // Its final pass still runs: held, and the banner says so.
@@ -485,18 +491,41 @@ fn meeting_queue_the_hold_says_previous_meeting_only_while_the_transcript_waits_
     went(&rx);
     assert!(started.load(Ordering::SeqCst));
     assert_eq!(hold.reason(), None);
-    // On the summary's own device it would wait, and the banner would say so.
+    // The answer is kept: the banner and the wait never read two different needs.
     *needs.lock().unwrap() = Some(live(Device::Cpu));
-    assert_eq!(hold.reason(), Some(HoldReason::PreviousMeeting));
-    let stop = CancelToken::new();
-    stop.cancel();
-    assert!(!hold.wait_transcription(&stop));
-    // Needs not known (the CUDA start has not decided): as before, any older meeting holds.
-    *needs.lock().unwrap() = None;
-    assert_eq!(hold.reason(), Some(HoldReason::PreviousMeeting));
+    assert_eq!(hold.reason(), None);
     drop(older);
     assert_eq!(hold.reason(), None);
     assert!(hold.wait_transcription(&CancelToken::new()));
+}
+
+#[test]
+fn meeting_queue_needs_unknown_at_the_banner_are_decided_once_known_and_then_kept() {
+    let q = MeetingQueue::new();
+    let older = q.enter();
+    older.set_summary(local(Device::Cpu, FOUR_B));
+    older.final_pass_done();
+    let needs = Arc::new(Mutex::new(None));
+    let hold = MeetingHold::beside(
+        Arc::new(q.enter()),
+        Beside {
+            needs: needs_of(&needs),
+            machine: machine(Some(15 * GIB), None, &[(Device::Npu, Device::Cpu)]),
+            card_summary_fell_back: no_fallback,
+        },
+    );
+    // Not known yet (the CUDA start): as before, any older meeting holds.
+    assert_eq!(hold.reason(), Some(HoldReason::PreviousMeeting));
+    *needs.lock().unwrap() = Some(live(Device::Cpu));
+    // Known: on the summary's own device it waits, and the banner says so.
+    assert_eq!(hold.reason(), Some(HoldReason::PreviousMeeting));
+    *needs.lock().unwrap() = Some(live(Device::Npu));
+    assert_eq!(hold.reason(), Some(HoldReason::PreviousMeeting), "kept");
+    let stop = CancelToken::new();
+    stop.cancel();
+    assert!(!hold.wait_transcription(&stop));
+    drop(older);
+    assert_eq!(hold.reason(), None);
 }
 
 #[test]
@@ -511,6 +540,7 @@ fn meeting_queue_a_hold_whose_needs_are_unknown_waits_for_every_older_ticket() {
         Beside {
             needs: needs_of(&unknown),
             machine: machine(Some(64 * GIB), Some(16), ALL_PAIRS),
+            card_summary_fell_back: no_fallback,
         },
     ));
     let rx = waiting({
@@ -529,4 +559,124 @@ fn meeting_queue_a_hold_whose_needs_are_unknown_waits_for_every_older_ticket() {
     let stop = CancelToken::new();
     stop.cancel();
     assert!(!plain.wait_transcription(&stop));
+}
+
+// T12.39: fallbacks end a beside decision.
+
+static CARD_FELL_BACK: AtomicBool = AtomicBool::new(false);
+
+fn card_fell_back() -> bool {
+    CARD_FELL_BACK.load(Ordering::SeqCst)
+}
+
+#[test]
+fn meeting_queue_after_a_card_summary_fell_back_card_summaries_count_as_on_the_processor() {
+    let mut desktop = machine(
+        Some(64 * GIB),
+        Some(16),
+        &[(Device::Cpu, Device::GraphicsCard)],
+    );
+    let summary = local(Device::GraphicsCard, NINE_B);
+    assert!(may_run_beside(summary, &live(Device::Cpu), &desktop));
+    desktop.card_summary_fell_back = true;
+    assert!(
+        !may_run_beside(summary, &live(Device::Cpu), &desktop),
+        "the summary may be on the CPU now"
+    );
+    // A summary off this computer is unaffected; a CPU summary beside the NPU too.
+    assert!(may_run_beside(
+        SummaryHold::OffThisComputer,
+        &live(Device::Cpu),
+        &desktop
+    ));
+    let surface = Machine {
+        card_summary_fell_back: true,
+        ..machine(Some(15 * GIB), None, &[(Device::Npu, Device::Cpu)])
+    };
+    assert!(may_run_beside(
+        local(Device::Cpu, FOUR_B),
+        &live(Device::Npu),
+        &surface
+    ));
+}
+
+#[test]
+fn meeting_queue_the_hold_reads_a_card_fallback_at_each_decision() {
+    let q = MeetingQueue::new();
+    let older = q.enter();
+    older.set_summary(local(Device::GraphicsCard, NINE_B));
+    older.final_pass_done();
+    let hold = MeetingHold::beside(
+        Arc::new(q.enter()),
+        Beside {
+            needs: Box::new(|| Some(live(Device::Cpu))),
+            machine: machine(
+                Some(64 * GIB),
+                Some(16),
+                &[(Device::Cpu, Device::GraphicsCard)],
+            ),
+            card_summary_fell_back: card_fell_back,
+        },
+    );
+    CARD_FELL_BACK.store(false, Ordering::SeqCst);
+    assert_eq!(hold.reason(), None);
+    CARD_FELL_BACK.store(true, Ordering::SeqCst);
+    assert_eq!(hold.reason(), Some(HoldReason::PreviousMeeting));
+    let stop = CancelToken::new();
+    stop.cancel();
+    assert!(!hold.wait_transcription(&stop));
+    drop(older);
+    assert!(hold.wait_transcription(&CancelToken::new()));
+}
+
+#[test]
+fn meeting_queue_a_live_load_that_fell_back_onto_the_summarys_device_waits_again() {
+    let q = MeetingQueue::new();
+    let older = q.enter();
+    older.set_summary(local(Device::Cpu, FOUR_B));
+    older.final_pass_done();
+    let hold = Arc::new(MeetingHold::beside(
+        Arc::new(q.enter()),
+        Beside {
+            needs: Box::new(|| Some(live(Device::Npu))),
+            machine: machine(Some(15 * GIB), None, &[(Device::Npu, Device::Cpu)]),
+            card_summary_fell_back: no_fallback,
+        },
+    ));
+    // Planned on the NPU, beside the CPU summary: it goes.
+    assert!(hold.wait_transcription(&CancelToken::new()));
+    // The load landed where it was planned: nothing to wait for.
+    assert!(hold.recheck_after_load(Device::Npu, &CancelToken::new()));
+    // It fell back to the CPU, the summary's device: it waits until the older ticket ends, and
+    // the banner says so.
+    let rx = waiting({
+        let hold = Arc::clone(&hold);
+        move || hold.recheck_after_load(Device::Cpu, &CancelToken::new())
+    });
+    still_waiting(&rx);
+    assert_eq!(hold.reason(), Some(HoldReason::PreviousMeeting));
+    drop(older);
+    went(&rx);
+    // A plain hold has nothing to re-check.
+    let plain = MeetingHold::new(Arc::new(q.enter()));
+    assert!(plain.recheck_after_load(Device::Cpu, &CancelToken::new()));
+}
+
+#[test]
+fn meeting_queue_a_live_load_that_fell_back_off_the_summarys_device_goes_on() {
+    let q = MeetingQueue::new();
+    let older = q.enter();
+    older.set_summary(local(Device::GraphicsCard, NINE_B));
+    older.final_pass_done();
+    let hold = MeetingHold::beside(
+        Arc::new(q.enter()),
+        Beside {
+            needs: Box::new(|| Some(live(Device::GraphicsCard))),
+            machine: machine(Some(64 * GIB), Some(16), ALL_PAIRS),
+            card_summary_fell_back: no_fallback,
+        },
+    );
+    assert!(hold.wait_transcription(&CancelToken::new()));
+    // CUDA refused, the track on the CPU, the summary on the card: a measured pair, it goes on.
+    assert!(hold.recheck_after_load(Device::Cpu, &CancelToken::new()));
 }

@@ -1568,7 +1568,7 @@ mod production {
     use earshot_runtime::Services;
     use earshot_runtime::host::{self, AfterMeeting, HostOutcome, MeetingModels};
     use earshot_runtime::live::{LiveConfig, LiveHold};
-    use earshot_runtime::meeting_queue::{Beside, Machine, MeetingHold, QueueTicket, SummaryHold};
+    use earshot_runtime::meeting_queue::{Beside, MeetingHold, QueueTicket, SummaryHold};
 
     use super::{HostPrepare, Prepare, Prepared, StartRequest};
     use crate::ipc::IpcError;
@@ -1638,14 +1638,18 @@ mod production {
             // its live work needs: a newer meeting's transcript waits only for an older summary on
             // a device it needs (T12.39).
             ticket.set_summary(SummaryHold::of(summary.as_ref()));
-            let gates = MeetingHold::beside(
+            let gates = Arc::new(MeetingHold::beside(
                 Arc::clone(ticket),
-                Beside {
-                    needs: meeting_models.live_needs(live_summaries.is_some()),
-                    machine: Machine::this_one(),
-                },
-            );
-            let mut hold = LiveHold::new(Arc::new(gates));
+                Beside::this_machine(meeting_models.live_needs(live_summaries.is_some())),
+            ));
+            // A live load that fell back to another device waits again for that device.
+            let weak = Arc::downgrade(&gates);
+            meeting_models.on_live_fallback(Box::new(move |device| {
+                if let Some(gates) = weak.upgrade() {
+                    gates.recheck_after_load(device, &CancelToken::new());
+                }
+            }));
+            let mut hold = LiveHold::new(gates);
             hold.notes = notes;
             hold.speakers = Some(meeting_models.speaker_factory());
             let config = LiveConfig {

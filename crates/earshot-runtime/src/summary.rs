@@ -191,6 +191,22 @@ const STALL_POLL: Duration = Duration::from_millis(100);
 /// every later summary of the session runs on the CPU and says so (T8.4ab).
 static GPU_STALLED: AtomicBool = AtomicBool::new(false);
 
+/// A summary that asked for the graphics card ran on the CPU in this process (a refused load, a
+/// dead or stalled child, a stall): a newer meeting's transcript stops counting on the card's
+/// summaries being on the card (T12.39, [`card_summary_fell_back`]).
+static CARD_SUMMARY_FELL_BACK: AtomicBool = AtomicBool::new(false);
+
+/// Whether a summary that asked for the graphics card has run on the CPU in this process
+/// (T12.39): from then on [`crate::meeting_queue`] counts every card summary as on the CPU.
+#[must_use]
+pub fn card_summary_fell_back() -> bool {
+    CARD_SUMMARY_FELL_BACK.load(Ordering::Acquire)
+}
+
+fn note_card_fallback() {
+    CARD_SUMMARY_FELL_BACK.store(true, Ordering::Release);
+}
+
 /// The text of [`LocalSummaryError::GpuChildStalled`].
 const CHILD_STALLED: &str = "the GPU's summary process stopped responding and was stopped";
 
@@ -1043,6 +1059,9 @@ fn run_local(
         if cancel.is_cancelled() {
             return Err(local(LocalSummaryError::Run(SummaryFailure::Cancelled)));
         }
+        if config.gpu {
+            note_card_fallback();
+        }
         let cpu = LocalSummaryConfig {
             gpu: false,
             ..config.clone()
@@ -1444,6 +1463,7 @@ fn load_with_fallback(
     stalled: &AtomicBool,
 ) -> Result<(LoadedModel, Option<Box<LocalSummaryError>>), RuntimeError> {
     if config.gpu && config.cpu_fallback && stalled.load(Ordering::Acquire) {
+        note_card_fallback();
         let cpu = LocalSummaryConfig {
             gpu: false,
             ..config.clone()
@@ -1456,6 +1476,7 @@ fn load_with_fallback(
         Err(RuntimeError::LocalSummary(refusal @ LocalSummaryError::Load(_)))
             if config.gpu && config.cpu_fallback =>
         {
+            note_card_fallback();
             let cpu = LocalSummaryConfig {
                 gpu: false,
                 ..config.clone()

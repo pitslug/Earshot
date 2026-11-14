@@ -101,7 +101,13 @@ pub struct MeetingModels {
     /// The banner of an ONNX Runtime library that did not load.
     library_note: LibraryNote,
     resolved: std::sync::Mutex<Option<Arc<ResolvedModels>>>,
+    /// Told where a live load landed when it fell back to another device (T12.39), before the
+    /// track decodes anything; it may block until that device is free.
+    after_fallback: std::sync::OnceLock<LiveFallbackHook>,
 }
+
+/// What [`MeetingModels::on_live_fallback`] calls with the device a live load fell back to.
+pub type LiveFallbackHook = Box<dyn Fn(crate::meeting_queue::Device) + Send + Sync>;
 
 /// The banner of an ONNX Runtime library that did not load ([`MeetingModels`]).
 pub type LibraryNote = Box<dyn Fn(Accelerator, &RuntimeError) -> String + Send + Sync>;
@@ -133,6 +139,7 @@ impl MeetingModels {
             notes,
             library_note,
             resolved: std::sync::Mutex::new(None),
+            after_fallback: std::sync::OnceLock::new(),
         }
     }
 
@@ -248,6 +255,13 @@ impl MeetingModels {
         })
     }
 
+    /// Sets what a live load that fell back to another device calls (T12.39): the meeting's hold
+    /// re-checks the device then ([`crate::meeting_queue::MeetingHold::recheck_after_load`]).
+    /// Set once; a second call changes nothing.
+    pub fn on_live_fallback(&self, hook: LiveFallbackHook) {
+        let _ = self.after_fallback.set(hook);
+    }
+
     /// Live transcription of the meeting, on what [`Self::resolve`] decides at its first call.
     pub fn live_factory(self: &Arc<Self>) -> LiveAsrFactory {
         let me = Arc::clone(self);
@@ -262,6 +276,15 @@ impl MeetingModels {
                 }
             };
             let loaded = f(track, entity);
+            // A fallback moved the track to another device: the hold re-checks it (T12.39).
+            if let Ok(Some(t)) = &loaded
+                && !t.fallbacks.is_empty()
+                && let Some(hook) = me.after_fallback.get()
+                && let Some(device) =
+                    crate::meeting_queue::Device::of_backend(t.asr.transcriber.backend_info().kind)
+            {
+                hook(device);
+            }
             store_npu_refusals(&me.services);
             // An NPU load that could not use its compiled model (T12.12a), once per process. One
             // made by a final pass or a preview shows at the next track load.

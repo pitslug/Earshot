@@ -69,6 +69,12 @@ pub enum Device {
 }
 
 impl Device {
+    /// Where work of backend `kind` ran (`None`: not a device of this computer, a test fake).
+    #[must_use]
+    pub fn of_backend(kind: earshot_core::asr::BackendKind) -> Option<Self> {
+        Accelerator::of(kind).map(Self::of)
+    }
+
     /// Where work on `accelerator` runs.
     #[must_use]
     pub fn of(accelerator: Accelerator) -> Self {
@@ -133,6 +139,9 @@ pub struct Machine {
     pub hardware: Hardware,
     /// The device pairs measured and switched on for its kind ([`BESIDE_PAIRS`]).
     pub pairs: Vec<(Device, Device)>,
+    /// A summary that asked for the graphics card has run on the CPU in this process
+    /// ([`crate::summary::card_summary_fell_back`]): every card summary then counts as on the CPU.
+    pub card_summary_fell_back: bool,
 }
 
 impl Machine {
@@ -142,6 +151,7 @@ impl Machine {
         Self {
             hardware: crate::hardware(),
             pairs: BESIDE_PAIRS.to_vec(),
+            card_summary_fell_back: crate::summary::card_summary_fell_back(),
         }
     }
 }
@@ -159,6 +169,11 @@ pub fn may_run_beside(summary: SummaryHold, needs: &LiveNeeds, machine: &Machine
     let (device, size) = match summary {
         SummaryHold::Unknown => return false,
         SummaryHold::OffThisComputer => return true,
+        // A card summary can end on the CPU (T12.39): after one has, none counts as on the card.
+        SummaryHold::Local {
+            device: Device::GraphicsCard,
+            size,
+        } if machine.card_summary_fell_back => (Device::Cpu, size),
         SummaryHold::Local { device, size } => (device, size),
     };
     if needs.live_summaries || !machine.pairs.contains(&(needs.device, device)) {
@@ -351,8 +366,24 @@ pub struct Beside {
     /// What the meeting's live work needs. Cheap, never loads a model: [`HoldGates::reason`] calls
     /// it on the session thread.
     pub needs: NeedsFn,
-    /// This computer.
+    /// This computer. Its `card_summary_fell_back` is read again at every decision from
+    /// [`Self::card_summary_fell_back`].
     pub machine: Machine,
+    /// Whether a card summary has run on the CPU in this process
+    /// ([`crate::summary::card_summary_fell_back`] in production).
+    pub card_summary_fell_back: fn() -> bool,
+}
+
+impl Beside {
+    /// This computer, for a meeting whose live work needs what `needs` says.
+    #[must_use]
+    pub fn this_machine(needs: NeedsFn) -> Self {
+        Self {
+            needs,
+            machine: Machine::this_one(),
+            card_summary_fell_back: crate::summary::card_summary_fell_back,
+        }
+    }
 }
 
 impl std::fmt::Debug for Beside {
@@ -368,6 +399,9 @@ impl std::fmt::Debug for Beside {
 pub struct MeetingHold {
     ticket: Arc<QueueTicket>,
     beside: Option<Beside>,
+    /// The live work's needs once known, so the banner and the wait decide on the same answer;
+    /// changed only when a load fell back to another device ([`Self::recheck_after_load`]).
+    decided: Mutex<Option<LiveNeeds>>,
 }
 
 impl MeetingHold {
@@ -378,6 +412,7 @@ impl MeetingHold {
         Self {
             ticket,
             beside: None,
+            decided: Mutex::new(None),
         }
     }
 
@@ -388,13 +423,58 @@ impl MeetingHold {
         Self {
             ticket,
             beside: Some(beside),
+            decided: Mutex::new(None),
         }
     }
 
-    /// What the live work needs, when this hold knows.
-    fn needs(&self) -> Option<(LiveNeeds, &Machine)> {
+    /// What the live work needs, when this hold knows, and this computer as it is now. The first
+    /// answer is kept, so the banner and the wait read the same.
+    fn needs(&self) -> Option<(LiveNeeds, Machine)> {
         let b = self.beside.as_ref()?;
-        Some(((b.needs)()?, &b.machine))
+        let mut decided = self.decided.lock().unwrap_or_else(PoisonError::into_inner);
+        let needs = match *decided {
+            Some(n) => n,
+            None => {
+                let n = (b.needs)()?;
+                *decided = Some(n);
+                n
+            }
+        };
+        let machine = Machine {
+            card_summary_fell_back: (b.card_summary_fell_back)(),
+            ..b.machine.clone()
+        };
+        Some((needs, machine))
+    }
+
+    /// A live load landed on `loaded` (a fallback, T12.39): the beside decision made for the
+    /// planned device no longer holds, so the work waits again as live work on `loaded` would,
+    /// before any decoding starts. Nothing to do when the device is the one decided on, or for a
+    /// hold that waits for whole tickets anyway. `false` when `cancel` came first.
+    pub fn recheck_after_load(&self, loaded: Device, cancel: &CancelToken) -> bool {
+        let Some(b) = self.beside.as_ref() else {
+            return true;
+        };
+        let needs = {
+            let mut decided = self.decided.lock().unwrap_or_else(PoisonError::into_inner);
+            match *decided {
+                Some(n) if n.device == loaded => return true,
+                Some(n) => {
+                    let moved = LiveNeeds {
+                        device: loaded,
+                        ..n
+                    };
+                    *decided = Some(moved);
+                    moved
+                }
+                None => return true,
+            }
+        };
+        let machine = Machine {
+            card_summary_fell_back: (b.card_summary_fell_back)(),
+            ..b.machine.clone()
+        };
+        self.ticket.wait_live_turn(&needs, &machine, cancel)
     }
 }
 
@@ -420,14 +500,14 @@ impl HoldGates for MeetingHold {
             return false;
         }
         match self.needs() {
-            Some((needs, machine)) => self.ticket.wait_live_turn(&needs, machine, cancel),
+            Some((needs, machine)) => self.ticket.wait_live_turn(&needs, &machine, cancel),
             None => self.ticket.wait_turn(cancel),
         }
     }
 
     fn reason(&self) -> Option<HoldReason> {
         let held = match self.needs() {
-            Some((needs, machine)) => self.ticket.live_held(&needs, machine),
+            Some((needs, machine)) => self.ticket.live_held(&needs, &machine),
             None => self.ticket.behind_older_work(),
         };
         if held {
