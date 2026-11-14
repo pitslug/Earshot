@@ -88,6 +88,7 @@ Stamps are three fields wherever they appear: `wall_ms` (u64), `logical` (u32), 
 | `GET /v1/presence` | token | | `{devices: [{device_id, age_s, blob}]}` |
 | `GET /v1/vault` | token | | `{vault_format, devices: [{device_id, created_unix_s, age_s}]}` |
 | `POST /v1/devices/revoke` | token | `{device_id}` | `{}` |
+| `GET /v1/health` | none | | `{ok, version}` (added in T11.2: checking a deployment by hand) |
 
 Rules:
 
@@ -97,8 +98,9 @@ Rules:
 - **Pull.** Rows with `seq > after`, ascending, at most `limit` (1 to 500, default 200) and at most 4 MiB of bodies. `more` says another page exists.
 - **Format.** `format` on a push is the highest envelope format the device writes. The vault's format is the highest ever pushed. A push or pull from a device whose `format` (header `Earshot-Sync-Format`) is lower than the vault's is `409 update_needed`.
 - **Limits.** 256 KiB per decoded row body (the client's 192 KiB plaintext limit plus the seal always fits), 4 MiB per request, 16 KiB per presence blob. Over a limit is `413`.
-- **Errors.** `{error: <word>}` with a status: `401 unknown_device`, `403 bad_secret`, `404 no_slot`, `409 key_mismatch`, `409 update_needed`, `413 too_large`, `429 slow_down`. The client maps each word to fixed copy; no server text reaches a window.
-- **Rate limits.** `pairing/take` and `devices`: 10 failures per minute per address, then `429`.
+- **Errors.** `{error: <word>}` with a status: `400 bad_request`, `401 unknown_device`, `403 bad_secret`, `404 no_slot`, `404 not_found` (an unknown path or method), `409 key_mismatch`, `409 update_needed`, `409 device_exists` (a pairing code naming a device id the relay already has, live or revoked: only the setup secret registers an id again), `413 too_large`, `429 slow_down`, `500 internal`. Every answer that is not a success is one of these. The client maps each word to fixed copy; no server text reaches a window.
+- **Rate limits.** `pairing/take` and `devices`: 10 failures per minute per address, then `429`. Behind the reverse proxy every caller has the proxy's address, so the limit is shared: a stranger's ten guesses make the owner wait a minute to register or pair. Accepted for calls made once per device; `X-Forwarded-For` is not trusted.
+- **Format on push.** The body's `format` must equal the `Earshot-Sync-Format` header, or `400`: one bad push cannot raise the vault past a format any device writes. The vault's format only rises; lowering it needs the relay's data reset (not yet a command).
 
 ## 4. Relay (T11.2)
 
@@ -114,7 +116,7 @@ vault(format INTEGER, key_check BLOB, next_seq INTEGER)
 - Tokens are 32 random bytes; only the SHA-256 is stored.
 - Rows are never deleted: a tombstone is a row like any other, so a device away for months still hears of deletions.
 - Configuration by environment: `EARSHOT_SYNC_SETUP_SECRET` (required, at least 24 characters, refused otherwise), `EARSHOT_SYNC_DATA` (default `/data`), `EARSHOT_SYNC_LISTEN` (default `0.0.0.0:8787`). TLS is the reverse proxy's.
-- Logs hold a method, a path, a status, a device id and byte counts. Never a body, a token, a secret or a slot.
+- Logs hold a method, a path (no query), a status and a duration. Never a body, a token, a secret, a slot or a device id.
 - Release (T11.2b, the owner, 2026-11-14): the relay lives in this repo and ships with every Windows release under the same version, as `ghcr.io/pitslug/earshot-sync-server:<version>` and `latest`, built for linux/amd64 by a GitHub Actions workflow that runs only on a release tag and builds nothing else. It is a registry image, not a file on the release, so the in-app updater's files are unchanged; `docker-compose.yml` is attached to the release.
 - Deliverables: the crate, a `Dockerfile` (multi-stage, non-root user, data volume), a `docker-compose.yml` with the relay only.
 - Net guard (GATE-08 item 5): the crate is left out of the app's check and gets its own ci step: its graph holds no HTTP client crate other than the `hyper` and `hyper-util` axum serves with, and no shipped crate depends on it.
@@ -139,8 +141,9 @@ sync_pending(key BLOB PRIMARY KEY, seq INTEGER NOT NULL, wall_ms, logical, node 
 ```
 
 - Both are device-local (no sync metadata, not in `SYNCED_TABLES`).
-- For every table in `SYNCED_TABLES`: `AFTER INSERT` and `AFTER UPDATE` triggers doing `INSERT OR IGNORE INTO sync_outbox VALUES ('<tbl>', NEW.id)`. A test pins the triggers to `SYNCED_TABLES`, so a new synced table without triggers fails.
-- The outbox fills whether or not sync is on. Turning sync on therefore needs no backfill, and the table stays small: one entry per row ever changed, a table name and 16 bytes.
+- For every table in `SYNCED_TABLES`: `AFTER INSERT` and `AFTER UPDATE` triggers that insert `('<tbl>', NEW.id)` into `sync_outbox` only when it is absent (`INSERT ... SELECT ... WHERE NOT EXISTS`). Not `INSERT OR IGNORE`: SQLite replaces a trigger's conflict clause with the firing statement's, and the store writes with upserts, so an ignored conflict became an error on a row's second change (found by the T11.1b tests). A test pins the triggers to `SYNCED_TABLES`, so a new synced table without triggers fails.
+- The outbox fills whether or not sync is on. Migration 6 also queues every row that already exists (triggers see only later changes), so turning sync on later sends everything. The table stays small: one entry per row ever changed, a table name and 16 bytes.
+- `Store::outbox` reads entries in `updated_at` order across tables, so a meeting goes out before its tracks, and a deletion's cleared rows (core deletion writes children first) before its meeting tombstone.
 
 ### 5.3 `Store::apply_remote`
 
@@ -161,7 +164,7 @@ Returned: counts of applied, ignored, pending by reason and unreadable. Never ro
 
 ### 5.4 Side effects
 
-- **Meeting tombstone** (remote `deleted`, local row live): this device's audio files for the meeting are deleted first (file before row, as `Store::delete_meeting`), then in the transaction every local child row still live is cleared and tombstoned with the meeting tombstone's own `updated_at`, the device-local keys of the meeting are erased, and the meeting row is written with the remote metadata. No new local stamp is made, so two devices applying the same deletion do not re-stamp each other.
+- **Meeting tombstone** (remote `deleted`, local row live): before the page is applied, the client (T11.3) runs the ordinary `Services::delete_meeting` for that meeting, so audio files go before rows, device-local keys are erased and a lease refuses it (the row is then held `busy`) exactly as a local deletion. Its own tombstone, stamped here, is newer than the pulled one, which is then ignored; both say deleted. The rows the other device cleared arrive in the same pull and apply as ordinary rows.
 - **Person tombstone**: `forget_identity_biometrics` for that identity.
 - **Voiceprint tombstone**: the local row's `sum` is zeroed as `forget_voiceprints` does.
 - After a page that erased anything: `Store::flush_erasures`.

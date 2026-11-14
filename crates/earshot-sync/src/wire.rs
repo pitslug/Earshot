@@ -265,27 +265,37 @@ pub enum ErrorWord {
     BadSecret,
     /// 404: no such pairing slot (unknown, expired or used).
     NoSlot,
+    /// 404: no such call (an unknown path or method).
+    NotFound,
     /// 409: the device's key check is not the vault's: join with a pairing code.
     KeyMismatch,
     /// 409: the vault holds rows of a newer format than the device writes: update Earshot.
     UpdateNeeded,
+    /// 409: a pairing code cannot register a device id that is already registered (or was
+    /// revoked); only the setup secret re-registers one.
+    DeviceExists,
     /// 413: over a size limit.
     TooLarge,
     /// 429: too many failed attempts from this address; wait a minute.
     SlowDown,
+    /// 500: the relay's own problem (its database).
+    Internal,
 }
 
 impl ErrorWord {
     /// Every word, for tests and the client's copy table.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 11] = [
         Self::BadRequest,
         Self::UnknownDevice,
         Self::BadSecret,
         Self::NoSlot,
+        Self::NotFound,
         Self::KeyMismatch,
         Self::UpdateNeeded,
+        Self::DeviceExists,
         Self::TooLarge,
         Self::SlowDown,
+        Self::Internal,
     ];
 
     /// The word on the wire.
@@ -296,10 +306,13 @@ impl ErrorWord {
             Self::UnknownDevice => "unknown_device",
             Self::BadSecret => "bad_secret",
             Self::NoSlot => "no_slot",
+            Self::NotFound => "not_found",
             Self::KeyMismatch => "key_mismatch",
             Self::UpdateNeeded => "update_needed",
+            Self::DeviceExists => "device_exists",
             Self::TooLarge => "too_large",
             Self::SlowDown => "slow_down",
+            Self::Internal => "internal",
         }
     }
 
@@ -310,10 +323,11 @@ impl ErrorWord {
             Self::BadRequest => 400,
             Self::UnknownDevice => 401,
             Self::BadSecret => 403,
-            Self::NoSlot => 404,
-            Self::KeyMismatch | Self::UpdateNeeded => 409,
+            Self::NoSlot | Self::NotFound => 404,
+            Self::KeyMismatch | Self::UpdateNeeded | Self::DeviceExists => 409,
             Self::TooLarge => 413,
             Self::SlowDown => 429,
+            Self::Internal => 500,
         }
     }
 

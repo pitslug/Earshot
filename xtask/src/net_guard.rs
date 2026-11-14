@@ -13,6 +13,11 @@
 //! rule and no exemption (Tauri 2 depends on reqwest only on Android and
 //! iOS, which the desktop app does not ship to; the Android edge is decided at T10.2).
 //!
+//! The sync relay ([`SERVER_PACKAGE`], GATE-08 item 5) serves HTTP, so it is left out of
+//! that run and checked on its own: its graph may hold [`SERVER_SERVES_WITH`] (axum's
+//! server, `hyper` and `hyper-util`) and no other HTTP client crate, and no workspace member
+//! may depend on it in any edge kind, so its server stack cannot reach a shipped binary.
+//!
 //! This replaces a crate-level `clippy.toml` `disallowed_types` rule: those are only
 //! enforced by dedicated xtask steps (AGENTS.md section 11), and a dependency-graph check
 //! also catches clients reached through other crates.
@@ -59,6 +64,13 @@ pub const HTTP_CLIENT_CRATES: &[&str] = &[
     "tokio-tungstenite",
 ];
 
+/// The sync relay: a server, checked by [`server_tree_args`] and [`server_dependents_args`]
+/// instead of the shipped run.
+pub const SERVER_PACKAGE: &str = "earshot-sync-server";
+
+/// Crates in [`HTTP_CLIENT_CRATES`] the relay may hold: axum serves with them.
+pub const SERVER_SERVES_WITH: &[&str] = &["hyper", "hyper-util"];
+
 /// Workspace members checked only on the targets they ship to, each target in its own
 /// `cargo tree` run ([`shipped_tree_args`]); every other shipped member is checked with
 /// `--target all`. Adding a package here narrows its check: it needs the owner's agreement.
@@ -77,6 +89,7 @@ pub fn tree_args() -> Vec<&'static str> {
     for (p, _) in SHIPPED_TARGETS {
         args.extend(["--exclude", p]);
     }
+    args.extend(["--exclude", SERVER_PACKAGE]);
     args.extend([
         "-e",
         "normal",
@@ -105,6 +118,86 @@ pub fn shipped_tree_args<'a>(package: &'a str, target: &'a str) -> Vec<&'a str> 
         "depth",
         "--no-dedupe",
     ]
+}
+
+/// Arguments of the run over the relay's own normal graph, on every target.
+pub fn server_tree_args() -> Vec<&'static str> {
+    vec![
+        "tree",
+        "-p",
+        SERVER_PACKAGE,
+        "-e",
+        "normal",
+        "--all-features",
+        "--target",
+        "all",
+        "--prefix",
+        "depth",
+        "--no-dedupe",
+    ]
+}
+
+/// Arguments of the inverted run listing every workspace member that depends on the relay,
+/// in any edge kind, on any target.
+pub fn server_dependents_args() -> Vec<&'static str> {
+    vec![
+        "tree",
+        "--workspace",
+        "-i",
+        SERVER_PACKAGE,
+        "-e",
+        "normal,build,dev",
+        "--all-features",
+        "--target",
+        "all",
+        "--prefix",
+        "depth",
+    ]
+}
+
+/// The relay's violations: [`evaluate_shipped`] on its own graph, less
+/// [`SERVER_SERVES_WITH`].
+pub fn evaluate_server(args: &[&str], out: &CmdOutput) -> Result<Vec<Violation>> {
+    Ok(evaluate_shipped(SERVER_PACKAGE, args, out)?
+        .into_iter()
+        .filter(|v| !SERVER_SERVES_WITH.contains(&v.client.as_str()))
+        .collect())
+}
+
+/// The members that depend on the relay, from [`server_dependents_args`]' output: every
+/// line below the root is one. Fails closed like [`evaluate_shipped`] (complete, successful,
+/// rooted at the relay, one root).
+pub fn evaluate_server_dependents(args: &[&str], out: &CmdOutput) -> Result<Vec<Violation>> {
+    out.require_complete(&format!("net: `cargo {}`", args.join(" ")))?;
+    if !out.success {
+        bail!("net: `cargo {}` failed: {}", args.join(" "), out.describe());
+    }
+    let mut lines = out.stdout.lines().filter(|l| !l.trim().is_empty());
+    let first = lines.next().unwrap_or("");
+    crate::purity::require_tree_root(
+        SERVER_PACKAGE,
+        first.trim_start_matches(|c: char| c.is_ascii_digit()),
+    )?;
+    let mut found = Vec::new();
+    for line in lines {
+        let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            bail!("net: unexpected `cargo tree` line (no depth prefix): {line}");
+        }
+        let Some(name) = line[digits..].split_whitespace().next() else {
+            bail!("net: unexpected `cargo tree` line (no crate name): {line}");
+        };
+        if line[..digits].parse::<usize>()? == 0 {
+            bail!("net: `cargo {}` printed a second tree root", args.join(" "));
+        }
+        found.push(Violation {
+            package: name.to_string(),
+            client: SERVER_PACKAGE.to_string(),
+        });
+    }
+    found.sort();
+    found.dedup();
+    Ok(found)
 }
 
 /// One forbidden dependency: an HTTP client crate found in the normal dependency graph of
@@ -235,6 +328,10 @@ pub fn run(root: &Path) -> Result<()> {
             found.extend(evaluate_shipped(package, &args, &capture(root, &args)?)?);
         }
     }
+    let args = server_tree_args();
+    found.extend(evaluate_server(&args, &capture(root, &args)?)?);
+    let args = server_dependents_args();
+    found.extend(evaluate_server_dependents(&args, &capture(root, &args)?)?);
     found.sort();
     found.dedup();
     if !found.is_empty() {
@@ -244,7 +341,8 @@ pub fn run(root: &Path) -> Result<()> {
             .collect();
         bail!(
             "net: HTTP client crates outside {NET_PACKAGE} (all HTTP goes through \
-             {NET_PACKAGE}, PLAN.md 3.9) or test-support crates ({}) in shipped crates: {}",
+             {NET_PACKAGE}, PLAN.md 3.9), test-support crates ({}) in shipped crates, or a \
+             dependency on {SERVER_PACKAGE}: {}",
             TEST_SUPPORT_PACKAGES.join(", "),
             list.join(", ")
         );
@@ -563,5 +661,70 @@ mod tests {
         // A second tree root means the run covered more than the package.
         let two = format!("{DESKTOP}\n0earshot-cli v0.1.0 (C:\\repo)\n1serde v1.0.228\n");
         assert!(evaluate_shipped(p, &args, &captured(&two, true, true)).is_err());
+    }
+
+    const SERVER: &str = "\
+0earshot-sync-server v0.1.0 (C:\\repo\\crates\\earshot-sync-server)
+1axum v0.8.4
+2hyper v1.12.0
+2hyper-util v0.1.21
+3hyper v1.12.0
+1earshot-sync v0.1.0 (C:\\repo\\crates\\earshot-sync)
+2earshot-core v0.1.0 (C:\\repo\\crates\\earshot-core)
+";
+
+    #[test]
+    fn net_relay_may_serve_with_hyper_but_hold_no_other_client() {
+        let args = server_tree_args();
+        assert_eq!(
+            evaluate_server(&args, &captured(SERVER, true, true)).unwrap(),
+            vec![]
+        );
+        // Canary: every other client crate in the relay's graph fails.
+        for client in HTTP_CLIENT_CRATES
+            .iter()
+            .filter(|c| !SERVER_SERVES_WITH.contains(c))
+        {
+            let tree = format!("{SERVER}1some-sdk v1.0.0\n2{client} v1.0.0\n");
+            assert_eq!(
+                evaluate_server(&args, &captured(&tree, true, true)).unwrap(),
+                [v(SERVER_PACKAGE, client)],
+                "{client}"
+            );
+        }
+        // Fails closed: cut off, failed, or rooted elsewhere.
+        assert!(evaluate_server(&args, &captured(SERVER, true, false)).is_err());
+        assert!(evaluate_server(&args, &captured(SERVER, false, true)).is_err());
+        assert!(evaluate_server(&args, &captured(CLEAN, true, true)).is_err());
+        // The shipped run leaves the relay out, so it is judged by this rule alone.
+        assert!(
+            tree_args()
+                .windows(2)
+                .any(|w| w == ["--exclude", SERVER_PACKAGE])
+        );
+    }
+
+    #[test]
+    fn net_no_member_may_depend_on_the_relay() {
+        let args = server_dependents_args();
+        let alone = "0earshot-sync-server v0.1.0 (C:\\repo\\crates\\earshot-sync-server)\n";
+        assert_eq!(
+            evaluate_server_dependents(&args, &captured(alone, true, true)).unwrap(),
+            vec![]
+        );
+        let used = format!(
+            "{alone}1earshot-runtime v0.1.0 (C:\\repo)\n2earshot-desktop v0.1.0 (C:\\repo)\n"
+        );
+        assert_eq!(
+            evaluate_server_dependents(&args, &captured(&used, true, true)).unwrap(),
+            [
+                v("earshot-desktop", SERVER_PACKAGE),
+                v("earshot-runtime", SERVER_PACKAGE)
+            ]
+        );
+        assert!(evaluate_server_dependents(&args, &captured(alone, true, false)).is_err());
+        assert!(evaluate_server_dependents(&args, &captured(alone, false, true)).is_err());
+        assert!(evaluate_server_dependents(&args, &captured("", true, true)).is_err());
+        assert!(evaluate_server_dependents(&args, &captured(CLEAN, true, true)).is_err());
     }
 }

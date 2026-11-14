@@ -13,6 +13,7 @@ members = [
     "crates/earshot-llm-local",
     "crates/earshot-store",
     "crates/earshot-sync",
+    "crates/earshot-sync-server",
     "crates/earshot-capture-wasapi",
     "crates/earshot-hardware",
     "crates/earshot-capture-android",
@@ -21,7 +22,6 @@ members = [
     "apps/desktop/src-tauri",
     "xtask",
 ]
-# earshot-sync-server is added in M11.
 
 [workspace.package]
 version = "0.3.6"

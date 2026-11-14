@@ -1,0 +1,24 @@
+# The relay image is built from the repository root (crates/earshot-sync-server/Dockerfile).
+# Cargo needs every workspace member's manifest and sources to read the workspace; nothing
+# else goes into the build context, and above all no private file of the owner's checkout
+# (the "Private files" block of .gitignore).
+.git
+.claude
+.cargo
+target
+**/node_modules
+packages
+apps/desktop/dist
+fixtures/private
+docs
+acceptance
+models
+scripts
+.env
+**/.env
+
+# Private files (mirrors .gitignore)
+CLAUDE.md
+LOG.md
+gates
+TODO.md
