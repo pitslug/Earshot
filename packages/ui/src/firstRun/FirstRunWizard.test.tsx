@@ -1,8 +1,8 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { type Ipc, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
+import { type Ipc, type MockIpcData, createMockIpc } from "../ipc";
 import { CHECK_TOTAL_MS } from "../ipc/mockAudioCheck";
 import { MODEL_STEP_MS } from "../ipc/mockModels";
 import { VOICE_SAMPLE_MS } from "../ipc/mockSettings";
@@ -11,9 +11,7 @@ import { SETUP_EXPLAINED } from "../settings/GeneralPage";
 import { EXPORT_EXPLAINED } from "../settings/ObsidianSection";
 import { CLAUDE_CODE_PRIVACY, CODEX_PRIVACY } from "../settings/SummariesPage";
 import { formatSize } from "../settings/copy";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { openSettings, renderApp } from "../test/app";
 import { type ManualTimer, createManualTimer } from "../time";
 import {
   AUDIO_CHECK_ROW,
@@ -43,13 +41,7 @@ function setup(data: MockIpcData = {}): Setup {
   const timer = createManualTimer(1_000_000);
   const ipc = createMockIpc({ meetings: [], timer, firstRun: { show: true }, ...data });
   const mount = () =>
-    render(
-      <EarshotThemeProvider>
-        <IpcProvider ipc={ipc}>
-          <AppShell timer={timer} />
-        </IpcProvider>
-      </EarshotThemeProvider>,
-    );
+    renderApp(ipc, { timer });
   mount();
   return { ipc, timer, user: userEvent.setup(), mount };
 }
@@ -80,10 +72,6 @@ async function totalOf(ipc: Ipc, names: string[]) {
   const all = [m.helpers, ...m.transcription, ...m.summary];
   return formatSize(all.filter((i) => names.includes(i.name)).reduce((sum, i) => sum + i.size, 0));
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("First run wizard", () => {
   it("has its steps in the agreed order and opens on the first, ahead of the meetings", async () => {
@@ -155,9 +143,7 @@ describe("First run wizard", () => {
 
   it("reopens from Settings, General and goes back there, with the record still done", async () => {
     const s = setup({ firstRun: { show: false } });
-    await s.user.click(await screen.findByRole("button", { name: "Settings" }));
-    const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-    await s.user.click(within(nav).getByRole("button", { name: "General" }));
+    await openSettings(s.user, "General");
     await screen.findByText(SETUP_EXPLAINED);
     await s.user.click(button("Open the setup guide"));
     await stepHeading(STEPS[0].title);
@@ -196,13 +182,7 @@ describe("First run wizard", () => {
     const timer = createManualTimer(1_000_000);
     const ipc = createMockIpc({ meetings: [], timer, firstRun: { show: true } });
     const subscribe = vi.spyOn(ipc, "onModelJobEvent");
-    render(
-      <EarshotThemeProvider>
-        <IpcProvider ipc={ipc}>
-          <AppShell timer={timer} />
-        </IpcProvider>
-      </EarshotThemeProvider>,
-    );
+    renderApp(ipc, { timer });
     const user = userEvent.setup();
     for (const [i, step] of STEPS.entries()) {
       await stepHeading(step.title);
@@ -671,9 +651,7 @@ describe("First run wizard", () => {
 
     it("the words reach Settings when the wizard was opened from there", async () => {
       const s = setup({ ...CLEAN, firstRun: { show: false } });
-      await s.user.click(await screen.findByRole("button", { name: "Settings" }));
-      const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-      await s.user.click(within(nav).getByRole("button", { name: "General" }));
+      await openSettings(s.user, "General");
       await s.user.click(await screen.findByRole("button", { name: "Open the setup guide" }));
       await toStep(s, 1);
       await s.user.click(button("Skip setup"));

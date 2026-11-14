@@ -3,6 +3,7 @@
 // activity, landed lines and a warning while it records; post-meeting progress and a
 // summary after it stops.
 
+import keepLocalCases from "../../../../fixtures/ui/keep_local_cases.json";
 import { type Timer, realTimer } from "../time";
 import {
   RECOGNISED_ME_COPY,
@@ -32,9 +33,9 @@ import {
   type SummaryView,
   type TranscriptRow,
 } from "./ipc";
-import { dictionaryWord } from "../detail/dictionaryWord";
+import { dictionaryWord, splitToken, tokensOf } from "../detail/dictionaryWord";
 import { DELETE_COPY } from "../shell/deleteCopy";
-import { marksAfterEdit, splitPunctuation, tokensOf, withWord, wordListOf, wordsToOffer } from "./mockWords";
+import { marksAfterEdit, withWord, wordListOf, wordsToOffer } from "./mockWords";
 import {
   ignoredVoice,
   linked,
@@ -52,7 +53,7 @@ import type { FolderListItem } from "./folders";
 import { type SampleMachine, createModelsMock } from "./mockModels";
 import { searchSample } from "./mockSearch";
 import { type SettingsMockData, createSettingsMock } from "./mockSettings";
-import { type SummariesMockData, createSummariesMock } from "./mockSummaries";
+import { NOT_A_WORD, type SummariesMockData, createSummariesMock } from "./mockSummaries";
 import { type StorageMockData, createStorageMock } from "./mockStorage";
 import { type BenchmarkMockData, createBenchmarkMock } from "./mockBenchmark";
 import { type CudaMockData, createCudaMock } from "./mockCuda";
@@ -165,10 +166,9 @@ export const POST_STEP_MS = 400;
 /** The refusals of a meeting deletion (T12.38): the UI's one copy of `deletion.rs`'s words. */
 export const MOCK_DELETE_COPY = DELETE_COPY;
 
-/** `detail::edit_error`'s copy for `EditError::MeetingStillWorking` (T12.45), kept by hand. */
-export const MOCK_STILL_WORKING_COPY =
-  "Earshot is still working on this meeting, and that work keeps the summary on this computer. " +
-  "Allow the summary writer once it has finished.";
+/** `detail::edit_error`'s copy for `EditError::MeetingStillWorking` (T12.45), read from the case
+ * table the desktop's Rust tests check that copy against. */
+export const MOCK_STILL_WORKING_COPY = keepLocalCases.still_working.message;
 
 const DEFAULT_SUMMARY: SummaryEvent = {
   kind: "Stored",
@@ -564,7 +564,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const wordAt = (meeting: string, segment: string, token: number): [TranscriptRow, string] => {
     const row = lineOf(meeting, segment);
     const t = tokensOf(row.text)[token];
-    const core = t === undefined ? "" : splitPunctuation(t)[1];
+    const core = t === undefined ? "" : splitToken(t)[1];
     if (core === "") fail("word_not_found", "This word is no longer in the line. The line may have been edited.");
     return [row, core];
   };
@@ -897,7 +897,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     // checks and messages (`setSummaryVocabulary`).
     addDictionaryWord: async (token) => {
       call("addDictionaryWord", token);
-      const word = dictionaryWord(token) ?? fail("invalid_setting", "Only a word can be added to the dictionary.");
+      const word = dictionaryWord(token) ?? fail("invalid_setting", NOT_A_WORD);
       const words = (await summariesMock.summaryVocabulary()).words;
       const there = words.find((w) => w.toLowerCase() === word.toLowerCase());
       if (there !== undefined) return { word: there, added: false };
@@ -906,11 +906,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     removeDictionaryWord: async (word) => {
       call("removeDictionaryWord", word);
-      const wanted = word
-        .split(/\p{White_Space}+/u)
-        .filter((p) => p !== "")
-        .join(" ")
-        .toLowerCase();
+      const wanted = tokensOf(word).join(" ").toLowerCase();
       const words = (await summariesMock.summaryVocabulary()).words;
       if (wanted === "" || !words.some((w) => w.toLowerCase() === wanted)) return false;
       await summariesMock.setSummaryVocabulary(words.filter((w) => w.toLowerCase() !== wanted));

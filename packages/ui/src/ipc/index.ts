@@ -5,6 +5,7 @@ export {
   IpcFailure,
   NEWER_DATA_KIND,
   RECOGNISED_ME_COPY,
+  errorText,
   everyCommandIsInIpc,
 } from "./ipc";
 export type {

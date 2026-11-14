@@ -1,11 +1,10 @@
 import {
   AppShell,
   EarshotThemeProvider,
+  type Ipc,
   IpcProvider,
-  createMockIpc,
   createTauriIpc,
   isTauri,
-  samplePersons,
   suppressBrowserMenu,
 } from "@earshot/ui";
 import { StrictMode } from "react";
@@ -22,64 +21,68 @@ import { createRoot } from "react-dom/client";
 // summary or transcript did not finish (T9.23). `?keptLocal=1` keeps the weekly sync
 // on this computer with Claude Code as the summary writer (T12.13). `?previews=battery` shows a
 // meeting whose provisional words are off on battery, `?previews=waiting` one where they wait
-// for the transcript and the banner is taken back (T12.33).
-const inTauri = isTauri();
-const query = new URLSearchParams(window.location.search);
-const machine = query.get("machine") === "desktop" ? "desktop" : "surface";
-const previews = query.get("previews");
-const ipc = inTauri
-  ? createTauriIpc()
-  : createMockIpc({
-      now: Date.now(),
-      machine,
-      firstRun: { show: query.get("firstRun") === "1" },
-      cleanInstall: query.get("clean") === "1",
-      noModels: query.get("clean") === "1",
-      inRoom: query.get("inRoom") === "recognised" ? "recognised" : query.get("inRoom") === "1",
-      ...(query.get("selfNamed") === "1"
-        ? { persons: [...samplePersons(), { id: "9e000000-0000-7000-8000-000000000009", name: "Casey", has_voiceprint: true, is_me: false }] }
-        : {}),
-      callEndOfferAfterMs: query.get("callEnded") === "1" ? 3_000 : undefined,
-      newerData: query.get("newerData") === "1",
-      dataFolderFails: query.get("dataFolder") === "1",
-      provisionalWords: previews === "battery" || previews === "waiting" ? previews : undefined,
-      ...(query.get("summary") === "failed"
+// for the transcript and the banner is taken back (T12.33). The mock is loaded only here, with a
+// dynamic import, so the app's own bundle starts without it (T12.54).
+async function previewIpc(): Promise<Ipc> {
+  const { createMockIpc, samplePersons } = await import("@earshot/ui/preview");
+  const query = new URLSearchParams(window.location.search);
+  const machine = query.get("machine") === "desktop" ? "desktop" : "surface";
+  const previews = query.get("previews");
+  return createMockIpc({
+    now: Date.now(),
+    machine,
+    firstRun: { show: query.get("firstRun") === "1" },
+    cleanInstall: query.get("clean") === "1",
+    noModels: query.get("clean") === "1",
+    inRoom: query.get("inRoom") === "recognised" ? "recognised" : query.get("inRoom") === "1",
+    ...(query.get("selfNamed") === "1"
+      ? { persons: [...samplePersons(), { id: "9e000000-0000-7000-8000-000000000009", name: "Casey", has_voiceprint: true, is_me: false }] }
+      : {}),
+    callEndOfferAfterMs: query.get("callEnded") === "1" ? 3_000 : undefined,
+    newerData: query.get("newerData") === "1",
+    dataFolderFails: query.get("dataFolder") === "1",
+    provisionalWords: previews === "battery" || previews === "waiting" ? previews : undefined,
+    ...(query.get("summary") === "failed"
+      ? {
+          summary: {
+            kind: "Failed" as const,
+            message:
+              "The summary could not be written: Earshot could not reach the summary service. Check the network and the address in Settings, Summaries, then try again.",
+            retryable: false,
+          },
+        }
+      : query.get("summary") === "postFailed"
         ? {
             summary: {
-              kind: "Failed" as const,
+              kind: "PostFailed" as const,
               message:
-                "The summary could not be written: Earshot could not reach the summary service. Check the network and the address in Settings, Summaries, then try again.",
+                "The transcript could not be finished. The recording and the draft transcript are saved. The transcription did not finish. Try again; if it keeps failing, choose another transcription model in Settings, Transcription.",
               retryable: false,
             },
           }
-        : query.get("summary") === "postFailed"
-          ? {
-              summary: {
-                kind: "PostFailed" as const,
-                message:
-                  "The transcript could not be finished. The recording and the draft transcript are saved. The transcription did not finish. Try again; if it keeps failing, choose another transcription model in Settings, Transcription.",
-                retryable: false,
-              },
-            }
-          : {}),
-      ...(query.get("keptLocal") === "1"
-        ? {
-            keptLocal: ["0190f1a2-0000-7000-8000-000000000003"],
-            summaries: { settings: { writer: "ClaudeCode" as const } },
-          }
         : {}),
-      cuda:
-        query.get("cuda") === "unavailable"
-          ? { notAvailable: "This download is not available yet, so there is nothing to install. Earshot keeps running as it does now." }
-          : query.get("cuda") === "checking"
-            ? {
-                installed: ["Summaries"],
-                switch: { summaries: true, transcription: false },
-                summariesOnCuda: true,
-                checkingMs: 15_000,
-              }
-            : {},
-    });
+    ...(query.get("keptLocal") === "1"
+      ? {
+          keptLocal: ["0190f1a2-0000-7000-8000-000000000003"],
+          summaries: { settings: { writer: "ClaudeCode" as const } },
+        }
+      : {}),
+    cuda:
+      query.get("cuda") === "unavailable"
+        ? { notAvailable: "This download is not available yet, so there is nothing to install. Earshot keeps running as it does now." }
+        : query.get("cuda") === "checking"
+          ? {
+              installed: ["Summaries"],
+              switch: { summaries: true, transcription: false },
+              summariesOnCuda: true,
+              checkingMs: 15_000,
+            }
+          : {},
+  });
+}
+
+const inTauri = isTauri();
+const ipc = inTauri ? createTauriIpc() : await previewIpc();
 
 // In the app the webview's own right-click menu (Back, Refresh, Print) is hidden except in text
 // fields and over selected text; the browser preview keeps it, for inspecting.

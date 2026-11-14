@@ -15,14 +15,12 @@ import {
   Field,
   Input,
   MessageBar,
-  MessageBarActions,
   MessageBarBody,
   MessageBarTitle,
   Radio,
   RadioGroup,
   Select,
   Spinner,
-  Subtitle2,
   Switch,
   Title2,
   makeStyles,
@@ -35,22 +33,12 @@ import type { EffortChoice, ProviderChoice, SummarySettingsView, WriterChoice } 
 import { ModelsNotLoaded, SummaryModelChoices } from "./ModelSections";
 import { SummaryStyleSection } from "./SummaryStyleSection";
 import { partName, titleOf } from "./copy";
+import { NotLoaded, NoticeBar, Section, UnknownSettings, usePageStyles } from "./parts";
 import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import type { ModelsPageState } from "./useModels";
 import { type CliCheck, type SummariesPageState, useSummaries } from "./useSummaries";
 
 const useStyles = makeStyles({
-  page: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
-  },
-  section: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalS,
-  },
   heading: {
     margin: 0,
   },
@@ -109,19 +97,6 @@ const useStyles = makeStyles({
     justifySelf: "start",
   },
 });
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  const styles = useStyles();
-  const id = useId();
-  return (
-    <section className={styles.section} aria-labelledby={id}>
-      <Subtitle2 as="h2" id={id} className={styles.heading}>
-        {title}
-      </Subtitle2>
-      {children}
-    </section>
-  );
-}
 
 /** The model field's placeholder per provider (never a stored default). */
 export const MODEL_PLACEHOLDER: Record<ProviderChoice, string> = {
@@ -754,14 +729,8 @@ function WriterSection({
 
 /** What shows until the settings are read: the spinner or the failure. */
 function SummariesNotLoaded({ load }: { load: Exclude<SummariesPageState["load"], { status: "loaded" }> }) {
-  if (load.status === "loading") return <Spinner label="Reading the summary settings" />;
   return (
-    <MessageBar intent="error">
-      <MessageBarBody>
-        <MessageBarTitle>The summary settings could not be read</MessageBarTitle>
-        {load.message}
-      </MessageBarBody>
-    </MessageBar>
+    <NotLoaded load={load} loading="Reading the summary settings" failed="The summary settings could not be read" />
   );
 }
 
@@ -770,40 +739,21 @@ function SummariesNotices({ state, settings }: { state: SummariesPageState; sett
   return (
     <>
       {state.notice !== null && (
-        <MessageBar intent="error">
-          <MessageBarBody>
-            <MessageBarTitle>{state.notice.title}</MessageBarTitle>
-            {state.notice.message}
-          </MessageBarBody>
-          <MessageBarActions
-            containerAction={
-              <Button size="small" appearance="transparent" onClick={state.dismiss}>
-                Dismiss
-              </Button>
-            }
-          />
-        </MessageBar>
+        <NoticeBar title={state.notice.title} message={state.notice.message} onDismiss={state.dismiss} />
       )}
-      {settings.unknown.length > 0 && (
-        <MessageBar intent="warning">
-          <MessageBarBody>
-            <MessageBarTitle>Some stored settings are not known to this version</MessageBarTitle>
-            {settings.unknown.join(" ")}
-          </MessageBarBody>
-        </MessageBar>
-      )}
+      <UnknownSettings unknown={settings.unknown} />
     </>
   );
 }
 
 /** Who writes the summary, on its own, for the first-run wizard: its Next saves what is typed. */
 export function SummaryWriterChoices({ saveOnNext }: { saveOnNext: SaveOnNext }) {
-  const styles = useStyles();
+  const page = usePageStyles();
   const state = useSummaries();
   const { load } = state;
   if (load.status !== "loaded") return <SummariesNotLoaded load={load} />;
   return (
-    <div className={styles.page}>
+    <div className={page.page}>
       <SummariesNotices state={state} settings={load.settings} />
       <WriterSection
         state={state}
@@ -825,6 +775,7 @@ export interface SummariesPageProps {
 /** The Summaries page of Settings. */
 export function SummariesPage({ models }: SummariesPageProps) {
   const styles = useStyles();
+  const page = usePageStyles();
   const state = useSummaries();
   const { load } = state;
   const writer = load.status === "loaded" ? load.settings.value.writer : null;
@@ -842,7 +793,7 @@ export function SummariesPage({ models }: SummariesPageProps) {
   const value = settings.value;
 
   return (
-    <div className={styles.page}>
+    <div className={page.page}>
       <Title2 as="h1" className={styles.heading}>
         Summaries
       </Title2>

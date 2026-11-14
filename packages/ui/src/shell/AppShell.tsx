@@ -60,6 +60,7 @@ import {
   type MeetingListItem,
   NEWER_DATA_KIND,
   type RecoveredRecording,
+  errorText,
   useIpc,
 } from "../ipc";
 import {
@@ -579,9 +580,7 @@ export function AppShell({
           setLoad({ status: "dataFolder", message: error.error.message });
           return;
         }
-        const message =
-          error instanceof IpcFailure || error instanceof Error ? error.message : String(error);
-        setLoad({ status: "failed", message });
+        setLoad({ status: "failed", message: errorText(error) });
       },
     );
     return () => {
@@ -646,7 +645,7 @@ export function AppShell({
     setStopError(null);
     ipc.stopMeeting().catch((e: unknown) => {
       setStopping(false);
-      setStopError(e instanceof Error ? e.message : String(e));
+      setStopError(errorText(e));
     });
   };
   const cancelFinishing = (id: string) => {
@@ -654,7 +653,7 @@ export function AppShell({
     setStopError(null);
     ipc.cancelFinishing(id).catch((e: unknown) => {
       setCancellingIds((ids) => ids.filter((i) => i !== id));
-      setStopError(e instanceof Error ? e.message : String(e));
+      setStopError(errorText(e));
     });
   };
   // Only a recording meeting has its own screen; one that has ended shows its page.
@@ -710,7 +709,7 @@ export function AppShell({
       setResultDismissed(id);
       open(id);
     } catch (e: unknown) {
-      setRetryError(e instanceof Error ? e.message : String(e));
+      setRetryError(errorText(e));
     } finally {
       setRetrying(false);
     }
@@ -888,7 +887,7 @@ export function AppShell({
     setQuitError(null);
     ipc.quitApp().catch((e: unknown) => {
       setQuitting(false);
-      setQuitError(e instanceof Error ? e.message : String(e));
+      setQuitError(errorText(e));
     });
   };
   const quitDialog = quitAsked !== null && (

@@ -4,7 +4,7 @@ import { createManualTimer } from "../time";
 import { commands } from "./bindings";
 import { EVENT_METHODS, IpcFailure, type MeetingEvent, type ModelJobEvent, NEWER_DATA_KIND } from "./ipc";
 import keepLocalCases from "../../../../fixtures/ui/keep_local_cases.json";
-import { MOCK_STILL_WORKING_COPY, POST_STEPS, POST_STEP_MS, SCRIPT_LINES, createMockIpc, sampleMeetings } from "./mock";
+import { POST_STEPS, POST_STEP_MS, SCRIPT_LINES, createMockIpc, sampleMeetings } from "./mock";
 import { CHECK_RUNNING_MESSAGE, DOWNLOADING_MESSAGE, MOCK_FALLBACK_MODEL, MODEL_STEP_MS } from "./mockModels";
 import { SAMPLE_FOLDERS } from "./mockFolders";
 import { createTauriIpc } from "./tauri";
@@ -491,6 +491,5 @@ describe("mock keep-local refusals", () => {
     await expect(ipc.allowSummaryWriter(id)).rejects.toMatchObject({
       error: { kind: keepLocalCases.still_working.kind, message: keepLocalCases.still_working.message },
     });
-    expect(MOCK_STILL_WORKING_COPY).toBe(keepLocalCases.still_working.message);
   });
 });

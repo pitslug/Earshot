@@ -4,8 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { type BenchmarkEvent, type BenchmarkPhase, type BenchmarkView, useIpc } from "../ipc";
-import { errorText } from "./useModels";
+import { type BenchmarkEvent, type BenchmarkPhase, type BenchmarkView, errorText, useIpc } from "../ipc";
 
 /** The run as last reported. */
 export type BenchmarkRun =

@@ -13,6 +13,8 @@ import {
 } from "@fluentui/react-components";
 import { useState } from "react";
 
+import { errorText } from "../ipc";
+
 const useStyles = makeStyles({
   root: {
     height: "100%",
@@ -50,7 +52,7 @@ export function DataFolderScreen({
     try {
       await onTryAgain();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
       setPending(false);
     }
   };

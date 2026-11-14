@@ -4,8 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { type AudioPageView, type AudioSettingsValue, useIpc } from "../ipc";
-import { errorText } from "./useModels";
+import { type AudioPageView, type AudioSettingsValue, errorText, useIpc } from "../ipc";
 
 export type AudioLoad =
   | { status: "loading" }

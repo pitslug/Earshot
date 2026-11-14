@@ -10,38 +10,26 @@ import {
   Caption1,
   Field,
   MessageBar,
-  MessageBarActions,
   MessageBarBody,
   MessageBarTitle,
   Radio,
   RadioGroup,
   Select,
   Spinner,
-  Subtitle2,
   Title2,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { type ReactNode, useId } from "react";
+import { useId } from "react";
 
 import type { AudioPageView, CaptureMode, ChosenDevice, DeviceItem } from "../ipc";
 import { MODE_LABEL } from "../meeting/liveMeeting";
 import { AudioCheckSection } from "./AudioCheckSection";
+import { NotLoaded, NoticeBar, Section, UnknownSettings, usePageStyles } from "./parts";
 import { type AudioPageState, useAudio } from "./useAudio";
 import { checkRunning, useAudioCheck } from "./useAudioCheck";
 
 const useStyles = makeStyles({
-  page: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
-  },
-  section: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalS,
-  },
   heading: {
     margin: 0,
   },
@@ -61,19 +49,6 @@ const useStyles = makeStyles({
     gap: tokens.spacingHorizontalS,
   },
 });
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  const styles = useStyles();
-  const id = useId();
-  return (
-    <section className={styles.section} aria-labelledby={id}>
-      <Subtitle2 as="h2" id={id} className={styles.heading}>
-        {title}
-      </Subtitle2>
-      {children}
-    </section>
-  );
-}
 
 /** The select's value for the Windows default (endpoint ids start with `{`). */
 export const DEFAULT_VALUE = "default";
@@ -173,6 +148,7 @@ function DeviceField({ kind, state, page }: { kind: DeviceKind; state: AudioPage
 /** The Audio page of Settings. */
 export function AudioPage() {
   const styles = useStyles();
+  const pageStyles = usePageStyles();
   const state = useAudio();
   const modeLabel = useId();
   const { load } = state;
@@ -181,47 +157,22 @@ export function AudioPage() {
   // The devices stay as they are while the check plays and listens on them.
   const deviceState = checkRunning(check.run) ? { ...state, busy: true } : state;
 
-  if (load.status === "loading") return <Spinner label="Reading the audio settings" />;
-  if (load.status === "failed") {
+  if (load.status !== "loaded") {
     return (
-      <MessageBar intent="error">
-        <MessageBarBody>
-          <MessageBarTitle>The audio settings could not be read</MessageBarTitle>
-          {load.message}
-        </MessageBarBody>
-      </MessageBar>
+      <NotLoaded load={load} loading="Reading the audio settings" failed="The audio settings could not be read" />
     );
   }
   const { page } = load;
 
   return (
-    <div className={styles.page}>
+    <div className={pageStyles.page}>
       <Title2 as="h1" className={styles.heading}>
         Audio
       </Title2>
       {state.notice !== null && (
-        <MessageBar intent="error">
-          <MessageBarBody>
-            <MessageBarTitle>{state.notice.title}</MessageBarTitle>
-            {state.notice.message}
-          </MessageBarBody>
-          <MessageBarActions
-            containerAction={
-              <Button size="small" appearance="transparent" onClick={state.dismiss}>
-                Dismiss
-              </Button>
-            }
-          />
-        </MessageBar>
+        <NoticeBar title={state.notice.title} message={state.notice.message} onDismiss={state.dismiss} />
       )}
-      {page.unknown.length > 0 && (
-        <MessageBar intent="warning">
-          <MessageBarBody>
-            <MessageBarTitle>Some stored settings are not known to this version</MessageBarTitle>
-            {page.unknown.join(" ")}
-          </MessageBarBody>
-        </MessageBar>
-      )}
+      <UnknownSettings unknown={page.unknown} />
 
       <Section title="Devices">
         {page.devices_error !== null && (

@@ -1,8 +1,8 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
+import { type MockIpcData, createMockIpc } from "../ipc";
 import { SAMPLE_DEVICES } from "../ipc/mockAudio";
 import {
   CHECK_HEADLINE,
@@ -14,9 +14,7 @@ import {
   TOO_QUIET_LINE,
   mockResult,
 } from "../ipc/mockAudioCheck";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { openSettings, renderApp } from "../test/app";
 import { type ManualTimer, createManualTimer } from "../time";
 import { CHECK_EXPLAINED, CHECK_WARNING, checkedLine } from "./AudioCheckSection";
 
@@ -30,17 +28,9 @@ interface Setup {
 async function open(data: MockIpcData = {}): Promise<Setup> {
   const timer = createManualTimer(START);
   const ipc = createMockIpc({ meetings: [], timer, ...data });
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "Settings" }));
-  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "Audio" }));
+  await openSettings(user, "Audio");
   await screen.findByRole("heading", { level: 2, name: "Audio check" });
   return { timer, user };
 }
@@ -59,10 +49,6 @@ async function runToEnd(s: Setup) {
   await screen.findByRole("group", { name: "Audio check running" });
   for (let t = 0; t < CHECK_TOTAL_MS; t += CHECK_STEP_MS) advance(s.timer, CHECK_STEP_MS);
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings, Audio check", () => {
   it("explains the check and warns that it plays sound before it runs", async () => {
