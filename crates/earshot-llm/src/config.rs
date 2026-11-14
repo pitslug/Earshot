@@ -50,20 +50,32 @@ pub const MAX_REPAIRS: usize = 2;
 
 /// An API key. Sent only as the `Authorization: Bearer` header (OpenAI-compatible) or the
 /// `x-api-key` header (Anthropic); its `Debug` output is redacted and it has no
-/// `Display`, so it cannot end up in logs or error messages by formatting.
+/// `Display`, so it cannot end up in logs or error messages by formatting. Every copy is
+/// wiped when dropped ([`earshot_net::wipe_string`], T12.46), and so is the request's
+/// header copy ([`earshot_net::NetRequest`]'s `Drop`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct ApiKey(String);
 
 impl ApiKey {
-    /// Wraps a key; surrounding whitespace is trimmed. `None` for an empty key.
+    /// Wraps a key; surrounding whitespace is trimmed. `None` for an empty key. The string
+    /// passed in is wiped once the trimmed copy is made.
     pub fn new(key: impl Into<String>) -> Option<Self> {
-        let k = key.into().trim().to_string();
-        (!k.is_empty()).then_some(ApiKey(k))
+        let mut raw = key.into();
+        let k = raw.trim().to_string();
+        earshot_net::wipe_string(&mut raw);
+        let key = ApiKey(k);
+        (!key.0.is_empty()).then_some(key)
     }
 
     /// The key itself, for building the request header.
     pub(crate) fn expose(&self) -> &str {
         &self.0
+    }
+}
+
+impl Drop for ApiKey {
+    fn drop(&mut self) {
+        earshot_net::wipe_string(&mut self.0);
     }
 }
 
