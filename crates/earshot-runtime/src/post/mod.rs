@@ -1580,6 +1580,9 @@ where
             // The row id of each diarisation speaker (`None`: no words, no row).
             let mut row_ids: Vec<Option<EntityId>> = vec![None; meeting_diar.speakers.len()];
             let mut identities = Vec::new();
+            // The "Me" row this run named itself (not a carried mark): in the room only the
+            // user's voiceprint names one (T12.44, `crate::edit::recognised_me`).
+            let mut named_me: Option<EntityId> = None;
             for (k, ((s, naming), earlier_speaker)) in meeting_diar
                 .speakers
                 .iter()
@@ -1640,6 +1643,7 @@ where
                     && let Some((id, person, name)) = &reusable_me
                 {
                     row_ids[k] = Some(*id);
+                    named_me = Some(*id);
                     speakers.push(PostSpeaker {
                         id: *id,
                         role: SpeakerRole::Me,
@@ -1702,6 +1706,9 @@ where
                     });
                 }
                 row_ids[k] = Some(row.id);
+                if naming.role == SpeakerRole::Me {
+                    named_me = Some(row.id);
+                }
                 speakers.push(PostSpeaker {
                     id: row.id,
                     role: naming.role,
@@ -1795,6 +1802,17 @@ where
                     &key,
                     &crate::identities::encode(&IdentityRecord { speakers: record }),
                 )?;
+            }
+            // Which room "Me" row the user's voiceprint named in this run (T12.44); any other
+            // run (a call, a carried mark, no Me) leaves no such evidence.
+            let vp_key = crate::identities::voiceprint_me_key(meeting);
+            match named_me.filter(|_| in_room_kinds(&recorded)) {
+                Some(id) => {
+                    crate::local::set_tx(tx, &vp_key, &crate::identities::encode_voiceprint_me(id))?
+                }
+                None => {
+                    tx.delete_local_value(vp_key.as_str())?;
+                }
             }
 
             // Final segments of the processed tracks.

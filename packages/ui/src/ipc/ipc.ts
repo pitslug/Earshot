@@ -277,9 +277,14 @@ export interface IpcCommands
   /** Links a speaker to a person; resolves with the person's id. */
   linkSpeaker(meeting: string, speaker: string, choice: LinkChoice): Promise<string>;
   /** "This is me": a voice of an in-room meeting becomes its one "Me" row. Saves no voice.
-   * Rejects with `not_in_room` or `meeting_has_me`. */
-  markMe(meeting: string, speaker: string): Promise<void>;
-  /** "This isn't me": a "Me" row of an in-room meeting goes back to an unnamed voice. */
+   * Rejects with `not_in_room` or `meeting_has_me`. Resolves with the separate persons named
+   * after the user, whom the panel offers to merge into the user (T12.44). */
+  markMe(meeting: string, speaker: string): Promise<PersonItem[]>;
+  /** Merges a separate person named after the user into the user (T12.44). Rejects with
+   * `person_not_found` or `not_named_after_user`. */
+  mergeIntoMe(person: string): Promise<void>;
+  /** "This isn't me": a "Me" row of an in-room meeting goes back to an unnamed voice.
+   * Rejects with `recognised_me` on a row the user's voiceprint named (T12.44). */
   unmarkMe(meeting: string, speaker: string): Promise<void>;
   /** Renames a person and their speaker rows in every meeting. */
   renamePerson(person: string, name: string): Promise<number>;
@@ -468,6 +473,11 @@ export const everyCommandIsInIpc: [Missing] extends [never] ? true : never = tru
 /** The error kind every command fails with when the database was saved by a newer Earshot
  * (`ipc::NEWER_DATA_KIND` in Rust): the app shows its own screen for it. */
 export const NEWER_DATA_KIND = "newer_data";
+
+/** Why "This isn't me" is refused on a "Me" row the user's voiceprint named (T12.44): the
+ * refusal and the Speakers panel's tooltip (`detail::RECOGNISED_ME_COPY`, same text). */
+export const RECOGNISED_ME_COPY =
+  'Earshot recognised your voice here from your voiceprint. To change this, forget your voice in Settings, People, then choose "This isn\'t me".';
 
 /** The error kind every command fails with when the data folder could not be opened at the
  * start (`ipc::DATA_FOLDER_KIND` in Rust, T9.23): the app shows its own screen, whose Try

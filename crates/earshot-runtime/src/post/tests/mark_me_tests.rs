@@ -183,6 +183,11 @@ fn post_rerun_keeps_an_edit_marking_a_voice_as_me_and_adds_no_second_me() {
                 .unwrap()
                 .user_edited
         );
+        // A carried mark is the user's: no voiceprint evidence for it (T12.44).
+        assert_eq!(
+            crate::edit::voiceprint_me_in(&svc.store(), meeting).unwrap(),
+            None
+        );
     }
 }
 

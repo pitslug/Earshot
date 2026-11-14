@@ -79,6 +79,9 @@ meeting_records! {
     /// `summary-edits/<meeting>`: which of the meeting's summary rows hold text the user
     /// edited (T12.43; row ids only, [`crate::summary_edits`]).
     SummaryEdits => "summary-edits/", meeting at 0;
+    /// `voiceprint-me/<meeting>`: the in-room "Me" row the final pass named by the user's
+    /// voiceprint (T12.44; no biometric data, [`crate::identities::voiceprint_me_key`]).
+    VoiceprintMe => "voiceprint-me/", meeting at 0;
 }
 
 impl MeetingRecord {

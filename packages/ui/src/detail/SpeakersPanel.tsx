@@ -4,7 +4,9 @@
 // user, linked and recognised ones) sit in a collapsed list where a wrong name or match can
 // still be fixed: rename here, rename person, link, merge and forget voice; "This is me" and
 // "This isn't me" in an in-room meeting. Ignored voices keep their label and can be named
-// after all.
+// after all. T12.44: a typed name that is someone's says "Links to <name>" before Save; after
+// "This is me" a separate person with the user's name is offered for merging into the user;
+// "This isn't me" waits on a voice the user's voiceprint named.
 
 import {
   Accordion,
@@ -26,6 +28,7 @@ import {
   Input,
   Menu,
   MessageBar,
+  MessageBarActions,
   MessageBarBody,
   MenuButton,
   MenuItem,
@@ -43,7 +46,7 @@ import {
 } from "@fluentui/react-components";
 import { type KeyboardEvent, useRef, useState } from "react";
 
-import type { LinkChoice, MeetingDetail, PersonItem, SpeakerCard } from "../ipc";
+import { RECOGNISED_ME_COPY, type LinkChoice, type MeetingDetail, type PersonItem, type SpeakerCard } from "../ipc";
 import { linkablePersons, personNamed, recognised, recordingsGone, sourceLabel, speakerGroups } from "./detail";
 
 const useStyles = makeStyles({
@@ -156,6 +159,35 @@ export interface SpeakersPanelProps {
   /** The meeting is still finishing (T12.28): the voices can be seen and heard, but every edit
    * waits, because the final pass may change who is who and would drop it. */
   locked?: boolean;
+  /** A separate person named after the user, offered for merging into the user after "This is
+   * me" (T12.44); `null` or absent when there is none. */
+  mergeOffer?: PersonItem | null;
+  /** Merges the offered person into the user. */
+  onMergeIntoMe?(person: string): Promise<void>;
+  /** Declines the offer: the person stays separate. */
+  onKeepSeparate?(): void;
+}
+
+/** The user's person when `name` is the user's own name (not the default "Me"), case
+ * ignored as `personNamed` does; else null. */
+export function userNamed(name: string, persons: PersonItem[]): PersonItem | null {
+  const n = name.trim().toLowerCase();
+  const user = persons.find((p) => p.is_me);
+  if (!user || user.name.trim() === "Me") return null;
+  return user.name.trim().toLowerCase() === n ? user : null;
+}
+
+/** Why typing the user's own name does not link the voice to them (T12.44). */
+export function ownNameHint(user: PersonItem, canMarkMe: boolean): string {
+  return canMarkMe
+    ? `This is your name. Save makes a separate person called ${user.name}. To show this voice as you, choose "This is me".`
+    : `This is your name. Save makes a separate person called ${user.name}, because only your own row can be you.`;
+}
+
+/** The offer after "This is me" when a separate person has the user's name (T12.44). */
+export function mergeOfferText(person: PersonItem): string {
+  const voice = person.has_voiceprint ? " Earshot will then recognise you by the voice saved for them." : "";
+  return `There is also a person called ${person.name}. If that is you, merge them into you.${voice}`;
 }
 
 /** Why the Speakers panel's edits wait while the meeting finishes. */
@@ -180,6 +212,26 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
       {props.locked && (
         <MessageBar intent="info" layout="multiline">
           <MessageBarBody>{SPEAKERS_LOCKED_NOTE}</MessageBarBody>
+        </MessageBar>
+      )}
+      {props.mergeOffer && (
+        <MessageBar intent="info" layout="multiline" aria-label="Merge into you">
+          <MessageBarBody>{mergeOfferText(props.mergeOffer)}</MessageBarBody>
+          <MessageBarActions>
+            <Button
+              size="small"
+              appearance="primary"
+              disabled={props.locked}
+              onClick={() => {
+                if (props.mergeOffer) void props.onMergeIntoMe?.(props.mergeOffer.id);
+              }}
+            >
+              Merge into me
+            </Button>
+            <Button size="small" onClick={() => props.onKeepSeparate?.()}>
+              Keep separate
+            </Button>
+          </MessageBarActions>
         </MessageBar>
       )}
       {unnamed.length > 0 ? (
@@ -331,11 +383,23 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
   const [saving, setSaving] = useState(false);
   const placeholder = `Name ${card.name.toLowerCase().startsWith("speaker") ? card.name.toLowerCase() : "this voice"}`;
   const typed = value.trim();
+  // The person Save would link to (T12.44): said before Save, so a typed name that is
+  // already someone's is never a surprise.
+  const linksTo = typed === "" ? null : personNamed(typed, persons);
+  // The user's own name links to nobody: only the meeting's own row can be the user (the
+  // runtime refuses linking any other voice to them), so Save would make a separate person.
+  const ownName = typed === "" ? null : userNamed(typed, persons);
+  const hint = linksTo
+    ? `Links to ${linksTo.name}`
+    : ownName
+      ? ownNameHint(ownName, card.can_mark_me)
+      : null;
+  const hintId = `${card.id}-links-to`;
   // Saving makes a person (an existing one with exactly that name) and remembers the voice,
   // so only on Save or Enter: leaving the field keeps the draft.
   const save = async () => {
     if (typed === "" || saving || locked) return;
-    const existing = personNamed(typed, persons);
+    const existing = linksTo;
     setSaving(true);
     try {
       await onSave(
@@ -357,6 +421,7 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
           value={value}
           placeholder={placeholder}
           aria-label={`Name of ${card.name}`}
+          aria-describedby={hint ? hintId : undefined}
           disabled={locked}
           ref={nameRef}
           onChange={(_, d) => setValue(d.value)}
@@ -374,6 +439,11 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
           Save
         </Button>
       </div>
+      {hint && (
+        <Caption1 id={hintId} className={styles.muted}>
+          {hint}
+        </Caption1>
+      )}
       <RowFacts {...props} />
       <div className={styles.actions}>
         {card.can_ignore && (
@@ -491,6 +561,13 @@ function NamedRow(props: RowProps) {
           >
             This isn&apos;t me
           </Button>
+        )}
+        {card.recognised_me && (
+          <Tooltip content={RECOGNISED_ME_COPY} relationship="description">
+            <Button size="small" appearance="subtle" disabledFocusable>
+              This isn&apos;t me
+            </Button>
+          </Tooltip>
         )}
         <LinkPopover card={card} persons={persons} onLink={onLink} locked={locked} />
         {card.kind === "Other" && editing === null && (

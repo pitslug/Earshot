@@ -69,7 +69,8 @@ use earshot_core::pipeline::{FinalPassRequest, FinalPassTrack};
 use earshot_core::summary::SummaryV1;
 use earshot_core::vocabulary::suggest::{Suggester, split_punctuation};
 use earshot_core::voiceprint::{
-    Person, VoiceprintError, VoiceprintRepo, enroll, identity_of, me_person, resolve_person,
+    DEFAULT_ME_NAME, Person, VoiceprintError, VoiceprintRepo, enroll, existing_me, identity_of,
+    me_person, merge_persons, resolve_person,
 };
 use earshot_store::{StoreTx, first_free_speaker_name};
 use rand_core::Rng;
@@ -132,6 +133,13 @@ pub enum EditError {
     MeetingHasMe(EntityId),
     /// The speaker is not the meeting's "Me" row, so there is nothing to undo.
     NotMe(EntityId),
+    /// The "Me" row (the id) was named by the user's own voiceprint, not by the user's mark
+    /// ([`recognised_me`], T12.44): "This isn't me" would be undone by the next
+    /// re-transcription. Forgetting the user's voice comes first.
+    RecognisedMe(EntityId),
+    /// The person (the id) is not a separate person named after the user, so it is not
+    /// merged into the user ([`merge_into_me`], T12.44).
+    NotNamedAfterUser(EntityId),
     /// The meeting has no earlier summary to go back to.
     NoPreviousSummary,
     /// The earlier summary cites transcript segments that are no longer there (the meeting
@@ -250,6 +258,14 @@ impl fmt::Display for EditError {
                 write!(f, "speaker {id} is already \"Me\" in this meeting")
             }
             Self::NotMe(id) => write!(f, "speaker {id} is not \"Me\" in this meeting"),
+            Self::RecognisedMe(id) => write!(
+                f,
+                "speaker {id} was recognised by your voiceprint; forget your voice first"
+            ),
+            Self::NotNamedAfterUser(id) => write!(
+                f,
+                "person {id} is not a separate person named after you, so it is not merged into you"
+            ),
             Self::NoPreviousSummary => f.write_str("there is no previous summary"),
             Self::PreviousSummaryStale => f.write_str(
                 "the previous summary cites a transcript that has been replaced; summarise again",
@@ -1195,10 +1211,179 @@ pub fn can_mark_me(tracks: &[Track], speakers: &[Speaker], row: &Speaker) -> boo
             .any(|s| s.role == SpeakerRole::Me && !s.meta.deleted)
 }
 
-/// Whether [`unmark_me`] would accept `row` of a meeting with these `tracks`.
+/// Whether [`unmark_me`] would accept `row` of a meeting with these `tracks`, the row its
+/// last final pass named by the user's voiceprint (`voiceprint_me`, [`voiceprint_me_in`])
+/// and whether the user has a live voiceprint ([`user_has_voiceprint`]).
 #[must_use]
-pub fn can_unmark_me(tracks: &[Track], row: &Speaker) -> bool {
-    records_in_room(tracks) && row.role == SpeakerRole::Me
+pub fn can_unmark_me(
+    tracks: &[Track],
+    row: &Speaker,
+    voiceprint_me: Option<EntityId>,
+    user_has_voiceprint: bool,
+) -> bool {
+    records_in_room(tracks)
+        && row.role == SpeakerRole::Me
+        && !recognised_me(tracks, row, voiceprint_me, user_has_voiceprint)
+}
+
+/// Whether `row` is an in-room meeting's "Me" row that the user's own voiceprint named
+/// (T12.44), so "This isn't me" is refused ([`EditError::RecognisedMe`]): a re-run would
+/// name it again by that voiceprint. Decided only on positive evidence: the final pass's
+/// `voiceprint-me/<meeting>` record names the row (a mark is never in it), and the user still
+/// has a voiceprint. A missing or unreadable record allows the undo; so does a forgotten
+/// voice, the way out the refusal points to.
+#[must_use]
+pub fn recognised_me(
+    tracks: &[Track],
+    row: &Speaker,
+    voiceprint_me: Option<EntityId>,
+    user_has_voiceprint: bool,
+) -> bool {
+    records_in_room(tracks)
+        && row.role == SpeakerRole::Me
+        && user_has_voiceprint
+        && voiceprint_me == Some(row.id)
+}
+
+/// The "Me" row of `meeting` its last final pass named by the user's voiceprint (T12.44;
+/// `None` without one or when the record cannot be read).
+///
+/// # Errors
+/// Store errors.
+pub fn voiceprint_me_in(
+    store: &earshot_store::Store,
+    meeting: EntityId,
+) -> Result<Option<EntityId>, RuntimeError> {
+    Ok(store
+        .local_value(crate::identities::voiceprint_me_key(meeting).as_str())?
+        .and_then(|b| crate::identities::decode_voiceprint_me(&b)))
+}
+
+/// Deletes `meeting`'s voiceprint-named "Me" record inside `tx` when it names `speaker` (the
+/// user just marked or unmarked that row: it is theirs now).
+fn drop_voiceprint_me(
+    tx: &mut StoreTx<'_>,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<(), RuntimeError> {
+    let key = crate::identities::voiceprint_me_key(meeting);
+    if tx
+        .local_value(key.as_str())?
+        .and_then(|b| crate::identities::decode_voiceprint_me(&b))
+        == Some(speaker)
+    {
+        tx.delete_local_value(key.as_str())?;
+    }
+    Ok(())
+}
+
+/// The live person a speaker row's `person_id` stands for: `person` itself, or the person it
+/// was merged into (`merged_into`, as voiceprint matching resolves it). `None` for a deleted
+/// person or a broken chain.
+///
+/// # Errors
+/// Store errors.
+pub fn resolved_person<R: VoiceprintRepo + ?Sized>(
+    repo: &R,
+    person: EntityId,
+) -> Result<Option<EntityId>, RuntimeError> {
+    Ok(resolve_person(repo, person)
+        .map_err(voiceprint_err)?
+        .map(|p| p.id))
+}
+
+/// Whether the user (every `is_me` person and everyone merged into them) has a live
+/// voiceprint of any model.
+///
+/// # Errors
+/// Store errors.
+pub fn user_has_voiceprint<R: VoiceprintRepo + ?Sized>(repo: &R) -> Result<bool, RuntimeError> {
+    for p in repo.persons().map_err(voiceprint_err)? {
+        if !p.is_me || !p.is_live() {
+            continue;
+        }
+        for id in identity_of(repo, p.id).map_err(voiceprint_err)? {
+            if repo
+                .voiceprints_of(id)
+                .map_err(voiceprint_err)?
+                .iter()
+                .any(|v| !v.meta.deleted)
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// The live persons named after the user (T12.44): not the user, and with the user's own
+/// name (trimmed, case folded as search does). Empty while the user has no name of their own
+/// ([`DEFAULT_ME_NAME`]) or no person yet. What "This is me" offers to merge into the user
+/// ([`merge_into_me`]).
+///
+/// # Errors
+/// Store errors.
+pub fn named_after_me(services: &Services) -> Result<Vec<PersonInfo>, RuntimeError> {
+    named_after_me_in(&services.store())
+}
+
+/// [`named_after_me`] from a store the caller has locked.
+///
+/// # Errors
+/// Store errors.
+pub fn named_after_me_in(repo: &earshot_store::Store) -> Result<Vec<PersonInfo>, RuntimeError> {
+    let Some(name) = user_name_key(repo)? else {
+        return Ok(Vec::new());
+    };
+    Ok(list_persons_in(repo)?
+        .into_iter()
+        .filter(|p| !p.is_me && name_key(&p.name) == name)
+        .collect())
+}
+
+/// The user's name as [`named_after_me`] compares it, `None` without a user or a name.
+fn user_name_key<R: VoiceprintRepo + ?Sized>(repo: &R) -> Result<Option<String>, RuntimeError> {
+    let Some(me) = existing_me(repo).map_err(voiceprint_err)? else {
+        return Ok(None);
+    };
+    let name = me.display_name.trim();
+    Ok((name != DEFAULT_ME_NAME && !name.is_empty()).then(|| name_key(name)))
+}
+
+fn name_key(name: &str) -> String {
+    crate::search::fold_case(name.trim()).collect()
+}
+
+/// Merges person `person`, a separate person named after the user ([`named_after_me`]),
+/// into the user (T12.44), through the identity rule
+/// ([`earshot_core::voiceprint::merge_persons`]): the person is no longer listed and
+/// resolves to the user, speaker rows linked to them keep their link and name, and their
+/// voiceprints stay attached to them and match as the user (forgetting the user's voice
+/// forgets them too). Nothing is enrolled: a voice the user marked as themselves stays
+/// without a voiceprint. Returns the user's person.
+///
+/// # Errors
+/// [`EditError::PersonNotFound`] for an unknown, deleted or merged-away person;
+/// [`EditError::NotNamedAfterUser`] for the user, anyone named otherwise, or when the user
+/// has no name; store errors.
+pub fn merge_into_me(services: &Services, person: EntityId) -> Result<EntityId, RuntimeError> {
+    write(services, |tx, stamp| {
+        let p = tx
+            .person(person)
+            .map_err(voiceprint_err)?
+            .filter(Person::is_live)
+            .ok_or(EditError::PersonNotFound(person))?;
+        let name = user_name_key(&*tx)?;
+        let me = existing_me(&*tx).map_err(voiceprint_err)?;
+        let (Some(name), Some(me)) = (name, me) else {
+            return Err(EditError::NotNamedAfterUser(person).into());
+        };
+        if p.is_me || name_key(&p.display_name) != name {
+            return Err(EditError::NotNamedAfterUser(person).into());
+        }
+        merge_persons(tx, person, me.id, stamp.hlc, stamp.clock).map_err(voiceprint_err)?;
+        Ok(me.id)
+    })
 }
 
 /// "This is me" (T9.12): the user says that voice `speaker` of the in-room meeting `meeting`
@@ -1244,6 +1429,8 @@ pub fn mark_me(
             return Err(EditError::NotInRoom(meeting).into());
         }
         let me = me_person(tx, stamp).map_err(voiceprint_err)?;
+        // A mark is the user's, never the voiceprint's (T12.44).
+        drop_voiceprint_me(tx, meeting, speaker)?;
         row.role = SpeakerRole::Me;
         row.person_id = Some(me.id);
         row.display_name.clone_from(&me.display_name);
@@ -1264,12 +1451,13 @@ pub fn mark_me(
 /// "This isn't me" (T9.12), the way out of a mistake: the "Me" row `speaker` of the in-room
 /// meeting `meeting` goes back to an unnamed voice of the room, the smallest free "Speaker N"
 /// that needs a name, linked to nobody. Its identity entry reads as the pass's own naming
-/// again, so a re-run names the voice as any other. The user's person stays. Also takes a "Me"
-/// row a voiceprint named in this meeting; a re-run then names it again by that voiceprint.
+/// again, so a re-run names the voice as any other. The user's person stays. A "Me" row the
+/// user's voiceprint named is refused while that voiceprint exists ([`recognised_me`],
+/// T12.44): a re-run would name it again.
 ///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting or speaker, [`EditError::NotInRoom`],
-/// [`EditError::NotMe`]); store errors.
+/// [`EditError::NotMe`], [`EditError::RecognisedMe`]); store errors.
 pub fn unmark_me(
     services: &Services,
     meeting: EntityId,
@@ -1283,6 +1471,17 @@ pub fn unmark_me(
         if row.role != SpeakerRole::Me {
             return Err(EditError::NotMe(speaker).into());
         }
+        let voiceprint_me = tx
+            .local_value(crate::identities::voiceprint_me_key(meeting).as_str())?
+            .and_then(|b| crate::identities::decode_voiceprint_me(&b));
+        if recognised_me(
+            &tx.tracks(meeting)?,
+            &row,
+            voiceprint_me,
+            user_has_voiceprint(&*tx)?,
+        ) {
+            return Err(EditError::RecognisedMe(speaker).into());
+        }
         let taken: Vec<String> = tx
             .speakers(meeting)?
             .into_iter()
@@ -1292,6 +1491,7 @@ pub fn unmark_me(
         row.role = SpeakerRole::Room;
         row.person_id = None;
         row.display_name = first_free_speaker_name(&taken);
+        drop_voiceprint_me(tx, meeting, speaker)?;
         row.meta.touch(stamp.hlc, stamp.clock);
         tx.put_speaker(row.clone())?;
         update_identity_entry(tx, meeting, speaker, |i| {
