@@ -292,6 +292,10 @@ fn zip_directory<R: Read + Seek>(r: &mut R) -> Result<Vec<ZipEntry>> {
     if count == 0xFFFF || cd_size == u32::MAX || cd_offset == u32::MAX {
         bail!("zip64 archives are not supported");
     }
+    // Checked before allocating: the sizes come from the file.
+    if u64::from(cd_offset) + u64::from(cd_size) > len {
+        bail!("corrupt zip: the central directory does not fit the file");
+    }
     r.seek(SeekFrom::Start(u64::from(cd_offset)))?;
     let mut cd = vec![0u8; usize::try_from(cd_size)?];
     r.read_exact(&mut cd)?;
@@ -729,6 +733,28 @@ mod tests {
         let err = zip_extract(z, &d.join("out")).unwrap_err();
         assert!(format!("{err:#}").contains("too large"), "{err:#}");
         assert!(!d.join("out").exists());
+    }
+
+    /// An end record whose central directory does not fit the file is refused before anything
+    /// is allocated for it (the size and offset come from the file).
+    #[test]
+    fn zip_refuses_a_central_directory_that_does_not_fit_the_file() {
+        let plain = zip_bytes(&[("top/a.txt", b"hello", false, 0o100_644, 0)]);
+        let end = plain.len() - 22;
+        // Offset past the end, then a size of nearly 4 GiB: both name bytes the file lacks.
+        let mut far = plain.clone();
+        far[end + 16..end + 20].copy_from_slice(&0x7000_0000u32.to_le_bytes());
+        let mut huge = plain.clone();
+        huge[end + 12..end + 16].copy_from_slice(&u32::MAX.wrapping_sub(1).to_le_bytes());
+        for (tag, z) in [("far", far), ("huge", huge)] {
+            let d = tmp(&format!("zip-cd-{tag}"));
+            let err = zip_extract(z, &d.join("out")).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("central directory does not fit"),
+                "{tag}: {err:#}"
+            );
+            assert!(!d.join("out").exists(), "{tag}");
+        }
     }
 
     fn zip_extract(z: Vec<u8>, into: &Path) -> Result<()> {

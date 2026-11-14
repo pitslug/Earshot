@@ -108,6 +108,50 @@ fn zip_bytes(entries: &[ZipSpec<'_>]) -> Vec<u8> {
     out
 }
 
+/// `z` (from [`zip_bytes`]) with every central-directory entry moved to zip64 fields as
+/// Python's `zipfile` writes an entry past 2 GiB: the chosen 32-bit fields read 0xFFFFFFFF and
+/// their values follow in a zip64 extra field (id 1), after an unrelated extra field. The one
+/// of xtask's archive tests.
+fn with_zip64_fields(z: &[u8], sizes: bool, offsets: bool) -> Vec<u8> {
+    let eocd = z.len() - 22;
+    let cd_offset = le32(z, eocd + 16) as usize;
+    let count = le16(z, eocd + 10);
+    let mut out = z[..cd_offset].to_vec();
+    let mut cd = Vec::new();
+    let mut at = cd_offset;
+    for _ in 0..count {
+        let (n, e, c) = (le16(z, at + 28), le16(z, at + 30), le16(z, at + 32));
+        let mut head = z[at..at + 46].to_vec();
+        let mut values = Vec::new();
+        // APPNOTE 4.5.3 order: uncompressed size, compressed size, local header offset.
+        for (field, on) in [(24, sizes), (20, sizes), (42, offsets)] {
+            if on {
+                values.extend_from_slice(&u64::from(le32(z, at + field)).to_le_bytes());
+                head[field..field + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            }
+        }
+        let mut extra = z[at + 46 + n..at + 46 + n + e].to_vec();
+        // An unrelated field first (an NTFS-style timestamp id), so the reader must walk.
+        extra.extend_from_slice(&0x000au16.to_le_bytes());
+        extra.extend_from_slice(&4u16.to_le_bytes());
+        extra.extend_from_slice(&[0; 4]);
+        extra.extend_from_slice(&1u16.to_le_bytes());
+        extra.extend_from_slice(&u16::try_from(values.len()).unwrap().to_le_bytes());
+        extra.extend_from_slice(&values);
+        head[30..32].copy_from_slice(&u16::try_from(extra.len()).unwrap().to_le_bytes());
+        cd.extend_from_slice(&head);
+        cd.extend_from_slice(&z[at + 46..at + 46 + n]);
+        cd.extend_from_slice(&extra);
+        cd.extend_from_slice(&z[at + 46 + n + e..at + 46 + n + e + c]);
+        at += 46 + n + e + c;
+    }
+    out.extend_from_slice(&cd);
+    let mut end = z[eocd..].to_vec();
+    end[12..16].copy_from_slice(&u32::try_from(cd.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(&end);
+    out
+}
+
 fn tar_header(path: &str, len: usize, kind: tar::EntryType) -> tar::Header {
     let mut h = tar::Header::new_gnu();
     // The raw name, so the builder's own path checks cannot hide a bad entry.
@@ -385,6 +429,81 @@ fn download_archive_never_writes_past_the_declared_size() {
     let t = tar_bz2(&[("top/big.bin", &big, tar::EntryType::Regular)]);
     let x = extract("tar.bz2", vec![member("top/big.bin", &big[..10])]);
     assert_refused("tar-bomb", &x, &t, "past its size");
+}
+
+/// Python's `zipfile` gives the local header offset of an entry past 2 GiB (and sizes past
+/// 4 GiB) only in the entry's zip64 extra field: read by xtask's rule.
+#[test]
+fn download_archive_zip_reads_sizes_and_offsets_from_zip64_extra_fields() {
+    let big = b"genie ".repeat(4000);
+    let plain = zip_bytes(&[
+        ("top/", b"", false, DIR, 0),
+        ("top/a.json", b"{}", false, FILE, 0),
+        ("top/b.bin", &big, true, FILE, 0),
+    ]);
+    let x = extract(
+        "zip",
+        vec![member("top/a.json", b"{}"), member("top/b.bin", &big)],
+    );
+    for (sizes, offsets) in [(false, true), (true, false), (true, true)] {
+        let z = with_zip64_fields(&plain, sizes, offsets);
+        let (out, dir) = run(&format!("zip64-fields-{sizes}-{offsets}"), &x, &z);
+        out.unwrap_or_else(|e| panic!("{sizes} {offsets}: {e}"));
+        let into = dir.0.join("out");
+        assert_eq!(std::fs::read(into.join("top/a.json")).unwrap(), b"{}");
+        assert_eq!(std::fs::read(into.join("top/b.bin")).unwrap(), big);
+    }
+    // A zip64 marker with no zip64 field to read it from is refused, never guessed.
+    assert!(zip64_fields([1, 2, u32::MAX], &[]).is_err());
+    assert!(zip64_fields([1, 2, u32::MAX], &[1, 0, 4, 0, 0, 0, 0, 0]).is_err());
+    // An extra field running past its entry.
+    assert!(zip64_fields([1, 2, u32::MAX], &[1, 0, 16, 0, 0, 0, 0, 0]).is_err());
+    assert_eq!(zip64_fields([1, 2, 3], &[]).unwrap(), [1, 2, 3]);
+
+    // The same through the whole reader: a marked offset with its zip64 field cut away.
+    let mut cut = zip_bytes(&[("top/a.json", b"{}", false, FILE, 0)]);
+    let cd = cut
+        .windows(4)
+        .position(|w| w == 0x0201_4b50u32.to_le_bytes())
+        .unwrap();
+    cut[cd + 42..cd + 46].copy_from_slice(&u32::MAX.to_le_bytes());
+    let x = extract("zip", vec![member("top/a.json", b"{}")]);
+    assert_refused("zip64-no-field", &x, &cut, "zip64");
+}
+
+/// A zip64 size of `u64::MAX` (a hostile archive) is refused, never an overflow panic, even
+/// when the manifest claims the same size.
+#[test]
+fn download_archive_zip_refuses_a_declared_size_of_u64_max() {
+    let data = b"some bytes";
+    let plain = zip_bytes(&[("top/a.bin", data, false, FILE, 0)]);
+    let mut z = with_zip64_fields(&plain, true, false);
+    // The zip64 field holds the uncompressed size first (APPNOTE 4.5.3).
+    let size = (data.len() as u64).to_le_bytes();
+    let hits: Vec<usize> = (0..z.len() - 7).filter(|&i| z[i..i + 8] == size).collect();
+    assert_eq!(
+        hits.len(),
+        2,
+        "the zip64 sizes, uncompressed then compressed"
+    );
+    z[hits[0]..hits[0] + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    let pinned_max = Member {
+        path: "top/a.bin".to_owned(),
+        sha256: sha(data),
+        size: u64::MAX,
+    };
+    assert_refused(
+        "zip-max-pinned",
+        &extract("zip", vec![pinned_max]),
+        &z,
+        "too large",
+    );
+    assert_refused(
+        "zip-max",
+        &extract("zip", vec![member("top/a.bin", data)]),
+        &z,
+        "manifest says",
+    );
 }
 
 #[test]
