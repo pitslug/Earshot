@@ -2052,41 +2052,53 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: the manifest can list retired CUDA member names; `verify_part` ignores and `remove_part`/the next download deletes exactly those (both manifest parsers and the CUDA folder case table change together), before the first CUDA manifest bump.
   - accept: `cargo test -p earshot-runtime cuda`; `cargo test -p xtask models`
 
-- [ ] T12.49 Remove the thinking experiment, the rejected prompt variants and the compact grammar
+- [x] T12.49 Remove the thinking experiment, the rejected prompt variants and the compact grammar
+  - status (2026-11-15): merged after review; two-call and DTW untouched; `accept m4` passes on main. `cargo xtask ci` and `accept m4`, `m6`, `m7` pass on main with the whole batch.
   - found (the owner, 2026-11-15, codebase review): measured and rejected code still sits in shipped crates. Two-call summaries (T6.20c) and opt-in DTW word times stay: the owner kept both.
   - do: delete `earshot_llm_local::thinking` with its grammars, ffi helper, tests and every `--thinking` / `-think<cap>` path in `sum_eval` (example and xtask); delete the nine `PromptVariant`s that were measured and not adopted (keep `Current`, `Standard`, `Brief`) with their rule files, snapshots and tests; delete the compact summary grammar option. The production prompts and `summary_grammar` stay byte-identical (existing snapshots unchanged). The `sum_eval` format key and the Qwen no-think prefix get one source each that both the example and xtask read.
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-llm-local`; `cargo test -p xtask sum_eval`; `cargo xtask accept m4` unchanged in result
 
-- [ ] T12.50 Archive readers refuse and read the same things
+- [x] T12.50 Archive readers refuse and read the same things
+  - status (2026-11-15): merged after review; the zip64 rule is pinned by `fixtures/models/zip64_field_cases.toml` in both suites. `cargo xtask ci` and `accept m4`, `m6`, `m7` pass on main with the whole batch.
   - found (codebase review): xtask's zip reader allocates the central directory size the file claims with no bounds check; the app's zip reader cannot read an entry's zip64 extra field, which xtask's can.
   - do: xtask refuses a central directory that does not fit the file before allocating; `earshot_runtime::archive` reads an entry's zip64 extra field by xtask's rule (a marked field without its extra field is refused, a size of `u64::MAX` is an error, never an overflow). Tests on both sides with hand-built archives. No new shared crate here (that is the second half of the review).
   - accept: `cargo test -p xtask archive`; `cargo test -p earshot-runtime archive`
 
-- [ ] T12.51 Small removals and single copies in the tools
+- [x] T12.51 Small removals and single copies in the tools
+  - status (2026-11-15): merged after review; the bridging rule exists once, in `earshot_runtime::echo`. `cargo xtask ci` and `accept m4`, `m6`, `m7` pass on main with the whole batch.
   - found (codebase review).
   - do: remove the placeholder crates `earshot-asr-qnn` and `earshot-capture-android` from the workspace (the coordinator updates PLAN 3.1); move `gap_has_echo_path`, `gaps_bridged` and `cleaning_stretches_with` out of `earshot_runtime::echo` into the `model_eval` example, leaving `cleaning_stretches` with the same results; xtask's `ami_headset_speakers` and `ami_segments` call the `refs.rs` parsers it already compiles, and the shared case table still runs on both sides.
   - accept: `cargo test -p earshot-runtime echo`; `cargo test -p earshot-runtime post_echo`; `cargo test -p xtask fixtures`; `cargo build -p earshot-runtime --example model_eval`
 
-- [ ] T12.52 One record envelope, one settings reader, one file hasher
+- [x] T12.52 One record envelope, one settings reader, one file hasher
+  - status (2026-11-15): merged after review; every converted record's bytes are pinned by a literal test. Not converted: records whose payload is not JSON, and the three records with no version (T12.56). `cargo xtask ci` and `accept m4`, `m6`, `m7` pass on main with the whole batch.
   - found (codebase review): `version u32 LE | JSON` is encoded and decoded by hand in ten records, "a stored value this build does not know" is read by hand in every settings module, and the streaming SHA-256 of a file exists four times.
   - do: one framing helper in earshot-store for the version header, used by every `u32 LE | JSON` record; each record keeps its own version, migration and what it does with an unreadable value. Every record's stored bytes stay identical, pinned by a test per record written before the change. One `read_setting` helper and one on/off parser in `earshot_runtime::local`, used by the settings modules; public types and reported messages unchanged. One file hasher. Not touched (the sync lane is working there): `keep_local.rs`, `live/mod.rs`, earshot-store `db.rs`, `repo.rs`, `schema.rs`, core `model`.
   - accept: `cargo test -p earshot-store`; `cargo test -p earshot-runtime`
 
-- [ ] T12.53 Desktop: one job runner and fixed copy when a job cannot start
+- [x] T12.53 Desktop: one job runner and fixed copy when a job cannot start
+  - status (2026-11-15): merged after review; bindings unchanged. `cargo xtask ci` and `accept m4`, `m6`, `m7` pass on main with the whole batch.
   - found (codebase review): the voice sample, audio check and benchmark runners are copies of each other, and four runners put the operating system's error text into a message the window shows.
   - do: one generic single-slot job runner (slot, gate pass, cancel token, named thread under `catch_unwind`, exactly one terminal event) used by `VoiceJobs`, `AudioCheckJobs` and `BenchmarkJobs`, behaviour and events unchanged; a thread or download that cannot start reports `plain_text::INTERNAL`, never the error's text, with a test; `IpcError::busy`, `internal` and `invalid` constructors replace the hand-built literals, kinds and retryable flags unchanged. Lock order in `ModelJobs` and `CudaJobs` is not touched.
   - accept: `cargo test -p earshot-desktop --bin earshot`; bindings unchanged (`cargo test -p earshot-desktop bindings`)
 
-- [ ] T12.54 UI: shared settings parts, and no rule kept twice without need
+- [x] T12.54 UI: shared settings parts, and no rule kept twice without need
+  - status (2026-11-15): merged after review; screenshots of every Settings page and the wizard taken light and dark in the lane's preview. The real app's page (top-level await, `sideEffects: false`) is the owner's to open once from an install. `cargo xtask ci` and `accept m4`, `m6`, `m7` pass on main with the whole batch.
   - found (codebase review).
   - do: one `useLoad`, `Section`, page style, `NotLoaded`, `UnknownSettings`, `NoticeBar` and `errorText` used by the Settings pages and the first-run wizard, with no change to what any page shows; `ipc.ts` re-exports the generated types with `export type *`; fixed copy the mock repeats is read from the `fixtures/ui` JSON; the mock sorts folders by lower-case code point and `BASE_LETTERS`, `folderOrder`, `base_letter_cases.json` and its tests go (Rust still sends the sorted list); `splitPunctuation` is `splitToken` and white-space token splitting exists once; delete `apps/desktop/profile/`; the mock is loaded with a dynamic import outside Tauri.
   - accept: `cmd /c pnpm -r build`; `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-runtime folders`; screenshots of every Settings page and the wizard, light and dark, unchanged in content
 
-- [ ] T12.55 UI tests: one render and navigation harness
+- [x] T12.55 UI tests: one render and navigation harness
+  - status (2026-11-15): merged; test files only, the same 554 tests by name, 2319 expect calls before and after. `cargo xtask ci` and `accept m4`, `m6`, `m7` pass on main with the whole batch.
   - deps: T12.54
   - found (codebase review): the AppShell render tree is written out 30 times and the Settings navigation 24 times.
   - do: `renderApp` and `openSettings` in `packages/ui/src/test/`, `installMatchMedia(false)` by default in `setup.ts`; the Speakers panel and delete-dialog tests move out of `MeetingDetail.test.tsx` into their own files. No test is removed or weakened: the count of test cases is the same before and after.
   - accept: `cmd /c pnpm --filter @earshot/ui test` with the same number of tests as before
+
+- [ ] T12.56 Sweep: what the T12.49 to T12.55 reviews left
+  - found (reviews of the tidy-up batch, 2026-11-15).
+  - do: (1) developer text that can still reach a window: `"the task stopped"` (kind `internal`) in the desktop's `audio_check.rs`, `audio_settings.rs` and `benchmark.rs`, the check child's "wrote a line Earshot cannot read ({e})" with serde's text, and `general.rs` "cannot find Earshot's program file: {e}" with the operating system's text, each to fixed copy with a test; (2) the three device-local records with no version (`pass_backend` in `backends.rs`, `stored_check` in `model_bench.rs`, the echo state in `echo.rs`) turn an unreadable value into `RuntimeError::Internal`: read them as "reported, default used" like every other record (a format change needs the owner); (3) the unused `meta` style in `AppShell.tsx`.
+  - accept: `cargo test -p earshot-desktop --bin earshot`; `cargo test -p earshot-runtime`; `cmd /c pnpm --filter @earshot/ui test`
 
 ### Parked (the owner, 2026-11-14)
 
