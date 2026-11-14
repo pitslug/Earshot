@@ -77,27 +77,20 @@ fn stored_without_quotes(words: &[String]) -> Vec<&str> {
 /// [`vocabulary`] from the stored bytes (`None`: nothing stored), so a store transaction can
 /// read the words too (`crate::word_choices`).
 pub(crate) fn vocabulary_of(bytes: Option<&[u8]>) -> (Vocabulary, Option<UnknownSetting>) {
-    let Some(bytes) = bytes else {
-        return (Vocabulary::default(), None);
-    };
-    let refused = |why: String| {
-        (
-            Vocabulary::default(),
-            Some(UnknownSetting {
-                key: VOCABULARY_KEY,
-                stored: format!("a word list this version refuses: {why}"),
-            }),
-        )
-    };
+    let refused = |why: String| format!("a word list this version refuses: {why}");
     // Parsed as plain strings first, so the reason names the rule broken (the core check),
     // never a word.
-    match serde_json::from_slice::<Vec<String>>(bytes) {
-        Ok(words) => match Vocabulary::new(stored_without_quotes(&words)) {
-            Ok(v) => (v, None),
-            Err(e) => refused(e.to_string()),
+    crate::local::setting_of(
+        VOCABULARY_KEY,
+        bytes,
+        |bytes| match serde_json::from_slice::<Vec<String>>(bytes) {
+            Ok(words) => {
+                Vocabulary::new(stored_without_quotes(&words)).map_err(|e| refused(e.to_string()))
+            }
+            Err(_) => Err(refused("it is not a list of words".into())),
         },
-        Err(_) => refused("it is not a list of words".into()),
-    }
+    )
+    .or_default_with(Vocabulary::default)
 }
 
 /// Checks `words` ([`Vocabulary::new`]: trimmed, empty ones and repeats dropped, within the

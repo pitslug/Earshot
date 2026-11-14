@@ -34,19 +34,17 @@ pub(crate) fn record_key(meeting: EntityId) -> LocalKey {
 }
 
 fn encode(ids: &BTreeSet<EntityId>) -> Result<Vec<u8>, RuntimeError> {
-    let mut out = RECORD_VERSION.to_le_bytes().to_vec();
     let text: Vec<String> = ids.iter().map(ToString::to_string).collect();
-    serde_json::to_writer(&mut out, &text)
-        .map_err(|_| RuntimeError::Internal("summary edits encoding"))?;
-    Ok(out)
+    earshot_store::encode_versioned(RECORD_VERSION, &text)
+        .map_err(|_| RuntimeError::Internal("summary edits encoding"))
 }
 
 /// The ids of a stored record; one this version cannot read is no ids.
 fn decode(bytes: &[u8]) -> BTreeSet<EntityId> {
-    let Some((head, body)) = bytes.split_first_chunk::<4>() else {
+    let Some((version, body)) = earshot_store::split_version(bytes) else {
         return BTreeSet::new();
     };
-    if u32::from_le_bytes(*head) != RECORD_VERSION {
+    if version != RECORD_VERSION {
         return BTreeSet::new();
     }
     serde_json::from_slice::<Vec<String>>(body)
@@ -115,5 +113,18 @@ mod tests {
         assert!(decode(&other).is_empty());
         assert!(decode(b"ab").is_empty());
         assert!(decode(&[1, 0, 0, 0, b'{']).is_empty());
+    }
+
+    #[test]
+    fn summary_edits_record_bytes_are_pinned() {
+        // T12.52: the exact stored form of a fixed record, so a change to the framing shows.
+        let ids: BTreeSet<EntityId> = [EntityId::from_bytes([1; 16])].into_iter().collect();
+        let pinned_json = r#"["01010101-0101-0101-0101-010101010101"]"#;
+        let bytes = encode(&ids).unwrap();
+        assert_eq!(bytes[..4], [1, 0, 0, 0]);
+        assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), pinned_json);
+        let mut pinned = vec![1, 0, 0, 0];
+        pinned.extend_from_slice(pinned_json.as_bytes());
+        assert_eq!(decode(&pinned), ids);
     }
 }

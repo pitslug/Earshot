@@ -381,27 +381,25 @@ pub(crate) fn record_key(meeting: EntityId) -> LocalKey {
 /// The stored form of `entries`: version (u32 LE), then JSON.
 #[must_use]
 pub fn encode(entries: &[HandoverEntry]) -> Vec<u8> {
-    let payload = serde_json::to_vec(&HandoverPayload {
-        entries: entries.to_vec(),
-    })
-    .expect("numbers and fixed words serialise");
-    let mut out = Vec::with_capacity(4 + payload.len());
-    out.extend_from_slice(&HANDOVER_RECORD_VERSION.to_le_bytes());
-    out.extend_from_slice(&payload);
-    out
+    earshot_store::encode_versioned(
+        HANDOVER_RECORD_VERSION,
+        &HandoverPayload {
+            entries: entries.to_vec(),
+        },
+    )
+    .expect("numbers and fixed words serialise")
 }
 
 /// Reads [`encode`]; a record of another version or that does not parse is reported, never an
 /// error.
 #[must_use]
 pub fn decode(bytes: &[u8]) -> HandoverRecord {
-    let Some(head) = bytes.get(..4) else {
+    let Some((version, payload)) = earshot_store::split_version(bytes) else {
         return HandoverRecord {
             entries: Vec::new(),
             unreadable: Some("the handover record is truncated".into()),
         };
     };
-    let version = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
     if !READABLE_HANDOVER_VERSIONS.contains(&version) {
         return HandoverRecord {
             entries: Vec::new(),
@@ -411,7 +409,7 @@ pub fn decode(bytes: &[u8]) -> HandoverRecord {
             )),
         };
     }
-    match serde_json::from_slice::<HandoverPayload>(&bytes[4..]) {
+    match serde_json::from_slice::<HandoverPayload>(payload) {
         // Version 1 knew neither Codex nor its outcome word.
         Ok(p)
             if version == 1
@@ -596,6 +594,43 @@ mod tests {
             sign_in,
             accepts_effort: Some(true),
         }
+    }
+
+    #[test]
+    fn claude_code_handover_record_bytes_are_pinned() {
+        // T12.52: the exact stored form of a fixed record, so a change to the framing shows.
+        let entries = vec![HandoverEntry {
+            at_unix_ms: 1_700_000_000_000,
+            characters: 42,
+            cli: HandoverCli::Codex,
+            outcome: HandoverKind::Answered,
+        }];
+        let pinned_json = r#"{"entries":[{"at_unix_ms":1700000000000,"characters":42,"cli":"codex","outcome":"answered"}]}"#;
+        let bytes = encode(&entries);
+        assert_eq!(bytes[..4], [2, 0, 0, 0]);
+        assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), pinned_json);
+        let mut pinned = vec![2, 0, 0, 0];
+        pinned.extend_from_slice(pinned_json.as_bytes());
+        assert_eq!(
+            decode(&pinned),
+            HandoverRecord {
+                entries,
+                unreadable: None
+            }
+        );
+        // The messages of an unreadable record.
+        assert_eq!(
+            decode(&[2, 0]).unreadable.as_deref(),
+            Some("the handover record is truncated")
+        );
+        assert_eq!(
+            decode(&[3, 0, 0, 0, b'{', b'}']).unreadable.as_deref(),
+            Some("handover record version 3, this build reads versions 1 to 2")
+        );
+        assert_eq!(
+            decode(&[2, 0, 0, 0, b'{']).unreadable.as_deref(),
+            Some("the handover record does not parse")
+        );
     }
 
     #[test]

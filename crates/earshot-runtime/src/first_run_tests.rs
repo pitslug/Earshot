@@ -118,3 +118,18 @@ fn first_run_record_is_the_registry_key_with_its_version_outside_the_payload() {
     assert_eq!(bytes[..4], RECORD_VERSION.to_le_bytes());
     assert_eq!(decode(&bytes), Some(Record { done: true }));
 }
+
+#[test]
+fn first_run_record_bytes_are_pinned() {
+    // T12.52: the exact stored form of a fixed record, so a change to the framing shows.
+    let bytes = encode(&Record { done: true }).unwrap();
+    assert_eq!(bytes, b"\x01\x00\x00\x00{\"done\":true}");
+    assert_eq!(decode(&bytes), Some(Record { done: true }));
+    assert_eq!(
+        decode(b"\x01\x00\x00\x00{\"done\":false}"),
+        Some(Record { done: false })
+    );
+    assert_eq!(decode(&[1, 0]), None);
+    assert_eq!(decode(b"\x02\x00\x00\x00{\"done\":true}"), None);
+    assert_eq!(decode(b"\x01\x00\x00\x00{"), None);
+}

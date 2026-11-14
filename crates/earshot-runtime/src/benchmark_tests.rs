@@ -1068,3 +1068,16 @@ fn benchmark_real_run_with_the_installed_models() {
         Some(record)
     );
 }
+
+#[test]
+fn benchmark_record_bytes_are_pinned() {
+    // T12.52: the stored form is the version, then the record's compact JSON.
+    let dir = TempDir::new("benchmark-record");
+    let (svc, _) = services(&dir);
+    let r = BenchmarkRecord::new(&measured(&[1, 2], 0, false), &setup(None), T0, "0.1.0");
+    record_benchmark(&mut svc.store(), &r).unwrap();
+    let stored = svc.store().local_value(BENCHMARK_KEY).unwrap().unwrap();
+    let mut pinned = vec![1, 0, 0, 0];
+    pinned.extend_from_slice(&serde_json::to_vec(&r).unwrap());
+    assert_eq!(stored, pinned);
+}

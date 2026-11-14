@@ -21,7 +21,7 @@ use std::fmt;
 use earshot_store::Store;
 
 use crate::RuntimeError;
-use crate::local::DeviceRecord;
+use crate::local::{DeviceRecord, read_setting};
 pub use crate::model_settings::UnknownSetting;
 
 #[cfg(test)]
@@ -238,17 +238,20 @@ fn stored_device(
     name_key: &'static str,
     unknown: &mut Vec<UnknownSetting>,
 ) -> Result<DeviceSetting, RuntimeError> {
-    let Some(bytes) = store.local_value(key)? else {
+    let id = read_setting(store, key, |text| {
+        if text == DEFAULT {
+            Ok(None)
+        } else if usable_id(&text) {
+            Ok(Some(text))
+        } else {
+            Err(text)
+        }
+    })?
+    .known(unknown)
+    .flatten();
+    let Some(text) = id else {
         return Ok(DeviceSetting::Default);
     };
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    if text == DEFAULT {
-        return Ok(DeviceSetting::Default);
-    }
-    if !usable_id(&text) {
-        unknown.push(UnknownSetting { key, stored: text });
-        return Ok(DeviceSetting::Default);
-    }
     let name = store
         .local_value(name_key)?
         .map(|b| String::from_utf8_lossy(&b).into_owned())
@@ -266,19 +269,11 @@ pub fn audio_settings(store: &Store) -> Result<(AudioSettings, Vec<UnknownSettin
     let mut unknown = Vec::new();
     let microphone = stored_device(store, MICROPHONE_KEY, MICROPHONE_NAME_KEY, &mut unknown)?;
     let output = stored_device(store, OUTPUT_KEY, OUTPUT_NAME_KEY, &mut unknown)?;
-    let capture_mode = match store.local_value(CAPTURE_MODE_KEY)? {
-        None => DefaultCaptureMode::default(),
-        Some(bytes) => {
-            let text = String::from_utf8_lossy(&bytes).into_owned();
-            DefaultCaptureMode::parse(&text).unwrap_or_else(|| {
-                unknown.push(UnknownSetting {
-                    key: CAPTURE_MODE_KEY,
-                    stored: text,
-                });
-                DefaultCaptureMode::default()
-            })
-        }
-    };
+    let capture_mode = read_setting(store, CAPTURE_MODE_KEY, |text| {
+        DefaultCaptureMode::parse(&text).ok_or(text)
+    })?
+    .known(&mut unknown)
+    .unwrap_or_default();
     Ok((
         AudioSettings {
             microphone,

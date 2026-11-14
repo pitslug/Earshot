@@ -69,7 +69,7 @@ use earshot_onnx::embed::CamppEmbedder;
 use earshot_onnx::parakeet::{ParakeetCtc, ParakeetTdt};
 use earshot_onnx::segment::PyannoteSegmenter;
 use earshot_onnx::silero::SileroVad;
-use earshot_onnx::{Provider, SessionBackend, SessionConfig};
+use earshot_onnx::{Provider, SessionBackend, SessionConfig, file_sha256};
 use earshot_store::{DataDir, Store};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{Rng, SeedableRng};
@@ -1149,23 +1149,6 @@ pub fn require_qnn_model(models: &ModelDir, model: &ParakeetModel) -> Result<Pat
     let dir = models.root().join(dir);
     verify_qnn_conversion(&dir)?;
     Ok(dir)
-}
-
-/// Lower-case hex SHA-256 of a file.
-fn file_sha256(path: &Path) -> std::io::Result<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// The converter versions (`task` in `conversion.json`) whose NPU conversions the runtime

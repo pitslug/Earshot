@@ -159,20 +159,12 @@ impl AudioRetention {
 pub fn audio_retention(
     store: &Store,
 ) -> Result<(AudioRetention, Option<UnknownSetting>), RuntimeError> {
-    let Some(bytes) = store.local_value(AUDIO_RETENTION_KEY)? else {
-        return Ok((AudioRetention::default(), None));
-    };
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    Ok(match AudioRetention::parse(&text) {
-        Some(r) => (r, None),
-        None => (
-            AudioRetention::default(),
-            Some(UnknownSetting {
-                key: AUDIO_RETENTION_KEY,
-                stored: text,
-            }),
-        ),
-    })
+    Ok(
+        crate::local::read_setting(store, AUDIO_RETENTION_KEY, |text| {
+            AudioRetention::parse(&text).ok_or(text)
+        })?
+        .or_default_with(AudioRetention::default),
+    )
 }
 
 /// Stores the setting (replacing an earlier one). Deletes nothing: [`run`] applies it.
