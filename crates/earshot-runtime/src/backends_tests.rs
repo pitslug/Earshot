@@ -1875,22 +1875,22 @@ fn backends_previews_second_session_beside_cuda_follows_the_first() {
             "{card:?}"
         );
     }
-    // On the card the second session needs CUDA's memory limit, the first session's there.
+    // After review: on the card the second session needs the CPU's limit for both sessions, not
+    // CUDA's (the card placement used less private memory than the CPU placement it admitted).
     let card = Some(PREVIEW_MIN_CARD_MEMORY);
-    assert_eq!(
-        second_preview_backend(
-            BackendKind::Cuda,
-            &machine(Some(PREVIEW_MIN_MEMORY_CUDA), card),
-            everyone
-        ),
-        Ok(BackendKind::Cuda)
-    );
     const { assert!(PREVIEW_BOTH_MIN_MEMORY < PREVIEW_MIN_MEMORY_CUDA) };
     for memory in [
-        Some(PREVIEW_MIN_MEMORY_CUDA - 1),
-        Some(PREVIEW_BOTH_MIN_MEMORY),
-        None,
+        PREVIEW_MIN_MEMORY_CUDA,
+        PREVIEW_MIN_MEMORY_CUDA - 1,
+        PREVIEW_BOTH_MIN_MEMORY,
     ] {
+        assert_eq!(
+            second_preview_backend(BackendKind::Cuda, &machine(Some(memory), card), everyone),
+            Ok(BackendKind::Cuda),
+            "{memory}"
+        );
+    }
+    for memory in [Some(PREVIEW_BOTH_MIN_MEMORY - 1), None] {
         let m = machine(memory, card);
         let why = second_preview_backend_or_refusal(BackendKind::Cuda, &m, everyone)
             .expect_err("too little memory for a session on the card");
@@ -1945,6 +1945,80 @@ fn backends_previews_second_session_beside_cuda_follows_the_first() {
             previews_refused_second(kind, &big, everyone),
             second_preview_backend(kind, &big, everyone).err()
         );
+    }
+}
+
+/// The expected placement table of a CUDA track's two preview sessions after the review of
+/// T12.59/T12.60, shared by the rule's tests here and in `live/preview_tests.rs`: for each choice and
+/// card (unknown, one under `PREVIEW_MIN_CARD_MEMORY`, at it), where the first and second sessions
+/// run or why not, for the memories unknown, 12 GiB - 1, 12 GiB, 20 GiB - 1 and 20 GiB.
+#[allow(clippy::type_complexity)]
+pub(crate) fn cuda_preview_table() -> (
+    [Option<u64>; 5],
+    Vec<(
+        crate::preview_settings::PreviewChoice,
+        Option<u64>,
+        [Result<BackendKind, PreviewOffReason>; 5],
+        [Result<BackendKind, PreviewOffReason>; 5],
+    )>,
+) {
+    use crate::preview_settings::PreviewChoice::{Automatic, Everyone, On};
+    use BackendKind::{Cpu, Cuda};
+    use PreviewOffReason::{NotAsked, NotEnoughMemory, OffByDefault};
+    const { assert!(PREVIEW_MIN_MEMORY == PREVIEW_BOTH_MIN_MEMORY) };
+    let memories = [
+        None,
+        Some(PREVIEW_MIN_MEMORY - 1),
+        Some(PREVIEW_MIN_MEMORY),
+        Some(PREVIEW_MIN_MEMORY_CUDA - 1),
+        Some(PREVIEW_MIN_MEMORY_CUDA),
+    ];
+    let (c, p) = (Ok(Cuda), Ok(Cpu));
+    let (d, n, m) = (Err(OffByDefault), Err(NotAsked), Err(NotEnoughMemory));
+    let limit = Some(PREVIEW_MIN_CARD_MEMORY);
+    let under = Some(PREVIEW_MIN_CARD_MEMORY - 1);
+    let rows = vec![
+        // choice, card, first session by memory, second session by memory
+        (Automatic, None, [d, d, p, p, p], [n, n, n, n, n]),
+        (Automatic, under, [d, d, p, p, p], [n, n, n, n, n]),
+        (Automatic, limit, [d, d, p, p, c], [n, n, n, n, n]),
+        (On, None, [p, p, p, p, p], [n, n, n, n, n]),
+        (On, under, [p, p, p, p, p], [n, n, n, n, n]),
+        (On, limit, [c, c, c, c, c], [n, n, n, n, n]),
+        (Everyone, None, [p, p, p, p, p], [m, m, p, p, p]),
+        (Everyone, under, [p, p, p, p, p], [m, m, p, p, p]),
+        (Everyone, limit, [c, c, c, c, c], [m, m, c, c, c]),
+    ];
+    (memories, rows)
+}
+
+/// After review of T12.59/T12.60: the whole table of where a CUDA track's preview sessions run.
+/// Nobody who had previews before T12.59 loses them: below CUDA's memory limit a card with room
+/// takes the small card's CPU placement by default, and the second session needs the CPU's limit
+/// wherever it runs.
+#[test]
+fn backends_previews_on_cuda_follow_the_table_for_every_choice_memory_and_card() {
+    let (memories, rows) = cuda_preview_table();
+    for (choice, card, first, second) in rows {
+        for (i, memory) in memories.iter().enumerate() {
+            let m = nvidia_machine(*memory, card);
+            let got_first =
+                preview_backend_or_refusal(BackendKind::Cuda, &m, choice).map_err(|r| r.reason);
+            assert_eq!(
+                got_first, first[i],
+                "first {choice:?} card {card:?} memory {memory:?}"
+            );
+            let got_second = second_preview_backend_or_refusal(BackendKind::Cuda, &m, choice)
+                .map_err(|r| r.reason);
+            assert_eq!(
+                got_second, second[i],
+                "second {choice:?} card {card:?} memory {memory:?}"
+            );
+            // The second session runs where the first does whenever it runs.
+            if let (Ok(f), Ok(s)) = (got_first, got_second) {
+                assert_eq!(f, s, "{choice:?} {card:?} {memory:?}");
+            }
+        }
     }
 }
 

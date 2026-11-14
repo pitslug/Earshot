@@ -48,8 +48,8 @@
 //! `--hold-card-gib <n>` (evaluation only, T12.59, CUDA) makes the card look like an `n` GiB card
 //! in free memory: before anything loads, a second process (this exe as `--card-holder <n>`) loads
 //! CUDA Parakeet sessions, each with its own encoder (`backends::hold_card_for_evaluation`: Parakeet
-//! 0.6B v2 sessions of about 2.3 GiB while one more stays above the target, then Parakeet 110M
-//! sessions of about 0.5 GiB), until `nvidia-smi`'s free memory is at most `n - 1.5` GiB (1.5 GiB
+//! 0.6B v2 sessions of 2.58 to 2.80 GiB on the desktop while one more stays above the target, then
+//! Parakeet 110M sessions of about 0.66 GiB), until `nvidia-smi`'s free memory is at most `n - 1.5` GiB (1.5 GiB
 //! taken as other programs' share), and keeps them loaded until the replay ends; the run then tells
 //! it to stop by closing its stdin, and stops it through its own process handle if it has not
 //! exited within a minute. The report's `card_holder` has every load, the free memory left and

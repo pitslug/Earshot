@@ -98,6 +98,10 @@ pub const NOTE_NOT_HERE: &str = "Not available on this computer.";
 /// processor (T12.3c).
 pub const NOTE_CARD_PROCESSOR: &str =
     "Your graphics card has too little memory for provisional words, so they run on the processor.";
+/// Transcription on a graphics card with room for their session, by default on a machine with less
+/// memory than that placement needs (`backends::PREVIEW_MIN_MEMORY_CUDA`): they run on the
+/// processor, as they did before T12.59.
+pub const NOTE_MEMORY_PROCESSOR: &str = "This computer has too little memory to run provisional words on the graphics card, so they run on the processor.";
 /// Everyone chosen, and no room for the second session.
 pub const NOTE_EVERYONE_MEMORY: &str = "This computer shows them for the other people only: it needs more memory to run them for you too.";
 /// Everyone chosen with transcription on the NPU, which runs no session for the user's own voice
@@ -156,8 +160,14 @@ pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardwar
             if previews_refused(backend, hardware, choice).is_none() {
                 // Not refused by default means the memory is known and at least the limit the
                 // notes name (no automatic limit is lower), so only the card can need a note
-                // (pinned by `preview_automatic_on_never_says_default_off`).
-                (PreviewSetting::OtherPeople, card_note)
+                // (pinned by `preview_automatic_on_never_says_default_off`). Beside a card with
+                // room, a machine under the card placement's memory limit runs them on the
+                // processor too, for another reason.
+                let memory_note = (card_note.is_none()
+                    && backend != BackendKind::Cpu
+                    && preview_backend(backend, hardware, choice) == Ok(BackendKind::Cpu))
+                .then_some(NOTE_MEMORY_PROCESSOR);
+                (PreviewSetting::OtherPeople, card_note.or(memory_note))
             } else {
                 (PreviewSetting::Off, below_limit.then_some(NOTE_DEFAULT_OFF))
             }
@@ -452,19 +462,114 @@ mod tests {
         );
     }
 
+    /// The card placement keeps CUDA's higher memory limit; after review of T12.59/T12.60 a
+    /// machine under it is no longer refused by default but runs them on the processor, as
+    /// before T12.59, and the page says why.
     #[test]
     fn preview_cuda_keeps_its_higher_memory_limit() {
         let m = machine(Some(16 * GIB), Some(16 * GIB));
-        assert!(previews_refused(BackendKind::Cuda, &m, PreviewChoice::Automatic).is_some());
+        assert_eq!(
+            previews_refused(BackendKind::Cuda, &m, PreviewChoice::Automatic),
+            None
+        );
+        assert_eq!(
+            preview_backend(BackendKind::Cuda, &m, PreviewChoice::Automatic),
+            Ok(BackendKind::Cpu)
+        );
+        assert_eq!(
+            preview_page(PreviewChoice::Automatic, Accelerator::Cuda, &m).note,
+            Some(NOTE_MEMORY_PROCESSOR)
+        );
         assert_eq!(
             previews_refused(BackendKind::Cuda, &m, PreviewChoice::On),
             None
+        );
+        assert_eq!(
+            preview_backend(BackendKind::Cuda, &m, PreviewChoice::On),
+            Ok(BackendKind::Cuda)
         );
         let big = machine(Some(PREVIEW_MIN_MEMORY_CUDA), Some(PREVIEW_MIN_CARD_MEMORY));
         assert_eq!(
             previews_refused(BackendKind::Cuda, &big, PreviewChoice::Automatic),
             None
         );
+    }
+
+    /// After review of T12.59/T12.60: what the page shows and says for a CUDA lead, for every
+    /// choice, memory (unknown, 12 GiB - 1, 12 GiB, 20 GiB - 1, 20 GiB) and card (unknown, one under
+    /// the limit, at it), beside where `backends::cuda_preview_table` puts the sessions.
+    #[test]
+    fn preview_page_on_cuda_follows_the_table_for_every_choice_memory_and_card() {
+        use PreviewSetting::{Everyone as Ev, Off as O, OtherPeople as Op};
+        let (memories, _) = crate::backends::tests::cuda_preview_table();
+        let limit = Some(PREVIEW_MIN_CARD_MEMORY);
+        let under = Some(PREVIEW_MIN_CARD_MEMORY - 1);
+        let (df, below, card, mem, every) = (
+            Some(NOTE_DEFAULT_OFF),
+            Some(NOTE_ON_BELOW_LIMIT),
+            Some(NOTE_CARD_PROCESSOR),
+            Some(NOTE_MEMORY_PROCESSOR),
+            Some(NOTE_EVERYONE_MEMORY),
+        );
+        let rows = [
+            // choice, card, (shown, note) by memory
+            (
+                PreviewChoice::Automatic,
+                None,
+                [(O, df), (O, df), (Op, card), (Op, card), (Op, card)],
+            ),
+            (
+                PreviewChoice::Automatic,
+                under,
+                [(O, df), (O, df), (Op, card), (Op, card), (Op, card)],
+            ),
+            (
+                PreviewChoice::Automatic,
+                limit,
+                [(O, df), (O, df), (Op, mem), (Op, mem), (Op, None)],
+            ),
+            (
+                PreviewChoice::On,
+                None,
+                [(Op, below), (Op, below), (Op, card), (Op, card), (Op, card)],
+            ),
+            (
+                PreviewChoice::On,
+                under,
+                [(Op, below), (Op, below), (Op, card), (Op, card), (Op, card)],
+            ),
+            (
+                PreviewChoice::On,
+                limit,
+                [(Op, below), (Op, below), (Op, None), (Op, None), (Op, None)],
+            ),
+            (
+                PreviewChoice::Everyone,
+                None,
+                [(Ev, every), (Ev, every), (Ev, card), (Ev, card), (Ev, card)],
+            ),
+            (
+                PreviewChoice::Everyone,
+                under,
+                [(Ev, every), (Ev, every), (Ev, card), (Ev, card), (Ev, card)],
+            ),
+            (
+                PreviewChoice::Everyone,
+                limit,
+                [(Ev, every), (Ev, every), (Ev, None), (Ev, None), (Ev, None)],
+            ),
+        ];
+        for (choice, card_memory, want) in rows {
+            for (i, memory) in memories.iter().enumerate() {
+                let page = preview_page(choice, Accelerator::Cuda, &machine(*memory, card_memory));
+                assert_eq!(
+                    (page.shown, page.note),
+                    want[i],
+                    "{choice:?} card {card_memory:?} memory {memory:?}"
+                );
+                assert!(page.can_change);
+            }
+        }
     }
 
     #[test]
@@ -573,13 +678,22 @@ mod tests {
                 "{card:?}"
             );
         }
-        // On the card the second session needs CUDA's memory limit: below it the page says so.
+        // After review: on the card the second session needs the CPU's limit for both sessions
+        // (12 GiB), not CUDA's 20; under CUDA's it still runs, below the CPU's the page says so.
         let short = machine(
             Some(PREVIEW_MIN_MEMORY_CUDA - 1),
             Some(PREVIEW_MIN_CARD_MEMORY),
         );
         assert_eq!(
             preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &short).note,
+            None
+        );
+        let too_short = machine(
+            Some(PREVIEW_BOTH_MIN_MEMORY - 1),
+            Some(PREVIEW_MIN_CARD_MEMORY),
+        );
+        assert_eq!(
+            preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &too_short).note,
             Some(NOTE_EVERYONE_MEMORY)
         );
         // On the CPU nothing moves, so nothing is said.
@@ -649,6 +763,7 @@ mod tests {
             NOTE_CARD_PROCESSOR,
             NOTE_EVERYONE_MEMORY,
             NOTE_EVERYONE_NPU,
+            NOTE_MEMORY_PROCESSOR,
         ] {
             assert_eq!(crate::catalogue::manifest_id_in(note), None, "{note}");
             assert!(!note.contains("not measured"), "{note}");
@@ -664,6 +779,7 @@ mod tests {
             NOTE_CARD_PROCESSOR,
             NOTE_EVERYONE_MEMORY,
             NOTE_EVERYONE_NPU,
+            NOTE_MEMORY_PROCESSOR,
         ] {
             assert!(!note.contains('\u{2014}'), "{note}");
         }

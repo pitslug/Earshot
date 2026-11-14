@@ -1257,11 +1257,13 @@ pub const PREVIEW_MIN_MEMORY_CUDA: u64 = 20 * 1024 * 1024 * 1024;
 
 /// A graphics card with less dedicated memory than this (or of unknown memory) runs no preview
 /// session on CUDA. T12.59's rule (docs/live-previews.md, measured 2026-11-15 with one shared
-/// encoder): a call with previews on peaked 4.75 GiB above the card's baseline, plus 2.5 GiB for
-/// other programs and room needs 7.25 GiB, so the smallest card sold that fits is 8 GB, less
-/// 0.5 GiB because a card can report just under its size; checked with the card filled to what a
-/// card of this size would have free. Below it a CUDA track's previews run on the CPU instead
-/// (T12.3c, [`preview_backend`]).
+/// encoder): a call with previews on peaked at most 4.90 GiB above the card's baseline (bundled
+/// audio, the repeat run), plus 2.5 GiB for other programs and room needs 7.40 GiB, so the smallest
+/// card sold that fits is 8 GB, less 0.5 GiB because a card can report just under its size;
+/// checked with the card filled to what a card of this size would have free. Since T12.60 the
+/// largest peak is Everyone with the user's own previews on the card, 5.38 GiB, which needs
+/// 7.88 GiB: still an 8 GB card. Below it a CUDA track's previews run on the CPU instead (T12.3c,
+/// [`preview_backend`]).
 pub const PREVIEW_MIN_CARD_MEMORY: u64 = 15 * 512 * 1024 * 1024;
 
 /// A machine with less memory than this has no previews by default on the NPU (T12.12c). A
@@ -1285,8 +1287,11 @@ pub const OWN_VOICE_NPU_REFUSED: &str = "not for your own voice on the NPU yet: 
 /// state and sampled retries a preview must not touch and would need a second model that nothing
 /// here has measured. A CUDA track whose card has no room for a third session
 /// ([`PREVIEW_MIN_CARD_MEMORY`]) runs it on the CPU with the CPU's shared weights and the CPU's
-/// memory limit (T12.3c), so the card holds no more than with previews off. The user's "on" or
-/// "everyone" lifts only the system memory limit.
+/// memory limit (T12.3c), so the card holds no more than with previews off. So does one beside a
+/// card with room when the choice is automatic and the machine has less than
+/// [`PREVIEW_MIN_MEMORY_CUDA`] (or unknown memory): the card placement's limit is not met, and the
+/// CPU placement's is the one that applied there before T12.59. The user's "on" or "everyone" lifts
+/// only the system memory limit, so with them a card with room runs it on the card.
 ///
 /// # Errors
 /// The reason no preview session runs.
@@ -1316,10 +1321,18 @@ pub fn preview_backend_or_refusal(
         BackendKind::Cpu => (BackendKind::Cpu, PREVIEW_MIN_MEMORY),
         BackendKind::Cuda => {
             let card = crate::model_settings::graphics_memory(hardware);
-            if card.is_none_or(|m| m < PREVIEW_MIN_CARD_MEMORY) {
-                (BackendKind::Cpu, PREVIEW_MIN_MEMORY)
-            } else {
+            let roomy_card = card.is_some_and(|m| m >= PREVIEW_MIN_CARD_MEMORY);
+            // On the card only when the user lifted the memory limit or the machine has CUDA's;
+            // otherwise the CPU placement of a small card (T12.3c), so a machine that had previews
+            // on the CPU before T12.59 lowered the card limit keeps them there.
+            let card_memory_ok = choice != PreviewChoice::Automatic
+                || hardware
+                    .total_memory
+                    .is_some_and(|m| m >= PREVIEW_MIN_MEMORY_CUDA);
+            if roomy_card && card_memory_ok {
                 (BackendKind::Cuda, PREVIEW_MIN_MEMORY_CUDA)
+            } else {
+                (BackendKind::Cpu, PREVIEW_MIN_MEMORY)
             }
         }
         BackendKind::Qnn => (BackendKind::Qnn, PREVIEW_MIN_MEMORY_NPU),
@@ -1407,12 +1420,16 @@ pub const PREVIEW_BOTH_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 /// Where this computer runs the second preview session, for the user's own track in a call (T9.14),
 /// when the track runs on `backend`; `Err` says why it runs none. The one rule: only when the user
 /// chose everyone, only where the first session runs ([`previews_refused`]), never beside the NPU
-/// ([`OWN_VOICE_NPU_REFUSED`], T12.12c). Where the first session runs on CUDA (a CUDA track and a
-/// card at or above [`PREVIEW_MIN_CARD_MEMORY`]) it runs on CUDA too (T12.60), borrowing the shared
-/// encoder like every CUDA session (T12.58), with [`PREVIEW_MIN_MEMORY_CUDA`] known to be there:
-/// the first session's limit on CUDA. Everywhere else it runs on the CPU, with the CPU's shared
-/// weights and [`PREVIEW_BOTH_MIN_MEMORY`] known to be there: beside the CPU's own sessions, and
-/// beside a card too small for the first, with the first on the CPU too (T12.3c).
+/// ([`OWN_VOICE_NPU_REFUSED`], T12.12c), and only with [`PREVIEW_BOTH_MIN_MEMORY`] known to be
+/// there. It runs where the first runs: on CUDA when the first does (a CUDA track and a card at or
+/// above [`PREVIEW_MIN_CARD_MEMORY`], T12.60), borrowing the shared encoder like every CUDA session
+/// (T12.58); everywhere else on the CPU with the CPU's shared weights, beside the CPU's own
+/// sessions and beside a card too small for the first (T12.3c). The memory limit is the CPU's on
+/// the card too: under Everyone the card placement peaked at less private memory than the CPU
+/// placement that limit admitted beside CUDA (9.33 against 11.36 GiB on bundled audio, 8.61
+/// against 10.80 GiB on continuous; measured 2026-11-15, docs/live-previews.md, reports
+/// `t1260/t1260-card-bundled.json`, `t1260-cpu-bundled.json`, `t1260-card-continuous.json`,
+/// `t1260-cpu-continuous.json`).
 ///
 /// # Errors
 /// The reason no second session runs.
@@ -1449,13 +1466,17 @@ pub fn second_preview_backend_or_refusal(
             "previews run on Parakeet on the CPU or CUDA only",
         );
     }
-    // T12.60: on the card beside a first session on the card, else on the CPU.
-    let (runs_on, memory_limit) = if first == BackendKind::Cuda {
-        (BackendKind::Cuda, PREVIEW_MIN_MEMORY_CUDA)
+    // T12.60: on the card beside a first session on the card, else on the CPU; the same memory
+    // limit either way.
+    let runs_on = if first == BackendKind::Cuda {
+        BackendKind::Cuda
     } else {
-        (BackendKind::Cpu, PREVIEW_BOTH_MIN_MEMORY)
+        BackendKind::Cpu
     };
-    if hardware.total_memory.is_none_or(|m| m < memory_limit) {
+    if hardware
+        .total_memory
+        .is_none_or(|m| m < PREVIEW_BOTH_MIN_MEMORY)
+    {
         return refused(
             PreviewOffReason::NotEnoughMemory,
             "not enough memory for a third session of the model",
@@ -1935,10 +1956,11 @@ pub fn own_encoders_for_evaluation() {
     OWN_ENCODERS.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// The model [`hold_card_for_evaluation`] fills the card with in large steps (about 2.3 GiB each).
+/// The model [`hold_card_for_evaluation`] fills the card with in large steps (2.58 to 2.80 GiB
+/// each on the desktop, T12.59; the first includes the CUDA context).
 pub const CARD_HOLD_LARGE: &str = "parakeet-tdt-0.6b-v2";
-/// The model it fills the rest with (about 0.5 GiB each), so the card ends within one of these
-/// under the free memory asked.
+/// The model it fills the rest with (about 0.66 GiB each on the desktop), so the card ends within
+/// one of these under the free memory asked.
 pub const CARD_HOLD_SMALL: &str = "parakeet-tdt-110m";
 /// At most this many loads in one hold, so a load that takes nothing measurable cannot loop.
 const CARD_HOLD_MAX_LOADS: usize = 64;
