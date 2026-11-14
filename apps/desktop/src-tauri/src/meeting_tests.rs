@@ -1495,6 +1495,9 @@ enum Finish {
     },
     /// Only logs that it started (what `LoadHangs` runs after the recording, if anything).
     Logs,
+    /// The inner work holding the meeting's `Processing` lease for its whole run, as
+    /// `host::after_meeting` does (T12.38: a deletion waits for it to let go).
+    Leased(Box<Finish>),
 }
 
 /// A transcriber stuck in a call that never returns, polling nothing, until released.
@@ -1768,9 +1771,19 @@ impl Prepare for CancelPrepare {
                 Box::new(ChaCha8Rng::seed_from_u64(seed)),
             )
         });
-        let after: AfterFn = Box::new(move |_svc, outcome, cancel, progress| {
+        let after: AfterFn = Box::new(move |svc, outcome, cancel, progress| {
             let id = outcome.meeting;
             log.lock().unwrap().push(format!("{id} starts"));
+            let (finish, _lease) = match finish {
+                Finish::Leased(inner) => (
+                    *inner,
+                    Some(
+                        svc.lease_meeting_for(id, earshot_runtime::MeetingJob::Processing)
+                            .unwrap(),
+                    ),
+                ),
+                other => (other, None),
+            };
             match finish {
                 Finish::PassUntilCancelled(running) => {
                     running.send(()).unwrap();
@@ -1853,7 +1866,7 @@ impl Prepare for CancelPrepare {
                         reason: SkipReason::NotRequested,
                     },
                 ),
-                Finish::LiveHangs { .. } | Finish::LoadHangs { .. } => {
+                Finish::LiveHangs { .. } | Finish::LoadHangs { .. } | Finish::Leased(_) => {
                     unreachable!("taken above")
                 }
             }
@@ -2755,4 +2768,314 @@ fn meeting_driver_stop_and_wait_for_saves_the_recording_within_its_limit() {
         "the recording ended"
     );
     d.join();
+}
+
+// T12.38: deleting a meeting that is still finishing, through `crate::deletion`.
+
+/// Job work no deletion test starts.
+struct NoJobs;
+
+impl crate::jobs::JobWork for NoJobs {
+    fn retranscribe(
+        &self,
+        _: &Services,
+        _: earshot_core::identity::EntityId,
+        _: &mut dyn FnMut(HostStep<'_>),
+        _: &mut dyn FnMut(String),
+    ) -> Result<earshot_runtime::edit::Retranscribed, IpcError> {
+        unreachable!("no job runs here")
+    }
+
+    fn summarise(
+        &self,
+        _: &Services,
+        _: earshot_core::identity::EntityId,
+        _: &mut dyn FnMut(String),
+    ) -> Result<SummaryResult, IpcError> {
+        unreachable!("no job runs here")
+    }
+}
+
+fn no_jobs() -> crate::jobs::JobRunner {
+    crate::jobs::JobRunner::new(
+        Arc::new(NoJobs),
+        Arc::new(|_| {}),
+        crate::activity::WorkGate::new(),
+        &crate::cuda_settings::CudaLatch::resolved_off(),
+    )
+}
+
+fn id_of(meeting: &str) -> earshot_core::identity::EntityId {
+    crate::detail::parse_id(meeting).unwrap()
+}
+
+fn delete_ask(svc: &Services, d: &MeetingDriver, meeting: &str) -> crate::deletion::DeleteAsk {
+    crate::deletion::ask(svc, d, &no_jobs(), id_of(meeting)).unwrap()
+}
+
+fn delete_now(
+    svc: &Services,
+    d: &MeetingDriver,
+    meeting: &str,
+    stop_finishing: bool,
+    wait: Duration,
+) -> Result<(), IpcError> {
+    crate::deletion::delete(svc, d, &no_jobs(), id_of(meeting), stop_finishing, wait)
+}
+
+fn is_gone(svc: &Services, meeting: &str) -> bool {
+    svc.meeting_activity(id_of(meeting)).unwrap().is_none()
+}
+
+/// The final pass or the summary running until cancelled, holding the meeting as production
+/// does: the question says it stops that work, the delete without the user's yes is refused
+/// and changes nothing, and with it the work is cancelled and the meeting deleted.
+fn delete_while_finishing_stops_it(
+    finish: impl FnOnce(mpsc::Sender<()>) -> Finish,
+    cancelled: &SummaryEvent,
+) {
+    use crate::deletion::DeleteAsk;
+    let dir = TempDir::new("delete-finishing");
+    let svc = services(&dir);
+    let (running_tx, running) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::Leased(Box::new(finish(running_tx)))]);
+    let (d, rx) = cancel_driver(prepare);
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    running.recv_timeout(MEET_GUARD).unwrap();
+
+    assert_eq!(delete_ask(&svc, &d, &meeting), DeleteAsk::StopsFinishing);
+    let e = delete_now(&svc, &d, &meeting, false, MEET_GUARD).unwrap_err();
+    assert_eq!(e.kind, "meeting_finishing");
+    assert_eq!(e.message, crate::deletion::FINISHING);
+    assert!(e.retryable);
+    assert!(
+        d.is_finishing(&meeting),
+        "nothing was stopped without the user's yes"
+    );
+    assert!(!is_gone(&svc, &meeting));
+
+    delete_now(&svc, &d, &meeting, true, MEET_GUARD).unwrap();
+    assert!(is_gone(&svc, &meeting));
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert_eq!(&result_of(&events, &meeting), cancelled);
+    assert_eq!(d.phase(), DriverPhase::Idle);
+    assert_eq!(recordings_of(&svc, &meeting), 0, "the audio went with it");
+}
+
+#[test]
+fn meeting_delete_during_the_final_pass_stops_it_then_deletes() {
+    delete_while_finishing_stops_it(Finish::PassUntilCancelled, &SummaryEvent::PostCancelled);
+}
+
+#[test]
+fn meeting_delete_during_the_summary_stops_it_then_deletes() {
+    delete_while_finishing_stops_it(Finish::SummaryUntilCancelled, &SummaryEvent::Cancelled);
+}
+
+#[test]
+fn meeting_delete_while_it_records_is_refused_and_stops_nothing() {
+    use crate::deletion::DeleteAsk;
+    let dir = TempDir::new("delete-recording");
+    let svc = services(&dir);
+    let (open, gate) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::Gate(gate)]);
+    let (d, rx) = cancel_driver(prepare);
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    assert_eq!(delete_ask(&svc, &d, &meeting), DeleteAsk::Recording);
+    for stop in [false, true] {
+        let e = delete_now(&svc, &d, &meeting, stop, MEET_GUARD).unwrap_err();
+        assert_eq!(e.kind, "meeting_recording");
+        assert_eq!(e.message, crate::deletion::RECORDING);
+    }
+    assert_eq!(d.phase(), DriverPhase::Recording, "still recording");
+    d.stop().unwrap();
+    open.send(()).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert!(matches!(
+        result_of(&events, &meeting),
+        SummaryEvent::Skipped { .. }
+    ));
+    assert_eq!(delete_ask(&svc, &d, &meeting), DeleteAsk::Free);
+    delete_now(&svc, &d, &meeting, false, MEET_GUARD).unwrap();
+    assert!(is_gone(&svc, &meeting));
+}
+
+#[test]
+fn meeting_delete_after_a_left_thread_says_restart_and_keeps_the_meeting() {
+    // T9.22b: the work after the meeting stopped answering and was left; the left thread keeps
+    // its lease, so the meeting cannot go before that thread ends or Earshot restarts.
+    use crate::deletion::DeleteAsk;
+    let dir = TempDir::new("delete-left");
+    let svc = services(&dir);
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::Leased(Box::new(Finish::AfterHangs {
+        in_step: true,
+        inside: inside_tx,
+        release: release_rx,
+    }))]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let d = d.with_after_bounds(SHORT_AFTER);
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert!(matches!(
+        result_of(&events, &meeting),
+        SummaryEvent::Failed { .. }
+    ));
+    d.join();
+
+    assert_eq!(delete_ask(&svc, &d, &meeting), DeleteAsk::NeedsRestart);
+    for stop in [false, true] {
+        let e = delete_now(&svc, &d, &meeting, stop, MEET_GUARD).unwrap_err();
+        assert_eq!(e.kind, "meeting_needs_restart");
+        assert_eq!(e.message, crate::deletion::NEEDS_RESTART);
+        assert!(!e.retryable);
+    }
+    assert!(!is_gone(&svc, &meeting));
+    assert_eq!(recordings_of(&svc, &meeting), 1, "the audio stays");
+
+    // Once the left thread ends, the meeting is free again.
+    release.send(()).unwrap();
+    logged_eventually(&prepare, &format!("{meeting} returned, cancelled true"));
+    activity_becomes(
+        &svc,
+        &meeting,
+        earshot_runtime::MeetingActivity::Unprocessed,
+    );
+    assert_eq!(delete_ask(&svc, &d, &meeting), DeleteAsk::Free);
+    delete_now(&svc, &d, &meeting, false, MEET_GUARD).unwrap();
+    assert!(is_gone(&svc, &meeting));
+}
+
+#[test]
+fn meeting_delete_of_work_that_is_left_while_it_stops_says_restart() {
+    // The user's yes cancels work that never answers: the driver leaves it, and the deletion,
+    // still waiting, says what the question for a left thread says, never hanging.
+    let dir = TempDir::new("delete-left-on-stop");
+    let svc = services(&dir);
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::Leased(Box::new(Finish::StepPollsThenHangs {
+        inside: inside_tx,
+        release: release_rx,
+    }))]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    // Only the cancel's grace can leave it: the step polls until the cancel, then goes silent.
+    let d = d.with_after_bounds(AfterBounds {
+        load: MEET_GUARD,
+        step: MEET_GUARD,
+        cancelled: Duration::from_millis(300),
+    });
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    let e = delete_now(&svc, &d, &meeting, true, Duration::from_secs(5)).unwrap_err();
+    assert_eq!(e.kind, "meeting_needs_restart");
+    assert!(!is_gone(&svc, &meeting));
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert!(matches!(
+        result_of(&events, &meeting),
+        SummaryEvent::Failed { .. }
+    ));
+    d.join();
+    release.send(()).unwrap();
+    logged_eventually(&prepare, &format!("{meeting} returned"));
+}
+
+#[test]
+fn meeting_delete_of_work_slow_to_stop_is_refused_as_retryable_and_cancels_it() {
+    // A load polls nothing and cannot be interrupted: the deletion does not wait past its bound,
+    // and the work, already cancelled, ends on its own; the next delete goes through.
+    use crate::deletion::DeleteAsk;
+    let dir = TempDir::new("delete-slow");
+    let svc = services(&dir);
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::Leased(Box::new(
+        Finish::SlowLoadThenCancelled {
+            inside: inside_tx,
+            release: release_rx,
+        },
+    ))]);
+    let (d, rx) = cancel_driver(prepare);
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    assert!(d.owns(&meeting));
+    let e = delete_now(&svc, &d, &meeting, true, Duration::from_millis(200)).unwrap_err();
+    assert_eq!(e.kind, "meeting_stopping");
+    assert_eq!(e.message, crate::deletion::STILL_STOPPING);
+    assert!(e.retryable);
+    assert!(!is_gone(&svc, &meeting));
+    release.send(()).unwrap();
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert_eq!(result_of(&events, &meeting), SummaryEvent::PostCancelled);
+    assert_eq!(delete_ask(&svc, &d, &meeting), DeleteAsk::Free);
+    delete_now(&svc, &d, &meeting, false, MEET_GUARD).unwrap();
+    assert!(is_gone(&svc, &meeting));
+}
+
+#[test]
+fn meeting_delete_between_the_recording_saved_and_its_cancel_opening_stops_it() {
+    // Review of T12.38: the session swaps its lease when the recording is saved, before the
+    // meeting's thread hears it and opens its cancel. The thread is held in that moment (its call
+    // signal blocks), so the question must still say the work stops, never "restart", and a
+    // deletion must wait for the thread rather than delete under it.
+    use crate::deletion::DeleteAsk;
+    let dir = TempDir::new("delete-gap");
+    let svc = services(&dir);
+    let prepare = FakePrepare::new(Script::Ends);
+    let hold = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (held_tx, held) = mpsc::channel::<()>();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let signal_hold = Arc::clone(&hold);
+    let (held_tx, release_rx) = (Mutex::new(held_tx), Mutex::new(release_rx));
+    *prepare.call_signal.lock().unwrap() = Some(Box::new(move || {
+        if signal_hold.swap(false, Ordering::SeqCst) {
+            let _ = held_tx.lock().unwrap().send(());
+            let _ = release_rx.lock().unwrap().recv_timeout(MEET_GUARD);
+        }
+        None
+    }));
+    let (d, rx) = driver(prepare);
+    let meeting = d.start(&svc, request(CaptureMode::Call)).unwrap();
+    hold.store(true, Ordering::SeqCst);
+    held.recv_timeout(MEET_GUARD).unwrap();
+    // The session saves the recording while the meeting's thread is held.
+    let deadline = Instant::now() + MEET_GUARD;
+    while svc.meeting_activity(id_of(&meeting)).unwrap()
+        == Some(earshot_runtime::MeetingActivity::Recording)
+    {
+        assert!(Instant::now() < deadline, "the recording was never saved");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!d.is_finishing(&meeting), "the cancel is not open yet");
+    assert!(d.owns(&meeting));
+    assert_eq!(delete_ask(&svc, &d, &meeting), DeleteAsk::StopsFinishing);
+
+    let deleting = {
+        let (svc, d, meeting) = (svc.clone(), d.clone(), meeting.clone());
+        std::thread::spawn(move || delete_now(&svc, &d, &meeting, true, MEET_GUARD))
+    };
+    several_looks();
+    assert!(
+        !is_gone(&svc, &meeting),
+        "nothing is deleted under the meeting's thread"
+    );
+    release.send(()).unwrap();
+    deleting.join().unwrap().unwrap();
+    assert!(is_gone(&svc, &meeting));
+    let events = until_summary(&rx);
+    assert!(matches!(
+        events.last(),
+        Some(MeetingEvent::Summary { meeting: m, .. }) if *m == meeting
+    ));
+    d.join();
+    assert!(!d.owns(&meeting));
 }

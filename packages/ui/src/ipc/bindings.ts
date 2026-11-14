@@ -135,11 +135,15 @@ export const commands = {
 	 *  (`no_vault` while none is set).
 	 */
 	exportMeeting: (meeting: string) => typedError<ExportDone, IpcError>(__TAURI_INVOKE("export_meeting", { meeting })),
+	/**  What deleting `meeting` means now, for the delete question. */
+	meetingDeletion: (meeting: string) => typedError<DeleteAsk, IpcError>(__TAURI_INVOKE("meeting_deletion", { meeting })),
 	/**
-	 *  Deletes `meeting` with its audio, transcript and summaries (`meeting_busy` while a job
-	 *  holds it).
+	 *  Deletes `meeting` with its audio, transcript and summaries. With `stop_finishing`, a final
+	 *  pass or summary that runs on it is stopped first (`meeting_finishing` without it). Refused
+	 *  while it records (`meeting_recording`), while a job runs on it (`meeting_job`), and while work
+	 *  given up on still holds it (`meeting_needs_restart`).
 	 */
-	deleteMeeting: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("delete_meeting", { meeting })),
+	deleteMeeting: (meeting: string, stopFinishing: boolean) => typedError<null, IpcError>(__TAURI_INVOKE("delete_meeting", { meeting, stopFinishing })),
 	/**
 	 *  "Allow": the meeting kept on this computer may be summarised by the summary writer from now
 	 *  on (the UI asks first). Nothing is sent until the user re-summarises.
@@ -854,6 +858,21 @@ export type CudaView = {
 	/**  The measured CPU saving, once there is one (`cuda_switch::MEASURED_CPU_SAVED`). */
 	transcription_cpu_saved: string | null,
 };
+
+/**  What deleting a meeting means now, for the delete question. */
+export type DeleteAsk = 
+/**  Nothing works on it: the plain question. */
+"Free" | 
+/**  Its final pass or summary runs or waits: deleting stops that first. */
+"StopsFinishing" | 
+/**  It is still recording: not deletable until the recording stops. */
+"Recording" | 
+/**  A re-transcription runs on it: not deletable until it ends. */
+"Retranscribing" | 
+/**  A re-summary runs on it: not deletable until it ends. */
+"Resummarising" | 
+/**  Work Earshot gave up on (T9.22) still holds it: not deletable until Earshot restarts. */
+"NeedsRestart";
 
 /**  The meeting's header line. */
 export type DetailHeader = {

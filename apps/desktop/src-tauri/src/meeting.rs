@@ -186,6 +186,8 @@ struct Inner {
     shown: AtomicU64,
     /// What cancels each meeting past its recording, by meeting id ([`Finishing`]).
     finishing: Mutex<BTreeMap<String, MeetingCancel>>,
+    /// The meetings whose thread runs, from the session's start ([`Owned`]).
+    owned: Mutex<std::collections::BTreeSet<String>>,
     /// The most a stop and wait waits ([`STOP_CEILING`]).
     stop_ceiling: Duration,
     /// When the work after a meeting is given up ([`AfterBounds`]).
@@ -265,6 +267,7 @@ impl MeetingDriver {
             started: AtomicU64::new(0),
             shown: AtomicU64::new(0),
             finishing: Mutex::default(),
+            owned: Mutex::default(),
             stop_ceiling: STOP_CEILING,
             after_bounds: AfterBounds::default(),
         }))
@@ -404,6 +407,31 @@ impl MeetingDriver {
         if let Some(cancel) = finishing.get(meeting) {
             cancel.cancel();
         }
+    }
+
+    /// Whether `meeting`'s thread runs (T12.38): from its session's start until the thread ends,
+    /// so also in the moment between the session's lease swap at the end of the recording and
+    /// this thread opening its [`Finishing`] entry. The thread lets go of its own leases and joins
+    /// the work after the meeting before this turns false, so a meeting still held once it is
+    /// false is held by a thread left behind (T9.22).
+    #[must_use]
+    pub fn owns(&self, meeting: &str) -> bool {
+        self.0
+            .owned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(meeting)
+    }
+
+    /// Whether [`MeetingDriver::cancel_finishing`] reaches `meeting` now.
+    #[cfg(test)]
+    #[must_use]
+    pub fn is_finishing(&self, meeting: &str) -> bool {
+        self.0
+            .finishing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(meeting)
     }
 
     /// Where the meetings are.
@@ -844,6 +872,35 @@ impl Drop for Finishing<'_> {
     }
 }
 
+/// A meeting in [`Inner::owned`] for its thread's life from the session's start, taken out on
+/// every way off the thread, a panic's unwind included. Declared before the meeting's leases and
+/// its [`Finishing`], so it goes last.
+struct Owned<'a> {
+    inner: &'a Inner,
+    meeting: String,
+}
+
+impl<'a> Owned<'a> {
+    fn new(inner: &'a Inner, meeting: String) -> Self {
+        inner
+            .owned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(meeting.clone());
+        Self { inner, meeting }
+    }
+}
+
+impl Drop for Owned<'_> {
+    fn drop(&mut self) {
+        self.inner
+            .owned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.meeting);
+    }
+}
+
 /// Runs the offer to stop for a call (T9.4, [`earshot_runtime::call_end`]). It says what changes;
 /// the meeting's thread is what stops the session on [`MeetingEvent::CallEndStopped`].
 struct CallEndOffer {
@@ -966,6 +1023,7 @@ fn run(
     };
     let id = session.meeting();
     let _ = meeting.set(id.to_string());
+    let _owned = Owned::new(inner, id.to_string());
     // From here on the screen follows this meeting.
     inner.shown.store(seq, Ordering::SeqCst);
     let _ = started.send(Ok(id.to_string()));

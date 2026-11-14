@@ -36,6 +36,7 @@ import type {
   MeetingEvent,
   MeetingListItem,
   MeetingState,
+  DeleteAsk,
   TranscriptState,
   ModelItem,
   ModelJobEvent,
@@ -143,6 +144,7 @@ export type {
   MeetingEvent,
   MeetingListItem,
   MeetingState,
+  DeleteAsk,
   TranscriptState,
   ModelItem,
   ModelJobEvent,
@@ -324,8 +326,13 @@ export interface IpcCommands
   recoveredRecordings(): Promise<RecoveredRecording[]>;
   /** Exports to the Obsidian vault. Rejects with `no_vault` while none is set. */
   exportMeeting(meeting: string): Promise<ExportDone>;
-  /** Deletes the meeting. Rejects with `meeting_busy` while a job holds it. */
-  deleteMeeting(meeting: string): Promise<void>;
+  /** What deleting the meeting means now (T12.38): the delete question follows it. */
+  meetingDeletion(meeting: string): Promise<DeleteAsk>;
+  /** Deletes the meeting; with `stopFinishing`, a final pass or summary running on it is stopped
+   * first. Rejects with `meeting_finishing` (without it), `meeting_recording`, `meeting_job`,
+   * `meeting_needs_restart`, `meeting_stopping` (the stopped work has not let go yet) or
+   * `meeting_busy`. */
+  deleteMeeting(meeting: string, stopFinishing?: boolean): Promise<void>;
   /** This computer's hardware as read and the parts this build runs models on. */
   hardware(): Promise<HardwareView>;
   /** The Models page: every model, the choices, the recommendations, the check, what is used. */
