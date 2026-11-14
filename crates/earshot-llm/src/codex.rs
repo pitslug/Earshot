@@ -39,7 +39,10 @@
 //!   showed enabled or available on 0.155.1 ([`DISABLED_FEATURES`]: the shell and unified
 //!   exec, apps (connectors), plugins, hooks, memories, multi-agent, image generation and
 //!   viewing, goals, sleep, tool suggestions, skill search and installs, browsers, computer
-//!   use, workspace dependencies, shell snapshots, MCP elicitation). A feature name this
+//!   use, workspace dependencies, shell snapshots, MCP elicitation; and, from codex-cli
+//!   0.169.0's list (T12.46), the background daemon, the code-mode host, incremental tools,
+//!   plugin discovery, local automation, the system proxy fallback, the unified exec TTY and
+//!   write-stdin approval). A feature name this
 //!   version does not know fails the run before any connection ("Unknown feature flag",
 //!   measured), so every listed name was accepted by 0.155.1. The list is pinned to
 //!   codex-cli 0.155.1: on every Codex version change, re-check it against
@@ -144,9 +147,10 @@ sometimes your earlier reply with a correction. Follow the system part exactly a
 last user part with only the JSON object it asks for, nothing before or after it.";
 
 /// Features turned off for every run (module docs; names from `codex features list` of
-/// codex-cli 0.155.1). Pinned to that version: re-check against `codex features list` on
-/// every Codex version change.
-pub const DISABLED_FEATURES: [&str; 21] = [
+/// codex-cli 0.155.1, and the last eight from codex-cli 0.169.0, T12.46: each listed there,
+/// accepted by `--disable` and then reported off, checked 2026-11-14). Re-check against
+/// `codex features list` on every Codex version change.
+pub const DISABLED_FEATURES: [&str; 29] = [
     "shell_tool",
     "unified_exec",
     "apps",
@@ -168,6 +172,14 @@ pub const DISABLED_FEATURES: [&str; 21] = [
     "workspace_dependencies",
     "shell_snapshot",
     "tool_call_mcp_elicitation",
+    "daemon_auto_start",
+    "code_mode_host",
+    "incremental_tools",
+    "plugin_discovery_prefetch",
+    "in_app_local_automation",
+    "system_proxy_fallback",
+    "unified_exec_tty",
+    "write_stdin_approval",
 ];
 
 /// Prefix of the working folders.
@@ -1087,6 +1099,14 @@ mod tests {
             "plugins",
             "hooks",
             "memories",
+            "daemon_auto_start",
+            "code_mode_host",
+            "incremental_tools",
+            "plugin_discovery_prefetch",
+            "in_app_local_automation",
+            "system_proxy_fallback",
+            "unified_exec_tty",
+            "write_stdin_approval",
         ] {
             assert!(
                 s.windows(2).any(|w| w[0] == "--disable" && w[1] == f),
