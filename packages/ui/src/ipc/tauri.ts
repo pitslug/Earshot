@@ -102,6 +102,9 @@ export function createTauriIpc(): Ipc {
     resummarise: async (meeting) => {
       unwrap(await commands.resummarise(meeting));
     },
+    cancelJob: async (meeting) => {
+      unwrap(await commands.cancelJob(meeting));
+    },
     allowSummaryWriter: async (meeting) => {
       unwrap(await commands.allowSummaryWriter(meeting));
     },

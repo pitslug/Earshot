@@ -1031,27 +1031,27 @@ describe("MeetingDetailView", () => {
     await waitFor(() => expect(trash).toHaveFocus());
   });
 
-  it("says when a meeting with a job running cannot be deleted, keeps it and leaves the page usable", async () => {
-    const { user, calls } = await setup();
+  it("keeps a meeting with a job running, and the job, when the delete question is cancelled", async () => {
+    const { user, calls, timer } = await setup();
     await screen.findByText(/TL;DR/);
-    // A job is running on the meeting: jobs have no cancel, so the question says why and offers
-    // nothing to confirm (T12.38).
+    // A job is running on the meeting: the question offers to stop it first (T12.41).
     await user.click(screen.getByRole("button", { name: "Re-summarise" }));
     expect(screen.getByText("Writing a new summary")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
     const dialog = await accessibleDialog();
-    expect(
-      within(dialog).getByText("This meeting is being summarised again. Delete it when that has finished."),
-    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/^Earshot is writing a new summary of this meeting\./)).toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Delete meeting" })).toBeNull();
-    const close = within(dialog).getByRole("button", { name: "Close" });
-    expect(close).toHaveFocus();
-    await user.click(close);
+    const stop = within(dialog).getByRole("button", { name: "Stop and delete" });
+    expect(stop).toHaveFocus();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(calls.some((c) => c[0] === "deleteMeeting")).toBe(false);
+    expect(calls.some((c) => c[0] === "deleteMeeting" || c[0] === "cancelJob")).toBe(false);
     // The closed modal's aria-hidden on the page lifts on tabster's deferred pass.
     expect(await screen.findByRole("button", { name: new RegExp(`^${ITEM.title}`) })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: ITEM.title })).toBeInTheDocument();
+    // The job goes on to its own end.
+    act(() => timer.advance(POST_STEP_MS));
+    expect(await screen.findByText(/New summary ready/)).toBeInTheDocument();
   });
 
   it("still shows a refusal that comes only at the delete, with its own words", async () => {
@@ -1117,7 +1117,6 @@ describe("MeetingDetailView", () => {
       "NeedsRestart",
       "Earshot could not stop earlier work on this meeting, and that work still holds it. Restart Earshot, then delete the meeting.",
     ],
-    ["Retranscribing", "This meeting is being transcribed again. Delete it when that has finished."],
   ] as const)("says why a meeting cannot be deleted now (%s) and deletes nothing", async (ask, text) => {
     const { user, calls, ipc } = await setup();
     await screen.findByText(/TL;DR/);
@@ -1130,6 +1129,90 @@ describe("MeetingDetailView", () => {
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(calls.some((c) => c[0] === "deleteMeeting")).toBe(false);
     expect(await screen.findByRole("button", { name: new RegExp(`^${ITEM.title}`) })).toBeInTheDocument();
+  });
+
+  it("asks before stopping a re-summary, then stops it and deletes the meeting (T12.41)", async () => {
+    const { user, calls, timer } = await setup();
+    await screen.findByText(/TL;DR/);
+    await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
+    const dialog = await accessibleDialog();
+    expect(
+      within(dialog).getByText(
+        "Earshot is writing a new summary of this meeting. Deleting the meeting stops that work first, then deletes its recording, transcript, summary and speaker names from this computer. The note in your Obsidian vault stays.",
+      ),
+    ).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Stop and delete" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(calls).toContainEqual(["deleteMeeting", ITEM.id, true]);
+    await screen.findByRole("heading", { level: 1, name: OTHER.title });
+    expect(screen.queryByText("The meeting was not deleted")).toBeNull();
+    // The cancelled job never ends on its own afterwards.
+    act(() => timer.advance(10 * POST_STEP_MS));
+    expect(screen.queryByText(/New summary ready/)).toBeNull();
+  });
+
+  describe("cancelling a job (T12.41)", () => {
+    it("cancels a re-summary from its notice, saying so while it stops and when it has", async () => {
+      const { user, calls, ipc, timer } = await setup();
+      await screen.findByText(/TL;DR/);
+      let send = () => {};
+      const real = ipc.cancelJob;
+      ipc.cancelJob = async (meeting) => {
+        await new Promise<void>((resolve) => {
+          send = resolve;
+        });
+        await real(meeting);
+      };
+      await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+      expect(screen.getByText("Writing a new summary")).toBeInTheDocument();
+      const cancel = screen.getByRole("button", { name: "Cancel the new summary" });
+      expect(cancel).toHaveTextContent("Cancel");
+      await user.click(cancel);
+      // Until the job's last event: the bar says it stops, and the button holds.
+      expect(screen.getByText("Stopping. This can take a moment if a model is still working or loading.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Cancel the new summary" })).toHaveAttribute("aria-disabled", "true");
+      await act(async () => send());
+      expect(await screen.findByText("The new summary was cancelled. Nothing was changed.")).toBeInTheDocument();
+      expect(calls).toContainEqual(["cancelJob", ITEM.id]);
+      expect(screen.queryByRole("button", { name: /^Cancel the/ })).toBeNull();
+      act(() => timer.advance(10 * POST_STEP_MS));
+      expect(screen.queryByText(/New summary ready/)).toBeNull();
+      // The old summary is still shown, and a new job can start.
+      expect(screen.getByText(/TL;DR/)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Dismiss" }));
+      await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+      expect(screen.getByRole("button", { name: "Cancel the new summary" })).not.toHaveAttribute("aria-disabled");
+    });
+
+    it("cancels a re-transcription during its steps", async () => {
+      const { user, calls, timer } = await setup();
+      await screen.findByText(/TL;DR/);
+      await user.click(screen.getByRole("button", { name: "Re-transcribe" }));
+      act(() => timer.advance(2 * POST_STEP_MS));
+      expect(screen.getByText(/^Re-transcribing: /)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Cancel the re-transcription" }));
+      expect(
+        await screen.findByText("The re-transcription was cancelled. The transcript has not changed."),
+      ).toBeInTheDocument();
+      expect(calls).toContainEqual(["cancelJob", ITEM.id]);
+      act(() => timer.advance(20 * POST_STEP_MS));
+      expect(screen.queryByText("The meeting was transcribed again.")).toBeNull();
+    });
+
+    it("keeps the job running when the cancel could not be sent", async () => {
+      const { user, ipc } = await setup();
+      await screen.findByText(/TL;DR/);
+      ipc.cancelJob = async () => {
+        throw new Error("no");
+      };
+      await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+      await user.click(screen.getByRole("button", { name: "Cancel the new summary" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Cancel the new summary" })).not.toHaveAttribute("aria-disabled"),
+      );
+      expect(screen.getByText("Writing a new summary")).toBeInTheDocument();
+    });
   });
 
   it("puts the actions at the top, with no More menu", async () => {
@@ -1827,6 +1910,7 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
             onChanged={() => {}}
             onJobStarted={() => {}}
             onJobDismissed={() => {}}
+            onJobCancel={() => {}}
             finishing={finishing}
             job={job}
           />

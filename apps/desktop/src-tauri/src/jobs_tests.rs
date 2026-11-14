@@ -52,6 +52,8 @@ struct Fake {
     /// What the final pass warns of; with any, the re-transcription ran instead of finding no
     /// audio.
     post_warnings: Vec<PostWarning>,
+    /// The work never looks at its cancel (a model load, which cannot be interrupted).
+    deaf: bool,
 }
 
 impl Fake {
@@ -69,13 +71,29 @@ impl Fake {
                 panic,
                 summary_note: None,
                 post_warnings: Vec::new(),
+                deaf: false,
             }),
             tx,
         )
     }
 
-    fn wait(&self) {
-        self.go.lock().unwrap().recv_timeout(GUARD).unwrap();
+    /// Waits for `go`, or answers `cancel` as the final pass and the summary answer theirs
+    /// (true: cancelled). A `go` already sent wins: the work had finished.
+    fn wait(&self, cancel: &CancelToken) -> bool {
+        let go = self.go.lock().unwrap();
+        let until = std::time::Instant::now() + GUARD;
+        loop {
+            match go.recv_timeout(Duration::from_millis(5)) {
+                Ok(()) => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) if !self.deaf && cancel.is_cancelled() => {
+                    return true;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    assert!(std::time::Instant::now() < until, "nobody said go");
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
     }
 }
 
@@ -84,6 +102,7 @@ impl JobWork for Fake {
         &self,
         svc: &Services,
         meeting: EntityId,
+        cancel: &CancelToken,
         progress: &mut dyn FnMut(HostStep<'_>),
         warn: &mut dyn FnMut(String),
     ) -> Result<Retranscribed, IpcError> {
@@ -100,7 +119,16 @@ impl JobWork for Fake {
         progress(HostStep::Post(PostStage::EchoChecked {
             elapsed: Duration::ZERO,
         }));
-        self.wait();
+        if self.wait(cancel) {
+            // As `host::final_pass` answers a cancel: nothing stored.
+            return Ok(Retranscribed {
+                missing_tracks: Vec::new(),
+                post: HostPost::Cancelled {
+                    speaker_windows_deleted: Ok(0),
+                },
+                summary_stale: false,
+            });
+        }
         assert!(!self.panic, "a bug in the work");
         if self.fail {
             return Err(IpcError {
@@ -141,6 +169,7 @@ impl JobWork for Fake {
         &self,
         svc: &Services,
         meeting: EntityId,
+        cancel: &CancelToken,
         warn: &mut dyn FnMut(String),
     ) -> Result<SummaryResult, IpcError> {
         if let Some(n) = &self.summary_note {
@@ -150,7 +179,10 @@ impl JobWork for Fake {
             .lock()
             .unwrap()
             .push(svc.meeting_activity(meeting).unwrap());
-        self.wait();
+        if self.wait(cancel) {
+            // As `host::run_summary` answers a cancel: nothing stored.
+            return Ok(SummaryResult::Cancelled);
+        }
         assert!(!self.panic, "a bug in the summary");
         Ok(SummaryResult::Skipped {
             reason: SkipReason::NotRequested,
@@ -232,10 +264,105 @@ fn idle_driver() -> crate::meeting::MeetingDriver {
     )
 }
 
+/// Every event up to and including the first terminal one, then checks nothing follows.
+fn until_terminal(rx: &Receiver<JobEvent>) -> (Vec<JobEvent>, JobEvent) {
+    let mut steps = Vec::new();
+    loop {
+        let e = rx.recv_timeout(GUARD).unwrap();
+        if matches!(e, JobEvent::Progress { .. } | JobEvent::Warning { .. }) {
+            steps.push(e);
+        } else {
+            return (steps, e);
+        }
+    }
+}
+
+/// Waits until the work of `job` has reached its wait (its steps before it were sent).
+fn wait_for_the_work(rx: &Receiver<JobEvent>, job: JobKind) {
+    if job == JobKind::Retranscribe {
+        // Progress, Warning, Progress: the fake waits after its last step.
+        for _ in 0..3 {
+            rx.recv_timeout(GUARD).unwrap();
+        }
+    }
+}
+
 #[test]
-fn jobs_a_meeting_with_a_job_running_is_not_deleted_and_says_which() {
-    // T12.38: jobs have no cancel, so a deletion is refused with the job named, whether or not
-    // the user agreed to stop the meeting's finishing; once the job ends it goes through.
+fn jobs_cancel_ends_a_running_job_with_one_cancelled_event_and_frees_the_meeting() {
+    // T12.41: the job's own token reaches the work, which answers it as the final pass and the
+    // summary do; the runner sends exactly one terminal event and lets the meeting go.
+    let dir = TempDir::new("jobs-cancel");
+    let svc = services(&dir);
+    for (job, seed) in [(JobKind::Retranscribe, 21), (JobKind::Resummarise, 22)] {
+        let m = meeting(&svc, seed);
+        let (fake, _go) = Fake::new(false);
+        let (jobs, rx) = runner(Arc::clone(&fake));
+        jobs.start(&svc, m, job).unwrap();
+        wait_for_the_work(&rx, job);
+        assert_eq!(jobs.cancel(m), Some(job));
+        let (_, last) = until_terminal(&rx);
+        assert_eq!(
+            last,
+            JobEvent::Cancelled {
+                meeting: m.to_string(),
+                job,
+            }
+        );
+        jobs.join();
+        assert!(rx.try_recv().is_err(), "exactly one terminal event");
+        assert!(!jobs.running(m));
+        assert_eq!(jobs.cancel(m), None, "a second press changes nothing");
+        // The work held the meeting while it ran, and let it go when it answered the cancel.
+        assert_eq!(
+            *fake.seen.lock().unwrap(),
+            [Some(MeetingActivity::Processing)]
+        );
+        assert_ne!(
+            svc.meeting_activity(m).unwrap(),
+            Some(MeetingActivity::Processing)
+        );
+        svc.delete_meeting(m).unwrap();
+    }
+}
+
+#[test]
+fn jobs_cancel_after_the_job_finished_changes_nothing() {
+    let dir = TempDir::new("jobs-cancel-late");
+    let svc = services(&dir);
+    for (job, seed) in [(JobKind::Retranscribe, 23), (JobKind::Resummarise, 24)] {
+        let m = meeting(&svc, seed);
+        let (fake, go) = Fake::new(false);
+        let (jobs, rx) = runner(fake);
+        // No job yet: nothing to cancel.
+        assert_eq!(jobs.cancel(m), None);
+        jobs.start(&svc, m, job).unwrap();
+        go.send(()).unwrap();
+        let (_, last) = until_terminal(&rx);
+        jobs.join();
+        assert_eq!(jobs.cancel(m), None);
+        assert!(
+            matches!(
+                last,
+                JobEvent::Retranscribed { .. } | JobEvent::Summary { .. }
+            ),
+            "{last:?}"
+        );
+        assert!(rx.try_recv().is_err(), "no second terminal event");
+        // A new job afterwards gets a token of its own, not the old one.
+        let (fake, go) = Fake::new(false);
+        let (jobs, rx) = runner(fake);
+        jobs.start(&svc, m, job).unwrap();
+        go.send(()).unwrap();
+        let (_, last) = until_terminal(&rx);
+        jobs.join();
+        assert!(!matches!(last, JobEvent::Cancelled { .. }), "{last:?}");
+    }
+}
+
+#[test]
+fn jobs_a_meeting_with_a_job_running_is_deleted_only_after_the_user_agreed_to_stop_it() {
+    // T12.38 then T12.41: without the user's agreement a deletion is refused with the job named;
+    // with it, the job is cancelled, ends in its one Cancelled event, and the meeting is deleted.
     use crate::deletion::{DeleteAsk, ask, delete, job_copy};
     let dir = TempDir::new("jobs-delete");
     let svc = services(&dir);
@@ -245,23 +372,57 @@ fn jobs_a_meeting_with_a_job_running_is_not_deleted_and_says_which() {
         (JobKind::Retranscribe, DeleteAsk::Retranscribing, 12),
     ] {
         let m = meeting(&svc, seed);
-        let (fake, go) = Fake::new(false);
+        let (fake, _go) = Fake::new(false);
         let (jobs, rx) = runner(Arc::clone(&fake));
         jobs.start(&svc, m, job).unwrap();
+        wait_for_the_work(&rx, job);
         assert_eq!(ask(&svc, &driver, &jobs, m).unwrap(), asked);
-        for stop in [false, true] {
-            let e = delete(&svc, &driver, &jobs, m, stop, GUARD).unwrap_err();
-            assert_eq!(e.kind, "meeting_job");
-            assert_eq!(e.message, job_copy(job));
-            assert!(e.retryable);
-        }
-        go.send(()).unwrap();
-        let _ = rx.recv_timeout(GUARD).unwrap();
+        let e = delete(&svc, &driver, &jobs, m, false, GUARD).unwrap_err();
+        assert_eq!(e.kind, "meeting_job");
+        assert_eq!(e.message, job_copy(job));
+        assert!(e.retryable);
+        assert!(jobs.running(m), "a refusal stops nothing");
+
+        delete(&svc, &driver, &jobs, m, true, GUARD).unwrap();
+        let (_, last) = until_terminal(&rx);
+        assert_eq!(
+            last,
+            JobEvent::Cancelled {
+                meeting: m.to_string(),
+                job,
+            }
+        );
         jobs.join();
-        assert_eq!(ask(&svc, &driver, &jobs, m).unwrap(), DeleteAsk::Free);
-        delete(&svc, &driver, &jobs, m, false, GUARD).unwrap();
+        assert!(rx.try_recv().is_err(), "exactly one terminal event");
         assert_eq!(svc.meeting_activity(m).unwrap(), None);
+        assert!(svc.store().meeting(m).unwrap().unwrap().meta.deleted);
     }
+}
+
+#[test]
+fn jobs_a_job_that_does_not_answer_its_cancel_in_time_keeps_the_meeting() {
+    // A model load cannot be interrupted: past the wait the deletion is refused as retryable,
+    // the job already cancelled, and nothing is deleted.
+    use crate::deletion::{STILL_STOPPING, delete};
+    let dir = TempDir::new("jobs-delete-slow");
+    let svc = services(&dir);
+    let driver = idle_driver();
+    let m = meeting(&svc, 13);
+    let (mut fake, go) = Fake::new(false);
+    Arc::get_mut(&mut fake).unwrap().deaf = true;
+    let (jobs, rx) = runner(Arc::clone(&fake));
+    jobs.start(&svc, m, JobKind::Resummarise).unwrap();
+    let e = delete(&svc, &driver, &jobs, m, true, Duration::from_millis(200)).unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str(), e.retryable),
+        ("meeting_stopping", STILL_STOPPING, true)
+    );
+    assert!(!svc.store().meeting(m).unwrap().unwrap().meta.deleted);
+    go.send(()).unwrap();
+    let (_, last) = until_terminal(&rx);
+    jobs.join();
+    // The work finished before it looked at the token again: its result stands.
+    assert!(matches!(last, JobEvent::Summary { .. }), "{last:?}");
 }
 
 #[test]
@@ -455,6 +616,7 @@ fn jobs_resummarise_tells_a_setup_note_before_the_summary() {
         panic: false,
         summary_note: Some(note.into()),
         post_warnings: Vec::new(),
+        deaf: false,
     });
     let (jobs, rx) = runner(fake);
     jobs.start(&svc, m, JobKind::Resummarise).unwrap();

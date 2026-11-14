@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import table from "../../../../fixtures/ui/delete_copy_cases.json";
 import { MOCK_DELETE_COPY } from "../ipc";
 import { DELETE_COPY } from "./deleteCopy";
-import { deleteQuestion } from "./deleteQuestion";
+import { deleteQuestion, stopsWork } from "./deleteQuestion";
 
 describe("delete question copy", () => {
   it("is the shared table, word for word", () => {
@@ -19,10 +19,21 @@ describe("delete question copy", () => {
   it("says why a meeting cannot be deleted now in the app's words", () => {
     expect(deleteQuestion("Recording")).toEqual({ text: table.recording, confirm: null });
     expect(deleteQuestion("NeedsRestart")).toEqual({ text: table.needs_restart, confirm: null });
-    expect(deleteQuestion("Retranscribing")).toEqual({ text: table.retranscribing, confirm: null });
-    expect(deleteQuestion("Resummarising")).toEqual({ text: table.resummarising, confirm: null });
     expect(deleteQuestion("Free").confirm).toBe("Delete meeting");
     expect(deleteQuestion("StopsFinishing").confirm).toBe("Stop and delete");
+  });
+
+  it("offers to stop a job and delete, as it does for the meeting's finishing (T12.41)", () => {
+    expect(deleteQuestion("Retranscribing")).toEqual({
+      text: expect.stringMatching(/^Earshot is transcribing this meeting again\. Deleting the meeting stops that work first/),
+      confirm: "Stop and delete",
+    });
+    expect(deleteQuestion("Resummarising")).toEqual({
+      text: expect.stringMatching(/^Earshot is writing a new summary of this meeting\. Deleting the meeting stops that work first/),
+      confirm: "Stop and delete",
+    });
+    const all = ["Free", "StopsFinishing", "Recording", "Retranscribing", "Resummarising", "NeedsRestart"] as const;
+    expect(all.filter(stopsWork)).toEqual(["StopsFinishing", "Retranscribing", "Resummarising"]);
   });
 
   it("uses no em dash and no run of spaces", () => {

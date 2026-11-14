@@ -6,8 +6,10 @@
 //! token), then tries `Services::delete_meeting` until the meeting's leases are gone, at most
 //! [`STOP_WAIT`]. A thread left behind (T9.22) keeps its `Processing` lease until it ends or the
 //! app restarts, so such a meeting is refused with [`NEEDS_RESTART`]: nothing records a deletion
-//! for the next start. A meeting still recording is refused ([`RECORDING`]); so is one with a
-//! re-transcription or re-summary running, since jobs have no cancel ([`job_copy`]).
+//! for the next start. A meeting still recording is refused ([`RECORDING`]). A re-transcription
+//! or re-summary running on it is stopped the same way once the user agreed (T12.41: through
+//! [`JobRunner::cancel`], then the job's thread ends); without that agreement the deletion is
+//! refused naming the job ([`job_copy`]).
 
 use std::time::{Duration, Instant};
 
@@ -31,9 +33,9 @@ pub enum DeleteAsk {
     StopsFinishing,
     /// It is still recording: not deletable until the recording stops.
     Recording,
-    /// A re-transcription runs on it: not deletable until it ends.
+    /// A re-transcription runs on it: deleting stops it first (T12.41).
     Retranscribing,
-    /// A re-summary runs on it: not deletable until it ends.
+    /// A re-summary runs on it: deleting stops it first (T12.41).
     Resummarising,
     /// Work Earshot gave up on (T9.22) still holds it: not deletable until Earshot restarts.
     NeedsRestart,
@@ -64,15 +66,17 @@ pub const STILL_STOPPING: &str = "Earshot is still stopping the work on this mee
 pub const NEEDS_RESTART: &str = "Earshot could not stop earlier work on this meeting, and that \
      work still holds it. Restart Earshot, then delete the meeting.";
 
-/// The refusal of a meeting with a job running.
+/// The refusal of a meeting with a job running, when the user did not agree to stop it.
 #[must_use]
 pub fn job_copy(job: JobKind) -> &'static str {
     match job {
         JobKind::Retranscribe => {
-            "This meeting is being transcribed again. Delete it when that has finished."
+            "This meeting is being transcribed again. Delete it again to stop that and delete \
+             the meeting."
         }
         JobKind::Resummarise => {
-            "This meeting is being summarised again. Delete it when that has finished."
+            "This meeting is being summarised again. Delete it again to stop that and delete \
+             the meeting."
         }
     }
 }
@@ -118,12 +122,12 @@ fn refused(kind: &str, message: &str, retryable: bool) -> IpcError {
     }
 }
 
-/// Deletes `meeting`; when its finishing runs and `stop_finishing` is set, cancels that first and
-/// waits up to `wait` for it to let go (production: [`STOP_WAIT`]).
+/// Deletes `meeting`; when its finishing or a job on it runs and `stop_finishing` is set, cancels
+/// that first and waits up to `wait` for it to let go (production: [`STOP_WAIT`]).
 ///
 /// # Errors
-/// `meeting_recording`, `meeting_job` and `meeting_needs_restart` as [`ask`] says;
-/// `meeting_finishing` (retryable) while its finishing runs and `stop_finishing` is not set;
+/// `meeting_recording` and `meeting_needs_restart` as [`ask`] says; `meeting_finishing` and
+/// `meeting_job` (retryable) while its finishing or a job runs and `stop_finishing` is not set;
 /// `meeting_stopping` (retryable) when the cancelled work has not let go within `wait`; anything
 /// `Services::delete_meeting` refuses.
 pub fn delete(
@@ -140,19 +144,19 @@ pub fn delete(
             Ok(())
         }
         DeleteAsk::Recording => Err(refused("meeting_recording", RECORDING, false)),
-        DeleteAsk::Retranscribing => Err(refused(
+        DeleteAsk::Retranscribing if !stop_finishing => Err(refused(
             "meeting_job",
             job_copy(JobKind::Retranscribe),
             true,
         )),
-        DeleteAsk::Resummarising => {
+        DeleteAsk::Resummarising if !stop_finishing => {
             Err(refused("meeting_job", job_copy(JobKind::Resummarise), true))
         }
         DeleteAsk::NeedsRestart => Err(refused("meeting_needs_restart", NEEDS_RESTART, false)),
         DeleteAsk::StopsFinishing if !stop_finishing => {
             Err(refused("meeting_finishing", FINISHING, true))
         }
-        DeleteAsk::StopsFinishing => {
+        DeleteAsk::StopsFinishing | DeleteAsk::Retranscribing | DeleteAsk::Resummarising => {
             // Bounded, not cancellable: a window closed meanwhile does not end it early, and the
             // command returns within `wait` plus one try whatever happens (review of T12.38).
             let id = meeting.to_string();
@@ -161,9 +165,12 @@ pub fn delete(
                 // Again on every round: in the moment before the meeting's thread opens its
                 // cancel there is nothing to reach yet, and a second cancel changes nothing.
                 driver.cancel_finishing(&id);
-                // Only once the meeting's thread has ended: it may not hold a lease yet, and it
-                // lets go of its own leases before it ends.
-                if !driver.owns(&id) {
+                // A job is cancelled the same way (T12.41); a job's thread lets go of its lease
+                // before it ends.
+                jobs.cancel(meeting);
+                // Only once the meeting's thread and any job's have ended: it may not hold a lease
+                // yet, and it lets go of its own leases before it ends.
+                if !driver.owns(&id) && jobs.running_job(meeting).is_none() {
                     match svc.delete_meeting(meeting) {
                         Ok(_) => return Ok(()),
                         Err(RuntimeError::MeetingBusy(_)) => {}
@@ -202,9 +209,9 @@ pub async fn meeting_deletion(
 }
 
 /// Deletes `meeting` with its audio, transcript and summaries. With `stop_finishing`, a final
-/// pass or summary that runs on it is stopped first (`meeting_finishing` without it). Refused
-/// while it records (`meeting_recording`), while a job runs on it (`meeting_job`), and while work
-/// given up on still holds it (`meeting_needs_restart`).
+/// pass, summary, re-transcription or re-summary that runs on it is stopped first
+/// (`meeting_finishing` or `meeting_job` without it). Refused while it records
+/// (`meeting_recording`) and while work given up on still holds it (`meeting_needs_restart`).
 #[tauri::command]
 #[specta::specta]
 pub async fn delete_meeting(
