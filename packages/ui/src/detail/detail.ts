@@ -47,7 +47,8 @@ export function summaryMarkdown(s: SummaryView): string {
 }
 
 /** The header's second line: "Mon 2 Nov 09:30 · 42 min · Call · Final transcript · Summary by
- * Qwen 3.5 9B · Transcribed on GPU (CUDA)". */
+ * Qwen 3.5 9B · Transcribed on GPU (CUDA)"; after the user edited the summary "Summary by
+ * Qwen 3.5 9B (edited)" (T12.43). The writer comes named by Rust (`summary::writer_name`). */
 export function headerLine(d: MeetingDetail): string {
   const h = d.header;
   const date = new Date(h.started_at_ms).toLocaleDateString(undefined, {
@@ -60,7 +61,9 @@ export function headerLine(d: MeetingDetail): string {
   parts.push(h.mode === "Call" ? "Call" : "In the room");
   if (h.transcript === "Final") parts.push("Final transcript");
   if (h.transcript === "Draft") parts.push("Draft transcript");
-  if (h.summary_model !== null) parts.push(`Summary by ${h.summary_model}`);
+  if (h.summary_writer !== null) {
+    parts.push(`Summary by ${h.summary_writer}${h.summary_edited ? " (edited)" : ""}`);
+  }
   if (h.transcript_backend !== null) parts.push(`Transcribed on ${h.transcript_backend}`);
   return parts.join(" · ");
 }

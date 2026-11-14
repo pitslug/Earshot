@@ -886,8 +886,14 @@ export type DetailHeader = {
 	mode: CaptureMode,
 	/**  Which transcript is shown (`None` without any). */
 	transcript: TranscriptKind | null,
-	/**  The model that wrote the current summary, when known. */
-	summary_model: string | null,
+	/**
+	 *  What wrote the current summary, as the user sees it (`summary::writer_name`: a local
+	 *  model's display name, "Claude (Claude Code)", "Codex" or an endpoint's model name;
+	 *  never a manifest id), when known.
+	 */
+	summary_writer: string | null,
+	/**  Whether the user edited the current summary's text (`summary_edits`, T12.43). */
+	summary_edited: boolean,
 	/**  The backend that ran the shown transcript ("GPU (CUDA)"), when recorded. */
 	transcript_backend: string | null,
 };

@@ -337,6 +337,24 @@ describe("MeetingDetailView", () => {
       await user.click(screen.getByRole("button", { name: "Switch to previous summary" }));
       expect(await screen.findByText(/\(by Friday\)/)).toBeInTheDocument();
       expect(screen.getByText("Split the pump order into two deliveries")).toBeInTheDocument();
+      // The text before the last edit was itself edited, so the header still says so.
+      expect(screen.getByText(/Summary by Qwen 3\.5 9B \(edited\)/)).toBeInTheDocument();
+    });
+
+    it("says in the header that the summary was edited, until undo brings back the writer's text", async () => {
+      const { user } = await setup();
+      await screen.findByText(/TL;DR/);
+      expect(screen.getByText(/Summary by Qwen 3\.5 9B · /)).toBeInTheDocument();
+      expect(screen.queryByText(/\(edited\)/)).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Edit decision 1" }));
+      const field = screen.getByRole("textbox", { name: "decision 1" });
+      await user.clear(field);
+      await user.type(field, "Split the pump order into two deliveries{Enter}");
+      expect(await screen.findByText(/Summary by Qwen 3\.5 9B \(edited\) · /)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Switch to previous summary" }));
+      expect(await screen.findByText("Split the pump order into two shipments")).toBeInTheDocument();
+      expect(screen.queryByText(/\(edited\)/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Summary by Qwen 3\.5 9B · /)).toBeInTheDocument();
     });
 
     it("shows the due-date editor's label, since the action's text is not shown while it is open", async () => {

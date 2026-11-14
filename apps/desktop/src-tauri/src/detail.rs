@@ -238,8 +238,12 @@ pub struct DetailHeader {
     pub mode: CaptureMode,
     /// Which transcript is shown (`None` without any).
     pub transcript: Option<TranscriptKind>,
-    /// The model that wrote the current summary, when known.
-    pub summary_model: Option<String>,
+    /// What wrote the current summary, as the user sees it (`summary::writer_name`: a local
+    /// model's display name, "Claude (Claude Code)", "Codex" or an endpoint's model name;
+    /// never a manifest id), when known.
+    pub summary_writer: Option<String>,
+    /// Whether the user edited the current summary's text (`summary_edits`, T12.43).
+    pub summary_edited: bool,
     /// The backend that ran the shown transcript ("GPU (CUDA)"), when recorded.
     pub transcript_backend: Option<String>,
 }
@@ -772,6 +776,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         kept_local,
         words,
         dictionary,
+        summary_edited,
     ) = {
         let db = services.store();
         let persons = edit::list_persons_in(&db)?;
@@ -805,9 +810,22 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         } else {
             Vec::new()
         };
+        let summary_edited = match &view.summary {
+            Some(s) => earshot_runtime::summary_edits::is_edited(&db, meeting, s.id)?,
+            None => false,
+        };
         (
-            persons, history, view, identities, backend, handovers, audio_kept, kept_local, words,
+            persons,
+            history,
+            view,
+            identities,
+            backend,
+            handovers,
+            audio_kept,
+            kept_local,
+            words,
             dictionary,
+            summary_edited,
         )
     };
     // The final pass's own rule, as the Speakers panel's offers use it.
@@ -867,6 +885,9 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         .map(|s| summary_view(s.id, &s.summary, &rows));
     let summary_stale = view.summary_out_of_date();
     let can_undo_summary = history.previous.is_some_and(|p| p.restorable);
+    // The CLIs this meeting was handed to: an agent-CLI writer name counts only with one.
+    let handed_to: Vec<earshot_runtime::claude_code::HandoverCli> =
+        handovers.entries.iter().map(|e| e.cli).collect();
     Ok(MeetingDetail {
         id: meeting.to_string(),
         state,
@@ -883,7 +904,12 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
                 TranscriptPass::Final => TranscriptKind::Final,
                 TranscriptPass::Live => TranscriptKind::Draft,
             }),
-            summary_model: view.summary.as_ref().and_then(|s| s.model.clone()),
+            summary_writer: view
+                .summary
+                .as_ref()
+                .and_then(|s| s.model.as_deref())
+                .map(|m| earshot_runtime::summary::writer_name(m, &handed_to)),
+            summary_edited,
             transcript_backend: backend.map(|b| backend_label(b.kind).to_owned()),
         },
         speakers: speaker_cards(&view, &persons, &identities),

@@ -784,8 +784,9 @@ fn set_summary_field(
 /// after an edit the summary a re-summarise replaced is no longer reachable by undo (it
 /// stays a tombstone, with its body, until the meeting is deleted). An edit does not make the summary current with the
 /// transcript: [`MeetingView::summary_out_of_date`] still compares the transcript's edits
-/// with the summary's creation. Returns whether anything changed (the same text writes
-/// nothing).
+/// with the summary's creation. Which rows hold edited text is recorded in the same
+/// transaction ([`crate::summary_edits`]), so the header can say a summary was edited.
+/// Returns whether anything changed (the same text writes nothing).
 ///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting, a summary that is not the current one, an
@@ -818,9 +819,13 @@ pub fn edit_summary(
         before.id = EntityId::generate(stamp.clock, &mut *stamp.rng);
         before.meta.origin_device_id = stamp.hlc.node();
         before.meta.mark_deleted(stamp.hlc, stamp.clock);
+        let before_id = before.id;
         tx.put_summary(before)?;
         edited.meta.touch(stamp.hlc, stamp.clock);
+        let edited_id = edited.id;
         tx.put_summary(edited)?;
+        // The header says a summary was edited (T12.43).
+        crate::summary_edits::record_edit_tx(tx, meeting, edited_id, before_id)?;
         Ok(true)
     })
 }
