@@ -881,22 +881,6 @@ pub fn cuda_view(
     })
 }
 
-fn refused(kind: &str, message: impl Into<String>) -> IpcError {
-    IpcError {
-        kind: kind.into(),
-        message: message.into(),
-        retryable: false,
-    }
-}
-
-fn busy(message: &str) -> IpcError {
-    IpcError {
-        kind: "busy".into(),
-        message: message.into(),
-        retryable: true,
-    }
-}
-
 /// Checks and stores the settings. Off is always allowed and touches no file; on needs the offer
 /// and the part's files. A failed change stores nothing.
 ///
@@ -914,13 +898,13 @@ pub fn set_switch(
     for part in CudaPart::ALL {
         if wanted.is_on(part) && !stored.is_on(part) {
             if !cuda_switch::offered(hardware) {
-                return Err(refused(
+                return Err(IpcError::new(
                     "invalid_setting",
                     "This computer's graphics card cannot use the CUDA libraries.",
                 ));
             }
             if files.part_files(models, part).state != PartState::Installed {
-                return Err(refused(
+                return Err(IpcError::new(
                     "invalid_setting",
                     "Download this part first, then switch it on.",
                 ));
@@ -929,7 +913,7 @@ pub fn set_switch(
     }
     let stored = set_cuda_switch(&mut services.store(), wanted).map_err(|e| match e {
         CudaSwitchError::Store(e) => IpcError::from(e),
-        other => refused("invalid_setting", plain(format!("{other}."))),
+        other => IpcError::new("invalid_setting", plain(format!("{other}."))),
     })?;
     Ok(stored.into())
 }
@@ -1052,25 +1036,25 @@ impl CudaJobs {
         accepted_terms: bool,
     ) -> Result<(), IpcError> {
         if !accepted_terms {
-            return Err(refused(
+            return Err(IpcError::new(
                 "terms_not_accepted",
                 "Accept NVIDIA's terms before this download.",
             ));
         }
         if !cuda_switch::offered(hardware) {
-            return Err(refused(
+            return Err(IpcError::new(
                 "not_offered",
                 "This computer's graphics card cannot use the CUDA libraries.",
             ));
         }
         let models = earshot_runtime::host::model_dir(&services.data);
         if let Some(why) = self.files().part_files(&models, part.part()).not_available {
-            return Err(refused("not_available", plain(why)));
+            return Err(IpcError::new("not_available", plain(why)));
         }
         if let Some(needed) = part.part().needs()
             && self.files().part_files(&models, needed).state != PartState::Installed
         {
-            return Err(refused(
+            return Err(IpcError::new(
                 "needs_summaries",
                 "Download summaries on CUDA first: this part needs its files.",
             ));
@@ -1080,14 +1064,14 @@ impl CudaJobs {
             let mut downloads = self.downloads();
             downloads.retain(|_, d| !d.thread.is_finished());
             if downloads.contains_key(&part) {
-                return Err(busy("This part is already downloading."));
+                return Err(IpcError::busy("This part is already downloading."));
             }
             let cancel = CancelToken::new();
             let (jobs, svc, token) = (self.clone(), services.clone(), cancel.clone());
             let thread = std::thread::Builder::new()
                 .name("earshot-cuda-download".into())
                 .spawn(move || jobs.run_download(&svc, part, &token))
-                .map_err(|e| refused("internal", format!("cannot start the download: {e}")))?;
+                .map_err(|_| IpcError::internal())?;
             downloads.insert(part, Download { cancel, thread });
             Ok(())
         })
@@ -1128,7 +1112,10 @@ impl CudaJobs {
                 d.cancel.cancel();
                 Ok(())
             }
-            _ => Err(refused("not_downloading", "This part is not downloading.")),
+            _ => Err(IpcError::new(
+                "not_downloading",
+                "This part is not downloading.",
+            )),
         }
     }
 
@@ -1189,13 +1176,13 @@ impl CudaJobs {
         part: CudaPartChoice,
     ) -> Result<CudaRemoved, IpcError> {
         if start.checking() {
-            return Err(busy(CUDA_CHECKING));
+            return Err(IpcError::busy(CUDA_CHECKING));
         }
         let models = earshot_runtime::host::model_dir(&services.data);
         self.0.checks.without_check_or_work(|| {
             let downloads = self.downloads();
             if downloads.values().any(|d| !d.thread.is_finished()) {
-                return Err(busy(CUDA_DOWNLOADING_MESSAGE));
+                return Err(IpcError::busy(CUDA_DOWNLOADING_MESSAGE));
             }
             let dependent = self
                 .files()
@@ -1203,7 +1190,7 @@ impl CudaJobs {
                 .state;
             let (stored, _) = cuda_switch::cuda_switch(&services.store())?;
             if let Some(why) = removal_refused(part.part(), stored, &start.loaded(), dependent) {
-                return Err(refused("part_in_use", why.copy()));
+                return Err(IpcError::new("part_in_use", why.copy()));
             }
             self.files()
                 .remove(&models, part.part())
@@ -1215,7 +1202,7 @@ impl CudaJobs {
                         retryable,
                     },
                     CudaFilesError::Cancelled => {
-                        refused("cuda_files", "The removal was cancelled.")
+                        IpcError::new("cuda_files", "The removal was cancelled.")
                     }
                 })
         })
@@ -1277,9 +1264,11 @@ pub const RESTART_DOWNLOADING: &str =
 /// voice sample or the audio check.
 pub fn claim_for_restart(gate: &WorkGate, downloading: bool) -> Result<(), IpcError> {
     if downloading {
-        return Err(busy(RESTART_DOWNLOADING));
+        return Err(IpcError::busy(RESTART_DOWNLOADING));
     }
-    let pass = gate.enter_restart().map_err(|_| busy(RESTART_BUSY))?;
+    let pass = gate
+        .enter_restart()
+        .map_err(|_| IpcError::busy(RESTART_BUSY))?;
     std::mem::forget(pass);
     Ok(())
 }
@@ -1406,7 +1395,7 @@ pub async fn open_cuda_terms(terms: CudaTerms) -> Result<(), IpcError> {
         // explorer.exe's exit code says nothing about the page, so only a failed start counts.
         match earshot_proc::run(&spec, &|| false) {
             Ok(_) | Err(earshot_proc::ChildError::TimedOut(_)) => Ok(()),
-            Err(_) => Err(refused(
+            Err(_) => Err(IpcError::new(
                 "open_failed",
                 format!("The page could not be opened. Its address is {url}"),
             )),

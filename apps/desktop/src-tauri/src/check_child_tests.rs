@@ -157,6 +157,29 @@ fn model_check_a_truncated_stream_is_a_retryable_failure() {
     }
 }
 
+/// A reader whose first read fails with the operating system's words.
+struct BrokenPipe;
+
+impl std::io::Read for BrokenPipe {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other(
+            "the pipe has been ended (os error 109)",
+        ))
+    }
+}
+
+/// The child's output that cannot be read says fixed copy, never the operating system's text.
+#[test]
+fn model_check_output_that_cannot_be_read_reports_fixed_copy() {
+    let mut heard = Heard::default();
+    let e =
+        read_lines(std::io::BufReader::new(BrokenPipe), &mut heard).expect_err("the read failed");
+    assert_eq!(e.kind, "model_check");
+    assert_eq!(e.message, crate::plain_text::INTERNAL);
+    assert!(e.retryable);
+    assert!(!e.message.contains("os error"), "{}", e.message);
+}
+
 #[test]
 fn model_check_an_error_line_is_a_failure_with_its_message() {
     let (r, heard) = read(

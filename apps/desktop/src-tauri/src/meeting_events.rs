@@ -1262,11 +1262,10 @@ pub fn kept_local_banner(reason: &SkipReason) -> Option<MeetingEvent> {
 /// summary model here is downloaded (kind `summary_kept_local`); never another writer.
 #[must_use]
 pub fn kept_local_error(model: &str) -> crate::ipc::IpcError {
-    crate::ipc::IpcError {
-        kind: "summary_kept_local".into(),
-        message: crate::plain_text::kept_local_no_model(model, false),
-        retryable: false,
-    }
+    crate::ipc::IpcError::new(
+        "summary_kept_local",
+        crate::plain_text::kept_local_no_model(model, false),
+    )
 }
 
 /// The banner at the start of a meeting whose summary will not run because Claude Code is

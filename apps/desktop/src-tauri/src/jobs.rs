@@ -165,11 +165,7 @@ impl Running {
 pub struct JobRunner(Arc<Inner>);
 
 fn busy() -> IpcError {
-    IpcError {
-        kind: "busy".into(),
-        message: "This meeting is already being re-transcribed or re-summarised.".into(),
-        retryable: true,
-    }
+    IpcError::busy("This meeting is already being re-transcribed or re-summarised.")
 }
 
 impl JobRunner {
@@ -235,11 +231,7 @@ impl JobRunner {
                 run_guarded(&inner, &svc, meeting, job, &token, lease);
                 drop(pass);
             })
-            .map_err(|_| IpcError {
-                kind: "internal".into(),
-                message: crate::plain_text::INTERNAL.into(),
-                retryable: false,
-            })?;
+            .map_err(|_| IpcError::internal())?;
         running.insert(
             meeting,
             Running {

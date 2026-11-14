@@ -11,9 +11,10 @@
 //! `Failed`). The audio is held in memory on that thread only and dropped there. Tests drive
 //! it through [`AudioCheckWork`] fakes over replay sources, never the speakers.
 
-use std::panic::AssertUnwindSafe;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::thread::JoinHandle;
+use std::sync::Arc;
+// The tests reach it through `super::*`.
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::Duration;
 
 use earshot_core::aec::delay::DelayConfig;
@@ -31,6 +32,7 @@ use tauri_specta::Event;
 use crate::activity::WorkGate;
 use crate::audio_settings::{DeviceItem, Devices};
 use crate::ipc::IpcError;
+use crate::slot_job::{SlotJob, progress_every};
 
 /// What a stored check found, for the page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
@@ -282,16 +284,11 @@ pub trait AudioCheckWork: Send + Sync {
 /// Where audio check events go.
 pub type AudioCheckSink = Arc<dyn Fn(AudioCheckEvent) + Send + Sync>;
 
-struct Running {
-    cancel: CancelToken,
-    thread: JoinHandle<()>,
-}
-
 struct Inner {
     work: Arc<dyn AudioCheckWork>,
     sink: AudioCheckSink,
     gate: WorkGate,
-    slot: Mutex<Option<Running>>,
+    job: SlotJob,
 }
 
 /// Runs at most one audio check (cheap to clone; clones share it).
@@ -317,12 +314,8 @@ impl AudioCheckJobs {
             work,
             sink,
             gate,
-            slot: Mutex::new(None),
+            job: SlotJob::new("earshot-audio-check", "The audio check is already running."),
         }))
-    }
-
-    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Running>> {
-        self.0.slot.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Starts a check (events follow).
@@ -331,56 +324,28 @@ impl AudioCheckJobs {
     /// `busy` (retryable) while a check, a meeting, the model check or the voice sample
     /// runs.
     pub fn start(&self, services: &Services) -> Result<(), IpcError> {
-        let mut slot = self.slot();
-        if let Some(old) = slot.take() {
-            if !old.thread.is_finished() {
-                *slot = Some(old);
-                return Err(IpcError {
-                    kind: "busy".into(),
-                    message: "The audio check is already running.".into(),
-                    retryable: true,
-                });
-            }
-            let _ = old.thread.join();
-        }
-        let pass = self.0.gate.enter_audio_check()?;
-        let cancel = CancelToken::new();
         let inner = Arc::clone(&self.0);
         let svc = services.clone();
-        let token = cancel.clone();
-        let thread = std::thread::Builder::new()
-            .name("earshot-audio-check".into())
-            .spawn(move || {
-                let event =
-                    std::panic::catch_unwind(AssertUnwindSafe(|| run(&inner, &svc, &token)))
-                        .unwrap_or_else(|_| AudioCheckEvent::Failed {
-                            message: AUDIO_CHECK_PANIC_MESSAGE.into(),
-                        });
-                drop(pass);
-                (inner.sink)(event);
-            })
-            .map_err(|e| IpcError {
-                kind: "internal".into(),
-                message: format!("cannot start the audio check thread: {e}"),
-                retryable: false,
-            })?;
-        *slot = Some(Running { cancel, thread });
-        Ok(())
+        let sink = Arc::clone(&self.0.sink);
+        self.0.job.start(
+            || self.0.gate.enter_audio_check(),
+            move |token| run(&inner, &svc, token),
+            || AudioCheckEvent::Failed {
+                message: AUDIO_CHECK_PANIC_MESSAGE.into(),
+            },
+            move |event| sink(event),
+        )
     }
 
     /// Cancels the running check (a `Cancelled` follows unless it already ended).
     pub fn cancel(&self) {
-        if let Some(r) = self.slot().as_ref() {
-            r.cancel.cancel();
-        }
+        self.0.job.cancel();
     }
 
     /// Waits for the running check.
     #[cfg(test)]
     pub fn join(&self) {
-        if let Some(r) = self.slot().take() {
-            let _ = r.thread.join();
-        }
+        self.0.job.join();
     }
 }
 
@@ -395,20 +360,10 @@ fn run(inner: &Inner, svc: &Services, cancel: &CancelToken) -> AudioCheckEvent {
             };
         }
     };
-    let total_ms = u64::try_from(check_length().as_millis()).unwrap_or(u64::MAX);
-    let step = u64::try_from(PROGRESS_STEP.as_millis()).unwrap_or(1).max(1);
-    let mut next = 0u64;
     let sink = Arc::clone(&inner.sink);
-    let mut progress = |d: Duration| {
-        let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
-        if ms >= next {
-            sink(AudioCheckEvent::Listening {
-                heard_ms: ms.min(total_ms),
-                total_ms,
-            });
-            next = (ms / step + 1) * step;
-        }
-    };
+    let mut progress = progress_every(PROGRESS_STEP, check_length(), |heard_ms, total_ms| {
+        sink(AudioCheckEvent::Listening { heard_ms, total_ms });
+    });
     let measured = match inner.work.run(&settings, cancel, &mut progress) {
         Ok(Some(m)) => m,
         Ok(None) => return AudioCheckEvent::Cancelled,
@@ -529,11 +484,7 @@ async fn blocking<T: Send + 'static>(
 ) -> Result<T, IpcError> {
     tauri::async_runtime::spawn_blocking(f)
         .await
-        .map_err(|_| IpcError {
-            kind: "internal".into(),
-            message: "the task stopped".into(),
-            retryable: false,
-        })?
+        .map_err(|_| IpcError::new("internal", "the task stopped"))?
 }
 
 #[cfg(test)]

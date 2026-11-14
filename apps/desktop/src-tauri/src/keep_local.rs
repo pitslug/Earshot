@@ -82,11 +82,7 @@ pub fn allow(
         earshot_runtime::RuntimeError::Edit(EditError::MeetingStillWorking(_))
             if left_behind(id) =>
         {
-            IpcError {
-                kind: "meeting_needs_restart".into(),
-                message: ALLOW_NEEDS_RESTART.into(),
-                retryable: false,
-            }
+            IpcError::new("meeting_needs_restart", ALLOW_NEEDS_RESTART)
         }
         earshot_runtime::RuntimeError::Edit(e) => crate::detail::edit_error(&e),
         e => IpcError::from(e),

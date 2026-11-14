@@ -41,11 +41,7 @@ pub trait Autostart: Send + Sync {
 }
 
 fn autostart_error(message: impl Into<String>) -> IpcError {
-    IpcError {
-        kind: "autostart".into(),
-        message: message.into(),
-        retryable: false,
-    }
+    IpcError::new("autostart", message)
 }
 
 /// The General page.

@@ -302,11 +302,7 @@ impl MeetingDriver {
         {
             let mut threads = self.threads();
             if threads.recording() {
-                return Err(IpcError {
-                    kind: "busy".into(),
-                    message: "a meeting is already recording".into(),
-                    retryable: true,
-                });
+                return Err(IpcError::busy("a meeting is already recording"));
             }
             let pass = self.0.gate.enter_meeting()?;
             if let Some(old) = threads.newest.take() {
@@ -338,11 +334,7 @@ impl MeetingDriver {
                     run_guarded(&inner, &svc, &request, &flags, &tx, seq);
                     drop(flags);
                 })
-                .map_err(|_| IpcError {
-                    kind: "internal".into(),
-                    message: crate::plain_text::INTERNAL.into(),
-                    retryable: false,
-                })?;
+                .map_err(|_| IpcError::internal())?;
             threads.newest = Some(Running {
                 stop,
                 keep,
@@ -351,11 +343,10 @@ impl MeetingDriver {
             });
         }
         let started = rx.recv().unwrap_or_else(|_| {
-            Err(IpcError {
-                kind: "internal".into(),
-                message: "the meeting thread stopped before the meeting started".into(),
-                retryable: false,
-            })
+            Err(IpcError::new(
+                "internal",
+                "the meeting thread stopped before the meeting started",
+            ))
         });
         if started.is_err() {
             // The thread ends right after reporting a failed start; join it so the next
@@ -380,11 +371,7 @@ impl MeetingDriver {
                 r.stop.store(true, Ordering::SeqCst);
                 Ok(())
             }
-            _ => Err(IpcError {
-                kind: "not_recording".into(),
-                message: "no meeting is recording".into(),
-                retryable: false,
-            }),
+            _ => Err(IpcError::new("not_recording", "no meeting is recording")),
         }
     }
 
@@ -983,11 +970,10 @@ fn run_guarded(
                 },
             );
         } else {
-            let _ = started.send(Err(IpcError {
-                kind: "internal".into(),
-                message: "The meeting stopped unexpectedly before it started.".into(),
-                retryable: false,
-            }));
+            let _ = started.send(Err(IpcError::new(
+                "internal",
+                "The meeting stopped unexpectedly before it started.",
+            )));
         }
     }
 }
@@ -1228,11 +1214,7 @@ fn run(
 }
 
 fn setup_err(kind: &str, message: String) -> IpcError {
-    IpcError {
-        kind: kind.into(),
-        message,
-        retryable: false,
-    }
+    IpcError::new(kind, message)
 }
 
 /// The banner text of an ONNX Runtime library that could not load (the CPU one is used).
@@ -1649,11 +1631,10 @@ fn call_signal(mode: CaptureMode) -> Option<CallSignal> {
 
 #[cfg(not(windows))]
 fn wasapi_source(_: &Services, _: &StartRequest) -> Result<MeetingSource, IpcError> {
-    Err(IpcError {
-        kind: "unsupported".into(),
-        message: "live capture needs Windows (WASAPI)".into(),
-        retryable: false,
-    })
+    Err(IpcError::new(
+        "unsupported",
+        "live capture needs Windows (WASAPI)",
+    ))
 }
 
 mod production {

@@ -184,6 +184,26 @@ impl IpcError {
             retryable: false,
         }
     }
+
+    /// Kind `busy`, retryable: something else runs; trying again later can work.
+    pub(crate) fn busy(message: impl Into<String>) -> Self {
+        Self {
+            kind: "busy".into(),
+            message: message.into(),
+            retryable: true,
+        }
+    }
+
+    /// Kind `internal` with the fixed [`crate::plain_text::INTERNAL`] copy, never an error's
+    /// own text.
+    pub(crate) fn internal() -> Self {
+        Self::new("internal", crate::plain_text::INTERNAL)
+    }
+
+    /// Kind `invalid_setting`: a value the user gave was refused.
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
+        Self::new("invalid_setting", message)
+    }
 }
 
 /// What the app says when its database was saved by a newer Earshot (T9.5c): the store is
@@ -1393,11 +1413,7 @@ fn set_window_theme(
             WindowTheme::Light => tauri::Theme::Light,
             WindowTheme::Dark => tauri::Theme::Dark,
         }))
-        .map_err(|e| IpcError {
-            kind: "window".into(),
-            message: e.to_string(),
-            retryable: false,
-        })
+        .map_err(window_error)
 }
 
 #[cfg(test)]
