@@ -28,15 +28,28 @@ jobs:
           git fetch -q --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "${GITHUB_SHA}"
           git checkout -q FETCH_HEAD
 
+      # A release tag is v<version>; a test build is v<version>-<suffix> (letters, digits and
+      # dots), published under that name only, never as latest.
       - name: Check the tag names the workspace version
         working-directory: src
         run: |
           version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)"
-          if [ -z "${version}" ] || [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+          tag="${GITHUB_REF_NAME#v}"
+          suffix="${tag#"${version}"}"
+          if [ -z "${version}" ] || [ "${tag}" = "${GITHUB_REF_NAME}" ] || [ "${suffix}" = "${tag}" ]; then
             echo "The tag ${GITHUB_REF_NAME} does not name the workspace version (${version})."
             exit 1
           fi
-          echo "VERSION=${version}" >> "${GITHUB_ENV}"
+          case "${suffix}" in
+            "") latest=true ;;
+            -*) latest=false
+                case "${suffix#-}" in
+                  ""|*[!A-Za-z0-9.]*) echo "The tag's suffix may hold letters, digits and dots only."; exit 1 ;;
+                esac ;;
+            *) echo "The tag ${GITHUB_REF_NAME} does not name the workspace version (${version})."; exit 1 ;;
+          esac
+          echo "VERSION=${tag}" >> "${GITHUB_ENV}"
+          echo "LATEST=${latest}" >> "${GITHUB_ENV}"
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-sync-server" >> "${GITHUB_ENV}"
 
       - name: Build the relay image
@@ -48,7 +61,7 @@ jobs:
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.licenses=MIT" \
             -f crates/earshot-sync-server/Dockerfile \
-            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" .
+            -t "${IMAGE}:${VERSION}" .
 
       - name: Push the relay image
         env:
@@ -56,5 +69,8 @@ jobs:
         run: |
           printf '%s' "${TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           docker push "${IMAGE}:${VERSION}"
-          docker push "${IMAGE}:latest"
+          if [ "${LATEST}" = "true" ]; then
+            docker tag "${IMAGE}:${VERSION}" "${IMAGE}:latest"
+            docker push "${IMAGE}:latest"
+          fi
           docker logout ghcr.io
