@@ -2010,8 +2010,8 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: a Cancel on a running re-transcribe or re-summarise job (one `CancelToken` per job through `jobs::JobRunner`, polled as the final pass and summary already poll), ending in one terminal `JobEvent` (cancelled, nothing written beyond what a cancelled final pass or summary writes today); the T12.38 delete dialog then offers Stop and delete for a job too. Tests through the job fakes; UI test and screenshots light and dark.
   - accept: `cargo test -p earshot-desktop --bin earshot`; `cargo test -p earshot-runtime` for anything touched; `cmd /c pnpm --filter @earshot/ui test`
 
-- [ ] T12.42 Update files carry a signed date
-  - status (2026-11-14): built on `lane/t1242` (1b6e24e) and held: the build date only refuses releases older than the copy, which the version check already refuses, and old copies' strict parser makes each release publish a second version file per architecture. Waiting on the owner to drop or keep it.
+- [x] T12.42 Update files carry a signed date (closed: dropped by the owner, not merged)
+  - status (2026-11-14): dropped by the owner. Built on `lane/t1242` (1b6e24e), never merged: the build date only refuses releases older than the copy, which the version check already refuses, and old copies' strict parser would make each release publish a second version file per architecture.
   - found (the owner, 2026-11-14, TODO decision 2): a version file has no date, so someone controlling the host could re-serve an older signed release to an older copy.
   - do: the signed version file gains a release date covered by the signature (`earshot-update`, `sign-update`); a copy refuses an offer whose date is older than its own build's (the build date baked in at build time), with fixed copy; an older file without a date is still read by older copies (forward only, docs/updates.md). Tests in earshot-update and the update settings.
   - accept: `cargo test -p earshot-update`; `cargo test -p xtask update`; `cargo test -p earshot-desktop --bin earshot update`
