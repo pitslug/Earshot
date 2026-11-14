@@ -1404,10 +1404,18 @@ fn host_npu_note_shows_once_until_something_about_it_changes() {
     let other = "Model B has no NPU version installed, so it runs on the processor.";
     let shown = |npu: Option<&str>| {
         let mut setup = setup_with_npu_note(npu);
-        npu_note_once(&mut svc.store(), &mut setup);
+        let shown = npu_note_once(&svc.store(), &mut setup);
+        shown.record(&mut svc.store());
         setup.notes
     };
     let unrelated = "A stored setting is not known.".to_owned();
+    // A start that failed never records: the note shows at the next start.
+    for _ in 0..2 {
+        let mut setup = setup_with_npu_note(Some(first));
+        let _not_recorded = npu_note_once(&svc.store(), &mut setup);
+        assert_eq!(setup.notes, [unrelated.clone(), first.to_owned()]);
+    }
+    assert_eq!(svc.store().local_value(NPU_NOTE_SHOWN_KEY).unwrap(), None);
     // The first start shows it; the next ones do not, while every other note stays.
     assert_eq!(shown(Some(first)), [unrelated.clone(), first.to_owned()]);
     assert_eq!(shown(Some(first)), std::slice::from_ref(&unrelated));

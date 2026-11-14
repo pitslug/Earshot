@@ -585,16 +585,17 @@ const NPU_NOTE_SHOWN_VERSION: u32 = 1;
 
 /// Shows `setup`'s NPU note ([`TranscriptionSetup::npu_note`]) once until something about it
 /// changes (T12.45; it used to show at every meeting start): the note stays in `setup.notes`
-/// only when it differs from the one last shown, and is then recorded as shown; a setup with no
-/// such note (the NPU version installed, another model, no NPU) forgets the record, so the note
-/// shows again if it comes back. Called by the hosts that turn notes into banners or job
-/// warnings, never by the Settings pages, which always say where a model runs. A record that
-/// cannot be read or written shows the note: a setting never hides what the user should hear.
-pub fn npu_note_once(store: &mut Store, setup: &mut TranscriptionSetup) {
+/// only when it differs from the one last shown. Nothing is written here: the host calls
+/// [`NpuNoteShown::record`] once the note has really been shown (the meeting started and its
+/// banners went out), so a start that fails leaves it unshown. A setup with no such note (the
+/// NPU version installed, another model, no NPU) records a forgetting, so the note shows again
+/// if it comes back. Called by the hosts that turn notes into banners or job warnings, never by
+/// the Settings pages, which always say where a model runs. A record that cannot be read shows
+/// the note: a setting never hides what the user should hear.
+pub fn npu_note_once(store: &Store, setup: &mut TranscriptionSetup) -> NpuNoteShown {
     let key = crate::local::DeviceRecord::NpuNoteShown.key();
     let Some(note) = &setup.npu_note else {
-        let _ = store.delete_local_value(key.as_str());
-        return;
+        return NpuNoteShown(None);
     };
     let mut record = NPU_NOTE_SHOWN_VERSION.to_le_bytes().to_vec();
     record.extend_from_slice(note.as_bytes());
@@ -603,9 +604,25 @@ pub fn npu_note_once(store: &mut Store, setup: &mut TranscriptionSetup) {
         .is_ok_and(|v| v.as_deref() == Some(record.as_slice()))
     {
         setup.notes.retain(|n| n != note);
-        return;
     }
-    let _ = crate::local::set(store, &key, &record);
+    NpuNoteShown(Some(record))
+}
+
+/// What [`npu_note_once`] leaves to record once the notes were shown: the note shown, or that
+/// there was none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub struct NpuNoteShown(Option<Vec<u8>>);
+
+impl NpuNoteShown {
+    /// Records it in [`NPU_NOTE_SHOWN_KEY`]. A write that fails is ignored: the note shows again.
+    pub fn record(self, store: &mut Store) {
+        let key = crate::local::DeviceRecord::NpuNoteShown.key();
+        let _ = match self.0 {
+            Some(record) => crate::local::set(store, &key, &record).map(|()| true),
+            None => store.delete_local_value(key.as_str()),
+        };
+    }
 }
 
 /// The transcription model and accelerator order of an app run (meeting start,

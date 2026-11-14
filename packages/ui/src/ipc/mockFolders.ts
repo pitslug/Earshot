@@ -63,7 +63,9 @@ const BASE_LETTERS: [string, string][] = [
   ["ß", "ss"],
   ["þ", "th"],
 ];
-const BASE_OF = new Map(BASE_LETTERS.flatMap(([letters, base]) => [...letters].map((l) => [l, base] as const)));
+/** Each letter of `BASE_LETTERS` and its base letters; pinned to core's whole table by
+ * `fixtures/ui/base_letter_cases.json`, generated from it by the runtime's tests. */
+export const BASE_OF = new Map(BASE_LETTERS.flatMap(([letters, base]) => [...letters].map((l) => [l, base] as const)));
 
 /** Rust's `char::to_lowercase` per character (`search::fold_case`), not a locale's. */
 const foldCase = (name: string) => [...name].map((c) => c.toLowerCase()).join("");

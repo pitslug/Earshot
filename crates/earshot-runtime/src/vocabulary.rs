@@ -65,6 +65,15 @@ pub fn vocabulary(store: &Store) -> Result<(Vocabulary, Option<UnknownSetting>),
     Ok(vocabulary_of(store.local_value(VOCABULARY_KEY)?.as_deref()))
 }
 
+/// Stored entries read without leading and trailing single quotes (T12.45): a word added from
+/// the transcript before quotes were stripped (`'Zorbek'`) reads as `Zorbek`, so it matches,
+/// is found for removal and is not added twice; [`Vocabulary::new`] then drops the repeat a
+/// stripped entry may make. Only quotes at the ends of a whole entry go: other punctuation the
+/// user typed stays.
+fn stored_without_quotes(words: &[String]) -> Vec<&str> {
+    words.iter().map(|w| w.trim().trim_matches('\'')).collect()
+}
+
 /// [`vocabulary`] from the stored bytes (`None`: nothing stored), so a store transaction can
 /// read the words too (`crate::word_choices`).
 pub(crate) fn vocabulary_of(bytes: Option<&[u8]>) -> (Vocabulary, Option<UnknownSetting>) {
@@ -83,7 +92,7 @@ pub(crate) fn vocabulary_of(bytes: Option<&[u8]>) -> (Vocabulary, Option<Unknown
     // Parsed as plain strings first, so the reason names the rule broken (the core check),
     // never a word.
     match serde_json::from_slice::<Vec<String>>(bytes) {
-        Ok(words) => match Vocabulary::new(&words) {
+        Ok(words) => match Vocabulary::new(stored_without_quotes(&words)) {
             Ok(v) => (v, None),
             Err(e) => refused(e.to_string()),
         },

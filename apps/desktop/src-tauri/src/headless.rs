@@ -352,6 +352,7 @@ impl Prepare for RecordingPrepare {
             start: prepared.start,
             notices: prepared.notices,
             call_signal: prepared.call_signal,
+            npu_note: prepared.npu_note,
             after: Box::new(
                 move |svc: &Services,
                       outcome: &LiveOutcome,

@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import table from "../../../../fixtures/ui/folder_sort_cases.json";
 import { createMockIpc } from "./mock";
-import { folderOrder } from "./mockFolders";
+import baseLetters from "../../../../fixtures/ui/base_letter_cases.json";
+import { BASE_OF, folderOrder } from "./mockFolders";
 
 describe("folderOrder", () => {
   it("follows the shared case table", () => {
@@ -13,6 +14,11 @@ describe("folderOrder", () => {
     for (const c of table.cases) {
       expect([c.names, [...c.names].sort(folderOrder)]).toEqual([c.names, c.sorted]);
     }
+  });
+
+  it("folds exactly the letters core's table folds, to the same base letters", () => {
+    expect(baseLetters.cases.length).toBeGreaterThan(50);
+    expect(new Map(baseLetters.cases.map((c) => [c.letter, c.base]))).toEqual(BASE_OF);
   });
 
   it("is the order the mock lists folders in", async () => {

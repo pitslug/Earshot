@@ -1,0 +1,11 @@
+{
+  "about": "The refusals of \"Allow\" on a meeting kept on this computer (T12.45): while the meeting is still recorded, waiting, finished or re-transcribed or re-summarised, and while work Earshot gave up on holds it. apps/desktop (keep_local_tests.rs) checks `detail::edit_error` and `keep_local::allow` against these; packages/ui/src/ipc/mock.test.ts checks the mock's copy, so a change edits this table, the Rust copy and the mock's together.",
+  "still_working": {
+    "kind": "meeting_still_working",
+    "message": "Earshot is still working on this meeting, and that work keeps the summary on this computer. Allow the summary writer once it has finished."
+  },
+  "needs_restart": {
+    "kind": "meeting_needs_restart",
+    "message": "Earshot could not stop earlier work on this meeting, and that work keeps the summary on this computer. Restart Earshot, then allow the summary writer."
+  }
+}
