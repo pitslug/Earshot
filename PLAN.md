@@ -65,7 +65,6 @@ earshot/
     earshot-asr-whisper/     whisper.cpp via whisper-rs. Features: cpu (default), cuda, vulkan.
     earshot-onnx/            ONNX Runtime (ort crate): Silero VAD, diarisation segmentation + speaker
                              embedding, execution-provider selection (CPU, CUDA, QNN).
-    earshot-asr-qnn/         Whisper encoder/decoder on ONNX Runtime QNN EP (Snapdragon NPU).
     earshot-net/             The only crate allowed to make HTTP requests: one reqwest + rustls client,
                              host allowlist (manifest hosts, configured LLM URL, update host,
                              future sync server),
@@ -73,7 +72,7 @@ earshot/
     earshot-llm/             OpenAI-compatible chat client, built on earshot-net.
     earshot-store/           SQLite (rusqlite, bundled), FLAC audio files, retention, file export writer.
     earshot-capture-wasapi/  Windows mic + loopback capture (windows crate).
-    earshot-capture-android/ JNI bridge receiving PCM from the Kotlin foreground service (dependency-free stub until T10.3).
+    earshot-capture-android/ JNI bridge receiving PCM from the Kotlin foreground service (not in the workspace yet: T10.3 creates it; the empty placeholder was removed in T12.51).
     earshot-runtime/         Drives the core pipeline: threads, channels, backend wiring, persistence.
     earshot-cli/             Headless driver: transcribe, diarise, summarise, export, record, bench.
     earshot-sync-server/     (Future) axum + SQLite sync server, Dockerfile.
@@ -135,7 +134,7 @@ All OS work (capture, files, network, GPU, threads) lives in adapter crates that
 
 | Concern | Trait (core) | Implementations |
 |---|---|---|
-| ASR | `Transcriber`, `StreamingTranscriber` | whisper.cpp CPU / CUDA / Vulkan (`earshot-asr-whisper`), QNN (`earshot-asr-qnn`), `FakeTranscriber` (tests) |
+| ASR | `Transcriber`, `StreamingTranscriber` | whisper.cpp CPU / CUDA / Vulkan (`earshot-asr-whisper`), Parakeet on ONNX Runtime CPU / CUDA / QNN (`earshot-onnx`), `FakeTranscriber` (tests) |
 | VAD | `Vad` | energy VAD (core), Silero (`earshot-onnx`) |
 | Diarisation | `SpeakerSegmenter`, `SpeakerEmbedder` | pyannote segmentation-3.0 ONNX + CAM++ or WeSpeaker ONNX (`earshot-onnx`), fakes |
 | Summary | `Summarizer` | OpenAI-compatible (`earshot-llm`), replay mock (tests) |
@@ -2097,7 +2096,7 @@ Research and hardware runs moved out of TODO.md: no decision is needed now. Each
 - The 9.34-9.47 s leak on double-talk-ser-0 (softclip-3 distortion in bins where the linear estimate is weak): the postfilter's per-bin residual ratio is clamped at 1, and raising the clamp costs double-talk SI-SDR below the robustness bar (measured 2026-10-24); needs a cross-bin (harmonic) nonlinear model (T1.5f follow-up) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d). - crates/earshot-core/src/aec/postfilter.rs:307
 - Record the live speaker-window reuse rate on a multi-party recording (three or more far-end voices) before calling live speakers done (T6.13d3 review; the Surface thread question is settled by the T6.13d4 setting) - crates/earshot-runtime/src/backends.rs
 - The positive Bluetooth hands-free fixture is constructed from docs, not recorded; replace it with a recorded property set at GATE-01b, and a 16 kHz LE Audio mic would be classified hands-free (T6.24 review) - crates/earshot-capture-wasapi/src/endpoint.rs:248
-- Final-pass echo bridging has no live evidence of the echo path inside a gap; the offline check (`echo::gap_has_echo_path`) was built and measured on 2026-11-01 and does not help (on the cancelled mic it finds no echo path in simulated double talk), so it is evaluation only. Remaining options: lock hysteresis in the delay estimator, or run the check on the raw mic, which the final pass does not store (T6.23 review) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d). - crates/earshot-runtime/src/echo.rs:77
+- Final-pass echo bridging has no live evidence of the echo path inside a gap; the offline check (`gap_has_echo_path`, in the `model_eval` example since T12.51) was built and measured on 2026-11-01 and does not help (on the cancelled mic it finds no echo path in simulated double talk), so it is evaluation only. Remaining options: lock hysteresis in the delay estimator, or run the check on the raw mic, which the final pass does not store (T6.23 review) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d). - crates/earshot-runtime/src/echo.rs:77
 - Apply the DTW decision rule on a quiet host (CUDA ami and CPU smoke, commands in docs/word-times.md) once whisper.cpp's DTW end() read is fixed upstream (T2.2d)
 - The low-frequency product gain gamma can climb to its ceiling (4) when the cube is near zero and then suppress near-end content at the product's level (synthetic gain 0.03); a learning gate tied on dev and made held-out worse (withdrawn, cc9fe13); needs a dev-justified fix that keeps held-out (T1.6c review) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d). - crates/earshot-core/src/aec/postfilter.rs:374
 - Remaining dev-wide / held-out misses after T1.6c: false linear-stage divergence resets in quiet passages (a relevance gate fixed stereo 84/174 but slowed delay-jump recovery 2.5 -> 6.6 s), applied delay drifting from the true delay under clock drift (drift erle_linear 8.5 dB dev-wide, 10.5 held-out), double-talk SI-SDR limited by postfilter near-end distortion (held-out 9.95 mono, 5.50 stereo vs 10) (T1.6c lane) Re-open only from a real-meeting bug that changes a summary (PLAN T6.23d).
@@ -2151,7 +2150,7 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
 - [ ] T10.3 Foreground service capture
   - deps: T10.2
   - do: Kotlin Tauri plugin: microphone foreground service, permissions (RECORD_AUDIO, POST_NOTIFICATIONS, FOREGROUND_SERVICE_MICROPHONE), partial wake lock, `AudioRecord` -> a direct JNI native method on the service class (same process as the Rust library; never Tauri plugin IPC/JSON for PCM) -> `earshot-capture-android`.
-  - accept: `cargo test -p earshot-capture-android` (host-side buffer/JNI-free logic) and APK builds
+  - accept: `cargo test -p earshot-capture-android` (host-side buffer/JNI-free logic; this task creates the crate, whose empty placeholder was removed in T12.51) and APK builds
 - [ ] T10.4 In-person mode in runtime
   - deps: T10.3, T6.13
   - do: mic-only pipeline, no AEC, single-track diarisation, thermal/battery-aware model choice. Cleanup follows the T6.8 design (T6.13): during the meeting, best effort (speakers first, re-transcription only with spare capacity and never when the device is hot), never deferred more than 30 minutes after the end.
