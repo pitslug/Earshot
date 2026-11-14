@@ -866,3 +866,22 @@ Stored words identical to `off` in all four beside runs (both tracks), no audio 
 **Fallbacks (added after measuring, from the same review).** A hold is decided on planned devices, and two fallbacks can move work after it: a card summary that ends on the CPU (a refused load, a dead or stalled child), and a live load that falls back to another device. Both end the beside decision in code: after any card summary of the process has run on the CPU, every card summary counts as on the CPU (`summary::card_summary_fell_back`, read at each decision), and a live load that fell back waits again as live work on the device it landed on before it decodes (`MeetingHold::recheck_after_load`, called from `MeetingModels::live_factory`). A newer meeting already decoding when an older summary falls back is not stopped.
 
 **Decision under the rule:** on x64 `BESIDE_PAIRS` stays empty. What ships: (a), a summary written off this computer (or none), lets a newer meeting's transcript start as soon as the older final pass is over, on every machine. The Surface's pair (NPU, CPU) stays off until the commands above are run there.
+
+### Surface results (measured 2026-11-14)
+
+Surface Pro, Snapdragon X2 Elite, 12 cores, 15.5 GiB reported, on mains, Earshot quit from the tray. Build: `live_lag` in release with `--features qnn`, the five commands above run one after another into a fresh `target\live-lag\`. Before each run the runner waited 60 s with no cargo, rustc, linker, cmake, ninja, clang or Earshot process in the list and checked it every 5 s during the run: all five read clean. Live transcription on the NPU (Parakeet 0.6B v2 on QNN, both tracks and the preview session), the summary on the CPU with the app's choice for this machine (the 4B), every summary stored on the CPU with no fallback (3 per run). Reports, unmodified: `docs/live-previews/t1239/t1239-qnn-*.json`.
+
+Machine load as the reports show it: `off` median 24% and 21%, `beside` median 27% and 29% (max 62% and 40%, the summary itself running on the CPU), `alone` 21% and 31% at start and end. The report's load probe starts a PowerShell and reads `Win32_Processor` once; run by hand on the same machine with nothing else running it read 12, 22, 23, 26 and 29%, so the `off` readings are the probe's own floor here, not other work (an `off` run itself used 50 s of CPU time in about 165 s on 12 cores). This is above the "few percent" the desktop showed, so it is recorded here rather than passed over.
+
+| run | mic / ref settled median (s) | mic / ref settled p95 (s) | ref on-screen median (s) | catch-up (s) | summary median (s) | private peak (GiB) |
+|---|---|---|---|---|---|---|
+| summary alone | | | | | 51.1 | 0.08 |
+| NPU off 1 | 13.44 / 13.94 | 24.96 / 25.13 | 2.47 | 0.40 | | 2.71 |
+| NPU off 2 | 13.43 / 13.97 | 24.96 / 25.07 | 2.27 | 0.42 | | 2.71 |
+| NPU off (mean of 2) | 13.44 / 13.96 | 24.96 / 25.10 | 2.37 | 0.41 | | 2.71 |
+| NPU beside 1 | 13.60 / 14.06 | 25.04 / 25.07 | **3.48** | 0.52 | 53.4 | **6.84** |
+| NPU beside 2 | 13.55 / 14.05 | 25.00 / 25.04 | **3.58** | 0.51 | 54.5 | **6.84** |
+
+Stored words identical to `off` in both beside runs (both tracks), capture lag at most 0.14 s, no audio dropped, no preview turned off and no slow pause, no warnings.
+
+**(b) Another device (NPU transcription beside the 4B's CPU summary): fails** points 2 (reference on-screen median 3.48 and 3.58 s against 2.87 s: +1.11 and +1.21 s against +0.5 s) and 6 (private memory 6.84 GiB against 4.71 GiB: +4.13 GiB against +2 GiB) in both runs. It passes 1 (settled medians within +0.17 s, p95 within +0.08 s), 3 (catch-up 0.52 and 0.51 s against 2.41 s), 4 (identical words), and 5 (summary 1.04 and 1.07 times `alone`, all on the CPU, all stored). The note above about the summary child does not apply here: the app runs a CPU summary in its own process (`summary_child` is for summaries on the graphics card only), so the summary's memory would be the meeting process's in the app too. The desktop's other remark does still apply: `beside` also makes the older meeting through a second live session in the same process first, so the 4.13 GiB does not separate the summary's cost from the method's. The on-screen failure does not depend on that. **Left off:** the ARM64 `BESIDE_PAIRS` stays empty.

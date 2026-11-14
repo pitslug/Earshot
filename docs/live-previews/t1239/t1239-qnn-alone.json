@@ -1,0 +1,52 @@
+{
+  "audio": "bundled",
+  "card": null,
+  "host": {
+    "logical_cores": 12,
+    "machine_load_percent": [
+      21.0,
+      31.0
+    ],
+    "peak_private_gib": 0.0846405029296875
+  },
+  "length_s": 150.0,
+  "requested_backend": "Qnn",
+  "summaries": {
+    "count": 3,
+    "mode": "Alone",
+    "model": null,
+    "on": "cpu",
+    "runs": [
+      {
+        "backend": "cpu",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 1.9255675,
+        "stored": true,
+        "took_s": 51.1433593
+      },
+      {
+        "backend": "cpu",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 1.770327,
+        "stored": true,
+        "took_s": 50.2816844
+      },
+      {
+        "backend": "cpu",
+        "chunks": 1,
+        "gpu_refused": false,
+        "load_s": 1.698526,
+        "stored": true,
+        "took_s": 51.6047178
+      }
+    ],
+    "took_s": {
+      "max": 51.6047178,
+      "median": 51.1433593,
+      "n": 3,
+      "p95": 51.6047178
+    }
+  }
+}
