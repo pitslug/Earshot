@@ -1,0 +1,15 @@
+{
+  "about": "The order of the folder list (T12.45): case folded, Latin letters with a diacritic sorted with their base letters (core's Whisper-normaliser table, fold_diacritic), ties by the case-folded name, everything else by code point; no language collation. crates/earshot-runtime (folders_tests.rs) creates each case's folders in the order given and lists them through `folders::list`; packages/ui/src/ipc/mockFolders.test.ts sorts them with the mock's `folderOrder`. Every name is invented.",
+  "cases": [
+    { "names": ["Charlie", "beta", "Alpha"], "sorted": ["Alpha", "beta", "Charlie"] },
+    { "names": ["Zebu", "Étude", "Ether", "eagle"], "sorted": ["eagle", "Ether", "Étude", "Zebu"] },
+    { "names": ["Éte", "Ete", "Etf"], "sorted": ["Ete", "Éte", "Etf"] },
+    { "names": ["Øresund", "Oak", "Ozone", "Öl"], "sorted": ["Oak", "Öl", "Øresund", "Ozone"] },
+    { "names": ["Straße", "Strand", "Strasse west"], "sorted": ["Strand", "Straße", "Strasse west"] },
+    { "names": ["Ægir", "Adder", "Afton"], "sorted": ["Adder", "Ægir", "Afton"] },
+    { "names": ["Łódź", "Lomond", "Lynx"], "sorted": ["Łódź", "Lomond", "Lynx"] },
+    { "names": ["2026 plans", "10 ideas", "Apples", "_drafts"], "sorted": ["10 ideas", "2026 plans", "_drafts", "Apples"] },
+    { "names": ["Zinc", "αlpha", "Ama"], "sorted": ["Ama", "Zinc", "αlpha"] },
+    { "names": ["Zinc", "🍎 Fruit", "Ａpple"], "sorted": ["Zinc", "Ａpple", "🍎 Fruit"] }
+  ]
+}

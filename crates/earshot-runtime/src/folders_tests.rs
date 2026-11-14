@@ -53,6 +53,30 @@ fn folders_are_listed_by_name_with_case_folded() {
 }
 
 #[test]
+fn folders_order_follows_the_shared_case_table() {
+    let table: serde_json::Value =
+        serde_json::from_str(include_str!("../../../fixtures/ui/folder_sort_cases.json")).unwrap();
+    let cases = table["cases"].as_array().unwrap();
+    assert!(cases.len() >= 8);
+    let strings = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_owned())
+            .collect()
+    };
+    for (i, case) in cases.iter().enumerate() {
+        let dir = TempDir::new(&format!("folders-order-{i}"));
+        let (svc, _clock) = services(&dir);
+        let given = strings(&case["names"]);
+        for name in &given {
+            create(&svc, name).unwrap();
+        }
+        assert_eq!(names(&svc), strings(&case["sorted"]), "names {given:?}");
+    }
+}
+
+#[test]
 fn folders_names_follow_the_name_rule() {
     let dir = TempDir::new("folders-name-rule");
     let (svc, _clock) = services(&dir);
@@ -102,10 +126,10 @@ fn folders_duplicate_names_are_refused_ignoring_case_without_quoting_the_name() 
         refused(rename(&svc, other, "LANTERN WORKS")),
         EditError::FolderNameTaken(clients)
     );
-    // Folded per character and compared by code point, so an accented letter sorts after z.
+    // An accented letter sorts with its base letter (T12.45: it used to sort after z).
     assert_eq!(
         names(&svc),
-        ["Lantern Works", "Orchard", "\u{c9}quipe Nord"]
+        ["\u{c9}quipe Nord", "Lantern Works", "Orchard"]
     );
 }
 
