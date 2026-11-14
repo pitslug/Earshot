@@ -2034,8 +2034,8 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: strip leading and trailing single quotes from a Dictionary word; refuse "allow the summary writer" while the meeting is still finishing, with the reason; "Other" with an empty name shows the stored model; folder rows get a visible menu button (the open meeting stays as it is when a folder is chosen); folders sort locale-aware (Rust and the mock together); the ARM64 "runs on the processor" note shows once until something about it changes. Shared case tables where both suites have a rule.
   - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; screenshots light and dark
 
-- [~] T12.46 Hardening and removals
-  - status (2026-11-14): merged after review (Codex now disables only the features the installed CLI lists). Open: `accept m7` on main.
+- [x] T12.46 Hardening and removals
+  - status (2026-11-14): merged after review (Codex now disables only the features the installed CLI lists); `accept m7` passes on main.
   - found (the owner, 2026-11-14, TODO decisions 13 to 19).
   - do: replay mode passes no provisional words (`accept m7`, `bundle-check`); `earshot_llm::ApiKey` and the request header copy are wiped on drop; zero-width and bidi format characters are refused in Dictionary words and the summary style together; remove `cleanup_stale_parts` and the final pass's enrolment path that served only pre-T9.12 data (nobody has an older database before v1; the owner can start fresh); disable Codex 0.166's daemon_auto_start, code_mode_host, incremental_tools, plugin_discovery_prefetch, in_app_local_automation, system_proxy_fallback, unified_exec_tty and write_stdin_approval in `DISABLED_FEATURES` (checked against the installed CLI's own feature list); put the first fact-judge prompt into docs/summary-eval.md (the owner approved publishing it; if the old transcript cannot be read, say so).
   - accept: tests of each touched crate; `cargo test -p xtask`; `cargo xtask accept m7` unchanged in result
