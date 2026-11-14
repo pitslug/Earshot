@@ -2517,3 +2517,35 @@ fn summary_a_load_on_an_integrated_gpu_counts_as_refused() {
     assert_eq!(refused_gpu(LlamaBackend::Vulkan, Some(radeon), &[]), None);
     assert_eq!(refused_gpu(LlamaBackend::Cpu, Some(radeon), &refuse), None);
 }
+
+#[test]
+fn summary_writer_names_are_friendly_and_never_a_manifest_id() {
+    use crate::catalogue::{DISPLAY_NAMES, display_name, manifest_id_in};
+    // Every local summary model by its display name.
+    for m in crate::summary_model::SUMMARY_MODELS {
+        assert_eq!(writer_name(m.id), display_name(m.id));
+        assert_ne!(writer_name(m.id), m.id, "{} has a display name", m.id);
+    }
+    // The agent CLIs, with and without a model, as the runtime stores them.
+    for model in [None, Some("opus"), Some("some-model")] {
+        let claude = crate::claude_code::stored_model_name(model);
+        assert_eq!(writer_name(&claude), "Claude (Claude Code)");
+        assert_eq!(
+            writer_name(&crate::codex::stored_model_name(model)),
+            "Codex"
+        );
+    }
+    // An endpoint's model name is shown as it was sent.
+    assert_eq!(writer_name("gpt-test-mini"), "gpt-test-mini");
+    assert_eq!(writer_name("claude-codex"), "claude-codex");
+    assert_eq!(writer_name("codexical"), "codexical");
+    // No stored name a model of the catalogue could leave is shown as a manifest id.
+    let stored = DISPLAY_NAMES
+        .iter()
+        .map(|(id, _)| (*id).to_owned())
+        .chain(["claude-code".into(), "codex/fable".into()]);
+    for s in stored {
+        let shown = writer_name(&s);
+        assert_eq!(manifest_id_in(&shown), None, "{s} is shown as {shown}");
+    }
+}

@@ -76,6 +76,9 @@ meeting_records! {
     /// `recovered-recording/<meeting>`: how much of an interrupted recording start-up recovery
     /// saved, until the app has said so once (T9.18; no content, [`crate::recover`]).
     RecoveredRecording => "recovered-recording/", meeting at 0;
+    /// `summary-edits/<meeting>`: which of the meeting's summary rows hold text the user
+    /// edited (T12.43; row ids only, [`crate::summary_edits`]).
+    SummaryEdits => "summary-edits/", meeting at 0;
 }
 
 impl MeetingRecord {

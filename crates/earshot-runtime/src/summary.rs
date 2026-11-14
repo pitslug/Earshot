@@ -103,6 +103,29 @@ use crate::view::{MeetingView, format_local};
 mod tests;
 use crate::{RuntimeError, Services, SharedClock};
 
+/// The name the user sees for what wrote a summary, from the model name stored with it
+/// (T12.43): "Claude (Claude Code)" for Claude Code and "Codex" for Codex, whatever model
+/// the CLI was given ([`crate::claude_code::stored_model_name`],
+/// [`crate::codex::stored_model_name`]); a local model's display name
+/// ([`crate::catalogue::display_name`]); anything else is the model name an endpoint was sent,
+/// shown as it is. The one rule for showing a summary's writer.
+#[must_use]
+pub fn writer_name(stored: &str) -> String {
+    let is_cli = |cli: &str| {
+        stored == cli
+            || stored
+                .strip_prefix(cli)
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
+    if is_cli(&crate::claude_code::stored_model_name(None)) {
+        "Claude (Claude Code)".to_owned()
+    } else if is_cli(&crate::codex::stored_model_name(None)) {
+        "Codex".to_owned()
+    } else {
+        crate::catalogue::display_name(stored).to_owned()
+    }
+}
+
 /// Where and how summaries are requested.
 #[derive(Debug, Clone)]
 pub struct SummaryConfig {
