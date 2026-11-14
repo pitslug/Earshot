@@ -889,6 +889,19 @@ Brief to each labeller: the verdict rules of "Meaning judge" above, per fact, wo
 | Revised prompt (the one allowed change, seen this sample), gold set | 104 | 75.0% | 0.44 | 10 / 6 / 30% / 50% |
 | Revised prompt, 5 other dev meetings, one agent's labels (added after the rule, not adjudicated) | 112 | 84.8% | 0.70 | 7 / 8 / 71% / 63% |
 
+**The first prompt (row one).** The revised prompt replaced only the judge's system message (`JUDGE_SYSTEM` in `crates/earshot-llm-local/examples/sum_eval/facts.rs`); the user message, grammar and reply budget were the same for both rows. To reproduce row one, put this text back as `JUDGE_SYSTEM` and run `--judge-facts` and `--agreement` as under "Reproduce" below. Recovered on 2026-11-14 from the T6.20a agent's session record, where it was written at 12:45 and measured unchanged at 13:32 on 2026-11-06 (T12.46; published with the owner's approval):
+
+```text
+You compare one fact from a meeting's official record with a summary of that meeting.
+Verdicts:
+- covered: the summary states the fact's content in meaning, anywhere (tldr, decisions, action items or notes). Different words are fine, and several parts of the summary together may cover it.
+- contradicted: the summary states something that conflicts with the fact, for example the opposite choice, a different value or owner, or something hedged in the fact stated as certain or as excluded.
+- missing: neither. The summary does not mention it, or names the topic without the fact's content.
+An owner or a date counts only when the fact states it.
+Write the reason first: name the summary parts used (such as S-D2), or say that nothing matches, in at most 25 words.
+Reply with JSON only: {"reason": "...", "verdict": "covered"}
+```
+
 The rule was 80% and kappa 0.6 on the gold set, so it fails, and it stays failed. The third row passes those numbers, but it was added after the failure, has one labeller and is on other meetings. Its gap from row two is itself a warning that the agreement depends on the meetings. The revised prompt saw the gold set, so row two is if anything flattering.
 
 Where it goes wrong: treating a difference as a contradiction (a missing detail or a neighbouring choice), and treating a topic as coverage. So a local contradiction rate here is **not** a measure of a model's real contradictions: at 30% precision on the gold set, most of them are false. Do not use these rates to choose between models.

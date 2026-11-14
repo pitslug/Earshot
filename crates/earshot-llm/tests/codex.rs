@@ -57,6 +57,19 @@ const MUST_CLEAR: [&str; 17] = [
     "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
 ];
 
+/// The features T12.46 added, which an older CLI (0.155.1) may not list. Written out here,
+/// not read from the crate.
+const NEWER_FEATURES: [&str; 8] = [
+    "daemon_auto_start",
+    "code_mode_host",
+    "incremental_tools",
+    "plugin_discovery_prefetch",
+    "in_app_local_automation",
+    "system_proxy_fallback",
+    "unified_exec_tty",
+    "write_stdin_approval",
+];
+
 /// A variable `main` sets that the CLI must still see (the rest of the environment stays).
 const KEPT: &str = "EARSHOT_FAKE_KEPT";
 
@@ -106,6 +119,24 @@ mod fake {
     pub fn main(dir: &Path, args: &[String]) -> ! {
         if args == ["--version"] {
             println!("codex-cli 9.9.9");
+            std::process::exit(0);
+        }
+        if args == ["features", "list"] {
+            bump(&dir.join("features-calls"));
+            if dir.join("features-unreadable").is_file() {
+                println!("hmm");
+                std::process::exit(0);
+            }
+            // The shape of codex-cli 0.169.0 (this host, 2026-11-14). An older CLI lists
+            // none of the eight names T12.46 added.
+            let old = dir.join("features-old").is_file();
+            for name in earshot_llm::codex::DISABLED_FEATURES
+                .into_iter()
+                .filter(|n| !old || !super::NEWER_FEATURES.contains(n))
+                .chain(["fast_mode"])
+            {
+                println!("{name:<40} stable             true");
+            }
             std::process::exit(0);
         }
         if args == ["login", "status"] {
@@ -413,6 +444,59 @@ fn codex_error(e: &LlmError) -> &CodexError {
     }
 }
 
+/// The names after each `--disable`, in order.
+fn disabled(args: &[String]) -> Vec<&str> {
+    args.windows(2)
+        .filter(|w| w[0] == "--disable")
+        .map(|w| w[1].as_str())
+        .collect()
+}
+
+/// T12.46: an older CLI that lists none of the newer features still summarises, with
+/// exactly the features it lists turned off.
+fn codex_an_older_cli_disables_only_what_it_lists() {
+    let s = Scenario::new("older");
+    s.flag("features-old");
+    s.script(None, &format!("reply {}", summary_json(&[1, 2])));
+    let client = s.client(|_| {});
+    let input = meeting(3);
+    let run = summarise(&client, &input, &CancelToken::new());
+    assert!(run.result.is_ok(), "{:?}", run.result.err());
+    assert_eq!(s.calls(), 1);
+    let args = s.args(1);
+    let expected: Vec<&str> = earshot_llm::codex::DISABLED_FEATURES
+        .into_iter()
+        .filter(|f| !NEWER_FEATURES.contains(f))
+        .collect();
+    assert_eq!(disabled(&args), expected);
+    assert!(!args.iter().any(|a| a == "fast_mode"));
+}
+
+/// T12.46: a feature list that cannot be read refuses the run before anything is handed
+/// over.
+fn codex_an_unreadable_feature_list_refuses_the_run() {
+    let s = Scenario::new("features-unreadable");
+    s.flag("features-unreadable");
+    s.script(None, &format!("reply {}", summary_json(&[1, 2])));
+    let client = s.client(|_| {});
+    let err = client
+        .complete(
+            &[earshot_core::prompt::ChatMessage {
+                role: earshot_core::prompt::Role::User,
+                content: "an invented request".into(),
+            }],
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+    assert_eq!(codex_error(&err), &CodexError::UnsupportedVersion);
+    assert_eq!(s.calls(), 0, "no summary run");
+    assert!(
+        client.handovers().entries().is_empty(),
+        "nothing handed over"
+    );
+    s.assert_temp_root_empty();
+}
+
 /// No argument of any run holds meeting text (the prompt goes only on standard input).
 fn assert_args_hold_no_meeting_text(s: &Scenario, input: &SummaryInput) {
     for n in 1..=s.calls() {
@@ -468,6 +552,9 @@ fn codex_valid_reply_is_a_summary_after_one_run() {
     // history either.
     assert!(!args.iter().any(|a| a == "-o"));
     assert_eq!(args[at("history.persistence=\"none\"") - 1], "-c");
+    // Every feature the CLI lists and Earshot turns off; never one it does not list.
+    assert_eq!(disabled(&args), earshot_llm::codex::DISABLED_FEATURES);
+    assert_eq!(s.read("features-calls"), "1");
     let cwd = s.read("call-1.cwd");
     let (path, entries) = cwd.split_once('\n').unwrap();
     assert_eq!(
@@ -1081,6 +1168,16 @@ const CASES: &[Case] = &[
     (
         "codex_valid_reply_is_a_summary_after_one_run",
         codex_valid_reply_is_a_summary_after_one_run,
+        false,
+    ),
+    (
+        "codex_an_older_cli_disables_only_what_it_lists",
+        codex_an_older_cli_disables_only_what_it_lists,
+        false,
+    ),
+    (
+        "codex_an_unreadable_feature_list_refuses_the_run",
+        codex_an_unreadable_feature_list_refuses_the_run,
         false,
     ),
     (

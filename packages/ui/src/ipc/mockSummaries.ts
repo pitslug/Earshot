@@ -138,8 +138,15 @@ export interface SummariesMock {
   setSummaryVocabulary(words: string[]): Promise<SummaryVocabularyView>;
 }
 
-/** The words as stored, with the app's rules and messages (`Vocabulary::new`): a control
- * character refuses the list; each word is trimmed with inner white space joined, empty ones
+/** An invisible formatting character (Unicode Cf: zero-width characters, text-direction marks)
+ * in a Dictionary word or the summary style (T12.46; core `prompt::format_chars`). */
+const INVISIBLE_IN_WORD =
+  "A word cannot hold invisible characters such as zero-width spaces or text-direction marks.";
+const INVISIBLE_IN_STYLE =
+  "The summary style cannot hold invisible characters such as zero-width spaces or text-direction marks.";
+
+/** The words as stored, with the app's rules and messages (`Vocabulary::new`): a control or
+ * invisible formatting character refuses the list; each word is trimmed with inner white space joined, empty ones
  * and repeats in another case are dropped (the first spelling wins), then the limits apply. */
 function checkVocabulary(words: string[]): string[] {
   const kept: string[] = [];
@@ -147,6 +154,7 @@ function checkVocabulary(words: string[]): string[] {
   let total = 0;
   for (const raw of words) {
     if (/\p{Cc}/u.test(raw)) fail("invalid_setting", "A word can hold only text, with no line breaks or tabs.");
+    if (/\p{Cf}/u.test(raw)) fail("invalid_setting", INVISIBLE_IN_WORD);
     const word = raw
       .split(/\p{White_Space}+/u)
       .filter((p) => p !== "")
@@ -172,12 +180,14 @@ function checkVocabulary(words: string[]): string[] {
 }
 
 /** The style as stored, with the app's rules and messages (`SummaryStyle::new`): control
- * characters other than tabs and line breaks are refused, CR LF becomes LF, the text is
+ * characters other than tabs and line breaks are refused, and so are invisible formatting
+ * characters, CR LF becomes LF, the text is
  * trimmed and may hold at most `MAX_STYLE_CHARS` characters. */
 function checkStyle(text: string): string {
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(text)) {
     fail("invalid_setting", "The summary style can hold only text, line breaks and tabs.");
   }
+  if (/\p{Cf}/u.test(text)) fail("invalid_setting", INVISIBLE_IN_STYLE);
   const style = rustTrim(text.replace(/\r\n?/g, "\n"));
   const n = [...style].length;
   if (n > MAX_STYLE_CHARS) {

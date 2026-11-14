@@ -39,11 +39,18 @@
 //!   showed enabled or available on 0.155.1 ([`DISABLED_FEATURES`]: the shell and unified
 //!   exec, apps (connectors), plugins, hooks, memories, multi-agent, image generation and
 //!   viewing, goals, sleep, tool suggestions, skill search and installs, browsers, computer
-//!   use, workspace dependencies, shell snapshots, MCP elicitation). A feature name this
-//!   version does not know fails the run before any connection ("Unknown feature flag",
-//!   measured), so every listed name was accepted by 0.155.1. The list is pinned to
-//!   codex-cli 0.155.1: on every Codex version change, re-check it against
-//!   `codex features list` (a new tool-providing feature must be added, a renamed one fixed).
+//!   use, workspace dependencies, shell snapshots, MCP elicitation; and, from codex-cli
+//!   0.169.0's list (T12.46), the background daemon, the code-mode host, incremental tools,
+//!   plugin discovery, local automation, the system proxy fallback, the unified exec TTY and
+//!   write-stdin approval). A feature name a version does not know fails the run before any
+//!   connection ("Unknown feature flag", measured), so each run first reads the installed
+//!   CLI's own `codex features list` (no content, [`CodexCli::features`], within
+//!   [`STATUS_TIMEOUT`]) and passes `--disable` only for the names it lists
+//!   ([`run_args`]): a feature it does not list cannot be on. A list that cannot be read
+//!   refuses the run ([`CodexError::UnsupportedVersion`]) before anything is handed over.
+//!   The list was checked against codex-cli 0.169.0 (2026-11-14, T12.46); on every Codex
+//!   version change, re-check it (a new tool-providing feature must be added, a renamed one
+//!   fixed).
 //! - Tools that run anyway: any `item.started`/`item.completed` whose item type is not an
 //!   agent message, reasoning or an error (for example `command_execution`, `file_change`,
 //!   `mcp_tool_call`, `web_search`, or a type this version adds) fails the run with
@@ -144,9 +151,11 @@ sometimes your earlier reply with a correction. Follow the system part exactly a
 last user part with only the JSON object it asks for, nothing before or after it.";
 
 /// Features turned off for every run (module docs; names from `codex features list` of
-/// codex-cli 0.155.1). Pinned to that version: re-check against `codex features list` on
-/// every Codex version change.
-pub const DISABLED_FEATURES: [&str; 21] = [
+/// codex-cli 0.155.1, and the last eight from codex-cli 0.169.0, T12.46: each listed there,
+/// accepted by `--disable` and then reported off, checked 2026-11-14). A run disables those
+/// the installed CLI lists ([`run_args`]). Re-check against `codex features list` on every
+/// Codex version change.
+pub const DISABLED_FEATURES: [&str; 29] = [
     "shell_tool",
     "unified_exec",
     "apps",
@@ -168,6 +177,14 @@ pub const DISABLED_FEATURES: [&str; 21] = [
     "workspace_dependencies",
     "shell_snapshot",
     "tool_call_mcp_elicitation",
+    "daemon_auto_start",
+    "code_mode_host",
+    "incremental_tools",
+    "plugin_discovery_prefetch",
+    "in_app_local_automation",
+    "system_proxy_fallback",
+    "unified_exec_tty",
+    "write_stdin_approval",
 ];
 
 /// Prefix of the working folders.
@@ -597,6 +614,17 @@ impl CodexCli {
         Ok(line.chars().take(80).collect())
     }
 
+    /// The feature names the CLI lists (`codex features list`, which reads no content):
+    /// what a run may pass to `--disable` ([`run_args`]).
+    ///
+    /// # Errors
+    /// The CLI cannot be run or times out (its own error); it fails or lists no feature in
+    /// the expected shape: [`CodexError::UnsupportedVersion`].
+    pub fn features(&self, timeout: Duration) -> Result<Vec<String>, CodexError> {
+        let out = self.query(&["features", "list"], timeout)?;
+        features_of(&out).ok_or(CodexError::UnsupportedVersion)
+    }
+
     /// Whether the CLI is signed in (`codex login status`, which never signs in).
     #[must_use]
     pub fn sign_in(&self, timeout: Duration) -> CodexSignIn {
@@ -648,6 +676,31 @@ pub fn sign_in_of(out: &ChildOutput) -> CodexSignIn {
     CodexSignIn::Unknown("Codex's sign-in status was not recognised".into())
 }
 
+/// The feature names of a `codex features list` run: the first word of every line shaped
+/// `<name> <stage...> <true|false>` (codex-cli 0.169.0, this host, 2026-11-14), the name of
+/// lower-case letters, digits, `_` and `.`. `None` when the run failed or no line has that
+/// shape.
+#[must_use]
+pub fn features_of(out: &ChildOutput) -> Option<Vec<String>> {
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let names: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let (name, last) = (words.first()?, words.last()?);
+            let named = name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.');
+            (words.len() >= 3 && named && matches!(*last, "true" | "false"))
+                .then(|| (*name).to_owned())
+        })
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
 fn child_error(e: ChildError) -> CodexError {
     match e {
         ChildError::Start(e) | ChildError::Job(e) | ChildError::Wait(e) => {
@@ -665,9 +718,10 @@ fn child_error(e: ChildError) -> CodexError {
 }
 
 /// The arguments of a summary run after the CLI's leading ones (module docs): `model`
-/// `None` uses Codex's default.
+/// `None` uses Codex's default; `--disable` for each of [`DISABLED_FEATURES`] that `listed`
+/// (the installed CLI's [`CodexCli::features`]) holds.
 #[must_use]
-pub fn run_args(model: Option<&str>) -> Vec<OsString> {
+pub fn run_args(model: Option<&str>, listed: &[String]) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "exec",
         "--json",
@@ -693,7 +747,10 @@ pub fn run_args(model: Option<&str>) -> Vec<OsString> {
     .iter()
     .map(OsString::from)
     .collect();
-    for f in DISABLED_FEATURES {
+    for f in DISABLED_FEATURES
+        .into_iter()
+        .filter(|f| listed.iter().any(|l| l == f))
+    {
         args.push("--disable".into());
         args.push(f.into());
     }
@@ -808,12 +865,17 @@ impl CodexClient {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
+        // What this CLI can turn off; nothing is handed over when it cannot be read.
+        let listed = self.config.cli.features(STATUS_TIMEOUT)?;
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
+        }
         let text = stdin_text(messages);
         let characters = text.chars().count();
         let dir = TempFolder::new(&self.config.temp_root, TEMP_PREFIX)
             .map_err(|e| CodexError::Start(format!("no working folder: {e}")))?;
         let spec = self.config.cli.spec(
-            run_args(self.config.model.as_deref()),
+            run_args(self.config.model.as_deref(), &listed),
             dir.path(),
             text.into_bytes(),
             self.config.request_timeout,
@@ -1052,7 +1114,8 @@ mod tests {
 
     #[test]
     fn codex_run_args_hold_only_fixed_text_and_the_model() {
-        let s: Vec<String> = run_args(Some("gpt-5.6-luna"))
+        let all: Vec<String> = DISABLED_FEATURES.iter().map(|f| (*f).to_owned()).collect();
+        let s: Vec<String> = run_args(Some("gpt-5.6-luna"), &all)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -1087,6 +1150,14 @@ mod tests {
             "plugins",
             "hooks",
             "memories",
+            "daemon_auto_start",
+            "code_mode_host",
+            "incremental_tools",
+            "plugin_discovery_prefetch",
+            "in_app_local_automation",
+            "system_proxy_fallback",
+            "unified_exec_tty",
+            "write_stdin_approval",
         ] {
             assert!(
                 s.windows(2).any(|w| w[0] == "--disable" && w[1] == f),
@@ -1110,7 +1181,51 @@ mod tests {
         ] {
             assert!(!s.iter().any(|a| a == never), "{never}");
         }
-        assert!(!run_args(None).iter().any(|a| a == "-m"));
+        assert!(!run_args(None, &all).iter().any(|a| a == "-m"));
+    }
+
+    #[test]
+    fn codex_run_args_disable_only_what_the_cli_lists() {
+        // An older CLI: none of the eight T12.46 names, plus a feature Earshot leaves alone.
+        let listed: Vec<String> = DISABLED_FEATURES[..21]
+            .iter()
+            .map(|f| (*f).to_owned())
+            .chain(["fast_mode".to_owned()])
+            .collect();
+        let s: Vec<String> = run_args(None, &listed)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let disabled: Vec<&str> = s
+            .windows(2)
+            .filter(|w| w[0] == "--disable")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(disabled, DISABLED_FEATURES[..21]);
+        assert!(!run_args(None, &[]).iter().any(|a| a == "--disable"));
+    }
+
+    #[test]
+    fn codex_features_come_from_the_listed_shape_only() {
+        let listed = "agent_message_board                      under development  false
+apps                                     stable             true
+guardianv2.thread_context                removed            false
+WARNING: something
+
+";
+        assert_eq!(
+            features_of(&output(listed, "", true)).unwrap(),
+            ["agent_message_board", "apps", "guardianv2.thread_context"]
+        );
+        assert_eq!(features_of(&output(listed, "", false)), None);
+        assert_eq!(
+            features_of(&output(
+                "hmm
+", "", true
+            )),
+            None
+        );
+        assert_eq!(features_of(&output("", "", true)), None);
     }
 
     fn output(stdout: &str, stderr: &str, ok: bool) -> ChildOutput {

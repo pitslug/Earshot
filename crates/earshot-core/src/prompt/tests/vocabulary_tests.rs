@@ -354,6 +354,22 @@ fn prompt_vocabulary_words_are_checked() {
             "{bad:?}"
         );
     }
+    // Invisible formatting characters (T12.46): zero-width and text-direction marks.
+    for bad in [
+        "Quill\u{200b}marsh",
+        "\u{feff}Quillmarsh",
+        "join\u{200d}er",
+        "\u{202e}hsramlliuQ",
+        "iso\u{2066}late\u{2069}",
+        "mark\u{200f}",
+    ] {
+        assert_eq!(
+            Vocabulary::new(["fine", bad]),
+            Err(VocabularyError::FormatCharacter { line: 2 }),
+            "{bad:?}"
+        );
+    }
+    assert!(serde_json::from_value::<Vocabulary>(serde_json::json!(["a\u{200b}b"])).is_err());
     // Deserialising applies the same rules.
     assert!(serde_json::from_value::<Vocabulary>(serde_json::json!(["a\nb"])).is_err());
     assert_eq!(

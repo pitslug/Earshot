@@ -69,6 +69,12 @@ pub enum VocabularyError {
         /// Its position, from 1.
         line: usize,
     },
+    /// A word holds an invisible formatting character (Unicode Cf: zero-width characters
+    /// and text-direction marks; T12.46).
+    FormatCharacter {
+        /// Its position, from 1.
+        line: usize,
+    },
 }
 
 impl fmt::Display for VocabularyError {
@@ -89,6 +95,10 @@ impl fmt::Display for VocabularyError {
             VocabularyError::ControlCharacter { .. } => {
                 write!(f, "a word can hold only text, with no line breaks or tabs")
             }
+            VocabularyError::FormatCharacter { .. } => write!(
+                f,
+                "a word cannot hold invisible characters such as zero-width spaces or text-direction marks"
+            ),
         }
     }
 }
@@ -101,7 +111,7 @@ impl Vocabulary {
     /// first spelling wins), then at most [`MAX_VOCABULARY_WORDS`] words of at most
     /// [`MAX_VOCABULARY_WORD_CHARS`] characters and [`MAX_VOCABULARY_CHARS`] in all. A
     /// control character anywhere in a word (a line break or a tab included) refuses the
-    /// list: a word is one line.
+    /// list: a word is one line. So does an invisible formatting character (Unicode Cf).
     ///
     /// # Errors
     /// [`VocabularyError`].
@@ -120,6 +130,9 @@ impl Vocabulary {
             // space (tab, NEL).
             if word.chars().any(char::is_control) {
                 return Err(VocabularyError::ControlCharacter { line });
+            }
+            if super::format_chars::has_format_char(word) {
+                return Err(VocabularyError::FormatCharacter { line });
             }
             // `split_whitespace` also splits at the Unicode line and paragraph separators,
             // so a kept word is always one line.

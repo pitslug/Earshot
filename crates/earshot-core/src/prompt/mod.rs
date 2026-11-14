@@ -40,6 +40,7 @@
 
 mod builder;
 mod chunks;
+mod format_chars;
 mod select;
 mod style;
 mod template;

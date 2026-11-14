@@ -518,11 +518,13 @@ fn summary_claude_code_run_cut_short_leaves_its_started_entry_and_keeps_its_own_
 
 /// A stand-in for the Codex CLI: `cmd /c type <events file> & rem <the provider's
 /// arguments>` prints `codex exec --json` events (the provider's own tests in earshot-llm run
-/// a full fake CLI).
+/// a full fake CLI). The file ends with one line shaped as `codex features list` prints it,
+/// so the provider's feature check (T12.46) reads a list; a summary run skips it (not JSON).
 #[cfg(windows)]
 fn codex_printing(dir: &TempDir, events: &[serde_json::Value]) -> earshot_llm::CodexCli {
     let path = dir.0.join("codex-events.jsonl");
-    let text: Vec<String> = events.iter().map(ToString::to_string).collect();
+    let mut text: Vec<String> = events.iter().map(ToString::to_string).collect();
+    text.push("shell_tool                               stable             true".into());
     std::fs::write(&path, text.join("\n")).unwrap();
     earshot_llm::CodexCli {
         program: "cmd".into(),

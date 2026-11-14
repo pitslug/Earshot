@@ -24,7 +24,7 @@ pub const STYLE_LINE_PREFIX: &str = "| ";
 
 /// The user's summary style: empty (the default, no style block at all) or checked text
 /// of at most [`MAX_STYLE_CHARS`] characters without control characters other than line
-/// breaks and tabs. Built only through [`SummaryStyle::new`] (deserialising checks the
+/// breaks and tabs and without invisible formatting characters. Built only through [`SummaryStyle::new`] (deserialising checks the
 /// same rules).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -37,6 +37,9 @@ pub enum StyleError {
     TooLong(usize),
     /// Holds a control character other than a line break or a tab.
     ControlCharacter,
+    /// Holds an invisible formatting character (Unicode Cf: zero-width characters and
+    /// text-direction marks; T12.46).
+    FormatCharacter,
 }
 
 impl fmt::Display for StyleError {
@@ -49,6 +52,10 @@ impl fmt::Display for StyleError {
             StyleError::ControlCharacter => write!(
                 f,
                 "the summary style can hold only text, line breaks and tabs"
+            ),
+            StyleError::FormatCharacter => write!(
+                f,
+                "the summary style cannot hold invisible characters such as zero-width spaces or text-direction marks"
             ),
         }
     }
@@ -63,7 +70,8 @@ fn allowed_control(c: char) -> bool {
 
 impl SummaryStyle {
     /// `text` trimmed, checked: at most [`MAX_STYLE_CHARS`] characters, no control
-    /// characters but `\n`, `\r` and `\t`. Line breaks are stored as `\n`.
+    /// characters but `\n`, `\r` and `\t`, no invisible formatting characters (Unicode
+    /// Cf). Line breaks are stored as `\n`.
     ///
     /// # Errors
     /// [`StyleError`].
@@ -71,6 +79,9 @@ impl SummaryStyle {
         // Checked before trimming: some control characters (NEL) are also whitespace.
         if text.chars().any(|c| c.is_control() && !allowed_control(c)) {
             return Err(StyleError::ControlCharacter);
+        }
+        if super::format_chars::has_format_char(text) {
+            return Err(StyleError::FormatCharacter);
         }
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let text = text.trim();

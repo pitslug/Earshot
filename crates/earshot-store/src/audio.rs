@@ -17,9 +17,8 @@ use crate::layout::DataDir;
 pub const DAY_MS: u64 = 86_400_000;
 
 /// Age (by modification time) after which an audio file without a row, or a `.part` file, is
-/// removed by [`run_retention`] ([`sweep_orphan_audio`]) and [`DataDir::cleanup_stale_parts`],
-/// but only in a folder that belongs to no live meeting (a deleted meeting's, or one no
-/// meeting row names): 7 days. A live meeting's unfinished audio is never swept, whatever its
+/// removed by [`run_retention`] ([`sweep_orphan_audio`]), but only in a folder that belongs
+/// to no live meeting (a deleted meeting's, or one no meeting row names): 7 days. A live meeting's unfinished audio is never swept, whatever its
 /// age, because start-up recovery (T9.18) can still turn it into a recording; a recording in
 /// progress elsewhere (its `.part` is written continuously) is younger than this anyway.
 pub const ORPHAN_GRACE_MS: u64 = 7 * DAY_MS;

@@ -332,6 +332,11 @@ fn network_line(host: &HostOutcome) -> Vec<String> {
         .collect()
 }
 
+/// The replay's pre-flight: the app's own, with no provisional words (T12.46).
+fn replay_prepare(source: crate::meeting::SourceFn) -> HostPrepare {
+    HostPrepare::with_source(source).without_previews()
+}
+
 /// [`HostPrepare`] with what its `after` step did kept for the report.
 struct RecordingPrepare {
     inner: HostPrepare,
@@ -615,7 +620,7 @@ fn run(args: &Args, out: &mut dyn Write) -> Result<(), String> {
     let dir = args.replay.clone();
     let source_record = Arc::clone(&record);
     let prepare = RecordingPrepare {
-        inner: HostPrepare::with_source(Box::new(move |_, _| {
+        inner: replay_prepare(Box::new(move |_, _| {
             replay_source(&dir, Arc::clone(&source_record))
         })),
         record: Arc::clone(&record),
