@@ -333,6 +333,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const details = new Map<string, MeetingDetail>(Object.entries(data.details ?? {}));
   const recovered: RecoveredRecording[] = (data.recovered ?? []).map((r) => ({ ...r }));
   const previous = new Map<string, SummaryView>();
+  // Whether the previous summary's text was edited (`summary_edits`: the label travels with
+  // the text, so undo swaps it too).
+  const previousEdited = new Map<string, boolean>();
   const jobs = new Map<string, "Retranscribing" | "Resummarising">();
   const persons: PersonItem[] = (data.persons ?? samplePersons()).map((p) => ({ ...p }));
   let personSeq = 0;
@@ -980,7 +983,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       if (JSON.stringify(next) === JSON.stringify(s)) return;
       previous.set(meeting, s);
-      details.set(meeting, { ...d, summary: next, can_undo_summary: true });
+      previousEdited.set(meeting, d.header.summary_edited);
+      details.set(meeting, {
+        ...d,
+        header: { ...d.header, summary_edited: true },
+        summary: next,
+        can_undo_summary: true,
+      });
     },
     renameSpeaker: async (meeting, speaker, name) => {
       call("renameSpeaker", meeting, speaker, name);
@@ -1184,9 +1193,11 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         jobs.delete(meeting);
         const d = detailOf(meeting);
         if (d.summary) previous.set(meeting, d.summary);
+        if (d.summary) previousEdited.set(meeting, d.header.summary_edited);
         const next = d.summary ? resummarised(d.summary) : null;
         details.set(meeting, {
           ...d,
+          header: { ...d.header, summary_edited: false },
           summary: next,
           can_undo_summary: d.summary !== null,
           summary_stale: false,
@@ -1213,7 +1224,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       const prev = previous.get(meeting);
       if (!prev || !d.can_undo_summary) fail("no_previous_summary", "There is no previous summary.");
       if (d.summary) previous.set(meeting, d.summary);
-      details.set(meeting, { ...d, summary: prev ?? null });
+      const wasEdited = previousEdited.get(meeting) ?? false;
+      previousEdited.set(meeting, d.header.summary_edited);
+      details.set(meeting, {
+        ...d,
+        header: { ...d.header, summary_edited: wasEdited },
+        summary: prev ?? null,
+      });
     },
     exportMeeting: async (meeting) => {
       call("exportMeeting", meeting);

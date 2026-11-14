@@ -190,7 +190,7 @@ fn put_summary(
     let mut s = Summary::new(
         meeting,
         Template::General,
-        Some("qwen3.5-9b".into()),
+        Some(earshot_runtime::summary_model::DEFAULT_SUMMARY_MODEL.into()),
         body,
         &mut stamp,
     );
@@ -226,7 +226,9 @@ fn detail_maps_header_transcript_speakers_and_resolves_citations() {
     assert_eq!(d.header.title, "Vendor review");
     assert_eq!(d.header.mode, CaptureMode::Call);
     assert_eq!(d.header.transcript, Some(TranscriptKind::Final));
-    assert_eq!(d.header.summary_model.as_deref(), Some("qwen3.5-9b"));
+    // The writer by its display name, never the manifest id (T12.43).
+    assert_eq!(d.header.summary_writer.as_deref(), Some("Qwen 3.5 9B"));
+    assert!(!d.header.summary_edited);
     assert_eq!(d.header.duration_ms, Some(60_000));
 
     // Transcript rows in meeting order with speaker names and tracks.
@@ -618,6 +620,7 @@ fn detail_a_summary_edit_shows_at_once_and_can_be_undone() {
     let d = meeting_detail(&svc, f.meeting).unwrap();
     assert_eq!(d.summary.as_ref().unwrap().id, id.to_string());
     assert!(!d.can_undo_summary);
+    assert!(!d.header.summary_edited);
 
     let field = |f: SummaryFieldRef| f.field();
     edit::edit_summary(
@@ -646,6 +649,8 @@ fn detail_a_summary_edit_shows_at_once_and_can_be_undone() {
         d.can_undo_summary,
         "the text before the edit can be restored"
     );
+    assert!(d.header.summary_edited, "the header says it was edited");
+    assert_eq!(d.header.summary_writer.as_deref(), Some("Qwen 3.5 9B"));
     assert!(
         !d.summary_stale,
         "a summary edit leaves the transcript as it was"
@@ -656,6 +661,8 @@ fn detail_a_summary_edit_shows_at_once_and_can_be_undone() {
         d.summary.as_ref().unwrap().actions[0].due.as_deref(),
         Some("Friday")
     );
+    // The text before the last edit was itself edited (the decision).
+    assert!(d.header.summary_edited);
 
     // A summary that is no longer current is refused as user copy.
     let e: IpcError = edit::edit_summary(
