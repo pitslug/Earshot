@@ -56,7 +56,8 @@
 //! **Telling the user (T12.33).** As it happens, each track with previews says whether they run
 //! or why not, as a kind ([`PreviewOffReason`]) in [`super::RuntimeEvent::LivePreviewState`], once
 //! per change: waiting for the transcript to catch up, running once the model is loaded, off for
-//! the meeting, or paused on battery. A track without previews (the mic in a call without `own_voice`) says nothing.
+//! the meeting, or paused on battery. A track without previews (the mic in a call without
+//! `own_voice`) says nothing.
 //! [`LivePreviews::rule`] is asked before a wait or the battery is said, once per track (its
 //! backend and model never change once known), so neither is said for previews this computer
 //! would not run anyway: turned off, off by default, a part without them, and in the app a whisper
