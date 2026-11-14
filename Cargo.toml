@@ -12,6 +12,7 @@ members = [
     "crates/earshot-llm-replay",
     "crates/earshot-llm-local",
     "crates/earshot-store",
+    "crates/earshot-sync",
     "crates/earshot-capture-wasapi",
     "crates/earshot-hardware",
     "crates/earshot-capture-android",

@@ -58,7 +58,7 @@ plaintext = JSON of SyncEnvelope { entity, class, id, meta, record }, plus "form
 
 - The stamp in the associated data is the row's `updated_at`. The relay cannot attach a ciphertext to another row key or stamp without the open failing.
 - Opening checks, in order: the leading byte, the tag, that the envelope's `id` hashes to the row key, that `meta.updated_at` equals the stamp sent beside it. Any failure is `Unreadable` with a fixed reason word, never the bytes.
-- Before sealing, the plaintext is refused if it is over 192 KiB or contains `fLaC`, `RIFF` or `OggS` at any offset (`AudioSignature`). This is the client half of `sync.no_audio`.
+- Before sealing, the plaintext is refused if it is over 192 KiB or holds an audio container's signature: raw `fLaC` or `OggS`, raw `RIFF` with `WAVE` four bytes later ("RIFF" alone is an English word a transcript can hold), or any of the three magics as serde writes a byte vector (comma-separated decimals) or as the first five characters of base64 (`AudioSignature`). This is the client half of `sync.no_audio`; the type system is the first.
 
 ### 2.4 Key check
 
@@ -231,6 +231,7 @@ A test delivers the same rows to three simulated devices in every order of two p
 - Blob plaintext: `{v: 1, name, app_version, kind: "app", offers_summaries: false, writer_kind: null, recording: bool}`, sealed with `k_presence` like a row (`aad = "earshot-presence-v1" | device_id`).
 - Sent every 60 s and once on sleep or quit with `gone: true`, best effort.
 - Online is `age_s <= 150` and not `gone` (a judgement: two missed beats). The rule is one pure function with a clock-free test.
+- Presence is advisory. A blob's associated data holds no time, and `age_s` is the relay's, so the relay could replay an old blob as fresh. Nothing decides on presence alone: offload (10.1) also needs the target's claim, which is a synced row the relay cannot forge.
 - Phase 1 uses the name and the age only. Phase 2 fills `offers_summaries` and `writer_kind`.
 
 ## 9. The Sync page (T11.3a)
