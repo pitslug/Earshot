@@ -1,44 +1,26 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { type Ipc, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
+import { type Ipc, type MockIpcData, createMockIpc } from "../ipc";
 import { MOCK_VERSION } from "../ipc/mockSettings";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider, THEME_KEY } from "../theme/EarshotThemeProvider";
+import { openSettings, renderApp } from "../test/app";
+import { THEME_KEY } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
-import {
-  START_EXPLAINED,
-  THEME_SYSTEM_EXPLAINED,
-  TRAY_EXPLAINED,
-  shortcutExplained,
-} from "./GeneralPage";
+import { START_EXPLAINED, THEME_SYSTEM_EXPLAINED, TRAY_EXPLAINED, shortcutExplained } from "./GeneralPage";
 
 async function open(data: MockIpcData = {}): Promise<{ ipc: Ipc; user: ReturnType<typeof userEvent.setup> }> {
   const timer = createManualTimer(1_000_000);
   const ipc = createMockIpc({ meetings: [], timer, ...data });
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "Settings" }));
-  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "General" }));
+  await openSettings(user, "General");
   await screen.findByRole("heading", { level: 1, name: "General" });
   await screen.findByRole("switch", { name: "Start Earshot with Windows" });
   return { ipc, user };
 }
 
 const start = () => screen.getByRole("switch", { name: "Start Earshot with Windows" });
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings, General", () => {
   it("turns starting with Windows on and off", async () => {

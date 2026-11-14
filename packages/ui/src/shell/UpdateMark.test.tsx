@@ -1,15 +1,11 @@
 // The mark beside Settings when an update waits for the user.
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { type Ipc, IpcProvider, type UpdateEvent, type UpdatePhase, createMockIpc } from "../ipc";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { type Ipc, type UpdateEvent, type UpdatePhase, createMockIpc } from "../ipc";
+import { renderApp } from "../test/app";
 import { createManualTimer } from "../time";
-import { AppShell } from "./AppShell";
-
-installMatchMedia(false);
 
 const AVAILABLE: UpdatePhase = { state: "Available", version: "9.9.9", size: 1000 };
 const DOWNLOADING: UpdatePhase = { state: "Downloading", version: "9.9.9", done: 1, total: 10 };
@@ -28,13 +24,7 @@ function open(configure: (base: Ipc) => Partial<Ipc>, phase?: UpdatePhase) {
     },
     ...configure(base),
   };
-  const view = render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  const view = renderApp(ipc, { timer });
   return { view, unsubscribe, send: (phase: UpdatePhase) => act(() => handler?.({ phase })), ready: () => waitFor(() => expect(handler).not.toBeNull()) };
 }
 

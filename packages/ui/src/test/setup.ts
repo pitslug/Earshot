@@ -1,6 +1,14 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
-import { afterEach } from "vitest";
+import { afterEach, beforeEach } from "vitest";
+
+import { installMatchMedia } from "./matchMedia";
+
+// Every test starts on a light system theme with a fresh fake `matchMedia` (jsdom has none), so a
+// test that switches it never reaches the next; a test that needs dark installs its own.
+beforeEach(() => {
+  installMatchMedia(false);
+});
 
 // jsdom has no ResizeObserver; Fluent's MessageBar observes its own size for reflow.
 if (typeof globalThis.ResizeObserver === "undefined") {

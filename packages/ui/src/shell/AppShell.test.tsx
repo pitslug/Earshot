@@ -1,18 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import {
-  DATA_FOLDER_COPY,
-  type Ipc,
-  IpcFailure,
-  IpcProvider,
-  type MeetingListItem,
-  createMockIpc,
-} from "../ipc";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
-import { AppShell } from "./AppShell";
+import { DATA_FOLDER_COPY, type Ipc, IpcFailure, type MeetingListItem, createMockIpc } from "../ipc";
+import { renderApp } from "../test/app";
 
 const at = (day: number, hour: number, minute = 0) =>
   new Date(2026, 10, day, hour, minute).getTime();
@@ -26,18 +17,8 @@ const MEETINGS: MeetingListItem[] = [
 ];
 
 function renderShell(ipc: Ipc) {
-  return render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell now={() => NOW} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  return renderApp(ipc, { now: () => NOW });
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("AppShell", () => {
   it("lists meetings grouped by day with their date, time and length", async () => {
@@ -137,13 +118,7 @@ describe("AppShell", () => {
   });
 
   it("shows a notice when given one", async () => {
-    render(
-      <EarshotThemeProvider>
-        <IpcProvider ipc={createMockIpc({ meetings: MEETINGS })}>
-          <AppShell now={() => NOW} notice="Preview: sample data" />
-        </IpcProvider>
-      </EarshotThemeProvider>,
-    );
+    renderApp(createMockIpc({ meetings: MEETINGS }), { now: () => NOW, notice: "Preview: sample data" });
     expect(await screen.findByText("Preview: sample data")).toBeInTheDocument();
   });
 });

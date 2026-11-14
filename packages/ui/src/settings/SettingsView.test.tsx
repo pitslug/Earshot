@@ -1,12 +1,10 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { type Ipc, IpcFailure, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
+import { type Ipc, IpcFailure, type MockIpcData, createMockIpc } from "../ipc";
 import { DOWNLOADING_MESSAGE, MOCK_DISPLAY_NAMES, MODEL_STEP_MS } from "../ipc/mockModels";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { renderApp } from "../test/app";
 import { type ManualTimer, createManualTimer } from "../time";
 import { SETTINGS_SECTIONS, type SettingsSection } from "./SettingsView";
 import { formatSize } from "./copy";
@@ -20,13 +18,7 @@ interface Setup {
 function setup(data: MockIpcData = {}, wrap: (ipc: Ipc) => Ipc = (i) => i): Setup {
   const timer = createManualTimer(1_000_000);
   const ipc = wrap(createMockIpc({ meetings: [], timer, ...data }));
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   return { timer, ipc, user: userEvent.setup() };
 }
 
@@ -72,10 +64,6 @@ function card(model: string): HTMLElement {
   if (!el) throw new Error(`no card for ${model}`);
   return el;
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings", () => {
   it("opens on General, lists the eight pages in order, switches and goes back to the meetings", async () => {

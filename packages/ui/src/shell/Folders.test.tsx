@@ -1,12 +1,10 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { type FolderListItem, type Ipc, IpcProvider, type MeetingListItem, createMockIpc } from "../ipc";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { type FolderListItem, type Ipc, type MeetingListItem, createMockIpc } from "../ipc";
+import { renderApp } from "../test/app";
 import { createManualTimer } from "../time";
-import { AppShell } from "./AppShell";
 import { folderMenuLabel } from "./Folders";
 import { SEARCH_DEBOUNCE_MS } from "./MeetingSearch";
 
@@ -48,13 +46,7 @@ function setup(data: Parameters<typeof createMockIpc>[0] = {}) {
 }
 
 function renderShell(ipc: Ipc, timer = createManualTimer(NOW)) {
-  return render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell now={() => NOW} timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  return renderApp(ipc, { now: () => NOW, timer });
 }
 
 const folderList = () => screen.findByRole("list", { name: "Folders" });
@@ -84,10 +76,6 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>, button: HTMLEl
   button.focus();
   await user.keyboard("{Shift>}{F10}{/Shift}");
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("folders", () => {
   it("opens on All meetings, and a folder shows only its meetings, still by day", async () => {

@@ -1,49 +1,16 @@
 // A meeting kept on this computer (T12.13): the start screen's box and the detail's bar, with
 // "Allow" behind a confirm.
 
-import { act, cleanup, render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { act, cleanup, screen, within } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 
-import { type Ipc, type MeetingListItem, type MockIpcData, createMockIpc, sampleMeetings } from "../ipc";
+import { type MockIpcData } from "../ipc";
 import { MOCK_STILL_WORKING_COPY } from "../ipc/mock";
-import { IpcProvider } from "../ipc/context";
 import { KEEP_LOCAL_HINT } from "../meeting/MeetingViews";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
-import { createManualTimer } from "../time";
-import { AppShell } from "../shell/AppShell";
+import { ITEM, OTHER, setup } from "../test/meetingDetail";
 import { KEPT_LOCAL_TEXT, allowWriterText } from "./KeptLocal";
 
-const ITEM: MeetingListItem = { ...sampleMeetings()[1], started_at_ms: 2_000 };
-const OTHER: MeetingListItem = { ...sampleMeetings()[2], started_at_ms: 1_000 };
-
-async function setup(data: MockIpcData = {}) {
-  const calls: unknown[][] = [];
-  const timer = createManualTimer(10_000);
-  const ipc: Ipc = createMockIpc({
-    timer,
-    meetings: [ITEM, OTHER],
-    onCall: (c) => calls.push(c),
-    ...data,
-  });
-  const user = userEvent.setup();
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
-  await screen.findByRole("heading", { level: 1, name: ITEM.title });
-  return { calls, timer, ipc, user };
-}
-
 const claudeCode: MockIpcData["summaries"] = { settings: { writer: "ClaudeCode" } };
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("keeping a meeting on this computer", () => {
   it("is off on the start screen and follows the box into the started meeting", async () => {

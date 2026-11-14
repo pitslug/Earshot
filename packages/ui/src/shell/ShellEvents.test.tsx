@@ -1,13 +1,12 @@
 // What the tray, the global shortcut and notifications ask of the window (T7.5).
 
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   type Ipc,
   IpcFailure,
-  IpcProvider,
   type MeetingEvent,
   type MockIpcData,
   type RecoveredRecording,
@@ -15,10 +14,8 @@ import {
   createMockIpc,
   sampleMeetings,
 } from "../ipc";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { renderApp } from "../test/app";
 import { createManualTimer } from "../time";
-import { AppShell } from "./AppShell";
 
 interface Setup {
   send(event: ShellEvent): void;
@@ -47,13 +44,7 @@ async function open(data: MockIpcData = {}, quitApp?: Ipc["quitApp"]): Promise<S
       return () => {};
     },
   };
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   // The first-run wizard has no Settings button.
   if (!data.firstRun?.show) await screen.findByRole("button", { name: "Settings" });
   await waitFor(() => {
@@ -67,10 +58,6 @@ async function open(data: MockIpcData = {}, quitApp?: Ipc["quitApp"]): Promise<S
     user: userEvent.setup(),
   };
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("the window hears the tray, the shortcut and notifications", () => {
   it("asks before quitting while recording, and stops and quits on yes", async () => {

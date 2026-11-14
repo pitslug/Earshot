@@ -1,11 +1,10 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { type Ipc, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
+import { type Ipc, type MockIpcData, createMockIpc } from "../ipc";
 import { VOICE_SAMPLE_MS, VOICE_STEP_MS, voiceMessage } from "../ipc/mockSettings";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
+import { openSettings, renderApp } from "../test/app";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
 import { FORGET_PERSON_EXPLAINED, REMOVE_PERSON_EXPLAINED, PEOPLE_EXPLAINED } from "./PeoplePage";
@@ -29,17 +28,9 @@ interface Setup {
 async function open(data: MockIpcData = {}): Promise<Setup> {
   const timer = createManualTimer(1_000_000);
   const ipc = createMockIpc({ meetings: [], timer, ...data });
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "Settings" }));
-  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "People" }));
+  await openSettings(user, "People");
   await screen.findByRole("heading", { level: 1, name: "People" });
   await screen.findByRole("textbox", { name: /Your name/ });
   return { ipc, timer, user };
@@ -48,10 +39,6 @@ async function open(data: MockIpcData = {}): Promise<Setup> {
 function advance(timer: ManualTimer, ms: number) {
   act(() => timer.advance(ms));
 }
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings, People, people", () => {
   const people = [
