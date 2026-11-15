@@ -28,14 +28,22 @@
 #    it is listed by its name; choose it under "Another computer" on the Summaries page.
 #
 # To keep the key in Docker secrets instead of the volume: copy the two files out of the volume
-# (vault/key and vault/token) to files only you can read, uncomment the `secrets` blocks, and
-# set EARSHOT_WORKER_KEY_FILE and EARSHOT_WORKER_TOKEN_FILE to /run/secrets/earshot_vault_key
-# and /run/secrets/earshot_vault_token. Never put either in an environment variable.
+# (vault/key and vault/token), make them owned by uid 10001 and readable by it only
+# (chmod 600: the worker refuses a vault file others can read), uncomment the `secrets` blocks,
+# and set EARSHOT_WORKER_KEY_FILE and EARSHOT_WORKER_TOKEN_FILE to
+# /run/secrets/earshot_vault_key and /run/secrets/earshot_vault_token. Never put either in an
+# environment variable. `join` always writes to the volume (a secret is read-only).
 #
-# The model server is the stock llama.cpp image, pinned by digest. The worker reaches it as
-# http://llama:8080/v1 on this file's network, which counts as its own local model, so it may
-# write meetings kept on your computers. Point EARSHOT_WORKER_LLM_URL anywhere else and that
-# endpoint is remote: kept-local meetings are declined and written on the asking device.
+# If a join fails after the code was taken, or this worker's volume is lost, the vault keeps a
+# device that can never sync (it holds nothing and is listed offline): delete the volume
+# (docker compose down -v) and join again with a new code.
+#
+# The model server is the stock llama.cpp image, pinned by digest, on an internal network with
+# no route out of this host. The worker reaches it as http://llama:8080/v1, which counts as its
+# own local model, so it may write meetings kept on your computers; the worker reaches the relay
+# over a second, ordinary network. Point EARSHOT_WORKER_LLM_URL anywhere else, or rename the
+# service, and that endpoint is remote: kept-local meetings are declined and written on the
+# asking device.
 services:
   earshot-worker:
     image: ghcr.io/pitslug/earshot-worker:${EARSHOT_VERSION:-latest}
@@ -44,6 +52,7 @@ services:
     environment:
       EARSHOT_WORKER_RELAY: ${EARSHOT_WORKER_RELAY:?set EARSHOT_WORKER_RELAY in .env}
       EARSHOT_WORKER_LLM_URL: http://llama:8080/v1
+      EARSHOT_WORKER_LLM_SERVICE: llama
       EARSHOT_WORKER_LLM_CONTEXT: "16384"
       EARSHOT_WORKER_NAME: ${EARSHOT_WORKER_NAME:-Earshot server}
       # EARSHOT_WORKER_KEY_FILE: /run/secrets/earshot_vault_key
@@ -53,7 +62,16 @@ services:
     # secrets:
     #   - earshot_vault_key
     #   - earshot_vault_token
-    networks: [earshot-worker]
+    # The model first, so the worker's first presence already names it; presence also looks
+    # again at every beat, so a model that comes up later is named from then on.
+    depends_on:
+      llama-cpu:
+        condition: service_started
+        required: false
+      llama-gpu:
+        condition: service_started
+        required: false
+    networks: [model, outside]
     # No ports: the worker only calls out, to the relay and to the model.
 
   llama-cpu:
@@ -64,7 +82,7 @@ services:
     volumes:
       - ./models:/models:ro
     networks:
-      earshot-worker:
+      model:
         aliases: [llama]
 
   llama-gpu:
@@ -82,11 +100,16 @@ services:
               count: 1
               capabilities: [gpu]
     networks:
-      earshot-worker:
+      model:
         aliases: [llama]
 
 networks:
-  earshot-worker: {}
+  # The model's network: internal, so the model server cannot reach anything outside this host
+  # and nothing outside can reach it.
+  model:
+    internal: true
+  # The worker's way to the relay.
+  outside: {}
 
 volumes:
   earshot-worker-data:

@@ -181,6 +181,7 @@ fn worker_config(dir: &Path, relay: &str, llm: &Url) -> Config {
         data,
         relay: Some(relay.to_owned()),
         llm_url: llm.clone(),
+        llm_service: "llama".into(),
         llm_model: "test-model".into(),
         llm_context: 16_384,
         llm_timeout: Duration::from_secs(60),
@@ -346,6 +347,15 @@ fn worker_writes_the_summary_a_simulated_device_asks_for() {
 
     // The same meeting asked again once the endpoint is the worker's own model: written.
     own.store(true, Ordering::SeqCst);
+    // Its presence says so from its next beat (the label is located again at every send).
+    wait_until("the local-model label", || {
+        ca.peers().unwrap().iter().any(|p| {
+            p.device == worker_id
+                && p.presence
+                    .as_ref()
+                    .is_some_and(|x| x.writer_kind.as_deref() == Some("local"))
+        })
+    });
     let again = earshot_runtime::offload::ask(&asker.svc, kept, worker_id)
         .unwrap()
         .unwrap();
@@ -432,4 +442,35 @@ fn worker_join_with_a_wrong_code_stores_nothing() {
     assert_eq!(e, WorkerError::Sync(SyncProblem::BadCode));
     assert!(!e.to_string().contains("not a code"));
     assert!(!config.key_file.exists() && !config.token_file.exists());
+}
+
+/// A vault folder that cannot be written is refused before the code is spent: the same code
+/// then joins once the files can go somewhere.
+#[test]
+fn worker_join_refuses_an_unwritable_vault_before_taking_the_code() {
+    let dir = TempDir::new("unwritable");
+    let relay = relay(&dir);
+    let asker = Asker::new(&dir.0);
+    set_up_first_device(&asker.svc, &*asker.vault, &relay.url(), SECRET).unwrap();
+    let endpoint = Url::parse("http://llama:8080/v1").unwrap();
+    let good = worker_config(&dir.0, &relay.url(), &endpoint);
+    // The key's folder is a file: nothing can be written there (a read-only secret does the
+    // same on Linux).
+    std::fs::write(dir.0.join("blocked"), b"").unwrap();
+    let blocked = Config {
+        key_file: dir.0.join("blocked").join("key"),
+        ..good.clone()
+    };
+    let wsvc = open_services(&good.data).unwrap();
+    let offer =
+        offer_pairing_code(&asker.svc, Arc::clone(&asker.vault) as Arc<dyn SyncVault>).unwrap();
+    let e = join(&wsvc, &blocked, offer.code()).unwrap_err();
+    assert_eq!(
+        e,
+        WorkerError::Vault(earshot_worker::vault::VaultRefused::NotWritable)
+    );
+    assert_eq!(e.health_word(), "vault_not_writable");
+    assert!(!good.token_file.exists(), "nothing was kept");
+    join(&wsvc, &good, offer.code()).unwrap();
+    assert!(good.key_file.is_file() && good.token_file.is_file());
 }

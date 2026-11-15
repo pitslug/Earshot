@@ -7,6 +7,7 @@
 //! | `EARSHOT_WORKER_DATA` | `/data` | The data folder: the worker's database, its vault files and its heartbeat |
 //! | `EARSHOT_WORKER_RELAY` | (required for `join` and `run`) | The relay's address, as the other devices use it (`https://...`) |
 //! | `EARSHOT_WORKER_LLM_URL` | `http://llama:8080/v1` | The OpenAI-compatible summary endpoint ([`crate::endpoint`] decides whether it is the worker's own model) |
+//! | `EARSHOT_WORKER_LLM_SERVICE` | `llama` | The model service's name on the compose network: the only bare name that can count as the worker's own model |
 //! | `EARSHOT_WORKER_LLM_MODEL` | `local` | The model name sent with each request and stored with the summary |
 //! | `EARSHOT_WORKER_LLM_CONTEXT` | `16384` | The endpoint's context window in tokens (the compose file starts llama.cpp with the same) |
 //! | `EARSHOT_WORKER_LLM_TIMEOUT_S` | `1800` | The longest one summary request may take |
@@ -28,6 +29,8 @@ pub struct Config {
     pub relay: Option<String>,
     /// The summary endpoint.
     pub llm_url: Url,
+    /// The model service's name on the compose network ([`crate::endpoint`]).
+    pub llm_service: String,
     /// The model name.
     pub llm_model: String,
     /// The endpoint's context window in tokens.
@@ -81,6 +84,16 @@ impl Config {
             &get("EARSHOT_WORKER_LLM_URL").unwrap_or_else(|| "http://llama:8080/v1".into()),
         )
         .map_err(|_| ConfigError("EARSHOT_WORKER_LLM_URL"))?;
+        let llm_service = get("EARSHOT_WORKER_LLM_SERVICE").unwrap_or_else(|| "llama".into());
+        let label = !llm_service.is_empty()
+            && llm_service.len() <= 63
+            && !llm_service.eq_ignore_ascii_case("localhost")
+            && llm_service
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        if !label {
+            return Err(ConfigError("EARSHOT_WORKER_LLM_SERVICE"));
+        }
         let number = |name: &'static str, default: u64| -> Result<u64, ConfigError> {
             get(name).map_or(Ok(default), |v| v.parse().map_err(|_| ConfigError(name)))
         };
@@ -105,6 +118,7 @@ impl Config {
             data,
             relay: get("EARSHOT_WORKER_RELAY"),
             llm_url,
+            llm_service,
             llm_model: get("EARSHOT_WORKER_LLM_MODEL").unwrap_or_else(|| "local".into()),
             llm_context,
             llm_timeout: Duration::from_secs(timeout),
@@ -147,6 +161,7 @@ mod tests {
         assert_eq!(c.relay, None);
         assert_eq!(c.relay(), Err(ConfigError("EARSHOT_WORKER_RELAY")));
         assert_eq!(c.llm_url.as_str(), "http://llama:8080/v1");
+        assert_eq!(c.llm_service, "llama");
         assert_eq!(c.llm_model, "local");
         assert_eq!(c.llm_context, 16_384);
         assert_eq!(c.llm_timeout, Duration::from_secs(1800));
@@ -182,6 +197,8 @@ mod tests {
             ("EARSHOT_WORKER_LLM_CONTEXT", "lots"),
             ("EARSHOT_WORKER_LLM_CONTEXT", "1024"),
             ("EARSHOT_WORKER_LLM_TIMEOUT_S", "0"),
+            ("EARSHOT_WORKER_LLM_SERVICE", "llama.lan"),
+            ("EARSHOT_WORKER_LLM_SERVICE", "localhost"),
             ("EARSHOT_WORKER_NAME", "\u{7}"),
         ] {
             let e = of(&[(name, value)]).unwrap_err();

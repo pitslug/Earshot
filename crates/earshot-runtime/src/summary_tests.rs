@@ -205,9 +205,9 @@ fn summary_own_model_endpoint_is_called_only_by_the_worker() {
         }
     }
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let name = concat!("own_model_", "endpoint(");
+    let name = concat!("own_model_", "endpoint");
     let mut found = Vec::new();
-    for dir in ["crates", "apps"] {
+    for dir in ["crates", "apps", "xtask"] {
         let dir = repo.join(dir);
         assert!(dir.is_dir(), "{} is not a folder", dir.display());
         scan(&dir, name, &mut found);

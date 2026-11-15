@@ -1065,9 +1065,18 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
     let (a, b) = pair(&relay);
     set_device_name(&b.svc, "Invented server").unwrap();
     set_offer_summaries(&b.svc, true).unwrap();
+    // Where the worker's model is, as its locator would say now.
+    let local = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let now = Arc::clone(&local);
     let worker = SyncClient::for_address(b.svc.clone(), b.vault(), &relay.relay.url())
         .unwrap()
-        .as_summary_worker(Some(WriterKind::Local));
+        .as_summary_worker(Arc::new(move || {
+            Some(if now.load(std::sync::atomic::Ordering::SeqCst) {
+                WriterKind::Local
+            } else {
+                WriterKind::OpenaiCompatible
+            })
+        }));
     worker.send_presence(false).unwrap();
     a.client().send_presence(false).unwrap();
     let peers = a.client().peers().unwrap();
@@ -1093,6 +1102,29 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
     assert_eq!(other.name.as_deref(), Some("Invented server"));
     assert!(other.online && other.offers_summaries);
     assert_eq!(other.writer_kind, Some(WriterKind::Local));
+    // The model moves (its container was not up yet, or is gone): the next presence says so.
+    local.store(false, std::sync::atomic::Ordering::SeqCst);
+    worker.send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    assert_eq!(
+        theirs.presence.as_ref().unwrap().writer_kind.as_deref(),
+        Some("openai_compatible")
+    );
+    local.store(true, std::sync::atomic::Ordering::SeqCst);
+    worker.send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    assert_eq!(
+        theirs.presence.as_ref().unwrap().writer_kind.as_deref(),
+        Some("local")
+    );
     // Not offering: no writer is named, whatever it was given.
     set_offer_summaries(&b.svc, false).unwrap();
     worker.send_presence(false).unwrap();

@@ -15,6 +15,7 @@
 //! that is the cost of a key on a server, stated in docs/sync.md section 10.
 
 pub mod config;
+pub mod crash;
 pub mod endpoint;
 pub mod health;
 pub mod vault;

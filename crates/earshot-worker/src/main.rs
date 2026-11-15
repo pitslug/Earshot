@@ -26,6 +26,7 @@ fn now_s() -> u64 {
 }
 
 fn main() -> ExitCode {
+    earshot_worker::crash::install_panic_hook();
     let command = std::env::args().nth(1);
     match command.as_deref() {
         Some("--version") => {
@@ -66,7 +67,7 @@ fn health_command() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(u) => {
-            println!("unhealthy: {}", u.word());
+            println!("unhealthy: {}", u.describe());
             ExitCode::FAILURE
         }
     }
@@ -91,8 +92,19 @@ fn join_command() -> Result<(), WorkerError> {
     Ok(())
 }
 
+/// [`run`], recording a run that cannot start or ends on a problem in the heartbeat file, so the
+/// health check reports why while Docker's restart policy tries again.
 fn run_command() -> Result<(), WorkerError> {
     let config = Config::from_env()?;
+    let heartbeat = health::heartbeat_path(&config.data);
+    let ran = run(config);
+    if let Err(e) = &ran {
+        let _ = health::record_stopped(&heartbeat, e.health_word());
+    }
+    ran
+}
+
+fn run(config: Config) -> Result<(), WorkerError> {
     let data = config.data.clone();
     let services = open_services(&data)?;
     let worker = Worker::open(services, config)?;

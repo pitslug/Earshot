@@ -259,12 +259,11 @@ jobs:
           done
           exit "${failed}"
 
-  # The summary worker's image (T11.6), built and run on the runner and never pushed (this
-  # workflow can only read the repository): the image's build reads the binary with ldd and
-  # copies its shared libraries, and the slim image must then start and answer its health check.
-  # The relay address does not exist (.invalid), so the worker runs, retries the relay with
-  # back-off and stays healthy, which is what its health check means (docs/sync.md section 10).
-  # The vault files are invented bytes made on the runner for this run only.
+  # The summary worker's image (T11.6), built and checked on the runner and never pushed (this
+  # workflow can only read the repository): crates/earshot-worker/image-check.sh reads the
+  # binary's libraries with ldd, checks that a worker that is not joined stops and says so, and
+  # that a joined one (invented vault files made for this run) starts against a relay that does
+  # not exist and answers its health check (docs/sync.md section 10).
   worker-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -280,38 +279,6 @@ jobs:
         working-directory: src
         run: docker build --progress plain -f crates/earshot-worker/Dockerfile -t earshot-worker:check .
 
-      - name: Read the slim image's libraries
-        run: docker run --rm --entrypoint ldd earshot-worker:check /usr/local/bin/earshot-worker
-
-      - name: Run the worker and wait for its health check
-        run: |
-          set -eu
-          mkdir -m 0755 smoke
-          head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > smoke/key
-          echo "an-invented-token-for-the-image-check" > smoke/token
-          chmod 0644 smoke/key smoke/token
-          docker volume create earshot-worker-check > /dev/null
-          docker run -d --name earshot-worker-check \
-            --health-interval 2s --health-start-period 5s --health-retries 3 \
-            -v earshot-worker-check:/data \
-            -v "${PWD}/smoke:/run/secrets:ro" \
-            -e EARSHOT_WORKER_RELAY=https://relay.invalid \
-            -e EARSHOT_WORKER_KEY_FILE=/run/secrets/key \
-            -e EARSHOT_WORKER_TOKEN_FILE=/run/secrets/token \
-            earshot-worker:check > /dev/null
-          status=starting
-          for _ in $(seq 1 60); do
-            status="$(docker inspect -f '{{.State.Health.Status}}' earshot-worker-check)"
-            if [ "${status}" = "healthy" ] || [ "${status}" = "unhealthy" ]; then break; fi
-            if [ "$(docker inspect -f '{{.State.Running}}' earshot-worker-check)" != "true" ]; then break; fi
-            sleep 2
-          done
-          echo "health: ${status}"
-          docker exec earshot-worker-check /usr/local/bin/earshot-worker health || true
-          docker logs earshot-worker-check
-          docker stop -t 20 earshot-worker-check > /dev/null
-          echo "exit code after stop: $(docker inspect -f '{{.State.ExitCode}}' earshot-worker-check)"
-          docker rm earshot-worker-check > /dev/null
-          docker volume rm earshot-worker-check > /dev/null
-          rm -rf smoke
-          test "${status}" = "healthy"
+      - name: Check the worker image
+        working-directory: src
+        run: sh crates/earshot-worker/image-check.sh earshot-worker:check

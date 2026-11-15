@@ -8,7 +8,9 @@
 //! 1. The address is plain `http` (the stock llama.cpp server speaks nothing else on a compose
 //!    network) and its host is a compose service name: one DNS label, letters, digits, `-` and
 //!    `_` only, with no dots, and not `localhost`. An IP address, a dotted name or `https` is
-//!    remote.
+//!    remote. And it is exactly the configured model service's name
+//!    (`EARSHOT_WORKER_LLM_SERVICE`, default `llama`, the compose file's alias): any other bare
+//!    name is remote.
 //! 2. The name resolves, and every address it resolves to is private: IPv4 10/8, 172.16/12 or
 //!    192.168/16, or IPv6 unique local (fc00::/7). Docker's networks use these. Loopback is not
 //!    accepted (the worker's container holds no model, and a loopback port can be forwarded
@@ -17,10 +19,11 @@
 //!    `url` holds the first resolved address), so a later lookup cannot send the transcript
 //!    somewhere the rule did not look. The name is looked up again for every request.
 //!
-//! What it cannot tell apart: a machine on the owner's LAN that the host's DNS search domain
-//! answers for a bare name with a private address would also pass. The compose file names the
-//! model service `llama`; an owner who points the worker at another bare name takes on that
-//! name's meaning.
+//! What it cannot tell apart: if no service of that name is on the worker's compose networks,
+//! Docker's DNS asks the host's resolvers, and a machine on the owner's LAN that the host's
+//! search domain answers for that bare name with a private address would also pass. The compose
+//! file puts the model on an internal network (no route out) under the alias `llama`, so while
+//! the compose file is used as shipped the name is the model's.
 
 use std::net::{IpAddr, ToSocketAddrs};
 
@@ -87,12 +90,13 @@ pub fn is_own_network_address(ip: IpAddr) -> bool {
     }
 }
 
-/// Where `url` is, given the addresses its host resolved to (`resolved`; ignored when the host
-/// is not a service name). A pure function: [`locate`] does the lookup.
+/// Where `url` is, given the configured model service's name (`service`) and the addresses the
+/// host resolved to (`resolved`; ignored when the host is not that service). A pure function:
+/// [`locate`] does the lookup.
 #[must_use]
-pub fn place_of(url: &Url, resolved: &[IpAddr]) -> Place {
+pub fn place_of(url: &Url, service: &str, resolved: &[IpAddr]) -> Place {
     let remote = || Place::Remote { url: url.clone() };
-    if service_name(url).is_none()
+    if !service_name(url).is_some_and(|name| name.eq_ignore_ascii_case(service))
         || resolved.is_empty()
         || !resolved.iter().all(|ip| is_own_network_address(*ip))
     {
@@ -105,17 +109,19 @@ pub fn place_of(url: &Url, resolved: &[IpAddr]) -> Place {
     Place::OwnNetwork { url: checked }
 }
 
-/// [`place_of`] with the service name looked up now. A name that does not resolve is remote.
+/// [`place_of`] with the service name looked up now. A name that does not resolve, or is not
+/// `service`, is remote (and not looked up).
 #[must_use]
-pub fn locate(url: &Url) -> Place {
-    let resolved: Vec<IpAddr> = match (service_name(url), url.port_or_known_default()) {
+pub fn locate(url: &Url, service: &str) -> Place {
+    let name = service_name(url).filter(|name| name.eq_ignore_ascii_case(service));
+    let resolved: Vec<IpAddr> = match (name, url.port_or_known_default()) {
         (Some(name), Some(port)) => (name, port)
             .to_socket_addrs()
             .map(|addrs| addrs.map(|a| a.ip()).collect())
             .unwrap_or_default(),
         _ => Vec::new(),
     };
-    place_of(url, &resolved)
+    place_of(url, service, &resolved)
 }
 
 #[cfg(test)]
@@ -184,7 +190,7 @@ mod tests {
     #[test]
     fn endpoint_a_service_name_on_private_addresses_is_the_own_model_at_the_checked_address() {
         let url = u("http://llama:8080/v1");
-        let place = place_of(&url, &[ip("172.18.0.3")]);
+        let place = place_of(&url, "llama", &[ip("172.18.0.3")]);
         assert_eq!(
             place,
             Place::OwnNetwork {
@@ -192,11 +198,11 @@ mod tests {
             }
         );
         assert!(place.is_own_network());
-        let v6 = place_of(&url, &[ip("fd00::3"), ip("172.18.0.3")]);
+        let v6 = place_of(&url, "llama", &[ip("fd00::3"), ip("172.18.0.3")]);
         assert_eq!(v6.url().as_str(), "http://[fd00::3]:8080/v1");
         // Without a port, the scheme's own.
         assert_eq!(
-            place_of(&u("http://llama/v1"), &[ip("10.1.2.3")])
+            place_of(&u("http://llama/v1"), "llama", &[ip("10.1.2.3")])
                 .url()
                 .as_str(),
             "http://10.1.2.3/v1"
@@ -215,11 +221,23 @@ mod tests {
             vec![ip("100.100.1.1")],
         ] {
             assert_eq!(
-                place_of(&url, &resolved),
+                place_of(&url, "llama", &resolved),
                 Place::Remote { url: url.clone() },
                 "{resolved:?}"
             );
         }
+        // Only the configured service's name: another bare name is remote however it resolves.
+        assert_eq!(
+            place_of(&url, "model", &[ip("172.18.0.3")]),
+            Place::Remote { url: url.clone() }
+        );
+        let other = u("http://nas:8080/v1");
+        assert_eq!(
+            place_of(&other, "llama", &[ip("192.168.1.5")]),
+            Place::Remote { url: other.clone() }
+        );
+        // The name compares without case (URLs lower-case their hosts).
+        assert!(place_of(&url, "LLaMA", &[ip("172.18.0.3")]).is_own_network());
         // A name that is not a service name is remote whatever it resolves to.
         for other in [
             "https://llama:8080/v1",
@@ -230,7 +248,7 @@ mod tests {
         ] {
             let url = u(other);
             assert_eq!(
-                place_of(&url, &[ip("172.18.0.3")]),
+                place_of(&url, "llama", &[ip("172.18.0.3")]),
                 Place::Remote { url: url.clone() },
                 "{other}"
             );
@@ -240,10 +258,13 @@ mod tests {
     #[test]
     fn endpoint_locate_of_a_name_that_does_not_resolve_is_remote() {
         let url = u("http://earshot-no-such-service-here:8080/v1");
-        assert_eq!(locate(&url), Place::Remote { url: url.clone() });
+        assert_eq!(
+            locate(&url, "earshot-no-such-service-here"),
+            Place::Remote { url: url.clone() }
+        );
         let ip_url = u("http://192.168.1.20:8080/v1");
         assert_eq!(
-            locate(&ip_url),
+            locate(&ip_url, "llama"),
             Place::Remote {
                 url: ip_url.clone()
             }

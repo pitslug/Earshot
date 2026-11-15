@@ -74,6 +74,11 @@ pub struct Peer {
     pub online: bool,
 }
 
+/// The writer kind a summary worker names in its presence, asked again at every presence send
+/// (where its model is can change while it runs).
+pub type WorkerWriter =
+    std::sync::Arc<dyn Fn() -> Option<crate::offload::WriterKind> + Send + Sync>;
+
 /// The sync client of one device: the relay at the stored address and the device's vault.
 pub struct SyncClient {
     services: Services,
@@ -86,8 +91,8 @@ pub struct SyncClient {
     /// client: they clear only after an update or with time).
     retried_all: AtomicBool,
     /// A summary worker's presence ([`SyncClient::as_summary_worker`]): kind `server` and the
-    /// writer it names; `None` for the app.
-    worker: Option<Option<crate::offload::WriterKind>>,
+    /// writer it names, asked at every send; `None` for the app.
+    worker: Option<WorkerWriter>,
 }
 
 impl std::fmt::Debug for SyncClient {
@@ -215,10 +220,12 @@ impl SyncClient {
     }
 
     /// This client's presence says it is a summary worker (T11.6, docs/sync.md section 10):
-    /// kind `server` and `writer` as the kind of writer it uses (sent while it offers
-    /// summaries), in place of the app's kind and its Summaries settings.
+    /// kind `server`, and the kind of writer `writer` answers at each presence send (sent while
+    /// it offers summaries), in place of the app's kind and its Summaries settings. Asked at
+    /// every send, because the label is what tells the user where a transcript goes, and where
+    /// the worker's model is can change while it runs (its container starting late).
     #[must_use]
-    pub fn as_summary_worker(mut self, writer: Option<crate::offload::WriterKind>) -> Self {
+    pub fn as_summary_worker(mut self, writer: WorkerWriter) -> Self {
         self.worker = Some(writer);
         self
     }
@@ -256,9 +263,9 @@ impl SyncClient {
             let settings = sync_settings(&db)?;
             // The writer kind travels only while this device offers to write: the asker's
             // label names it, so the user knows where the transcript goes.
-            let writer = match self.worker {
+            let writer = match &self.worker {
                 _ if !settings.offers_summaries => None,
-                Some(worker) => worker,
+                Some(worker) => worker(),
                 None => {
                     crate::offload::WriterKind::of_settings(&db).map_err(|_| SyncProblem::Store)?
                 }

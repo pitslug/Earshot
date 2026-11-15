@@ -42,6 +42,75 @@ impl FileVault {
     pub fn token_path(&self) -> &Path {
         &self.token
     }
+
+    /// Proves both files can be written where they go, before a pairing code is spent on
+    /// joining: each folder is created (`0700`) or tightened to `0700`, and a probe file is
+    /// written and removed in it. A read-only folder (a Docker secret's `/run/secrets`) fails.
+    ///
+    /// # Errors
+    /// [`VaultRefused::NotWritable`].
+    pub fn probe_writable(&self) -> Result<(), VaultRefused> {
+        for path in [&self.key, &self.token] {
+            let mut probe = path.as_os_str().to_owned();
+            probe.push(".probe");
+            let probe = PathBuf::from(probe);
+            let written = write_private(&probe, b"probe");
+            let _ = fs::remove_file(&probe);
+            written.map_err(|_| VaultRefused::NotWritable)?;
+        }
+        Ok(())
+    }
+
+    /// Refuses a key or token file that a group or other users can read (Unix; elsewhere the
+    /// folder's own permissions decide). Missing files pass: the sync thread reports those.
+    ///
+    /// # Errors
+    /// [`VaultRefused::ReadableByOthers`].
+    pub fn check_private(&self) -> Result<(), VaultRefused> {
+        for path in [&self.key, &self.token] {
+            if readable_by_others(path) {
+                return Err(VaultRefused::ReadableByOthers);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why the vault files cannot be used. Fixed copy; never a path or a file's contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultRefused {
+    /// A file's folder cannot be written (for `join`).
+    NotWritable,
+    /// A file can be read by a group or other users.
+    ReadableByOthers,
+}
+
+impl VaultRefused {
+    /// The message printed.
+    #[must_use]
+    pub const fn copy(self) -> &'static str {
+        match self {
+            Self::NotWritable => {
+                "the vault files' folder cannot be written; join writes them to the data volume \
+                 (a Docker secret is read-only: copy them there after joining)"
+            }
+            Self::ReadableByOthers => {
+                "a vault file can be read by other users; make it readable by the worker's user \
+                 only (chmod 600, owner uid 10001)"
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn readable_by_others(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o077 != 0)
+}
+
+#[cfg(not(unix))]
+fn readable_by_others(_path: &Path) -> bool {
+    false
 }
 
 /// `bytes` written to `path` readable by this user only: a fresh temporary file beside it, then
@@ -79,6 +148,15 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 fn create_private_dir(dir: &Path) -> io::Result<()> {
     if dir.is_dir() {
+        // An existing folder is tightened: only the worker's user may list it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir)?.permissions().mode();
+            if mode & 0o077 != 0 {
+                fs::set_permissions(dir, fs::Permissions::from_mode(mode & 0o700))?;
+            }
+        }
         return Ok(());
     }
     let mut builder = fs::DirBuilder::new();
@@ -258,6 +336,19 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn vault_probe_leaves_nothing_behind_and_refuses_a_folder_that_is_a_file() {
+        let dir = Dir::new("probe");
+        let vault = FileVault::new(dir.0.join("vault/key"), dir.0.join("vault/token"));
+        vault.probe_writable().unwrap();
+        assert_eq!(fs::read_dir(dir.0.join("vault")).unwrap().count(), 0);
+        assert!(!vault.has().unwrap());
+        // A folder path that is a file cannot hold them, on every system.
+        fs::write(dir.0.join("blocked"), b"").unwrap();
+        let blocked = FileVault::new(dir.0.join("blocked/key"), dir.0.join("blocked/token"));
+        assert_eq!(blocked.probe_writable(), Err(VaultRefused::NotWritable));
     }
 
     #[test]
