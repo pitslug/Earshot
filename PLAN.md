@@ -1959,7 +1959,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: when a track's previews are off or stop for a reason the user can act on or wait out (on battery, the live transcript catching up or fallen behind, a refused load), the meeting screen says so once per reason in fixed copy chosen by kind (one banner key, as other meeting banners), and takes it back when they start. The reason reaches the UI as a kind, never the runtime's text; nothing is shown when the setting is off or the meeting is in the room with no previews asked for. Ask the owner first whether the far end's previews should run on battery as a choice; default unchanged without that answer.
   - accept: `cargo test -p earshot-runtime live_preview`; `cargo test -p earshot-desktop --bin earshot meeting_events`; `cmd /c pnpm --filter @earshot/ui test`; screenshots of the banner in light and dark
 
-- [ ] T12.36 A setting for the raw mic (Audio page, off by default)
+- [~] T12.36 A setting for the raw mic (Audio page, off by default)
   - deps: T12.32, T7.4i, T7.4j
   - why: T12.32 measured that the Surface's default mic stream is processed before Earshot sees it, which the canceller cannot model, and that the raw stream removes the echo words left under "Me" while the user listens. One device and one take per condition is not grounds for a new default, and the only way to judge it on real meetings is to run them with it.
   - do: a device-local Audio page choice (Windows' processing, the default, or raw), read at meeting start through `host::audio_setup` and carried to the live `WasapiSource` mic as `MicProcessing`; in-room meetings included. A mic that refuses raw, at the start or on a mid-meeting re-open, records on the default stream with one banner (a setting never costs a recording), and the meeting never falls back silently. The audio check's stored delay is keyed by the mode as well as the endpoints (the delay differed by about 40 ms between the two). The raw recorder keeps its refuse-only rule. The scans that keep raw out of the app change to name this one path. Before it ships: the take pair T12.32 left out (the owner talking with the far end silent, default against raw) under a rule written first.
@@ -2339,7 +2339,7 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - deps: T11.6
   - do: docs/sync.md section 10 promises "On <server> (local model, processor)" or "graphics card"; presence carries only the writer kind today. Add an optional presence field read from the worker's compose profile, and the copy in `fixtures/ui/offload_copy_cases.json` (both suites); presence stays one padded size.
   - accept: `cargo test -p earshot-worker` and `cargo test -p earshot-desktop offload`
-- [ ] T11.6c Remove another device from the Sync page
+- [~] T11.6c Remove another device from the Sync page
   - found (T11.6, 2026-11-15): a worker (or computer) stranded by a failed join, or one the owner no longer has, stays listed offline; the only recovery today is wiping its volume and joining again.
   - deps: T11.6
   - do: a "Remove" action on another device's row of the Sync page (confirm first): the relay revokes that device's token and drops its presence; its rows stay. Fixed copy through the shared tables; the relay endpoint authorised as removal of self is today.
