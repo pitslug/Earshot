@@ -197,14 +197,17 @@ pub fn set_chosen_helper(
     services: &Services,
     device: Option<DeviceId>,
 ) -> Result<(), RuntimeError> {
-    use crate::summary_order::{SummaryOrderError, set_summary_order, summary_order};
+    use crate::summary_order::{
+        SummaryOrderError, set_summary_order_keeping_writer, summary_order,
+    };
     let mut db = services.store();
     if device == Some(db.device()) {
         return Err(RuntimeError::Internal("a device cannot be its own helper"));
     }
     let (order, _) = summary_order(&db)?;
     let order = order.with_helper(device);
-    set_summary_order(&mut db, &order, None).map_err(|e| match e {
+    // A stored writer word that does not read as itself is kept, never replaced by a default.
+    set_summary_order_keeping_writer(&mut db, &order).map_err(|e| match e {
         SummaryOrderError::Store(e) => e,
         _ => RuntimeError::Internal("the order of summary writers could not be kept"),
     })?;
@@ -425,8 +428,8 @@ fn ask_inner(
             return Ok(());
         };
         #[cfg(test)]
-        if crate::summary_order::run::fault::take_ask() {
-            return Err(RuntimeError::Internal("an injected fault"));
+        if let Some(e) = crate::summary_order::run::fault::take_ask() {
+            return Err(e);
         }
         let mut waiting = run.clone();
         waiting.waiting_on = Some(asked.request);

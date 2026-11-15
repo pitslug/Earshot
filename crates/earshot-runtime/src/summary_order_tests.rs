@@ -460,7 +460,7 @@ fn summary_order_hold_is_local_when_any_step_is_local() {
 }
 
 #[test]
-fn summary_order_benchmark_runs_the_local_step_only_when_it_is_first() {
+fn summary_order_benchmark_runs_the_local_step_when_it_is_the_first_writer_here() {
     use crate::benchmark::{BenchSkip, BenchSummary, prepare_bench_summary};
     let dir = TempDir::new("summary-order-bench");
     let (svc, _) = services(&dir);
@@ -481,21 +481,19 @@ fn summary_order_benchmark_runs_the_local_step_only_when_it_is_first() {
         None,
     )
     .unwrap();
-    let s = read(&svc);
-    assert!(s.computer_first);
+    // A computer first is skipped: the local model is the first writer here, so it is
+    // benchmarked as before (here not installed, which the benchmark says as such).
     assert!(matches!(
-        prepare_bench_summary(&s, &models, svc.clock.clone(), &[]).unwrap(),
-        BenchSummary::Skipped(BenchSkip::NotOnThisComputer { .. })
+        prepare_bench_summary(&read(&svc), &models, svc.clock.clone(), &[]).unwrap(),
+        BenchSummary::Skipped(BenchSkip::NotInstalled { .. })
     ));
     set_summary_order(&mut svc.store(), &order(&[CLAUDE, LOCAL]), None).unwrap();
     assert!(matches!(
         prepare_bench_summary(&read(&svc), &models, svc.clock.clone(), &[]).unwrap(),
         BenchSummary::Skipped(BenchSkip::NotOnThisComputer { .. })
     ));
-    // Local first: the local step (here not installed, which the benchmark says as such).
     set_summary_order(&mut svc.store(), &order(&[LOCAL, CLAUDE]), None).unwrap();
     let s = read(&svc);
-    assert!(!s.computer_first);
     assert!(matches!(
         prepare_bench_summary(&s, &models, svc.clock.clone(), &[]).unwrap(),
         BenchSummary::Skipped(BenchSkip::NotInstalled { .. })
@@ -522,4 +520,48 @@ fn summary_order_writer_kind_is_the_first_writer_step() {
         WriterKind::of_order(&db).unwrap(),
         Some(WriterKind::OpenaiCompatible)
     );
+}
+
+#[test]
+fn summary_order_choosing_a_helper_keeps_a_writer_word_this_build_does_not_know() {
+    let dir = TempDir::new("summary-order-unknown-writer");
+    let (svc, _) = services(&dir);
+    crate::local::set(
+        &mut svc.store(),
+        &DeviceRecord::SummaryWriter.key(),
+        b"a-writer-from-a-newer-build",
+    )
+    .unwrap();
+    crate::offload::set_chosen_helper(&svc, Some(DESK)).unwrap();
+    let db = svc.store();
+    assert_eq!(
+        raw(&db, SUMMARY_WRITER_KEY).as_deref(),
+        Some("a-writer-from-a-newer-build"),
+        "never replaced by the default"
+    );
+    assert_eq!(crate::offload::chosen_helper(&db).unwrap(), Some(DESK));
+    assert_eq!(
+        summary_order(&db).unwrap().0,
+        order(&[OrderStep::Computer(DESK), LOCAL])
+    );
+}
+
+#[test]
+fn summary_order_choosing_a_helper_keeps_an_endpoint_writer_without_its_fields() {
+    let dir = TempDir::new("summary-order-empty-endpoint");
+    let (svc, _) = services(&dir);
+    crate::local::set(
+        &mut svc.store(),
+        &DeviceRecord::SummaryWriter.key(),
+        b"endpoint",
+    )
+    .unwrap();
+    crate::offload::set_chosen_helper(&svc, Some(DESK)).unwrap();
+    crate::offload::set_chosen_helper(&svc, Some(LAPTOP)).unwrap();
+    let db = svc.store();
+    assert_eq!(raw(&db, SUMMARY_WRITER_KEY).as_deref(), Some("endpoint"));
+    assert_eq!(crate::offload::chosen_helper(&db).unwrap(), Some(LAPTOP));
+    drop(db);
+    crate::offload::set_chosen_helper(&svc, None).unwrap();
+    assert_eq!(crate::offload::chosen_helper(&svc.store()).unwrap(), None);
 }

@@ -316,18 +316,32 @@ pub(crate) fn end_in_tx(
 pub(crate) mod fault {
     use std::cell::Cell;
 
+    use crate::RuntimeError;
+
     thread_local! {
-        static ASK: Cell<bool> = const { Cell::new(false) };
+        /// 0: none; 1: a fault that is not a store error; 2: a store error.
+        static ASK: Cell<u8> = const { Cell::new(0) };
     }
 
     /// Fails the next computer ask on this thread after its request is written and before the
-    /// record names it.
+    /// record names it, with an error that is not a store error ("request not written").
     pub(crate) fn fail_ask() {
-        ASK.with(|f| f.set(true));
+        ASK.with(|f| f.set(1));
     }
 
-    pub(crate) fn take_ask() -> bool {
-        ASK.with(|f| f.replace(false))
+    /// As [`fail_ask`], with a store error.
+    pub(crate) fn fail_ask_store() {
+        ASK.with(|f| f.set(2));
+    }
+
+    pub(crate) fn take_ask() -> Option<RuntimeError> {
+        match ASK.with(|f| f.replace(0)) {
+            1 => Some(RuntimeError::Internal("an injected fault")),
+            2 => Some(RuntimeError::Store(earshot_store::StoreError::Busy(
+                "an injected fault".into(),
+            ))),
+            _ => None,
+        }
     }
 }
 
@@ -342,62 +356,126 @@ pub fn skip_word(reason: &SkipReason) -> Option<OutcomeWord> {
         | SkipReason::ChosenNotInstalled { .. }
         | SkipReason::KeptLocalNoModel { .. } => Some(OutcomeWord::NotInstalled),
         SkipReason::NoApiKey(_) => Some(OutcomeWord::NoApiKey),
-        SkipReason::ClaudeCodeUnavailable(e) => Some(match e {
-            earshot_llm::ClaudeCodeError::NotInstalled => OutcomeWord::NotInstalled,
-            _ => OutcomeWord::NotSignedIn,
-        }),
-        SkipReason::CodexUnavailable(e) => Some(match e {
-            earshot_llm::CodexError::NotInstalled => OutcomeWord::NotInstalled,
-            _ => OutcomeWord::NotSignedIn,
-        }),
+        SkipReason::ClaudeCodeUnavailable(e) => claude_code_word(e),
+        SkipReason::CodexUnavailable(e) => codex_word(e),
+        SkipReason::NotNow => Some(OutcomeWord::NotNow),
         SkipReason::NotRequested | SkipReason::PostFailed => None,
     }
 }
 
 /// The word of writer step `step` whose summary failed with `error`, when the run moves on for
 /// it; `None` stops the run (cancellation, a changed transcript or deleted meeting, a busy
-/// meeting, store errors, a handover that could not be recorded, and anything not listed).
+/// meeting, store errors, a handover that could not be recorded, and anything not listed). The
+/// writers' own error enums are matched without a wildcard, so a new variant does not compile
+/// until it is classified here.
 #[must_use]
 pub fn failure_word(step: WriterStep, error: &RuntimeError) -> Option<OutcomeWord> {
     use earshot_llm::LlmError;
-    let listed_for_all = |e: &LlmError| matches!(e, LlmError::Invalid { .. } | LlmError::Prompt(_));
     match (step, error) {
-        (WriterStep::Local, RuntimeError::LocalSummary(e)) if !e.is_cancelled() => {
-            Some(OutcomeWord::Failed)
-        }
+        (WriterStep::Local, RuntimeError::LocalSummary(e)) => local_word(e),
         (WriterStep::Local, RuntimeError::ModelMissing { .. }) => Some(OutcomeWord::NotInstalled),
-        (WriterStep::Local, RuntimeError::Llm(e)) if listed_for_all(e) => Some(OutcomeWord::Failed),
         (WriterStep::Endpoint, RuntimeError::ApiKey(_)) => Some(OutcomeWord::NoApiKey),
-        (
-            WriterStep::Endpoint,
-            RuntimeError::Llm(
-                LlmError::Http { .. }
-                | LlmError::Net(_)
-                | LlmError::Refused { .. }
-                | LlmError::FormatRejected { .. }
-                | LlmError::Invalid { .. }
-                | LlmError::Prompt(_),
-            ),
-        ) => Some(OutcomeWord::Failed),
-        (WriterStep::ClaudeCode, RuntimeError::Llm(LlmError::ClaudeCode(e))) => match e {
-            earshot_llm::ClaudeCodeError::NotRecorded => None,
-            earshot_llm::ClaudeCodeError::NotInstalled => Some(OutcomeWord::NotInstalled),
-            e if e.needs_sign_in() => Some(OutcomeWord::NotSignedIn),
-            _ => Some(OutcomeWord::Failed),
-        },
-        (WriterStep::Codex, RuntimeError::Llm(LlmError::Codex(e))) => match e {
-            earshot_llm::CodexError::NotRecorded => None,
-            earshot_llm::CodexError::NotInstalled => Some(OutcomeWord::NotInstalled),
-            earshot_llm::CodexError::NotSignedIn | earshot_llm::CodexError::SignInExpired => {
-                Some(OutcomeWord::NotSignedIn)
+        (_, RuntimeError::Llm(e)) => match e {
+            // Listed for every writer: still invalid after the repair rounds, or too long.
+            LlmError::Invalid { .. } | LlmError::Prompt(_) => Some(OutcomeWord::Failed),
+            LlmError::Http { .. }
+            | LlmError::Net(_)
+            | LlmError::Refused { .. }
+            | LlmError::FormatRejected { .. } => {
+                (step == WriterStep::Endpoint).then_some(OutcomeWord::Failed)
             }
-            _ => Some(OutcomeWord::Failed),
+            LlmError::ClaudeCode(e) => {
+                if step == WriterStep::ClaudeCode {
+                    claude_code_word(e)
+                } else {
+                    None
+                }
+            }
+            LlmError::Codex(e) => {
+                if step == WriterStep::Codex {
+                    codex_word(e)
+                } else {
+                    None
+                }
+            }
+            LlmError::Endpoint(_) | LlmError::BadResponse(_) | LlmError::Cancelled => None,
         },
-        (WriterStep::ClaudeCode | WriterStep::Codex, RuntimeError::Llm(e)) if listed_for_all(e) => {
-            Some(OutcomeWord::Failed)
-        }
         _ => None,
     }
+}
+
+/// The local model's failures: every one moves on (each after its own CPU retry) except a
+/// cancellation.
+fn local_word(e: &crate::summary::LocalSummaryError) -> Option<OutcomeWord> {
+    use crate::summary::LocalSummaryError as L;
+    use earshot_llm_local::summarize::SummaryFailure as F;
+    match e {
+        L::Run(F::Cancelled) => None,
+        L::Run(
+            F::Plan(_) | F::TooLong { .. } | F::Grammar(_) | F::Model(_) | F::Invalid { .. },
+        )
+        | L::Load(_)
+        | L::LoadRetried { .. }
+        | L::GpuStalled
+        | L::LoadStalled
+        | L::GpuChildStalled
+        | L::GpuChildDied { .. }
+        | L::CudaFilesChanged { .. }
+        | L::ChildRun(_)
+        | L::Chunks(_) => Some(OutcomeWord::Failed),
+    }
+}
+
+/// Claude Code's errors: all move on except a handover that could not be recorded.
+fn claude_code_word(e: &earshot_llm::ClaudeCodeError) -> Option<OutcomeWord> {
+    use earshot_llm::ClaudeCodeError as E;
+    match e {
+        E::NotRecorded => None,
+        E::NotInstalled => Some(OutcomeWord::NotInstalled),
+        E::NotSignedIn | E::SignInExpired => Some(OutcomeWord::NotSignedIn),
+        E::SignInBusy
+        | E::PromptTooLong
+        | E::UnsupportedVersion
+        | E::Start(_)
+        | E::TimedOut(_)
+        | E::OutputIncomplete
+        | E::BadOutput(_)
+        | E::Failed { .. } => Some(OutcomeWord::Failed),
+    }
+}
+
+/// Codex's errors: all move on except a handover that could not be recorded.
+fn codex_word(e: &earshot_llm::CodexError) -> Option<OutcomeWord> {
+    use earshot_llm::CodexError as E;
+    match e {
+        E::NotRecorded => None,
+        E::NotInstalled => Some(OutcomeWord::NotInstalled),
+        E::NotSignedIn | E::SignInExpired => Some(OutcomeWord::NotSignedIn),
+        E::AccessDenied
+        | E::PromptTooLong
+        | E::UnsupportedVersion
+        | E::ToolRan
+        | E::UnknownEvent
+        | E::Start(_)
+        | E::TimedOut(_)
+        | E::OutputIncomplete
+        | E::BadOutput(_)
+        | E::Failed { .. } => Some(OutcomeWord::Failed),
+    }
+}
+
+/// Whether a computer step's failed ask stops the run: a store error, a deleted meeting, or the
+/// run replaced meanwhile ([`crate::offload::ask_for_run`]'s conflict). Any other error is the
+/// table's "request not written" and moves on.
+#[must_use]
+pub fn stops_ask(error: &RuntimeError) -> bool {
+    matches!(
+        error,
+        RuntimeError::Store(_)
+            | RuntimeError::Repo(_)
+            | RuntimeError::Conflict(_)
+            | RuntimeError::Edit(crate::edit::EditError::MeetingNotFound(_))
+    )
 }
 
 /// The word of a computer step not asked for `why` (the run always moves on).
@@ -789,6 +867,9 @@ fn run_steps(
                 }
                 if w == WriterStep::Local && (plan.local_not_now)() {
                     run.push(i, OutcomeWord::NotNow);
+                    last = Some(SummaryResult::Skipped {
+                        reason: SkipReason::NotNow,
+                    });
                     run.cursor = i + 1;
                     continue;
                 }
@@ -868,11 +949,15 @@ fn run_steps(
                     out.offload = Some(choice.clone());
                 }
                 match choice {
+                    // Trust boundary: the host's answer names a device, and the transcript goes
+                    // only to the computer the user put in this step. An answer for any other
+                    // device is not asked.
                     OffloadChoice::Ask {
-                        device,
-                        name,
-                        writer,
-                    } => {
+                        device: answered, ..
+                    } if answered != device => {
+                        run.push(i, unavailable_word(Unavailable::NotAsked));
+                    }
+                    OffloadChoice::Ask { name, writer, .. } => {
                         let mut waiting = run.clone();
                         waiting.cursor = i + 1;
                         waiting.state = RunState::Waiting;
@@ -890,6 +975,16 @@ fn run_steps(
                             }
                             Ok(None) => {
                                 run.push(i, unavailable_word(Unavailable::NoFinalTranscript))
+                            }
+                            // A store error, a deleted meeting or a run replaced meanwhile
+                            // stops the run; only a request that was otherwise not written
+                            // moves on.
+                            Err(error) if stops_ask(&error) => {
+                                let failed = SummaryResult::Failed {
+                                    retryable: error.is_retryable(),
+                                    error,
+                                };
+                                return stop(services, meeting, run, out, failed);
                             }
                             Err(_) => run.push(i, unavailable_word(Unavailable::NotAsked)),
                         }

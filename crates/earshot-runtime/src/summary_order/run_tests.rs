@@ -52,15 +52,25 @@ enum Fake {
     Stop(fn() -> RuntimeError),
 }
 
+/// What a fake runs when a computer is asked about.
+type Meanwhile = Box<dyn Fn(&Services)>;
+
 /// Fake [`StepWriters`]: what each writer builds and each computer answers, and every step asked.
 #[derive(Default)]
 struct Writers {
     writers: HashMap<WriterStep, Fake>,
     computers: HashMap<DeviceId, OffloadChoice>,
     asked: Mutex<Vec<OrderStep>>,
+    /// Runs when a computer is asked about (to change the store meanwhile).
+    on_computer: Option<Meanwhile>,
 }
 
 impl Writers {
+    fn meanwhile(mut self, f: impl Fn(&Services) + 'static) -> Self {
+        self.on_computer = Some(Box::new(f));
+        self
+    }
+
     fn with(mut self, step: WriterStep, fake: Fake) -> Self {
         self.writers.insert(step, fake);
         self
@@ -98,8 +108,11 @@ impl StepWriters for Writers {
         }
     }
 
-    fn computer(&self, _services: &Services, device: DeviceId) -> OffloadChoice {
+    fn computer(&self, services: &Services, device: DeviceId) -> OffloadChoice {
         self.asked.lock().unwrap().push(OrderStep::Computer(device));
+        if let Some(f) = &self.on_computer {
+            f(services);
+        }
         self.computers
             .get(&device)
             .cloned()
@@ -175,6 +188,18 @@ fn summary_order_run_move_on_table_lists_each_result_and_stops_on_the_rest() {
     };
     // Local model: every local failure (after its own CPU retry), an invalid reply, too long.
     for e in [
+        local(LocalSummaryError::Load(earshot_llm_local::LlmError::Load(
+            "x".into(),
+        ))),
+        local(LocalSummaryError::LoadRetried {
+            gpu: Box::new(LocalSummaryError::GpuStalled),
+            cpu: Box::new(LocalSummaryError::Load(earshot_llm_local::LlmError::Load(
+                "x".into(),
+            ))),
+        }),
+        local(LocalSummaryError::Chunks(
+            earshot_core::prompt::TimeChunkError::ZeroWindow,
+        )),
         local(LocalSummaryError::GpuStalled),
         local(LocalSummaryError::LoadStalled),
         local(LocalSummaryError::GpuChildStalled),
@@ -1087,4 +1112,164 @@ fn summary_order_run_step_lines_hold_fixed_words_only() {
         line(ENDPOINT, StepResult::Moved(OutcomeWord::NoApiKey)),
         "your endpoint: no API key"
     );
+}
+
+fn ask(device: DeviceId) -> OffloadChoice {
+    OffloadChoice::Ask {
+        device,
+        name: "Invented desk".into(),
+        writer: WriterKind::Local,
+    }
+}
+
+#[test]
+fn summary_order_run_an_answer_for_another_device_is_never_asked() {
+    let dir = TempDir::new("order-run-other-device");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Planning", 20);
+    let elsewhere = DeviceId::from_bytes([0x66; 16]);
+    // The host answers "ask" for a device that is not this step's.
+    let writers = Writers::default()
+        .computer(DESK, ask(elsewhere))
+        .with(WriterStep::Local, Fake::Skip(not_installed()));
+    let out = run_summary_order(
+        &svc,
+        m,
+        RunStart::Order(order(&[OrderStep::Computer(DESK), LOCAL])),
+        &plan(&writers),
+        &CancelToken::new(),
+    );
+    assert!(
+        svc.store().summary_requests().unwrap().is_empty(),
+        "no request anywhere"
+    );
+    assert_eq!(
+        results(&out),
+        vec![
+            StepResult::Moved(OutcomeWord::Failed),
+            StepResult::Moved(OutcomeWord::NotInstalled)
+        ]
+    );
+}
+
+#[test]
+fn summary_order_run_a_local_step_skipped_not_now_says_so() {
+    let dir = TempDir::new("order-run-not-now-only");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Planning", 21);
+    let writers = Writers::default();
+    let out = run_summary_order(
+        &svc,
+        m,
+        RunStart::Order(order(&[LOCAL])),
+        &RunPlan {
+            writers: &writers,
+            local_not_now: &|| true,
+        },
+        &CancelToken::new(),
+    );
+    assert!(
+        matches!(
+            out.summary,
+            SummaryResult::Skipped {
+                reason: SkipReason::NotNow
+            }
+        ),
+        "{:?}",
+        out.summary
+    );
+    assert!(writers.asked().is_empty());
+    assert_eq!(skip_word(&SkipReason::NotNow), Some(OutcomeWord::NotNow));
+}
+
+#[test]
+fn summary_order_run_a_failed_ask_stops_except_when_the_request_was_not_written() {
+    let dir = TempDir::new("order-run-ask-errors");
+    let (svc, _) = services(&dir);
+    // Which errors stop.
+    assert!(stops_ask(&RuntimeError::Store(
+        earshot_store::StoreError::Busy("x".into())
+    )));
+    assert!(stops_ask(&RuntimeError::Conflict(
+        "the summary run was replaced"
+    )));
+    assert!(stops_ask(&RuntimeError::Edit(
+        crate::edit::EditError::MeetingNotFound(EntityId::from_bytes([1; 16]))
+    )));
+    assert!(!stops_ask(&RuntimeError::Internal("not written")));
+
+    // A store error: the run stops and the next step is never built.
+    let m = meeting(&svc, "Planning", 22);
+    let writers = Writers::default().computer(DESK, ask(DESK));
+    fault::fail_ask_store();
+    let out = run_summary_order(
+        &svc,
+        m,
+        RunStart::Order(order(&[OrderStep::Computer(DESK), LOCAL])),
+        &plan(&writers),
+        &CancelToken::new(),
+    );
+    assert!(matches!(
+        out.summary,
+        SummaryResult::Failed {
+            error: RuntimeError::Store(_),
+            ..
+        }
+    ));
+    assert_eq!(writers.asked(), vec![OrderStep::Computer(DESK)]);
+    assert!(svc.store().summary_requests().unwrap().is_empty());
+
+    // The run replaced meanwhile (another run started): it stops, and the newer record stays.
+    let m = meeting(&svc, "Planning", 23);
+    let newer = SummaryRun {
+        run: 7,
+        ..SummaryRun::new(RunOrigin::Named)
+    };
+    let newer_bytes = encode(&newer);
+    let writers = Writers::default()
+        .computer(DESK, ask(DESK))
+        .meanwhile(move |svc| {
+            crate::local::set(&mut svc.store(), &record_key(m), &newer_bytes).unwrap();
+        });
+    let out = run_summary_order(
+        &svc,
+        m,
+        RunStart::Order(order(&[OrderStep::Computer(DESK), LOCAL])),
+        &plan(&writers),
+        &CancelToken::new(),
+    );
+    assert!(
+        matches!(
+            out.summary,
+            SummaryResult::Failed {
+                error: RuntimeError::Conflict(_),
+                ..
+            }
+        ),
+        "{:?}",
+        out.summary
+    );
+    assert_eq!(writers.asked(), vec![OrderStep::Computer(DESK)]);
+    assert_eq!(record(&svc, m).run, 7);
+
+    // The meeting deleted meanwhile: it stops.
+    let m = meeting(&svc, "Planning", 24);
+    let writers = Writers::default()
+        .computer(DESK, ask(DESK))
+        .meanwhile(move |svc| {
+            svc.delete_meeting(m).unwrap();
+        });
+    let out = run_summary_order(
+        &svc,
+        m,
+        RunStart::Order(order(&[OrderStep::Computer(DESK), LOCAL])),
+        &plan(&writers),
+        &CancelToken::new(),
+    );
+    assert!(
+        matches!(out.summary, SummaryResult::Failed { .. }),
+        "{:?}",
+        out.summary
+    );
+    assert_eq!(writers.asked(), vec![OrderStep::Computer(DESK)]);
 }

@@ -239,8 +239,7 @@ impl SummaryOrder {
         })
     }
 
-    /// Whether the first step is the local model (the benchmark's rule, docs/summary-order.md
-    /// 4.5).
+    /// Whether the first step is the local model.
     #[must_use]
     pub fn first_is_local(&self) -> bool {
         self.steps.first().is_some_and(|s| s.is_local())
@@ -533,6 +532,33 @@ pub fn set_summary_order(
     order: &SummaryOrder,
     settings: Option<&SummarySettings>,
 ) -> Result<SummaryOrder, SummaryOrderError> {
+    write_order(store, order, settings, false)
+}
+
+/// [`set_summary_order`] for a change that leaves the writer alone (choosing the helper,
+/// [`crate::offload::set_chosen_helper`]): a stored writer word that does not read as itself
+/// (a word this build does not know, or "your own endpoint" without a usable endpoint, both read
+/// as the default) is kept as stored instead of being replaced by the mirror of that default.
+/// The old keys then differ from the mirror, so the order reads from them, as it did before.
+///
+/// # Errors
+/// As [`set_summary_order`].
+pub(crate) fn set_summary_order_keeping_writer(
+    store: &mut Store,
+    order: &SummaryOrder,
+) -> Result<SummaryOrder, SummaryOrderError> {
+    let (writer, _) = old_keys(store)?;
+    let effective = crate::summary_settings::summary_settings(store)?.0.writer;
+    let keep = writer.is_some_and(|w| w != effective.as_str());
+    write_order(store, order, None, keep)
+}
+
+fn write_order(
+    store: &mut Store,
+    order: &SummaryOrder,
+    settings: Option<&SummarySettings>,
+    keep_writer: bool,
+) -> Result<SummaryOrder, SummaryOrderError> {
     let checked = match settings {
         Some(s) => Some(crate::summary_settings::validate(&SummarySettings {
             writer: order.mirror().writer,
@@ -559,11 +585,13 @@ pub fn set_summary_order(
             if fault::take() {
                 return Err(RuntimeError::Internal("an injected fault"));
             }
-            crate::local::set_tx(
-                tx,
-                &DeviceRecord::SummaryWriter.key(),
-                mirror.writer.as_str().as_bytes(),
-            )?;
+            if !keep_writer {
+                crate::local::set_tx(
+                    tx,
+                    &DeviceRecord::SummaryWriter.key(),
+                    mirror.writer.as_str().as_bytes(),
+                )?;
+            }
             crate::local::set_tx(
                 tx,
                 &DeviceRecord::SummaryOffloadDevice.key(),

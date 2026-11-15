@@ -799,9 +799,6 @@ pub struct SettingsSummary {
     /// What the user is told: a "where it runs" choice not used (local only) and every
     /// stored Summaries setting this version does not know.
     pub notes: Vec<String>,
-    /// The order's first step is another computer (T12.63a; the benchmark then runs no
-    /// summary, docs/summary-order.md 4.5).
-    pub computer_first: bool,
 }
 
 /// The summary step of an app run from the settings in `store` (T7.4g): no summary, the
@@ -859,13 +856,6 @@ fn summary_for(
     use crate::summary_settings::{ApiKeyError, EndpointProvider, SummaryWriter, summary_settings};
     let (settings, unknown) = summary_settings(store)?;
     let chosen = writer.unwrap_or(settings.writer);
-    let computer_first = matches!(
-        crate::summary_order::summary_order(store)?
-            .0
-            .steps()
-            .first(),
-        Some(crate::summary_order::OrderStep::Computer(_))
-    );
     let mut placement = local_summary_placement(store, order, hardware)?;
     let mut request = SummaryRequest {
         graphics_memory: crate::model_settings::graphics_memory(hardware),
@@ -935,7 +925,6 @@ fn summary_for(
         writer,
         live: settings.live,
         notes,
-        computer_first,
     })
 }
 
@@ -1963,6 +1952,9 @@ pub enum SkipReason {
         /// The local model it would have used.
         model: &'static str,
     },
+    /// The order's local step would have run beside a newer meeting the meeting queue did not
+    /// hold for it, and no later step wrote the summary (T12.63a, docs/summary-order.md 4.5).
+    NotNow,
 }
 
 /// Where a stored summary was made.
