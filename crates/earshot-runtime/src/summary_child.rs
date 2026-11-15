@@ -49,14 +49,19 @@
 //! verify and trial cover the bytes. A folder that fails runs the summary on the CPU with a note.
 
 use std::ffi::OsString;
-use std::io::{BufRead, Read, Write};
+#[cfg(windows)]
+use std::io::BufRead;
+use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
 
 use earshot_core::asr::CancelToken;
 use earshot_core::prompt::SummaryInput;

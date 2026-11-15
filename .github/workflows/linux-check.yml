@@ -164,6 +164,10 @@ jobs:
         working-directory: src
         run: |
           rustup component add clippy --toolchain "${RUSTUP_TOOLCHAIN}"
+          # llama-cpp-sys-2's build script runs again here (see the step above).
+          for d in target/debug target/debug/deps target/debug/examples; do
+            rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
+          done
           cargo clippy --locked -p earshot-runtime --lib -- -D warnings
 
       # Last, because core's debug echo-canceller tests run for a long time, and bounded; core

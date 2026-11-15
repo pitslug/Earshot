@@ -610,6 +610,7 @@ mod tests {
         entered: Arc<AtomicUsize>,
         release: Arc<AtomicBool>,
         progress: Arc<AtomicUsize>,
+        #[cfg_attr(not(windows), expect(dead_code, reason = "read on Windows only"))]
         priority: Arc<Mutex<Vec<i32>>>,
     }
 
