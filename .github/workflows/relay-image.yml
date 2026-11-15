@@ -1,5 +1,8 @@
-# The sync relay's image (T11.2b): built when a release tag is pushed, from that tag only,
-# and pushed to ghcr.io/<owner>/earshot-sync-server as the version and as `latest`.
+# The sync relay's image (T11.2b) and the summary worker's (T11.6): built when a release tag is
+# pushed, from that tag only, and pushed to ghcr.io/<owner>/earshot-sync-server and
+# ghcr.io/<owner>/earshot-worker as the version and as `latest` (the owner, 2026-11-15: the two
+# are released side by side). The worker's image is pushed only after it started on the runner
+# and answered its health check.
 #
 # No third-party or GitHub actions: every step is a shell command on the runner, so there is
 # nothing to pin and nothing else runs with the token. The token can read the repository
@@ -64,6 +67,97 @@ jobs:
             -t "${IMAGE}:${VERSION}" .
 
       - name: Push the relay image
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "${TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker push "${IMAGE}:${VERSION}"
+          if [ "${LATEST}" = "true" ]; then
+            docker tag "${IMAGE}:${VERSION}" "${IMAGE}:latest"
+            docker push "${IMAGE}:latest"
+          fi
+          docker logout ghcr.io
+
+  worker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Fetch the tagged commit
+        run: |
+          git init -q src
+          cd src
+          git fetch -q --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+
+      # A release tag is v<version>; a test build is v<version>-<suffix> (letters, digits and
+      # dots), published under that name only, never as latest.
+      - name: Check the tag names the workspace version
+        working-directory: src
+        run: |
+          version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)"
+          tag="${GITHUB_REF_NAME#v}"
+          suffix="${tag#"${version}"}"
+          if [ -z "${version}" ] || [ "${tag}" = "${GITHUB_REF_NAME}" ] || [ "${suffix}" = "${tag}" ]; then
+            echo "The tag ${GITHUB_REF_NAME} does not name the workspace version (${version})."
+            exit 1
+          fi
+          case "${suffix}" in
+            "") latest=true ;;
+            -*) latest=false
+                case "${suffix#-}" in
+                  ""|*[!A-Za-z0-9.]*) echo "The tag's suffix may hold letters, digits and dots only."; exit 1 ;;
+                esac ;;
+            *) echo "The tag ${GITHUB_REF_NAME} does not name the workspace version (${version})."; exit 1 ;;
+          esac
+          echo "VERSION=${tag}" >> "${GITHUB_ENV}"
+          echo "LATEST=${latest}" >> "${GITHUB_ENV}"
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-worker" >> "${GITHUB_ENV}"
+
+      - name: Build the worker image
+        working-directory: src
+        run: |
+          docker build --progress plain \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            -f crates/earshot-worker/Dockerfile \
+            -t "${IMAGE}:${VERSION}" .
+
+      # The same check as linux-check's worker-image job: the slim image starts and answers its
+      # health check (a relay that does not exist, invented vault files made for this run).
+      - name: Run the worker and wait for its health check
+        run: |
+          set -eu
+          docker run --rm --entrypoint ldd "${IMAGE}:${VERSION}" /usr/local/bin/earshot-worker
+          mkdir -m 0755 smoke
+          head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > smoke/key
+          echo "an-invented-token-for-the-image-check" > smoke/token
+          chmod 0644 smoke/key smoke/token
+          docker volume create earshot-worker-check > /dev/null
+          docker run -d --name earshot-worker-check \
+            --health-interval 2s --health-start-period 5s --health-retries 3 \
+            -v earshot-worker-check:/data \
+            -v "${PWD}/smoke:/run/secrets:ro" \
+            -e EARSHOT_WORKER_RELAY=https://relay.invalid \
+            -e EARSHOT_WORKER_KEY_FILE=/run/secrets/key \
+            -e EARSHOT_WORKER_TOKEN_FILE=/run/secrets/token \
+            "${IMAGE}:${VERSION}" > /dev/null
+          status=starting
+          for _ in $(seq 1 60); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' earshot-worker-check)"
+            if [ "${status}" = "healthy" ] || [ "${status}" = "unhealthy" ]; then break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' earshot-worker-check)" != "true" ]; then break; fi
+            sleep 2
+          done
+          echo "health: ${status}"
+          docker stop -t 20 earshot-worker-check > /dev/null
+          docker rm earshot-worker-check > /dev/null
+          docker volume rm earshot-worker-check > /dev/null
+          rm -rf smoke
+          test "${status}" = "healthy"
+
+      - name: Push the worker image
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

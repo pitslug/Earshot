@@ -170,6 +170,36 @@ jobs:
           done
           cargo clippy --locked -p earshot-runtime --lib -- -D warnings
 
+      # The summary worker (T11.6): gating build, tests and clippy. llama-cpp-sys-2's build
+      # script runs again for each (see the step above), so its links go first.
+      - name: Build earshot-worker
+        id: build_worker
+        continue-on-error: true
+        working-directory: src
+        run: |
+          for d in target/debug target/debug/deps target/debug/examples; do
+            rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
+          done
+          cargo build --locked -p earshot-worker
+      - name: Test earshot-worker
+        id: test_worker
+        continue-on-error: true
+        working-directory: src
+        run: |
+          for d in target/debug target/debug/deps target/debug/examples; do
+            rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
+          done
+          cargo test --locked -p earshot-worker
+      - name: Clippy earshot-worker
+        id: clippy_worker
+        continue-on-error: true
+        working-directory: src
+        run: |
+          for d in target/debug target/debug/deps target/debug/examples; do
+            rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
+          done
+          cargo clippy --locked -p earshot-worker --all-targets -- -D warnings
+
       # Last, because core's debug echo-canceller tests run for a long time, and bounded; core
       # is already checked for wasm32 by `cargo xtask purity`. Its fixture tests fail here by
       # design (no fetched fixtures).
@@ -202,6 +232,9 @@ jobs:
           echo "test earshot-runtime (sync): ${{ steps.test_runtime_sync.outcome }}"
           echo "test earshot-runtime (rest, informational): ${{ steps.test_runtime_all.outcome }}"
           echo "clippy earshot-runtime (lib): ${{ steps.clippy_runtime.outcome }}"
+          echo "build earshot-worker: ${{ steps.build_worker.outcome }}"
+          echo "test earshot-worker: ${{ steps.test_worker.outcome }}"
+          echo "clippy earshot-worker: ${{ steps.clippy_worker.outcome }}"
 
       # Every step above may fail without stopping the next, so the run's own result comes from
       # here: it fails when a build, or a test step that is not marked informational, failed.
@@ -219,7 +252,66 @@ jobs:
             "${{ steps.build_relay.outcome }}" "${{ steps.test_relay.outcome }}" \
             "${{ steps.build_runtime.outcome }}" \
             "${{ steps.test_runtime_summary.outcome }}" "${{ steps.test_runtime_sync.outcome }}" \
-            "${{ steps.clippy_runtime.outcome }}"; do
+            "${{ steps.clippy_runtime.outcome }}" \
+            "${{ steps.build_worker.outcome }}" "${{ steps.test_worker.outcome }}" \
+            "${{ steps.clippy_worker.outcome }}"; do
             if [ "${outcome}" != "success" ]; then failed=1; fi
           done
           exit "${failed}"
+
+  # The summary worker's image (T11.6), built and run on the runner and never pushed (this
+  # workflow can only read the repository): the image's build reads the binary with ldd and
+  # copies its shared libraries, and the slim image must then start and answer its health check.
+  # The relay address does not exist (.invalid), so the worker runs, retries the relay with
+  # back-off and stays healthy, which is what its health check means (docs/sync.md section 10).
+  # The vault files are invented bytes made on the runner for this run only.
+  worker-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Fetch the pushed commit
+        run: |
+          git init -q src
+          cd src
+          git fetch -q --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+
+      - name: Build the worker image
+        working-directory: src
+        run: docker build --progress plain -f crates/earshot-worker/Dockerfile -t earshot-worker:check .
+
+      - name: Read the slim image's libraries
+        run: docker run --rm --entrypoint ldd earshot-worker:check /usr/local/bin/earshot-worker
+
+      - name: Run the worker and wait for its health check
+        run: |
+          set -eu
+          mkdir -m 0755 smoke
+          head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > smoke/key
+          echo "an-invented-token-for-the-image-check" > smoke/token
+          chmod 0644 smoke/key smoke/token
+          docker volume create earshot-worker-check > /dev/null
+          docker run -d --name earshot-worker-check \
+            --health-interval 2s --health-start-period 5s --health-retries 3 \
+            -v earshot-worker-check:/data \
+            -v "${PWD}/smoke:/run/secrets:ro" \
+            -e EARSHOT_WORKER_RELAY=https://relay.invalid \
+            -e EARSHOT_WORKER_KEY_FILE=/run/secrets/key \
+            -e EARSHOT_WORKER_TOKEN_FILE=/run/secrets/token \
+            earshot-worker:check > /dev/null
+          status=starting
+          for _ in $(seq 1 60); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' earshot-worker-check)"
+            if [ "${status}" = "healthy" ] || [ "${status}" = "unhealthy" ]; then break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' earshot-worker-check)" != "true" ]; then break; fi
+            sleep 2
+          done
+          echo "health: ${status}"
+          docker exec earshot-worker-check /usr/local/bin/earshot-worker health || true
+          docker logs earshot-worker-check
+          docker stop -t 20 earshot-worker-check > /dev/null
+          echo "exit code after stop: $(docker inspect -f '{{.State.ExitCode}}' earshot-worker-check)"
+          docker rm earshot-worker-check > /dev/null
+          docker volume rm earshot-worker-check > /dev/null
+          rm -rf smoke
+          test "${status}" = "healthy"

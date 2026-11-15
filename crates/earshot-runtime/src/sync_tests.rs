@@ -1056,6 +1056,59 @@ fn presence_round_trip_names_each_device_and_says_who_is_online() {
     );
 }
 
+/// T11.6: a summary worker's presence says kind `server` and names the writer it was given,
+/// not its Summaries settings; the app's says `app`. Its client may name its relay itself.
+#[test]
+fn presence_a_summary_worker_says_server_and_its_own_writer() {
+    use crate::offload::WriterKind;
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_device_name(&b.svc, "Invented server").unwrap();
+    set_offer_summaries(&b.svc, true).unwrap();
+    let worker = SyncClient::for_address(b.svc.clone(), b.vault(), &relay.relay.url())
+        .unwrap()
+        .as_summary_worker(Some(WriterKind::Local));
+    worker.send_presence(false).unwrap();
+    a.client().send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    let p = theirs.presence.as_ref().unwrap();
+    assert_eq!(p.kind, KIND_SERVER);
+    assert_eq!(p.writer_kind.as_deref(), Some("local"));
+    assert!(
+        theirs.online && p.offers_summaries && !p.recording,
+        "{theirs:?}"
+    );
+    let mine = peers
+        .iter()
+        .find(|p| p.device == a.svc.store().device())
+        .unwrap();
+    assert_eq!(mine.presence.as_ref().unwrap().kind, KIND_APP);
+    // The Sync page lists it by its name, online.
+    let listed = vault_devices(&a.svc, a.vault()).unwrap();
+    let other = listed.iter().find(|d| !d.this_device).unwrap();
+    assert_eq!(other.name.as_deref(), Some("Invented server"));
+    assert!(other.online && other.offers_summaries);
+    assert_eq!(other.writer_kind, Some(WriterKind::Local));
+    // Not offering: no writer is named, whatever it was given.
+    set_offer_summaries(&b.svc, false).unwrap();
+    worker.send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    assert_eq!(theirs.presence.as_ref().unwrap().writer_kind, None);
+    // A refused address is refused as a stored one would be.
+    assert_eq!(
+        SyncClient::for_address(b.svc.clone(), b.vault(), "http://relay.example.com").err(),
+        Some(SyncProblem::Address)
+    );
+}
+
 #[test]
 fn presence_from_another_vault_is_listed_without_a_name() {
     // A blob sealed under another key cannot be opened: no name, not online.
@@ -1217,7 +1270,14 @@ fn presence_blobs_are_one_size_whatever_they_say() {
         ),
         (widest.as_str(), false, false, Some(longest)),
     ] {
-        let p = presence::presence_now(name.to_owned(), true, writer, recording, gone);
+        let p = presence::presence_now(
+            presence::KIND_APP,
+            name.to_owned(),
+            true,
+            writer,
+            recording,
+            gone,
+        );
         let blob = presence::blob_of(&p, &keys, device).unwrap();
         sizes.insert(blob.len());
         let back = presence::open_blob(&keys, device, &blob).unwrap();

@@ -40,8 +40,8 @@ use crate::services::Services;
 pub use earshot_sync::VaultKey;
 pub use engine::{Peer, SyncClient, TickReport};
 pub use presence::{
-    Beats, MAX_DEVICE_NAME, ONLINE_WITHIN_S, PRESENCE_EVERY, Presence, clean_name, computer_name,
-    online,
+    Beats, KIND_APP, KIND_SERVER, MAX_DEVICE_NAME, ONLINE_WITHIN_S, PRESENCE_EVERY, Presence,
+    clean_name, computer_name, online,
 };
 pub use setup::{
     PairingOffer, join_with_code, offer_pairing_code, remove_this_device, set_up_first_device,

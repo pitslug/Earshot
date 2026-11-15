@@ -13,6 +13,7 @@ members = [
     "crates/earshot-store",
     "crates/earshot-sync",
     "crates/earshot-sync-server",
+    "crates/earshot-worker",
     "crates/earshot-capture-wasapi",
     "crates/earshot-hardware",
     "crates/earshot-runtime",

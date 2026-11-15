@@ -85,6 +85,9 @@ pub struct SyncClient {
     /// Whether rows held for a newer format or a far clock were tried again yet (once per
     /// client: they clear only after an update or with time).
     retried_all: AtomicBool,
+    /// A summary worker's presence ([`SyncClient::as_summary_worker`]): kind `server` and the
+    /// writer it names; `None` for the app.
+    worker: Option<Option<crate::offload::WriterKind>>,
 }
 
 impl std::fmt::Debug for SyncClient {
@@ -190,7 +193,34 @@ impl SyncClient {
             device,
             stop: Arc::new(AtomicBool::new(false)),
             retried_all: AtomicBool::new(false),
+            worker: None,
         })
+    }
+
+    /// The client for the relay at `address` rather than the stored one: the summary worker
+    /// (T11.6), whose configuration names its relay. The address is checked as a stored one is
+    /// ([`super::check_address`]).
+    ///
+    /// # Errors
+    /// [`SyncProblem::Address`] for a refused address; [`SyncProblem::Internal`] when the HTTP
+    /// client cannot be built.
+    pub fn for_address(
+        services: Services,
+        vault: std::sync::Arc<dyn SyncVault>,
+        address: &str,
+    ) -> Result<Self, SyncProblem> {
+        let address = check_address(address).map_err(|_| SyncProblem::Address)?;
+        let device = services.store().device();
+        Self::at(services, vault, address, device)
+    }
+
+    /// This client's presence says it is a summary worker (T11.6, docs/sync.md section 10):
+    /// kind `server` and `writer` as the kind of writer it uses (sent while it offers
+    /// summaries), in place of the app's kind and its Summaries settings.
+    #[must_use]
+    pub fn as_summary_worker(mut self, writer: Option<crate::offload::WriterKind>) -> Self {
+        self.worker = Some(writer);
+        self
     }
 
     /// Every request this client made, one entry per hop.
@@ -226,15 +256,22 @@ impl SyncClient {
             let settings = sync_settings(&db)?;
             // The writer kind travels only while this device offers to write: the asker's
             // label names it, so the user knows where the transcript goes.
-            let writer = if settings.offers_summaries {
-                crate::offload::WriterKind::of_settings(&db).map_err(|_| SyncProblem::Store)?
-            } else {
-                None
+            let writer = match self.worker {
+                _ if !settings.offers_summaries => None,
+                Some(worker) => worker,
+                None => {
+                    crate::offload::WriterKind::of_settings(&db).map_err(|_| SyncProblem::Store)?
+                }
             };
             (settings, writer)
         };
         let recording = !self.services.recording_meetings().is_empty();
         let presence = super::presence::presence_now(
+            if self.worker.is_some() {
+                super::presence::KIND_SERVER
+            } else {
+                super::presence::KIND_APP
+            },
             settings.device_name,
             settings.offers_summaries,
             writer,

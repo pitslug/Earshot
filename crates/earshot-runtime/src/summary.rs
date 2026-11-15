@@ -516,6 +516,10 @@ enum Backend {
         model: String,
         /// Through an agent CLI, Claude Code or Codex (the report says so).
         cli: Option<HandoverCli>,
+        /// The endpoint is this device's own local model ([`SummaryService::own_model_endpoint`]:
+        /// the summary worker's llama.cpp server on its own compose network), so it may write a
+        /// meeting kept on this computer.
+        own_model: bool,
     },
     Local {
         config: LocalSummaryConfig,
@@ -634,11 +638,32 @@ impl SummaryService {
                 summarizer: LlmSummarizer::new(LlmClient::new(net, llm)),
                 model: config.model.clone(),
                 cli: None,
+                own_model: false,
             },
             audit,
             handovers: Handovers::None,
             record_failures: Arc::default(),
         })
+    }
+
+    /// [`SummaryService::new`] for an OpenAI-compatible endpoint that is this device's own local
+    /// model: the summary worker's llama.cpp server on the worker's own compose network (T11.6,
+    /// docs/sync.md section 10). Unlike any other remote service it may write a meeting kept on
+    /// this computer ([`crate::keep_local`]). Only `earshot-worker` calls it, and only for an
+    /// endpoint its own-network rule accepted (`earshot_worker::endpoint`); pinned by
+    /// `summary_own_model_endpoint_is_called_only_by_the_worker`.
+    ///
+    /// # Errors
+    /// As [`SummaryService::new`].
+    pub fn own_model_endpoint(
+        config: &SummaryConfig,
+        clock: SharedClock,
+    ) -> Result<Self, RuntimeError> {
+        let mut service = Self::new(config, clock)?;
+        if let Backend::Remote { own_model, .. } = &mut service.backend {
+            *own_model = true;
+        }
+        Ok(service)
     }
 
     /// A service summarising through the user's Claude Code CLI ([`crate::claude_code`]):
@@ -675,6 +700,7 @@ impl SummaryService {
                 summarizer: LlmSummarizer::new(client),
                 model: crate::claude_code::stored_model_name(config.model.as_deref()),
                 cli: Some(HandoverCli::ClaudeCode),
+                own_model: false,
             },
             audit: AuditLog::new(),
             handovers: Handovers::ClaudeCode(handovers),
@@ -714,6 +740,7 @@ impl SummaryService {
                 summarizer: LlmSummarizer::new(client),
                 model: crate::codex::stored_model_name(config.model.as_deref()),
                 cli: Some(HandoverCli::Codex),
+                own_model: false,
             },
             audit: AuditLog::new(),
             handovers: Handovers::Codex(handovers),
@@ -938,9 +965,15 @@ impl SummaryService {
     ) -> Result<SummaryOutcome, RuntimeError> {
         // A meeting kept on this computer (T12.13) is summarised only by a local model: any
         // other service is refused before the transcript is read (`crate::keep_local`).
-        if !matches!(self.backend, Backend::Local { .. })
-            && crate::keep_local::summary_privacy(&services.store(), meeting)
-                == crate::keep_local::SummaryPrivacy::KeptLocal
+        if !matches!(
+            self.backend,
+            Backend::Local { .. }
+                | Backend::Remote {
+                    own_model: true,
+                    ..
+                }
+        ) && crate::keep_local::summary_privacy(&services.store(), meeting)
+            == crate::keep_local::SummaryPrivacy::KeptLocal
         {
             return Err(RuntimeError::SummaryKeptLocal(meeting));
         }
@@ -967,6 +1000,7 @@ impl SummaryService {
                 summarizer,
                 model,
                 cli,
+                ..
             } => {
                 let run = runtime.block_on(summarizer.summarize_with_report(&input, cancel));
                 let summary = run.result.map_err(RuntimeError::Llm)?;
