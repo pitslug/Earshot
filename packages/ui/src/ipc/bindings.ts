@@ -2149,6 +2149,12 @@ export type SyncCodeView = {
 export type SyncDeviceView = {
 	/**  Whether it is this computer. */
 	this_device: boolean,
+	/**  Its name from its presence (`None` until it sends one this computer can read). */
+	name: string | null,
+	/**  Whether it is online now (its presence is at most 150 s old and does not say gone). */
+	online: boolean,
+	/**  Whether it is recording now. */
+	recording: boolean,
 	/**  The first eight hex digits of its id. */
 	short_id: string,
 	/**  When it joined (Unix seconds, the server's clock). */

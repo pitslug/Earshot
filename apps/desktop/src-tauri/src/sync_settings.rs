@@ -176,7 +176,7 @@ impl SyncHost {
     pub fn stop_soon(&self) {
         let _lifecycle = self.lifecycle();
         let old = self.slot().take();
-        retire(old);
+        retire_saying_gone(old);
     }
 
     /// Stops the thread and waits for it (a request in flight ends at its timeout). The slot
@@ -220,6 +220,15 @@ impl SyncHost {
 }
 
 /// Stops a replaced thread on a thread of its own, so no caller waits for its request.
+/// Stops a thread for good on a thread of its own, telling the other devices it is gone.
+fn retire_saying_gone(old: Option<SyncThread>) {
+    if let Some(t) = old {
+        let _ = std::thread::Builder::new()
+            .name("earshot-sync-stop".into())
+            .spawn(move || t.stop_saying_gone());
+    }
+}
+
 fn retire(old: Option<SyncThread>) {
     if let Some(t) = old {
         let _ = std::thread::Builder::new()
@@ -294,6 +303,12 @@ pub fn view(services: &Services, host: &SyncHost) -> Result<SyncView, IpcError> 
 pub struct SyncDeviceView {
     /// Whether it is this computer.
     pub this_device: bool,
+    /// Its name from its presence (`None` until it sends one this computer can read).
+    pub name: Option<String>,
+    /// Whether it is online now (its presence is at most 150 s old and does not say gone).
+    pub online: bool,
+    /// Whether it is recording now.
+    pub recording: bool,
     /// The first eight hex digits of its id.
     pub short_id: String,
     /// When it joined (Unix seconds, the server's clock).
@@ -312,6 +327,9 @@ pub fn devices(services: &Services, host: &SyncHost) -> Result<Vec<SyncDeviceVie
         .into_iter()
         .map(|d| SyncDeviceView {
             this_device: d.this_device,
+            name: d.name,
+            online: d.online,
+            recording: d.recording,
             short_id: d.short_id,
             joined_unix_s: d.joined_unix_s,
             seen_s_ago: d.seen_s_ago,

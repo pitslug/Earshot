@@ -102,6 +102,10 @@ describe("the Sync page", () => {
     expect(await screen.findByRole("switch", { name: "Sync is on" })).toBeChecked();
     const list = await screen.findByRole("list", { name: "Computers" });
     expect(within(list).getByText("Computer b71d04a8")).toBeInTheDocument();
+    // Named and online from presence; a computer without one is shown by its id and last seen.
+    expect(within(list).getByText("Laptop")).toBeInTheDocument();
+    expect(within(list).getByText("Online, recording")).toBeInTheDocument();
+    expect(within(list).getByText("Last seen 2 hours ago")).toBeInTheDocument();
     expect(within(list).getByText(seenText(7_200))).toBeInTheDocument();
   });
 

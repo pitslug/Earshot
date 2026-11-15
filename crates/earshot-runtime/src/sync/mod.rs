@@ -22,6 +22,7 @@
 
 mod client;
 mod engine;
+mod presence;
 mod setup;
 mod thread;
 
@@ -37,7 +38,10 @@ use crate::services::Services;
 
 /// The vault key type, for hosts that store it ([`SyncVault`]).
 pub use earshot_sync::VaultKey;
-pub use engine::{SyncClient, TickReport};
+pub use engine::{Peer, SyncClient, TickReport};
+pub use presence::{
+    MAX_DEVICE_NAME, ONLINE_WITHIN_S, PRESENCE_EVERY, Presence, clean_name, computer_name, online,
+};
 pub use setup::{
     PairingOffer, join_with_code, offer_pairing_code, remove_this_device, set_up_first_device,
 };
@@ -53,6 +57,12 @@ pub(crate) const SYNC_VOICEPRINTS_KEY: &str = "settings/sync-voiceprints";
 pub(crate) const SYNC_CURSOR_KEY: &str = "sync-cursor";
 /// `sync-status`: the last tick's outcome (times, a problem word, counts; never content).
 pub(crate) const SYNC_STATUS_KEY: &str = "sync-status";
+/// `settings/device-name`: this device's name as its other devices show it (absent: the
+/// computer's name).
+pub(crate) const DEVICE_NAME_KEY: &str = "settings/device-name";
+/// `settings/sync-offer-summaries`: whether this device writes summaries for the others
+/// (`on`/`off`; absent is off). Sent in presence; summary offload is T11.3d.
+pub(crate) const OFFER_SUMMARIES_KEY: &str = "settings/sync-offer-summaries";
 
 /// The longest address accepted.
 pub const MAX_ADDRESS: usize = 2048;
@@ -383,6 +393,10 @@ pub struct SyncSettings {
     pub on: bool,
     /// Whether voiceprints sync.
     pub voiceprints: bool,
+    /// This device's name as its other devices show it.
+    pub device_name: String,
+    /// Whether this device writes summaries for the others.
+    pub offers_summaries: bool,
 }
 
 fn on_setting(store: &Store, key: &str) -> Result<bool, SyncProblem> {
@@ -404,7 +418,43 @@ pub fn sync_settings(store: &Store) -> Result<SyncSettings, SyncProblem> {
         address,
         on: on_setting(store, SYNC_ON_KEY)?,
         voiceprints: on_setting(store, SYNC_VOICEPRINTS_KEY)?,
+        device_name: store
+            .local_value(DEVICE_NAME_KEY)?
+            .and_then(|b| clean_name(&String::from_utf8_lossy(&b)))
+            .unwrap_or_else(computer_name),
+        offers_summaries: on_setting(store, OFFER_SUMMARIES_KEY)?,
     })
+}
+
+/// Sets this device's name as its other devices show it; an empty name goes back to the
+/// computer's name. Sent with the next presence.
+///
+/// # Errors
+/// [`SyncProblem::Store`].
+pub fn set_device_name(services: &Services, name: &str) -> Result<(), SyncProblem> {
+    let mut db = services.store();
+    match clean_name(name) {
+        Some(n) => local::set(&mut db, &DeviceRecord::DeviceName.key(), n.as_bytes())?,
+        None => {
+            db.delete_local_value(DEVICE_NAME_KEY)?;
+        }
+    }
+    Ok(())
+}
+
+/// Turns "Write summaries for my other devices" on or off (sent in presence; the offload it
+/// offers is T11.3d).
+///
+/// # Errors
+/// [`SyncProblem::Store`].
+pub fn set_offer_summaries(services: &Services, on: bool) -> Result<(), SyncProblem> {
+    let mut db = services.store();
+    local::set(
+        &mut db,
+        &DeviceRecord::OfferSummaries.key(),
+        on_off_word(on),
+    )?;
+    Ok(())
 }
 
 fn on_off_word(on: bool) -> &'static [u8] {
@@ -518,11 +568,19 @@ pub fn sync_overview(store: &Store, vault: &dyn SyncVault) -> Result<SyncOvervie
     })
 }
 
-/// One device of the vault, as the server knows it.
+/// One device of the vault, as the server knows it, with its presence when it sent one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncDevice {
     /// Whether it is this device.
     pub this_device: bool,
+    /// Its name, from its presence (`None` until it sends one this device can read).
+    pub name: Option<String>,
+    /// Whether it is online now ([`online`]).
+    pub online: bool,
+    /// Whether it is recording now (from its presence).
+    pub recording: bool,
+    /// Whether it writes summaries for the other devices (from its presence).
+    pub offers_summaries: bool,
     /// The first eight hex digits of its id: enough to tell two devices apart on the page.
     pub short_id: String,
     /// When it joined (Unix seconds, the server's clock).
@@ -531,8 +589,9 @@ pub struct SyncDevice {
     pub seen_s_ago: u64,
 }
 
-/// The vault's devices, from the server, this device first. Names come with presence
-/// (T11.3c); until then a device is shown by its short id.
+/// The vault's devices, from the server, this device first, each with its presence (name,
+/// online, recording, offers summaries) when it has sent one this device can read; a device
+/// without one is shown by its short id.
 ///
 /// # Errors
 /// [`SyncProblem::Vault`] when this device is not set up; the relay's problems.
@@ -544,20 +603,31 @@ pub fn vault_devices(
     let client = SyncClient::new(services.clone(), vault)?;
     let me = *client.device().as_uuid().as_bytes();
     let answer = client.relay().vault(&secrets.token)?;
+    let peers = client.peers()?;
     let mut devices: Vec<SyncDevice> = answer
         .devices
         .into_iter()
-        .map(|d| SyncDevice {
-            this_device: d.device_id.0 == me,
-            short_id: d
-                .device_id
-                .0
+        .map(|d| {
+            let peer = peers
                 .iter()
-                .take(4)
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-            joined_unix_s: d.created_unix_s,
-            seen_s_ago: d.age_s,
+                .find(|p| p.device.as_uuid().as_bytes()[..] == d.device_id.0[..]);
+            let presence = peer.and_then(|p| p.presence.as_ref());
+            SyncDevice {
+                this_device: d.device_id.0 == me,
+                name: presence.map(|p| p.name.clone()).filter(|n| !n.is_empty()),
+                online: peer.is_some_and(|p| p.online),
+                recording: presence.is_some_and(|p| p.recording),
+                offers_summaries: presence.is_some_and(|p| p.offers_summaries),
+                short_id: d
+                    .device_id
+                    .0
+                    .iter()
+                    .take(4)
+                    .map(|b| format!("{b:02x}"))
+                    .collect(),
+                joined_unix_s: d.created_unix_s,
+                seen_s_ago: d.age_s,
+            }
         })
         .collect();
     devices.sort_by_key(|d| (!d.this_device, d.joined_unix_s));

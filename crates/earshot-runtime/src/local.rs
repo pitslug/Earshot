@@ -233,6 +233,11 @@ pub(crate) enum DeviceRecord {
     SyncCursor,
     /// `sync-status`: the last sync tick's outcome; times, a problem word, counts (T11.3).
     SyncStatus,
+    /// `settings/device-name`: this device's name as its other devices show it (T11.3c).
+    DeviceName,
+    /// `settings/sync-offer-summaries`: whether this device writes summaries for the others
+    /// (T11.3c).
+    OfferSummaries,
 }
 
 impl DeviceRecord {
@@ -282,6 +287,8 @@ impl DeviceRecord {
         DeviceRecord::SyncVoiceprints,
         DeviceRecord::SyncCursor,
         DeviceRecord::SyncStatus,
+        DeviceRecord::DeviceName,
+        DeviceRecord::OfferSummaries,
     ];
 
     /// Its key.
@@ -337,6 +344,8 @@ impl DeviceRecord {
                 DeviceRecord::SyncVoiceprints => crate::sync::SYNC_VOICEPRINTS_KEY,
                 DeviceRecord::SyncCursor => crate::sync::SYNC_CURSOR_KEY,
                 DeviceRecord::SyncStatus => crate::sync::SYNC_STATUS_KEY,
+                DeviceRecord::DeviceName => crate::sync::DEVICE_NAME_KEY,
+                DeviceRecord::OfferSummaries => crate::sync::OFFER_SUMMARIES_KEY,
             }
             .to_owned(),
         )

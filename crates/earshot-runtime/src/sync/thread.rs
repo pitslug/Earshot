@@ -44,6 +44,8 @@ pub struct SyncTiming {
     pub tick: Duration,
     /// How often the outbox's length is read (also the debounce).
     pub poll: Duration,
+    /// How often this device's presence is sent ([`super::PRESENCE_EVERY`]).
+    pub presence: Duration,
 }
 
 impl Default for SyncTiming {
@@ -51,6 +53,7 @@ impl Default for SyncTiming {
         Self {
             tick: TICK,
             poll: Duration::from_secs(2),
+            presence: super::PRESENCE_EVERY,
         }
     }
 }
@@ -59,6 +62,9 @@ impl Default for SyncTiming {
 struct Signal {
     stop: bool,
     soon: bool,
+    /// Say gone on the way out (sync turned off). A thread replaced by a new one does not,
+    /// or its gone could land after the new thread's announcement.
+    gone: bool,
 }
 
 /// The running sync thread (`earshot-sync`). Stopped and joined by [`SyncThread::stop`] or
@@ -104,15 +110,27 @@ impl SyncThread {
         cv.notify_all();
     }
 
-    /// Stops the thread and waits for it.
+    /// Stops the thread and waits for it, saying nothing to the other devices (it is being
+    /// replaced, or the device is being removed, which the relay records itself).
     pub fn stop(mut self) {
-        self.stop_and_join();
+        self.stop_and_join(false);
     }
 
-    fn stop_and_join(&mut self) {
+    /// Stops the thread for good and waits for it; on the way out it tells the other devices
+    /// it is gone (best effort, bounded by the presence timeout), so they stop showing it
+    /// online at once rather than after the online window.
+    pub fn stop_saying_gone(mut self) {
+        self.stop_and_join(true);
+    }
+
+    fn stop_and_join(&mut self, gone: bool) {
         let (lock, cv) = &*self.signal;
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        lock.lock().unwrap_or_else(PoisonError::into_inner).stop = true;
+        {
+            let mut s = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            s.stop = true;
+            s.gone |= gone;
+        }
         cv.notify_all();
         if let Some(h) = self.handle.take() {
             let _ = h.join();
@@ -128,7 +146,7 @@ impl SyncThread {
 
 impl Drop for SyncThread {
     fn drop(&mut self) {
-        self.stop_and_join();
+        self.stop_and_join(false);
     }
 }
 
@@ -142,12 +160,16 @@ fn run(client: &SyncClient, timing: SyncTiming, signal: &(Mutex<Signal>, Condvar
     let mut next = Instant::now();
     let mut seen = outbox_len(&services);
     let mut changed = false;
+    // Presence goes out after the first tick without a problem, then every `presence`.
+    let mut next_presence: Option<Instant> = None;
+    let mut announced = false;
     loop {
         // Wait until the next tick, a poll, a nudge or a stop.
         {
             let (lock, cv) = signal;
             let mut s = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            let wait = next
+            let due = next_presence.map_or(next, |p| p.min(next));
+            let wait = due
                 .saturating_duration_since(Instant::now())
                 .min(timing.poll);
             if !s.stop && !s.soon && !wait.is_zero() {
@@ -157,6 +179,13 @@ fn run(client: &SyncClient, timing: SyncTiming, signal: &(Mutex<Signal>, Condvar
                     .0;
             }
             if s.stop {
+                let say_gone = s.gone;
+                drop(s);
+                // Best effort: the other devices see this one go at once, not after the
+                // online window.
+                if announced && say_gone {
+                    let _ = catch_unwind(AssertUnwindSafe(|| client.send_presence(true)));
+                }
                 return;
             }
             if std::mem::take(&mut s.soon) && failures == 0 {
@@ -174,6 +203,15 @@ fn run(client: &SyncClient, timing: SyncTiming, signal: &(Mutex<Signal>, Condvar
                 next = next.min(Instant::now());
             }
         }
+        if let Some(at) = next_presence
+            && Instant::now() >= at
+        {
+            // Advisory: a failure is the next tick's to report.
+            if let Ok(Ok(())) = catch_unwind(AssertUnwindSafe(|| client.send_presence(false))) {
+                announced = true;
+            }
+            next_presence = Some(Instant::now() + timing.presence);
+        }
         if Instant::now() < next {
             continue;
         }
@@ -181,6 +219,9 @@ fn run(client: &SyncClient, timing: SyncTiming, signal: &(Mutex<Signal>, Condvar
             Ok(Ok(_)) => {
                 failures = 0;
                 next = Instant::now() + timing.tick;
+                if next_presence.is_none() {
+                    next_presence = Some(Instant::now());
+                }
             }
             Ok(Err(p)) if p.stops() => return,
             Ok(Err(_)) => {

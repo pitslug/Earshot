@@ -48,6 +48,7 @@ fn computer(tag: &str) -> Computer {
     let timing = SyncTiming {
         tick: Duration::from_millis(100),
         poll: Duration::from_millis(10),
+        presence: Duration::from_millis(50),
     };
     let host = SyncHost::with_timing(Arc::clone(&vault) as Arc<dyn SyncVault>, timing);
     Computer {
@@ -162,6 +163,25 @@ fn sync_set_up_join_and_remove_through_the_page_carry_no_secret() {
     let list = devices(&b.svc, &b.host).unwrap();
     assert_eq!(list.len(), 2);
     assert!(list[0].this_device);
+    // The other computer is listed by the name in its presence, online.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let list = devices(&b.svc, &b.host).unwrap();
+        let other = list.iter().find(|d| !d.this_device).unwrap();
+        if other.online {
+            assert_eq!(
+                other.name.as_deref(),
+                Some(earshot_runtime::sync::computer_name().as_str())
+            );
+            assert!(!other.recording);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the other computer never showed online"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     // No response holds the key, the token, the setup secret, or the code once used.
     let key_hex: String = a

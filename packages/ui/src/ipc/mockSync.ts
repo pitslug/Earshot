@@ -81,8 +81,33 @@ export interface SyncMockData {
 }
 
 const DEFAULT_DEVICES: SyncDeviceView[] = [
-  { this_device: true, short_id: "3f2a9c1e", joined_unix_s: 1_793_000_000, seen_s_ago: 0 },
-  { this_device: false, short_id: "b71d04a8", joined_unix_s: 1_793_100_000, seen_s_ago: 7_200 },
+  {
+    this_device: true,
+    name: "Desk",
+    online: true,
+    recording: false,
+    short_id: "3f2a9c1e",
+    joined_unix_s: 1_793_000_000,
+    seen_s_ago: 0,
+  },
+  {
+    this_device: false,
+    name: null,
+    online: false,
+    recording: false,
+    short_id: "b71d04a8",
+    joined_unix_s: 1_793_100_000,
+    seen_s_ago: 7_200,
+  },
+  {
+    this_device: false,
+    name: "Laptop",
+    online: true,
+    recording: true,
+    short_id: "c5e09b72",
+    joined_unix_s: 1_793_200_000,
+    seen_s_ago: 20,
+  },
 ];
 
 function commandFailure(word: SyncProblemWord): never {

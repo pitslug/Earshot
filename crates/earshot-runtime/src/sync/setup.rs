@@ -199,6 +199,7 @@ pub fn remove_this_device(
         SYNC_STATUS_KEY,
         SYNC_ON_KEY,
         SYNC_VOICEPRINTS_KEY,
+        super::OFFER_SUMMARIES_KEY,
     ] {
         db.delete_local_value(key)?;
     }

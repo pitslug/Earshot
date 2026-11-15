@@ -552,6 +552,7 @@ fn sync_thread_sends_a_local_write_and_stops_when_asked() {
     let timing = SyncTiming {
         tick: Duration::from_millis(200),
         poll: Duration::from_millis(20),
+        presence: Duration::from_millis(50),
     };
     let thread = SyncThread::start(a.client(), timing).unwrap();
     let m = meeting(&a.svc, "Written while running", 8);
@@ -702,6 +703,7 @@ fn sync_thread_retries_an_unreachable_server_until_it_answers() {
     let timing = SyncTiming {
         tick: Duration::from_millis(100),
         poll: Duration::from_millis(10),
+        presence: Duration::from_millis(50),
     };
     let thread = SyncThread::start(a.client(), timing).unwrap();
     wait_for("no unreachable status", || {
@@ -994,4 +996,145 @@ fn sync_converge_keeps_the_users_name_when_the_named_me_is_merged_away() {
         .unwrap();
     assert_eq!(me.id, first[0].id(), "the earliest Me stays");
     assert_eq!(me.display_name, "Casey", "and takes the name its user set");
+}
+
+// T11.3c: presence (docs/sync-spec.md section 8).
+
+#[test]
+fn presence_online_is_a_recent_blob_that_does_not_say_gone() {
+    assert!(online(0, false));
+    assert!(online(ONLINE_WITHIN_S, false));
+    assert!(!online(ONLINE_WITHIN_S + 1, false));
+    assert!(!online(0, true), "a device that said gone is not online");
+    assert_eq!(ONLINE_WITHIN_S, 150);
+    assert_eq!(PRESENCE_EVERY, Duration::from_secs(60));
+}
+
+#[test]
+fn presence_names_are_cleaned_and_bounded() {
+    assert_eq!(clean_name("  Study PC  ").as_deref(), Some("Study PC"));
+    assert_eq!(clean_name("Desk\u{7}top").as_deref(), Some("Desktop"));
+    assert_eq!(clean_name("   "), None);
+    let long = "x".repeat(MAX_DEVICE_NAME + 10);
+    assert_eq!(clean_name(&long).unwrap().chars().count(), MAX_DEVICE_NAME);
+    assert!(!computer_name().is_empty());
+}
+
+#[test]
+fn presence_round_trip_names_each_device_and_says_who_is_online() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_device_name(&a.svc, "Study desktop").unwrap();
+    set_offer_summaries(&a.svc, true).unwrap();
+    let live = meeting(&a.svc, "Recording now", 30);
+    let lease = a
+        .svc
+        .lease_meeting_for(live, MeetingJob::Recording)
+        .unwrap();
+    let ca = a.client();
+    // Before A says anything, B lists it by its short id only.
+    let before = vault_devices(&b.svc, b.vault()).unwrap();
+    let other = before.iter().find(|d| !d.this_device).unwrap();
+    assert_eq!(other.name, None);
+    assert!(!other.online);
+    ca.send_presence(false).unwrap();
+    let listed = vault_devices(&b.svc, b.vault()).unwrap();
+    let other = listed.iter().find(|d| !d.this_device).unwrap();
+    assert_eq!(other.name.as_deref(), Some("Study desktop"));
+    assert!(
+        other.online && other.recording && other.offers_summaries,
+        "{other:?}"
+    );
+    // Going away: gone at once, without waiting out the online window.
+    drop(lease);
+    ca.send_presence(true).unwrap();
+    let after = vault_devices(&b.svc, b.vault()).unwrap();
+    let other = after.iter().find(|d| !d.this_device).unwrap();
+    assert!(!other.online && !other.recording, "{other:?}");
+    assert_eq!(other.name.as_deref(), Some("Study desktop"));
+    // An empty name goes back to the computer's name.
+    set_device_name(&a.svc, "  ").unwrap();
+    assert_eq!(
+        sync_settings(&a.svc.store()).unwrap().device_name,
+        computer_name()
+    );
+}
+
+#[test]
+fn presence_from_another_vault_is_listed_without_a_name() {
+    // A blob sealed under another key cannot be opened: no name, not online.
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let secrets = a.vault.load().unwrap().unwrap();
+    let stranger = earshot_sync::VaultKey::generate().unwrap();
+    let blob = earshot_sync::seal_presence(
+        &stranger.keys(),
+        a.svc.store().device(),
+        br#"{"v":1,"name":"Not readable","app_version":"0","kind":"app","offers_summaries":false,"writer_kind":null,"recording":false}"#,
+    )
+    .unwrap();
+    a.client()
+        .relay()
+        .put_presence(
+            &secrets.token,
+            &earshot_sync::wire::PresenceRequest {
+                blob: earshot_sync::wire::B64(blob),
+            },
+        )
+        .unwrap();
+    let listed = vault_devices(&b.svc, b.vault()).unwrap();
+    let other = listed.iter().find(|d| !d.this_device).unwrap();
+    assert_eq!(other.name, None);
+    assert!(!other.online);
+}
+
+#[test]
+fn presence_the_thread_announces_itself_and_says_gone_when_stopped() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_device_name(&a.svc, "Laptop").unwrap();
+    let timing = SyncTiming {
+        tick: Duration::from_millis(100),
+        poll: Duration::from_millis(10),
+        presence: Duration::from_millis(50),
+    };
+    let thread = SyncThread::start(a.client(), timing).unwrap();
+    let online_now = || {
+        vault_devices(&b.svc, b.vault())
+            .unwrap()
+            .into_iter()
+            .find(|d| !d.this_device)
+            .is_some_and(|d| d.online && d.name.as_deref() == Some("Laptop"))
+    };
+    wait_for("the thread never sent its presence", online_now);
+    thread.stop_saying_gone();
+    assert!(!online_now(), "a thread stopped for good says gone");
+    // A thread replaced by another stays quiet: its device is still online.
+    let replaced = SyncThread::start(a.client(), timing).unwrap();
+    wait_for("the second thread never sent its presence", online_now);
+    replaced.stop();
+    assert!(online_now(), "a replaced thread must not say gone");
+}
+
+#[test]
+fn presence_blobs_are_one_size_whatever_they_say() {
+    let key = earshot_sync::VaultKey::generate().unwrap();
+    let keys = key.keys();
+    let device = earshot_core::identity::DeviceId::from_bytes([7; 16]);
+    let widest = "\u{1F600}".repeat(MAX_DEVICE_NAME);
+    let mut sizes = std::collections::BTreeSet::new();
+    for (name, recording, gone) in [
+        ("A", false, false),
+        ("A", true, false),
+        ("A much longer computer name here", true, true),
+        (widest.as_str(), false, false),
+    ] {
+        let p = presence::presence_now(name.to_owned(), true, recording, gone);
+        let blob = presence::blob_of(&p, &keys, device).unwrap();
+        sizes.insert(blob.len());
+        let back = presence::open_blob(&keys, device, &blob).unwrap();
+        assert_eq!((back.recording, back.gone), (recording, gone));
+        assert_eq!(back.name, clean_name(name).unwrap());
+    }
+    assert_eq!(sizes.len(), 1, "every blob is one size: {sizes:?}");
 }

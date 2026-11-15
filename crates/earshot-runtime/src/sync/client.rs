@@ -10,8 +10,8 @@ use earshot_net::{Allowlist, AuditLog, Method, NetClient, NetConfig, NetError, N
 use earshot_sync::ENVELOPE_FORMAT;
 use earshot_sync::wire::{
     ErrorBody, ErrorWord, FORMAT_HEADER, PULL_DEFAULT, PairingRequest, PairingResponse,
-    PullResponse, PushRequest, PushResponse, RegisterRequest, RegisterResponse, RevokeRequest,
-    TakeRequest, TakeResponse, VaultResponse,
+    PresenceRequest, PresenceResponse, PullResponse, PushRequest, PushResponse, RegisterRequest,
+    RegisterResponse, RevokeRequest, TakeRequest, TakeResponse, VaultResponse,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -21,6 +21,9 @@ use crate::services::SharedClock;
 
 /// How long one request may take (a page is at most 4 MiB).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a presence request may take: it is small and advisory, and a stop waits for the
+/// one that says gone.
+const PRESENCE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The relay at one address.
 pub(crate) struct Relay {
@@ -87,9 +90,20 @@ impl Relay {
         token: Option<&DeviceToken>,
         body: Option<Vec<u8>>,
     ) -> Result<Resp, SyncProblem> {
+        self.call_within(method, url, token, body, REQUEST_TIMEOUT)
+    }
+
+    fn call_within<Resp: DeserializeOwned>(
+        &self,
+        method: Method,
+        url: Url,
+        token: Option<&DeviceToken>,
+        body: Option<Vec<u8>>,
+        timeout: Duration,
+    ) -> Result<Resp, SyncProblem> {
         let mut req = NetRequest::new(method, url)
             .header(FORMAT_HEADER, ENVELOPE_FORMAT.to_string())
-            .timeout(REQUEST_TIMEOUT);
+            .timeout(timeout);
         if let Some(token) = token {
             req = req.header("Authorization", format!("Bearer {}", token.as_str()));
         }
@@ -169,6 +183,28 @@ impl Relay {
     ) -> Result<(), SyncProblem> {
         let _: serde_json::Value = self.post("v1/devices/revoke", Some(token), req)?;
         Ok(())
+    }
+
+    /// `POST /v1/presence`.
+    pub(crate) fn put_presence(
+        &self,
+        token: &DeviceToken,
+        req: &PresenceRequest,
+    ) -> Result<(), SyncProblem> {
+        let bytes = serde_json::to_vec(req).map_err(|_| SyncProblem::Internal)?;
+        let _: serde_json::Value = self.call_within(
+            Method::POST,
+            self.url("v1/presence")?,
+            Some(token),
+            Some(bytes),
+            PRESENCE_TIMEOUT,
+        )?;
+        Ok(())
+    }
+
+    /// `GET /v1/presence`.
+    pub(crate) fn presence(&self, token: &DeviceToken) -> Result<PresenceResponse, SyncProblem> {
+        self.call(Method::GET, self.url("v1/presence")?, Some(token), None)
     }
 
     /// `GET /v1/vault`.

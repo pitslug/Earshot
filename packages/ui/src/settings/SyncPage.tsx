@@ -128,9 +128,18 @@ export function codeLifeText(seconds: number): string {
   return `Works for ${minutes} minute${minutes === 1 ? "" : "s"}, once.`;
 }
 
-/** A computer's name in the list. */
+/** A computer's name in the list: its own name from its presence, else its short id. */
 export function deviceName(d: SyncDeviceView): string {
-  return d.this_device ? "This computer" : `Computer ${d.short_id}`;
+  if (d.this_device) return "This computer";
+  return d.name ?? `Computer ${d.short_id}`;
+}
+
+/** A computer's state in the list: online (and recording) from its presence, else when it
+ * last reached the server. */
+export function deviceState(d: SyncDeviceView): string {
+  if (d.this_device) return seenText(d.seen_s_ago);
+  if (d.online) return d.recording ? "Online, recording" : "Online";
+  return seenText(d.seen_s_ago);
 }
 
 /** One of the two forms of a computer that is not set up. */
@@ -336,7 +345,7 @@ function Computers({ state }: { state: SyncPageState }) {
           {devices.view.map((d) => (
             <li key={d.short_id} className={styles.device}>
               <Body1>{deviceName(d)}</Body1>
-              <Caption1 className={styles.muted}>{seenText(d.seen_s_ago)}</Caption1>
+              <Caption1 className={styles.muted}>{deviceState(d)}</Caption1>
             </li>
           ))}
         </ul>

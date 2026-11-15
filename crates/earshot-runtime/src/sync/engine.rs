@@ -61,6 +61,19 @@ pub struct TickReport {
     pub repaired: usize,
 }
 
+/// Another device's presence, as this device reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    /// The device.
+    pub device: DeviceId,
+    /// Its presence; `None` when its blob cannot be opened or read.
+    pub presence: Option<super::Presence>,
+    /// Seconds since the relay received it, by the relay's clock.
+    pub age_s: u64,
+    /// Whether it counts as online ([`super::online`]).
+    pub online: bool,
+}
+
 /// The sync client of one device: the relay at the stored address and the device's vault.
 pub struct SyncClient {
     services: Services,
@@ -195,6 +208,53 @@ impl SyncClient {
 
     pub(crate) fn relay(&self) -> &Relay {
         &self.relay
+    }
+
+    /// Sends this device's presence (its name, version, whether it offers summaries, whether
+    /// it is recording; `gone` when it is going away).
+    ///
+    /// # Errors
+    /// [`SyncProblem::Vault`] when not set up; the relay's problems.
+    pub fn send_presence(&self, gone: bool) -> Result<(), SyncProblem> {
+        let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
+        let keys = secrets.key.keys();
+        let settings = sync_settings(&self.services.store())?;
+        let recording = !self.services.recording_meetings().is_empty();
+        let presence = super::presence::presence_now(
+            settings.device_name,
+            settings.offers_summaries,
+            recording,
+            gone,
+        );
+        let blob = super::presence::blob_of(&presence, &keys, self.device)?;
+        self.relay
+            .put_presence(&secrets.token, &super::presence::request_of(blob))
+    }
+
+    /// Every device's presence, from the relay.
+    ///
+    /// # Errors
+    /// [`SyncProblem::Vault`] when not set up; the relay's problems.
+    pub fn peers(&self) -> Result<Vec<Peer>, SyncProblem> {
+        let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
+        let keys = secrets.key.keys();
+        let answer = self.relay.presence(&secrets.token)?;
+        Ok(answer
+            .devices
+            .into_iter()
+            .filter_map(|e| {
+                let id: [u8; 16] = e.device_id.0.as_slice().try_into().ok()?;
+                let device = DeviceId::from_bytes(id);
+                let presence = super::presence::open_blob(&keys, device, &e.blob.0);
+                let gone = presence.as_ref().is_some_and(|p| p.gone);
+                Some(Peer {
+                    device,
+                    online: presence.is_some() && super::online(e.age_s, gone),
+                    presence,
+                    age_s: e.age_s,
+                })
+            })
+            .collect())
     }
 
     /// The flag that ends a tick at its next page.
