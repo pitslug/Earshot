@@ -16,8 +16,11 @@
 //! error, and every later call (queued or new) gets an error at once, never a hang; the session is
 //! never run again. A [`Registry`] replaces a broken encoder at the next borrow.
 //!
-//! **Stalled:** a run still going [`STALL_LIMIT`] after it started marks the encoder stalled
-//! (checked by waiting callers and by [`SharedEncoder::is_broken`], so by every registry borrow):
+//! **Stalled:** a run still going [`STALL_LIMIT`] of time awake after it started marks the encoder
+//! stalled (checked by waiting callers and by [`SharedEncoder::is_broken`], so by every registry
+//! borrow). Time awake, not `Instant`: on Windows `Instant` is `QueryPerformanceCounter`, which
+//! keeps counting while the computer sleeps (T9.16 saw capture timestamps jump across Modern
+//! Standby), so a final pass in flight at a sleep would come back stalled ([`stalled`], T12.62):
 //! callers waiting behind it get an error instead of waiting for ever (a stuck meeting never
 //! blocks the next, T9.22), and the registry loads a fresh encoder for the next load. The hung run
 //! cannot be stopped without `unsafe`: its thread and session stay until the run returns or the
@@ -102,8 +105,32 @@ pub(crate) trait EncoderRun: Send + 'static {
     fn run(&mut self, input: EncoderInput) -> Result<EncoderOutput, RunError>;
 }
 
-/// Where the encoder reads the time: the real clock, or a fake in tests.
+/// Where the encoder reads the time for waits (asked to started): the real clock, or a fake in
+/// tests.
 pub(crate) type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
+/// Where the encoder reads time awake for the stall rule: a monotonic count from any origin that
+/// leaves out time the computer slept ([`awake_clock`]), or a fake in tests.
+pub(crate) type AwakeClock = Arc<dyn Fn() -> Duration + Send + Sync>;
+
+/// Whether a run that started at `started` (time awake) has stalled by `now`: more than
+/// [`STALL_LIMIT`] of time awake has passed. A clock that went backwards never stalls a run.
+pub(crate) fn stalled(started: Duration, now: Duration) -> bool {
+    now.saturating_sub(started) > STALL_LIMIT
+}
+
+/// The production awake clock: `earshot_proc::awake_time` (Windows' unbiased interrupt time) when
+/// it can be read, else time since this clock was made by `Instant` (off Windows, where the stall
+/// rule then counts a sleep as it did before T12.62). Chosen once, so one clock never mixes the
+/// two.
+pub(crate) fn awake_clock() -> AwakeClock {
+    if earshot_proc::awake_time().is_some() {
+        Arc::new(|| earshot_proc::awake_time().unwrap_or_default())
+    } else {
+        let origin = Instant::now();
+        Arc::new(move || origin.elapsed())
+    }
+}
 
 /// The answer to one call, and how long it waited from asked to started.
 type Reply = (Result<EncoderOutput, OnnxError>, Duration);
@@ -118,9 +145,10 @@ struct Job {
 struct State {
     broken: AtomicBool,
     stalled: AtomicBool,
-    /// When the run in progress started (`None` between runs).
-    running_since: Mutex<Option<Instant>>,
+    /// When the run in progress started, in time awake (`None` between runs).
+    running_since: Mutex<Option<Duration>>,
     clock: Clock,
+    awake: AwakeClock,
 }
 
 impl State {
@@ -128,8 +156,12 @@ impl State {
         (self.clock)()
     }
 
+    fn awake_now(&self) -> Duration {
+        (self.awake)()
+    }
+
     /// Whether the encoder may no longer be used: broken, or stalled (checked now, so a run past
-    /// [`STALL_LIMIT`] marks it stalled here).
+    /// [`STALL_LIMIT`] of time awake marks it stalled here, [`stalled`]).
     fn unusable(&self) -> bool {
         if self.broken.load(Ordering::SeqCst) || self.stalled.load(Ordering::SeqCst) {
             return true;
@@ -138,14 +170,14 @@ impl State {
             .running_since
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if since.is_some_and(|t| self.now().saturating_duration_since(t) > STALL_LIMIT) {
+        if since.is_some_and(|t| stalled(t, self.awake_now())) {
             self.stalled.store(true, Ordering::SeqCst);
             return true;
         }
         false
     }
 
-    fn set_running(&self, since: Option<Instant>) {
+    fn set_running(&self, since: Option<Duration>) {
         *self
             .running_since
             .lock()
@@ -157,8 +189,10 @@ impl State {
 struct Inner {
     jobs: mpsc::Sender<Job>,
     state: Arc<State>,
-    /// The latest [`KEPT_LOG`] calls: the asking thread's name and its wait ([`SharedEncoder::wait_log`]).
-    log: Mutex<VecDeque<(String, Duration)>>,
+    /// The latest [`KEPT_LOG`] calls: the asking thread and its wait ([`SharedEncoder::wait_log`]).
+    /// The thread's handle, not its name: taking it clones a reference count, so a call allocates
+    /// nothing for the log once it is full (T12.62); names are read only by `wait_log`.
+    log: Mutex<VecDeque<(std::thread::Thread, Duration)>>,
     backend: SessionBackend,
     metadata: BTreeMap<String, String>,
     audio_shape: Option<Vec<i64>>,
@@ -222,16 +256,18 @@ impl SharedEncoder {
             metadata,
             audio_shape,
             Arc::new(Instant::now),
+            awake_clock(),
         )
     }
 
-    /// [`Self::spawn`] reading the time from `clock`.
+    /// [`Self::spawn`] reading waits from `clock` and time awake from `awake`.
     fn spawn_with_clock(
         runner: impl EncoderRun,
         backend: SessionBackend,
         metadata: BTreeMap<String, String>,
         audio_shape: Option<Vec<i64>>,
         clock: Clock,
+        awake: AwakeClock,
     ) -> Result<Self, OnnxError> {
         let (jobs, rx) = mpsc::channel::<Job>();
         let state = Arc::new(State {
@@ -239,6 +275,7 @@ impl SharedEncoder {
             stalled: AtomicBool::new(false),
             running_since: Mutex::new(None),
             clock,
+            awake,
         });
         let shared = Arc::clone(&state);
         std::thread::Builder::new()
@@ -264,8 +301,8 @@ impl SharedEncoder {
     }
 
     /// Whether the encoder may no longer be used: a run failed or panicked, or the run in progress
-    /// has gone past [`STALL_LIMIT`] (checked now). Such an encoder answers every call with an
-    /// error.
+    /// has gone past [`STALL_LIMIT`] of time awake (checked now). Such an encoder answers every
+    /// call with an error.
     #[must_use]
     pub fn is_broken(&self) -> bool {
         self.inner.state.unusable()
@@ -302,10 +339,7 @@ impl SharedEncoder {
                 Err(reply) => reply,
             },
         };
-        let name = std::thread::current()
-            .name()
-            .unwrap_or("unnamed")
-            .to_owned();
+        let asker = std::thread::current();
         let mut log = self
             .inner
             .log
@@ -314,7 +348,7 @@ impl SharedEncoder {
         if log.len() == KEPT_LOG {
             log.pop_front();
         }
-        log.push_back((name, reply.1));
+        log.push_back((asker, reply.1));
         drop(log);
         reply
     }
@@ -328,7 +362,7 @@ impl SharedEncoder {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .cloned()
+            .map(|(thread, waited)| (thread.name().unwrap_or("unnamed").to_owned(), *waited))
             .collect()
     }
 
@@ -398,7 +432,7 @@ fn serve(mut runner: impl EncoderRun, jobs: &mpsc::Receiver<Job>, state: &State)
         } else if state.stalled.load(Ordering::SeqCst) {
             Err(stalled_error())
         } else {
-            state.set_running(Some(started));
+            state.set_running(Some(state.awake_now()));
             let ran = std::panic::catch_unwind(AssertUnwindSafe(|| runner.run(job.input)));
             state.set_running(None);
             match ran {

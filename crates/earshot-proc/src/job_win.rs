@@ -4,8 +4,9 @@
 //! file because it is the crate's other Windows call.
 //!
 //! The five job kernel32 functions and the three job structures are declared by hand, as are
-//! the two calls and one structure of [`peak_memory`] and the five calls and one structure that
-//! resume a suspended child (`Cargo.toml`: `windows-sys` would need
+//! the two calls and one structure of [`peak_memory`], the one call of [`awake_time`] (T12.62)
+//! and the five calls and one structure that resume a suspended child (`Cargo.toml`:
+//! `windows-sys` would need
 //! features nothing else in the workspace builds). [`KillOnClose::spawn`] starts a child
 //! suspended and resumes it only once it is in the job (std cannot hand out the primary
 //! thread's handle, so the thread is found through a toolhelp snapshot); a child spawned
@@ -64,6 +65,7 @@ struct ExtendedLimitInformation {
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
+    fn QueryUnbiasedInterruptTime(unbiased_time: *mut u64) -> Bool;
     fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
     fn SetInformationJobObject(job: Handle, class: i32, info: *const c_void, length: u32) -> Bool;
     fn AssignProcessToJobObject(job: Handle, process: Handle) -> Bool;
@@ -186,6 +188,19 @@ pub fn peak_memory() -> Option<crate::PeakMemory> {
     })
 }
 
+/// Time this computer has been awake since it started, from `QueryUnbiasedInterruptTime`
+/// (kernel32, Windows 7 and later: the interrupt-time count in 100 ns units, which by its
+/// documentation leaves out time spent in sleep or hibernation, unlike `QueryPerformanceCounter`
+/// and so `std::time::Instant`); `None` if the call fails. It moves in timer ticks (about 15.6
+/// ms by default), so it judges long limits, not short waits (T12.62).
+#[must_use]
+pub fn awake_time() -> Option<std::time::Duration> {
+    let mut ticks = 0u64;
+    // SAFETY: `ticks` is a live, writable u64, the one out parameter the call writes.
+    let ok = unsafe { QueryUnbiasedInterruptTime(&raw mut ticks) };
+    (ok != 0).then(|| std::time::Duration::from_nanos(ticks.saturating_mul(100)))
+}
+
 /// An owned job object with kill-on-close; closing it (drop) kills every process in it.
 #[derive(Debug)]
 pub struct KillOnClose(Handle);
@@ -292,6 +307,16 @@ impl Drop for KillOnClose {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proc_awake_time_is_read_and_moves_forward() {
+        let first = awake_time().expect("QueryUnbiasedInterruptTime answers");
+        assert!(first > std::time::Duration::ZERO);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let second = awake_time().unwrap();
+        // Timer ticks of about 15.6 ms: 50 ms of sleep moves it by at least one.
+        assert!(second > first, "{first:?} then {second:?}");
+    }
 
     #[test]
     fn proc_memory_counters_have_the_psapi_size() {

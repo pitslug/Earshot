@@ -1427,6 +1427,7 @@ version = "0.3.7"
 dependencies = [
  "claxon",
  "earshot-core",
+ "earshot-proc",
  "ort",
  "rand_chacha",
  "rand_core",

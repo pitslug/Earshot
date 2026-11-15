@@ -2845,6 +2845,8 @@ fn backends_card_hold_is_used_by_no_shipped_code() {
         concat!("hold_card_", "for_evaluation"),
         concat!("CardHold", "Load"),
         concat!("card_hold_", "step"),
+        // T12.62: the card memory blocks of the holder's last steps.
+        concat!("hold_device_", "bytes"),
     ] {
         let found = shipped_files_naming(name);
         assert!(found.is_empty(), "shipped code names {name}: {found:?}");
@@ -2861,11 +2863,12 @@ fn backends_own_voice_cpu_load_is_used_by_no_shipped_code() {
 }
 
 /// T12.59: the holder ends under the free memory asked by less than one small load: large loads
-/// while one more stays above the target, then small ones until it is at most the target. A
-/// simulated card with fixed costs per load, clock-free.
+/// while one more stays above the target, then small ones. T12.62: then blocks, so it ends under
+/// the target by less than one block (within 0.5 GiB). A simulated card with fixed costs per load,
+/// clock-free.
 #[test]
 fn backends_card_hold_step_ends_just_under_the_target() {
-    use crate::backends::{CardHoldStep, card_hold_step};
+    use crate::backends::{CARD_HOLD_BLOCK, CardHoldStep, card_hold_step};
     const MIB: u64 = 1024 * 1024;
     let (large, small) = (2_330 * MIB, 470 * MIB);
     for (free, target) in [
@@ -2878,10 +2881,11 @@ fn backends_card_hold_step_ends_just_under_the_target() {
         let mut now = free;
         let mut steps = Vec::new();
         loop {
-            match card_hold_step(now, target, large) {
+            match card_hold_step(now, target, large, small) {
                 CardHoldStep::Done => break,
                 CardHoldStep::Large => now -= large,
                 CardHoldStep::Small => now -= small,
+                CardHoldStep::Block => now -= CARD_HOLD_BLOCK,
             }
             steps.push(now);
             assert!(steps.len() < 64, "no end: {free} {target}");
@@ -2892,6 +2896,11 @@ fn backends_card_hold_step_ends_just_under_the_target() {
                 now + small > target,
                 "{free} {target}: ended {now}, a small load under"
             );
+            assert!(
+                now + CARD_HOLD_BLOCK > target,
+                "{free} {target}: ended {now}, a block under"
+            );
+            assert!(target - now < GIB / 2, "{free} {target}: within 0.5 GiB");
         } else {
             assert!(
                 steps.is_empty(),
@@ -2899,17 +2908,21 @@ fn backends_card_hold_step_ends_just_under_the_target() {
             );
         }
     }
-    // Only a large load that stays above the target is taken.
+    // Only a large load that stays above the target is taken; then only such a small one.
     assert_eq!(
-        card_hold_step(10 * GIB, 5 * GIB, 2 * GIB),
+        card_hold_step(10 * GIB, 5 * GIB, 2 * GIB, GIB / 2),
         CardHoldStep::Large
     );
     assert_eq!(
-        card_hold_step(7 * GIB, 5 * GIB, 2 * GIB),
+        card_hold_step(7 * GIB, 5 * GIB, 2 * GIB, GIB / 2),
         CardHoldStep::Small
     );
     assert_eq!(
-        card_hold_step(5 * GIB, 5 * GIB, 2 * GIB),
+        card_hold_step(5 * GIB + GIB / 4, 5 * GIB, 2 * GIB, GIB / 2),
+        CardHoldStep::Block
+    );
+    assert_eq!(
+        card_hold_step(5 * GIB, 5 * GIB, 2 * GIB, GIB / 2),
         CardHoldStep::Done
     );
 }

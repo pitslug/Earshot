@@ -18,6 +18,8 @@ qnn = []
 
 [dependencies]
 earshot-core = { path = "../earshot-core" }
+# The awake-time clock of the shared encoder's stall rule (T12.62); std only.
+earshot-proc = { path = "../earshot-proc" }
 # ort 2.0.0-rc.14 wraps the ONNX Runtime 1.31 C API (api-31). Pinned with `=`. On every target
 # ONNX Runtime is loaded at run time (`load-dynamic`) from Microsoft's official release build,
 # fetched and checksum-pinned through models/manifest.toml; nothing is downloaded or linked at

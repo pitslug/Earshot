@@ -653,6 +653,21 @@ fn meeting_queue_a_live_load_that_fell_back_onto_the_summarys_device_waits_again
         let hold = Arc::clone(&hold);
         move || hold.recheck_after_load(Device::Cpu, &CancelToken::new())
     });
+    // The banner reads the decision the waiting thread records before it waits: wait for that
+    // (bounded) rather than for wall-clock time, which a busy host can outrun (T12.62).
+    let guard = std::time::Instant::now() + GUARD;
+    while hold
+        .decided
+        .lock()
+        .unwrap()
+        .is_none_or(|n| n.device != Device::Cpu)
+    {
+        assert!(
+            std::time::Instant::now() < guard,
+            "the re-check never decided"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     still_waiting(&rx);
     assert_eq!(hold.reason(), Some(HoldReason::PreviousMeeting));
     drop(older);

@@ -254,11 +254,13 @@ fn shared_encoder_thread_is_named_with_fixed_text() {
     );
 }
 
-/// A clock the test moves by hand: a fixed start plus an offset.
+/// A clock the test moves by hand: a fixed start plus time awake plus time asleep. The wait clock
+/// counts both, as `Instant` does on Windows; the awake clock counts only time awake.
 #[derive(Clone)]
 struct HandClock {
     start: Instant,
     offset_ms: Arc<AtomicU64>,
+    asleep_ms: Arc<AtomicU64>,
 }
 
 impl HandClock {
@@ -266,16 +268,34 @@ impl HandClock {
         Self {
             start: Instant::now(),
             offset_ms: Arc::new(AtomicU64::new(0)),
+            asleep_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 
     fn clock(&self) -> Clock {
         let me = self.clone();
-        Arc::new(move || me.start + Duration::from_millis(me.offset_ms.load(Ordering::SeqCst)))
+        Arc::new(move || {
+            me.start
+                + Duration::from_millis(
+                    me.offset_ms.load(Ordering::SeqCst) + me.asleep_ms.load(Ordering::SeqCst),
+                )
+        })
     }
 
+    fn awake(&self) -> AwakeClock {
+        let me = self.clone();
+        Arc::new(move || Duration::from_millis(me.offset_ms.load(Ordering::SeqCst)))
+    }
+
+    /// Time passes with the computer awake.
     fn advance(&self, by: Duration) {
         self.offset_ms
+            .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
+    }
+
+    /// Time passes with the computer asleep.
+    fn sleep(&self, by: Duration) {
+        self.asleep_ms
             .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
     }
 }
@@ -314,6 +334,7 @@ fn hanging(clock: &HandClock) -> (SharedEncoder, mpsc::Receiver<usize>, mpsc::Se
         BTreeMap::new(),
         None,
         clock.clock(),
+        clock.awake(),
     )
     .unwrap();
     (enc, started_rx, release)
@@ -364,6 +385,39 @@ fn shared_encoder_a_caller_behind_a_hung_run_gets_an_error_after_the_limit() {
     assert!(enc.is_broken());
     let e = enc.clone();
     assert!(within(move || e.run(input(3)).0.is_err()), "a later call");
+    let _ = release.send(());
+}
+
+/// T12.62: the stall rule counts time awake only, from the run's start.
+#[test]
+fn shared_encoder_stall_rule_counts_time_awake_past_the_limit() {
+    let at = |s: u64| Duration::from_secs(s);
+    assert!(!stalled(at(100), at(100) + STALL_LIMIT));
+    assert!(stalled(
+        at(100),
+        at(100) + STALL_LIMIT + Duration::from_millis(1)
+    ));
+    assert!(
+        !stalled(at(100), at(5)),
+        "a clock that went back stalls nothing"
+    );
+}
+
+/// T12.62: a run in flight while the computer sleeps is not stalled when it wakes, however long
+/// the sleep, and its waiter keeps waiting; time awake past the limit still stalls it.
+#[test]
+fn shared_encoder_a_sleep_during_a_run_never_marks_it_stalled() {
+    let clock = HandClock::new();
+    let (enc, started, release) = hanging(&clock);
+    let hung = start_hung_call(&enc, &started);
+    clock.advance(STALL_LIMIT / 2);
+    clock.sleep(Duration::from_secs(8 * 3600));
+    assert!(!enc.is_broken(), "a night asleep is no stall");
+    std::thread::sleep(STALL_POLL * 3);
+    assert!(hung.try_recv().is_err(), "the run is still waited for");
+    clock.advance(STALL_LIMIT / 2 + Duration::from_secs(1));
+    assert!(enc.is_broken(), "time awake past the limit is a stall");
+    assert!(hung.recv_timeout(Duration::from_secs(10)).unwrap().is_err());
     let _ = release.send(());
 }
 
