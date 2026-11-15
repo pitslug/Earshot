@@ -2144,6 +2144,12 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: lower the constant, remove what it makes unreachable, rework the tests that used "between the limits" cases without weakening a boundary, and say in docs/live-previews.md that this is a decision, not a measurement.
   - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`
 
+- [ ] T12.62 Sweep: the open TODO.md lines from T12.36 to T12.61
+  - found (TODO.md `[open]` lines, 2026-11-15); the idle-host re-runs (m2, bench) and the endpoint name limit (changes what is accepted: the owner) stay in TODO.md.
+  - deps: T12.56
+  - do: (1) `shared_encoder::STALL_LIMIT`: find whether its clock counts through a system sleep and, if it does, judge a run by time awake (a clock-free test of the rule); (2) `shared_encoder::run`: no per-call allocation of the asking thread's name in shipped code (fixed names, or the wait log kept for evaluation only); (3) `earshot-cli` and `m2_prod` take the `shared-encoder` note and print it, so a fallback to an own encoder is never silent; (4) `hold_card_for_evaluation`: a third, smaller step so a target can land within 0.5 GiB (evaluation only); (5) `preview::previews_off`: a stop for another reason never overwrites a crash `finish` detects in the same moment, with a test; (6) a preview test that far-end words do not reach the mic's own previews in a call under Everyone; (7) `meeting_queue_a_live_load_that_fell_back_onto_the_summarys_device_waits_again`: find the timing dependence and remove it without loosening what it asserts (AGENTS ground rule 4). Each closed line leaves TODO.md in the same commit.
+  - accept: `cargo test -p earshot-onnx shared_encoder`; `cargo test -p earshot-runtime`; `cargo test -p earshot-cli`
+
 ### Parked (the owner, 2026-11-14)
 
 Research and hardware runs moved out of TODO.md: no decision is needed now. Each comes back as a task when the hardware, a recording or a better approach exists.
