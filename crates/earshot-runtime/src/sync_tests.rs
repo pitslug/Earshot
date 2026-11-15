@@ -396,14 +396,14 @@ fn sync_overview_and_device_list_show_counts_and_short_ids_only() {
     let relay = relay();
     let (a, b) = pair(&relay);
     meeting(&a.svc, "Waiting to go", 13);
-    let view = sync_overview(&a.svc.store(), &*a.vault).unwrap();
+    let view = sync_overview(&a.svc, &*a.vault).unwrap();
     assert!(view.set_up);
     assert!(view.settings.on);
     assert!(matches!(view.settings.address, Some(Ok(_))));
     assert!(view.waiting > 0);
     assert_eq!(view.held, 0);
     a.client().tick().unwrap();
-    assert_eq!(sync_overview(&a.svc.store(), &*a.vault).unwrap().waiting, 0);
+    assert_eq!(sync_overview(&a.svc, &*a.vault).unwrap().waiting, 0);
     let devices = vault_devices(&a.svc, a.vault()).unwrap();
     assert_eq!(devices.len(), 2);
     assert!(devices[0].this_device && !devices[1].this_device);
@@ -416,11 +416,7 @@ fn sync_overview_and_device_list_show_counts_and_short_ids_only() {
     assert_eq!(devices[0].short_id.len(), 8);
     // A device that is not set up has no list to show.
     let lone = Device::new("sync-lone");
-    assert!(
-        !sync_overview(&lone.svc.store(), &*lone.vault)
-            .unwrap()
-            .set_up
-    );
+    assert!(!sync_overview(&lone.svc, &*lone.vault).unwrap().set_up);
     assert_eq!(
         vault_devices(&lone.svc, lone.vault()),
         Err(SyncProblem::Vault)
@@ -1137,4 +1133,48 @@ fn presence_blobs_are_one_size_whatever_they_say() {
         assert_eq!(back.name, clean_name(name).unwrap());
     }
     assert_eq!(sizes.len(), 1, "every blob is one size: {sizes:?}");
+}
+
+#[test]
+fn sync_waiting_leaves_out_voiceprints_while_their_switch_is_off() {
+    use earshot_core::voiceprint::{Person, Voiceprint};
+    use rand_core::SeedableRng;
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    {
+        let clock = Arc::clone(&a.svc.clock);
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(31);
+        let mut db = a.svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = earshot_core::model::Stamp {
+            clock: &*clock,
+            hlc,
+            rng: &mut rng,
+        };
+        let p = Person::new("Someone invented", false, &mut stamp);
+        let vid = earshot_core::identity::EntityId::generate(stamp.clock, &mut *stamp.rng);
+        let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
+        let v = Voiceprint {
+            id: vid,
+            meta,
+            person_id: p.id,
+            model: earshot_core::diar::EmbeddingModelId::new("invented-model"),
+            sum: vec![0.5; 4],
+            count: 1,
+            speech_ms: 5_000,
+        };
+        store.put_person(p).unwrap();
+        store.put_voiceprint(v).unwrap();
+    }
+    a.client().tick().unwrap();
+    let view = sync_overview(&a.svc, &*a.vault).unwrap();
+    assert!(!view.settings.voiceprints);
+    assert_eq!(
+        view.waiting, 0,
+        "a switched-off voiceprint is not waiting to send"
+    );
+    assert!(
+        a.svc.store().outbox_len().unwrap() > 0,
+        "it stays queued for the switch"
+    );
 }

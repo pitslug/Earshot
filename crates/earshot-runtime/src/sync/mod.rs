@@ -558,13 +558,22 @@ pub struct SyncOverview {
 ///
 /// # Errors
 /// [`SyncProblem::Store`]; a failing credential store is [`SyncProblem::Store`] too.
-pub fn sync_overview(store: &Store, vault: &dyn SyncVault) -> Result<SyncOverview, SyncProblem> {
+pub fn sync_overview(
+    services: &Services,
+    vault: &dyn SyncVault,
+) -> Result<SyncOverview, SyncProblem> {
+    let set_up = vault.has()?;
+    let recording = services.recording_meetings();
+    let store = services.store();
+    let settings = sync_settings(&store)?;
     Ok(SyncOverview {
-        set_up: vault.has()?,
-        settings: sync_settings(store)?,
-        status: sync_status(store)?,
-        waiting: store.outbox_len()?,
+        set_up,
+        status: sync_status(&store)?,
+        // What the push would send now: a recording's rows and switched-off voiceprints are
+        // not behind.
+        waiting: store.outbox_len_except(&recording, settings.voiceprints)?,
         held: u64::try_from(store.held_rows()?.len()).unwrap_or(u64::MAX),
+        settings,
     })
 }
 

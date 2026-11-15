@@ -130,7 +130,9 @@ fn open(
     let key: [u8; ROW_KEY_LEN] = key.try_into().map_err(|_| ())?;
     let row = match open_row(keys, RowKey(key), stamp, &body).map_err(|_| ())? {
         Opened::NewerFormat(_) => None,
-        Opened::Row(row) => SyncedRow::decode(&row.entity, row.record).map_err(|_| ())?,
+        // A known entity whose fields this build cannot read was written by a newer Earshot
+        // that did not raise the format: held like a newer format, never skipped past.
+        Opened::Row(row) => SyncedRow::decode(&row.entity, row.record).unwrap_or(None),
     };
     Ok(Incoming {
         key,

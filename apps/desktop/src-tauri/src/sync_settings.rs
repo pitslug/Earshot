@@ -293,8 +293,8 @@ fn view_of(o: SyncOverview, running: bool) -> SyncView {
 /// # Errors
 /// Fixed copy for a store or credential failure.
 pub fn view(services: &Services, host: &SyncHost) -> Result<SyncView, IpcError> {
-    let overview = earshot_runtime::sync::sync_overview(&services.store(), &*host.vault)
-        .map_err(sync_error)?;
+    let overview =
+        earshot_runtime::sync::sync_overview(services, &*host.vault).map_err(sync_error)?;
     Ok(view_of(overview, host.running()))
 }
 

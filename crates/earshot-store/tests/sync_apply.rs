@@ -537,6 +537,53 @@ fn store_sync_a_live_meeting_never_overwrites_a_deletion_here() {
 }
 
 #[test]
+fn store_sync_waiting_counts_only_what_the_push_would_send() {
+    let mut e = env("sync-waiting");
+    e.store
+        .put_meeting(meeting(1, "Recording", at(T0 + 1, 0, HERE)))
+        .unwrap();
+    e.store.put_track(track(2, 1, at(T0 + 2, 0, HERE))).unwrap();
+    e.store
+        .put_meeting(meeting(3, "Saved", at(T0 + 3, 0, HERE)))
+        .unwrap();
+    e.store
+        .put_person(person(4, false, at(T0 + 4, 0, HERE)))
+        .unwrap();
+    e.store
+        .put_voiceprint(voiceprint(5, 4, at(T0 + 5, 0, HERE)))
+        .unwrap();
+    assert_eq!(e.store.outbox_len().unwrap(), 5);
+    assert_eq!(e.store.outbox_len_except(&[], true).unwrap(), 5);
+    assert_eq!(e.store.outbox_len_except(&[], false).unwrap(), 4);
+    assert_eq!(e.store.outbox_len_except(&[id(1)], false).unwrap(), 2);
+    for (meetings, vp) in [(vec![], true), (vec![id(1)], false), (vec![id(1)], true)] {
+        assert_eq!(
+            e.store.outbox_len_except(&meetings, vp).unwrap(),
+            e.store.outbox_except(1000, &meetings, vp).unwrap().len() as u64,
+            "the count is the push's own"
+        );
+    }
+}
+
+#[test]
+fn store_sync_a_live_row_of_a_meeting_deleted_here_is_not_written() {
+    let mut e = env("sync-child-of-deleted");
+    let mut gone = meeting(1, "Deleted here", at(T0 + 5, 0, HERE));
+    gone.meta.deleted = true;
+    e.store.put_meeting(gone).unwrap();
+    // A track of it, edited elsewhere after the deletion: live, and later stamped.
+    let late = incoming(1, SyncedRow::Track(track(2, 1, at(T0 + 9, 0, THERE))));
+    let a = e.apply(&[late], &rules(false));
+    assert_eq!((a.written, a.deletions_kept), (0, 1), "{a:?}");
+    assert!(e.store.tracks(id(1)).unwrap().is_empty());
+    // Its tombstone still applies.
+    let mut cleared = track(2, 1, at(T0 + 10, 0, THERE));
+    cleared.meta.deleted = true;
+    let a = e.apply(&[incoming(2, SyncedRow::Track(cleared))], &rules(false));
+    assert_eq!(a.written, 1);
+}
+
+#[test]
 fn store_sync_voiceprints_apply_only_when_switched_on() {
     let mut e = env("sync-voiceprint");
     let v = incoming(

@@ -467,6 +467,49 @@ impl Store {
         Ok(u64::try_from(n).unwrap_or(0))
     }
 
+    /// How many rows [`Store::outbox_except`] would send with the same exclusions: what a
+    /// device shows as waiting to send (a recording's rows and switched-off voiceprints wait
+    /// for a reason of their own and are not behind).
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn outbox_len_except(
+        &self,
+        meetings: &[EntityId],
+        voiceprints: bool,
+    ) -> Result<u64, StoreError> {
+        let skip: Vec<Vec<u8>> = meetings
+            .iter()
+            .map(|m| m.as_uuid().as_bytes().to_vec())
+            .collect();
+        let marks = vec!["?"; skip.len()].join(", ");
+        let mut total: u64 = 0;
+        for table in SYNCED_TABLES {
+            if table == "voiceprint" && !voiceprints {
+                continue;
+            }
+            let meeting_col = match table {
+                "meeting" => Some("id"),
+                "track" | "segment" | "speaker" | "note" | "summary" => Some("meeting_id"),
+                _ => None,
+            };
+            let except = match meeting_col {
+                Some(col) if !skip.is_empty() => format!(" AND r.{col} NOT IN ({marks})"),
+                _ => String::new(),
+            };
+            let sql = format!(
+                "SELECT count(*) FROM sync_outbox o JOIN {table} r ON r.id = o.id WHERE o.tbl = ?{except}"
+            );
+            let mut values: Vec<&dyn rusqlite::ToSql> = vec![&table];
+            if !except.is_empty() {
+                values.extend(skip.iter().map(|b| b as &dyn rusqlite::ToSql));
+            }
+            let n: i64 = self.conn.query_row(&sql, values.as_slice(), |r| r.get(0))?;
+            total += u64::try_from(n).unwrap_or(0);
+        }
+        Ok(total)
+    }
+
     /// Marks rows as sent: each `(table, id, stamp)` leaves the outbox only if the row still
     /// has the `updated_at` that was sent, so a change made while it was on the way is sent
     /// next time. Returns how many left.
@@ -576,6 +619,19 @@ impl Store {
                 if row.meeting().is_some_and(|m| (rules.leased)(m)) {
                     hold(tx, inc, HoldReason::Busy)?;
                     out.hold(HoldReason::Busy);
+                    continue;
+                }
+                // A live row of a meeting deleted here (edited elsewhere before that device heard
+                // of the deletion) is not written: no transcript text of a deleted meeting is
+                // kept. The other device deletes its copy when the tombstone reaches it.
+                if !matches!(row, SyncedRow::Meeting(_))
+                    && !row.meta().deleted
+                    && let Some(m) = row.meeting()
+                    && crate::repo::synced_by_id(&tx.conn, "meeting", m)?
+                        .is_some_and(|l| l.meta().deleted)
+                {
+                    unhold(tx, inc)?;
+                    out.deletions_kept += 1;
                     continue;
                 }
                 let local = crate::repo::synced_by_id(&tx.conn, row.table(), row.id())?;
