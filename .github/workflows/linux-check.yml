@@ -261,7 +261,7 @@ jobs:
 
   # The summary worker's image (T11.6), built and checked on the runner and never pushed (this
   # workflow can only read the repository): crates/earshot-worker/image-check.sh reads the
-  # binary's libraries with ldd, checks that a worker that is not joined stops and says so, and
+  # binary's libraries with ldd, checks that a worker that is not joined waits and says so, and
   # that a joined one (invented vault files made for this run) starts against a relay that does
   # not exist and answers its health check (docs/sync.md section 10).
   worker-image:

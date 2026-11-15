@@ -74,6 +74,31 @@ impl FileVault {
         }
         Ok(())
     }
+
+    /// Whether the worker has joined, by the two files alone: [`Presence::Absent`] only when
+    /// neither file exists (the worker then waits to be joined), [`Presence::Present`] when
+    /// both are files. Anything in between is not a worker waiting to join but a vault that
+    /// needs the person: one file without the other, a path that is not a file, or a file
+    /// whose presence cannot be read.
+    ///
+    /// # Errors
+    /// [`VaultRefused::Incomplete`]; [`VaultRefused::Unreadable`].
+    pub fn presence(&self) -> Result<Presence, VaultRefused> {
+        match (file_state(&self.key)?, file_state(&self.token)?) {
+            (false, false) => Ok(Presence::Absent),
+            (true, true) => Ok(Presence::Present),
+            _ => Err(VaultRefused::Incomplete),
+        }
+    }
+}
+
+/// Whether the vault files are there ([`FileVault::presence`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// Neither file exists: the worker has not joined.
+    Absent,
+    /// Both are files.
+    Present,
 }
 
 /// Why the vault files cannot be used. Fixed copy; never a path or a file's contents.
@@ -83,6 +108,10 @@ pub enum VaultRefused {
     NotWritable,
     /// A file can be read by a group or other users.
     ReadableByOthers,
+    /// One file is there without the other.
+    Incomplete,
+    /// A path is not a file, or whether it exists cannot be read.
+    Unreadable,
 }
 
 impl VaultRefused {
@@ -98,7 +127,27 @@ impl VaultRefused {
                 "a vault file can be read by other users; make it readable by the worker's user \
                  only (chmod 600, owner uid 10001)"
             }
+            Self::Incomplete => {
+                "only one of the two vault files is there; delete the worker's volume and join \
+                 again with a new code"
+            }
+            Self::Unreadable => {
+                "a vault file is not a file or cannot be read; make both files readable by the \
+                 worker's user (owner uid 10001)"
+            }
         }
+    }
+}
+
+/// Whether `path` is a file (`true`) or does not exist (`false`); a path that is something else,
+/// or whose metadata cannot be read for any reason but its absence, is
+/// [`VaultRefused::Unreadable`]. Follows links, as a Docker secret may be one.
+fn file_state(path: &Path) -> Result<bool, VaultRefused> {
+    match fs::metadata(path) {
+        Ok(m) if m.is_file() => Ok(true),
+        Ok(_) => Err(VaultRefused::Unreadable),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(VaultRefused::Unreadable),
     }
 }
 
@@ -396,5 +445,42 @@ mod tests {
         // Wrong length, odd digits.
         assert!(key_of(&"a".repeat(63)).is_none());
         assert!(key_of(&format!("{}zz", "a".repeat(62))).is_none());
+    }
+
+    /// Only both files missing is a worker waiting to join; one without the other, or a path
+    /// that is a folder, is a vault the person must look at.
+    #[test]
+    fn vault_presence_waits_only_when_both_files_are_missing() {
+        let dir = Dir::new("presence");
+        let vault = FileVault::new(dir.0.join("vault/key"), dir.0.join("vault/token"));
+        // Not even the folder exists yet.
+        assert_eq!(vault.presence(), Ok(Presence::Absent));
+        fs::create_dir_all(dir.0.join("vault")).unwrap();
+        assert_eq!(vault.presence(), Ok(Presence::Absent));
+        fs::write(vault.key_path(), "ab".repeat(32)).unwrap();
+        assert_eq!(vault.presence(), Err(VaultRefused::Incomplete));
+        fs::remove_file(vault.key_path()).unwrap();
+        fs::write(vault.token_path(), "a-token").unwrap();
+        assert_eq!(vault.presence(), Err(VaultRefused::Incomplete));
+        fs::write(vault.key_path(), "ab".repeat(32)).unwrap();
+        assert_eq!(vault.presence(), Ok(Presence::Present));
+        // A folder where a file should be.
+        fs::remove_file(vault.token_path()).unwrap();
+        fs::create_dir(vault.token_path()).unwrap();
+        assert_eq!(vault.presence(), Err(VaultRefused::Unreadable));
+        fs::remove_file(vault.key_path()).unwrap();
+        assert_eq!(vault.presence(), Err(VaultRefused::Unreadable));
+        // A path under a file is not missing on Linux (ENOTDIR); Windows reports it as a
+        // missing path, which is what it is there.
+        #[cfg(unix)]
+        {
+            fs::write(dir.0.join("blocked"), b"").unwrap();
+            let blocked = FileVault::new(dir.0.join("blocked/key"), dir.0.join("blocked/token"));
+            assert_eq!(blocked.presence(), Err(VaultRefused::Unreadable));
+        }
+        // Fixed copy, never a path.
+        for r in [VaultRefused::Incomplete, VaultRefused::Unreadable] {
+            assert!(!r.copy().contains(&*dir.0.to_string_lossy()));
+        }
     }
 }

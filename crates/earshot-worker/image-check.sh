@@ -3,7 +3,8 @@
 # relay-image before anything is pushed: `sh crates/earshot-worker/image-check.sh <image>`.
 #
 # 1. The slim image's libraries, as ldd reads them (fails on a missing one).
-# 2. A worker that is not joined stops, and its health check says why.
+# 2. A worker that is not joined waits to be joined (T11.6d): it says so once, its health check
+#    reports `not_joined`, and `docker stop` ends the wait with exit code 0.
 # 3. A joined worker (invented vault files made here for this run, owner-only, against a relay
 #    address that does not exist) runs, retries the relay and reaches Docker's `healthy`.
 # Prints image output and fixed words only; the vault files are deleted at the end.
@@ -18,17 +19,33 @@ rm -f ldd.txt
 
 echo "== not joined"
 docker volume create earshot-worker-unjoined > /dev/null
-code=0
-docker run --rm -v earshot-worker-unjoined:/data \
+docker run -d --name earshot-worker-unjoined -v earshot-worker-unjoined:/data \
   -e EARSHOT_WORKER_RELAY=https://relay.invalid \
   -e EARSHOT_WORKER_MODEL_SUBNET=172.31.250.0/24 \
-  "${image}" run || code=$?
-echo "run exit code: ${code}"
-health="$(docker run --rm -v earshot-worker-unjoined:/data "${image}" health || true)"
+  "${image}" run > /dev/null
+health=""
+for _ in $(seq 1 30); do
+  health="$(docker exec earshot-worker-unjoined /usr/local/bin/earshot-worker health || true)"
+  if [ "${health}" = "unhealthy: not_joined" ]; then break; fi
+  if [ "$(docker inspect -f '{{.State.Running}}' earshot-worker-unjoined)" != "true" ]; then break; fi
+  sleep 1
+done
 echo "health: ${health}"
+waiting="$(docker inspect -f '{{.State.Running}}' earshot-worker-unjoined)"
+docker stop -t 20 earshot-worker-unjoined > /dev/null
+code="$(docker inspect -f '{{.State.ExitCode}}' earshot-worker-unjoined)"
+docker logs earshot-worker-unjoined > unjoined.txt 2>&1
+cat unjoined.txt
+echo "still running while waiting: ${waiting}; exit code after stop: ${code}"
+docker rm earshot-worker-unjoined > /dev/null
 docker volume rm earshot-worker-unjoined > /dev/null
-test "${code}" -ne 0
-test "${health}" = "unhealthy: stopped: not_joined"
+test "${health}" = "unhealthy: not_joined"
+test "${waiting}" = "true"
+test "${code}" = "0"
+test "$(grep -cx "waiting to join" unjoined.txt)" = "1"
+grep -qx "stopped" unjoined.txt
+if grep -qx "running" unjoined.txt; then echo "a worker that never joined ran"; exit 1; fi
+rm -f unjoined.txt
 
 echo "== joined"
 mkdir -m 0700 smoke

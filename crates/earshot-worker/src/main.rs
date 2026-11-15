@@ -5,7 +5,11 @@
 //! - `earshot-worker join` reads a pairing code from standard input (one line; never an argument,
 //!   which `ps` and `docker inspect` would show), joins the vault of `EARSHOT_WORKER_RELAY` and
 //!   stores the vault key and token in the vault files.
-//! - `earshot-worker run` runs the worker until SIGTERM or Ctrl+C, then says gone.
+//! - `earshot-worker run` runs the worker until SIGTERM or Ctrl+C, then says gone. Not joined
+//!   yet (neither vault file), it prints "waiting to join" once and looks for the files every
+//!   [`earshot_worker::worker::JOIN_POLL`], so `docker exec -it earshot-worker earshot-worker
+//!   join` in the running container joins it (T11.6d); a stop while waiting exits 0 and sends
+//!   nothing.
 //! - `earshot-worker health` is the container's health check (exit 0 when healthy).
 
 use std::process::ExitCode;
@@ -14,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use earshot_runtime::sync::SyncTiming;
 use earshot_worker::config::Config;
 use earshot_worker::health;
-use earshot_worker::worker::{Worker, WorkerError, join, open_services};
+use earshot_worker::worker::{Waited, Worker, WorkerError, join, open_services, wait_to_join};
 
 /// How long a stop waits for the gone presence to be sent.
 const GONE_WAIT: Duration = Duration::from_secs(5);
@@ -98,59 +102,77 @@ fn run_command() -> Result<(), WorkerError> {
 
 fn run(config: Config) -> Result<(), WorkerError> {
     let data = config.data.clone();
-    let services = open_services(&data)?;
-    let worker = Worker::open(services, config)?;
-    let thread = worker.start(SyncTiming::default())?;
     let heartbeat = health::heartbeat_path(&data);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| WorkerError::Spawn)?;
+    let mut terminate = {
+        let _context = runtime.enter();
+        terminate_signal()?
+    };
+    // Not joined yet: wait for `docker exec ... earshot-worker join` rather than exit and be
+    // restarted. The store is not opened until the vault files are there.
+    let _ = std::fs::create_dir_all(&data);
+    let waited = wait_to_join(
+        &config,
+        &heartbeat,
+        &mut || println!("waiting to join"),
+        &mut |every| {
+            runtime.block_on(async {
+                tokio::select! {
+                    () = tokio::time::sleep(every) => false,
+                    _ = tokio::signal::ctrl_c() => true,
+                    () = terminate.recv() => true,
+                }
+            })
+        },
+    )?;
+    if waited == Waited::Stopped {
+        // It never joined: no presence to take back, nothing to send.
+        let _ = std::fs::remove_file(&heartbeat);
+        println!("stopped");
+        return Ok(());
+    }
+    let services = open_services(&data)?;
+    let worker = Worker::open(services, config)?;
+    let thread = worker.start(SyncTiming::default())?;
     println!("running");
     let stopped = runtime.block_on(async {
         let mut beat = tokio::time::interval(health::HEARTBEAT_EVERY);
-        let mut terminate = terminate_signal()?;
         loop {
             tokio::select! {
                 _ = beat.tick() => {
                     if thread.ended() {
-                        return Ok(false);
+                        return false;
                     }
                     // A heartbeat that cannot be written makes the health check fail, which is
                     // what a full or read-only volume should do.
                     let _ = health::beat(&heartbeat, now_s());
                 }
-                _ = tokio::signal::ctrl_c() => return Ok(true),
-                () = terminate.recv() => return Ok(true),
+                _ = tokio::signal::ctrl_c() => return true,
+                () = terminate.recv() => return true,
             }
         }
     });
     let _ = std::fs::remove_file(&heartbeat);
     worker.cancel();
-    match stopped {
-        Ok(true) => {
-            if let Some(done) = thread.say_gone() {
-                let _ = done.recv_timeout(GONE_WAIT);
-            }
-            thread.stop();
-            println!("stopped");
-            Ok(())
+    if stopped {
+        if let Some(done) = thread.say_gone() {
+            let _ = done.recv_timeout(GONE_WAIT);
         }
-        Ok(false) => {
-            // The sync thread stopped on a problem the person must act on (removed, another
-            // vault's key, an update needed) or on a panic: report its word and end.
-            let status = earshot_runtime::sync::sync_status(&worker.services().store())
-                .ok()
-                .and_then(|s| s.problem)
-                .unwrap_or(earshot_runtime::sync::SyncProblem::Internal);
-            thread.stop();
-            Err(WorkerError::Sync(status))
-        }
-        Err(e) => {
-            thread.stop();
-            Err(e)
-        }
+        thread.stop();
+        println!("stopped");
+        return Ok(());
     }
+    // The sync thread stopped on a problem the person must act on (removed, another vault's
+    // key, an update needed) or on a panic: report its word and end.
+    let status = earshot_runtime::sync::sync_status(&worker.services().store())
+        .ok()
+        .and_then(|s| s.problem)
+        .unwrap_or(earshot_runtime::sync::SyncProblem::Internal);
+    thread.stop();
+    Err(WorkerError::Sync(status))
 }
 
 /// SIGTERM (`docker stop`) on Unix; on other systems a future that never resolves (Ctrl+C
