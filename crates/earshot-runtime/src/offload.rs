@@ -342,12 +342,37 @@ pub fn ask(
     meeting: EntityId,
     target: DeviceId,
 ) -> Result<Option<EntityId>, RuntimeError> {
+    Ok(ask_for(services, meeting, target)?.map(|a| a.request))
+}
+
+/// A request [`ask_for`] answered with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Asked {
+    /// The request.
+    pub request: EntityId,
+    /// The device it asks: `target`, or the open request's own when the meeting already waited.
+    pub target: DeviceId,
+}
+
+/// [`ask`], saying which device the request it answers with asks: a meeting that already waited
+/// for another device keeps that request, and its caller must name that device, not `target`.
+///
+/// # Errors
+/// As [`ask`].
+pub fn ask_for(
+    services: &Services,
+    meeting: EntityId,
+    target: DeviceId,
+) -> Result<Option<Asked>, RuntimeError> {
     let me = services.store().device();
     let now = services.clock.now_unix_ms();
     crate::edit::write(services, |tx, stamp| {
         crate::edit::live_meeting(&*tx, meeting)?;
         if let Some(open) = open_request(&*tx, me, meeting)? {
-            return Ok(Some(open.id));
+            return Ok(Some(Asked {
+                request: open.id,
+                target: open.target_device,
+            }));
         }
         let count = final_segments(&*tx, meeting)?;
         if count == 0 {
@@ -366,7 +391,10 @@ pub fn ask(
             },
         );
         crate::local::set_tx(tx, &DeviceRecord::OffloadTimes.key(), &encode_times(&times))?;
-        Ok(Some(id))
+        Ok(Some(Asked {
+            request: id,
+            target,
+        }))
     })
 }
 
@@ -386,11 +414,15 @@ fn open_request<R: SummaryRequestRepo + ?Sized>(
     }))
 }
 
-/// `offload-times`: this device's own clock readings for the open requests it asked or was
-/// asked (when it asked, first saw a claim, claimed, or first found the helper's presence
-/// missing). Every timer of offload runs on the device clock from these, never on HLC wall
-/// time, which can run ahead of the clock by up to the apply window. Device-local, pruned to the
-/// open requests at every step.
+/// `offload-times`: this device's own clock readings. For the open requests it asked or was
+/// asked: when it asked, first saw a claim, claimed, or first found the helper's presence
+/// missing. For the declined or withdrawn requests it asked: when it first saw them closed, when
+/// their write here started, and when a summary written since settled them; a closed request is
+/// aged out ([`LOOK_BACK_MS`]) only from its start or its settling, so one whose write here never
+/// started is never left. Every timer of offload runs on the device clock from these, never on
+/// HLC wall time, which can run ahead of the clock by up to the apply window. Device-local:
+/// open readings are pruned to the open requests at every step, closed ones to the requests the
+/// store still holds. A step's write re-reads and merges, so an `ask` meanwhile is never lost.
 pub(crate) const OFFLOAD_TIMES_KEY: &str = "offload-times";
 
 /// [`OFFLOAD_TIMES_KEY`]'s format version.
@@ -398,8 +430,51 @@ const TIMES_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Times {
-    /// By request id (hyphenated).
+    /// Open requests, by request id (hyphenated).
     requests: std::collections::BTreeMap<String, Since>,
+    /// Declined or withdrawn requests this device asked, by request id (hyphenated).
+    #[serde(default)]
+    closed: std::collections::BTreeMap<String, Closed>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Closed {
+    /// When this device first saw it closed.
+    seen_ms: u64,
+    /// When its write here was first handed and started (a later start, after a restart, keeps
+    /// it, so the look-back runs from the first).
+    started_ms: Option<u64>,
+    /// When a summary written since it was asked settled it.
+    settled_ms: Option<u64>,
+}
+
+impl Closed {
+    /// Whether it is left alone: it started or settled more than [`LOOK_BACK_MS`] ago.
+    fn aged(&self, now: u64) -> bool {
+        self.started_ms
+            .or(self.settled_ms)
+            .is_some_and(|at| now.saturating_sub(at) > LOOK_BACK_MS)
+    }
+}
+
+/// `stored` with what one step changed (`before` to `after`) applied: a value the step set
+/// overwrites, a value the step removed goes only if it is still what the step read, and
+/// anything written meanwhile (an `ask`'s new reading) stays.
+fn merge<V: PartialEq + Clone>(
+    stored: &mut std::collections::BTreeMap<String, V>,
+    before: &std::collections::BTreeMap<String, V>,
+    after: &std::collections::BTreeMap<String, V>,
+) {
+    for (k, v) in after {
+        if before.get(k) != Some(v) {
+            stored.insert(k.clone(), v.clone());
+        }
+    }
+    for (k, v) in before {
+        if !after.contains_key(k) && stored.get(k) == Some(v) {
+            stored.remove(k);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -592,10 +667,10 @@ pub struct Offload {
     settled: Mutex<BTreeSet<EntityId>>,
 }
 
-/// A declined or withdrawn request created more than this long ago (by its HLC wall time, which
-/// only runs ahead of the clock, so a request never looks older than it is) is not looked at
-/// again: its write here was handed long before (7 days, a judgement bounding each step's reads).
-/// Open requests are always looked at: their own rules end them within minutes.
+/// A declined or withdrawn request whose write here started, or that a summary settled, more than
+/// this long ago by this device's clock ([`OFFLOAD_TIMES_KEY`]) is not looked at again (7 days, a
+/// judgement bounding each step's reads). One whose write here never started is always looked
+/// at, however old, and so are open requests: their own rules end them within minutes.
 pub const LOOK_BACK_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 /// What [`Offload::step`] reads of one request, under one store lock.
@@ -660,14 +735,18 @@ impl Offload {
         host: &dyn OffloadHost,
     ) -> Result<StepReport, RuntimeError> {
         let (me, now) = (services.store().device(), services.clock.now_unix_ms());
-        let (seen, offers, mut times) = {
+        let (seen, offers, mut times, held) = {
             let db = services.store();
             let offers = crate::sync::sync_settings(&db)
                 .map(|s| s.offers_summaries)
                 .unwrap_or(false);
             let times = read_times(db.local_value(OFFLOAD_TIMES_KEY)?.as_deref());
             let mut seen = Vec::new();
+            let mut held: BTreeSet<String> = BTreeSet::new();
             for r in db.summary_requests()? {
+                if !r.meta.deleted {
+                    held.insert(r.id.to_string());
+                }
                 let mine = r.asking_device == me;
                 let wanted = if mine {
                     r.state != RequestState::Done
@@ -679,7 +758,10 @@ impl Offload {
                     || !authored(&r)
                     || self.is_settled(r.id)
                     || (!r.state.is_open()
-                        && r.meta.created_at.wall_ms.saturating_add(LOOK_BACK_MS) < now)
+                        && times
+                            .closed
+                            .get(&r.id.to_string())
+                            .is_some_and(|c| c.aged(now)))
                 {
                     continue;
                 }
@@ -702,14 +784,15 @@ impl Offload {
                     final_segments,
                 });
             }
-            (seen, offers, times)
+            (seen, offers, times, held)
         };
         let before = times.clone();
-        // Readings are kept for open requests only.
+        // Open readings are kept for open requests only, closed ones while the store holds them.
         times.requests.retain(|id, _| {
             seen.iter()
                 .any(|s| s.request.state.is_open() && s.request.id.to_string() == *id)
         });
+        times.closed.retain(|id, _| held.contains(id));
         let waits_on_claim = seen.iter().any(|s| {
             s.meeting_live
                 && s.request.asking_device == me
@@ -743,11 +826,20 @@ impl Offload {
             }
         }
         if times != before {
-            local::set(
-                &mut services.store(),
-                &DeviceRecord::OffloadTimes.key(),
-                &encode_times(&times),
-            )?;
+            // Re-read and merged in one transaction: an `ask` since this step read is kept.
+            services
+                .store()
+                .transaction(|tx| -> Result<(), RuntimeError> {
+                    let mut stored = read_times(tx.local_value(OFFLOAD_TIMES_KEY)?.as_deref());
+                    merge(&mut stored.requests, &before.requests, &times.requests);
+                    merge(&mut stored.closed, &before.closed, &times.closed);
+                    local::set_tx(
+                        tx,
+                        &DeviceRecord::OffloadTimes.key(),
+                        &encode_times(&stored),
+                    )?;
+                    Ok(())
+                })?;
         }
         outcome.map(|()| report)
     }
@@ -770,6 +862,18 @@ impl Offload {
             };
         }
         entry.since_ms
+    }
+
+    /// This device's closed reading for `r`, first seen now when there is none.
+    fn closed<'t>(times: &'t mut Times, r: &SummaryRequest, now: u64) -> &'t mut Closed {
+        times
+            .closed
+            .entry(r.id.to_string())
+            .or_insert_with(|| Closed {
+                seen_ms: now,
+                started_ms: None,
+                settled_ms: None,
+            })
     }
 
     #[allow(clippy::too_many_arguments)] // The step's state, read once and passed down.
@@ -835,11 +939,18 @@ impl Offload {
                 HereReason::HelperStale
             }
             RequestState::Declined | RequestState::Withdrawn if s.summarised_since => {
+                Self::closed(times, r, now).settled_ms.get_or_insert(now);
                 self.settle(r.id);
                 return Ok(());
             }
-            RequestState::Declined => HereReason::Declined(r.reason.clone()),
-            RequestState::Withdrawn => HereReason::Withdrawn,
+            RequestState::Declined => {
+                Self::closed(times, r, now);
+                HereReason::Declined(r.reason.clone())
+            }
+            RequestState::Withdrawn => {
+                Self::closed(times, r, now);
+                HereReason::Withdrawn
+            }
             RequestState::Done => {
                 self.settle(r.id);
                 return Ok(());
@@ -854,6 +965,7 @@ impl Offload {
             });
             if started {
                 report.written_here += 1;
+                Self::closed(times, r, now).started_ms.get_or_insert(now);
             } else {
                 // Refused (a job of the meeting runs, the meeting is in use): the next step tries
                 // again.

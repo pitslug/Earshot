@@ -1843,10 +1843,11 @@ pub enum SummaryResult {
         request: EntityId,
         /// The helper asked.
         device: earshot_core::identity::DeviceId,
-        /// Its name, from its presence.
+        /// Its name, from its presence; empty when it is not the chosen device (the meeting
+        /// already waited for another).
         name: String,
-        /// The kind of writer it uses.
-        writer: crate::offload::WriterKind,
+        /// The kind of writer it uses, when known (the chosen device's).
+        writer: Option<crate::offload::WriterKind>,
     },
 }
 
@@ -2051,13 +2052,16 @@ where
                 device,
                 name,
                 writer,
-            } => match crate::offload::ask(services, meeting, device) {
-                Ok(Some(request)) => {
+            } => match crate::offload::ask_for(services, meeting, device) {
+                Ok(Some(asked)) => {
+                    // A meeting that already waited keeps its request: name its device, and the
+                    // chosen one's name and writer only when it is that device.
+                    let same = asked.target == device;
                     offloaded = Some(SummaryResult::Offloaded {
-                        request,
-                        device,
-                        name: name.clone(),
-                        writer,
+                        request: asked.request,
+                        device: asked.target,
+                        name: if same { name.clone() } else { String::new() },
+                        writer: same.then_some(writer),
                     });
                     crate::offload::OffloadChoice::Ask {
                         device,

@@ -37,6 +37,7 @@ struct Seen {
         earshot_core::prompt::PromptVariant,
     ),
     /// The thread's OS priority (Windows).
+    #[cfg_attr(not(windows), expect(dead_code, reason = "read on Windows only"))]
     priority: Option<i32>,
 }
 

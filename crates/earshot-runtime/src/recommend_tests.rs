@@ -277,6 +277,7 @@ fn hardware_summary_follows_the_memory_rule_and_where_it_runs() {
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "hardware facts are read on Windows only")]
 fn hardware_facts_of_this_host_feed_the_recommendation() {
     let hw = earshot_hardware::read();
     let order = crate::backends::accelerator_order();
