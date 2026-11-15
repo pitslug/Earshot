@@ -227,7 +227,26 @@ It cannot be the relay itself. To write a summary a program must read the transc
 
 Rejected for the first version: llama.cpp built into the worker image. It needs its own CPU and CUDA builds of the DLL set for Linux, where the stock server image already has both.
 
-Open, and measured before the worker is promised: `earshot-store` and the summary path of `earshot-runtime` have only ever been built for Windows. The worker needs them on Linux (the store has `cfg(not(windows))` branches that no test has run). A spike decides whether the worker reuses the runtime or gets a small crate of its own over the store and `earshot-llm`.
+Measured on Linux (T11.5, 2026-11-15): `earshot-store` and the summary path of `earshot-runtime` had only ever been built for Windows, and the store's `cfg(not(windows))` branches had never run. The spike built and tested them on `x86_64-unknown-linux-gnu` (GitHub's `ubuntu-24.04` runner, toolchain 1.99.1, debug builds, `--locked`) with the workflow `.github/workflows/linux-check.yml`, which runs only by hand or on a push to a `linux/**` branch. Measured at commit `4c33909` (on `ba70504`, before T12.56 and T12.62), so later count changes are not regressions by themselves. No source file changed. The run's own result follows only the build steps and the non-informational test steps (the last step fails the run when one of them failed); the core and "everything else" runtime test steps are informational.
+
+| Crate | Builds | Tests |
+|---|---|---|
+| `earshot-core` (lib) | yes | 655 passed, 1 failed: a dev-wide echo test whose LibriSpeech fixture is not fetched on the runner (the missing-fixture rule, not a Linux fault) |
+| `earshot-proc` | yes | 2 passed, 7 ignored (they spawn `cmd.exe`, `ping.exe` or `findstr`), so `run_with` itself is untested on Linux |
+| `earshot-net` | yes | 47 passed |
+| `earshot-store` | yes | 155 passed, 2 ignored (Windows only: total memory, sharing-mode in-use check). The non-Windows `rename_noreplace` (hard link, then remove) and `sync_dir` ran in the export and audio tests and passed. `total_memory()` is `None` off Windows |
+| `earshot-sync` | yes | 11 passed |
+| `earshot-llm` | yes | 78 passed, 39 ignored (35 of them the Claude Code and Codex fake-CLI binaries, Windows only) |
+| `earshot-sync-server` | yes | 17 passed |
+| `earshot-runtime` (lib) | yes (2 min 41 s cold on the first run, 1 min 49 s on the run cited; 17 dead-code warnings on Linux, 18 in the test build, so a Linux `clippy -D warnings` would fail), compiling whisper.cpp (`whisper-rs-sys`, static), llama.cpp (`llama-cpp-sys-2`, shared `libllama.so` and `libggml*.so`), `ort-sys` (load-dynamic, no native library) and `earshot-hardware` | filter `summary`: 157 passed, 10 ignored (agent-CLI stand-ins are `cmd.exe`; the local model is not fetched; the llama DLL check is Windows only). Filter `sync`: 33 passed. Everything else: 858 passed, 10 failed, 14 ignored; 9 failures need the models folder (`LOCALAPPDATA` unset, as without fetched models on Windows) and 1 asserts hardware facts that `earshot-hardware` reads on Windows only (off Windows it reports a core count of 1 and no memory, which anything sizing threads from it would follow) |
+
+Two build notes, both for the workflow, not the crates: `.cargo/config.toml` sets `CMAKE_C_FLAGS_RELEASE` and `CMAKE_CXX_FLAGS_RELEASE` to MSVC flags for every target, so the workflow overrides them with gcc flags (not measured without); and `llama-cpp-sys-2` 0.1.160 hard-links its shared libraries and their `.so` symlinks into `target/debug`, `deps` and `examples` each time its build script runs, then panics (`File exists`) on a dangling link left by an earlier run with other features, so the workflow removes those links between the library build and the test build. Runs: https://github.com/pitslug/Earshot/actions/runs/43692740570 (first complete run, the runtime's test build stopped in `llama-cpp-sys-2`) and https://github.com/pitslug/Earshot/actions/runs/43694560256 (the results above).
+
+Recommendation for T11.6: the worker reuses `earshot-runtime`; it does not get a crate of its own.
+
+- It builds and its summary and sync tests pass on Linux as they are, so reuse costs no port.
+- What the worker needs exists once there and AGENTS.md says it must: the sync engine (`earshot_runtime::sync`), the meeting reader (`MeetingView`), `summary::store_summary`'s transaction and conflict checks, `keep_local::summary_privacy` and the handover and request rules. A separate crate over the store, `earshot-sync` and `earshot-llm` would copy all of them, and a worker summary would no longer be checked exactly like a desktop one.
+- The cost is weight, not correctness: the worker binary carries whisper.cpp statically and, because `summary.rs` names `earshot_llm_local` directly, is likely to need `libllama.so` and `libggml*.so` beside it in the image even though it never loads a model in process [likely: not yet checked with `ldd` on a built worker]. A cargo feature in the runtime that leaves out the in-process engines would remove that, but it is a refactor of the runtime and should follow a working worker, not precede it.
 
 ## 11. Audio exclusion
 
