@@ -10,8 +10,8 @@ use earshot_sync::{PairingCode, VaultKey};
 use super::client::Relay;
 use super::engine::SyncClient;
 use super::{
-    DeviceToken, SYNC_CURSOR_KEY, SYNC_ON_KEY, SYNC_SERVER_KEY, SYNC_STATUS_KEY, SyncProblem,
-    SyncVault, check_address, encode_cursor,
+    DeviceToken, SYNC_CURSOR_KEY, SYNC_ON_KEY, SYNC_SERVER_KEY, SYNC_STATUS_KEY,
+    SYNC_VOICEPRINTS_KEY, SyncProblem, SyncVault, check_address, encode_cursor,
 };
 use crate::local::{self, DeviceRecord};
 use crate::services::Services;
@@ -72,6 +72,8 @@ fn keep(
         )?;
         local::set_tx(tx, &DeviceRecord::SyncCursor.key(), &encode_cursor(0))?;
         local::set_tx(tx, &DeviceRecord::SyncOn.key(), b"on")?;
+        // A thread of an earlier setup may have written a status after it was stopped.
+        tx.delete_local_value(SYNC_STATUS_KEY)?;
         Ok(())
     })
 }
@@ -160,7 +162,7 @@ pub fn join_with_code(
 }
 
 /// Removes this device from sync: the server revokes its token, then the key, the token, the
-/// address, the cursor and the status are deleted here. Meetings stay. A token the server no
+/// address, the cursor, the status and the voiceprint switch are deleted here. Meetings stay. A token the server no
 /// longer knows counts as revoked. The host stops its [`super::SyncThread`] first, or a tick in
 /// flight writes the cursor and status back.
 ///
@@ -190,11 +192,13 @@ pub fn remove_this_device(
     }
     vault.remove()?;
     let mut db = services.store();
+    // Voiceprint sync is cleared too: joining a vault again asks for it afresh (biometric).
     for key in [
         SYNC_SERVER_KEY,
         SYNC_CURSOR_KEY,
         SYNC_STATUS_KEY,
         SYNC_ON_KEY,
+        SYNC_VOICEPRINTS_KEY,
     ] {
         db.delete_local_value(key)?;
     }

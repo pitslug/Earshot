@@ -60,6 +60,7 @@ import { type CudaMockData, createCudaMock } from "./mockCuda";
 import { type AudioMockData, createAudioMock } from "./mockAudio";
 import { type AudioCheckMockData, createAudioCheckMock } from "./mockAudioCheck";
 import { type FirstRunMockData, createFirstRunMock } from "./mockFirstRun";
+import { type SyncMockData, createSyncMock } from "./mockSync";
 import { SAMPLE_FOLDERS, createFoldersMock } from "./mockFolders";
 
 const MINUTE = 60_000;
@@ -257,6 +258,8 @@ export interface MockIpcData {
   cuda?: CudaMockData;
   /** The first-run wizard (default: already done, so other screens' tests never meet it). */
   firstRun?: FirstRunMockData;
+  /** The Sync page (default: this computer is not set up). */
+  sync?: SyncMockData;
   /** Offers to stop this long into a meeting (the preview's `?callEnded=1`). */
   callEndOfferAfterMs?: number;
   /** The folders (default: `SAMPLE_FOLDERS` with the sample meetings, none with given ones). */
@@ -669,6 +672,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     ...createBenchmarkMock(data.benchmark, timer),
     ...createCudaMock(data.machine ?? "surface", timer, data.cuda),
     ...createFirstRunMock(data.firstRun),
+    ...createSyncMock(data.sync),
     ...foldersMock,
     listFolders: async () => storeFailure() ?? foldersMock.listFolders(),
     appInfo: async () => ({ ...appInfo }),

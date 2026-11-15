@@ -11,7 +11,7 @@ use earshot_sync::ENVELOPE_FORMAT;
 use earshot_sync::wire::{
     ErrorBody, ErrorWord, FORMAT_HEADER, PULL_DEFAULT, PairingRequest, PairingResponse,
     PullResponse, PushRequest, PushResponse, RegisterRequest, RegisterResponse, RevokeRequest,
-    TakeRequest, TakeResponse,
+    TakeRequest, TakeResponse, VaultResponse,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -169,5 +169,10 @@ impl Relay {
     ) -> Result<(), SyncProblem> {
         let _: serde_json::Value = self.post("v1/devices/revoke", Some(token), req)?;
         Ok(())
+    }
+
+    /// `GET /v1/vault`.
+    pub(crate) fn vault(&self, token: &DeviceToken) -> Result<VaultResponse, SyncProblem> {
+        self.call(Method::GET, self.url("v1/vault")?, Some(token), None)
     }
 }

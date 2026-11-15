@@ -217,7 +217,8 @@ every tick (30 s, or at once after a local write, debounced 2 s):
 - The cursor moves only from the value the page was pulled after, under the store lock (a reset made meanwhile, by turning a kind on, wins).
 - Stopping the thread ends a tick at its next page.
 - The thread holds the store lock only inside the two transactions and the short reads. Never across a request.
-- It takes no `WorkPass`: it loads no model. `WorkGate::enter_restart` must wait for a tick in progress to end (a new long job joins the restart rule).
+- It takes no `WorkPass`: it loads no model, and it does not hold up an update's restart or the app's quit. A tick cut off by the process exiting is safe: each of its writes is one store transaction, an accepted push not yet marked sent comes back superseded and leaves the outbox, and a page applied but not yet recorded in the cursor applies as not newer (T11.3a, which replaced the earlier plan to make `WorkGate::enter_restart` wait for it).
+- The app keeps one thread (`SyncHost`): started at app start when sync is on and set up, after setting up or joining, and when turned on; stopped on its own thread when turned off; stopped and waited for before this computer is removed.
 - A meeting is never delayed, failed or warned by sync. A recording computer still pulls; rows for the meeting being recorded cannot exist on another device.
 
 ### 6.3 Setting up
@@ -227,7 +228,7 @@ every tick (30 s, or at once after a local write, debounced 2 s):
 - **Join**: address and code. `pairing/take`, unwrap `K`, register with `slot` and `key_check`, store, reset the cursor to 0, start the loop.
 - Setting up or joining queues every synced row again and drops every held row (`Store::queue_everything`): earlier sends went to no vault or another one, and held rows were sealed under another key.
 - **Turn off**: stop the loop. Local data, key and token stay, so turning it on again resumes.
-- **Remove this device**: revoke its token, delete key, token, address, cursor and status. Local meetings stay. The host stops the sync thread first.
+- **Remove this device**: revoke its token, delete key, token, address, cursor, status and the voiceprint switch. Local meetings stay. The host stops the sync thread first and no start may run until the removal ends.
 
 ## 7. Convergence rules (T11.3b)
 
@@ -249,17 +250,20 @@ A test delivers the same rows to three simulated devices in every order of two p
 
 ## 9. The Sync page (T11.3a)
 
-A new Settings page, "Sync", after Notes and storage.
+A Settings page, "Sync", after People and before Notes and storage. What T11.3a ships:
 
-- **Not set up**: what sync does in two sentences; "Set up the first computer" (address, setup secret) and "Join with a code" (address, code).
-- **Set up**: the server address; status line (Up to date, Syncing, or the problem in fixed copy); last sync; rows waiting to send; rows waiting to apply with the reason; rows that could not be read.
-- **Devices**: name, Online or last seen, this device marked; "Add a computer" shows a pairing code and its countdown; "Remove" on another device revokes it (a confirmation dialog).
-- **Switches**: "Sync voiceprints" (off), "Sync the Dictionary" (phase 2).
-- **Turn off sync** and **Remove this computer**.
+- **Not set up**: what sync does in two sentences; "Set up the first computer" (address, setup secret, Set up) and "Join with a pairing code" (address, code, Join), each its own form. The secret and code fields are cleared after every attempt.
+- **Set up**: "Sync is on" switch; the server address; last sync; rows waiting to send, held for later and that could not be read; the last problem in fixed copy (and that sync is stopped until it is fixed, for a problem that stops it); a line when sync should be running and is not; "Sync now", which starts a thread that should run and does not.
+- **Add a computer**: shows a pairing code once asked, until Hide, its expiry, or leaving the page.
+- **Computers**: from the server (`GET /v1/vault`): this computer first, others by the first eight hex digits of their id with last seen, until presence brings names (T11.3c).
+- **Voiceprints**: "Sync voiceprints" (off by default).
+- **Remove this computer**: a confirmation dialog. Removal also turns voiceprint sync off, so joining a vault again asks for it afresh.
 
-IPC commands in `apps/desktop/src-tauri/src/sync_settings.rs`: `sync_view`, `sync_set_up`, `sync_join`, `sync_pairing_code`, `sync_set_switch`, `sync_set_name`, `sync_turn_off`, `sync_remove_this`, `sync_revoke`, `sync_now`; event `SyncEvent` (joins `EVENT_METHODS`). Every command has an `Ipc` method and a mock; the mock mirrors the address rule and the code format from one shared fixture (`fixtures/ui/sync_cases.json`), run by both suites.
+Not in T11.3a: revoking another computer, device names, the Dictionary switch (phase 2), an event (the page reads `sync_view` when it opens and after each action).
 
-Choices apply at once; the address, secret, code and name are typed text and need their button, which joins the save-rule test's list. Failures are fixed copy by kind. Screens are judged by screenshot in light and dark.
+IPC commands in `apps/desktop/src-tauri/src/sync_settings.rs`: `sync_view`, `sync_devices`, `set_up_sync`, `offer_sync_code`, `join_sync`, `set_sync_on`, `set_sync_voiceprints`, `sync_now`, `remove_sync_device`. Every command has an `Ipc` method and a mock (`packages/ui/src/ipc/mockSync.ts`). One shared fixture, `fixtures/ui/sync_copy_cases.json`, holds the status copy (`problems`), a button press's copy (`command_problems`: nothing retries a button press, so none says Earshot will try again), the words that stop sync (`stops`), and the address rule's cases; both suites read every key. The key and token live in Credential Manager (`Earshot/sync-key`, `Earshot/sync-token`, `sync_vault.rs`); no response carries them, the setup secret or a used code.
+
+Choices apply at once; Set up and Join submit typed text and are in the save-rule test's list. Screens are judged by screenshot in light and dark.
 
 ## 10. Phase 2 interfaces
 

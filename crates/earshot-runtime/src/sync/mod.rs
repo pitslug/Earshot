@@ -30,12 +30,13 @@ use std::sync::Mutex;
 
 use earshot_net::Url;
 use earshot_store::{Store, encode_versioned, split_version};
-use earshot_sync::VaultKey;
 use serde::{Deserialize, Serialize};
 
 use crate::local::{self, DeviceRecord};
 use crate::services::Services;
 
+/// The vault key type, for hosts that store it ([`SyncVault`]).
+pub use earshot_sync::VaultKey;
 pub use engine::{SyncClient, TickReport};
 pub use setup::{
     PairingOffer, join_with_code, offer_pairing_code, remove_this_device, set_up_first_device,
@@ -485,6 +486,82 @@ pub struct SyncStatus {
     pub problem: Option<SyncProblem>,
     /// Pulled rows that could not be opened or read, in all.
     pub unreadable: u64,
+}
+
+/// What the Sync page shows: the settings, the last tick's outcome and the queues. Counts and
+/// words only; never an address's text when it is refused, never a key or token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncOverview {
+    /// Whether a key and token are stored (this device is set up).
+    pub set_up: bool,
+    /// The stored settings.
+    pub settings: SyncSettings,
+    /// The last tick's outcome.
+    pub status: SyncStatus,
+    /// Rows changed here and not yet sent.
+    pub waiting: u64,
+    /// Pulled rows held for later (a meeting in use, a missing parent, a newer format, a clock).
+    pub held: u64,
+}
+
+/// The Sync page's view of this device.
+///
+/// # Errors
+/// [`SyncProblem::Store`]; a failing credential store is [`SyncProblem::Store`] too.
+pub fn sync_overview(store: &Store, vault: &dyn SyncVault) -> Result<SyncOverview, SyncProblem> {
+    Ok(SyncOverview {
+        set_up: vault.has()?,
+        settings: sync_settings(store)?,
+        status: sync_status(store)?,
+        waiting: store.outbox_len()?,
+        held: u64::try_from(store.held_rows()?.len()).unwrap_or(u64::MAX),
+    })
+}
+
+/// One device of the vault, as the server knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncDevice {
+    /// Whether it is this device.
+    pub this_device: bool,
+    /// The first eight hex digits of its id: enough to tell two devices apart on the page.
+    pub short_id: String,
+    /// When it joined (Unix seconds, the server's clock).
+    pub joined_unix_s: u64,
+    /// Seconds since it last called the server.
+    pub seen_s_ago: u64,
+}
+
+/// The vault's devices, from the server, this device first. Names come with presence
+/// (T11.3c); until then a device is shown by its short id.
+///
+/// # Errors
+/// [`SyncProblem::Vault`] when this device is not set up; the relay's problems.
+pub fn vault_devices(
+    services: &Services,
+    vault: std::sync::Arc<dyn SyncVault>,
+) -> Result<Vec<SyncDevice>, SyncProblem> {
+    let secrets = vault.load()?.ok_or(SyncProblem::Vault)?;
+    let client = SyncClient::new(services.clone(), vault)?;
+    let me = *client.device().as_uuid().as_bytes();
+    let answer = client.relay().vault(&secrets.token)?;
+    let mut devices: Vec<SyncDevice> = answer
+        .devices
+        .into_iter()
+        .map(|d| SyncDevice {
+            this_device: d.device_id.0 == me,
+            short_id: d
+                .device_id
+                .0
+                .iter()
+                .take(4)
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            joined_unix_s: d.created_unix_s,
+            seen_s_ago: d.age_s,
+        })
+        .collect();
+    devices.sort_by_key(|d| (!d.this_device, d.joined_unix_s));
+    Ok(devices)
 }
 
 /// The stored status (the default when none is stored or it cannot be read).

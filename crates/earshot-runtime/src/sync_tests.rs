@@ -392,6 +392,43 @@ fn sync_server_unreachable_is_a_status_and_a_retry() {
 }
 
 #[test]
+fn sync_overview_and_device_list_show_counts_and_short_ids_only() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    meeting(&a.svc, "Waiting to go", 13);
+    let view = sync_overview(&a.svc.store(), &*a.vault).unwrap();
+    assert!(view.set_up);
+    assert!(view.settings.on);
+    assert!(matches!(view.settings.address, Some(Ok(_))));
+    assert!(view.waiting > 0);
+    assert_eq!(view.held, 0);
+    a.client().tick().unwrap();
+    assert_eq!(sync_overview(&a.svc.store(), &*a.vault).unwrap().waiting, 0);
+    let devices = vault_devices(&a.svc, a.vault()).unwrap();
+    assert_eq!(devices.len(), 2);
+    assert!(devices[0].this_device && !devices[1].this_device);
+    let me = a.svc.store().device();
+    let hex: String = me.as_uuid().as_bytes()[..4]
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect();
+    assert_eq!(devices[0].short_id, hex);
+    assert_eq!(devices[0].short_id.len(), 8);
+    // A device that is not set up has no list to show.
+    let lone = Device::new("sync-lone");
+    assert!(
+        !sync_overview(&lone.svc.store(), &*lone.vault)
+            .unwrap()
+            .set_up
+    );
+    assert_eq!(
+        vault_devices(&lone.svc, lone.vault()),
+        Err(SyncProblem::Vault)
+    );
+    drop(b);
+}
+
+#[test]
 fn sync_backoff_doubles_from_the_tick_to_its_cap() {
     assert_eq!(backoff(0), Duration::from_secs(30));
     assert_eq!(backoff(1), Duration::from_secs(30));

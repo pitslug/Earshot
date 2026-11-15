@@ -1346,6 +1346,7 @@ dependencies = [
  "earshot-proc",
  "earshot-runtime",
  "earshot-store",
+ "earshot-sync-server",
  "earshot-update",
  "rand_chacha",
  "rand_core",
