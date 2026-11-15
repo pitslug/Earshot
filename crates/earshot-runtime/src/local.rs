@@ -241,6 +241,9 @@ pub(crate) enum DeviceRecord {
     /// `settings/summary-offload-device`: the device asked to write this one's summaries
     /// (T11.3da; [`crate::offload`]).
     SummaryOffloadDevice,
+    /// `offload-times`: this device's clock readings for open summary offload requests (T11.3da;
+    /// [`crate::offload`]).
+    OffloadTimes,
 }
 
 impl DeviceRecord {
@@ -293,6 +296,7 @@ impl DeviceRecord {
         DeviceRecord::DeviceName,
         DeviceRecord::OfferSummaries,
         DeviceRecord::SummaryOffloadDevice,
+        DeviceRecord::OffloadTimes,
     ];
 
     /// Its key.
@@ -351,6 +355,7 @@ impl DeviceRecord {
                 DeviceRecord::DeviceName => crate::sync::DEVICE_NAME_KEY,
                 DeviceRecord::OfferSummaries => crate::sync::OFFER_SUMMARIES_KEY,
                 DeviceRecord::SummaryOffloadDevice => crate::offload::OFFLOAD_DEVICE_KEY,
+                DeviceRecord::OffloadTimes => crate::offload::OFFLOAD_TIMES_KEY,
             }
             .to_owned(),
         )

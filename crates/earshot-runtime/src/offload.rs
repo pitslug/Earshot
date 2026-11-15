@@ -329,8 +329,11 @@ fn final_segments<R: MeetingRepo + ?Sized>(
 }
 
 /// Asks `target` to write `meeting`'s summary: a [`SummaryRequest`] counting the meeting's
-/// final segments, written in one transaction. Returns its id, or `None` when the meeting has
-/// no final transcript to count (it is then written here, [`Unavailable::NoFinalTranscript`]).
+/// final segments, written in one transaction with this device's own record of when it asked
+/// ([`OFFLOAD_TIMES_KEY`]). Returns its id, or `None` when the meeting has no final transcript to
+/// count (it is then written here, [`Unavailable::NoFinalTranscript`]). A meeting that already
+/// waits for a request this device asked gets no second one: that request's id is returned
+/// ([`waiting_for`] says for whom).
 ///
 /// # Errors
 /// [`crate::edit::EditError::MeetingNotFound`] for an unknown or deleted meeting; store errors.
@@ -340,8 +343,12 @@ pub fn ask(
     target: DeviceId,
 ) -> Result<Option<EntityId>, RuntimeError> {
     let me = services.store().device();
+    let now = services.clock.now_unix_ms();
     crate::edit::write(services, |tx, stamp| {
         crate::edit::live_meeting(&*tx, meeting)?;
+        if let Some(open) = open_request(&*tx, me, meeting)? {
+            return Ok(Some(open.id));
+        }
         let count = final_segments(&*tx, meeting)?;
         if count == 0 {
             return Ok(None);
@@ -349,8 +356,77 @@ pub fn ask(
         let request = SummaryRequest::new(meeting, target, me, count, stamp);
         let id = request.id;
         tx.put_summary_request(request)?;
+        let mut times = read_times(tx.local_value(OFFLOAD_TIMES_KEY)?.as_deref());
+        times.requests.insert(
+            id.to_string(),
+            Since {
+                state: RequestState::Requested.name().to_owned(),
+                since_ms: now,
+                absent_since_ms: None,
+            },
+        );
+        crate::local::set_tx(tx, &DeviceRecord::OffloadTimes.key(), &encode_times(&times))?;
         Ok(Some(id))
     })
+}
+
+/// The request this device asked for `meeting` that is still open (requested or claimed), newest
+/// first.
+fn open_request<R: SummaryRequestRepo + ?Sized>(
+    repo: &R,
+    me: DeviceId,
+    meeting: EntityId,
+) -> Result<Option<SummaryRequest>, RuntimeError> {
+    Ok(repo.summary_requests()?.into_iter().rev().find(|r| {
+        r.meeting_id == meeting
+            && r.asking_device == me
+            && !r.meta.deleted
+            && r.state.is_open()
+            && authored(r)
+    }))
+}
+
+/// `offload-times`: this device's own clock readings for the open requests it asked or was
+/// asked (when it asked, first saw a claim, claimed, or first found the helper's presence
+/// missing). Every timer of offload runs on the device clock from these, never on HLC wall
+/// time, which can run ahead of the clock by up to the apply window. Device-local, pruned to the
+/// open requests at every step.
+pub(crate) const OFFLOAD_TIMES_KEY: &str = "offload-times";
+
+/// [`OFFLOAD_TIMES_KEY`]'s format version.
+const TIMES_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct Times {
+    /// By request id (hyphenated).
+    requests: std::collections::BTreeMap<String, Since>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Since {
+    /// The state the reading belongs to ([`RequestState::name`]): a new state starts anew.
+    state: String,
+    /// When this device asked (requested), first saw the claim (asker) or claimed (helper).
+    since_ms: u64,
+    /// When this device first found the helper's presence missing or unreadable (asker).
+    absent_since_ms: Option<u64>,
+}
+
+/// The stored readings; none when absent or unreadable (the timers then start now: a wait can
+/// only grow).
+fn read_times(bytes: Option<&[u8]>) -> Times {
+    bytes
+        .and_then(|b| {
+            let (v, payload) = earshot_store::split_version(b)?;
+            (v == TIMES_VERSION)
+                .then(|| serde_json::from_slice(payload).ok())
+                .flatten()
+        })
+        .unwrap_or_default()
+}
+
+fn encode_times(times: &Times) -> Vec<u8> {
+    earshot_store::encode_versioned(TIMES_VERSION, times).expect("times serialise")
 }
 
 /// The helper `meeting` waits for: a request this device asked that is still open (requested or
@@ -363,18 +439,7 @@ pub fn waiting_for(
     me: DeviceId,
     meeting: EntityId,
 ) -> Result<Option<DeviceId>, RuntimeError> {
-    Ok(store
-        .summary_requests()?
-        .into_iter()
-        .rev()
-        .find(|r| {
-            r.meeting_id == meeting
-                && r.asking_device == me
-                && !r.meta.deleted
-                && r.state.is_open()
-                && authored(r)
-        })
-        .map(|r| r.target_device))
+    Ok(open_request(store, me, meeting)?.map(|r| r.target_device))
 }
 
 /// Whether `request`'s last write came from the device allowed to write its state: the asker
@@ -444,6 +509,25 @@ fn move_request(
     })
 }
 
+/// Declines `request`, claimed by this device, with `word` ([`reason`]): for a host whose work for
+/// it could not start or ended in a panic. Returns whether it moved (it was no longer claimed).
+///
+/// # Errors
+/// Store errors.
+pub fn decline(
+    services: &Services,
+    request: EntityId,
+    word: &'static str,
+) -> Result<bool, RuntimeError> {
+    move_request(
+        services,
+        request,
+        RequestState::Claimed,
+        RequestState::Declined,
+        word,
+    )
+}
+
 /// Why the asker writes a meeting's summary itself after asking a helper.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HereReason {
@@ -474,8 +558,10 @@ pub struct WriteHere {
 /// work on a thread of its own.
 pub trait OffloadHost: Send + Sync {
     /// Write `job.meeting`'s summary here, with this device's own writer (a re-summary job:
-    /// [`crate::keep_local::summary_privacy`] still decides the writer).
-    fn write_here(&self, job: WriteHere);
+    /// [`crate::keep_local::summary_privacy`] still decides the writer). Returns whether the work
+    /// started; a refusal (a job of the meeting runs, the meeting is in use) is handed again at the
+    /// next step.
+    fn write_here(&self, job: WriteHere) -> bool;
     /// Write the summary another device asked for: run [`write_for_request`] in this device's
     /// meeting queue.
     fn write_for(&self, request: SummaryRequest);
@@ -501,14 +587,24 @@ pub struct StepReport {
 #[derive(Debug, Default)]
 pub struct Offload {
     handed: Mutex<BTreeSet<EntityId>>,
+    /// Requests that need nothing more of this device (done, or declined or withdrawn with a
+    /// summary since), so a step does not read their meeting again.
+    settled: Mutex<BTreeSet<EntityId>>,
 }
+
+/// A declined or withdrawn request created more than this long ago (by its HLC wall time, which
+/// only runs ahead of the clock, so a request never looks older than it is) is not looked at
+/// again: its write here was handed long before (7 days, a judgement bounding each step's reads).
+/// Open requests are always looked at: their own rules end them within minutes.
+pub const LOOK_BACK_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 /// What [`Offload::step`] reads of one request, under one store lock.
 struct Seen {
     request: SummaryRequest,
     /// The meeting is live here.
     meeting_live: bool,
-    /// A live summary of the meeting was created after the request (by HLC).
+    /// A summary of the meeting was created after the request (by HLC), live or not: one
+    /// replaced by an undo still counts, so the user's choice is never written over.
     summarised_since: bool,
     /// The meeting's live final segments here.
     final_segments: u64,
@@ -528,6 +624,27 @@ impl Offload {
             .insert(request)
     }
 
+    fn unhand(&self, request: EntityId) {
+        self.handed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&request);
+    }
+
+    fn settle(&self, request: EntityId) {
+        self.settled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(request);
+    }
+
+    fn is_settled(&self, request: EntityId) -> bool {
+        self.settled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&request)
+    }
+
     /// One pass over the requests this device asked or was asked, by this device's clock and the
     /// relay's presence from `peers` (asked at most once, and only when this device waits on a
     /// claimed request; `None` when it could not be read, which withdraws nothing on presence
@@ -543,11 +660,12 @@ impl Offload {
         host: &dyn OffloadHost,
     ) -> Result<StepReport, RuntimeError> {
         let (me, now) = (services.store().device(), services.clock.now_unix_ms());
-        let (seen, offers) = {
+        let (seen, offers, mut times) = {
             let db = services.store();
             let offers = crate::sync::sync_settings(&db)
                 .map(|s| s.offers_summaries)
                 .unwrap_or(false);
+            let times = read_times(db.local_value(OFFLOAD_TIMES_KEY)?.as_deref());
             let mut seen = Vec::new();
             for r in db.summary_requests()? {
                 let mine = r.asking_device == me;
@@ -556,7 +674,13 @@ impl Offload {
                 } else {
                     r.target_device == me && r.state.is_open()
                 };
-                if r.meta.deleted || !wanted || !authored(&r) {
+                if r.meta.deleted
+                    || !wanted
+                    || !authored(&r)
+                    || self.is_settled(r.id)
+                    || (!r.state.is_open()
+                        && r.meta.created_at.wall_ms.saturating_add(LOOK_BACK_MS) < now)
+                {
                     continue;
                 }
                 let meeting = db.meeting(r.meeting_id)?;
@@ -565,7 +689,7 @@ impl Offload {
                     && db
                         .summaries(r.meeting_id)?
                         .iter()
-                        .any(|s| !s.meta.deleted && s.meta.created_at > r.meta.created_at);
+                        .any(|s| s.meta.created_at > r.meta.created_at);
                 let final_segments = if meeting_live && r.target_device == me {
                     final_segments(&**db, r.meeting_id)?
                 } else {
@@ -578,8 +702,14 @@ impl Offload {
                     final_segments,
                 });
             }
-            (seen, offers)
+            (seen, offers, times)
         };
+        let before = times.clone();
+        // Readings are kept for open requests only.
+        times.requests.retain(|id, _| {
+            seen.iter()
+                .any(|s| s.request.state.is_open() && s.request.id.to_string() == *id)
+        });
         let waits_on_claim = seen.iter().any(|s| {
             s.meeting_live
                 && s.request.asking_device == me
@@ -587,34 +717,78 @@ impl Offload {
         });
         let peers = if waits_on_claim { peers() } else { None };
         let mut report = StepReport::default();
+        let mut outcome = Ok(());
         for s in seen {
+            let r = &s.request;
             if !s.meeting_live {
+                self.settle(r.id);
                 continue;
             }
-            let r = &s.request;
-            if r.asking_device == me {
-                self.as_asker(services, &s, now, peers.as_deref(), host, &mut report)?;
+            let done = if r.asking_device == me {
+                self.as_asker(
+                    services,
+                    &s,
+                    now,
+                    peers.as_deref(),
+                    &mut times,
+                    host,
+                    &mut report,
+                )
             } else {
-                self.as_helper(services, &s, now, offers, host, &mut report)?;
+                self.as_helper(services, &s, now, offers, &mut times, host, &mut report)
+            };
+            if let Err(e) = done {
+                outcome = Err(e);
+                break;
             }
         }
-        Ok(report)
+        if times != before {
+            local::set(
+                &mut services.store(),
+                &DeviceRecord::OffloadTimes.key(),
+                &encode_times(&times),
+            )?;
+        }
+        outcome.map(|()| report)
     }
 
+    /// This device's reading for `r` in its current state, started now when there is none.
+    fn since(times: &mut Times, r: &SummaryRequest, now: u64) -> u64 {
+        let entry = times
+            .requests
+            .entry(r.id.to_string())
+            .or_insert_with(|| Since {
+                state: r.state.name().to_owned(),
+                since_ms: now,
+                absent_since_ms: None,
+            });
+        if entry.state != r.state.name() {
+            *entry = Since {
+                state: r.state.name().to_owned(),
+                since_ms: now,
+                absent_since_ms: None,
+            };
+        }
+        entry.since_ms
+    }
+
+    #[allow(clippy::too_many_arguments)] // The step's state, read once and passed down.
     fn as_asker(
         &self,
         services: &Services,
         s: &Seen,
         now: u64,
         peers: Option<&[Peer]>,
+        times: &mut Times,
         host: &dyn OffloadHost,
         report: &mut StepReport,
     ) -> Result<(), RuntimeError> {
         let r = &s.request;
         let why = match r.state {
-            RequestState::Requested
-                if now.saturating_sub(r.meta.created_at.wall_ms) >= CLAIM_WITHIN_MS =>
-            {
+            RequestState::Requested => {
+                if now.saturating_sub(Self::since(times, r, now)) < CLAIM_WITHIN_MS {
+                    return Ok(());
+                }
                 if !move_request(
                     services,
                     r.id,
@@ -627,41 +801,76 @@ impl Offload {
                 report.withdrawn += 1;
                 HereReason::NotClaimed
             }
-            RequestState::Claimed if peers.is_some_and(|p| helper_stale(p, r.target_device)) => {
-                if !move_request(
-                    services,
-                    r.id,
-                    RequestState::Claimed,
-                    RequestState::Withdrawn,
-                    "",
-                )? {
+            RequestState::Claimed => {
+                Self::since(times, r, now);
+                let Some(peers) = peers else {
+                    return Ok(());
+                };
+                let entry = times
+                    .requests
+                    .get_mut(&r.id.to_string())
+                    .expect("since inserted it");
+                let stale = match presence_of(peers, r.target_device) {
+                    HelperPresence::Seen { stale } => {
+                        entry.absent_since_ms = None;
+                        stale
+                    }
+                    HelperPresence::Missing => {
+                        let since = *entry.absent_since_ms.get_or_insert(now);
+                        now.saturating_sub(since) >= STALE_AFTER_S * 1000
+                    }
+                };
+                if !stale
+                    || !move_request(
+                        services,
+                        r.id,
+                        RequestState::Claimed,
+                        RequestState::Withdrawn,
+                        "",
+                    )?
+                {
                     return Ok(());
                 }
                 report.withdrawn += 1;
                 HereReason::HelperStale
             }
-            RequestState::Declined if !s.summarised_since => HereReason::Declined(r.reason.clone()),
-            RequestState::Withdrawn if !s.summarised_since => HereReason::Withdrawn,
-            _ => return Ok(()),
+            RequestState::Declined | RequestState::Withdrawn if s.summarised_since => {
+                self.settle(r.id);
+                return Ok(());
+            }
+            RequestState::Declined => HereReason::Declined(r.reason.clone()),
+            RequestState::Withdrawn => HereReason::Withdrawn,
+            RequestState::Done => {
+                self.settle(r.id);
+                return Ok(());
+            }
         };
         if self.hand_once(r.id) {
-            report.written_here += 1;
-            host.write_here(WriteHere {
+            let started = host.write_here(WriteHere {
                 meeting: r.meeting_id,
                 request: r.id,
                 helper: r.target_device,
                 why,
             });
+            if started {
+                report.written_here += 1;
+            } else {
+                // Refused (a job of the meeting runs, the meeting is in use): the next step tries
+                // again.
+                self.unhand(r.id);
+            }
         }
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)] // The step's state, read once and passed down.
     fn as_helper(
         &self,
         services: &Services,
         s: &Seen,
         now: u64,
         offers: bool,
+        times: &mut Times,
         host: &dyn OffloadHost,
         report: &mut StepReport,
     ) -> Result<(), RuntimeError> {
@@ -690,9 +899,11 @@ impl Offload {
                     return Ok(());
                 }
                 report.claimed += 1;
-                now
+                let mut claimed = r.clone();
+                claimed.state = RequestState::Claimed;
+                Self::since(times, &claimed, now)
             }
-            RequestState::Claimed => r.meta.updated_at.wall_ms,
+            RequestState::Claimed => Self::since(times, r, now),
             _ => return Ok(()),
         };
         if s.final_segments >= r.segment_count {
@@ -717,15 +928,29 @@ impl Offload {
     }
 }
 
-/// Whether the helper `device`'s presence is stale: no presence, one that cannot be read, or
-/// one older than [`STALE_AFTER_S`] (a "gone" blob counts from when it was sent, so a helper
-/// that went to sleep is stale five minutes later).
+/// What the relay says of a claimed request's helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelperPresence {
+    /// Its presence was read: `stale` when it is [`STALE_AFTER_S`] old or older (a "gone" blob
+    /// counts from when it was sent, so a helper that went to sleep is stale five minutes later).
+    Seen {
+        /// At least [`STALE_AFTER_S`] old.
+        stale: bool,
+    },
+    /// No presence, or one that cannot be read: the asker gives it [`STALE_AFTER_S`] from when it
+    /// first found it missing, on its own clock.
+    Missing,
+}
+
+/// The helper `device`'s presence among `peers`.
 #[must_use]
-pub fn helper_stale(peers: &[Peer], device: DeviceId) -> bool {
-    peers
-        .iter()
-        .find(|p| p.device == device)
-        .is_none_or(|p| p.presence.is_none() || p.age_s >= STALE_AFTER_S)
+pub fn presence_of(peers: &[Peer], device: DeviceId) -> HelperPresence {
+    match peers.iter().find(|p| p.device == device) {
+        Some(p) if p.presence.is_some() => HelperPresence::Seen {
+            stale: p.age_s >= STALE_AFTER_S,
+        },
+        _ => HelperPresence::Missing,
+    }
 }
 
 /// The writer a helper's host builds for one request, with the summary privacy of its meeting.
