@@ -73,7 +73,7 @@ use std::time::Duration;
 
 use earshot_core::asr::CancelToken;
 use earshot_core::identity::EntityId;
-use earshot_core::model::{MeetingRepo, Stamp, Summary};
+use earshot_core::model::{MeetingRepo, Stamp, Summary, SummaryRequestRepo};
 use earshot_core::prompt::{
     ContextBudget, MeetingInfo, PromptSegment, SummaryInput, SummaryStyle, TimeChunkError,
     UserNote, Vocabulary, time_chunks,
@@ -905,6 +905,37 @@ impl SummaryService {
         rng: &mut R,
         cancel: &CancelToken,
     ) -> Result<SummaryOutcome, RuntimeError> {
+        self.summarize_inner(services, meeting, None, rng, cancel)
+    }
+
+    /// [`SummaryService::summarize`] for another device's summary request (summary offload,
+    /// [`crate::offload`]): the request is read again in the summary's write transaction, which
+    /// stores nothing unless it is still claimed by this device, and marks it done in the same
+    /// transaction.
+    ///
+    /// # Errors
+    /// As [`SummaryService::summarize`]; [`RuntimeError::Conflict`] with
+    /// [`crate::offload::REQUEST_NOT_CLAIMED`] when the request is no longer this device's to
+    /// answer (withdrawn by the asker, deleted, or never claimed here); nothing is written then.
+    pub fn summarize_answering<R: Rng + ?Sized>(
+        &self,
+        services: &Services,
+        meeting: EntityId,
+        request: EntityId,
+        rng: &mut R,
+        cancel: &CancelToken,
+    ) -> Result<SummaryOutcome, RuntimeError> {
+        self.summarize_inner(services, meeting, Some(request), rng, cancel)
+    }
+
+    fn summarize_inner<R: Rng + ?Sized>(
+        &self,
+        services: &Services,
+        meeting: EntityId,
+        answering: Option<EntityId>,
+        rng: &mut R,
+        cancel: &CancelToken,
+    ) -> Result<SummaryOutcome, RuntimeError> {
         // A meeting kept on this computer (T12.13) is summarised only by a local model: any
         // other service is refused before the transcript is read (`crate::keep_local`).
         if !matches!(self.backend, Backend::Local { .. })
@@ -968,7 +999,8 @@ impl SummaryService {
                 )
             }
         };
-        let (summary_id, title_set) = store_summary(services, &view, model, &summary, rng)?;
+        let (summary_id, title_set) =
+            store_summary_answering(services, &view, model, &summary, answering, rng)?;
         Ok(SummaryOutcome {
             summary_id,
             summary,
@@ -1536,11 +1568,28 @@ fn load_with_fallback(
 /// docs: the meeting must still exist with the same segment ids; older summaries become
 /// tombstones; only an empty title is filled; the partials made during the meeting are
 /// deleted, [`crate::live_summaries`]). Returns the row id and whether the title was set.
+/// Tests store summaries through it; production goes through [`store_summary_answering`].
+#[cfg(test)]
 pub(crate) fn store_summary<R: Rng + ?Sized>(
     services: &Services,
     view: &MeetingView,
     model: String,
     summary: &SummaryV1,
+    rng: &mut R,
+) -> Result<(EntityId, bool), RuntimeError> {
+    store_summary_answering(services, view, model, summary, None, rng)
+}
+
+/// [`store_summary`], answering another device's summary request when `answering` names one:
+/// inside the transaction the request must still be claimed by this device (else
+/// [`RuntimeError::Conflict`] with [`crate::offload::REQUEST_NOT_CLAIMED`], nothing stored) and
+/// is marked done with the summary.
+fn store_summary_answering<R: Rng + ?Sized>(
+    services: &Services,
+    view: &MeetingView,
+    model: String,
+    summary: &SummaryV1,
+    answering: Option<EntityId>,
     rng: &mut R,
 ) -> Result<(EntityId, bool), RuntimeError> {
     let meeting = view.meeting.id;
@@ -1571,6 +1620,16 @@ pub(crate) fn store_summary<R: Rng + ?Sized>(
                 "the transcript changed during the summary",
             ));
         }
+        // Summary offload: the asker may have withdrawn the request while the model ran.
+        let answered = match answering {
+            Some(request) => Some(crate::offload::still_claimed(
+                &*tx,
+                request,
+                meeting,
+                stamp.hlc.node(),
+            )?),
+            None => None,
+        };
         for mut old in tx.summaries(meeting)? {
             if !old.meta.deleted {
                 old.meta.mark_deleted(stamp.hlc, stamp.clock);
@@ -1590,6 +1649,11 @@ pub(crate) fn store_summary<R: Rng + ?Sized>(
             m.meta.touch(stamp.hlc, stamp.clock);
             tx.put_meeting(m)?;
             title_set = true;
+        }
+        if let Some(mut request) = answered {
+            request.state = earshot_core::model::RequestState::Done;
+            request.meta.touch(stamp.hlc, stamp.clock);
+            tx.put_summary_request(request)?;
         }
         // The live partials are content; a summary now exists, so they go.
         tx.delete_local_value(crate::live_summaries::record_key(meeting).as_str())?;

@@ -1411,8 +1411,15 @@ pub fn summary_result_event(result: &SummaryResult, voices_to_name: u32) -> Summ
             retryable: *retryable,
         },
         SummaryResult::Cancelled => SummaryEvent::Cancelled,
+        // The app passes no offload choice yet (T11.3db shows "Waiting for <device>").
+        SummaryResult::Offloaded { .. } => SummaryEvent::Skipped {
+            reason: OFFLOADED_COPY.to_owned(),
+        },
     }
 }
+
+/// What the screen says when another of the user's computers was asked to write the summary.
+pub const OFFLOADED_COPY: &str = "Another of your computers is writing the summary.";
 
 #[cfg(test)]
 #[path = "meeting_events_tests.rs"]

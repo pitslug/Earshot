@@ -1771,6 +1771,7 @@ mod production {
                         // One token: the user's Cancel stops both, so no summary runs on the draft.
                         post_cancel: cancel,
                         summary_cancel: cancel,
+                        offload: None,
                     };
                     host::after_meeting(svc, outcome, &run, progress)
                 },

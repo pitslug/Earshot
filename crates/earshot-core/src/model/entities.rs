@@ -137,6 +137,109 @@ impl Folder {
     }
 }
 
+/// Where a [`SummaryRequest`] stands (docs/sync.md section 10, "The request"). The asker
+/// writes [`RequestState::Requested`] and [`RequestState::Withdrawn`]; the target writes
+/// [`RequestState::Claimed`], [`RequestState::Done`] and [`RequestState::Declined`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestState {
+    /// Asked; no answer from the target yet.
+    Requested,
+    /// The target took it and will write the summary.
+    Claimed,
+    /// The target stored the summary.
+    Done,
+    /// The target will not write it ([`SummaryRequest::reason`] says why).
+    Declined,
+    /// The asker took it back and writes the summary itself.
+    Withdrawn,
+}
+
+impl RequestState {
+    /// Every state.
+    pub const ALL: [Self; 5] = [
+        Self::Requested,
+        Self::Claimed,
+        Self::Done,
+        Self::Declined,
+        Self::Withdrawn,
+    ];
+
+    /// Stable name (`requested`, `claimed`, `done`, `declined`, `withdrawn`).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::Claimed => "claimed",
+            Self::Done => "done",
+            Self::Declined => "declined",
+            Self::Withdrawn => "withdrawn",
+        }
+    }
+
+    /// Parses [`RequestState::name`].
+    #[must_use]
+    pub fn from_name(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.name() == s)
+    }
+
+    /// Whether an answer is still to come (requested or claimed).
+    #[must_use]
+    pub const fn is_open(self) -> bool {
+        matches!(self, Self::Requested | Self::Claimed)
+    }
+}
+
+/// One device asking another to write a meeting's summary (summary offload, docs/sync.md
+/// section 10). It holds no content: device ids, how many transcript segments the asker counted,
+/// a state and a fixed reason word. The summary itself comes back as an ordinary synced
+/// [`Summary`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SummaryRequest {
+    /// Row id.
+    pub id: EntityId,
+    /// Sync metadata.
+    pub meta: SyncMeta,
+    /// The meeting to summarise.
+    pub meeting_id: EntityId,
+    /// The device asked to write it.
+    pub target_device: DeviceId,
+    /// The device that asked.
+    pub asking_device: DeviceId,
+    /// How many segments of the final transcript the asker held when it asked; the target
+    /// waits until it holds as many.
+    pub segment_count: u64,
+    /// Where it stands.
+    pub state: RequestState,
+    /// Why the target declined, as a fixed word; empty in every other state.
+    pub reason: String,
+}
+
+syncable_row!(SummaryRequest, "summary_request");
+
+impl SummaryRequest {
+    /// A new request, [`RequestState::Requested`], from `asking_device` to `target_device`.
+    pub fn new<C: Clock + ?Sized, R: Rng + ?Sized>(
+        meeting_id: EntityId,
+        target_device: DeviceId,
+        asking_device: DeviceId,
+        segment_count: u64,
+        stamp: &mut Stamp<'_, C, R>,
+    ) -> Self {
+        let (id, meta) = new_row(stamp);
+        SummaryRequest {
+            id,
+            meta,
+            meeting_id,
+            target_device,
+            asking_device,
+            segment_count,
+            state: RequestState::Requested,
+            reason: String::new(),
+        }
+    }
+}
+
 /// Which clock a track's device timestamps came from (for diagnosing alignment; transcript
 /// times are always [`MeetingTime`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

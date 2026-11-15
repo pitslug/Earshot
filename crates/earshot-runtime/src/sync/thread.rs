@@ -17,6 +17,11 @@
 //! makes the thread tick at once and beat after the first tick that reaches the relay.
 //! [`super::presence::Beats`] decides what is sent, behind one lock held across every presence
 //! send, so a gone and a beat never overtake each other.
+//!
+//! Summary offload (T11.3da): a thread started with [`SyncThread::start_offloading`] runs
+//! [`crate::offload::Offload::step`] after every tick, whatever its outcome (an unclaimed
+//! request is withdrawn on time even while the relay cannot be reached), handing work to the
+//! host's [`OffloadHost`].
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +33,7 @@ use std::time::{Duration, Instant};
 use super::presence::Beats;
 use super::{SyncClient, SyncProblem, record_problem};
 use crate::RuntimeError;
+use crate::offload::{Offload, OffloadHost};
 use crate::services::Services;
 
 /// The regular tick.
@@ -107,6 +113,27 @@ impl SyncThread {
     /// # Errors
     /// [`RuntimeError::Spawn`].
     pub fn start(client: SyncClient, timing: SyncTiming) -> Result<Self, RuntimeError> {
+        Self::start_with(client, timing, None)
+    }
+
+    /// [`SyncThread::start`], and summary offload after every tick
+    /// ([`crate::offload::Offload::step`], work handed to `host`).
+    ///
+    /// # Errors
+    /// [`RuntimeError::Spawn`].
+    pub fn start_offloading(
+        client: SyncClient,
+        timing: SyncTiming,
+        host: Arc<dyn OffloadHost>,
+    ) -> Result<Self, RuntimeError> {
+        Self::start_with(client, timing, Some((Arc::new(Offload::new()), host)))
+    }
+
+    fn start_with(
+        client: SyncClient,
+        timing: SyncTiming,
+        offload: Option<(Arc<Offload>, Arc<dyn OffloadHost>)>,
+    ) -> Result<Self, RuntimeError> {
         let signal = Arc::new((Mutex::new(Signal::default()), Condvar::new()));
         let stop = client.stop_flag();
         let client = Arc::new(client);
@@ -115,7 +142,7 @@ impl SyncThread {
         let (c, b) = (Arc::clone(&client), Arc::clone(&beats));
         let handle = std::thread::Builder::new()
             .name("earshot-sync".into())
-            .spawn(move || run(&c, timing, &theirs, &b))
+            .spawn(move || run(&c, timing, &theirs, &b, offload.as_ref()))
             .map_err(RuntimeError::Spawn)?;
         Ok(Self {
             signal,
@@ -230,6 +257,7 @@ fn run(
     timing: SyncTiming,
     signal: &(Mutex<Signal>, Condvar),
     beats: &Mutex<Beats>,
+    offload: Option<&(Arc<Offload>, Arc<dyn OffloadHost>)>,
 ) {
     let services = client.services().clone();
     let mut failures: u32 = 0;
@@ -305,7 +333,16 @@ fn run(
         if Instant::now() < next {
             continue;
         }
-        match catch_unwind(AssertUnwindSafe(|| client.tick())) {
+        let ticked = catch_unwind(AssertUnwindSafe(|| client.tick()));
+        if let Some((state, host)) = offload
+            && !matches!(&ticked, Ok(Err(p)) if p.stops())
+        {
+            // A store failure or a panic here is the next step's to retry; it never ends sync.
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                state.step(&services, &mut || client.peers().ok(), &**host)
+            }));
+        }
+        match ticked {
             Ok(Ok(_)) => {
                 failures = 0;
                 next = Instant::now() + timing.tick;

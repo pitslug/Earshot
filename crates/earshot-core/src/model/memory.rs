@@ -3,13 +3,16 @@
 use std::collections::BTreeMap;
 
 use super::entities::{
-    AudioFile, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary, Track,
+    AudioFile, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary, SummaryRequest,
+    Track,
 };
-use super::repo::{AudioFileRepo, ExportRepo, FolderRepo, MeetingRepo, RepoError};
+use super::repo::{
+    AudioFileRepo, ExportRepo, FolderRepo, MeetingRepo, RepoError, SummaryRequestRepo,
+};
 use crate::identity::{DeviceId, EntityId};
 
-/// In-memory implementation of [`MeetingRepo`], [`FolderRepo`], [`AudioFileRepo`] and
-/// [`ExportRepo`] with the same parent checks and orders as the SQLite store.
+/// In-memory implementation of [`MeetingRepo`], [`FolderRepo`], [`SummaryRequestRepo`],
+/// [`AudioFileRepo`] and [`ExportRepo`] with the same parent checks and orders as the SQLite store.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryRepo {
     meetings: BTreeMap<EntityId, Meeting>,
@@ -21,6 +24,7 @@ pub struct InMemoryRepo {
     audio: BTreeMap<EntityId, AudioFile>,
     exports: BTreeMap<(EntityId, DeviceId), ExportRecord>,
     folders: BTreeMap<EntityId, Folder>,
+    requests: BTreeMap<EntityId, SummaryRequest>,
 }
 
 impl InMemoryRepo {
@@ -212,6 +216,24 @@ impl FolderRepo for InMemoryRepo {
 
     fn put_folder(&mut self, folder: Folder) -> Result<(), RepoError> {
         self.folders.insert(folder.id, folder);
+        Ok(())
+    }
+}
+
+impl SummaryRequestRepo for InMemoryRepo {
+    fn summary_request(&self, id: EntityId) -> Result<Option<SummaryRequest>, RepoError> {
+        Ok(self.requests.get(&id).cloned())
+    }
+
+    fn summary_requests(&self) -> Result<Vec<SummaryRequest>, RepoError> {
+        let mut v: Vec<SummaryRequest> = self.requests.values().cloned().collect();
+        v.sort_by_key(|r| (r.meta.created_at, r.id));
+        Ok(v)
+    }
+
+    fn put_summary_request(&mut self, request: SummaryRequest) -> Result<(), RepoError> {
+        self.need_meeting(request.meeting_id)?;
+        self.requests.insert(request.id, request);
         Ok(())
     }
 }
