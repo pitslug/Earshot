@@ -738,7 +738,8 @@ impl Offload {
     }
 
     /// The last step of a sync thread that stops on a problem the user must act on (this device
-    /// was removed, another vault, an update needed, no usable address or key; T11.6c). Nothing
+    /// was removed, another vault, an update needed, no usable address or key) or because sync
+    /// was turned off (T11.6c). Nothing
     /// this device writes reaches the helper until sync works again, so every open request it
     /// asked is withdrawn here at once (no claim window, no presence) and its meeting handed to
     /// `host` to write here ([`HereReason::Withdrawn`]); requests asked of this device are left

@@ -210,9 +210,10 @@ impl SyncThread {
         self.stop_and_join(false);
     }
 
-    /// Stops the thread for good and waits for it; on the way out it tells the other devices
-    /// it is gone (best effort, bounded by the presence timeout), so they stop showing it
-    /// online at once rather than after the online window.
+    /// Stops the thread for good (sync turned off) and waits for it; on the way out it tells
+    /// the other devices it is gone (best effort, bounded by the presence timeout), so they stop
+    /// showing it online at once rather than after the online window, and an offloading thread
+    /// hands back the summaries this device asked for ([`Offload::step_sync_stopped`]).
     pub fn stop_saying_gone(mut self) {
         self.stop_and_join(true);
     }
@@ -282,6 +283,7 @@ fn run(
                     .0;
             }
             if s.stop {
+                // Saying gone is turning sync off (the one caller of `stop_saying_gone`).
                 let say_gone = s.gone;
                 drop(s);
                 // Best effort: the other devices see this one go at once, not after the
@@ -291,6 +293,13 @@ fn run(
                     let _ = catch_unwind(AssertUnwindSafe(|| client.send_presence(true)));
                 }
                 drop(b);
+                // Turned off: no step runs until it is turned on, so what this device asked is
+                // handed back now rather than left waiting (T11.6c).
+                if say_gone && let Some((state, host)) = offload {
+                    let _ = catch_unwind(AssertUnwindSafe(|| {
+                        state.step_sync_stopped(&services, &**host)
+                    }));
+                }
                 return;
             }
             if std::mem::take(&mut s.soon) && failures == 0 {

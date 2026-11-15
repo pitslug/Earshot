@@ -396,6 +396,65 @@ fn sync_removing_another_device_stops_it_and_keeps_its_rows() {
     assert_only_the_relay(&ca, &relay);
 }
 
+/// The recovery the removed computer's page offers (T11.6c, the owner's decision 2026-11-16):
+/// remove it here, then join again with a pairing code from a live computer; it syncs again
+/// under its own device id, both ways, with no request to the relay while forgetting.
+#[test]
+fn sync_a_removed_device_follows_the_copy_and_syncs_again() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let before = meeting(&a.svc, "Before the removal", 4);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    let b_id = b.svc.store().device();
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    assert_eq!(cb.tick(), Err(SyncProblem::UnknownDevice));
+
+    // "Remove it here": forgetting asks the server nothing (it would only hear 401 again), so
+    // it works even with the server out of reach (a port nothing listens on).
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    {
+        let mut db = b.svc.store();
+        crate::local::set(
+            &mut db,
+            &DeviceRecord::SyncServer.key(),
+            format!("http://127.0.0.1:{port}").as_bytes(),
+        )
+        .unwrap();
+    }
+    remove_this_device(&b.svc, b.vault()).unwrap();
+    assert!(!b.vault.has().unwrap());
+
+    // "Then join again with a pairing code": shown on the live computer.
+    let during = meeting(&a.svc, "While it was removed", 5);
+    ca.tick().unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+    assert_eq!(b.svc.store().device(), b_id, "the same device id came back");
+    let cb = b.client();
+    cb.tick().unwrap();
+    assert_eq!(b.title(before).as_deref(), Some("Before the removal"));
+    assert_eq!(b.title(during).as_deref(), Some("While it was removed"));
+    // Both ways again.
+    let after = meeting(&b.svc, "After rejoining", 6);
+    cb.tick().unwrap();
+    ca.tick().unwrap();
+    assert_eq!(a.title(after).as_deref(), Some("After rejoining"));
+    let listed: Vec<_> = vault_devices(&a.svc, a.vault())
+        .unwrap()
+        .into_iter()
+        .map(|d| d.device)
+        .collect();
+    assert_eq!(listed.len(), 2);
+    assert!(listed.contains(&b_id));
+    assert_only_the_relay(&cb, &relay);
+}
+
 #[test]
 fn sync_removing_another_device_never_takes_this_one_or_works_once_removed() {
     let relay = relay();

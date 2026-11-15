@@ -193,7 +193,9 @@ pub fn remove_other_device(
 
 /// Removes this device from sync: the server revokes its token, then the key, the token, the
 /// address, the cursor, the status and the voiceprint switch are deleted here. Meetings stay. A token the server no
-/// longer knows counts as revoked. The host stops its [`super::SyncThread`] first, or a tick in
+/// longer knows counts as revoked, and a device whose last sync said it was removed asks the
+/// server nothing. Afterwards it may join again with a pairing code from a live device: the
+/// relay registers its id again (T11.6c). The host stops its [`super::SyncThread`] first, or a tick in
 /// flight writes the cursor and status back.
 ///
 /// # Errors
@@ -209,7 +211,12 @@ pub fn remove_this_device(
         Err(SyncProblem::Address) => None,
         Err(p) => return Err(p),
     };
-    if let (Some(secrets), Some(client)) = (vault.load()?, client) {
+    // A device the relay already removed has nothing left to revoke there: forgetting here works
+    // without the server, so it can join again with a pairing code even while the server is out
+    // of reach.
+    let removed =
+        super::sync_status(&services.store())?.problem == Some(SyncProblem::UnknownDevice);
+    if !removed && let (Some(secrets), Some(client)) = (vault.load()?, client) {
         match client.relay().revoke(
             &secrets.token,
             &RevokeRequest {

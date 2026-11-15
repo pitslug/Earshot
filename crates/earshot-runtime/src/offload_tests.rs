@@ -1237,6 +1237,69 @@ fn offload_a_device_whose_sync_stops_withdraws_what_it_asked_and_writes_here() {
     assert!(host.for_others().is_empty());
 }
 
+/// Turning sync off (`stop_saying_gone`) hands back what this device asked, as a stopping
+/// problem does; a thread only replaced (`stop`) hands back nothing (T11.6c).
+#[test]
+fn offload_turning_sync_off_hands_back_what_this_device_asked() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let timing = crate::sync::SyncTiming {
+        tick: std::time::Duration::from_millis(20),
+        poll: std::time::Duration::from_millis(5),
+        presence: std::time::Duration::from_secs(3600),
+    };
+    let m = meeting(&a.svc, "Invented sync off", 24);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    // Wait for one tick each time: the manual clock never reaches the 90 s claim window.
+    let ticked = |host: &Recorder, thread: &crate::sync::SyncThread| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while crate::sync::sync_status(&a.svc.store())
+            .unwrap()
+            .last_success_unix_ms
+            .is_none()
+        {
+            assert!(std::time::Instant::now() < deadline, "never ticked");
+            assert!(!thread.ended());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            host.here().is_empty(),
+            "nothing handed back while sync runs"
+        );
+    };
+    let replaced = Arc::new(Recorder::default());
+    let thread = crate::sync::SyncThread::start_offloading(
+        a.client(),
+        timing,
+        Arc::clone(&replaced) as Arc<dyn OffloadHost>,
+    )
+    .unwrap();
+    ticked(&replaced, &thread);
+    thread.stop();
+    assert!(
+        replaced.here().is_empty(),
+        "a replaced thread hands back nothing"
+    );
+    assert_eq!(a.request(request).state, RequestState::Requested);
+
+    let host = Arc::new(Recorder::default());
+    let thread = crate::sync::SyncThread::start_offloading(
+        a.client(),
+        timing,
+        Arc::clone(&host) as Arc<dyn OffloadHost>,
+    )
+    .unwrap();
+    ticked(&host, &thread);
+    thread.stop_saying_gone();
+    let here: Vec<(EntityId, HereReason)> = host
+        .here()
+        .into_iter()
+        .map(|w| (w.request, w.why))
+        .collect();
+    assert_eq!(here, vec![(request, HereReason::Withdrawn)]);
+    assert_eq!(a.request(request).state, RequestState::Withdrawn);
+}
+
 /// A claimed request whose helper has no presence at all is given five minutes from when the
 /// asker first found it missing, not withdrawn at once (A5).
 #[test]
