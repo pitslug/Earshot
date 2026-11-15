@@ -105,6 +105,7 @@ fn seal(keys: &Keys, row: &SyncedRow) -> Result<SealedRow, SealError> {
         SyncedRow::Person(r) => seal_row(keys, r),
         SyncedRow::Voiceprint(r) => seal_row(keys, r),
         SyncedRow::Folder(r) => seal_row(keys, r),
+        SyncedRow::SummaryRequest(r) => seal_row(keys, r),
     }
 }
 
@@ -120,7 +121,7 @@ fn wire_row(sealed: SealedRow) -> WireRow {
 
 /// A pulled row opened with `keys`: `Ok(Incoming)` to apply or hold, `Err(())` when it
 /// cannot be opened or read (counted and skipped).
-fn open(
+pub(super) fn open(
     keys: &Keys,
     seq: u64,
     key: &[u8],
@@ -220,11 +221,23 @@ impl SyncClient {
     pub fn send_presence(&self, gone: bool) -> Result<(), SyncProblem> {
         let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
         let keys = secrets.key.keys();
-        let settings = sync_settings(&self.services.store())?;
+        let (settings, writer) = {
+            let db = self.services.store();
+            let settings = sync_settings(&db)?;
+            // The writer kind travels only while this device offers to write: the asker's
+            // label names it, so the user knows where the transcript goes.
+            let writer = if settings.offers_summaries {
+                crate::offload::WriterKind::of_settings(&db).map_err(|_| SyncProblem::Store)?
+            } else {
+                None
+            };
+            (settings, writer)
+        };
         let recording = !self.services.recording_meetings().is_empty();
         let presence = super::presence::presence_now(
             settings.device_name,
             settings.offers_summaries,
+            writer,
             recording,
             gone,
         );
@@ -512,7 +525,8 @@ impl SyncClient {
         report.written += applied.written;
         report.ignored += applied.ignored + applied.skipped;
         report.held += applied.held.iter().sum::<usize>();
-        report.repaired += applied.mes_merged + applied.summaries_replaced;
+        report.repaired +=
+            applied.mes_merged + applied.summaries_replaced + applied.withdrawals_kept;
         Ok(())
     }
 

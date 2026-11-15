@@ -44,7 +44,8 @@ pub struct Presence {
     /// Whether it writes summaries for the other devices ("Write summaries for my other
     /// devices").
     pub offers_summaries: bool,
-    /// The kind of writer it would use (phase 2; `None` until then).
+    /// The kind of writer it would use ([`crate::offload::WriterKind::word`]), sent only while
+    /// it offers summaries; `None` otherwise or for "no summary".
     pub writer_kind: Option<String>,
     /// Whether it is recording a meeting now.
     pub recording: bool,
@@ -178,6 +179,7 @@ pub(crate) fn open_blob(
 pub(crate) fn presence_now(
     name: String,
     offers_summaries: bool,
+    writer_kind: Option<crate::offload::WriterKind>,
     recording: bool,
     gone: bool,
 ) -> Presence {
@@ -187,7 +189,7 @@ pub(crate) fn presence_now(
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
         kind: "app".to_owned(),
         offers_summaries,
-        writer_kind: None,
+        writer_kind: writer_kind.map(|k| k.word().to_owned()),
         recording,
         gone,
         pad: String::new(),

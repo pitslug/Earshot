@@ -1,11 +1,12 @@
-// The Sync page commands (T11.3a), kept apart from ipc.ts so `IpcCommands` gains them in one
-// line. Refusals are `IpcError` kind `sync` (fixed copy by problem word,
-// `fixtures/ui/sync_copy_cases.json`) or `invalid_setting` (an address or setup secret the rule
-// refuses).
+// The Sync page commands (T11.3a) and summary offload's (T11.3db), kept apart from ipc.ts so
+// `IpcCommands` gains them in one line. Refusals are `IpcError` kind `sync` (fixed copy by problem
+// word, `fixtures/ui/sync_copy_cases.json`), `invalid_setting` (an address, setup secret or name
+// the rule refuses) or `offload` (a computer that would not be asked,
+// `fixtures/ui/offload_copy_cases.json`).
 
-import type { SyncCodeView, SyncDeviceView, SyncView } from "./bindings";
+import type { SummaryHelperView, SummaryHelpersView, SyncCodeView, SyncDeviceView, SyncView } from "./bindings";
 
-export type { SyncCodeView, SyncDeviceView, SyncView };
+export type { SummaryHelperView, SummaryHelpersView, SyncCodeView, SyncDeviceView, SyncView };
 
 /** The Sync part of `IpcCommands`. */
 export interface SyncCommands {
@@ -27,4 +28,16 @@ export interface SyncCommands {
   syncNow(): Promise<SyncView>;
   /** Removes this computer from sync: its meetings stay, the server and key are forgotten. */
   removeSyncDevice(): Promise<SyncView>;
+  /** Turns "Write summaries for my other computers" on or off (T11.3db). */
+  setSyncOfferSummaries(on: boolean): Promise<SyncView>;
+  /** Sets this computer's name as the other computers show it; empty: the computer's own. */
+  setSyncDeviceName(name: string): Promise<SyncView>;
+  /** The Summaries page's other computers that write summaries, and the chosen one (asks the
+   * server). */
+  summaryHelpers(): Promise<SummaryHelpersView>;
+  /** Chooses the computer this one asks to write its summaries (null: none). */
+  setSummaryHelper(device: string | null): Promise<SummaryHelpersView>;
+  /** Asks another computer to write a meeting's summary now; resolves with the meeting's waiting
+   * line. */
+  askSummaryHelper(meeting: string, device: string): Promise<string>;
 }

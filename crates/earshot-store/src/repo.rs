@@ -5,7 +5,8 @@ use earshot_core::diar::EmbeddingModelId;
 use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp, SyncMeta};
 use earshot_core::model::{
     AudioFile, AudioFileRepo, ExportRecord, ExportRepo, Folder, FolderRepo, Meeting, MeetingRepo,
-    Note, RepoError, SegmentRow, Speaker, Summary, Track, TranscriptPass, VaultPath,
+    Note, RepoError, RequestState, SegmentRow, Speaker, Summary, SummaryRequest,
+    SummaryRequestRepo, Track, TranscriptPass, VaultPath,
 };
 use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintError, VoiceprintRepo};
 use rusqlite::types::{Type, Value};
@@ -615,6 +616,72 @@ fn put_folder(c: &Connection, f: &Folder) -> Result<(), RepoError> {
     Ok(())
 }
 
+// ---- summary_request (T11.3da) ----
+
+const SUMMARY_REQUEST: [&str; 6] = [
+    "meeting_id",
+    "target_device",
+    "asking_device",
+    "segment_count",
+    "state",
+    "reason",
+];
+
+fn summary_request_row(r: &Row<'_>) -> rusqlite::Result<SummaryRequest> {
+    let state: String = r.get(REST + 4)?;
+    Ok(SummaryRequest {
+        id: get_id(r, 0)?,
+        meta: get_meta(r, 1)?,
+        meeting_id: get_id(r, REST)?,
+        target_device: get_device(r, REST + 1)?,
+        asking_device: get_device(r, REST + 2)?,
+        segment_count: get_u64(r, REST + 3)?,
+        state: RequestState::from_name(&state)
+            .ok_or_else(|| conv_err(REST + 4, Type::Text, BadValue(state.clone())))?,
+        reason: r.get(REST + 5)?,
+    })
+}
+
+fn get_summary_request(c: &Connection, id: EntityId) -> Result<Option<SummaryRequest>, RepoError> {
+    let sql = select_sql(
+        "summary_request",
+        &synced_cols(&SUMMARY_REQUEST),
+        "WHERE id = ?1",
+    );
+    Ok(query(c, &sql, &[id_value(id)], summary_request_row)?.pop())
+}
+
+fn all_summary_requests(c: &Connection) -> Result<Vec<SummaryRequest>, RepoError> {
+    let sql = select_sql(
+        "summary_request",
+        &synced_cols(&SUMMARY_REQUEST),
+        "ORDER BY created_wall, created_logical, created_node, id",
+    );
+    query(c, &sql, &[], summary_request_row)
+}
+
+fn put_summary_request(c: &Connection, s: &SummaryRequest) -> Result<(), RepoError> {
+    need_meeting(c, s.meeting_id)?;
+    let v = synced_values(
+        s.id,
+        &s.meta,
+        vec![
+            id_value(s.meeting_id),
+            device_value(s.target_device),
+            device_value(s.asking_device),
+            int(s.segment_count)?,
+            text(s.state.name()),
+            text(&s.reason),
+        ],
+    )?;
+    exec(
+        c,
+        &upsert_sql("summary_request", &synced_cols(&SUMMARY_REQUEST), "id"),
+        &v,
+    )?;
+    Ok(())
+}
+
 // ---- audio_file (NeverSync) ----
 
 const AUDIO: [&str; 11] = [
@@ -873,6 +940,9 @@ pub(crate) fn synced_by_id(
         "folder" => query(c, &sql(&FOLDER), &p, folder_row)?
             .pop()
             .map(R::Folder),
+        "summary_request" => query(c, &sql(&SUMMARY_REQUEST), &p, summary_request_row)?
+            .pop()
+            .map(R::SummaryRequest),
         _ => None,
     })
 }
@@ -891,6 +961,7 @@ pub(crate) fn put_synced(c: &Connection, row: &crate::sync::SyncedRow) -> Result
         R::Person(p) => put_person(c, p),
         R::Voiceprint(v) => put_voiceprint(c, v),
         R::Folder(f) => put_folder(c, f),
+        R::SummaryRequest(s) => put_summary_request(c, s),
     }
 }
 
@@ -956,6 +1027,18 @@ macro_rules! impl_repos {
             }
             fn put_folder(&mut self, folder: Folder) -> Result<(), RepoError> {
                 put_folder(&self.conn, &folder)
+            }
+        }
+
+        impl SummaryRequestRepo for $ty {
+            fn summary_request(&self, id: EntityId) -> Result<Option<SummaryRequest>, RepoError> {
+                get_summary_request(&self.conn, id)
+            }
+            fn summary_requests(&self) -> Result<Vec<SummaryRequest>, RepoError> {
+                all_summary_requests(&self.conn)
+            }
+            fn put_summary_request(&mut self, request: SummaryRequest) -> Result<(), RepoError> {
+                put_summary_request(&self.conn, &request)
             }
         }
 

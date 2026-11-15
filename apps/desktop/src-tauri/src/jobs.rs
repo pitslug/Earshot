@@ -201,6 +201,21 @@ impl JobRunner {
         meeting: EntityId,
         job: JobKind,
     ) -> Result<(), IpcError> {
+        self.start_noted(services, meeting, job, None)
+    }
+
+    /// [`JobRunner::start`], with `note` sent as the job's first [`JobEvent::Warning`] (why it
+    /// runs: a summary another computer did not write, T11.3db).
+    ///
+    /// # Errors
+    /// As [`JobRunner::start`].
+    pub fn start_noted(
+        &self,
+        services: &Services,
+        meeting: EntityId,
+        job: JobKind,
+        note: Option<String>,
+    ) -> Result<(), IpcError> {
         let mut running = self
             .0
             .running
@@ -228,6 +243,12 @@ impl JobRunner {
         let thread = std::thread::Builder::new()
             .name("earshot-job".into())
             .spawn(move || {
+                if let Some(message) = note {
+                    (inner.sink)(JobEvent::Warning {
+                        meeting: meeting.to_string(),
+                        message,
+                    });
+                }
                 run_guarded(&inner, &svc, meeting, job, &token, lease);
                 drop(pass);
             })

@@ -179,6 +179,12 @@ pub enum SummaryEvent {
     },
     /// The summary was cancelled; nothing was stored. A final transcript stays.
     Cancelled,
+    /// Another of the user's computers was asked to write the summary (T11.3db): it arrives by
+    /// sync, or this computer writes it if that one does not.
+    Offloaded {
+        /// The meeting's waiting line (fixed copy, `offload::waiting_copy`).
+        message: String,
+    },
     /// The final pass was cancelled, so no summary ran either: the recording and any draft
     /// transcript stay and the meeting reads as `Unprocessed`.
     PostCancelled,
@@ -1411,6 +1417,9 @@ pub fn summary_result_event(result: &SummaryResult, voices_to_name: u32) -> Summ
             retryable: *retryable,
         },
         SummaryResult::Cancelled => SummaryEvent::Cancelled,
+        SummaryResult::Offloaded { name, .. } => SummaryEvent::Offloaded {
+            message: crate::offload::waiting_copy(Some(name)),
+        },
     }
 }
 

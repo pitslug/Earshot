@@ -378,6 +378,16 @@ export const commands = {
 	syncNow: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("sync_now")),
 	/**  Removes this computer from sync. */
 	removeSyncDevice: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("remove_sync_device")),
+	/**  Turns "Write summaries for my other computers" on or off. */
+	setSyncOfferSummaries: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_offer_summaries", { on })),
+	/**  Sets this computer's name as the other computers show it. */
+	setSyncDeviceName: (name: string) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_device_name", { name })),
+	/**  The Summaries page's offload part (asks the server). */
+	summaryHelpers: () => typedError<SummaryHelpersView, IpcError>(__TAURI_INVOKE("summary_helpers")),
+	/**  Chooses the computer this one asks to write its summaries (`None`: none). */
+	setSummaryHelper: (device: string | null) => typedError<SummaryHelpersView, IpcError>(__TAURI_INVOKE("set_summary_helper", { device })),
+	/**  Asks another computer to write a meeting's summary now; returns the meeting's waiting line. */
+	askSummaryHelper: (meeting: string, device: string) => typedError<string, IpcError>(__TAURI_INVOKE("ask_summary_helper", { meeting, device })),
 	/**  Whether the app opens on the first-run wizard. */
 	firstRunState: () => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("first_run_state")),
 	/**  Marks the first-run wizard done, whichever steps were skipped. */
@@ -1255,6 +1265,11 @@ export type MeetingDetail = {
 	 *  for a draft transcript, which offers neither.
 	 */
 	dictionary: string[],
+	/**
+	 *  While another computer was asked to write the summary and has not answered (T11.3db):
+	 *  the meeting's waiting line (fixed copy, `offload::waiting_copy`).
+	 */
+	waiting_for: string | null,
 };
 
 /**
@@ -1995,6 +2010,13 @@ retryable: boolean } |
 /**  The summary was cancelled; nothing was stored. A final transcript stays. */
 { kind: "Cancelled" } | 
 /**
+ *  Another of the user's computers was asked to write the summary (T11.3db): it arrives by
+ *  sync, or this computer writes it if that one does not.
+ */
+{ kind: "Offloaded"; 
+/**  The meeting's waiting line (fixed copy, `offload::waiting_copy`). */
+message: string } | 
+/**
  *  The final pass was cancelled, so no summary ran either: the recording and any draft
  *  transcript stay and the meeting reads as `Unprocessed`.
  */
@@ -2039,6 +2061,40 @@ bullet: number } |
 { kind: "OpenQuestion"; 
 /**  Which. */
 index: number };
+
+/**  One paired computer the Summaries page can ask. */
+export type SummaryHelperView = {
+	/**  Its id. */
+	id: string,
+	/**  Its name, from its presence; `None` until it sends one (the page shows the short id). */
+	name: string | null,
+	/**  The first eight hex digits of its id. */
+	short_id: string,
+	/**  The kind of writer it uses (fixed copy, [`writer_label`]); `None` when it has none. */
+	writer: string | null,
+	/**  Whether it writes summaries for the others now. */
+	offers: boolean,
+	/**  Whether it is online now. */
+	online: boolean,
+	/**  Whether it is recording now. */
+	recording: boolean,
+	/**  Whether it would be asked now: online, offering, with a writer, not recording. */
+	available: boolean,
+	/**  Whether it is the chosen one. */
+	chosen: boolean,
+};
+
+/**  The Summaries page's offload part. */
+export type SummaryHelpersView = {
+	/**  Sync is set up and on, so another computer can be asked. */
+	sync_ready: boolean,
+	/**  The chosen computer's id, if any. */
+	chosen: string | null,
+	/**  The computers that offer summaries, and the chosen one whatever it offers now. */
+	helpers: SummaryHelperView[],
+	/**  Why the computers could not be read now (fixed copy); the chosen one is still listed. */
+	problem: string | null,
+};
 
 /**  The Summaries page settings as the UI sends and reads them. */
 export type SummarySettingsValue = {
@@ -2155,6 +2211,13 @@ export type SyncDeviceView = {
 	online: boolean,
 	/**  Whether it is recording now. */
 	recording: boolean,
+	/**  Whether it writes summaries for the other computers (T11.3db). */
+	offers_summaries: boolean,
+	/**
+	 *  The kind of writer it uses, as the page names it (fixed copy,
+	 *  [`crate::offload::writer_label`]); `None` when it does not offer summaries.
+	 */
+	writer: string | null,
 	/**  The first eight hex digits of its id. */
 	short_id: string,
 	/**  When it joined (Unix seconds, the server's clock). */
@@ -2189,6 +2252,10 @@ export type SyncView = {
 	waiting: number,
 	/**  Rows from other devices held for later. */
 	held: number,
+	/**  "Write summaries for my other computers" (T11.3db). */
+	offers_summaries: boolean,
+	/**  This computer's name as the other computers show it (T11.3db). */
+	device_name: string,
 };
 
 /**  NVIDIA's terms for a part. */

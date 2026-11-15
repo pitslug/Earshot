@@ -852,6 +852,7 @@ fn outcome(post: Result<HostPost, RuntimeError>, summary: SummaryResult) -> Host
         handovers: vec![],
         handover_record_failures: vec![],
         claude_effort_unread: false,
+        offload: None,
     }
 }
 

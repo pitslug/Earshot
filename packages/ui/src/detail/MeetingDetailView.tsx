@@ -63,6 +63,7 @@ import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
 import { KeptLocal } from "./KeptLocal";
+import { ResummariseControl } from "./ResummariseControl";
 import { SpeakersPanel } from "./SpeakersPanel";
 import {
   DictionaryBar,
@@ -442,6 +443,9 @@ export function jobNotice(view: JobView): Notice {
         case "Cancelled":
         case "PostCancelled":
           return { key: "job", intent: "info", text: "The summary was cancelled." };
+        // Another computer writes it (T11.3db); the summary arrives by sync.
+        case "Offloaded":
+          return { key: "job", intent: "info", title: "Summary on another computer", text: e.result.message };
         default: {
           const unhandled: never = e.result;
           return unhandled;
@@ -658,6 +662,18 @@ export function MeetingDetailView({
     }
   };
 
+  // Re-summarise on another computer (T11.3db): the meeting shows it waits.
+  const askHelper = async (device: string) => {
+    try {
+      const line = await ipc.askSummaryHelper(id, device);
+      setNotice({ key: "job", intent: "info", text: line });
+      await reload();
+      onChanged();
+    } catch (e) {
+      setNotice({ key: "job", intent: "error", text: failureText(e) });
+    }
+  };
+
   const title = displayTitle(item);
   const jobBar = job !== undefined ? jobNotice(job) : null;
   const voices = detail ? voicesToName(detail) : 0;
@@ -753,9 +769,12 @@ export function MeetingDetailView({
                 </Button>
               </Tooltip>
             ) : (
-              <Button disabled={detail === null} onClick={() => void startJob("resummarise")}>
-                {detail !== null && detail.summary === null ? "Summarise" : "Re-summarise"}
-              </Button>
+              <ResummariseControl
+                label={detail !== null && detail.summary === null ? "Summarise" : "Re-summarise"}
+                disabled={detail === null}
+                onHere={() => void startJob("resummarise")}
+                onAsk={(device) => void askHelper(device)}
+              />
             )}
           </div>
         </div>
@@ -1264,6 +1283,14 @@ function SummaryTab({
               Re-summarise
             </Button>
           </MessageBarActions>
+        </MessageBar>
+      )}
+      {detail.waiting_for !== null && (
+        <MessageBar intent="info" layout="multiline" role="status">
+          <MessageBarBody>
+            <MessageBarTitle>Summary on another computer</MessageBarTitle>
+            {detail.waiting_for} If it does not answer, this computer writes it.
+          </MessageBarBody>
         </MessageBar>
       )}
       <KeptLocal keptLocal={detail.kept_local} onAllow={onAllowWriter} />

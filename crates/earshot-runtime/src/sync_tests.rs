@@ -1205,13 +1205,19 @@ fn presence_blobs_are_one_size_whatever_they_say() {
     let device = earshot_core::identity::DeviceId::from_bytes([7; 16]);
     let widest = "\u{1F600}".repeat(MAX_DEVICE_NAME);
     let mut sizes = std::collections::BTreeSet::new();
-    for (name, recording, gone) in [
-        ("A", false, false),
-        ("A", true, false),
-        ("A much longer computer name here", true, true),
-        (widest.as_str(), false, false),
+    let longest = crate::offload::WriterKind::OpenaiCompatible;
+    for (name, recording, gone, writer) in [
+        ("A", false, false, None),
+        ("A", true, false, Some(crate::offload::WriterKind::Local)),
+        (
+            "A much longer computer name here",
+            true,
+            true,
+            Some(longest),
+        ),
+        (widest.as_str(), false, false, Some(longest)),
     ] {
-        let p = presence::presence_now(name.to_owned(), true, recording, gone);
+        let p = presence::presence_now(name.to_owned(), true, writer, recording, gone);
         let blob = presence::blob_of(&p, &keys, device).unwrap();
         sizes.insert(blob.len());
         let back = presence::open_blob(&keys, device, &blob).unwrap();
@@ -1262,5 +1268,69 @@ fn sync_waiting_leaves_out_voiceprints_while_their_switch_is_off() {
     assert!(
         a.svc.store().outbox_len().unwrap() > 0,
         "it stays queued for the switch"
+    );
+}
+
+/// A row of an entity this build does not know (as `summary_request` is to Earshot 0.3.7, which
+/// syncs at the same envelope format) is held as `format` by the client, never dropped or
+/// applied, and opens again after an update (T11.3da kept the format at 1).
+#[test]
+fn sync_a_row_of_an_entity_this_build_does_not_know_is_held() {
+    use earshot_core::identity::{
+        Clock, EntityId, HlcTimestamp, SyncClass, SyncMeta, SyncSerialize, SyncableClass,
+    };
+    #[derive(serde::Serialize)]
+    struct FromANewerBuild {
+        id: EntityId,
+        meta: SyncMeta,
+        anything: String,
+    }
+    impl SyncClass for FromANewerBuild {
+        type Class = SyncableClass;
+    }
+    impl SyncSerialize for FromANewerBuild {
+        const ENTITY: &'static str = "an_entity_from_a_newer_build";
+        fn sync_id(&self) -> EntityId {
+            self.id
+        }
+        fn sync_meta(&self) -> &SyncMeta {
+            &self.meta
+        }
+    }
+    let node = earshot_core::identity::DeviceId::from_bytes([9; 16]);
+    let stamp = HlcTimestamp {
+        wall_ms: crate::testutil::T0,
+        logical: 0,
+        node,
+    };
+    let row = FromANewerBuild {
+        id: EntityId::from_bytes([0x01, 0x90, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 1, 9]),
+        meta: SyncMeta {
+            created_at: stamp,
+            updated_at: stamp,
+            deleted: false,
+            origin_device_id: node,
+        },
+        anything: "new".into(),
+    };
+    let keys = earshot_sync::VaultKey::from_bytes([3; 32]).keys();
+    let sealed = earshot_sync::seal_row(&keys, &row).unwrap();
+    let inc = engine::open(&keys, 1, &sealed.key.0, sealed.stamp, sealed.body).unwrap();
+    assert!(inc.row.is_none(), "not decoded: held for a newer build");
+    let dir = TempDir::new("sync-unknown-entity");
+    let (svc, clock) = services(&dir);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let free = |_: EntityId| false;
+    let rules = earshot_store::ApplyRules {
+        voiceprints: false,
+        leased: &free,
+        now_ms: clock.now_unix_ms(),
+    };
+    let applied = store.apply_remote(&[inc], &rules, hlc, &*clock).unwrap();
+    assert_eq!(applied.held[0], 1, "{applied:?}");
+    assert_eq!(
+        store.held_rows().unwrap()[0].reason,
+        earshot_store::HoldReason::Format
     );
 }

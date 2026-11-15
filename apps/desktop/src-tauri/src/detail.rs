@@ -294,6 +294,9 @@ pub struct MeetingDetail {
     /// from Dictionary" when it is one (case ignored) and "Add to Dictionary" otherwise; empty
     /// for a draft transcript, which offers neither.
     pub dictionary: Vec<String>,
+    /// While another computer was asked to write the summary and has not answered (T11.3db):
+    /// the meeting's waiting line (fixed copy, `offload::waiting_copy`).
+    pub waiting_for: Option<String>,
 }
 
 /// One handover to Claude Code or Codex.
@@ -801,6 +804,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         words,
         dictionary,
         summary_edited,
+        waiting_for,
     ) = {
         let db = services.store();
         let persons = edit::list_persons_in(&db)?;
@@ -850,6 +854,8 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             Some(s) => earshot_runtime::summary_edits::is_edited(&db, meeting, s.id)?,
             None => false,
         };
+        let waiting_for = earshot_runtime::offload::waiting_for(&db, db.device(), meeting)?
+            .map(|_| crate::offload::waiting_copy(None));
         (
             persons,
             history,
@@ -862,6 +868,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             words,
             dictionary,
             summary_edited,
+            waiting_for,
         )
     };
     // The final pass's own rule, as the Speakers panel's offers use it.
@@ -973,6 +980,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         kept_local,
         word_list: words.list,
         dictionary,
+        waiting_for,
     })
 }
 

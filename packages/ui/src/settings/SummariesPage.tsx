@@ -30,6 +30,7 @@ import {
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import type { EffortChoice, ProviderChoice, SummarySettingsView, WriterChoice } from "../ipc";
+import { HelperSection } from "./HelperSection";
 import { ModelsNotLoaded, SummaryModelChoices } from "./ModelSections";
 import { SummaryStyleSection } from "./SummaryStyleSection";
 import { partName, titleOf } from "./copy";
@@ -800,6 +801,8 @@ export function SummariesPage({ models }: SummariesPageProps) {
       <SummariesNotices state={state} settings={settings} />
 
       <WriterSection state={state} settings={settings} keySaved={keySaved} localModels={models} />
+
+      <HelperSection />
 
       <Section title="During the meeting">
         <Switch

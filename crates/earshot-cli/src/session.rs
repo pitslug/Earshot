@@ -1151,6 +1151,7 @@ pub fn run_meeting(
         no_summary: skip_reason(&plan).unwrap_or(SkipReason::NotRequested),
         post_cancel: &post_cancel,
         summary_cancel: &CancelToken::new(),
+        offload: None,
     };
     let mut printer = PostPrinter {
         out: &mut *out,
@@ -1288,6 +1289,8 @@ pub fn run_meeting(
         SummaryResult::Skipped { .. } => {
             writeln!(out, "network: none ({no_summary_network})")?;
         }
+        // The CLI passes no offload choice, so it never asks another device.
+        SummaryResult::Offloaded { .. } => bail!("summary: asked another computer"),
     }
 
     // 5. Export, on request only.

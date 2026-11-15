@@ -276,6 +276,13 @@ impl MeetingDriver {
         }))
     }
 
+    /// The queue meetings take turns in; summary offload's work for another computer takes its
+    /// turn here too (T11.3db).
+    #[must_use]
+    pub fn queue(&self) -> MeetingQueue {
+        self.0.queue.clone()
+    }
+
     fn threads(&self) -> std::sync::MutexGuard<'_, Threads> {
         self.0
             .threads
@@ -1198,6 +1205,15 @@ fn run(
     if host.claude_effort_unread {
         send(crate::meeting_events::claude_effort_unread_warning());
     }
+    // The chosen computer was not asked (T11.3db): the banner says this computer wrote the
+    // summary only when one was stored.
+    if let Some(banner) = host
+        .offload
+        .as_ref()
+        .and_then(|choice| crate::offload::offload_banner(choice, &host.summary))
+    {
+        send(banner);
+    }
     if let Some(message) = crate::meeting_events::summary_fallback_note(&host.summary) {
         send(MeetingEvent::Warning {
             key: "summary-processor".into(),
@@ -1549,7 +1565,16 @@ pub struct HostPrepare {
     source: SourceFn,
     /// Whether the meeting may run provisional words (T9.1m); off only in the hidden replay.
     previews: bool,
+    /// Summary offload's decision (T11.3db), set by the app once sync is ready; empty: this
+    /// computer's writer, as before.
+    offload: OffloadSlot,
 }
+
+/// Summary offload's decision for a meeting's summary step (`offload::choose_now` in the app).
+pub type OffloadChooser = Arc<dyn Fn() -> earshot_runtime::offload::OffloadChoice + Send + Sync>;
+
+/// Where the app puts its [`OffloadChooser`] once sync is ready (shared with [`HostPrepare`]).
+pub type OffloadSlot = Arc<std::sync::OnceLock<OffloadChooser>>;
 
 impl HostPrepare {
     /// The app's meetings: live capture.
@@ -1564,7 +1589,15 @@ impl HostPrepare {
         Self {
             source,
             previews: true,
+            offload: OffloadSlot::default(),
         }
+    }
+
+    /// Summary offload's decision comes from `slot` once the app sets it (T11.3db).
+    #[must_use]
+    pub fn with_offload(mut self, slot: OffloadSlot) -> Self {
+        self.offload = slot;
+        self
     }
 
     /// No provisional words, whatever the setting says (T12.46): the hidden replay shows no
@@ -1741,6 +1774,7 @@ mod production {
                 ..LiveConfig::default()
             };
             let factory = meeting_models.live_factory();
+            let offload = self.offload.get().cloned();
             let starter = source.starter;
             let call_signal = source.call_signal;
             let start =
@@ -1771,6 +1805,9 @@ mod production {
                         // One token: the user's Cancel stops both, so no summary runs on the draft.
                         post_cancel: cancel,
                         summary_cancel: cancel,
+                        offload: offload
+                            .as_ref()
+                            .map(|f| &**f as &dyn Fn() -> earshot_runtime::offload::OffloadChoice),
                     };
                     host::after_meeting(svc, outcome, &run, progress)
                 },

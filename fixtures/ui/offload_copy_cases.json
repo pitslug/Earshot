@@ -1,0 +1,40 @@
+{
+  "_comment": "Summary offload copy (T11.3db, docs/sync.md section 10). writers: the label of each writer kind presence carries. unavailable: the banner when the chosen computer was not asked and this computer stored the summary, by reason. not_asked: the same reasons claiming nothing about a summary, for a summary step that stored none here and a refused re-summarise On <device>. {device} (always at the start of a sentence) is the chosen computer's name. written_here: the first warning of the re-summary this computer runs after asking, sent before it runs, by reason; {device} as above. waiting: the meeting's line while a request is open. already_waiting: re-summarise On <device> while the meeting waits for another computer. unnamed: {device} at the start of a sentence for a computer whose name is not known; unnamed_inline: the same inside a sentence (waiting). Pinned to the desktop's offload copy by its tests and read by the UI mock. Shipped with the app: public copy only.",
+  "writers": {
+    "local": "local model",
+    "anthropic": "Claude with an API key",
+    "openai_compatible": "own server",
+    "claude_code": "Claude Code",
+    "codex": "Codex"
+  },
+  "unavailable": {
+    "sync_off": "Sync is off, so this computer wrote the summary.",
+    "unreachable": "The sync server could not be reached, so this computer wrote the summary.",
+    "offline": "{device} is not online, so this computer wrote the summary.",
+    "not_offering": "{device} no longer writes summaries for your other computers, so this computer wrote the summary.",
+    "no_writer": "{device} has no summary writer set up, so this computer wrote the summary.",
+    "recording": "{device} is recording a meeting, so this computer wrote the summary.",
+    "no_final_transcript": "This meeting has no final transcript to send, so this computer wrote the summary.",
+    "not_asked": "{device} could not be asked, so this computer wrote the summary."
+  },
+  "not_asked": {
+    "sync_off": "Sync is off, so no other computer was asked.",
+    "unreachable": "The sync server could not be reached, so no other computer was asked.",
+    "offline": "{device} is not online, so it was not asked.",
+    "not_offering": "{device} no longer writes summaries for your other computers, so it was not asked.",
+    "no_writer": "{device} has no summary writer set up, so it was not asked.",
+    "recording": "{device} is recording a meeting, so it was not asked.",
+    "no_final_transcript": "This meeting has no final transcript to send, so no other computer was asked.",
+    "not_asked": "{device} could not be asked."
+  },
+  "written_here": {
+    "not_claimed": "{device} did not answer, so this computer writes the summary instead.",
+    "helper_stale": "{device} went offline before it finished, so this computer writes the summary instead.",
+    "declined": "{device} could not write the summary, so this computer writes it instead.",
+    "withdrawn": "{device} did not write the summary, so this computer writes it instead."
+  },
+  "waiting": "Waiting for {device} to write the summary.",
+  "already_waiting": "This meeting already waits for another computer to write its summary.",
+  "unnamed": "Your other computer",
+  "unnamed_inline": "your other computer"
+}

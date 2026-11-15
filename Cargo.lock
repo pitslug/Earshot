@@ -1343,6 +1343,7 @@ version = "0.3.7"
 dependencies = [
  "earshot-capture-wasapi",
  "earshot-core",
+ "earshot-llm-replay",
  "earshot-proc",
  "earshot-runtime",
  "earshot-store",

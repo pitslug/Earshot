@@ -120,6 +120,7 @@ fn run<'a>(
         no_summary: SkipReason::NotRequested,
         post_cancel,
         summary_cancel,
+        offload: None,
     }
 }
 

@@ -1835,6 +1835,20 @@ pub enum SummaryResult {
     },
     /// Cancelled through [`AfterMeeting::summary_cancel`]; nothing was stored.
     Cancelled,
+    /// Another of the user's devices was asked to write it (summary offload,
+    /// [`crate::offload`]): nothing was written here; the summary arrives by sync, or this
+    /// device writes it if the helper does not ([`crate::offload::Offload::step`]).
+    Offloaded {
+        /// The request.
+        request: EntityId,
+        /// The helper asked.
+        device: earshot_core::identity::DeviceId,
+        /// Its name, from its presence; empty when it is not the chosen device (the meeting
+        /// already waited for another).
+        name: String,
+        /// The kind of writer it uses, when known (the chosen device's).
+        writer: Option<crate::offload::WriterKind>,
+    },
 }
 
 /// Result of [`after_meeting`].
@@ -1860,6 +1874,11 @@ pub struct HostOutcome {
     /// chosen, because its help could not be read ([`claude_effort_unread`], T12.20); false
     /// for any summary that was not stored.
     pub claude_effort_unread: bool,
+    /// What the summary step decided about the chosen helper (summary offload; `None` when the
+    /// run had no [`AfterMeeting::offload`] or stopped before the summary). A
+    /// [`crate::offload::OffloadChoice::HereInstead`] is shown: this device's writer ran because
+    /// the chosen one was not available.
+    pub offload: Option<crate::offload::OffloadChoice>,
 }
 
 impl HostOutcome {
@@ -1876,6 +1895,7 @@ impl HostOutcome {
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
             claude_effort_unread: false,
+            offload: None,
         }
     }
 
@@ -1893,6 +1913,7 @@ impl HostOutcome {
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
             claude_effort_unread: false,
+            offload: None,
         }
     }
 }
@@ -1918,6 +1939,10 @@ pub struct AfterMeeting<'a> {
     pub post_cancel: &'a CancelToken,
     /// Cancels the summary.
     pub summary_cancel: &'a CancelToken,
+    /// Summary offload (T11.3da): the decision of the summary step, made when the summary is
+    /// due (after the final pass), e.g. [`crate::offload::choose_now`]. `None`: this device's
+    /// writer, as before.
+    pub offload: Option<&'a dyn Fn() -> crate::offload::OffloadChoice>,
 }
 
 /// The skip reason of a plan that runs no summary (`None` for one that runs a summary).
@@ -2014,6 +2039,51 @@ where
         Ok(HostPost::Skipped)
     };
     progress(HostStep::PostFinished(&post));
+    // Summary offload: decided once, when the summary is due (never for a failed pass or a
+    // cancelled summary).
+    let mut offload = None;
+    let mut offloaded = None;
+    if post.is_ok()
+        && !run.summary_cancel.is_cancelled()
+        && let Some(choose) = run.offload
+    {
+        let choice = match choose() {
+            crate::offload::OffloadChoice::Ask {
+                device,
+                name,
+                writer,
+            } => match crate::offload::ask_for(services, meeting, device) {
+                Ok(Some(asked)) => {
+                    // A meeting that already waited keeps its request: name its device, and the
+                    // chosen one's name and writer only when it is that device.
+                    let same = asked.target == device;
+                    offloaded = Some(SummaryResult::Offloaded {
+                        request: asked.request,
+                        device: asked.target,
+                        name: if same { name.clone() } else { String::new() },
+                        writer: same.then_some(writer),
+                    });
+                    crate::offload::OffloadChoice::Ask {
+                        device,
+                        name,
+                        writer,
+                    }
+                }
+                Ok(None) => crate::offload::OffloadChoice::HereInstead {
+                    device,
+                    name: Some(name),
+                    why: crate::offload::Unavailable::NoFinalTranscript,
+                },
+                Err(_) => crate::offload::OffloadChoice::HereInstead {
+                    device,
+                    name: Some(name),
+                    why: crate::offload::Unavailable::NotAsked,
+                },
+            },
+            other => other,
+        };
+        offload = Some(choice);
+    }
     let (summary, network, handovers, handover_record_failures) = if post.is_err() {
         (
             SummaryResult::Skipped {
@@ -2023,6 +2093,8 @@ where
             Vec::new(),
             Vec::new(),
         )
+    } else if let Some(offloaded) = offloaded {
+        (offloaded, Vec::new(), Vec::new(), Vec::new())
     } else {
         match run.summary {
             // Cancelled already: nothing to load or send, whatever the transcript holds.
@@ -2060,6 +2132,7 @@ where
         handovers,
         handover_record_failures,
         claude_effort_unread,
+        offload,
     }
 }
 

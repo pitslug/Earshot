@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use earshot_runtime::Services;
+use earshot_runtime::offload::OffloadHost;
 use earshot_runtime::sync::{
     AddressRefused, SyncClient, SyncOverview, SyncProblem, SyncThread, SyncTiming, SyncVault,
     check_address,
@@ -105,6 +106,9 @@ pub struct SyncHost {
     /// the slot, then the store).
     lifecycle: Mutex<()>,
     timing: SyncTiming,
+    /// Who does summary offload's work (T11.3db): set once the app's meeting driver and job
+    /// runner exist; a thread started without it runs no offload step.
+    offload: Mutex<Option<Arc<dyn OffloadHost>>>,
 }
 
 impl std::fmt::Debug for SyncHost {
@@ -128,7 +132,14 @@ impl SyncHost {
             thread: Mutex::new(None),
             lifecycle: Mutex::new(()),
             timing,
+            offload: Mutex::new(None),
         }
+    }
+
+    /// Sets who does summary offload's work; threads started from now on run its step after
+    /// every tick ([`earshot_runtime::offload::Offload::step`]).
+    pub fn set_offload_host(&self, host: Arc<dyn OffloadHost>) {
+        *self.offload.lock().unwrap_or_else(PoisonError::into_inner) = Some(host);
     }
 
     /// The vault.
@@ -163,10 +174,18 @@ impl SyncHost {
             earshot_runtime::sync::sync_settings(&db).is_ok_and(|s| s.on)
         };
         let ready = on && self.vault.has().unwrap_or(false);
+        let offload = self
+            .offload
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let next = if ready {
             SyncClient::new(services.clone(), self.vault())
                 .ok()
-                .and_then(|c| SyncThread::start(c, self.timing).ok())
+                .and_then(|c| match offload {
+                    Some(host) => SyncThread::start_offloading(c, self.timing, host).ok(),
+                    None => SyncThread::start(c, self.timing).ok(),
+                })
         } else {
             None
         };
@@ -295,6 +314,10 @@ pub struct SyncView {
     pub waiting: u64,
     /// Rows from other devices held for later.
     pub held: u64,
+    /// "Write summaries for my other computers" (T11.3db).
+    pub offers_summaries: bool,
+    /// This computer's name as the other computers show it (T11.3db).
+    pub device_name: String,
 }
 
 fn view_of(o: SyncOverview, running: bool) -> SyncView {
@@ -316,6 +339,8 @@ fn view_of(o: SyncOverview, running: bool) -> SyncView {
         unreadable: o.status.unreadable,
         waiting: o.waiting,
         held: o.held,
+        offers_summaries: o.settings.offers_summaries,
+        device_name: o.settings.device_name,
     }
 }
 
@@ -340,6 +365,11 @@ pub struct SyncDeviceView {
     pub online: bool,
     /// Whether it is recording now.
     pub recording: bool,
+    /// Whether it writes summaries for the other computers (T11.3db).
+    pub offers_summaries: bool,
+    /// The kind of writer it uses, as the page names it (fixed copy,
+    /// [`crate::offload::writer_label`]); `None` when it does not offer summaries.
+    pub writer: Option<String>,
     /// The first eight hex digits of its id.
     pub short_id: String,
     /// When it joined (Unix seconds, the server's clock).
@@ -361,6 +391,10 @@ pub fn devices(services: &Services, host: &SyncHost) -> Result<Vec<SyncDeviceVie
             name: d.name,
             online: d.online,
             recording: d.recording,
+            offers_summaries: d.offers_summaries,
+            writer: d
+                .writer_kind
+                .map(|k| crate::offload::writer_label(k).to_owned()),
             short_id: d.short_id,
             joined_unix_s: d.joined_unix_s,
             seen_s_ago: d.seen_s_ago,
@@ -462,6 +496,46 @@ pub fn set_voiceprints(
     host.nudge();
     view(services, host)
 }
+
+/// Turns "Write summaries for my other computers" on or off; the next presence says so.
+///
+/// # Errors
+/// Fixed copy of a store failure.
+pub fn set_offer_summaries(
+    services: &Services,
+    host: &SyncHost,
+    on: bool,
+) -> Result<SyncView, IpcError> {
+    earshot_runtime::sync::set_offer_summaries(services, on).map_err(sync_error)?;
+    host.nudge();
+    view(services, host)
+}
+
+/// The longest name the page accepts (characters), as presence keeps it.
+pub const MAX_DEVICE_NAME: usize = earshot_runtime::sync::MAX_DEVICE_NAME;
+
+/// Sets this computer's name as the other computers show it; empty goes back to the computer's
+/// own name.
+///
+/// # Errors
+/// [`IpcError::invalid`] for a name over [`MAX_DEVICE_NAME`] characters; fixed copy of a store
+/// failure.
+pub fn set_device_name(
+    services: &Services,
+    host: &SyncHost,
+    name: &str,
+) -> Result<SyncView, IpcError> {
+    if name.trim().chars().count() > MAX_DEVICE_NAME {
+        return Err(IpcError::invalid(DEVICE_NAME_TOO_LONG));
+    }
+    earshot_runtime::sync::set_device_name(services, name).map_err(sync_error)?;
+    host.nudge();
+    view(services, host)
+}
+
+/// The refusal of a name over [`MAX_DEVICE_NAME`] characters (the table's `device_name_too_long`,
+/// `fixtures/ui/sync_copy_cases.json`).
+pub const DEVICE_NAME_TOO_LONG: &str = "The name can have at most 64 characters.";
 
 /// Removes this computer from sync (the thread first, then the server and what it kept).
 ///
@@ -597,6 +671,32 @@ pub async fn set_sync_voiceprints(
     let services = state.services()?;
     let host = host(&sync);
     blocking(move || set_voiceprints(&services, &host, on)).await
+}
+
+/// Turns "Write summaries for my other computers" on or off.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_sync_offer_summaries(
+    state: tauri::State<'_, AppState>,
+    sync: tauri::State<'_, Arc<SyncHost>>,
+    on: bool,
+) -> Result<SyncView, IpcError> {
+    let services = state.services()?;
+    let host = host(&sync);
+    blocking(move || set_offer_summaries(&services, &host, on)).await
+}
+
+/// Sets this computer's name as the other computers show it.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_sync_device_name(
+    state: tauri::State<'_, AppState>,
+    sync: tauri::State<'_, Arc<SyncHost>>,
+    name: String,
+) -> Result<SyncView, IpcError> {
+    let services = state.services()?;
+    let host = host(&sync);
+    blocking(move || set_device_name(&services, &host, &name)).await
 }
 
 /// Asks for a sync now.
