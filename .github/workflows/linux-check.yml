@@ -42,7 +42,7 @@ jobs:
 
       - name: Install the pinned toolchain
         run: |
-          rustup toolchain install "${RUSTUP_TOOLCHAIN}" --profile minimal
+          rustup toolchain install "${RUSTUP_TOOLCHAIN}" --profile minimal --component rustfmt
           rustc --version
           cargo --version
           cmake --version | head -n 1
@@ -126,7 +126,18 @@ jobs:
         continue-on-error: true
         working-directory: src
         run: cargo build --locked -p earshot-runtime --lib
-      # The summary path and sync: the runtime's summary, sync and view tests.
+      # llama-cpp-sys-2 0.1.160 hard-links its shared libraries (with their .so symlinks) into
+      # target/debug, target/debug/deps and target/debug/examples whenever its build script
+      # runs, and panics (File exists) when a link from an earlier run is a dangling symlink:
+      # the test build runs it again with other features than the library build. Remove the
+      # links first; cargo test finds the libraries through the build's own search path.
+      - name: Remove llama.cpp's links from the library build
+        working-directory: src
+        run: |
+          for d in target/debug target/debug/deps target/debug/examples; do
+            rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
+          done
+      # The summary path and sync: the runtime's summary and sync tests.
       - name: Test earshot-runtime (lib, summary)
         id: test_runtime_summary
         continue-on-error: true
