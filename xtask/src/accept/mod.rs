@@ -8,6 +8,7 @@
 
 mod m0;
 pub mod m1;
+pub mod m11;
 pub mod m2;
 pub mod m3;
 mod m4;
@@ -180,7 +181,7 @@ const REGISTRY: &[Entry] = &[
     Entry {
         milestone: "m11",
         task: "T11.4",
-        runner: None,
+        runner: Some(m11::run),
     },
 ];
 

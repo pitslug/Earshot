@@ -174,6 +174,33 @@ impl Db {
         Ok(Self(c))
     }
 
+    /// Counts and sizes of what the relay holds (`earshot-sync-server inspect`, `accept m11`).
+    /// Nothing it holds is read but lengths.
+    pub(crate) fn inspect(&self) -> Result<crate::Inspection, DbError> {
+        let (rows, largest_row, rows_over_limit): (i64, i64, i64) = self.0.query_row(
+            "SELECT count(*), coalesce(max(length(body)), 0), \
+             coalesce(sum(length(body) > ?1), 0) FROM row",
+            [i64::try_from(earshot_sync::wire::MAX_ROW_BODY).unwrap_or(i64::MAX)],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let (devices, largest_presence, presence_over_limit): (i64, i64, i64) = self.0.query_row(
+            "SELECT count(*), coalesce(max(length(presence)), 0), \
+             coalesce(sum(length(presence) > ?1), 0) FROM device",
+            [i64::try_from(earshot_sync::wire::MAX_PRESENCE).unwrap_or(i64::MAX)],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let n = |v: i64| u64::try_from(v).unwrap_or(0);
+        Ok(crate::Inspection {
+            rows: n(rows),
+            largest_row_bytes: n(largest_row),
+            rows_over_limit: n(rows_over_limit),
+            row_limit_bytes: earshot_sync::wire::MAX_ROW_BODY as u64,
+            devices: n(devices),
+            largest_presence_bytes: n(largest_presence),
+            presence_over_limit: n(presence_over_limit),
+        })
+    }
+
     /// The device holding `token_hash`, unless revoked; records that it was seen at `now`.
     pub(crate) fn device_by_token(
         &self,

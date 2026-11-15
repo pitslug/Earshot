@@ -9,8 +9,12 @@
 //! container's magic is refused, plus anything over [`MAX_PLAINTEXT`].
 //!
 //! One deliberate narrowing of the spec's "`RIFF` at any offset": a raw `RIFF` counts only
-//! with `WAVE` four bytes later, as a WAV header has it, because "RIFF" is an English word a
-//! transcript can hold, and a refused row never syncs.
+//! with `WAVE` after it within a header's length, because "RIFF" is an English word a
+//! transcript can hold, and a refused row never syncs. A real header's four size bytes are
+//! control or non-ASCII bytes, which JSON escapes (`\u0000` is six characters, a lone byte
+//! decoded lossily is three), so `WAVE` starts anywhere from 8 to [`WAV_GAP_MAX`] bytes after
+//! `RIFF` in the plaintext (found by the T11.4 acceptance review: a rule of exactly 8 never
+//! saw a real header).
 
 /// The largest plaintext sealed (192 KiB): the relay's 256 KiB row limit always holds the
 /// seal. No synced row comes near it; audio would.
@@ -36,6 +40,10 @@ impl PlaintextRefused {
     }
 }
 
+/// The furthest `WAVE` may start after `RIFF` in the plaintext: `RIFF` and four size bytes
+/// each escaped as `\uXXXX` (4 + 4 x 6).
+const WAV_GAP_MAX: usize = 28;
+
 /// Raw signatures (FLAC, Ogg) refused anywhere.
 const RAW: &[&[u8]] = &[b"fLaC", b"OggS"];
 
@@ -59,9 +67,10 @@ pub fn check_plaintext(plaintext: &[u8]) -> Result<(), PlaintextRefused> {
         return Err(PlaintextRefused::TooLarge);
     }
     let holds = |needle: &[u8]| plaintext.windows(needle.len()).any(|w| w == needle);
-    let wav = plaintext
-        .windows(12)
-        .any(|w| &w[..4] == b"RIFF" && &w[8..] == b"WAVE");
+    let wav = plaintext.windows(4).enumerate().any(|(i, w)| {
+        w == b"RIFF"
+            && (8..=WAV_GAP_MAX).any(|gap| plaintext.get(i + gap..i + gap + 4) == Some(b"WAVE"))
+    });
     if wav
         || RAW
             .iter()

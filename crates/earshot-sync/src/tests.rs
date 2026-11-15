@@ -262,8 +262,10 @@ fn sync_audio_and_oversized_plaintext_are_refused_before_sealing() {
     for title in [
         "fLaC",
         "before OggS after",
-        // JSON escapes control characters, so the four size bytes are plain ones here.
+        // Printable size bytes, and a real header's, which JSON escapes.
         "RIFF1234WAVE",
+        "RIFF\u{24}\u{8}\u{0}\u{0}WAVEfmt ",
+        "RIFF\u{ff}\u{ff}\u{ff}\u{7f}WAVE",
         "[102,76,97,67,0,0,0,34]",
         "[82,73,70,70,36,0]",
         "[79,103,103,83]",

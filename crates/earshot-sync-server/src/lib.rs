@@ -210,6 +210,34 @@ impl Relay {
     }
 }
 
+/// What the relay holds, by count and size only (`earshot-sync-server inspect`; `accept m11`
+/// checks that no stored row is over the limit). Never a body, a key or a device id.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Inspection {
+    /// Rows stored.
+    pub rows: u64,
+    /// The largest stored row body, in bytes.
+    pub largest_row_bytes: u64,
+    /// Rows whose body is over the limit (the relay refuses them, so 0).
+    pub rows_over_limit: u64,
+    /// The row limit the count was taken against, in bytes.
+    pub row_limit_bytes: u64,
+    /// Devices registered (revoked ones included).
+    pub devices: u64,
+    /// The largest stored presence blob, in bytes.
+    pub largest_presence_bytes: u64,
+    /// Presence blobs over their limit.
+    pub presence_over_limit: u64,
+}
+
+/// What the relay in `data` holds, by count and size.
+///
+/// # Errors
+/// The database cannot be opened, or it was written by a newer relay.
+pub fn inspect(data: &std::path::Path) -> Result<Inspection, DbError> {
+    db::Db::open(&data.join("relay.db"))?.inspect()
+}
+
 /// A relay serving on a loopback port inside the calling process, on its own tokio runtime:
 /// the in-process server that sync clients are tested against (T11.3). It is the relay's
 /// own router, not a copy. Stops when dropped; drop it outside any async context.

@@ -29,6 +29,24 @@ async fn main() -> ExitCode {
             Err(_) => ExitCode::from(1),
         };
     }
+    // Counts and sizes of what is stored, as JSON (for checking a deployment and for
+    // `accept m11`); run with the relay stopped or beside it.
+    if std::env::args().nth(1).as_deref() == Some("inspect") {
+        let data = std::env::var("EARSHOT_SYNC_DATA").unwrap_or_else(|_| "/data".into());
+        return match earshot_sync_server::inspect(std::path::Path::new(&data)) {
+            Ok(i) => match serde_json::to_string(&i) {
+                Ok(json) => {
+                    println!("{json}");
+                    ExitCode::SUCCESS
+                }
+                Err(_) => ExitCode::from(1),
+            },
+            Err(e) => {
+                eprintln!("earshot-sync-server: cannot read the data folder: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
     let config = match Config::from_env(|k| std::env::var(k).ok()) {
         Ok(c) => c,
         Err(e) => {
