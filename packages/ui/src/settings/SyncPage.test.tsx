@@ -35,6 +35,11 @@ async function setup(sync: SyncMockData = {}) {
   return { user, calls, timer };
 }
 
+/** A `remove_other` template with the row's name. */
+function fillDevice(template: string, name: string): string {
+  return template.replace("{device}", name);
+}
+
 function setUpForm(): HTMLElement {
   return screen.getByRole("form", { name: "Set up the first computer" });
 }
@@ -203,6 +208,57 @@ describe("the Sync page", () => {
     expect(calls).toContain("removeSyncDevice");
     const heading = screen.getByRole("heading", { level: 1, name: "Sync" });
     await waitFor(() => expect(heading).toHaveFocus());
+  });
+
+  it("removes another computer from its row through a dialog that says the key is not taken back (T11.6c)", async () => {
+    const { user, calls } = await setup({ setUp: true });
+    const list = await screen.findByRole("list", { name: "Computers" });
+    // Every other computer has a Remove; this one does not (it has its own section).
+    const buttons = within(list).getAllByRole("button");
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual(
+      ["Computer b71d04a8", "Laptop", "Studio"].map((n) => fillDevice(table.remove_other.button, n)),
+    );
+    expect(buttons.every((b) => b.textContent === table.remove_other.confirm)).toBe(true);
+    await user.click(within(list).getByRole("button", { name: fillDevice(table.remove_other.button, "Laptop") }));
+    const dialog = await screen.findByRole("alertdialog", { name: fillDevice(table.remove_other.title, "Laptop") });
+    expect(within(dialog).getByText(table.remove_other.explained)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: table.remove_other.confirm }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await waitFor(() => expect(within(list).queryByText("Laptop")).toBeNull());
+    expect(calls).toContain("removeOtherSyncDevice");
+    expect(within(list).getByText("Studio")).toBeInTheDocument();
+    // Focus does not fall to the page when the row goes.
+    await waitFor(() => expect(list).toHaveFocus());
+    // This computer is still set up.
+    expect(screen.getByRole("switch", { name: "Sync is on" })).toBeChecked();
+  });
+
+  it("keeps the computer on Cancel; its Remove is where the dialog gives focus back", async () => {
+    const { user, calls } = await setup({ setUp: true });
+    const list = await screen.findByRole("list", { name: "Computers" });
+    const remove = within(list).getByRole("button", { name: fillDevice(table.remove_other.button, "Computer b71d04a8") });
+    // A programmatic Fluent Dialog hands focus back only to a restore target (jsdom fires no
+    // focusout when the dialog unmounts, so the hand-back itself is checked in the preview).
+    expect(remove.getAttribute("data-tabster")).toContain("restorer");
+    await user.click(remove);
+    const dialog = await screen.findByRole("alertdialog", {
+      name: fillDevice(table.remove_other.title, "Computer b71d04a8"),
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(calls).not.toContain("removeOtherSyncDevice");
+    expect(within(list).getByText("Computer b71d04a8")).toBeInTheDocument();
+  });
+
+  it("shows a refused removal of another computer with the command copy and keeps the row", async () => {
+    const { user } = await setup({ setUp: true, refuse: { removeOtherSyncDevice: "unreachable" } });
+    const list = await screen.findByRole("list", { name: "Computers" });
+    await user.click(within(list).getByRole("button", { name: fillDevice(table.remove_other.button, "Studio") }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: table.remove_other.confirm }));
+    expect(await screen.findByText(table.command_problems.unreachable)).toBeInTheDocument();
+    expect(screen.getByText("This was not changed")).toBeInTheDocument();
+    expect(within(list).getByText("Studio")).toBeInTheDocument();
   });
 
   it("reads voiceprints off after a removal and a new set up", async () => {

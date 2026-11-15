@@ -233,6 +233,89 @@ fn sync_set_up_join_and_remove_through_the_page_carry_no_secret() {
 }
 
 #[test]
+fn sync_remove_other_copy_matches_the_shared_table() {
+    let table = table();
+    let copy = table["remove_other"].as_object().unwrap();
+    assert_eq!(copy.len(), 5, "every key is read here: {copy:?}");
+    assert_eq!(copy["not_another"].as_str(), Some(NOT_ANOTHER_DEVICE));
+    for key in ["button", "title"] {
+        assert!(copy[key].as_str().unwrap().contains("{device}"), "{key}");
+    }
+    assert_eq!(copy["confirm"].as_str(), Some("Remove"));
+    // The owner's decision (T11.6c): the dialog says plainly that the key is not taken back
+    // and that a lost computer should be wiped too.
+    let explained = copy["explained"].as_str().unwrap();
+    for words in [
+        "does not take back the sync key",
+        "also wipe it",
+        "stay on your other",
+    ] {
+        assert!(explained.contains(words), "{words}");
+    }
+    for v in copy.values() {
+        let s = v.as_str().unwrap();
+        assert!(!s.contains('\u{2014}') && !s.contains("  "), "{s}");
+    }
+}
+
+#[test]
+fn sync_removing_another_computer_from_its_row() {
+    let env = relay();
+    let a = computer("sync-other-a");
+    let b = computer("sync-other-b");
+    let url = env.relay.url();
+    set_up(&a.svc, &a.host, &url, SECRET).unwrap();
+    let code = offer_code(&a.svc, &a.host).unwrap();
+    join(&b.svc, &b.host, &url, &code.code).unwrap();
+    let list = devices(&a.svc, &a.host).unwrap();
+    assert_eq!(list.len(), 2);
+    let me = list.iter().find(|d| d.this_device).unwrap().id.clone();
+    let other = list.iter().find(|d| !d.this_device).unwrap().id.clone();
+    assert_eq!(other.len(), 36, "{other}");
+    assert!(other.starts_with(&list[1].short_id));
+
+    // This computer, or an id that is not one, is refused with fixed copy and nothing sent.
+    for id in [me.as_str(), "", "not-an-id", &other[..30], "zz"] {
+        let e = remove_other(&a.svc, &a.host, id).unwrap_err();
+        assert_eq!(
+            (e.kind.as_str(), e.message.as_str()),
+            ("invalid_setting", NOT_ANOTHER_DEVICE),
+            "{id:?}"
+        );
+    }
+    assert_eq!(devices(&a.svc, &a.host).unwrap().len(), 2);
+
+    // The other computer: gone from the list returned, and its thread stops on the answer it
+    // gets next, saying this computer was removed.
+    let left = remove_other(&a.svc, &a.host, &other.to_uppercase()).unwrap();
+    assert_eq!(left.len(), 1);
+    assert!(left[0].this_device);
+    b.host.nudge();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let v = view(&b.svc, &b.host).unwrap();
+        if v.stopped {
+            assert_eq!(
+                v.problem.as_deref(),
+                Some(problem_copy(SyncProblem::UnknownDevice))
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the removed computer never stopped: {v:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // It can no longer remove the first one: it hears that it was removed.
+    let e = remove_other(&b.svc, &b.host, &me).unwrap_err();
+    assert_eq!(e.message, command_copy(SyncProblem::UnknownDevice));
+    assert!(view(&a.svc, &a.host).unwrap().set_up);
+    a.host.stop_and_wait();
+    b.host.stop_and_wait();
+}
+
+#[test]
 fn sync_page_refusals_are_fixed_copy_and_store_nothing() {
     let env = relay();
     let a = computer("sync-page-refuse");

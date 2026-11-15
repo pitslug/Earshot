@@ -48,7 +48,8 @@ pub use presence::{
     clean_name, computer_name, online,
 };
 pub use setup::{
-    PairingOffer, join_with_code, offer_pairing_code, remove_this_device, set_up_first_device,
+    PairingOffer, join_with_code, offer_pairing_code, remove_other_device, remove_this_device,
+    set_up_first_device,
 };
 pub use thread::{SyncThread, SyncTiming, backoff};
 

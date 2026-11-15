@@ -510,6 +510,72 @@ async fn relay_presence_ages_by_its_own_clock_and_revoked_devices_leave() {
 }
 
 #[tokio::test]
+async fn relay_a_device_removed_by_another_keeps_its_rows_and_cannot_act() {
+    // T11.6c: any device of the vault may remove any other (docs/sync-spec.md section 3).
+    let h = harness("remove-other");
+    let a = h.register(1, 0xC1).await;
+    let b = h.register(2, 0xC1).await;
+    let (s, _) = h
+        .post(
+            "/v1/rows",
+            Some(&b),
+            &json!({"format": 1, "rows": [row(9, 100, 0, b"sealed-by-b")]}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    h.post("/v1/presence", Some(&b), &json!({"blob": b64(b"sealed-b")}))
+        .await;
+    let revoke = |id: u8| json!({"device_id": b64(&[id; 16])});
+    let (s, v) = h.post("/v1/devices/revoke", Some(&a), &revoke(2)).await;
+    assert_eq!((s, v), (StatusCode::OK, json!({})));
+    // Every call of the removed device is refused, its own removal of another included.
+    for (method, uri) in [
+        ("GET", "/v1/vault"),
+        ("GET", "/v1/presence"),
+        ("GET", "/v1/rows"),
+    ] {
+        let (s, v) = h.call(method, uri, Some(&b), Some(1), None).await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::UNAUTHORIZED, "unknown_device"),
+            "{uri}"
+        );
+    }
+    let (s, _) = h.post("/v1/devices/revoke", Some(&b), &revoke(1)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = h.call("GET", "/v1/vault", Some(&a), None, None).await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the removed device could not remove the other"
+    );
+    // Its rows stay; its presence is gone.
+    let (_, v) = h
+        .call("GET", "/v1/rows?after=0", Some(&a), Some(1), None)
+        .await;
+    let rows = v["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["body"], b64(b"sealed-by-b"));
+    let (_, v) = h.call("GET", "/v1/presence", Some(&a), None, None).await;
+    assert!(v["devices"].as_array().unwrap().is_empty(), "{v}");
+    // Removing it again, or an id the relay does not know, changes nothing and revives nobody.
+    for id in [2, 7] {
+        let (s, _) = h.post("/v1/devices/revoke", Some(&a), &revoke(id)).await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let (s, _) = h.call("GET", "/v1/vault", Some(&b), None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (_, v) = h.call("GET", "/v1/vault", Some(&a), None, None).await;
+    let ids: Vec<&Value> = v["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| &d["device_id"])
+        .collect();
+    assert_eq!(ids, [&json!(b64(&[1; 16]))]);
+}
+
+#[tokio::test]
 async fn relay_slows_an_address_after_ten_failures_for_a_minute() {
     let h = harness("limiter");
     let wrong = json!({"device_id": b64(&[1; 16]), "key_check": b64(&[1; 32]),

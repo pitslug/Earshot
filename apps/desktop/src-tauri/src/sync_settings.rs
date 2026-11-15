@@ -373,6 +373,10 @@ pub struct SyncDeviceView {
     /// The kind of writer it uses, as the page names it (fixed copy,
     /// [`crate::offload::writer_label`]); `None` when it does not offer summaries.
     pub writer: Option<String>,
+    /// Its whole id (hyphenated UUID, as the summary helper list gives it): what
+    /// [`remove_other_sync_device`] names. Not a secret (the server lists it to every device of
+    /// the vault).
+    pub id: String,
     /// The first eight hex digits of its id.
     pub short_id: String,
     /// When it joined (Unix seconds, the server's clock).
@@ -398,6 +402,7 @@ pub fn devices(services: &Services, host: &SyncHost) -> Result<Vec<SyncDeviceVie
             writer: d
                 .writer_kind
                 .map(|k| crate::offload::writer_label(k).to_owned()),
+            id: d.device.to_string(),
             short_id: d.short_id,
             joined_unix_s: d.joined_unix_s,
             seen_s_ago: d.seen_s_ago,
@@ -572,6 +577,36 @@ pub fn remove(services: &Services, host: &SyncHost) -> Result<SyncView, IpcError
     };
     removed.map_err(sync_error)?;
     view(services, host)
+}
+
+/// The refusal of an id that is not another computer of the vault (the table's
+/// `remove_other.not_another`, `fixtures/ui/sync_copy_cases.json`).
+pub const NOT_ANOTHER_DEVICE: &str =
+    "That is not another of your computers. To remove this computer, use Remove this computer.";
+
+/// A device id as [`SyncDeviceView::id`] gives it (a UUID, as the summary helper list's ids).
+fn parse_device_id(id: &str) -> Option<earshot_core::identity::DeviceId> {
+    serde_json::from_value(serde_json::Value::String(id.to_owned())).ok()
+}
+
+/// Removes another computer from the vault (T11.6c): the server revokes its token and drops
+/// its presence; its synced rows stay. Returns the computers left. This computer leaves only
+/// through [`remove`].
+///
+/// # Errors
+/// [`IpcError::invalid`] with [`NOT_ANOTHER_DEVICE`] for this computer's id or one that is not
+/// an id, with nothing sent; fixed copy of the problem.
+pub fn remove_other(
+    services: &Services,
+    host: &SyncHost,
+    id: &str,
+) -> Result<Vec<SyncDeviceView>, IpcError> {
+    let device = parse_device_id(id)
+        .filter(|d| *d != services.store().device())
+        .ok_or_else(|| IpcError::invalid(NOT_ANOTHER_DEVICE))?;
+    earshot_runtime::sync::remove_other_device(services, host.vault(), device)
+        .map_err(sync_error)?;
+    devices(services, host)
 }
 
 fn host(state: &tauri::State<'_, Arc<SyncHost>>) -> Arc<SyncHost> {
@@ -755,6 +790,19 @@ pub async fn remove_sync_device(
     let services = state.services()?;
     let host = host(&sync);
     blocking(move || remove(&services, &host)).await
+}
+
+/// Removes another computer from sync; returns the computers left.
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_other_sync_device(
+    state: tauri::State<'_, AppState>,
+    sync: tauri::State<'_, Arc<SyncHost>>,
+    id: String,
+) -> Result<Vec<SyncDeviceView>, IpcError> {
+    let services = state.services()?;
+    let host = host(&sync);
+    blocking(move || remove_other(&services, &host, &id)).await
 }
 
 #[cfg(test)]

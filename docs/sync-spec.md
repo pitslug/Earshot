@@ -100,6 +100,7 @@ Rules:
 - **Limits.** 256 KiB per decoded row body (the client's 192 KiB plaintext limit plus the seal always fits), 4 MiB per request, 16 KiB per presence blob. Over a limit is `413`.
 - **Errors.** `{error: <word>}` with a status: `400 bad_request`, `401 unknown_device`, `403 bad_secret`, `404 no_slot`, `404 not_found` (an unknown path or method), `409 key_mismatch`, `409 update_needed`, `409 device_exists` (a pairing code naming a device id the relay already has, live or revoked: only the setup secret registers an id again), `413 too_large`, `429 slow_down`, `500 internal`. Every answer that is not a success is one of these. The client maps each word to fixed copy; no server text reaches a window.
 - **Rate limits.** `pairing/take` and `devices`: 10 failures per minute per address, then `429`. Behind the reverse proxy every caller has the proxy's address, so the limit is shared: a stranger's ten guesses make the owner wait a minute to register or pair. Accepted for calls made once per device; `X-Forwarded-For` is not trusted.
+- **Revoke** (T11.6c). Any device of the vault may revoke any device id, its own or another's: the relay serves one vault, every device it registered holds the vault key, so letting one remove another adds no reach. The revoked device's token stops working at once (`401 unknown_device` on its next call, its own revokes included) and its presence is dropped; the rows it pushed stay. An id already revoked, or one the relay never registered, answers `{}` and changes nothing: revoking never registers or revives a device (only the setup secret registers a revoked id again). A device that removes itself and one that removes another use the same call.
 - **Format on push.** The body's `format` must equal the `Earshot-Sync-Format` header, or `400`: one bad push cannot raise the vault past a format any device writes. The vault's format only rises; lowering it needs the relay's data reset (not yet a command).
 
 ## 4. Relay (T11.2)
@@ -114,6 +115,7 @@ vault(format INTEGER, key_check BLOB, next_seq INTEGER)
 ```
 
 - Tokens are 32 random bytes; only the SHA-256 is stored.
+- A revoke sets `revoked` and clears `presence`; nothing else of the device, and none of its rows, is touched.
 - Rows are never deleted: a tombstone is a row like any other, so a device away for months still hears of deletions.
 - Configuration by environment: `EARSHOT_SYNC_SETUP_SECRET` (required, at least 24 characters, refused otherwise), `EARSHOT_SYNC_DATA` (default `/data`), `EARSHOT_SYNC_LISTEN` (default `0.0.0.0:8787`). TLS is the reverse proxy's.
 - Logs hold a method, a path (no query), a status and a duration. Never a body, a token, a secret, a slot or a device id.
@@ -229,6 +231,7 @@ every tick (30 s, or at once after a local write, debounced 2 s):
 - Setting up or joining queues every synced row again and drops every held row (`Store::queue_everything`): earlier sends went to no vault or another one, and held rows were sealed under another key.
 - **Turn off**: stop the loop. Local data, key and token stay, so turning it on again resumes.
 - **Remove this device**: revoke its token, delete key, token, address, cursor, status and the voiceprint switch. Local meetings stay. The host stops the sync thread first and no start may run until the removal ends.
+- **Remove another device** (T11.6c, `remove_other_device`): revoke that device's id with this device's token. Nothing here changes and the sync thread keeps running. This device's own id is refused before any request (`internal`: the page never offers it; this device leaves only through Remove this device). A device that was itself removed hears `unknown_device`. Removal does not take back the vault key the other device holds (no key rotation, docs/sync.md section 3), so the page says to wipe a lost computer too.
 
 ## 7. Convergence rules (T11.3b)
 
@@ -260,10 +263,11 @@ A Settings page, "Sync", after People and before Notes and storage. What T11.3a 
 - **Computers**: from the server (`GET /v1/vault`): this computer first, others by the first eight hex digits of their id with last seen, until presence brings names (T11.3c).
 - **Voiceprints**: "Sync voiceprints" (off by default).
 - **Remove this computer**: a confirmation dialog. Removal also turns voiceprint sync off, so joining a vault again asks for it afresh.
+- **Remove another computer** (T11.6c): each other computer's row has a Remove (named `Remove <computer>`), confirmed in a dialog that says its synced meetings stay, that removal does not take back the sync key it holds, and to wipe a lost computer too. The list then shows the computers left; focus goes to the list, or back to the Remove on Cancel. A refusal shows in the page's notice bar with the command copy.
 
-Not in T11.3a: revoking another computer, device names, the Dictionary switch (phase 2), an event (the page reads `sync_view` when it opens and after each action).
+Not in T11.3a: revoking another computer (T11.6c), device names, the Dictionary switch (phase 2), an event (the page reads `sync_view` when it opens and after each action).
 
-IPC commands in `apps/desktop/src-tauri/src/sync_settings.rs`: `sync_view`, `sync_devices`, `set_up_sync`, `offer_sync_code`, `join_sync`, `set_sync_on`, `set_sync_voiceprints`, `sync_now`, `remove_sync_device`. Every command has an `Ipc` method and a mock (`packages/ui/src/ipc/mockSync.ts`). One shared fixture, `fixtures/ui/sync_copy_cases.json`, holds the status copy (`problems`), a button press's copy (`command_problems`: nothing retries a button press, so none says Earshot will try again), the words that stop sync (`stops`), and the address rule's cases; both suites read every key. The key and token live in Credential Manager (`Earshot/sync-key`, `Earshot/sync-token`, `sync_vault.rs`); no response carries them, the setup secret or a used code.
+IPC commands in `apps/desktop/src-tauri/src/sync_settings.rs`: `sync_view`, `sync_devices`, `set_up_sync`, `offer_sync_code`, `join_sync`, `set_sync_on`, `set_sync_voiceprints`, `sync_now`, `remove_sync_device`, `remove_other_sync_device` (T11.6c: by `SyncDeviceView.id`, the hyphenated UUID; returns the computers left; this computer's id or text that is not an id is `invalid_setting` with `remove_other.not_another`). Every command has an `Ipc` method and a mock (`packages/ui/src/ipc/mockSync.ts`). One shared fixture, `fixtures/ui/sync_copy_cases.json`, holds the status copy (`problems`), a button press's copy (`command_problems`: nothing retries a button press, so none says Earshot will try again), the words that stop sync (`stops`), the address rule's cases, and the copy for removing another computer (`remove_other`: the row's button name, the dialog's title, text and confirm, and the refusal); both suites read every key. The key and token live in Credential Manager (`Earshot/sync-key`, `Earshot/sync-token`, `sync_vault.rs`); no response carries them, the setup secret or a used code.
 
 Choices apply at once; Set up and Join submit typed text and are in the save-rule test's list. Screens are judged by screenshot in light and dark.
 

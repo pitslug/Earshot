@@ -162,6 +162,35 @@ pub fn join_with_code(
     keep(services, vault, &address, &key, &token)
 }
 
+/// Removes another device of the vault (T11.6c): the server revokes its token and drops its
+/// presence; the rows it synced stay. Any device of the vault may remove any other, because
+/// each already holds the vault key; removal does not take that key back. The removed device's
+/// next request is refused with [`SyncProblem::UnknownDevice`], as for a device that removed
+/// itself. Removing a device the server no longer lists changes nothing.
+///
+/// # Errors
+/// [`SyncProblem::Vault`] when this device is not set up; [`SyncProblem::Internal`] for this
+/// device's own id (it leaves only through [`remove_this_device`], which also forgets what it
+/// kept), with nothing sent; [`SyncProblem::UnknownDevice`] when this device was itself
+/// removed; the relay's other problems.
+pub fn remove_other_device(
+    services: &Services,
+    vault: std::sync::Arc<dyn SyncVault>,
+    device: earshot_core::identity::DeviceId,
+) -> Result<(), SyncProblem> {
+    let secrets = vault.load()?.ok_or(SyncProblem::Vault)?;
+    if device == services.store().device() {
+        return Err(SyncProblem::Internal);
+    }
+    let client = SyncClient::new(services.clone(), vault)?;
+    client.relay().revoke(
+        &secrets.token,
+        &RevokeRequest {
+            device_id: B64(device.as_uuid().as_bytes().to_vec()),
+        },
+    )
+}
+
 /// Removes this device from sync: the server revokes its token, then the key, the token, the
 /// address, the cursor, the status and the voiceprint switch are deleted here. Meetings stay. A token the server no
 /// longer knows counts as revoked. The host stops its [`super::SyncThread`] first, or a tick in

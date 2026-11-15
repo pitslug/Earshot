@@ -81,6 +81,7 @@ describe("the Sync mock", () => {
       "setSyncDictionary",
       "syncNow",
       "removeSyncDevice",
+      "removeOtherSyncDevice",
     ];
     for (const name of commands) {
       const sync = createSyncMock({ setUp: true, refuse: { [name]: "unreachable" } });
@@ -94,6 +95,24 @@ describe("the Sync mock", () => {
     const view = await createSyncMock({ setUp: true, problem: "key_mismatch" }).syncView();
     expect(view.problem).toBe(table.problems.key_mismatch);
     expect(view.stopped).toBe(true);
+  });
+
+  it("removes another computer and refuses this one or an unknown id with the table's copy (T11.6c)", async () => {
+    const sync = createSyncMock({ setUp: true });
+    const before = await sync.syncDevices();
+    const me = before.find((d) => d.this_device);
+    const other = before.find((d) => !d.this_device);
+    if (me === undefined || other === undefined) throw new Error("the default list has both");
+    for (const id of [me.id, "not-an-id", ""]) {
+      const e = await refusal(sync.removeOtherSyncDevice(id));
+      expect(e?.error, id).toMatchObject({ kind: "invalid_setting", message: table.remove_other.not_another });
+    }
+    const left = await sync.removeOtherSyncDevice(other.id);
+    expect(left.map((d) => d.id)).toEqual(before.filter((d) => d.id !== other.id).map((d) => d.id));
+    expect(await sync.syncDevices()).toEqual(left);
+    // Every id is whole and distinct, and begins with the short id.
+    expect(new Set(before.map((d) => d.id)).size).toBe(before.length);
+    for (const d of before) expect(d.id.startsWith(d.short_id)).toBe(true);
   });
 
   it("starts a stopped sync on sync now", async () => {

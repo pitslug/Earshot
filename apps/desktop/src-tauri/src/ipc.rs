@@ -150,6 +150,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::sync_settings::set_sync_dictionary,
             crate::sync_settings::sync_now,
             crate::sync_settings::remove_sync_device,
+            crate::sync_settings::remove_other_sync_device,
             crate::sync_settings::set_sync_offer_summaries,
             crate::sync_settings::set_sync_device_name,
             crate::offload::summary_helpers,

@@ -30,6 +30,9 @@ export interface SyncCommands {
   syncNow(): Promise<SyncView>;
   /** Removes this computer from sync: its meetings stay, the server and key are forgotten. */
   removeSyncDevice(): Promise<SyncView>;
+  /** Removes another computer from sync by its `SyncDeviceView.id` (T11.6c): the server stops
+   * taking its requests and its synced meetings stay. Resolves with the computers left. */
+  removeOtherSyncDevice(id: string): Promise<SyncDeviceView[]>;
   /** Turns "Write summaries for my other computers" on or off (T11.3db). */
   setSyncOfferSummaries(on: boolean): Promise<SyncView>;
   /** Sets this computer's name as the other computers show it; empty: the computer's own. */

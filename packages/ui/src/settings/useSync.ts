@@ -50,6 +50,9 @@ export interface SyncPageState {
   showCode: () => Promise<void>;
   hideCode: () => void;
   remove: () => Promise<boolean>;
+  /** Removes another computer (T11.6c); resolves true when it is gone from the list. A refusal
+   * shows above the parts, as for the other changes. */
+  removeOther: (id: string) => Promise<boolean>;
 }
 
 /** The Sync page's state. */
@@ -186,6 +189,19 @@ export function useSync(timer: Timer): SyncPageState {
         setJoin(EMPTY_FORM);
       }
       return removed;
+    },
+    removeOther: async (id) => {
+      setBusy(true);
+      try {
+        setDevices({ status: "loaded", view: await ipc.removeOtherSyncDevice(id) });
+        setError(null);
+        return true;
+      } catch (e) {
+        setError(errorText(e));
+        return false;
+      } finally {
+        setBusy(false);
+      }
     },
   };
 }
