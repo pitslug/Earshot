@@ -1205,11 +1205,12 @@ fn run(
     if host.claude_effort_unread {
         send(crate::meeting_events::claude_effort_unread_warning());
     }
-    // This computer wrote the summary although another was chosen (T11.3db).
+    // The chosen computer was not asked (T11.3db): the banner says this computer wrote the
+    // summary only when one was stored.
     if let Some(banner) = host
         .offload
         .as_ref()
-        .and_then(crate::offload::offload_banner)
+        .and_then(|choice| crate::offload::offload_banner(choice, &host.summary))
     {
         send(banner);
     }

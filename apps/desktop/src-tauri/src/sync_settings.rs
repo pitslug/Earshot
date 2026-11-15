@@ -533,7 +533,8 @@ pub fn set_device_name(
     view(services, host)
 }
 
-/// The refusal of a name over [`MAX_DEVICE_NAME`] characters.
+/// The refusal of a name over [`MAX_DEVICE_NAME`] characters (the table's `device_name_too_long`,
+/// `fixtures/ui/sync_copy_cases.json`).
 pub const DEVICE_NAME_TOO_LONG: &str = "The name can have at most 64 characters.";
 
 /// Removes this computer from sync (the thread first, then the server and what it kept).

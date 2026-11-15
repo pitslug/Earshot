@@ -63,7 +63,8 @@ fn named(name: Option<&str>, unnamed: &str) -> String {
         .to_owned()
 }
 
-/// The template of each reason the chosen computer was not asked (the table's `unavailable`).
+/// The template of each reason the chosen computer was not asked, for a summary this computer
+/// stored instead (the table's `unavailable`). Shown only when a summary was stored here.
 #[must_use]
 pub const fn unavailable_template(why: Unavailable) -> &'static str {
     match why {
@@ -85,6 +86,29 @@ pub const fn unavailable_template(why: Unavailable) -> &'static str {
             "This meeting has no final transcript to send, so this computer wrote the summary."
         }
         Unavailable::NotAsked => "{device} could not be asked, so this computer wrote the summary.",
+    }
+}
+
+/// The template of each reason the chosen computer was not asked, claiming nothing about a
+/// summary (the table's `not_asked`): for a summary step that stored none here, and a refused
+/// re-summarise "On <device>".
+#[must_use]
+pub const fn not_asked_template(why: Unavailable) -> &'static str {
+    match why {
+        Unavailable::SyncOff => "Sync is off, so no other computer was asked.",
+        Unavailable::Unreachable => {
+            "The sync server could not be reached, so no other computer was asked."
+        }
+        Unavailable::Offline => "{device} is not online, so it was not asked.",
+        Unavailable::NotOffering => {
+            "{device} no longer writes summaries for your other computers, so it was not asked."
+        }
+        Unavailable::NoWriter => "{device} has no summary writer set up, so it was not asked.",
+        Unavailable::Recording => "{device} is recording a meeting, so it was not asked.",
+        Unavailable::NoFinalTranscript => {
+            "This meeting has no final transcript to send, so no other computer was asked."
+        }
+        Unavailable::NotAsked => "{device} could not be asked.",
     }
 }
 
@@ -110,19 +134,24 @@ pub fn unavailable_copy(why: Unavailable, name: Option<&str>) -> String {
     unavailable_template(why).replace("{device}", &named(name, UNNAMED))
 }
 
-/// The template of each reason this computer wrote a summary after asking (the table's
-/// `written_here`, by [`here_word`]).
+/// The template of each reason this computer writes a summary it had asked another computer for
+/// (the table's `written_here`, by [`here_word`]): the re-summary job's first warning, sent before
+/// the job runs, so it says what is being done, not that it was done.
 #[must_use]
 pub const fn written_here_template(why: &HereReason) -> &'static str {
     match why {
-        HereReason::NotClaimed => "{device} did not answer, so this computer wrote the summary.",
+        HereReason::NotClaimed => {
+            "{device} did not answer, so this computer writes the summary instead."
+        }
         HereReason::HelperStale => {
-            "{device} went offline before it finished, so this computer wrote the summary."
+            "{device} went offline before it finished, so this computer writes the summary instead."
         }
         HereReason::Declined(_) => {
-            "{device} could not write the summary, so this computer wrote it."
+            "{device} could not write the summary, so this computer writes it instead."
         }
-        HereReason::Withdrawn => "{device} did not write the summary, so this computer wrote it.",
+        HereReason::Withdrawn => {
+            "{device} did not write the summary, so this computer writes it instead."
+        }
     }
 }
 
@@ -138,7 +167,7 @@ pub const fn here_word(why: &HereReason) -> &'static str {
     }
 }
 
-/// Why this computer wrote a summary it had asked another computer for.
+/// Why this computer writes a summary it had asked another computer for.
 #[must_use]
 pub fn written_here_copy(why: &HereReason, name: Option<&str>) -> String {
     written_here_template(why).replace("{device}", &named(name, UNNAMED))
@@ -153,15 +182,23 @@ pub fn waiting_copy(name: Option<&str>) -> String {
     WAITING_TEMPLATE.replace("{device}", &named(name, UNNAMED_INLINE))
 }
 
-/// The banner of a summary step that wrote here although a computer was chosen; `None` for any
-/// other choice.
+/// The banner of a summary step whose chosen computer was not asked; `None` for any other
+/// choice. It says this computer wrote the summary only when `summary` is a stored one; for a
+/// summary skipped, failed or cancelled it says only that the computer was not asked.
 #[must_use]
-pub fn offload_banner(choice: &OffloadChoice) -> Option<MeetingEvent> {
+pub fn offload_banner(
+    choice: &OffloadChoice,
+    summary: &earshot_runtime::host::SummaryResult,
+) -> Option<MeetingEvent> {
     match choice {
         OffloadChoice::HereInstead { name, why, .. } => Some(MeetingEvent::Warning {
             key: OFFLOAD_BANNER_KEY.into(),
             kind: WarningKind::Backend,
-            message: unavailable_copy(*why, name.as_deref()),
+            message: if matches!(summary, earshot_runtime::host::SummaryResult::Stored { .. }) {
+                unavailable_copy(*why, name.as_deref())
+            } else {
+                not_asked_copy(*why, name.as_deref())
+            },
         }),
         OffloadChoice::Here | OffloadChoice::Ask { .. } => None,
     }
@@ -335,6 +372,23 @@ pub fn ask_helper(
     } else {
         earshot_runtime::offload::decide(Some(device), None, false)
     };
+    // One open request per meeting: the same computer again answers with it, another is refused.
+    let waiting = {
+        let db = services.store();
+        earshot_runtime::offload::waiting_for(&db, db.device(), meeting)?
+    };
+    match waiting {
+        Some(t) if t == device => {
+            let name = match &choice {
+                OffloadChoice::Ask { name, .. } => Some(name.as_str()),
+                OffloadChoice::HereInstead { name, .. } => name.as_deref(),
+                OffloadChoice::Here => None,
+            };
+            return Ok(waiting_copy(name));
+        }
+        Some(_) => return Err(IpcError::new(OFFLOAD_ERROR_KIND, ALREADY_WAITING)),
+        None => {}
+    }
     let name = match choice {
         OffloadChoice::Ask { name, .. } => name,
         OffloadChoice::HereInstead { why, name, .. } => {
@@ -360,16 +414,17 @@ pub fn ask_helper(
 /// The IPC error kind of a computer that would not be asked.
 pub const OFFLOAD_ERROR_KIND: &str = "offload";
 
-/// Why a computer the user picked by hand was not asked (the banner's reason, without what this
-/// computer did instead: nothing ran).
+/// Why the chosen computer was not asked, claiming nothing about a summary
+/// ([`not_asked_template`]).
 #[must_use]
 pub fn not_asked_copy(why: Unavailable, name: Option<&str>) -> String {
-    let copy = unavailable_copy(why, name);
-    match copy.split_once(", so this computer wrote the summary") {
-        Some((head, _)) => format!("{head}."),
-        None => copy,
-    }
+    not_asked_template(why).replace("{device}", &named(name, UNNAMED))
 }
+
+/// The refusal of re-summarise "On <device>" while the meeting already waits for another
+/// computer (the table's `already_waiting`).
+pub const ALREADY_WAITING: &str =
+    "This meeting already waits for another computer to write its summary.";
 
 /// The Summaries page's offload part (asks the server).
 #[tauri::command]
@@ -486,16 +541,18 @@ impl HostOffload {
 }
 
 impl OffloadHost for HostOffload {
-    fn write_here(&self, job: WriteHere) {
+    fn write_here(&self, job: WriteHere) -> bool {
         let note = written_here_copy(&job.why, None);
-        // A job of the meeting that already runs (or a meeting in use) refuses: the next process
-        // start hands it again while no summary was written since.
-        let _ = self.jobs.start_noted(
-            &self.services,
-            job.meeting,
-            crate::jobs::JobKind::Resummarise,
-            Some(note),
-        );
+        // A job of the meeting that already runs, the model check or a meeting in use refuses:
+        // the next step hands it again.
+        self.jobs
+            .start_noted(
+                &self.services,
+                job.meeting,
+                crate::jobs::JobKind::Resummarise,
+                Some(note),
+            )
+            .is_ok()
     }
 
     fn write_for(&self, request: SummaryRequest) {
@@ -505,26 +562,36 @@ impl OffloadHost for HostOffload {
             self.gate.clone(),
             Arc::clone(&self.work),
         );
-        let _ = std::thread::Builder::new()
+        let id = request.id;
+        let spawned = std::thread::Builder::new()
             .name("earshot-offload".into())
             .spawn(move || {
-                let pass = gate.enter_work();
-                let busy = pass.is_err();
-                let _ = earshot_runtime::offload::write_for_request(
-                    &svc,
-                    &queue,
-                    &request,
-                    &|privacy| {
-                        if busy {
-                            HelperWriter::Decline(reason::BUSY)
-                        } else {
-                            work.writer(&svc, privacy)
-                        }
-                    },
-                    &CancelToken::new(),
-                );
-                drop(pass);
+                // One outcome whatever happens: a panic declines `failed`, so the asker writes it.
+                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let pass = gate.enter_work();
+                    let busy = pass.is_err();
+                    let _ = earshot_runtime::offload::write_for_request(
+                        &svc,
+                        &queue,
+                        &request,
+                        &|privacy| {
+                            if busy {
+                                HelperWriter::Decline(reason::BUSY)
+                            } else {
+                                work.writer(&svc, privacy)
+                            }
+                        },
+                        &CancelToken::new(),
+                    );
+                    drop(pass);
+                }));
+                if ran.is_err() {
+                    let _ = earshot_runtime::offload::decline(&svc, id, reason::FAILED);
+                }
             });
+        if spawned.is_err() {
+            let _ = earshot_runtime::offload::decline(&self.services, id, reason::FAILED);
+        }
     }
 }
 

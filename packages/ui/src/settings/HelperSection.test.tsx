@@ -29,11 +29,20 @@ async function summaries(data: MockIpcData = {}) {
 
 describe("summary offload: the mock and the shared table", () => {
   it("fills every reason from the table, with the unnamed words when a name is not known", () => {
-    for (const template of [...Object.values(offload.unavailable), ...Object.values(offload.written_here)]) {
-      expect(template).toMatch(/so this computer wrote/);
+    for (const template of [
+      ...Object.values(offload.unavailable),
+      ...Object.values(offload.not_asked),
+      ...Object.values(offload.written_here),
+    ]) {
       expect(template).not.toMatch(/ {2}/);
       // A name only ever starts a sentence.
       expect(template.indexOf("{device}")).toBeLessThanOrEqual(0);
+    }
+    // Only a stored summary's banner says this computer wrote it; the job's first warning and the
+    // not-asked words claim no summary.
+    for (const t of Object.values(offload.unavailable)) expect(t).toMatch(/so this computer wrote/);
+    for (const t of [...Object.values(offload.not_asked), ...Object.values(offload.written_here)]) {
+      expect(t).not.toMatch(/wrote/);
     }
     expect(offloadCopy(offload.unavailable.offline, null)).toBe(
       "Your other computer is not online, so this computer wrote the summary.",
@@ -53,7 +62,7 @@ describe("summary offload: the mock and the shared table", () => {
     expect(laptop?.available).toBe(false);
     expect(await sync.askSummaryHelper("m", mockDeviceId("e4a17d30"))).toBe("Waiting for Studio to write the summary.");
     await expect(sync.askSummaryHelper("m", mockDeviceId("c5e09b72"))).rejects.toMatchObject({
-      error: { kind: "offload", message: "Laptop is recording a meeting." },
+      error: { kind: "offload", message: "Laptop is recording a meeting, so it was not asked." },
     });
     // Without sync nothing can be asked.
     const off = createSyncMock({ setUp: false, helper: "e4a17d30" });

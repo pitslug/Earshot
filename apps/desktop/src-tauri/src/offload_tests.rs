@@ -81,6 +81,22 @@ fn offload_copy_matches_the_shared_table() {
             "{why:?}"
         );
     }
+    let not_asked = t["not_asked"].as_object().unwrap();
+    assert_eq!(not_asked.len(), EVERY_UNAVAILABLE.len());
+    for why in EVERY_UNAVAILABLE {
+        assert_eq!(
+            not_asked[unavailable_word(why)].as_str(),
+            Some(not_asked_template(why)),
+            "{why:?}"
+        );
+        // Claims nothing about a summary.
+        assert!(!not_asked_template(why).contains("summary."), "{why:?}");
+    }
+    assert_eq!(t["already_waiting"].as_str(), Some(ALREADY_WAITING));
+    // The job's first warning is sent before the job runs: it never says the summary was written.
+    for why in every_here() {
+        assert!(!written_here_template(&why).contains("wrote"), "{why:?}");
+    }
     assert_eq!(t["waiting"].as_str(), Some(WAITING_TEMPLATE));
     assert_eq!(t["unnamed"].as_str(), Some(UNNAMED));
     assert_eq!(t["unnamed_inline"].as_str(), Some(UNNAMED_INLINE));
@@ -99,7 +115,7 @@ fn offload_copy_matches_the_shared_table() {
     );
     assert_eq!(
         not_asked_copy(Unavailable::Recording, Some("Invented desk")),
-        "Invented desk is recording a meeting."
+        "Invented desk is recording a meeting, so it was not asked."
     );
     for why in EVERY_UNAVAILABLE {
         let c = not_asked_copy(why, Some("D"));
@@ -107,32 +123,82 @@ fn offload_copy_matches_the_shared_table() {
     }
 }
 
+fn summary_reply() -> earshot_llm_replay::mock::MockResponse {
+    let summary = earshot_core::summary::SummaryV1 {
+        title: "Invented title".into(),
+        tldr: "An invented summary.".into(),
+        enhanced_notes: vec![],
+        decisions: vec![],
+        action_items: vec![],
+        open_questions: vec![],
+        topics: vec![],
+    };
+    earshot_llm_replay::mock::MockResponse::completion(
+        &serde_json::to_string(&summary).unwrap(),
+        "stop",
+    )
+}
+
+/// The banner says this computer wrote the summary only when one was stored; for a summary
+/// skipped, failed or cancelled it claims nothing (B1).
 #[test]
 fn offload_banner_is_shown_only_when_this_computer_wrote_instead() {
     let device = earshot_core::identity::DeviceId::from_bytes([4; 16]);
-    assert_eq!(offload_banner(&OffloadChoice::Here), None);
-    assert_eq!(
-        offload_banner(&OffloadChoice::Ask {
-            device,
-            name: "D".into(),
-            writer: WriterKind::Local,
-        }),
-        None
-    );
-    let Some(MeetingEvent::Warning { key, message, .. }) =
-        offload_banner(&OffloadChoice::HereInstead {
-            device,
-            name: Some("Invented desk".into()),
-            why: Unavailable::NotOffering,
-        })
-    else {
-        panic!("a banner");
+    let dir = TempDir::new("offload-banner");
+    let svc = services(&dir);
+    let m = meeting_with_final(&svc, 3, 2);
+    let server = earshot_llm_replay::mock::MockServer::start(vec![summary_reply()]).unwrap();
+    let service = earshot_runtime::summary::SummaryService::new(
+        &earshot_runtime::summary::SummaryConfig::new(server.endpoint().as_str(), "test-model"),
+        svc.clock.clone(),
+    )
+    .unwrap();
+    let stored = earshot_runtime::host::run_summary(&svc, m, &service, &CancelToken::new());
+    assert!(matches!(stored, SummaryResult::Stored { .. }), "{stored:?}");
+    let skipped = SummaryResult::Skipped {
+        reason: SkipReason::KeptLocalNoModel {
+            model: "qwen3.5-4b-q4_k_m",
+        },
     };
-    assert_eq!(key, OFFLOAD_BANNER_KEY);
-    assert_eq!(
-        message,
-        unavailable_copy(Unavailable::NotOffering, Some("Invented desk"))
-    );
+    let failed = SummaryResult::Failed {
+        error: earshot_runtime::RuntimeError::Internal("an invented failure"),
+        retryable: false,
+    };
+    let instead = OffloadChoice::HereInstead {
+        device,
+        name: Some("Invented desk".into()),
+        why: Unavailable::NotOffering,
+    };
+    for result in [&stored, &skipped, &failed, &SummaryResult::Cancelled] {
+        assert_eq!(offload_banner(&OffloadChoice::Here, result), None);
+        assert_eq!(
+            offload_banner(
+                &OffloadChoice::Ask {
+                    device,
+                    name: "D".into(),
+                    writer: WriterKind::Local,
+                },
+                result
+            ),
+            None
+        );
+        let Some(MeetingEvent::Warning { key, message, .. }) = offload_banner(&instead, result)
+        else {
+            panic!("a banner");
+        };
+        assert_eq!(key, OFFLOAD_BANNER_KEY);
+        let wrote = matches!(result, SummaryResult::Stored { .. });
+        assert_eq!(
+            message,
+            if wrote {
+                unavailable_copy(Unavailable::NotOffering, Some("Invented desk"))
+            } else {
+                not_asked_copy(Unavailable::NotOffering, Some("Invented desk"))
+            },
+            "{result:?}"
+        );
+        assert_eq!(message.contains("wrote the summary"), wrote, "{message}");
+    }
 }
 
 #[test]
@@ -538,4 +604,111 @@ fn offload_writer_of_a_setup_declines_without_a_service() {
         writer_of(Err(IpcError::internal())),
         HelperWriter::Decline(reason::NO_WRITER)
     ));
+}
+
+/// A write here the job runner refuses (the meeting is in use) says so, so the step hands it
+/// again (A1).
+#[test]
+fn offload_host_says_when_a_write_here_did_not_start() {
+    let dir = TempDir::new("offload-host-refused");
+    let svc = services(&dir);
+    let m = meeting_with_final(&svc, 11, 1);
+    let (runner, _events) = jobs();
+    let host = HostOffload::new(
+        svc.clone(),
+        runner,
+        MeetingQueue::new(),
+        crate::activity::WorkGate::new(),
+        Arc::new(NoWriter),
+    );
+    let job = || WriteHere {
+        meeting: m,
+        request: EntityId::from_bytes([5; 16]),
+        helper: earshot_core::identity::DeviceId::from_bytes([6; 16]),
+        why: HereReason::Withdrawn,
+    };
+    let lease = svc
+        .lease_meeting_for(m, earshot_runtime::MeetingJob::Processing)
+        .unwrap();
+    assert!(
+        !host.write_here(job()),
+        "refused while the meeting is in use"
+    );
+    drop(lease);
+    assert!(host.write_here(job()), "started once free");
+}
+
+/// A helper whose work panics declines the request `failed`, so the asker writes it (A2).
+#[test]
+fn offload_host_declines_when_its_work_panics() {
+    struct Panics;
+    impl HelperWork for Panics {
+        fn writer(&self, _: &Services, _: SummaryPrivacy) -> HelperWriter {
+            panic!("an invented bug in the writer");
+        }
+    }
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    earshot_runtime::sync::set_offer_summaries(&b.svc, true).unwrap();
+    let m = meeting_with_final(&a.svc, 12, 2);
+    let request = earshot_runtime::offload::ask(&a.svc, m, b.id())
+        .unwrap()
+        .unwrap();
+    let (ca, cb) = (a.client(), b.client());
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    cb.tick().unwrap();
+    let (runner, _events) = jobs();
+    let host: Arc<dyn OffloadHost> = Arc::new(HostOffload::new(
+        b.svc.clone(),
+        runner,
+        MeetingQueue::new(),
+        crate::activity::WorkGate::new(),
+        Arc::new(Panics),
+    ));
+    let state = earshot_runtime::offload::Offload::new();
+    let r = state.step(&b.svc, &mut || None, &*host).unwrap();
+    assert_eq!(r.handed, 1, "{r:?}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let got = b.svc.store().summary_request(request).unwrap().unwrap();
+        if got.state == RequestState::Declined {
+            assert_eq!(got.reason, reason::FAILED);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "never declined");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Re-summarise "On <device>" while the meeting already waits: the same computer answers with
+/// the open request, another is refused (A8).
+#[test]
+fn offload_a_meeting_waits_for_one_computer_at_a_time() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    earshot_runtime::sync::set_offer_summaries(&b.svc, true).unwrap();
+    earshot_runtime::sync::set_device_name(&b.svc, "Invented desk").unwrap();
+    b.client().send_presence(false).unwrap();
+    let m = meeting_with_final(&a.svc, 13, 2);
+    let (mid, bid) = (m.to_string(), b.id().to_string());
+    ask_helper(&a.svc, &a.host, &mid, &bid).unwrap();
+    let again = ask_helper(&a.svc, &a.host, &mid, &bid).unwrap();
+    assert_eq!(again, "Waiting for Invented desk to write the summary.");
+    assert_eq!(a.svc.store().summary_requests().unwrap().len(), 1);
+    let other = earshot_core::identity::DeviceId::from_bytes([0x45; 16]).to_string();
+    let refused = ask_helper(&a.svc, &a.host, &mid, &other).unwrap_err();
+    assert_eq!(refused.message, ALREADY_WAITING);
+    assert_eq!(a.svc.store().summary_requests().unwrap().len(), 1);
+}
+
+/// The name refusal is the shared table's (A8).
+#[test]
+fn offload_device_name_refusal_is_the_shared_tables() {
+    let table: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../fixtures/ui/sync_copy_cases.json")).unwrap();
+    assert_eq!(
+        table["device_name_too_long"].as_str(),
+        Some(crate::sync_settings::DEVICE_NAME_TOO_LONG)
+    );
 }

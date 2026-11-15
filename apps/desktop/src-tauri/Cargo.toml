@@ -90,6 +90,9 @@ rand_chacha = { version = "0.10.0", default-features = false }
 rand_core = { version = "0.10.1", default-features = false }
 # The Sync page's tests run the real relay in process (`LocalRelay`, T11.3a); a dev edge only.
 earshot-sync-server = { path = "../../../crates/earshot-sync-server" }
+# A stored summary for the offload banner's test (T11.3db): the loopback LLM mock, a dev edge only
+# (net guard TEST_SUPPORT_PACKAGES).
+earshot-llm-replay = { path = "../../../crates/earshot-llm-replay" }
 
 [lints]
 workspace = true

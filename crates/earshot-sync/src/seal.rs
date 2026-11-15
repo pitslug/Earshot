@@ -18,8 +18,9 @@ use crate::keys::{Keys, RowKey};
 use crate::{SealError, Unreadable, check_plaintext};
 
 /// The envelope format this build writes and reads. A row with a higher one is kept unopened
-/// ([`Opened::NewerFormat`]) until an update. 2 since T11.3da (the `summary_request` entity).
-pub const ENVELOPE_FORMAT: u32 = 2;
+/// ([`Opened::NewerFormat`]) until an update. A new entity does not raise it: an older build
+/// holds a row of an entity it does not know (T11.3da kept 1 for `summary_request`).
+pub const ENVELOPE_FORMAT: u32 = 1;
 
 /// The leading byte of every sealed value this build writes.
 const SEAL_VERSION: u8 = 0x01;

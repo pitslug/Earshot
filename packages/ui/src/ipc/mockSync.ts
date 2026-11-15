@@ -31,8 +31,9 @@ export function offloadCopy(template: string, name: string | null, inline = fals
 /** The longest name the app keeps for this computer (characters). */
 export const MAX_DEVICE_NAME = 64;
 
-/** What the app says about a longer name (`sync_settings::DEVICE_NAME_TOO_LONG`). */
-export const DEVICE_NAME_TOO_LONG = "The name can have at most 64 characters.";
+/** What the app says about a longer name (`sync_settings::DEVICE_NAME_TOO_LONG`, the table's
+ * `device_name_too_long`). */
+export const DEVICE_NAME_TOO_LONG = table.device_name_too_long;
 
 /** The full id the mock gives a device: its short id padded to a UUID. */
 export function mockDeviceId(shortId: string): string {
@@ -224,6 +225,8 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
   let offersSummaries = data.offersSummaries ?? false;
   let deviceName = data.deviceName ?? "Desk";
   let helper: string | null = data.helper ?? null;
+  // The computer each meeting was asked of (`offload::ask` keeps one open request per meeting).
+  const asked = new Map<string, string>();
   const available = (d: SyncDeviceView) => d.online && d.offers_summaries && !d.recording && d.writer !== null;
   const helpers = (): SummaryHelpersView => {
     const ready = setUp && on;
@@ -371,15 +374,21 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
       const notAsked = (template: string) => {
         throw new IpcFailure({
           kind: "offload",
-          message: offloadCopy(template.replace(", so this computer wrote the summary", ""), d?.name ?? null),
+          message: offloadCopy(template, d?.name ?? null),
           retryable: false,
         });
       };
-      if (!(setUp && on)) notAsked(offload.unavailable.sync_off);
-      if (d === undefined || !d.online) notAsked(offload.unavailable.offline);
-      else if (!d.offers_summaries) notAsked(offload.unavailable.not_offering);
-      else if (d.recording) notAsked(offload.unavailable.recording);
-      else if (d.writer === null) notAsked(offload.unavailable.no_writer);
+      if (!(setUp && on)) notAsked(offload.not_asked.sync_off);
+      if (d === undefined || !d.online) notAsked(offload.not_asked.offline);
+      else if (!d.offers_summaries) notAsked(offload.not_asked.not_offering);
+      else if (d.recording) notAsked(offload.not_asked.recording);
+      else if (d.writer === null) notAsked(offload.not_asked.no_writer);
+      // One computer at a time per meeting.
+      const open = asked.get(_meeting);
+      if (open !== undefined && open !== device) {
+        throw new IpcFailure({ kind: "offload", message: offload.already_waiting, retryable: false });
+      }
+      asked.set(_meeting, device);
       return offloadCopy(offload.waiting, d?.name ?? null, true);
     },
     removeSyncDevice: async () => {

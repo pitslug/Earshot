@@ -121,7 +121,7 @@ fn wire_row(sealed: SealedRow) -> WireRow {
 
 /// A pulled row opened with `keys`: `Ok(Incoming)` to apply or hold, `Err(())` when it
 /// cannot be opened or read (counted and skipped).
-fn open(
+pub(super) fn open(
     keys: &Keys,
     seq: u64,
     key: &[u8],

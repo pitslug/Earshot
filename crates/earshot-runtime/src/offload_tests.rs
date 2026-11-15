@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use earshot_core::asr::CancelToken;
-use earshot_core::identity::{DeviceId, EntityId, ManualClock};
+use earshot_core::identity::{Clock, DeviceId, EntityId, ManualClock};
 use earshot_core::model::{MeetingRepo, RequestState, SummaryRequest, SummaryRequestRepo};
 use earshot_core::summary::SummaryV1;
 use earshot_llm_replay::mock::{MockResponse, MockServer};
@@ -124,11 +124,14 @@ fn pair(relay: &TestRelay) -> (Device, Device) {
 struct Recorder {
     here: Mutex<Vec<WriteHere>>,
     for_others: Mutex<Vec<SummaryRequest>>,
+    /// Refuse to start a write here (a job of the meeting runs).
+    refuse_here: std::sync::atomic::AtomicBool,
 }
 
 impl OffloadHost for Recorder {
-    fn write_here(&self, job: WriteHere) {
+    fn write_here(&self, job: WriteHere) -> bool {
         self.here.lock().unwrap().push(job);
+        !self.refuse_here.load(std::sync::atomic::Ordering::SeqCst)
     }
     fn write_for(&self, request: SummaryRequest) {
         self.for_others.lock().unwrap().push(request);
@@ -360,17 +363,31 @@ fn offload_decide_asks_only_an_online_offering_idle_helper_with_a_writer() {
 fn offload_helper_staleness_starts_at_five_minutes_of_silence() {
     let them = DeviceId::from_bytes([2; 16]);
     let p = || Some(presence("D", true, Some(WriterKind::Local), false));
-    assert!(!helper_stale(&[peer(them, p(), STALE_AFTER_S - 1)], them));
-    assert!(helper_stale(&[peer(them, p(), STALE_AFTER_S)], them));
+    let seen = |stale| HelperPresence::Seen { stale };
+    assert_eq!(
+        presence_of(&[peer(them, p(), STALE_AFTER_S - 1)], them),
+        seen(false)
+    );
+    assert_eq!(
+        presence_of(&[peer(them, p(), STALE_AFTER_S)], them),
+        seen(true)
+    );
     // A helper that said gone is stale five minutes after it said so, not at once.
     let mut gone = presence("D", true, Some(WriterKind::Local), false);
     gone.gone = true;
-    assert!(!helper_stale(&[peer(them, Some(gone.clone()), 30)], them));
-    assert!(helper_stale(&[peer(them, Some(gone), STALE_AFTER_S)], them));
-    assert!(helper_stale(&[], them), "no presence at all");
-    assert!(
-        helper_stale(&[peer(them, None, 0)], them),
-        "unreadable presence"
+    assert_eq!(
+        presence_of(&[peer(them, Some(gone.clone()), 30)], them),
+        seen(false)
+    );
+    assert_eq!(
+        presence_of(&[peer(them, Some(gone), STALE_AFTER_S)], them),
+        seen(true)
+    );
+    // Missing or unreadable presence is timed by the asker from when it first found it so.
+    assert_eq!(presence_of(&[], them), HelperPresence::Missing);
+    assert_eq!(
+        presence_of(&[peer(them, None, 0)], them),
+        HelperPresence::Missing
     );
 }
 
@@ -1022,6 +1039,8 @@ fn offload_a_failed_helper_summary_declines_the_request() {
     );
     assert_eq!(done, HelperOutcome::Declined(reason::FAILED));
     assert_eq!(b.request(request).state, RequestState::Declined);
+    // The asker hears of the decline; the meeting then has no open request and can be asked anew.
+    sync(&cb, &ca);
     // A cancelled one stays claimed for the next start.
     a.clock.advance_ms(1_000);
     let second = ask(&a.svc, m, b.id()).unwrap().unwrap();
@@ -1144,4 +1163,195 @@ fn offload_the_sync_thread_steps_after_each_tick() {
     thread.stop();
     assert_eq!(host.for_others()[0].id, request);
     assert_eq!(b.request(request).state, RequestState::Claimed);
+}
+
+/// A claimed request whose helper has no presence at all is given five minutes from when the
+/// asker first found it missing, not withdrawn at once (A5).
+#[test]
+fn offload_a_helper_missing_from_presence_gets_five_minutes() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let m = meeting(&a.svc, "Invented absence", 31);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    sync(&ca, &cb);
+    b.step(None, &Recorder::default());
+    sync(&cb, &ca);
+    assert_eq!(a.request(request).state, RequestState::Claimed);
+    let asker = Recorder::default();
+    // First found missing: the wait starts now.
+    assert_eq!(a.step(Some(vec![]), &asker), StepReport::default());
+    a.clock.advance_ms(STALE_AFTER_S * 1000 - 1);
+    assert_eq!(a.step(Some(vec![]), &asker), StepReport::default());
+    // Seen again in between resets it.
+    let back = vec![peer(
+        b.id(),
+        Some(presence("D", true, Some(WriterKind::Local), false)),
+        5,
+    )];
+    assert_eq!(a.step(Some(back), &asker), StepReport::default());
+    a.clock.advance_ms(2);
+    assert_eq!(
+        a.step(Some(vec![]), &asker),
+        StepReport::default(),
+        "missing anew"
+    );
+    a.clock.advance_ms(STALE_AFTER_S * 1000);
+    let r = a.step(Some(vec![]), &asker);
+    assert_eq!((r.withdrawn, r.written_here), (1, 1), "{r:?}");
+    assert_eq!(asker.here()[0].why, HereReason::HelperStale);
+}
+
+/// The 90 s and transcript waits run on the device clock from this device's own readings, not
+/// on HLC wall time: a request stamped far ahead (a peer's clock observed) is not withdrawn early
+/// (A4).
+#[test]
+fn offload_waits_run_on_the_device_clock_not_hlc_time() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    // The asker's HLC runs an hour ahead of its clock, as after observing a peer's stamp.
+    {
+        let clock = Arc::clone(&a.svc.clock);
+        let mut db = a.svc.store();
+        let (_, hlc) = db.parts();
+        let ahead = earshot_core::identity::HlcTimestamp {
+            wall_ms: clock.now_unix_ms() + 60 * 60_000,
+            logical: 0,
+            node: DeviceId::from_bytes([0x7f; 16]),
+        };
+        let _ = hlc.observe(ahead, &*clock);
+    }
+    let m = meeting(&a.svc, "Invented clocks", 32);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    assert!(
+        a.request(request).meta.created_at.wall_ms > a.clock.now_unix_ms() + 30 * 60_000,
+        "the request's HLC time is ahead of the clock"
+    );
+    let asker = Recorder::default();
+    a.clock.advance_ms(CLAIM_WITHIN_MS - 1);
+    assert_eq!(a.step(None, &asker), StepReport::default());
+    a.clock.advance_ms(1);
+    assert_eq!(a.step(None, &asker).withdrawn, 1, "90 s on the clock");
+
+    // The helper's transcript wait, likewise: its claim is stamped by an HLC ahead of its clock.
+    let second = meeting(&a.svc, "Invented clocks two", 33);
+    sync(&ca, &cb);
+    let req = ask(&a.svc, second, b.id()).unwrap().unwrap();
+    {
+        let mut db = a.svc.store();
+        let clock = Arc::clone(&a.svc.clock);
+        let (store, hlc) = db.parts();
+        let mut r = store.summary_request(req).unwrap().unwrap();
+        r.segment_count += 1;
+        r.meta.touch(hlc, &*clock);
+        store.put_summary_request(r).unwrap();
+    }
+    sync(&ca, &cb);
+    let helper = Recorder::default();
+    assert_eq!(b.step(None, &helper).claimed, 1);
+    assert!(b.request(req).meta.updated_at.wall_ms > b.clock.now_unix_ms() + 30 * 60_000);
+    b.clock.advance_ms(TRANSCRIPT_WAIT_MS - 1);
+    assert_eq!(b.step(None, &helper), StepReport::default());
+    b.clock.advance_ms(1);
+    assert_eq!(b.step(None, &helper).declined, 1);
+}
+
+/// A write here the host refuses (a job of the meeting runs) is handed again at the next step
+/// (A1).
+#[test]
+fn offload_a_refused_write_here_is_handed_again() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Invented refusal", 34);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    let asker = Recorder::default();
+    asker
+        .refuse_here
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    a.clock.advance_ms(CLAIM_WITHIN_MS);
+    let r = a.step(None, &asker);
+    assert_eq!((r.withdrawn, r.written_here), (1, 0), "{r:?}");
+    asker
+        .refuse_here
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let r = a.step(None, &asker);
+    assert_eq!(r.written_here, 1, "{r:?}");
+    let here = asker.here();
+    assert_eq!(here.len(), 2);
+    assert!(here.iter().all(|h| h.request == request));
+    assert_eq!(here[1].why, HereReason::Withdrawn);
+    // Started: not handed again in this process.
+    assert_eq!(a.step(None, &asker).written_here, 0);
+}
+
+/// After the summary written here is undone to an older one, a restart hands nothing: the user's
+/// choice is kept (A3).
+#[test]
+fn offload_an_undone_summary_is_not_written_over_after_a_restart() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Invented undo", 35);
+    let server = MockServer::start(vec![reply("Older summary"), reply("Written here")]).unwrap();
+    let service = remote_service(&a.svc, &server);
+    let run = |svc: &Services| {
+        service
+            .summarize(svc, m, &mut *crate::os_seeded_rng(), &CancelToken::new())
+            .unwrap()
+    };
+    run(&a.svc);
+    a.clock.advance_ms(1_000);
+    let _request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    a.clock.advance_ms(CLAIM_WITHIN_MS);
+    let asker = Recorder::default();
+    assert_eq!(a.step(None, &asker).written_here, 1);
+    // The host writes it here; the user switches back to the older one.
+    a.clock.advance_ms(1_000);
+    run(&a.svc);
+    crate::edit::undo_summary(&a.svc, m).unwrap();
+    let live: Vec<_> = a
+        .svc
+        .store()
+        .summaries(m)
+        .unwrap()
+        .into_iter()
+        .filter(|s| !s.meta.deleted)
+        .collect();
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].summary.title, "Older summary");
+    let rh = Recorder::default();
+    Offload::new().step(&a.svc, &mut || None, &rh).unwrap();
+    assert!(
+        rh.here().is_empty(),
+        "a restart writes nothing over the undo"
+    );
+}
+
+/// A request older than the look-back is not looked at, and a meeting asked twice gets no second
+/// request (A7, A8).
+#[test]
+fn offload_old_requests_are_left_and_a_meeting_is_asked_once() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Invented once", 36);
+    let first = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    assert_eq!(ask(&a.svc, m, b.id()).unwrap(), Some(first), "the open one");
+    let other = DeviceId::from_bytes([0x44; 16]);
+    assert_eq!(
+        ask(&a.svc, m, other).unwrap(),
+        Some(first),
+        "one open request per meeting"
+    );
+    assert_eq!(a.svc.store().summary_requests().unwrap().len(), 1);
+    // An open request is looked at whatever its age: withdrawn and handed back.
+    let asker = Recorder::default();
+    a.clock.advance_ms(LOOK_BACK_MS + 1);
+    assert_eq!(a.step(None, &asker).written_here, 1);
+    // A withdrawn one past the look-back is not looked at again, even by a new process.
+    let rh = Recorder::default();
+    assert_eq!(
+        Offload::new().step(&a.svc, &mut || None, &rh).unwrap(),
+        StepReport::default()
+    );
+    assert!(rh.here().is_empty());
 }
