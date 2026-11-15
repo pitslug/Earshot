@@ -2101,7 +2101,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: `renderApp` and `openSettings` in `packages/ui/src/test/`, `installMatchMedia(false)` by default in `setup.ts`; the Speakers panel and delete-dialog tests move out of `MeetingDetail.test.tsx` into their own files. No test is removed or weakened: the count of test cases is the same before and after.
   - accept: `cmd /c pnpm --filter @earshot/ui test` with the same number of tests as before
 
-- [ ] T12.56 Sweep: what the T12.49 to T12.55 reviews left
+- [x] T12.56 Sweep: what the T12.49 to T12.55 reviews left
   - found (reviews of the tidy-up batch, 2026-11-15).
   - do: (1) developer text that can still reach a window: `"the task stopped"` (kind `internal`) in the desktop's `audio_check.rs`, `audio_settings.rs` and `benchmark.rs`, the check child's "wrote a line Earshot cannot read ({e})" with serde's text, and `general.rs` "cannot find Earshot's program file: {e}" with the operating system's text, each to fixed copy with a test; (2) the three device-local records with no version (`pass_backend` in `backends.rs`, `stored_check` in `model_bench.rs`, the echo state in `echo.rs`) turn an unreadable value into `RuntimeError::Internal`: read them as "reported, default used" like every other record (a format change needs the owner); (3) the unused `meta` style in `AppShell.tsx`.
   - accept: `cargo test -p earshot-desktop --bin earshot`; `cargo test -p earshot-runtime`; `cmd /c pnpm --filter @earshot/ui test`
@@ -2144,7 +2144,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: lower the constant, remove what it makes unreachable, rework the tests that used "between the limits" cases without weakening a boundary, and say in docs/live-previews.md that this is a decision, not a measurement.
   - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`
 
-- [ ] T12.62 Sweep: the open TODO.md lines from T12.36 to T12.61
+- [x] T12.62 Sweep: the open TODO.md lines from T12.36 to T12.61
   - found (TODO.md `[open]` lines, 2026-11-15); the idle-host re-runs (m2, bench) and the endpoint name limit (changes what is accepted: the owner) stay in TODO.md.
   - deps: T12.56
   - do: (1) `shared_encoder::STALL_LIMIT`: find whether its clock counts through a system sleep and, if it does, judge a run by time awake (a clock-free test of the rule); (2) `shared_encoder::run`: no per-call allocation of the asking thread's name in shipped code (fixed names, or the wait log kept for evaluation only); (3) `earshot-cli` and `m2_prod` take the `shared-encoder` note and print it, so a fallback to an own encoder is never silent; (4) `hold_card_for_evaluation`: a third, smaller step so a target can land within 0.5 GiB (evaluation only); (5) `preview::previews_off`: a stop for another reason never overwrites a crash `finish` detects in the same moment, with a test; (6) a preview test that far-end words do not reach the mic's own previews in a call under Everyone; (7) `meeting_queue_a_live_load_that_fell_back_onto_the_summarys_device_waits_again`: find the timing dependence and remove it without loosening what it asserts (AGENTS ground rule 4). Each closed line leaves TODO.md in the same commit.

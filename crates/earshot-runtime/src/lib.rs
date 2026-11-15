@@ -92,6 +92,7 @@ mod testutil;
 
 /// The hardware facts' types (T7.4d), for hosts that show them.
 pub use earshot_hardware;
+pub use local::StoredRecord;
 pub use post::Calibration;
 
 /// This machine's hardware facts: `earshot_hardware::read()`, the one source of them.

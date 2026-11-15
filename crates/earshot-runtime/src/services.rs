@@ -329,7 +329,9 @@ impl Services {
         } else if m.duration_ms.is_none() {
             MeetingActivity::Interrupted
         } else if db.has_live_segment(meeting, TranscriptPass::Final)?
-            || crate::backends::pass_backend(&db, meeting, TranscriptPass::Final, None)?.is_some()
+            // A pass backend this build cannot read still says the final pass ran (T12.56).
+            || crate::backends::pass_backend_record(&db, meeting, TranscriptPass::Final, None)?
+                .exists()
         {
             MeetingActivity::Ready
         } else {

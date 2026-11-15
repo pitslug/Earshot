@@ -692,6 +692,19 @@ pub struct OnnxSession {
     keep: Option<(PathBuf, SessionConfig)>,
 }
 
+/// Graphics card memory held for evaluation ([`OnnxSession::hold_device_bytes`]): freed on drop,
+/// the tensor before the allocator it came from.
+pub struct DeviceBlock {
+    _tensor: ort::value::Tensor<u8>,
+    _allocator: ort::memory::Allocator,
+}
+
+impl fmt::Debug for DeviceBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DeviceBlock")
+    }
+}
+
 /// The ONNX Runtime session of an [`OnnxSession`]: always there, except while its drop moves a QNN
 /// session to the idle pool.
 pub(crate) struct Held(Option<Session>);
@@ -953,6 +966,34 @@ impl OnnxSession {
     #[must_use]
     pub fn backend(&self) -> &SessionBackend {
         &self.backend
+    }
+
+    /// Evaluation only (T12.62, the card holder of `live_lag --hold-card-gib`): takes `bytes` of
+    /// the graphics card's memory through this CUDA session's allocator, held until the block is
+    /// dropped. With [`cuda_provider_options`]' arena setting the arena grows by what is asked.
+    ///
+    /// # Errors
+    /// A session not on CUDA, or an allocation ONNX Runtime refuses.
+    pub fn hold_device_bytes(&self, bytes: usize) -> Result<DeviceBlock, OnnxError> {
+        use ort::memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType};
+        let Provider::Cuda { device_id } = self.backend.requested else {
+            return Err(OnnxError::Runtime(
+                "card memory is held only through a CUDA session".to_owned(),
+            ));
+        };
+        let info = MemoryInfo::new(
+            AllocationDevice::CUDA,
+            device_id,
+            AllocatorType::Device,
+            MemoryType::Default,
+        )
+        .map_err(runtime_err)?;
+        let allocator = Allocator::new(&self.session, info).map_err(runtime_err)?;
+        let tensor = ort::value::Tensor::<u8>::new(&allocator, [bytes]).map_err(runtime_err)?;
+        Ok(DeviceBlock {
+            _tensor: tensor,
+            _allocator: allocator,
+        })
     }
 
     /// Input names in model order.

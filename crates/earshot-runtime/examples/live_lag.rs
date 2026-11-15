@@ -1733,7 +1733,7 @@ fn gib_of(bytes: u64) -> f64 {
 const HOLDER_LINE: &str = "card_holder: ";
 
 /// `live_lag <repo> --card-holder <gib>` (evaluation only, T12.59): the second process of
-/// `--hold-card-gib`. Loads own-encoder CUDA sessions through
+/// `--hold-card-gib`. Loads own-encoder CUDA sessions, then card memory blocks, through
 /// `backends::hold_card_for_evaluation` until the card's free memory is at most what a card of
 /// `gib` GiB would have with [`OTHER_PROGRAMS_GIB`] used by other programs, prints one line
 /// ([`HOLDER_LINE`] and JSON: every load, the free memory left, the adapters' dedicated memory),
@@ -1760,6 +1760,7 @@ fn run_card_holder(models: &ModelDir, gib: f64) -> ! {
         "under_target_by_gib": hold.free_left.map(|f| to_gib(target.saturating_sub(f))),
         "reached_target": hold.free_left.is_some_and(|f| f <= target),
         "sessions": hold.sessions(),
+        "blocks": hold.blocks(),
         "loads": hold.loads.iter().map(|l| json!({
             "model": l.model,
             "free_before_gib": to_gib(l.free_before),

@@ -359,6 +359,9 @@ pub struct PostInput {
     /// The echo canceller's delay lock at the end of the live session
     /// ([`crate::echo::echo_locks`]); empty: no echo path, nothing is cleaned as echo.
     pub echo_locks: Vec<EchoLock>,
+    /// The stored lock stretches could not be read (T12.56): `echo_locks` is empty, nothing is
+    /// cleaned as echo, and the run reports [`PostWarning::EchoRecordUnreadable`].
+    pub echo_locks_unreadable: bool,
 }
 
 /// One speaker of the processed tracks.
@@ -422,6 +425,9 @@ pub enum PostWarning {
         /// Why.
         reason: String,
     },
+    /// The meeting's stored echo lock stretches could not be read (T12.56): nothing was
+    /// cleaned as echo from the "Me" transcript.
+    EchoRecordUnreadable,
     /// A track's stored live speaker windows could not be read (another version, damaged);
     /// the track was diarised whole.
     SpeakerRecordUnreadable {
@@ -600,7 +606,7 @@ pub fn load_post_input(
     meeting: EntityId,
     request: &FinalPassRequest,
 ) -> Result<(PostInput, Vec<TrackId>), RuntimeError> {
-    let (tracks, files, echo_locks, records) = {
+    let (tracks, files, locks, records) = {
         let db = services.store();
         let mut records = Vec::new();
         for t in &request.tracks {
@@ -613,7 +619,7 @@ pub fn load_post_input(
         (
             db.tracks(meeting)?,
             db.audio_files(meeting)?,
-            crate::echo::echo_locks(&db, meeting)?,
+            crate::echo::echo_locks_record(&db, meeting)?,
             records,
         )
     };
@@ -660,7 +666,8 @@ pub fn load_post_input(
         PostInput {
             meeting,
             tracks: out,
-            echo_locks,
+            echo_locks_unreadable: locks.is_unreadable(),
+            echo_locks: locks.value().unwrap_or_default(),
         },
         missing,
     ))
@@ -1372,6 +1379,11 @@ where
             }
             let mut warnings: Vec<PostWarning> = backend_change
                 .into_iter()
+                .chain(
+                    input
+                        .echo_locks_unreadable
+                        .then_some(PostWarning::EchoRecordUnreadable),
+                )
                 .chain(echo_warning)
                 .chain(repetition_warnings)
                 .chain(unreadable_speakers)

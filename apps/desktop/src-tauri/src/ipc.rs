@@ -639,13 +639,14 @@ fn keep_recording(driver: State<'_, MeetingDriver>) {
     driver.keep_recording();
 }
 
-/// Runs blocking work off the main thread.
+/// Runs blocking work off the main thread. Work that panics or is cancelled reaches the page as
+/// [`IpcError::internal`], never the panic's or the runtime's words (T12.56).
 pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, IpcError> + Send + 'static,
 ) -> Result<T, IpcError> {
     tauri::async_runtime::spawn_blocking(f)
         .await
-        .map_err(|_| IpcError::new("internal", "the task stopped"))?
+        .map_err(|_| IpcError::internal())?
 }
 
 /// Everything the meeting detail screen shows of `meeting`.

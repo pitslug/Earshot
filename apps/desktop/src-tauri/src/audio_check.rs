@@ -450,7 +450,7 @@ pub async fn audio_check(
     state: tauri::State<'_, crate::ipc::AppState>,
 ) -> Result<AudioCheckView, IpcError> {
     let services = state.services()?;
-    blocking(move || {
+    crate::ipc::blocking(move || {
         let (settings, _) = earshot_runtime::audio_settings::audio_settings(&services.store())?;
         let devices = crate::audio_settings::list_devices();
         check_view(&services, &settings, devices.as_ref())
@@ -476,15 +476,6 @@ pub fn start_audio_check(
 #[specta::specta]
 pub fn cancel_audio_check(jobs: tauri::State<'_, AudioCheckJobs>) {
     jobs.cancel();
-}
-
-/// Runs blocking work off the main thread.
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, IpcError> + Send + 'static,
-) -> Result<T, IpcError> {
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .map_err(|_| IpcError::new("internal", "the task stopped"))?
 }
 
 #[cfg(test)]

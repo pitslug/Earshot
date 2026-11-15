@@ -615,9 +615,7 @@ pub async fn benchmark(
 ) -> Result<BenchmarkView, IpcError> {
     let services = state.services()?;
     let running = jobs.current();
-    tauri::async_runtime::spawn_blocking(move || benchmark_view(&services, running))
-        .await
-        .map_err(|_| IpcError::new("internal", "the task stopped"))?
+    crate::ipc::blocking(move || benchmark_view(&services, running)).await
 }
 
 /// Starts the benchmark with the current settings (`BenchmarkEvent`s follow). `busy` while a

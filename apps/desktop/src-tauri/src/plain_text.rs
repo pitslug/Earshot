@@ -159,6 +159,7 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
             PostWarning::BackendChanged { .. }
             | PostWarning::StretchRecordUnreadable { .. }
             | PostWarning::SpeakerRecordUnreadable { .. }
+            | PostWarning::EchoRecordUnreadable
             | PostWarning::RepetitionDropped { .. }
             | PostWarning::VoiceWithoutWords { .. }
             | PostWarning::EditedLinesKept { .. } => None,
@@ -1024,6 +1025,7 @@ mod post_warning_tests {
                     track: TrackId::Mic,
                     reason: reason.into(),
                 },
+                PostWarning::EchoRecordUnreadable,
             ])
             .is_empty()
         );

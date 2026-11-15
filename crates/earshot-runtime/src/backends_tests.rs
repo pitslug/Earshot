@@ -763,6 +763,26 @@ fn backends_pass_backend_is_stored_per_pass_and_track() {
 }
 
 #[test]
+fn backends_an_unreadable_pass_backend_reads_as_not_recorded_and_still_exists() {
+    let mut store = Store::open_in_memory().unwrap();
+    let meeting = EntityId::from_bytes([2; 16]);
+    let key = pass_key(meeting, TranscriptPass::Final, None);
+    crate::local::set(&mut store, &key, b"{\"kind\":\"tpu\"").unwrap();
+    // Reported as unreadable, the default (nothing recorded) used, never an error (T12.56).
+    let record = pass_backend_record(&store, meeting, TranscriptPass::Final, None).unwrap();
+    assert!(record.is_unreadable() && record.exists());
+    assert_eq!(
+        pass_backend(&store, meeting, TranscriptPass::Final, None).unwrap(),
+        None
+    );
+    // The stored bytes are left as they were.
+    assert_eq!(
+        store.local_value(key.as_str()).unwrap().as_deref(),
+        Some(&b"{\"kind\":\"tpu\""[..])
+    );
+}
+
+#[test]
 fn backends_are_send_for_the_runtime_threads() {
     fn send<T: Send>() {}
     send::<earshot_onnx::silero::SileroVad>();
@@ -1094,6 +1114,7 @@ fn backends_production_loader_feeds_the_live_factory_and_the_post_processor() {
     ));
     let input = crate::post::PostInput {
         echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
         meeting,
         tracks: tracks
             .iter()
@@ -2824,6 +2845,8 @@ fn backends_card_hold_is_used_by_no_shipped_code() {
         concat!("hold_card_", "for_evaluation"),
         concat!("CardHold", "Load"),
         concat!("card_hold_", "step"),
+        // T12.62: the card memory blocks of the holder's last steps.
+        concat!("hold_device_", "bytes"),
     ] {
         let found = shipped_files_naming(name);
         assert!(found.is_empty(), "shipped code names {name}: {found:?}");
@@ -2840,11 +2863,12 @@ fn backends_own_voice_cpu_load_is_used_by_no_shipped_code() {
 }
 
 /// T12.59: the holder ends under the free memory asked by less than one small load: large loads
-/// while one more stays above the target, then small ones until it is at most the target. A
-/// simulated card with fixed costs per load, clock-free.
+/// while one more stays above the target, then small ones. T12.62: then blocks, so it ends under
+/// the target by less than one block (within 0.5 GiB). A simulated card with fixed costs per load,
+/// clock-free.
 #[test]
 fn backends_card_hold_step_ends_just_under_the_target() {
-    use crate::backends::{CardHoldStep, card_hold_step};
+    use crate::backends::{CARD_HOLD_BLOCK, CardHoldStep, card_hold_step};
     const MIB: u64 = 1024 * 1024;
     let (large, small) = (2_330 * MIB, 470 * MIB);
     for (free, target) in [
@@ -2857,10 +2881,11 @@ fn backends_card_hold_step_ends_just_under_the_target() {
         let mut now = free;
         let mut steps = Vec::new();
         loop {
-            match card_hold_step(now, target, large) {
+            match card_hold_step(now, target, large, small) {
                 CardHoldStep::Done => break,
                 CardHoldStep::Large => now -= large,
                 CardHoldStep::Small => now -= small,
+                CardHoldStep::Block => now -= CARD_HOLD_BLOCK,
             }
             steps.push(now);
             assert!(steps.len() < 64, "no end: {free} {target}");
@@ -2871,6 +2896,11 @@ fn backends_card_hold_step_ends_just_under_the_target() {
                 now + small > target,
                 "{free} {target}: ended {now}, a small load under"
             );
+            assert!(
+                now + CARD_HOLD_BLOCK > target,
+                "{free} {target}: ended {now}, a block under"
+            );
+            assert!(target - now < GIB / 2, "{free} {target}: within 0.5 GiB");
         } else {
             assert!(
                 steps.is_empty(),
@@ -2878,17 +2908,21 @@ fn backends_card_hold_step_ends_just_under_the_target() {
             );
         }
     }
-    // Only a large load that stays above the target is taken.
+    // Only a large load that stays above the target is taken; then only such a small one.
     assert_eq!(
-        card_hold_step(10 * GIB, 5 * GIB, 2 * GIB),
+        card_hold_step(10 * GIB, 5 * GIB, 2 * GIB, GIB / 2),
         CardHoldStep::Large
     );
     assert_eq!(
-        card_hold_step(7 * GIB, 5 * GIB, 2 * GIB),
+        card_hold_step(7 * GIB, 5 * GIB, 2 * GIB, GIB / 2),
         CardHoldStep::Small
     );
     assert_eq!(
-        card_hold_step(5 * GIB, 5 * GIB, 2 * GIB),
+        card_hold_step(5 * GIB + GIB / 4, 5 * GIB, 2 * GIB, GIB / 2),
+        CardHoldStep::Block
+    );
+    assert_eq!(
+        card_hold_step(5 * GIB, 5 * GIB, 2 * GIB, GIB / 2),
         CardHoldStep::Done
     );
 }

@@ -1953,9 +1953,14 @@ pub fn own_encoders_for_evaluation() {
 /// The model [`hold_card_for_evaluation`] fills the card with in large steps (2.58 to 2.80 GiB
 /// each on the desktop, T12.59; the first includes the CUDA context).
 pub const CARD_HOLD_LARGE: &str = "parakeet-tdt-0.6b-v2";
-/// The model it fills the rest with (about 0.66 GiB each on the desktop), so the card ends within
-/// one of these under the free memory asked.
+/// The model it fills the rest with in small steps (about 0.66 GiB each on the desktop).
 pub const CARD_HOLD_SMALL: &str = "parakeet-tdt-110m";
+/// The last steps: blocks of card memory this size, taken through a CUDA session's allocator
+/// ([`earshot_onnx::OnnxSession::hold_device_bytes`]), so the card ends within one block (well
+/// inside 0.5 GiB) under the free memory asked (T12.62).
+pub const CARD_HOLD_BLOCK: u64 = 128 * 1024 * 1024;
+/// What [`CardHoldLoad::model`] says for a [`CARD_HOLD_BLOCK`].
+pub const CARD_HOLD_BLOCK_NAME: &str = "card memory block";
 /// At most this many loads in one hold, so a load that takes nothing measurable cannot loop.
 const CARD_HOLD_MAX_LOADS: usize = 64;
 
@@ -1966,28 +1971,33 @@ pub(crate) enum CardHoldStep {
     Large,
     /// Load [`CARD_HOLD_SMALL`].
     Small,
+    /// Take one [`CARD_HOLD_BLOCK`].
+    Block,
     /// The card's free memory is at most the target.
     Done,
 }
 
 /// The rule of [`hold_card_for_evaluation`]: large loads while one more still leaves the free
-/// memory above `target`, then small loads until it is at most `target`, so the hold ends under
-/// the target by less than one small load. `large` is what one large load is expected to take
-/// (bytes).
-pub(crate) fn card_hold_step(free: u64, target: u64, large: u64) -> CardHoldStep {
+/// memory above `target`, then small loads while one more still does, then blocks until it is at
+/// most `target`, so the hold ends under the target by less than one block (T12.62). `large` and
+/// `small` are what one load of each is expected to take (bytes).
+pub(crate) fn card_hold_step(free: u64, target: u64, large: u64, small: u64) -> CardHoldStep {
     if free <= target {
         CardHoldStep::Done
     } else if free.saturating_sub(large) > target {
         CardHoldStep::Large
-    } else {
+    } else if free.saturating_sub(small) > target {
         CardHoldStep::Small
+    } else {
+        CardHoldStep::Block
     }
 }
 
 /// One load of a card hold: the model and the card's free memory (bytes) before and after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardHoldLoad {
-    /// The model loaded ([`CARD_HOLD_LARGE`] or [`CARD_HOLD_SMALL`]).
+    /// The model loaded ([`CARD_HOLD_LARGE`] or [`CARD_HOLD_SMALL`]), or
+    /// [`CARD_HOLD_BLOCK_NAME`].
     pub model: &'static str,
     /// Free memory before the load, as read.
     pub free_before: u64,
@@ -1995,10 +2005,16 @@ pub struct CardHoldLoad {
     pub free_after: u64,
 }
 
-/// What [`hold_card_for_evaluation`] holds: own-encoder CUDA sessions, kept until dropped.
+/// What [`hold_card_for_evaluation`] holds: own-encoder CUDA sessions and card memory blocks, kept
+/// until dropped.
 pub struct CardHold {
     /// The sessions, held only to keep their memory on the card.
     held: Vec<ParakeetTranscriber>,
+    /// The blocks; declared before `block_source`, so they are dropped before the session they
+    /// were taken through.
+    blocks: Vec<earshot_onnx::DeviceBlock>,
+    /// The CUDA session the blocks are taken through (the VAD model: small).
+    block_source: Option<earshot_onnx::OnnxSession>,
     /// Every load, in order.
     pub loads: Vec<CardHoldLoad>,
     /// The card's free memory after the last load (bytes), as read.
@@ -2014,13 +2030,39 @@ impl CardHold {
     pub fn sessions(&self) -> usize {
         self.held.len()
     }
+
+    /// How many card memory blocks are held.
+    #[must_use]
+    pub fn blocks(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Takes one [`CARD_HOLD_BLOCK`], loading the VAD model on CUDA first to take it through.
+    fn take_block(&mut self, models: &ModelDir) -> Result<(), String> {
+        if self.block_source.is_none() {
+            let config = SessionConfig {
+                provider: Provider::Cuda { device_id: 0 },
+                intra_threads: Some(1),
+                background: None,
+            };
+            let source = earshot_onnx::OnnxSession::load(&models.root().join(SILERO), &config)
+                .map_err(|e| e.to_string())?;
+            self.block_source = Some(source);
+        }
+        let source = self.block_source.as_ref().expect("loaded above");
+        let bytes = usize::try_from(CARD_HOLD_BLOCK).map_err(|e| e.to_string())?;
+        self.blocks
+            .push(source.hold_device_bytes(bytes).map_err(|e| e.to_string())?);
+        Ok(())
+    }
 }
 
 /// Evaluation only (T12.59, `live_lag --hold-card-gib`): fills the graphics card with CUDA
 /// Parakeet sessions, each with its own encoder ([`own_encoders_for_evaluation`] is set for this
 /// process first, so nothing is shared), until `free()` (the card's free memory in bytes, read
 /// after each load) is at most `target_free`, by [`card_hold_step`]: [`CARD_HOLD_LARGE`] while one
-/// more leaves the card above the target, then [`CARD_HOLD_SMALL`]. It makes the card look like a
+/// more leaves the card above the target, then [`CARD_HOLD_SMALL`] while one more does, then
+/// [`CARD_HOLD_BLOCK`]s through a CUDA session of the VAD model. It makes the card look like a
 /// smaller one in free memory only, for a run in another process. ONNX Runtime must be
 /// initialised with its CUDA library ([`init_onnx`]). No shipped code calls it (pinned by
 /// `backends_card_hold_is_used_by_no_shipped_code`).
@@ -2040,44 +2082,62 @@ pub fn hold_card_for_evaluation(
     };
     let (large_model, small_model) = (parakeet(CARD_HOLD_LARGE)?, parakeet(CARD_HOLD_SMALL)?);
     // Expected costs until one load of each is measured.
-    let mut large = 2_500 * 1024 * 1024u64;
+    let (mut large, mut small) = (2_500 * 1024 * 1024u64, 660 * 1024 * 1024u64);
     let mut now = free().ok_or("the card's free memory cannot be read")?;
     let mut hold = CardHold {
         held: Vec::new(),
+        blocks: Vec::new(),
+        block_source: None,
         loads: Vec::new(),
         free_left: Some(now),
         stopped: None,
     };
     loop {
-        let step = card_hold_step(now, target_free, large);
-        let model = match step {
-            CardHoldStep::Done => break,
-            CardHoldStep::Large => large_model,
-            CardHoldStep::Small => small_model,
-        };
+        let step = card_hold_step(now, target_free, large, small);
+        if step == CardHoldStep::Done {
+            break;
+        }
         if hold.loads.len() >= CARD_HOLD_MAX_LOADS {
             hold.stopped = Some(format!("stopped after {CARD_HOLD_MAX_LOADS} loads"));
             break;
         }
-        let session = match load_parakeet(models, model, Accelerator::Cuda, Some(1)) {
-            Ok(s) => s,
-            Err(e) => {
-                hold.stopped = Some(format!("{}: {e}", model.name));
-                break;
+        let name = match step {
+            CardHoldStep::Large | CardHoldStep::Small => {
+                let model = if step == CardHoldStep::Large {
+                    large_model
+                } else {
+                    small_model
+                };
+                match load_parakeet(models, model, Accelerator::Cuda, Some(1)) {
+                    Ok(s) => hold.held.push(s),
+                    Err(e) => {
+                        hold.stopped = Some(format!("{}: {e}", model.name));
+                        break;
+                    }
+                }
+                model.name
+            }
+            CardHoldStep::Block | CardHoldStep::Done => {
+                if let Err(e) = hold.take_block(models) {
+                    hold.stopped = Some(format!("{CARD_HOLD_BLOCK_NAME}: {e}"));
+                    break;
+                }
+                CARD_HOLD_BLOCK_NAME
             }
         };
-        hold.held.push(session);
         let Some(after) = free() else {
             hold.stopped = Some("the card's free memory cannot be read".into());
             hold.free_left = None;
             break;
         };
         let took = now.saturating_sub(after);
-        if step == CardHoldStep::Large && took > 0 {
-            large = took;
+        match step {
+            CardHoldStep::Large if took > 0 => large = took,
+            CardHoldStep::Small if took > 0 => small = took,
+            _ => {}
         }
         hold.loads.push(CardHoldLoad {
-            model: model.name,
+            model: name,
             free_before: now,
             free_after: after,
         });
@@ -2753,23 +2813,32 @@ pub fn record_pass_backend(
     Ok(())
 }
 
-/// The backend recorded by [`record_pass_backend`], if any.
+/// The backend recorded by [`record_pass_backend`], if any; a value this build cannot read is
+/// `None`, as if nothing was recorded ([`pass_backend_record`] says which, T12.56).
 ///
 /// # Errors
-/// Store errors; [`RuntimeError::Internal`] for a value that does not parse.
+/// Store errors.
 pub fn pass_backend(
     store: &Store,
     meeting: EntityId,
     pass: TranscriptPass,
     track: Option<TrackId>,
 ) -> Result<Option<BackendInfo>, RuntimeError> {
-    store
-        .local_value(pass_key(meeting, pass, track).as_str())?
-        .map(|v| {
-            serde_json::from_slice(&v)
-                .map_err(|_| RuntimeError::Internal("stored backend info does not parse"))
-        })
-        .transpose()
+    Ok(pass_backend_record(store, meeting, pass, track)?.value())
+}
+
+/// The record behind [`pass_backend`]: absent, read, or stored but unreadable (a pass ran even
+/// when its backend cannot be read).
+///
+/// # Errors
+/// Store errors.
+pub fn pass_backend_record(
+    store: &Store,
+    meeting: EntityId,
+    pass: TranscriptPass,
+    track: Option<TrackId>,
+) -> Result<crate::StoredRecord<BackendInfo>, RuntimeError> {
+    crate::local::json_record(store, &pass_key(meeting, pass, track))
 }
 /// Starts a live session on the default microphone (`mic_role`) and, in a call, the
 /// loopback source of `mode` (Windows). In the room the meeting has one (mic) track. The

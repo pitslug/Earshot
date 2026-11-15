@@ -188,11 +188,6 @@ fn json<T: Serialize>(v: &T) -> Result<Vec<u8>, RuntimeError> {
     serde_json::to_vec(v).map_err(|_| RuntimeError::Internal("echo state does not serialise"))
 }
 
-fn parse<T: for<'de> Deserialize<'de>>(v: &[u8]) -> Result<T, RuntimeError> {
-    serde_json::from_slice(v)
-        .map_err(|_| RuntimeError::Internal("stored echo state does not parse"))
-}
-
 /// Records the lock stretches of `meeting`'s live session (empty: never locked).
 ///
 /// # Errors
@@ -206,16 +201,28 @@ pub fn record_echo_locks(
     Ok(())
 }
 
-/// The lock stretches recorded by [`record_echo_locks`]; empty when there were none or
-/// nothing was recorded (an older meeting: no cleaning).
+/// The lock stretches recorded by [`record_echo_locks`]; empty when there were none, nothing
+/// was recorded (an older meeting: no cleaning) or the record cannot be read
+/// ([`echo_locks_record`] says which, T12.56).
 ///
 /// # Errors
-/// Store errors; [`RuntimeError::Internal`] for a value that does not parse.
+/// Store errors.
 pub fn echo_locks(store: &Store, meeting: EntityId) -> Result<Vec<EchoLock>, RuntimeError> {
-    match store.local_value(locks_key(meeting).as_str())? {
-        Some(v) => parse(&v),
-        None => Ok(Vec::new()),
-    }
+    Ok(echo_locks_record(store, meeting)?
+        .value()
+        .unwrap_or_default())
+}
+
+/// The record behind [`echo_locks`]: absent, read, or stored but unreadable (the final pass
+/// then cleans nothing as echo and says so, [`crate::post::PostWarning::EchoRecordUnreadable`]).
+///
+/// # Errors
+/// Store errors.
+pub fn echo_locks_record(
+    store: &Store,
+    meeting: EntityId,
+) -> Result<crate::StoredRecord<Vec<EchoLock>>, RuntimeError> {
+    crate::local::json_record(store, &locks_key(meeting))
 }
 /// Records what echo cleaning did in `pass` of `meeting`.
 ///
@@ -231,19 +238,17 @@ pub fn record_echo_report(
     Ok(())
 }
 
-/// The report recorded by [`record_echo_report`], if any.
+/// The report recorded by [`record_echo_report`], if any; one this build cannot read is
+/// `None`, as if none was recorded (T12.56).
 ///
 /// # Errors
-/// Store errors; [`RuntimeError::Internal`] for a value that does not parse.
+/// Store errors.
 pub fn echo_report(
     store: &Store,
     meeting: EntityId,
     pass: TranscriptPass,
 ) -> Result<Option<EchoReport>, RuntimeError> {
-    store
-        .local_value(report_key(meeting, pass).as_str())?
-        .map(|v| parse(&v))
-        .transpose()
+    Ok(crate::local::json_record(store, &report_key(meeting, pass))?.value())
 }
 
 #[cfg(test)]
@@ -264,6 +269,30 @@ mod tests {
         (0..3u64)
             .map(|k| Word::new(texts[k as usize], t + 300 * k, t + 300 * k + 250, 0.9))
             .collect()
+    }
+
+    #[test]
+    fn post_echo_records_this_build_cannot_read_are_the_default_never_an_error() {
+        let mut store = Store::open_in_memory().unwrap();
+        let meeting = EntityId::from_bytes([3; 16]);
+        assert!(!echo_locks_record(&store, meeting).unwrap().exists());
+        crate::local::set(&mut store, &locks_key(meeting), b"not json").unwrap();
+        crate::local::set(
+            &mut store,
+            &report_key(meeting, TranscriptPass::Final),
+            b"{\"locks\":7}",
+        )
+        .unwrap();
+        // T12.56: reported as unreadable, the default used.
+        assert!(echo_locks_record(&store, meeting).unwrap().is_unreadable());
+        assert!(echo_locks(&store, meeting).unwrap().is_empty());
+        assert_eq!(
+            echo_report(&store, meeting, TranscriptPass::Final).unwrap(),
+            None
+        );
+        // A readable record still reads.
+        record_echo_locks(&mut store, meeting, &[lock(0, 900, 230)]).unwrap();
+        assert_eq!(echo_locks(&store, meeting).unwrap(), [lock(0, 900, 230)]);
     }
 
     #[test]

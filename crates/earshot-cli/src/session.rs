@@ -546,6 +546,21 @@ pub fn format_stats(stats: &PipelineStats) -> String {
     s
 }
 
+/// Prints the note of a CUDA load that could not share the speech model's encoder and loaded its
+/// own (T12.58), once per process, so the fallback is never silent here (T12.62). Called after
+/// each stage that loads models; the note answers once.
+pub(crate) fn write_shared_encoder_note(out: &mut dyn Write) -> std::io::Result<()> {
+    match earshot_runtime::shared_encoders::take_note() {
+        Some(note) => writeln!(out, "{}", shared_encoder_note_line(note)),
+        None => Ok(()),
+    }
+}
+
+/// The line [`write_shared_encoder_note`] prints for `note`.
+fn shared_encoder_note_line(note: &str) -> String {
+    format!("note: {note}")
+}
+
 pub(crate) fn format_warning(w: &RuntimeWarning) -> String {
     match w {
         RuntimeWarning::Pipeline(e) => format!("warning: pipeline: {e:?}"),
@@ -1110,6 +1125,7 @@ pub fn run_meeting(
     };
     // Hang-up: the recording is finalised; the summary's wait is timed from here.
     let hung_up = std::time::Instant::now();
+    write_shared_encoder_note(out)?;
     let meeting = outcome.meeting;
     {
         let db = svc.store();
@@ -1148,6 +1164,8 @@ pub fn run_meeting(
         error: None,
     };
     let host = after_meeting(&svc, &outcome, &after, &mut |step| printer.step(step));
+    // A final pass that could not share the encoder (printed whatever the pass's result).
+    write_shared_encoder_note(printer.out)?;
     if let Some(e) = printer.error.take() {
         return Err(e.into());
     }
@@ -1777,6 +1795,16 @@ mod tests {
             residual_drift_ppm: None,
             attenuation_db: Some(18.5),
         }
+    }
+
+    #[test]
+    fn session_shared_encoder_note_is_printed_as_a_note_and_nothing_without_one() {
+        let note = earshot_runtime::shared_encoders::NOTE;
+        assert_eq!(shared_encoder_note_line(note), format!("note: {note}"));
+        // No CUDA load in this process fell back: nothing is printed.
+        let mut out = Vec::new();
+        write_shared_encoder_note(&mut out).unwrap();
+        assert!(out.is_empty());
     }
 
     #[test]
