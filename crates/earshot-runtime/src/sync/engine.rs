@@ -256,6 +256,30 @@ impl SyncClient {
     /// # Errors
     /// [`SyncProblem::Vault`] when not set up; the relay's problems.
     pub fn send_presence(&self, gone: bool) -> Result<(), SyncProblem> {
+        // A gone blob names no writer, so a worker's locator (which may look a name up) is not
+        // asked for one.
+        let worker = if gone {
+            self.worker.as_ref().map(|_| None)
+        } else {
+            self.worker_writer_now()
+        };
+        self.send_presence_with(gone, worker)
+    }
+
+    /// A summary worker's writer kind now (its locator asked, which may look a name up; no lock
+    /// is held), or `None` for the app. The sync thread asks before it takes the presence lock
+    /// and passes the answer to [`Self::send_presence_with`].
+    pub(crate) fn worker_writer_now(&self) -> Option<Option<crate::offload::WriterKind>> {
+        self.worker.as_ref().map(|worker| worker())
+    }
+
+    /// [`Self::send_presence`] with a worker's writer kind already found (`worker`: `None` for
+    /// the app, whose writer comes from its Summaries settings).
+    pub(crate) fn send_presence_with(
+        &self,
+        gone: bool,
+        worker: Option<Option<crate::offload::WriterKind>>,
+    ) -> Result<(), SyncProblem> {
         let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
         let keys = secrets.key.keys();
         let (settings, writer) = {
@@ -263,9 +287,9 @@ impl SyncClient {
             let settings = sync_settings(&db)?;
             // The writer kind travels only while this device offers to write: the asker's
             // label names it, so the user knows where the transcript goes.
-            let writer = match &self.worker {
+            let writer = match worker {
                 _ if !settings.offers_summaries => None,
-                Some(worker) => worker(),
+                Some(worker) => worker,
                 None => {
                     crate::offload::WriterKind::of_settings(&db).map_err(|_| SyncProblem::Store)?
                 }

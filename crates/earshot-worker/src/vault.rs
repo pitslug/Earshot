@@ -338,6 +338,30 @@ mod tests {
         assert_eq!(mode, 0o700);
     }
 
+    /// A key file a group can read (0640) is refused; saving into an existing 0755 folder
+    /// tightens it to 0700.
+    #[cfg(unix)]
+    #[test]
+    fn vault_a_group_readable_key_is_refused_and_an_open_folder_is_tightened() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = Dir::new("tighten");
+        let folder = dir.0.join("vault");
+        fs::create_dir_all(&folder).unwrap();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+        let vault = FileVault::new(folder.join("key"), folder.join("token"));
+        vault
+            .save(
+                &VaultKey::from_bytes([2; 32]),
+                &DeviceToken::new("t".into()),
+            )
+            .unwrap();
+        let mode = fs::metadata(&folder).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "the folder is tightened by a save");
+        assert_eq!(vault.check_private(), Ok(()));
+        fs::set_permissions(vault.key_path(), fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(vault.check_private(), Err(VaultRefused::ReadableByOthers));
+    }
+
     #[test]
     fn vault_probe_leaves_nothing_behind_and_refuses_a_folder_that_is_a_file() {
         let dir = Dir::new("probe");

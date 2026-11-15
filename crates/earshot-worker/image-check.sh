@@ -21,6 +21,7 @@ docker volume create earshot-worker-unjoined > /dev/null
 code=0
 docker run --rm -v earshot-worker-unjoined:/data \
   -e EARSHOT_WORKER_RELAY=https://relay.invalid \
+  -e EARSHOT_WORKER_MODEL_SUBNET=172.31.250.0/24 \
   "${image}" run || code=$?
 echo "run exit code: ${code}"
 health="$(docker run --rm -v earshot-worker-unjoined:/data "${image}" health || true)"
@@ -41,6 +42,7 @@ docker run -d --name earshot-worker-check \
   -v earshot-worker-check:/data \
   -v "${PWD}/smoke:/run/secrets:ro" \
   -e EARSHOT_WORKER_RELAY=https://relay.invalid \
+  -e EARSHOT_WORKER_MODEL_SUBNET=172.31.250.0/24 \
   -e EARSHOT_WORKER_KEY_FILE=/run/secrets/key \
   -e EARSHOT_WORKER_TOKEN_FILE=/run/secrets/token \
   "${image}" > /dev/null

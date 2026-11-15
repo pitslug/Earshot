@@ -196,11 +196,11 @@ impl Worker {
     /// # Errors
     /// As [`Worker::open_with`].
     pub fn open(services: Services, config: Config) -> Result<Self, WorkerError> {
-        let service = config.llm_service.clone();
+        let own = config.own_model();
         Self::open_with(
             services,
             config,
-            Arc::new(move |url: &Url| locate(url, &service)),
+            Arc::new(move |url: &Url| locate(url, own.as_ref())),
         )
     }
 
@@ -392,6 +392,7 @@ mod tests {
             relay: Some("https://sync.example.com".into()),
             llm_url: Url::parse(llm).unwrap(),
             llm_service: "llama".into(),
+            model_subnet: crate::endpoint::Subnet::parse_private("172.31.250.0/24"),
             llm_model: "test-model".into(),
             llm_context: 16_384,
             llm_timeout: Duration::from_secs(60),
@@ -409,8 +410,28 @@ mod tests {
         (host, dir)
     }
 
+    /// The production rule with `service` as the model service, the compose file's subnet and
+    /// a stub lookup that answers every name with an address inside that subnet, so only the
+    /// rule's own checks can make a name remote.
+    fn stub_resolving(service: &'static str) -> Arc<Locate> {
+        let own = crate::endpoint::OwnModel {
+            service: service.into(),
+            subnet: crate::endpoint::Subnet::parse_private("172.31.250.0/24").unwrap(),
+        };
+        Arc::new(move |url: &Url| {
+            crate::endpoint::locate_with(url, Some(&own), &|_, _| {
+                vec!["172.31.250.3".parse().unwrap()]
+            })
+        })
+    }
+
+    /// The production rule with the system's lookup.
     fn production(service: &'static str) -> Arc<Locate> {
-        Arc::new(move |url: &Url| locate(url, service))
+        let own = crate::endpoint::OwnModel {
+            service: service.into(),
+            subnet: crate::endpoint::Subnet::parse_private("172.31.250.0/24").unwrap(),
+        };
+        Arc::new(move |url: &Url| locate(url, Some(&own)))
     }
 
     fn declined(writer: &HelperWriter) -> Option<&'static str> {
@@ -425,10 +446,16 @@ mod tests {
     /// kept-local meeting is declined before a writer is even built.
     #[test]
     fn worker_host_a_name_the_rule_refuses_is_never_written_to() {
+        // Control: the stub lookup puts the model service inside its subnet, so the configured
+        // name is the worker's own model and writes.
+        let (host, _dir) = make_host("control", "http://llama:8080/v1", stub_resolving("llama"));
+        assert_eq!(declined(&host.writer(SummaryPrivacy::KeptLocal)), None);
+        // The same lookup for a name that is not the configured service: only the exact-name
+        // rule makes it remote.
         let (host, _dir) = make_host(
             "refused",
             "http://llama:8080/v1",
-            production("not-this-one"),
+            stub_resolving("not-this-one"),
         );
         assert_eq!(
             declined(&host.writer(SummaryPrivacy::Writer)),

@@ -1068,9 +1068,12 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
     // Where the worker's model is, as its locator would say now.
     let local = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let now = Arc::clone(&local);
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
     let worker = SyncClient::for_address(b.svc.clone(), b.vault(), &relay.relay.url())
         .unwrap()
         .as_summary_worker(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Some(if now.load(std::sync::atomic::Ordering::SeqCst) {
                 WriterKind::Local
             } else {
@@ -1134,6 +1137,21 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
         .find(|p| p.device == b.svc.store().device())
         .unwrap();
     assert_eq!(theirs.presence.as_ref().unwrap().writer_kind, None);
+    // A gone blob does not ask the locator (it may look a name up) and names no writer.
+    let before = asked.load(std::sync::atomic::Ordering::SeqCst);
+    set_offer_summaries(&b.svc, true).unwrap();
+    worker.send_presence(true).unwrap();
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), before);
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    let p = theirs.presence.as_ref().unwrap();
+    assert!(
+        p.gone && p.writer_kind.is_none() && p.kind == KIND_SERVER,
+        "{p:?}"
+    );
     // A refused address is refused as a stored one would be.
     assert_eq!(
         SyncClient::for_address(b.svc.clone(), b.vault(), "http://relay.example.com").err(),

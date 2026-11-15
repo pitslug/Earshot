@@ -39,11 +39,13 @@
 # (docker compose down -v) and join again with a new code.
 #
 # The model server is the stock llama.cpp image, pinned by digest, on an internal network with
-# no route out of this host. The worker reaches it as http://llama:8080/v1, which counts as its
-# own local model, so it may write meetings kept on your computers; the worker reaches the relay
-# over a second, ordinary network. Point EARSHOT_WORKER_LLM_URL anywhere else, or rename the
-# service, and that endpoint is remote: kept-local meetings are declined and written on the
-# asking device.
+# no route out of this host and a fixed subnet. The worker reaches it as http://llama:8080/v1,
+# which counts as its own local model only while `llama` resolves inside that subnet, so it may
+# write meetings kept on your computers; the worker reaches the relay over a second, ordinary
+# network. Point EARSHOT_WORKER_LLM_URL anywhere else, or rename the service, and that endpoint
+# is remote: kept-local meetings are declined and written on the asking device. If you change
+# the `model` network's subnet (because it clashes with one of yours), change
+# EARSHOT_WORKER_MODEL_SUBNET to the same value, or the model counts as remote.
 services:
   earshot-worker:
     image: ghcr.io/pitslug/earshot-worker:${EARSHOT_VERSION:-latest}
@@ -53,6 +55,7 @@ services:
       EARSHOT_WORKER_RELAY: ${EARSHOT_WORKER_RELAY:?set EARSHOT_WORKER_RELAY in .env}
       EARSHOT_WORKER_LLM_URL: http://llama:8080/v1
       EARSHOT_WORKER_LLM_SERVICE: llama
+      EARSHOT_WORKER_MODEL_SUBNET: 172.31.250.0/24
       EARSHOT_WORKER_LLM_CONTEXT: "16384"
       EARSHOT_WORKER_NAME: ${EARSHOT_WORKER_NAME:-Earshot server}
       # EARSHOT_WORKER_KEY_FILE: /run/secrets/earshot_vault_key
@@ -108,6 +111,11 @@ networks:
   # and nothing outside can reach it.
   model:
     internal: true
+    # Fixed, so the worker can tell its model's addresses from any other (keep it equal to
+    # EARSHOT_WORKER_MODEL_SUBNET).
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
   # The worker's way to the relay.
   outside: {}
 

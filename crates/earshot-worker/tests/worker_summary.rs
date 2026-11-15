@@ -182,6 +182,7 @@ fn worker_config(dir: &Path, relay: &str, llm: &Url) -> Config {
         relay: Some(relay.to_owned()),
         llm_url: llm.clone(),
         llm_service: "llama".into(),
+        model_subnet: None,
         llm_model: "test-model".into(),
         llm_context: 16_384,
         llm_timeout: Duration::from_secs(60),

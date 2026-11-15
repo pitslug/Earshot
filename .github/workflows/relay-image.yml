@@ -109,11 +109,15 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           printf '%s' "${TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          # Both version tags first, then both `latest`, so `latest` never names a relay and a
+          # worker of different releases while the other is still on its way.
           for image in "${RELAY}" "${WORKER}"; do
             docker push "${image}:${VERSION}"
-            if [ "${LATEST}" = "true" ]; then
+          done
+          if [ "${LATEST}" = "true" ]; then
+            for image in "${RELAY}" "${WORKER}"; do
               docker tag "${image}:${VERSION}" "${image}:latest"
               docker push "${image}:latest"
-            fi
-          done
+            done
+          fi
           docker logout ghcr.io

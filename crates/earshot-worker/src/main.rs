@@ -54,14 +54,7 @@ fn report(result: Result<(), WorkerError>) -> ExitCode {
 }
 
 fn health_command() -> ExitCode {
-    let data = match Config::from_env() {
-        Ok(c) => c.data,
-        Err(e) => {
-            eprintln!("unhealthy: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match health::check(&data, now_s()) {
+    match health::check(&Config::data_from_env(), now_s()) {
         Ok(()) => {
             println!("healthy");
             ExitCode::SUCCESS
@@ -95,9 +88,8 @@ fn join_command() -> Result<(), WorkerError> {
 /// [`run`], recording a run that cannot start or ends on a problem in the heartbeat file, so the
 /// health check reports why while Docker's restart policy tries again.
 fn run_command() -> Result<(), WorkerError> {
-    let config = Config::from_env()?;
-    let heartbeat = health::heartbeat_path(&config.data);
-    let ran = run(config);
+    let heartbeat = health::heartbeat_path(&Config::data_from_env());
+    let ran = Config::from_env().map_err(WorkerError::from).and_then(run);
     if let Err(e) = &ran {
         let _ = health::record_stopped(&heartbeat, e.health_word());
     }

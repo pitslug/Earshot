@@ -8,6 +8,7 @@
 //! | `EARSHOT_WORKER_RELAY` | (required for `join` and `run`) | The relay's address, as the other devices use it (`https://...`) |
 //! | `EARSHOT_WORKER_LLM_URL` | `http://llama:8080/v1` | The OpenAI-compatible summary endpoint ([`crate::endpoint`] decides whether it is the worker's own model) |
 //! | `EARSHOT_WORKER_LLM_SERVICE` | `llama` | The model service's name on the compose network: the only bare name that can count as the worker's own model |
+//! | `EARSHOT_WORKER_MODEL_SUBNET` | (required when the endpoint names the model service) | The model network's fixed private subnet (CIDR, the compose file's `172.31.250.0/24`): only addresses inside it can be the worker's own model |
 //! | `EARSHOT_WORKER_LLM_MODEL` | `local` | The model name sent with each request and stored with the summary |
 //! | `EARSHOT_WORKER_LLM_CONTEXT` | `16384` | The endpoint's context window in tokens (the compose file starts llama.cpp with the same) |
 //! | `EARSHOT_WORKER_LLM_TIMEOUT_S` | `1800` | The longest one summary request may take |
@@ -20,6 +21,8 @@ use std::time::Duration;
 
 use earshot_net::Url;
 
+use crate::endpoint::{OwnModel, Subnet, service_name};
+
 /// The configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -31,6 +34,9 @@ pub struct Config {
     pub llm_url: Url,
     /// The model service's name on the compose network ([`crate::endpoint`]).
     pub llm_service: String,
+    /// The model network's fixed subnet ([`crate::endpoint`]); `None`: nothing is the
+    /// worker's own model.
+    pub model_subnet: Option<Subnet>,
     /// The model name.
     pub llm_model: String,
     /// The endpoint's context window in tokens.
@@ -94,6 +100,19 @@ impl Config {
         if !label {
             return Err(ConfigError("EARSHOT_WORKER_LLM_SERVICE"));
         }
+        let model_subnet = match get("EARSHOT_WORKER_MODEL_SUBNET") {
+            Some(text) => Some(
+                Subnet::parse_private(&text).ok_or(ConfigError("EARSHOT_WORKER_MODEL_SUBNET"))?,
+            ),
+            None => None,
+        };
+        // An endpoint naming the model service is meant to be the worker's own model, which
+        // needs the subnet (without it, it would silently be remote).
+        if model_subnet.is_none()
+            && service_name(&llm_url).is_some_and(|n| n.eq_ignore_ascii_case(&llm_service))
+        {
+            return Err(ConfigError("EARSHOT_WORKER_MODEL_SUBNET"));
+        }
         let number = |name: &'static str, default: u64| -> Result<u64, ConfigError> {
             get(name).map_or(Ok(default), |v| v.parse().map_err(|_| ConfigError(name)))
         };
@@ -119,10 +138,33 @@ impl Config {
             relay: get("EARSHOT_WORKER_RELAY"),
             llm_url,
             llm_service,
+            model_subnet,
             llm_model: get("EARSHOT_WORKER_LLM_MODEL").unwrap_or_else(|| "local".into()),
             llm_context,
             llm_timeout: Duration::from_secs(timeout),
             name,
+        })
+    }
+
+    /// The data folder alone, from the process environment (the health check needs nothing
+    /// else, so it answers even when another variable is wrong).
+    #[must_use]
+    pub fn data_from_env() -> PathBuf {
+        PathBuf::from(
+            std::env::var("EARSHOT_WORKER_DATA")
+                .ok()
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "/data".into()),
+        )
+    }
+
+    /// What counts as the worker's own model; `None` without a subnet.
+    #[must_use]
+    pub fn own_model(&self) -> Option<OwnModel> {
+        self.model_subnet.map(|subnet| OwnModel {
+            service: self.llm_service.clone(),
+            subnet,
         })
     }
 
@@ -156,7 +198,9 @@ mod tests {
 
     #[test]
     fn config_defaults_name_the_compose_layout() {
-        let c = of(&[]).unwrap();
+        let c = of(&[("EARSHOT_WORKER_MODEL_SUBNET", "172.31.250.0/24")]).unwrap();
+        assert_eq!(c.model_subnet.unwrap().to_string(), "172.31.250.0/24");
+        assert_eq!(c.own_model().unwrap().service, "llama");
         assert_eq!(c.data, PathBuf::from("/data"));
         assert_eq!(c.relay, None);
         assert_eq!(c.relay(), Err(ConfigError("EARSHOT_WORKER_RELAY")));
@@ -201,9 +245,33 @@ mod tests {
             ("EARSHOT_WORKER_LLM_SERVICE", "localhost"),
             ("EARSHOT_WORKER_NAME", "\u{7}"),
         ] {
-            let e = of(&[(name, value)]).unwrap_err();
+            let e = of(&[
+                (name, value),
+                ("EARSHOT_WORKER_MODEL_SUBNET", "172.31.250.0/24"),
+            ])
+            .unwrap_err();
             assert_eq!(e, ConfigError(name));
             assert!(!e.to_string().contains(value), "{e}");
         }
+    }
+
+    #[test]
+    fn config_the_model_service_needs_its_subnet() {
+        // The default endpoint names the model service: without the subnet it would silently be
+        // remote, so it is refused.
+        assert_eq!(
+            of(&[]).unwrap_err(),
+            ConfigError("EARSHOT_WORKER_MODEL_SUBNET")
+        );
+        for bad in ["192.0.2.0/24", "172.31.250.1/24", "10.0.0.0/33", "lots"] {
+            assert_eq!(
+                of(&[("EARSHOT_WORKER_MODEL_SUBNET", bad)]).unwrap_err(),
+                ConfigError("EARSHOT_WORKER_MODEL_SUBNET"),
+                "{bad}"
+            );
+        }
+        // Another endpoint needs none: nothing is then the worker's own model.
+        let c = of(&[("EARSHOT_WORKER_LLM_URL", "https://api.example.com/v1")]).unwrap();
+        assert_eq!(c.own_model(), None);
     }
 }
