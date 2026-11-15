@@ -1004,8 +1004,8 @@ pub fn add_dictionary_word(
     services: &Services,
     token: &str,
 ) -> Result<DictionaryWordAdded, IpcError> {
-    let added = vocabulary::add_word(&mut services.store(), token)
-        .map_err(crate::summary_vocabulary::refusal)?;
+    let added =
+        vocabulary::add_word(services, token).map_err(crate::summary_vocabulary::refusal)?;
     Ok(DictionaryWordAdded {
         word: added.word,
         added: added.added,
@@ -1018,7 +1018,7 @@ pub fn add_dictionary_word(
 /// # Errors
 /// Store errors.
 pub fn remove_dictionary_word(services: &Services, word: &str) -> Result<bool, IpcError> {
-    vocabulary::remove_word(&mut services.store(), word).map_err(crate::summary_vocabulary::refusal)
+    vocabulary::remove_word(services, word).map_err(crate::summary_vocabulary::refusal)
 }
 
 /// Saves a line edit (`edit::edit_segment_offering`) and returns the words the bar under the

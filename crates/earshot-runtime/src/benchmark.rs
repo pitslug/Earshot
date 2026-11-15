@@ -609,7 +609,7 @@ fn run_in(
     crate::summary_style::set_summary_style(&mut svc.store(), run.style.as_str())
         .map_err(|_| RuntimeError::Internal("the summary style cannot be copied"))?;
     crate::summary_style::set_summary_template(&mut svc.store(), run.style_preset)?;
-    crate::vocabulary::set_vocabulary(&mut svc.store(), run.vocabulary.words())
+    crate::vocabulary::set_vocabulary(&svc, run.vocabulary.words())
         .map_err(|_| RuntimeError::Internal("the word list cannot be copied"))?;
     let total = run.meeting.duration();
     let source = ReplayBuilder::new(

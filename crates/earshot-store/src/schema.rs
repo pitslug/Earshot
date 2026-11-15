@@ -308,8 +308,27 @@ CREATE TRIGGER summary_request_sync_update AFTER UPDATE ON summary_request BEGIN
 END;
 ";
 
+/// Migration 8: the user's Dictionary words (T11.3e, docs/sync-spec.md section 10.2), one synced
+/// row per word with its own outbox triggers, filled by the runtime (the words of
+/// `settings/vocabulary` are not copied here: a row needs an id and a stamp the runtime makes).
+const V8: &str = "
+CREATE TABLE dictionary_word (
+    id BLOB PRIMARY KEY NOT NULL, {META},
+    word TEXT NOT NULL
+) STRICT;
+
+CREATE TRIGGER dictionary_word_sync_insert AFTER INSERT ON dictionary_word BEGIN
+    INSERT INTO sync_outbox SELECT 'dictionary_word', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'dictionary_word' AND id = NEW.id);
+END;
+CREATE TRIGGER dictionary_word_sync_update AFTER UPDATE ON dictionary_word BEGIN
+    INSERT INTO sync_outbox SELECT 'dictionary_word', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'dictionary_word' AND id = NEW.id);
+END;
+";
+
 /// Tables with sync metadata (the HLC high-water mark is the greatest `updated_*` in them).
-pub(crate) const SYNCED_TABLES: [&str; 10] = [
+pub(crate) const SYNCED_TABLES: [&str; 11] = [
     "meeting",
     "track",
     "speaker",
@@ -320,11 +339,12 @@ pub(crate) const SYNCED_TABLES: [&str; 10] = [
     "voiceprint",
     "folder",
     "summary_request",
+    "dictionary_word",
 ];
 
 /// The migrations, in order, with `{META}` expanded.
 pub(crate) fn migrations() -> Vec<String> {
-    [V1, V2, V3, V4, V5, V6, V7]
+    [V1, V2, V3, V4, V5, V6, V7, V8]
         .iter()
         .map(|m| m.replace("{META}", META))
         .collect()
@@ -345,6 +365,7 @@ mod tests {
         "a682b36a9b8d6bd831f0f4865fa7554dd79330f35e80f10c7512389e3bcc1df4",
         "964bd0e4d3a4bb7e505659731a7dea0a1774269734863714d7a23c4af756b466",
         "2cf8b62638de4aab2956a78789c81bf374546f49e81e882a4215d1aebdadbd1d",
+        "a8f780ef2d07563a4eddfb9f7d9c50f0f82cd141f41b1251447c85085f6a82ec",
     ];
 
     /// `(type, name, tbl_name, sql)` of every schema object, sorted.
@@ -501,6 +522,28 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, 6);
+    }
+
+    /// The committed schema-7 fixture (`tests/data/schema_v7.sql`, used by
+    /// `tests/dictionary_word.rs`) creates exactly the objects migrations 1 to 7 create, so the
+    /// Dictionary migration (8) is tested on a real schema-7 database.
+    #[test]
+    fn store_dictionary_v7_fixture_has_exactly_the_schema_of_migrations_1_to_7() {
+        let fixture = rusqlite::Connection::open_in_memory().unwrap();
+        fixture
+            .execute_batch(include_str!("../tests/data/schema_v7.sql"))
+            .unwrap();
+        let fresh = rusqlite::Connection::open_in_memory().unwrap();
+        for m in &super::migrations()[..7] {
+            fresh.execute_batch(m).unwrap();
+        }
+        let want = objects(&fresh);
+        assert!(want.iter().any(|o| o.1 == "summary_request"), "{want:?}");
+        assert_eq!(objects(&fixture), want);
+        let version: u32 = fixture
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
     }
 
     /// Every synced table has its insert and update trigger feeding `sync_outbox`, and no

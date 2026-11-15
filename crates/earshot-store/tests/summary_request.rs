@@ -11,13 +11,21 @@ use earshot_core::model::{
     Meeting, MeetingRepo, RequestState, SummaryRequest, SummaryRequestRepo, repo_contract,
 };
 use earshot_core::prompt::Template;
-use earshot_store::{ApplyRules, Incoming, SCHEMA_VERSION, Store, SyncedRow};
+use earshot_store::{ApplyRules, Incoming, SCHEMA_VERSION, Store, SyncKinds, SyncedRow};
 
 /// The asker and the target of the requests here.
 const ASKER: DeviceId = DeviceId::from_bytes([0x11; 16]);
 const TARGET: DeviceId = DeviceId::from_bytes([0x22; 16]);
 
 const T0: u64 = 1_800_000_000_000;
+
+/// The opt-in switches with voiceprints `on` and Dictionary words on (T11.3e).
+fn vp(on: bool) -> SyncKinds {
+    SyncKinds {
+        voiceprints: on,
+        dictionary: true,
+    }
+}
 
 fn id(n: u8) -> EntityId {
     EntityId::from_bytes([0x01, 0x90, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, n, 2])
@@ -111,9 +119,10 @@ impl Env {
     ) -> earshot_store::Applied {
         let mut hlc = self.store.hlc(self.me).unwrap();
         let rules = ApplyRules {
-            voiceprints: false,
+            kinds: vp(false),
             leased,
             now_ms: T0 + 60_000,
+            after: None,
         };
         self.store
             .apply_remote(page, &rules, &mut hlc, &self.clock)
@@ -324,8 +333,8 @@ fn store_offload_a_recording_meetings_requests_wait_in_the_outbox() {
     e.store
         .put_summary_request(request(1, 5, RequestState::Requested, at(T0 + 5, ASKER)))
         .unwrap();
-    let except = e.store.outbox_except(100, &[id(5)], false).unwrap();
+    let except = e.store.outbox_except(100, &[id(5)], vp(false)).unwrap();
     assert!(except.is_empty(), "{except:?}");
-    assert_eq!(e.store.outbox_len_except(&[id(5)], false).unwrap(), 0);
-    assert_eq!(e.store.outbox_len_except(&[], false).unwrap(), 2);
+    assert_eq!(e.store.outbox_len_except(&[id(5)], vp(false)).unwrap(), 0);
+    assert_eq!(e.store.outbox_len_except(&[], vp(false)).unwrap(), 2);
 }

@@ -17,8 +17,8 @@
 
 use earshot_core::identity::{Clock, EntityId, Hlc, HlcTimestamp, SyncMeta, SyncSerialize};
 use earshot_core::model::{
-    Folder, Meeting, Note, RepoError, RequestState, SegmentRow, Speaker, Summary, SummaryRequest,
-    Track,
+    DictionaryWord, Folder, Meeting, Note, RepoError, RequestState, SegmentRow, Speaker, Summary,
+    SummaryRequest, Track,
 };
 use earshot_core::voiceprint::{Person, Voiceprint};
 use rusqlite::{OptionalExtension, params};
@@ -53,6 +53,8 @@ pub enum SyncedRow {
     Folder(Folder),
     /// `summary_request` (summary offload, T11.3da).
     SummaryRequest(SummaryRequest),
+    /// `dictionary_word` (synced only while the device's Dictionary switch is on, T11.3e).
+    DictionaryWord(DictionaryWord),
 }
 
 macro_rules! each {
@@ -68,6 +70,7 @@ macro_rules! each {
             SyncedRow::Voiceprint($r) => $e,
             SyncedRow::Folder($r) => $e,
             SyncedRow::SummaryRequest($r) => $e,
+            SyncedRow::DictionaryWord($r) => $e,
         }
     };
 }
@@ -94,8 +97,8 @@ impl SyncedRow {
         each!(self, r => r.sync_meta())
     }
 
-    /// The meeting it belongs to: its own id for a meeting, `None` for people, voiceprints
-    /// and folders.
+    /// The meeting it belongs to: its own id for a meeting, `None` for people, voiceprints,
+    /// folders and Dictionary words.
     #[must_use]
     pub fn meeting(&self) -> Option<EntityId> {
         match self {
@@ -106,7 +109,9 @@ impl SyncedRow {
             Self::Note(r) => Some(r.meeting_id),
             Self::Summary(r) => Some(r.meeting_id),
             Self::SummaryRequest(r) => Some(r.meeting_id),
-            Self::Person(_) | Self::Voiceprint(_) | Self::Folder(_) => None,
+            Self::Person(_) | Self::Voiceprint(_) | Self::Folder(_) | Self::DictionaryWord(_) => {
+                None
+            }
         }
     }
 
@@ -140,6 +145,7 @@ impl SyncedRow {
             "voiceprint" => Self::Voiceprint(v(record)?),
             "folder" => Self::Folder(v(record)?),
             "summary_request" => Self::SummaryRequest(v(record)?),
+            "dictionary_word" => Self::DictionaryWord(v(record)?),
             _ => return Ok(None),
         }))
     }
@@ -223,14 +229,50 @@ pub struct Held {
     pub reason: HoldReason,
 }
 
+/// The opt-in kinds this device syncs (docs/sync.md section 9): a row of a kind switched off
+/// is neither pushed nor applied here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncKinds {
+    /// Voiceprints (`settings/sync-voiceprints`, off by default).
+    pub voiceprints: bool,
+    /// Dictionary words (`settings/sync-dictionary`, on by default, T11.3e).
+    pub dictionary: bool,
+}
+
+impl SyncKinds {
+    /// Every opt-in kind on.
+    pub const ALL: Self = Self {
+        voiceprints: true,
+        dictionary: true,
+    };
+
+    /// Whether rows of `table` go out and come in under these switches (`true` for every
+    /// table that is not opt-in).
+    #[must_use]
+    pub fn syncs(self, table: &str) -> bool {
+        match table {
+            "voiceprint" => self.voiceprints,
+            "dictionary_word" => self.dictionary,
+            _ => true,
+        }
+    }
+}
+
+/// Work the caller does inside [`Store::apply_remote`]'s transaction after the page's writes
+/// and the convergence rules (the runtime rebuilds `settings/vocabulary` from the live
+/// Dictionary rows there, so the list never differs from the rows it was built from).
+pub type AfterApply<'a> = &'a dyn Fn(&mut StoreTx<'_>) -> Result<(), StoreError>;
+
 /// What may be applied now.
 pub struct ApplyRules<'a> {
-    /// Whether this device syncs voiceprints (`settings/sync-voiceprints`).
-    pub voiceprints: bool,
+    /// The opt-in kinds this device syncs.
+    pub kinds: SyncKinds,
     /// Whether a meeting is in use on this device (a job lease of this process).
     pub leased: &'a dyn Fn(EntityId) -> bool,
     /// This device's wall clock, Unix ms.
     pub now_ms: u64,
+    /// Run last inside the page's transaction, when given; its error rolls the page back.
+    pub after: Option<AfterApply<'a>>,
 }
 
 /// What a page did. Counts only.
@@ -240,7 +282,7 @@ pub struct Applied {
     pub written: usize,
     /// Rows not later than the local copy: nothing changed.
     pub ignored: usize,
-    /// Voiceprint rows skipped because voiceprint sync is off.
+    /// Voiceprint or Dictionary rows skipped because that kind's sync is off.
     pub skipped: usize,
     /// Rows held, per reason, in [`HoldReason::ALL`] order.
     pub held: [usize; 4],
@@ -432,12 +474,13 @@ impl Store {
     /// # Errors
     /// Store errors.
     pub fn outbox(&self, limit: usize) -> Result<Vec<SyncedRow>, StoreError> {
-        self.outbox_except(limit, &[], true)
+        self.outbox_except(limit, &[], SyncKinds::ALL)
     }
 
     /// [`Store::outbox`] leaving out, in the query itself, the rows of the meetings in
-    /// `meetings` (a meeting being recorded: its rows wait until it is saved) and, when
-    /// `voiceprints` is false, every voiceprint. Left out in SQL rather than after reading, so
+    /// `meetings` (a meeting being recorded: its rows wait until it is saved) and every row of a
+    /// kind switched off in `kinds` (voiceprints, Dictionary words). Left out in SQL rather than
+    /// after reading, so
     /// a long recording's rows cannot fill every page and keep other rows from going.
     ///
     /// # Errors
@@ -446,7 +489,7 @@ impl Store {
         &self,
         limit: usize,
         meetings: &[EntityId],
-        voiceprints: bool,
+        kinds: SyncKinds,
     ) -> Result<Vec<SyncedRow>, StoreError> {
         let mut rows = Vec::new();
         let limit_sql = i64::try_from(limit).unwrap_or(i64::MAX);
@@ -456,7 +499,7 @@ impl Store {
             .collect();
         let marks = vec!["?"; skip.len()].join(", ");
         for table in SYNCED_TABLES {
-            if table == "voiceprint" && !voiceprints {
+            if !kinds.syncs(table) {
                 continue;
             }
             let meeting_col = match table {
@@ -531,7 +574,7 @@ impl Store {
     }
 
     /// How many rows [`Store::outbox_except`] would send with the same exclusions: what a
-    /// device shows as waiting to send (a recording's rows and switched-off voiceprints wait
+    /// device shows as waiting to send (a recording's rows and switched-off kinds wait
     /// for a reason of their own and are not behind).
     ///
     /// # Errors
@@ -539,7 +582,7 @@ impl Store {
     pub fn outbox_len_except(
         &self,
         meetings: &[EntityId],
-        voiceprints: bool,
+        kinds: SyncKinds,
     ) -> Result<u64, StoreError> {
         let skip: Vec<Vec<u8>> = meetings
             .iter()
@@ -548,7 +591,7 @@ impl Store {
         let marks = vec!["?"; skip.len()].join(", ");
         let mut total: u64 = 0;
         for table in SYNCED_TABLES {
-            if table == "voiceprint" && !voiceprints {
+            if !kinds.syncs(table) {
                 continue;
             }
             let meeting_col = match table {
@@ -644,7 +687,7 @@ impl Store {
 
     /// Applies a page of pulled rows in one transaction, in order (docs/sync-spec.md
     /// section 5.3). Each row is, in this order of checks: held when this build cannot read
-    /// it, skipped when it is a voiceprint and voiceprint sync is off, held when its stamp is
+    /// it, skipped when its kind is switched off ([`SyncKinds`]), held when its stamp is
     /// more than [`MAX_CLOCK_AHEAD_MS`] ahead, held when its meeting is in use here, ignored
     /// when the local copy's `updated_at` is not earlier, else written whole with its own
     /// metadata (held when a row it belongs to is missing). A written row leaves no outbox
@@ -672,7 +715,7 @@ impl Store {
                     out.hold(HoldReason::Format);
                     continue;
                 };
-                if matches!(row, SyncedRow::Voiceprint(_)) && !rules.voiceprints {
+                if !rules.kinds.syncs(row.table()) {
                     unhold(tx, inc)?;
                     out.skipped += 1;
                     continue;
@@ -803,6 +846,9 @@ impl Store {
                 }
             }
             converge(tx, hlc, clock, &mut out)?;
+            if let Some(after) = rules.after {
+                after(tx)?;
+            }
             Ok(out)
         })
     }

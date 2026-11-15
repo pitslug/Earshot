@@ -20,6 +20,7 @@ import {
   REMOVE_EXPLAINED,
   SYNC_INTRO,
   VOICEPRINTS_EXPLAINED,
+  DICTIONARY_EXPLAINED,
   codeLifeText,
   seenText,
 } from "./SyncPage";
@@ -118,6 +119,22 @@ describe("the Sync page", () => {
     expect(within(list).getByText("Online, recording")).toBeInTheDocument();
     expect(within(list).getByText("Last seen 2 hours ago")).toBeInTheDocument();
     expect(within(list).getByText(seenText(7_200))).toBeInTheDocument();
+  });
+
+  it("syncs Dictionary words by default and turns that off and on at once (T11.3e)", async () => {
+    const { user, calls } = await setup({ setUp: true });
+    const dictionary = await screen.findByRole("switch", { name: "Sync Dictionary words" });
+    expect(dictionary).toBeChecked();
+    expect(screen.getByText(DICTIONARY_EXPLAINED)).toBeInTheDocument();
+    // Beside the voiceprint switch, before it.
+    const voice = screen.getByRole("switch", { name: "Sync voiceprints" });
+    expect(dictionary.compareDocumentPosition(voice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await user.click(dictionary);
+    await waitFor(() => expect(dictionary).not.toBeChecked());
+    expect(voice).not.toBeChecked();
+    await user.click(dictionary);
+    await waitFor(() => expect(dictionary).toBeChecked());
+    expect(calls.filter((c) => c === "setSyncDictionary")).toHaveLength(2);
   });
 
   it("turns sync off and voiceprints on at once", async () => {

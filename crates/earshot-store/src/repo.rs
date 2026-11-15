@@ -4,9 +4,9 @@ use earshot_core::asr::{MeetingTime, Segment, Word};
 use earshot_core::diar::EmbeddingModelId;
 use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp, SyncMeta};
 use earshot_core::model::{
-    AudioFile, AudioFileRepo, ExportRecord, ExportRepo, Folder, FolderRepo, Meeting, MeetingRepo,
-    Note, RepoError, RequestState, SegmentRow, Speaker, Summary, SummaryRequest,
-    SummaryRequestRepo, Track, TranscriptPass, VaultPath,
+    AudioFile, AudioFileRepo, DictionaryRepo, DictionaryWord, ExportRecord, ExportRepo, Folder,
+    FolderRepo, Meeting, MeetingRepo, Note, RepoError, RequestState, SegmentRow, Speaker, Summary,
+    SummaryRequest, SummaryRequestRepo, Track, TranscriptPass, VaultPath,
 };
 use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintError, VoiceprintRepo};
 use rusqlite::types::{Type, Value};
@@ -616,6 +616,46 @@ fn put_folder(c: &Connection, f: &Folder) -> Result<(), RepoError> {
     Ok(())
 }
 
+// ---- dictionary_word (T11.3e) ----
+
+const DICTIONARY_WORD: [&str; 1] = ["word"];
+
+fn dictionary_word_row(r: &Row<'_>) -> rusqlite::Result<DictionaryWord> {
+    Ok(DictionaryWord {
+        id: get_id(r, 0)?,
+        meta: get_meta(r, 1)?,
+        word: r.get(REST)?,
+    })
+}
+
+fn get_dictionary_word(c: &Connection, id: EntityId) -> Result<Option<DictionaryWord>, RepoError> {
+    let sql = select_sql(
+        "dictionary_word",
+        &synced_cols(&DICTIONARY_WORD),
+        "WHERE id = ?1",
+    );
+    Ok(query(c, &sql, &[id_value(id)], dictionary_word_row)?.pop())
+}
+
+fn all_dictionary_words(c: &Connection) -> Result<Vec<DictionaryWord>, RepoError> {
+    let sql = select_sql(
+        "dictionary_word",
+        &synced_cols(&DICTIONARY_WORD),
+        "ORDER BY created_wall, created_logical, created_node, id",
+    );
+    query(c, &sql, &[], dictionary_word_row)
+}
+
+fn put_dictionary_word(c: &Connection, w: &DictionaryWord) -> Result<(), RepoError> {
+    let v = synced_values(w.id, &w.meta, vec![text(&w.word)])?;
+    exec(
+        c,
+        &upsert_sql("dictionary_word", &synced_cols(&DICTIONARY_WORD), "id"),
+        &v,
+    )?;
+    Ok(())
+}
+
 // ---- summary_request (T11.3da) ----
 
 const SUMMARY_REQUEST: [&str; 6] = [
@@ -943,6 +983,9 @@ pub(crate) fn synced_by_id(
         "summary_request" => query(c, &sql(&SUMMARY_REQUEST), &p, summary_request_row)?
             .pop()
             .map(R::SummaryRequest),
+        "dictionary_word" => query(c, &sql(&DICTIONARY_WORD), &p, dictionary_word_row)?
+            .pop()
+            .map(R::DictionaryWord),
         _ => None,
     })
 }
@@ -962,6 +1005,7 @@ pub(crate) fn put_synced(c: &Connection, row: &crate::sync::SyncedRow) -> Result
         R::Voiceprint(v) => put_voiceprint(c, v),
         R::Folder(f) => put_folder(c, f),
         R::SummaryRequest(s) => put_summary_request(c, s),
+        R::DictionaryWord(w) => put_dictionary_word(c, w),
     }
 }
 
@@ -1027,6 +1071,18 @@ macro_rules! impl_repos {
             }
             fn put_folder(&mut self, folder: Folder) -> Result<(), RepoError> {
                 put_folder(&self.conn, &folder)
+            }
+        }
+
+        impl DictionaryRepo for $ty {
+            fn dictionary_word(&self, id: EntityId) -> Result<Option<DictionaryWord>, RepoError> {
+                get_dictionary_word(&self.conn, id)
+            }
+            fn dictionary_words(&self) -> Result<Vec<DictionaryWord>, RepoError> {
+                all_dictionary_words(&self.conn)
+            }
+            fn put_dictionary_word(&mut self, word: DictionaryWord) -> Result<(), RepoError> {
+                put_dictionary_word(&self.conn, &word)
             }
         }
 

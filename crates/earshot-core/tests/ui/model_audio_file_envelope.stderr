@@ -7,6 +7,7 @@ error[E0277]: the trait bound `AudioFile: SyncSerialize` is not satisfied
   |             required by a bound introduced by this call
   |
   = help: the following other types implement trait `SyncSerialize`:
+            DictionaryWord
             Meeting
             Person
             SegmentRow
@@ -14,7 +15,6 @@ error[E0277]: the trait bound `AudioFile: SyncSerialize` is not satisfied
             Summary
             SummaryRequest
             Track
-            Voiceprint
           and $N others
 note: required by a bound in `sync_envelope`
  --> src/identity/sync.rs
@@ -29,6 +29,7 @@ error[E0277]: the trait bound `AudioFile: SyncSerialize` is not satisfied
   |             ^^^^^^^^^^^^^^^^^^^ the trait `SyncSerialize` is not implemented for `AudioFile`
   |
   = help: the following other types implement trait `SyncSerialize`:
+            DictionaryWord
             Meeting
             Person
             SegmentRow
@@ -36,7 +37,6 @@ error[E0277]: the trait bound `AudioFile: SyncSerialize` is not satisfied
             Summary
             SummaryRequest
             Track
-            Voiceprint
           and $N others
 note: required by a bound in `SyncEnvelope`
  --> src/identity/sync.rs

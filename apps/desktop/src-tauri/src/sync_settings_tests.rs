@@ -213,6 +213,11 @@ fn sync_set_up_join_and_remove_through_the_page_carry_no_secret() {
     assert!(on.on && on.running);
     let vp = set_voiceprints(&b.svc, &b.host, true).unwrap();
     assert!(vp.voiceprints);
+    // Dictionary sync is on by default once sync is on (T11.3e), and turns off and on.
+    assert!(vp.dictionary);
+    let dict = set_dictionary(&b.svc, &b.host, false).unwrap();
+    assert!(!dict.dictionary && dict.voiceprints);
+    assert!(set_dictionary(&b.svc, &b.host, true).unwrap().dictionary);
 
     // Removing it stops the thread and forgets the key, token and address.
     let gone = remove(&b.svc, &b.host).unwrap();

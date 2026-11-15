@@ -47,6 +47,17 @@ export interface SummariesMockData {
   template?: string;
   /** The stored Dictionary words (T12.15a; default: none). */
   vocabulary?: string[];
+  /** Stored Dictionary words not in use because the list joined by Dictionary sync passes a
+   * limit (T11.3e; default 0). The mock runs no sync: this is fixture data. */
+  notInUse?: number;
+}
+
+/** What the Dictionary page says about `n` words not in use (the app's copy,
+ * `summary_vocabulary::not_in_use_note`, T11.3e); `null` for none. */
+export function notInUseNote(n: number): string | null {
+  if (n <= 0) return null;
+  if (n === 1) return table.messages.not_in_use.one;
+  return table.messages.not_in_use.many.replace("{n}", String(n));
 }
 
 /** The longest summary style the app accepts (`earshot_core::prompt::MAX_STYLE_CHARS`). */
@@ -336,12 +347,15 @@ export function createSummariesMock(
     templates: SUMMARY_TEMPLATES.map((t) => ({ ...t })),
   });
   let vocabulary = checkVocabulary(data.vocabulary ?? []);
+  const notInUse = data.notInUse ?? 0;
   const vocabularyView = (): SummaryVocabularyView => ({
     words: [...vocabulary],
     unknown: [],
     max_words: MAX_VOCABULARY_WORDS,
     max_word_chars: MAX_VOCABULARY_WORD_CHARS,
     max_chars: MAX_VOCABULARY_CHARS,
+    not_in_use: notInUse,
+    not_in_use_note: notInUseNote(notInUse),
   });
   const store = () => {
     if (data.keyStoreError !== undefined) {

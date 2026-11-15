@@ -374,6 +374,8 @@ export const commands = {
 	setSyncOn: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_on", { on })),
 	/**  Turns voiceprint sync on or off. */
 	setSyncVoiceprints: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_voiceprints", { on })),
+	/**  Turns Dictionary sync on or off. */
+	setSyncDictionary: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_dictionary", { on })),
 	/**  Asks for a sync now. */
 	syncNow: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("sync_now")),
 	/**  Removes this computer from sync. */
@@ -2191,6 +2193,13 @@ export type SummaryVocabularyView = {
 	max_word_chars: number,
 	/**  The longest list accepted, in characters over every word. */
 	max_chars: number,
+	/**
+	 *  Words stored but not in use: the list joined from the user's computers by Dictionary
+	 *  sync passes a limit (T11.3e). Always 0 while Dictionary sync is off.
+	 */
+	not_in_use: number,
+	/**  What the page says about them ([`not_in_use_note`]); `None` when every word is in use. */
+	not_in_use_note: string | null,
 };
 
 /**  A pairing code to show for adding a device. */
@@ -2236,6 +2245,8 @@ export type SyncView = {
 	running: boolean,
 	/**  Voiceprints sync. */
 	voiceprints: boolean,
+	/**  Dictionary words sync (T11.3e; on unless turned off). */
+	dictionary: boolean,
 	/**  The server's address, when one is stored and usable. */
 	address: string | null,
 	/**  Why a stored address is not usable (fixed copy). */

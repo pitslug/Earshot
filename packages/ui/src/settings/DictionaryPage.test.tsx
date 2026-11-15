@@ -8,6 +8,7 @@ import { type Ipc, IpcFailure, IpcProvider, type MockIpcData, createMockIpc } fr
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { ADD_LABEL, DICTIONARY_INTRO, DictionaryPage } from "./DictionaryPage";
 import { ALREADY_THERE } from "./useDictionary";
+import table from "../../../../fixtures/ui/summary_settings_cases.json";
 
 function setup(data: MockIpcData = {}, wrap: (ipc: Ipc) => Ipc = (i) => i) {
   const ipc = wrap(createMockIpc({ meetings: [], ...data }));
@@ -30,6 +31,18 @@ function shown(): string[] {
 }
 
 describe("Dictionary", () => {
+  it("says how many words are not in use when the joined list passes a limit (T11.3e)", async () => {
+    setup({ summaries: { vocabulary: ["Quillmarsh", "QXR-7"], notInUse: 3 } });
+    const bar = await screen.findByLabelText("Words not in use");
+    expect(bar).toHaveTextContent(table.messages.not_in_use.many.replace("{n}", "3"));
+  });
+
+  it("says nothing about words not in use when every word is in use", async () => {
+    setup({ summaries: { vocabulary: ["Quillmarsh"] } });
+    await waitFor(() => expect(shown()).toEqual(["Quillmarsh"]));
+    expect(screen.queryByLabelText("Words not in use")).not.toBeInTheDocument();
+  });
+
   it("says what the words are for and starts with none", async () => {
     setup();
     expect(screen.getByRole("heading", { level: 1, name: "Dictionary" })).toBeInTheDocument();
@@ -120,6 +133,8 @@ describe("Dictionary", () => {
         max_words: 100,
         max_word_chars: 40,
         max_chars: 1000,
+        not_in_use: 0,
+        not_in_use_note: null,
       }),
     }));
     expect(await screen.findByText("The stored dictionary is not used")).toBeInTheDocument();

@@ -24,6 +24,8 @@ export interface SyncCommands {
   setSyncOn(on: boolean): Promise<SyncView>;
   /** Turns voiceprint sync on or off. */
   setSyncVoiceprints(on: boolean): Promise<SyncView>;
+  /** Turns Dictionary sync on or off (T11.3e; on by default once sync is on). */
+  setSyncDictionary(on: boolean): Promise<SyncView>;
   /** Asks for a sync now. */
   syncNow(): Promise<SyncView>;
   /** Removes this computer from sync: its meetings stay, the server and key are forgotten. */

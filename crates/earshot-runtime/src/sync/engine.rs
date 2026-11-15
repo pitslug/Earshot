@@ -12,7 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp};
 use earshot_net::{AuditLog, Url};
-use earshot_store::{ApplyRules, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, Store, SyncedRow};
+use earshot_store::{
+    ApplyRules, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, Store, StoreError, StoreTx, SyncKinds,
+    SyncedRow,
+};
 use earshot_sync::wire::{B64, PullResponse, PulledRow, PushRequest, WireRow};
 use earshot_sync::{
     ENVELOPE_FORMAT, Keys, Opened, ROW_KEY_LEN, RowKey, SealError, SealedRow, open_row, seal_row,
@@ -106,6 +109,7 @@ fn seal(keys: &Keys, row: &SyncedRow) -> Result<SealedRow, SealError> {
         SyncedRow::Voiceprint(r) => seal_row(keys, r),
         SyncedRow::Folder(r) => seal_row(keys, r),
         SyncedRow::SummaryRequest(r) => seal_row(keys, r),
+        SyncedRow::DictionaryWord(r) => seal_row(keys, r),
     }
 }
 
@@ -307,9 +311,14 @@ impl SyncClient {
     fn tick_into(&self, report: &mut TickReport) -> Result<(), SyncProblem> {
         let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
         let keys = secrets.key.keys();
-        let voiceprints = sync_settings(&self.services.store())?.voiceprints;
-        self.push(&keys, &secrets.token, voiceprints, report)?;
-        self.retry_held(&keys, voiceprints, report)?;
+        let kinds = sync_settings(&self.services.store())?.kinds();
+        if kinds.dictionary {
+            // Words this device had before its rows existed (an older Earshot) get rows before
+            // anything is pulled, so the list rebuilt after a page never loses them.
+            crate::vocabulary::reconcile(&self.services)?;
+        }
+        self.push(&keys, &secrets.token, kinds, report)?;
+        self.retry_held(&keys, kinds, report)?;
         self.pull(&keys, &secrets.token, report)
     }
 
@@ -317,7 +326,7 @@ impl SyncClient {
         &self,
         keys: &Keys,
         token: &super::DeviceToken,
-        voiceprints: bool,
+        kinds: SyncKinds,
         report: &mut TickReport,
     ) -> Result<(), SyncProblem> {
         for _ in 0..MAX_PUSH_PAGES {
@@ -325,10 +334,10 @@ impl SyncClient {
                 return Ok(());
             }
             let recording = self.services.recording_meetings();
-            let mut rows =
-                self.services
-                    .store()
-                    .outbox_except(PUSH_PAGE, &recording, voiceprints)?;
+            let mut rows = self
+                .services
+                .store()
+                .outbox_except(PUSH_PAGE, &recording, kinds)?;
             if rows.is_empty() {
                 return Ok(());
             }
@@ -424,7 +433,7 @@ impl SyncClient {
     fn retry_held(
         &self,
         keys: &Keys,
-        voiceprints: bool,
+        kinds: SyncKinds,
         report: &mut TickReport,
     ) -> Result<(), SyncProblem> {
         let held = self.services.store().held_rows()?;
@@ -435,7 +444,7 @@ impl SyncClient {
             .take(MAX_RETRY)
             .filter_map(|h| open(keys, h.seq, &h.key, h.stamp, h.body).ok())
             .collect();
-        self.apply(&page, voiceprints, report)
+        self.apply(&page, kinds, report)
     }
 
     fn pull(
@@ -448,11 +457,11 @@ impl SyncClient {
             if self.stopping() {
                 return Ok(());
             }
-            // The cursor and the voiceprint switch are read together: turning the switch on
-            // resets the cursor, and the page is applied under the switch it was pulled for.
-            let (after, voiceprints) = {
+            // The cursor and the kind switches are read together: turning a switch on resets
+            // the cursor, and the page is applied under the switches it was pulled for.
+            let (after, kinds) = {
                 let db = self.services.store();
-                (pull_cursor(&db)?, sync_settings(&db)?.voiceprints)
+                (pull_cursor(&db)?, sync_settings(&db)?.kinds())
             };
             let PullResponse {
                 rows,
@@ -474,7 +483,7 @@ impl SyncClient {
                     Err(()) => report.unreadable += 1,
                 }
             }
-            self.apply(&page, voiceprints, report)?;
+            self.apply(&page, kinds, report)?;
             if let Some(last) = last
                 && last > after
                 && !advance_cursor(&mut self.services.store(), after, last)?
@@ -493,7 +502,7 @@ impl SyncClient {
     fn apply(
         &self,
         page: &[Incoming],
-        voiceprints: bool,
+        kinds: SyncKinds,
         report: &mut TickReport,
     ) -> Result<(), SyncProblem> {
         if page.is_empty() {
@@ -509,10 +518,16 @@ impl SyncClient {
         }
         let leased: BTreeSet<EntityId> = self.services.leased_meetings();
         let is_leased = |m: EntityId| leased.contains(&m);
+        // With Dictionary sync on, `settings/vocabulary` is rebuilt from the live word rows in
+        // the page's own transaction, so the list never differs from the rows it came from.
+        let rebuild = |tx: &mut StoreTx<'_>| -> Result<(), StoreError> {
+            crate::vocabulary::rebuild_tx(tx).map(|_| ())
+        };
         let rules = ApplyRules {
-            voiceprints,
+            kinds,
             leased: &is_leased,
             now_ms: self.services.clock.now_unix_ms(),
+            after: kinds.dictionary.then_some(&rebuild),
         };
         let clock = std::sync::Arc::clone(&self.services.clock);
         let mut db = self.services.store();

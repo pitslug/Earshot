@@ -171,6 +171,7 @@ export function createTauriIpc(): Ipc {
     joinSync: async (address, code) => unwrap(await commands.joinSync(address, code)),
     setSyncOn: async (on) => unwrap(await commands.setSyncOn(on)),
     setSyncVoiceprints: async (on) => unwrap(await commands.setSyncVoiceprints(on)),
+    setSyncDictionary: async (on) => unwrap(await commands.setSyncDictionary(on)),
     syncNow: async () => unwrap(await commands.syncNow()),
     removeSyncDevice: async () => unwrap(await commands.removeSyncDevice()),
     setSyncOfferSummaries: async (on) => unwrap(await commands.setSyncOfferSummaries(on)),

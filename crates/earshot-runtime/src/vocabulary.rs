@@ -1,8 +1,18 @@
 //! The user's own words (T12.15a): names, acronyms and other terms from their meetings, so
 //! summaries spell them right ([`earshot_core::prompt::Vocabulary`], the rules and limits).
-//! Device-local (`local_state` key [`VOCABULARY_KEY`], never synced, no migration), stored as
-//! a JSON list of strings, written only through [`set_vocabulary`] after the core check; an
-//! empty list (the default) is no words.
+//! What summaries read is device-local (`local_state` key [`VOCABULARY_KEY`]), stored as a JSON
+//! list of strings, written only through [`set_vocabulary`] (and [`add_word`], [`remove_word`])
+//! after the core check; an empty list (the default) is no words.
+//!
+//! Dictionary sync (T11.3e, docs/sync.md section 9): every write also keeps one synced
+//! `DictionaryWord` row per word in the same transaction (a new word gets a row, a removed one
+//! a tombstone with its word cleared), whether or not sync is on, so turning it on sends them.
+//! While Dictionary sync is on ([`dictionary_syncs`]) the stored list is rebuilt from the live
+//! rows ([`rebuild_tx`]) after every write and every applied page: the same word twice (case
+//! ignored, as [`Vocabulary::new`] compares) counts once with the earliest-created spelling, and
+//! words are taken in creation order until a limit of [`Vocabulary::new`] is reached. The rest
+//! stay stored and the Dictionary page says how many are not in use ([`DictionaryState`]);
+//! nothing is deleted to make room. Off, the list is this device's own, as written.
 //!
 //! Every summary [`crate::summary::SummaryService::summarize`] writes reads the list stored
 //! at that moment, whoever writes it (this computer, your own endpoint, Claude Code, Codex),
@@ -16,14 +26,20 @@
 
 use std::collections::HashSet;
 use std::fmt;
+use std::sync::Arc;
 
-use earshot_core::prompt::{Vocabulary, VocabularyError};
+use earshot_core::model::{DictionaryRepo, DictionaryWord, Stamp};
+use earshot_core::prompt::{
+    MAX_VOCABULARY_CHARS, MAX_VOCABULARY_WORDS, Vocabulary, VocabularyError,
+};
 use earshot_core::vocabulary::suggest::{is_common, split_punctuation};
-use earshot_store::Store;
+use earshot_store::{Store, StoreError, StoreTx};
 
 use crate::RuntimeError;
+use crate::edit::DynStamp;
 use crate::local::DeviceRecord;
 pub use crate::model_settings::UnknownSetting;
+use crate::services::{Services, os_seeded_rng};
 
 #[cfg(test)]
 #[path = "vocabulary_tests.rs"]
@@ -74,6 +90,164 @@ fn stored_without_quotes(words: &[String]) -> Vec<&str> {
     words.iter().map(|w| w.trim().trim_matches('\'')).collect()
 }
 
+/// The Dictionary as the page shows it: the words in use (what summaries read) and how many
+/// stored words are not in use because the list joined from the user's computers passes a limit
+/// (always 0 while Dictionary sync is off).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictionaryState {
+    /// The words in use.
+    pub words: Vocabulary,
+    /// Why a stored list was refused (no words are used then).
+    pub unknown: Option<UnknownSetting>,
+    /// Stored words not in use (distinct, case ignored).
+    pub not_in_use: usize,
+}
+
+/// [`vocabulary`] plus how many stored words are not in use ([`DictionaryState`]).
+///
+/// # Errors
+/// Store errors.
+pub fn dictionary_state(store: &Store) -> Result<DictionaryState, RuntimeError> {
+    let (words, unknown) = vocabulary(store)?;
+    let not_in_use = if dictionary_syncs(store)? {
+        joined(&store.dictionary_words()?).1
+    } else {
+        0
+    };
+    Ok(DictionaryState {
+        words,
+        unknown,
+        not_in_use,
+    })
+}
+
+/// Whether the stored list follows the synced rows: sync is on (`settings/sync`) and
+/// Dictionary sync is not turned off (`settings/sync-dictionary`, on by default).
+///
+/// # Errors
+/// Store errors.
+pub fn dictionary_syncs(store: &Store) -> Result<bool, RuntimeError> {
+    syncs_from(|k| store.local_value(k))
+}
+
+fn syncs_from(
+    read: impl Fn(&str) -> Result<Option<Vec<u8>>, StoreError>,
+) -> Result<bool, RuntimeError> {
+    let switch = |key: &str, default: bool| -> Result<bool, RuntimeError> {
+        Ok(read(key)?
+            .and_then(|b| crate::local::on_off(&String::from_utf8_lossy(&b)))
+            .unwrap_or(default))
+    };
+    Ok(switch(crate::sync::SYNC_ON_KEY, false)? && switch(crate::sync::SYNC_DICTIONARY_KEY, true)?)
+}
+
+/// The list joined from the live word rows (docs/sync.md section 9): in creation order, the
+/// same word twice (case ignored) once with the earliest spelling, each word read by
+/// [`Vocabulary::new`]'s own rules (a word it refuses on its own, too long or with a control
+/// character, is not in use), taken until the next word would pass [`MAX_VOCABULARY_WORDS`] or
+/// [`MAX_VOCABULARY_CHARS`]. Returns the words in use and how many distinct words are not.
+fn joined(rows: &[DictionaryWord]) -> (Vocabulary, usize) {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut kept: Vec<String> = Vec::new();
+    let mut total = 0;
+    let mut full = false;
+    let mut not_in_use = 0;
+    for row in rows.iter().filter(|r| r.is_live()) {
+        let Ok(one) = Vocabulary::new([row.word.trim().trim_matches('\'')]) else {
+            if seen.insert(row.word.to_lowercase()) {
+                not_in_use += 1;
+            }
+            continue;
+        };
+        let Some(word) = one.words().first() else {
+            continue;
+        };
+        if !seen.insert(word.to_lowercase()) {
+            continue;
+        }
+        let chars = word.chars().count();
+        if full || kept.len() + 1 > MAX_VOCABULARY_WORDS || total + chars > MAX_VOCABULARY_CHARS {
+            full = true;
+            not_in_use += 1;
+            continue;
+        }
+        total += chars;
+        kept.push(word.clone());
+    }
+    // Within every limit by construction; `new` checks it again.
+    (Vocabulary::new(&kept).unwrap_or_default(), not_in_use)
+}
+
+/// Rebuilds the stored list from the live word rows ([`joined`]) inside `tx` and returns it.
+/// Run after every applied page while Dictionary sync is on (`crate::sync`), and after every
+/// write here while it is.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn rebuild_tx(tx: &mut StoreTx<'_>) -> Result<Vocabulary, StoreError> {
+    let (words, _) = joined(&tx.dictionary_words()?);
+    let bytes = serde_json::to_vec(words.words())
+        .map_err(|_| StoreError::Corrupt("word list encoding".into()))?;
+    crate::local::set_tx(tx, &DeviceRecord::Vocabulary.key(), &bytes)?;
+    Ok(words)
+}
+
+/// Makes a row for each word of the stored list that has no live row (case ignored): the words
+/// an older Earshot stored before rows existed. Run when Dictionary sync is turned on and before
+/// every sync tick pulls, so a rebuild never loses them. Returns how many rows it made.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn reconcile_tx(
+    tx: &mut StoreTx<'_>,
+    stamp: &mut DynStamp<'_, '_>,
+) -> Result<usize, StoreError> {
+    let (current, _) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
+    let rows = tx.dictionary_words()?;
+    let mut made = 0;
+    for word in current.words() {
+        if !has_live_row(&rows, word) {
+            tx.put_dictionary_word(DictionaryWord::new(word.clone(), stamp))?;
+            made += 1;
+        }
+    }
+    Ok(made)
+}
+
+/// [`reconcile_tx`] in its own transaction.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn reconcile(services: &Services) -> Result<usize, RuntimeError> {
+    with_stamp(services, |tx, stamp| Ok(reconcile_tx(tx, stamp)?))
+}
+
+fn has_live_row(rows: &[DictionaryWord], word: &str) -> bool {
+    let wanted = word.to_lowercase();
+    rows.iter()
+        .any(|r| r.is_live() && r.word.to_lowercase() == wanted)
+}
+
+/// Runs `f` in one store transaction under the services lock, with a stamp from the services
+/// clock, the device's HLC and a fresh OS-seeded RNG (for new row ids).
+pub(crate) fn with_stamp<T, E: From<StoreError>>(
+    services: &Services,
+    f: impl FnOnce(&mut StoreTx<'_>, &mut DynStamp<'_, '_>) -> Result<T, E>,
+) -> Result<T, E> {
+    let clock = Arc::clone(&services.clock);
+    let mut rng = os_seeded_rng();
+    let mut db = services.store();
+    let (store, hlc) = db.parts();
+    store.transaction(|tx| {
+        let mut stamp: DynStamp<'_, '_> = Stamp {
+            clock: &*clock,
+            hlc,
+            rng: &mut *rng,
+        };
+        f(tx, &mut stamp)
+    })
+}
+
 /// [`vocabulary`] from the stored bytes (`None`: nothing stored), so a store transaction can
 /// read the words too (`crate::word_choices`).
 pub(crate) fn vocabulary_of(bytes: Option<&[u8]>) -> (Vocabulary, Option<UnknownSetting>) {
@@ -95,20 +269,60 @@ pub(crate) fn vocabulary_of(bytes: Option<&[u8]>) -> (Vocabulary, Option<Unknown
 
 /// Checks `words` ([`Vocabulary::new`]: trimmed, empty ones and repeats dropped, within the
 /// limits, one line each) and stores them, replacing the earlier list; an empty list stores
-/// no words. Returns what was stored.
+/// no words. Returns what was stored: while Dictionary sync is on, the list rebuilt from the
+/// rows ([`rebuild_tx`]).
+///
+/// In the same transaction the synced rows follow the change from the list stored before: a
+/// word that left it is removed (every live row of it, case ignored, a tombstone with its word
+/// cleared) and a word new to it gets a row unless a live one exists. A stored word that is not
+/// in use (sync joined past a limit) is not on the list the page sends, so it is never removed
+/// here.
 ///
 /// # Errors
 /// [`SetVocabularyError`]: nothing is stored on a refusal.
 pub fn set_vocabulary<S: AsRef<str>>(
-    store: &mut Store,
+    services: &Services,
     words: &[S],
 ) -> Result<Vocabulary, SetVocabularyError> {
     let vocabulary = Vocabulary::new(words).map_err(SetVocabularyError::Refused)?;
-    let bytes = serde_json::to_vec(vocabulary.words())
-        .map_err(|_| SetVocabularyError::Store(RuntimeError::Internal("word list encoding")))?;
-    crate::local::set(store, &DeviceRecord::Vocabulary.key(), &bytes)
-        .map_err(|e| SetVocabularyError::Store(e.into()))?;
-    Ok(vocabulary)
+    with_stamp(services, |tx, stamp| -> Result<Vocabulary, RuntimeError> {
+        let syncs = syncs_from(|k| tx.local_value(k))?;
+        let (before, _refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
+        // Words from before rows existed get theirs first, so a removal reaches them too.
+        reconcile_tx(tx, stamp)?;
+        let rows = tx.dictionary_words()?;
+        for gone in before
+            .words()
+            .iter()
+            .filter(|w| !listed_in(vocabulary.words(), w))
+        {
+            let wanted = gone.to_lowercase();
+            for mut row in rows
+                .iter()
+                .filter(|r| r.is_live() && r.word.to_lowercase() == wanted)
+                .cloned()
+            {
+                if row.remove(stamp.hlc, stamp.clock) {
+                    tx.put_dictionary_word(row)?;
+                }
+            }
+        }
+        for new in vocabulary
+            .words()
+            .iter()
+            .filter(|w| !listed_in(before.words(), w) && !has_live_row(&rows, w))
+        {
+            tx.put_dictionary_word(DictionaryWord::new(new.clone(), stamp))?;
+        }
+        if syncs {
+            return Ok(rebuild_tx(tx)?);
+        }
+        let bytes = serde_json::to_vec(vocabulary.words())
+            .map_err(|_| RuntimeError::Internal("word list encoding"))?;
+        crate::local::set_tx(tx, &DeviceRecord::Vocabulary.key(), &bytes)?;
+        Ok(vocabulary.clone())
+    })
+    .map_err(SetVocabularyError::Store)
 }
 
 // Adding words from the transcript (T12.15f): one word at a time, from a click on that word
@@ -187,11 +401,11 @@ pub struct AddedWord {
 /// [`SetVocabularyError::NotAWord`] for a token with no word; [`SetVocabularyError::Refused`]
 /// (the list's limits, as the Dictionary page reports them); store errors. Nothing is stored on
 /// an error.
-pub fn add_word(store: &mut Store, token: &str) -> Result<AddedWord, SetVocabularyError> {
+pub fn add_word(services: &Services, token: &str) -> Result<AddedWord, SetVocabularyError> {
     let word = dictionary_word(token)
         .ok_or(SetVocabularyError::NotAWord)?
         .to_owned();
-    let (current, _refused) = vocabulary(store).map_err(SetVocabularyError::Store)?;
+    let (current, _refused) = vocabulary(&services.store()).map_err(SetVocabularyError::Store)?;
     if let Some(entry) = current
         .words()
         .iter()
@@ -204,7 +418,7 @@ pub fn add_word(store: &mut Store, token: &str) -> Result<AddedWord, SetVocabula
     }
     let mut words: Vec<String> = current.into();
     words.push(word.clone());
-    set_vocabulary(store, &words)?;
+    set_vocabulary(services, &words)?;
     Ok(AddedWord { word, added: true })
 }
 
@@ -215,9 +429,9 @@ pub fn add_word(store: &mut Store, token: &str) -> Result<AddedWord, SetVocabula
 ///
 /// # Errors
 /// Store errors.
-pub fn remove_word(store: &mut Store, word: &str) -> Result<bool, SetVocabularyError> {
+pub fn remove_word(services: &Services, word: &str) -> Result<bool, SetVocabularyError> {
     let word = word.split_whitespace().collect::<Vec<_>>().join(" ");
-    let (current, _refused) = vocabulary(store).map_err(SetVocabularyError::Store)?;
+    let (current, _refused) = vocabulary(&services.store()).map_err(SetVocabularyError::Store)?;
     if word.is_empty() || !listed_in(current.words(), &word) {
         return Ok(false);
     }
@@ -227,6 +441,6 @@ pub fn remove_word(store: &mut Store, word: &str) -> Result<bool, SetVocabularyE
         .iter()
         .filter(|e| e.to_lowercase() != wanted)
         .collect();
-    set_vocabulary(store, &kept)?;
+    set_vocabulary(services, &kept)?;
     Ok(true)
 }

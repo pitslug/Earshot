@@ -1,6 +1,10 @@
 {
  "about": "The Summaries and Dictionary refusals and messages (T12.20): apps/desktop/src-tauri (summaries_tests.rs, summary_vocabulary_tests.rs, summary_style_tests.rs) runs every case through the app's own IPC functions, and packages/ui/src/ipc/mockSummaries.test.ts runs them through the mock, so the mock's copy of the Rust rules cannot drift. A settings case is `base` with `change` applied; `error` is the exact message (null when stored), `stored` the fields that differ from the input. Every name and word is invented. Generated once; edit by hand afterwards.",
  "messages": {
+  "not_in_use": {
+   "one": "1 word is not in use: the Dictionaries of your computers together pass the limits. Remove a word to make room for it.",
+   "many": "{n} words are not in use: the Dictionaries of your computers together pass the limits. Remove words to make room for them."
+  },
   "effort_needs_newer": "Choosing the effort needs a newer Claude Code. This one runs at its own default effort; update Claude Code to choose it.",
   "live_needs_local": "Summarising during the meeting needs a local summary model.",
   "not_a_word": "Only a word can be added to the dictionary.",

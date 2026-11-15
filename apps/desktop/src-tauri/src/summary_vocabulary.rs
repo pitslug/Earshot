@@ -28,19 +28,43 @@ pub struct SummaryVocabularyView {
     pub max_word_chars: u32,
     /// The longest list accepted, in characters over every word.
     pub max_chars: u32,
+    /// Words stored but not in use: the list joined from the user's computers by Dictionary
+    /// sync passes a limit (T11.3e). Always 0 while Dictionary sync is off.
+    pub not_in_use: u32,
+    /// What the page says about them ([`not_in_use_note`]); `None` when every word is in use.
+    pub not_in_use_note: Option<String>,
+}
+
+/// The page's line for one word not in use (`fixtures/ui/summary_settings_cases.json`,
+/// `messages.not_in_use.one`).
+pub const NOT_IN_USE_ONE: &str = "1 word is not in use: the Dictionaries of your computers together pass the limits. Remove a word to make room for it.";
+
+/// The page's line for `{n}` words not in use (`messages.not_in_use.many`).
+pub const NOT_IN_USE_MANY: &str = "{n} words are not in use: the Dictionaries of your computers together pass the limits. Remove words to make room for them.";
+
+/// The page's line for `n` stored words not in use; `None` for 0.
+#[must_use]
+pub fn not_in_use_note(n: usize) -> Option<String> {
+    match n {
+        0 => None,
+        1 => Some(NOT_IN_USE_ONE.to_owned()),
+        n => Some(NOT_IN_USE_MANY.replace("{n}", &n.to_string())),
+    }
 }
 
 fn limit(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-fn view(words: &[String], unknown: Vec<String>) -> SummaryVocabularyView {
+fn view(words: &[String], unknown: Vec<String>, not_in_use: usize) -> SummaryVocabularyView {
     SummaryVocabularyView {
         words: words.to_vec(),
         unknown,
         max_words: limit(MAX_VOCABULARY_WORDS),
         max_word_chars: limit(MAX_VOCABULARY_WORD_CHARS),
         max_chars: limit(MAX_VOCABULARY_CHARS),
+        not_in_use: limit(not_in_use),
+        not_in_use_note: not_in_use_note(not_in_use),
     }
 }
 
@@ -63,10 +87,11 @@ fn sentence(text: &str) -> String {
 /// # Errors
 /// Store errors.
 pub fn vocabulary_view(services: &Services) -> Result<SummaryVocabularyView, IpcError> {
-    let (words, unknown) = vocabulary::vocabulary(&services.store())?;
+    let state = vocabulary::dictionary_state(&services.store())?;
     Ok(view(
-        words.words(),
-        unknown.iter().map(ToString::to_string).collect(),
+        state.words.words(),
+        state.unknown.iter().map(ToString::to_string).collect(),
+        state.not_in_use,
     ))
 }
 
@@ -75,11 +100,8 @@ pub fn vocabulary_view(services: &Services) -> Result<SummaryVocabularyView, Ipc
 /// # Errors
 /// `invalid_setting` (nothing stored, the reason in plain words); store errors.
 pub fn set_words(services: &Services, words: &[String]) -> Result<SummaryVocabularyView, IpcError> {
-    let stored = {
-        let mut db = services.store();
-        vocabulary::set_vocabulary(&mut db, words)
-    };
-    stored.map(|v| view(v.words(), Vec::new())).map_err(refusal)
+    vocabulary::set_vocabulary(services, words).map_err(refusal)?;
+    vocabulary_view(services)
 }
 
 /// A Dictionary write's error for the UI: a refusal is `invalid_setting` with the rule in plain

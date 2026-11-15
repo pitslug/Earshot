@@ -104,6 +104,10 @@ export const SYNC_INTRO =
 export const VOICEPRINTS_EXPLAINED =
   "Voice samples are biometric data, so they stay on each computer unless you turn this on. Turning it on also brings in the ones your other computers saved earlier.";
 
+/** What Dictionary sync means (T11.3e). */
+export const DICTIONARY_EXPLAINED =
+  "Your Dictionary words stay the same on each computer that syncs them. Turned off, this computer keeps its own list.";
+
 /** What Status says when sync is on but its thread is not running. */
 export const NOT_RUNNING = "Sync is not running. Choose Sync now to start it.";
 
@@ -417,6 +421,15 @@ function SetUp({ view, state, onRemove }: { view: SyncView; state: SyncPageState
       </Section>
       <Section title="This computer">
         <NameForm view={view} state={state} />
+      </Section>
+      <Section title="Dictionary">
+        <Switch
+          label="Sync Dictionary words"
+          checked={view.dictionary}
+          disabled={state.busy}
+          onChange={(_, d) => void state.setDictionary(d.checked)}
+        />
+        <Caption1 className={styles.muted}>{DICTIONARY_EXPLAINED}</Caption1>
       </Section>
       <Section title="Voiceprints">
         <Switch

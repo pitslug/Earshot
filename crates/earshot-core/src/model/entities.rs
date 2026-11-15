@@ -10,7 +10,7 @@ use crate::capture::TrackId;
 use crate::diar::SpeakerRole;
 use crate::identity::{
     Clock, DeviceId, EntityId, Hlc, HlcTimestamp, NeverSyncClass, SyncClass, SyncMeta,
-    SyncSerialize, SyncableClass,
+    SyncSerialize, SyncableClass, SyncableOptInClass,
 };
 use crate::prompt::Template;
 use crate::summary::{SUMMARY_SCHEMA_VERSION, SummaryV1};
@@ -25,12 +25,15 @@ fn new_row<C: Clock + ?Sized, R: Rng + ?Sized>(
     )
 }
 
-/// Implements [`SyncClass`] as `Syncable` and [`SyncSerialize`] for a row with `id` and
-/// `meta` fields.
+/// Implements [`SyncClass`] as `Syncable` (or the class given: `SyncableOptInClass` for a kind
+/// each device opts into) and [`SyncSerialize`] for a row with `id` and `meta` fields.
 macro_rules! syncable_row {
     ($ty:ty, $entity:literal) => {
+        syncable_row!($ty, $entity, SyncableClass);
+    };
+    ($ty:ty, $entity:literal, $class:ty) => {
         impl SyncClass for $ty {
-            type Class = SyncableClass;
+            type Class = $class;
         }
         impl SyncSerialize for $ty {
             const ENTITY: &'static str = $entity;
@@ -237,6 +240,55 @@ impl SummaryRequest {
             state: RequestState::Requested,
             reason: String::new(),
         }
+    }
+}
+
+/// One word of the user's Dictionary (T11.3e, docs/sync.md section 9 "Dictionary"): one synced
+/// row per word, so a word added on each of two devices keeps both and a removal is a tombstone
+/// that syncs. Opt-in per device (`settings/sync-dictionary`). The word is content: a tombstone
+/// has it cleared. Word rules and limits are the runtime's ([`crate::prompt::Vocabulary`] on
+/// each device), never a storage constraint, because sync may deliver anything.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DictionaryWord {
+    /// Row id.
+    pub id: EntityId,
+    /// Sync metadata.
+    pub meta: SyncMeta,
+    /// The word as the user's list holds it; empty once removed.
+    pub word: String,
+}
+
+syncable_row!(DictionaryWord, "dictionary_word", SyncableOptInClass);
+
+impl DictionaryWord {
+    /// A new word row holding `word` (not checked here).
+    pub fn new<C: Clock + ?Sized, R: Rng + ?Sized>(
+        word: impl Into<String>,
+        stamp: &mut Stamp<'_, C, R>,
+    ) -> Self {
+        let (id, meta) = new_row(stamp);
+        DictionaryWord {
+            id,
+            meta,
+            word: word.into(),
+        }
+    }
+
+    /// Whether the word is in the list (not removed).
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        !self.meta.deleted
+    }
+
+    /// Removes the word: marks the row deleted and clears the word (content), stamped now. A
+    /// row already removed is left as it is (`false`), so a repeated removal writes nothing.
+    pub fn remove<C: Clock + ?Sized>(&mut self, hlc: &mut Hlc, clock: &C) -> bool {
+        if self.meta.deleted {
+            return false;
+        }
+        self.meta.mark_deleted(hlc, clock);
+        self.word.clear();
+        true
     }
 }
 

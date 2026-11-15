@@ -96,6 +96,19 @@ describe("the Summaries mock against the app's case table", () => {
     ]);
   });
 
+  it("says how many Dictionary words are not in use as the app does (T11.3e)", async () => {
+    const copy = table.messages.not_in_use;
+    expect(await createSummariesMock().summaryVocabulary()).toMatchObject({ not_in_use: 0, not_in_use_note: null });
+    expect(await createSummariesMock({ notInUse: 1 }).summaryVocabulary()).toMatchObject({
+      not_in_use: 1,
+      not_in_use_note: copy.one,
+    });
+    expect(await createSummariesMock({ notInUse: 4 }).summaryVocabulary()).toMatchObject({
+      not_in_use: 4,
+      not_in_use_note: copy.many.replace("{n}", "4"),
+    });
+  });
+
   it("refuses a token with no word as the app does (T12.15f)", async () => {
     const ipc = createMockIpc();
     await expect(ipc.addDictionaryWord("--")).rejects.toMatchObject({

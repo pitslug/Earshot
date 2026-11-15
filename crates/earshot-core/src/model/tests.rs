@@ -246,6 +246,22 @@ fn model_in_memory_repo_summary_request_contract() {
 }
 
 #[test]
+fn model_in_memory_repo_dictionary_contract() {
+    repo_contract::dictionary_repo(InMemoryRepo::new);
+}
+
+#[test]
+fn model_dictionary_word_is_opt_in_and_goes_through_the_sync_envelope() {
+    let mut w = World::new();
+    assert_eq!(kind::<DictionaryWord>(), SyncClassKind::SyncableOptIn);
+    let word = DictionaryWord::new("Quillmarsh", &mut w.stamp());
+    let env = sync_envelope(&word);
+    assert_eq!(env.entity, "dictionary_word");
+    assert_eq!(env.class, SyncClassKind::SyncableOptIn);
+    assert!(word.is_live());
+}
+
+#[test]
 fn model_summary_request_states_have_stable_names() {
     for s in RequestState::ALL {
         assert_eq!(RequestState::from_name(s.name()), Some(s));

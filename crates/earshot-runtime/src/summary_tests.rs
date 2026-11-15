@@ -1026,7 +1026,7 @@ fn summary_input_keeps_the_standard_rules_whatever_the_settings() {
     assert_eq!(input.rules, SummaryRules::Standard);
     assert_eq!(input.prompt_variant, PromptVariant::Current);
     crate::summary_style::set_summary_style(&mut svc.store(), "Short bullets.").unwrap();
-    crate::vocabulary::set_vocabulary(&mut svc.store(), &["Quillmarsh"]).unwrap();
+    crate::vocabulary::set_vocabulary(&svc, &["Quillmarsh"]).unwrap();
     let input = SummaryService::input(&svc, id).unwrap();
     assert_eq!(input.rules, SummaryRules::Standard);
     assert_eq!(input.prompt_variant, PromptVariant::Current);

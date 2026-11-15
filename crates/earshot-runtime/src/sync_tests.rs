@@ -801,9 +801,13 @@ fn apply_page(dev: &Device, rows: &[earshot_store::SyncedRow]) -> earshot_store:
         .collect();
     let never = |_: earshot_core::identity::EntityId| false;
     let rules = earshot_store::ApplyRules {
-        voiceprints: false,
+        kinds: earshot_store::SyncKinds {
+            voiceprints: false,
+            dictionary: true,
+        },
         leased: &never,
         now_ms: dev.svc.clock.now_unix_ms(),
+        after: None,
     };
     let clock = Arc::clone(&dev.svc.clock);
     let mut db = dev.svc.store();
@@ -1323,9 +1327,13 @@ fn sync_a_row_of_an_entity_this_build_does_not_know_is_held() {
     let (store, hlc) = db.parts();
     let free = |_: EntityId| false;
     let rules = earshot_store::ApplyRules {
-        voiceprints: false,
+        kinds: earshot_store::SyncKinds {
+            voiceprints: false,
+            dictionary: true,
+        },
         leased: &free,
         now_ms: clock.now_unix_ms(),
+        after: None,
     };
     let applied = store.apply_remote(&[inc], &rules, hlc, &*clock).unwrap();
     assert_eq!(applied.held[0], 1, "{applied:?}");
@@ -1333,4 +1341,229 @@ fn sync_a_row_of_an_entity_this_build_does_not_know_is_held() {
         store.held_rows().unwrap()[0].reason,
         earshot_store::HoldReason::Format
     );
+}
+
+// ---- Dictionary sync (T11.3e, docs/sync.md section 9). Every name holds `dictionary_sync`;
+// every word is invented. ----
+
+/// The words a device's summaries read now.
+fn words(dev: &Device) -> Vec<String> {
+    crate::vocabulary::vocabulary(&dev.svc.store())
+        .unwrap()
+        .0
+        .words()
+        .to_vec()
+}
+
+/// The live word rows a device holds, in creation order.
+fn live_rows(dev: &Device) -> Vec<String> {
+    use earshot_core::model::DictionaryRepo;
+    dev.svc
+        .store()
+        .dictionary_words()
+        .unwrap()
+        .into_iter()
+        .filter(|w| w.is_live())
+        .map(|w| w.word)
+        .collect()
+}
+
+fn not_in_use(dev: &Device) -> usize {
+    crate::vocabulary::dictionary_state(&dev.svc.store())
+        .unwrap()
+        .not_in_use
+}
+
+/// Ticks `a`, `b`, then `a` again, so each has the other's changes.
+fn exchange(a: &Device, b: &Device) {
+    a.client().tick().unwrap();
+    b.client().tick().unwrap();
+    a.client().tick().unwrap();
+}
+
+#[test]
+fn dictionary_sync_is_on_by_default_once_sync_is_on() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    let settings = sync_settings(&a.svc.store()).unwrap();
+    assert!(settings.dictionary && !settings.voiceprints);
+    assert!(crate::vocabulary::dictionary_syncs(&a.svc.store()).unwrap());
+    // A device that never set sync up keeps its own list.
+    let alone = Device::new("sync-dictionary-alone");
+    assert!(!crate::vocabulary::dictionary_syncs(&alone.svc.store()).unwrap());
+}
+
+#[test]
+fn dictionary_sync_two_devices_adding_different_words_keep_both() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    crate::vocabulary::add_word(&a.svc, "Quillmarsh").unwrap();
+    b.clock.advance_ms(5);
+    crate::vocabulary::add_word(&b.svc, "Velmora").unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&a), ["Quillmarsh", "Velmora"], "creation order");
+    assert_eq!(words(&b), words(&a));
+    assert_eq!((not_in_use(&a), not_in_use(&b)), (0, 0));
+    let ca = a.client();
+    ca.tick().unwrap();
+    assert_only_the_relay(&ca, &relay);
+}
+
+#[test]
+fn dictionary_sync_a_removal_on_one_device_reaches_the_other() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    crate::vocabulary::set_vocabulary(&a.svc, &["Quillmarsh", "QXR-7"]).unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&b), ["Quillmarsh", "QXR-7"]);
+    b.clock.advance_ms(10);
+    assert!(crate::vocabulary::remove_word(&b.svc, "quillmarsh").unwrap());
+    exchange(&b, &a);
+    assert_eq!(words(&a), ["QXR-7"]);
+    assert_eq!(words(&b), ["QXR-7"]);
+    // The removal is a tombstone with its word cleared: the word is gone from every row.
+    use earshot_core::model::DictionaryRepo;
+    let rows = a.svc.store().dictionary_words().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.is_live() || r.word.is_empty()));
+}
+
+#[test]
+fn dictionary_sync_the_same_word_twice_counts_once_with_the_earliest_spelling() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    crate::vocabulary::add_word(&a.svc, "quillmarsh").unwrap();
+    b.clock.advance_ms(50);
+    crate::vocabulary::add_word(&b.svc, "QuillMarsh").unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&a), ["quillmarsh"]);
+    assert_eq!(words(&b), ["quillmarsh"]);
+    // Both rows stay stored; the repeat is neither in use nor counted as not in use.
+    assert_eq!(live_rows(&b).len(), 2);
+    assert_eq!(not_in_use(&b), 0);
+    // Removing the word removes every spelling of it, everywhere.
+    assert!(crate::vocabulary::remove_word(&b.svc, "QUILLMARSH").unwrap());
+    exchange(&b, &a);
+    assert!(words(&a).is_empty() && live_rows(&a).is_empty());
+}
+
+#[test]
+fn dictionary_sync_a_joined_list_past_the_limits_keeps_every_word_and_counts_the_rest() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let mine: Vec<String> = (0..60).map(|i| format!("alpha{i:02}")).collect();
+    let theirs: Vec<String> = (0..60).map(|i| format!("beta{i:02}")).collect();
+    crate::vocabulary::set_vocabulary(&a.svc, &mine).unwrap();
+    b.clock.advance_ms(100);
+    crate::vocabulary::set_vocabulary(&b.svc, &theirs).unwrap();
+    exchange(&a, &b);
+    let mut want = mine.clone();
+    want.extend(theirs[..40].iter().cloned());
+    for dev in [&a, &b] {
+        assert_eq!(words(dev), want, "taken in creation order up to 100 words");
+        assert_eq!(not_in_use(dev), 20);
+        assert_eq!(live_rows(dev).len(), 120, "nothing deleted to make room");
+    }
+    // Removing a word in use lets the next stored word in.
+    assert!(crate::vocabulary::remove_word(&a.svc, "alpha00").unwrap());
+    assert_eq!(not_in_use(&a), 19);
+    assert!(words(&a).contains(&"beta40".to_owned()));
+    exchange(&a, &b);
+    assert_eq!(words(&b), words(&a));
+    assert_eq!(live_rows(&b).len(), 119);
+}
+
+#[test]
+fn dictionary_sync_off_keeps_this_devices_list_and_neither_sends_nor_applies() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_dictionary(&b.svc, false).unwrap();
+    assert!(!sync_settings(&b.svc.store()).unwrap().dictionary);
+    crate::vocabulary::add_word(&a.svc, "Quillmarsh").unwrap();
+    b.clock.advance_ms(5);
+    crate::vocabulary::add_word(&b.svc, "Velmora").unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&a), ["Quillmarsh"], "b sent nothing");
+    assert_eq!(words(&b), ["Velmora"], "b applied nothing");
+    // b's row waits in its outbox, and is not counted as behind.
+    let overview = sync_overview(&b.svc, &*b.vault).unwrap();
+    assert_eq!(overview.waiting, 0);
+    assert!(b.svc.store().outbox_len().unwrap() > 0);
+
+    // Turning it on reads every earlier row and sends b's own.
+    set_sync_dictionary(&b.svc, true).unwrap();
+    assert_eq!(pull_cursor(&b.svc.store()).unwrap(), 0);
+    exchange(&b, &a);
+    b.client().tick().unwrap();
+    assert_eq!(words(&a), ["Quillmarsh", "Velmora"]);
+    assert_eq!(words(&b), ["Quillmarsh", "Velmora"]);
+}
+
+#[test]
+fn dictionary_sync_words_stored_before_rows_existed_get_rows_and_are_kept() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    // As an older Earshot stored them: the list alone, no rows.
+    local::set(
+        &mut a.svc.store(),
+        &DeviceRecord::Vocabulary.key(),
+        br#"["Ostrelby","QXR-7"]"#,
+    )
+    .unwrap();
+    assert!(live_rows(&a).is_empty());
+    exchange(&a, &b);
+    assert_eq!(live_rows(&a), ["Ostrelby", "QXR-7"]);
+    assert_eq!(words(&a), ["Ostrelby", "QXR-7"]);
+    assert_eq!(words(&b), ["Ostrelby", "QXR-7"]);
+}
+
+#[test]
+fn dictionary_sync_turning_it_on_makes_rows_for_the_words_already_here() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    set_sync_dictionary(&a.svc, false).unwrap();
+    local::set(
+        &mut a.svc.store(),
+        &DeviceRecord::Vocabulary.key(),
+        br#"["Velmora"]"#,
+    )
+    .unwrap();
+    assert!(live_rows(&a).is_empty());
+    set_sync_dictionary(&a.svc, true).unwrap();
+    assert_eq!(live_rows(&a), ["Velmora"]);
+    // Already on: nothing more is made and the cursor is left alone.
+    a.client().tick().unwrap();
+    let at = pull_cursor(&a.svc.store()).unwrap();
+    set_sync_dictionary(&a.svc, true).unwrap();
+    assert_eq!(pull_cursor(&a.svc.store()).unwrap(), at);
+    assert_eq!(live_rows(&a), ["Velmora"]);
+}
+
+#[test]
+fn dictionary_sync_words_reach_the_relay_only_sealed() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    crate::vocabulary::add_word(&a.svc, "Zentravelk").unwrap();
+    let ca = a.client();
+    ca.tick().unwrap();
+    // Nothing the relay stored holds the word in the clear.
+    let mut stack = vec![relay._dir.0.clone()];
+    let mut files = 0;
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files += 1;
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(
+                    !bytes.windows(10).any(|w| w == b"Zentravelk"),
+                    "a relay file holds the word"
+                );
+            }
+        }
+    }
+    assert!(files > 0);
+    assert_only_the_relay(&ca, &relay);
 }

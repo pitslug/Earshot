@@ -21,6 +21,8 @@ fn summary_vocabulary_view_starts_empty_and_saves_checked_words() {
             max_words: 100,
             max_word_chars: 40,
             max_chars: 1000,
+            not_in_use: 0,
+            not_in_use_note: None,
         }
     );
     let saved = set_words(&svc, &owned(&[" Quillmarsh ", "", "QXR-7", "qxr-7"])).unwrap();
@@ -59,7 +61,7 @@ fn summary_vocabulary_refusals_are_plain_sentences_and_store_nothing() {
 
 #[test]
 fn summary_vocabulary_the_view_serialises_for_the_ui() {
-    let json = serde_json::to_value(view(&owned(&["QXR-7"]), vec![])).unwrap();
+    let json = serde_json::to_value(view(&owned(&["QXR-7"]), vec![], 0)).unwrap();
     assert_eq!(
         json,
         serde_json::json!({
@@ -68,6 +70,8 @@ fn summary_vocabulary_the_view_serialises_for_the_ui() {
             "max_words": 100,
             "max_word_chars": 40,
             "max_chars": 1000,
+            "not_in_use": 0,
+            "not_in_use_note": null,
         })
     );
 }
@@ -101,4 +105,19 @@ fn summary_vocabulary_follows_the_shared_case_table() {
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn summary_vocabulary_words_not_in_use_follow_the_shared_table() {
+    let table = crate::testutil::summary_cases();
+    let copy = &table["messages"]["not_in_use"];
+    assert_eq!(not_in_use_note(0), None);
+    assert_eq!(not_in_use_note(1).as_deref(), copy["one"].as_str());
+    let many = copy["many"].as_str().unwrap();
+    assert!(many.contains("{n}"));
+    assert_eq!(not_in_use_note(7), Some(many.replace("{n}", "7")));
+    // A view counts them and says so.
+    let v = view(&owned(&["QXR-7"]), vec![], 3);
+    assert_eq!(v.not_in_use, 3);
+    assert_eq!(v.not_in_use_note, Some(many.replace("{n}", "3")));
 }

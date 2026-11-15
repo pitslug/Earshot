@@ -312,6 +312,14 @@ What T11.3db built in the app (`apps/desktop/src-tauri/src/offload.rs`): the Syn
 
 `dictionary_word(id, META, word TEXT NOT NULL)`, class `SyncableOptIn`. Rules as `docs/sync.md` section 9. `settings/vocabulary` stays what summaries read.
 
+What T11.3e ships (store migration 8; a new entity, so no `ENVELOPE_FORMAT` change: an older build holds the rows as `format`):
+
+- `earshot_store::SyncKinds { voiceprints, dictionary }` replaces the voiceprint flag in `outbox_except`, `outbox_len_except` and `ApplyRules`; `ApplyRules::after` runs inside the page's transaction, and the client uses it to rebuild `settings/vocabulary` from the live rows while Dictionary sync is on, so the list never differs from the rows it came from.
+- Every Dictionary write (`vocabulary::set_vocabulary`, `add_word`, `remove_word`, now on `Services`) keeps one row per word in the record's transaction whether or not sync is on: a word new to the list gets a row unless a live one exists, a word that left it has every live row of it (case ignored) removed, a tombstone with its word cleared. Rows follow the change from the stored list, so a word not in use is never removed by a save.
+- While sync is on and Dictionary sync is not off (`vocabulary::dictionary_syncs`), the stored list is the joined list (`vocabulary::rebuild_tx`): live rows in creation order, the same word (lower-cased, as `Vocabulary::new` compares) once with the earliest spelling, a word `Vocabulary::new` refuses on its own not in use, and words taken until the next would pass 100 words or 1000 characters (a prefix: everything after the first word that does not fit is not in use). Off, the list is the device's own, as written.
+- Words stored before rows existed get rows before every tick pulls and when the switch is turned on (`vocabulary::reconcile_tx`: a list word with no live row), so a rebuild never loses them. Turning the switch on also resets the pull cursor.
+- The Dictionary page shows `messages.not_in_use` from `fixtures/ui/summary_settings_cases.json`; the Sync page has "Sync Dictionary words" (`set_sync_dictionary`) before the voiceprint switch. Removing this computer leaves the Dictionary switch as it is.
+
 ## 11. Phase 3 interface
 
 `earshot-worker` is a device with `kind: "server"` in its presence blob, `offers_summaries: true`, and the target half of 10.1. Its key comes from a file named by `EARSHOT_WORKER_KEY_FILE`. Nothing in phases 1 or 2 may assume a device has a window, a microphone or Credential Manager: the sync client takes its key and token through `SyncVault` and its store through `Services`, both of which a worker can provide.
