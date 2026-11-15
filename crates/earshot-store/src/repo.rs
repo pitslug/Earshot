@@ -244,7 +244,7 @@ fn need_child(
 
 // ---- meeting ----
 
-const MEETING: [&str; 7] = [
+const MEETING: [&str; 8] = [
     "title",
     "started_unix_ms",
     "utc_offset_minutes",
@@ -252,6 +252,7 @@ const MEETING: [&str; 7] = [
     "tags",
     "template",
     "folder_id",
+    "summary_kept_local",
 ];
 
 fn meeting_row(r: &Row<'_>) -> rusqlite::Result<Meeting> {
@@ -268,6 +269,7 @@ fn meeting_row(r: &Row<'_>) -> rusqlite::Result<Meeting> {
             .parse()
             .map_err(|_| conv_err(REST + 5, Type::Text, BadValue(template.clone())))?,
         folder_id: get_opt_id(r, REST + 6)?,
+        summary_kept_local: r.get::<_, i64>(REST + 7)? != 0,
     })
 }
 
@@ -297,6 +299,7 @@ fn put_meeting(c: &Connection, m: &Meeting) -> Result<(), RepoError> {
             json(&m.tags)?,
             text(m.template.name()),
             opt_id(m.folder_id),
+            Value::Integer(i64::from(m.summary_kept_local)),
         ],
     )?;
     exec(c, &upsert_sql("meeting", &synced_cols(&MEETING), "id"), &v)?;
@@ -554,7 +557,7 @@ fn summary_row(r: &Row<'_>) -> rusqlite::Result<Summary> {
     })
 }
 
-fn summaries_of(c: &Connection, meeting: EntityId) -> Result<Vec<Summary>, RepoError> {
+pub(crate) fn summaries_of(c: &Connection, meeting: EntityId) -> Result<Vec<Summary>, RepoError> {
     let sql = select_sql(
         "summary",
         &synced_cols(&SUMMARY),
@@ -563,7 +566,7 @@ fn summaries_of(c: &Connection, meeting: EntityId) -> Result<Vec<Summary>, RepoE
     query(c, &sql, &[id_value(meeting)], summary_row)
 }
 
-fn put_summary(c: &Connection, s: &Summary) -> Result<(), RepoError> {
+pub(crate) fn put_summary(c: &Connection, s: &Summary) -> Result<(), RepoError> {
     need_meeting(c, s.meeting_id)?;
     let v = synced_values(
         s.id,
@@ -785,12 +788,12 @@ fn get_person(c: &Connection, id: EntityId) -> Result<Option<Person>, RepoError>
     Ok(query(c, &sql, &[id_value(id)], person_row)?.pop())
 }
 
-fn all_persons(c: &Connection) -> Result<Vec<Person>, RepoError> {
+pub(crate) fn all_persons(c: &Connection) -> Result<Vec<Person>, RepoError> {
     let sql = select_sql("person", &synced_cols(&PERSON), "ORDER BY id");
     query(c, &sql, &[], person_row)
 }
 
-fn put_person(c: &Connection, p: &Person) -> Result<(), RepoError> {
+pub(crate) fn put_person(c: &Connection, p: &Person) -> Result<(), RepoError> {
     let v = synced_values(
         p.id,
         &p.meta,
@@ -832,6 +835,63 @@ fn put_voiceprint(c: &Connection, v: &Voiceprint) -> Result<(), RepoError> {
         &vals,
     )?;
     Ok(())
+}
+
+// ---- sync (T11.1b) ----
+
+/// The row `id` of the synced `table`, tombstones included; `None` when absent or for a
+/// table that is not synced.
+pub(crate) fn synced_by_id(
+    c: &Connection,
+    table: &str,
+    id: EntityId,
+) -> Result<Option<crate::sync::SyncedRow>, RepoError> {
+    use crate::sync::SyncedRow as R;
+    let sql = |cols: &[&'static str]| select_sql(table, &synced_cols(cols), "WHERE id = ?1");
+    let p = [id_value(id)];
+    Ok(match table {
+        "meeting" => query(c, &sql(&MEETING), &p, meeting_row)?
+            .pop()
+            .map(R::Meeting),
+        "track" => query(c, &sql(&TRACK), &p, track_row)?.pop().map(R::Track),
+        "segment" => query(c, &sql(&SEGMENT), &p, segment_row)?
+            .pop()
+            .map(R::Segment),
+        "speaker" => query(c, &sql(&SPEAKER), &p, speaker_row)?
+            .pop()
+            .map(R::Speaker),
+        "note" => query(c, &sql(&NOTE), &p, note_row)?.pop().map(R::Note),
+        "summary" => query(c, &sql(&SUMMARY), &p, summary_row)?
+            .pop()
+            .map(R::Summary),
+        "person" => query(c, &sql(&PERSON), &p, person_row)?
+            .pop()
+            .map(R::Person),
+        "voiceprint" => query(c, &sql(&VOICEPRINT), &p, voiceprint_row)?
+            .pop()
+            .map(R::Voiceprint),
+        "folder" => query(c, &sql(&FOLDER), &p, folder_row)?
+            .pop()
+            .map(R::Folder),
+        _ => None,
+    })
+}
+
+/// Writes `row` with the repository's own checks (a missing parent is
+/// [`RepoError::MissingParent`]).
+pub(crate) fn put_synced(c: &Connection, row: &crate::sync::SyncedRow) -> Result<(), RepoError> {
+    use crate::sync::SyncedRow as R;
+    match row {
+        R::Meeting(m) => put_meeting(c, m),
+        R::Track(t) => put_track(c, t),
+        R::Segment(s) => put_segment(c, s),
+        R::Speaker(s) => put_speaker(c, s),
+        R::Note(n) => put_note(c, n),
+        R::Summary(s) => put_summary(c, s),
+        R::Person(p) => put_person(c, p),
+        R::Voiceprint(v) => put_voiceprint(c, v),
+        R::Folder(f) => put_folder(c, f),
+    }
 }
 
 /// Implements the repository traits for a type with a `conn` field that derefs to a

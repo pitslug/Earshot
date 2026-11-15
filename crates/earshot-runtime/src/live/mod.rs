@@ -964,13 +964,15 @@ where
             hlc,
             rng: &mut *rng,
         };
-        let meeting = Meeting::new(
+        let mut meeting = Meeting::new(
             cfg.title.clone(),
             clock.now_unix_ms(),
             cfg.utc_offset_minutes,
             cfg.template,
             &mut stamp,
         );
+        // Kept on this computer (T12.13) as the synced field (T11.1a): every copy carries it.
+        meeting.summary_kept_local = cfg.keep_summary_local;
         let tracks: Vec<Track> = capture
             .tracks()
             .map(|id| {
@@ -1103,17 +1105,12 @@ where
     // Commit the rows last, then start the thread (which announces Started).
     let committed = {
         let (m, t) = (meeting.clone(), tracks.clone());
-        let keep_local = cfg.keep_summary_local;
         services
             .store()
             .transaction(|tx| -> Result<(), RuntimeError> {
-                let id = m.id;
                 tx.put_meeting(m)?;
                 for track in t {
                     tx.put_track(track)?;
-                }
-                if keep_local {
-                    crate::keep_local::mark_kept_local_tx(tx, id)?;
                 }
                 Ok(())
             })

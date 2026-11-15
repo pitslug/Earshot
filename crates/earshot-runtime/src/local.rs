@@ -75,7 +75,9 @@ meeting_records! {
     /// format in `earshot_store::encode_retention_clock`, [`crate::retention`]).
     AudioRetention => "audio-retention/", meeting at 0;
     /// `summary-kept-local/<meeting>`: the meeting's summary stays on this computer (T12.13;
-    /// presence is the answer, [`crate::keep_local`]).
+    /// presence is the answer, [`crate::keep_local`]). Never written since T11.1a, which made
+    /// it the synced field `Meeting::summary_kept_local`: read only for meetings from before
+    /// store migration 5, and removable once no store predates it.
     KeptLocal => "summary-kept-local/", meeting at 0;
     /// `word-choices/<meeting>`: the user's choices on suggested words (content, T12.15ec;
     /// [`crate::word_choices`]).
@@ -221,6 +223,21 @@ pub(crate) enum DeviceRecord {
     /// `npu-note-shown`: the "no NPU version, runs on the processor" note last shown at a
     /// meeting or job start (T12.45; [`crate::host::npu_note_once`]).
     NpuNoteShown,
+    /// `settings/sync-server`: the sync server's address (T11.3).
+    SyncServer,
+    /// `settings/sync`: whether sync runs (T11.3).
+    SyncOn,
+    /// `settings/sync-voiceprints`: whether voiceprints sync (T11.3).
+    SyncVoiceprints,
+    /// `sync-cursor`: the relay sequence number pulled up to (T11.3).
+    SyncCursor,
+    /// `sync-status`: the last sync tick's outcome; times, a problem word, counts (T11.3).
+    SyncStatus,
+    /// `settings/device-name`: this device's name as its other devices show it (T11.3c).
+    DeviceName,
+    /// `settings/sync-offer-summaries`: whether this device writes summaries for the others
+    /// (T11.3c).
+    OfferSummaries,
 }
 
 impl DeviceRecord {
@@ -265,6 +282,13 @@ impl DeviceRecord {
         DeviceRecord::Vocabulary,
         DeviceRecord::NpuCompiled,
         DeviceRecord::NpuNoteShown,
+        DeviceRecord::SyncServer,
+        DeviceRecord::SyncOn,
+        DeviceRecord::SyncVoiceprints,
+        DeviceRecord::SyncCursor,
+        DeviceRecord::SyncStatus,
+        DeviceRecord::DeviceName,
+        DeviceRecord::OfferSummaries,
     ];
 
     /// Its key.
@@ -315,6 +339,13 @@ impl DeviceRecord {
                 DeviceRecord::Vocabulary => crate::vocabulary::VOCABULARY_KEY,
                 DeviceRecord::NpuCompiled => crate::npu_compiled::REFUSALS_KEY,
                 DeviceRecord::NpuNoteShown => crate::host::NPU_NOTE_SHOWN_KEY,
+                DeviceRecord::SyncServer => crate::sync::SYNC_SERVER_KEY,
+                DeviceRecord::SyncOn => crate::sync::SYNC_ON_KEY,
+                DeviceRecord::SyncVoiceprints => crate::sync::SYNC_VOICEPRINTS_KEY,
+                DeviceRecord::SyncCursor => crate::sync::SYNC_CURSOR_KEY,
+                DeviceRecord::SyncStatus => crate::sync::SYNC_STATUS_KEY,
+                DeviceRecord::DeviceName => crate::sync::DEVICE_NAME_KEY,
+                DeviceRecord::OfferSummaries => crate::sync::OFFER_SUMMARIES_KEY,
             }
             .to_owned(),
         )

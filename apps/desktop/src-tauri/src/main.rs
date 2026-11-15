@@ -49,6 +49,8 @@ mod storage_settings;
 mod summaries;
 mod summary_style;
 mod summary_vocabulary;
+mod sync_settings;
+mod sync_vault;
 #[cfg(test)]
 mod testutil;
 #[cfg(windows)]
@@ -216,6 +218,17 @@ fn main() {
             if let Ok(services) = state.services() {
                 update_settings::spawn_schedule(services, update_jobs.clone(), update_clock);
             }
+            // Sync (T11.3a): started off the setup path (Credential Manager is read first).
+            let sync = std::sync::Arc::new(sync_settings::SyncHost::new(std::sync::Arc::new(
+                sync_vault::SyncCredentials::app(),
+            )));
+            if let Ok(services) = state.services() {
+                let sync = std::sync::Arc::clone(&sync);
+                let _ = std::thread::Builder::new()
+                    .name("earshot-sync-start".into())
+                    .spawn(move || sync.start_if_on(&services));
+            }
+            app.manage(sync);
             app.manage(update_jobs);
             app.manage(state);
             app.manage(earshot_runtime::search::Searches::default());

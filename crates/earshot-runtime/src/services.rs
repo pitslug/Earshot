@@ -356,6 +356,17 @@ impl Services {
         self.activity().leased.keys().copied().collect()
     }
 
+    /// Meetings a live session records now ([`MeetingJob::Recording`] leases): sync leaves
+    /// their rows queued until the recording is saved.
+    pub(crate) fn recording_meetings(&self) -> Vec<EntityId> {
+        self.activity()
+            .leased
+            .iter()
+            .filter(|(_, jobs)| jobs.contains_key(&MeetingJob::Recording))
+            .map(|(m, _)| *m)
+            .collect()
+    }
+
     /// The activity lock: held only for map updates, never across store work or a wait.
     fn activity(&self) -> MutexGuard<'_, Activity> {
         self.activity.lock().unwrap_or_else(PoisonError::into_inner)

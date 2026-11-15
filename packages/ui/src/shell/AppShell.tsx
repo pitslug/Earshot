@@ -983,6 +983,7 @@ export function AppShell({
     const settings = (
       <SettingsView
         initialSection={settingsSection}
+        timer={timer}
         onBack={() => setView(recording ? "meeting" : "detail")}
         onOpenSetup={() => {
           setSetupFromSettings(true);

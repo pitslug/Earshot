@@ -58,7 +58,7 @@ plaintext = JSON of SyncEnvelope { entity, class, id, meta, record }, plus "form
 
 - The stamp in the associated data is the row's `updated_at`. The relay cannot attach a ciphertext to another row key or stamp without the open failing.
 - Opening checks, in order: the leading byte, the tag, that the envelope's `id` hashes to the row key, that `meta.updated_at` equals the stamp sent beside it. Any failure is `Unreadable` with a fixed reason word, never the bytes.
-- Before sealing, the plaintext is refused if it is over 192 KiB or contains `fLaC`, `RIFF` or `OggS` at any offset (`AudioSignature`). This is the client half of `sync.no_audio`.
+- Before sealing, the plaintext is refused if it is over 192 KiB or holds an audio container's signature: raw `fLaC` or `OggS`, raw `RIFF` with `WAVE` four bytes later ("RIFF" alone is an English word a transcript can hold), or any of the three magics as serde writes a byte vector (comma-separated decimals) or as the first five characters of base64 (`AudioSignature`). This is the client half of `sync.no_audio`; the type system is the first.
 
 ### 2.4 Key check
 
@@ -88,6 +88,7 @@ Stamps are three fields wherever they appear: `wall_ms` (u64), `logical` (u32), 
 | `GET /v1/presence` | token | | `{devices: [{device_id, age_s, blob}]}` |
 | `GET /v1/vault` | token | | `{vault_format, devices: [{device_id, created_unix_s, age_s}]}` |
 | `POST /v1/devices/revoke` | token | `{device_id}` | `{}` |
+| `GET /v1/health` | none | | `{ok, version}` (added in T11.2: checking a deployment by hand) |
 
 Rules:
 
@@ -97,8 +98,9 @@ Rules:
 - **Pull.** Rows with `seq > after`, ascending, at most `limit` (1 to 500, default 200) and at most 4 MiB of bodies. `more` says another page exists.
 - **Format.** `format` on a push is the highest envelope format the device writes. The vault's format is the highest ever pushed. A push or pull from a device whose `format` (header `Earshot-Sync-Format`) is lower than the vault's is `409 update_needed`.
 - **Limits.** 256 KiB per decoded row body (the client's 192 KiB plaintext limit plus the seal always fits), 4 MiB per request, 16 KiB per presence blob. Over a limit is `413`.
-- **Errors.** `{error: <word>}` with a status: `401 unknown_device`, `403 bad_secret`, `404 no_slot`, `409 key_mismatch`, `409 update_needed`, `413 too_large`, `429 slow_down`. The client maps each word to fixed copy; no server text reaches a window.
-- **Rate limits.** `pairing/take` and `devices`: 10 failures per minute per address, then `429`.
+- **Errors.** `{error: <word>}` with a status: `400 bad_request`, `401 unknown_device`, `403 bad_secret`, `404 no_slot`, `404 not_found` (an unknown path or method), `409 key_mismatch`, `409 update_needed`, `409 device_exists` (a pairing code naming a device id the relay already has, live or revoked: only the setup secret registers an id again), `413 too_large`, `429 slow_down`, `500 internal`. Every answer that is not a success is one of these. The client maps each word to fixed copy; no server text reaches a window.
+- **Rate limits.** `pairing/take` and `devices`: 10 failures per minute per address, then `429`. Behind the reverse proxy every caller has the proxy's address, so the limit is shared: a stranger's ten guesses make the owner wait a minute to register or pair. Accepted for calls made once per device; `X-Forwarded-For` is not trusted.
+- **Format on push.** The body's `format` must equal the `Earshot-Sync-Format` header, or `400`: one bad push cannot raise the vault past a format any device writes. The vault's format only rises; lowering it needs the relay's data reset (not yet a command).
 
 ## 4. Relay (T11.2)
 
@@ -114,10 +116,10 @@ vault(format INTEGER, key_check BLOB, next_seq INTEGER)
 - Tokens are 32 random bytes; only the SHA-256 is stored.
 - Rows are never deleted: a tombstone is a row like any other, so a device away for months still hears of deletions.
 - Configuration by environment: `EARSHOT_SYNC_SETUP_SECRET` (required, at least 24 characters, refused otherwise), `EARSHOT_SYNC_DATA` (default `/data`), `EARSHOT_SYNC_LISTEN` (default `0.0.0.0:8787`). TLS is the reverse proxy's.
-- Logs hold a method, a path, a status, a device id and byte counts. Never a body, a token, a secret or a slot.
+- Logs hold a method, a path (no query), a status and a duration. Never a body, a token, a secret, a slot or a device id.
 - Release (T11.2b, the owner, 2026-11-14): the relay lives in this repo and ships with every Windows release under the same version, as `ghcr.io/pitslug/earshot-sync-server:<version>` and `latest`, built for linux/amd64 by a GitHub Actions workflow that runs only on a release tag and builds nothing else. It is a registry image, not a file on the release, so the in-app updater's files are unchanged; `docker-compose.yml` is attached to the release.
 - Deliverables: the crate, a `Dockerfile` (multi-stage, non-root user, data volume), a `docker-compose.yml` with the relay only.
-- Net guard (GATE-08 item 5): the crate is left out of the app's check and gets its own ci step: its graph holds no HTTP client crate other than the `hyper` and `hyper-util` axum serves with, and no shipped crate depends on it.
+- Net guard (GATE-08 item 5): the crate is left out of the app's check and gets its own ci step: its graph holds no HTTP client crate other than the `hyper` and `hyper-util` axum serves with, and no workspace member depends on it through a normal or build edge. A dev-dependency is allowed (T11.3: the runtime's sync tests run the real relay in process through `LocalRelay`); a test build never ships.
 
 ## 5. Store changes (T11.1a, T11.1b)
 
@@ -139,8 +141,9 @@ sync_pending(key BLOB PRIMARY KEY, seq INTEGER NOT NULL, wall_ms, logical, node 
 ```
 
 - Both are device-local (no sync metadata, not in `SYNCED_TABLES`).
-- For every table in `SYNCED_TABLES`: `AFTER INSERT` and `AFTER UPDATE` triggers doing `INSERT OR IGNORE INTO sync_outbox VALUES ('<tbl>', NEW.id)`. A test pins the triggers to `SYNCED_TABLES`, so a new synced table without triggers fails.
-- The outbox fills whether or not sync is on. Turning sync on therefore needs no backfill, and the table stays small: one entry per row ever changed, a table name and 16 bytes.
+- For every table in `SYNCED_TABLES`: `AFTER INSERT` and `AFTER UPDATE` triggers that insert `('<tbl>', NEW.id)` into `sync_outbox` only when it is absent (`INSERT ... SELECT ... WHERE NOT EXISTS`). Not `INSERT OR IGNORE`: SQLite replaces a trigger's conflict clause with the firing statement's, and the store writes with upserts, so an ignored conflict became an error on a row's second change (found by the T11.1b tests). A test pins the triggers to `SYNCED_TABLES`, so a new synced table without triggers fails.
+- The outbox fills whether or not sync is on. Migration 6 also queues every row that already exists (triggers see only later changes), so turning sync on later sends everything. The table stays small: one entry per row ever changed, a table name and 16 bytes.
+- `Store::outbox` reads entries in `updated_at` order across tables, so a meeting goes out before its tracks, and a deletion's cleared rows (core deletion writes children first) before its meeting tombstone.
 
 ### 5.3 `Store::apply_remote`
 
@@ -161,7 +164,7 @@ Returned: counts of applied, ignored, pending by reason and unreadable. Never ro
 
 ### 5.4 Side effects
 
-- **Meeting tombstone** (remote `deleted`, local row live): this device's audio files for the meeting are deleted first (file before row, as `Store::delete_meeting`), then in the transaction every local child row still live is cleared and tombstoned with the meeting tombstone's own `updated_at`, the device-local keys of the meeting are erased, and the meeting row is written with the remote metadata. No new local stamp is made, so two devices applying the same deletion do not re-stamp each other.
+- **Meeting tombstone** (remote `deleted`, local row live, whatever the two stamps: a meeting row edited here after the deletion must not stay live over the children the deletion cleared; a tombstone stamped more than 24 h ahead deletes nothing and is held): before the page is applied, the client (T11.3) runs the ordinary `Services::delete_meeting` for that meeting, so audio files go before rows, device-local keys are erased and a lease refuses it (the row is then held `busy`) exactly as a local deletion. Its own tombstone, stamped here, is newer than the pulled one, which is then ignored; both say deleted. The rows the other device cleared arrive in the same pull and apply as ordinary rows.
 - **Person tombstone**: `forget_identity_biometrics` for that identity.
 - **Voiceprint tombstone**: the local row's `sum` is zeroed as `forget_voiceprints` does.
 - After a page that erased anything: `Store::flush_erasures`.
@@ -179,6 +182,7 @@ A `Busy` after the commit means the page is committed.
 | Credential Manager | `Earshot/sync-key` | the vault key |
 | Credential Manager | `Earshot/sync-token` | the device token |
 | `local_state` (`DeviceRecord`) | `settings/sync-server` | the server address |
+| | `settings/sync` | `on`/`off`: whether the loop runs (absent is off; set on by setting up or joining) |
 | | `settings/device-name` | this device's shown name (default: the computer name) |
 | | `settings/sync-voiceprints` | off by default |
 | | `settings/sync-dictionary` | on by default (phase 2) |
@@ -198,14 +202,23 @@ every tick (30 s, or at once after a local write, debounced 2 s):
            A row of a kind whose switch is off (voiceprints, Dictionary words) is left too.
            After the response, in one transaction: delete each entry whose row still has
            the updated_at that was sent.
-  2. pull: GET rows after the cursor; open each; Store::apply_remote; repeat while more.
+  2. pull: try every held row again (opened anew, one page); GET rows after the cursor; open
+           each; Store::apply_remote; store the cursor; repeat while more.
   3. presence: every 60 s (section 8).
 ```
 
+- The recording meeting's rows and switched-off kinds are left out by the outbox query itself (`Store::outbox_except`), so a long recording cannot fill every page.
+- The cursor is written right after its page's transaction, not inside it (the store does not know the runtime's record keys): a page applied twice after a crash between the two changes nothing, as its rows are no longer newer.
+- Local writes are found by reading the outbox's length every 2 s and ticking once it stops changing: no writer has to know about sync.
 - A failed request ends the tick, records a problem word and backs off: 30 s, 1 min, 2 min, up to 15 min, back to 30 s on the first success.
-- `update_needed` and `key_mismatch` stop the loop until the user acts; the Sync page says which.
+- `update_needed`, `key_mismatch`, `unknown_device` (this device was removed), a refused address and a missing key or token stop the loop until the user acts; the Sync page says which. A credential store that fails to answer is a retry.
+- A push response must account for every row sent (`accepted` plus `superseded`, each superseded key one that was sent); anything else is `server` and the rows stay queued.
+- Held rows are tried again every tick when held as `busy` or `parent`, and once per app start when held as `format` or `clock`, at most 500 a tick.
+- The cursor moves only from the value the page was pulled after, under the store lock (a reset made meanwhile, by turning a kind on, wins).
+- Stopping the thread ends a tick at its next page.
 - The thread holds the store lock only inside the two transactions and the short reads. Never across a request.
-- It takes no `WorkPass`: it loads no model. `WorkGate::enter_restart` must wait for a tick in progress to end (a new long job joins the restart rule).
+- It takes no `WorkPass`: it loads no model, and it does not hold up an update's restart or the app's quit. A tick cut off by the process exiting is safe: each of its writes is one store transaction, an accepted push not yet marked sent comes back superseded and leaves the outbox, and a page applied but not yet recorded in the cursor applies as not newer (T11.3a, which replaced the earlier plan to make `WorkGate::enter_restart` wait for it).
+- The app keeps one thread (`SyncHost`): started at app start when sync is on and set up, after setting up or joining, and when turned on; stopped on its own thread when turned off; stopped and waited for before this computer is removed.
 - A meeting is never delayed, failed or warned by sync. A recording computer still pulls; rows for the meeting being recorded cannot exist on another device.
 
 ### 6.3 Setting up
@@ -213,14 +226,15 @@ every tick (30 s, or at once after a local write, debounced 2 s):
 - **First device**: address and setup secret. Generate `K`, register with `key_check`, store key and token, start the loop.
 - **Show a pairing code**: generate the code, `POST /v1/pairing`, show it with a 10 minute countdown.
 - **Join**: address and code. `pairing/take`, unwrap `K`, register with `slot` and `key_check`, store, reset the cursor to 0, start the loop.
+- Setting up or joining queues every synced row again and drops every held row (`Store::queue_everything`): earlier sends went to no vault or another one, and held rows were sealed under another key.
 - **Turn off**: stop the loop. Local data, key and token stay, so turning it on again resumes.
-- **Remove this device**: revoke its token, delete key, token, address, cursor and status. Local meetings stay.
+- **Remove this device**: revoke its token, delete key, token, address, cursor, status and the voiceprint switch. Local meetings stay. The host stops the sync thread first and no start may run until the removal ends.
 
 ## 7. Convergence rules (T11.3b)
 
 Run inside `apply_remote`'s transaction after the page's writes. Each depends only on synced rows.
 
-1. **One Me.** If more than one live person has `is_me` and no `merged_into`: the one with the earliest `created_at` (id as tie-break) stays; each other gets `merged_into` it and its speaker rows are relinked as `merge_into_me` does. Written with this device's stamp; two devices doing it at once write the same content.
+1. **One Me.** If more than one live person has `is_me` and no `merged_into`: the one with the earliest `created_at` (id as tie-break) stays; each other gets `merged_into` it, as `merge_persons` does: speaker rows and voiceprints keep their link and resolve through the chain. When the kept one still has the default name and a merged one was named by its user, the kept one takes that name (the earliest-created named one). Written with this device's stamp; two devices doing it at once write the same content.
 2. **One live summary per meeting.** If a meeting has more than one live summary: the latest `created_at` stays; each other is tombstoned keeping its body, as `store_summary` does to a replaced summary.
 3. **Folders.** Two live folders with one name both stay.
 
@@ -229,23 +243,29 @@ A test delivers the same rows to three simulated devices in every order of two p
 ## 8. Presence (T11.3c)
 
 - Blob plaintext: `{v: 1, name, app_version, kind: "app", offers_summaries: false, writer_kind: null, recording: bool}`, sealed with `k_presence` like a row (`aad = "earshot-presence-v1" | device_id`).
-- Sent every 60 s and once on sleep or quit with `gone: true`, best effort.
+- Sent every 60 s and once with `gone: true` when sync is turned off, best effort (5 s). Not on quit or sleep yet: the 150 s window ends those (a task before T11.3d adds them, because offload must not pick a helper that just went to sleep). A thread replaced by a new one says nothing, and removal relies on the relay clearing a revoked device's presence.
+- The plaintext is padded to 640 bytes before sealing, so the blob's size says nothing of a flag or the name.
 - Online is `age_s <= 150` and not `gone` (a judgement: two missed beats). The rule is one pure function with a clock-free test.
-- Phase 1 uses the name and the age only. Phase 2 fills `offers_summaries` and `writer_kind`.
+- Presence is advisory. A blob's associated data holds no time, and `age_s` is the relay's, so the relay could replay an old blob as fresh. Nothing decides on presence alone: offload (10.1) also needs the target's claim, which is a synced row the relay cannot forge.
+- Phase 1 uses the name, `recording` and the age. Phase 2 fills `writer_kind` and acts on `offers_summaries`.
+- What T11.3c ships: `earshot_runtime::sync::presence` (blob, `online`, `clean_name`, `computer_name`); the thread sends presence after its first tick without a problem and every 60 s, and says gone when it is stopped (turned off, removed); quitting the app sends nothing (the 150 s window ends it). `settings/device-name` (absent: the computer's name, set by `set_device_name`) and `settings/sync-offer-summaries` (off; `set_offer_summaries`) are stored and sent; the page's switch for the latter comes with T11.3d, where it does something, and no page edits the name yet. The Sync page's computer list shows each other computer's name, Online (and recording), else when it last reached the server; a blob that cannot be opened lists the computer by its short id.
 
 ## 9. The Sync page (T11.3a)
 
-A new Settings page, "Sync", after Notes and storage.
+A Settings page, "Sync", after People and before Notes and storage. What T11.3a ships:
 
-- **Not set up**: what sync does in two sentences; "Set up the first computer" (address, setup secret) and "Join with a code" (address, code).
-- **Set up**: the server address; status line (Up to date, Syncing, or the problem in fixed copy); last sync; rows waiting to send; rows waiting to apply with the reason; rows that could not be read.
-- **Devices**: name, Online or last seen, this device marked; "Add a computer" shows a pairing code and its countdown; "Remove" on another device revokes it (a confirmation dialog).
-- **Switches**: "Sync voiceprints" (off), "Sync the Dictionary" (phase 2).
-- **Turn off sync** and **Remove this computer**.
+- **Not set up**: what sync does in two sentences; "Set up the first computer" (address, setup secret, Set up) and "Join with a pairing code" (address, code, Join), each its own form. The secret and code fields are cleared after every attempt.
+- **Set up**: "Sync is on" switch; the server address; last sync; rows waiting to send, held for later and that could not be read; the last problem in fixed copy (and that sync is stopped until it is fixed, for a problem that stops it); a line when sync should be running and is not; "Sync now", which starts a thread that should run and does not.
+- **Add a computer**: shows a pairing code once asked, until Hide, its expiry, or leaving the page.
+- **Computers**: from the server (`GET /v1/vault`): this computer first, others by the first eight hex digits of their id with last seen, until presence brings names (T11.3c).
+- **Voiceprints**: "Sync voiceprints" (off by default).
+- **Remove this computer**: a confirmation dialog. Removal also turns voiceprint sync off, so joining a vault again asks for it afresh.
 
-IPC commands in `apps/desktop/src-tauri/src/sync_settings.rs`: `sync_view`, `sync_set_up`, `sync_join`, `sync_pairing_code`, `sync_set_switch`, `sync_set_name`, `sync_turn_off`, `sync_remove_this`, `sync_revoke`, `sync_now`; event `SyncEvent` (joins `EVENT_METHODS`). Every command has an `Ipc` method and a mock; the mock mirrors the address rule and the code format from one shared fixture (`fixtures/ui/sync_cases.json`), run by both suites.
+Not in T11.3a: revoking another computer, device names, the Dictionary switch (phase 2), an event (the page reads `sync_view` when it opens and after each action).
 
-Choices apply at once; the address, secret, code and name are typed text and need their button, which joins the save-rule test's list. Failures are fixed copy by kind. Screens are judged by screenshot in light and dark.
+IPC commands in `apps/desktop/src-tauri/src/sync_settings.rs`: `sync_view`, `sync_devices`, `set_up_sync`, `offer_sync_code`, `join_sync`, `set_sync_on`, `set_sync_voiceprints`, `sync_now`, `remove_sync_device`. Every command has an `Ipc` method and a mock (`packages/ui/src/ipc/mockSync.ts`). One shared fixture, `fixtures/ui/sync_copy_cases.json`, holds the status copy (`problems`), a button press's copy (`command_problems`: nothing retries a button press, so none says Earshot will try again), the words that stop sync (`stops`), and the address rule's cases; both suites read every key. The key and token live in Credential Manager (`Earshot/sync-key`, `Earshot/sync-token`, `sync_vault.rs`); no response carries them, the setup secret or a used code.
+
+Choices apply at once; Set up and Join submit typed text and are in the save-rule test's list. Screens are judged by screenshot in light and dark.
 
 ## 10. Phase 2 interfaces
 

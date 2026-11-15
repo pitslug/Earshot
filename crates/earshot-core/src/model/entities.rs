@@ -71,6 +71,12 @@ pub struct Meeting {
     /// written before folders existed still reads.
     #[serde(default)]
     pub folder_id: Option<EntityId>,
+    /// The meeting's summary is written only on a device that holds its transcript, by a
+    /// local model (T12.13, T11.1a; docs/sync-spec.md section 5.1). Set when the meeting is
+    /// created and cleared only when the user allows the summary writer, so every synced copy
+    /// carries it. `serde(default)` so JSON written before T11.1a still reads (as not kept).
+    #[serde(default)]
+    pub summary_kept_local: bool,
 }
 
 syncable_row!(Meeting, "meeting");
@@ -95,6 +101,7 @@ impl Meeting {
             tags: Vec::new(),
             template,
             folder_id: None,
+            summary_kept_local: false,
         }
     }
 }

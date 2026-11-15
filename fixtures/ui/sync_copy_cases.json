@@ -1,0 +1,87 @@
+{
+  "_comment": "Sync page copy (T11.3a). problems: the last sync's status, by word. command_problems: a button press that failed, by word (nothing retries those). Pinned to sync_settings::problem_copy and command_copy by the desktop's tests and read by the UI mock. Shipped with the app: public copy only.",
+  "problems": {
+    "unreachable": "The sync server could not be reached. Earshot will try again.",
+    "server": "The sync server gave an answer Earshot does not understand. Earshot will try again.",
+    "unknown_device": "This computer was removed from sync. Remove it here, then join again with a pairing code.",
+    "key_mismatch": "This sync server already belongs to other devices. Join it with a pairing code from one of them.",
+    "update_needed": "Another device uses a newer Earshot. Update Earshot on this computer to keep syncing.",
+    "slow_down": "Too many tries. Wait a minute, then try again.",
+    "too_large": "Something was too large for the sync server. Earshot will try again.",
+    "bad_secret": "That setup secret is not the server's.",
+    "no_slot": "That pairing code is not one the server holds. It may be used or out of date: show a new one on the other device.",
+    "bad_code": "That is not a pairing code. Check it and type it again.",
+    "device_exists": "This computer is already registered with the server. Set it up with the server's setup secret instead.",
+    "address": "The sync server's address is not usable. Remove this computer from sync and set it up again.",
+    "vault": "This computer's sync key is missing. Remove this computer from sync and set it up again.",
+    "store": "Earshot could not read or save its own data for sync. It will try again.",
+    "internal": "Something went wrong inside sync. Restart Earshot to try again."
+  },
+  "command_problems": {
+    "unreachable": "The sync server could not be reached. Check the address and try again.",
+    "server": "The sync server gave an answer Earshot does not understand. Check the address and try again.",
+    "unknown_device": "This computer was removed from sync. Remove it here, then join again with a pairing code.",
+    "key_mismatch": "This sync server already belongs to other devices. Join it with a pairing code from one of them.",
+    "update_needed": "Another device uses a newer Earshot. Update Earshot on this computer to keep syncing.",
+    "slow_down": "Too many tries. Wait a minute, then try again.",
+    "too_large": "Something was too large for the sync server. Try again.",
+    "bad_secret": "That setup secret is not the server's.",
+    "no_slot": "That pairing code is not one the server holds. It may be used or out of date: show a new one on the other device.",
+    "bad_code": "That is not a pairing code. Check it and type it again.",
+    "device_exists": "This computer is already registered with the server. Set it up with the server's setup secret instead.",
+    "address": "The sync server's address is not usable. Remove this computer from sync and set it up again.",
+    "vault": "This computer's sync key is missing. Remove this computer from sync and set it up again.",
+    "store": "Earshot could not read or save its own data for sync. Try again.",
+    "internal": "Something went wrong inside sync. Restart Earshot to try again."
+  },
+  "stops": [
+    "unknown_device",
+    "key_mismatch",
+    "update_needed",
+    "address",
+    "vault"
+  ],
+  "secret_missing": "Enter the server's setup secret.",
+  "address_cases": [
+    {
+      "input": "",
+      "copy": "Enter the sync server's address."
+    },
+    {
+      "input": "   ",
+      "copy": "Enter the sync server's address."
+    },
+    {
+      "input": "sync.example.com",
+      "copy": "That is not a web address."
+    },
+    {
+      "input": "http://sync.example.com",
+      "copy": "The address must start with https:// (http:// only for this computer)."
+    },
+    {
+      "input": "https://sync.example.com/earshot",
+      "copy": "Enter the server's address without a path, for example https://sync.example.com"
+    },
+    {
+      "input": "https://user:pw@sync.example.com",
+      "copy": "The address must not hold a user name or password."
+    },
+    {
+      "input": "https://sync.example.com",
+      "copy": null
+    },
+    {
+      "input": "http://127.0.0.1:8787",
+      "copy": null
+    },
+    {
+      "input": "http://user:pw@sync.example.com",
+      "copy": "The address must not hold a user name or password."
+    },
+    {
+      "input": "http://sync.example.com/earshot",
+      "copy": "Enter the server's address without a path, for example https://sync.example.com"
+    }
+  ]
+}

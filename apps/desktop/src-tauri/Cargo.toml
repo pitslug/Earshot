@@ -84,6 +84,8 @@ specta-typescript = "=0.0.12"
 # Seeded row ids in tests (same versions as earshot-runtime).
 rand_chacha = { version = "0.10.0", default-features = false }
 rand_core = { version = "0.10.1", default-features = false }
+# The Sync page's tests run the real relay in process (`LocalRelay`, T11.3a); a dev edge only.
+earshot-sync-server = { path = "../../../crates/earshot-sync-server" }
 
 [lints]
 workspace = true

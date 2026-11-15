@@ -1284,14 +1284,17 @@ fn assert_left_at_the_end(stop_wait: Duration) {
 fn live_preview_slow_previews_pause_and_come_back() {
     let scene = scene_of(27);
     let seen = Arc::new(Seen::default());
+    // The slow decodes are far above the threshold and every other decode far below it, so a
+    // busy host (a full `cargo test --workspace`) cannot make an ordinary fake decode count as
+    // slow: at 4 ms it did, giving 2 or 6 pauses under load.
     let script = |call: usize, cancel: &CancelToken| {
         if call < 3 {
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(250));
         }
         marker_words(call, cancel)
     };
     let config = LivePreviews {
-        slow: Duration::from_millis(4),
+        slow: Duration::from_millis(200),
         slow_pause: Duration::from_millis(50),
         ..previews(loader(&seen, script))
     };

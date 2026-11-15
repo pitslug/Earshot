@@ -94,6 +94,7 @@ fn fixture() -> Fixture {
         tags: vec!["planning".into(), "Team Sync".into()],
         template: Template::General,
         folder_id: None,
+        summary_kept_local: false,
     };
     let me = Speaker {
         id: id(10),

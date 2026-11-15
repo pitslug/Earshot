@@ -1,0 +1,26 @@
+[package]
+name = "earshot-sync"
+description = "Sync encryption (T11.2a, docs/sync-spec.md section 2): vault keys, sealed rows, row keys and pairing codes. No network, no files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+earshot-core = { path = "../earshot-core" }
+# RustCrypto, MIT or Apache-2.0. The 0.10/0.12 line shares `sha2` 0.10 with the rest of the
+# workspace. No default features: no RNG inside the AEAD crate; nonces come from `random`.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = { version = "0.10", default-features = false }
+# The operating system's generator, for key material and nonces (never `os_seeded_rng`).
+getrandom = "0.3"
+# The relay's JSON calls carry binary fields as standard base64 (`wire`).
+base64 = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zeroize = { version = "1", default-features = false }
+
+[lints]
+workspace = true

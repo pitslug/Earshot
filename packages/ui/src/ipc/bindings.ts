@@ -360,6 +360,24 @@ export const commands = {
 	 *  stored).
 	 */
 	setSummaryVocabulary: (words: string[]) => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("set_summary_vocabulary", { words })),
+	/**  The Sync page's view. */
+	syncView: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("sync_view")),
+	/**  The vault's devices (asks the server). */
+	syncDevices: () => typedError<SyncDeviceView[], IpcError>(__TAURI_INVOKE("sync_devices")),
+	/**  Sets this computer up as the first device with the server's setup secret. */
+	setUpSync: (address: string, setupSecret: string) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_up_sync", { address, setupSecret })),
+	/**  A pairing code for adding another device. */
+	offerSyncCode: () => typedError<SyncCodeView, IpcError>(__TAURI_INVOKE("offer_sync_code")),
+	/**  Joins the vault with a pairing code shown on another device. */
+	joinSync: (address: string, code: string) => typedError<SyncView, IpcError>(__TAURI_INVOKE("join_sync", { address, code })),
+	/**  Turns sync on or off. */
+	setSyncOn: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_on", { on })),
+	/**  Turns voiceprint sync on or off. */
+	setSyncVoiceprints: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_voiceprints", { on })),
+	/**  Asks for a sync now. */
+	syncNow: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("sync_now")),
+	/**  Removes this computer from sync. */
+	removeSyncDevice: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("remove_sync_device")),
 	/**  Whether the app opens on the first-run wizard. */
 	firstRunState: () => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("first_run_state")),
 	/**  Marks the first-run wizard done, whichever steps were skipped. */
@@ -2117,6 +2135,60 @@ export type SummaryVocabularyView = {
 	max_word_chars: number,
 	/**  The longest list accepted, in characters over every word. */
 	max_chars: number,
+};
+
+/**  A pairing code to show for adding a device. */
+export type SyncCodeView = {
+	/**  The code, in groups. */
+	code: string,
+	/**  Seconds until it stops working. */
+	expires_in_s: number,
+};
+
+/**  One device of the vault. */
+export type SyncDeviceView = {
+	/**  Whether it is this computer. */
+	this_device: boolean,
+	/**  Its name from its presence (`None` until it sends one this computer can read). */
+	name: string | null,
+	/**  Whether it is online now (its presence is at most 150 s old and does not say gone). */
+	online: boolean,
+	/**  Whether it is recording now. */
+	recording: boolean,
+	/**  The first eight hex digits of its id. */
+	short_id: string,
+	/**  When it joined (Unix seconds, the server's clock). */
+	joined_unix_s: number,
+	/**  Seconds since it last reached the server. */
+	seen_s_ago: number,
+};
+
+/**  What the Sync page shows. Never a key, token, setup secret or used pairing code. */
+export type SyncView = {
+	/**  A key and token are stored: this computer is set up. */
+	set_up: boolean,
+	/**  Sync is on. */
+	on: boolean,
+	/**  The sync thread is running now. */
+	running: boolean,
+	/**  Voiceprints sync. */
+	voiceprints: boolean,
+	/**  The server's address, when one is stored and usable. */
+	address: string | null,
+	/**  Why a stored address is not usable (fixed copy). */
+	address_problem: string | null,
+	/**  When sync last finished without a problem (Unix ms). */
+	last_success_unix_ms: number | null,
+	/**  The last problem (fixed copy). */
+	problem: string | null,
+	/**  Whether that problem stopped sync until something is done. */
+	stopped: boolean,
+	/**  Rows from other devices that could not be read, in all. */
+	unreadable: number,
+	/**  Rows changed here and not yet sent. */
+	waiting: number,
+	/**  Rows from other devices held for later. */
+	held: number,
 };
 
 /**  NVIDIA's terms for a part. */
