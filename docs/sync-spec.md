@@ -306,6 +306,8 @@ What T11.3da built (`earshot_runtime::offload`), with the detail this section le
 - **Busy.** A summary request is never held as `busy`: it holds no content and must reach a device whose summary job holds the meeting.
 - **Authorship.** A request whose last write came from a device not allowed to write its state (`updated_at.node`) is ignored by every reader.
 
+What T11.3db built in the app (`apps/desktop/src-tauri/src/offload.rs`): the Sync page's "Write summaries for my other computers" (`set_sync_offer_summaries`) and the computer's name (`set_sync_device_name`, typed, with its own Save name button); the Summaries page's "Another computer" (`summary_helpers`, `set_summary_helper`), listing each computer that offers summaries as "On <device> (<writer kind>)" and the chosen one whatever it offers now; the meeting's `SummaryEvent::Offloaded` and `MeetingDetail.waiting_for` ("Waiting for <device> to write the summary."), and banner `summary-offload` when this computer wrote it instead; re-summarise "Here" or "On <device>" (`ask_summary_helper`, refused with the reason when the computer would not be asked). `HostOffload` re-summarises a handed-back meeting with its reason as the job's first warning and writes another computer's request on thread `earshot-offload` in the meeting driver's queue with a work pass (none to be had declines `busy`). Copy comes only from `fixtures/ui/offload_copy_cases.json`, read by both suites.
+
 ### 10.2 Dictionary (T11.3e)
 
 `dictionary_word(id, META, word TEXT NOT NULL)`, class `SyncableOptIn`. Rules as `docs/sync.md` section 9. `settings/vocabulary` stays what summaries read.

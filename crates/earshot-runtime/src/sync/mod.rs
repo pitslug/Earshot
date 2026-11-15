@@ -581,6 +581,8 @@ pub fn sync_overview(
 /// One device of the vault, as the server knows it, with its presence when it sent one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncDevice {
+    /// Its id.
+    pub device: earshot_core::identity::DeviceId,
     /// Whether it is this device.
     pub this_device: bool,
     /// Its name, from its presence (`None` until it sends one this device can read).
@@ -591,6 +593,9 @@ pub struct SyncDevice {
     pub recording: bool,
     /// Whether it writes summaries for the other devices (from its presence).
     pub offers_summaries: bool,
+    /// The kind of writer it would use, when it offers summaries and this build knows the
+    /// kind (from its presence; summary offload names it so the user knows where text goes).
+    pub writer_kind: Option<crate::offload::WriterKind>,
     /// The first eight hex digits of its id: enough to tell two devices apart on the page.
     pub short_id: String,
     /// When it joined (Unix seconds, the server's clock).
@@ -622,12 +627,18 @@ pub fn vault_devices(
                 .iter()
                 .find(|p| p.device.as_uuid().as_bytes()[..] == d.device_id.0[..]);
             let presence = peer.and_then(|p| p.presence.as_ref());
+            let id: [u8; 16] = d.device_id.0.as_slice().try_into().unwrap_or([0; 16]);
             SyncDevice {
+                device: earshot_core::identity::DeviceId::from_bytes(id),
                 this_device: d.device_id.0 == me,
                 name: presence.map(|p| p.name.clone()).filter(|n| !n.is_empty()),
                 online: peer.is_some_and(|p| p.online),
                 recording: presence.is_some_and(|p| p.recording),
                 offers_summaries: presence.is_some_and(|p| p.offers_summaries),
+                writer_kind: presence
+                    .filter(|p| p.offers_summaries)
+                    .and_then(|p| p.writer_kind.as_deref())
+                    .and_then(crate::offload::WriterKind::parse),
                 short_id: d
                     .device_id
                     .0
