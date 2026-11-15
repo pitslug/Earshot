@@ -91,6 +91,9 @@ meeting_records! {
     /// `voiceprint-me/<meeting>`: the in-room "Me" row the final pass named by the user's
     /// voiceprint (T12.44; no biometric data, [`crate::identities::voiceprint_me_key`]).
     VoiceprintMe => "voiceprint-me/", meeting at 0;
+    /// `summary-run/<meeting>`: the meeting's last run of the order of summary writers (T12.63a;
+    /// fixed words, step and request ids only, [`crate::summary_order::run`]).
+    SummaryRun => "summary-run/", meeting at 0;
 }
 
 impl MeetingRecord {
@@ -246,6 +249,9 @@ pub(crate) enum DeviceRecord {
     /// `offload-times`: this device's clock readings for open summary offload requests (T11.3da;
     /// [`crate::offload`]).
     OffloadTimes,
+    /// `settings/summary-order`: the order of summary writers (T12.63a;
+    /// [`crate::summary_order`]).
+    SummaryOrder,
 }
 
 impl DeviceRecord {
@@ -300,6 +306,7 @@ impl DeviceRecord {
         DeviceRecord::OfferSummaries,
         DeviceRecord::SummaryOffloadDevice,
         DeviceRecord::OffloadTimes,
+        DeviceRecord::SummaryOrder,
     ];
 
     /// Its key.
@@ -360,6 +367,7 @@ impl DeviceRecord {
                 DeviceRecord::OfferSummaries => crate::sync::OFFER_SUMMARIES_KEY,
                 DeviceRecord::SummaryOffloadDevice => crate::offload::OFFLOAD_DEVICE_KEY,
                 DeviceRecord::OffloadTimes => crate::offload::OFFLOAD_TIMES_KEY,
+                DeviceRecord::SummaryOrder => crate::summary_order::SUMMARY_ORDER_KEY,
             }
             .to_owned(),
         )

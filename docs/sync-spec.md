@@ -271,6 +271,8 @@ Choices apply at once; Set up and Join submit typed text and are in the save-rul
 
 ### 10.1 Summary offload (T11.3d)
 
+Superseded in part by T12.63a (docs/summary-order.md section 4): the chosen helper is now a computer step of the order of summary writers (`settings/summary-order`; `settings/summary-offload-device` is only its mirror for older builds, written by `summary_order::set_summary_order`). A run records itself in `summary-run/<meeting>`, and `ask_for_run` names the request in that record in the request's own transaction. `OffloadHost::write_here` became `continue_run`, decided by the record (`summary_order::run::hand_back`): `Continuation::Order` continues the same run, a named run ends with the computer's outcome, no record is `Continuation::Legacy` (written here as below), an unreadable record or one naming another request is settled with no job; the host answers `Started`, `Refused` or `Settled`. A `Done` request a waiting record names ends the run with that computer as its writer (`end_after_done`). The helper's writer is the first writer step of its order (`summary_order::run::helper_writer`, presence `WriterKind::of_order`), and nothing else runs for a request. The rest of this section is the T11.3da design as built.
+
 New synced table and entity (`syncable_row!(SummaryRequest, "summary_request")`):
 
 ```

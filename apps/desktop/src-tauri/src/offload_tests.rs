@@ -521,11 +521,12 @@ fn offload_host_writes_a_handed_back_meeting_here_with_its_reason() {
         crate::activity::WorkGate::new(),
         Arc::new(NoWriter),
     );
-    host.write_here(WriteHere {
+    host.continue_run(WriteHere {
         meeting: m,
         request: EntityId::from_bytes([5; 16]),
         helper: earshot_core::identity::DeviceId::from_bytes([6; 16]),
         why: HereReason::NotClaimed,
+        continuation: earshot_runtime::offload::Continuation::Legacy,
     });
     let first = events.recv_timeout(Duration::from_secs(30)).unwrap();
     assert_eq!(
@@ -626,16 +627,21 @@ fn offload_host_says_when_a_write_here_did_not_start() {
         request: EntityId::from_bytes([5; 16]),
         helper: earshot_core::identity::DeviceId::from_bytes([6; 16]),
         why: HereReason::Withdrawn,
+        continuation: earshot_runtime::offload::Continuation::Legacy,
     };
     let lease = svc
         .lease_meeting_for(m, earshot_runtime::MeetingJob::Processing)
         .unwrap();
     assert!(
-        !host.write_here(job()),
+        host.continue_run(job()) == earshot_runtime::offload::ContinueAnswer::Refused,
         "refused while the meeting is in use"
     );
     drop(lease);
-    assert!(host.write_here(job()), "started once free");
+    assert_eq!(
+        host.continue_run(job()),
+        earshot_runtime::offload::ContinueAnswer::Started,
+        "started once free"
+    );
 }
 
 /// A helper whose work panics declines the request `failed`, so the asker writes it (A2).

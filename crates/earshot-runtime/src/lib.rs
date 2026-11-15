@@ -80,6 +80,7 @@ pub mod summary;
 pub mod summary_child;
 pub mod summary_edits;
 pub mod summary_model;
+pub mod summary_order;
 pub mod summary_settings;
 pub mod summary_style;
 pub mod sync;

@@ -1808,6 +1808,8 @@ mod production {
                         offload: offload
                             .as_ref()
                             .map(|f| &**f as &dyn Fn() -> earshot_runtime::offload::OffloadChoice),
+                        // The one prepared writer until T12.63b runs the order (T12.63a).
+                        order_run: None,
                     };
                     host::after_meeting(svc, outcome, &run, progress)
                 },

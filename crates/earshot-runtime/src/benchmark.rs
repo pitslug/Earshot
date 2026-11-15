@@ -371,6 +371,12 @@ pub fn prepare_bench_summary(
     clock: SharedClock,
     dll_dirs: &[PathBuf],
 ) -> Result<BenchSummary, RuntimeError> {
+    // The order's first step is another computer: not written here (docs/summary-order.md 4.5).
+    if settings.computer_first {
+        return Ok(BenchSummary::Skipped(BenchSkip::NotOnThisComputer {
+            writer: "computer".to_owned(),
+        }));
+    }
     Ok(match settings.writer {
         SummaryWriter::NoSummary => BenchSummary::Skipped(BenchSkip::NotRequested),
         SummaryWriter::OnThisComputer => {
@@ -1048,6 +1054,7 @@ pub fn run_from_settings(
             post_cancel: cancel,
             summary_cancel: cancel,
             offload: None,
+            order_run: None,
         };
         host::after_meeting(svc, outcome, &run, progress)
     });
