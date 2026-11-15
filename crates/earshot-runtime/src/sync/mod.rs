@@ -493,9 +493,15 @@ fn on_off_word(on: bool) -> &'static [u8] {
 /// # Errors
 /// [`SyncProblem::Store`].
 pub fn set_sync_on(services: &Services, on: bool) -> Result<(), SyncProblem> {
-    let mut db = services.store();
-    local::set(&mut db, &DeviceRecord::SyncOn.key(), on_off_word(on))?;
-    Ok(())
+    crate::vocabulary::with_stamp(services, |tx, stamp| -> Result<(), SyncProblem> {
+        local::set_tx(tx, &DeviceRecord::SyncOn.key(), on_off_word(on))?;
+        if on {
+            // Dictionary words changed while sync was off get rows and the list follows them
+            // (T11.3e), as turning the Dictionary switch on does.
+            crate::vocabulary::syncing_turned_on_tx(tx, stamp)?;
+        }
+        Ok(())
+    })
 }
 
 /// Turns voiceprint sync on or off. Turning it on resets the pull cursor, so voiceprints
@@ -531,8 +537,7 @@ pub fn set_sync_dictionary(services: &Services, on: bool) -> Result<(), SyncProb
             .unwrap_or(true);
         local::set_tx(tx, &DeviceRecord::SyncDictionary.key(), on_off_word(on))?;
         if on && !was {
-            crate::vocabulary::reconcile_tx(tx, stamp)?;
-            crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep)?;
+            crate::vocabulary::syncing_turned_on_tx(tx, stamp)?;
             local::set_tx(tx, &DeviceRecord::SyncCursor.key(), &encode_cursor(0))?;
         }
         Ok(())

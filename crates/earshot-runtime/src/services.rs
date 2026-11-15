@@ -228,6 +228,13 @@ impl Services {
         })
     }
 
+    /// Whether another thread holds the store lock now (tests of what may run between a
+    /// read and a write).
+    #[cfg(test)]
+    pub(crate) fn store_is_held(&self) -> bool {
+        matches!(self.db.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+    }
+
     /// Locks the store (and the HLC).
     ///
     /// A thread that panicked while holding the lock does not make the store unusable:

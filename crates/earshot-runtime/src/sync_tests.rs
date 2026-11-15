@@ -1738,3 +1738,119 @@ fn dictionary_sync_a_row_from_another_build_is_matched_by_its_normalised_word() 
     assert!(live_rows(&a).is_empty());
     assert!(words(&a).is_empty());
 }
+
+#[test]
+fn dictionary_sync_an_add_is_checked_against_the_rebuilt_list() {
+    // A refused stored list is kept over pulls, so the stored list (empty) lags the rows: with
+    // exactly 100 live rows the quick check passes and only the rebuilt list shows the new word
+    // would not be in use. The add rolls back whole.
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    let full: Vec<String> = (0..100).map(|i| format!("w{i:03}")).collect();
+    crate::testutil::replace_words(&a.svc, &full).unwrap();
+    local::set(&mut a.svc.store(), &DeviceRecord::Vocabulary.key(), b"{}").unwrap();
+    assert_eq!(not_in_use(&a), 0);
+    let outbox = a.svc.store().outbox_len().unwrap();
+    let err = crate::vocabulary::add_entry(&a.svc, "Quillmarsh").unwrap_err();
+    assert!(matches!(
+        err,
+        crate::vocabulary::SetVocabularyError::NotInUse
+    ));
+    assert_eq!(live_rows(&a).len(), 100, "no row stored");
+    assert_eq!(
+        stored_list(&a).as_deref(),
+        Some(&b"{}"[..]),
+        "nothing written"
+    );
+    assert_eq!(
+        a.svc.store().outbox_len().unwrap(),
+        outbox,
+        "nothing to sync"
+    );
+    let err = crate::vocabulary::add_word(&a.svc, "Quillmarsh").unwrap_err();
+    assert!(matches!(
+        err,
+        crate::vocabulary::SetVocabularyError::NotInUse
+    ));
+}
+
+#[test]
+fn dictionary_sync_turning_sync_on_again_brings_the_list_back_to_the_rows() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let mine: Vec<String> = (0..60).map(|i| format!("alpha{i:02}")).collect();
+    let theirs: Vec<String> = (0..60).map(|i| format!("beta{i:02}")).collect();
+    crate::testutil::replace_words(&a.svc, &mine).unwrap();
+    b.clock.advance_ms(100);
+    crate::testutil::replace_words(&b.svc, &theirs).unwrap();
+    exchange(&a, &b);
+    assert_eq!(not_in_use(&a), 20);
+    // With sync off the list is this computer's own: a deletion writes it directly.
+    set_sync_on(&a.svc, false).unwrap();
+    assert!(crate::vocabulary::remove_entry(&a.svc, "alpha00").unwrap());
+    assert_eq!(words(&a).len(), 99);
+    // Turning sync on again rebuilds the list from the rows, as the Dictionary switch does,
+    // and an add is decided on that list.
+    set_sync_on(&a.svc, true).unwrap();
+    assert_eq!(words(&a).len(), 100);
+    assert!(words(&a).contains(&"beta40".to_owned()));
+    assert_eq!(not_in_use(&a), 19);
+    let err = crate::vocabulary::add_entry(&a.svc, "Quillmarsh").unwrap_err();
+    assert!(matches!(
+        err,
+        crate::vocabulary::SetVocabularyError::NotInUse
+    ));
+    assert_eq!(live_rows(&a).len(), 119);
+}
+
+#[test]
+fn dictionary_sync_setting_up_makes_rows_and_rebuilds_the_list() {
+    // Dictionary sync is on by default: setting up reconciles and rebuilds at once.
+    let relay = relay();
+    let a = Device::new("sync-dictionary-setup");
+    local::set(
+        &mut a.svc.store(),
+        &DeviceRecord::Vocabulary.key(),
+        br#"["Velmora","'Ostrelby'"]"#,
+    )
+    .unwrap();
+    set_up_first_device(&a.svc, &*a.vault, &relay.relay.url(), SECRET).unwrap();
+    assert_eq!(live_rows(&a), ["Velmora", "Ostrelby"]);
+    assert_eq!(
+        stored_list(&a).as_deref(),
+        Some(&br#"["Velmora","Ostrelby"]"#[..])
+    );
+}
+
+#[test]
+fn dictionary_sync_an_edit_holds_the_store_lock_from_its_read_to_its_write() {
+    // A sync apply runs only under the store lock (`SyncClient::apply`), so it cannot fall
+    // between an edit's read of the stored list and its write while the lock is held: the seam
+    // runs at that point and asks another thread whether it could take the lock.
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    crate::vocabulary::add_entry(&a.svc, "Quillmarsh").unwrap();
+    let probe = a.svc.clone();
+    let seen: Arc<std::sync::Mutex<Vec<bool>>> = Arc::default();
+    let record = Arc::clone(&seen);
+    crate::vocabulary::BETWEEN_READ_AND_WRITE.with(|seam| {
+        *seam.borrow_mut() = Some(Box::new(move || {
+            let svc = probe.clone();
+            let held = std::thread::spawn(move || svc.store_is_held())
+                .join()
+                .unwrap();
+            record.lock().unwrap().push(held);
+        }));
+    });
+    crate::vocabulary::add_entry(&a.svc, "Velmora").unwrap();
+    assert!(crate::vocabulary::remove_entry(&a.svc, "Quillmarsh").unwrap());
+    crate::vocabulary::BETWEEN_READ_AND_WRITE.with(|seam| *seam.borrow_mut() = None);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [true, true],
+        "the seam ran in both edits, lock held"
+    );
+    assert_eq!(words(&a), ["Velmora"]);
+    // Once the edit has committed, the lock is free for an apply.
+    assert!(!a.svc.store_is_held());
+}

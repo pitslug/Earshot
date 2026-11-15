@@ -62,9 +62,8 @@ fn keep(
     token: &DeviceToken,
 ) -> Result<(), SyncProblem> {
     vault.save(key, token)?;
-    let mut db = services.store();
-    db.queue_everything()?;
-    db.transaction(|tx| -> Result<(), SyncProblem> {
+    services.store().queue_everything()?;
+    crate::vocabulary::with_stamp(services, |tx, stamp| -> Result<(), SyncProblem> {
         local::set_tx(
             tx,
             &DeviceRecord::SyncServer.key(),
@@ -72,6 +71,8 @@ fn keep(
         )?;
         local::set_tx(tx, &DeviceRecord::SyncCursor.key(), &encode_cursor(0))?;
         local::set_tx(tx, &DeviceRecord::SyncOn.key(), b"on")?;
+        // Dictionary sync is on by default: rows for the words here, the list from the rows.
+        crate::vocabulary::syncing_turned_on_tx(tx, stamp)?;
         // A thread of an earlier setup may have written a status after it was stopped.
         tx.delete_local_value(SYNC_STATUS_KEY)?;
         Ok(())

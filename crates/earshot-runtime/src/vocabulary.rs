@@ -1,8 +1,10 @@
 //! The user's own words (T12.15a): names, acronyms and other terms from their meetings, so
 //! summaries spell them right ([`earshot_core::prompt::Vocabulary`], the rules and limits).
 //! What summaries read is device-local (`local_state` key [`VOCABULARY_KEY`]), stored as a JSON
-//! list of strings, written only through [`set_vocabulary`] (and [`add_word`], [`remove_word`])
-//! after the core check; an empty list (the default) is no words.
+//! list of strings, written only by the Dictionary's edits after the core check: one word at a
+//! time ([`add_entry`], [`remove_entry`], and [`add_word`] / [`remove_word`] from the
+//! transcript), or a whole list from a caller that read it first ([`set_vocabulary`]); an empty
+//! list (the default) is no words.
 //!
 //! Dictionary sync (T11.3e, docs/sync.md section 9): every write also keeps one synced
 //! `DictionaryWord` row per word in the same transaction (a new word gets a row, a removed one
@@ -283,6 +285,22 @@ pub(crate) fn reconcile_tx(
     Ok(made)
 }
 
+/// What turning Dictionary syncing on does inside its transaction (the Dictionary switch, sync
+/// itself, or setting up or joining a vault): rows for the words here ([`reconcile_tx`]), then
+/// the list rebuilt from the rows ([`rebuild_tx`], a refused stored list kept), so the list never
+/// lags the rows it will be checked against.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn syncing_turned_on_tx(
+    tx: &mut StoreTx<'_>,
+    stamp: &mut DynStamp<'_, '_>,
+) -> Result<(), StoreError> {
+    reconcile_tx(tx, stamp)?;
+    rebuild_tx(tx, OverRefused::Keep)?;
+    Ok(())
+}
+
 /// [`reconcile_tx`] in its own transaction.
 ///
 /// # Errors
@@ -337,6 +355,24 @@ pub(crate) fn with_stamp<T, E: From<StoreError>>(
         };
         f(tx, &mut stamp)
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test seam: run by [`add_entry`] and [`remove_entry`] on this thread after they read
+    /// the stored list and before they write (T11.3e review).
+    pub(crate) static BETWEEN_READ_AND_WRITE: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Runs the test seam [`BETWEEN_READ_AND_WRITE`] when one is set; nothing in shipped builds.
+fn between_read_and_write() {
+    #[cfg(test)]
+    BETWEEN_READ_AND_WRITE.with(|seam| {
+        if let Some(f) = seam.borrow().as_ref() {
+            f();
+        }
+    });
 }
 
 /// [`vocabulary`] from the stored bytes (`None`: nothing stored), so a store transaction can
@@ -466,6 +502,7 @@ pub fn add_entry(services: &Services, text: &str) -> Result<AddedEntry, SetVocab
         services,
         |tx, stamp| -> Result<AddedEntry, SetVocabularyError> {
             let (current, _refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
+            between_read_and_write();
             if let Some(entry) = current
                 .words()
                 .iter()
@@ -477,6 +514,8 @@ pub fn add_entry(services: &Services, text: &str) -> Result<AddedEntry, SetVocab
                     words: current.clone(),
                 });
             }
+            // A quick refusal while the joined list already leaves words out; the check that
+            // decides is on the rebuilt list below.
             let syncs = syncs_from(|k| tx.local_value(k)).map_err(SetVocabularyError::Store)?;
             if syncs && joined(&tx.dictionary_words()?).1 > 0 {
                 return Err(SetVocabularyError::NotInUse);
@@ -490,6 +529,12 @@ pub fn add_entry(services: &Services, text: &str) -> Result<AddedEntry, SetVocab
                 tx.put_dictionary_word(DictionaryWord::new(word.clone(), stamp))?;
             }
             let words = match rebuild_tx(tx, OverRefused::Replace)? {
+                // Decided on the outcome: a word the rebuilt list leaves out would be stored
+                // and synced but not in use, so the whole add rolls back (the stored list may
+                // lag the rows, for example after a refused list was kept or sync was off).
+                Some(rebuilt) if !listed_in(rebuilt.words(), &word) => {
+                    return Err(SetVocabularyError::NotInUse);
+                }
                 Some(rebuilt) => rebuilt,
                 None => {
                     write_list_tx(tx, &next)?;
@@ -519,6 +564,7 @@ pub fn remove_entry(services: &Services, word: &str) -> Result<bool, SetVocabula
     }
     with_stamp(services, |tx, stamp| -> Result<bool, SetVocabularyError> {
         let (current, _refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
+        between_read_and_write();
         if !listed_in(current.words(), &word) {
             return Ok(false);
         }
@@ -540,8 +586,8 @@ pub fn remove_entry(services: &Services, word: &str) -> Result<bool, SetVocabula
 
 // Adding words from the transcript (T12.15f): one word at a time, from a click on that word
 // (a word of the line's text, or a button of the bar under a line just edited); never
-// automatic. Both directions go through [`set_vocabulary`], so the limits and refusals are the
-// Dictionary page's own.
+// automatic. Both directions go through the page's own one-word edits ([`add_entry`],
+// [`remove_entry`]), so the limits and refusals are the Dictionary page's own.
 
 /// The word a transcript token adds to the Dictionary: its core (no surrounding punctuation,
 /// `earshot_core::vocabulary::suggest::split_punctuation`, the matcher's own rule), when the

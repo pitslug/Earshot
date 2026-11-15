@@ -164,3 +164,38 @@ fn summary_vocabulary_refusals_of_t11_3e_follow_the_shared_table() {
     assert_eq!(stale.kind, "invalid_setting");
     assert_eq!(Some(stale.message.as_str()), m["stale_list"].as_str());
 }
+
+#[test]
+fn summary_vocabulary_the_shared_table_holds_for_the_pages_one_word_adds() {
+    // The page adds one word at a time (T11.3e): each case's words added in turn (blank ones
+    // are never sent: the page's Add is off for them) end in the stored list, or the first
+    // refusal is the case's message.
+    let table = crate::testutil::summary_cases();
+    let mut wrong = Vec::new();
+    for case in table["vocabulary"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let dir = TempDir::new("summary-vocabulary");
+        let svc = services(&dir);
+        let words: Vec<String> = serde_json::from_value(case["words"].clone()).unwrap();
+        let mut refused = None;
+        for w in words.iter().filter(|w| !w.trim().is_empty()) {
+            if let Err(e) = add_word(&svc, w) {
+                refused = Some(e);
+                break;
+            }
+        }
+        match (refused, case["error"].as_str()) {
+            (Some(e), Some(want)) if e.kind == "invalid_setting" && e.message == want => {}
+            (None, None) => {
+                let want: Vec<String> = serde_json::from_value(case["stored"].clone()).unwrap();
+                let got = vocabulary_view(&svc).unwrap().words;
+                if got != want {
+                    wrong.push(format!("{name}: stored {got:?}"));
+                }
+            }
+            (Some(e), _) => wrong.push(format!("{name}: refused {:?}", e.message)),
+            (None, Some(_)) => wrong.push(format!("{name}: not refused")),
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
