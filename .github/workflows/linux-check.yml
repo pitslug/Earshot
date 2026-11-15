@@ -55,12 +55,6 @@ jobs:
         continue-on-error: true
         working-directory: src
         run: cargo build --locked -p earshot-core --lib
-      - name: Test earshot-core (lib)
-        id: test_core
-        continue-on-error: true
-        working-directory: src
-        run: cargo test --locked -p earshot-core --lib
-
       - name: Build earshot-proc
         id: build_proc
         continue-on-error: true
@@ -150,6 +144,16 @@ jobs:
         continue-on-error: true
         working-directory: src
         run: cargo test --locked -p earshot-runtime --lib -- --skip summary --skip sync
+
+      # Last, because core's debug echo-canceller tests run for a long time, and bounded; core
+      # is already checked for wasm32 by `cargo xtask purity`. Its fixture tests fail here by
+      # design (no fetched fixtures).
+      - name: Test earshot-core (lib, informational)
+        id: test_core
+        continue-on-error: true
+        timeout-minutes: 45
+        working-directory: src
+        run: cargo test --locked -p earshot-core --lib
 
       - name: Outcomes
         if: always()
