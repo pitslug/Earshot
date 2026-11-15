@@ -726,3 +726,272 @@ fn sync_thread_retries_an_unreachable_server_until_it_answers() {
     thread.stop();
     drop(again);
 }
+
+// T11.3b: the convergence rules (docs/sync-spec.md section 7).
+
+/// A summary saying `title`.
+fn summary_of(title: &str) -> earshot_core::summary::SummaryV1 {
+    earshot_core::summary::SummaryV1 {
+        title: title.into(),
+        tldr: "An invented summary.".into(),
+        enhanced_notes: vec![],
+        decisions: vec![],
+        action_items: vec![],
+        open_questions: vec![],
+        topics: vec![],
+    }
+}
+
+/// A "Me" person and a summary of `meeting`, made on `dev` with its own clock and HLC, not
+/// stored there.
+fn me_and_summary(
+    dev: &Device,
+    meeting: earshot_core::identity::EntityId,
+    seed: u64,
+) -> Vec<earshot_store::SyncedRow> {
+    use rand_core::SeedableRng;
+    let clock = Arc::clone(&dev.svc.clock);
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+    let mut db = dev.svc.store();
+    let (_, hlc) = db.parts();
+    let mut stamp = earshot_core::model::Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let me = earshot_core::voiceprint::Person::new("Me", true, &mut stamp);
+    let summary = earshot_core::model::Summary::new(
+        meeting,
+        earshot_core::prompt::Template::General,
+        None,
+        summary_of(&format!("Written on device {seed}")),
+        &mut stamp,
+    );
+    vec![
+        earshot_store::SyncedRow::Person(me),
+        earshot_store::SyncedRow::Summary(summary),
+    ]
+}
+
+/// Every synced row of `meeting` on `dev`, as a page.
+fn meeting_rows(
+    dev: &Device,
+    m: earshot_core::identity::EntityId,
+) -> Vec<earshot_store::SyncedRow> {
+    use earshot_store::SyncedRow as R;
+    let db = dev.svc.store();
+    let mut rows = vec![R::Meeting(db.meeting(m).unwrap().unwrap())];
+    rows.extend(db.tracks(m).unwrap().into_iter().map(R::Track));
+    rows.extend(db.speakers(m).unwrap().into_iter().map(R::Speaker));
+    rows.extend(db.segments(m).unwrap().into_iter().map(R::Segment));
+    rows.extend(db.notes(m).unwrap().into_iter().map(R::Note));
+    rows
+}
+
+/// Applies `rows` on `dev` as one page, as the client does (bodies are not opened here).
+fn apply_page(dev: &Device, rows: &[earshot_store::SyncedRow]) -> earshot_store::Applied {
+    let page: Vec<earshot_store::Incoming> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| earshot_store::Incoming {
+            key: *r.id().as_uuid().as_bytes(),
+            seq: u64::try_from(i).unwrap() + 1,
+            stamp: r.meta().updated_at,
+            body: vec![0xA5; 8],
+            row: Some(r.clone()),
+        })
+        .collect();
+    let never = |_: earshot_core::identity::EntityId| false;
+    let rules = earshot_store::ApplyRules {
+        voiceprints: false,
+        leased: &never,
+        now_ms: dev.svc.clock.now_unix_ms(),
+    };
+    let clock = Arc::clone(&dev.svc.clock);
+    let mut db = dev.svc.store();
+    let (store, hlc) = db.parts();
+    store.apply_remote(&page, &rules, hlc, &*clock).unwrap()
+}
+
+/// What must agree across devices: each person's id, mark, merge and deletion, and each
+/// summary's id, meeting and deletion. Stamps differ, as each device repairs with its own.
+fn converged_rows(dev: &Device, m: earshot_core::identity::EntityId) -> Vec<String> {
+    let db = dev.svc.store();
+    let mut out: Vec<String> = db
+        .persons()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            format!(
+                "person {} me={} merged={:?} deleted={}",
+                p.id, p.is_me, p.merged_into, p.meta.deleted
+            )
+        })
+        .collect();
+    out.extend(db.summaries(m).unwrap().iter().map(|s| {
+        format!(
+            "summary {} of {} deleted={} title={}",
+            s.id, s.meeting_id, s.meta.deleted, s.summary.title
+        )
+    }));
+    out.sort();
+    out
+}
+
+#[test]
+fn sync_converge_three_devices_reach_the_same_rows_in_any_order() {
+    use earshot_core::identity::Clock as _;
+    // Two devices each made their own "Me" and wrote a summary of the same meeting.
+    let x = Device::new("sync-converge-x");
+    let y = Device::new("sync-converge-y");
+    let m = meeting(&x.svc, "Shared meeting", 21);
+    x.clock.advance_ms(1_000);
+    let mut first = meeting_rows(&x, m);
+    first.extend(me_and_summary(&x, m, 1));
+    y.clock.set_ms(x.clock.now_unix_ms() + 5_000);
+    let second = me_and_summary(&y, m, 2);
+    let earliest_me = first[first.len() - 2].id();
+    let latest_summary = second[1].id();
+
+    // Every order of the two pages, and both in one page each way.
+    let orders: Vec<Vec<Vec<earshot_store::SyncedRow>>> = vec![
+        vec![first.clone(), second.clone()],
+        vec![second.clone(), first.clone()],
+        vec![[first.clone(), second.clone()].concat()],
+        vec![[second.clone(), first.clone()].concat()],
+    ];
+    let mut results = Vec::new();
+    for (i, order) in orders.iter().enumerate() {
+        let dev = Device::new(&format!("sync-converge-{i}"));
+        dev.clock.set_ms(y.clock.now_unix_ms() + 1_000);
+        for page in order {
+            apply_page(&dev, page);
+        }
+        // Rows held for a missing parent are tried again, as the next tick does.
+        apply_page(&dev, &[first.clone(), second.clone()].concat());
+        let rows = converged_rows(&dev, m);
+        let db = dev.svc.store();
+        // One live "Me": the earliest-created; one live summary: the latest-created.
+        let live_mes: Vec<_> = db
+            .persons()
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.is_me && p.is_live())
+            .collect();
+        assert_eq!(live_mes.len(), 1, "order {i}: {rows:?}");
+        assert_eq!(live_mes[0].id, earliest_me, "order {i}");
+        let live_summaries: Vec<_> = db
+            .summaries(m)
+            .unwrap()
+            .into_iter()
+            .filter(|s| !s.meta.deleted)
+            .collect();
+        assert_eq!(live_summaries.len(), 1, "order {i}: {rows:?}");
+        assert_eq!(live_summaries[0].id, latest_summary, "order {i}");
+        // The replaced summary keeps its body: it is the undo.
+        assert!(
+            db.summaries(m)
+                .unwrap()
+                .iter()
+                .any(|s| s.meta.deleted && s.summary.title == "Written on device 1"),
+            "order {i}"
+        );
+        drop(db);
+        results.push(rows);
+    }
+    for (i, r) in results.iter().enumerate().skip(1) {
+        assert_eq!(r, &results[0], "order {i} reached other rows than order 0");
+    }
+}
+
+#[test]
+fn sync_converge_repairs_travel_and_settle_through_the_relay() {
+    // Through the real relay: each device makes its own "Me" and summary after pairing.
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Shared", 22);
+    let (ca, cb) = (a.client(), b.client());
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    for (dev, seed) in [(&a, 3), (&b, 4)] {
+        dev.clock.advance_ms(1_000 * seed);
+        let rows = me_and_summary(dev, m, seed);
+        let mut db = dev.svc.store();
+        for r in rows {
+            match r {
+                earshot_store::SyncedRow::Person(p) => db.put_person(p).unwrap(),
+                earshot_store::SyncedRow::Summary(s) => db.put_summary(s).unwrap(),
+                _ => unreachable!(),
+            }
+        }
+    }
+    let mut repaired = 0;
+    for _ in 0..3 {
+        repaired += ca.tick().unwrap().repaired;
+        repaired += cb.tick().unwrap().repaired;
+    }
+    assert!(
+        repaired >= 2,
+        "a Me merge and a summary replacement were made: {repaired}"
+    );
+    // The repaired state, the same on both: one live Me and one live summary.
+    for dev in [&a, &b] {
+        let db = dev.svc.store();
+        let mes: Vec<_> = db
+            .persons()
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.is_me && p.is_live())
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(mes.len(), 1, "{mes:?}");
+        let live = db
+            .summaries(m)
+            .unwrap()
+            .into_iter()
+            .filter(|s| !s.meta.deleted)
+            .count();
+        assert_eq!(live, 1);
+    }
+    assert_eq!(converged_rows(&a, m), converged_rows(&b, m));
+    assert_eq!(a.rows(), b.rows(), "stamps settle too");
+    // Settled: neither device has anything left to push, write or repair.
+    for c in [&ca, &cb] {
+        let quiet = c.tick().unwrap();
+        assert_eq!(
+            (quiet.pushed, quiet.written, quiet.repaired),
+            (0, 0, 0),
+            "{quiet:?}"
+        );
+    }
+}
+
+#[test]
+fn sync_converge_keeps_the_users_name_when_the_named_me_is_merged_away() {
+    use earshot_store::SyncedRow;
+    let x = Device::new("sync-converge-name-x");
+    let y = Device::new("sync-converge-name-y");
+    let m = meeting(&x.svc, "Any", 23);
+    // The earlier "Me" was never named; the later one was.
+    let mut first = me_and_summary(&x, m, 5);
+    first.truncate(1);
+    y.clock.advance_ms(10_000);
+    let mut second = me_and_summary(&y, m, 6);
+    second.truncate(1);
+    if let SyncedRow::Person(p) = &mut second[0] {
+        p.display_name = "Casey".into();
+    }
+    let dev = Device::new("sync-converge-name");
+    dev.clock.advance_ms(20_000);
+    let applied = apply_page(&dev, &[first.clone(), second].concat());
+    assert_eq!(applied.mes_merged, 1);
+    let db = dev.svc.store();
+    let me = db
+        .persons()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.is_me && p.is_live())
+        .unwrap();
+    assert_eq!(me.id, first[0].id(), "the earliest Me stays");
+    assert_eq!(me.display_name, "Casey", "and takes the name its user set");
+}

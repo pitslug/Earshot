@@ -557,7 +557,7 @@ fn summary_row(r: &Row<'_>) -> rusqlite::Result<Summary> {
     })
 }
 
-fn summaries_of(c: &Connection, meeting: EntityId) -> Result<Vec<Summary>, RepoError> {
+pub(crate) fn summaries_of(c: &Connection, meeting: EntityId) -> Result<Vec<Summary>, RepoError> {
     let sql = select_sql(
         "summary",
         &synced_cols(&SUMMARY),
@@ -566,7 +566,7 @@ fn summaries_of(c: &Connection, meeting: EntityId) -> Result<Vec<Summary>, RepoE
     query(c, &sql, &[id_value(meeting)], summary_row)
 }
 
-fn put_summary(c: &Connection, s: &Summary) -> Result<(), RepoError> {
+pub(crate) fn put_summary(c: &Connection, s: &Summary) -> Result<(), RepoError> {
     need_meeting(c, s.meeting_id)?;
     let v = synced_values(
         s.id,
@@ -788,12 +788,12 @@ fn get_person(c: &Connection, id: EntityId) -> Result<Option<Person>, RepoError>
     Ok(query(c, &sql, &[id_value(id)], person_row)?.pop())
 }
 
-fn all_persons(c: &Connection) -> Result<Vec<Person>, RepoError> {
+pub(crate) fn all_persons(c: &Connection) -> Result<Vec<Person>, RepoError> {
     let sql = select_sql("person", &synced_cols(&PERSON), "ORDER BY id");
     query(c, &sql, &[], person_row)
 }
 
-fn put_person(c: &Connection, p: &Person) -> Result<(), RepoError> {
+pub(crate) fn put_person(c: &Connection, p: &Person) -> Result<(), RepoError> {
     let v = synced_values(
         p.id,
         &p.meta,

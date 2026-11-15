@@ -234,7 +234,7 @@ every tick (30 s, or at once after a local write, debounced 2 s):
 
 Run inside `apply_remote`'s transaction after the page's writes. Each depends only on synced rows.
 
-1. **One Me.** If more than one live person has `is_me` and no `merged_into`: the one with the earliest `created_at` (id as tie-break) stays; each other gets `merged_into` it and its speaker rows are relinked as `merge_into_me` does. Written with this device's stamp; two devices doing it at once write the same content.
+1. **One Me.** If more than one live person has `is_me` and no `merged_into`: the one with the earliest `created_at` (id as tie-break) stays; each other gets `merged_into` it, as `merge_persons` does: speaker rows and voiceprints keep their link and resolve through the chain. When the kept one still has the default name and a merged one was named by its user, the kept one takes that name (the earliest-created named one). Written with this device's stamp; two devices doing it at once write the same content.
 2. **One live summary per meeting.** If a meeting has more than one live summary: the latest `created_at` stays; each other is tombstoned keeping its body, as `store_summary` does to a replaced summary.
 3. **Folders.** Two live folders with one name both stay.
 

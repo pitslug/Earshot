@@ -232,6 +232,10 @@ pub struct Applied {
     /// Live meeting rows refused because the meeting is deleted here (its tombstone was
     /// stamped again, so it goes out and wins at the relay).
     pub deletions_kept: usize,
+    /// "Me" people merged into the earliest one (two devices each made their own).
+    pub mes_merged: usize,
+    /// Live summaries tombstoned because a later-created one of the same meeting stays.
+    pub summaries_replaced: usize,
 }
 
 impl Applied {
@@ -280,6 +284,83 @@ fn unhold(tx: &StoreTx<'_>, inc: &Incoming) -> Result<(), StoreError> {
             &inc.stamp.node.as_uuid().as_bytes()[..]
         ],
     )?;
+    Ok(())
+}
+
+/// The rules that keep devices converged (docs/sync-spec.md section 7), run inside
+/// [`Store::apply_remote`]'s transaction after its writes. Each depends only on synced rows,
+/// so every device settles on the same rows whatever order pages arrive in. Each repair points
+/// a row at an earlier-created one, so repairs made on two devices from different subsets
+/// (three "Me" people seen two at a time) form no cycle; whole-row last writer wins picks one
+/// copy of each repaired row and applying it repairs nothing more.
+///
+/// 1. One "Me": of the live people marked `is_me` (not deleted, not merged), the one with the
+///    earliest `created_at` (id as the tie-break) stays and each other is merged into it, as
+///    `merge_persons` does (`merged_into` set; speaker rows and voiceprints follow the chain).
+///    When the kept one still has the default name and a merged one was named by its user,
+///    the kept one takes the name of the earliest-created such one, so pairing a computer
+///    whose user set a name never loses it.
+/// 2. One live summary per meeting: the latest-created stays and each other is tombstoned
+///    with its body, as a replaced summary is (it becomes the undo). A summary and its
+///    edit's pre-edit copy share a `created_at`; the id breaks that tie, deterministically,
+///    and the other stays reachable as the newest tombstone.
+///
+/// Two live folders with one name both stay (the user decides). Run after every page, so a
+/// repair also covers rows that arrived in earlier pages.
+fn converge<C: Clock + ?Sized>(
+    tx: &StoreTx<'_>,
+    hlc: &mut Hlc,
+    clock: &C,
+    out: &mut Applied,
+) -> Result<(), StoreError> {
+    let mut mes: Vec<Person> = crate::repo::all_persons(&tx.conn)?
+        .into_iter()
+        .filter(|p| p.is_me && p.is_live())
+        .collect();
+    mes.sort_by_key(|p| (p.meta.created_at, p.id));
+    if let Some((keep, rest)) = mes.split_first() {
+        let default_name = earshot_core::voiceprint::DEFAULT_ME_NAME;
+        let named = rest
+            .iter()
+            .find(|p| !p.display_name.is_empty() && p.display_name != default_name);
+        if keep.display_name == default_name
+            && let Some(named) = named
+        {
+            let mut kept = keep.clone();
+            kept.display_name.clone_from(&named.display_name);
+            kept.meta.touch(hlc, clock);
+            crate::repo::put_person(&tx.conn, &kept)?;
+        }
+        for p in rest {
+            let mut merged = p.clone();
+            merged.merged_into = Some(keep.id);
+            merged.meta.touch(hlc, clock);
+            crate::repo::put_person(&tx.conn, &merged)?;
+            out.mes_merged += 1;
+        }
+    }
+    let crowded: Vec<[u8; 16]> = {
+        let mut st = tx.conn.prepare(
+            "SELECT meeting_id FROM summary WHERE deleted = 0 GROUP BY meeting_id HAVING count(*) > 1",
+        )?;
+        st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
+    };
+    for meeting in crowded {
+        let mut live: Vec<Summary> =
+            crate::repo::summaries_of(&tx.conn, EntityId::from_bytes(meeting))?
+                .into_iter()
+                .filter(|s| !s.meta.deleted)
+                .collect();
+        live.sort_by_key(|s| (s.meta.created_at, s.id));
+        live.pop();
+        for s in live {
+            let mut replaced = s;
+            replaced.meta.deleted = true;
+            replaced.meta.touch(hlc, clock);
+            crate::repo::put_summary(&tx.conn, &replaced)?;
+            out.summaries_replaced += 1;
+        }
+    }
     Ok(())
 }
 
@@ -562,6 +643,7 @@ impl Store {
                         crate::identities::forget_identity_biometrics(tx, p.id, hlc, clock)?;
                 }
             }
+            converge(tx, hlc, clock, &mut out)?;
             Ok(out)
         })
     }

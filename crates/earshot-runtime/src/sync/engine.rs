@@ -57,6 +57,8 @@ pub struct TickReport {
     pub unreadable: usize,
     /// Meetings deleted here because they were deleted on another device.
     pub deleted_meetings: usize,
+    /// Repairs made by the convergence rules: "Me" people merged and summaries replaced.
+    pub repaired: usize,
 }
 
 /// The sync client of one device: the relay at the stored address and the device's vault.
@@ -448,6 +450,7 @@ impl SyncClient {
         report.written += applied.written;
         report.ignored += applied.ignored + applied.skipped;
         report.held += applied.held.iter().sum::<usize>();
+        report.repaired += applied.mes_merged + applied.summaries_replaced;
         Ok(())
     }
 
