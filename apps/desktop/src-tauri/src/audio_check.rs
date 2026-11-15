@@ -208,7 +208,8 @@ fn opened<'a>(listed: &'a [DeviceItem], setting: &DeviceSetting) -> Option<&'a D
 }
 
 /// The check part of the page: the stored result of the pair `settings` opens among
-/// `devices` (none when they could not be listed).
+/// `devices`, recorded with the microphone signal `settings` asks for (T12.36; none when they
+/// could not be listed).
 ///
 /// # Errors
 /// Store errors.
@@ -222,7 +223,7 @@ pub fn check_view(
         let mic = opened(&d.microphones, &settings.microphone)?;
         let out = opened(&d.outputs, &settings.output)?;
         stored
-            .pair(&mic.id, &out.id)
+            .pair(&mic.id, &out.id, settings.mic_signal.is_raw())
             .map(|c| result_view(c, max_delay()))
     });
     Ok(AudioCheckView {
@@ -236,14 +237,28 @@ fn done_view(services: &Services, m: &Measured) -> Result<AudioCheckView, Runtim
     let stored = check::stored_checks(&services.store())?;
     Ok(AudioCheckView {
         result: stored
-            .pair(&m.microphone.id, &m.output.id)
+            .pair(&m.microphone.id, &m.output.id, m.raw_mic)
             .map(|c| result_view(c, max_delay())),
         unreadable: false,
     })
 }
 
-/// The note for chosen devices that were not connected (the default was checked).
+/// What a raw microphone that refused raw (T12.36) adds to the check's note.
+pub const RAW_REFUSED_NOTE: &str = "This microphone does not allow recording without Windows' \
+     own sound processing, so it was checked with that processing, as meetings record it.";
+
+/// The note for chosen devices that were not connected (the default was checked) and for a
+/// raw microphone that refused raw.
 fn fallback_note(m: &Measured) -> Option<String> {
+    let notes: Vec<String> = device_note(m)
+        .into_iter()
+        .chain(m.raw_refused.then(|| RAW_REFUSED_NOTE.to_owned()))
+        .collect();
+    (!notes.is_empty()).then(|| notes.join(" "))
+}
+
+/// The note for chosen devices that were not connected.
+fn device_note(m: &Measured) -> Option<String> {
     #[cfg(windows)]
     {
         use earshot_core::capture::TrackId;

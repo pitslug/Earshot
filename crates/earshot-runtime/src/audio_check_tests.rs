@@ -346,8 +346,8 @@ fn audio_check_results_are_stored_per_pair() {
         vec![other.clone(), again.clone()],
         "the pair was replaced"
     );
-    assert_eq!(stored.pair("mic-a", "out-a"), Some(&again));
-    assert_eq!(stored.pair("mic-a", "out-c"), None);
+    assert_eq!(stored.pair("mic-a", "out-a", false), Some(&again));
+    assert_eq!(stored.pair("mic-a", "out-c", false), None);
     assert_eq!(again.delay_ms(), Some(1_700.0 / 16.0));
     // Survives a reopen (device-local).
     drop(db);
@@ -394,7 +394,7 @@ fn audio_check_keeps_the_check_just_written_whatever_the_clock_did() {
     record_check(&mut db, again.clone()).unwrap();
     let stored = stored_checks(&db).unwrap();
     assert_eq!(stored.checks.last(), Some(&again));
-    assert_eq!(stored.pair("mic-1", "out"), Some(&again));
+    assert_eq!(stored.pair("mic-1", "out", false), Some(&again));
     assert_eq!(stored.checks.len(), MAX_PAIRS);
 }
 
@@ -469,7 +469,10 @@ fn audio_check_an_unreadable_record_is_reported_and_replaced() {
         crate::local::set(&mut db, &DeviceRecord::AudioCheck.key(), &bad).unwrap();
         let stored = stored_checks(&db).unwrap();
         assert!(stored.unreadable && stored.checks.is_empty());
-        assert_eq!(delay_hint_for(&db, "mic", "out", 9_600).unwrap(), None);
+        assert_eq!(
+            delay_hint_for(&db, "mic", "out", false, 9_600).unwrap(),
+            None
+        );
     }
     let c = StoredCheck::new(
         endpoint("mic"),
@@ -485,7 +488,10 @@ fn audio_check_an_unreadable_record_is_reported_and_replaced() {
 fn audio_check_hint_for_the_pair_at_meeting_start() {
     let dir = TempDir::new("audio-check-hint");
     let mut db = store(&dir);
-    assert_eq!(delay_hint_for(&db, "mic", "out", 9_600).unwrap(), None);
+    assert_eq!(
+        delay_hint_for(&db, "mic", "out", false, 9_600).unwrap(),
+        None
+    );
     let cases = [
         ("out-echo", echo_result(1_600.0, false), Some(1_600.0)),
         ("out-quiet", echo_result(1_600.0, true), None),
@@ -509,18 +515,18 @@ fn audio_check_hint_for_the_pair_at_meeting_start() {
     .unwrap();
     for (out, _, want) in &cases {
         assert_eq!(
-            delay_hint_for(&db, "mic", out, 9_600).unwrap(),
+            delay_hint_for(&db, "mic", out, false, 9_600).unwrap(),
             *want,
             "{out}"
         );
     }
     assert_eq!(
-        delay_hint_for(&db, "mic", "out-headphones", 9_600).unwrap(),
+        delay_hint_for(&db, "mic", "out-headphones", false, 9_600).unwrap(),
         None
     );
     // Another mic with the same output has no result.
     assert_eq!(
-        delay_hint_for(&db, "other-mic", "out-echo", 9_600).unwrap(),
+        delay_hint_for(&db, "other-mic", "out-echo", false, 9_600).unwrap(),
         None
     );
     // The stored rule is the core rule.
@@ -534,6 +540,80 @@ fn audio_check_hint_for_the_pair_at_meeting_start() {
         stored.delay_hint(9_600),
         echo_result(1_600.0, false).delay_hint(9_600)
     );
+}
+
+#[test]
+fn audio_check_results_are_kept_apart_by_the_microphone_signal() {
+    // T12.36: the same pair checked raw and processed keeps both, and a meeting gets the delay
+    // of the signal it records (about 40 ms apart on the Surface).
+    let dir = TempDir::new("audio-check-signal");
+    let mut db = store(&dir);
+    let processed = StoredCheck::new(
+        endpoint("mic"),
+        endpoint("out"),
+        1,
+        &echo_result(1_600.0, false),
+    );
+    let raw = StoredCheck::new(
+        endpoint("mic"),
+        endpoint("out"),
+        2,
+        &echo_result(960.0, false),
+    )
+    .with_raw_mic(true);
+    record_check(&mut db, processed.clone()).unwrap();
+    record_check(&mut db, raw.clone()).unwrap();
+    let stored = stored_checks(&db).unwrap();
+    assert_eq!(stored.checks, vec![processed.clone(), raw.clone()]);
+    assert_eq!(stored.pair("mic", "out", false), Some(&processed));
+    assert_eq!(stored.pair("mic", "out", true), Some(&raw));
+    assert_eq!(
+        delay_hint_for(&db, "mic", "out", false, 9_600).unwrap(),
+        Some(1_600.0)
+    );
+    assert_eq!(
+        delay_hint_for(&db, "mic", "out", true, 9_600).unwrap(),
+        Some(960.0)
+    );
+    // Re-checking one signal replaces only its own result.
+    let raw_again = StoredCheck::new(
+        endpoint("mic"),
+        endpoint("out"),
+        3,
+        &echo_result(1_000.0, false),
+    )
+    .with_raw_mic(true);
+    record_check(&mut db, raw_again.clone()).unwrap();
+    assert_eq!(
+        stored_checks(&db).unwrap().checks,
+        vec![processed.clone(), raw_again]
+    );
+    // A pair checked only processed gives a raw meeting nothing, and the other way round.
+    record_check(
+        &mut db,
+        StoredCheck::new(
+            endpoint("mic"),
+            endpoint("out-2"),
+            4,
+            &echo_result(1_600.0, false),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        delay_hint_for(&db, "mic", "out-2", true, 9_600).unwrap(),
+        None
+    );
+    // A record written before the field existed reads as the processed signal.
+    let mut old = serde_json::to_value(&processed).unwrap();
+    old.as_object_mut().unwrap().remove("raw_mic");
+    let back: StoredCheck = serde_json::from_value(old).unwrap();
+    assert_eq!(back, processed);
+    assert!(!back.raw_mic);
+    // Measured carries the signal into what it stores.
+    let mut measured = Measured::new(endpoint("m"), endpoint("o"), echo_result(800.0, false));
+    assert!(!measured.stored(1).raw_mic);
+    measured.raw_mic = true;
+    assert!(measured.stored(1).raw_mic);
 }
 
 #[test]
@@ -694,6 +774,7 @@ fn audio_check_record_bytes_are_pinned() {
         outcome: StoredOutcome::NoEcho,
         too_quiet: false,
         clipping: true,
+        raw_mic: false,
     }];
     let pinned_json = r#"[{"microphone":{"id":"mic-id","name":"Mic"},"output":{"id":"out-id","name":"Speakers"},"checked_at_ms":1700000000000,"outcome":{"kind":"no-echo"},"too_quiet":false,"clipping":true}]"#;
     let bytes = encode(&checks).unwrap();
@@ -701,8 +782,14 @@ fn audio_check_record_bytes_are_pinned() {
     assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), pinned_json);
     let mut pinned = vec![1, 0, 0, 0];
     pinned.extend_from_slice(pinned_json.as_bytes());
-    assert_eq!(decode(&pinned), Some(checks));
+    assert_eq!(decode(&pinned), Some(checks.clone()));
     assert_eq!(decode(&[1, 0]), None);
     assert_eq!(decode(&[2, 0, 0, 0, b'[', b']']), None);
     assert_eq!(decode(&[1, 0, 0, 0, b'[']), None);
+    // T12.36: a raw result adds its field; a processed one is stored exactly as before.
+    let raw = vec![checks[0].clone().with_raw_mic(true)];
+    let raw_json = pinned_json.replace(r#""clipping":true}"#, r#""clipping":true,"raw_mic":true}"#);
+    let bytes = encode(&raw).unwrap();
+    assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), raw_json);
+    assert_eq!(decode(&bytes), Some(raw));
 }

@@ -863,7 +863,7 @@ fn backends_a_bluetooth_hands_free_mic_becomes_a_session_warning() {
 #[test]
 fn backends_a_refused_keep_awake_is_a_start_warning_without_its_reason() {
     use crate::live::RuntimeWarning;
-    assert!(start_warnings(None, &[], None).is_empty());
+    assert!(start_warnings(None, &[], None, None).is_empty());
     let mic = earshot_capture_wasapi::HandsFreeMic {
         device_name: "Invented headset".into(),
         sample_rate: Some(16_000),
@@ -871,12 +871,35 @@ fn backends_a_refused_keep_awake_is_a_start_warning_without_its_reason() {
     let warnings = start_warnings(
         Some(mic.clone()),
         &[],
+        None,
         Some("PowerSetRequest: error 0x80070005"),
     );
     assert_eq!(
         warnings,
         [hands_free_warning(mic), RuntimeWarning::SleepNotPrevented]
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn backends_a_refused_raw_mic_is_a_start_warning_without_its_reason() {
+    // T12.36: the meeting records the processed stream and says so; the refusal's text stays in
+    // the capture layer.
+    use crate::live::RuntimeWarning;
+    let warnings = start_warnings(
+        None,
+        &[],
+        Some("Invented mic cannot be opened raw"),
+        Some("PowerSetRequest: error 0x80070005"),
+    );
+    assert_eq!(
+        warnings,
+        [
+            RuntimeWarning::RawMicRefused,
+            RuntimeWarning::SleepNotPrevented
+        ]
+    );
+    assert!(start_warnings(None, &[], None, None).is_empty());
 }
 
 #[cfg(windows)]

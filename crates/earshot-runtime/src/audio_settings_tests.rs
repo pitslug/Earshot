@@ -53,10 +53,12 @@ fn audio_settings_round_trip_in_the_store() {
         AudioSettings::default().capture_mode,
         DefaultCaptureMode::Call
     );
+    assert_eq!(AudioSettings::default().mic_signal, MicSignal::Processed);
     let want = AudioSettings {
         microphone: chosen(MIC_ID, "Acme Evolve"),
         output: chosen(OUT_ID, "Speakers"),
         capture_mode: DefaultCaptureMode::InRoom,
+        mic_signal: MicSignal::Raw,
     };
     assert_eq!(set_audio_settings(&mut db, &want).unwrap(), want);
     assert_eq!(audio_settings(&db).unwrap(), (want.clone(), Vec::new()));
@@ -76,6 +78,7 @@ fn audio_settings_round_trip_in_the_store() {
         db.local_value(CAPTURE_MODE_KEY).unwrap().unwrap(),
         b"in-room"
     );
+    assert_eq!(db.local_value(MIC_SIGNAL_KEY).unwrap().unwrap(), b"raw");
     // Back to the defaults: the names are cleared with the ids.
     let defaults = AudioSettings::default();
     assert_eq!(set_audio_settings(&mut db, &defaults).unwrap(), defaults);
@@ -83,6 +86,7 @@ fn audio_settings_round_trip_in_the_store() {
     assert_eq!(db.local_value(OUTPUT_KEY).unwrap().unwrap(), b"default");
     assert_eq!(db.local_value(OUTPUT_NAME_KEY).unwrap().unwrap(), b"");
     assert_eq!(db.local_value(CAPTURE_MODE_KEY).unwrap().unwrap(), b"call");
+    assert_eq!(db.local_value(MIC_SIGNAL_KEY).unwrap().unwrap(), b"default");
 }
 
 #[test]
@@ -95,12 +99,15 @@ fn audio_settings_unusable_stored_values_read_as_defaults_and_are_reported() {
     // A name that cannot be shown is dropped, the choice kept.
     db.set_local_value(OUTPUT_NAME_KEY, b"two\nlines").unwrap();
     db.set_local_value(CAPTURE_MODE_KEY, b"podcast").unwrap();
+    // A word this version does not know is never read as raw.
+    db.set_local_value(MIC_SIGNAL_KEY, b"Raw").unwrap();
     let (s, unknown) = audio_settings(&db).unwrap();
     assert_eq!(s.microphone, DeviceSetting::Default);
     assert_eq!(s.output, chosen(OUT_ID, ""));
     assert_eq!(s.capture_mode, DefaultCaptureMode::Call);
+    assert_eq!(s.mic_signal, MicSignal::Processed);
     let keys: Vec<&str> = unknown.iter().map(|u| u.key).collect();
-    assert_eq!(keys, [MICROPHONE_KEY, CAPTURE_MODE_KEY]);
+    assert_eq!(keys, [MICROPHONE_KEY, CAPTURE_MODE_KEY, MIC_SIGNAL_KEY]);
     assert_eq!(unknown[1].stored, "podcast");
     assert!(unknown[1].to_string().contains("the default is used"));
     // A chosen id with no name key at all is still the choice.
@@ -168,6 +175,11 @@ fn audio_settings_capture_mode_names() {
         assert_eq!(DefaultCaptureMode::parse(m.as_str()), Some(m));
     }
     assert_eq!(DefaultCaptureMode::parse("Call"), None);
+    for m in [MicSignal::Processed, MicSignal::Raw] {
+        assert_eq!(MicSignal::parse(m.as_str()), Some(m));
+    }
+    assert_eq!(MicSignal::parse("processed"), None);
+    assert!(MicSignal::Raw.is_raw() && !MicSignal::Processed.is_raw());
     assert_eq!(DeviceSetting::Default.id(), None);
     assert_eq!(chosen(MIC_ID, "").id(), Some(MIC_ID));
 }
@@ -175,13 +187,25 @@ fn audio_settings_capture_mode_names() {
 #[cfg(windows)]
 #[test]
 fn audio_settings_give_the_capture_layer_the_chosen_endpoints() {
-    use earshot_capture_wasapi::DeviceChoice;
+    use earshot_capture_wasapi::{DeviceChoice, MicProcessing};
     let s = AudioSettings {
         microphone: chosen(MIC_ID, "Jabra"),
         output: DeviceSetting::Default,
         capture_mode: DefaultCaptureMode::Call,
+        mic_signal: MicSignal::Processed,
     };
     let d = s.devices();
+    assert_eq!(d.mic_processing, MicProcessing::Default);
+    // The raw setting reaches the capture layer, in a call and in the room alike.
+    for capture_mode in [DefaultCaptureMode::Call, DefaultCaptureMode::InRoom] {
+        let raw = AudioSettings {
+            capture_mode,
+            mic_signal: MicSignal::Raw,
+            ..s.clone()
+        };
+        assert_eq!(raw.devices().mic_processing, MicProcessing::Raw);
+        assert_eq!(raw.devices().microphone, d.microphone);
+    }
     assert_eq!(
         d.microphone,
         DeviceChoice::Endpoint {

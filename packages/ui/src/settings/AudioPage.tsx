@@ -1,6 +1,7 @@
 // Settings, Audio (docs/ui-design.md "Settings", PLAN T7.4i): the microphone and the output a
 // meeting records (the Windows default, followed when it changes, or one device by name),
-// and the capture mode a new meeting starts with. Choices save as they change. A chosen
+// the capture mode a new meeting starts with, and whether the microphone is recorded with
+// Windows' own sound processing or raw (T12.36, off by default). Choices save as they change. A chosen
 // device that is not connected stays chosen and is shown as such; meetings then record the
 // Windows default and say so. The audio check (T7.4j) plays short sounds through the output
 // and shows what it found for the devices in use (AudioCheckSection).
@@ -22,7 +23,7 @@ import {
 } from "@fluentui/react-components";
 import { useId } from "react";
 
-import type { AudioPageView, CaptureMode, ChosenDevice, DeviceItem } from "../ipc";
+import type { AudioPageView, CaptureMode, ChosenDevice, DeviceItem, MicSignal } from "../ipc";
 import { MODE_LABEL } from "../meeting/liveMeeting";
 import { AudioCheckSection } from "./AudioCheckSection";
 import { NotLoaded, NoticeBar, Section, UnknownSettings, usePageStyles } from "./parts";
@@ -76,6 +77,16 @@ export const MICROPHONE_DESCRIPTION =
 /** What the capture mode setting does. */
 export const MODE_DESCRIPTION =
   "What a new meeting records. You can still pick the other one when you start a meeting.";
+
+/** The choices of the microphone's sound processing (T12.36). */
+export const SIGNAL_LABEL: Record<MicSignal, string> = {
+  Processed: "With Windows' sound processing (recommended)",
+  Raw: "Raw, without Windows' sound processing",
+};
+
+/** What the sound processing setting does. */
+export const SIGNAL_DESCRIPTION =
+  "Some computers clean up the microphone before Earshot hears it, which can leave echo of the other side under your name. Raw skips that, where the microphone allows it; one that does not is recorded with the processing and the meeting says so. Run the audio check again after you change this.";
 
 /** The option text of the Windows default, naming the device it is now. */
 export function defaultLabel(devices: DeviceItem[]): string {
@@ -151,9 +162,13 @@ export function AudioPage() {
   const pageStyles = usePageStyles();
   const state = useAudio();
   const modeLabel = useId();
+  const signalLabel = useId();
   const { load } = state;
   const chosen = load.status === "loaded" ? load.page.value : null;
-  const check = useAudioCheck(`${chosen?.microphone?.id ?? "default"}|${chosen?.output?.id ?? "default"}`);
+  // The stored check is per microphone, output and sound processing.
+  const check = useAudioCheck(
+    `${chosen?.microphone?.id ?? "default"}|${chosen?.output?.id ?? "default"}|${chosen?.mic_signal ?? "Processed"}`,
+  );
   // The devices stay as they are while the check plays and listens on them.
   const deviceState = checkRunning(check.run) ? { ...state, busy: true } : state;
 
@@ -211,6 +226,22 @@ export function AudioPage() {
           <Radio value="InRoom" label={MODE_LABEL.InRoom} />
         </RadioGroup>
         <Caption1 className={styles.muted}>{MODE_DESCRIPTION}</Caption1>
+      </Section>
+
+      <Section title="Microphone sound processing">
+        <span id={signalLabel} hidden>
+          Microphone sound processing
+        </span>
+        <RadioGroup
+          aria-labelledby={signalLabel}
+          value={page.value.mic_signal}
+          disabled={deviceState.busy}
+          onChange={(_, d) => void state.save({ mic_signal: d.value as MicSignal })}
+        >
+          <Radio value="Processed" label={SIGNAL_LABEL.Processed} />
+          <Radio value="Raw" label={SIGNAL_LABEL.Raw} />
+        </RadioGroup>
+        <Caption1 className={styles.muted}>{SIGNAL_DESCRIPTION}</Caption1>
       </Section>
 
       <Section title="Audio check">

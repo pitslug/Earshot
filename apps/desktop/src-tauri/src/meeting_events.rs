@@ -674,6 +674,10 @@ fn meeting_clock(ms: u64) -> String {
     }
 }
 
+/// The banner key of [`RuntimeWarning::RawMicRefused`] (T12.36): one banner whether the mic
+/// refused raw at the start or on a re-open.
+pub const RAW_MIC_KEY: &str = "raw-mic";
+
 /// The banner key of [`RuntimeWarning::EveryRecordingStopped`]; the shell notifies on it
 /// whether or not the window is watched (T9.17).
 pub const RECORDING_STOPPED_KEY: &str = "recording-stopped";
@@ -983,6 +987,13 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
                 ),
             )
         }
+        RuntimeWarning::RawMicRefused => warning(
+            RAW_MIC_KEY.into(),
+            WarningKind::Audio,
+            "Your microphone does not allow recording without Windows' own sound processing, so \
+             this meeting records it with that processing. Nothing is lost."
+                .into(),
+        ),
         RuntimeWarning::SleepNotPrevented => warning(
             "keep-awake".into(),
             WarningKind::Audio,

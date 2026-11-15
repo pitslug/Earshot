@@ -13,14 +13,17 @@
 //! - [`run_check`] (Windows) is the production run: the capture on the Audio page's devices
 //!   (a device loopback of the chosen output) and a render thread playing the chirps on the
 //!   output that loopback opened.
-//! - The result is stored device-locally per microphone + output pair, by the endpoint ids
-//!   actually opened (a "default" choice is stored under the device Windows used then), in
+//! - The result is stored device-locally per microphone + output pair and microphone signal
+//!   (T12.36: with Windows' processing or raw, as opened; the delay differed by about 40 ms
+//!   between the two on the Surface), by the endpoint ids actually opened (a "default" choice
+//!   is stored under the device Windows used then, a raw request the mic refused under the
+//!   processed signal it recorded), in
 //!   the one record `audio-check` (`version u32 LE | JSON list` in the order written, at
 //!   most [`MAX_PAIRS`], the most recently written kept whatever the wall clock did; never
 //!   synced). A record this version cannot read is reported and treated
 //!   as empty, never an error.
 //! - At meeting start ([`delay_hint_for`], used by `backends::start_wasapi_session_on`) the
-//!   stored delay of the pair the meeting opened seeds the delay estimator through
+//!   stored delay of the pair and signal the meeting opened seeds the delay estimator through
 //!   `PipelineConfig::delay_hint` (a hint only seeds the search; the canceller never cancels
 //!   without live evidence). With process loopback (a call app) the pair's output is the
 //!   output the Audio page names (the chosen one when connected, else the Windows default),
@@ -110,6 +113,11 @@ pub struct StoredCheck {
     pub too_quiet: bool,
     /// The mic clipped.
     pub clipping: bool,
+    /// The microphone was recorded raw, without Windows' own processing (T12.36). Written only
+    /// when true, so a processed result is stored as before; absent in records written before
+    /// it, which all recorded the processed signal.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub raw_mic: bool,
 }
 
 impl StoredCheck {
@@ -142,7 +150,15 @@ impl StoredCheck {
             outcome,
             too_quiet: result.too_quiet,
             clipping: result.clipping,
+            raw_mic: false,
         }
+    }
+
+    /// The same result recorded with the microphone raw (`true`) or processed.
+    #[must_use]
+    pub fn with_raw_mic(mut self, raw_mic: bool) -> Self {
+        self.raw_mic = raw_mic;
+        self
     }
 
     /// The delay in ms when an echo was heard.
@@ -168,10 +184,11 @@ impl StoredCheck {
         }
     }
 
-    /// Whether this is the result of the pair `mic` + `output` (endpoint ids).
+    /// Whether this is the result of the pair `mic` + `output` (endpoint ids) with the
+    /// microphone recorded raw (`raw_mic`) or processed.
     #[must_use]
-    pub fn is_pair(&self, mic: &str, output: &str) -> bool {
-        self.microphone.id == mic && self.output.id == output
+    pub fn is_pair(&self, mic: &str, output: &str, raw_mic: bool) -> bool {
+        self.microphone.id == mic && self.output.id == output && self.raw_mic == raw_mic
     }
 }
 
@@ -185,12 +202,19 @@ pub struct StoredChecks {
 }
 
 impl StoredChecks {
-    /// The result of the pair `mic` + `output`, if any.
+    /// The result of the pair `mic` + `output` with the microphone raw or processed, if any.
     #[must_use]
-    pub fn pair(&self, mic: &str, output: &str) -> Option<&StoredCheck> {
-        // A pair is stored at most once; the last match is the latest write.
-        self.checks.iter().rev().find(|c| c.is_pair(mic, output))
+    pub fn pair(&self, mic: &str, output: &str, raw_mic: bool) -> Option<&StoredCheck> {
+        // A pair is stored at most once per signal; the last match is the latest write.
+        self.checks
+            .iter()
+            .rev()
+            .find(|c| c.is_pair(mic, output, raw_mic))
     }
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn decode(bytes: &[u8]) -> Option<Vec<StoredCheck>> {
@@ -226,7 +250,7 @@ pub fn stored_checks(store: &Store) -> Result<StoredChecks, RuntimeError> {
     })
 }
 
-/// Stores `check`, replacing the earlier result of its pair, and keeps the [`MAX_PAIRS`]
+/// Stores `check`, replacing the earlier result of its pair and signal, and keeps the [`MAX_PAIRS`]
 /// most recently written (by write order, never by `checked_at_ms`, so `check` itself is
 /// always kept even when the wall clock stepped back; an unreadable earlier record is
 /// replaced).
@@ -235,7 +259,7 @@ pub fn stored_checks(store: &Store) -> Result<StoredChecks, RuntimeError> {
 /// Store errors.
 pub fn record_check(store: &mut Store, check: StoredCheck) -> Result<(), RuntimeError> {
     let mut checks = stored_checks(store)?.checks;
-    checks.retain(|c| !c.is_pair(&check.microphone.id, &check.output.id));
+    checks.retain(|c| !c.is_pair(&check.microphone.id, &check.output.id, check.raw_mic));
     checks.push(check);
     let excess = checks.len().saturating_sub(MAX_PAIRS);
     checks.drain(..excess);
@@ -243,8 +267,9 @@ pub fn record_check(store: &mut Store, check: StoredCheck) -> Result<(), Runtime
     Ok(())
 }
 
-/// The stored delay hint of the pair `mic` + `output` (endpoint ids) for a canceller
-/// searching up to `max_delay` samples; `None` without a usable result (module docs).
+/// The stored delay hint of the pair `mic` + `output` (endpoint ids), with the microphone
+/// recorded raw (`raw_mic`) or processed, for a canceller searching up to `max_delay` samples;
+/// `None` without a usable result (module docs). A check of the other signal never answers.
 ///
 /// # Errors
 /// Store errors.
@@ -252,10 +277,11 @@ pub fn delay_hint_for(
     store: &Store,
     mic: &str,
     output: &str,
+    raw_mic: bool,
     max_delay: usize,
 ) -> Result<Option<f64>, RuntimeError> {
     Ok(stored_checks(store)?
-        .pair(mic, output)
+        .pair(mic, output, raw_mic)
         .and_then(|c| c.delay_hint(max_delay)))
 }
 
@@ -524,6 +550,10 @@ pub struct Measured {
     pub output: CheckedEndpoint,
     /// The verdict.
     pub result: CheckResult,
+    /// The microphone was recorded raw (T12.36).
+    pub raw_mic: bool,
+    /// A raw microphone was asked for and refused, so the processed signal was checked.
+    pub raw_refused: bool,
     /// Chosen endpoints that were not connected and were replaced by the default.
     #[cfg(windows)]
     pub fallbacks: Vec<earshot_capture_wasapi::DeviceFallback>,
@@ -538,6 +568,8 @@ impl Measured {
             microphone,
             output,
             result,
+            raw_mic: false,
+            raw_refused: false,
             #[cfg(windows)]
             fallbacks: Vec::new(),
         }
@@ -552,11 +584,14 @@ impl Measured {
             at_ms,
             &self.result,
         )
+        .with_raw_mic(self.raw_mic)
     }
 }
 
 /// The production check (module docs): plays the chirps on the output of `devices` and
-/// captures it and the microphone. Returns `None` when cancelled (playback stops at once).
+/// captures it and the microphone, recorded as `devices` asks (raw or processed, with the
+/// meeting's fallback when raw is refused). Returns `None` when cancelled (playback stops at
+/// once).
 ///
 /// # Errors
 /// [`RuntimeError::Capture`] when a device cannot be opened, identified or played on, or as
@@ -597,6 +632,8 @@ pub fn run_check(
             .unwrap_or_default(),
     };
     let fallbacks = source.fallbacks().to_vec();
+    let raw_mic = source.mic_opened_raw();
+    let raw_refused = source.raw_refused().is_some();
     // Held across `measure`: a panic there drops it, which stops and joins the playback.
     let player = Playback::spawn(move |flag| {
         let com = ComApartment::init_mta().map_err(|e| e.to_string())?;
@@ -622,6 +659,8 @@ pub fn run_check(
         microphone,
         output,
         result,
+        raw_mic,
+        raw_refused,
         fallbacks,
     }))
 }

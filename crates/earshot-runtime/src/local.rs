@@ -188,6 +188,9 @@ pub(crate) enum DeviceRecord {
     OutputName,
     /// `settings/capture-mode`: the capture mode a new meeting starts with (T7.4i).
     CaptureMode,
+    /// `settings/mic-signal`: whether a meeting records the mic with Windows' own processing
+    /// (`default`) or without it (`raw`, T12.36).
+    MicSignal,
     /// `audio-check`: the audio check's results per microphone + output pair (T7.4j).
     AudioCheck,
     /// `benchmark`: the latest benchmark result (T7.4c; timings, settings and backends, no
@@ -275,6 +278,7 @@ impl DeviceRecord {
         DeviceRecord::Output,
         DeviceRecord::OutputName,
         DeviceRecord::CaptureMode,
+        DeviceRecord::MicSignal,
         DeviceRecord::AudioCheck,
         DeviceRecord::Benchmark,
         DeviceRecord::SummaryStyle,
@@ -335,6 +339,7 @@ impl DeviceRecord {
                 DeviceRecord::Output => crate::audio_settings::OUTPUT_KEY,
                 DeviceRecord::OutputName => crate::audio_settings::OUTPUT_NAME_KEY,
                 DeviceRecord::CaptureMode => crate::audio_settings::CAPTURE_MODE_KEY,
+                DeviceRecord::MicSignal => crate::audio_settings::MIC_SIGNAL_KEY,
                 DeviceRecord::AudioCheck => crate::audio_check::AUDIO_CHECK_KEY,
                 DeviceRecord::Benchmark => crate::benchmark::BENCHMARK_KEY,
                 DeviceRecord::SummaryStyle => crate::summary_style::SUMMARY_STYLE_KEY,

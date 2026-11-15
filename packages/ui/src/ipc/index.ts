@@ -56,6 +56,7 @@ export type {
   MeetingEvent,
   MeetingListItem,
   MeetingState,
+  MicSignal,
   DeleteAsk,
   PostStep,
   SummaryEvent,

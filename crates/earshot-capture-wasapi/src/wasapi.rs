@@ -183,6 +183,19 @@ impl CaptureError {
     pub fn is_device_gone(&self) -> bool {
         matches!(self, Self::DeviceGone { .. }) || self.is_device_loss()
     }
+
+    /// True when a microphone stream could not be made raw (T12.36): the endpoint refuses raw
+    /// processing ([`CaptureError::RawMic`]), or the calls that ask for it failed. Not a lost
+    /// device: the same endpoint opens with its default processing.
+    fn is_raw_refusal(&self) -> bool {
+        match self {
+            Self::RawMic(_) => true,
+            Self::Windows { context, .. } => {
+                *context == RAW_PROPERTIES_CONTEXT || *context == RAW_CLIENT2_CONTEXT
+            }
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for CaptureError {
@@ -906,12 +919,14 @@ fn mix_format(client: &IAudioClient) -> Result<(MixFormat, Vec<u8>), CaptureErro
 
 /// The failed call named when a raw stream's options are refused.
 const RAW_PROPERTIES_CONTEXT: &str = "IAudioClient2::SetClientProperties (raw microphone)";
+/// The call that gets the interface [`RAW_PROPERTIES_CONTEXT`] is called on.
+const RAW_CLIENT2_CONTEXT: &str = "get IAudioClient2 (raw microphone)";
 
 /// Declares `AUDCLNT_STREAMOPTIONS_RAW` on a capture client that is not initialised yet
 /// (T12.32; Microsoft Learn, `IAudioClient2::SetClientProperties` and
 /// `AUDCLNT_STREAMOPTIONS`), with the category a stream that declares nothing gets.
 fn set_raw(client: &IAudioClient) -> Result<(), CaptureError> {
-    let client2: IAudioClient2 = client.cast().ctx("get IAudioClient2")?;
+    let client2: IAudioClient2 = client.cast().ctx(RAW_CLIENT2_CONTEXT)?;
     let properties = AudioClientProperties {
         cbSize: size_of::<AudioClientProperties>() as u32,
         bIsOffload: false.into(),
@@ -1751,6 +1766,10 @@ struct Track<S, O> {
     /// raw, so a re-open on an endpoint without raw support fails like any other failed
     /// re-open and the track never mixes raw and processed audio.
     processing: MicProcessing,
+    /// A raw mic whose re-open cannot get raw asks for the default stream instead and keeps
+    /// it (T12.36, the live source); `false` for the raw recorder, whose refused re-open
+    /// leaves silence.
+    raw_fallback: bool,
     stream: Option<S>,
     follower: StreamFollower,
     /// The last stream error that was neither a device loss nor a programming fault (T9.21):
@@ -1782,6 +1801,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             rate: stream.format().sample_rate,
             channels,
             processing: MicProcessing::Default,
+            raw_fallback: false,
             stream: Some(stream),
             follower,
             stream_error: None,
@@ -1791,9 +1811,20 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
     }
 
     /// The track of a stream that was opened with `processing`: re-opens ask for the same.
-    /// Only the raw recorder asks for anything but the default.
+    /// The raw recorder (on request) and the live source (the Audio page's setting, T12.36)
+    /// ask for raw.
     fn with_processing(mut self, processing: MicProcessing) -> Self {
         self.processing = processing;
+        self
+    }
+
+    /// The live source's mic (T12.36): a re-open that cannot get a raw stream
+    /// ([`CaptureError::is_raw_refusal`]) opens the default stream at once and keeps it for
+    /// the rest of the capture, telling the observer once
+    /// ([`TrackObserver::raw_fell_back`]), so a setting never costs the recording. Without
+    /// it a refused raw re-open leaves the track without a stream (the raw recorder).
+    fn with_raw_fallback(mut self) -> Self {
+        self.raw_fallback = true;
         self
     }
 
@@ -1884,18 +1915,33 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             observer.set_horizon(now.saturating_add(QPC_LIMIT_MARGIN));
             let _ = old.drain(&mut |p, s| observer.packet(p, s));
         }
-        let opened = driver
-            .open(
-                self.endpoint,
-                self.device.id(),
-                Some(self.rate),
-                self.channels,
-                self.processing,
-            )
-            .and_then(|s| {
-                s.start()?;
-                Ok(s)
-            });
+        let mut open = |processing| {
+            driver
+                .open(
+                    self.endpoint,
+                    self.device.id(),
+                    Some(self.rate),
+                    self.channels,
+                    processing,
+                )
+                .and_then(|s| {
+                    s.start()?;
+                    Ok(s)
+                })
+        };
+        let mut fell_back = false;
+        let opened = match open(self.processing) {
+            Err(e)
+                if self.raw_fallback
+                    && self.processing == MicProcessing::Raw
+                    && e.is_raw_refusal() =>
+            {
+                fell_back = true;
+                self.processing = MicProcessing::Default;
+                open(MicProcessing::Default)
+            }
+            other => other,
+        };
         match opened {
             Ok(s) => {
                 self.follower.opened(s.device_id().map(str::to_owned));
@@ -1912,6 +1958,9 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                     },
                 );
                 self.stream = Some(s);
+                if fell_back {
+                    self.observer.raw_fell_back(now);
+                }
             }
             Err(e) => {
                 let failure = if e.is_device_gone() {
@@ -1923,6 +1972,9 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                 let error = e.detail();
                 self.observer
                     .reopened(now, reason, ReopenOutcome::Failed { error: &error });
+                if fell_back {
+                    self.observer.raw_fell_back(now);
+                }
                 if matches!(e, CaptureError::RawMic(_)) {
                     self.observer.raw_refused(now);
                 }
@@ -2111,17 +2163,29 @@ fn open_chosen<'com>(
     track: TrackId,
     choice: &DeviceChoice,
 ) -> Result<ChosenStream<'com>, CaptureError> {
+    open_chosen_as(com, endpoint, track, choice, MicProcessing::Default)
+}
+
+/// [`open_chosen`] asking every stream for `processing`. A stream that cannot be made raw
+/// ([`CaptureError::is_raw_refusal`]) is the processing's failure, not the device's: it is
+/// returned as it is and never replaced by the default endpoint, so the chosen device wins
+/// over the raw request ([`open_live_mic`]).
+fn open_chosen_as<'com>(
+    com: &'com ComApartment,
+    endpoint: Endpoint,
+    track: TrackId,
+    choice: &DeviceChoice,
+    processing: MicProcessing,
+) -> Result<ChosenStream<'com>, CaptureError> {
+    let open = |id| CaptureStream::open_with(com, endpoint, id, None, None, processing);
     let Some(id) = choice.id() else {
-        return Ok((
-            CaptureStream::open(com, endpoint, None, None)?,
-            DeviceChoice::Default,
-            None,
-        ));
+        return Ok((open(None)?, DeviceChoice::Default, None));
     };
-    match CaptureStream::open_on(com, endpoint, Some(id), None, None) {
+    match open(Some(id)) {
         Ok(stream) => Ok((stream, choice.clone(), None)),
+        Err(e) if e.is_raw_refusal() => Err(e),
         Err(e) => {
-            let stream = CaptureStream::open(com, endpoint, None, None)?;
+            let stream = open(None)?;
             let fallback = crate::devices::fallback(
                 track,
                 choice,
@@ -2142,6 +2206,39 @@ fn open_mic<'com>(
     choice: &DeviceChoice,
 ) -> Result<ChosenStream<'com>, CaptureError> {
     open_chosen(com, Endpoint::Microphone(mic_role), TrackId::Mic, choice)
+}
+
+/// The live source's microphone (T12.36): opened as `processing` asks (the Audio page's
+/// setting), and a raw request that fails for any reason is retried at once with the default
+/// processing, so a setting never costs a recording ([`prefer_raw`]). Returns the stream, the
+/// processing it was opened with and, after such a retry, why raw was not used.
+fn open_live_mic<'com>(
+    com: &'com ComApartment,
+    mic_role: MicRole,
+    choice: &DeviceChoice,
+    processing: MicProcessing,
+) -> Result<(ChosenStream<'com>, MicProcessing, Option<String>), CaptureError> {
+    prefer_raw(processing, |p| {
+        open_chosen_as(com, Endpoint::Microphone(mic_role), TrackId::Mic, choice, p)
+    })
+}
+
+/// Opens with `open(processing)`; when that asked for raw and failed, opens with the default
+/// processing and returns the raw attempt's error as text ([`CaptureError::detail`]) beside
+/// the stream. An error opening the default is the open's. Platform independent, so the
+/// live start's rule is tested without a device.
+fn prefer_raw<S>(
+    processing: MicProcessing,
+    mut open: impl FnMut(MicProcessing) -> Result<S, CaptureError>,
+) -> Result<(S, MicProcessing, Option<String>), CaptureError> {
+    match (processing, open(processing)) {
+        (_, Ok(stream)) => Ok((stream, processing, None)),
+        (MicProcessing::Raw, Err(raw)) => {
+            let stream = open(MicProcessing::Default)?;
+            Ok((stream, MicProcessing::Default, Some(raw.detail())))
+        }
+        (MicProcessing::Default, Err(e)) => Err(e),
+    }
 }
 
 /// The mic track of the started stream on `device`: the default follows its role's default
@@ -2461,6 +2558,10 @@ struct Started {
     loopback: Option<(DeviceDescription, LoopbackSource)>,
     /// Chosen endpoints replaced by the default (T7.4i).
     fallbacks: Vec<DeviceFallback>,
+    /// The mic was opened raw (T12.36).
+    mic_raw: bool,
+    /// Why a raw mic asked for was opened with the default processing (T12.36).
+    raw_refused: Option<String>,
     /// The render endpoint the reference belongs to (T7.4j,
     /// [`WasapiSource::output_endpoint_id`]).
     output_endpoint: Option<String>,
@@ -2496,6 +2597,11 @@ fn track_info(s: &CaptureStream<'_>) -> Result<TrackInfo, CaptureError> {
 ///   is given up for the default ([`crate::devices`] module docs). In the room ([`CaptureMode::InRoom`]) no loopback is opened and the
 ///   session has no reference track (`CaptureSession::reference` is `None`): the
 ///   pipeline then runs no echo canceller and the meeting has one track.
+/// - Mic processing (T12.36): as the selection's `mic_processing` asks. A raw mic that
+///   refuses raw, at the start or on a re-open, records the default stream instead: at the
+///   start [`raw_refused`](Self::raw_refused) says why, on a re-open one
+///   `EndpointWarning::RawMicRefused` note follows, and the track keeps the default stream
+///   for the rest of the capture. (The raw recorder refuses instead, [`record_raw`].)
 /// - Frames: `f32` at the device's native rate (normally 48 kHz); the pipeline
 ///   resamples (PLAN.md 3.3). The mic is mono; the reference keeps the loopback's
 ///   channels interleaved (stereo on a desktop; `TrackInfo::channels`), and consumers
@@ -2527,6 +2633,8 @@ pub struct WasapiSource {
     mic_properties: Option<EndpointProperties>,
     loopback: Option<(DeviceDescription, LoopbackSource)>,
     fallbacks: Vec<DeviceFallback>,
+    mic_raw: bool,
+    raw_refused: Option<String>,
     output_endpoint: Option<String>,
     sleep_not_prevented: Option<String>,
 }
@@ -2539,6 +2647,8 @@ impl fmt::Debug for WasapiSource {
             .field("mic_properties", &self.mic_properties)
             .field("loopback", &self.loopback)
             .field("fallbacks", &self.fallbacks)
+            .field("mic_raw", &self.mic_raw)
+            .field("raw_refused", &self.raw_refused)
             .field("output_endpoint", &self.output_endpoint)
             .field("sleep_not_prevented", &self.sleep_not_prevented)
             .finish()
@@ -2602,6 +2712,8 @@ impl WasapiSource {
             mic_properties: started.mic_properties,
             loopback: started.loopback,
             fallbacks: started.fallbacks,
+            mic_raw: started.mic_raw,
+            raw_refused: started.raw_refused,
             output_endpoint: started.output_endpoint,
             sleep_not_prevented: started.sleep_not_prevented,
         })
@@ -2620,6 +2732,21 @@ impl WasapiSource {
     /// default one (empty when every choice was used or nothing was chosen).
     pub fn fallbacks(&self) -> &[DeviceFallback] {
         &self.fallbacks
+    }
+
+    /// Whether the microphone was opened raw, without Windows' own signal processing (T12.36:
+    /// the selection asked for it and the endpoint allowed it). Read when capture started; a
+    /// later re-open that cannot get raw is announced on the mic track
+    /// (`EndpointWarning::RawMicRefused`).
+    pub fn mic_opened_raw(&self) -> bool {
+        self.mic_raw
+    }
+
+    /// Why the raw microphone the selection asked for (T12.36) was opened with the default
+    /// processing instead (the refusal, or the failed call and its error number); `None` when
+    /// raw was not asked for or was used.
+    pub fn raw_refused(&self) -> Option<&str> {
+        self.raw_refused.as_deref()
     }
 
     /// Why Windows refused to keep the computer awake for this capture (T9.16,
@@ -2720,8 +2847,12 @@ fn live_capture(
     let setup = (|| {
         // Registered before the streams open so no change in between is missed.
         let notifications = DeviceNotifications::register(com)?;
-        let (mic_stream, mic_device, mic_fallback) =
-            open_mic(com, request.mic_role, &request.devices.microphone)?;
+        let ((mic_stream, mic_device, mic_fallback), mic_processing, raw_refused) = open_live_mic(
+            com,
+            request.mic_role,
+            &request.devices.microphone,
+            request.devices.mic_processing,
+        )?;
         let mut opened = request
             .loopback
             .as_ref()
@@ -2743,6 +2874,8 @@ fn live_capture(
                 .as_ref()
                 .map(|o| (o.stream.description(), o.source.clone())),
             fallbacks,
+            mic_raw: mic_processing == MicProcessing::Raw,
+            raw_refused,
             output_endpoint: opened.as_ref().and_then(|o| {
                 o.stream
                     .device_id()
@@ -2753,20 +2886,25 @@ fn live_capture(
         };
         Ok::<_, CaptureError>((
             notifications,
-            (mic_stream, mic_device),
+            (mic_stream, mic_device, mic_processing),
             opened,
             started,
             infos,
         ))
     })();
-    let (notifications, (mic_stream, mic_device), opened, started, (mic_info, lb_info)) =
-        match setup {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = ready.send(Err(e));
-                return;
-            }
-        };
+    let (
+        notifications,
+        (mic_stream, mic_device, mic_processing),
+        opened,
+        started,
+        (mic_info, lb_info),
+    ) = match setup {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = ready.send(Err(e));
+            return;
+        }
+    };
     let call_output = match opened
         .as_ref()
         .filter(|o| o.follows_call)
@@ -2795,7 +2933,11 @@ fn live_capture(
     if ready.send(Ok(started)).is_err() {
         return;
     }
-    let mut mic = mic_track(mic_stream, request.mic_role, mic_device, mic_obs);
+    // A raw mic stays raw across re-opens, and one that cannot be re-opened raw records the
+    // default stream (T12.36).
+    let mut mic = mic_track(mic_stream, request.mic_role, mic_device, mic_obs)
+        .with_processing(mic_processing)
+        .with_raw_fallback();
     // `opened` and `lb_obs` are both present exactly when a loopback was requested.
     let mut lb = opened.zip(lb_obs).map(|(o, obs)| o.into_track(obs));
     let mut driver = Wasapi {
@@ -3984,6 +4126,7 @@ mod device_tests {
         let devices = DeviceSelection {
             microphone: chosen(MISSING_ID, "Old headset"),
             output: DeviceChoice::Default,
+            mic_processing: MicProcessing::Default,
         };
         let mut src =
             WasapiSource::start_on(MicRole::Console, &CaptureMode::InRoom, &devices).unwrap();
@@ -4011,6 +4154,7 @@ mod device_tests {
         let devices = DeviceSelection {
             microphone: chosen(&mic.id, &mic.name),
             output: chosen(&output.id, &output.name),
+            mic_processing: MicProcessing::Default,
         };
         let mut src = WasapiSource::start_on(
             MicRole::Console,
