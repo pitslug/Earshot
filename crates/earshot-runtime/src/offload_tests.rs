@@ -1165,6 +1165,78 @@ fn offload_the_sync_thread_steps_after_each_tick() {
     assert_eq!(b.request(request).state, RequestState::Claimed);
 }
 
+/// A device whose sync stops on a problem (here: another device removed it, T11.6c) runs one last
+/// step before its thread ends: what it asked and is still open is withdrawn here and written here
+/// at once (nothing it sends can reach the helper), and nothing asked of it is claimed.
+#[test]
+fn offload_a_device_whose_sync_stops_withdraws_what_it_asked_and_writes_here() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_offer_summaries(&a.svc, true).unwrap();
+    let (ca, cb) = (a.client(), b.client());
+    let unclaimed = meeting(&a.svc, "Invented planning", 21);
+    let claimed = meeting(&a.svc, "Invented review", 22);
+    let r_claimed = ask(&a.svc, claimed, b.id()).unwrap().unwrap();
+    sync(&ca, &cb);
+    b.step(None, &Recorder::default());
+    sync(&cb, &ca);
+    assert_eq!(a.request(r_claimed).state, RequestState::Claimed);
+    // Asked after the helper's step: still unclaimed when sync stops.
+    let r_unclaimed = ask(&a.svc, unclaimed, b.id()).unwrap().unwrap();
+    // A request the other device asked of this one, before the removal.
+    let theirs = meeting(&b.svc, "Invented handover", 23);
+    let r_theirs = ask(&b.svc, theirs, a.id()).unwrap().unwrap();
+    cb.tick().unwrap();
+    ca.tick().unwrap();
+    assert_eq!(a.request(r_theirs).state, RequestState::Requested);
+    let open_before: Vec<RequestState> = [r_unclaimed, r_claimed]
+        .iter()
+        .map(|r| a.request(*r).state)
+        .collect();
+    assert!(open_before.iter().all(|s| s.is_open()), "{open_before:?}");
+
+    crate::sync::remove_other_device(&b.svc, b.vault(), a.id()).unwrap();
+    let host = Arc::new(Recorder::default());
+    let thread = crate::sync::SyncThread::start_offloading(
+        a.client(),
+        crate::sync::SyncTiming {
+            tick: std::time::Duration::from_millis(20),
+            poll: std::time::Duration::from_millis(5),
+            presence: std::time::Duration::from_secs(3600),
+        },
+        Arc::clone(&host) as Arc<dyn OffloadHost>,
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !thread.ended() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the thread never stopped"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    thread.stop();
+    // No 90 s wait and no presence: both are withdrawn and handed back at once.
+    let mut here: Vec<(EntityId, HereReason)> = host
+        .here()
+        .into_iter()
+        .map(|w| (w.request, w.why))
+        .collect();
+    here.sort_by_key(|(r, _)| *r);
+    let mut want = vec![
+        (r_unclaimed, HereReason::Withdrawn),
+        (r_claimed, HereReason::Withdrawn),
+    ];
+    want.sort_by_key(|(r, _)| *r);
+    assert_eq!(here, want);
+    for r in [r_unclaimed, r_claimed] {
+        assert_eq!(a.request(r).state, RequestState::Withdrawn);
+    }
+    // Asked of it: not claimed, not handed.
+    assert_eq!(a.request(r_theirs).state, RequestState::Requested);
+    assert!(host.for_others().is_empty());
+}
+
 /// A claimed request whose helper has no presence at all is given five minutes from when the
 /// asker first found it missing, not withdrawn at once (A5).
 #[test]

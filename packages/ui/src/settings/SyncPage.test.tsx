@@ -7,7 +7,8 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import table from "../../../../fixtures/ui/sync_copy_cases.json";
-import { type SyncMockData, createMockIpc } from "../ipc";
+import { type SyncDeviceView, type SyncMockData, createMockIpc } from "../ipc";
+import { mockDeviceId } from "../ipc/mockSync";
 import { MOCK_SYNC_CODE, MOCK_SYNC_SECRET } from "../ipc/mockSync";
 import { openSettings, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
@@ -35,9 +36,25 @@ async function setup(sync: SyncMockData = {}) {
   return { user, calls, timer };
 }
 
+/** One computer of the list, offline and named by presence later. */
+function device(shortId: string, thisDevice: boolean): SyncDeviceView {
+  return {
+    this_device: thisDevice,
+    name: null,
+    online: false,
+    recording: false,
+    offers_summaries: false,
+    writer: null,
+    id: mockDeviceId(shortId),
+    short_id: shortId,
+    joined_unix_s: 1_793_000_000,
+    seen_s_ago: 60,
+  };
+}
+
 /** A `remove_other` template with the row's name. */
 function fillDevice(template: string, name: string): string {
-  return template.replace("{device}", name);
+  return template.replace("{device}", () => name);
 }
 
 function setUpForm(): HTMLElement {
@@ -259,6 +276,21 @@ describe("the Sync page", () => {
     expect(await screen.findByText(table.command_problems.unreachable)).toBeInTheDocument();
     expect(screen.getByText("This was not changed")).toBeInTheDocument();
     expect(within(list).getByText("Studio")).toBeInTheDocument();
+    // The Remove was disabled while the call ran: focus goes to the list, not the page.
+    await waitFor(() => expect(list).toHaveFocus());
+  });
+
+  it("names a computer whose name holds replacement patterns as it is", async () => {
+    const odd = "Desk $& $1 $$ $` co";
+    const devices: SyncDeviceView[] = [
+      { ...device("3f2a9c1e", true), name: "Desk" },
+      { ...device("a1b2c3d4", false), name: odd },
+    ];
+    const { user } = await setup({ setUp: true, devices });
+    const list = await screen.findByRole("list", { name: "Computers" });
+    const remove = within(list).getByRole("button", { name: `Remove ${odd}` });
+    await user.click(remove);
+    expect(await screen.findByRole("alertdialog", { name: `Remove ${odd} from sync?` })).toBeInTheDocument();
   });
 
   it("reads voiceprints off after a removal and a new set up", async () => {

@@ -589,24 +589,45 @@ fn parse_device_id(id: &str) -> Option<earshot_core::identity::DeviceId> {
     serde_json::from_value(serde_json::Value::String(id.to_owned())).ok()
 }
 
+/// Another computer was removed (T11.6c).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct SyncRemovedView {
+    /// The computers left, or `None` when they could not be listed after the removal (the page
+    /// asks again; the removal itself happened).
+    pub devices: Option<Vec<SyncDeviceView>>,
+}
+
 /// Removes another computer from the vault (T11.6c): the server revokes its token and drops
 /// its presence; its synced rows stay. Returns the computers left. This computer leaves only
 /// through [`remove`].
 ///
 /// # Errors
 /// [`IpcError::invalid`] with [`NOT_ANOTHER_DEVICE`] for this computer's id or one that is not
-/// an id, with nothing sent; fixed copy of the problem.
+/// an id, with nothing sent; fixed copy of the problem. Once the server has revoked it, the
+/// answer is a success whatever the list does.
 pub fn remove_other(
     services: &Services,
     host: &SyncHost,
     id: &str,
-) -> Result<Vec<SyncDeviceView>, IpcError> {
+) -> Result<SyncRemovedView, IpcError> {
+    remove_other_then(services, host, id, || devices(services, host))
+}
+
+/// [`remove_other`] with the list read after the removal given (a test seam).
+fn remove_other_then(
+    services: &Services,
+    host: &SyncHost,
+    id: &str,
+    list: impl FnOnce() -> Result<Vec<SyncDeviceView>, IpcError>,
+) -> Result<SyncRemovedView, IpcError> {
     let device = parse_device_id(id)
         .filter(|d| *d != services.store().device())
         .ok_or_else(|| IpcError::invalid(NOT_ANOTHER_DEVICE))?;
     earshot_runtime::sync::remove_other_device(services, host.vault(), device)
         .map_err(sync_error)?;
-    devices(services, host)
+    Ok(SyncRemovedView {
+        devices: list().ok(),
+    })
 }
 
 fn host(state: &tauri::State<'_, Arc<SyncHost>>) -> Arc<SyncHost> {
@@ -792,14 +813,14 @@ pub async fn remove_sync_device(
     blocking(move || remove(&services, &host)).await
 }
 
-/// Removes another computer from sync; returns the computers left.
+/// Removes another computer from sync; returns the computers left when they can be listed.
 #[tauri::command]
 #[specta::specta]
 pub async fn remove_other_sync_device(
     state: tauri::State<'_, AppState>,
     sync: tauri::State<'_, Arc<SyncHost>>,
     id: String,
-) -> Result<Vec<SyncDeviceView>, IpcError> {
+) -> Result<SyncRemovedView, IpcError> {
     let services = state.services()?;
     let host = host(&sync);
     blocking(move || remove_other(&services, &host, &id)).await

@@ -40,6 +40,9 @@ export function mockDeviceId(shortId: string): string {
   return `${shortId}-0000-7000-8000-000000000000`;
 }
 
+/** A UUID as the app reads a device id (hyphenated or not, either case). */
+const UUID = /^(?:[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})$/i;
+
 /** A problem word the app sends (`sync_settings::problem_copy`). */
 export type SyncProblemWord = keyof typeof table.problems;
 
@@ -419,10 +422,14 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
     },
     removeOtherSyncDevice: async (id) => {
       call("removeOtherSyncDevice");
-      const found = devices.find((d) => d.id === id);
-      if (!setUp || found === undefined || found.this_device) invalid(table.remove_other.not_another);
-      devices = devices.filter((d) => d.id !== id);
-      return devices.map((d) => ({ ...d }));
+      // Rust's order: text that is not an id, or this computer's, is refused before anything
+      // else; then a computer that is not set up has no key (`vault`); an id the server does not
+      // list changes nothing.
+      const me = devices.find((d) => d.this_device);
+      if (!UUID.test(id) || id.toLowerCase() === me?.id) invalid(table.remove_other.not_another);
+      if (!setUp) commandFailure("vault");
+      devices = devices.filter((d) => d.id !== id.toLowerCase());
+      return { devices: devices.map((d) => ({ ...d })) };
     },
   };
 }

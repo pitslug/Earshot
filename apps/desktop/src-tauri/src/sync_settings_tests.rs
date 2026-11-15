@@ -287,7 +287,10 @@ fn sync_removing_another_computer_from_its_row() {
 
     // The other computer: gone from the list returned, and its thread stops on the answer it
     // gets next, saying this computer was removed.
-    let left = remove_other(&a.svc, &a.host, &other.to_uppercase()).unwrap();
+    let left = remove_other(&a.svc, &a.host, &other.to_uppercase())
+        .unwrap()
+        .devices
+        .unwrap();
     assert_eq!(left.len(), 1);
     assert!(left[0].this_device);
     b.host.nudge();
@@ -313,6 +316,43 @@ fn sync_removing_another_computer_from_its_row() {
     assert!(view(&a.svc, &a.host).unwrap().set_up);
     a.host.stop_and_wait();
     b.host.stop_and_wait();
+}
+
+#[test]
+fn sync_removing_another_computer_is_a_success_when_the_list_then_fails() {
+    let env = relay();
+    let a = computer("sync-other-list-a");
+    let b = computer("sync-other-list-b");
+    let url = env.relay.url();
+    set_up(&a.svc, &a.host, &url, SECRET).unwrap();
+    let code = offer_code(&a.svc, &a.host).unwrap();
+    join(&b.svc, &b.host, &url, &code.code).unwrap();
+    let other = devices(&a.svc, &a.host)
+        .unwrap()
+        .into_iter()
+        .find(|d| !d.this_device)
+        .unwrap()
+        .id;
+    // The revoke happened; the list read after it fails: still a success, with no list.
+    let done = remove_other_then(&a.svc, &a.host, &other, || {
+        Err(sync_error(SyncProblem::Unreachable))
+    })
+    .unwrap();
+    assert_eq!(done, SyncRemovedView { devices: None });
+    let left = devices(&a.svc, &a.host).unwrap();
+    assert_eq!(left.len(), 1, "the removal happened");
+    // A refused revoke is still an error, and the list is never read.
+    let e = remove_other_then(&b.svc, &b.host, &a_id(&a), || -> Result<_, IpcError> {
+        panic!("no list after a refused removal")
+    })
+    .unwrap_err();
+    assert_eq!(e.message, command_copy(SyncProblem::UnknownDevice));
+    a.host.stop_and_wait();
+    b.host.stop_and_wait();
+}
+
+fn a_id(c: &Computer) -> String {
+    c.svc.store().device().to_string()
 }
 
 #[test]

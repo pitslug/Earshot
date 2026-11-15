@@ -4,9 +4,16 @@
 // the rule refuses) or `offload` (a computer that would not be asked,
 // `fixtures/ui/offload_copy_cases.json`).
 
-import type { SummaryHelperView, SummaryHelpersView, SyncCodeView, SyncDeviceView, SyncView } from "./bindings";
+import type {
+  SummaryHelperView,
+  SummaryHelpersView,
+  SyncCodeView,
+  SyncDeviceView,
+  SyncRemovedView,
+  SyncView,
+} from "./bindings";
 
-export type { SummaryHelperView, SummaryHelpersView, SyncCodeView, SyncDeviceView, SyncView };
+export type { SummaryHelperView, SummaryHelpersView, SyncCodeView, SyncDeviceView, SyncRemovedView, SyncView };
 
 /** The Sync part of `IpcCommands`. */
 export interface SyncCommands {
@@ -31,8 +38,9 @@ export interface SyncCommands {
   /** Removes this computer from sync: its meetings stay, the server and key are forgotten. */
   removeSyncDevice(): Promise<SyncView>;
   /** Removes another computer from sync by its `SyncDeviceView.id` (T11.6c): the server stops
-   * taking its requests and its synced meetings stay. Resolves with the computers left. */
-  removeOtherSyncDevice(id: string): Promise<SyncDeviceView[]>;
+   * taking its requests and its synced meetings stay. Resolves with the computers left, or no list
+   * when they could not be listed after the removal (which still happened). */
+  removeOtherSyncDevice(id: string): Promise<SyncRemovedView>;
   /** Turns "Write summaries for my other computers" on or off (T11.3db). */
   setSyncOfferSummaries(on: boolean): Promise<SyncView>;
   /** Sets this computer's name as the other computers show it; empty: the computer's own. */

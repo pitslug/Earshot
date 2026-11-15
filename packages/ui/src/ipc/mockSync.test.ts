@@ -107,9 +107,16 @@ describe("the Sync mock", () => {
       const e = await refusal(sync.removeOtherSyncDevice(id));
       expect(e?.error, id).toMatchObject({ kind: "invalid_setting", message: table.remove_other.not_another });
     }
-    const left = await sync.removeOtherSyncDevice(other.id);
-    expect(left.map((d) => d.id)).toEqual(before.filter((d) => d.id !== other.id).map((d) => d.id));
+    // An id the server does not list changes nothing, as in Rust.
+    const unknown = await sync.removeOtherSyncDevice("00000000-0000-7000-8000-000000000001");
+    expect(unknown.devices).toEqual(before);
+    const left = (await sync.removeOtherSyncDevice(other.id)).devices;
+    expect(left?.map((d) => d.id)).toEqual(before.filter((d) => d.id !== other.id).map((d) => d.id));
     expect(await sync.syncDevices()).toEqual(left);
+    // Not set up: no key to ask with, the Rust order (an id first, then the vault).
+    const lone = createSyncMock();
+    const e = await refusal(lone.removeOtherSyncDevice(other.id));
+    expect(e?.error).toMatchObject({ kind: "sync", message: table.command_problems.vault });
     // Every id is whole and distinct, and begins with the short id.
     expect(new Set(before.map((d) => d.id)).size).toBe(before.length);
     for (const d of before) expect(d.id.startsWith(d.short_id)).toBe(true);

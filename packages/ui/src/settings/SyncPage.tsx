@@ -389,7 +389,8 @@ function AddComputer({ state }: { state: SyncPageState }) {
 
 /** A `remove_other` template (`fixtures/ui/sync_copy_cases.json`) with the row's name. */
 export function removeOtherText(template: string, d: SyncDeviceView): string {
-  return template.replace("{device}", deviceName(d));
+  // A function replacer: a name is text, never a replacement pattern (`$&`, `$1`).
+  return template.replace("{device}", () => deviceName(d));
 }
 
 /** One other computer's Remove; the dialog hands focus back to it on Cancel. */
@@ -529,9 +530,11 @@ export function SyncPage({ timer = realTimer }: { timer?: Timer }) {
   const listRef = useRef<HTMLUListElement>(null);
   const removeOther = async (d: SyncDeviceView) => {
     setOtherOpen(false);
-    // Its row goes, and the Remove that opened the dialog with it: focus moves to the list
-    // rather than falling to the page.
-    if (await state.removeOther(d.id)) listRef.current?.focus();
+    // Removed: its row goes, and the Remove that opened the dialog with it. Refused: that Remove
+    // is disabled while the call ran, so the dialog's hand-back found nothing to focus. Either
+    // way focus moves to the list rather than staying on the page.
+    await state.removeOther(d.id);
+    listRef.current?.focus();
   };
   const { load } = state;
   // After set up, join or removal swaps the page's parts, focus goes to the heading rather than

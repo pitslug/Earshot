@@ -342,12 +342,17 @@ fn run(
             continue;
         }
         let ticked = catch_unwind(AssertUnwindSafe(|| client.tick()));
-        if let Some((state, host)) = offload
-            && !matches!(&ticked, Ok(Err(p)) if p.stops())
-        {
+        if let Some((state, host)) = offload {
             // A store failure or a panic here is the next step's to retry; it never ends sync.
+            // A problem that stops sync gets one last step that withdraws and writes here what
+            // this device asked (T11.6c): no later step runs until the user acts.
+            let stopped = matches!(&ticked, Ok(Err(p)) if p.stops());
             let _ = catch_unwind(AssertUnwindSafe(|| {
-                state.step(&services, &mut || client.peers().ok(), &**host)
+                if stopped {
+                    state.step_sync_stopped(&services, &**host)
+                } else {
+                    state.step(&services, &mut || client.peers().ok(), &**host)
+                }
             }));
         }
         match ticked {

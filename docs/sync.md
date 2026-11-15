@@ -84,7 +84,7 @@ Losing every device loses the key, and the server's data is then unreadable. Any
 | `GET /v1/pairing/<slot>` | the joining device takes the wrapped key; the slot is deleted |
 | `POST /v1/rows` | push a page of rows; a row older than or equal to the stored one is answered `superseded` and ignored |
 | `GET /v1/rows?after=<seq>` | pull rows with a server sequence above the cursor, in pages |
-| `PUT /v1/presence` | store this device's encrypted presence blob and the server's receive time |
+| `POST /v1/presence` | store this device's encrypted presence blob and the server's receive time |
 | `GET /v1/presence` | every device's blob and its age in seconds, computed by the server |
 | `POST /v1/devices/revoke` | revoke a device's token (`{device_id}`): any device of the vault may revoke itself or another; the revoked device's presence goes and its rows stay (T11.6c) |
 

@@ -193,7 +193,13 @@ export function useSync(timer: Timer): SyncPageState {
     removeOther: async (id) => {
       setBusy(true);
       try {
-        setDevices({ status: "loaded", view: await ipc.removeOtherSyncDevice(id) });
+        const { devices } = await ipc.removeOtherSyncDevice(id);
+        if (devices === null) {
+          // Removed, but the list could not be read after it: ask again.
+          setDevicesAsked((n) => n + 1);
+        } else {
+          setDevices({ status: "loaded", view: devices });
+        }
         setError(null);
         return true;
       } catch (e) {
