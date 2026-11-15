@@ -30,6 +30,11 @@ pub const MAX_DEVICE_NAME: usize = 64;
 /// 64-character name of 4-byte characters and a long version included, fits well inside).
 pub const PADDED_LEN: usize = 640;
 
+/// [`Presence::kind`] of Earshot on a computer.
+pub const KIND_APP: &str = "app";
+/// [`Presence::kind`] of a summary worker (`earshot-worker`, T11.6).
+pub const KIND_SERVER: &str = "server";
+
 /// The presence blob's plaintext.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Presence {
@@ -39,7 +44,7 @@ pub struct Presence {
     pub name: String,
     /// Earshot's version on it.
     pub app_version: String,
-    /// `app` for Earshot on a computer (`server` for a summary worker, later).
+    /// [`KIND_APP`] for Earshot on a computer, [`KIND_SERVER`] for a summary worker (T11.6).
     pub kind: String,
     /// Whether it writes summaries for the other devices ("Write summaries for my other
     /// devices").
@@ -177,6 +182,7 @@ pub(crate) fn open_blob(
 
 /// The presence this device sends now.
 pub(crate) fn presence_now(
+    kind: &str,
     name: String,
     offers_summaries: bool,
     writer_kind: Option<crate::offload::WriterKind>,
@@ -187,7 +193,7 @@ pub(crate) fn presence_now(
         v: PRESENCE_VERSION,
         name,
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
-        kind: "app".to_owned(),
+        kind: kind.to_owned(),
         offers_summaries,
         writer_kind: writer_kind.map(|k| k.word().to_owned()),
         recording,

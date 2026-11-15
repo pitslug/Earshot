@@ -140,6 +140,101 @@ fn summary_kept_local_meeting_opens_no_connection_with_an_endpoint_set() {
     assert_eq!(server.requests().len(), 1);
 }
 
+/// T11.6: the summary worker's own model (its llama.cpp server on its own compose network) may
+/// write a kept-local meeting; the same endpoint through the ordinary constructor may not.
+#[test]
+fn summary_own_model_endpoint_writes_a_kept_local_meeting() {
+    let dir = TempDir::new("summary");
+    let (svc, _) = services(&dir);
+    let id = meeting(&svc, "", 1);
+    keep_local(&svc, id);
+    let server = MockServer::start(vec![reply("Written by the worker's model")]).unwrap();
+    let config = SummaryConfig::new(server.endpoint().as_str(), "test-model");
+    // Control: an ordinary remote service is refused before anything is sent.
+    let remote = SummaryService::new(&config, svc.clock.clone()).unwrap();
+    let refused = remote.summarize(
+        &svc,
+        id,
+        &mut ChaCha8Rng::seed_from_u64(2),
+        &CancelToken::new(),
+    );
+    assert!(matches!(refused, Err(RuntimeError::SummaryKeptLocal(_))));
+    assert!(server.requests().is_empty());
+    let own = SummaryService::own_model_endpoint(&config, svc.clock.clone()).unwrap();
+    let out = own
+        .summarize(
+            &svc,
+            id,
+            &mut ChaCha8Rng::seed_from_u64(3),
+            &CancelToken::new(),
+        )
+        .unwrap();
+    assert_eq!(out.summary.title, "Written by the worker's model");
+    assert_eq!(server.requests().len(), 1);
+    // It is an ordinary remote client otherwise: every hop is in its audit log.
+    let endpoint = server.endpoint();
+    for e in own.audit_log().entries() {
+        assert_eq!(
+            (e.host.as_str(), e.port),
+            (endpoint.host_str().unwrap(), endpoint.port().unwrap())
+        );
+    }
+}
+
+/// T11.6: only the summary worker builds a service that counts an endpoint as its own model.
+#[test]
+fn summary_own_model_endpoint_is_called_only_by_the_worker() {
+    use std::path::{Path, PathBuf};
+    fn scan(dir: &Path, name: &str, found: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                scan(&path, name, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                if text.contains(name) {
+                    found.push(path);
+                }
+            }
+        }
+    }
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let name = concat!("own_model_", "endpoint");
+    let mut found = Vec::new();
+    for dir in ["crates", "apps", "xtask"] {
+        let dir = repo.join(dir);
+        assert!(dir.is_dir(), "{} is not a folder", dir.display());
+        scan(&dir, name, &mut found);
+    }
+    let callers: Vec<_> = found
+        .iter()
+        .filter(|p| {
+            let rel = p
+                .strip_prefix(&repo)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .replace('\\', "/");
+            !(rel == "crates/earshot-runtime/src/summary.rs"
+                || rel == "crates/earshot-runtime/src/summary_tests.rs"
+                || rel.starts_with("crates/earshot-worker/"))
+        })
+        .collect();
+    assert!(callers.is_empty(), "named outside the worker: {callers:?}");
+    // The worker does call it (the scan reads the right files).
+    assert!(
+        found
+            .iter()
+            .any(|p| p.to_string_lossy().contains("earshot-worker")),
+        "{found:?}"
+    );
+}
+
 #[test]
 #[cfg_attr(
     not(windows),

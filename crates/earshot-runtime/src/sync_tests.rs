@@ -1060,6 +1060,109 @@ fn presence_round_trip_names_each_device_and_says_who_is_online() {
     );
 }
 
+/// T11.6: a summary worker's presence says kind `server` and names the writer it was given,
+/// not its Summaries settings; the app's says `app`. Its client may name its relay itself.
+#[test]
+fn presence_a_summary_worker_says_server_and_its_own_writer() {
+    use crate::offload::WriterKind;
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_device_name(&b.svc, "Invented server").unwrap();
+    set_offer_summaries(&b.svc, true).unwrap();
+    // Where the worker's model is, as its locator would say now.
+    let local = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let now = Arc::clone(&local);
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    let worker = SyncClient::for_address(b.svc.clone(), b.vault(), &relay.relay.url())
+        .unwrap()
+        .as_summary_worker(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(if now.load(std::sync::atomic::Ordering::SeqCst) {
+                WriterKind::Local
+            } else {
+                WriterKind::OpenaiCompatible
+            })
+        }));
+    worker.send_presence(false).unwrap();
+    a.client().send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    let p = theirs.presence.as_ref().unwrap();
+    assert_eq!(p.kind, KIND_SERVER);
+    assert_eq!(p.writer_kind.as_deref(), Some("local"));
+    assert!(
+        theirs.online && p.offers_summaries && !p.recording,
+        "{theirs:?}"
+    );
+    let mine = peers
+        .iter()
+        .find(|p| p.device == a.svc.store().device())
+        .unwrap();
+    assert_eq!(mine.presence.as_ref().unwrap().kind, KIND_APP);
+    // The Sync page lists it by its name, online.
+    let listed = vault_devices(&a.svc, a.vault()).unwrap();
+    let other = listed.iter().find(|d| !d.this_device).unwrap();
+    assert_eq!(other.name.as_deref(), Some("Invented server"));
+    assert!(other.online && other.offers_summaries);
+    assert_eq!(other.writer_kind, Some(WriterKind::Local));
+    // The model moves (its container was not up yet, or is gone): the next presence says so.
+    local.store(false, std::sync::atomic::Ordering::SeqCst);
+    worker.send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    assert_eq!(
+        theirs.presence.as_ref().unwrap().writer_kind.as_deref(),
+        Some("openai_compatible")
+    );
+    local.store(true, std::sync::atomic::Ordering::SeqCst);
+    worker.send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    assert_eq!(
+        theirs.presence.as_ref().unwrap().writer_kind.as_deref(),
+        Some("local")
+    );
+    // Not offering: no writer is named, whatever it was given.
+    set_offer_summaries(&b.svc, false).unwrap();
+    worker.send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    assert_eq!(theirs.presence.as_ref().unwrap().writer_kind, None);
+    // A gone blob does not ask the locator (it may look a name up) and names no writer.
+    let before = asked.load(std::sync::atomic::Ordering::SeqCst);
+    set_offer_summaries(&b.svc, true).unwrap();
+    worker.send_presence(true).unwrap();
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), before);
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    let p = theirs.presence.as_ref().unwrap();
+    assert!(
+        p.gone && p.writer_kind.is_none() && p.kind == KIND_SERVER,
+        "{p:?}"
+    );
+    // A refused address is refused as a stored one would be.
+    assert_eq!(
+        SyncClient::for_address(b.svc.clone(), b.vault(), "http://relay.example.com").err(),
+        Some(SyncProblem::Address)
+    );
+}
+
 #[test]
 fn presence_from_another_vault_is_listed_without_a_name() {
     // A blob sealed under another key cannot be opened: no name, not online.
@@ -1221,7 +1324,14 @@ fn presence_blobs_are_one_size_whatever_they_say() {
         ),
         (widest.as_str(), false, false, Some(longest)),
     ] {
-        let p = presence::presence_now(name.to_owned(), true, writer, recording, gone);
+        let p = presence::presence_now(
+            presence::KIND_APP,
+            name.to_owned(),
+            true,
+            writer,
+            recording,
+            gone,
+        );
         let blob = presence::blob_of(&p, &keys, device).unwrap();
         sizes.insert(blob.len());
         let back = presence::open_blob(&keys, device, &blob).unwrap();

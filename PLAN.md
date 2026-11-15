@@ -2315,10 +2315,20 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - deps: T11.5
   - do: `recommend::tests::hardware_facts_of_this_host_feed_the_recommendation` gets `#[cfg_attr(not(windows), ignore = "hardware facts are read on Windows only")]` (assertion unchanged); the runtime's 17 Linux-only dead-code warnings (unused `ChildEnd` variants and the like) are removed by gating the Windows-only code, never by `allow`; where the worker would size threads from `earshot_hardware::read()` (a core count of 1 off Windows), use `std::thread::available_parallelism` on non-Windows. The linux-check workflow then runs `cargo clippy -p earshot-runtime --lib -- -D warnings` as a gating step.
   - accept: `cargo test -p earshot-runtime recommend` on Windows, and a green linux-check run whose clippy step passes
-- [ ] T11.6 Summary worker container
+- [x] T11.6 Summary worker container
   - deps: T11.5, T11.3da
   - do: docs/sync.md section 10 (reusing `earshot-runtime`, T11.5's recommendation). `earshot-worker`: a headless paired device (its own pairing code and token, the vault key from a Docker secret or an owner-only file, never an environment variable or image layer) running the sync client, presence (kind "server") and the `SummaryRequest` target path; the model in a stock llama.cpp server container on the compose network, reached through `earshot-llm` as an OpenAI-compatible endpoint, with compose profiles `cpu` and `gpu`; an endpoint on its own compose network counts as its local model (kept-local meetings allowed), any other is remote (kept-local declined); it never applies voiceprints, holds no audio, and the relay container still holds no key. The Sync page's device list and the offload choice show it. Released side by side with the relay (the owner, 2026-11-15): `ghcr.io/pitslug/earshot-worker:<version>` and `latest` from the same release tag and workflow, and its compose service attached to the release beside the relay's. Reviewer required (network code, privacy).
   - accept: `cargo test -p earshot-worker` and a summary written by the worker for a simulated device's request, on the `cpu` profile; a green linux-check run with `earshot-worker` among its gating steps; the image's binary read with `ldd` and exactly the shared libraries it needs copied into it (or none), the container answering its health check from the slim image
+- [ ] T11.6a The worker's presence names processor or graphics card
+  - found (T11.6, 2026-11-15).
+  - deps: T11.6
+  - do: docs/sync.md section 10 promises "On <server> (local model, processor)" or "graphics card"; presence carries only the writer kind today. Add an optional presence field read from the worker's compose profile, and the copy in `fixtures/ui/offload_copy_cases.json` (both suites); presence stays one padded size.
+  - accept: `cargo test -p earshot-worker` and `cargo test -p earshot-desktop offload`
+- [ ] T11.6c Remove another device from the Sync page
+  - found (T11.6, 2026-11-15): a worker (or computer) stranded by a failed join, or one the owner no longer has, stays listed offline; the only recovery today is wiping its volume and joining again.
+  - deps: T11.6
+  - do: a "Remove" action on another device's row of the Sync page (confirm first): the relay revokes that device's token and drops its presence; its rows stay. Fixed copy through the shared tables; the relay endpoint authorised as removal of self is today.
+  - accept: `cargo test -p earshot-runtime sync` and `cargo test -p earshot-desktop sync`
 - [ ] T11.6b Runtime without the in-process engines (optional)
   - found (T11.5, 2026-11-15).
   - deps: T11.6

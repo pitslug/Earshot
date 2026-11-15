@@ -1534,6 +1534,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "earshot-worker"
+version = "0.3.7"
+dependencies = [
+ "earshot-core",
+ "earshot-llm-replay",
+ "earshot-net",
+ "earshot-runtime",
+ "earshot-store",
+ "earshot-sync-server",
+ "rand_chacha",
+ "rand_core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ed25519"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

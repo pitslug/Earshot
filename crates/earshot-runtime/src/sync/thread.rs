@@ -320,10 +320,18 @@ fn run(
             && Instant::now() >= at
         {
             // Advisory: a failure is the next tick's to report. Decided and sent under the
-            // presence lock, so a going away either stops this beat or queues behind it.
+            // presence lock, so a going away either stops this beat or queues behind it. A
+            // summary worker's writer kind is found first, outside the lock (its locator may
+            // look a name up), so a gone waiting for the lock is held up only by the send itself
+            // (bounded by its request timeout), as before; the kind is at most one lookup old.
+            // Only a worker's locator can panic: it then names no writer.
+            let worker =
+                catch_unwind(AssertUnwindSafe(|| client.worker_writer_now())).unwrap_or(Some(None));
             let mut b = beats_of(beats);
             if b.beat_due()
-                && let Ok(Ok(())) = catch_unwind(AssertUnwindSafe(|| client.send_presence(false)))
+                && let Ok(Ok(())) = catch_unwind(AssertUnwindSafe(|| {
+                    client.send_presence_with(false, worker)
+                }))
             {
                 b.sent_online();
             }
