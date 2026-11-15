@@ -15,6 +15,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use earshot_core::asr::CancelToken;
 use earshot_core::model::SummaryRequest;
@@ -29,7 +30,8 @@ use earshot_store::{DataDir, Store};
 
 use crate::config::{Config, ConfigError};
 use crate::endpoint::{Place, locate};
-use crate::vault::{FileVault, VaultRefused};
+use crate::health;
+use crate::vault::{FileVault, Presence, VaultRefused};
 
 /// Why the worker cannot do what was asked, as fixed words. Never holds a key, a token, a code
 /// or an address.
@@ -92,6 +94,8 @@ impl WorkerError {
             Self::Spawn => "spawn",
             Self::Vault(VaultRefused::NotWritable) => "vault_not_writable",
             Self::Vault(VaultRefused::ReadableByOthers) => "vault_readable_by_others",
+            Self::Vault(VaultRefused::Incomplete) => "vault_incomplete",
+            Self::Vault(VaultRefused::Unreadable) => "vault_unreadable",
         }
     }
 }
@@ -132,17 +136,34 @@ pub fn vault_of(config: &Config) -> FileVault {
 /// Both files' folders are proven writable first, so a code is never spent (and the device
 /// registered at the relay) when the key could not be kept.
 ///
+/// From before the code is spent until the device is named and offers summaries, the join
+/// marker ([`FileVault::begin_join`]) is in the vault folder, so a run waiting beside this join
+/// (`docker exec`) starts only once the whole join is done (T11.6d). The marker is removed
+/// whether the join worked or not; only a crash leaves it.
+///
 /// # Errors
 /// [`WorkerError::Config`] without a relay; [`WorkerError::VoiceprintsOn`];
-/// [`WorkerError::Vault`] when the files cannot be written; the pairing's [`SyncProblem`]s (a
-/// wrong or used code, a device already joined).
+/// [`WorkerError::Vault`] when the files or the marker cannot be written or the marker cannot
+/// be removed; the pairing's [`SyncProblem`]s (a wrong or used code, a device already joined).
 pub fn join(services: &Services, config: &Config, code: &str) -> Result<(), WorkerError> {
     let relay = config.relay()?;
     refuse_voiceprints(services)?;
     let vault = vault_of(config);
     vault.probe_writable()?;
-    earshot_runtime::sync::join_with_code(services, &vault, relay, code)?;
-    present_as_worker(services, config)
+    vault.begin_join(now_s())?;
+    let joined = earshot_runtime::sync::join_with_code(services, &vault, relay, code)
+        .map_err(WorkerError::from)
+        .and_then(|()| present_as_worker(services, config));
+    let ended = vault.end_join();
+    joined?;
+    Ok(ended?)
+}
+
+/// The system clock in Unix seconds (0 before 1970).
+fn now_s() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn refuse_voiceprints(services: &Services) -> Result<(), WorkerError> {
@@ -151,6 +172,98 @@ fn refuse_voiceprints(services: &Services) -> Result<(), WorkerError> {
         return Err(WorkerError::VoiceprintsOn);
     }
     Ok(())
+}
+
+/// How often a run waiting to be joined looks for the vault files again (a judgement: a join
+/// through `docker exec` is picked up within this).
+pub const JOIN_POLL: Duration = Duration::from_secs(5);
+
+/// What a waiting run tells the person, each at most once per run ([`wait_to_join`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notice {
+    /// Not joined yet.
+    Waiting,
+    /// An earlier join stopped part way: run `join` again.
+    Interrupted,
+}
+
+impl Notice {
+    /// The fixed line printed.
+    #[must_use]
+    pub const fn line(self) -> &'static str {
+        match self {
+            Self::Waiting => "waiting to join",
+            Self::Interrupted => "join interrupted: run `earshot-worker join` again",
+        }
+    }
+}
+
+/// How [`wait_to_join`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waited {
+    /// Both vault files are there: run.
+    Joined,
+    /// A stop was asked for while waiting: end cleanly, sending nothing (the worker never
+    /// joined, so it has no presence to take back).
+    Stopped,
+}
+
+/// Waits until the worker has been joined (T11.6d), so `run` can stay up beside a `join` given
+/// through `docker exec` instead of exiting and being restarted. Reads only the configuration,
+/// the two vault files and the join marker ([`FileVault::presence`] at `now_s()`): the store is
+/// not opened while waiting, so a `join` in the same container is the only process using it.
+///
+/// [`Presence::Present`] (both files, no marker) returns [`Waited::Joined`] at once. Not joined
+/// yet, it keeps waiting, calling `pause` with [`JOIN_POLL`] between looks (`pause` returns true
+/// when a stop was asked for), records what it waits on in `heartbeat` at every look (so a
+/// waiting run that died reads `stale`), and calls `notice` at most once per [`Notice`] (the
+/// caller prints its fixed line):
+/// - [`Presence::Absent`], or [`Presence::Joining`] (a join is under way, also when the run
+///   starts in the middle of one): [`Notice::Waiting`], [`health::waiting_text`] (`not_joined`).
+/// - [`Presence::Interrupted`] (a stale marker): [`Notice::Interrupted`],
+///   [`health::interrupted_text`] (`join_interrupted`). It does not exit: the container stays
+///   up, so `join` can be run in it again, which overwrites the marker.
+///
+/// Anything else is refused at once: one file without the other and no marker, or a path that
+/// is not a file.
+///
+/// # Errors
+/// [`WorkerError::Config`] without a relay; [`WorkerError::Vault`].
+pub fn wait_to_join(
+    config: &Config,
+    heartbeat: &Path,
+    now_s: &dyn Fn() -> u64,
+    notice: &mut dyn FnMut(Notice),
+    pause: &mut dyn FnMut(Duration) -> bool,
+) -> Result<Waited, WorkerError> {
+    config.relay()?;
+    let vault = vault_of(config);
+    let mut said = Vec::new();
+    let mut say = |n: Notice| {
+        if !said.contains(&n) {
+            said.push(n);
+            notice(n);
+        }
+    };
+    loop {
+        let now = now_s();
+        // A record that cannot be written leaves the health check unhealthy anyway (no
+        // heartbeat, or a stale one).
+        match vault.presence(now)? {
+            Presence::Present => return Ok(Waited::Joined),
+            Presence::Absent | Presence::Joining => {
+                say(Notice::Waiting);
+                let _ = health::record_waiting(heartbeat, now);
+            }
+            Presence::Interrupted => {
+                say(Notice::Interrupted);
+                let _ = health::record_interrupted(heartbeat, now);
+            }
+        }
+        if pause(JOIN_POLL) {
+            return Ok(Waited::Stopped);
+        }
+    }
 }
 
 /// The name the other devices show, and "Write summaries for my other devices" on.
@@ -210,7 +323,8 @@ impl Worker {
     ///
     /// # Errors
     /// [`WorkerError::Config`] without a relay; [`WorkerError::VoiceprintsOn`];
-    /// [`WorkerError::NotJoined`]; [`WorkerError::Vault`] for a file others can read;
+    /// [`WorkerError::NotJoined`] with neither vault file; [`WorkerError::Vault`] for one file
+    /// without the other, a path that is not a file, or a file others can read;
     /// [`WorkerError::Store`].
     pub fn open_with(
         services: Services,
@@ -220,7 +334,7 @@ impl Worker {
         config.relay()?;
         refuse_voiceprints(&services)?;
         let vault = Arc::new(vault_of(&config));
-        if !vault.has().map_err(|_| WorkerError::Store)? {
+        if vault.presence(now_s())? != Presence::Present {
             return Err(WorkerError::NotJoined);
         }
         vault.check_private()?;
@@ -505,6 +619,379 @@ mod tests {
         );
     }
 
+    fn wait_config(dir: &Path) -> Config {
+        Config {
+            data: dir.join("data"),
+            relay: Some("https://sync.example.com".into()),
+            llm_url: Url::parse("http://llama:8080/v1").unwrap(),
+            llm_service: "llama".into(),
+            model_subnet: None,
+            llm_model: "test-model".into(),
+            llm_context: 16_384,
+            llm_timeout: Duration::from_secs(60),
+            name: "Invented server".into(),
+            key_file: dir.join("vault/key"),
+            token_file: dir.join("vault/token"),
+        }
+    }
+
+    fn wait_dir(tag: &str) -> Dir {
+        let dir =
+            Dir(std::env::temp_dir()
+                .join(format!("earshot-worker-wait-{tag}-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&dir.0);
+        std::fs::create_dir_all(&dir.0).unwrap();
+        dir
+    }
+
+    fn write_key(config: &Config) {
+        std::fs::create_dir_all(config.key_file.parent().unwrap()).unwrap();
+        std::fs::write(&config.key_file, "ab".repeat(32)).unwrap();
+    }
+
+    fn write_token(config: &Config) {
+        std::fs::create_dir_all(config.token_file.parent().unwrap()).unwrap();
+        std::fs::write(&config.token_file, "an-invented-token").unwrap();
+    }
+
+    const NOW: u64 = 1_800_000_000;
+
+    fn write_marker(config: &Config, at: u64) {
+        std::fs::create_dir_all(config.key_file.parent().unwrap()).unwrap();
+        std::fs::write(
+            vault_of(config).marker_path(),
+            crate::vault::marker_text(at),
+        )
+        .unwrap();
+    }
+
+    fn remove_marker(config: &Config) {
+        std::fs::remove_file(vault_of(config).marker_path()).unwrap();
+    }
+
+    /// Nothing of the store exists while it waits: the data folder is not even created.
+    fn assert_no_store(config: &Config) {
+        assert!(!config.data.exists(), "the store was opened while waiting");
+    }
+
+    /// No vault files: one notice, the health check says `not_joined` while it waits, it
+    /// looks again every [`JOIN_POLL`], and it runs as soon as both files are there.
+    #[test]
+    fn worker_wait_runs_once_joined_and_says_so_once() {
+        let dir = wait_dir("joined");
+        let config = wait_config(&dir.0);
+        let heartbeat = health::heartbeat_path(&dir.0);
+        let mut notices = 0;
+        let mut pauses = Vec::new();
+        let waited = wait_to_join(
+            &config,
+            &heartbeat,
+            &|| NOW,
+            &mut |_| notices += 1,
+            &mut |d| {
+                pauses.push(d);
+                assert_eq!(
+                    health::check(&dir.0, NOW),
+                    Err(health::Unhealthy::NotJoined),
+                    "while waiting"
+                );
+                assert_no_store(&config);
+                if pauses.len() == 3 {
+                    write_key(&config);
+                    write_token(&config);
+                }
+                false
+            },
+        );
+        assert_eq!(waited, Ok(Waited::Joined));
+        assert_eq!(notices, 1, "one line, however long it waits");
+        assert_eq!(pauses, vec![JOIN_POLL; 3]);
+        assert_no_store(&config);
+    }
+
+    /// The waiting record carries the time of each look, so a waiting run that died reads
+    /// stale rather than `not_joined` forever.
+    #[test]
+    fn worker_wait_refreshes_its_record_at_every_look() {
+        let dir = wait_dir("refresh");
+        let config = wait_config(&dir.0);
+        let heartbeat = health::heartbeat_path(&dir.0);
+        let clock = std::cell::Cell::new(NOW);
+        let mut pauses = 0;
+        let waited = wait_to_join(
+            &config,
+            &heartbeat,
+            &|| clock.get(),
+            &mut |_| {},
+            &mut |d| {
+                pauses += 1;
+                assert_eq!(
+                    std::fs::read_to_string(&heartbeat).unwrap(),
+                    health::waiting_text(clock.get())
+                );
+                clock.set(clock.get() + d.as_secs());
+                pauses == 3
+            },
+        );
+        assert_eq!(waited, Ok(Waited::Stopped));
+        // Read long after the last look: stale.
+        assert_eq!(
+            health::check(&dir.0, clock.get() + health::STALE_AFTER_S + 1),
+            Err(health::Unhealthy::Stale)
+        );
+    }
+
+    /// A stop while waiting ends it, with nothing joined, nothing written to the vault and no
+    /// store opened.
+    #[test]
+    fn worker_wait_stops_cleanly_when_asked() {
+        let dir = wait_dir("stopped");
+        let config = wait_config(&dir.0);
+        let heartbeat = health::heartbeat_path(&dir.0);
+        let mut notices = 0;
+        let mut pauses = 0;
+        let waited = wait_to_join(
+            &config,
+            &heartbeat,
+            &|| NOW,
+            &mut |_| notices += 1,
+            &mut |_| {
+                pauses += 1;
+                pauses == 2
+            },
+        );
+        assert_eq!(waited, Ok(Waited::Stopped));
+        assert_eq!((notices, pauses), (1, 2));
+        assert!(!config.key_file.exists() && !config.token_file.exists());
+        assert_no_store(&config);
+    }
+
+    /// Already joined: no notice, no pause, the heartbeat left to the run loop.
+    #[test]
+    fn worker_wait_returns_at_once_when_joined() {
+        let dir = wait_dir("present");
+        let config = wait_config(&dir.0);
+        write_key(&config);
+        write_token(&config);
+        let heartbeat = health::heartbeat_path(&dir.0);
+        let waited = wait_to_join(
+            &config,
+            &heartbeat,
+            &|| NOW,
+            &mut |_| panic!("no notice"),
+            &mut |_| panic!("no pause"),
+        );
+        assert_eq!(waited, Ok(Waited::Joined));
+        assert!(!heartbeat.exists());
+    }
+
+    /// A join through `docker exec` while it waits: the marker first, then the key, the
+    /// token, the device set up, the marker gone. The run starts only after the marker is
+    /// gone, however long the files have been there.
+    #[test]
+    fn worker_wait_holds_until_the_join_marker_is_gone() {
+        let dir = wait_dir("join");
+        let config = wait_config(&dir.0);
+        let heartbeat = health::heartbeat_path(&dir.0);
+        let mut notices = 0;
+        let mut pauses = 0;
+        let waited = wait_to_join(
+            &config,
+            &heartbeat,
+            &|| NOW,
+            &mut |_| notices += 1,
+            &mut |_| {
+                pauses += 1;
+                match pauses {
+                    1 => write_marker(&config, NOW),
+                    2 => write_key(&config),
+                    3 => write_token(&config),
+                    4 => {} // the join is still setting up the device
+                    5 => remove_marker(&config),
+                    _ => panic!("joined by now"),
+                }
+                assert_no_store(&config);
+                false
+            },
+        );
+        assert_eq!(waited, Ok(Waited::Joined));
+        assert_eq!((notices, pauses), (1, 5));
+    }
+
+    /// A run that starts in the middle of a join (marker and key there, no token yet) waits for
+    /// it, rather than refusing the half vault; a stop during it is clean.
+    #[test]
+    fn worker_wait_a_run_starting_mid_join_waits_for_it() {
+        let dir = wait_dir("mid-join");
+        let config = wait_config(&dir.0);
+        let heartbeat = health::heartbeat_path(&dir.0);
+        write_marker(&config, NOW);
+        write_key(&config);
+        let mut notices = 0;
+        let mut pauses = 0;
+        let waited = wait_to_join(
+            &config,
+            &heartbeat,
+            &|| NOW,
+            &mut |_| notices += 1,
+            &mut |_| {
+                pauses += 1;
+                if pauses == 1 {
+                    write_token(&config);
+                    remove_marker(&config);
+                }
+                false
+            },
+        );
+        assert_eq!(waited, Ok(Waited::Joined));
+        assert_eq!((notices, pauses), (1, 1));
+
+        write_marker(&config, NOW);
+        let waited = wait_to_join(&config, &heartbeat, &|| NOW, &mut |_| {}, &mut |_| true);
+        assert_eq!(waited, Ok(Waited::Stopped));
+    }
+
+    /// A marker left by a crashed join keeps the run waiting (it never exits, so the container
+    /// stays up for `join`) with `join_interrupted`, said once, whatever the files hold; a new
+    /// join overwrites the marker and the wait goes on from there to running.
+    #[test]
+    fn worker_wait_keeps_waiting_behind_an_interrupted_join_until_a_new_join() {
+        let dir = wait_dir("interrupted");
+        let config = wait_config(&dir.0);
+        let heartbeat = health::heartbeat_path(&dir.0);
+        let stale = NOW + crate::vault::JOIN_STALE_S + 1;
+        write_marker(&config, NOW);
+        write_key(&config);
+        write_token(&config);
+        let mut notices = Vec::new();
+        let mut pauses = 0;
+        let waited = wait_to_join(
+            &config,
+            &heartbeat,
+            &|| stale,
+            &mut |n| notices.push(n),
+            &mut |_| {
+                pauses += 1;
+                let verdict = health::check(&dir.0, stale);
+                match pauses {
+                    1..=3 => assert_eq!(verdict, Err(health::Unhealthy::JoinInterrupted)),
+                    // `join` again: its marker replaces the stale one.
+                    4 => {
+                        assert_eq!(verdict, Err(health::Unhealthy::JoinInterrupted));
+                        write_marker(&config, stale);
+                    }
+                    5 => {
+                        assert_eq!(verdict, Err(health::Unhealthy::NotJoined));
+                        remove_marker(&config);
+                    }
+                    _ => panic!("joined by now"),
+                }
+                assert_no_store(&config);
+                false
+            },
+        );
+        assert_eq!(waited, Ok(Waited::Joined));
+        assert_eq!(pauses, 5);
+        assert_eq!(notices, vec![Notice::Interrupted, Notice::Waiting]);
+    }
+
+    /// A join that hangs past the limit while the run waits turns into `join_interrupted`
+    /// without ending the wait; a stop still ends it cleanly.
+    #[test]
+    fn worker_wait_a_join_that_hangs_too_long_reads_as_interrupted() {
+        let dir = wait_dir("hang");
+        let config = wait_config(&dir.0);
+        let heartbeat = health::heartbeat_path(&dir.0);
+        let stale = NOW + crate::vault::JOIN_STALE_S + 1;
+        write_marker(&config, NOW);
+        write_key(&config);
+        let clock = std::cell::Cell::new(NOW);
+        let mut notices = Vec::new();
+        let mut pauses = 0;
+        let waited = wait_to_join(
+            &config,
+            &heartbeat,
+            &|| clock.get(),
+            &mut |n| notices.push(n),
+            &mut |_| {
+                pauses += 1;
+                clock.set(stale);
+                pauses == 3
+            },
+        );
+        assert_eq!(waited, Ok(Waited::Stopped));
+        assert_eq!(notices, vec![Notice::Waiting, Notice::Interrupted]);
+        assert_eq!(
+            health::check(&dir.0, stale),
+            Err(health::Unhealthy::JoinInterrupted)
+        );
+        // Fixed lines only.
+        assert_eq!(Notice::Waiting.line(), "waiting to join");
+        assert!(Notice::Interrupted.line().contains("earshot-worker join"));
+    }
+
+    /// One file without the other and no join under way is not a worker waiting to join: it
+    /// is refused at once, as before T11.6d.
+    #[test]
+    fn worker_wait_refuses_a_half_present_vault() {
+        let dir = wait_dir("half");
+        let config = wait_config(&dir.0);
+        let heartbeat = health::heartbeat_path(&dir.0);
+        for half in [write_key as fn(&Config), write_token] {
+            let _ = std::fs::remove_file(&config.key_file);
+            let _ = std::fs::remove_file(&config.token_file);
+            half(&config);
+            let waited = wait_to_join(
+                &config,
+                &heartbeat,
+                &|| NOW,
+                &mut |_| panic!("not waiting"),
+                &mut |_| panic!("no pause"),
+            );
+            assert_eq!(waited, Err(WorkerError::Vault(VaultRefused::Incomplete)));
+        }
+        assert_eq!(
+            WorkerError::Vault(VaultRefused::Incomplete).health_word(),
+            "vault_incomplete"
+        );
+    }
+
+    /// A path that is not a file is refused at once; no relay address is a configuration
+    /// error before anything is looked at.
+    #[test]
+    fn worker_wait_refuses_an_unusable_vault_or_configuration_at_once() {
+        let dir = wait_dir("unusable");
+        let config = wait_config(&dir.0);
+        let heartbeat = health::heartbeat_path(&dir.0);
+        std::fs::create_dir_all(&config.key_file).unwrap();
+        let waited = wait_to_join(
+            &config,
+            &heartbeat,
+            &|| NOW,
+            &mut |_| panic!("not waiting"),
+            &mut |_| panic!("no pause"),
+        );
+        assert_eq!(waited, Err(WorkerError::Vault(VaultRefused::Unreadable)));
+        assert_eq!(
+            WorkerError::Vault(VaultRefused::Unreadable).health_word(),
+            "vault_unreadable"
+        );
+        let no_relay = Config {
+            relay: None,
+            ..wait_config(&dir.0)
+        };
+        assert!(matches!(
+            wait_to_join(
+                &no_relay,
+                &heartbeat,
+                &|| NOW,
+                &mut |_| panic!("not waiting"),
+                &mut |_| panic!("no pause"),
+            ),
+            Err(WorkerError::Config(_))
+        ));
+    }
+
     #[test]
     fn worker_errors_say_what_to_do_in_fixed_words() {
         assert_eq!(WorkerError::NotJoined.health_word(), "not_joined");
@@ -522,6 +1009,8 @@ mod tests {
             WorkerError::Sync(SyncProblem::KeyMismatch),
             WorkerError::Vault(VaultRefused::NotWritable),
             WorkerError::Vault(VaultRefused::ReadableByOthers),
+            WorkerError::Vault(VaultRefused::Incomplete),
+            WorkerError::Vault(VaultRefused::Unreadable),
         ] {
             assert!(
                 e.health_word()

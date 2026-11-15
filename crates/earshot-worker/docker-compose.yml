@@ -13,19 +13,22 @@
 #      EARSHOT_WORKER_RELAY=https://<your relay's address, as your devices use it>
 #      EARSHOT_VERSION=<the Earshot version, or leave it out for latest>
 #
-# 3. Show a pairing code on one of your devices (Settings, Sync, "Show a pairing code"), then join with
-#    it (the code is typed, never given as an argument):
-#
-#      docker compose run --rm -it earshot-worker join
-#
-#    The vault key and token are written to the worker's volume, readable by its user only.
-# 4. Start it with the model on the processor or on an NVIDIA graphics card:
+# 3. Start it with the model on the processor or on an NVIDIA graphics card:
 #
 #      docker compose --profile cpu up -d
 #      docker compose --profile gpu up -d
 #
-#    Moving between them is a profile change; the worker is the same. On your other devices
-#    it is listed by its name; choose it under "Another computer" on the Summaries page.
+#    Moving between them is a profile change; the worker is the same. Until it is joined it
+#    prints "waiting to join", looks for its vault files every few seconds and its health check
+#    says "unhealthy: not_joined"; it sends nothing anywhere meanwhile.
+# 4. Show a pairing code on one of your devices (Settings, Sync, "Show a pairing code"), then join
+#    the running worker with it (the code is typed, never given as an argument):
+#
+#      docker exec -it earshot-worker earshot-worker join
+#
+#    The vault key and token are written to the worker's volume, readable by its user only, and
+#    the running worker starts within a few seconds. On your other devices it is listed by its
+#    name; choose it under "Another computer" on the Summaries page.
 #
 # To keep the key in Docker secrets instead of the volume: copy the two files out of the volume
 # (vault/key and vault/token), make them owned by uid 10001 and readable by it only
@@ -49,6 +52,8 @@
 services:
   earshot-worker:
     image: ghcr.io/pitslug/earshot-worker:${EARSHOT_VERSION:-latest}
+    # Named, so step 4's `docker exec` finds it.
+    container_name: earshot-worker
     restart: unless-stopped
     profiles: ["cpu", "gpu"]
     environment:

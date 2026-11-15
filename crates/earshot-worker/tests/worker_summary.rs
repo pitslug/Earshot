@@ -37,6 +37,13 @@ use earshot_worker::worker::{Worker, WorkerError, join, open_services};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
+fn now_s() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 const SECRET: &str = "an-invented-setup-secret-for-worker-tests";
 /// A fixed meeting start (any time works: the clocks are the system's).
 const T0: u64 = 1_792_294_800_000;
@@ -259,6 +266,13 @@ fn worker_writes_the_summary_a_simulated_device_asks_for() {
     join(&wsvc, &config, offer.code()).unwrap();
     drop(offer);
     assert!(config.key_file.is_file() && config.token_file.is_file());
+    // The join ended: no marker holds a waiting run back.
+    let vault = earshot_worker::worker::vault_of(&config);
+    assert!(!vault.marker_path().exists());
+    assert_eq!(
+        vault.presence(now_s()),
+        Ok(earshot_worker::vault::Presence::Present)
+    );
 
     // The endpoint is remote until the test says it is the worker's own model.
     let own = Arc::new(AtomicBool::new(false));
@@ -443,6 +457,13 @@ fn worker_join_with_a_wrong_code_stores_nothing() {
     assert_eq!(e, WorkerError::Sync(SyncProblem::BadCode));
     assert!(!e.to_string().contains("not a code"));
     assert!(!config.key_file.exists() && !config.token_file.exists());
+    // A failed join leaves no marker either: a waiting run keeps waiting.
+    let vault = earshot_worker::worker::vault_of(&config);
+    assert!(!vault.marker_path().exists());
+    assert_eq!(
+        vault.presence(now_s()),
+        Ok(earshot_worker::vault::Presence::Absent)
+    );
 }
 
 /// A vault folder that cannot be written is refused before the code is spent: the same code
