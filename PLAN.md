@@ -2258,7 +2258,7 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - deps: GATE-08
   - do: docs/sync.md section 4. An adapter crate: XChaCha20-Poly1305 over a `SyncEnvelope` with row key, `updated_at` and format as associated data; the HMAC row key; the 128-bit pairing code and its HKDF wrap of the vault key; key material from the operating system's generator, redacted `Debug`, wiped on drop; the plaintext audio-signature and size check before sealing. No HTTP, nothing in core. Reviewer required (privacy).
   - accept: `cargo test -p earshot-sync`
-- [~] T11.2b Publish the relay image from GitHub Actions
+- [x] T11.2b Publish the relay image from GitHub Actions
   - deps: T11.2
   - do: the owner, 2026-11-14: the relay ships from this repo with the Windows releases, same version number, as `ghcr.io/pitslug/earshot-sync-server:<version>` and `latest`. One workflow, the repo's first: it runs only on a pushed release tag, builds only `earshot-sync-server` from its Dockerfile for linux/amd64 and pushes it; permissions `contents: read` and `packages: write` only, no secret but the run's own token, every action pinned by commit hash, and nothing in its log but the build (the log is public). `docker-compose.yml` names the image by version and is attached to the release by the release steps (docs/overnight-run.md gains the line). The image's version comes from the workspace version, and the workflow fails if the tag and that version differ. Pushing a tag is the owner's step.
   - accept: a run on a pre-release tag is green and the owner's server pulls that tag (recorded at GATE-09 if not before)
@@ -2282,7 +2282,7 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - deps: T11.2b, T11.3a, T11.3b, T11.3c (offload and Dictionary sync follow GATE-09: the owner, 2026-11-14, docs/sync-spec.md section 0)
   - do: `accept m11`: server via Docker if available else the binary; two simulated clients; sync.convergence; sync.no_audio (type-level check plus a scan of every plaintext at the client boundary for RIFF, fLaC and OggS signatures, and of every server table for rows over the size limit; wording as GATE-08 approves).
   - accept: `cargo xtask accept m11`
-- [ ] GATE-09 Self-hosted deployment
+- [x] GATE-09 Self-hosted deployment
   - deps: T11.4
 - [ ] T11.3ca Presence says gone on quit and on sleep
   - deps: T11.3c
