@@ -581,7 +581,7 @@ fn offload_the_helper_writes_the_summary_and_it_syncs_back() {
     };
     assert_eq!(
         (device, name.as_str(), writer),
-        (b.id(), "Invented desk", WriterKind::OpenaiCompatible)
+        (b.id(), "Invented desk", Some(WriterKind::OpenaiCompatible))
     );
     assert!(matches!(host.offload, Some(OffloadChoice::Ask { .. })));
     assert!(
@@ -1327,10 +1327,10 @@ fn offload_an_undone_summary_is_not_written_over_after_a_restart() {
     );
 }
 
-/// A request older than the look-back is not looked at, and a meeting asked twice gets no second
-/// request (A7, A8).
+/// A meeting asked twice gets no second request, and an open request is looked at whatever its
+/// age (A8).
 #[test]
-fn offload_old_requests_are_left_and_a_meeting_is_asked_once() {
+fn offload_a_meeting_is_asked_once_and_open_requests_never_age() {
     let relay = relay();
     let (a, b) = pair(&relay);
     let m = meeting(&a.svc, "Invented once", 36);
@@ -1338,20 +1338,228 @@ fn offload_old_requests_are_left_and_a_meeting_is_asked_once() {
     assert_eq!(ask(&a.svc, m, b.id()).unwrap(), Some(first), "the open one");
     let other = DeviceId::from_bytes([0x44; 16]);
     assert_eq!(
-        ask(&a.svc, m, other).unwrap(),
-        Some(first),
-        "one open request per meeting"
+        ask_for(&a.svc, m, other).unwrap(),
+        Some(Asked {
+            request: first,
+            target: b.id(),
+        }),
+        "one open request per meeting, naming its own device"
     );
     assert_eq!(a.svc.store().summary_requests().unwrap().len(), 1);
-    // An open request is looked at whatever its age: withdrawn and handed back.
     let asker = Recorder::default();
     a.clock.advance_ms(LOOK_BACK_MS + 1);
     assert_eq!(a.step(None, &asker).written_here, 1);
-    // A withdrawn one past the look-back is not looked at again, even by a new process.
-    let rh = Recorder::default();
+}
+
+/// The look-back runs from this device's own start or settling of the write here, never from the
+/// request's HLC time: a request declined while the asker was away a week is still written, and so
+/// is one whose write here was refused on waking; one started more than 7 days ago is left.
+#[test]
+fn offload_closed_requests_age_from_their_start_on_this_device() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    set_offer_summaries(&b.svc, false).unwrap();
+    let m = meeting(&a.svc, "Invented away", 41);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    sync(&ca, &cb);
+    // The helper declines while the asker is away for eight days.
+    assert_eq!(b.step(None, &Recorder::default()).declined, 1);
+    cb.tick().unwrap();
+    a.clock.advance_ms(LOOK_BACK_MS + 24 * 60 * 60 * 1000);
+    ca.tick().unwrap();
+    assert_eq!(a.request(request).state, RequestState::Declined);
+    // On waking the write here is refused (a job of the meeting runs) ...
+    let asker = Recorder::default();
+    asker
+        .refuse_here
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(a.step(None, &asker).written_here, 0);
+    // ... and a week later, never started, it is still handed.
+    a.clock.advance_ms(LOOK_BACK_MS + 1);
+    asker
+        .refuse_here
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(
-        Offload::new().step(&a.svc, &mut || None, &rh).unwrap(),
+        a.step(None, &asker).written_here,
+        1,
+        "declined while away, then refused"
+    );
+    // Started: a new process within the week hands it again (no summary since) ...
+    a.clock.advance_ms(LOOK_BACK_MS - 1);
+    let rh = Recorder::default();
+    Offload::new().step(&a.svc, &mut || None, &rh).unwrap();
+    assert_eq!(rh.here().len(), 1);
+    // ... and one more than a week after it started leaves it.
+    a.clock.advance_ms(2);
+    let late = Recorder::default();
+    assert_eq!(
+        Offload::new().step(&a.svc, &mut || None, &late).unwrap(),
         StepReport::default()
     );
-    assert!(rh.here().is_empty());
+    assert!(late.here().is_empty());
+}
+
+/// `offload-times` is `version u32 LE | JSON`, pinned byte for byte.
+#[test]
+fn offload_times_bytes_are_pinned() {
+    let mut times = Times::default();
+    times.requests.insert(
+        "01900000-0000-7000-8000-000000000001".into(),
+        Since {
+            state: "requested".into(),
+            since_ms: 5,
+            absent_since_ms: None,
+        },
+    );
+    times.closed.insert(
+        "01900000-0000-7000-8000-000000000002".into(),
+        Closed {
+            seen_ms: 6,
+            started_ms: Some(7),
+            settled_ms: None,
+        },
+    );
+    let mut want = 1u32.to_le_bytes().to_vec();
+    want.extend_from_slice(
+        br#"{"requests":{"01900000-0000-7000-8000-000000000001":{"state":"requested","since_ms":5,"absent_since_ms":null}},"closed":{"01900000-0000-7000-8000-000000000002":{"seen_ms":6,"started_ms":7,"settled_ms":null}}}"#,
+    );
+    assert_eq!(encode_times(&times), want);
+    assert_eq!(read_times(Some(&want)), times);
+    // Unreadable, another version, or nothing: no readings (every wait starts anew, so it grows).
+    assert_eq!(read_times(Some(b"junk")), Times::default());
+    assert_eq!(read_times(Some(&want[..3])), Times::default());
+    let mut other = 2u32.to_le_bytes().to_vec();
+    other.extend_from_slice(&want[4..]);
+    assert_eq!(read_times(Some(&other)), Times::default());
+    assert_eq!(read_times(None), Times::default());
+}
+
+/// A step's write merges: a reading an `ask` wrote after the step read is kept, a reading the
+/// step pruned goes only when it is still what the step read.
+#[test]
+fn offload_times_merge_keeps_an_ask_meanwhile() {
+    let since = |ms| Since {
+        state: "requested".into(),
+        since_ms: ms,
+        absent_since_ms: None,
+    };
+    let before: std::collections::BTreeMap<String, Since> =
+        [("old".to_owned(), since(1)), ("kept".to_owned(), since(2))].into();
+    let after: std::collections::BTreeMap<String, Since> =
+        [("kept".to_owned(), since(2)), ("new".to_owned(), since(3))].into();
+    let mut stored = before.clone();
+    stored.insert("asked".into(), since(4));
+    merge(&mut stored, &before, &after);
+    let keys: Vec<&str> = stored.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        ["asked", "kept", "new"],
+        "the ask meanwhile is kept, old pruned"
+    );
+    // A pruned reading that changed meanwhile stays.
+    let mut changed = before.clone();
+    changed.insert("old".into(), since(9));
+    merge(&mut changed, &before, &after);
+    assert_eq!(changed["old"], since(9));
+}
+
+/// Readings are pruned: an open reading when the request closes, a closed one when the store no
+/// longer holds the request; and they survive a new `Offload` on the same store.
+#[test]
+fn offload_times_are_pruned_and_survive_a_restart() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Invented prune", 42);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    let stored = || {
+        read_times(
+            a.svc
+                .store()
+                .local_value(OFFLOAD_TIMES_KEY)
+                .unwrap()
+                .as_deref(),
+        )
+    };
+    assert!(stored().requests.contains_key(&request.to_string()));
+    // A new process 60 s later: the 90 s still run from the ask.
+    a.clock.advance_ms(60_000);
+    assert_eq!(
+        Offload::new()
+            .step(&a.svc, &mut || None, &Recorder::default())
+            .unwrap(),
+        StepReport::default()
+    );
+    a.clock.advance_ms(CLAIM_WITHIN_MS - 60_000);
+    let asker = Recorder::default();
+    let fresh = Offload::new();
+    assert_eq!(
+        fresh.step(&a.svc, &mut || None, &asker).unwrap().withdrawn,
+        1
+    );
+    // Next step: the open reading is pruned; the closed one holds the start.
+    fresh.step(&a.svc, &mut || None, &asker).unwrap();
+    let t = stored();
+    assert!(!t.requests.contains_key(&request.to_string()));
+    assert!(t.closed[&request.to_string()].started_ms.is_some());
+    // The request tombstoned: its closed reading goes.
+    {
+        let mut db = a.svc.store();
+        let clock = Arc::clone(&a.svc.clock);
+        let (store, hlc) = db.parts();
+        let mut r = store.summary_request(request).unwrap().unwrap();
+        r.meta.mark_deleted(hlc, &*clock);
+        store.put_summary_request(r).unwrap();
+    }
+    Offload::new()
+        .step(&a.svc, &mut || None, &Recorder::default())
+        .unwrap();
+    let t = stored();
+    assert!(
+        !t.closed.contains_key(&request.to_string()),
+        "pruned with the request: {t:?}"
+    );
+}
+
+/// The summary step names the device its request asks: a meeting that already waited for another
+/// device is reported as waiting for that one, not the newly chosen (re-review item 4).
+#[test]
+fn offload_after_meeting_names_the_device_of_an_open_request() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let outcome = crate::host::tests::recorded(&a.svc, 331);
+    let models = crate::backends::ModelDir::new(a._dir.0.join("models"));
+    let sc = CancelToken::new();
+    let never = MockServer::start(vec![reply("Never")]).unwrap();
+    let own = remote_service(&a.svc, &never);
+    // The final pass first, then a request to another device before the summary step.
+    let earlier = DeviceId::from_bytes([0x46; 16]);
+    let peers = helper_online(b.id());
+    let asked = std::cell::Cell::new(None);
+    let choose = || {
+        asked.set(Some(
+            ask(&a.svc, outcome.meeting, earlier).unwrap().unwrap(),
+        ));
+        decide(Some(b.id()), Some(&peers), false)
+    };
+    let host = crate::host::after_meeting_with(
+        &a.svc,
+        &outcome,
+        &run_of(&models, &own, &sc, &choose, true),
+        crate::host::tests::fake_post,
+        &mut |_| {},
+    );
+    let crate::host::SummaryResult::Offloaded {
+        request,
+        device,
+        name,
+        writer,
+    } = host.summary
+    else {
+        panic!("{:?}", host.summary);
+    };
+    assert_eq!(Some(request), asked.get());
+    assert_eq!(device, earlier);
+    assert_eq!((name.as_str(), writer), ("", None));
+    assert!(never.requests().is_empty());
 }

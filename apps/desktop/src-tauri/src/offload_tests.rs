@@ -208,7 +208,7 @@ fn offload_an_asked_summary_shows_the_waiting_line() {
             request: EntityId::from_bytes([1; 16]),
             device: earshot_core::identity::DeviceId::from_bytes([2; 16]),
             name: "Invented desk".into(),
-            writer: WriterKind::ClaudeCode,
+            writer: Some(WriterKind::ClaudeCode),
         },
         0,
     );
@@ -710,5 +710,47 @@ fn offload_device_name_refusal_is_the_shared_tables() {
     assert_eq!(
         table["device_name_too_long"].as_str(),
         Some(crate::sync_settings::DEVICE_NAME_TOO_LONG)
+    );
+}
+
+/// A helper thread that cannot start declines the request `failed` at once, so the asker writes
+/// it (re-review item 5; the spawn seam, never real thread exhaustion).
+#[test]
+fn offload_host_declines_when_its_thread_cannot_start() {
+    fn refuse(
+        _: &'static str,
+        _: Box<dyn FnOnce() + Send>,
+    ) -> std::io::Result<std::thread::JoinHandle<()>> {
+        Err(std::io::Error::other("an invented spawn failure"))
+    }
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    earshot_runtime::sync::set_offer_summaries(&b.svc, true).unwrap();
+    let m = meeting_with_final(&a.svc, 14, 2);
+    let request = earshot_runtime::offload::ask(&a.svc, m, b.id())
+        .unwrap()
+        .unwrap();
+    let (ca, cb) = (a.client(), b.client());
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    cb.tick().unwrap();
+    let (runner, _events) = jobs();
+    let host: Arc<dyn OffloadHost> = Arc::new(
+        HostOffload::new(
+            b.svc.clone(),
+            runner,
+            MeetingQueue::new(),
+            crate::activity::WorkGate::new(),
+            Arc::new(NoWriter),
+        )
+        .with_spawn(refuse),
+    );
+    let state = earshot_runtime::offload::Offload::new();
+    let r = state.step(&b.svc, &mut || None, &*host).unwrap();
+    assert_eq!(r.handed, 1, "{r:?}");
+    let got = b.svc.store().summary_request(request).unwrap().unwrap();
+    assert_eq!(
+        (got.state, got.reason.as_str()),
+        (RequestState::Declined, reason::FAILED)
     );
 }

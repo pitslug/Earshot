@@ -518,6 +518,8 @@ pub struct HostOffload {
     queue: MeetingQueue,
     gate: crate::activity::WorkGate,
     work: Arc<dyn HelperWork>,
+    /// How the `earshot-offload` thread starts (a seam: tests make it fail).
+    spawn: crate::slot_job::Spawn,
 }
 
 impl HostOffload {
@@ -536,7 +538,16 @@ impl HostOffload {
             queue,
             gate,
             work,
+            spawn: crate::slot_job::spawn_named,
         }
+    }
+
+    /// The host with another way to start its thread (tests).
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_spawn(mut self, spawn: crate::slot_job::Spawn) -> Self {
+        self.spawn = spawn;
+        self
     }
 }
 
@@ -563,9 +574,9 @@ impl OffloadHost for HostOffload {
             Arc::clone(&self.work),
         );
         let id = request.id;
-        let spawned = std::thread::Builder::new()
-            .name("earshot-offload".into())
-            .spawn(move || {
+        let spawned = (self.spawn)(
+            "earshot-offload",
+            Box::new(move || {
                 // One outcome whatever happens: a panic declines `failed`, so the asker writes it.
                 let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let pass = gate.enter_work();
@@ -588,7 +599,8 @@ impl OffloadHost for HostOffload {
                 if ran.is_err() {
                     let _ = earshot_runtime::offload::decline(&svc, id, reason::FAILED);
                 }
-            });
+            }),
+        );
         if spawned.is_err() {
             let _ = earshot_runtime::offload::decline(&self.services, id, reason::FAILED);
         }
