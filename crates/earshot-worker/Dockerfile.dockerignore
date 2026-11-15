@@ -1,0 +1,25 @@
+# The summary worker's build context (crates/earshot-worker/Dockerfile; BuildKit reads this file
+# in place of the root .dockerignore). The root file's rules, except that the runtime embeds
+# models/manifest.toml (the model catalogue), so that one file goes in. Nothing private, no
+# model file and no docs.
+.git
+.claude
+.cargo
+target
+**/node_modules
+packages
+apps/desktop/dist
+fixtures/private
+docs
+acceptance
+models/*
+!models/manifest.toml
+scripts
+.env
+**/.env
+
+# Private files (mirrors .gitignore)
+CLAUDE.md
+LOG.md
+gates
+TODO.md
