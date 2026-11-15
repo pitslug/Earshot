@@ -773,7 +773,9 @@ No measurement was re-run for these: they change the rule's logic only, and in e
 Not covered:
 
 - Everyone with the user's own previews on the card was never run with the holder at 7.5 GiB. Its peak, 5.38 GiB above the baseline, is just under the 5.39 to 5.43 GiB the holder left free in T12.59's checks, so whether an 8 GB card holds it with room is not shown.
-- Whether `PREVIEW_MIN_MEMORY_CUDA` should drop below 20 GiB, now that the card placement uses less private memory than the CPU placement beside CUDA that 12 GiB admitted. T12.59's committed rule keeps 20; the owner decides.
+- Whether `PREVIEW_MIN_MEMORY_CUDA` should drop below 20 GiB, now that the card placement uses less private memory than the CPU placement beside CUDA that 12 GiB admitted. T12.59's committed rule keeps 20; the owner decides. (Decided the same day: below.)
+
+**2026-11-15, T12.61: the card placement's memory limit is 12 GiB (the owner's decision).** The owner lowered `PREVIEW_MIN_MEMORY_CUDA` from 20 to 12 GiB, the processor's limit, kept as its own constant. Why: 12 GiB already admits heavier placements (Everyone with the user's own session on the processor reached 11.36 GiB of private memory, `t1260/t1260-cpu-bundled.json`, against 9.33 GiB with it on the card), and at 20 GiB a 16 GB machine with a card with room got the slower processor placement by default. T12.59's rule result stood at 20 (a call with previews on the card peaked at 8.81 GiB of private memory against the 5.81 GiB the processor's limit was judged on); this overrides it by decision, not by a new rule. With both limits at 12 GiB the first fix above (a card with room but memory under the card placement's limit takes the processor placement) can no longer be reached, because a machine under 12 GiB is refused either way, so that branch and its Settings note were removed as unreachable. Nothing was re-measured, and no machine with 12 to 20 GiB of memory has run previews on the card.
 
 ## Provisional words from a streaming model (T12.23, spike, evaluation only)
 
