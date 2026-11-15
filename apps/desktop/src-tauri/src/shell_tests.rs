@@ -463,3 +463,18 @@ fn call_end_a_click_on_a_closed_question_does_nothing() {
     assert_eq!(call_end_answer(ToastClick::KeepRecording, false), None);
     assert_eq!(call_end_answer(ToastClick::Window, true), None);
 }
+
+#[test]
+fn shell_sync_quit_waits_for_gone_presence_only_inside_the_exit_limit() {
+    use std::time::Duration;
+    // Nothing saved: the whole gone wait.
+    assert_eq!(gone_wait(Duration::ZERO), QUIT_GONE_WAIT);
+    // A long save leaves less, and never past the exit limit.
+    assert_eq!(
+        gone_wait(EXIT_SAVE_LIMIT - Duration::from_millis(300)),
+        Duration::from_millis(300)
+    );
+    assert_eq!(gone_wait(EXIT_SAVE_LIMIT), Duration::ZERO);
+    assert_eq!(gone_wait(EXIT_SAVE_LIMIT * 2), Duration::ZERO);
+    assert!(QUIT_GONE_WAIT < EXIT_SAVE_LIMIT);
+}

@@ -39,6 +39,8 @@ mod obsidian;
 #[cfg(test)]
 mod page_names_tests;
 mod plain_text;
+#[cfg(windows)]
+mod power_win;
 mod recovery;
 mod shell;
 #[cfg(windows)]
@@ -228,6 +230,9 @@ fn main() {
                     .name("earshot-sync-start".into())
                     .spawn(move || sync.start_if_on(&services));
             }
+            // Gone on sleep, online on resume (T11.3ca).
+            #[cfg(windows)]
+            let _ = power_win::watch(std::sync::Arc::clone(&sync));
             app.manage(sync);
             app.manage(update_jobs);
             app.manage(state);

@@ -13,6 +13,7 @@
 //! store transaction and a tick replayed after a restart changes nothing.
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use earshot_runtime::Services;
 use earshot_runtime::sync::{
@@ -217,9 +218,38 @@ impl SyncHost {
     pub fn running(&self) -> bool {
         self.slot().as_ref().is_some_and(|t| !t.ended())
     }
+
+    /// This computer is going away (the app quits, Windows sleeps; T11.3ca): the running
+    /// thread says gone from a thread of its own and stops its beats. Waits at most `wait` for
+    /// the send (the slot is not held while waiting); never longer, whatever the network does.
+    pub fn say_gone_within(&self, wait: Duration) {
+        if let Some(rx) = self.say_gone() {
+            let _ = rx.recv_timeout(wait);
+        }
+    }
+
+    /// [`Self::say_gone_within`] without the wait: the receiver hears once the send has
+    /// finished; `None` when nothing is sent (no thread, or never seen online).
+    #[must_use]
+    pub fn say_gone(&self) -> Option<std::sync::mpsc::Receiver<()>> {
+        self.slot().as_ref().and_then(SyncThread::say_gone)
+    }
+
+    /// This computer is back from sleep: the running thread says online and ticks now.
+    pub fn back(&self) {
+        if let Some(t) = self.slot().as_ref() {
+            t.back();
+        }
+    }
 }
 
-/// Stops a replaced thread on a thread of its own, so no caller waits for its request.
+/// How long quitting waits for the gone presence, at most (inside [`crate::shell::EXIT_SAVE_LIMIT`]).
+pub const QUIT_GONE_WAIT: Duration = Duration::from_secs(1);
+/// How long a suspend waits for the gone presence: Windows gives a suspend notification about
+/// two seconds before it may go ahead, and the network may already be on its way down (a
+/// judgement).
+pub const SLEEP_GONE_WAIT: Duration = Duration::from_millis(1500);
+
 /// Stops a thread for good on a thread of its own, telling the other devices it is gone.
 fn retire_saying_gone(old: Option<SyncThread>) {
     if let Some(t) = old {
@@ -229,6 +259,7 @@ fn retire_saying_gone(old: Option<SyncThread>) {
     }
 }
 
+/// Stops a replaced thread on a thread of its own, so no caller waits for its request.
 fn retire(old: Option<SyncThread>) {
     if let Some(t) = old {
         let _ = std::thread::Builder::new()

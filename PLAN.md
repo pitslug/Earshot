@@ -2290,7 +2290,7 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - accept: `cargo xtask accept m11`
 - [x] GATE-09 Self-hosted deployment
   - deps: T11.4
-- [ ] T11.3ca Presence says gone on quit and on sleep
+- [x] T11.3ca Presence says gone on quit and on sleep
   - deps: T11.3c
   - do: the app sends `gone` presence when it quits (inside `shell::save_before_exit`'s bound, never blocking the quit beyond it) and when Windows suspends (the power broadcast), and the next beat after resume says online again; offload must not pick a helper that just went to sleep and reads online for up to 150 s. docs/sync.md section 10 already promises sleep and quit (T11.3c shipped only "gone" on turning sync off). Clock-free tests of the send decision; the real sleep check by hand.
   - accept: `cargo test -p earshot-runtime presence` and `cargo test -p earshot-desktop sync`

@@ -63,6 +63,53 @@ pub const fn online(age_s: u64, gone: bool) -> bool {
     !gone && age_s <= ONLINE_WITHIN_S
 }
 
+/// What presence this device sends, decided without a clock (T11.3ca): a regular beat says
+/// online, going away (the app quits or Windows sleeps) says gone once, and beats resume when
+/// it comes back. Nothing is said before the first beat got through ("announced"), because the
+/// other devices have not seen this one online yet.
+///
+/// The sync thread holds this behind one lock across every presence send, so sends never
+/// overtake each other at the relay: a gone queued behind a beat in flight lands after it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Beats {
+    announced: bool,
+    away: bool,
+}
+
+impl Beats {
+    /// Whether a regular beat should go out now (not while away).
+    #[must_use]
+    pub const fn beat_due(&self) -> bool {
+        !self.away
+    }
+
+    /// An online beat got through.
+    pub const fn sent_online(&mut self) {
+        self.announced = true;
+    }
+
+    /// This device is going away. Returns whether to send gone now: once announced, and not
+    /// twice for one going away.
+    pub const fn go_away(&mut self) -> bool {
+        let say = self.announced && !self.away;
+        self.away = true;
+        say
+    }
+
+    /// This device is back (Windows resumed): beats resume. Returns whether it had gone away.
+    pub const fn come_back(&mut self) -> bool {
+        let was = self.away;
+        self.away = false;
+        was
+    }
+
+    /// Whether the other devices have seen this one online.
+    #[must_use]
+    pub const fn announced(&self) -> bool {
+        self.announced
+    }
+}
+
 /// A device's name trimmed to [`MAX_DEVICE_NAME`] characters, control characters dropped;
 /// `None` when nothing is left.
 #[must_use]

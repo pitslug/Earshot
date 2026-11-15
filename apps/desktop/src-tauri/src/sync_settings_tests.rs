@@ -283,3 +283,57 @@ fn sync_host_starts_only_when_on_and_set_up() {
     assert!(!again.running(), "turned off: no thread at the next start");
     a.host.stop_and_wait();
 }
+
+/// Whether `b` lists the other computer as online, within `limit`.
+fn sync_other_online_within(b: &Computer, want: bool, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        let online = devices(&b.svc, &b.host)
+            .unwrap()
+            .iter()
+            .find(|d| !d.this_device)
+            .is_some_and(|d| d.online);
+        if online == want {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn sync_sleep_says_gone_at_once_and_resume_says_online_again() {
+    use crate::power_win::{PowerChange, handle};
+    let env = relay();
+    let a = computer("sync-sleep-a");
+    let b = computer("sync-sleep-b");
+    let url = env.relay.url();
+    set_up(&a.svc, &a.host, &url, SECRET).unwrap();
+    let code = offer_code(&a.svc, &a.host).unwrap();
+    join(&b.svc, &b.host, &url, &code.code).unwrap();
+    assert!(
+        sync_other_online_within(&b, true, Duration::from_secs(60)),
+        "the first computer never showed online"
+    );
+    // Suspend: the handler returns once gone is sent (or its wait ends), and the other
+    // computer reads it offline at once, not after the 150 s online window (2 s allows for a
+    // beat that crossed the suspend and the gone sent after it).
+    handle(&a.host, PowerChange::Suspend);
+    assert!(
+        sync_other_online_within(&b, false, Duration::from_secs(2)),
+        "a sleeping computer still reads online"
+    );
+    // It stays offline across several beat intervals: no beats while asleep.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(sync_other_online_within(&b, false, Duration::ZERO));
+    handle(&a.host, PowerChange::Resume);
+    assert!(
+        sync_other_online_within(&b, true, Duration::from_secs(60)),
+        "a resumed computer never said it was back"
+    );
+    a.host.stop_and_wait();
+    b.host.stop_and_wait();
+}

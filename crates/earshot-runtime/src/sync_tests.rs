@@ -1112,6 +1112,92 @@ fn presence_the_thread_announces_itself_and_says_gone_when_stopped() {
     assert!(online_now(), "a replaced thread must not say gone");
 }
 
+// T11.3ca: gone on quit and on sleep.
+
+#[test]
+fn presence_beats_say_gone_once_and_online_again_only_after_an_announcement() {
+    // Nothing announced yet: going away and coming back send nothing.
+    let mut b = Beats::default();
+    assert!(b.beat_due());
+    assert!(!b.go_away(), "never seen online: nothing to take back");
+    assert!(!b.beat_due(), "no beats while away");
+    assert!(b.come_back(), "it had gone away, though nothing was said");
+    assert!(b.beat_due());
+    // Announced: gone once per going away; beats resume when back.
+    b.sent_online();
+    assert!(b.announced());
+    assert!(b.go_away(), "seen online: say gone");
+    assert!(!b.go_away(), "not twice for one going away");
+    assert!(!b.beat_due());
+    assert!(b.come_back(), "it had gone away");
+    assert!(!b.come_back(), "and is back only once");
+    assert!(b.beat_due());
+}
+
+#[test]
+fn presence_the_thread_says_gone_when_going_away_and_online_when_back() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_device_name(&a.svc, "Laptop").unwrap();
+    let timing = SyncTiming {
+        tick: Duration::from_millis(100),
+        poll: Duration::from_millis(10),
+        presence: Duration::from_millis(50),
+    };
+    let online_now = || {
+        vault_devices(&b.svc, b.vault())
+            .unwrap()
+            .into_iter()
+            .find(|d| !d.this_device)
+            .is_some_and(|d| d.online && d.name.as_deref() == Some("Laptop"))
+    };
+    let thread = SyncThread::start(a.client(), timing).unwrap();
+    wait_for("the thread never sent its presence", online_now);
+    let sent = thread.say_gone().expect("the gone thread starts");
+    sent.recv_timeout(Duration::from_secs(10))
+        .expect("the gone send never finished");
+    assert!(!online_now(), "a device going away says gone at once");
+    assert!(thread.say_gone().is_none(), "not twice for one going away");
+    // Several beat intervals later it still reads gone: the beats stopped.
+    std::thread::sleep(timing.presence * 6);
+    assert!(!online_now(), "no beat while away");
+    thread.back();
+    wait_for("the thread never said it was back", online_now);
+    thread.stop();
+}
+
+#[test]
+fn presence_back_beats_after_the_first_tick_not_the_next_interval() {
+    // A beat interval far longer than the test: only `back` can bring the device online again
+    // in time.
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_device_name(&a.svc, "Laptop").unwrap();
+    let timing = SyncTiming {
+        tick: Duration::from_millis(100),
+        poll: Duration::from_millis(10),
+        presence: Duration::from_secs(3600),
+    };
+    let online_now = || {
+        vault_devices(&b.svc, b.vault())
+            .unwrap()
+            .into_iter()
+            .find(|d| !d.this_device)
+            .is_some_and(|d| d.online)
+    };
+    let thread = SyncThread::start(a.client(), timing).unwrap();
+    wait_for("the first beat never came", online_now);
+    thread
+        .say_gone()
+        .expect("the gone thread starts")
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the gone send never finished");
+    assert!(!online_now());
+    thread.back();
+    wait_for("back never beat before the next interval", online_now);
+    thread.stop();
+}
+
 #[test]
 fn presence_blobs_are_one_size_whatever_they_say() {
     let key = earshot_sync::VaultKey::generate().unwrap();

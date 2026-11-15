@@ -10,12 +10,22 @@
 //! Stopping ends a tick in progress at its next page, so a stop waits for at most the request
 //! on the wire (each is bounded by its timeout). A host on its quit path should not wait for
 //! even that: drop the thread off the quit path or bound the wait.
+//!
+//! Going away (T11.3ca): when the app quits or Windows sleeps the host calls
+//! [`SyncThread::say_gone`], which sends gone presence from a thread of its own (a tick in
+//! progress cannot hold it up) and stops the regular beats; [`SyncThread::back`] after a resume
+//! makes the thread tick at once and beat after the first tick that reaches the relay.
+//! [`super::presence::Beats`] decides what is sent, behind one lock held across every presence
+//! send, so a gone and a beat never overtake each other.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use super::presence::Beats;
 use super::{SyncClient, SyncProblem, record_problem};
 use crate::RuntimeError;
 use crate::services::Services;
@@ -65,6 +75,8 @@ struct Signal {
     /// Say gone on the way out (sync turned off). A thread replaced by a new one does not,
     /// or its gone could land after the new thread's announcement.
     gone: bool,
+    /// Back from sleep: send a beat and tick now.
+    back: bool,
 }
 
 /// The running sync thread (`earshot-sync`). Stopped and joined by [`SyncThread::stop`] or
@@ -73,6 +85,12 @@ pub struct SyncThread {
     signal: Arc<(Mutex<Signal>, Condvar)>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    client: Arc<SyncClient>,
+    /// The presence decision, and the lock every presence send holds.
+    beats: Arc<Mutex<Beats>>,
+    /// Set by [`Self::say_gone`], cleared by [`Self::back`]: a gone thread sends only while it
+    /// is still set, so a resume that overtook it is not undone.
+    leaving: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for SyncThread {
@@ -91,16 +109,65 @@ impl SyncThread {
     pub fn start(client: SyncClient, timing: SyncTiming) -> Result<Self, RuntimeError> {
         let signal = Arc::new((Mutex::new(Signal::default()), Condvar::new()));
         let stop = client.stop_flag();
+        let client = Arc::new(client);
+        let beats = Arc::new(Mutex::new(Beats::default()));
         let theirs = Arc::clone(&signal);
+        let (c, b) = (Arc::clone(&client), Arc::clone(&beats));
         let handle = std::thread::Builder::new()
             .name("earshot-sync".into())
-            .spawn(move || run(&client, timing, &theirs))
+            .spawn(move || run(&c, timing, &theirs, &b))
             .map_err(RuntimeError::Spawn)?;
         Ok(Self {
             signal,
             stop,
             handle: Some(handle),
+            client,
+            beats,
+            leaving: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// This device is going away (the app quits, Windows sleeps): a thread of its own
+    /// (`earshot-sync-gone`) takes the presence lock, behind any beat in flight, stops the
+    /// regular beats and, when the other devices have seen this one online, sends gone (best
+    /// effort, bounded by the presence timeout). Returns a receiver that hears once that thread
+    /// is done, for a caller that may wait a bounded time; `None` when it is already leaving or
+    /// the thread cannot start. Never blocks.
+    #[must_use]
+    pub fn say_gone(&self) -> Option<Receiver<()>> {
+        if self.leaving.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        let (client, beats, leaving) = (
+            Arc::clone(&self.client),
+            Arc::clone(&self.beats),
+            Arc::clone(&self.leaving),
+        );
+        let (tx, rx) = sync_channel(1);
+        std::thread::Builder::new()
+            .name("earshot-sync-gone".into())
+            .spawn(move || {
+                {
+                    let mut b = beats_of(&beats);
+                    // A resume that came first wins: nothing to take back.
+                    if leaving.load(Ordering::SeqCst) && b.go_away() {
+                        let _ = catch_unwind(AssertUnwindSafe(|| client.send_presence(true)));
+                    }
+                }
+                let _ = tx.send(());
+            })
+            .ok()
+            .map(|_| rx)
+    }
+
+    /// This device is back (Windows resumed): the thread ticks at once whatever the back-off,
+    /// and beats again after the first tick that reaches the relay (the network may still be
+    /// coming up). Never blocks.
+    pub fn back(&self) {
+        self.leaving.store(false, Ordering::SeqCst);
+        let (signal, cv) = &*self.signal;
+        signal.lock().unwrap_or_else(PoisonError::into_inner).back = true;
+        cv.notify_all();
     }
 
     /// Asks for a tick soon (after a local change a host knows of; polling finds the rest).
@@ -154,7 +221,16 @@ fn outbox_len(services: &Services) -> Option<u64> {
     services.store().outbox_len().ok()
 }
 
-fn run(client: &SyncClient, timing: SyncTiming, signal: &(Mutex<Signal>, Condvar)) {
+fn beats_of(beats: &Mutex<Beats>) -> MutexGuard<'_, Beats> {
+    beats.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn run(
+    client: &SyncClient,
+    timing: SyncTiming,
+    signal: &(Mutex<Signal>, Condvar),
+    beats: &Mutex<Beats>,
+) {
     let services = client.services().clone();
     let mut failures: u32 = 0;
     let mut next = Instant::now();
@@ -162,7 +238,6 @@ fn run(client: &SyncClient, timing: SyncTiming, signal: &(Mutex<Signal>, Condvar
     let mut changed = false;
     // Presence goes out after the first tick without a problem, then every `presence`.
     let mut next_presence: Option<Instant> = None;
-    let mut announced = false;
     loop {
         // Wait until the next tick, a poll, a nudge or a stop.
         {
@@ -172,7 +247,7 @@ fn run(client: &SyncClient, timing: SyncTiming, signal: &(Mutex<Signal>, Condvar
             let wait = due
                 .saturating_duration_since(Instant::now())
                 .min(timing.poll);
-            if !s.stop && !s.soon && !wait.is_zero() {
+            if !s.stop && !s.soon && !s.back && !wait.is_zero() {
                 s = cv
                     .wait_timeout(s, wait)
                     .unwrap_or_else(PoisonError::into_inner)
@@ -183,13 +258,23 @@ fn run(client: &SyncClient, timing: SyncTiming, signal: &(Mutex<Signal>, Condvar
                 drop(s);
                 // Best effort: the other devices see this one go at once, not after the
                 // online window.
-                if announced && say_gone {
+                let b = beats_of(beats);
+                if b.announced() && say_gone {
                     let _ = catch_unwind(AssertUnwindSafe(|| client.send_presence(true)));
                 }
+                drop(b);
                 return;
             }
             if std::mem::take(&mut s.soon) && failures == 0 {
                 next = next.min(Instant::now());
+            }
+            if std::mem::take(&mut s.back) {
+                // A resume: tick at once whatever the back-off, and beat after the first tick
+                // that reaches the relay (the tick's success arm sets the beat due).
+                if beats_of(beats).come_back() {
+                    next = Instant::now();
+                    next_presence = None;
+                }
             }
         }
         // A local write: tick once the outbox stops changing (only between failures).
@@ -206,10 +291,15 @@ fn run(client: &SyncClient, timing: SyncTiming, signal: &(Mutex<Signal>, Condvar
         if let Some(at) = next_presence
             && Instant::now() >= at
         {
-            // Advisory: a failure is the next tick's to report.
-            if let Ok(Ok(())) = catch_unwind(AssertUnwindSafe(|| client.send_presence(false))) {
-                announced = true;
+            // Advisory: a failure is the next tick's to report. Decided and sent under the
+            // presence lock, so a going away either stops this beat or queues behind it.
+            let mut b = beats_of(beats);
+            if b.beat_due()
+                && let Ok(Ok(())) = catch_unwind(AssertUnwindSafe(|| client.send_presence(false)))
+            {
+                b.sent_online();
             }
+            drop(b);
             next_presence = Some(Instant::now() + timing.presence);
         }
         if Instant::now() < next {

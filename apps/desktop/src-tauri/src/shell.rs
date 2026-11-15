@@ -31,6 +31,7 @@ use tauri_specta::Event;
 use crate::ipc::{AppState, IpcError};
 use crate::meeting::{DriverPhase, MeetingDriver, StartRequest};
 use crate::meeting_events::{EndedReason, MeetingEvent, SummaryEvent};
+use crate::sync_settings::{QUIT_GONE_WAIT, SyncHost};
 
 /// The argument of the `Run` value: started by Windows, stay in the tray.
 pub const AUTOSTART_ARG: &str = "--autostart";
@@ -57,7 +58,28 @@ pub const EXIT_SAVE_LIMIT: std::time::Duration = std::time::Duration::from_secs(
 /// finished, waiting at most [`EXIT_SAVE_LIMIT`]; the final pass and summary are cut and the
 /// meeting stays Unprocessed, as tray Quit does. While it saves, Windows is told why Earshot
 /// holds up the restart. Nothing happens when nothing records (tray Quit has already stopped).
+///
+/// With sync on, the other computers are told this one is gone (T11.3ca): the send starts
+/// first on a thread of its own and is waited for last, at most [`QUIT_GONE_WAIT`] and never
+/// past [`EXIT_SAVE_LIMIT`] from the start; an unfinished send is cut by the process ending.
 pub fn save_before_exit(app: &AppHandle) {
+    let started = std::time::Instant::now();
+    let gone = app
+        .try_state::<Arc<SyncHost>>()
+        .and_then(|host| host.say_gone());
+    save_recording_before_exit(app);
+    if let Some(rx) = gone {
+        let _ = rx.recv_timeout(gone_wait(started.elapsed()));
+    }
+}
+
+/// How long quitting still waits for the gone presence after `spent` on saving a recording.
+#[must_use]
+pub fn gone_wait(spent: std::time::Duration) -> std::time::Duration {
+    EXIT_SAVE_LIMIT.saturating_sub(spent).min(QUIT_GONE_WAIT)
+}
+
+fn save_recording_before_exit(app: &AppHandle) {
     let Some(driver) = app.try_state::<MeetingDriver>() else {
         return;
     };
