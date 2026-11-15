@@ -60,6 +60,21 @@ fn final_pass_ran(svc: &Services, meeting: EntityId) {
 }
 
 #[test]
+fn ipc_blocking_work_that_panics_reaches_the_page_as_fixed_copy() {
+    let e = tauri::async_runtime::block_on(blocking(|| -> Result<(), IpcError> {
+        panic!("words that must not reach the page")
+    }))
+    .unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str()),
+        ("internal", crate::plain_text::INTERNAL)
+    );
+    // Work that ends normally is passed through unchanged.
+    let ok = tauri::async_runtime::block_on(blocking(|| Ok::<_, IpcError>(7))).unwrap();
+    assert_eq!(ok, 7);
+}
+
+#[test]
 fn list_meetings_returns_live_meetings_newest_first_without_deleted_ones() {
     let dir = TempDir::new("list");
     let svc = services(&dir);

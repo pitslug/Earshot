@@ -2753,23 +2753,32 @@ pub fn record_pass_backend(
     Ok(())
 }
 
-/// The backend recorded by [`record_pass_backend`], if any.
+/// The backend recorded by [`record_pass_backend`], if any; a value this build cannot read is
+/// `None`, as if nothing was recorded ([`pass_backend_record`] says which, T12.56).
 ///
 /// # Errors
-/// Store errors; [`RuntimeError::Internal`] for a value that does not parse.
+/// Store errors.
 pub fn pass_backend(
     store: &Store,
     meeting: EntityId,
     pass: TranscriptPass,
     track: Option<TrackId>,
 ) -> Result<Option<BackendInfo>, RuntimeError> {
-    store
-        .local_value(pass_key(meeting, pass, track).as_str())?
-        .map(|v| {
-            serde_json::from_slice(&v)
-                .map_err(|_| RuntimeError::Internal("stored backend info does not parse"))
-        })
-        .transpose()
+    Ok(pass_backend_record(store, meeting, pass, track)?.value())
+}
+
+/// The record behind [`pass_backend`]: absent, read, or stored but unreadable (a pass ran even
+/// when its backend cannot be read).
+///
+/// # Errors
+/// Store errors.
+pub fn pass_backend_record(
+    store: &Store,
+    meeting: EntityId,
+    pass: TranscriptPass,
+    track: Option<TrackId>,
+) -> Result<crate::StoredRecord<BackendInfo>, RuntimeError> {
+    crate::local::json_record(store, &pass_key(meeting, pass, track))
 }
 /// Starts a live session on the default microphone (`mic_role`) and, in a call, the
 /// loopback source of `mode` (Windows). In the room the meeting has one (mic) track. The

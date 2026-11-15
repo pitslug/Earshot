@@ -451,6 +451,57 @@ pub(crate) fn read_setting<T>(
     }))
 }
 
+/// A device-local JSON record with no version header (the pass backend, the model check, the
+/// echo state) as read: a value this build cannot parse is [`StoredRecord::Unreadable`], so
+/// the caller reports it and uses its default, never failing the job that reads it (T12.56).
+/// The stored bytes are unchanged.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StoredRecord<T> {
+    /// Nothing stored.
+    Absent,
+    /// A stored value this build reads.
+    Read(T),
+    /// A stored value this build cannot parse.
+    Unreadable,
+}
+
+impl<T> StoredRecord<T> {
+    /// The value read; `None` when nothing is stored or it cannot be read.
+    #[must_use]
+    pub fn value(self) -> Option<T> {
+        match self {
+            Self::Read(v) => Some(v),
+            Self::Absent | Self::Unreadable => None,
+        }
+    }
+
+    /// Something is stored, whether or not this build can read it.
+    #[must_use]
+    pub fn exists(&self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+
+    /// A value is stored that this build cannot read.
+    #[must_use]
+    pub fn is_unreadable(&self) -> bool {
+        matches!(self, Self::Unreadable)
+    }
+}
+
+/// The JSON record stored under `key`, as [`StoredRecord`].
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn json_record<T: serde::de::DeserializeOwned>(
+    store: &Store,
+    key: &LocalKey,
+) -> Result<StoredRecord<T>, RuntimeError> {
+    Ok(match store.local_value(key.as_str())? {
+        None => StoredRecord::Absent,
+        Some(v) => serde_json::from_slice(&v).map_or(StoredRecord::Unreadable, StoredRecord::Read),
+    })
+}
+
 /// An on/off setting's stored word: `on` or `off`, anything else `None`.
 pub(crate) fn on_off(text: &str) -> Option<bool> {
     match text {

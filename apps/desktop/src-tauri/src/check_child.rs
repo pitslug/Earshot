@@ -410,6 +410,9 @@ pub fn cancelled() -> IpcError {
 }
 
 /// A child failure as the job reports it (retryable: running the check again may work).
+/// What the page says when the check's child writes a line this version cannot read.
+pub const UNREADABLE_LINE: &str = "The model check wrote a line Earshot cannot read.";
+
 fn child_failed(message: impl Into<String>) -> IpcError {
     IpcError {
         kind: "model_check".into(),
@@ -508,11 +511,9 @@ pub fn read_lines(
         if line.trim().is_empty() {
             continue;
         }
-        let parsed: CheckLine = serde_json::from_str(&line).map_err(|e| {
-            child_failed(format!(
-                "the model check wrote a line Earshot cannot read ({e})"
-            ))
-        })?;
+        // serde's words name the line's contents and never reach the page (T12.56).
+        let parsed: CheckLine =
+            serde_json::from_str(&line).map_err(|_| child_failed(UNREADABLE_LINE))?;
         let end = match parsed {
             CheckLine::Warning { message } => {
                 events.warning(message);

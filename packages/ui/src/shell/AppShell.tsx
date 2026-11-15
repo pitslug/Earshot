@@ -249,9 +249,6 @@ const useStyles = makeStyles({
   heading: {
     margin: 0,
   },
-  meta: {
-    color: tokens.colorNeutralForeground3,
-  },
   emptyFolder: {
     display: "block",
     paddingLeft: tokens.spacingHorizontalS,

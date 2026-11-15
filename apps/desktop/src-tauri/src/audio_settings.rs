@@ -261,7 +261,7 @@ pub async fn audio_settings(
     state: tauri::State<'_, crate::ipc::AppState>,
 ) -> Result<AudioPageView, IpcError> {
     let services = state.services()?;
-    blocking(move || audio_page(&services, list_devices())).await
+    crate::ipc::blocking(move || audio_page(&services, list_devices())).await
 }
 
 /// Checks and stores the Audio page settings (`invalid_setting`: nothing stored); returns
@@ -273,7 +273,7 @@ pub async fn set_audio_settings(
     settings: AudioSettingsValue,
 ) -> Result<AudioPageView, IpcError> {
     let services = state.services()?;
-    blocking(move || set_settings(&services, &settings, list_devices())).await
+    crate::ipc::blocking(move || set_settings(&services, &settings, list_devices())).await
 }
 
 /// The stored capture mode a new meeting starts with: a store read only, no device listing
@@ -284,7 +284,7 @@ pub async fn default_capture_mode(
     state: tauri::State<'_, crate::ipc::AppState>,
 ) -> Result<CaptureMode, IpcError> {
     let services = state.services()?;
-    blocking(move || stored_capture_mode(&services)).await
+    crate::ipc::blocking(move || stored_capture_mode(&services)).await
 }
 
 /// The stored capture mode (the default for a value this version cannot use).
@@ -294,15 +294,6 @@ pub async fn default_capture_mode(
 pub fn stored_capture_mode(services: &Services) -> Result<CaptureMode, IpcError> {
     let (s, _) = earshot_runtime::audio_settings::audio_settings(&services.store())?;
     Ok(AudioSettingsValue::of(&s).capture_mode)
-}
-
-/// Runs blocking work off the main thread.
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, IpcError> + Send + 'static,
-) -> Result<T, IpcError> {
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .map_err(|_| IpcError::new("internal", "the task stopped"))?
 }
 
 #[cfg(test)]

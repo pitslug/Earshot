@@ -856,6 +856,43 @@ fn host_meeting_activity_is_ready_with_a_final_transcript() {
 }
 
 #[test]
+fn host_an_unreadable_model_check_is_the_fallback_with_its_reason_never_an_error() {
+    let dir = TempDir::new("host");
+    let mut store = Store::open(&dir.0.join("earshot.db")).unwrap();
+    let models = ModelDir::new(dir.0.join("models"));
+    crate::local::set(
+        &mut store,
+        &crate::local::DeviceRecord::ModelCheck.key(),
+        b"{\"fingerprint\":",
+    )
+    .unwrap();
+    assert!(
+        crate::model_bench::stored_check_record(&store)
+            .unwrap()
+            .is_unreadable()
+    );
+    assert_eq!(crate::model_bench::stored_check(&store).unwrap(), None);
+    // A meeting still gets a model: the fallback, saying why (T12.56).
+    assert_eq!(
+        choose_model(None, &store, &models, DEFAULT_LANGUAGES).unwrap(),
+        (
+            ModelChoice {
+                model: FALLBACK_MODEL.into(),
+                backend: None
+            },
+            ModelSource::Fallback(UNREADABLE_CHECK)
+        )
+    );
+    let setup = transcription_setup(&store, &models, &[Accelerator::Cpu], &crate::hardware());
+    assert!(setup.is_ok(), "{setup:?}");
+    // The record is left as stored; the next check replaces it.
+    assert_eq!(
+        store.local_value("model-check").unwrap().as_deref(),
+        Some(&b"{\"fingerprint\":"[..])
+    );
+}
+
+#[test]
 fn host_model_choice_follows_the_request_then_a_current_check() {
     let dir = TempDir::new("host");
     let store = Store::open(&dir.0.join("earshot.db")).unwrap();

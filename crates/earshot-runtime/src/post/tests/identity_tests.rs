@@ -72,6 +72,7 @@ fn run_both(
         svc,
         PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting,
             tracks: tracks.into_iter().map(|(t, a)| track_input(t, a)).collect(),
         },

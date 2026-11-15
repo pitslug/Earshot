@@ -37,13 +37,14 @@ use earshot_core::identity::EntityId;
 use earshot_net::AuditEntry;
 use earshot_store::{DataDir, Store};
 
+use crate::StoredRecord;
 use crate::backends::{
     Accelerator, CAMPPLUS, EvidenceLoader, ModelDir, SEGMENTATION, SILERO, asr_model, init_onnx,
     live_asr_factory, onnx_library, order_from, post_processor, with_live_speakers,
 };
 pub use crate::keep_local::SummaryPrivacy;
 use crate::live::{LiveAsrFactory, LiveConfig, LiveOutcome, LiveSession};
-use crate::model_bench::{check_fingerprint, hardware_facts, stored_check};
+use crate::model_bench::{check_fingerprint, hardware_facts, stored_check, stored_check_record};
 use crate::post::{
     CleanupWork, PostConfig, PostInput, PostOutcome, PostProcessor, PostStage, load_post_input,
 };
@@ -396,7 +397,7 @@ pub enum ModelSource {
 /// `languages`.
 ///
 /// # Errors
-/// The stored model check does not parse; store errors.
+/// Store errors.
 pub fn models_advice(
     store: &Store,
     models: &ModelDir,
@@ -412,16 +413,21 @@ pub fn models_advice(
     )
 }
 
+/// Why the fallback model runs when the stored model check cannot be read (T12.56): the next
+/// check replaces it.
+pub const UNREADABLE_CHECK: &str = "the stored model check cannot be read";
+
 /// The meeting languages of a host that has no language setting yet (T7.4e adds one).
 pub const DEFAULT_LANGUAGES: &[&str] = &["en"];
 
 /// The transcription model of a run: `requested`, else the model check recorded in `store`
 /// when it is current for this machine, `models` and the meeting `languages` (T6.10c; the
 /// check's fingerprint holds the languages it ran for), else [`FALLBACK_MODEL`]. A host
-/// without a language setting passes [`DEFAULT_LANGUAGES`].
+/// without a language setting passes [`DEFAULT_LANGUAGES`]. A stored check this build cannot
+/// read is the fallback, with that reason (T12.56).
 ///
 /// # Errors
-/// The stored model check does not parse; store errors.
+/// Store errors.
 pub fn choose_model(
     requested: Option<&str>,
     store: &Store,
@@ -429,9 +435,9 @@ pub fn choose_model(
     languages: &[&str],
 ) -> Result<(ModelChoice, ModelSource), RuntimeError> {
     let check = if requested.is_some() {
-        None
+        StoredRecord::Absent
     } else {
-        stored_check(store)?
+        stored_check_record(store)?
     };
     Ok(choose_model_from(requested, check, models, languages))
 }
@@ -439,7 +445,7 @@ pub fn choose_model(
 /// [`choose_model`] with the stored model check `check` already read.
 fn choose_model_from(
     requested: Option<&str>,
-    check: Option<crate::model_bench::StoredCheck>,
+    check: StoredRecord<crate::model_bench::StoredCheck>,
     models: &ModelDir,
     languages: &[&str],
 ) -> (ModelChoice, ModelSource) {
@@ -452,15 +458,16 @@ fn choose_model_from(
     }
     let fingerprint = check_fingerprint(models, &hardware_facts(), languages);
     let why = match check {
-        Some(c) if c.current(&fingerprint) => {
+        StoredRecord::Read(c) if c.current(&fingerprint) => {
             let choice = ModelChoice {
                 model: c.model,
                 backend: Some(c.backend),
             };
             return (choice, ModelSource::ModelCheck);
         }
-        Some(_) => "the model check is out of date for this machine",
-        None => "no model check yet",
+        StoredRecord::Read(_) => "the model check is out of date for this machine",
+        StoredRecord::Unreadable => UNREADABLE_CHECK,
+        StoredRecord::Absent => "no model check yet",
     };
     let choice = ModelChoice {
         model: FALLBACK_MODEL.to_owned(),
@@ -644,7 +651,7 @@ impl NpuNoteShown {
 /// runs" ([`crate::model_settings::transcription_placement`]).
 ///
 /// # Errors
-/// The stored model check does not parse; store errors.
+/// Store errors.
 pub fn transcription_setup(
     store: &Store,
     models: &ModelDir,
@@ -662,20 +669,20 @@ pub struct TranscriptionReads {
     settings: crate::model_settings::ModelSettings,
     unknown: Vec<crate::model_settings::UnknownSetting>,
     /// The stored model check; read only under the automatic choice, as before.
-    check: Option<crate::model_bench::StoredCheck>,
+    check: StoredRecord<crate::model_bench::StoredCheck>,
 }
 
 impl TranscriptionReads {
     /// The model settings in `store`, and its stored model check when the choice is automatic.
     ///
     /// # Errors
-    /// The stored model check does not parse; store errors.
+    /// Store errors.
     pub fn read(store: &Store) -> Result<Self, RuntimeError> {
         use crate::model_settings::{ModelPick, model_settings};
         let (settings, unknown) = model_settings(store)?;
         let check = match settings.transcription {
-            ModelPick::Automatic => stored_check(store)?,
-            ModelPick::Named(_) => None,
+            ModelPick::Automatic => stored_check_record(store)?,
+            ModelPick::Named(_) => StoredRecord::Absent,
         };
         Ok(Self {
             settings,

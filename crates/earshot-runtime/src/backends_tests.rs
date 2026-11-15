@@ -763,6 +763,26 @@ fn backends_pass_backend_is_stored_per_pass_and_track() {
 }
 
 #[test]
+fn backends_an_unreadable_pass_backend_reads_as_not_recorded_and_still_exists() {
+    let mut store = Store::open_in_memory().unwrap();
+    let meeting = EntityId::from_bytes([2; 16]);
+    let key = pass_key(meeting, TranscriptPass::Final, None);
+    crate::local::set(&mut store, &key, b"{\"kind\":\"tpu\"").unwrap();
+    // Reported as unreadable, the default (nothing recorded) used, never an error (T12.56).
+    let record = pass_backend_record(&store, meeting, TranscriptPass::Final, None).unwrap();
+    assert!(record.is_unreadable() && record.exists());
+    assert_eq!(
+        pass_backend(&store, meeting, TranscriptPass::Final, None).unwrap(),
+        None
+    );
+    // The stored bytes are left as they were.
+    assert_eq!(
+        store.local_value(key.as_str()).unwrap().as_deref(),
+        Some(&b"{\"kind\":\"tpu\""[..])
+    );
+}
+
+#[test]
 fn backends_are_send_for_the_runtime_threads() {
     fn send<T: Send>() {}
     send::<earshot_onnx::silero::SileroVad>();
@@ -1094,6 +1114,7 @@ fn backends_production_loader_feeds_the_live_factory_and_the_post_processor() {
     ));
     let input = crate::post::PostInput {
         echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
         meeting,
         tracks: tracks
             .iter()
