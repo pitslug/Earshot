@@ -3,9 +3,9 @@
 //! [`STALE_AFTER_S`] away from now. A run that cannot start or ends on a problem (not joined,
 //! removed from the vault, another vault's key) writes `stopped <word>` there instead, so the
 //! health check reports that word while Docker's restart policy starts the worker again. A run
-//! that finds no vault files waits to be joined and writes [`WAITING_TEXT`] there meanwhile, so
-//! the health check reports `not_joined` (T11.6d). A
-//! relay that cannot be reached is not unhealthy: the sync thread retries it with back-off, and
+//! that is not joined yet waits and writes `waiting <time>` ([`waiting_text`]) there at every
+//! look, so the health check reports `not_joined`, or `stale` once a waiting run has died
+//! (T11.6d). A relay that cannot be reached is not unhealthy: the sync thread retries it with back-off, and
 //! the Sync page says so.
 
 use std::path::{Path, PathBuf};
@@ -15,8 +15,6 @@ use std::time::Duration;
 pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
 /// A heartbeat older (or newer) than this is stale: four missed beats (a judgement).
 pub const STALE_AFTER_S: u64 = 120;
-/// What a run waiting to be joined writes to the heartbeat file (fixed text).
-pub const WAITING_TEXT: &str = "waiting not_joined\n";
 /// The longest stopped word kept.
 const MAX_WORD: usize = 32;
 
@@ -29,7 +27,7 @@ pub enum Unhealthy {
     Stale,
     /// The heartbeat does not hold a time or a stopped word.
     Unreadable,
-    /// The run is waiting to be joined: no vault files yet.
+    /// The run is waiting to be joined (its record is at most [`STALE_AFTER_S`] old).
     NotJoined,
     /// The last run stopped on this problem (a fixed word: lower-case letters and `_`).
     Stopped(String),
@@ -61,6 +59,12 @@ pub fn beat_text(now_s: u64) -> String {
     format!("{now_s}\n")
 }
 
+/// The text recording that a run is waiting to be joined at `now_s`.
+#[must_use]
+pub fn waiting_text(now_s: u64) -> String {
+    format!("waiting {now_s}\n")
+}
+
 /// The text recording that a run stopped on `word` (anything but lower-case letters and `_`
 /// is dropped, so nothing but a fixed word is ever written).
 #[must_use]
@@ -79,8 +83,13 @@ pub fn stopped_text(word: &str) -> String {
 /// [`Unhealthy`].
 pub fn verdict(text: Option<&str>, now_s: u64) -> Result<(), Unhealthy> {
     let text = text.ok_or(Unhealthy::NotRunning)?.trim();
-    if text == WAITING_TEXT.trim() {
-        return Err(Unhealthy::NotJoined);
+    if let Some(at) = text.strip_prefix("waiting ") {
+        let at: u64 = at.parse().map_err(|_| Unhealthy::Unreadable)?;
+        return Err(if at.abs_diff(now_s) > STALE_AFTER_S {
+            Unhealthy::Stale
+        } else {
+            Unhealthy::NotJoined
+        });
     }
     if let Some(word) = text.strip_prefix("stopped ") {
         let ok = !word.is_empty()
@@ -115,12 +124,12 @@ pub fn beat(path: &Path, now_s: u64) -> std::io::Result<()> {
     write(path, &beat_text(now_s))
 }
 
-/// Records that the run is waiting to be joined ([`WAITING_TEXT`]).
+/// Records that the run is waiting to be joined at `now_s` ([`waiting_text`]).
 ///
 /// # Errors
 /// I/O errors.
-pub fn record_waiting(path: &Path) -> std::io::Result<()> {
-    write(path, WAITING_TEXT)
+pub fn record_waiting(path: &Path, now_s: u64) -> std::io::Result<()> {
+    write(path, &waiting_text(now_s))
 }
 
 /// Records that the run stopped on `word`.
@@ -212,19 +221,37 @@ mod tests {
     #[test]
     fn health_a_run_waiting_to_be_joined_is_unhealthy_with_a_fixed_word() {
         let now = 1_800_000_000;
-        assert_eq!(verdict(Some(WAITING_TEXT), now), Err(Unhealthy::NotJoined));
+        assert_eq!(waiting_text(now), "waiting 1800000000\n");
+        assert_eq!(
+            verdict(Some(&waiting_text(now)), now),
+            Err(Unhealthy::NotJoined)
+        );
+        assert_eq!(
+            verdict(Some(&waiting_text(now - STALE_AFTER_S)), now),
+            Err(Unhealthy::NotJoined)
+        );
         assert_eq!(Unhealthy::NotJoined.describe(), "not_joined");
+        // A waiting run that died reads stale, like a running one, either way round.
+        assert_eq!(
+            verdict(Some(&waiting_text(now - STALE_AFTER_S - 1)), now),
+            Err(Unhealthy::Stale)
+        );
+        assert_eq!(
+            verdict(Some(&waiting_text(now + STALE_AFTER_S + 1)), now),
+            Err(Unhealthy::Stale)
+        );
         // Nothing else that starts the same way reads as waiting.
         assert_eq!(
             verdict(Some("waiting something"), now),
             Err(Unhealthy::Unreadable)
         );
+        assert_eq!(verdict(Some("waiting "), now), Err(Unhealthy::Unreadable));
         let dir =
             std::env::temp_dir().join(format!("earshot-worker-waiting-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        record_waiting(&heartbeat_path(&dir)).unwrap();
-        assert_eq!(check(&dir, now), Err(Unhealthy::NotJoined));
+        record_waiting(&heartbeat_path(&dir), now).unwrap();
+        assert_eq!(check(&dir, now + 5), Err(Unhealthy::NotJoined));
         // The first heartbeat after joining replaces it.
         beat(&heartbeat_path(&dir), now).unwrap();
         assert_eq!(check(&dir, now), Ok(()));

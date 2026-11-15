@@ -107,23 +107,25 @@ fn run(config: Config) -> Result<(), WorkerError> {
         .enable_all()
         .build()
         .map_err(|_| WorkerError::Spawn)?;
-    let mut terminate = {
+    // One listener for the whole run, the wait and the run loop alike, so a stop that arrives
+    // between two waits is not lost.
+    let mut stop = {
         let _context = runtime.enter();
-        terminate_signal()?
+        StopSignals::listen()?
     };
     // Not joined yet: wait for `docker exec ... earshot-worker join` rather than exit and be
-    // restarted. The store is not opened until the vault files are there.
+    // restarted. The store is not opened until the join is done.
     let _ = std::fs::create_dir_all(&data);
     let waited = wait_to_join(
         &config,
         &heartbeat,
+        &now_s,
         &mut || println!("waiting to join"),
         &mut |every| {
             runtime.block_on(async {
                 tokio::select! {
                     () = tokio::time::sleep(every) => false,
-                    _ = tokio::signal::ctrl_c() => true,
-                    () = terminate.recv() => true,
+                    () = stop.recv() => true,
                 }
             })
         },
@@ -150,8 +152,7 @@ fn run(config: Config) -> Result<(), WorkerError> {
                     // what a full or read-only volume should do.
                     let _ = health::beat(&heartbeat, now_s());
                 }
-                _ = tokio::signal::ctrl_c() => return true,
-                () = terminate.recv() => return true,
+                () = stop.recv() => return true,
             }
         }
     });
@@ -175,35 +176,57 @@ fn run(config: Config) -> Result<(), WorkerError> {
     Err(WorkerError::Sync(status))
 }
 
-/// SIGTERM (`docker stop`) on Unix; on other systems a future that never resolves (Ctrl+C
-/// still stops it).
-struct Terminate {
+/// The stop requests, registered once for the whole run: SIGTERM (`docker stop`) and SIGINT
+/// (Ctrl+C) on Unix, Ctrl+C on Windows; elsewhere nothing. Signals that arrive while nothing
+/// waits on them are kept until the next [`StopSignals::recv`].
+struct StopSignals {
     #[cfg(unix)]
-    signal: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    ctrl_c: tokio::signal::windows::CtrlC,
 }
 
-impl Terminate {
+impl StopSignals {
+    /// Registers the listeners (inside the runtime's context).
+    fn listen() -> Result<Self, WorkerError> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Ok(Self {
+                terminate: signal(SignalKind::terminate()).map_err(|_| WorkerError::Spawn)?,
+                interrupt: signal(SignalKind::interrupt()).map_err(|_| WorkerError::Spawn)?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            Ok(Self {
+                ctrl_c: tokio::signal::windows::ctrl_c().map_err(|_| WorkerError::Spawn)?,
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Ok(Self {})
+        }
+    }
+
+    /// Resolves at the next stop request.
     async fn recv(&mut self) {
         #[cfg(unix)]
         {
-            self.signal.recv().await;
+            tokio::select! {
+                _ = self.terminate.recv() => {}
+                _ = self.interrupt.recv() => {}
+            }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            self.ctrl_c.recv().await;
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             std::future::pending::<()>().await;
         }
-    }
-}
-
-fn terminate_signal() -> Result<Terminate, WorkerError> {
-    #[cfg(unix)]
-    {
-        let signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .map_err(|_| WorkerError::Spawn)?;
-        Ok(Terminate { signal })
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Terminate {})
     }
 }

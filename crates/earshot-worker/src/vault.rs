@@ -75,15 +75,57 @@ impl FileVault {
         Ok(())
     }
 
-    /// Whether the worker has joined, by the two files alone: [`Presence::Absent`] only when
-    /// neither file exists (the worker then waits to be joined), [`Presence::Present`] when
-    /// both are files. Anything in between is not a worker waiting to join but a vault that
-    /// needs the person: one file without the other, a path that is not a file, or a file
-    /// whose presence cannot be read.
+    /// The join marker: `joining` in the key file's folder, there from just before `join`
+    /// spends the code until the device is set up ([`FileVault::begin_join`]).
+    #[must_use]
+    pub fn marker_path(&self) -> PathBuf {
+        folder_of(&self.key).join(MARKER_NAME)
+    }
+
+    /// Marks a join as under way at `now_s` (Unix seconds): the marker ([`marker_text`]) is
+    /// written, readable by this user only, before anything else of the join happens, so a run
+    /// does not start on a vault whose device is not set up yet.
     ///
     /// # Errors
-    /// [`VaultRefused::Incomplete`]; [`VaultRefused::Unreadable`].
-    pub fn presence(&self) -> Result<Presence, VaultRefused> {
+    /// [`VaultRefused::NotWritable`].
+    pub fn begin_join(&self, now_s: u64) -> Result<(), VaultRefused> {
+        write_private(&self.marker_path(), marker_text(now_s).as_bytes())
+            .map_err(|_| VaultRefused::NotWritable)
+    }
+
+    /// Ends a join, whether it worked or not: the marker is removed (a missing one is fine).
+    /// Only a crash leaves it, which [`FileVault::presence`] then reads as an interrupted join
+    /// once it is [`JOIN_STALE_S`] old.
+    ///
+    /// # Errors
+    /// [`VaultRefused::NotWritable`].
+    pub fn end_join(&self) -> Result<(), VaultRefused> {
+        match fs::remove_file(self.marker_path()) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(VaultRefused::NotWritable),
+        }
+    }
+
+    /// Whether the worker has joined at `now_s` (Unix seconds).
+    ///
+    /// A join marker decides first: one at most [`JOIN_STALE_S`] away from now is
+    /// [`Presence::Joining`] whatever the files hold (the join is still writing them or setting
+    /// up the device); an older one, or one that does not hold a time, is
+    /// [`VaultRefused::JoinInterrupted`] rather than a guess. Without a marker only neither
+    /// file existing is [`Presence::Absent`] (the worker waits to be joined), and both being
+    /// files is [`Presence::Present`]. Anything in between needs the person: one file without
+    /// the other, a path that is not a file, or a path whose presence cannot be read.
+    ///
+    /// # Errors
+    /// [`VaultRefused::JoinInterrupted`]; [`VaultRefused::Incomplete`];
+    /// [`VaultRefused::Unreadable`].
+    pub fn presence(&self, now_s: u64) -> Result<Presence, VaultRefused> {
+        match read(&self.marker_path()) {
+            Ok(None) => {}
+            Ok(Some(text)) => return marker_verdict(&text, now_s),
+            Err(_) => return Err(VaultRefused::Unreadable),
+        }
         match (file_state(&self.key)?, file_state(&self.token)?) {
             (false, false) => Ok(Presence::Absent),
             (true, true) => Ok(Presence::Present),
@@ -92,11 +134,44 @@ impl FileVault {
     }
 }
 
+/// The join marker's file name.
+const MARKER_NAME: &str = "joining";
+
+/// How long a join may take before its marker counts as an interrupted join (a judgement: a
+/// join is a few requests to the relay, each bounded by the client's timeout).
+pub const JOIN_STALE_S: u64 = 600;
+
+/// The join marker's text for `now_s`.
+#[must_use]
+pub fn marker_text(now_s: u64) -> String {
+    format!("joining {now_s}\n")
+}
+
+fn marker_verdict(text: &str, now_s: u64) -> Result<Presence, VaultRefused> {
+    let at = text
+        .trim()
+        .strip_prefix("joining ")
+        .and_then(|t| t.parse::<u64>().ok());
+    match at {
+        Some(at) if at.abs_diff(now_s) <= JOIN_STALE_S => Ok(Presence::Joining),
+        _ => Err(VaultRefused::JoinInterrupted),
+    }
+}
+
+/// The folder a vault file goes in (`.` for a bare file name).
+fn folder_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
 /// Whether the vault files are there ([`FileVault::presence`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Presence {
     /// Neither file exists: the worker has not joined.
     Absent,
+    /// A join is under way: not joined yet.
+    Joining,
     /// Both are files.
     Present,
 }
@@ -112,6 +187,9 @@ pub enum VaultRefused {
     Incomplete,
     /// A path is not a file, or whether it exists cannot be read.
     Unreadable,
+    /// A join marker older than [`JOIN_STALE_S`] (or holding no time): a join stopped part
+    /// way.
+    JoinInterrupted,
 }
 
 impl VaultRefused {
@@ -134,6 +212,10 @@ impl VaultRefused {
             Self::Unreadable => {
                 "a vault file is not a file or cannot be read; make both files readable by the \
                  worker's user (owner uid 10001)"
+            }
+            Self::JoinInterrupted => {
+                "a join was interrupted part way; delete the worker's volume and join again with \
+                 a new code"
             }
         }
     }
@@ -165,11 +247,7 @@ fn readable_by_others(_path: &Path) -> bool {
 /// `bytes` written to `path` readable by this user only: a fresh temporary file beside it, then
 /// a rename, so a reader never sees half a file.
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let dir = path
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    create_private_dir(dir)?;
+    create_private_dir(folder_of(path))?;
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
@@ -308,6 +386,8 @@ impl SyncVault for FileVault {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NOW: u64 = 1_800_000_000;
 
     struct Dir(PathBuf);
     impl Dir {
@@ -454,33 +534,76 @@ mod tests {
         let dir = Dir::new("presence");
         let vault = FileVault::new(dir.0.join("vault/key"), dir.0.join("vault/token"));
         // Not even the folder exists yet.
-        assert_eq!(vault.presence(), Ok(Presence::Absent));
+        assert_eq!(vault.presence(NOW), Ok(Presence::Absent));
         fs::create_dir_all(dir.0.join("vault")).unwrap();
-        assert_eq!(vault.presence(), Ok(Presence::Absent));
+        assert_eq!(vault.presence(NOW), Ok(Presence::Absent));
         fs::write(vault.key_path(), "ab".repeat(32)).unwrap();
-        assert_eq!(vault.presence(), Err(VaultRefused::Incomplete));
+        assert_eq!(vault.presence(NOW), Err(VaultRefused::Incomplete));
         fs::remove_file(vault.key_path()).unwrap();
         fs::write(vault.token_path(), "a-token").unwrap();
-        assert_eq!(vault.presence(), Err(VaultRefused::Incomplete));
+        assert_eq!(vault.presence(NOW), Err(VaultRefused::Incomplete));
         fs::write(vault.key_path(), "ab".repeat(32)).unwrap();
-        assert_eq!(vault.presence(), Ok(Presence::Present));
+        assert_eq!(vault.presence(NOW), Ok(Presence::Present));
         // A folder where a file should be.
         fs::remove_file(vault.token_path()).unwrap();
         fs::create_dir(vault.token_path()).unwrap();
-        assert_eq!(vault.presence(), Err(VaultRefused::Unreadable));
+        assert_eq!(vault.presence(NOW), Err(VaultRefused::Unreadable));
         fs::remove_file(vault.key_path()).unwrap();
-        assert_eq!(vault.presence(), Err(VaultRefused::Unreadable));
+        assert_eq!(vault.presence(NOW), Err(VaultRefused::Unreadable));
         // A path under a file is not missing on Linux (ENOTDIR); Windows reports it as a
         // missing path, which is what it is there.
         #[cfg(unix)]
         {
             fs::write(dir.0.join("blocked"), b"").unwrap();
             let blocked = FileVault::new(dir.0.join("blocked/key"), dir.0.join("blocked/token"));
-            assert_eq!(blocked.presence(), Err(VaultRefused::Unreadable));
+            assert_eq!(blocked.presence(NOW), Err(VaultRefused::Unreadable));
         }
         // Fixed copy, never a path.
-        for r in [VaultRefused::Incomplete, VaultRefused::Unreadable] {
+        for r in [
+            VaultRefused::Incomplete,
+            VaultRefused::Unreadable,
+            VaultRefused::JoinInterrupted,
+        ] {
             assert!(!r.copy().contains(&*dir.0.to_string_lossy()));
         }
+    }
+
+    /// A fresh join marker is a join under way whatever the files hold; a stale or unreadable
+    /// one is an interrupted join, never a guess; a join that ends leaves no marker.
+    #[test]
+    fn vault_a_join_marker_holds_the_run_until_the_join_ends() {
+        let dir = Dir::new("marker");
+        let vault = FileVault::new(dir.0.join("vault/key"), dir.0.join("vault/token"));
+        assert_eq!(vault.marker_path(), dir.0.join("vault/joining"));
+        vault.begin_join(NOW).unwrap();
+        assert_eq!(
+            fs::read_to_string(vault.marker_path()).unwrap(),
+            marker_text(NOW)
+        );
+        // No files yet, the key alone, then both: still joining.
+        assert_eq!(vault.presence(NOW), Ok(Presence::Joining));
+        fs::write(vault.key_path(), "ab".repeat(32)).unwrap();
+        assert_eq!(vault.presence(NOW + 5), Ok(Presence::Joining));
+        fs::write(vault.token_path(), "a-token").unwrap();
+        assert_eq!(vault.presence(NOW + JOIN_STALE_S), Ok(Presence::Joining));
+        // Left behind by a crash: stale after JOIN_STALE_S either way round.
+        assert_eq!(
+            vault.presence(NOW + JOIN_STALE_S + 1),
+            Err(VaultRefused::JoinInterrupted)
+        );
+        assert_eq!(
+            vault.presence(NOW - JOIN_STALE_S - 1),
+            Err(VaultRefused::JoinInterrupted)
+        );
+        fs::write(vault.marker_path(), "joining soon").unwrap();
+        assert_eq!(vault.presence(NOW), Err(VaultRefused::JoinInterrupted));
+        // The join ends: the files decide again, and ending twice is fine.
+        vault.end_join().unwrap();
+        assert!(!vault.marker_path().exists());
+        assert_eq!(vault.presence(NOW), Ok(Presence::Present));
+        vault.end_join().unwrap();
+        // A marker that is a folder cannot be read.
+        fs::create_dir(vault.marker_path()).unwrap();
+        assert_eq!(vault.presence(NOW), Err(VaultRefused::Unreadable));
     }
 }
