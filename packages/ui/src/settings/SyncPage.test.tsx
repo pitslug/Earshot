@@ -11,7 +11,18 @@ import { type SyncMockData, createMockIpc } from "../ipc";
 import { MOCK_SYNC_CODE, MOCK_SYNC_SECRET } from "../ipc/mockSync";
 import { openSettings, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
-import { NOT_RUNNING, REMOVE_EXPLAINED, SYNC_INTRO, VOICEPRINTS_EXPLAINED, codeLifeText, seenText } from "./SyncPage";
+import offload from "../../../../fixtures/ui/offload_copy_cases.json";
+import { DEVICE_NAME_TOO_LONG } from "../ipc/mockSync";
+import {
+  NAME_EXPLAINED,
+  NOT_RUNNING,
+  OFFER_EXPLAINED,
+  REMOVE_EXPLAINED,
+  SYNC_INTRO,
+  VOICEPRINTS_EXPLAINED,
+  codeLifeText,
+  seenText,
+} from "./SyncPage";
 
 async function setup(sync: SyncMockData = {}) {
   const calls: string[] = [];
@@ -121,7 +132,13 @@ describe("the Sync page", () => {
     await user.click(voice);
     await waitFor(() => expect(voice).toBeChecked());
     expect(calls).toEqual(expect.arrayContaining(["setSyncOn", "setSyncVoiceprints"]));
-    expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
+    // Choices apply at once; the one Save is the typed name's, in its own form with no choice
+    // beside it (T11.3db).
+    const saves = screen.getAllByRole("button", { name: /^Save/ });
+    expect(saves.map((b) => b.textContent)).toEqual(["Save name"]);
+    const form = saves[0].closest("form");
+    expect(form).toHaveAccessibleName("This computer's name");
+    expect(form?.querySelectorAll("input[type='checkbox'], input[type='radio'], select, [role='switch']")).toHaveLength(0);
   });
 
   it("syncs now and asks for the computers again", async () => {
@@ -220,5 +237,38 @@ describe("the Sync page", () => {
     expect(await screen.findByText("The computers could not be listed")).toBeInTheDocument();
     expect(screen.getByText(table.command_problems.unreachable)).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Sync is on" })).toBeInTheDocument();
+  });
+
+  it("writes summaries for the other computers when switched on, and lists who does (T11.3db)", async () => {
+    const { user, calls } = await setup({ setUp: true });
+    const offer = await screen.findByRole("switch", { name: "Write summaries for my other computers" });
+    expect(offer).not.toBeChecked();
+    expect(screen.getByText(OFFER_EXPLAINED)).toBeInTheDocument();
+    await user.click(offer);
+    await waitFor(() => expect(offer).toBeChecked());
+    expect(calls).toContain("setSyncOfferSummaries");
+    const list = await screen.findByRole("list", { name: "Computers" });
+    expect(within(list).getByText(`Writes summaries (${offload.writers.local})`)).toBeInTheDocument();
+    expect(within(list).getByText(`Writes summaries (${offload.writers.claude_code})`)).toBeInTheDocument();
+  });
+
+  it("saves this computer's name with its own button and shows a refusal under it", async () => {
+    const { user, calls } = await setup({ setUp: true, deviceName: "Desk" });
+    const form = await screen.findByRole("form", { name: "This computer's name" });
+    const field = within(form).getByRole("textbox", { name: "This computer's name" });
+    expect(field).toHaveValue("Desk");
+    expect(within(form).getByText(NAME_EXPLAINED)).toBeInTheDocument();
+    const save = within(form).getByRole("button", { name: "Save name" });
+    expect(save).toBeDisabled();
+    await user.clear(field);
+    await user.type(field, "x".repeat(65));
+    await user.click(save);
+    expect(await within(form).findByText(DEVICE_NAME_TOO_LONG)).toBeInTheDocument();
+    await user.clear(field);
+    await user.type(field, "Invented laptop ");
+    await user.click(within(form).getByRole("button", { name: "Save name" }));
+    await waitFor(() => expect(field).toHaveValue("Invented laptop"));
+    expect(within(form).queryByText(DEVICE_NAME_TOO_LONG)).toBeNull();
+    expect(calls.filter((c) => c === "setSyncDeviceName")).toHaveLength(2);
   });
 });

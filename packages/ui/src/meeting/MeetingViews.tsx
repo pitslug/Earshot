@@ -969,6 +969,17 @@ function ResultNotice({
           </MessageBarActions>
         </MessageBar>
       );
+    // Another computer writes it (T11.3db): it arrives by sync, or this computer writes it.
+    case "Offloaded":
+      return (
+        <MessageBar intent="info" layout="multiline" role="status">
+          <MessageBarBody>
+            <MessageBarTitle>Summary on another computer</MessageBarTitle>
+            {s.message} If it does not answer, this computer writes it.
+          </MessageBarBody>
+          <MessageBarActions>{dismiss}</MessageBarActions>
+        </MessageBar>
+      );
     case "Cancelled":
       return (
         <MessageBar intent="info" layout="multiline" role="status">

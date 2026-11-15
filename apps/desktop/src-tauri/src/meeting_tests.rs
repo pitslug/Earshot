@@ -315,6 +315,7 @@ impl Prepare for FakePrepare {
                 handovers: vec![],
                 handover_record_failures: vec![],
                 claude_effort_unread: effort_unread,
+                offload: None,
             }
         });
         Ok(Prepared {
@@ -1262,6 +1263,7 @@ impl Prepare for QueuePrepare {
                 handovers: vec![],
                 handover_record_failures: vec!["a store error".into()],
                 claude_effort_unread: false,
+                offload: None,
             }
         });
         Ok(Prepared {
@@ -1670,6 +1672,7 @@ fn outcome_of(post: Result<HostPost, RuntimeError>, summary: SummaryResult) -> H
         handovers: vec![],
         handover_record_failures: vec![],
         claude_effort_unread: false,
+        offload: None,
     }
 }
 

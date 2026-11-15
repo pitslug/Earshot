@@ -1,0 +1,29 @@
+{
+  "_comment": "Summary offload copy (T11.3db, docs/sync.md section 10). writers: the label of each writer kind presence carries. unavailable: the banner when this computer wrote the summary because the chosen computer was not asked, by reason; {device} (always at the start of a sentence) is the chosen computer's name. written_here: the warning of a summary this computer wrote after asking, by reason; {device} as above. waiting: the meeting's line while a request is open. unnamed: {device} at the start of a sentence for a computer whose name is not known; unnamed_inline: the same inside a sentence (waiting). Pinned to the desktop's offload copy by its tests and read by the UI mock. Shipped with the app: public copy only.",
+  "writers": {
+    "local": "local model",
+    "anthropic": "Claude with an API key",
+    "openai_compatible": "own server",
+    "claude_code": "Claude Code",
+    "codex": "Codex"
+  },
+  "unavailable": {
+    "sync_off": "Sync is off, so this computer wrote the summary.",
+    "unreachable": "The sync server could not be reached, so this computer wrote the summary.",
+    "offline": "{device} is not online, so this computer wrote the summary.",
+    "not_offering": "{device} no longer writes summaries for your other computers, so this computer wrote the summary.",
+    "no_writer": "{device} has no summary writer set up, so this computer wrote the summary.",
+    "recording": "{device} is recording a meeting, so this computer wrote the summary.",
+    "no_final_transcript": "This meeting has no final transcript to send, so this computer wrote the summary.",
+    "not_asked": "{device} could not be asked, so this computer wrote the summary."
+  },
+  "written_here": {
+    "not_claimed": "{device} did not answer, so this computer wrote the summary.",
+    "helper_stale": "{device} went offline before it finished, so this computer wrote the summary.",
+    "declined": "{device} could not write the summary, so this computer wrote it.",
+    "withdrawn": "{device} did not write the summary, so this computer wrote it."
+  },
+  "waiting": "Waiting for {device} to write the summary.",
+  "unnamed": "Your other computer",
+  "unnamed_inline": "your other computer"
+}

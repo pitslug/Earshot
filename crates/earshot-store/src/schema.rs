@@ -282,8 +282,34 @@ INSERT OR IGNORE INTO sync_outbox SELECT 'voiceprint', id FROM voiceprint;
 INSERT OR IGNORE INTO sync_outbox SELECT 'folder', id FROM folder;
 ";
 
+/// Migration 7: summary offload requests (T11.3da, docs/sync-spec.md section 10.1), a synced
+/// child of a meeting with its own outbox triggers (migration 6 covers only the tables that
+/// existed then). A request holds no content: device ids, a segment count, a state word and a
+/// reason word.
+const V7: &str = "
+CREATE TABLE summary_request (
+    id BLOB PRIMARY KEY NOT NULL, {META},
+    meeting_id BLOB NOT NULL REFERENCES meeting(id),
+    target_device BLOB NOT NULL,
+    asking_device BLOB NOT NULL,
+    segment_count INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    reason TEXT NOT NULL
+) STRICT;
+CREATE INDEX summary_request_meeting ON summary_request(meeting_id);
+
+CREATE TRIGGER summary_request_sync_insert AFTER INSERT ON summary_request BEGIN
+    INSERT INTO sync_outbox SELECT 'summary_request', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'summary_request' AND id = NEW.id);
+END;
+CREATE TRIGGER summary_request_sync_update AFTER UPDATE ON summary_request BEGIN
+    INSERT INTO sync_outbox SELECT 'summary_request', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'summary_request' AND id = NEW.id);
+END;
+";
+
 /// Tables with sync metadata (the HLC high-water mark is the greatest `updated_*` in them).
-pub(crate) const SYNCED_TABLES: [&str; 9] = [
+pub(crate) const SYNCED_TABLES: [&str; 10] = [
     "meeting",
     "track",
     "speaker",
@@ -293,11 +319,12 @@ pub(crate) const SYNCED_TABLES: [&str; 9] = [
     "person",
     "voiceprint",
     "folder",
+    "summary_request",
 ];
 
 /// The migrations, in order, with `{META}` expanded.
 pub(crate) fn migrations() -> Vec<String> {
-    [V1, V2, V3, V4, V5, V6]
+    [V1, V2, V3, V4, V5, V6, V7]
         .iter()
         .map(|m| m.replace("{META}", META))
         .collect()
@@ -317,6 +344,7 @@ mod tests {
         "85a4c55bdbd320805308174fdb3a2f531d9dfae9262659b726437b8caa14603b",
         "a682b36a9b8d6bd831f0f4865fa7554dd79330f35e80f10c7512389e3bcc1df4",
         "964bd0e4d3a4bb7e505659731a7dea0a1774269734863714d7a23c4af756b466",
+        "2cf8b62638de4aab2956a78789c81bf374546f49e81e882a4215d1aebdadbd1d",
     ];
 
     /// `(type, name, tbl_name, sql)` of every schema object, sorted.
@@ -451,6 +479,28 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, 5);
+    }
+
+    /// The committed schema-6 fixture (`tests/data/schema_v6.sql`, used by
+    /// `tests/summary_request.rs`) creates exactly the objects migrations 1 to 6 create, so the
+    /// summary offload migration (7) is tested on a real schema-6 database.
+    #[test]
+    fn store_offload_v6_fixture_has_exactly_the_schema_of_migrations_1_to_6() {
+        let fixture = rusqlite::Connection::open_in_memory().unwrap();
+        fixture
+            .execute_batch(include_str!("../tests/data/schema_v6.sql"))
+            .unwrap();
+        let fresh = rusqlite::Connection::open_in_memory().unwrap();
+        for m in &super::migrations()[..6] {
+            fresh.execute_batch(m).unwrap();
+        }
+        let want = objects(&fresh);
+        assert!(want.iter().any(|o| o.1 == "sync_outbox"), "{want:?}");
+        assert_eq!(objects(&fixture), want);
+        let version: u32 = fixture
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
     }
 
     /// Every synced table has its insert and update trigger feeding `sync_outbox`, and no

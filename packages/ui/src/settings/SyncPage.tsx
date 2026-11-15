@@ -111,6 +111,13 @@ export const NOT_RUNNING = "Sync is not running. Choose Sync now to start it.";
 export const REMOVE_EXPLAINED =
   "Your meetings stay on this computer. It stops syncing and forgets the sync server and its key. To sync again, set it up again or join with a pairing code.";
 
+/** What "Write summaries for my other computers" means (T11.3db). */
+export const OFFER_EXPLAINED =
+  "When another of your computers asks, this computer writes the meeting's summary with its own summary writer. The other computer chooses it on its Summaries page.";
+
+/** What the computer's name is for. */
+export const NAME_EXPLAINED = "How your other computers show this one. Leave it empty to use the computer's own name.";
+
 /** How long ago a computer last reached the server, in words. */
 export function seenText(secondsAgo: number): string {
   const s = Math.max(0, Math.round(secondsAgo));
@@ -140,6 +147,39 @@ export function deviceState(d: SyncDeviceView): string {
   if (d.this_device) return seenText(d.seen_s_ago);
   if (d.online) return d.recording ? "Online, recording" : "Online";
   return seenText(d.seen_s_ago);
+}
+
+/** What a computer that writes summaries for the others uses, in the list. */
+export function writesText(d: SyncDeviceView): string | null {
+  if (d.this_device || !d.offers_summaries) return null;
+  return d.writer === null ? "Writes summaries" : `Writes summaries (${d.writer})`;
+}
+
+/** This computer's name, typed, saved with its own button (typed text needs Save). */
+function NameForm({ view, state }: { view: SyncView; state: SyncPageState }) {
+  const styles = useStyles();
+  const [name, setName] = useState(view.device_name);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <form
+      aria-label="This computer's name"
+      className={styles.form}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void state.saveDeviceName(name).then((refused) => {
+          setError(refused);
+          if (refused === null) setName((n) => n.trim());
+        });
+      }}
+    >
+      <Field label="This computer's name" hint={NAME_EXPLAINED} validationMessage={error ?? undefined}>
+        <Input value={name} onChange={(_, d) => setName(d.value)} />
+      </Field>
+      <Button type="submit" className={styles.action} disabled={state.busy || name.trim() === view.device_name}>
+        Save name
+      </Button>
+    </form>
+  );
 }
 
 /** One of the two forms of a computer that is not set up. */
@@ -346,6 +386,7 @@ function Computers({ state }: { state: SyncPageState }) {
             <li key={d.short_id} className={styles.device}>
               <Body1>{deviceName(d)}</Body1>
               <Caption1 className={styles.muted}>{deviceState(d)}</Caption1>
+              {writesText(d) !== null && <Caption1 className={styles.muted}>{writesText(d)}</Caption1>}
             </li>
           ))}
         </ul>
@@ -365,6 +406,18 @@ function SetUp({ view, state, onRemove }: { view: SyncView; state: SyncPageState
       <Status view={view} state={state} />
       <AddComputer state={state} />
       <Computers state={state} />
+      <Section title="Summaries for your other computers">
+        <Switch
+          label="Write summaries for my other computers"
+          checked={view.offers_summaries}
+          disabled={state.busy}
+          onChange={(_, d) => void state.setOfferSummaries(d.checked)}
+        />
+        <Caption1 className={styles.muted}>{OFFER_EXPLAINED}</Caption1>
+      </Section>
+      <Section title="This computer">
+        <NameForm view={view} state={state} />
+      </Section>
       <Section title="Voiceprints">
         <Switch
           label="Sync voiceprints"

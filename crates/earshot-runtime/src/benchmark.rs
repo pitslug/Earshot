@@ -752,6 +752,12 @@ fn run_in(
         SummaryResult::Skipped { reason } => MeasuredSummary::Skipped(skip_of(&reason, skip)?),
         SummaryResult::Cancelled => return Ok(None),
         SummaryResult::Failed { error, .. } => return Err(error),
+        // The benchmark's run has no offload choice, so nothing is ever asked of another device.
+        SummaryResult::Offloaded { .. } => {
+            return Err(RuntimeError::Internal(
+                "the benchmark reached outside this computer",
+            ));
+        }
     };
     let final_backend = {
         let db = svc.store();
@@ -1040,6 +1046,7 @@ pub fn run_from_settings(
             no_summary,
             post_cancel: cancel,
             summary_cancel: cancel,
+            offload: None,
         };
         host::after_meeting(svc, outcome, &run, progress)
     });

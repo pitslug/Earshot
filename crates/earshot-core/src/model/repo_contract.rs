@@ -12,10 +12,12 @@ use crate::prompt::Template;
 use crate::summary::{ActionItem, Decision, NoteBullet, NoteSection, SummaryV1};
 
 use super::entities::{
-    AudioFile, AudioFormat, ClockDomain, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker,
-    Summary, Track, TranscriptPass, VaultPath,
+    AudioFile, AudioFormat, ClockDomain, ExportRecord, Folder, Meeting, Note, RequestState,
+    SegmentRow, Speaker, Summary, SummaryRequest, Track, TranscriptPass, VaultPath,
 };
-use super::repo::{AudioFileRepo, ExportRepo, FolderRepo, MeetingRepo, RepoError};
+use super::repo::{
+    AudioFileRepo, ExportRepo, FolderRepo, MeetingRepo, RepoError, SummaryRequestRepo,
+};
 
 /// Deterministic row factory (ids from a counter, metadata from a manual clock).
 struct Rows {
@@ -674,4 +676,98 @@ pub fn folder_repo<R: FolderRepo>(make: impl Fn() -> R) {
         }) if id == ghost => {}
         other => panic!("deleting a missing folder: expected MissingParent, got {other:?}"),
     }
+}
+
+/// [`SummaryRequestRepo`] contract: a request needs its meeting, every field round-trips
+/// (device ids, the count, each state and the reason word), replace is by id, the listing is
+/// in creation (HLC) order with tombstones included, and a meeting's deletion leaves its
+/// requests as they are (a request holds no content).
+///
+/// # Panics
+/// On any violation.
+pub fn summary_request_repo<R: MeetingRepo + SummaryRequestRepo>(make: impl Fn() -> R) {
+    let mut f = Rows::new();
+    let mut repo = make();
+    let asker = DeviceId::from_bytes([0xa1; 16]);
+    let target = DeviceId::from_bytes([0xb2; 16]);
+    let m = f.meeting(1_800_000_000_000);
+    let request = |f: &mut Rows, meeting: EntityId| SummaryRequest {
+        id: f.id(),
+        meta: f.meta(),
+        meeting_id: meeting,
+        target_device: target,
+        asking_device: asker,
+        segment_count: 1234,
+        state: RequestState::Requested,
+        reason: String::new(),
+    };
+
+    let first = request(&mut f, m.id);
+    match repo.put_summary_request(first.clone()) {
+        Err(RepoError::MissingParent {
+            entity: "meeting",
+            id,
+        }) if id == m.id => {}
+        other => panic!("a request without its meeting: expected MissingParent, got {other:?}"),
+    }
+    assert!(
+        repo.summary_requests().unwrap().is_empty(),
+        "nothing written"
+    );
+    repo.put_meeting(m.clone()).unwrap();
+    assert_eq!(repo.summary_request(first.id).unwrap(), None);
+    repo.put_summary_request(first.clone()).unwrap();
+    assert_eq!(
+        repo.summary_request(first.id).unwrap().as_ref(),
+        Some(&first)
+    );
+
+    // Every state and a reason word round-trip; replace is by id.
+    for state in RequestState::ALL {
+        let mut changed = first.clone();
+        changed.state = state;
+        changed.reason = if state == RequestState::Declined {
+            "kept_local_no_model".into()
+        } else {
+            String::new()
+        };
+        changed.meta.touch(&mut f.hlc, &f.clock);
+        repo.put_summary_request(changed.clone()).unwrap();
+        assert_eq!(
+            repo.summary_request(first.id).unwrap().as_ref(),
+            Some(&changed)
+        );
+        assert_eq!(
+            repo.summary_requests().unwrap().len(),
+            1,
+            "replace, not insert"
+        );
+    }
+
+    // Creation order is `meta.created_at`, not id order.
+    let mut later = request(&mut f, m.id);
+    let mut low = [0u8; 16];
+    low[6] = 0x70;
+    low[8] = 0x80;
+    low[15] = 1;
+    later.id = EntityId::from_bytes(low);
+    assert!(later.id < first.id, "ids sort against creation order");
+    later.meta.mark_deleted(&mut f.hlc, &f.clock);
+    repo.put_summary_request(later.clone()).unwrap();
+    let ids: Vec<EntityId> = repo
+        .summary_requests()
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec![first.id, later.id],
+        "creation order, tombstones listed"
+    );
+
+    // Deleting the meeting leaves its requests as they are.
+    let before = repo.summary_requests().unwrap();
+    super::delete_meeting(&mut repo, m.id, &mut f.hlc, &f.clock).unwrap();
+    assert_eq!(repo.summary_requests().unwrap(), before);
 }

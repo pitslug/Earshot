@@ -441,9 +441,11 @@ pub fn finished_toast(result: &SummaryEvent) -> Option<Toast> {
             buttons: vec![("Open", ToastClick::Meeting)],
             stays: false,
         }),
-        SummaryEvent::Skipped { .. } | SummaryEvent::Cancelled | SummaryEvent::PostCancelled => {
-            None
-        }
+        // Another computer writes it (T11.3db): nothing to open yet.
+        SummaryEvent::Skipped { .. }
+        | SummaryEvent::Cancelled
+        | SummaryEvent::PostCancelled
+        | SummaryEvent::Offloaded { .. } => None,
     }
 }
 

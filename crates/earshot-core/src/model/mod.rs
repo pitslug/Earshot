@@ -36,13 +36,13 @@ pub mod repo_contract;
 pub use crate::asr::MeetingTime;
 pub use crate::voiceprint::{Person, Stamp, Voiceprint};
 pub use entities::{
-    AudioFile, AudioFormat, ClockDomain, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker,
-    Summary, Track, TranscriptPass, VaultPath, VaultPathError,
+    AudioFile, AudioFormat, ClockDomain, ExportRecord, Folder, Meeting, Note, RequestState,
+    SegmentRow, Speaker, Summary, SummaryRequest, Track, TranscriptPass, VaultPath, VaultPathError,
 };
 pub use memory::InMemoryRepo;
 pub use repo::{
-    AudioFileRepo, ExportRepo, FolderRepo, MeetingErasure, MeetingRepo, RepoError, delete_folder,
-    delete_meeting, live_segments, replace_segments,
+    AudioFileRepo, ExportRepo, FolderRepo, MeetingErasure, MeetingRepo, RepoError,
+    SummaryRequestRepo, delete_folder, delete_meeting, live_segments, replace_segments,
 };
 
 #[cfg(test)]

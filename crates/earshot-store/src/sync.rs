@@ -16,7 +16,10 @@
 //! that identity's biometrics here, in the same transaction.
 
 use earshot_core::identity::{Clock, EntityId, Hlc, HlcTimestamp, SyncMeta, SyncSerialize};
-use earshot_core::model::{Folder, Meeting, Note, RepoError, SegmentRow, Speaker, Summary, Track};
+use earshot_core::model::{
+    Folder, Meeting, Note, RepoError, RequestState, SegmentRow, Speaker, Summary, SummaryRequest,
+    Track,
+};
 use earshot_core::voiceprint::{Person, Voiceprint};
 use rusqlite::{OptionalExtension, params};
 
@@ -48,6 +51,8 @@ pub enum SyncedRow {
     Voiceprint(Voiceprint),
     /// `folder`.
     Folder(Folder),
+    /// `summary_request` (summary offload, T11.3da).
+    SummaryRequest(SummaryRequest),
 }
 
 macro_rules! each {
@@ -62,6 +67,7 @@ macro_rules! each {
             SyncedRow::Person($r) => $e,
             SyncedRow::Voiceprint($r) => $e,
             SyncedRow::Folder($r) => $e,
+            SyncedRow::SummaryRequest($r) => $e,
         }
     };
 }
@@ -99,8 +105,18 @@ impl SyncedRow {
             Self::Speaker(r) => Some(r.meeting_id),
             Self::Note(r) => Some(r.meeting_id),
             Self::Summary(r) => Some(r.meeting_id),
+            Self::SummaryRequest(r) => Some(r.meeting_id),
             Self::Person(_) | Self::Voiceprint(_) | Self::Folder(_) => None,
         }
+    }
+
+    /// Whether the row waits while its meeting is in use here ([`HoldReason::Busy`]): every row
+    /// of a meeting but a summary request, which holds no content and must reach a device
+    /// whose summary job holds the meeting (a helper re-reads it before storing, the asker
+    /// sees the helper's claim).
+    #[must_use]
+    pub fn waits_while_busy(&self) -> bool {
+        !matches!(self, Self::SummaryRequest(_)) && self.meeting().is_some()
     }
 
     /// The row an opened envelope's `record` holds for `entity`; `Ok(None)` for an entity
@@ -123,6 +139,7 @@ impl SyncedRow {
             "person" => Self::Person(v(record)?),
             "voiceprint" => Self::Voiceprint(v(record)?),
             "folder" => Self::Folder(v(record)?),
+            "summary_request" => Self::SummaryRequest(v(record)?),
             _ => return Ok(None),
         }))
     }
@@ -236,6 +253,9 @@ pub struct Applied {
     pub mes_merged: usize,
     /// Live summaries tombstoned because a later-created one of the same meeting stays.
     pub summaries_replaced: usize,
+    /// Summary requests this device withdrew that came back open (claimed elsewhere before
+    /// that device heard of the withdrawal): the withdrawal was stamped again here.
+    pub withdrawals_kept: usize,
 }
 
 impl Applied {
@@ -285,6 +305,47 @@ fn unhold(tx: &StoreTx<'_>, inc: &Incoming) -> Result<(), StoreError> {
         ],
     )?;
     Ok(())
+}
+
+/// What [`Store::apply_remote`] does with a pulled summary request over the copy here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Withdrawal {
+    /// Whole-row last writer wins, as for any row.
+    Lww,
+    /// Write the pulled withdrawal whatever the stamps.
+    TakeIt,
+    /// Keep the withdrawal here, re-stamped when the pulled copy is later.
+    KeepMine,
+}
+
+/// The withdrawal rule of summary offload (docs/sync-spec.md section 10.1): once the asker takes
+/// a request back it writes the summary itself, so the request must never open again.
+///
+/// 1. A pulled withdrawal replaces an open request here (requested or claimed) whatever the two
+///    stamps: the target may have claimed it after the asker withdrew, before it heard of that.
+/// 2. On the asker (`me`), a withdrawn request is never replaced by an open one: the pulled copy
+///    is refused, and when it is later the withdrawal is stamped again here, so it goes out and
+///    wins at the relay (only the asker writes a withdrawal, and here the asker writes it).
+///
+/// Anything else (a done or declined answer, two copies of one state) is last writer wins: a
+/// withdrawal and a stored summary may both happen, and the summary rule keeps the later.
+fn withdrawal(
+    here: &SummaryRequest,
+    there: &SummaryRequest,
+    me: earshot_core::identity::DeviceId,
+) -> Withdrawal {
+    let withdrawn = RequestState::Withdrawn;
+    if there.state == withdrawn && here.state.is_open() {
+        if here.meta.updated_at >= there.meta.updated_at {
+            Withdrawal::TakeIt
+        } else {
+            Withdrawal::Lww
+        }
+    } else if here.state == withdrawn && there.state.is_open() && here.asking_device == me {
+        Withdrawal::KeepMine
+    } else {
+        Withdrawal::Lww
+    }
 }
 
 /// The rules that keep devices converged (docs/sync-spec.md section 7), run inside
@@ -400,7 +461,9 @@ impl Store {
             }
             let meeting_col = match table {
                 "meeting" => Some("id"),
-                "track" | "segment" | "speaker" | "note" | "summary" => Some("meeting_id"),
+                "track" | "segment" | "speaker" | "note" | "summary" | "summary_request" => {
+                    Some("meeting_id")
+                }
                 _ => None,
             };
             let except = match meeting_col {
@@ -490,7 +553,9 @@ impl Store {
             }
             let meeting_col = match table {
                 "meeting" => Some("id"),
-                "track" | "segment" | "speaker" | "note" | "summary" => Some("meeting_id"),
+                "track" | "segment" | "speaker" | "note" | "summary" | "summary_request" => {
+                    Some("meeting_id")
+                }
                 _ => None,
             };
             let except = match meeting_col {
@@ -586,8 +651,9 @@ impl Store {
     /// entry of its own and is observed by `hlc`; a row applied or found not newer leaves
     /// `sync_pending`. A person tombstone forgets that identity's biometrics; when
     /// [`Applied::biometrics_forgotten`] is not zero the caller runs [`Store::flush_erasures`],
-    /// as for any biometric deletion. One IMMEDIATE transaction: what it reads cannot change
-    /// before it writes.
+    /// as for any biometric deletion. A summary request is never held as busy, and its
+    /// withdrawal is final (`withdrawal`, docs/sync-spec.md section 10.1). One IMMEDIATE
+    /// transaction: what it reads cannot change before it writes.
     ///
     /// # Errors
     /// Store errors; nothing of the page is written then.
@@ -616,7 +682,7 @@ impl Store {
                     out.hold(HoldReason::Clock);
                     continue;
                 }
-                if row.meeting().is_some_and(|m| (rules.leased)(m)) {
+                if row.waits_while_busy() && row.meeting().is_some_and(|m| (rules.leased)(m)) {
                     hold(tx, inc, HoldReason::Busy)?;
                     out.hold(HoldReason::Busy);
                     continue;
@@ -654,6 +720,43 @@ impl Store {
                     }
                     unhold(tx, inc)?;
                     continue;
+                }
+                // A summary request's withdrawal is final (docs/sync-spec.md section 10.1).
+                if let (Some(SyncedRow::SummaryRequest(here)), SyncedRow::SummaryRequest(there)) =
+                    (&local, row)
+                {
+                    match withdrawal(here, there, hlc.node()) {
+                        Withdrawal::Lww => {}
+                        Withdrawal::TakeIt => {
+                            // Written as it came: only the asker writes a withdrawal, so this
+                            // device never stamps one of its own here.
+                            crate::repo::put_synced(&tx.conn, row)?;
+                            tx.conn.execute(
+                                "DELETE FROM sync_outbox WHERE tbl = ?1 AND id = ?2",
+                                params![row.table(), &row.id().as_uuid().as_bytes()[..]],
+                            )?;
+                            unhold(tx, inc)?;
+                            let _ = hlc.observe(inc.stamp, clock);
+                            out.written += 1;
+                            continue;
+                        }
+                        Withdrawal::KeepMine => {
+                            let _ = hlc.observe(inc.stamp, clock);
+                            if here.meta.updated_at < there.meta.updated_at {
+                                let mut again = here.clone();
+                                again.meta.touch(hlc, clock);
+                                crate::repo::put_synced(
+                                    &tx.conn,
+                                    &SyncedRow::SummaryRequest(again),
+                                )?;
+                                out.withdrawals_kept += 1;
+                            } else {
+                                out.ignored += 1;
+                            }
+                            unhold(tx, inc)?;
+                            continue;
+                        }
+                    }
                 }
                 if local
                     .as_ref()

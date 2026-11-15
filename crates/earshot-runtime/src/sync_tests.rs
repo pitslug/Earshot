@@ -1205,13 +1205,19 @@ fn presence_blobs_are_one_size_whatever_they_say() {
     let device = earshot_core::identity::DeviceId::from_bytes([7; 16]);
     let widest = "\u{1F600}".repeat(MAX_DEVICE_NAME);
     let mut sizes = std::collections::BTreeSet::new();
-    for (name, recording, gone) in [
-        ("A", false, false),
-        ("A", true, false),
-        ("A much longer computer name here", true, true),
-        (widest.as_str(), false, false),
+    let longest = crate::offload::WriterKind::OpenaiCompatible;
+    for (name, recording, gone, writer) in [
+        ("A", false, false, None),
+        ("A", true, false, Some(crate::offload::WriterKind::Local)),
+        (
+            "A much longer computer name here",
+            true,
+            true,
+            Some(longest),
+        ),
+        (widest.as_str(), false, false, Some(longest)),
     ] {
-        let p = presence::presence_now(name.to_owned(), true, recording, gone);
+        let p = presence::presence_now(name.to_owned(), true, writer, recording, gone);
         let blob = presence::blob_of(&p, &keys, device).unwrap();
         sizes.insert(blob.len());
         let back = presence::open_blob(&keys, device, &blob).unwrap();

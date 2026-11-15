@@ -169,8 +169,13 @@ fn sync_newer_format_is_kept_not_refused_and_bad_json_is_unreadable() {
     let k = keys.row_key(id(1));
     let at = stamp(1_800_000_000_500, 2);
     // A newer Earshot may change the envelope's shape: only the format is read.
-    let s = seal_plaintext(&keys, k, at, br#"{"format":2,"anything":["new"]}"#).unwrap();
-    assert_eq!(open_row(&keys, k, at, &s.body), Ok(Opened::NewerFormat(2)));
+    let newer = ENVELOPE_FORMAT + 1;
+    let plain = format!(r#"{{"format":{newer},"anything":["new"]}}"#);
+    let s = seal_plaintext(&keys, k, at, plain.as_bytes()).unwrap();
+    assert_eq!(
+        open_row(&keys, k, at, &s.body),
+        Ok(Opened::NewerFormat(newer))
+    );
     for bad in [
         &br#"{"format":1}"#[..],
         b"[]",

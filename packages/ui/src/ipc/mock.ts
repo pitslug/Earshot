@@ -60,7 +60,7 @@ import { type CudaMockData, createCudaMock } from "./mockCuda";
 import { type AudioMockData, createAudioMock } from "./mockAudio";
 import { type AudioCheckMockData, createAudioCheckMock } from "./mockAudioCheck";
 import { type FirstRunMockData, createFirstRunMock } from "./mockFirstRun";
-import { type SyncMockData, createSyncMock } from "./mockSync";
+import { OFFLOAD_COPY, type SyncMockData, createSyncMock, offloadCopy } from "./mockSync";
 import { SAMPLE_FOLDERS, createFoldersMock } from "./mockFolders";
 
 const MINUTE = 60_000;
@@ -374,6 +374,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     data.noModels,
   );
   const summariesMock = createSummariesMock(data.summaries, data.machine ?? "surface");
+  const syncMock = createSyncMock(data.sync);
+  // Meetings asked of another computer, with their waiting line (T11.3db).
+  const waitingFor = new Map<string, string>();
   const { exportTarget, ...settingsMock } = createSettingsMock(
     { vault: data.vault, ...data.settings },
     data.machine ?? "surface",
@@ -672,7 +675,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     ...createBenchmarkMock(data.benchmark, timer),
     ...createCudaMock(data.machine ?? "surface", timer, data.cuda),
     ...createFirstRunMock(data.firstRun),
-    ...createSyncMock(data.sync),
+    ...syncMock,
+    // T11.3db: a meeting asked of another computer shows that it waits.
+    askSummaryHelper: async (meeting, device) => {
+      const line = await syncMock.askSummaryHelper(meeting, device);
+      waitingFor.set(meeting, offloadCopy(OFFLOAD_COPY.waiting, null, true));
+      return line;
+    },
     ...foldersMock,
     listFolders: async () => storeFailure() ?? foldersMock.listFolders(),
     appInfo: async () => ({ ...appInfo }),
@@ -852,6 +861,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         kept_local,
         word_list,
         dictionary,
+        waiting_for: waitingFor.get(meeting) ?? d.waiting_for,
         state: row?.state ?? d.state,
         header: { ...d.header, title: row?.title ?? d.header.title },
       });

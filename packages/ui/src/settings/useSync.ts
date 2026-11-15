@@ -41,6 +41,10 @@ export interface SyncPageState {
   joinWithCode: () => Promise<void>;
   setOn: (on: boolean) => Promise<void>;
   setVoiceprints: (on: boolean) => Promise<void>;
+  /** "Write summaries for my other computers" (T11.3db). */
+  setOfferSummaries: (on: boolean) => Promise<void>;
+  /** Saves this computer's name; resolves with the refusal's copy, or null when saved. */
+  saveDeviceName: (name: string) => Promise<string | null>;
   syncNow: () => Promise<void>;
   showCode: () => Promise<void>;
   hideCode: () => void;
@@ -138,6 +142,20 @@ export function useSync(timer: Timer): SyncPageState {
     },
     setVoiceprints: async (on) => {
       await change(() => ipc.setSyncVoiceprints(on));
+    },
+    setOfferSummaries: async (on) => {
+      await change(() => ipc.setSyncOfferSummaries(on));
+    },
+    saveDeviceName: async (name) => {
+      setBusy(true);
+      try {
+        shown(await ipc.setSyncDeviceName(name));
+        return null;
+      } catch (e) {
+        return errorText(e);
+      } finally {
+        setBusy(false);
+      }
     },
     syncNow: async () => {
       if (await change(() => ipc.syncNow())) setDevicesAsked((n) => n + 1);
