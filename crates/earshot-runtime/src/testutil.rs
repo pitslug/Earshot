@@ -108,6 +108,16 @@ impl earshot_core::asr::Transcriber for Timeline {
     }
 }
 
+/// Replaces the stored Dictionary with `words`, taking the stored list as the base
+/// (`vocabulary::set_vocabulary`): a test has no list on screen that could be stale.
+pub fn replace_words<S: AsRef<str>>(
+    svc: &Services,
+    words: &[S],
+) -> Result<earshot_core::prompt::Vocabulary, crate::vocabulary::SetVocabularyError> {
+    let base = crate::vocabulary::vocabulary(&svc.store()).unwrap().0;
+    crate::vocabulary::set_vocabulary(svc, base.words(), words)
+}
+
 /// Services over a fresh store in `dir`, with a clock the test can move.
 pub fn services(dir: &TempDir) -> (Services, Arc<ManualClock>) {
     let data = DataDir::new(dir.0.join("data"));

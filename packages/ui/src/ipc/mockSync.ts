@@ -84,6 +84,8 @@ export interface SyncMockData {
   running?: boolean;
   /** Voiceprints sync (default false). */
   voiceprints?: boolean;
+  /** Dictionary words sync (default true, T11.3e). */
+  dictionary?: boolean;
   /** The server's address (default `https://sync.example.com` when set up). */
   address?: string | null;
   /** When sync last finished without a problem (Unix ms, default none). */
@@ -213,6 +215,7 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
   let on = data.on ?? setUp;
   let running = data.running ?? (setUp && on);
   let voiceprints = data.voiceprints ?? false;
+  let dictionary = data.dictionary ?? true;
   let address = data.address ?? (setUp ? "https://sync.example.com" : null);
   let lastSuccess = data.lastSuccessUnixMs ?? null;
   let problem: SyncProblemWord | null = data.problem ?? null;
@@ -264,6 +267,7 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
     on,
     running: setUp && on && running,
     voiceprints,
+    dictionary,
     address,
     address_problem: null,
     last_success_unix_ms: lastSuccess,
@@ -330,6 +334,11 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
     setSyncVoiceprints: async (value) => {
       call("setSyncVoiceprints");
       voiceprints = value;
+      return view();
+    },
+    setSyncDictionary: async (value) => {
+      call("setSyncDictionary");
+      dictionary = value;
       return view();
     },
     syncNow: async () => {

@@ -41,6 +41,7 @@ export interface SyncPageState {
   joinWithCode: () => Promise<void>;
   setOn: (on: boolean) => Promise<void>;
   setVoiceprints: (on: boolean) => Promise<void>;
+  setDictionary: (on: boolean) => Promise<void>;
   /** "Write summaries for my other computers" (T11.3db). */
   setOfferSummaries: (on: boolean) => Promise<void>;
   /** Saves this computer's name; resolves with the refusal's copy, or null when saved. */
@@ -142,6 +143,9 @@ export function useSync(timer: Timer): SyncPageState {
     },
     setVoiceprints: async (on) => {
       await change(() => ipc.setSyncVoiceprints(on));
+    },
+    setDictionary: async (on) => {
+      await change(() => ipc.setSyncDictionary(on));
     },
     setOfferSummaries: async (on) => {
       await change(() => ipc.setSyncOfferSummaries(on));

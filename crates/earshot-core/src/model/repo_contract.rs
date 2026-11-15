@@ -12,11 +12,12 @@ use crate::prompt::Template;
 use crate::summary::{ActionItem, Decision, NoteBullet, NoteSection, SummaryV1};
 
 use super::entities::{
-    AudioFile, AudioFormat, ClockDomain, ExportRecord, Folder, Meeting, Note, RequestState,
-    SegmentRow, Speaker, Summary, SummaryRequest, Track, TranscriptPass, VaultPath,
+    AudioFile, AudioFormat, ClockDomain, DictionaryWord, ExportRecord, Folder, Meeting, Note,
+    RequestState, SegmentRow, Speaker, Summary, SummaryRequest, Track, TranscriptPass, VaultPath,
 };
 use super::repo::{
-    AudioFileRepo, ExportRepo, FolderRepo, MeetingRepo, RepoError, SummaryRequestRepo,
+    AudioFileRepo, DictionaryRepo, ExportRepo, FolderRepo, MeetingRepo, RepoError,
+    SummaryRequestRepo,
 };
 
 /// Deterministic row factory (ids from a counter, metadata from a manual clock).
@@ -770,4 +771,74 @@ pub fn summary_request_repo<R: MeetingRepo + SummaryRequestRepo>(make: impl Fn()
     let before = repo.summary_requests().unwrap();
     super::delete_meeting(&mut repo, m.id, &mut f.hlc, &f.clock).unwrap();
     assert_eq!(repo.summary_requests().unwrap(), before);
+}
+
+/// [`DictionaryRepo`] contract: a word needs no parent, every field round-trips (a word with
+/// spaces, punctuation and letters outside ASCII), replace is by id, a removal keeps the row as
+/// a tombstone with its word cleared, the listing is in creation (HLC) order with removed rows
+/// included, and a meeting's deletion leaves the words as they are.
+///
+/// # Panics
+/// On any violation.
+pub fn dictionary_repo<R: MeetingRepo + DictionaryRepo>(make: impl Fn() -> R) {
+    let mut f = Rows::new();
+    let mut repo = make();
+    let word = |f: &mut Rows, w: &str| DictionaryWord {
+        id: f.id(),
+        meta: f.meta(),
+        word: w.into(),
+    };
+
+    let first = word(&mut f, "Quillmarsh-7 Örtvik");
+    assert_eq!(repo.dictionary_word(first.id).unwrap(), None);
+    assert!(repo.dictionary_words().unwrap().is_empty());
+    repo.put_dictionary_word(first.clone()).unwrap();
+    assert_eq!(
+        repo.dictionary_word(first.id).unwrap().as_ref(),
+        Some(&first)
+    );
+
+    // Replace is by id; a removal is a tombstone with the word cleared.
+    let mut removed = first.clone();
+    assert!(removed.remove(&mut f.hlc, &f.clock));
+    assert!(!removed.clone().remove(&mut f.hlc, &f.clock), "once only");
+    assert!(removed.word.is_empty() && !removed.is_live());
+    repo.put_dictionary_word(removed.clone()).unwrap();
+    assert_eq!(
+        repo.dictionary_word(first.id).unwrap().as_ref(),
+        Some(&removed)
+    );
+    assert_eq!(
+        repo.dictionary_words().unwrap().len(),
+        1,
+        "replace, not insert"
+    );
+
+    // Creation order is `meta.created_at`, not id order.
+    let mut later = word(&mut f, "QXR-7");
+    let mut low = [0u8; 16];
+    low[6] = 0x70;
+    low[8] = 0x80;
+    low[15] = 1;
+    later.id = EntityId::from_bytes(low);
+    assert!(later.id < first.id, "ids sort against creation order");
+    repo.put_dictionary_word(later.clone()).unwrap();
+    let ids: Vec<EntityId> = repo
+        .dictionary_words()
+        .unwrap()
+        .iter()
+        .map(|w| w.id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec![first.id, later.id],
+        "creation order, removed listed"
+    );
+
+    // Deleting a meeting leaves the words as they are.
+    let m = f.meeting(1_800_000_000_000);
+    repo.put_meeting(m.clone()).unwrap();
+    let before = repo.dictionary_words().unwrap();
+    super::delete_meeting(&mut repo, m.id, &mut f.hlc, &f.clock).unwrap();
+    assert_eq!(repo.dictionary_words().unwrap(), before);
 }

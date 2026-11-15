@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::entities::{
-    AudioFile, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary, SummaryRequest,
-    Track, TranscriptPass,
+    AudioFile, DictionaryWord, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary,
+    SummaryRequest, Track, TranscriptPass,
 };
 use crate::asr::Segment;
 use crate::identity::{Clock, DeviceId, EntityId, Hlc};
@@ -223,6 +223,27 @@ pub trait SummaryRequestRepo {
     /// # Errors
     /// [`RepoError::MissingParent`] if its meeting does not exist.
     fn put_summary_request(&mut self, request: SummaryRequest) -> Result<(), RepoError>;
+}
+
+/// The user's Dictionary words (syncable opt-in, T11.3e, docs/sync.md section 9). One row per
+/// word; `put_dictionary_word` inserts or replaces by id; reads return removed rows too (the
+/// removal must sync). No parent: a word belongs to no meeting.
+pub trait DictionaryRepo {
+    /// The word row with `id`.
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn dictionary_word(&self, id: EntityId) -> Result<Option<DictionaryWord>, RepoError>;
+    /// Every word row, removed ones included, in creation order (`meta.created_at`, then id).
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn dictionary_words(&self) -> Result<Vec<DictionaryWord>, RepoError>;
+    /// Inserts or replaces a word row by id.
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn put_dictionary_word(&mut self, word: DictionaryWord) -> Result<(), RepoError>;
 }
 
 /// The erasure rule of [`delete_meeting`] and [`delete_folder`]: clears a copy of `row`

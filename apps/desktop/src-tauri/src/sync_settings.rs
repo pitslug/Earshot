@@ -298,6 +298,8 @@ pub struct SyncView {
     pub running: bool,
     /// Voiceprints sync.
     pub voiceprints: bool,
+    /// Dictionary words sync (T11.3e; on unless turned off).
+    pub dictionary: bool,
     /// The server's address, when one is stored and usable.
     pub address: Option<String>,
     /// Why a stored address is not usable (fixed copy).
@@ -331,6 +333,7 @@ fn view_of(o: SyncOverview, running: bool) -> SyncView {
         on: o.settings.on,
         running,
         voiceprints: o.settings.voiceprints,
+        dictionary: o.settings.dictionary,
         address,
         address_problem,
         last_success_unix_ms: o.status.last_success_unix_ms,
@@ -493,6 +496,20 @@ pub fn set_voiceprints(
     on: bool,
 ) -> Result<SyncView, IpcError> {
     earshot_runtime::sync::set_sync_voiceprints(services, on).map_err(sync_error)?;
+    host.nudge();
+    view(services, host)
+}
+
+/// Turns Dictionary sync on or off (on: rows for the words here, and every earlier row read).
+///
+/// # Errors
+/// Fixed copy of a store failure.
+pub fn set_dictionary(
+    services: &Services,
+    host: &SyncHost,
+    on: bool,
+) -> Result<SyncView, IpcError> {
+    earshot_runtime::sync::set_sync_dictionary(services, on).map_err(sync_error)?;
     host.nudge();
     view(services, host)
 }
@@ -671,6 +688,19 @@ pub async fn set_sync_voiceprints(
     let services = state.services()?;
     let host = host(&sync);
     blocking(move || set_voiceprints(&services, &host, on)).await
+}
+
+/// Turns Dictionary sync on or off.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_sync_dictionary(
+    state: tauri::State<'_, AppState>,
+    sync: tauri::State<'_, Arc<SyncHost>>,
+    on: bool,
+) -> Result<SyncView, IpcError> {
+    let services = state.services()?;
+    let host = host(&sync);
+    blocking(move || set_dictionary(&services, &host, on)).await
 }
 
 /// Turns "Write summaries for my other computers" on or off.

@@ -3,16 +3,18 @@
 use std::collections::BTreeMap;
 
 use super::entities::{
-    AudioFile, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary, SummaryRequest,
-    Track,
+    AudioFile, DictionaryWord, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary,
+    SummaryRequest, Track,
 };
 use super::repo::{
-    AudioFileRepo, ExportRepo, FolderRepo, MeetingRepo, RepoError, SummaryRequestRepo,
+    AudioFileRepo, DictionaryRepo, ExportRepo, FolderRepo, MeetingRepo, RepoError,
+    SummaryRequestRepo,
 };
 use crate::identity::{DeviceId, EntityId};
 
 /// In-memory implementation of [`MeetingRepo`], [`FolderRepo`], [`SummaryRequestRepo`],
-/// [`AudioFileRepo`] and [`ExportRepo`] with the same parent checks and orders as the SQLite store.
+/// [`DictionaryRepo`], [`AudioFileRepo`] and [`ExportRepo`] with the same parent checks and
+/// orders as the SQLite store.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryRepo {
     meetings: BTreeMap<EntityId, Meeting>,
@@ -25,6 +27,7 @@ pub struct InMemoryRepo {
     exports: BTreeMap<(EntityId, DeviceId), ExportRecord>,
     folders: BTreeMap<EntityId, Folder>,
     requests: BTreeMap<EntityId, SummaryRequest>,
+    words: BTreeMap<EntityId, DictionaryWord>,
 }
 
 impl InMemoryRepo {
@@ -234,6 +237,23 @@ impl SummaryRequestRepo for InMemoryRepo {
     fn put_summary_request(&mut self, request: SummaryRequest) -> Result<(), RepoError> {
         self.need_meeting(request.meeting_id)?;
         self.requests.insert(request.id, request);
+        Ok(())
+    }
+}
+
+impl DictionaryRepo for InMemoryRepo {
+    fn dictionary_word(&self, id: EntityId) -> Result<Option<DictionaryWord>, RepoError> {
+        Ok(self.words.get(&id).cloned())
+    }
+
+    fn dictionary_words(&self) -> Result<Vec<DictionaryWord>, RepoError> {
+        let mut v: Vec<DictionaryWord> = self.words.values().cloned().collect();
+        v.sort_by_key(|w| (w.meta.created_at, w.id));
+        Ok(v)
+    }
+
+    fn put_dictionary_word(&mut self, word: DictionaryWord) -> Result<(), RepoError> {
+        self.words.insert(word.id, word);
         Ok(())
     }
 }

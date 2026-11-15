@@ -658,9 +658,11 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
   });
 
+  // The mock's whole-list Dictionary write is not an `Ipc` command (T11.3e).
+  const { setSummaryVocabulary: _wholeList, ...summaryCommands } = summariesMock;
   return {
     ...modelsMock,
-    ...summariesMock,
+    ...summaryCommands,
     models: async () => {
       const [view, summaries] = await Promise.all([modelsMock.models(), summariesMock.summarySettings()]);
       return {
@@ -908,14 +910,15 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       return offer;
     },
     // T12.15f: `vocabulary::add_word` and `remove_word`, through the Dictionary page's own
-    // checks and messages (`setSummaryVocabulary`).
+    // one-word commands (T11.3e: its checks, messages and the refusal while words are not in
+    // use).
     addDictionaryWord: async (token) => {
       call("addDictionaryWord", token);
       const word = dictionaryWord(token) ?? fail("invalid_setting", NOT_A_WORD);
       const words = (await summariesMock.summaryVocabulary()).words;
       const there = words.find((w) => w.toLowerCase() === word.toLowerCase());
       if (there !== undefined) return { word: there, added: false };
-      await summariesMock.setSummaryVocabulary([...words, word]);
+      await summariesMock.addSummaryVocabularyWord(word);
       return { word, added: true };
     },
     removeDictionaryWord: async (word) => {
@@ -923,7 +926,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       const wanted = tokensOf(word).join(" ").toLowerCase();
       const words = (await summariesMock.summaryVocabulary()).words;
       if (wanted === "" || !words.some((w) => w.toLowerCase() === wanted)) return false;
-      await summariesMock.setSummaryVocabulary(words.filter((w) => w.toLowerCase() !== wanted));
+      await summariesMock.removeSummaryVocabularyWord(wanted);
       return true;
     },
     // T12.15e: the rules of `edit::use_word`, `put_back_word` and `keep_word` (mockWords.ts).

@@ -229,6 +229,8 @@ pub(crate) enum DeviceRecord {
     SyncOn,
     /// `settings/sync-voiceprints`: whether voiceprints sync (T11.3).
     SyncVoiceprints,
+    /// `settings/sync-dictionary`: whether Dictionary words sync (T11.3e).
+    SyncDictionary,
     /// `sync-cursor`: the relay sequence number pulled up to (T11.3).
     SyncCursor,
     /// `sync-status`: the last sync tick's outcome; times, a problem word, counts (T11.3).
@@ -291,6 +293,7 @@ impl DeviceRecord {
         DeviceRecord::SyncServer,
         DeviceRecord::SyncOn,
         DeviceRecord::SyncVoiceprints,
+        DeviceRecord::SyncDictionary,
         DeviceRecord::SyncCursor,
         DeviceRecord::SyncStatus,
         DeviceRecord::DeviceName,
@@ -350,6 +353,7 @@ impl DeviceRecord {
                 DeviceRecord::SyncServer => crate::sync::SYNC_SERVER_KEY,
                 DeviceRecord::SyncOn => crate::sync::SYNC_ON_KEY,
                 DeviceRecord::SyncVoiceprints => crate::sync::SYNC_VOICEPRINTS_KEY,
+                DeviceRecord::SyncDictionary => crate::sync::SYNC_DICTIONARY_KEY,
                 DeviceRecord::SyncCursor => crate::sync::SYNC_CURSOR_KEY,
                 DeviceRecord::SyncStatus => crate::sync::SYNC_STATUS_KEY,
                 DeviceRecord::DeviceName => crate::sync::DEVICE_NAME_KEY,

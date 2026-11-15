@@ -8,6 +8,7 @@ import { type Ipc, IpcFailure, IpcProvider, type MockIpcData, createMockIpc } fr
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { ADD_LABEL, DICTIONARY_INTRO, DictionaryPage } from "./DictionaryPage";
 import { ALREADY_THERE } from "./useDictionary";
+import table from "../../../../fixtures/ui/summary_settings_cases.json";
 
 function setup(data: MockIpcData = {}, wrap: (ipc: Ipc) => Ipc = (i) => i) {
   const ipc = wrap(createMockIpc({ meetings: [], ...data }));
@@ -30,6 +31,18 @@ function shown(): string[] {
 }
 
 describe("Dictionary", () => {
+  it("says how many words are not in use when the joined list passes a limit (T11.3e)", async () => {
+    setup({ summaries: { vocabulary: ["Quillmarsh", "QXR-7"], notInUse: 3 } });
+    const bar = await screen.findByLabelText("Words not in use");
+    expect(bar).toHaveTextContent(table.messages.not_in_use.many.replace("{n}", "3"));
+  });
+
+  it("says nothing about words not in use when every word is in use", async () => {
+    setup({ summaries: { vocabulary: ["Quillmarsh"] } });
+    await waitFor(() => expect(shown()).toEqual(["Quillmarsh"]));
+    expect(screen.queryByLabelText("Words not in use")).not.toBeInTheDocument();
+  });
+
   it("says what the words are for and starts with none", async () => {
     setup();
     expect(screen.getByRole("heading", { level: 1, name: "Dictionary" })).toBeInTheDocument();
@@ -99,16 +112,52 @@ describe("Dictionary", () => {
     expect((await s.ipc.summaryVocabulary()).words).toEqual(["Quillmarsh"]);
   });
 
-  it("mock follows the app's rules: trimmed, inner spaces joined, repeats dropped, limits", async () => {
+  it("mock follows the app's rules: trimmed, inner spaces joined, repeats found, limits", async () => {
     const ipc = createMockIpc({ meetings: [] });
-    expect((await ipc.setSummaryVocabulary([" Ostrelby   Ridge ", "", "ostrelby ridge", "QXR-7"])).words).toEqual([
-      "Ostrelby Ridge",
-      "QXR-7",
-    ]);
-    await expect(ipc.setSummaryVocabulary(["a\tb"])).rejects.toThrow(IpcFailure);
-    const many = Array.from({ length: 101 }, (_, i) => `w${i}`);
-    await expect(ipc.setSummaryVocabulary(many)).rejects.toThrow("at most 100 words; this one has 101");
-    expect((await ipc.summaryVocabulary()).words).toEqual(["Ostrelby Ridge", "QXR-7"]);
+    expect(await ipc.addSummaryVocabularyWord(" Ostrelby   Ridge ")).toMatchObject({ added: true });
+    expect(await ipc.addSummaryVocabularyWord("ostrelby ridge")).toMatchObject({ added: false });
+    expect((await ipc.addSummaryVocabularyWord("QXR-7")).view.words).toEqual(["Ostrelby Ridge", "QXR-7"]);
+    await expect(ipc.addSummaryVocabularyWord("a\tb")).rejects.toThrow(IpcFailure);
+    expect((await ipc.removeSummaryVocabularyWord("OSTRELBY  ridge")).words).toEqual(["QXR-7"]);
+    const full = createMockIpc({
+      meetings: [],
+      summaries: { vocabulary: Array.from({ length: 100 }, (_, i) => `w${i}`) },
+    });
+    await expect(full.addSummaryVocabularyWord("Quillmarsh")).rejects.toThrow("at most 100 words; this one has 101");
+  });
+
+  it("refuses an Add while words are not in use, and says so (T11.3e)", async () => {
+    const s = setup({ summaries: { vocabulary: ["Quillmarsh"], notInUse: 2 } });
+    const field = await screen.findByRole("textbox", { name: ADD_LABEL });
+    await s.user.type(field, "Velmora{Enter}");
+    expect(await screen.findByText(table.messages.add_not_in_use)).toBeInTheDocument();
+    expect(field).toHaveValue("Velmora");
+    expect((await s.ipc.summaryVocabulary()).words).toEqual(["Quillmarsh"]);
+    // A word already there is still found, not refused, and the page says it was there.
+    await s.user.clear(field);
+    await s.user.type(field, "quillmarsh{Enter}");
+    expect(await screen.findByText(ALREADY_THERE)).toBeInTheDocument();
+  });
+
+  it("edits one word at a time and never sends a whole list (T11.3e)", async () => {
+    const calls: string[] = [];
+    const s = setup({ summaries: { vocabulary: ["Quillmarsh", "QXR-7"] } }, (ipc) => ({
+      ...ipc,
+      addSummaryVocabularyWord: async (text) => {
+        calls.push(`add:${text}`);
+        return ipc.addSummaryVocabularyWord(text);
+      },
+      removeSummaryVocabularyWord: async (word) => {
+        calls.push(`remove:${word}`);
+        return ipc.removeSummaryVocabularyWord(word);
+      },
+    }));
+    const field = await screen.findByRole("textbox", { name: ADD_LABEL });
+    await s.user.type(field, "Velmora{Enter}");
+    await waitFor(() => expect(shown()).toEqual(["Quillmarsh", "QXR-7", "Velmora"]));
+    await s.user.click(screen.getByRole("button", { name: "Delete QXR-7" }));
+    await waitFor(() => expect(shown()).toEqual(["Quillmarsh", "Velmora"]));
+    expect(calls).toEqual(["add:Velmora", "remove:QXR-7"]);
   });
 
   it("names a stored list this version refuses, by its reason", async () => {
@@ -120,6 +169,8 @@ describe("Dictionary", () => {
         max_words: 100,
         max_word_chars: 40,
         max_chars: 1000,
+        not_in_use: 0,
+        not_in_use_note: null,
       }),
     }));
     expect(await screen.findByText("The stored dictionary is not used")).toBeInTheDocument();

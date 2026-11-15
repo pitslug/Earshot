@@ -78,6 +78,7 @@ describe("the Sync mock", () => {
       "offerSyncCode",
       "setSyncOn",
       "setSyncVoiceprints",
+      "setSyncDictionary",
       "syncNow",
       "removeSyncDevice",
     ];

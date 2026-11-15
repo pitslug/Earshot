@@ -1,7 +1,8 @@
 // The Dictionary page's state (T12.15a): the stored words, the word being typed and what to
-// say about the last change. Every change stores the whole list at once (the save rule: Add
-// and Delete apply at once); the rules (trimming, repeats, limits) are the app's, so nothing
-// is decided here: a repeat is noticed only because the stored list did not grow.
+// say about the last change. Add and Delete apply at once, one word each (T11.3e: the page
+// never sends a whole list, so it cannot remove a word another computer added since it read
+// the list); the rules (trimming, repeats, limits, words not in use) are the app's, and a
+// repeat is what the add result says, never inferred from the list.
 
 import { useCallback, useState } from "react";
 
@@ -20,9 +21,9 @@ export interface DictionaryState {
   /** Why the last Delete failed (null when it did not). */
   deleteError: string | null;
   busy: boolean;
-  /** Stores the list with the typed word added; the field empties once it is stored. */
+  /** Adds the typed word; the field empties once it is stored or found already there. */
   add(): Promise<void>;
-  /** Stores the list without `word`. */
+  /** Removes `word`. */
   remove(word: string): Promise<void>;
 }
 
@@ -38,21 +39,14 @@ export function useDictionary(): DictionaryState {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const words = load.status === "loaded" ? load.view.words : [];
-
-  const store = useCallback(
-    async (next: string[]) => {
-      setBusy(true);
-      try {
-        const view = await ipc.setSummaryVocabulary(next);
-        setLoad({ status: "loaded", view });
-        return view;
-      } finally {
-        setBusy(false);
-      }
-    },
-    [ipc],
-  );
+  const run = useCallback(async <T,>(change: () => Promise<T>) => {
+    setBusy(true);
+    try {
+      return await change();
+    } finally {
+      setBusy(false);
+    }
+  }, []);
 
   return {
     load,
@@ -68,9 +62,10 @@ export function useDictionary(): DictionaryState {
       if (draft.trim() === "" || busy) return;
       setDeleteError(null);
       try {
-        const view = await store([...words, draft]);
+        const result = await run(() => ipc.addSummaryVocabularyWord(draft));
+        setLoad({ status: "loaded", view: result.view });
         setDraftText("");
-        setAddMessage(view.words.length > words.length ? null : { intent: "warning", text: ALREADY_THERE });
+        setAddMessage(result.added ? null : { intent: "warning", text: ALREADY_THERE });
       } catch (e) {
         setAddMessage({ intent: "error", text: errorText(e) });
       }
@@ -78,7 +73,8 @@ export function useDictionary(): DictionaryState {
     remove: async (word) => {
       setAddMessage(null);
       try {
-        await store(words.filter((w) => w !== word));
+        const view = await run(() => ipc.removeSummaryVocabularyWord(word));
+        setLoad({ status: "loaded", view });
         setDeleteError(null);
       } catch (e) {
         setDeleteError(errorText(e));

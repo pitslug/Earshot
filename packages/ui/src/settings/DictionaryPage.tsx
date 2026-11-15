@@ -110,6 +110,11 @@ export function DictionaryPage() {
         ) : (
           <>
             <UnknownSettings unknown={load.view.unknown} title="The stored dictionary is not used" />
+            {load.view.not_in_use_note !== null && (
+              <MessageBar intent="warning" aria-label="Words not in use">
+                <MessageBarBody>{load.view.not_in_use_note}</MessageBarBody>
+              </MessageBar>
+            )}
             <form
               aria-label={ADD_LABEL}
               onSubmit={(e) => {
