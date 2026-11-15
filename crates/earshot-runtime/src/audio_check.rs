@@ -460,11 +460,13 @@ pub(crate) fn measure_up_to<A: AudioSource>(
 /// The playback thread of a check: [`finish`](Self::finish) stops and joins it; dropped
 /// without that (a panic while measuring) it still sets the stop flag and joins, so the
 /// sounds never keep playing past the check.
+#[cfg(any(windows, test))]
 pub(crate) struct Playback {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<Result<(), String>>>,
 }
 
+#[cfg(any(windows, test))]
 impl Playback {
     /// Runs `play` on a thread named `earshot-audio-check-play`; `play` must return soon
     /// after the flag it is given is set.
@@ -506,6 +508,7 @@ impl Playback {
     }
 }
 
+#[cfg(any(windows, test))]
 impl Drop for Playback {
     fn drop(&mut self) {
         let _ = self.stop_and_join();
