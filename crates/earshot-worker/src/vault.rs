@@ -94,8 +94,8 @@ impl FileVault {
     }
 
     /// Ends a join, whether it worked or not: the marker is removed (a missing one is fine).
-    /// Only a crash leaves it, which [`FileVault::presence`] then reads as an interrupted join
-    /// once it is [`JOIN_STALE_S`] old.
+    /// Only a crash leaves it, which [`FileVault::presence`] then reads as
+    /// [`Presence::Interrupted`] once it is [`JOIN_STALE_S`] old; the next `join` overwrites it.
     ///
     /// # Errors
     /// [`VaultRefused::NotWritable`].
@@ -112,18 +112,17 @@ impl FileVault {
     /// A join marker decides first: one at most [`JOIN_STALE_S`] away from now is
     /// [`Presence::Joining`] whatever the files hold (the join is still writing them or setting
     /// up the device); an older one, or one that does not hold a time, is
-    /// [`VaultRefused::JoinInterrupted`] rather than a guess. Without a marker only neither
-    /// file existing is [`Presence::Absent`] (the worker waits to be joined), and both being
-    /// files is [`Presence::Present`]. Anything in between needs the person: one file without
-    /// the other, a path that is not a file, or a path whose presence cannot be read.
+    /// [`Presence::Interrupted`]: still not joined, and never guessed at. Without a marker only
+    /// neither file existing is [`Presence::Absent`] (the worker waits to be joined), and both
+    /// being files is [`Presence::Present`]. Anything in between needs the person: one file
+    /// without the other, a path that is not a file, or a path whose presence cannot be read.
     ///
     /// # Errors
-    /// [`VaultRefused::JoinInterrupted`]; [`VaultRefused::Incomplete`];
-    /// [`VaultRefused::Unreadable`].
+    /// [`VaultRefused::Incomplete`]; [`VaultRefused::Unreadable`].
     pub fn presence(&self, now_s: u64) -> Result<Presence, VaultRefused> {
         match read(&self.marker_path()) {
             Ok(None) => {}
-            Ok(Some(text)) => return marker_verdict(&text, now_s),
+            Ok(Some(text)) => return Ok(marker_verdict(&text, now_s)),
             Err(_) => return Err(VaultRefused::Unreadable),
         }
         match (file_state(&self.key)?, file_state(&self.token)?) {
@@ -137,9 +136,22 @@ impl FileVault {
 /// The join marker's file name.
 const MARKER_NAME: &str = "joining";
 
-/// How long a join may take before its marker counts as an interrupted join (a judgement: a
-/// join is a few requests to the relay, each bounded by the client's timeout).
-pub const JOIN_STALE_S: u64 = 600;
+/// The requests to the relay a join makes (`take_slot`, then `register`).
+pub const JOIN_REQUESTS: u64 = 2;
+
+/// Room for the join's store writes and the device's set-up after the last request (a
+/// judgement).
+pub const JOIN_MARGIN_S: u64 = 300;
+
+/// How long a join may take before its marker counts as an interrupted join: longer than the
+/// worst a join can take, every request following every redirect earshot-net allows, each hop
+/// taking earshot-net's longest per-hop timeout ([`earshot_net::DEFAULT_TIMEOUT`]; the relay
+/// client sets a shorter one), plus [`JOIN_MARGIN_S`]. A stale marker only changes what the
+/// waiting run reports, so erring long costs nothing but a later `join_interrupted`.
+pub const JOIN_STALE_S: u64 = JOIN_REQUESTS
+    * (earshot_net::MAX_REDIRECTS as u64 + 1)
+    * earshot_net::DEFAULT_TIMEOUT.as_secs()
+    + JOIN_MARGIN_S;
 
 /// The join marker's text for `now_s`.
 #[must_use]
@@ -147,14 +159,14 @@ pub fn marker_text(now_s: u64) -> String {
     format!("joining {now_s}\n")
 }
 
-fn marker_verdict(text: &str, now_s: u64) -> Result<Presence, VaultRefused> {
+fn marker_verdict(text: &str, now_s: u64) -> Presence {
     let at = text
         .trim()
         .strip_prefix("joining ")
         .and_then(|t| t.parse::<u64>().ok());
     match at {
-        Some(at) if at.abs_diff(now_s) <= JOIN_STALE_S => Ok(Presence::Joining),
-        _ => Err(VaultRefused::JoinInterrupted),
+        Some(at) if at.abs_diff(now_s) <= JOIN_STALE_S => Presence::Joining,
+        _ => Presence::Interrupted,
     }
 }
 
@@ -172,6 +184,9 @@ pub enum Presence {
     Absent,
     /// A join is under way: not joined yet.
     Joining,
+    /// A join marker older than [`JOIN_STALE_S`] (or holding no time): a join stopped part way
+    /// and the worker is not joined. Running `join` again overwrites the marker.
+    Interrupted,
     /// Both are files.
     Present,
 }
@@ -187,9 +202,6 @@ pub enum VaultRefused {
     Incomplete,
     /// A path is not a file, or whether it exists cannot be read.
     Unreadable,
-    /// A join marker older than [`JOIN_STALE_S`] (or holding no time): a join stopped part
-    /// way.
-    JoinInterrupted,
 }
 
 impl VaultRefused {
@@ -212,10 +224,6 @@ impl VaultRefused {
             Self::Unreadable => {
                 "a vault file is not a file or cannot be read; make both files readable by the \
                  worker's user (owner uid 10001)"
-            }
-            Self::JoinInterrupted => {
-                "a join was interrupted part way; delete the worker's volume and join again with \
-                 a new code"
             }
         }
     }
@@ -559,11 +567,7 @@ mod tests {
             assert_eq!(blocked.presence(NOW), Err(VaultRefused::Unreadable));
         }
         // Fixed copy, never a path.
-        for r in [
-            VaultRefused::Incomplete,
-            VaultRefused::Unreadable,
-            VaultRefused::JoinInterrupted,
-        ] {
+        for r in [VaultRefused::Incomplete, VaultRefused::Unreadable] {
             assert!(!r.copy().contains(&*dir.0.to_string_lossy()));
         }
     }
@@ -586,17 +590,21 @@ mod tests {
         assert_eq!(vault.presence(NOW + 5), Ok(Presence::Joining));
         fs::write(vault.token_path(), "a-token").unwrap();
         assert_eq!(vault.presence(NOW + JOIN_STALE_S), Ok(Presence::Joining));
-        // Left behind by a crash: stale after JOIN_STALE_S either way round.
+        // Left behind by a crash: interrupted after JOIN_STALE_S either way round, still not
+        // joined whatever the files hold.
         assert_eq!(
             vault.presence(NOW + JOIN_STALE_S + 1),
-            Err(VaultRefused::JoinInterrupted)
+            Ok(Presence::Interrupted)
         );
         assert_eq!(
             vault.presence(NOW - JOIN_STALE_S - 1),
-            Err(VaultRefused::JoinInterrupted)
+            Ok(Presence::Interrupted)
         );
         fs::write(vault.marker_path(), "joining soon").unwrap();
-        assert_eq!(vault.presence(NOW), Err(VaultRefused::JoinInterrupted));
+        assert_eq!(vault.presence(NOW), Ok(Presence::Interrupted));
+        // A new join overwrites the stale marker: joining again.
+        vault.begin_join(NOW).unwrap();
+        assert_eq!(vault.presence(NOW), Ok(Presence::Joining));
         // The join ends: the files decide again, and ending twice is fine.
         vault.end_join().unwrap();
         assert!(!vault.marker_path().exists());
@@ -605,5 +613,16 @@ mod tests {
         // A marker that is a folder cannot be read.
         fs::create_dir(vault.marker_path()).unwrap();
         assert_eq!(vault.presence(NOW), Err(VaultRefused::Unreadable));
+    }
+
+    /// The stale limit is longer than the worst a join can take: every request following every
+    /// redirect, each hop at earshot-net's longest per-hop timeout, plus the margin.
+    #[test]
+    fn vault_a_join_marker_goes_stale_only_after_the_longest_join() {
+        let hops = JOIN_REQUESTS * (earshot_net::MAX_REDIRECTS as u64 + 1);
+        let longest_join = hops * earshot_net::DEFAULT_TIMEOUT.as_secs();
+        assert_eq!(JOIN_STALE_S, longest_join + JOIN_MARGIN_S);
+        assert!(JOIN_STALE_S > longest_join);
+        const { assert!(JOIN_MARGIN_S > 0) };
     }
 }

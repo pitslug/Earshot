@@ -60,9 +60,10 @@ echo "== not joined: joined while it waits"
 start_unjoined earshot-worker-joining
 sleep 7
 # What `join` leaves in the volume, written as the container's user with invented values (no
-# relay exists here to join): the join marker first, then the key and the token.
+# relay exists here to join): the join marker first, written to a temporary name and renamed as
+# `join` does so a look never reads it half written, then the key and the token.
 docker exec earshot-worker-joining sh -c \
-  'umask 077 && mkdir -p /data/vault && echo "joining $(date +%s)" > /data/vault/joining'
+  'umask 077 && mkdir -p /data/vault && echo "joining $(date +%s)" > /data/vault/joining.tmp && mv /data/vault/joining.tmp /data/vault/joining'
 head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' \
   | docker exec -i earshot-worker-joining sh -c 'umask 077 && cat > /data/vault/key'
 echo "an-invented-token-for-the-image-check" \

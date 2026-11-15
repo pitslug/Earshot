@@ -120,7 +120,7 @@ fn run(config: Config) -> Result<(), WorkerError> {
         &config,
         &heartbeat,
         &now_s,
-        &mut || println!("waiting to join"),
+        &mut |notice| println!("{}", notice.line()),
         &mut |every| {
             runtime.block_on(async {
                 tokio::select! {
