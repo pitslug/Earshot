@@ -126,12 +126,20 @@ struct Recorder {
     for_others: Mutex<Vec<SummaryRequest>>,
     /// Refuse to start a write here (a job of the meeting runs).
     refuse_here: std::sync::atomic::AtomicBool,
+    /// Answer that nothing is left to do.
+    settle_here: std::sync::atomic::AtomicBool,
 }
 
 impl OffloadHost for Recorder {
-    fn write_here(&self, job: WriteHere) -> bool {
+    fn continue_run(&self, job: WriteHere) -> ContinueAnswer {
         self.here.lock().unwrap().push(job);
-        !self.refuse_here.load(std::sync::atomic::Ordering::SeqCst)
+        if self.settle_here.load(std::sync::atomic::Ordering::SeqCst) {
+            ContinueAnswer::Settled
+        } else if self.refuse_here.load(std::sync::atomic::Ordering::SeqCst) {
+            ContinueAnswer::Refused
+        } else {
+            ContinueAnswer::Started
+        }
     }
     fn write_for(&self, request: SummaryRequest) {
         self.for_others.lock().unwrap().push(request);
@@ -225,6 +233,7 @@ fn run_of<'a>(
         post_cancel: summary_cancel,
         summary_cancel,
         offload: Some(offload),
+        order_run: None,
     }
 }
 
@@ -676,6 +685,7 @@ fn offload_an_unclaimed_request_is_withdrawn_after_90_seconds_and_written_here()
             request,
             helper: b.id(),
             why: HereReason::NotClaimed,
+            continuation: Continuation::Legacy,
         }]
     );
     assert_eq!(a.request(request).state, RequestState::Withdrawn);
@@ -1562,4 +1572,523 @@ fn offload_after_meeting_names_the_device_of_an_open_request() {
     assert_eq!(device, earlier);
     assert_eq!((name.as_str(), writer), ("", None));
     assert!(never.requests().is_empty());
+}
+
+// ---- computer steps of the order of summary writers (T12.63a, docs/summary-order.md 4.3) ----
+
+mod order_steps {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+    use crate::host::{PreparedSummary, SkipReason, SummaryResult};
+    use crate::summary_order::run::{
+        Built, OutcomeWord, RunOrigin, RunPlan, RunRecord, RunStart, RunState, RunView,
+        StepWriters, SummaryRun, run_summary_order, run_view,
+    };
+    use crate::summary_order::{OrderStep, SummaryOrder, WriterStep, set_summary_order};
+
+    const LOCAL: OrderStep = OrderStep::LOCAL;
+    const ENDPOINT: OrderStep = OrderStep::Writer(WriterStep::Endpoint);
+    const CLAUDE: OrderStep = OrderStep::Writer(WriterStep::ClaudeCode);
+    const DESK: DeviceId = DeviceId::from_bytes([0x51; 16]);
+    const LAPTOP: DeviceId = DeviceId::from_bytes([0x52; 16]);
+
+    /// Fake writers: each writer a mock endpoint (or not installed), each computer a decision.
+    #[derive(Default)]
+    struct Writers {
+        mocks: HashMap<WriterStep, String>,
+        computers: HashMap<DeviceId, OffloadChoice>,
+        asked: Mutex<Vec<OrderStep>>,
+    }
+
+    impl Writers {
+        fn mock(mut self, step: WriterStep, server: &MockServer) -> Self {
+            self.mocks.insert(step, server.endpoint().to_string());
+            self
+        }
+
+        fn asks(mut self, device: DeviceId) -> Self {
+            self.computers.insert(
+                device,
+                OffloadChoice::Ask {
+                    device,
+                    name: "Invented desk".into(),
+                    writer: WriterKind::Local,
+                },
+            );
+            self
+        }
+
+        fn choice(mut self, device: DeviceId, choice: OffloadChoice) -> Self {
+            self.computers.insert(device, choice);
+            self
+        }
+
+        fn asked(&self) -> Vec<OrderStep> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    impl StepWriters for Writers {
+        fn writer(&self, services: &Services, step: WriterStep) -> Built {
+            self.asked.lock().unwrap().push(OrderStep::Writer(step));
+            match self.mocks.get(&step) {
+                Some(url) => Built::Service(Box::new(PreparedSummary {
+                    service: SummaryService::new(
+                        &SummaryConfig::new(url.as_str(), "test-model"),
+                        services.clock.clone(),
+                    )
+                    .unwrap(),
+                    local: None,
+                })),
+                None => Built::Skip(SkipReason::NotInstalled {
+                    model: "qwen3.5-4b",
+                    why: "not installed".into(),
+                }),
+            }
+        }
+
+        fn computer(&self, _services: &Services, device: DeviceId) -> OffloadChoice {
+            self.asked.lock().unwrap().push(OrderStep::Computer(device));
+            self.computers
+                .get(&device)
+                .cloned()
+                .unwrap_or_else(|| decide(Some(device), None, false))
+        }
+    }
+
+    fn plan(writers: &Writers) -> RunPlan<'_> {
+        RunPlan {
+            writers,
+            local_not_now: &|| false,
+        }
+    }
+
+    fn order(steps: &[OrderStep]) -> SummaryOrder {
+        SummaryOrder::new(steps.to_vec()).unwrap()
+    }
+
+    fn record(svc: &Services, m: EntityId) -> SummaryRun {
+        match crate::summary_order::run::read(&svc.store(), m).unwrap() {
+            RunRecord::Read(r) => r,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn start(dev: &Device, m: EntityId, start_as: RunStart, writers: &Writers) -> SummaryResult {
+        run_summary_order(&dev.svc, m, start_as, &plan(writers), &CancelToken::new()).summary
+    }
+
+    fn offloaded(result: SummaryResult) -> EntityId {
+        match result {
+            SummaryResult::Offloaded { request, .. } => request,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The asker's step 90 s after its last request: withdrawn unclaimed and handed back.
+    fn hand_back(dev: &Device, host: &Recorder) -> StepReport {
+        dev.clock.advance_ms(CLAIM_WITHIN_MS + 1);
+        dev.step(None, host)
+    }
+
+    fn open_requests(dev: &Device, m: EntityId) -> usize {
+        dev.svc
+            .store()
+            .summary_requests()
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.meeting_id == m && r.state.is_open())
+            .count()
+    }
+
+    #[test]
+    fn offload_order_a_computer_step_suspends_the_run_and_names_its_request() {
+        let a = Device::new("offload-order-suspend");
+        let m = meeting(&a.svc, "Invented planning", 501);
+        let writers = Writers::default().asks(DESK);
+        let request = offloaded(start(
+            &a,
+            m,
+            RunStart::Order(order(&[OrderStep::Computer(DESK), ENDPOINT])),
+            &writers,
+        ));
+        assert_eq!(
+            writers.asked(),
+            vec![OrderStep::Computer(DESK)],
+            "suspended there"
+        );
+        let r = record(&a.svc, m);
+        assert_eq!(
+            (r.state, r.waiting_on, r.cursor),
+            (RunState::Waiting, Some(request), 1)
+        );
+        assert_eq!(a.request(request).target_device, DESK);
+        let aid = a.id();
+        assert_eq!(waiting_for(&a.svc.store(), aid, m).unwrap(), Some(DESK));
+    }
+
+    #[test]
+    fn offload_order_the_request_and_waiting_on_are_one_transaction() {
+        let a = Device::new("offload-order-fault");
+        let m = meeting(&a.svc, "Invented planning", 502);
+        let writers = Writers::default().asks(DESK);
+        crate::summary_order::run::fault::fail_ask();
+        let result = start(
+            &a,
+            m,
+            RunStart::Order(order(&[OrderStep::Computer(DESK)])),
+            &writers,
+        );
+        assert!(
+            matches!(result, SummaryResult::Skipped { .. }),
+            "{result:?}"
+        );
+        assert!(
+            a.svc.store().summary_requests().unwrap().is_empty(),
+            "no request without a record naming it"
+        );
+        let r = record(&a.svc, m);
+        assert_eq!((r.waiting_on, r.state), (None, RunState::Ended));
+        assert_eq!(r.outcome_of(0), Some(OutcomeWord::Failed));
+    }
+
+    #[test]
+    fn offload_order_a_hand_back_continues_the_same_run_from_its_copied_steps() {
+        let a = Device::new("offload-order-continue");
+        let m = meeting(&a.svc, "Invented planning", 503);
+        let request = offloaded(start(
+            &a,
+            m,
+            RunStart::Order(order(&[OrderStep::Computer(DESK), ENDPOINT])),
+            &Writers::default().asks(DESK),
+        ));
+        let host = Recorder::default();
+        let r = hand_back(&a, &host);
+        assert_eq!((r.withdrawn, r.written_here), (1, 1), "{r:?}");
+        let here = host.here();
+        assert_eq!(here.len(), 1);
+        assert_eq!(
+            here[0].continuation,
+            Continuation::Order {
+                word: OutcomeWord::NoReply
+            }
+        );
+        // The order changes meanwhile: the run goes on with the steps it copied.
+        set_summary_order(&mut a.svc.store(), &order(&[LOCAL]), None).unwrap();
+        let good = MockServer::start(vec![reply("Written by the endpoint")]).unwrap();
+        let writers = Writers::default().mock(WriterStep::Endpoint, &good);
+        let result = start(
+            &a,
+            m,
+            RunStart::Continue {
+                request,
+                word: OutcomeWord::NoReply,
+            },
+            &writers,
+        );
+        assert!(matches!(result, SummaryResult::Stored { .. }), "{result:?}");
+        assert_eq!(
+            writers.asked(),
+            vec![ENDPOINT],
+            "never the current order's local step"
+        );
+        let r = record(&a.svc, m);
+        assert_eq!((r.state, r.writer), (RunState::Ended, Some(1)));
+        assert_eq!(r.outcome_of(0), Some(OutcomeWord::NoReply));
+        // A second continuation of the same request finds nothing to continue.
+        let again = run_summary_order(
+            &a.svc,
+            m,
+            RunStart::Continue {
+                request,
+                word: OutcomeWord::NoReply,
+            },
+            &plan(&Writers::default()),
+            &CancelToken::new(),
+        );
+        assert!(again.settled);
+    }
+
+    #[test]
+    fn offload_order_a_restart_while_continuing_is_interrupted_and_sends_nothing_again() {
+        let a = Device::new("offload-order-restart");
+        let m = meeting(&a.svc, "Invented planning", 504);
+        let request = offloaded(start(
+            &a,
+            m,
+            RunStart::Order(order(&[OrderStep::Computer(DESK), ENDPOINT])),
+            &Writers::default().asks(DESK),
+        ));
+        hand_back(&a, &Recorder::default());
+        // The job's first transaction ran, then the app stopped.
+        let mut continuing = record(&a.svc, m);
+        continuing.waiting_on = None;
+        continuing.state = RunState::Continuing;
+        crate::local::set(
+            &mut a.svc.store(),
+            &crate::summary_order::run::record_key(m),
+            &crate::summary_order::run::encode(&continuing),
+        )
+        .unwrap();
+        let restarted = Offload::new();
+        let host = Recorder::default();
+        restarted.step(&a.svc, &mut || None, &host).unwrap();
+        assert!(host.here().is_empty(), "nothing is handed again");
+        assert!(matches!(
+            run_view(&a.svc.store(), m).unwrap(),
+            RunView::Unfinished(_)
+        ));
+        assert_eq!(a.request(request).state, RequestState::Withdrawn);
+    }
+
+    #[test]
+    fn offload_order_a_named_hand_back_ends_the_run() {
+        let a = Device::new("offload-order-named");
+        let m = meeting(&a.svc, "Invented planning", 505);
+        offloaded(start(
+            &a,
+            m,
+            RunStart::Named(OrderStep::Computer(DESK)),
+            &Writers::default().asks(DESK),
+        ));
+        let host = Recorder::default();
+        let r = hand_back(&a, &host);
+        assert_eq!((r.withdrawn, r.written_here), (1, 0), "{r:?}");
+        assert!(host.here().is_empty(), "nothing is written here");
+        let run = record(&a.svc, m);
+        assert_eq!(
+            (run.origin, run.state, run.writer),
+            (RunOrigin::Named, RunState::Ended, None)
+        );
+        assert_eq!(run.outcome_of(0), Some(OutcomeWord::NoReply));
+        // Settled: not read again, and a restart finds nothing to continue either.
+        a.step(None, &host);
+        Offload::new().step(&a.svc, &mut || None, &host).unwrap();
+        assert!(host.here().is_empty());
+        assert!(a.svc.store().summaries(m).unwrap().is_empty());
+    }
+
+    #[test]
+    fn offload_order_two_computer_steps_in_one_run() {
+        let a = Device::new("offload-order-two");
+        let m = meeting(&a.svc, "Invented planning", 506);
+        let steps = [
+            OrderStep::Computer(DESK),
+            OrderStep::Computer(LAPTOP),
+            LOCAL,
+        ];
+        let first = offloaded(start(
+            &a,
+            m,
+            RunStart::Order(order(&steps)),
+            &Writers::default().asks(DESK),
+        ));
+        hand_back(&a, &Recorder::default());
+        let writers = Writers::default().asks(LAPTOP);
+        let second = offloaded(start(
+            &a,
+            m,
+            RunStart::Continue {
+                request: first,
+                word: OutcomeWord::NoReply,
+            },
+            &writers,
+        ));
+        assert_ne!(first, second);
+        assert_eq!(writers.asked(), vec![OrderStep::Computer(LAPTOP)]);
+        let r = record(&a.svc, m);
+        assert_eq!((r.waiting_on, r.cursor), (Some(second), 2));
+        assert_eq!(r.outcome_of(0), Some(OutcomeWord::NoReply));
+        assert_eq!(a.request(second).target_device, LAPTOP);
+        assert_eq!(open_requests(&a, m), 1, "one open request per meeting");
+    }
+
+    #[test]
+    fn offload_order_a_request_the_record_does_not_name_is_settled() {
+        let a = Device::new("offload-order-other");
+        let m = meeting(&a.svc, "Invented planning", 507);
+        let old = ask(&a.svc, m, DESK).unwrap().unwrap();
+        // A new run withdraws it and names none.
+        let local_fails = Writers::default();
+        start(&a, m, RunStart::Order(order(&[LOCAL])), &local_fails);
+        assert_eq!(a.request(old).state, RequestState::Withdrawn);
+        let host = Recorder::default();
+        a.step(None, &host);
+        assert!(host.here().is_empty(), "no job");
+        a.clock.advance_ms(LOOK_BACK_MS + 1);
+        a.step(None, &host);
+        assert!(host.here().is_empty(), "not handed again");
+    }
+
+    #[test]
+    fn offload_order_an_unreadable_record_on_a_hand_back_writes_and_sends_nothing() {
+        let a = Device::new("offload-order-unreadable");
+        let m = meeting(&a.svc, "Invented planning", 508);
+        offloaded(start(
+            &a,
+            m,
+            RunStart::Named(OrderStep::Computer(DESK)),
+            &Writers::default().asks(DESK),
+        ));
+        crate::local::set(
+            &mut a.svc.store(),
+            &crate::summary_order::run::record_key(m),
+            b"damaged",
+        )
+        .unwrap();
+        let host = Recorder::default();
+        let r = hand_back(&a, &host);
+        assert_eq!(r.written_here, 0, "{r:?}");
+        assert!(host.here().is_empty(), "never the legacy branch");
+        assert!(a.svc.store().summaries(m).unwrap().is_empty());
+        assert_eq!(run_view(&a.svc.store(), m).unwrap(), RunView::Unreadable);
+    }
+
+    #[test]
+    fn offload_order_a_request_with_no_record_is_written_here_as_before() {
+        let a = Device::new("offload-order-legacy");
+        let m = meeting(&a.svc, "Invented planning", 509);
+        let request = ask(&a.svc, m, DESK).unwrap().unwrap();
+        let host = Recorder::default();
+        assert_eq!(hand_back(&a, &host).written_here, 1);
+        assert_eq!(host.here()[0].continuation, Continuation::Legacy);
+        assert_eq!(host.here()[0].request, request);
+        // The legacy job writes with the order's first writer step and records an ended run.
+        set_summary_order(&mut a.svc.store(), &order(&[CLAUDE, LOCAL]), None).unwrap();
+        let good = MockServer::start(vec![reply("Written here")]).unwrap();
+        let writers = Writers::default().mock(WriterStep::ClaudeCode, &good);
+        let result = start(&a, m, RunStart::Legacy, &writers);
+        assert!(matches!(result, SummaryResult::Stored { .. }), "{result:?}");
+        assert_eq!(writers.asked(), vec![CLAUDE], "one writer, no next step");
+        let r = record(&a.svc, m);
+        assert_eq!(
+            (r.origin, r.state, r.writer),
+            (RunOrigin::Named, RunState::Ended, Some(0))
+        );
+    }
+
+    #[test]
+    fn offload_order_continue_run_answers_started_refused_and_settled() {
+        let a = Device::new("offload-order-answers");
+        let m = meeting(&a.svc, "Invented planning", 510);
+        offloaded(start(
+            &a,
+            m,
+            RunStart::Order(order(&[OrderStep::Computer(DESK), LOCAL])),
+            &Writers::default().asks(DESK),
+        ));
+        let host = Recorder::default();
+        host.refuse_here.store(true, Ordering::SeqCst);
+        assert_eq!(hand_back(&a, &host).written_here, 0);
+        // Refused: handed again at the next step.
+        assert_eq!(a.step(None, &host).written_here, 0);
+        assert_eq!(host.here().len(), 2);
+        // Settled: not handed again.
+        host.refuse_here.store(false, Ordering::SeqCst);
+        host.settle_here.store(true, Ordering::SeqCst);
+        a.step(None, &host);
+        assert_eq!(host.here().len(), 3);
+        a.step(None, &host);
+        assert_eq!(host.here().len(), 3, "settled");
+        // Started: counted, and handed once in the process.
+        let b = Device::new("offload-order-answers-b");
+        let m2 = meeting(&b.svc, "Invented planning", 511);
+        offloaded(start(
+            &b,
+            m2,
+            RunStart::Order(order(&[OrderStep::Computer(DESK), LOCAL])),
+            &Writers::default().asks(DESK),
+        ));
+        let started = Recorder::default();
+        assert_eq!(hand_back(&b, &started).written_here, 1);
+        assert_eq!(b.step(None, &started).written_here, 0);
+        assert_eq!(started.here().len(), 1);
+    }
+
+    #[test]
+    fn offload_order_an_unavailable_computer_moves_on_and_keeps_its_banner() {
+        let a = Device::new("offload-order-unavailable");
+        let m = meeting(&a.svc, "Invented planning", 512);
+        let good = MockServer::start(vec![reply("Written here")]).unwrap();
+        let writers = Writers::default()
+            .choice(
+                DESK,
+                OffloadChoice::HereInstead {
+                    device: DESK,
+                    name: Some("Invented desk".into()),
+                    why: Unavailable::NotOffering,
+                },
+            )
+            .mock(WriterStep::Local, &good);
+        let out = run_summary_order(
+            &a.svc,
+            m,
+            RunStart::Order(order(&[OrderStep::Computer(DESK), LOCAL])),
+            &plan(&writers),
+            &CancelToken::new(),
+        );
+        assert!(matches!(out.summary, SummaryResult::Stored { .. }));
+        assert!(matches!(
+            out.offload,
+            Some(OffloadChoice::HereInstead {
+                why: Unavailable::NotOffering,
+                ..
+            })
+        ));
+        assert_eq!(
+            record(&a.svc, m).outcome_of(0),
+            Some(OutcomeWord::NotOffering)
+        );
+        assert!(a.svc.store().summary_requests().unwrap().is_empty());
+    }
+
+    #[test]
+    fn offload_order_the_helpers_summary_ends_the_waiting_run() {
+        let relay = relay();
+        let (a, b) = pair(&relay);
+        let (ca, cb) = (a.client(), b.client());
+        let m = meeting(&a.svc, "Invented planning", 513);
+        let peers = helper_online(b.id());
+        let writers = Writers::default().choice(b.id(), decide(Some(b.id()), Some(&peers), false));
+        let request = offloaded(start(
+            &a,
+            m,
+            RunStart::Order(order(&[OrderStep::Computer(b.id()), LOCAL])),
+            &writers,
+        ));
+        sync(&ca, &cb);
+        let helper = Recorder::default();
+        b.step(None, &helper);
+        let handed = helper.for_others();
+        assert_eq!(handed.len(), 1);
+        let server = MockServer::start(vec![reply("Written by the helper")]).unwrap();
+        let done = write_for_request(
+            &b.svc,
+            &MeetingQueue::new(),
+            &handed[0],
+            &|_| remote_writer(&b.svc, &server),
+            &CancelToken::new(),
+        );
+        assert!(matches!(done, HelperOutcome::Done { .. }), "{done:?}");
+        sync(&cb, &ca);
+        assert_eq!(a.request(request).state, RequestState::Done);
+        // Before the asker's step the view already reads it as ended.
+        assert!(matches!(
+            run_view(&a.svc.store(), m).unwrap(),
+            RunView::Ended(_)
+        ));
+        assert_eq!(record(&a.svc, m).state, RunState::Waiting);
+        let asker = Recorder::default();
+        a.step(None, &asker);
+        assert!(asker.here().is_empty());
+        let r = record(&a.svc, m);
+        assert_eq!(
+            (r.state, r.writer, r.waiting_on),
+            (RunState::Ended, Some(0), None)
+        );
+        assert_eq!(a.live_summaries(m), 1);
+    }
 }

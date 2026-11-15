@@ -326,6 +326,28 @@ impl QueueTicket {
         self.queue.tickets().open.range(..self.id).next().is_some()
     }
 
+    /// Whether a newer meeting's ticket is open (T12.63a: a local summary step the recorded
+    /// hold did not cover is skipped "not now" only then, docs/summary-order.md 4.5).
+    #[must_use]
+    pub fn newer_open(&self) -> bool {
+        self.queue
+            .tickets()
+            .open
+            .range(self.id.saturating_add(1)..)
+            .next()
+            .is_some()
+    }
+
+    /// What this meeting's summary was recorded to hold ([`Self::set_summary`]).
+    #[must_use]
+    pub fn summary(&self) -> SummaryHold {
+        self.queue
+            .tickets()
+            .open
+            .get(&self.id)
+            .map_or(SummaryHold::Unknown, |o| o.summary)
+    }
+
     /// Whether live work needing `needs` would wait for an older meeting now
     /// ([`Self::wait_live_turn`]).
     #[must_use]

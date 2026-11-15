@@ -22,7 +22,9 @@ use earshot_core::model::SummaryRequest;
 use earshot_net::Url;
 use earshot_runtime::keep_local::SummaryPrivacy;
 use earshot_runtime::meeting_queue::{MeetingQueue, SummaryHold};
-use earshot_runtime::offload::{HelperWriter, OffloadHost, WriteHere, WriterKind, reason};
+use earshot_runtime::offload::{
+    ContinueAnswer, HelperWriter, OffloadHost, WriteHere, WriterKind, reason,
+};
 use earshot_runtime::summary::{LOCAL_MAX_OUTPUT_TOKENS, SummaryConfig, SummaryService};
 use earshot_runtime::sync::{SyncClient, SyncProblem, SyncThread, SyncTiming, SyncVault};
 use earshot_runtime::{Services, SharedClock, SystemClock};
@@ -446,8 +448,8 @@ fn summary_config(config: &Config, url: &Url) -> SummaryConfig {
 
 impl OffloadHost for WorkerHost {
     /// The worker asks no other device, so nothing is ever handed back to it to write.
-    fn write_here(&self, _job: WriteHere) -> bool {
-        false
+    fn continue_run(&self, _job: WriteHere) -> ContinueAnswer {
+        ContinueAnswer::Refused
     }
 
     fn write_for(&self, request: SummaryRequest) {

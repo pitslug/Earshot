@@ -295,7 +295,7 @@ impl SyncClient {
                 _ if !settings.offers_summaries => None,
                 Some(worker) => worker,
                 None => {
-                    crate::offload::WriterKind::of_settings(&db).map_err(|_| SyncProblem::Store)?
+                    crate::offload::WriterKind::of_order(&db).map_err(|_| SyncProblem::Store)?
                 }
             };
             (settings, writer)

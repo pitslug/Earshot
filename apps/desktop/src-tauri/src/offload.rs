@@ -27,8 +27,8 @@ use earshot_runtime::host::SkipReason;
 use earshot_runtime::keep_local::SummaryPrivacy;
 use earshot_runtime::meeting_queue::{MeetingQueue, SummaryHold};
 use earshot_runtime::offload::{
-    HelperWriter, HereReason, OffloadChoice, OffloadHost, Unavailable, WriteHere, WriterKind,
-    reason,
+    Continuation, ContinueAnswer, HelperWriter, HereReason, OffloadChoice, OffloadHost,
+    Unavailable, WriteHere, WriterKind, reason,
 };
 use serde::Serialize;
 use specta::Type;
@@ -552,11 +552,21 @@ impl HostOffload {
 }
 
 impl OffloadHost for HostOffload {
-    fn write_here(&self, job: WriteHere) -> bool {
+    fn continue_run(&self, job: WriteHere) -> ContinueAnswer {
+        match job.continuation {
+            // A request asked before the order of summary writers (T12.63a): written here as
+            // before.
+            Continuation::Legacy => {}
+            // The app asks computers only through `host::after_meeting`'s one prepared writer
+            // until T12.63b runs the order, so no run waits here; one that does is never written
+            // with the current writer instead of its copied steps.
+            Continuation::Order { .. } => return ContinueAnswer::Settled,
+        }
         let note = written_here_copy(&job.why, None);
         // A job of the meeting that already runs, the model check or a meeting in use refuses:
         // the next step hands it again.
-        self.jobs
+        if self
+            .jobs
             .start_noted(
                 &self.services,
                 job.meeting,
@@ -564,6 +574,11 @@ impl OffloadHost for HostOffload {
                 Some(note),
             )
             .is_ok()
+        {
+            ContinueAnswer::Started
+        } else {
+            ContinueAnswer::Refused
+        }
     }
 
     fn write_for(&self, request: SummaryRequest) {

@@ -193,6 +193,8 @@ Each device sends an encrypted blob every 60 s: device name, app version, whethe
 
 ### At summary time
 
+Since T12.63a the computer is one step of the order of summary writers (docs/summary-order.md): a run asks a computer step as below and suspends; when the computer withdraws or declines, the run record decides (a re-summarise job continues the same run from its copied steps, a named run ends, a request asked before T12.63a is written here as before, an unreadable record or another run's request is settled with nothing written or sent). A computer answering a request runs only the writer kind its presence advertised, the first writer step of its own order. What follows is the T11.3da rule as it still runs for the app's one prepared writer until T12.63b.
+
 Decided once, where `host::summary_from_settings` runs today:
 
 1. If a device is chosen, and presence says it is online, offers summaries and is not recording: write a `SummaryRequest { meeting, target device, asking device, segment count, state }` and sync. The meeting shows "Waiting for <device>".

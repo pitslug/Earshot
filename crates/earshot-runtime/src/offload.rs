@@ -14,8 +14,12 @@
 //!
 //! [`Offload::step`] (run by the sync thread after each tick) then withdraws a request that is
 //! not claimed within [`CLAIM_WITHIN_MS`], or whose claiming helper's presence has been stale
-//! for [`STALE_AFTER_S`], and hands the meeting back to the host to write here
-//! ([`OffloadHost::write_here`]); a declined request is handed back the same way.
+//! for [`STALE_AFTER_S`], and hands the meeting back to the host ([`OffloadHost::continue_run`]);
+//! a declined request is handed back the same way. Since T12.63a the meeting's run of the order
+//! of summary writers decides what a hand-back does ([`crate::summary_order::run`]): the same run
+//! goes on from its copied steps, a named run ends, a request with no run record is written here
+//! as before ([`Continuation::Legacy`]), and an unreadable record or one naming another request is
+//! settled with nothing written or sent. A `Done` request a waiting run names ends that run.
 //!
 //! # The helper
 //!
@@ -142,23 +146,26 @@ impl WriterKind {
         Self::ALL.into_iter().find(|k| k.word() == word)
     }
 
-    /// The kind of this device's summary writer (`None` for no summary).
+    /// The kind of this device's summary writer: the first writer step of its order of summary
+    /// writers (T12.63a, [`crate::summary_order`]), which is the one writer it runs for another
+    /// device's request ([`crate::summary_order::run::helper_writer`]); `None` without one.
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn of_order(store: &earshot_store::Store) -> Result<Option<Self>, RuntimeError> {
+        let (order, _) = crate::summary_order::summary_order(store)?;
+        let (settings, _) = crate::summary_settings::summary_settings(store)?;
+        Ok(order
+            .first_writer()
+            .map(|w| crate::summary_order::run::kind_of(w, &settings)))
+    }
+
+    /// [`WriterKind::of_order`] (the name before T12.63a).
     ///
     /// # Errors
     /// Store errors.
     pub fn of_settings(store: &earshot_store::Store) -> Result<Option<Self>, RuntimeError> {
-        use crate::summary_settings::{EndpointProvider, SummaryWriter, summary_settings};
-        let (s, _) = summary_settings(store)?;
-        Ok(match s.writer {
-            SummaryWriter::OnThisComputer => Some(Self::Local),
-            SummaryWriter::OwnEndpoint => Some(match s.provider {
-                EndpointProvider::Anthropic => Self::Anthropic,
-                EndpointProvider::OpenAiCompatible => Self::OpenaiCompatible,
-            }),
-            SummaryWriter::ClaudeCode => Some(Self::ClaudeCode),
-            SummaryWriter::Codex => Some(Self::Codex),
-            SummaryWriter::NoSummary => None,
-        })
+        Self::of_order(store)
     }
 }
 
@@ -179,7 +186,10 @@ pub fn chosen_helper(store: &earshot_store::Store) -> Result<Option<DeviceId>, R
 }
 
 /// Chooses the helper this device asks; `None` asks none (this device's writer, as before).
-/// A device-local setting: each device keeps its own.
+/// A device-local setting: each device keeps its own. Stored as the order's step-1 computer
+/// ([`crate::summary_order::SummaryOrder::with_helper`]) through
+/// [`crate::summary_order::set_summary_order`], the one writer of
+/// `settings/summary-offload-device` (T12.63a).
 ///
 /// # Errors
 /// Store errors; [`RuntimeError::Internal`] for this device itself.
@@ -187,16 +197,20 @@ pub fn set_chosen_helper(
     services: &Services,
     device: Option<DeviceId>,
 ) -> Result<(), RuntimeError> {
-    if device == Some(services.store().device()) {
+    use crate::summary_order::{
+        SummaryOrderError, set_summary_order_keeping_writer, summary_order,
+    };
+    let mut db = services.store();
+    if device == Some(db.device()) {
         return Err(RuntimeError::Internal("a device cannot be its own helper"));
     }
-    let text = device.map(|d| d.to_string()).unwrap_or_default();
-    let mut db = services.store();
-    local::set(
-        &mut db,
-        &DeviceRecord::SummaryOffloadDevice.key(),
-        text.as_bytes(),
-    )?;
+    let (order, _) = summary_order(&db)?;
+    let order = order.with_helper(device);
+    // A stored writer word that does not read as itself is kept, never replaced by a default.
+    set_summary_order_keeping_writer(&mut db, &order).map_err(|e| match e {
+        SummaryOrderError::Store(e) => e,
+        _ => RuntimeError::Internal("the order of summary writers could not be kept"),
+    })?;
     Ok(())
 }
 
@@ -317,6 +331,24 @@ pub fn choose_now(services: &Services, vault: std::sync::Arc<dyn SyncVault>) -> 
     }
 }
 
+/// [`decide`] for `device` (a computer step of the order, T12.63a) with the relay's presence,
+/// asked now (one request through the sync client, without the store lock).
+#[must_use]
+pub fn choose_device_now(
+    services: &Services,
+    vault: std::sync::Arc<dyn SyncVault>,
+    device: DeviceId,
+) -> OffloadChoice {
+    let sync_on = crate::sync::sync_settings(&services.store()).is_ok_and(|s| s.on);
+    if !sync_on || !vault.has().unwrap_or(false) {
+        return decide(Some(device), None, false);
+    }
+    match SyncClient::new(services.clone(), vault).and_then(|c| c.peers()) {
+        Ok(peers) => decide(Some(device), Some(&peers), false),
+        Err(_) => decide(Some(device), None, true),
+    }
+}
+
 /// How many live final segments `meeting` holds: what a request counts and a helper waits for.
 fn final_segments<R: MeetingRepo + ?Sized>(
     repo: &R,
@@ -364,15 +396,58 @@ pub fn ask_for(
     meeting: EntityId,
     target: DeviceId,
 ) -> Result<Option<Asked>, RuntimeError> {
+    ask_inner(services, meeting, target, None)
+}
+
+/// [`ask_for`] as a computer step of a run of the order (T12.63a): in the transaction that writes
+/// the request, the run's record (`waiting`, re-read and still of the same run) names it in
+/// `waiting_on`, so no open request exists without a record naming it. A record of another run
+/// writes nothing.
+///
+/// # Errors
+/// As [`ask_for`]; [`RuntimeError::Conflict`] when the record is no longer of `waiting`'s run.
+pub fn ask_for_run(
+    services: &Services,
+    meeting: EntityId,
+    target: DeviceId,
+    waiting: &crate::summary_order::run::SummaryRun,
+) -> Result<Option<Asked>, RuntimeError> {
+    ask_inner(services, meeting, target, Some(waiting))
+}
+
+fn ask_inner(
+    services: &Services,
+    meeting: EntityId,
+    target: DeviceId,
+    run: Option<&crate::summary_order::run::SummaryRun>,
+) -> Result<Option<Asked>, RuntimeError> {
     let me = services.store().device();
     let now = services.clock.now_unix_ms();
+    let name_it = |tx: &mut earshot_store::StoreTx<'_>, asked: Asked| -> Result<(), RuntimeError> {
+        let Some(run) = run else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        if let Some(e) = crate::summary_order::run::fault::take_ask() {
+            return Err(e);
+        }
+        let mut waiting = run.clone();
+        waiting.waiting_on = Some(asked.request);
+        if crate::summary_order::run::put_own_tx(tx, meeting, &waiting)? {
+            Ok(())
+        } else {
+            Err(RuntimeError::Conflict("the summary run was replaced"))
+        }
+    };
     crate::edit::write(services, |tx, stamp| {
         crate::edit::live_meeting(&*tx, meeting)?;
         if let Some(open) = open_request(&*tx, me, meeting)? {
-            return Ok(Some(Asked {
+            let asked = Asked {
                 request: open.id,
                 target: open.target_device,
-            }));
+            };
+            name_it(tx, asked)?;
+            return Ok(Some(asked));
         }
         let count = final_segments(&*tx, meeting)?;
         if count == 0 {
@@ -391,10 +466,12 @@ pub fn ask_for(
             },
         );
         crate::local::set_tx(tx, &DeviceRecord::OffloadTimes.key(), &encode_times(&times))?;
-        Ok(Some(Asked {
+        let asked = Asked {
             request: id,
             target,
-        }))
+        };
+        name_it(tx, asked)?;
+        Ok(Some(asked))
     })
 }
 
@@ -627,16 +704,45 @@ pub struct WriteHere {
     pub helper: DeviceId,
     /// Why.
     pub why: HereReason,
+    /// How the meeting's run of the order goes on (T12.63a).
+    pub continuation: Continuation,
+}
+
+/// How a run goes on after a computer handed its request back (docs/summary-order.md 4.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Continuation {
+    /// The meeting has no run record (a request asked before T12.63a): write it here as before,
+    /// with the order's first writer step under the meeting's privacy
+    /// ([`crate::summary_order::run::RunStart::Legacy`]).
+    Legacy,
+    /// The record waits on this request in an order run: a re-summarise job continues the same
+    /// run from its copied steps ([`crate::summary_order::run::RunStart::Continue`] with this
+    /// word).
+    Order {
+        /// The computer's outcome.
+        word: crate::summary_order::run::OutcomeWord,
+    },
+}
+
+/// What the host answers [`OffloadHost::continue_run`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinueAnswer {
+    /// The work started.
+    Started,
+    /// The meeting is busy (a job of the meeting runs, the meeting is in use): handed again at the
+    /// next step.
+    Refused,
+    /// Nothing to do: the request is settled and not read again in this process.
+    Settled,
 }
 
 /// What the host does for [`Offload::step`]. Both calls must return quickly: the host runs the
 /// work on a thread of its own.
 pub trait OffloadHost: Send + Sync {
-    /// Write `job.meeting`'s summary here, with this device's own writer (a re-summary job:
-    /// [`crate::keep_local::summary_privacy`] still decides the writer). Returns whether the work
-    /// started; a refusal (a job of the meeting runs, the meeting is in use) is handed again at the
-    /// next step.
-    fn write_here(&self, job: WriteHere) -> bool;
+    /// Go on with `job.meeting`'s summary after the computer handed its request back, as
+    /// `job.continuation` says (a re-summary job; [`crate::keep_local::summary_privacy`] still
+    /// decides the writers). A refusal is handed again at the next step.
+    fn continue_run(&self, job: WriteHere) -> ContinueAnswer;
     /// Write the summary another device asked for: run [`write_for_request`] in this device's
     /// meeting queue.
     fn write_for(&self, request: SummaryRequest);
@@ -699,6 +805,13 @@ impl Offload {
             .insert(request)
     }
 
+    fn handed(&self, request: EntityId) -> bool {
+        self.handed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&request)
+    }
+
     fn unhand(&self, request: EntityId) {
         self.handed
             .lock()
@@ -749,7 +862,12 @@ impl Offload {
                 }
                 let mine = r.asking_device == me;
                 let wanted = if mine {
+                    // A done request is read only while a run record waits on it, so the run is
+                    // ended with that computer as its writer (T12.63a).
                     r.state != RequestState::Done
+                        || (!r.meta.deleted
+                            && !self.is_settled(r.id)
+                            && crate::summary_order::run::waits_on(&db, r.meeting_id, r.id)?)
                 } else {
                     r.target_device == me && r.state.is_open()
                 };
@@ -952,24 +1070,49 @@ impl Offload {
                 HereReason::Withdrawn
             }
             RequestState::Done => {
+                // The computer stored the summary: a run waiting on it ends with that computer
+                // as its writer.
+                crate::summary_order::run::end_after_done(services, r.meeting_id, r.id)?;
                 self.settle(r.id);
                 return Ok(());
             }
         };
+        if self.handed(r.id) {
+            return Ok(());
+        }
+        // The run record decides (docs/summary-order.md 4.3).
+        use crate::summary_order::run::{HandBack, OutcomeWord, hand_back};
+        let word = match &why {
+            HereReason::Declined(_) => OutcomeWord::Declined,
+            HereReason::NotClaimed | HereReason::HelperStale | HereReason::Withdrawn => {
+                OutcomeWord::NoReply
+            }
+        };
+        let continuation = match hand_back(services, r.meeting_id, r.id, word)? {
+            HandBack::Settle => {
+                self.settle(r.id);
+                return Ok(());
+            }
+            HandBack::Legacy => Continuation::Legacy,
+            HandBack::ContinueOrder => Continuation::Order { word },
+        };
         if self.hand_once(r.id) {
-            let started = host.write_here(WriteHere {
+            let answer = host.continue_run(WriteHere {
                 meeting: r.meeting_id,
                 request: r.id,
                 helper: r.target_device,
                 why,
+                continuation,
             });
-            if started {
-                report.written_here += 1;
-                Self::closed(times, r, now).started_ms.get_or_insert(now);
-            } else {
+            match answer {
+                ContinueAnswer::Started => {
+                    report.written_here += 1;
+                    Self::closed(times, r, now).started_ms.get_or_insert(now);
+                }
                 // Refused (a job of the meeting runs, the meeting is in use): the next step tries
                 // again.
-                self.unhand(r.id);
+                ContinueAnswer::Refused => self.unhand(r.id),
+                ContinueAnswer::Settled => self.settle(r.id),
             }
         }
         Ok(())

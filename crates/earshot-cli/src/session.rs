@@ -1152,6 +1152,7 @@ pub fn run_meeting(
         post_cancel: &post_cancel,
         summary_cancel: &CancelToken::new(),
         offload: None,
+        order_run: None,
     };
     let mut printer = PostPrinter {
         out: &mut *out,
@@ -1204,6 +1205,10 @@ pub fn run_meeting(
             out,
             "claude-code: ran at its own default effort (its --help could not be read)"
         )?;
+    }
+    // The order of summary writers (T12.63a): one line per step of the run.
+    for (i, step) in host.steps.iter().enumerate() {
+        writeln!(out, "summary step {}: {}", i + 1, step.line())?;
     }
     if summary.is_some() {
         for e in &host.network {

@@ -349,6 +349,7 @@ fn processed(svc: &Services, seed: u64) -> EntityId {
         post_cancel: &post_cancel,
         summary_cancel: &summary_cancel,
         offload: None,
+        order_run: None,
     };
     let result = after_meeting_with(svc, &outcome, &run, fake_post, &mut |_| {});
     assert!(

@@ -371,6 +371,9 @@ pub fn prepare_bench_summary(
     clock: SharedClock,
     dll_dirs: &[PathBuf],
 ) -> Result<BenchSummary, RuntimeError> {
+    // `settings.writer` is the order's first writer step on this computer, computer steps
+    // skipped (its mirror, docs/summary-order.md 4.5): [computer, local] benchmarks the local
+    // model as before, [Claude Code, local] does not.
     Ok(match settings.writer {
         SummaryWriter::NoSummary => BenchSummary::Skipped(BenchSkip::NotRequested),
         SummaryWriter::OnThisComputer => {
@@ -579,6 +582,10 @@ fn skip_of(reason: &SkipReason, skip: Option<&BenchSkip>) -> Result<BenchSkip, R
         }),
         SkipReason::PostFailed => Err(RuntimeError::Internal(
             "the benchmark summary was skipped after a failed final pass",
+        )),
+        // The benchmark runs no order (one prepared local step, no queue): never reached.
+        SkipReason::NotNow => Err(RuntimeError::Internal(
+            "the benchmark summary was skipped as not now",
         )),
     }
 }
@@ -1048,6 +1055,7 @@ pub fn run_from_settings(
             post_cancel: cancel,
             summary_cancel: cancel,
             offload: None,
+            order_run: None,
         };
         host::after_meeting(svc, outcome, &run, progress)
     });

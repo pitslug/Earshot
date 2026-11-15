@@ -853,6 +853,7 @@ fn outcome(post: Result<HostPost, RuntimeError>, summary: SummaryResult) -> Host
         handover_record_failures: vec![],
         claude_effort_unread: false,
         offload: None,
+        steps: Vec::new(),
     }
 }
 

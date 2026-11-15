@@ -932,7 +932,24 @@ impl SummaryService {
         rng: &mut R,
         cancel: &CancelToken,
     ) -> Result<SummaryOutcome, RuntimeError> {
-        self.summarize_inner(services, meeting, None, rng, cancel)
+        self.summarize_inner(services, meeting, None, None, rng, cancel)
+    }
+
+    /// [`SummaryService::summarize`] as one step of a run of the order of summary writers
+    /// (T12.63a, [`crate::summary_order::run`]): the run's ended record is stored in the
+    /// summary's own write transaction, when the meeting's record is still of that run.
+    ///
+    /// # Errors
+    /// As [`SummaryService::summarize`].
+    pub fn summarize_in_run<R: Rng + ?Sized>(
+        &self,
+        services: &Services,
+        meeting: EntityId,
+        end: &crate::summary_order::run::RunEnd,
+        rng: &mut R,
+        cancel: &CancelToken,
+    ) -> Result<SummaryOutcome, RuntimeError> {
+        self.summarize_inner(services, meeting, None, Some(end), rng, cancel)
     }
 
     /// [`SummaryService::summarize`] for another device's summary request (summary offload,
@@ -952,7 +969,7 @@ impl SummaryService {
         rng: &mut R,
         cancel: &CancelToken,
     ) -> Result<SummaryOutcome, RuntimeError> {
-        self.summarize_inner(services, meeting, Some(request), rng, cancel)
+        self.summarize_inner(services, meeting, Some(request), None, rng, cancel)
     }
 
     fn summarize_inner<R: Rng + ?Sized>(
@@ -960,6 +977,7 @@ impl SummaryService {
         services: &Services,
         meeting: EntityId,
         answering: Option<EntityId>,
+        run_end: Option<&crate::summary_order::run::RunEnd>,
         rng: &mut R,
         cancel: &CancelToken,
     ) -> Result<SummaryOutcome, RuntimeError> {
@@ -1034,7 +1052,7 @@ impl SummaryService {
             }
         };
         let (summary_id, title_set) =
-            store_summary_answering(services, &view, model, &summary, answering, rng)?;
+            store_summary_answering(services, &view, model, &summary, answering, run_end, rng)?;
         Ok(SummaryOutcome {
             summary_id,
             summary,
@@ -1611,19 +1629,21 @@ pub(crate) fn store_summary<R: Rng + ?Sized>(
     summary: &SummaryV1,
     rng: &mut R,
 ) -> Result<(EntityId, bool), RuntimeError> {
-    store_summary_answering(services, view, model, summary, None, rng)
+    store_summary_answering(services, view, model, summary, None, None, rng)
 }
 
 /// [`store_summary`], answering another device's summary request when `answering` names one:
 /// inside the transaction the request must still be claimed by this device (else
 /// [`RuntimeError::Conflict`] with [`crate::offload::REQUEST_NOT_CLAIMED`], nothing stored) and
-/// is marked done with the summary.
+/// is marked done with the summary. With `run_end` the run of the order of summary writers that
+/// wrote it is ended in the same transaction ([`crate::summary_order::run`]).
 fn store_summary_answering<R: Rng + ?Sized>(
     services: &Services,
     view: &MeetingView,
     model: String,
     summary: &SummaryV1,
     answering: Option<EntityId>,
+    run_end: Option<&crate::summary_order::run::RunEnd>,
     rng: &mut R,
 ) -> Result<(EntityId, bool), RuntimeError> {
     let meeting = view.meeting.id;
@@ -1688,6 +1708,9 @@ fn store_summary_answering<R: Rng + ?Sized>(
             request.state = earshot_core::model::RequestState::Done;
             request.meta.touch(stamp.hlc, stamp.clock);
             tx.put_summary_request(request)?;
+        }
+        if let Some(end) = run_end {
+            crate::summary_order::run::end_in_tx(tx, meeting, end)?;
         }
         // The live partials are content; a summary now exists, so they go.
         tx.delete_local_value(crate::live_summaries::record_key(meeting).as_str())?;
