@@ -572,6 +572,7 @@ mod tests {
         release: Arc<AtomicBool>,
         cancellable: bool,
         /// The thread priority seen in each call (Windows).
+        #[cfg_attr(not(windows), expect(dead_code, reason = "read on Windows only"))]
         priority: Arc<Mutex<Vec<i32>>>,
     }
 

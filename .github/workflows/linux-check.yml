@@ -157,6 +157,15 @@ jobs:
         working-directory: src
         run: cargo test --locked -p earshot-runtime --lib -- --skip summary --skip sync
 
+      # The runtime's library carries no Linux-only warnings (T11.5b).
+      - name: Clippy earshot-runtime (lib)
+        id: clippy_runtime
+        continue-on-error: true
+        working-directory: src
+        run: |
+          rustup component add clippy --toolchain "${RUSTUP_TOOLCHAIN}"
+          cargo clippy --locked -p earshot-runtime --lib -- -D warnings
+
       # Last, because core's debug echo-canceller tests run for a long time, and bounded; core
       # is already checked for wasm32 by `cargo xtask purity`. Its fixture tests fail here by
       # design (no fetched fixtures).
@@ -188,6 +197,7 @@ jobs:
           echo "test earshot-runtime (summary): ${{ steps.test_runtime_summary.outcome }}"
           echo "test earshot-runtime (sync): ${{ steps.test_runtime_sync.outcome }}"
           echo "test earshot-runtime (rest, informational): ${{ steps.test_runtime_all.outcome }}"
+          echo "clippy earshot-runtime (lib): ${{ steps.clippy_runtime.outcome }}"
 
       # Every step above may fail without stopping the next, so the run's own result comes from
       # here: it fails when a build, or a test step that is not marked informational, failed.
@@ -204,7 +214,8 @@ jobs:
             "${{ steps.build_llm.outcome }}" "${{ steps.test_llm.outcome }}" \
             "${{ steps.build_relay.outcome }}" "${{ steps.test_relay.outcome }}" \
             "${{ steps.build_runtime.outcome }}" \
-            "${{ steps.test_runtime_summary.outcome }}" "${{ steps.test_runtime_sync.outcome }}"; do
+            "${{ steps.test_runtime_summary.outcome }}" "${{ steps.test_runtime_sync.outcome }}" \
+            "${{ steps.clippy_runtime.outcome }}"; do
             if [ "${outcome}" != "success" ]; then failed=1; fi
           done
           exit "${failed}"

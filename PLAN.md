@@ -2310,7 +2310,7 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - deps: GATE-09
   - do: docs/sync.md section 10 "The server as a summary device", its open question. Build and test `earshot-store`, `earshot-sync`, `earshot-llm` and the summary path of `earshot-runtime` for `x86_64-unknown-linux-gnu` on GitHub Actions' Ubuntu runners (the owner, 2026-11-15: a second workflow, on pushes to `linux/**` branches and by hand only, `contents: read`, actions pinned by hash, nothing in its log but the build) (the store's `cfg(not(windows))` branches have never run); report what builds, what fails and why, and recommend whether the worker reuses the runtime or gets a small crate of its own. Nothing shipped changes.
   - accept: the findings in docs/sync.md with the recommendation; follow-ups become tasks
-- [ ] T11.5b Linux portability of the runtime's tests and warnings
+- [~] T11.5b Linux portability of the runtime's tests and warnings
   - found (T11.5, 2026-11-15).
   - deps: T11.5
   - do: `recommend::tests::hardware_facts_of_this_host_feed_the_recommendation` gets `#[cfg_attr(not(windows), ignore = "hardware facts are read on Windows only")]` (assertion unchanged); the runtime's 17 Linux-only dead-code warnings (unused `ChildEnd` variants and the like) are removed by gating the Windows-only code, never by `allow`; where the worker would size threads from `earshot_hardware::read()` (a core count of 1 off Windows), use `std::thread::available_parallelism` on non-Windows. The linux-check workflow then runs `cargo clippy -p earshot-runtime --lib -- -D warnings` as a gating step.
