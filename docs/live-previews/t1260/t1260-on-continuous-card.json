@@ -1,0 +1,27 @@
+{
+  "name": "t1260-on-continuous",
+  "args": "--backend cuda --audio continuous --seconds 120 --previews on",
+  "exit": 0,
+  "started": "2026-11-15T08:58:46",
+  "idle_checks": [
+    {
+      "load": 4.7,
+      "card_mib": 1111,
+      "builds": 0
+    },
+    {
+      "load": 4.4,
+      "card_mib": 1111,
+      "builds": 0
+    },
+    {
+      "load": 4.9,
+      "card_mib": 1111,
+      "builds": 0
+    }
+  ],
+  "baseline_mib": 1111,
+  "peak_mib": 5978.0,
+  "peak_above_baseline_gib": 4.753,
+  "readings": 125
+}

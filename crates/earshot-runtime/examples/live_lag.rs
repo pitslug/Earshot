@@ -7,7 +7,7 @@
 //!     [--seconds <n>] [--previews off|on|everyone] [--force-previews] [--card-memory-gib <n>]
 //!     [--window <s>] [--interval <s>] [--max-piece <s>] [--stream nemotron]
 //!     [--stream-threads <n>] [--summary off|alone|beside [--summary-on cpu|gpu]
-//!     [--summary-model <id>]] [--out <file.json>]
+//!     [--summary-model <id>]] [--own-encoders] [--hold-card-gib <n>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root> --memory
 //!     [--backend cpu|cuda|qnn] [--card-memory-gib <n>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- <repo-root>
@@ -44,6 +44,22 @@
 //! Without it a CUDA replay holds the shared encoder (`backends::hold_shared_encoder_for_evaluation`)
 //! and reports its placement, its handles when the live transcript finished and each thread's
 //! waits for it (`shared_encoder`).
+//!
+//! `--hold-card-gib <n>` (evaluation only, T12.59, CUDA) makes the card look like an `n` GiB card
+//! in free memory: before anything loads, a second process (this exe as `--card-holder <n>`) loads
+//! CUDA Parakeet sessions, each with its own encoder (`backends::hold_card_for_evaluation`: Parakeet
+//! 0.6B v2 sessions of 2.58 to 2.80 GiB on the desktop while one more stays above the target, then
+//! Parakeet 110M sessions of about 0.66 GiB), until `nvidia-smi`'s free memory is at most `n - 1.5` GiB (1.5 GiB
+//! taken as other programs' share), and keeps them loaded until the replay ends; the run then tells
+//! it to stop by closing its stdin, and stops it through its own process handle if it has not
+//! exited within a minute. The report's `card_holder` has every load, the free memory left and
+//! what each graphics adapter reports as dedicated memory. The preview rule still reads the card's
+//! real size.
+//!
+//! `--own-voice-cpu` (evaluation only, T12.60, CUDA, `--previews everyone`) loads the user's own
+//! preview session on the CPU, where T12.3a put it beside CUDA, through
+//! `backends::load_preview_second_on_cpu_for_evaluation` (the app's rule and refusals, then the
+//! CPU), so the card and CPU columns of T12.60's rule run on one build.
 //!
 //! `--stream nemotron` (evaluation only, T12.23) gives each previewed track a streaming model
 //! instead of window decodes: NVIDIA's Nemotron Speech Streaming 0.6B (manifest set `stream-eval`,
@@ -107,8 +123,8 @@ use earshot_core::capture::{DeviceTime, ReplayBuilder, TrackId};
 use earshot_core::model::ClockDomain;
 use earshot_runtime::backends::{
     Accelerator, ModelDir, PreviewSlot, init_onnx, load_nemotron_preview, load_preview_on_hardware,
-    load_preview_unrefused, onnx_library, preview_backend, previews_refused,
-    previews_refused_second, second_preview_backend,
+    load_preview_second_on_cpu_for_evaluation, load_preview_unrefused, onnx_library,
+    preview_backend, previews_refused, previews_refused_second, second_preview_backend,
 };
 use earshot_runtime::live::{
     LiveAsrFactory, LiveConfig, LivePreviews, LiveTranscription, PreviewLoader, RuntimeEvent,
@@ -175,6 +191,15 @@ struct Args {
     /// Evaluation only (T12.58): every CUDA Parakeet session loads its own encoder, as before one
     /// was shared (`backends::own_encoders_for_evaluation`), for a comparison run.
     own_encoders: bool,
+    /// Evaluation only (T12.59): a second process holds the card until its free memory is what a
+    /// card of this many GiB with 1.5 GiB used by other programs would have ([`CardHolder`]).
+    hold_card_gib: Option<f64>,
+    /// That second process: hold the card for a card of this many GiB until stdin closes
+    /// ([`run_card_holder`]).
+    card_holder: Option<f64>,
+    /// Evaluation only (T12.60): the user's own preview session on the CPU, where T12.3a put it,
+    /// through `backends::load_preview_second_on_cpu_for_evaluation` ([`own_voice_cpu_loader`]).
+    own_voice_cpu: bool,
 }
 
 /// What `--summary` runs (T12.39).
@@ -216,6 +241,9 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         summary_gpu: false,
         summary_model: None,
         own_encoders: false,
+        hold_card_gib: None,
+        card_holder: None,
+        own_voice_cpu: false,
     };
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -300,8 +328,37 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--summary-model" => args.summary_model = Some(value()?),
             "--own-encoders" => args.own_encoders = true,
+            "--hold-card-gib" => args.hold_card_gib = Some(card_gib(&flag, &value()?)?),
+            "--card-holder" => args.card_holder = Some(card_gib(&flag, &value()?)?),
+            "--own-voice-cpu" => args.own_voice_cpu = true,
             other => return Err(format!("unknown flag {other}")),
         }
+    }
+    if args.own_voice_cpu
+        && (args.previews != Some(PreviewChoice::Everyone)
+            || args.backend != BackendKind::Cuda
+            || args.force_previews
+            || args.card_memory_gib.is_some()
+            || args.stream.is_some())
+    {
+        return Err(
+            "--own-voice-cpu moves the user's own previews of a CUDA replay to the CPU: it needs \
+             --backend cuda --previews everyone and no --force-previews, --card-memory-gib or \
+             --stream"
+                .to_owned(),
+        );
+    }
+    if args.hold_card_gib.is_some()
+        && (args.backend != BackendKind::Cuda
+            || args.memory
+            || args.contention.is_some()
+            || args.card_holder.is_some())
+    {
+        return Err(
+            "--hold-card-gib fills the graphics card beside a replay: it needs --backend cuda \
+             and no --memory, --contention or --card-holder"
+                .to_owned(),
+        );
     }
     if args.own_encoders && args.backend != BackendKind::Cuda {
         return Err(
@@ -363,6 +420,22 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         );
     }
     Ok(args)
+}
+
+/// What a card of `gib` GiB is taken to have in use by other programs (T12.59's rule: the 1.3 GiB
+/// measured on the desktop, rounded up).
+const OTHER_PROGRAMS_GIB: f64 = 1.5;
+
+/// A card size for `--hold-card-gib` / `--card-holder`: a number of GiB above what other programs
+/// are taken to use.
+fn card_gib(flag: &str, text: &str) -> Result<f64, String> {
+    let gib: f64 = text.parse().map_err(|e| format!("{flag}: {e}"))?;
+    if !gib.is_finite() || gib <= OTHER_PROGRAMS_GIB || gib > 1024.0 {
+        return Err(format!(
+            "{flag} must be a card size in GiB above {OTHER_PROGRAMS_GIB}"
+        ));
+    }
+    Ok(gib)
 }
 
 /// The live stretches' piece config (T12.24, evaluation only): production's
@@ -518,6 +591,33 @@ fn simulated_loader(
                 .map_err(String::as_str),
         );
         record["simulated_card_gib"] = json!(simulated_card_gib(&machine));
+        log.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(record);
+        result.map(|p| p.transcriber).map_err(Into::into)
+    })
+}
+
+/// Evaluation only (`--own-voice-cpu`, T12.60): the user's own preview session through
+/// `backends::load_preview_second_on_cpu_for_evaluation` (the app's rule, then always the CPU), with
+/// the placement of every session written to `log`.
+fn own_voice_cpu_loader(
+    models: ModelDir,
+    choice: PreviewChoice,
+    log: Arc<Mutex<Vec<Value>>>,
+) -> PreviewLoader {
+    Arc::new(move |backend: &BackendInfo| {
+        let result = load_preview_second_on_cpu_for_evaluation(&models, backend, choice);
+        let mut record = preview_record(
+            "own_voice",
+            false,
+            backend,
+            result
+                .as_ref()
+                .map(|p| (p.transcriber.backend_info(), Some(p.placement.clone())))
+                .map_err(String::as_str),
+        );
+        record["own_voice_cpu"] = json!(true);
         log.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(record);
@@ -1577,6 +1677,203 @@ impl CardLog {
     }
 }
 
+/// The graphics card's free memory in bytes, from one `nvidia-smi` reading (the first card it
+/// lists); `None` when it cannot be read.
+fn card_free_bytes() -> Option<u64> {
+    let out = Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mib: u64 = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(mib * 1024 * 1024)
+}
+
+/// The free memory a card of `gib` GiB has with [`OTHER_PROGRAMS_GIB`] in use by other programs,
+/// in bytes: what the holder leaves at most.
+fn holder_target_bytes(gib: f64) -> u64 {
+    // `card_gib` keeps `gib` finite and above the other programs' share.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let bytes = ((gib - OTHER_PROGRAMS_GIB) * GIB as f64) as u64;
+    bytes
+}
+
+/// What this machine's graphics adapters report as dedicated memory (`earshot_hardware`), in GiB,
+/// beside each adapter's own name (a hardware fact, not content).
+fn adapters_json() -> Value {
+    earshot_runtime::hardware()
+        .gpus
+        .iter()
+        .map(|g| {
+            json!({
+                "name": g.name,
+                "integrated": g.integrated,
+                "dedicated_memory_bytes": g.dedicated_memory,
+                "dedicated_memory_gib": g.dedicated_memory.map(gib_of),
+            })
+        })
+        .collect()
+}
+
+/// Bytes in GiB, for a report.
+#[allow(clippy::cast_precision_loss)]
+fn gib_of(bytes: u64) -> f64 {
+    bytes as f64 / GIB as f64
+}
+
+/// The prefix of the holder's one report line on stdout.
+const HOLDER_LINE: &str = "card_holder: ";
+
+/// `live_lag <repo> --card-holder <gib>` (evaluation only, T12.59): the second process of
+/// `--hold-card-gib`. Loads own-encoder CUDA sessions through
+/// `backends::hold_card_for_evaluation` until the card's free memory is at most what a card of
+/// `gib` GiB would have with [`OTHER_PROGRAMS_GIB`] used by other programs, prints one line
+/// ([`HOLDER_LINE`] and JSON: every load, the free memory left, the adapters' dedicated memory),
+/// then keeps everything loaded until stdin closes or reads `stop`. Started and stopped only by its
+/// parent, through its own process handle.
+fn run_card_holder(models: &ModelDir, gib: f64) -> ! {
+    use std::io::{BufRead, Write};
+    let large = earshot_runtime::backends::CARD_HOLD_LARGE;
+    earshot_runtime::cuda::use_for_transcription(models, true)
+        .unwrap_or_else(|e| fail(format!("holder: CUDA: {e}")));
+    init_onnx(models, onnx_library(large, &[Accelerator::Cuda]))
+        .unwrap_or_else(|e| fail(format!("holder: ONNX Runtime: {e}")));
+    let target = holder_target_bytes(gib);
+    let free_at_start = card_free_bytes();
+    let hold = earshot_runtime::backends::hold_card_for_evaluation(models, target, card_free_bytes)
+        .unwrap_or_else(|e| fail(format!("holder: {e}")));
+    let to_gib = gib_of;
+    let line = json!({
+        "card_gib": gib,
+        "other_programs_gib": OTHER_PROGRAMS_GIB,
+        "target_free_gib": to_gib(target),
+        "free_at_start_gib": free_at_start.map(to_gib),
+        "free_left_gib": hold.free_left.map(to_gib),
+        "under_target_by_gib": hold.free_left.map(|f| to_gib(target.saturating_sub(f))),
+        "reached_target": hold.free_left.is_some_and(|f| f <= target),
+        "sessions": hold.sessions(),
+        "loads": hold.loads.iter().map(|l| json!({
+            "model": l.model,
+            "free_before_gib": to_gib(l.free_before),
+            "free_after_gib": to_gib(l.free_after),
+        })).collect::<Vec<_>>(),
+        "stopped": hold.stopped,
+        "adapters": adapters_json(),
+    });
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{HOLDER_LINE}{line}");
+    let _ = out.flush();
+    drop(out);
+    for read in std::io::stdin().lock().lines() {
+        match read {
+            Ok(l) if l.trim() == "stop" => break,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    drop(hold);
+    std::process::exit(0)
+}
+
+/// The holder process of `--hold-card-gib` (T12.59), seen from the run: its child handle (the
+/// only way it is stopped), its report line and its stdin.
+struct CardHolder {
+    child: std::process::Child,
+    report: Value,
+}
+
+impl CardHolder {
+    /// How long the holder may take to fill the card.
+    const FILL_LIMIT: Duration = Duration::from_secs(600);
+    /// How long it may take to exit once told to stop.
+    const STOP_LIMIT: Duration = Duration::from_secs(60);
+
+    /// Starts this exe as `--card-holder <gib>` and waits for its report line.
+    fn start(repo: &Path, models: &ModelDir, gib: f64) -> Self {
+        use std::io::BufRead;
+        let exe = std::env::current_exe().unwrap_or_else(|e| fail(format!("holder: {e}")));
+        let mut child = Command::new(exe)
+            .arg(repo)
+            .args([
+                "--backend",
+                "cuda",
+                "--card-holder",
+                &gib.to_string(),
+                "--models",
+            ])
+            .arg(models.root())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .unwrap_or_else(|e| fail(format!("holder: {e}")));
+        let out = child
+            .stdout
+            .take()
+            .unwrap_or_else(|| fail("holder: no stdout"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if let Some(rest) = line.strip_prefix(HOLDER_LINE) {
+                    let _ = tx.send(rest.to_owned());
+                }
+            }
+        });
+        let Ok(line) = rx.recv_timeout(Self::FILL_LIMIT) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            fail("holder: no report within the fill limit");
+        };
+        let report: Value = serde_json::from_str(&line).unwrap_or_else(|e| {
+            let _ = child.kill();
+            let _ = child.wait();
+            fail(format!("holder: report: {e}"))
+        });
+        eprintln!(
+            "live_lag: holder pid {} left {:?} GiB free (target {:?})",
+            child.id(),
+            report["free_left_gib"],
+            report["target_free_gib"]
+        );
+        Self { child, report }
+    }
+
+    /// Tells the holder to stop (closes its stdin), waits for it, and stops it by its own handle
+    /// past [`Self::STOP_LIMIT`]; the report, with the card's free memory just before.
+    fn finish(mut self) -> Value {
+        let free_before_stop = card_free_bytes().map(gib_of);
+        drop(self.child.stdin.take());
+        let deadline = Instant::now() + Self::STOP_LIMIT;
+        let mut killed = false;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                _ => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    killed = true;
+                    break;
+                }
+            }
+        }
+        let mut report = self.report;
+        report["free_before_stop_gib"] = json!(free_before_stop);
+        report["killed"] = json!(killed);
+        report
+    }
+}
+
 fn main() {
     // NPU compiles in a helper, as in the app (T12.12b).
     let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
@@ -1602,6 +1899,13 @@ fn main() {
         },
         ModelDir::new,
     );
+    if let Some(gib) = args.card_holder {
+        run_card_holder(&models, gib);
+    }
+    // T12.59 (evaluation only): the card filled by a second process before anything here loads.
+    let holder = args
+        .hold_card_gib
+        .map(|gib| CardHolder::start(&args.repo, &models, gib));
     let (mic, reference) = load_audio(&args);
     let length = PIPELINE_RATE.duration_of(mic.len());
 
@@ -1758,7 +2062,7 @@ fn main() {
                 .map(|k| format!("{k:?}")),
             "app_own_voice": (choice == PreviewChoice::Everyone)
                 .then(|| previews_refused_second(args.backend, &machine, choice)),
-            // Where the app would run the user's own track's session (T12.3a: the CPU beside CUDA).
+            // Where the app would run the user's own track's session (T12.60: with the first).
             "app_own_voice_on": (choice == PreviewChoice::Everyone)
                 .then(|| second_preview_backend(args.backend, &machine, choice).ok())
                 .flatten()
@@ -1776,6 +2080,13 @@ fn main() {
         } else {
             previews_for(&models, choice, &loads, &preview_sessions)
         };
+        if args.own_voice_cpu {
+            p.own_voice = Some(own_voice_cpu_loader(
+                models.clone(),
+                choice,
+                Arc::clone(&preview_sessions),
+            ));
+        }
         if let Some(s) = args.window {
             p.window = Duration::from_secs_f64(s);
         }
@@ -1926,6 +2237,7 @@ fn main() {
         summaries_json(mode, args.summary_gpu, args.summary_model.as_deref(), &runs)
     });
     let card = card.map(CardLog::finish);
+    let card_holder = holder.map(CardHolder::finish);
     drop(stop_readings);
     let readings = sampler
         .join()
@@ -1961,6 +2273,7 @@ fn main() {
         "summary": args.summary.map(|m| format!("{m:?}")),
         "summaries": summaries,
         "card": card,
+        "card_holder": card_holder,
         "pieces": format!("{:?}", stretch_pieces(args.max_piece).unwrap_or_else(|e| fail(e))),
         "live_backends": backends,
         "onnx_placement": *evidence.lock().unwrap_or_else(PoisonError::into_inner),
@@ -1977,6 +2290,7 @@ fn main() {
         "stopped_with": format!("{:?}", outcome.reason),
         "capture_max_lag_s": state.max_lag().as_secs_f64(),
         "own_encoders": args.own_encoders,
+        "own_voice_cpu": args.own_voice_cpu,
         "shared_encoder": held.as_ref().map_or_else(
             || json!("no shared encoder"),
             |e| shared_encoder_report(e, users_at_finish),
@@ -2093,6 +2407,70 @@ mod tests {
         assert!(parse(&["--backend"]).is_err());
         assert!(parse(&["--previews", "some"]).is_err());
         assert!(parse(&["--share-npu"]).is_err(), "no such flag");
+    }
+
+    /// T12.59: the holder runs beside a CUDA replay only, and its card size must leave room
+    /// above the other programs' share.
+    #[test]
+    fn live_lag_card_holder_needs_a_cuda_replay_and_a_card_size() {
+        let a = parse(&["--backend", "cuda", "--hold-card-gib", "7.5"]).unwrap();
+        assert_eq!(a.hold_card_gib, Some(7.5));
+        assert_eq!(a.card_holder, None);
+        assert!(parse(&["--hold-card-gib", "7.5"]).is_err(), "needs CUDA");
+        assert!(parse(&["--backend", "cuda", "--hold-card-gib", "7.5", "--memory"]).is_err());
+        assert!(
+            parse(&[
+                "--backend",
+                "cuda",
+                "--hold-card-gib",
+                "7.5",
+                "--contention",
+                "alone"
+            ])
+            .is_err()
+        );
+        for bad in ["1.5", "1", "0", "-3", "nan", "inf", "x"] {
+            assert!(
+                parse(&["--backend", "cuda", "--hold-card-gib", bad]).is_err(),
+                "{bad}"
+            );
+        }
+        let h = parse(&["--backend", "cuda", "--card-holder", "5.5"]).unwrap();
+        assert_eq!(h.card_holder, Some(5.5));
+        // A card of 7.5 GiB with 1.5 GiB used elsewhere has 6 GiB free.
+        assert_eq!(holder_target_bytes(7.5), 6 * GIB);
+        assert_eq!(holder_target_bytes(12.0), 21 * GIB / 2);
+    }
+
+    /// T12.60: the CPU column needs a CUDA replay under Everyone and the app's own rule.
+    #[test]
+    fn live_lag_own_voice_cpu_needs_everyone_on_cuda() {
+        let ok = [
+            "--backend",
+            "cuda",
+            "--previews",
+            "everyone",
+            "--own-voice-cpu",
+        ];
+        assert!(parse(&ok).unwrap().own_voice_cpu);
+        assert!(
+            !parse(&ok[..4]).unwrap().own_voice_cpu,
+            "never unless asked"
+        );
+        assert!(parse(&["--backend", "cuda", "--previews", "on", "--own-voice-cpu"]).is_err());
+        assert!(parse(&["--previews", "everyone", "--own-voice-cpu"]).is_err());
+        assert!(
+            parse(&[
+                "--backend",
+                "cuda",
+                "--previews",
+                "everyone",
+                "--own-voice-cpu",
+                "--card-memory-gib",
+                "6"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -2242,13 +2620,13 @@ mod tests {
             ],
             ..earshot_hardware::Hardware::default()
         };
-        let sim = simulated_machine(machine.clone(), 12).unwrap();
+        let sim = simulated_machine(machine.clone(), 6).unwrap();
         assert_eq!(sim.total_memory, machine.total_memory);
-        assert_eq!(sim.gpus[0].dedicated_memory, Some(12 * GIB));
+        assert_eq!(sim.gpus[0].dedicated_memory, Some(6 * GIB));
         assert_eq!(sim.gpus[1].dedicated_memory, Some(GIB / 2), "integrated");
-        assert_eq!(sim.gpus[2].dedicated_memory, Some(12 * GIB));
+        assert_eq!(sim.gpus[2].dedicated_memory, Some(6 * GIB));
         assert_eq!(sim.gpus[0].name, machine.gpus[0].name);
-        assert_eq!(simulated_card_gib(&sim), Some(12));
+        assert_eq!(simulated_card_gib(&sim), Some(6));
         // The rule sees a small card: a CUDA track's previews move to the CPU.
         assert_eq!(
             preview_backend(BackendKind::Cuda, &sim, PreviewChoice::Automatic),
@@ -2273,7 +2651,7 @@ mod tests {
     fn live_lag_simulated_preview_loads_apply_the_apps_rule_to_the_simulated_card() {
         let machine = earshot_hardware::Hardware {
             total_memory: Some(64 * GIB),
-            gpus: vec![a_card(Some(12 * GIB), Some(false))],
+            gpus: vec![a_card(Some(6 * GIB), Some(false))],
             ..earshot_hardware::Hardware::default()
         };
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -2305,7 +2683,7 @@ mod tests {
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 4);
         assert!(log.iter().all(|r| r["refusal_bypassed"] == false));
-        assert!(log.iter().all(|r| r["simulated_card_gib"] == 12));
+        assert!(log.iter().all(|r| r["simulated_card_gib"] == 6));
     }
 
     #[test]

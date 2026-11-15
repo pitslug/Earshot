@@ -1786,7 +1786,7 @@ fn backends_previews_second_session_only_for_everyone_on_a_big_cpu_machine() {
     assert!(previews_refused_second(BackendKind::Cpu, &below, PreviewChoice::Everyone).is_some());
     let unknown = machine(None, None);
     assert!(previews_refused_second(BackendKind::Cpu, &unknown, PreviewChoice::Everyone).is_some());
-    // The first session would run on CUDA here; the second runs on the CPU (T12.3a).
+    // The first session would run on CUDA here, and so would the second (T12.60).
     assert_eq!(
         previews_refused(BackendKind::Cuda, &big, PreviewChoice::Everyone),
         None
@@ -1813,11 +1813,13 @@ fn backends_previews_second_session_only_for_everyone_on_a_big_cpu_machine() {
     }
 }
 
-/// T12.3a: where the second session runs. On the CPU it runs beside the first; with transcription on
-/// CUDA it runs on the CPU, never as another session on the card, under the CPU's memory limit.
-/// Everything else refuses as before.
+/// T12.60: where the second session runs. On the CPU it runs beside the first. With transcription
+/// on CUDA it runs on the card when the first does (a card at or above `PREVIEW_MIN_CARD_MEMORY`),
+/// under CUDA's memory limit; beside a card one byte under the limit, or of unknown memory, it runs
+/// on the CPU with the first, under the CPU's. Only Everyone has it. Everything else refuses as
+/// before.
 #[test]
-fn backends_previews_second_session_beside_cuda_runs_on_the_cpu() {
+fn backends_previews_second_session_beside_cuda_follows_the_first() {
     use crate::preview_settings::PreviewChoice;
     use earshot_hardware::{Gpu, Hardware};
     let machine = |memory: Option<u64>, card: Option<u64>| Hardware {
@@ -1832,48 +1834,93 @@ fn backends_previews_second_session_beside_cuda_runs_on_the_cpu() {
         }],
         ..Hardware::default()
     };
-    let card = Some(PREVIEW_MIN_CARD_MEMORY);
-    let big = machine(Some(64 * 1024 * 1024 * 1024), card);
     let everyone = PreviewChoice::Everyone;
+    let others = PreviewChoice::On;
+    let roomy = Some(64 * GIB);
+    // The rule's table: card at the limit, one under, unknown; Everyone and Other people only.
+    for (card, first, second) in [
+        (
+            Some(PREVIEW_MIN_CARD_MEMORY),
+            BackendKind::Cuda,
+            BackendKind::Cuda,
+        ),
+        (
+            Some(PREVIEW_MIN_CARD_MEMORY - 1),
+            BackendKind::Cpu,
+            BackendKind::Cpu,
+        ),
+        (None, BackendKind::Cpu, BackendKind::Cpu),
+    ] {
+        let m = machine(roomy, card);
+        for choice in [everyone, others] {
+            assert_eq!(
+                preview_backend(BackendKind::Cuda, &m, choice),
+                Ok(first),
+                "{card:?} {choice:?}"
+            );
+        }
+        assert_eq!(
+            second_preview_backend(BackendKind::Cuda, &m, everyone),
+            Ok(second),
+            "{card:?}"
+        );
+        assert!(
+            second_preview_backend(BackendKind::Cuda, &m, others).is_err(),
+            "{card:?}: Other people only has no second session"
+        );
+        // A CPU track's second session stays on the CPU whatever the card.
+        assert_eq!(
+            second_preview_backend(BackendKind::Cpu, &m, everyone),
+            Ok(BackendKind::Cpu),
+            "{card:?}"
+        );
+    }
+    // After review: on the card the second session needs the CPU's limit for both sessions, not
+    // CUDA's (the card placement used less private memory than the CPU placement it admitted).
+    let card = Some(PREVIEW_MIN_CARD_MEMORY);
+    const { assert!(PREVIEW_BOTH_MIN_MEMORY < PREVIEW_MIN_MEMORY_CUDA) };
+    for memory in [
+        PREVIEW_MIN_MEMORY_CUDA,
+        PREVIEW_MIN_MEMORY_CUDA - 1,
+        PREVIEW_BOTH_MIN_MEMORY,
+    ] {
+        assert_eq!(
+            second_preview_backend(BackendKind::Cuda, &machine(Some(memory), card), everyone),
+            Ok(BackendKind::Cuda),
+            "{memory}"
+        );
+    }
+    for memory in [Some(PREVIEW_BOTH_MIN_MEMORY - 1), None] {
+        let m = machine(memory, card);
+        let why = second_preview_backend_or_refusal(BackendKind::Cuda, &m, everyone)
+            .expect_err("too little memory for a session on the card");
+        assert_eq!(why.reason, PreviewOffReason::NotEnoughMemory, "{memory:?}");
+        // The first session is lifted by Everyone and still runs.
+        assert_eq!(
+            preview_backend(BackendKind::Cuda, &m, everyone),
+            Ok(BackendKind::Cuda)
+        );
+    }
+    // Beside a card too small for the first, the CPU's memory rule, as on the CPU (T12.3c).
+    let small = Some(PREVIEW_MIN_CARD_MEMORY - 1);
     assert_eq!(
-        second_preview_backend(BackendKind::Cuda, &big, everyone),
+        second_preview_backend(
+            BackendKind::Cuda,
+            &machine(Some(PREVIEW_BOTH_MIN_MEMORY), small),
+            everyone
+        ),
         Ok(BackendKind::Cpu)
     );
-    assert_eq!(
-        second_preview_backend(BackendKind::Cpu, &big, everyone),
-        Ok(BackendKind::Cpu)
-    );
-    let at_limit = machine(Some(PREVIEW_BOTH_MIN_MEMORY), card);
-    assert_eq!(
-        second_preview_backend(BackendKind::Cuda, &at_limit, everyone),
-        Ok(BackendKind::Cpu)
-    );
-    // Too little or unknown memory refuses with the CPU's reason, as on the CPU.
     for m in [
-        machine(Some(PREVIEW_BOTH_MIN_MEMORY - 1), card),
-        machine(None, card),
+        machine(Some(PREVIEW_BOTH_MIN_MEMORY - 1), small),
+        machine(None, small),
     ] {
         let cuda = second_preview_backend(BackendKind::Cuda, &m, everyone);
         let cpu = second_preview_backend(BackendKind::Cpu, &m, everyone);
         assert!(cuda.is_err(), "{:?}", m.total_memory);
         assert_eq!(cuda, cpu, "{:?}", m.total_memory);
     }
-    // A card too small for a session on it runs the second on the CPU as well (T12.3c), with the
-    // CPU's memory rule.
-    let small_card = machine(Some(64 * 1024 * 1024 * 1024), Some(8 * 1024 * 1024 * 1024));
-    assert_eq!(
-        second_preview_backend(BackendKind::Cuda, &small_card, everyone),
-        Ok(BackendKind::Cpu)
-    );
-    let small_both = machine(
-        Some(PREVIEW_BOTH_MIN_MEMORY - 1),
-        Some(8 * 1024 * 1024 * 1024),
-    );
-    assert_eq!(
-        second_preview_backend(BackendKind::Cuda, &small_both, everyone),
-        second_preview_backend(BackendKind::Cpu, &small_both, everyone)
-    );
-    assert!(second_preview_backend(BackendKind::Cuda, &small_both, everyone).is_err());
+    let big = machine(roomy, card);
     for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
         assert!(
             second_preview_backend(kind, &big, everyone).is_err(),
@@ -1901,10 +1948,85 @@ fn backends_previews_second_session_beside_cuda_runs_on_the_cpu() {
     }
 }
 
-/// T12.3a: the second session's load asks for the backend the rule returns: a CUDA track's own-voice
-/// session is loaded on the CPU, a refusal loads nothing.
+/// The expected placement table of a CUDA track's two preview sessions after the review of
+/// T12.59/T12.60, shared by the rule's tests here and in `live/preview_tests.rs`: for each choice and
+/// card (unknown, one under `PREVIEW_MIN_CARD_MEMORY`, at it), where the first and second sessions
+/// run or why not, for the memories unknown, 12 GiB - 1, 12 GiB, 20 GiB - 1 and 20 GiB.
+#[allow(clippy::type_complexity)]
+pub(crate) fn cuda_preview_table() -> (
+    [Option<u64>; 5],
+    Vec<(
+        crate::preview_settings::PreviewChoice,
+        Option<u64>,
+        [Result<BackendKind, PreviewOffReason>; 5],
+        [Result<BackendKind, PreviewOffReason>; 5],
+    )>,
+) {
+    use crate::preview_settings::PreviewChoice::{Automatic, Everyone, On};
+    use BackendKind::{Cpu, Cuda};
+    use PreviewOffReason::{NotAsked, NotEnoughMemory, OffByDefault};
+    const { assert!(PREVIEW_MIN_MEMORY == PREVIEW_BOTH_MIN_MEMORY) };
+    let memories = [
+        None,
+        Some(PREVIEW_MIN_MEMORY - 1),
+        Some(PREVIEW_MIN_MEMORY),
+        Some(PREVIEW_MIN_MEMORY_CUDA - 1),
+        Some(PREVIEW_MIN_MEMORY_CUDA),
+    ];
+    let (c, p) = (Ok(Cuda), Ok(Cpu));
+    let (d, n, m) = (Err(OffByDefault), Err(NotAsked), Err(NotEnoughMemory));
+    let limit = Some(PREVIEW_MIN_CARD_MEMORY);
+    let under = Some(PREVIEW_MIN_CARD_MEMORY - 1);
+    let rows = vec![
+        // choice, card, first session by memory, second session by memory
+        (Automatic, None, [d, d, p, p, p], [n, n, n, n, n]),
+        (Automatic, under, [d, d, p, p, p], [n, n, n, n, n]),
+        (Automatic, limit, [d, d, p, p, c], [n, n, n, n, n]),
+        (On, None, [p, p, p, p, p], [n, n, n, n, n]),
+        (On, under, [p, p, p, p, p], [n, n, n, n, n]),
+        (On, limit, [c, c, c, c, c], [n, n, n, n, n]),
+        (Everyone, None, [p, p, p, p, p], [m, m, p, p, p]),
+        (Everyone, under, [p, p, p, p, p], [m, m, p, p, p]),
+        (Everyone, limit, [c, c, c, c, c], [m, m, c, c, c]),
+    ];
+    (memories, rows)
+}
+
+/// After review of T12.59/T12.60: the whole table of where a CUDA track's preview sessions run.
+/// Nobody who had previews before T12.59 loses them: below CUDA's memory limit a card with room
+/// takes the small card's CPU placement by default, and the second session needs the CPU's limit
+/// wherever it runs.
 #[test]
-fn backends_previews_second_session_on_a_cuda_track_is_loaded_on_the_cpu() {
+fn backends_previews_on_cuda_follow_the_table_for_every_choice_memory_and_card() {
+    let (memories, rows) = cuda_preview_table();
+    for (choice, card, first, second) in rows {
+        for (i, memory) in memories.iter().enumerate() {
+            let m = nvidia_machine(*memory, card);
+            let got_first =
+                preview_backend_or_refusal(BackendKind::Cuda, &m, choice).map_err(|r| r.reason);
+            assert_eq!(
+                got_first, first[i],
+                "first {choice:?} card {card:?} memory {memory:?}"
+            );
+            let got_second = second_preview_backend_or_refusal(BackendKind::Cuda, &m, choice)
+                .map_err(|r| r.reason);
+            assert_eq!(
+                got_second, second[i],
+                "second {choice:?} card {card:?} memory {memory:?}"
+            );
+            // The second session runs where the first does whenever it runs.
+            if let (Ok(f), Ok(s)) = (got_first, got_second) {
+                assert_eq!(f, s, "{choice:?} {card:?} {memory:?}");
+            }
+        }
+    }
+}
+
+/// T12.60: the second session's load asks for the backend the rule returns: a CUDA track's own-voice
+/// session beside a card with room is loaded on CUDA (so it borrows the shared encoder through the
+/// first session's loader), beside a small card on the CPU; a refusal loads nothing.
+#[test]
+fn backends_previews_second_session_on_a_cuda_track_loads_where_the_rule_says() {
     use crate::preview_settings::PreviewChoice;
     use earshot_hardware::Hardware;
     let big = Hardware {
@@ -1931,9 +2053,14 @@ fn backends_previews_second_session_on_a_cuda_track_is_loaded_on_the_cpu() {
     };
     let result = load_preview_second_with(&track, &big, PreviewChoice::Everyone, load);
     assert_eq!(result.err().as_deref(), Some("a fake load"));
+    let mut small_card = big.clone();
+    small_card.gpus[0].dedicated_memory = Some(PREVIEW_MIN_CARD_MEMORY - 1);
+    let result = load_preview_second_with(&track, &small_card, PreviewChoice::Everyone, load);
+    assert_eq!(result.err().as_deref(), Some("a fake load"));
     let asked = asked.into_inner().unwrap();
-    assert_eq!(asked.len(), 1);
-    assert_eq!(asked[0].kind, BackendKind::Cpu);
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[0].kind, BackendKind::Cuda);
+    assert_eq!(asked[1].kind, BackendKind::Cpu);
     assert_eq!(asked[0].model, track.model);
     // A refused second session never reaches the load.
     let small = Hardware {
@@ -1985,7 +2112,7 @@ fn backends_previews_beside_a_small_card_run_on_the_cpu() {
         PreviewChoice::Everyone,
     ];
     for choice in choices {
-        for card in [small, Some(8 * GIB), None] {
+        for card in [small, Some(6 * GIB), None] {
             let m = nvidia_machine(Some(64 * GIB), card);
             assert_eq!(
                 preview_backend(BackendKind::Cuda, &m, choice),
@@ -2118,7 +2245,7 @@ fn backends_preview_on_hardware_load_applies_the_rule_to_the_given_machine() {
     use crate::preview_settings::PreviewChoice;
     let empty = std::env::temp_dir().join(format!("earshot-preview-on-hw-{}", std::process::id()));
     let models = ModelDir::new(&empty);
-    let small = nvidia_machine(Some(64 * GIB), Some(12 * GIB));
+    let small = nvidia_machine(Some(64 * GIB), Some(6 * GIB));
     let cuda = BackendInfo {
         kind: BackendKind::Cuda,
         device: "CUDA0".to_owned(),
@@ -2693,6 +2820,83 @@ fn backends_own_encoders_switch_is_used_by_no_shipped_code() {
     assert_eq!(reads.len(), 1, "{reads:?}");
 }
 
+/// T12.59: the card holder (`live_lag --hold-card-gib`) is evaluation only: nothing shipped
+/// fills the card with sessions it never uses.
+#[test]
+fn backends_card_hold_is_used_by_no_shipped_code() {
+    for name in [
+        concat!("hold_card_", "for_evaluation"),
+        concat!("CardHold", "Load"),
+        concat!("card_hold_", "step"),
+    ] {
+        let found = shipped_files_naming(name);
+        assert!(found.is_empty(), "shipped code names {name}: {found:?}");
+    }
+}
+
+/// T12.60: the CPU column's loader (`live_lag --own-voice-cpu`) is evaluation only: nothing shipped
+/// puts the user's own previews on the CPU past the rule.
+#[test]
+fn backends_own_voice_cpu_load_is_used_by_no_shipped_code() {
+    let name = concat!("load_preview_second_on_cpu_", "for_evaluation");
+    let found = shipped_files_naming(name);
+    assert!(found.is_empty(), "shipped code calls {name}: {found:?}");
+}
+
+/// T12.59: the holder ends under the free memory asked by less than one small load: large loads
+/// while one more stays above the target, then small ones until it is at most the target. A
+/// simulated card with fixed costs per load, clock-free.
+#[test]
+fn backends_card_hold_step_ends_just_under_the_target() {
+    use crate::backends::{CardHoldStep, card_hold_step};
+    const MIB: u64 = 1024 * 1024;
+    let (large, small) = (2_330 * MIB, 470 * MIB);
+    for (free, target) in [
+        (15_000 * MIB, 6_144 * MIB),
+        (15_000 * MIB, 4_096 * MIB),
+        (15_000 * MIB, 14_900 * MIB),
+        (6_000 * MIB, 6_144 * MIB),
+        (9_000 * MIB, 4_000 * MIB),
+    ] {
+        let mut now = free;
+        let mut steps = Vec::new();
+        loop {
+            match card_hold_step(now, target, large) {
+                CardHoldStep::Done => break,
+                CardHoldStep::Large => now -= large,
+                CardHoldStep::Small => now -= small,
+            }
+            steps.push(now);
+            assert!(steps.len() < 64, "no end: {free} {target}");
+        }
+        assert!(now <= target, "{free} {target}: ended at {now}");
+        if free > target {
+            assert!(
+                now + small > target,
+                "{free} {target}: ended {now}, a small load under"
+            );
+        } else {
+            assert!(
+                steps.is_empty(),
+                "a card already under the target loads nothing"
+            );
+        }
+    }
+    // Only a large load that stays above the target is taken.
+    assert_eq!(
+        card_hold_step(10 * GIB, 5 * GIB, 2 * GIB),
+        CardHoldStep::Large
+    );
+    assert_eq!(
+        card_hold_step(7 * GIB, 5 * GIB, 2 * GIB),
+        CardHoldStep::Small
+    );
+    assert_eq!(
+        card_hold_step(5 * GIB, 5 * GIB, 2 * GIB),
+        CardHoldStep::Done
+    );
+}
+
 /// T12.23: nothing shipped loads the streaming model (licence agreed for evaluation only); only
 /// examples may. Its one [`crate::live::StreamingPreview`] is private to `backends.rs` and made
 /// only by that loader, so nothing shipped can give a live session a streaming preview either.
@@ -2779,6 +2983,13 @@ fn backends_evaluation_only_items_are_named_only_by_evaluation_items_in_backends
         concat!("pub fn load_nemotron_", "preview("),
         concat!("pub fn own_encoders_", "for_evaluation("),
         concat!("pub fn hold_shared_encoder_", "for_evaluation("),
+        concat!("pub fn hold_card_", "for_evaluation("),
+        concat!("pub(crate) fn card_hold_", "step("),
+        concat!("pub struct Card", "HoldLoad {"),
+        concat!("pub struct Card", "Hold {"),
+        concat!("impl Card", "Hold {"),
+        concat!("pub(crate) enum Card", "HoldStep {"),
+        concat!("pub fn load_preview_second_on_cpu_", "for_evaluation("),
     ];
     let spans: Vec<std::ops::Range<usize>> = items.iter().map(|h| item_span(&src, h)).collect();
     let names = [
@@ -2791,6 +3002,10 @@ fn backends_evaluation_only_items_are_named_only_by_evaluation_items_in_backends
         concat!("Evaluated", "Stream"),
         concat!("own_encoders_", "for_evaluation"),
         concat!("hold_shared_encoder_", "for_evaluation"),
+        concat!("hold_card_", "for_evaluation"),
+        concat!("card_hold_", "step"),
+        concat!("Card", "Hold"),
+        concat!("load_preview_second_on_cpu_", "for_evaluation"),
     ];
     for (at, line) in code_lines(&src) {
         for name in names {

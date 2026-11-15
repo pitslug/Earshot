@@ -884,11 +884,11 @@ fn live_preview_own_voice_in_a_call_shows_both_tracks_and_reports_each() {
     assert_eq!(with, without);
 }
 
-/// T12.3a: in a meeting transcribed on CUDA, the far end's previews load on the track's backend and
-/// the user's own track's session loads on the CPU (`backends::load_preview_second_with`, the rule's
-/// own decision); each track's report says where its session ran.
+/// T12.60: in a meeting transcribed on CUDA beside a card with room, the far end's previews and the
+/// user's own track's session both load on the track's backend (`backends::load_preview_second_with`,
+/// the rule's own decision); each track's report says where its session ran.
 #[test]
-fn live_preview_own_voice_beside_cuda_loads_on_the_cpu_and_reports_it() {
+fn live_preview_own_voice_beside_a_roomy_card_loads_on_cuda_and_reports_it() {
     use crate::preview_settings::PreviewChoice;
     use earshot_hardware::{Gpu, Hardware};
     let scene = scene_of(27);
@@ -949,7 +949,7 @@ fn live_preview_own_voice_beside_cuda_loads_on_the_cpu_and_reports_it() {
         vec![("far", BackendKind::Cuda), ("own", BackendKind::Cuda)]
     );
     let mic = report_for(&events, TrackId::Mic);
-    assert_eq!(mic.backend, Some(BackendKind::Cpu), "{mic:?}");
+    assert_eq!(mic.backend, Some(BackendKind::Cuda), "{mic:?}");
     assert_eq!(mic.off, None, "{mic:?}");
     assert!(mic.decodes > 0, "{mic:?}");
     let far_report = report_for(&events, TrackId::Reference);
@@ -1477,6 +1477,48 @@ fn live_preview_a_track_falling_behind_turns_them_off() {
     assert_eq!(report.off.as_deref(), Some(FELL_BEHIND_REASON));
 }
 
+/// After review of T12.59/T12.60: a meeting's two preview loaders (`backends::load_preview_with`,
+/// `load_preview_second_with`) on a CUDA track ask for the backend `backends::cuda_preview_table`
+/// gives, or refuse with its kind before loading anything, for every choice, memory and card.
+#[test]
+fn live_preview_loaders_on_cuda_follow_the_table_for_every_choice_memory_and_card() {
+    use crate::backends::{load_preview_second_with, load_preview_with};
+    let (memories, rows) = crate::backends::tests::cuda_preview_table();
+    let track = BackendInfo {
+        kind: BackendKind::Cuda,
+        device: "CUDA0".to_owned(),
+        model: "parakeet-tdt-0.6b-v2".to_owned(),
+    };
+    let asked =
+        |on: &BackendInfo| -> Result<BackendKind, crate::live::PreviewRefusal> { Ok(on.kind) };
+    for (choice, card, first, second) in rows {
+        for (i, memory) in memories.iter().enumerate() {
+            let m = earshot_hardware::Hardware {
+                total_memory: *memory,
+                gpus: vec![earshot_hardware::Gpu {
+                    name: "A card".to_owned(),
+                    vendor_id: 0x10de,
+                    dedicated_memory: card,
+                    driver_version: None,
+                    integrated: Some(false),
+                    compute_capability: None,
+                }],
+                ..earshot_hardware::Hardware::default()
+            };
+            let got = load_preview_with(&track, &m, choice, asked).map_err(|r| r.reason);
+            assert_eq!(
+                got, first[i],
+                "first {choice:?} card {card:?} memory {memory:?}"
+            );
+            let got = load_preview_second_with(&track, &m, choice, asked).map_err(|r| r.reason);
+            assert_eq!(
+                got, second[i],
+                "second {choice:?} card {card:?} memory {memory:?}"
+            );
+        }
+    }
+}
+
 /// Which computers run previews (`docs/live-previews.md`).
 #[test]
 fn live_preview_runs_only_where_it_was_measured_and_fits() {
@@ -1515,7 +1557,13 @@ fn live_preview_runs_only_where_it_was_measured_and_fits() {
         Some(PREVIEW_MIN_CARD_MEMORY),
     );
     assert_eq!(previews_refused(BackendKind::Cpu, &below_cuda), None);
-    assert!(previews_refused(BackendKind::Cuda, &below_cuda).is_some());
+    // After review of T12.59/T12.60: below CUDA's memory limit a card with room no longer refuses
+    // them by default; they take the small card's CPU placement, as before T12.59.
+    assert_eq!(previews_refused(BackendKind::Cuda, &below_cuda), None);
+    assert_eq!(
+        crate::backends::preview_backend(BackendKind::Cuda, &below_cuda, PreviewChoice::Automatic),
+        Ok(BackendKind::Cpu)
+    );
     assert!(previews_refused(BackendKind::Cpu, &machine(None, None)).is_some());
     let card = machine(
         Some(PREVIEW_MIN_MEMORY_CUDA),
