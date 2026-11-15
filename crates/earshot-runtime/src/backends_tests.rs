@@ -1878,12 +1878,7 @@ fn backends_previews_second_session_beside_cuda_follows_the_first() {
     // After review: on the card the second session needs the CPU's limit for both sessions, not
     // CUDA's (the card placement used less private memory than the CPU placement it admitted).
     let card = Some(PREVIEW_MIN_CARD_MEMORY);
-    const { assert!(PREVIEW_BOTH_MIN_MEMORY < PREVIEW_MIN_MEMORY_CUDA) };
-    for memory in [
-        PREVIEW_MIN_MEMORY_CUDA,
-        PREVIEW_MIN_MEMORY_CUDA - 1,
-        PREVIEW_BOTH_MIN_MEMORY,
-    ] {
+    for memory in [20 * GIB, 15 * GIB, PREVIEW_BOTH_MIN_MEMORY] {
         assert_eq!(
             second_preview_backend(BackendKind::Cuda, &machine(Some(memory), card), everyone),
             Ok(BackendKind::Cuda),
@@ -1949,29 +1944,30 @@ fn backends_previews_second_session_beside_cuda_follows_the_first() {
 }
 
 /// The expected placement table of a CUDA track's two preview sessions after the review of
-/// T12.59/T12.60, shared by the rule's tests here and in `live/preview_tests.rs`: for each choice and
-/// card (unknown, one under `PREVIEW_MIN_CARD_MEMORY`, at it), where the first and second sessions
-/// run or why not, for the memories unknown, 12 GiB - 1, 12 GiB, 20 GiB - 1 and 20 GiB.
+/// T12.59/T12.60, with T12.61's 12 GiB on the card, shared by the rule's tests here and in
+/// `live/preview_tests.rs` and `preview_settings.rs`: for each choice and card (unknown, one under
+/// `PREVIEW_MIN_CARD_MEMORY`, at it), where the first and second sessions run or why not, for the
+/// memories unknown, 12 GiB - 1, 12 GiB and 20 GiB.
 #[allow(clippy::type_complexity)]
 pub(crate) fn cuda_preview_table() -> (
-    [Option<u64>; 5],
+    [Option<u64>; 4],
     Vec<(
         crate::preview_settings::PreviewChoice,
         Option<u64>,
-        [Result<BackendKind, PreviewOffReason>; 5],
-        [Result<BackendKind, PreviewOffReason>; 5],
+        [Result<BackendKind, PreviewOffReason>; 4],
+        [Result<BackendKind, PreviewOffReason>; 4],
     )>,
 ) {
     use crate::preview_settings::PreviewChoice::{Automatic, Everyone, On};
     use BackendKind::{Cpu, Cuda};
     use PreviewOffReason::{NotAsked, NotEnoughMemory, OffByDefault};
     const { assert!(PREVIEW_MIN_MEMORY == PREVIEW_BOTH_MIN_MEMORY) };
+    const { assert!(PREVIEW_MIN_MEMORY == PREVIEW_MIN_MEMORY_CUDA) };
     let memories = [
         None,
         Some(PREVIEW_MIN_MEMORY - 1),
         Some(PREVIEW_MIN_MEMORY),
-        Some(PREVIEW_MIN_MEMORY_CUDA - 1),
-        Some(PREVIEW_MIN_MEMORY_CUDA),
+        Some(20 * GIB),
     ];
     let (c, p) = (Ok(Cuda), Ok(Cpu));
     let (d, n, m) = (Err(OffByDefault), Err(NotAsked), Err(NotEnoughMemory));
@@ -1979,23 +1975,23 @@ pub(crate) fn cuda_preview_table() -> (
     let under = Some(PREVIEW_MIN_CARD_MEMORY - 1);
     let rows = vec![
         // choice, card, first session by memory, second session by memory
-        (Automatic, None, [d, d, p, p, p], [n, n, n, n, n]),
-        (Automatic, under, [d, d, p, p, p], [n, n, n, n, n]),
-        (Automatic, limit, [d, d, p, p, c], [n, n, n, n, n]),
-        (On, None, [p, p, p, p, p], [n, n, n, n, n]),
-        (On, under, [p, p, p, p, p], [n, n, n, n, n]),
-        (On, limit, [c, c, c, c, c], [n, n, n, n, n]),
-        (Everyone, None, [p, p, p, p, p], [m, m, p, p, p]),
-        (Everyone, under, [p, p, p, p, p], [m, m, p, p, p]),
-        (Everyone, limit, [c, c, c, c, c], [m, m, c, c, c]),
+        (Automatic, None, [d, d, p, p], [n, n, n, n]),
+        (Automatic, under, [d, d, p, p], [n, n, n, n]),
+        (Automatic, limit, [d, d, c, c], [n, n, n, n]),
+        (On, None, [p, p, p, p], [n, n, n, n]),
+        (On, under, [p, p, p, p], [n, n, n, n]),
+        (On, limit, [c, c, c, c], [n, n, n, n]),
+        (Everyone, None, [p, p, p, p], [m, m, p, p]),
+        (Everyone, under, [p, p, p, p], [m, m, p, p]),
+        (Everyone, limit, [c, c, c, c], [m, m, c, c]),
     ];
     (memories, rows)
 }
 
-/// After review of T12.59/T12.60: the whole table of where a CUDA track's preview sessions run.
-/// Nobody who had previews before T12.59 loses them: below CUDA's memory limit a card with room
-/// takes the small card's CPU placement by default, and the second session needs the CPU's limit
-/// wherever it runs.
+/// After review of T12.59/T12.60, with T12.61's 12 GiB on the card: the whole table of where a
+/// CUDA track's preview sessions run. A card with room runs them on CUDA from 12 GiB of memory, a
+/// small or unknown card on the CPU from 12 GiB, and the second session needs 12 GiB wherever it
+/// runs.
 #[test]
 fn backends_previews_on_cuda_follow_the_table_for_every_choice_memory_and_card() {
     let (memories, rows) = cuda_preview_table();
@@ -2132,10 +2128,10 @@ fn backends_previews_beside_a_small_card_run_on_the_cpu() {
             "{choice:?}"
         );
     }
-    // The CPU's limit, not CUDA's: at 12 GiB a small card's previews run by default, and below it
-    // they are off by default with the CPU's reason, and "on" or Everyone lift it as on the CPU.
+    // The CPU's limit (since T12.61 the same value as CUDA's): at 12 GiB a small card's previews
+    // run by default, and below it they are off by default with the CPU's reason, and "on" or
+    // Everyone lift it as on the CPU.
     let at_cpu_limit = nvidia_machine(Some(PREVIEW_MIN_MEMORY), small);
-    const { assert!(PREVIEW_MIN_MEMORY < PREVIEW_MIN_MEMORY_CUDA) };
     assert_eq!(
         preview_backend(BackendKind::Cuda, &at_cpu_limit, PreviewChoice::Automatic),
         Ok(BackendKind::Cpu)

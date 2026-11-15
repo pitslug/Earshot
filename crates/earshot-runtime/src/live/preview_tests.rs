@@ -1552,18 +1552,23 @@ fn live_preview_runs_only_where_it_was_measured_and_fits() {
     let small = machine(Some(PREVIEW_MIN_MEMORY - 1), Some(PREVIEW_MIN_CARD_MEMORY));
     assert!(previews_refused(BackendKind::Cpu, &small).is_some());
     assert!(previews_refused(BackendKind::Cuda, &small).is_some());
+    // T12.61: a 16 GB machine (under the 20 GiB the card placement once needed) beside a card with
+    // room runs them on the card by default.
+    let sixteen = machine(Some(15 * GIB), Some(PREVIEW_MIN_CARD_MEMORY));
+    assert_eq!(previews_refused(BackendKind::Cpu, &sixteen), None);
+    assert_eq!(previews_refused(BackendKind::Cuda, &sixteen), None);
+    assert_eq!(
+        crate::backends::preview_backend(BackendKind::Cuda, &sixteen, PreviewChoice::Automatic),
+        Ok(BackendKind::Cuda)
+    );
+    // At the card placement's limit they run there, one under they are off by default.
+    let at_cuda = machine(Some(PREVIEW_MIN_MEMORY_CUDA), Some(PREVIEW_MIN_CARD_MEMORY));
+    assert_eq!(previews_refused(BackendKind::Cuda, &at_cuda), None);
     let below_cuda = machine(
         Some(PREVIEW_MIN_MEMORY_CUDA - 1),
         Some(PREVIEW_MIN_CARD_MEMORY),
     );
-    assert_eq!(previews_refused(BackendKind::Cpu, &below_cuda), None);
-    // After review of T12.59/T12.60: below CUDA's memory limit a card with room no longer refuses
-    // them by default; they take the small card's CPU placement, as before T12.59.
-    assert_eq!(previews_refused(BackendKind::Cuda, &below_cuda), None);
-    assert_eq!(
-        crate::backends::preview_backend(BackendKind::Cuda, &below_cuda, PreviewChoice::Automatic),
-        Ok(BackendKind::Cpu)
-    );
+    assert!(previews_refused(BackendKind::Cuda, &below_cuda).is_some());
     assert!(previews_refused(BackendKind::Cpu, &machine(None, None)).is_some());
     let card = machine(
         Some(PREVIEW_MIN_MEMORY_CUDA),

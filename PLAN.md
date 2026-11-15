@@ -2132,6 +2132,12 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - rule (fixed before measuring): on an idle desktop, bundled and continuous audio, Everyone, the own previews on the card against the same build with them on the CPU: (1) `stored_sha256` equal per track; (2) each track's real decode rtf at most 1.5 times the CPU column's, catch-up at most 2 s more, no audio dropped, no real decode waiting more than 250 ms for the encoder; (3) the own track's on-screen median at most 3 s and no worse than the CPU column's, the far end's at most 3 s, no preview turned off, at most 2 slow pauses per track; (4) the card's peak above baseline at most 0.5 GiB over Other people only, and `PREVIEW_MIN_CARD_MEMORY` under T12.59's rule unchanged by it (if it would rise, the result goes to the owner before anything ships). A narrow miss is repeated once and both runs reported.
   - accept: `cargo test -p earshot-runtime`; the rule's result in docs/live-previews.md
 
+- [x] T12.61 Previews on the card need 12 GiB of memory, as on the processor
+  - done (2026-11-15): `PREVIEW_MIN_MEMORY_CUDA` is 12 GiB (was 20), kept as its own constant. The owner's decision over T12.59's rule result: a call with previews on the card peaked at 8.81 GiB of private memory, and 12 GiB already admitted heavier placements (Everyone with the own session on the processor reached 11.36 GiB), while at 20 a 16 GB machine with a roomy card got the slower processor placement by default. T12.60c's fallback and its page note became unreachable and are removed; the outcome for every machine equals keeping them at these values. Nothing re-measured; no machine with 12 to 20 GiB of memory has run it.
+  - deps: T12.60
+  - do: lower the constant, remove what it makes unreachable, rework the tests that used "between the limits" cases without weakening a boundary, and say in docs/live-previews.md that this is a decision, not a measurement.
+  - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`
+
 ### Parked (the owner, 2026-11-14)
 
 Research and hardware runs moved out of TODO.md: no decision is needed now. Each comes back as a task when the hardware, a recording or a better approach exists.
