@@ -11,7 +11,7 @@ use crate::word_choices::{
 };
 
 fn set_words(svc: &Services, words: &[&str]) {
-    crate::vocabulary::set_vocabulary(svc, words).unwrap();
+    crate::testutil::replace_words(svc, words).unwrap();
 }
 
 /// Puts `text` into line `id` as the recogniser would (no edit mark).

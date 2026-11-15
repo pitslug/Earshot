@@ -10,7 +10,7 @@ use rand_core::SeedableRng;
 
 use super::*;
 use crate::summary::{SummaryConfig, SummaryService};
-use crate::testutil::{TempDir, meeting, services};
+use crate::testutil::{TempDir, meeting, replace_words, services};
 
 fn store(dir: &TempDir) -> Store {
     Store::open(&dir.0.join("earshot.db")).unwrap()
@@ -27,29 +27,29 @@ fn summary_vocabulary_is_empty_until_one_is_saved() {
 fn summary_vocabulary_saves_checked_words_and_empty_clears_them() {
     let dir = TempDir::new("summary-vocabulary");
     let (svc, _clock) = services(&dir);
-    let saved = set_vocabulary(&svc, &[" Quillmarsh ", "", "QXR-7", "quillmarsh"]).unwrap();
+    let saved = replace_words(&svc, &[" Quillmarsh ", "", "QXR-7", "quillmarsh"]).unwrap();
     assert_eq!(saved.words(), ["Quillmarsh", "QXR-7"]);
     assert_eq!(vocabulary(&svc.store()).unwrap(), (saved, None));
     assert_eq!(
         svc.store().local_value(VOCABULARY_KEY).unwrap().as_deref(),
         Some(br#"["Quillmarsh","QXR-7"]"#.as_slice())
     );
-    let cleared = set_vocabulary(&svc, &["  ", ""]).unwrap();
+    let cleared = replace_words(&svc, &["  ", ""]).unwrap();
     assert!(cleared.is_empty());
     assert_eq!(
         vocabulary(&svc.store()).unwrap(),
         (Vocabulary::default(), None)
     );
-    assert!(set_vocabulary::<&str>(&svc, &[]).unwrap().is_empty());
+    assert!(replace_words::<&str>(&svc, &[]).unwrap().is_empty());
 }
 
 #[test]
 fn summary_vocabulary_refusals_store_nothing() {
     let dir = TempDir::new("summary-vocabulary");
     let (svc, _clock) = services(&dir);
-    set_vocabulary(&svc, &["Quillmarsh"]).unwrap();
+    replace_words(&svc, &["Quillmarsh"]).unwrap();
     let long = "q".repeat(MAX_VOCABULARY_WORD_CHARS + 1);
-    let err = set_vocabulary(&svc, &["QXR-7", long.as_str()]).unwrap_err();
+    let err = replace_words(&svc, &["QXR-7", long.as_str()]).unwrap_err();
     assert!(matches!(
         err,
         SetVocabularyError::Refused(VocabularyError::WordTooLong { line: 2, .. })
@@ -58,7 +58,7 @@ fn summary_vocabulary_refusals_store_nothing() {
         err.to_string(),
         "a word can have at most 40 characters; this one has 41"
     );
-    let err = set_vocabulary(&svc, &["a\nb"]).unwrap_err();
+    let err = replace_words(&svc, &["a\nb"]).unwrap_err();
     assert!(matches!(
         err,
         SetVocabularyError::Refused(VocabularyError::ControlCharacter { line: 1 })
@@ -123,7 +123,7 @@ fn summary_vocabulary_a_refused_stored_value_is_a_meeting_note() {
         setup.notes
     );
     // A readable list is no note.
-    set_vocabulary(&svc, &["QXR-7"]).unwrap();
+    replace_words(&svc, &["QXR-7"]).unwrap();
     let setup = crate::host::summary_from_settings(
         &svc.store(),
         &cpu,
@@ -163,7 +163,7 @@ fn summary_vocabulary_reaches_the_summary_request_and_a_resummarise_uses_the_cur
             .vocabulary
             .is_empty()
     );
-    set_vocabulary(&svc, &["Quillmarsh", "QXR-7"]).unwrap();
+    replace_words(&svc, &["Quillmarsh", "QXR-7"]).unwrap();
     assert_eq!(
         SummaryService::input(&svc, id).unwrap().vocabulary.words(),
         ["Quillmarsh", "QXR-7"]
@@ -187,7 +187,7 @@ fn summary_vocabulary_reaches_the_summary_request_and_a_resummarise_uses_the_cur
             .unwrap()
     };
     run(&svc);
-    set_vocabulary(&svc, &["Ostrelby Ridge"]).unwrap();
+    replace_words(&svc, &["Ostrelby Ridge"]).unwrap();
     run(&svc);
     let bodies: Vec<String> = server
         .requests()
@@ -299,7 +299,7 @@ fn vocabulary_words_to_offer_follows_the_shared_case_table() {
 fn vocabulary_add_word_appends_the_core_and_remove_takes_exactly_it_back() {
     let dir = TempDir::new("summary-vocabulary");
     let (svc, _clock) = services(&dir);
-    set_vocabulary(&svc, &["QXR-7", "Velmora Ridge"]).unwrap();
+    replace_words(&svc, &["QXR-7", "Velmora Ridge"]).unwrap();
     let added = add_word(&svc, "(Quillmarsh),").unwrap();
     assert_eq!(
         added,
@@ -345,7 +345,7 @@ fn vocabulary_add_word_appends_the_core_and_remove_takes_exactly_it_back() {
 fn vocabulary_add_word_refuses_a_token_that_is_not_a_word_and_stores_nothing() {
     let dir = TempDir::new("summary-vocabulary");
     let (svc, _clock) = services(&dir);
-    set_vocabulary(&svc, &["QXR-7"]).unwrap();
+    replace_words(&svc, &["QXR-7"]).unwrap();
     for token in ["42", "--", "", "  "] {
         let err = add_word(&svc, token).unwrap_err();
         assert!(matches!(err, SetVocabularyError::NotAWord), "{token:?}");
@@ -358,7 +358,7 @@ fn vocabulary_add_word_keeps_the_dictionary_page_limits_and_messages() {
     let dir = TempDir::new("summary-vocabulary");
     let (svc, _clock) = services(&dir);
     let full: Vec<String> = (0..100).map(|i| format!("w{i}")).collect();
-    set_vocabulary(&svc, &full).unwrap();
+    replace_words(&svc, &full).unwrap();
     let err = add_word(&svc, "Quillmarsh").unwrap_err();
     assert!(matches!(
         err,
@@ -372,7 +372,7 @@ fn vocabulary_add_word_keeps_the_dictionary_page_limits_and_messages() {
 
     // A word too long, and a list too long in all: the page's own messages.
     let long = "q".repeat(MAX_VOCABULARY_WORD_CHARS + 1);
-    set_vocabulary(&svc, &["QXR-7"]).unwrap();
+    replace_words(&svc, &["QXR-7"]).unwrap();
     let err = add_word(&svc, &long).unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -381,7 +381,7 @@ fn vocabulary_add_word_keeps_the_dictionary_page_limits_and_messages() {
     let near: Vec<String> = (0..25)
         .map(|i| format!("{i:02}{}", "q".repeat(38)))
         .collect();
-    set_vocabulary(&svc, &near).unwrap();
+    replace_words(&svc, &near).unwrap();
     let err = add_word(&svc, "Quillmarsh").unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -439,7 +439,7 @@ fn vocabulary_writes_keep_one_synced_row_per_word_with_sync_off() {
             .map(|w| (w.word, w.meta.deleted))
             .collect()
     };
-    set_vocabulary(&svc, &["Quillmarsh", "QXR-7"]).unwrap();
+    replace_words(&svc, &["Quillmarsh", "QXR-7"]).unwrap();
     assert_eq!(
         rows(),
         [("Quillmarsh".into(), false), ("QXR-7".into(), false)]
@@ -460,7 +460,7 @@ fn vocabulary_writes_keep_one_synced_row_per_word_with_sync_off() {
         ["Quillmarsh", "Velmora"]
     );
     // Writing the same words again writes no row; every row waits to be sent.
-    set_vocabulary(&svc, &["Velmora", "Quillmarsh"]).unwrap();
+    replace_words(&svc, &["Velmora", "Quillmarsh"]).unwrap();
     assert_eq!(rows().len(), 3);
     assert_eq!(
         vocabulary(&svc.store()).unwrap().0.words(),

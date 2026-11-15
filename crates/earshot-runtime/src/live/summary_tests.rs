@@ -157,7 +157,7 @@ fn live_summaries_map_each_settled_window_during_the_session_and_record_it() {
     let audio = speech(&w, 12_000, 201);
     let mapper = FakeMapper::new(4, Behaviour::Answer);
     // The user's own words reach every window (T12.15a; an invented word).
-    crate::vocabulary::set_vocabulary(&svc, &["Quillmarsh"]).unwrap();
+    crate::testutil::replace_words(&svc, &["Quillmarsh"]).unwrap();
     let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // Released by the publish, not the call: a window whose `map` has returned is dropped if
     // the end cancels the thread before it publishes.

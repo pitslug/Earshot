@@ -8,6 +8,15 @@ fn owned(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| (*w).to_owned()).collect()
 }
 
+/// Replaces the whole list through the runtime's whole-list path, with the stored list as the
+/// base, and maps a refusal as the page's commands do (the page itself edits one word at a
+/// time since T11.3e).
+fn set_words(svc: &Services, words: &[String]) -> Result<SummaryVocabularyView, IpcError> {
+    let base = vocabulary::vocabulary(&svc.store()).unwrap().0;
+    vocabulary::set_vocabulary(svc, base.words(), words).map_err(refusal)?;
+    vocabulary_view(svc)
+}
+
 #[test]
 fn summary_vocabulary_view_starts_empty_and_saves_checked_words() {
     let dir = TempDir::new("summary-vocabulary");
@@ -120,4 +129,38 @@ fn summary_vocabulary_words_not_in_use_follow_the_shared_table() {
     let v = view(&owned(&["QXR-7"]), vec![], 3);
     assert_eq!(v.not_in_use, 3);
     assert_eq!(v.not_in_use_note, Some(many.replace("{n}", "3")));
+}
+
+#[test]
+fn summary_vocabulary_the_page_adds_and_removes_one_word_at_a_time() {
+    let dir = TempDir::new("summary-vocabulary");
+    let svc = services(&dir);
+    let added = add_word(&svc, "  Velmora   Ridge ").unwrap();
+    assert!(added.added);
+    assert_eq!(added.view.words, owned(&["Velmora Ridge"]));
+    // Already there in another case: the result says so, nothing is written.
+    let again = add_word(&svc, "velmora ridge").unwrap();
+    assert!(!again.added);
+    assert_eq!(again.view.words, owned(&["Velmora Ridge"]));
+    let err = add_word(&svc, &"q".repeat(41)).unwrap_err();
+    assert_eq!(
+        err.message,
+        "A word can have at most 40 characters; this one has 41."
+    );
+    assert!(remove_word(&svc, "VELMORA RIDGE").unwrap().words.is_empty());
+}
+
+#[test]
+fn summary_vocabulary_refusals_of_t11_3e_follow_the_shared_table() {
+    let table = crate::testutil::summary_cases();
+    let m = &table["messages"];
+    let not_in_use = refusal(SetVocabularyError::NotInUse);
+    assert_eq!(not_in_use.kind, "invalid_setting");
+    assert_eq!(
+        Some(not_in_use.message.as_str()),
+        m["add_not_in_use"].as_str()
+    );
+    let stale = refusal(SetVocabularyError::Stale);
+    assert_eq!(stale.kind, "invalid_setting");
+    assert_eq!(Some(stale.message.as_str()), m["stale_list"].as_str());
 }

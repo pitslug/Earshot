@@ -18,7 +18,7 @@ import {
 } from "./ipc";
 import type { SampleMachine } from "./mockModels";
 import type { SummaryStyleView, SummaryTemplateOption } from "./summaryStyle";
-import type { SummaryVocabularyView } from "./summaryVocabulary";
+import type { SummaryVocabularyAdded, SummaryVocabularyView } from "./summaryVocabulary";
 
 /** The Anthropic API address the app offers. */
 export const MOCK_ANTHROPIC_URL = table.messages.anthropic_url;
@@ -140,7 +140,11 @@ export interface SummariesMock {
   setSummaryStyle(style: string): Promise<SummaryStyleView>;
   setSummaryTemplate(template: string): Promise<SummaryStyleView>;
   summaryVocabulary(): Promise<SummaryVocabularyView>;
+  /** The mock's whole-list write (its case table and the transcript's word actions use it;
+   * not an `Ipc` command: the page edits one word at a time, T11.3e). */
   setSummaryVocabulary(words: string[]): Promise<SummaryVocabularyView>;
+  addSummaryVocabularyWord(text: string): Promise<SummaryVocabularyAdded>;
+  removeSummaryVocabularyWord(word: string): Promise<SummaryVocabularyView>;
 }
 
 /** An invisible formatting character (Unicode Cf: zero-width characters, text-direction marks)
@@ -400,6 +404,22 @@ export function createSummariesMock(
     summaryVocabulary: async () => vocabularyView(),
     setSummaryVocabulary: async (words) => {
       vocabulary = checkVocabulary(words);
+      return vocabularyView();
+    },
+    // `vocabulary::add_entry` and `remove_entry` (T11.3e): one word, the stored list read here.
+    addSummaryVocabularyWord: async (text) => {
+      const [word] = checkVocabulary([text]);
+      if (word === undefined) fail("invalid_setting", table.messages.not_a_word);
+      if (vocabulary.some((w) => w.toLowerCase() === word.toLowerCase())) {
+        return { added: false, view: vocabularyView() };
+      }
+      if (notInUse > 0) fail("invalid_setting", table.messages.add_not_in_use);
+      vocabulary = checkVocabulary([...vocabulary, word]);
+      return { added: true, view: vocabularyView() };
+    },
+    removeSummaryVocabularyWord: async (word) => {
+      const wanted = word.split(/\p{White_Space}+/u).filter((t) => t !== "").join(" ").toLowerCase();
+      vocabulary = vocabulary.filter((w) => w.toLowerCase() !== wanted);
       return vocabularyView();
     },
   };

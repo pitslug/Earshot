@@ -521,7 +521,7 @@ impl SyncClient {
         // With Dictionary sync on, `settings/vocabulary` is rebuilt from the live word rows in
         // the page's own transaction, so the list never differs from the rows it came from.
         let rebuild = |tx: &mut StoreTx<'_>| -> Result<(), StoreError> {
-            crate::vocabulary::rebuild_tx(tx).map(|_| ())
+            crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep).map(|_| ())
         };
         let rules = ApplyRules {
             kinds,

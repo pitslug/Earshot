@@ -1413,7 +1413,7 @@ fn dictionary_sync_two_devices_adding_different_words_keep_both() {
 fn dictionary_sync_a_removal_on_one_device_reaches_the_other() {
     let relay = relay();
     let (a, b) = pair(&relay);
-    crate::vocabulary::set_vocabulary(&a.svc, &["Quillmarsh", "QXR-7"]).unwrap();
+    crate::testutil::replace_words(&a.svc, &["Quillmarsh", "QXR-7"]).unwrap();
     exchange(&a, &b);
     assert_eq!(words(&b), ["Quillmarsh", "QXR-7"]);
     b.clock.advance_ms(10);
@@ -1453,9 +1453,9 @@ fn dictionary_sync_a_joined_list_past_the_limits_keeps_every_word_and_counts_the
     let (a, b) = pair(&relay);
     let mine: Vec<String> = (0..60).map(|i| format!("alpha{i:02}")).collect();
     let theirs: Vec<String> = (0..60).map(|i| format!("beta{i:02}")).collect();
-    crate::vocabulary::set_vocabulary(&a.svc, &mine).unwrap();
+    crate::testutil::replace_words(&a.svc, &mine).unwrap();
     b.clock.advance_ms(100);
-    crate::vocabulary::set_vocabulary(&b.svc, &theirs).unwrap();
+    crate::testutil::replace_words(&b.svc, &theirs).unwrap();
     exchange(&a, &b);
     let mut want = mine.clone();
     want.extend(theirs[..40].iter().cloned());
@@ -1566,4 +1566,175 @@ fn dictionary_sync_words_reach_the_relay_only_sealed() {
     }
     assert!(files > 0);
     assert_only_the_relay(&ca, &relay);
+}
+
+/// The stored `settings/vocabulary` bytes of a device.
+fn stored_list(dev: &Device) -> Option<Vec<u8>> {
+    dev.svc
+        .store()
+        .local_value(crate::vocabulary::VOCABULARY_KEY)
+        .unwrap()
+}
+
+#[test]
+fn dictionary_sync_a_stale_page_cannot_delete_a_word_another_device_added() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    // b's page read its list (empty) before a's word arrived.
+    let seen = words(&b);
+    crate::vocabulary::add_word(&a.svc, "Velmora").unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&b), ["Velmora"]);
+    // A whole-list save from that page is refused; nothing is written.
+    let err = crate::vocabulary::set_vocabulary(&b.svc, &seen, &["Quillmarsh"]).unwrap_err();
+    assert!(matches!(err, crate::vocabulary::SetVocabularyError::Stale));
+    assert_eq!(err.to_string(), crate::vocabulary::STALE_LIST);
+    // The page edits one word at a time instead: adding keeps the word that arrived.
+    b.clock.advance_ms(5);
+    crate::vocabulary::add_entry(&b.svc, "Quillmarsh").unwrap();
+    exchange(&b, &a);
+    assert_eq!(words(&a), ["Velmora", "Quillmarsh"]);
+    assert_eq!(words(&b), ["Velmora", "Quillmarsh"]);
+}
+
+#[test]
+fn dictionary_sync_an_apply_between_read_and_write_is_never_a_removal() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    crate::vocabulary::add_word(&b.svc, "Quillmarsh").unwrap();
+    exchange(&b, &a);
+    // b's page shows its list; meanwhile a's word arrives and is applied on b.
+    let page = words(&b);
+    assert_eq!(page, ["Quillmarsh"]);
+    a.clock.advance_ms(5);
+    crate::vocabulary::add_word(&a.svc, "Velmora").unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&b), ["Quillmarsh", "Velmora"]);
+    // The page's Delete names one word: the word applied in between stays, everywhere.
+    assert!(crate::vocabulary::remove_entry(&b.svc, &page[0]).unwrap());
+    assert_eq!(words(&b), ["Velmora"]);
+    exchange(&b, &a);
+    assert_eq!(words(&a), ["Velmora"]);
+    assert_eq!(live_rows(&a), ["Velmora"]);
+}
+
+#[test]
+fn dictionary_sync_add_is_refused_while_words_are_not_in_use() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let mine: Vec<String> = (0..60).map(|i| format!("alpha{i:02}")).collect();
+    let theirs: Vec<String> = (0..60).map(|i| format!("beta{i:02}")).collect();
+    crate::testutil::replace_words(&a.svc, &mine).unwrap();
+    b.clock.advance_ms(100);
+    crate::testutil::replace_words(&b.svc, &theirs).unwrap();
+    exchange(&a, &b);
+    assert_eq!(not_in_use(&a), 20);
+    let before = live_rows(&a);
+    let err = crate::vocabulary::add_entry(&a.svc, "Quillmarsh").unwrap_err();
+    assert!(matches!(
+        err,
+        crate::vocabulary::SetVocabularyError::NotInUse
+    ));
+    assert_eq!(err.to_string(), crate::vocabulary::NOT_IN_USE_REFUSAL);
+    let err = crate::vocabulary::add_word(&a.svc, "Quillmarsh").unwrap_err();
+    assert!(matches!(
+        err,
+        crate::vocabulary::SetVocabularyError::NotInUse
+    ));
+    assert_eq!(live_rows(&a), before, "nothing stored");
+    // A word already in use is still reported as there, not refused.
+    let there = crate::vocabulary::add_entry(&a.svc, "ALPHA00").unwrap();
+    assert!(!there.added);
+}
+
+#[test]
+fn dictionary_sync_a_list_this_version_refuses_is_kept_over_a_pulled_page() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    local::set(&mut a.svc.store(), &DeviceRecord::Vocabulary.key(), b"{}").unwrap();
+    crate::vocabulary::add_word(&b.svc, "Velmora").unwrap();
+    exchange(&b, &a);
+    // The page still reports it by its reason; the join did not replace it.
+    assert_eq!(stored_list(&a).as_deref(), Some(&b"{}"[..]));
+    let state = crate::vocabulary::dictionary_state(&a.svc.store()).unwrap();
+    assert!(state.unknown.is_some() && state.words.is_empty());
+    // Turning the switch off and on keeps it too.
+    set_sync_dictionary(&a.svc, false).unwrap();
+    set_sync_dictionary(&a.svc, true).unwrap();
+    assert_eq!(stored_list(&a).as_deref(), Some(&b"{}"[..]));
+    // The user's own add replaces it with the joined list.
+    crate::vocabulary::add_entry(&a.svc, "Quillmarsh").unwrap();
+    assert_eq!(words(&a), ["Velmora", "Quillmarsh"]);
+}
+
+#[test]
+fn dictionary_sync_switched_off_inside_the_apply_leaves_the_list_alone() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    crate::vocabulary::add_word(&a.svc, "Velmora").unwrap();
+    local::set(
+        &mut a.svc.store(),
+        &DeviceRecord::Vocabulary.key(),
+        br#"["Ostrelby"]"#,
+    )
+    .unwrap();
+    set_sync_dictionary(&a.svc, false).unwrap();
+    // The hook the apply runs reads the switch inside the transaction.
+    let rebuilt = a
+        .svc
+        .store()
+        .transaction(|tx| crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep))
+        .unwrap();
+    assert_eq!(rebuilt, None);
+    assert_eq!(words(&a), ["Ostrelby"]);
+}
+
+#[test]
+fn dictionary_sync_an_unchanged_rebuild_keeps_the_list_byte_for_byte() {
+    // Live summary windows are reused only with exactly the words they were mapped with
+    // (`live_summaries::reusable`): a tick that changes no row must leave the list as it was,
+    // so a sync during a meeting maps nothing again unless the words themselves changed.
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    crate::vocabulary::add_word(&a.svc, "Velmora").unwrap();
+    b.clock.advance_ms(5);
+    crate::vocabulary::add_word(&b.svc, "Quillmarsh").unwrap();
+    exchange(&a, &b);
+    let before = stored_list(&b);
+    exchange(&a, &b);
+    b.client().tick().unwrap();
+    assert_eq!(stored_list(&b), before);
+}
+
+#[test]
+fn dictionary_sync_a_row_from_another_build_is_matched_by_its_normalised_word() {
+    use earshot_core::model::{DictionaryRepo, DictionaryWord};
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    // A row as another build might write it: quotes and spaces around the word.
+    {
+        let clock = Arc::clone(&a.svc.clock);
+        let mut rng = crate::services::os_seeded_rng();
+        let mut db = a.svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = earshot_core::model::Stamp {
+            clock: &*clock,
+            hlc,
+            rng: &mut *rng,
+        };
+        store
+            .put_dictionary_word(DictionaryWord::new("  'zorbek' ", &mut stamp))
+            .unwrap();
+    }
+    a.client().tick().unwrap();
+    assert_eq!(words(&a), ["zorbek"]);
+    // Adding it again finds it; removing it removes that row.
+    assert!(
+        !crate::vocabulary::add_entry(&a.svc, "Zorbek")
+            .unwrap()
+            .added
+    );
+    assert!(crate::vocabulary::remove_entry(&a.svc, "Zorbek").unwrap());
+    assert!(live_rows(&a).is_empty());
+    assert!(words(&a).is_empty());
 }

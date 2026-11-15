@@ -386,7 +386,8 @@ fn detail_suggested_and_changed_words_and_the_word_list() {
     let dir = TempDir::new("detail-words");
     let svc = services(&dir);
     let f = call_meeting(&svc, 42);
-    earshot_runtime::vocabulary::set_vocabulary(&svc, &["Zorbek", "priya"]).unwrap();
+    earshot_runtime::vocabulary::set_vocabulary(&svc, &[] as &[&str], &["Zorbek", "priya"])
+        .unwrap();
     edit::edit_segment(&svc, f.meeting, f.segments[3], "then ask sorbeck, friday").unwrap();
     let d = meeting_detail(&svc, f.meeting).unwrap();
     // The Dictionary, then saved people's name words without a repeat in another case.
@@ -462,7 +463,7 @@ fn detail_dictionary_words_from_the_transcript_add_undo_and_remove() {
     let dir = TempDir::new("detail-dictionary");
     let svc = services(&dir);
     let f = call_meeting(&svc, 43);
-    earshot_runtime::vocabulary::set_vocabulary(&svc, &["QXR-7"]).unwrap();
+    earshot_runtime::vocabulary::set_vocabulary(&svc, &[] as &[&str], &["QXR-7"]).unwrap();
     edit::edit_segment(&svc, f.meeting, f.segments[3], "then ask sorbeck, friday").unwrap();
     let d = meeting_detail(&svc, f.meeting).unwrap();
     assert_eq!(d.dictionary, ["QXR-7"]);
@@ -522,7 +523,7 @@ fn detail_dictionary_words_from_the_transcript_add_undo_and_remove() {
 
     // Refusals are the Dictionary page's own sentences, and store nothing.
     let full: Vec<String> = (0..100).map(|i| format!("w{i}")).collect();
-    earshot_runtime::vocabulary::set_vocabulary(&svc, &full).unwrap();
+    earshot_runtime::vocabulary::set_vocabulary(&svc, &[] as &[&str], &full).unwrap();
     let e = add_dictionary_word(&svc, "Quillmarsh").unwrap_err();
     assert_eq!(e.kind, "invalid_setting");
     assert_eq!(

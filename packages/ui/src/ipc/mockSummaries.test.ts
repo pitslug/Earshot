@@ -107,6 +107,12 @@ describe("the Summaries mock against the app's case table", () => {
       not_in_use: 4,
       not_in_use_note: copy.many.replace("{n}", "4"),
     });
+    // An Add is refused then, with the app's copy; a word already there is still found.
+    const mock = createSummariesMock({ vocabulary: ["Quillmarsh"], notInUse: 1 });
+    expect(await outcome(() => mock.addSummaryVocabularyWord("Velmora"))).toEqual({
+      error: table.messages.add_not_in_use,
+    });
+    expect(await mock.addSummaryVocabularyWord("QUILLMARSH")).toMatchObject({ added: false });
   });
 
   it("refuses a token with no word as the app does (T12.15f)", async () => {

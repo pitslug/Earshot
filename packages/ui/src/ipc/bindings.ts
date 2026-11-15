@@ -355,11 +355,10 @@ export const commands = {
 	setSummaryTemplate: (template: string) => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("set_summary_template", { template })),
 	/**  The user's own words for summaries (and a stored list this version refuses). */
 	summaryVocabulary: () => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("summary_vocabulary")),
-	/**
-	 *  Checks and stores the user's own words (empty for none; `invalid_setting`: nothing
-	 *  stored).
-	 */
-	setSummaryVocabulary: (words: string[]) => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("set_summary_vocabulary", { words })),
+	/**  Adds one word typed on the Dictionary page (`invalid_setting`: nothing stored). */
+	addSummaryVocabularyWord: (text: string) => typedError<SummaryVocabularyAdded, IpcError>(__TAURI_INVOKE("add_summary_vocabulary_word", { text })),
+	/**  Removes one word from the Dictionary page. */
+	removeSummaryVocabularyWord: (word: string) => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("remove_summary_vocabulary_word", { word })),
 	/**  The Sync page's view. */
 	syncView: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("sync_view")),
 	/**  The vault's devices (asks the server). */
@@ -2181,9 +2180,20 @@ export type SummaryView = {
 	open_questions: string[],
 };
 
+/**  What an Add on the Dictionary page did (T11.3e: the page edits one word at a time). */
+export type SummaryVocabularyAdded = {
+	/**  False when the word was already there (case ignored): nothing was written. */
+	added: boolean,
+	/**  The words after the add. */
+	view: SummaryVocabularyView,
+};
+
 /**  The stored words with what the page says about them. */
 export type SummaryVocabularyView = {
-	/**  The words in use, in the user's order (empty for none, the default). */
+	/**
+	 *  The words in use (empty for none, the default): in the user's order while Dictionary
+	 *  sync is off, in creation order while it is on (T11.3e).
+	 */
 	words: string[],
 	/**  One line when the stored list is one this version refuses (none is used). */
 	unknown: string[],

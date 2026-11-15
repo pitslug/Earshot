@@ -18,7 +18,8 @@ mod tests;
 /// The stored words with what the page says about them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct SummaryVocabularyView {
-    /// The words in use, in the user's order (empty for none, the default).
+    /// The words in use (empty for none, the default): in the user's order while Dictionary
+    /// sync is off, in creation order while it is on (T11.3e).
     pub words: Vec<String>,
     /// One line when the stored list is one this version refuses (none is used).
     pub unknown: Vec<String>,
@@ -95,12 +96,35 @@ pub fn vocabulary_view(services: &Services) -> Result<SummaryVocabularyView, Ipc
     ))
 }
 
-/// Checks and stores `words` (empty for none); returns them as stored.
+/// What an Add on the Dictionary page did (T11.3e: the page edits one word at a time).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct SummaryVocabularyAdded {
+    /// False when the word was already there (case ignored): nothing was written.
+    pub added: bool,
+    /// The words after the add.
+    pub view: SummaryVocabularyView,
+}
+
+/// Adds one typed entry (`vocabulary::add_entry`: the stored list read and written in one
+/// transaction).
 ///
 /// # Errors
-/// `invalid_setting` (nothing stored, the reason in plain words); store errors.
-pub fn set_words(services: &Services, words: &[String]) -> Result<SummaryVocabularyView, IpcError> {
-    vocabulary::set_vocabulary(services, words).map_err(refusal)?;
+/// `invalid_setting` (nothing stored, the reason in plain words: the limits, words not in use);
+/// store errors.
+pub fn add_word(services: &Services, text: &str) -> Result<SummaryVocabularyAdded, IpcError> {
+    let added = vocabulary::add_entry(services, text).map_err(refusal)?;
+    Ok(SummaryVocabularyAdded {
+        added: added.added,
+        view: vocabulary_view(services)?,
+    })
+}
+
+/// Removes one entry (`vocabulary::remove_entry`: one transaction) and returns the words.
+///
+/// # Errors
+/// Store errors.
+pub fn remove_word(services: &Services, word: &str) -> Result<SummaryVocabularyView, IpcError> {
+    vocabulary::remove_entry(services, word).map_err(refusal)?;
     vocabulary_view(services)
 }
 
@@ -110,9 +134,10 @@ pub fn set_words(services: &Services, words: &[String]) -> Result<SummaryVocabul
 pub fn refusal(e: SetVocabularyError) -> IpcError {
     match e {
         SetVocabularyError::Store(e) => e.into(),
-        SetVocabularyError::Refused(_) | SetVocabularyError::NotAWord => {
-            IpcError::invalid(sentence(&e.to_string()))
-        }
+        SetVocabularyError::Refused(_)
+        | SetVocabularyError::NotAWord
+        | SetVocabularyError::NotInUse
+        | SetVocabularyError::Stale => IpcError::invalid(sentence(&e.to_string())),
     }
 }
 
@@ -126,14 +151,24 @@ pub async fn summary_vocabulary(
     crate::ipc::blocking(move || vocabulary_view(&services)).await
 }
 
-/// Checks and stores the user's own words (empty for none; `invalid_setting`: nothing
-/// stored).
+/// Adds one word typed on the Dictionary page (`invalid_setting`: nothing stored).
 #[tauri::command]
 #[specta::specta]
-pub async fn set_summary_vocabulary(
+pub async fn add_summary_vocabulary_word(
     state: tauri::State<'_, crate::ipc::AppState>,
-    words: Vec<String>,
+    text: String,
+) -> Result<SummaryVocabularyAdded, IpcError> {
+    let services = state.services()?;
+    crate::ipc::blocking(move || add_word(&services, &text)).await
+}
+
+/// Removes one word from the Dictionary page.
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_summary_vocabulary_word(
+    state: tauri::State<'_, crate::ipc::AppState>,
+    word: String,
 ) -> Result<SummaryVocabularyView, IpcError> {
     let services = state.services()?;
-    crate::ipc::blocking(move || set_words(&services, &words)).await
+    crate::ipc::blocking(move || remove_word(&services, &word)).await
 }

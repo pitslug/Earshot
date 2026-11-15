@@ -45,6 +45,16 @@ use crate::services::{Services, os_seeded_rng};
 #[path = "vocabulary_tests.rs"]
 mod tests;
 
+/// Why an add is refused while some words are not in use (shown as a sentence by the app,
+/// `fixtures/ui/summary_settings_cases.json` `messages.add_not_in_use`).
+pub const NOT_IN_USE_REFUSAL: &str =
+    "some words are not in use: remove words to make room before adding more";
+
+/// Why a whole-list save is refused when the stored list changed since it was read
+/// (`messages.stale_list`).
+pub const STALE_LIST: &str =
+    "the dictionary changed since this list was read: look at it again and try once more";
+
 /// `local_state` key of the user's words.
 pub const VOCABULARY_KEY: &str = "settings/vocabulary";
 
@@ -56,8 +66,14 @@ pub enum SetVocabularyError {
     /// Writing the store failed.
     Store(RuntimeError),
     /// A word from the transcript ([`add_word`]) that is not a word: no letter between its
-    /// punctuation.
+    /// punctuation (also an empty entry).
     NotAWord,
+    /// Dictionary sync is on and some stored words are not in use: an added word would not be
+    /// in use either (T11.3e).
+    NotInUse,
+    /// The stored list is not the one the caller read ([`set_vocabulary`]'s `base`): another
+    /// computer or window changed it (T11.3e).
+    Stale,
 }
 
 impl fmt::Display for SetVocabularyError {
@@ -65,6 +81,8 @@ impl fmt::Display for SetVocabularyError {
         match self {
             Self::Refused(e) => write!(f, "{e}"),
             Self::NotAWord => write!(f, "only a word can be added to the dictionary"),
+            Self::NotInUse => write!(f, "{NOT_IN_USE_REFUSAL}"),
+            Self::Stale => write!(f, "{STALE_LIST}"),
             Self::Store(e) => write!(f, "{e}"),
         }
     }
@@ -141,11 +159,26 @@ fn syncs_from(
     Ok(switch(crate::sync::SYNC_ON_KEY, false)? && switch(crate::sync::SYNC_DICTIONARY_KEY, true)?)
 }
 
+/// The comparison key of a stored word, by the rules [`joined`] reads rows with: trimmed,
+/// single quotes at the ends dropped, read by [`Vocabulary::new`] (inner white space joined),
+/// lower-cased as it compares repeats. `None` for a word it refuses on its own (too long, a
+/// control or formatting character) or that is empty; such a row is matched by its lower-cased
+/// text instead ([`row_key`]), so a row from another build can still be removed.
+fn word_key(word: &str) -> Option<String> {
+    let one = Vocabulary::new([word.trim().trim_matches('\'')]).ok()?;
+    one.words().first().map(|w| w.to_lowercase())
+}
+
+/// [`word_key`], or the lower-cased text of a word it refuses.
+fn row_key(word: &str) -> String {
+    word_key(word).unwrap_or_else(|| word.to_lowercase())
+}
+
 /// The list joined from the live word rows (docs/sync.md section 9): in creation order, the
-/// same word twice (case ignored) once with the earliest spelling, each word read by
-/// [`Vocabulary::new`]'s own rules (a word it refuses on its own, too long or with a control
-/// character, is not in use), taken until the next word would pass [`MAX_VOCABULARY_WORDS`] or
-/// [`MAX_VOCABULARY_CHARS`]. Returns the words in use and how many distinct words are not.
+/// same word twice ([`word_key`]) once with the earliest spelling, a word [`Vocabulary::new`]
+/// refuses on its own not in use, taken until the next word would pass
+/// [`MAX_VOCABULARY_WORDS`] or [`MAX_VOCABULARY_CHARS`] (a prefix: every word after it is not in
+/// use). Returns the words in use and how many distinct words are not.
 fn joined(rows: &[DictionaryWord]) -> (Vocabulary, usize) {
     let mut seen: HashSet<String> = HashSet::new();
     let mut kept: Vec<String> = Vec::new();
@@ -154,7 +187,7 @@ fn joined(rows: &[DictionaryWord]) -> (Vocabulary, usize) {
     let mut not_in_use = 0;
     for row in rows.iter().filter(|r| r.is_live()) {
         let Ok(one) = Vocabulary::new([row.word.trim().trim_matches('\'')]) else {
-            if seen.insert(row.word.to_lowercase()) {
+            if seen.insert(row_key(&row.word)) {
                 not_in_use += 1;
             }
             continue;
@@ -178,23 +211,59 @@ fn joined(rows: &[DictionaryWord]) -> (Vocabulary, usize) {
     (Vocabulary::new(&kept).unwrap_or_default(), not_in_use)
 }
 
-/// Rebuilds the stored list from the live word rows ([`joined`]) inside `tx` and returns it.
-/// Run after every applied page while Dictionary sync is on (`crate::sync`), and after every
-/// write here while it is.
+/// Whether a rebuild may replace a stored list this version refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverRefused {
+    /// No: the refused list stays and is still reported by its reason (a pulled page or the
+    /// switch turned on must not hide it).
+    Keep,
+    /// Yes: the user changed the Dictionary, as a write over a refused list does with sync off.
+    Replace,
+}
+
+/// Rebuilds the stored list from the live word rows ([`joined`]) inside `tx` and returns it,
+/// only while Dictionary sync is on ([`dictionary_syncs`], read inside `tx`, so a switch turned
+/// off just before an apply leaves the list alone): `None` when it did nothing (sync off, or a
+/// refused stored list kept under [`OverRefused::Keep`]). Run after every applied page and when
+/// the switch is turned on (`crate::sync`), and after every write here.
 ///
 /// # Errors
 /// Store errors.
-pub(crate) fn rebuild_tx(tx: &mut StoreTx<'_>) -> Result<Vocabulary, StoreError> {
+pub(crate) fn rebuild_tx(
+    tx: &mut StoreTx<'_>,
+    over: OverRefused,
+) -> Result<Option<Vocabulary>, StoreError> {
+    if !syncs_from(|k| tx.local_value(k)).map_err(runtime_to_store)? {
+        return Ok(None);
+    }
+    if over == OverRefused::Keep {
+        let (_, refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
+        if refused.is_some() {
+            return Ok(None);
+        }
+    }
     let (words, _) = joined(&tx.dictionary_words()?);
-    let bytes = serde_json::to_vec(words.words())
-        .map_err(|_| StoreError::Corrupt("word list encoding".into()))?;
-    crate::local::set_tx(tx, &DeviceRecord::Vocabulary.key(), &bytes)?;
-    Ok(words)
+    write_list_tx(tx, &words)?;
+    Ok(Some(words))
 }
 
-/// Makes a row for each word of the stored list that has no live row (case ignored): the words
-/// an older Earshot stored before rows existed. Run when Dictionary sync is turned on and before
-/// every sync tick pulls, so a rebuild never loses them. Returns how many rows it made.
+fn runtime_to_store(e: RuntimeError) -> StoreError {
+    match e {
+        RuntimeError::Store(e) => e,
+        _ => StoreError::Corrupt("dictionary switch".into()),
+    }
+}
+
+fn write_list_tx(tx: &mut StoreTx<'_>, words: &Vocabulary) -> Result<(), StoreError> {
+    let bytes = serde_json::to_vec(words.words())
+        .map_err(|_| StoreError::Corrupt("word list encoding".into()))?;
+    crate::local::set_tx(tx, &DeviceRecord::Vocabulary.key(), &bytes)
+}
+
+/// Makes a row for each word of the stored list that has no live row ([`word_key`]): the words
+/// an older Earshot stored before rows existed. Run when Dictionary sync is turned on, before
+/// every sync tick pulls and inside every write here, so a rebuild never loses them. Returns how
+/// many rows it made.
 ///
 /// # Errors
 /// Store errors.
@@ -223,9 +292,31 @@ pub(crate) fn reconcile(services: &Services) -> Result<usize, RuntimeError> {
 }
 
 fn has_live_row(rows: &[DictionaryWord], word: &str) -> bool {
-    let wanted = word.to_lowercase();
+    let wanted = row_key(word);
     rows.iter()
-        .any(|r| r.is_live() && r.word.to_lowercase() == wanted)
+        .any(|r| r.is_live() && row_key(&r.word) == wanted)
+}
+
+/// Removes every live row of `word` ([`row_key`], so any spelling and a row from another build
+/// go too): each a tombstone with its word cleared. Returns how many went.
+fn remove_rows_tx(
+    tx: &mut StoreTx<'_>,
+    stamp: &mut DynStamp<'_, '_>,
+    word: &str,
+) -> Result<usize, StoreError> {
+    let wanted = row_key(word);
+    let mut gone = 0;
+    for mut row in tx
+        .dictionary_words()?
+        .into_iter()
+        .filter(|r| r.is_live() && row_key(&r.word) == wanted)
+    {
+        if row.remove(stamp.hlc, stamp.clock) {
+            tx.put_dictionary_word(row)?;
+            gone += 1;
+        }
+    }
+    Ok(gone)
 }
 
 /// Runs `f` in one store transaction under the services lock, with a stamp from the services
@@ -267,62 +358,184 @@ pub(crate) fn vocabulary_of(bytes: Option<&[u8]>) -> (Vocabulary, Option<Unknown
     .or_default_with(Vocabulary::default)
 }
 
-/// Checks `words` ([`Vocabulary::new`]: trimmed, empty ones and repeats dropped, within the
-/// limits, one line each) and stores them, replacing the earlier list; an empty list stores
-/// no words. Returns what was stored: while Dictionary sync is on, the list rebuilt from the
-/// rows ([`rebuild_tx`]).
+/// Replaces the whole list, for a caller that shows the user a list and stores their edit of it
+/// (the benchmark's scratch store, the shared case table): `base` is the list the caller read,
+/// `words` the list to store (checked by [`Vocabulary::new`]: trimmed, empty ones and repeats
+/// dropped, within the limits, one line each; empty stores no words). Returns what was stored:
+/// while Dictionary sync is on, the list rebuilt from the rows ([`rebuild_tx`]).
 ///
-/// In the same transaction the synced rows follow the change from the list stored before: a
-/// word that left it is removed (every live row of it, case ignored, a tombstone with its word
-/// cleared) and a word new to it gets a row unless a live one exists. A stored word that is not
-/// in use (sync joined past a limit) is not on the list the page sends, so it is never removed
-/// here.
+/// One transaction: the stored list is read inside it and must still be `base` (as
+/// [`Vocabulary::new`] reads both), or nothing is written ([`SetVocabularyError::Stale`]), so a
+/// word another computer added after the caller read the list is never removed by this save.
+/// The rows then follow the change from `base`: a word that left it has every live row of it
+/// removed, a word new to it gets a row unless a live one exists. A stored word that is not in
+/// use is not on `base`, so it is never removed here. The Dictionary page edits one word at a
+/// time instead ([`add_entry`], [`remove_entry`]).
 ///
 /// # Errors
 /// [`SetVocabularyError`]: nothing is stored on a refusal.
-pub fn set_vocabulary<S: AsRef<str>>(
+pub fn set_vocabulary<B: AsRef<str>, S: AsRef<str>>(
     services: &Services,
+    base: &[B],
     words: &[S],
 ) -> Result<Vocabulary, SetVocabularyError> {
     let vocabulary = Vocabulary::new(words).map_err(SetVocabularyError::Refused)?;
-    with_stamp(services, |tx, stamp| -> Result<Vocabulary, RuntimeError> {
-        let syncs = syncs_from(|k| tx.local_value(k))?;
-        let (before, _refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
-        // Words from before rows existed get theirs first, so a removal reaches them too.
-        reconcile_tx(tx, stamp)?;
-        let rows = tx.dictionary_words()?;
-        for gone in before
-            .words()
-            .iter()
-            .filter(|w| !listed_in(vocabulary.words(), w))
-        {
-            let wanted = gone.to_lowercase();
-            for mut row in rows
-                .iter()
-                .filter(|r| r.is_live() && r.word.to_lowercase() == wanted)
-                .cloned()
-            {
-                if row.remove(stamp.hlc, stamp.clock) {
-                    tx.put_dictionary_word(row)?;
-                }
+    let base = Vocabulary::new(base).map_err(|_| SetVocabularyError::Stale)?;
+    with_stamp(
+        services,
+        |tx, stamp| -> Result<Vocabulary, SetVocabularyError> {
+            let (stored, _refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
+            if stored.words() != base.words() {
+                return Err(SetVocabularyError::Stale);
             }
+            // Words from before rows existed get theirs first, so a removal reaches them too.
+            reconcile_tx(tx, stamp)?;
+            for gone in base
+                .words()
+                .iter()
+                .filter(|w| !listed_in(vocabulary.words(), w))
+            {
+                remove_rows_tx(tx, stamp, gone)?;
+            }
+            let rows = tx.dictionary_words()?;
+            for new in vocabulary
+                .words()
+                .iter()
+                .filter(|w| !listed_in(base.words(), w) && !has_live_row(&rows, w))
+            {
+                tx.put_dictionary_word(DictionaryWord::new(new.clone(), stamp))?;
+            }
+            if let Some(rebuilt) = rebuild_tx(tx, OverRefused::Replace)? {
+                return Ok(rebuilt);
+            }
+            write_list_tx(tx, &vocabulary)?;
+            Ok(vocabulary.clone())
+        },
+    )
+}
+
+fn store_err(e: StoreError) -> SetVocabularyError {
+    SetVocabularyError::Store(e.into())
+}
+
+impl From<StoreError> for SetVocabularyError {
+    fn from(e: StoreError) -> Self {
+        store_err(e)
+    }
+}
+
+impl From<earshot_core::model::RepoError> for SetVocabularyError {
+    fn from(e: earshot_core::model::RepoError) -> Self {
+        Self::Store(e.into())
+    }
+}
+
+/// What [`add_entry`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddedEntry {
+    /// The entry as the Dictionary holds it now ("Undo" removes exactly this).
+    pub word: String,
+    /// False when the Dictionary already had it (case ignored): nothing was written.
+    pub added: bool,
+    /// The list in use after the add.
+    pub words: Vocabulary,
+}
+
+/// Adds one entry typed on the Dictionary page (read by [`Vocabulary::new`]'s rules: trimmed,
+/// inner white space joined) at the end of the list. Reads the stored list and writes the row
+/// and the list in one transaction, so nothing another computer added in between is lost.
+///
+/// An entry already listed (case ignored) writes nothing (`added` false). While Dictionary sync
+/// is on and some stored words are not in use, nothing is added
+/// ([`SetVocabularyError::NotInUse`]): a new word would be stored and synced but not in use
+/// itself. A stored list this version refuses reads as no words, so the new list holds this
+/// entry alone.
+///
+/// # Errors
+/// [`SetVocabularyError::Refused`] (the list's limits, as the page reports them; an empty entry
+/// is [`SetVocabularyError::NotAWord`]), [`SetVocabularyError::NotInUse`]; store errors. Nothing
+/// is stored on an error.
+pub fn add_entry(services: &Services, text: &str) -> Result<AddedEntry, SetVocabularyError> {
+    let entry = Vocabulary::new([text]).map_err(SetVocabularyError::Refused)?;
+    let word = entry
+        .words()
+        .first()
+        .cloned()
+        .ok_or(SetVocabularyError::NotAWord)?;
+    with_stamp(
+        services,
+        |tx, stamp| -> Result<AddedEntry, SetVocabularyError> {
+            let (current, _refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
+            if let Some(entry) = current
+                .words()
+                .iter()
+                .find(|e| e.to_lowercase() == word.to_lowercase())
+            {
+                return Ok(AddedEntry {
+                    word: entry.clone(),
+                    added: false,
+                    words: current.clone(),
+                });
+            }
+            let syncs = syncs_from(|k| tx.local_value(k)).map_err(SetVocabularyError::Store)?;
+            if syncs && joined(&tx.dictionary_words()?).1 > 0 {
+                return Err(SetVocabularyError::NotInUse);
+            }
+            let mut next: Vec<String> = current.into();
+            next.push(word.clone());
+            let next = Vocabulary::new(&next).map_err(SetVocabularyError::Refused)?;
+            reconcile_tx(tx, stamp)?;
+            let rows = tx.dictionary_words()?;
+            if !has_live_row(&rows, &word) {
+                tx.put_dictionary_word(DictionaryWord::new(word.clone(), stamp))?;
+            }
+            let words = match rebuild_tx(tx, OverRefused::Replace)? {
+                Some(rebuilt) => rebuilt,
+                None => {
+                    write_list_tx(tx, &next)?;
+                    next
+                }
+            };
+            Ok(AddedEntry {
+                word,
+                added: true,
+                words,
+            })
+        },
+    )
+}
+
+/// Removes the Dictionary entry that is `word` (case ignored; surrounding white space ignored,
+/// inner runs read as one space, as [`Vocabulary::new`] stores entries) and every live row of
+/// it, reading the stored list and writing in one transaction. Returns whether an entry went; a
+/// word not listed writes nothing. An entry that only contains `word` (a phrase) stays.
+///
+/// # Errors
+/// Store errors.
+pub fn remove_entry(services: &Services, word: &str) -> Result<bool, SetVocabularyError> {
+    let word = word.split_whitespace().collect::<Vec<_>>().join(" ");
+    if word.is_empty() {
+        return Ok(false);
+    }
+    with_stamp(services, |tx, stamp| -> Result<bool, SetVocabularyError> {
+        let (current, _refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
+        if !listed_in(current.words(), &word) {
+            return Ok(false);
         }
-        for new in vocabulary
-            .words()
-            .iter()
-            .filter(|w| !listed_in(before.words(), w) && !has_live_row(&rows, w))
-        {
-            tx.put_dictionary_word(DictionaryWord::new(new.clone(), stamp))?;
+        reconcile_tx(tx, stamp)?;
+        remove_rows_tx(tx, stamp, &word)?;
+        if rebuild_tx(tx, OverRefused::Replace)?.is_none() {
+            let wanted = word.to_lowercase();
+            let kept: Vec<&String> = current
+                .words()
+                .iter()
+                .filter(|e| e.to_lowercase() != wanted)
+                .collect();
+            let kept = Vocabulary::new(kept).unwrap_or_default();
+            write_list_tx(tx, &kept)?;
         }
-        if syncs {
-            return Ok(rebuild_tx(tx)?);
-        }
-        let bytes = serde_json::to_vec(vocabulary.words())
-            .map_err(|_| RuntimeError::Internal("word list encoding"))?;
-        crate::local::set_tx(tx, &DeviceRecord::Vocabulary.key(), &bytes)?;
-        Ok(vocabulary.clone())
+        Ok(true)
     })
-    .map_err(SetVocabularyError::Store)
 }
 
 // Adding words from the transcript (T12.15f): one word at a time, from a click on that word
@@ -392,55 +605,28 @@ pub struct AddedWord {
     pub added: bool,
 }
 
-/// Adds the word of `token` ([`dictionary_word`]) at the end of the stored Dictionary in one
-/// [`set_vocabulary`] write. A word already there (case ignored) writes nothing. A stored list
-/// this version refuses reads as no words ([`vocabulary`]), so the new list holds this word
-/// alone, as an add on the Dictionary page does.
+/// Adds the word of `token` ([`dictionary_word`]) at the end of the stored Dictionary
+/// ([`add_entry`]: one transaction). A word already there (case ignored) writes nothing. A
+/// stored list this version refuses reads as no words ([`vocabulary`]), so the new list holds
+/// this word alone, as an add on the Dictionary page does.
 ///
 /// # Errors
 /// [`SetVocabularyError::NotAWord`] for a token with no word; [`SetVocabularyError::Refused`]
-/// (the list's limits, as the Dictionary page reports them); store errors. Nothing is stored on
-/// an error.
+/// (the list's limits, as the Dictionary page reports them); [`SetVocabularyError::NotInUse`];
+/// store errors. Nothing is stored on an error.
 pub fn add_word(services: &Services, token: &str) -> Result<AddedWord, SetVocabularyError> {
-    let word = dictionary_word(token)
-        .ok_or(SetVocabularyError::NotAWord)?
-        .to_owned();
-    let (current, _refused) = vocabulary(&services.store()).map_err(SetVocabularyError::Store)?;
-    if let Some(entry) = current
-        .words()
-        .iter()
-        .find(|e| e.to_lowercase() == word.to_lowercase())
-    {
-        return Ok(AddedWord {
-            word: entry.clone(),
-            added: false,
-        });
-    }
-    let mut words: Vec<String> = current.into();
-    words.push(word.clone());
-    set_vocabulary(services, &words)?;
-    Ok(AddedWord { word, added: true })
+    let word = dictionary_word(token).ok_or(SetVocabularyError::NotAWord)?;
+    let added = add_entry(services, word)?;
+    Ok(AddedWord {
+        word: added.word,
+        added: added.added,
+    })
 }
 
-/// Removes the Dictionary entry that is `word` (case ignored; surrounding white space ignored,
-/// inner runs read as one space, as [`Vocabulary::new`] stores entries) in one
-/// [`set_vocabulary`] write. Returns whether an entry went; a word not listed writes nothing.
-/// An entry that only contains `word` (a phrase) stays.
+/// Removes the Dictionary entry that is `word` ([`remove_entry`]: one transaction).
 ///
 /// # Errors
 /// Store errors.
 pub fn remove_word(services: &Services, word: &str) -> Result<bool, SetVocabularyError> {
-    let word = word.split_whitespace().collect::<Vec<_>>().join(" ");
-    let (current, _refused) = vocabulary(&services.store()).map_err(SetVocabularyError::Store)?;
-    if word.is_empty() || !listed_in(current.words(), &word) {
-        return Ok(false);
-    }
-    let wanted = word.to_lowercase();
-    let kept: Vec<&String> = current
-        .words()
-        .iter()
-        .filter(|e| e.to_lowercase() != wanted)
-        .collect();
-    set_vocabulary(services, &kept)?;
-    Ok(true)
+    remove_entry(services, word)
 }

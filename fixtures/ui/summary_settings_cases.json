@@ -1,6 +1,8 @@
 {
  "about": "The Summaries and Dictionary refusals and messages (T12.20): apps/desktop/src-tauri (summaries_tests.rs, summary_vocabulary_tests.rs, summary_style_tests.rs) runs every case through the app's own IPC functions, and packages/ui/src/ipc/mockSummaries.test.ts runs them through the mock, so the mock's copy of the Rust rules cannot drift. A settings case is `base` with `change` applied; `error` is the exact message (null when stored), `stored` the fields that differ from the input. Every name and word is invented. Generated once; edit by hand afterwards.",
  "messages": {
+  "add_not_in_use": "Some words are not in use: remove words to make room before adding more.",
+  "stale_list": "The dictionary changed since this list was read: look at it again and try once more.",
   "not_in_use": {
    "one": "1 word is not in use: the Dictionaries of your computers together pass the limits. Remove a word to make room for it.",
    "many": "{n} words are not in use: the Dictionaries of your computers together pass the limits. Remove words to make room for them."

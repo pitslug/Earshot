@@ -532,6 +532,7 @@ pub fn set_sync_dictionary(services: &Services, on: bool) -> Result<(), SyncProb
         local::set_tx(tx, &DeviceRecord::SyncDictionary.key(), on_off_word(on))?;
         if on && !was {
             crate::vocabulary::reconcile_tx(tx, stamp)?;
+            crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep)?;
             local::set_tx(tx, &DeviceRecord::SyncCursor.key(), &encode_cursor(0))?;
         }
         Ok(())
