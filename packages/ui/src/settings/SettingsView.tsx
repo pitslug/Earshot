@@ -1,6 +1,7 @@
 // The Settings screen (docs/ui-design.md "Settings", docs/settings-design.md "Settings: eight
 // pages", T12.5b): the section list on the left, one page on the right: General, Audio (T7.4i),
-// System, Transcription, Summaries (T7.4g), Dictionary (T12.15a), People and Notes and storage.
+// System, Transcription, Summaries (T7.4g), Dictionary (T12.15a), People, Sync (T11.3a) and Notes
+// and storage.
 // It opens on General.
 // It holds the one `useModels` state for every page that shows a model part (System,
 // Transcription, Summaries), so a download or the model check carries on across pages.
@@ -8,12 +9,15 @@
 import { Button, makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import { useState } from "react";
 
+import { type Timer, realTimer } from "../time";
+
 import { AudioPage } from "./AudioPage";
 import { DictionaryPage } from "./DictionaryPage";
 import { GeneralPage } from "./GeneralPage";
 import { NotesStoragePage } from "./NotesStoragePage";
 import { PeoplePage } from "./PeoplePage";
 import { SummariesPage } from "./SummariesPage";
+import { SyncPage } from "./SyncPage";
 import { SystemPage } from "./SystemPage";
 import { TranscriptionPage } from "./TranscriptionPage";
 import { useModels } from "./useModels";
@@ -27,6 +31,7 @@ export const SETTINGS_SECTIONS = [
   "Summaries",
   "Dictionary",
   "People",
+  "Sync",
   "Notes and storage",
 ] as const;
 
@@ -78,10 +83,17 @@ export interface SettingsViewProps {
   initialSection?: SettingsSection;
   /** Opens the first-run wizard again (General). */
   onOpenSetup?: () => void;
+  /** The clock and timers (injected so tests never use real time). */
+  timer?: Timer;
 }
 
 /** The Settings screen. */
-export function SettingsView({ onBack, initialSection = "General", onOpenSetup }: SettingsViewProps) {
+export function SettingsView({
+  onBack,
+  initialSection = "General",
+  onOpenSetup,
+  timer = realTimer,
+}: SettingsViewProps) {
   const styles = useStyles();
   const [section, setSection] = useState<SettingsSection>(initialSection);
   // Held here, not in a page: the one subscriber to model job events outlives a page switch.
@@ -119,6 +131,8 @@ export function SettingsView({ onBack, initialSection = "General", onOpenSetup }
           <DictionaryPage />
         ) : section === "People" ? (
           <PeoplePage />
+        ) : section === "Sync" ? (
+          <SyncPage timer={timer} />
         ) : (
           <NotesStoragePage />
         )}

@@ -675,6 +675,7 @@ fn summaries_resummarise_with_a_chosen_summary_model_not_downloaded_fails_naming
     let e = crate::jobs::summarise_with(
         &svc,
         EntityId::from_bytes([1; 16]),
+        &earshot_core::asr::CancelToken::new(),
         &models,
         &MemoryVault::default(),
         &no_claude(),
@@ -699,6 +700,7 @@ fn summaries_resummarise_without_an_api_key_fails_with_the_api_key_message() {
     let e = crate::jobs::summarise_with(
         &svc,
         meeting,
+        &earshot_core::asr::CancelToken::new(),
         &models,
         &vault,
         &no_claude(),
@@ -931,6 +933,31 @@ fn summaries_claude_code_not_signed_in_skips_the_meetings_summary_with_a_banner(
 }
 
 #[test]
+fn summaries_resummarise_cancelled_during_the_setup_runs_nothing() {
+    // T12.41: a re-summary whose cancel was pressed while it was set up starts no writer.
+    let dir = TempDir::new("summaries-cancelled-job");
+    let svc = services(&dir);
+    let models = earshot_runtime::backends::ModelDir::new(dir.0.join("models"));
+    claude_code(&svc, "opus");
+    let cancel = earshot_core::asr::CancelToken::new();
+    cancel.cancel();
+    let mut warned = Vec::new();
+    let result = crate::jobs::summarise_with(
+        &svc,
+        EntityId::from_bytes([1; 16]),
+        &cancel,
+        &models,
+        &MemoryVault::default(),
+        &claude_installed(SignIn::SignedIn { method: None }),
+        &no_codex(),
+        &mut |w| warned.push(w),
+    )
+    .expect("a cancelled summary is not an error");
+    assert!(matches!(result, SummaryResult::Cancelled), "{result:?}");
+    assert!(warned.is_empty());
+}
+
+#[test]
 fn summaries_resummarise_through_claude_code_not_signed_in_fails_with_the_reason() {
     let dir = TempDir::new("summaries-claude-code-job");
     let svc = services(&dir);
@@ -940,6 +967,7 @@ fn summaries_resummarise_through_claude_code_not_signed_in_fails_with_the_reason
     let e = crate::jobs::summarise_with(
         &svc,
         meeting,
+        &earshot_core::asr::CancelToken::new(),
         &models,
         &MemoryVault::default(),
         &claude_installed(SignIn::NotSignedIn),
@@ -1161,6 +1189,7 @@ fn summaries_resummarise_through_codex_not_signed_in_fails_with_the_reason() {
     let e = crate::jobs::summarise_with(
         &svc,
         meeting,
+        &earshot_core::asr::CancelToken::new(),
         &models,
         &MemoryVault::default(),
         &no_claude(),

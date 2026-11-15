@@ -26,7 +26,7 @@ use earshot_core::prompt::{StyleError, StylePreset, SummaryStyle};
 use earshot_store::Store;
 
 use crate::RuntimeError;
-use crate::local::DeviceRecord;
+use crate::local::{DeviceRecord, setting_of};
 pub use crate::model_settings::UnknownSetting;
 
 #[cfg(test)]
@@ -67,25 +67,16 @@ impl std::error::Error for SummaryStyleError {}
 pub fn summary_style(
     store: &Store,
 ) -> Result<(SummaryStyle, Option<UnknownSetting>), RuntimeError> {
-    let Some(bytes) = store.local_value(SUMMARY_STYLE_KEY)? else {
-        return Ok((SummaryStyle::default(), None));
-    };
-    let refused = |why: String| {
-        Ok((
-            SummaryStyle::default(),
-            Some(UnknownSetting {
-                key: SUMMARY_STYLE_KEY,
-                stored: format!("a summary style this version refuses: {why}"),
-            }),
-        ))
-    };
-    match String::from_utf8(bytes) {
-        Ok(text) => match SummaryStyle::new(&text) {
-            Ok(style) => Ok((style, None)),
-            Err(e) => refused(e.to_string()),
+    let refused = |why: String| format!("a summary style this version refuses: {why}");
+    Ok(setting_of(
+        SUMMARY_STYLE_KEY,
+        store.local_value(SUMMARY_STYLE_KEY)?.as_deref(),
+        |bytes| match std::str::from_utf8(bytes) {
+            Ok(text) => SummaryStyle::new(text).map_err(|e| refused(e.to_string())),
+            Err(_) => Err(refused("it is not text".into())),
         },
-        Err(_) => refused("it is not text".into()),
-    }
+    )
+    .or_default_with(SummaryStyle::default))
 }
 
 /// Checks `text` ([`SummaryStyle::new`]: trimmed, at most
@@ -114,22 +105,17 @@ pub fn set_summary_style(store: &mut Store, text: &str) -> Result<SummaryStyle, 
 pub fn summary_template(
     store: &Store,
 ) -> Result<(StylePreset, Option<UnknownSetting>), RuntimeError> {
-    let Some(bytes) = store.local_value(SUMMARY_TEMPLATE_KEY)? else {
-        return Ok((StylePreset::Standard, None));
-    };
-    match std::str::from_utf8(&bytes)
-        .ok()
-        .and_then(|w| w.parse::<StylePreset>().ok())
-    {
-        Some(p) => Ok((p, None)),
-        None => Ok((
-            StylePreset::Standard,
-            Some(UnknownSetting {
-                key: SUMMARY_TEMPLATE_KEY,
-                stored: "a summary template this version does not offer".into(),
-            }),
-        )),
-    }
+    Ok(setting_of(
+        SUMMARY_TEMPLATE_KEY,
+        store.local_value(SUMMARY_TEMPLATE_KEY)?.as_deref(),
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .ok()
+                .and_then(|w| w.parse::<StylePreset>().ok())
+                .ok_or_else(|| "a summary template this version does not offer".into())
+        },
+    )
+    .or_default_with(|| StylePreset::Standard))
 }
 
 /// Stores `preset` as the summary template (Standard stores its name too, so a later

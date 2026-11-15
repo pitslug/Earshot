@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createManualTimer } from "../time";
 import { commands } from "./bindings";
 import { EVENT_METHODS, IpcFailure, type MeetingEvent, type ModelJobEvent, NEWER_DATA_KIND } from "./ipc";
+import keepLocalCases from "../../../../fixtures/ui/keep_local_cases.json";
 import { POST_STEPS, POST_STEP_MS, SCRIPT_LINES, createMockIpc, sampleMeetings } from "./mock";
 import { CHECK_RUNNING_MESSAGE, DOWNLOADING_MESSAGE, MOCK_FALLBACK_MODEL, MODEL_STEP_MS } from "./mockModels";
 import { SAMPLE_FOLDERS } from "./mockFolders";
@@ -479,5 +480,16 @@ describe("mock speech helpers (T9.1f)", () => {
       expect(e).toBeInstanceOf(IpcFailure);
       expect((e as IpcFailure).error.kind).toBe(NEWER_DATA_KIND);
     }
+  });
+});
+
+describe("mock keep-local refusals", () => {
+  it("allow while worked on follows the shared case table (T12.45)", async () => {
+    const ipc = createMockIpc({ keptLocal: [sampleMeetings()[1].id] });
+    const id = sampleMeetings()[1].id;
+    await ipc.resummarise(id);
+    await expect(ipc.allowSummaryWriter(id)).rejects.toMatchObject({
+      error: { kind: keepLocalCases.still_working.kind, message: keepLocalCases.still_working.message },
+    });
   });
 });

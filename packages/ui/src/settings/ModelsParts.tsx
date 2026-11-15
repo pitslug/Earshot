@@ -11,9 +11,7 @@ import {
   Combobox,
   Field,
   MessageBar,
-  MessageBarActions,
   MessageBarBody,
-  MessageBarTitle,
   Option,
   Select,
   Spinner,
@@ -25,6 +23,7 @@ import { useId } from "react";
 
 import type { HardwareView, ModelsView, PartChoice, RunsOn } from "../ipc";
 import { hardwareRows, languageName, partName, partOf, titleOf, verdictTag } from "./copy";
+import { NoticeBar } from "./parts";
 import type { Checking, Notice } from "./useModels";
 
 const useStyles = makeStyles({
@@ -358,19 +357,13 @@ export function Notices({ notices, onDismiss }: { notices: Notice[]; onDismiss(k
   return (
     <div className={styles.notices}>
       {notices.map((n) => (
-        <MessageBar key={n.key} intent={n.intent}>
-          <MessageBarBody>
-            <MessageBarTitle>{n.title}</MessageBarTitle>
-            {n.message}
-          </MessageBarBody>
-          <MessageBarActions
-            containerAction={
-              <Button size="small" appearance="transparent" onClick={() => onDismiss(n.key)}>
-                Dismiss
-              </Button>
-            }
-          />
-        </MessageBar>
+        <NoticeBar
+          key={n.key}
+          intent={n.intent}
+          title={n.title}
+          message={n.message}
+          onDismiss={() => onDismiss(n.key)}
+        />
       ))}
     </div>
   );

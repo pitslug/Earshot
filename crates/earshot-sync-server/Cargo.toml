@@ -1,0 +1,33 @@
+[package]
+name = "earshot-sync-server"
+description = "The sync relay (T11.2, docs/sync-spec.md section 4): stores sealed rows, presence blobs and pairing slots; holds no key and reads nothing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "earshot-sync-server"
+path = "src/main.rs"
+
+[dependencies]
+earshot-sync = { path = "../earshot-sync" }
+# Serves HTTP only (hyper as a server). The ci `net` step checks this crate on its own: no
+# HTTP client crate but `hyper`/`hyper-util`, and no shipped crate depends on it (GATE-08).
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "macros", "signal", "time"] }
+# Same version and features as earshot-store: one SQLite in the lockfile.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = { version = "0.10", default-features = false }
+getrandom = "0.3"
+subtle = { version = "2", default-features = false }
+
+[dev-dependencies]
+base64 = "0.21"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+http-body-util = "0.1"
+
+[lints]
+workspace = true

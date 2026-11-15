@@ -92,12 +92,8 @@ pub(crate) fn record_key(meeting: EntityId, track: TrackId) -> LocalKey {
 /// # Errors
 /// [`RuntimeError::Internal`] if the record does not serialise (never expected).
 pub fn encode(record: &StretchRecord) -> Result<Vec<u8>, RuntimeError> {
-    let payload = serde_json::to_vec(record)
-        .map_err(|_| RuntimeError::Internal("a stretch record does not serialise"))?;
-    let mut out = Vec::with_capacity(4 + payload.len());
-    out.extend_from_slice(&STRETCH_RECORD_VERSION.to_le_bytes());
-    out.extend_from_slice(&payload);
-    Ok(out)
+    earshot_store::encode_versioned(STRETCH_RECORD_VERSION, record)
+        .map_err(|_| RuntimeError::Internal("a stretch record does not serialise"))
 }
 
 /// Reads [`encode`]: the record, or why it cannot be used.
@@ -109,16 +105,15 @@ pub fn decode(bytes: &[u8]) -> StoredStretches {
             "stretch record version 1, this build reads {STRETCH_RECORD_VERSION}"
         ));
     }
-    let Some(head) = bytes.get(..4) else {
+    let Some((version, payload)) = earshot_store::split_version(bytes) else {
         return StoredStretches::Unreadable("the stretch record is truncated".into());
     };
-    let version = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
     if version != STRETCH_RECORD_VERSION {
         return StoredStretches::Unreadable(format!(
             "stretch record version {version}, this build reads {STRETCH_RECORD_VERSION}"
         ));
     }
-    match serde_json::from_slice(&bytes[4..]) {
+    match serde_json::from_slice(payload) {
         Ok(record) => StoredStretches::Record(Box::new(record)),
         Err(e) => StoredStretches::Unreadable(format!("the stretch record: {e}")),
     }
@@ -195,6 +190,50 @@ mod tests {
         assert_eq!(bytes[..4], STRETCH_RECORD_VERSION.to_le_bytes());
         assert_eq!(decode(&bytes), StoredStretches::Record(Box::new(r)));
     }
+
+    #[test]
+    fn stretches_record_bytes_are_pinned() {
+        // T12.52: the exact stored form of a fixed record, so a change to the framing shows.
+        let bytes = encode(&record()).unwrap();
+        assert_eq!(bytes[..4], [2, 0, 0, 0]);
+        assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), PINNED_STRETCHES);
+        let mut pinned = vec![2, 0, 0, 0];
+        pinned.extend_from_slice(PINNED_STRETCHES.as_bytes());
+        assert_eq!(decode(&pinned), StoredStretches::Record(Box::new(record())));
+        // The messages of an unreadable record.
+        let unreadable = |b: &[u8]| match decode(b) {
+            StoredStretches::Unreadable(why) => why,
+            StoredStretches::Record(_) => panic!("must not read"),
+        };
+        assert_eq!(unreadable(&[2, 0]), "the stretch record is truncated");
+        assert_eq!(
+            unreadable(&[7, 0, 0, 0, b'{', b'}']),
+            "stretch record version 7, this build reads 2"
+        );
+        assert_eq!(
+            unreadable(b"{}"),
+            "stretch record version 1, this build reads 2"
+        );
+        assert!(unreadable(&[2, 0, 0, 0, b'{']).starts_with("the stretch record: "));
+    }
+
+    const PINNED_STRETCHES: &str = concat!(
+        r#"{"backend":{"kind":"cuda","device":"gpu","model":"ggml-base.en"},"#,
+        r#""options":{"language":{"code":"en"},"decoding":{"strategy":{"strategy":"beam_search","#,
+        r#""beam_size":5},"temperature":0.0,"fallback":{"increment":0.2,"#,
+        r#""repetition_threshold":2.4,"logprob_threshold":-1.0}},"prompt":null},"#,
+        r#""pieces":{"threshold":0.5,"min_speech":{"secs":0,"nanos":250000000},"#,
+        r#""min_silence":{"secs":2,"nanos":0},"speech_pad":{"secs":0,"nanos":400000000},"#,
+        r#""max_piece":{"secs":30,"nanos":0},"merge_gap":{"secs":1,"nanos":0},"#,
+        r#""context_gap":{"secs":10,"nanos":0},"prompt_chars":200,"#,
+        r#""compression_ratio_threshold":2.4,"recover_speech":{"secs":2,"nanos":0}},"#,
+        r#""vad":"silero-vad@0123456789ab","vad_frame":512,"#,
+        r#""decoded":{"pieces":[{"span":{"start":16000,"end":32000},"#,
+        r#""segments":[{"start":0,"end":300,"text":"hi","#,
+        r#""words":[{"text":"hi","start":0,"end":300,"probability":0.9}]}],"#,
+        r#""dropped":false,"retried":false,"uncovered":false,"language":"en"}],"#,
+        r#""through":40000},"stopped":null}"#,
+    );
 
     #[test]
     fn stretches_record_of_another_version_or_damaged_is_unreadable_not_an_error() {

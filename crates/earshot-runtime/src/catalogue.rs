@@ -249,6 +249,8 @@ struct RawManifest {
     ladders: Vec<RawLadder>,
     #[serde(default, rename = "cuda_archive")]
     cuda_archives: Vec<RawCudaArchive>,
+    #[serde(default, rename = "cuda_retired")]
+    cuda_retired: Vec<RawCudaRetired>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -312,6 +314,12 @@ struct RawCudaArchive {
     format: String,
     #[serde(default, rename = "file")]
     files: Vec<CudaFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCudaRetired {
+    name: String,
 }
 
 /// A downloadable file of the manifest (location `cache`, under the models directory).
@@ -531,6 +539,7 @@ pub struct Catalogue {
     models: Vec<Model>,
     ladders: Vec<Ladder>,
     cuda_archives: Vec<CudaArchive>,
+    cuda_retired: Vec<String>,
 }
 
 fn manifest_err(msg: impl Into<String>) -> CatalogueError {
@@ -556,6 +565,11 @@ fn extract_cache_paths(into: &str) -> [String; 3] {
         format!("{into}.tmp"),
         format!("{into}.old"),
     ]
+}
+
+/// Whether `name` is a plain file name of the CUDA folder: no folder, drive or dot entry.
+fn is_plain_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
 }
 
 /// Whether a manifest path is inside the CUDA folder. The rule of xtask's
@@ -779,11 +793,13 @@ impl Catalogue {
             });
         }
         let cuda_archives = Self::cuda_archives_of(&artefacts, raw.cuda_archives)?;
+        let cuda_retired = Self::cuda_retired_of(&cuda_archives, raw.cuda_retired)?;
         Ok(Self {
             artefacts,
             models,
             ladders,
             cuda_archives,
+            cuda_retired,
         })
     }
 
@@ -829,11 +845,7 @@ impl Catalogue {
                 return Err(manifest_err(format!("{ctx}: names no file")));
             }
             for f in &r.files {
-                let plain = !f.name.is_empty()
-                    && f.name != "."
-                    && f.name != ".."
-                    && !f.name.contains(['/', '\\', ':']);
-                if !plain {
+                if !is_plain_name(&f.name) {
                     return Err(manifest_err(format!(
                         "{ctx}: file name `{}` is not a plain name",
                         f.name
@@ -873,10 +885,46 @@ impl Catalogue {
         Ok(archives)
     }
 
+    /// Checks `[[cuda_retired]]` (T12.48, the rules of xtask's `Manifest::validate_cuda`): every
+    /// name a plain name, unique without regard to case, and pinned by no part.
+    fn cuda_retired_of(
+        archives: &[CudaArchive],
+        raw: Vec<RawCudaRetired>,
+    ) -> Result<Vec<String>, CatalogueError> {
+        let pinned: BTreeSet<String> = archives
+            .iter()
+            .flat_map(|a| a.files.iter().map(|f| f.name.to_lowercase()))
+            .collect();
+        let mut seen = BTreeSet::new();
+        let mut names = Vec::new();
+        for r in raw {
+            let ctx = format!("cuda_retired `{}`", r.name);
+            if !is_plain_name(&r.name) {
+                return Err(manifest_err(format!("{ctx}: not a plain name")));
+            }
+            let lower = r.name.to_lowercase();
+            if pinned.contains(&lower) {
+                return Err(manifest_err(format!("{ctx}: a part still pins it")));
+            }
+            if !seen.insert(lower) {
+                return Err(manifest_err(format!("{ctx}: repeats")));
+            }
+            names.push(r.name);
+        }
+        Ok(names)
+    }
+
     /// The archives of the opt-in CUDA folder, in manifest order ([`crate::cuda`]).
     #[must_use]
     pub fn cuda_archives(&self) -> &[CudaArchive] {
         &self.cuda_archives
+    }
+
+    /// Names an earlier manifest put in the CUDA folder and no part pins now (T12.48): a load
+    /// ignores them and a removal or download deletes them ([`crate::cuda`]).
+    #[must_use]
+    pub fn cuda_retired(&self) -> &[String] {
+        &self.cuda_retired
     }
 
     /// The artefact ids of helpers set `set`; an archive among them must be one the app can

@@ -24,11 +24,6 @@ pub mod meeting;
 pub mod quality;
 pub mod timing;
 
-/// The `asr_eval` reference rules (`refs::parse_ami_words`), compiled here too so the AMI
-/// references of both are one rule.
-#[allow(dead_code, clippy::pedantic)]
-#[path = "../../../crates/earshot-asr-whisper/examples/asr_eval/refs.rs"]
-pub(crate) mod ami_refs;
 #[path = "../../../crates/earshot-asr-whisper/examples/asr_eval/gate12_private.rs"]
 pub(crate) mod gate12_private;
 

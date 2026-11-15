@@ -11,9 +11,9 @@ import {
   type ModelsView,
   type SummarySettingsValue,
   type SummarySettingsView,
+  errorText,
   useIpc,
 } from "../ipc";
-import { errorText } from "./useModels";
 
 export type SummariesLoad =
   | { status: "loading" }

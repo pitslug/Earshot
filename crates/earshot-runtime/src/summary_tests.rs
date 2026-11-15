@@ -518,11 +518,13 @@ fn summary_claude_code_run_cut_short_leaves_its_started_entry_and_keeps_its_own_
 
 /// A stand-in for the Codex CLI: `cmd /c type <events file> & rem <the provider's
 /// arguments>` prints `codex exec --json` events (the provider's own tests in earshot-llm run
-/// a full fake CLI).
+/// a full fake CLI). The file ends with one line shaped as `codex features list` prints it,
+/// so the provider's feature check (T12.46) reads a list; a summary run skips it (not JSON).
 #[cfg(windows)]
 fn codex_printing(dir: &TempDir, events: &[serde_json::Value]) -> earshot_llm::CodexCli {
     let path = dir.0.join("codex-events.jsonl");
-    let text: Vec<String> = events.iter().map(ToString::to_string).collect();
+    let mut text: Vec<String> = events.iter().map(ToString::to_string).collect();
+    text.push("shell_tool                               stable             true".into());
     std::fs::write(&path, text.join("\n")).unwrap();
     earshot_llm::CodexCli {
         program: "cmd".into(),
@@ -2516,4 +2518,45 @@ fn summary_a_load_on_an_integrated_gpu_counts_as_refused() {
     assert_eq!(refused_gpu(LlamaBackend::Vulkan, None, &refuse), None);
     assert_eq!(refused_gpu(LlamaBackend::Vulkan, Some(radeon), &[]), None);
     assert_eq!(refused_gpu(LlamaBackend::Cpu, Some(radeon), &refuse), None);
+}
+
+#[test]
+fn summary_writer_names_are_friendly_and_never_a_manifest_id() {
+    use crate::catalogue::{DISPLAY_NAMES, display_name, manifest_id_in};
+    use crate::claude_code::HandoverCli::{ClaudeCode, Codex};
+    let both = [ClaudeCode, Codex];
+    // Every local summary model by its display name.
+    for m in crate::summary_model::SUMMARY_MODELS {
+        assert_eq!(writer_name(m.id, &both), display_name(m.id));
+        assert_ne!(writer_name(m.id, &[]), m.id, "{} has a display name", m.id);
+    }
+    // The agent CLIs, with and without a model, as the runtime stores them, in a meeting
+    // handed to that CLI.
+    for model in [None, Some("opus"), Some("some-model")] {
+        let claude = crate::claude_code::stored_model_name(model);
+        assert_eq!(writer_name(&claude, &[ClaudeCode]), "Claude (Claude Code)");
+        let codex = crate::codex::stored_model_name(model);
+        assert_eq!(writer_name(&codex, &[Codex]), "Codex");
+        // A handover to the other CLI, or none, does not make it a CLI's summary.
+        assert_eq!(writer_name(&claude, &[Codex]), claude);
+        assert_eq!(writer_name(&codex, &[]), codex);
+    }
+    // An endpoint's model name is shown as it was sent, even one named like a CLI.
+    assert_eq!(writer_name("codex", &[]), "codex");
+    assert_eq!(writer_name("claude-code", &[]), "claude-code");
+    assert_eq!(writer_name("gpt-test-mini", &both), "gpt-test-mini");
+    assert_eq!(writer_name("claude-codex", &both), "claude-codex");
+    assert_eq!(writer_name("codexical", &both), "codexical");
+    assert_eq!(writer_name("codex/", &both), "codex/");
+    // No stored name a model of the catalogue could leave is shown as a manifest id.
+    let stored = DISPLAY_NAMES
+        .iter()
+        .map(|(id, _)| (*id).to_owned())
+        .chain(["claude-code".into(), "codex/fable".into()]);
+    for s in stored {
+        for handed in [&both[..], &[]] {
+            let shown = writer_name(&s, handed);
+            assert_eq!(manifest_id_in(&shown), None, "{s} is shown as {shown}");
+        }
+    }
 }

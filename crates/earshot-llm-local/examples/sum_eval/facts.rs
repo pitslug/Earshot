@@ -60,8 +60,9 @@ is in the budget\".\n\
 Reply with JSON only: {\"facts\": [\"...\"]}";
 
 /// The judge prompt: the verdict rules of docs/summary-eval.md, per fact. This is the one
-/// allowed revision (T6.20a's rule), and it still fails that rule on the gold set: the judge
-/// is not validated, so do not choose between models on its rates.
+/// allowed revision (T6.20a's rule; the first prompt is in docs/summary-eval.md), and it still
+/// fails that rule on the gold set: the judge is not validated, so do not choose between
+/// models on its rates.
 const JUDGE_SYSTEM: &str = "You compare one fact from a meeting's official record with a \
 summary of that meeting.\n\
 Ask these in order and stop at the first yes:\n\
@@ -103,7 +104,6 @@ fn split_grammar() -> Result<String, String> {
         }),
         GrammarOptions {
             non_blank_strings: true,
-            compact: false,
         },
     )
     .map_err(|e| e.to_string())
@@ -123,7 +123,6 @@ fn judge_grammar() -> Result<String, String> {
         }),
         GrammarOptions {
             non_blank_strings: true,
-            compact: false,
         },
     )
     .map_err(|e| e.to_string())

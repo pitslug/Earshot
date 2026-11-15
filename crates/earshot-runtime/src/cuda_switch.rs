@@ -42,12 +42,14 @@ const OFF: &str = "off";
 
 /// THE SLOT FOR THE MEASURED NUMBER (PLAN T8.4a part 3): how much CPU work the transcription part
 /// saves, as a sentence the page shows after "its gain is less processor work". `None` until it
-/// is measured on a real meeting replay; never fill it with an estimate. Measured 2026-11-06, RTX
-/// 5080, a 6 minute two-track recording replayed as fast as it reads, three runs each way, no
-/// summary: 151 s of processor time against 101 s, peak private memory 7.7 GB against 12.4 GB
-/// (docs/cuda-install.md).
+/// is measured on a real meeting replay; never fill it with an estimate. Re-measured 2026-11-15
+/// (T12.59, after one encoder was shared), RTX 5080, the shipped exe's replay of a 6 minute
+/// two-track recording as fast as it reads, three runs each way, no summary: 166.6 to 169.6 s of
+/// processor time without CUDA against 105.6 to 105.8 s with it, peak private memory 5.32 GB
+/// against 8.16 GB (docs/cuda-install.md). First measured 2026-11-06: 151 against 101 s, 7.7
+/// against 12.4 GB.
 pub const MEASURED_CPU_SAVED: Option<&str> = Some(
-    "Measured on one recording with an RTX 5080: about a third less processor time, and about 5 GB more memory set aside.",
+    "Measured on one recording with an RTX 5080: about a third less processor time, and about 3 GB more memory set aside.",
 );
 
 /// Whether this machine is offered NVIDIA's libraries. x64 only: the files are x64 builds, and
@@ -61,10 +63,13 @@ fn offered_on(hardware: &Hardware, x64: bool) -> bool {
     x64 && earshot_hardware::cuda_card(hardware).is_some()
 }
 
-/// A card with less dedicated memory than this transcribes on the CPU: a call
-/// runs one session per track, and a meeting took 7.8 GiB of the card with 1.3 GiB already in use,
-/// 9.1 GiB in all (docs/live-previews.md). The same model gives the same words on the CPU, in time.
-pub const TRANSCRIPTION_MIN_CARD_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
+/// A card with less dedicated memory than this transcribes on the CPU. T12.59's rule
+/// (docs/live-previews.md, measured 2026-11-15 with one shared encoder): a call with previews off
+/// peaked 4.18 GiB above the card's baseline, plus 2.5 GiB for other programs and room needs
+/// 6.68 GiB, so the smallest card sold that fits is 8 GB, less 0.5 GiB because a card can report
+/// just under its size; checked with the card filled to what a card of this size would have free.
+/// The same model gives the same words on the CPU, in time.
+pub const TRANSCRIPTION_MIN_CARD_MEMORY: u64 = 15 * 512 * 1024 * 1024;
 
 /// Whether this machine's card has room to transcribe a call. A card whose memory cannot be read
 /// gets no offer, as one whose capability cannot be read does.
@@ -143,20 +148,11 @@ fn stored(on: bool) -> &'static str {
 pub fn cuda_switch(store: &Store) -> Result<(CudaSwitch, Vec<UnknownSetting>), RuntimeError> {
     let mut unknown = Vec::new();
     let mut read = |key: &'static str| -> Result<bool, RuntimeError> {
-        let Some(bytes) = store.local_value(key)? else {
-            return Ok(false);
-        };
-        match bytes.as_slice() {
-            b"on" => Ok(true),
-            b"off" => Ok(false),
-            other => {
-                unknown.push(UnknownSetting {
-                    key,
-                    stored: String::from_utf8_lossy(other).into_owned(),
-                });
-                Ok(false)
-            }
-        }
+        Ok(
+            crate::local::read_setting(store, key, |t| crate::local::on_off(&t).ok_or(t))?
+                .known(&mut unknown)
+                .unwrap_or(false),
+        )
     };
     let summaries = read(CUDA_SUMMARIES_KEY)?;
     let mut transcription = read(CUDA_TRANSCRIPTION_KEY)?;

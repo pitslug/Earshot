@@ -190,7 +190,7 @@ fn put_summary(
     let mut s = Summary::new(
         meeting,
         Template::General,
-        Some("qwen3.5-9b".into()),
+        Some(earshot_runtime::summary_model::DEFAULT_SUMMARY_MODEL.into()),
         body,
         &mut stamp,
     );
@@ -226,7 +226,9 @@ fn detail_maps_header_transcript_speakers_and_resolves_citations() {
     assert_eq!(d.header.title, "Vendor review");
     assert_eq!(d.header.mode, CaptureMode::Call);
     assert_eq!(d.header.transcript, Some(TranscriptKind::Final));
-    assert_eq!(d.header.summary_model.as_deref(), Some("qwen3.5-9b"));
+    // The writer by its display name, never the manifest id (T12.43).
+    assert_eq!(d.header.summary_writer.as_deref(), Some("Qwen 3.5 9B"));
+    assert!(!d.header.summary_edited);
     assert_eq!(d.header.duration_ms, Some(60_000));
 
     // Transcript rows in meeting order with speaker names and tracks.
@@ -618,6 +620,7 @@ fn detail_a_summary_edit_shows_at_once_and_can_be_undone() {
     let d = meeting_detail(&svc, f.meeting).unwrap();
     assert_eq!(d.summary.as_ref().unwrap().id, id.to_string());
     assert!(!d.can_undo_summary);
+    assert!(!d.header.summary_edited);
 
     let field = |f: SummaryFieldRef| f.field();
     edit::edit_summary(
@@ -646,6 +649,8 @@ fn detail_a_summary_edit_shows_at_once_and_can_be_undone() {
         d.can_undo_summary,
         "the text before the edit can be restored"
     );
+    assert!(d.header.summary_edited, "the header says it was edited");
+    assert_eq!(d.header.summary_writer.as_deref(), Some("Qwen 3.5 9B"));
     assert!(
         !d.summary_stale,
         "a summary edit leaves the transcript as it was"
@@ -656,6 +661,8 @@ fn detail_a_summary_edit_shows_at_once_and_can_be_undone() {
         d.summary.as_ref().unwrap().actions[0].due.as_deref(),
         Some("Friday")
     );
+    // The text before the last edit was itself edited (the decision).
+    assert!(d.header.summary_edited);
 
     // A summary that is no longer current is refused as user copy.
     let e: IpcError = edit::edit_summary(
@@ -926,6 +933,131 @@ fn detail_offers_this_is_me_only_in_a_room_with_no_me_row() {
     assert_eq!(e.kind, "speaker_not_found");
 }
 
+/// Adds a person (`is_me` for the user), with one voiceprint when `print`; returns the id.
+fn person_with(svc: &Services, name: &str, is_me: bool, print: bool, seed: u64) -> EntityId {
+    let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let p = Person::new(name, is_me, &mut stamp);
+    store.put_person(p.clone()).unwrap();
+    if print {
+        earshot_core::voiceprint::enroll(
+            &mut *store,
+            p.id,
+            &[earshot_core::diar::Embedding::new(
+                EmbeddingModelId::new("level@1"),
+                vec![1.0, 0.0],
+            )],
+            std::time::Duration::from_secs(60),
+            &earshot_core::voiceprint::EnrolmentConfig::default(),
+            &mut stamp,
+        )
+        .unwrap();
+    }
+    p.id
+}
+
+#[test]
+fn detail_this_isnt_me_is_refused_on_a_voice_the_users_voiceprint_named() {
+    let dir = TempDir::new("detail-recognised-me");
+    let svc = services(&dir);
+    let user = person_with(&svc, "Casey", true, true, 60);
+    let (m, voice, _) = in_room_meeting(&svc, 61);
+    // As a final pass naming the voice by the user's voiceprint leaves it (no identity entry).
+    {
+        let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let mut row = db
+            .speakers(m)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == voice)
+            .unwrap();
+        let (store, hlc) = db.parts();
+        row.role = SpeakerRole::Me;
+        row.person_id = Some(user);
+        row.display_name = "Casey".into();
+        row.meta.touch(hlc, &*clock);
+        store.put_speaker(row).unwrap();
+        // The pass's evidence that the voiceprint named it (test set-up: production writes it
+        // through the runtime's registry).
+        store
+            .set_local_value(
+                &format!("voiceprint-me/{m}"),
+                &earshot_runtime::identities::encode_voiceprint_me(voice),
+            )
+            .unwrap();
+    }
+    let d = meeting_detail(&svc, m).unwrap();
+    let mine = card(&d, voice);
+    assert!(mine.recognised_me && !mine.can_unmark_me);
+    assert!(
+        d.speakers
+            .iter()
+            .filter(|s| s.id != mine.id)
+            .all(|s| !s.recognised_me)
+    );
+    let e = IpcError::from(edit::unmark_me(&svc, m, voice).unwrap_err());
+    assert_eq!(e.kind, "recognised_me");
+    assert_eq!(e.message, RECOGNISED_ME_COPY);
+    assert!(RECOGNISED_ME_COPY.contains("Settings, People"));
+
+    // With the user's voice forgotten, the undo is the user's again.
+    earshot_runtime::my_voice::forget_my_voice(&svc).unwrap();
+    let mine = card(&meeting_detail(&svc, m).unwrap(), voice).clone();
+    assert!(!mine.recognised_me && mine.can_unmark_me);
+}
+
+#[test]
+fn detail_recognised_me_copy_is_the_ui_copy() {
+    // The UI's tooltip and mock refusal (`RECOGNISED_ME_COPY` in packages/ui/src/ipc/ipc.ts)
+    // say exactly this; the TypeScript literal escapes the apostrophe.
+    let ts = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../packages/ui/src/ipc/ipc.ts"),
+    )
+    .unwrap();
+    let literal = format!("'{}'", RECOGNISED_ME_COPY.replace('\'', "\\'"));
+    assert!(ts.contains(&literal), "{literal}");
+}
+
+#[test]
+fn detail_mark_me_returns_the_persons_named_after_the_user_to_merge() {
+    let dir = TempDir::new("detail-merge-me");
+    let svc = services(&dir);
+    person_with(&svc, "Casey Lane", true, false, 62);
+    let twin = person_with(&svc, "Casey Lane", false, true, 63);
+    person_with(&svc, "Robin", false, false, 64);
+    let (m, voice, other) = in_room_meeting(&svc, 65);
+    edit::link_speaker(&svc, m, other, &PersonChoice::Existing(twin)).unwrap();
+    let offered = super::mark_me(&svc, m, voice).unwrap();
+    assert_eq!(offered.len(), 1);
+    assert_eq!(offered[0].id, twin.to_string());
+    assert_eq!(offered[0].name, "Casey Lane");
+    assert!(offered[0].has_voiceprint && !offered[0].is_me);
+
+    let user = edit::merge_into_me(&svc, twin).unwrap();
+    // The row linked to the merged person shows the user as its person: it has a name and
+    // never asks for one again.
+    let d = meeting_detail(&svc, m).unwrap();
+    let theirs = card(&d, other);
+    assert_eq!(theirs.person.as_ref().unwrap().id, user.to_string());
+    assert!(theirs.person.as_ref().unwrap().has_voiceprint);
+    assert!(!theirs.needs_name && !theirs.can_ignore);
+    assert_eq!(theirs.name, "Casey Lane");
+    let listed = persons(&svc).unwrap();
+    assert!(listed.iter().all(|p| p.id != twin.to_string()));
+    assert!(listed.iter().any(|p| p.is_me && p.has_voiceprint));
+    let e = IpcError::from(edit::merge_into_me(&svc, twin).unwrap_err());
+    assert_eq!(e.kind, "person_not_found");
+}
+
 #[test]
 fn detail_edit_refusals_become_plain_user_copy() {
     let id = EntityId::from_bytes([2; 16]);
@@ -949,6 +1081,8 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::NotInRoom(id), "not_in_room"),
         (EditError::MeetingHasMe(id), "meeting_has_me"),
         (EditError::NotMe(id), "not_me"),
+        (EditError::RecognisedMe(id), "recognised_me"),
+        (EditError::NotNamedAfterUser(id), "not_named_after_user"),
         (EditError::NoPreviousSummary, "no_previous_summary"),
         (EditError::PreviousSummaryStale, "previous_summary_stale"),
         (EditError::FolderNotFound(id), "folder_not_found"),
@@ -991,6 +1125,7 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::WordNotFound(id), "word_not_found"),
         (EditError::WordNotListed, "word_not_listed"),
         (EditError::NoWordChoice(id), "no_word_choice"),
+        (EditError::MeetingStillWorking(id), "meeting_still_working"),
     ];
     for (e, kind) in all {
         let ipc = IpcError::from(RuntimeError::Edit(e.clone()));

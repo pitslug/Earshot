@@ -297,6 +297,17 @@ impl MeetingModels {
                         message: message.to_owned(),
                     });
             }
+            // A CUDA load that could not share the encoder (T12.58), once per process; one made by
+            // a final pass or a preview shows at the next track load.
+            if let Some(message) = crate::shared_encoders::take_note() {
+                me.notes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(crate::live::RuntimeWarning::HostNote {
+                        key: "shared-encoder".to_owned(),
+                        message: message.to_owned(),
+                    });
+            }
             loaded
         })
     }
@@ -570,6 +581,59 @@ pub struct TranscriptionSetup {
     /// Things the user is told: the forced part not used (the model runs on the processor)
     /// and stored settings this version does not know.
     pub notes: Vec<String>,
+    /// The note of `notes` that says a Parakeet model with no NPU version installed runs on the
+    /// processor ([`crate::backends::npu_order`]), so a meeting can show it once
+    /// ([`npu_note_once`]).
+    pub npu_note: Option<String>,
+}
+
+/// The device record of the NPU note last shown at a meeting or job start (T12.45):
+/// `version u32 LE | note UTF-8` (fixed copy and a model's display name, never content).
+pub const NPU_NOTE_SHOWN_KEY: &str = "npu-note-shown";
+
+/// [`NPU_NOTE_SHOWN_KEY`]'s version.
+const NPU_NOTE_SHOWN_VERSION: u32 = 1;
+
+/// Shows `setup`'s NPU note ([`TranscriptionSetup::npu_note`]) once until something about it
+/// changes (T12.45; it used to show at every meeting start): the note stays in `setup.notes`
+/// only when it differs from the one last shown. Nothing is written here: the host calls
+/// [`NpuNoteShown::record`] once the note has really been shown (the meeting started and its
+/// banners went out), so a start that fails leaves it unshown. A setup with no such note (the
+/// NPU version installed, another model, no NPU) records a forgetting, so the note shows again
+/// if it comes back. Called by the hosts that turn notes into banners or job warnings, never by
+/// the Settings pages, which always say where a model runs. A record that cannot be read shows
+/// the note: a setting never hides what the user should hear.
+pub fn npu_note_once(store: &Store, setup: &mut TranscriptionSetup) -> NpuNoteShown {
+    let key = crate::local::DeviceRecord::NpuNoteShown.key();
+    let Some(note) = &setup.npu_note else {
+        return NpuNoteShown(None);
+    };
+    let mut record = NPU_NOTE_SHOWN_VERSION.to_le_bytes().to_vec();
+    record.extend_from_slice(note.as_bytes());
+    if store
+        .local_value(key.as_str())
+        .is_ok_and(|v| v.as_deref() == Some(record.as_slice()))
+    {
+        setup.notes.retain(|n| n != note);
+    }
+    NpuNoteShown(Some(record))
+}
+
+/// What [`npu_note_once`] leaves to record once the notes were shown: the note shown, or that
+/// there was none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub struct NpuNoteShown(Option<Vec<u8>>);
+
+impl NpuNoteShown {
+    /// Records it in [`NPU_NOTE_SHOWN_KEY`]. A write that fails is ignored: the note shows again.
+    pub fn record(self, store: &mut Store) {
+        let key = crate::local::DeviceRecord::NpuNoteShown.key();
+        let _ = match self.0 {
+            Some(record) => crate::local::set(store, &key, &record).map(|()| true),
+            None => store.delete_local_value(key.as_str()),
+        };
+    }
 }
 
 /// The transcription model and accelerator order of an app run (meeting start,
@@ -678,7 +742,7 @@ pub fn transcription_setup_from(
     );
     // A Parakeet model whose NPU conversion is not installed runs on the processor, said (T8.4f).
     let (order, npu_note) = crate::backends::npu_order(models, &choice.model, placement.order);
-    let mut notes: Vec<String> = placement.note.into_iter().chain(npu_note).collect();
+    let mut notes: Vec<String> = placement.note.into_iter().chain(npu_note.clone()).collect();
     notes.extend(unknown.iter().map(ToString::to_string));
     Ok(TranscriptionSetup {
         choice,
@@ -686,6 +750,7 @@ pub fn transcription_setup_from(
         order,
         languages: settings.languages.clone(),
         notes,
+        npu_note,
     })
 }
 
@@ -1540,7 +1605,7 @@ pub fn live_factory(
 /// too small for them, T12.3c), and never costs the meeting anything. With
 /// [`PreviewChoice::Everyone`](crate::preview_settings::PreviewChoice::Everyone) the user's own
 /// track in a call gets a second session of its own, where `backends::second_preview_backend`
-/// says (T9.14; the CPU, also beside CUDA: T12.3a). Each loader's rule is also given as
+/// says (T9.14; with the first on CUDA, T12.60, else the CPU). Each loader's rule is also given as
 /// [`LivePreviews::rule`](crate::live::LivePreviews), so the session knows what the computer
 /// refuses before it tells the user about a wait or the battery (T12.33).
 #[must_use]

@@ -69,18 +69,12 @@ impl LiveFolders {
         folder_id.and_then(|id| self.0.get(&id))
     }
 
-    /// The folders sorted by name, case folded per character, then by creation and id (two
-    /// live folders can share a name after a sync).
+    /// The folders sorted by name ([`name_order`]), then by creation and id (two live folders
+    /// can share a name after a sync).
     #[must_use]
     pub fn sorted(&self) -> Vec<FolderItem> {
         let mut folders: Vec<&Folder> = self.0.values().collect();
-        folders.sort_by_cached_key(|f| {
-            (
-                fold_case(&f.name).collect::<String>(),
-                f.meta.created_at,
-                f.id,
-            )
-        });
+        folders.sort_by_cached_key(|f| (name_order(&f.name), f.meta.created_at, f.id));
         folders
             .into_iter()
             .map(|f| FolderItem {
@@ -91,7 +85,30 @@ impl LiveFolders {
     }
 }
 
-/// Every live folder, sorted by name (case folded per character).
+/// The sort key of a folder name (T12.45): first the name with case folded and each Latin
+/// letter with a diacritic folded to its base letters (`é` with `e`, `ø` with `o`, `æ` as
+/// `ae`, `ß` as `ss`), so a name starting with an accented letter no longer sorts after `z`;
+/// then the case-folded name, so `Éte` follows `Ete`. Everything else compares by code point.
+///
+/// There is no ICU here, so this is not a language's collation (a Swedish `å` sorts with `a`,
+/// not after `z`): the base-letter table is core's Latin table for Whisper's normaliser
+/// (`earshot_core::metrics::normalize::fold_diacritic`). `fixtures/ui/folder_sort_cases.json`
+/// pins the order. The UI lists folders in the order sent and never sorts them; the UI mock
+/// sorts by lower-case code point only (T12.54).
+#[must_use]
+pub fn name_order(name: &str) -> (String, String) {
+    let folded: String = fold_case(name).collect();
+    let mut base = String::with_capacity(folded.len());
+    for c in folded.chars() {
+        match earshot_core::metrics::normalize::fold_diacritic(c) {
+            Some(b) => base.push_str(b),
+            None => base.push(c),
+        }
+    }
+    (base, folded)
+}
+
+/// Every live folder, sorted by name ([`name_order`]).
 ///
 /// # Errors
 /// Storage errors.

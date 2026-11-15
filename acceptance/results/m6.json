@@ -1,9 +1,9 @@
 {
   "milestone": "m6",
   "requested_backend": null,
-  "timestamp": "2026-10-25T23:13:59Z",
+  "timestamp": "2026-11-14T15:18:45Z",
   "host": "x86_64-pc-windows-msvc",
-  "commit": "5fc7dc4",
+  "commit": "568bf1f",
   "backends": [
     "cpu"
   ],
@@ -30,7 +30,7 @@
     {
       "name": "transcript",
       "pass": true,
-      "detail": "final pass: 4 mic and 7 loopback segments with text; backends (live mic, live loopback, final) Ok([\"Cpu\", \"Cpu\", \"Cpu\"])"
+      "detail": "final pass: 8 mic and 7 loopback segments with text; backends (live mic, live loopback, final) Ok([\"Cpu\", \"Cpu\", \"Cpu\"])"
     },
     {
       "name": "speakers_separated",
@@ -60,12 +60,12 @@
     {
       "name": "export",
       "pass": true,
-      "detail": "1 file(s) in the vault; note Meetings/2026-10-25 23-13 Replayed call.md; missing []"
+      "detail": "1 file(s) in the vault; note Meetings/2026-11-14 15-18 Replayed call.md; missing []"
     },
     {
       "name": "network",
       "pass": true,
-      "detail": "1 audit entries, 1 requests at the mock, 0 not a successful POST to 127.0.0.1:61441/v1/chat/completions"
+      "detail": "1 audit entries, 1 requests at the mock, 0 not a successful POST to 127.0.0.1:55162/v1/chat/completions"
     }
   ],
   "pass": true

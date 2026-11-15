@@ -128,6 +128,43 @@ fn summary_kept_local_record_presence_is_the_answer() {
 }
 
 #[test]
+fn summary_kept_local_allow_is_refused_while_the_meeting_is_still_worked_on() {
+    use crate::MeetingJob;
+    let dir = TempDir::new("summary-kept-local-busy");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "", 1);
+    for job in [
+        MeetingJob::Recording,
+        MeetingJob::Waiting,
+        MeetingJob::Processing,
+    ] {
+        crate::local::set(&mut svc.store(), &record_key(m), &encode()).unwrap();
+        let lease = svc.lease_meeting_for(m, job).unwrap();
+        assert!(
+            matches!(
+                allow_writer(&svc, m),
+                Err(RuntimeError::Edit(crate::edit::EditError::MeetingStillWorking(id))) if id == m
+            ),
+            "{job:?}"
+        );
+        // Refused means nothing changed: the meeting is still kept here.
+        assert_eq!(
+            summary_privacy(&svc.store(), m),
+            SummaryPrivacy::KeptLocal,
+            "{job:?}"
+        );
+        drop(lease);
+        allow_writer(&svc, m).unwrap();
+        assert_eq!(summary_privacy(&svc.store(), m), SummaryPrivacy::Writer);
+    }
+    // A lease that is not a meeting's own work (an export) does not refuse it.
+    crate::local::set(&mut svc.store(), &record_key(m), &encode()).unwrap();
+    let _export = svc.lease_meeting(m).unwrap();
+    allow_writer(&svc, m).unwrap();
+    assert_eq!(summary_privacy(&svc.store(), m), SummaryPrivacy::Writer);
+}
+
+#[test]
 fn summary_kept_local_record_is_version_then_marker() {
     let mut want = RECORD_VERSION.to_le_bytes().to_vec();
     want.extend_from_slice(b"local");
@@ -249,4 +286,94 @@ fn summary_kept_local_request_never_plans_a_remote_writer() {
         host::summary_plan(&open, Some(16 << 30), false, &models).unwrap(),
         SummaryPlan::NoApiKey(_)
     ));
+}
+
+/// Sets `meeting`'s synced field the way a copy of a kept meeting from another device carries
+/// it, with no device-local record (T11.1a).
+fn set_field(svc: &Services, meeting: EntityId, kept: bool) {
+    let mut db = svc.store();
+    let mut m = db.meeting(meeting).unwrap().unwrap();
+    m.summary_kept_local = kept;
+    db.put_meeting(m).unwrap();
+}
+
+#[test]
+fn summary_kept_local_field_alone_keeps_the_meeting() {
+    let dir = TempDir::new("summary-kept-local-field");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "", 1);
+    set_field(&svc, m, true);
+    assert_eq!(
+        svc.store().local_value(record_key(m).as_str()).unwrap(),
+        None,
+        "no device-local record"
+    );
+    assert_eq!(summary_privacy(&svc.store(), m), SummaryPrivacy::KeptLocal);
+    // Control: the same meeting with the field off and no record goes to the writer.
+    set_field(&svc, m, false);
+    assert_eq!(summary_privacy(&svc.store(), m), SummaryPrivacy::Writer);
+}
+
+#[test]
+fn summary_kept_local_allow_clears_field_and_record_as_an_edit() {
+    let dir = TempDir::new("summary-kept-local-allow-field");
+    let (svc, clock) = services(&dir);
+    let m = meeting(&svc, "", 1);
+    set_field(&svc, m, true);
+    crate::local::set(&mut svc.store(), &record_key(m), &encode()).unwrap();
+    let before = svc.store().meeting(m).unwrap().unwrap().meta.updated_at;
+    clock.advance_ms(1_000);
+    allow_writer(&svc, m).unwrap();
+    let after = svc.store().meeting(m).unwrap().unwrap();
+    assert!(!after.summary_kept_local);
+    assert_eq!(
+        svc.store().local_value(record_key(m).as_str()).unwrap(),
+        None
+    );
+    // Re-stamped, so this choice wins over an older synced copy that still says kept.
+    assert!(
+        after.meta.updated_at > before,
+        "{before:?} {:?}",
+        after.meta
+    );
+    assert_eq!(summary_privacy(&svc.store(), m), SummaryPrivacy::Writer);
+    // Allowing a meeting that is not kept writes nothing: no new stamp to sync.
+    clock.advance_ms(1_000);
+    allow_writer(&svc, m).unwrap();
+    assert_eq!(
+        svc.store().meeting(m).unwrap().unwrap().meta.updated_at,
+        after.meta.updated_at
+    );
+}
+
+#[test]
+fn summary_kept_local_field_alone_refuses_a_service_that_is_not_local() {
+    use crate::summary::{SummaryConfig, SummaryService};
+    use earshot_core::asr::CancelToken;
+    use earshot_llm_replay::mock::MockServer;
+    use rand_core::SeedableRng;
+    let dir = TempDir::new("summary-kept-local-field-service");
+    let (svc, _) = services(&dir);
+    let id = meeting(&svc, "", 1);
+    set_field(&svc, id, true);
+    let server = MockServer::start(vec![]).unwrap();
+    let service = SummaryService::new(
+        &SummaryConfig::new(server.endpoint().as_str(), "test-model"),
+        svc.clock.clone(),
+    )
+    .unwrap();
+    let e = service
+        .summarize(
+            &svc,
+            id,
+            &mut rand_chacha::ChaCha8Rng::seed_from_u64(2),
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(e, RuntimeError::SummaryKeptLocal(m) if m == id),
+        "{e:?}"
+    );
+    assert!(service.audit_log().is_empty());
+    assert!(server.requests().is_empty());
 }

@@ -344,30 +344,6 @@ fn retention_sweeps_orphan_audio_older_than_the_grace_period() {
 }
 
 #[test]
-fn data_dir_startup_cleanup_removes_only_stale_part_files() {
-    let tmp = TempDir::new("parts");
-    let data = DataDir::new(tmp.path().join("Earshot"));
-    data.create().unwrap();
-    let d = data.root().join("audio").join("m");
-    std::fs::create_dir_all(&d).unwrap();
-    let stale = d.join("mic.flac.part");
-    let fresh = d.join("loopback.flac.part");
-    let finished = d.join("x.flac");
-    for p in [&stale, &fresh, &finished] {
-        std::fs::write(p, b"x").unwrap();
-    }
-    age(&stale, Duration::from_millis(ORPHAN_GRACE_MS + DAY_MS));
-    age(&finished, Duration::from_millis(ORPHAN_GRACE_MS + DAY_MS));
-    let store = Store::open(&data.db_path()).unwrap();
-    assert_eq!(
-        data.cleanup_stale_parts(&store, now_ms(), ORPHAN_GRACE_MS)
-            .unwrap(),
-        1
-    );
-    assert!(!stale.exists() && fresh.exists() && finished.exists());
-}
-
-#[test]
 fn store_deleted_local_values_leave_no_trace_on_disk() {
     // T6.13d2: transient device-local records (live speaker embeddings, live transcripts)
     // are deleted after the final pass; their bytes must not survive in the database, its

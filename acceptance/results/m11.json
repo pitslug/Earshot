@@ -1,0 +1,62 @@
+{
+  "milestone": "m11",
+  "requested_backend": null,
+  "timestamp": "2026-11-15T01:58:51Z",
+  "host": "x86_64-pc-windows-msvc",
+  "commit": "5275cb1-dirty",
+  "backends": [],
+  "results": [
+    {
+      "id": "sync.convergence",
+      "metric": "two clients converge after concurrent edits",
+      "op": "pass",
+      "threshold": null,
+      "unit": "",
+      "value": null,
+      "passed": true,
+      "backend": null,
+      "pass": true,
+      "reason": "passed"
+    },
+    {
+      "id": "sync.no_audio",
+      "metric": "no audio types/bytes in any sync plaintext; no server row over the size limit",
+      "op": "pass",
+      "threshold": null,
+      "unit": "",
+      "value": null,
+      "passed": true,
+      "backend": null,
+      "pass": true,
+      "reason": "passed"
+    }
+  ],
+  "checks": [
+    {
+      "name": "server",
+      "pass": true,
+      "detail": "the relay binary (Docker is not on this host)"
+    },
+    {
+      "name": "relay_log_holds_no_secret",
+      "pass": true,
+      "detail": "21 log lines"
+    },
+    {
+      "name": "type_level",
+      "pass": true,
+      "detail": "earshot-core model_never_sync and identity_sync_class"
+    },
+    {
+      "name": "convergence_detail",
+      "pass": true,
+      "detail": "14 rows the same on both devices after concurrent edits"
+    },
+    {
+      "name": "no_audio_detail",
+      "pass": true,
+      "detail": "14 stored rows opened, none audio; largest row 1631 of 262144 bytes"
+    }
+  ],
+  "pass": true
+}

@@ -60,6 +60,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             merge_speakers,
             link_speaker,
             mark_me,
+            merge_into_me,
             unmark_me,
             rename_person,
             list_persons,
@@ -71,6 +72,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             speaker_sample,
             retranscribe,
             resummarise,
+            cancel_job,
             undo_summary,
             export_meeting,
             crate::deletion::meeting_deletion,
@@ -137,6 +139,15 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::summary_style::set_summary_template,
             crate::summary_vocabulary::summary_vocabulary,
             crate::summary_vocabulary::set_summary_vocabulary,
+            crate::sync_settings::sync_view,
+            crate::sync_settings::sync_devices,
+            crate::sync_settings::set_up_sync,
+            crate::sync_settings::offer_sync_code,
+            crate::sync_settings::join_sync,
+            crate::sync_settings::set_sync_on,
+            crate::sync_settings::set_sync_voiceprints,
+            crate::sync_settings::sync_now,
+            crate::sync_settings::remove_sync_device,
             crate::first_run::first_run_state,
             crate::first_run::finish_first_run,
             crate::cuda_settings::cuda_settings,
@@ -181,6 +192,26 @@ impl IpcError {
             message: message.into(),
             retryable: false,
         }
+    }
+
+    /// Kind `busy`, retryable: something else runs; trying again later can work.
+    pub(crate) fn busy(message: impl Into<String>) -> Self {
+        Self {
+            kind: "busy".into(),
+            message: message.into(),
+            retryable: true,
+        }
+    }
+
+    /// Kind `internal` with the fixed [`crate::plain_text::INTERNAL`] copy, never an error's
+    /// own text.
+    pub(crate) fn internal() -> Self {
+        Self::new("internal", crate::plain_text::INTERNAL)
+    }
+
+    /// Kind `invalid_setting`: a value the user gave was refused.
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
+        Self::new("invalid_setting", message)
     }
 }
 
@@ -827,18 +858,28 @@ async fn link_speaker(
     blocking(move || detail::link(&services, meeting, speaker, &choice)).await
 }
 
-/// Says a voice of an in-room meeting is the user's ("This is me").
+/// Says a voice of an in-room meeting is the user's ("This is me"); returns the separate
+/// persons named after the user, to offer merging them into the user (T12.44).
 #[tauri::command]
 #[specta::specta]
 async fn mark_me(
     state: State<'_, AppState>,
     meeting: String,
     speaker: String,
-) -> Result<(), IpcError> {
+) -> Result<Vec<PersonItem>, IpcError> {
     let services = state.services()?;
     let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || detail::mark_me(&services, meeting, speaker)).await
+}
+
+/// Merges a separate person named after the user into the user (T12.44).
+#[tauri::command]
+#[specta::specta]
+async fn merge_into_me(state: State<'_, AppState>, person: String) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let person = parse_id(&person)?;
     blocking(move || {
-        earshot_runtime::edit::mark_me(&services, meeting, speaker)?;
+        earshot_runtime::edit::merge_into_me(&services, person)?;
         Ok(())
     })
     .await
@@ -998,6 +1039,16 @@ fn resummarise(
 ) -> Result<(), IpcError> {
     let services = state.services()?;
     jobs.start(&services, parse_id(&meeting)?, JobKind::Resummarise)
+}
+
+/// Cancels the re-transcription or re-summary of `meeting` (T12.41); its last `JobEvent` follows
+/// as usual (`Cancelled`, or what the job finished with if it had finished). No job is not an
+/// error.
+#[tauri::command]
+#[specta::specta]
+fn cancel_job(jobs: State<'_, JobRunner>, meeting: String) -> Result<(), IpcError> {
+    jobs.cancel(parse_id(&meeting)?);
+    Ok(())
 }
 
 /// Swaps the current summary with the previous one.
@@ -1371,11 +1422,7 @@ fn set_window_theme(
             WindowTheme::Light => tauri::Theme::Light,
             WindowTheme::Dark => tauri::Theme::Dark,
         }))
-        .map_err(|e| IpcError {
-            kind: "window".into(),
-            message: e.to_string(),
-            retryable: false,
-        })
+        .map_err(window_error)
 }
 
 #[cfg(test)]

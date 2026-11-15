@@ -1,0 +1,27 @@
+{
+  "name": "t1260-card-bundled",
+  "args": "--backend cuda --audio bundled --previews everyone",
+  "exit": 0,
+  "started": "2026-11-15T08:45:34",
+  "idle_checks": [
+    {
+      "load": 8.7,
+      "card_mib": 1111,
+      "builds": 0
+    },
+    {
+      "load": 9.9,
+      "card_mib": 1111,
+      "builds": 0
+    },
+    {
+      "load": 4.4,
+      "card_mib": 1111,
+      "builds": 0
+    }
+  ],
+  "baseline_mib": 1111,
+  "peak_mib": 6624.0,
+  "peak_above_baseline_gib": 5.384,
+  "readings": 155
+}

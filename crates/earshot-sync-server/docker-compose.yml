@@ -1,0 +1,25 @@
+# The sync relay (docs/sync-spec.md section 4). Put a `.env` file beside this one with
+#
+#   EARSHOT_SYNC_SETUP_SECRET=<at least 24 characters>
+#   EARSHOT_VERSION=<the Earshot version, or leave it out for latest>
+#
+# or give the secret as a Docker secret file and set EARSHOT_SYNC_SETUP_SECRET_FILE to its
+# path (/run/secrets/<name>) instead; never both.
+#
+# then `docker compose up -d`. Put it behind your reverse proxy for TLS; the relay speaks
+# plain HTTP on port 8787 and holds only sealed data. Behind the proxy every caller shares
+# the proxy's address, so ten failed registrations or pairing attempts by anyone make
+# everyone wait a minute.
+services:
+  earshot-sync:
+    image: ghcr.io/pitslug/earshot-sync-server:${EARSHOT_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      EARSHOT_SYNC_SETUP_SECRET: ${EARSHOT_SYNC_SETUP_SECRET:?set EARSHOT_SYNC_SETUP_SECRET in .env}
+    volumes:
+      - earshot-sync-data:/data
+    ports:
+      - "8787:8787"
+
+volumes:
+  earshot-sync-data:

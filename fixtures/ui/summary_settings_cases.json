@@ -284,24 +284,29 @@
    "error": "A word can hold only text, with no line breaks or tabs."
   },
   {
-   "name": "a byte order mark is not white space",
+   "name": "a byte order mark refuses the list",
    "words": [
     "\ufeffQuillmarsh"
    ],
-   "stored": [
-    "\ufeffQuillmarsh"
-   ],
-   "error": null
+   "stored": null,
+   "error": "A word cannot hold invisible characters such as zero-width spaces or text-direction marks."
   },
   {
-   "name": "a zero-width space is not white space",
+   "name": "a zero-width space refuses the list",
    "words": [
     "Quill\u200bmarsh"
    ],
-   "stored": [
-    "Quill\u200bmarsh"
+   "stored": null,
+   "error": "A word cannot hold invisible characters such as zero-width spaces or text-direction marks."
+  },
+  {
+   "name": "a text-direction override refuses the list",
+   "words": [
+    "Quillmarsh",
+    "\u202eQXR-7"
    ],
-   "error": null
+   "stored": null,
+   "error": "A word cannot hold invisible characters such as zero-width spaces or text-direction marks."
   },
   {
    "name": "a line separator splits like a space",
@@ -530,10 +535,16 @@
    "error": "The summary style can hold only text, line breaks and tabs."
   },
   {
-   "name": "a byte order mark is not trimmed",
+   "name": "a byte order mark refuses it",
    "text": "\ufeffBe brief.",
-   "stored": "\ufeffBe brief.",
-   "error": null
+   "stored": null,
+   "error": "The summary style cannot hold invisible characters such as zero-width spaces or text-direction marks."
+  },
+  {
+   "name": "a text-direction isolate refuses it",
+   "text": "Be \u2066brief\u2069.",
+   "stored": null,
+   "error": "The summary style cannot hold invisible characters such as zero-width spaces or text-direction marks."
   },
   {
    "name": "at the limit",

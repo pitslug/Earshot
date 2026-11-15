@@ -150,6 +150,25 @@ impl NetRequest {
     }
 }
 
+/// Secret header values are wiped when the request is dropped (T12.46); a clone keeps its
+/// own copy until it is dropped too.
+impl Drop for NetRequest {
+    fn drop(&mut self) {
+        self.wipe_secrets();
+    }
+}
+
+impl NetRequest {
+    /// Wipes every secret header value ([`is_secret_header`]), leaving it empty.
+    fn wipe_secrets(&mut self) {
+        for (name, value) in &mut self.headers {
+            if is_secret_header(name) {
+                crate::secret::wipe_string(value);
+            }
+        }
+    }
+}
+
 impl fmt::Debug for NetRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let headers: Vec<(&str, &str)> = self
@@ -538,19 +557,21 @@ impl NetClient {
     /// unread and its audit entry not yet recorded.
     async fn follow(
         &self,
-        req: NetRequest,
+        mut req: NetRequest,
     ) -> Result<(reqwest::Response, AuditEntry, Url), NetError> {
         let mut headers = HeaderMap::new();
         for (k, v) in &req.headers {
             let name = HeaderName::from_bytes(k.as_bytes())
                 .map_err(|e| NetError::InvalidHeader(format!("{k}: {e}")))?;
-            let value = HeaderValue::from_str(v)
+            let mut value = HeaderValue::from_str(v)
                 .map_err(|e| NetError::InvalidHeader(format!("{k}: {e}")))?;
+            // hyper keeps a sensitive value out of its HPACK table and its own Debug.
+            value.set_sensitive(is_secret_header(k));
             headers.append(name, value);
         }
-        let mut method = req.method;
-        let mut url = req.url;
-        let mut body = req.body;
+        let mut method = req.method.clone();
+        let mut url = req.url.clone();
+        let mut body = std::mem::take(&mut req.body);
 
         for hop in 0..=MAX_REDIRECTS {
             let mut entry = self.entry(&method, &url);
@@ -771,6 +792,24 @@ mod tests {
         assert!(is_secret_header(" X-API-KEY "));
         assert!(is_secret_header("openai_api_key"));
         assert!(!is_secret_header("content-type"));
+    }
+
+    #[test]
+    fn request_drop_wipes_only_its_own_secret_header_values() {
+        let mut req = NetRequest::get(Url::parse("https://h.example/v1").unwrap())
+            .header("x-api-key", "sk-invented")
+            .header("Authorization", "Bearer sk-invented")
+            .header("content-type", "application/json");
+        let copy = req.clone();
+        req.wipe_secrets();
+        let values: Vec<&str> = req.headers.iter().map(|(_, v)| v.as_str()).collect();
+        assert_eq!(values, ["", "", "application/json"]);
+        // A clone keeps its own copy until it is dropped too.
+        assert_eq!(copy.headers[0].1, "sk-invented");
+        // Dropping a request wipes each secret header value, and only those.
+        let before = crate::wipes_on_this_thread();
+        drop(copy);
+        assert_eq!(crate::wipes_on_this_thread() - before, 2);
     }
 
     #[test]

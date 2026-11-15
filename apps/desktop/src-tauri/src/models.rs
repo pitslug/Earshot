@@ -312,11 +312,7 @@ pub struct ModelsView {
 }
 
 fn internal(e: &CatalogueError) -> IpcError {
-    IpcError {
-        kind: "model".into(),
-        message: catalogue_copy(e),
-        retryable: false,
-    }
+    IpcError::new("model", catalogue_copy(e))
 }
 
 /// The models folder or the built-in model list could not be used.
@@ -636,11 +632,7 @@ pub fn settings_view(services: &Services) -> Result<ModelSettingsView, IpcError>
 pub fn settings_error(e: SettingsError) -> IpcError {
     match e {
         SettingsError::Store(e) => IpcError::from(e),
-        other => IpcError {
-            kind: "invalid_setting".into(),
-            message: settings_copy(&other),
-            retryable: false,
-        },
+        other => IpcError::invalid(settings_copy(&other)),
     }
 }
 
@@ -679,11 +671,7 @@ pub fn remove_error(e: &CatalogueError) -> IpcError {
         CatalogueError::UnknownModel(_) => "unknown_model",
         _ => "model",
     };
-    IpcError {
-        kind: kind.into(),
-        message: catalogue_copy(e),
-        retryable: false,
-    }
+    IpcError::new(kind, catalogue_copy(e))
 }
 
 /// Removes `model`'s files unless it is protected (`host::protected_models` for `hw` and

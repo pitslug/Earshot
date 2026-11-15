@@ -69,7 +69,7 @@ use earshot_onnx::embed::CamppEmbedder;
 use earshot_onnx::parakeet::{ParakeetCtc, ParakeetTdt};
 use earshot_onnx::segment::PyannoteSegmenter;
 use earshot_onnx::silero::SileroVad;
-use earshot_onnx::{Provider, SessionBackend, SessionConfig};
+use earshot_onnx::{Provider, SessionBackend, SessionConfig, file_sha256};
 use earshot_store::{DataDir, Store};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{Rng, SeedableRng};
@@ -1151,23 +1151,6 @@ pub fn require_qnn_model(models: &ModelDir, model: &ParakeetModel) -> Result<Pat
     Ok(dir)
 }
 
-/// Lower-case hex SHA-256 of a file.
-fn file_sha256(path: &Path) -> std::io::Result<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
-}
-
 /// The converter versions (`task` in `conversion.json`) whose NPU conversions the runtime
 /// loads. T8.3 conversions (no `recipe`) calibrated on one piece and cut every piece after
 /// 16 s (T8.3c, docs/qnn.md), so they are refused.
@@ -1266,14 +1249,26 @@ pub fn load_parakeet(
 /// them on anyway (`preview_settings`).
 pub const PREVIEW_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 
-/// The same on CUDA, where sessions do not share their weights and a meeting reaches 15.4 GiB.
-pub const PREVIEW_MIN_MEMORY_CUDA: u64 = 20 * 1024 * 1024 * 1024;
+/// The same on CUDA, beside a card with room. The same value as [`PREVIEW_MIN_MEMORY`], kept apart
+/// because it rests on other numbers. T12.59's rule kept 20 GiB, because a call with previews on the
+/// card peaked at 8.81 GiB of private memory (bundled audio, measured 2026-11-15, docs/live-previews.md)
+/// against the 5.81 GiB the CPU's limit was judged on. The owner lowered it to 12 GiB on 2026-11-15
+/// (T12.61), a judgement and not the rule's result: 12 GiB already admits heavier placements
+/// (Everyone with the user's own session on the processor reached 11.36 GiB,
+/// `t1260/t1260-cpu-bundled.json`), and at 20 GiB a 16 GB machine with a card with room got the
+/// slower processor placement by default. No machine with 12 to 20 GiB of memory has run it.
+pub const PREVIEW_MIN_MEMORY_CUDA: u64 = 12 * 1024 * 1024 * 1024;
 
 /// A graphics card with less dedicated memory than this (or of unknown memory) runs no preview
-/// session on CUDA: a third session took a meeting's use of the card from 7.8 to 11.5 GiB (measured,
-/// docs/live-previews.md). A judgement: the 11.5 and room for the rest of the desktop. Below it a
-/// CUDA track's previews run on the CPU instead (T12.3c, [`preview_backend`]).
-pub const PREVIEW_MIN_CARD_MEMORY: u64 = 14 * 1024 * 1024 * 1024;
+/// session on CUDA. T12.59's rule (docs/live-previews.md, measured 2026-11-15 with one shared
+/// encoder): a call with previews on peaked at most 4.90 GiB above the card's baseline (bundled
+/// audio, the repeat run), plus 2.5 GiB for other programs and room needs 7.40 GiB, so the smallest
+/// card sold that fits is 8 GB, less 0.5 GiB because a card can report just under its size;
+/// checked with the card filled to what a card of this size would have free. Since T12.60 the
+/// largest peak is Everyone with the user's own previews on the card, 5.38 GiB, which needs
+/// 7.88 GiB: still an 8 GB card. Below it a CUDA track's previews run on the CPU instead (T12.3c,
+/// [`preview_backend`]).
+pub const PREVIEW_MIN_CARD_MEMORY: u64 = 15 * 512 * 1024 * 1024;
 
 /// A machine with less memory than this has no previews by default on the NPU (T12.12c). A
 /// judgement: from the compiled NPU model a preview session added at most 0.77 GiB of working set
@@ -1296,8 +1291,9 @@ pub const OWN_VOICE_NPU_REFUSED: &str = "not for your own voice on the NPU yet: 
 /// state and sampled retries a preview must not touch and would need a second model that nothing
 /// here has measured. A CUDA track whose card has no room for a third session
 /// ([`PREVIEW_MIN_CARD_MEMORY`]) runs it on the CPU with the CPU's shared weights and the CPU's
-/// memory limit (T12.3c), so the card holds no more than with previews off. The user's "on" or
-/// "everyone" lifts only the system memory limit.
+/// memory limit (T12.3c), so the card holds no more than with previews off; a card with room runs
+/// it on CUDA under [`PREVIEW_MIN_MEMORY_CUDA`]. The user's "on" or "everyone" lifts only the system
+/// memory limit.
 ///
 /// # Errors
 /// The reason no preview session runs.
@@ -1418,11 +1414,16 @@ pub const PREVIEW_BOTH_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 /// Where this computer runs the second preview session, for the user's own track in a call (T9.14),
 /// when the track runs on `backend`; `Err` says why it runs none. The one rule: only when the user
 /// chose everyone, only where the first session runs ([`previews_refused`]), never beside the NPU
-/// ([`OWN_VOICE_NPU_REFUSED`], T12.12c), and only with
-/// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there. It always runs on the CPU, with the CPU's shared
-/// weights: beside the CPU's own sessions, and beside CUDA too (T12.3a), so that the card holds no
-/// more sessions than with "Other people only"; beside a card too small for the first, with the
-/// first on the CPU too (T12.3c).
+/// ([`OWN_VOICE_NPU_REFUSED`], T12.12c), and only with [`PREVIEW_BOTH_MIN_MEMORY`] known to be
+/// there. It runs where the first runs: on CUDA when the first does (a CUDA track and a card at or
+/// above [`PREVIEW_MIN_CARD_MEMORY`], T12.60), borrowing the shared encoder like every CUDA session
+/// (T12.58); everywhere else on the CPU with the CPU's shared weights, beside the CPU's own
+/// sessions and beside a card too small for the first (T12.3c). The memory limit is the CPU's on
+/// the card too: under Everyone the card placement peaked at less private memory than the CPU
+/// placement that limit admitted beside CUDA (9.33 against 11.36 GiB on bundled audio, 8.61
+/// against 10.80 GiB on continuous; measured 2026-11-15, docs/live-previews.md, reports
+/// `t1260/t1260-card-bundled.json`, `t1260-cpu-bundled.json`, `t1260-card-continuous.json`,
+/// `t1260-cpu-continuous.json`).
 ///
 /// # Errors
 /// The reason no second session runs.
@@ -1449,7 +1450,7 @@ pub fn second_preview_backend_or_refusal(
     if choice != PreviewChoice::Everyone {
         return refused(PreviewOffReason::NotAsked, "only for the other people");
     }
-    preview_backend_or_refusal(backend, hardware, choice)?;
+    let first = preview_backend_or_refusal(backend, hardware, choice)?;
     if backend == BackendKind::Qnn {
         return refused(PreviewOffReason::OwnVoiceOnNpu, OWN_VOICE_NPU_REFUSED);
     }
@@ -1459,6 +1460,13 @@ pub fn second_preview_backend_or_refusal(
             "previews run on Parakeet on the CPU or CUDA only",
         );
     }
+    // T12.60: on the card beside a first session on the card, else on the CPU; the same memory
+    // limit either way.
+    let runs_on = if first == BackendKind::Cuda {
+        BackendKind::Cuda
+    } else {
+        BackendKind::Cpu
+    };
     if hardware
         .total_memory
         .is_none_or(|m| m < PREVIEW_BOTH_MIN_MEMORY)
@@ -1468,7 +1476,7 @@ pub fn second_preview_backend_or_refusal(
             "not enough memory for a third session of the model",
         );
     }
-    Ok(BackendKind::Cpu)
+    Ok(runs_on)
 }
 
 /// Why this computer runs no second preview session (T9.14), or `None` when it does: the reason
@@ -1520,8 +1528,9 @@ pub(crate) fn load_preview_with<T, E: From<PreviewRefusal>>(
 }
 
 /// [`load_preview`] for the second session, the user's own track in a call (T9.14), loaded where
-/// [`second_preview_backend`] says (the CPU, also beside CUDA: T12.3a) or refused by it. It shares
-/// nothing with the first.
+/// [`second_preview_backend`] says (on CUDA beside a first session on CUDA, T12.60, borrowing the
+/// shared encoder through the same loader as the first; else the CPU) or refused by it. It has its
+/// own session and thread; on CUDA it shares only the encoder with the first.
 ///
 /// # Errors
 /// As [`load_preview`], with the second session's rule.
@@ -1620,6 +1629,34 @@ pub fn load_preview_on_hardware(
         PreviewSlot::First => load_preview_with(backend, hardware, choice, load),
         PreviewSlot::OwnVoice => load_preview_second_with(backend, hardware, choice, load),
     }
+}
+
+/// Evaluation only (T12.60, `live_lag --own-voice-cpu`): the user's own preview session loaded
+/// as [`load_preview_second`] loads it, the rule and its refusals included, except that it always
+/// loads on the CPU, where T12.3a put it beside CUDA, so the card and CPU columns of T12.60's rule
+/// run on one build. The app, the CLI and [`crate::host`] never call it (pinned by
+/// `backends_own_voice_cpu_load_is_used_by_no_shipped_code`).
+///
+/// # Errors
+/// As [`load_preview_second`].
+pub fn load_preview_second_on_cpu_for_evaluation(
+    models: &ModelDir,
+    backend: &BackendInfo,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<EvaluatedPreview, String> {
+    second_preview_rule(backend, &crate::hardware(), choice)?;
+    let session = load_preview_parakeet(
+        models,
+        &BackendInfo {
+            kind: BackendKind::Cpu,
+            ..backend.clone()
+        },
+    )?;
+    let placement = session.backends().iter().map(ToString::to_string).collect();
+    Ok(EvaluatedPreview {
+        transcriber: Box::new(session),
+        placement,
+    })
 }
 
 /// The streaming model of T12.23 under the models directory (manifest set `stream-eval`).
@@ -1733,74 +1770,6 @@ pub fn load_nemotron_preview(models: &ModelDir, threads: usize) -> Result<Evalua
     })
 }
 
-/// A track's own Parakeet TDT session with its encoder made shareable, and a preview session that
-/// borrows that encoder ([`load_preview_sharing_encoder`]).
-pub struct SharedEncoderPair {
-    /// The track's session, loaded as [`load_parakeet`] loads it; its encoder calls now take the
-    /// lock too.
-    pub track: ParakeetTdt,
-    /// The preview's: the track's encoder, its own prediction network and joint on the preview's
-    /// background threads.
-    pub preview: ParakeetTdt,
-    /// The shared encoder, for its backend and user count.
-    pub encoder: earshot_onnx::parakeet::SharedEncoder,
-}
-
-/// Evaluation only (T12.3b, `live_lag --contention shared`): a track's session of the Parakeet TDT
-/// `model` on `accel` (as [`load_parakeet`] with `threads`), and a preview session that borrows its
-/// encoder through a lock ([`earshot_onnx::parakeet::SharedEncoder`]) instead of loading its own
-/// copy, with its own prediction network and joint on background threads as [`load_preview`]
-/// loads them. CUDA only: the CPU already shares weights (T9.1ma) and the NPU cannot (T12.4). The
-/// app, the CLI and [`crate::host`] never call it (pinned by
-/// `backends_preview_sharing_encoder_is_used_by_no_shipped_code`).
-///
-/// # Errors
-/// A backend other than CUDA, a model other than a Parakeet TDT one, a failed load or placement
-/// check, or a preview thread that cannot lower its priority.
-pub fn load_preview_sharing_encoder(
-    models: &ModelDir,
-    model: &str,
-    accel: Accelerator,
-    threads: Option<usize>,
-) -> Result<SharedEncoderPair, String> {
-    if accel != Accelerator::Cuda {
-        return Err("a shared encoder is evaluated on CUDA only".to_owned());
-    }
-    let Ok(AsrModel::Parakeet(parakeet)) = asr_model(model) else {
-        return Err("previews run on Parakeet only".to_owned());
-    };
-    let ParakeetTranscriber::Tdt(track) =
-        load_parakeet(models, parakeet, accel, threads).map_err(|e| e.to_string())?
-    else {
-        return Err("a shared encoder needs a Parakeet TDT model".to_owned());
-    };
-    let (track, encoder) = track.share_encoder();
-    let steps = SessionConfig {
-        intra_threads: Some(onnx_cpu_threads(cores(), 2)),
-        background: Some(earshot_onnx::ThreadStart(
-            crate::priority::lower_preview_pool_thread,
-        )),
-        ..session_config(accel).map_err(|e| e.to_string())?
-    };
-    let preview = ParakeetTdt::load_sharing(
-        &models.root().join(parakeet.dir),
-        &encoder,
-        &steps,
-        parakeet.name,
-        parakeet.english_only,
-    )
-    .map_err(|e| format!("{}: {e}", parakeet.name))?;
-    check_placement(&preview.backends(), accel.backend()).map_err(|e| e.to_string())?;
-    if crate::priority::preview_pool_failed() {
-        return Err("a preview thread could not lower its priority".to_owned());
-    }
-    Ok(SharedEncoderPair {
-        track,
-        preview,
-        encoder,
-    })
-}
-
 fn load_preview_session(
     models: &ModelDir,
     backend: &BackendInfo,
@@ -1893,16 +1862,229 @@ fn load_parakeet_with(
     }
     let dir = models.root().join(model.dir);
     let onnx = |e: earshot_onnx::OnnxError| AsrError::Backend(format!("{}: {e}", model.name));
+    let own_tdt = || -> Result<ParakeetTranscriber, AsrError> {
+        Ok(ParakeetTranscriber::Tdt(Box::new(
+            ParakeetTdt::load(&dir, &config, model.name, model.english_only).map_err(onnx)?,
+        )))
+    };
     let t = match model.decoder {
         ParakeetDecoder::Ctc => {
             ParakeetTranscriber::Ctc(Box::new(ParakeetCtc::load(&dir, &config).map_err(onnx)?))
         }
-        ParakeetDecoder::Tdt => ParakeetTranscriber::Tdt(Box::new(
-            ParakeetTdt::load(&dir, &config, model.name, model.english_only).map_err(onnx)?,
-        )),
+        // One encoder on the card for every CUDA session of the model (T12.58).
+        ParakeetDecoder::Tdt if accel == Accelerator::Cuda && !own_encoders() => {
+            crate::shared_encoders::on_shared_encoder(
+                || borrow_shared_tdt(models, model, &dir, &config),
+                own_tdt,
+            )?
+        }
+        ParakeetDecoder::Tdt => own_tdt()?,
     };
     check_placement(&t.backends(), accel.backend())?;
     Ok(t)
+}
+
+/// A Parakeet TDT model on CUDA borrowing the process's shared encoder of `model` (loaded now with
+/// the one fixed configuration when none is alive, `shared_encoders::ENCODERS`), its own prediction
+/// network and joint on `steps` (T12.58).
+fn borrow_shared_tdt(
+    models: &ModelDir,
+    model: &ParakeetModel,
+    dir: &Path,
+    steps: &SessionConfig,
+) -> Result<ParakeetTranscriber, String> {
+    use crate::shared_encoders::{ENCODERS, EncoderKey};
+    let key = EncoderKey {
+        models: models.root().to_path_buf(),
+        model: model.name,
+    };
+    let encoder = ENCODERS.borrow(&key, |config| {
+        earshot_onnx::parakeet::load_shared_encoder(dir, config).map_err(|e| e.to_string())
+    })?;
+    let t = ParakeetTdt::load_sharing(dir, &encoder, steps, model.name, model.english_only)
+        .map_err(|e| e.to_string())?;
+    check_placement(&t.backends(), BackendKind::Cuda).map_err(|e| e.to_string())?;
+    Ok(ParakeetTranscriber::Tdt(Box::new(t)))
+}
+
+/// Evaluation only (`live_lag`, T12.58): the process's shared CUDA encoder of the Parakeet TDT
+/// `model`, borrowed as a CUDA load borrows it, so a report can read its placement, user count and
+/// wait log ([`earshot_onnx::parakeet::SharedEncoder::wait_log`]) after the meeting. Holding it
+/// keeps it loaded. No shipped code calls it (pinned by
+/// `backends_own_encoders_switch_is_used_by_no_shipped_code`).
+///
+/// # Errors
+/// A model that is not a Parakeet TDT model, or a failed load.
+pub fn hold_shared_encoder_for_evaluation(
+    models: &ModelDir,
+    model: &str,
+) -> Result<earshot_onnx::parakeet::SharedEncoder, String> {
+    let Ok(AsrModel::Parakeet(parakeet)) = asr_model(model) else {
+        return Err("a shared encoder is a Parakeet model's".to_owned());
+    };
+    if parakeet.decoder != ParakeetDecoder::Tdt {
+        return Err("a shared encoder is a Parakeet TDT model's".to_owned());
+    }
+    let dir = models.root().join(parakeet.dir);
+    let key = crate::shared_encoders::EncoderKey {
+        models: models.root().to_path_buf(),
+        model: parakeet.name,
+    };
+    crate::shared_encoders::ENCODERS.borrow(&key, |config| {
+        earshot_onnx::parakeet::load_shared_encoder(&dir, config).map_err(|e| e.to_string())
+    })
+}
+
+/// Set only by [`own_encoders_for_evaluation`].
+static OWN_ENCODERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn own_encoders() -> bool {
+    OWN_ENCODERS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Evaluation only (`live_lag --own-encoders`, T12.58): every CUDA Parakeet session of this
+/// process loads its own encoder again, as before T12.58, for a comparison run. Process-wide and
+/// never undone. No shipped code calls it (pinned by
+/// `backends_own_encoders_switch_is_used_by_no_shipped_code`).
+pub fn own_encoders_for_evaluation() {
+    OWN_ENCODERS.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The model [`hold_card_for_evaluation`] fills the card with in large steps (2.58 to 2.80 GiB
+/// each on the desktop, T12.59; the first includes the CUDA context).
+pub const CARD_HOLD_LARGE: &str = "parakeet-tdt-0.6b-v2";
+/// The model it fills the rest with (about 0.66 GiB each on the desktop), so the card ends within
+/// one of these under the free memory asked.
+pub const CARD_HOLD_SMALL: &str = "parakeet-tdt-110m";
+/// At most this many loads in one hold, so a load that takes nothing measurable cannot loop.
+const CARD_HOLD_MAX_LOADS: usize = 64;
+
+/// The next load of a card hold ([`card_hold_step`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CardHoldStep {
+    /// Load [`CARD_HOLD_LARGE`].
+    Large,
+    /// Load [`CARD_HOLD_SMALL`].
+    Small,
+    /// The card's free memory is at most the target.
+    Done,
+}
+
+/// The rule of [`hold_card_for_evaluation`]: large loads while one more still leaves the free
+/// memory above `target`, then small loads until it is at most `target`, so the hold ends under
+/// the target by less than one small load. `large` is what one large load is expected to take
+/// (bytes).
+pub(crate) fn card_hold_step(free: u64, target: u64, large: u64) -> CardHoldStep {
+    if free <= target {
+        CardHoldStep::Done
+    } else if free.saturating_sub(large) > target {
+        CardHoldStep::Large
+    } else {
+        CardHoldStep::Small
+    }
+}
+
+/// One load of a card hold: the model and the card's free memory (bytes) before and after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardHoldLoad {
+    /// The model loaded ([`CARD_HOLD_LARGE`] or [`CARD_HOLD_SMALL`]).
+    pub model: &'static str,
+    /// Free memory before the load, as read.
+    pub free_before: u64,
+    /// Free memory after it, as read.
+    pub free_after: u64,
+}
+
+/// What [`hold_card_for_evaluation`] holds: own-encoder CUDA sessions, kept until dropped.
+pub struct CardHold {
+    /// The sessions, held only to keep their memory on the card.
+    held: Vec<ParakeetTranscriber>,
+    /// Every load, in order.
+    pub loads: Vec<CardHoldLoad>,
+    /// The card's free memory after the last load (bytes), as read.
+    pub free_left: Option<u64>,
+    /// Why the hold stopped before reaching the target, when it did (a load that failed, a free
+    /// reading that failed, or too many loads).
+    pub stopped: Option<String>,
+}
+
+impl CardHold {
+    /// How many sessions are held.
+    #[must_use]
+    pub fn sessions(&self) -> usize {
+        self.held.len()
+    }
+}
+
+/// Evaluation only (T12.59, `live_lag --hold-card-gib`): fills the graphics card with CUDA
+/// Parakeet sessions, each with its own encoder ([`own_encoders_for_evaluation`] is set for this
+/// process first, so nothing is shared), until `free()` (the card's free memory in bytes, read
+/// after each load) is at most `target_free`, by [`card_hold_step`]: [`CARD_HOLD_LARGE`] while one
+/// more leaves the card above the target, then [`CARD_HOLD_SMALL`]. It makes the card look like a
+/// smaller one in free memory only, for a run in another process. ONNX Runtime must be
+/// initialised with its CUDA library ([`init_onnx`]). No shipped code calls it (pinned by
+/// `backends_card_hold_is_used_by_no_shipped_code`).
+///
+/// # Errors
+/// The first free reading failed, or a hold model is unknown to this build. A load failing later
+/// stops the hold with the reason in [`CardHold::stopped`].
+pub fn hold_card_for_evaluation(
+    models: &ModelDir,
+    target_free: u64,
+    mut free: impl FnMut() -> Option<u64>,
+) -> Result<CardHold, String> {
+    own_encoders_for_evaluation();
+    let parakeet = |name: &str| match asr_model(name) {
+        Ok(AsrModel::Parakeet(p)) => Ok(p),
+        _ => Err(format!("{name} is not a Parakeet model of this build")),
+    };
+    let (large_model, small_model) = (parakeet(CARD_HOLD_LARGE)?, parakeet(CARD_HOLD_SMALL)?);
+    // Expected costs until one load of each is measured.
+    let mut large = 2_500 * 1024 * 1024u64;
+    let mut now = free().ok_or("the card's free memory cannot be read")?;
+    let mut hold = CardHold {
+        held: Vec::new(),
+        loads: Vec::new(),
+        free_left: Some(now),
+        stopped: None,
+    };
+    loop {
+        let step = card_hold_step(now, target_free, large);
+        let model = match step {
+            CardHoldStep::Done => break,
+            CardHoldStep::Large => large_model,
+            CardHoldStep::Small => small_model,
+        };
+        if hold.loads.len() >= CARD_HOLD_MAX_LOADS {
+            hold.stopped = Some(format!("stopped after {CARD_HOLD_MAX_LOADS} loads"));
+            break;
+        }
+        let session = match load_parakeet(models, model, Accelerator::Cuda, Some(1)) {
+            Ok(s) => s,
+            Err(e) => {
+                hold.stopped = Some(format!("{}: {e}", model.name));
+                break;
+            }
+        };
+        hold.held.push(session);
+        let Some(after) = free() else {
+            hold.stopped = Some("the card's free memory cannot be read".into());
+            hold.free_left = None;
+            break;
+        };
+        let took = now.saturating_sub(after);
+        if step == CardHoldStep::Large && took > 0 {
+            large = took;
+        }
+        hold.loads.push(CardHoldLoad {
+            model: model.name,
+            free_before: now,
+            free_after: after,
+        });
+        now = after;
+        hold.free_left = Some(now);
+    }
+    Ok(hold)
 }
 
 /// [`load_parakeet`] on QNN: the NPU conversion with its documented partition, the encoder from

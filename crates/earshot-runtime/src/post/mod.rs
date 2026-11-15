@@ -194,7 +194,7 @@ use earshot_core::model::{
 use earshot_core::pipeline::FinalPassRequest;
 use earshot_core::voiceprint::{
     EnrolmentConfig, InMemoryVoiceprintRepo, MatchOutcome, VoiceprintError, VoiceprintRepo,
-    calibrated_threshold, enroll, enroll_me, match_embedding_with_report, me_person,
+    calibrated_threshold, enroll_me, match_embedding_with_report, me_person,
 };
 use earshot_store::read_flac;
 use rand_core::Rng;
@@ -1580,6 +1580,9 @@ where
             // The row id of each diarisation speaker (`None`: no words, no row).
             let mut row_ids: Vec<Option<EntityId>> = vec![None; meeting_diar.speakers.len()];
             let mut identities = Vec::new();
+            // The "Me" row this run named itself (not a carried mark): in the room only the
+            // user's voiceprint names one (T12.44, `crate::edit::recognised_me`).
+            let mut named_me: Option<EntityId> = None;
             for (k, ((s, naming), earlier_speaker)) in meeting_diar
                 .speakers
                 .iter()
@@ -1640,6 +1643,7 @@ where
                     && let Some((id, person, name)) = &reusable_me
                 {
                     row_ids[k] = Some(*id);
+                    named_me = Some(*id);
                     speakers.push(PostSpeaker {
                         id: *id,
                         role: SpeakerRole::Me,
@@ -1702,6 +1706,9 @@ where
                     });
                 }
                 row_ids[k] = Some(row.id);
+                if naming.role == SpeakerRole::Me {
+                    named_me = Some(row.id);
+                }
                 speakers.push(PostSpeaker {
                     id: row.id,
                     role: naming.role,
@@ -1796,6 +1803,17 @@ where
                     &crate::identities::encode(&IdentityRecord { speakers: record }),
                 )?;
             }
+            // Which room "Me" row the user's voiceprint named in this run (T12.44); any other
+            // run (a call, a carried mark, no Me) leaves no such evidence.
+            let vp_key = crate::identities::voiceprint_me_key(meeting);
+            match named_me.filter(|_| in_room_kinds(&recorded)) {
+                Some(id) => {
+                    crate::local::set_tx(tx, &vp_key, &crate::identities::encode_voiceprint_me(id))?
+                }
+                None => {
+                    tx.delete_local_value(vp_key.as_str())?;
+                }
+            }
 
             // Final segments of the processed tracks.
             for mut old in replaced {
@@ -1833,26 +1851,16 @@ where
                 && let Some(k) = meeting_diar.me()
             {
                 let me = &meeting_diar.speakers[k];
-                // The reused "Me" row's person (the user may have re-linked it), else the
-                // user's person.
-                let result = match reusable_me.as_ref().and_then(|(_, person, _)| *person) {
-                    Some(person) => enroll(
-                        tx,
-                        person,
-                        std::slice::from_ref(&me.centroid),
-                        me.speech,
-                        &config.enrolment,
-                        &mut stamp,
-                    ),
-                    None => enroll_me(
-                        tx,
-                        std::slice::from_ref(&me.centroid),
-                        me.speech,
-                        &config.enrolment,
-                        &mut stamp,
-                    )
-                    .map(|(_, voiceprint)| voiceprint),
-                };
+                // Always the user's person: a Me row is linked to no one else (`link_speaker`
+                // refuses it), so nothing is enrolled into another person.
+                let result = enroll_me(
+                    tx,
+                    std::slice::from_ref(&me.centroid),
+                    me.speech,
+                    &config.enrolment,
+                    &mut stamp,
+                )
+                .map(|(_, voiceprint)| voiceprint);
                 match result {
                     Ok(voiceprint) => enrolled_me = Some(voiceprint),
                     Err(VoiceprintError::NotEnoughSpeech { needed, got }) => {

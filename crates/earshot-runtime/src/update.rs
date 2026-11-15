@@ -69,7 +69,11 @@ pub const fn installer_args() -> [&'static str; 3] {
 /// # Errors
 /// Store errors.
 pub fn auto_check(store: &Store) -> Result<bool, RuntimeError> {
-    Ok(store.local_value(AUTO_CHECK_KEY)?.as_deref() == Some(b"on"))
+    // Anything but a stored "on" is off, unreported.
+    Ok(matches!(
+        crate::local::read_setting(store, AUTO_CHECK_KEY, |t| crate::local::on_off(&t).ok_or(t))?,
+        crate::local::Setting::Known(true)
+    ))
 }
 
 /// Stores "check automatically".
@@ -153,14 +157,11 @@ impl UpdateSchedule {
 /// # Errors
 /// Store errors.
 pub fn update_schedule(store: &Store) -> Result<(UpdateSchedule, Option<String>), RuntimeError> {
-    let Some(bytes) = store.local_value(SCHEDULE_KEY)? else {
-        return Ok((UpdateSchedule::default(), None));
-    };
-    let text = String::from_utf8_lossy(&bytes);
-    Ok(match UpdateSchedule::from_stored(&text) {
-        Some(schedule) => (schedule, None),
-        None => (UpdateSchedule::default(), Some(text.into_owned())),
-    })
+    let (schedule, unknown) = crate::local::read_setting(store, SCHEDULE_KEY, |text| {
+        UpdateSchedule::from_stored(&text).ok_or(text)
+    })?
+    .or_default_with(UpdateSchedule::default);
+    Ok((schedule, unknown.map(|u| u.stored)))
 }
 
 /// Stores how often automatic checks run.

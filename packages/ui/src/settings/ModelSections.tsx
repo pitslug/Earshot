@@ -3,34 +3,17 @@
 // by the System, Transcription and Summaries pages and, through `ModelChoices`, by the first-run
 // wizard. Everything shown comes from the IPC, through the one `useModels` state they share.
 
-import {
-  Caption1,
-  MessageBar,
-  MessageBarBody,
-  MessageBarTitle,
-  RadioGroup,
-  Spinner,
-  Subtitle2,
-  makeStyles,
-  tokens,
-} from "@fluentui/react-components";
-import { type ReactNode, useId } from "react";
+import { Caption1, RadioGroup, makeStyles, tokens } from "@fluentui/react-components";
+import { useId } from "react";
 
 import type { ModelItem } from "../ipc";
 import { HelpersCard, ModelCard, NpuCard } from "./ModelCard";
 import { CheckLine, Notices } from "./ModelsParts";
 import { HELPERS_WHY, NPU_WHY, ROLE_LABEL, choiceWhy, summaryLabel, summaryWhy, titleOf } from "./copy";
+import { NotLoaded, Section, UnknownSettings } from "./parts";
 import type { ModelsData, ModelsLoad, ModelsPageState } from "./useModels";
 
 const useStyles = makeStyles({
-  section: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalS,
-  },
-  heading: {
-    margin: 0,
-  },
   choices: {
     display: "grid",
     gap: tokens.spacingVerticalS,
@@ -40,43 +23,9 @@ const useStyles = makeStyles({
   },
 });
 
-export function Section({ title, children }: { title: string; children: ReactNode }) {
-  const styles = useStyles();
-  const id = useId();
-  return (
-    <section className={styles.section} aria-labelledby={id}>
-      <Subtitle2 as="h2" id={id} className={styles.heading}>
-        {title}
-      </Subtitle2>
-      {children}
-    </section>
-  );
-}
-
 /** What shows until the models are read: the spinner or the failure. */
 export function ModelsNotLoaded({ load }: { load: Exclude<ModelsLoad, { status: "loaded" }> }) {
-  if (load.status === "loading") return <Spinner label="Reading this computer and the models" />;
-  return (
-    <MessageBar intent="error">
-      <MessageBarBody>
-        <MessageBarTitle>The models could not be read</MessageBarTitle>
-        {load.message}
-      </MessageBarBody>
-    </MessageBar>
-  );
-}
-
-/** Stored settings this version does not know. */
-export function UnknownModelSettings({ unknown }: { unknown: string[] }) {
-  if (unknown.length === 0) return null;
-  return (
-    <MessageBar intent="warning">
-      <MessageBarBody>
-        <MessageBarTitle>Some stored settings are not known to this version</MessageBarTitle>
-        {unknown.join(" ")}
-      </MessageBarBody>
-    </MessageBar>
-  );
+  return <NotLoaded load={load} loading="Reading this computer and the models" failed="The models could not be read" />;
 }
 
 /** The notices of the whole model state and the stored settings this version does not know: the
@@ -85,7 +34,7 @@ export function ModelNotices({ state, data }: { state: ModelsPageState; data: Mo
   return (
     <>
       <Notices notices={state.notices.filter((n) => n.area === "page")} onDismiss={state.dismiss} />
-      <UnknownModelSettings unknown={data.settings.unknown} />
+      <UnknownSettings unknown={data.settings.unknown} />
     </>
   );
 }

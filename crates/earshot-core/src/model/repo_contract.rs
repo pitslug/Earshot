@@ -60,6 +60,8 @@ impl Rows {
             // A folder that is never stored: `folder_id` is not a foreign key (sync may
             // deliver a meeting before its folder), so every repo must accept it.
             folder_id: Some(self.id()),
+            // Kept on this computer (T11.1a): every repo must store and return the field.
+            summary_kept_local: true,
         }
     }
 
@@ -193,6 +195,7 @@ pub fn meeting_repo<R: MeetingRepo>(make: impl Fn() -> R) {
     renamed.duration_ms = None;
     renamed.tags.clear();
     renamed.folder_id = None;
+    renamed.summary_kept_local = false;
     renamed.meta.touch(&mut f.hlc, &f.clock);
     repo.put_meeting(renamed.clone()).unwrap();
     assert_eq!(repo.meeting(late.id).unwrap().as_ref(), Some(&renamed));

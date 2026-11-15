@@ -194,18 +194,16 @@ impl StoredChecks {
 }
 
 fn decode(bytes: &[u8]) -> Option<Vec<StoredCheck>> {
-    let (version, payload) = bytes.split_first_chunk::<4>()?;
-    if u32::from_le_bytes(*version) != RECORD_VERSION {
+    let (version, payload) = earshot_store::split_version(bytes)?;
+    if version != RECORD_VERSION {
         return None;
     }
     serde_json::from_slice(payload).ok()
 }
 
 fn encode(checks: &[StoredCheck]) -> Result<Vec<u8>, RuntimeError> {
-    let mut out = RECORD_VERSION.to_le_bytes().to_vec();
-    serde_json::to_writer(&mut out, checks)
-        .map_err(|_| RuntimeError::Internal("cannot encode the audio check record"))?;
-    Ok(out)
+    earshot_store::encode_versioned(RECORD_VERSION, checks)
+        .map_err(|_| RuntimeError::Internal("cannot encode the audio check record"))
 }
 
 /// The stored results.

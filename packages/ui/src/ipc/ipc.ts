@@ -2,89 +2,38 @@
 // `createTauriIpc` (tauri.ts) talks to Tauri.
 
 import type {
-  ActionView,
   AppInfo,
   AudioCheckEvent,
-  AudioCheckOutcome,
-  AudioCheckResultView,
   AudioCheckView,
   AudioPageView,
   AudioSettingsValue,
-  ChosenDevice,
-  DeviceItem,
   CaptureMode,
-  CheckView,
-  ChoiceKind,
-  ChoiceView,
-  Citation,
-  CitedText,
-  DetailHeader,
-  HandoverItem,
-  KeptLocalView,
-  EndedReason,
   ExportDone,
-  GpuView,
   HardwareView,
-  InUseView,
-  Installed,
   IpcError,
   JobEvent,
-  JobKind,
   LinkChoice,
-  LiveTrack,
   MeetingDetail,
   MeetingEvent,
   MeetingListItem,
-  MeetingState,
   DeleteAsk,
-  TranscriptState,
-  ModelItem,
   ModelJobEvent,
   UpdateEvent,
-  UpdatePhase,
   UpdateView,
   ScheduleChoice,
   ModelSettingsValue,
   ModelSettingsView,
-  ModelUse,
   ModelsView,
-  NotesView,
-  NpuView,
-  PartChoice,
   PersonItem,
-  PersonRef,
-  PostStep,
-  ProviderChoice,
-  RecommendedView,
-  RememberOutcome,
   SavedVoiceResult,
   RemovedView,
-  RowTrack,
-  RunsOn,
-  SearchMatch,
-  SearchResultItem,
   SearchResultsView,
-  SpeakerCard,
-  SpeakerKind,
-  SpeakerSource,
-  ClaudeCodeState,
   ClaudeCodeStatusView,
-  CodexState,
   CodexStatusView,
-  EffortChoice,
-  SummaryEvent,
   SummarySettingsValue,
   SummarySettingsView,
   SummaryFieldRef,
-  SummaryView,
-  TranscriptKind,
-  TranscriptRow,
-  ChangedWordView,
   DictionaryWordAdded,
-  WordSuggestionView,
-  Verdict,
-  WarningKind,
-  WriterChoice,
   GeneralView,
   PreviewsChoice,
   PreviewsView,
@@ -93,11 +42,8 @@ import type {
   ObsidianSettingsValue,
   ObsidianSettingsView,
   SpeakerTimingChoice,
-  SpeakerTimingOption,
   SpeakersView,
   VoiceEvent,
-  VoiceResult,
-  VoiceView,
   WindowTheme,
   commands,
 } from "./bindings";
@@ -108,106 +54,10 @@ import type { FolderCommands } from "./folders";
 import type { StorageCommands } from "./storage";
 import type { SummaryStyleCommands } from "./summaryStyle";
 import type { SummaryVocabularyCommands } from "./summaryVocabulary";
+import type { SyncCommands } from "./sync";
 
-export type {
-  ActionView,
-  AppInfo,
-  AudioCheckEvent,
-  AudioCheckOutcome,
-  AudioCheckResultView,
-  AudioCheckView,
-  AudioPageView,
-  AudioSettingsValue,
-  ChosenDevice,
-  DeviceItem,
-  CaptureMode,
-  CheckView,
-  ChoiceKind,
-  ChoiceView,
-  Citation,
-  CitedText,
-  DetailHeader,
-  HandoverItem,
-  KeptLocalView,
-  EndedReason,
-  ExportDone,
-  GpuView,
-  HardwareView,
-  InUseView,
-  Installed,
-  IpcError,
-  JobEvent,
-  JobKind,
-  LinkChoice,
-  LiveTrack,
-  MeetingDetail,
-  MeetingEvent,
-  MeetingListItem,
-  MeetingState,
-  DeleteAsk,
-  TranscriptState,
-  ModelItem,
-  ModelJobEvent,
-  UpdateEvent,
-  UpdatePhase,
-  UpdateView,
-  ScheduleChoice,
-  ModelSettingsValue,
-  ModelSettingsView,
-  ModelUse,
-  ModelsView,
-  NotesView,
-  NpuView,
-  PartChoice,
-  PersonItem,
-  PersonRef,
-  PostStep,
-  ProviderChoice,
-  RecommendedView,
-  RememberOutcome,
-  SavedVoiceResult,
-  RemovedView,
-  RowTrack,
-  RunsOn,
-  SearchMatch,
-  SearchResultItem,
-  SearchResultsView,
-  SpeakerCard,
-  SpeakerKind,
-  SpeakerSource,
-  ClaudeCodeState,
-  ClaudeCodeStatusView,
-  CodexState,
-  CodexStatusView,
-  EffortChoice,
-  SummaryEvent,
-  SummarySettingsValue,
-  SummarySettingsView,
-  SummaryFieldRef,
-  SummaryView,
-  TranscriptKind,
-  TranscriptRow,
-  ChangedWordView,
-  DictionaryWordAdded,
-  WordSuggestionView,
-  Verdict,
-  WarningKind,
-  WriterChoice,
-  GeneralView,
-  PreviewsChoice,
-  PreviewsView,
-  ShellEvent,
-  RecoveredRecording,
-  ObsidianSettingsValue,
-  ObsidianSettingsView,
-  SpeakerTimingChoice,
-  SpeakerTimingOption,
-  SpeakersView,
-  VoiceEvent,
-  VoiceResult,
-  VoiceView,
-  WindowTheme,
-};
+// Every generated type, for the UI to import from here.
+export type * from "./bindings";
 
 /** Everything the UI can ask of the app. One method per command in `bindings.ts`. */
 export interface IpcCommands
@@ -217,7 +67,8 @@ export interface IpcCommands
     BenchmarkCommands,
     FirstRunCommands,
     FolderCommands,
-    CudaCommands {
+    CudaCommands,
+    SyncCommands {
   /** The app version and data directory. */
   appInfo(): Promise<AppInfo>;
   /** The meetings, newest first. Rejects with an `IpcFailure`. */
@@ -277,9 +128,14 @@ export interface IpcCommands
   /** Links a speaker to a person; resolves with the person's id. */
   linkSpeaker(meeting: string, speaker: string, choice: LinkChoice): Promise<string>;
   /** "This is me": a voice of an in-room meeting becomes its one "Me" row. Saves no voice.
-   * Rejects with `not_in_room` or `meeting_has_me`. */
-  markMe(meeting: string, speaker: string): Promise<void>;
-  /** "This isn't me": a "Me" row of an in-room meeting goes back to an unnamed voice. */
+   * Rejects with `not_in_room` or `meeting_has_me`. Resolves with the separate persons named
+   * after the user, whom the panel offers to merge into the user (T12.44). */
+  markMe(meeting: string, speaker: string): Promise<PersonItem[]>;
+  /** Merges a separate person named after the user into the user (T12.44). Rejects with
+   * `person_not_found` or `not_named_after_user`. */
+  mergeIntoMe(person: string): Promise<void>;
+  /** "This isn't me": a "Me" row of an in-room meeting goes back to an unnamed voice.
+   * Rejects with `recognised_me` on a row the user's voiceprint named (T12.44). */
   unmarkMe(meeting: string, speaker: string): Promise<void>;
   /** Renames a person and their speaker rows in every meeting. */
   renamePerson(person: string, name: string): Promise<number>;
@@ -316,6 +172,9 @@ export interface IpcCommands
   retranscribe(meeting: string): Promise<void>;
   /** Starts a re-summary; `JobEvent`s follow. Rejects with `busy` / `meeting_busy`. */
   resummarise(meeting: string): Promise<void>;
+  /** Cancels the meeting's re-transcription or re-summary (T12.41); its last `JobEvent` follows
+   * (`Cancelled`, or what it finished with). No job is not an error. */
+  cancelJob(meeting: string): Promise<void>;
   /** Swaps the current summary with the previous one. */
   undoSummary(meeting: string): Promise<void>;
   /** Lets the summary writer summarise a meeting kept on this computer from now on (T12.13).
@@ -466,6 +325,11 @@ export const everyCommandIsInIpc: [Missing] extends [never] ? true : never = tru
  * (`ipc::NEWER_DATA_KIND` in Rust): the app shows its own screen for it. */
 export const NEWER_DATA_KIND = "newer_data";
 
+/** Why "This isn't me" is refused on a "Me" row the user's voiceprint named (T12.44): the
+ * refusal and the Speakers panel's tooltip (`detail::RECOGNISED_ME_COPY`, same text). */
+export const RECOGNISED_ME_COPY =
+  'Earshot recognised your voice here from your voiceprint. To change this, forget your voice in Settings, People, then choose "This isn\'t me".';
+
 /** The error kind every command fails with when the data folder could not be opened at the
  * start (`ipc::DATA_FOLDER_KIND` in Rust, T9.23): the app shows its own screen, whose Try
  * again restarts Earshot. */
@@ -480,4 +344,11 @@ export class IpcFailure extends Error {
     this.name = "IpcFailure";
     this.error = error;
   }
+}
+
+/** The text of a failed IPC call (or any thrown value). */
+export function errorText(e: unknown): string {
+  if (e instanceof IpcFailure) return e.error.message;
+  if (e instanceof Error) return e.message;
+  return String(e);
 }

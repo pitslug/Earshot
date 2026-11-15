@@ -110,52 +110,6 @@ impl DataDir {
         Ok(p)
     }
 
-    /// Startup cleanup: removes `audio/*/*.flac.part` files (recordings that crashed before
-    /// they were finalised) last modified at least `grace_ms` before `now_unix_ms`, in folders
-    /// that belong to no live meeting (the rule of [`crate::sweep_orphan_audio`]: a live
-    /// meeting's `.part` is kept for start-up recovery, T9.18). Use
-    /// [`crate::ORPHAN_GRACE_MS`]. Returns how many were removed.
-    ///
-    /// # Errors
-    /// SQLite errors; I/O errors other than "not found".
-    pub fn cleanup_stale_parts(
-        &self,
-        store: &Store,
-        now_unix_ms: u64,
-        grace_ms: u64,
-    ) -> Result<usize, StoreError> {
-        let Ok(dirs) = std::fs::read_dir(self.root.join("audio")) else {
-            return Ok(0);
-        };
-        let mut removed = 0;
-        for d in dirs.filter_map(Result::ok) {
-            if crate::audio::belongs_to_live_meeting(store, &d)? {
-                continue;
-            }
-            let Ok(files) = std::fs::read_dir(d.path()) else {
-                continue;
-            };
-            for f in files.filter_map(Result::ok) {
-                let p = f.path();
-                if !f.file_name().to_string_lossy().ends_with(".flac.part")
-                    || !f.file_type().is_ok_and(|t| t.is_file())
-                {
-                    continue;
-                }
-                if crate::audio::mtime_ms(&p)
-                    .is_some_and(|m| now_unix_ms.saturating_sub(m) >= grace_ms)
-                {
-                    match std::fs::remove_file(&p) {
-                        Ok(()) => removed += 1,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-            }
-        }
-        Ok(removed)
-    }
-
     /// A FLAC writer for a track of `meeting`, at its layout path.
     ///
     /// # Errors

@@ -42,7 +42,7 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
-use super::ami_refs;
+use crate::ami_refs;
 use crate::fixtures;
 
 /// Changes whenever the generated audio or truth would change; a cached meeting with

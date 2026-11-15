@@ -5,12 +5,18 @@
 //! `lease_meeting_alone(Processing)`); a re-summary takes the same lease here before its
 //! thread starts, so it is refused while the meeting records, is processed or is deleted, and
 //! a deletion is refused while it runs. The work is behind [`JobWork`], so tests run fakes.
+//!
+//! Each job has its own `CancelToken` (T12.41), set by [`JobRunner::cancel`] and polled as the
+//! final pass and the summary already poll theirs: a cancelled job writes nothing beyond what a
+//! cancelled final pass or summary writes (the meeting's live speaker windows deleted) and ends in
+//! one [`JobEvent::Cancelled`]. A cancel after the work has finished changes nothing.
 
 use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
+use earshot_core::asr::CancelToken;
 use earshot_core::identity::EntityId;
 use earshot_runtime::edit::Retranscribed;
 use earshot_runtime::host::{HostPost, HostStep, SummaryResult};
@@ -34,7 +40,7 @@ pub enum JobKind {
 }
 
 /// One event of a job on a stored meeting: `Progress` steps and `Warning`s (re-transcription
-/// only), then exactly one of `Retranscribed`, `Summary` or `Failed`.
+/// only), then exactly one of `Retranscribed`, `Summary`, `Cancelled` or `Failed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Type, tauri_specta::Event)]
 #[serde(tag = "type")]
 pub enum JobEvent {
@@ -77,6 +83,14 @@ pub enum JobEvent {
         /// Plain copy.
         message: String,
     },
+    /// The job was cancelled ([`JobRunner::cancel`], T12.41): the transcript and the summary are
+    /// as they were.
+    Cancelled {
+        /// Meeting id.
+        meeting: String,
+        /// Which job.
+        job: JobKind,
+    },
     /// The job failed; nothing was changed by it (also a job that stopped unexpectedly).
     Failed {
         /// Meeting id.
@@ -93,7 +107,8 @@ pub enum JobEvent {
 /// The work of the jobs (production: [`HostJobs`]).
 pub trait JobWork: Send + Sync {
     /// Re-transcribes `meeting` (`edit::retranscribe`, which leases the meeting); `warn`
-    /// hears notices for the user (an ONNX Runtime library fallback).
+    /// hears notices for the user (an ONNX Runtime library fallback). A pass that answers
+    /// `cancel` is `HostPost::Cancelled`.
     ///
     /// # Errors
     /// Setup and final-pass errors.
@@ -101,12 +116,14 @@ pub trait JobWork: Send + Sync {
         &self,
         services: &Services,
         meeting: EntityId,
+        cancel: &CancelToken,
         progress: &mut dyn FnMut(HostStep<'_>),
         warn: &mut dyn FnMut(String),
     ) -> Result<Retranscribed, IpcError>;
 
     /// Summarises `meeting` again with the meeting's summary plan; `warn` hears notices for
-    /// the user (the chosen graphics card not used).
+    /// the user (the chosen graphics card not used). A summary that answers `cancel` is
+    /// [`SummaryResult::Cancelled`].
     ///
     /// # Errors
     /// Setup errors (a summary model that cannot load); a summary that ran and failed is
@@ -115,6 +132,7 @@ pub trait JobWork: Send + Sync {
         &self,
         services: &Services,
         meeting: EntityId,
+        cancel: &CancelToken,
         warn: &mut dyn FnMut(String),
     ) -> Result<SummaryResult, IpcError>;
 }
@@ -125,8 +143,21 @@ pub type JobSink = Arc<dyn Fn(JobEvent) + Send + Sync>;
 struct Inner {
     work: Arc<dyn JobWork>,
     sink: JobSink,
-    running: Mutex<BTreeMap<EntityId, (JobKind, JoinHandle<()>)>>,
+    running: Mutex<BTreeMap<EntityId, Running>>,
     gate: crate::activity::WorkGate,
+}
+
+/// A job that runs: which, its cancel and its thread.
+struct Running {
+    job: JobKind,
+    cancel: CancelToken,
+    thread: JoinHandle<()>,
+}
+
+impl Running {
+    fn runs(&self) -> bool {
+        !self.thread.is_finished()
+    }
 }
 
 /// Runs the jobs (cheap to clone; clones share the jobs).
@@ -134,11 +165,7 @@ struct Inner {
 pub struct JobRunner(Arc<Inner>);
 
 fn busy() -> IpcError {
-    IpcError {
-        kind: "busy".into(),
-        message: "This meeting is already being re-transcribed or re-summarised.".into(),
-        retryable: true,
-    }
+    IpcError::busy("This meeting is already being re-transcribed or re-summarised.")
 }
 
 impl JobRunner {
@@ -179,7 +206,7 @@ impl JobRunner {
             .running
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        running.retain(|_, (_, t)| !t.is_finished());
+        running.retain(|_, r| r.runs());
         if running.contains_key(&meeting) {
             return Err(busy());
         }
@@ -196,19 +223,38 @@ impl JobRunner {
         };
         let inner = Arc::clone(&self.0);
         let svc = services.clone();
+        let cancel = CancelToken::new();
+        let token = cancel.clone();
         let thread = std::thread::Builder::new()
             .name("earshot-job".into())
             .spawn(move || {
-                run_guarded(&inner, &svc, meeting, job, lease);
+                run_guarded(&inner, &svc, meeting, job, &token, lease);
                 drop(pass);
             })
-            .map_err(|_| IpcError {
-                kind: "internal".into(),
-                message: crate::plain_text::INTERNAL.into(),
-                retryable: false,
-            })?;
-        running.insert(meeting, (job, thread));
+            .map_err(|_| IpcError::internal())?;
+        running.insert(
+            meeting,
+            Running {
+                job,
+                cancel,
+                thread,
+            },
+        );
         Ok(())
+    }
+
+    /// Cancels the job of `meeting` (T12.41) and returns which job it was. Its one terminal event
+    /// follows as usual: `Cancelled` when the work answered the cancel, else what it finished
+    /// with. No job, a job already finished and a second press change nothing.
+    pub fn cancel(&self, meeting: EntityId) -> Option<JobKind> {
+        let running = self
+            .0
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let r = running.get(&meeting).filter(|r| r.runs())?;
+        r.cancel.cancel();
+        Some(r.job)
     }
 
     /// Whether a job of `meeting` runs.
@@ -218,8 +264,9 @@ impl JobRunner {
         self.running_job(meeting).is_some()
     }
 
-    /// The job of `meeting` that runs, if any (T12.38: a meeting deletion names it). Jobs have no
-    /// cancel, so a deletion is refused while one runs.
+    /// The job of `meeting` that runs, if any (T12.38: a meeting deletion names it, and stops it
+    /// first when the user agreed, T12.41). True until the job's thread has ended, which is after
+    /// the job let go of its lease.
     #[must_use]
     pub fn running_job(&self, meeting: EntityId) -> Option<JobKind> {
         self.0
@@ -227,8 +274,8 @@ impl JobRunner {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&meeting)
-            .filter(|(_, t)| !t.is_finished())
-            .map(|(job, _)| *job)
+            .filter(|r| r.runs())
+            .map(|r| r.job)
     }
 
     /// Waits for every job.
@@ -242,7 +289,7 @@ impl JobRunner {
                 .unwrap_or_else(PoisonError::into_inner),
         )
         .into_values()
-        .map(|(_, t)| t)
+        .map(|r| r.thread)
         .collect();
         for t in all {
             let _ = t.join();
@@ -283,10 +330,11 @@ fn run_guarded(
     svc: &Services,
     meeting: EntityId,
     job: JobKind,
+    cancel: &CancelToken,
     lease: Option<MeetingLease>,
 ) {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        run(inner, svc, meeting, job, lease);
+        run(inner, svc, meeting, job, cancel, lease);
     }));
     if result.is_err() {
         (inner.sink)(JobEvent::Failed {
@@ -303,10 +351,15 @@ fn run(
     svc: &Services,
     meeting: EntityId,
     job: JobKind,
+    cancel: &CancelToken,
     lease: Option<MeetingLease>,
 ) {
     let sink = &*inner.sink;
     let id = meeting.to_string();
+    let cancelled = || JobEvent::Cancelled {
+        meeting: id.clone(),
+        job,
+    };
     let failed = |e: IpcError| JobEvent::Failed {
         meeting: id.clone(),
         job,
@@ -319,6 +372,7 @@ fn run(
             let result = inner.work.retranscribe(
                 svc,
                 meeting,
+                cancel,
                 &mut |step| {
                     if let Some(crate::meeting_events::MeetingEvent::PostProgress {
                         step,
@@ -343,6 +397,8 @@ fn run(
                 },
             );
             sink(match result {
+                // The pass answered the cancel: nothing stored, the speaker windows deleted.
+                Ok(r) if matches!(r.post, HostPost::Cancelled { .. }) => cancelled(),
                 Ok(r) => JobEvent::Retranscribed {
                     meeting: id.clone(),
                     missing_tracks: u32::try_from(r.missing_tracks.len()).unwrap_or(u32::MAX),
@@ -362,7 +418,7 @@ fn run(
             });
         }
         JobKind::Resummarise => {
-            let result = inner.work.summarise(svc, meeting, &mut |message| {
+            let result = inner.work.summarise(svc, meeting, cancel, &mut |message| {
                 sink(JobEvent::Warning {
                     meeting: id.clone(),
                     message,
@@ -380,6 +436,7 @@ fn run(
                 });
             }
             sink(match result {
+                Ok(SummaryResult::Cancelled) => cancelled(),
                 Ok(r) => JobEvent::Summary {
                     meeting: id.clone(),
                     result: summary_result_event(&r, voices_to_name(svc, meeting)),
@@ -399,37 +456,40 @@ impl JobWork for HostJobs {
         &self,
         svc: &Services,
         meeting: EntityId,
+        cancel: &CancelToken,
         progress: &mut dyn FnMut(HostStep<'_>),
         warn: &mut dyn FnMut(String),
     ) -> Result<Retranscribed, IpcError> {
-        use earshot_core::asr::CancelToken;
         use earshot_runtime::edit::{Retranscribe, retranscribe};
         use earshot_runtime::host;
 
         let models = host::model_dir(&svc.data);
         // Waits for this start's choice of ONNX Runtime's library, if it is still being made.
         let build = host::settled_order();
-        let setup = {
+        let mut setup = {
             let db = svc.store();
             host::transcription_setup(&db, &models, &build, &earshot_runtime::hardware())?
         };
+        host::require_models(&models, &setup.choice.model, true)?;
+        // "Runs on the processor" for want of an NPU version: once until it changes (T12.45),
+        // recorded once the warnings went out.
+        let npu_note = host::npu_note_once(&svc.store(), &mut setup);
         let choice = setup.choice;
-        host::require_models(&models, &choice.model, true)?;
         let order = setup.order;
         for note in setup.notes {
             warn(note);
         }
+        npu_note.record(&mut svc.store());
         // A library that cannot load falls back to the CPU one, told as the meeting driver does.
         host::init_onnx_for(&models, &choice.model, &order, &mut |library, e| {
             warn(crate::meeting::onnx_fallback_message(library, e));
         })?;
-        // The app has no cancel control yet: the token is never set.
-        let cancel = CancelToken::new();
+        // The final pass looks at the token before it loads a model and between its steps.
         let run = Retranscribe {
             models: &models,
             model: &choice.model,
             order: &order,
-            cancel: &cancel,
+            cancel,
         };
         Ok(retranscribe(svc, meeting, &run, progress)?)
     }
@@ -438,12 +498,14 @@ impl JobWork for HostJobs {
         &self,
         svc: &Services,
         meeting: EntityId,
+        cancel: &CancelToken,
         warn: &mut dyn FnMut(String),
     ) -> Result<SummaryResult, IpcError> {
         let models = earshot_runtime::host::model_dir(&svc.data);
         summarise_with(
             svc,
             meeting,
+            cancel,
             &models,
             &crate::credentials::CredentialManager::anthropic(),
             &earshot_runtime::claude_code::InstalledClaudeCode::meeting_start(),
@@ -458,21 +520,23 @@ impl JobWork for HostJobs {
 /// `api_key` message (a meeting's own summary is skipped instead), and Claude Code that is
 /// not installed or not signed in fails it with that reason (`claude_code`), and Codex
 /// likewise (`codex`, T7.4gc). A meeting kept on this computer (T12.13) is summarised only by
-/// the local summary model, and fails `summary_kept_local` without it.
+/// the local summary model, and fails `summary_kept_local` without it. A set `cancel` (T12.41)
+/// is [`SummaryResult::Cancelled`], before any model loads when it was set during the setup.
 ///
 /// # Errors
 /// As `meeting::summary_setup`; `api_key` without the endpoint's key; `claude_code`;
 /// `codex`; `summary_kept_local`.
+#[allow(clippy::too_many_arguments)] // The seams tests fill in: models, the key store, two CLIs.
 pub(crate) fn summarise_with(
     svc: &Services,
     meeting: EntityId,
+    cancel: &CancelToken,
     models: &earshot_runtime::backends::ModelDir,
     keys: &dyn earshot_runtime::summary_settings::ApiKeyStore,
     claude: &dyn earshot_runtime::claude_code::ClaudeCodeProbe,
     codex: &dyn earshot_runtime::codex::CodexProbe,
     warn: &mut dyn FnMut(String),
 ) -> Result<SummaryResult, IpcError> {
-    use earshot_core::asr::CancelToken;
     use earshot_runtime::host::{self, SkipReason};
 
     // A meeting kept on this computer (T12.13) is read here, before anything is set up: a
@@ -503,8 +567,10 @@ pub(crate) fn summarise_with(
         warn(note);
     }
     Ok(match setup.summary {
+        // Cancelled during the setup: no model loads and nothing is sent.
+        Some(_) if cancel.is_cancelled() => SummaryResult::Cancelled,
         Some(s) => {
-            let result = host::run_summary(svc, meeting, &s.service, &CancelToken::new());
+            let result = host::run_summary(svc, meeting, &s.service, cancel);
             for why in s.service.handover_record_failures() {
                 warn(crate::meeting_events::handover_record_copy(&why));
             }

@@ -3,8 +3,10 @@
 // activity, landed lines and a warning while it records; post-meeting progress and a
 // summary after it stops.
 
+import keepLocalCases from "../../../../fixtures/ui/keep_local_cases.json";
 import { type Timer, realTimer } from "../time";
 import {
+  RECOGNISED_ME_COPY,
   type AppInfo,
   type CaptureMode,
   type DeleteAsk,
@@ -31,9 +33,9 @@ import {
   type SummaryView,
   type TranscriptRow,
 } from "./ipc";
-import { dictionaryWord } from "../detail/dictionaryWord";
+import { dictionaryWord, splitToken, tokensOf } from "../detail/dictionaryWord";
 import { DELETE_COPY } from "../shell/deleteCopy";
-import { marksAfterEdit, splitPunctuation, tokensOf, withWord, wordListOf, wordsToOffer } from "./mockWords";
+import { marksAfterEdit, withWord, wordListOf, wordsToOffer } from "./mockWords";
 import {
   ignoredVoice,
   linked,
@@ -43,6 +45,7 @@ import {
   resummarised,
   sampleDetail,
   sampleInRoomDetail,
+  sampleRecognisedInRoomDetail,
   samplePersons,
   unmarkedMe,
 } from "./mockDetail";
@@ -50,13 +53,14 @@ import type { FolderListItem } from "./folders";
 import { type SampleMachine, createModelsMock } from "./mockModels";
 import { searchSample } from "./mockSearch";
 import { type SettingsMockData, createSettingsMock } from "./mockSettings";
-import { type SummariesMockData, createSummariesMock } from "./mockSummaries";
+import { NOT_A_WORD, type SummariesMockData, createSummariesMock } from "./mockSummaries";
 import { type StorageMockData, createStorageMock } from "./mockStorage";
 import { type BenchmarkMockData, createBenchmarkMock } from "./mockBenchmark";
 import { type CudaMockData, createCudaMock } from "./mockCuda";
 import { type AudioMockData, createAudioMock } from "./mockAudio";
 import { type AudioCheckMockData, createAudioCheckMock } from "./mockAudioCheck";
 import { type FirstRunMockData, createFirstRunMock } from "./mockFirstRun";
+import { type SyncMockData, createSyncMock } from "./mockSync";
 import { SAMPLE_FOLDERS, createFoldersMock } from "./mockFolders";
 
 const MINUTE = 60_000;
@@ -163,6 +167,10 @@ export const POST_STEP_MS = 400;
 /** The refusals of a meeting deletion (T12.38): the UI's one copy of `deletion.rs`'s words. */
 export const MOCK_DELETE_COPY = DELETE_COPY;
 
+/** `detail::edit_error`'s copy for `EditError::MeetingStillWorking` (T12.45), read from the case
+ * table the desktop's Rust tests check that copy against. */
+export const MOCK_STILL_WORKING_COPY = keepLocalCases.still_working.message;
+
 const DEFAULT_SUMMARY: SummaryEvent = {
   kind: "Stored",
   title: "Vendor review: pumps",
@@ -199,7 +207,7 @@ export interface MockIpcData {
   details?: Record<string, MeetingDetail>;
   /** Finished meetings without a detail of their own were recorded in the room, with no
    * saved voice (`sampleInRoomDetail`). */
-  inRoom?: boolean;
+  inRoom?: boolean | "recognised";
   /** The persons (default: `samplePersons()`). */
   persons?: PersonItem[];
   /** The vault exports go to (the stored Obsidian vault); without one `exportMeeting`
@@ -250,6 +258,8 @@ export interface MockIpcData {
   cuda?: CudaMockData;
   /** The first-run wizard (default: already done, so other screens' tests never meet it). */
   firstRun?: FirstRunMockData;
+  /** The Sync page (default: this computer is not set up). */
+  sync?: SyncMockData;
   /** Offers to stop this long into a meeting (the preview's `?callEnded=1`). */
   callEndOfferAfterMs?: number;
   /** The folders (default: `SAMPLE_FOLDERS` with the sample meetings, none with given ones). */
@@ -333,9 +343,21 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const details = new Map<string, MeetingDetail>(Object.entries(data.details ?? {}));
   const recovered: RecoveredRecording[] = (data.recovered ?? []).map((r) => ({ ...r }));
   const previous = new Map<string, SummaryView>();
+  // Whether the previous summary's text was edited (`summary_edits`: the label travels with
+  // the text, so undo swaps it too).
+  const previousEdited = new Map<string, boolean>();
   const jobs = new Map<string, "Retranscribing" | "Resummarising">();
+  const jobTimers = new Map<string, (() => void)[]>();
   const persons: PersonItem[] = (data.persons ?? samplePersons()).map((p) => ({ ...p }));
   let personSeq = 0;
+  // `edit::named_after_me`: separate persons with the user's own name (not the default "Me"),
+  // case ignored.
+  const namedAfterMe = (): PersonItem[] => {
+    const user = persons.find((p) => p.is_me);
+    const name = user?.name.trim().toLowerCase() ?? "";
+    if (name === "" || user?.name.trim() === "Me") return [];
+    return persons.filter((p) => !p.is_me && p.name.trim().toLowerCase() === name);
+  };
   const call = (...args: unknown[]) => data.onCall?.(args);
   const emit = (event: MeetingEvent) => {
     for (const l of [...listeners]) l(event);
@@ -499,7 +521,12 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     if (!row) return fail("meeting_not_found", "This meeting no longer exists.");
     let d = details.get(id);
     if (!d) {
-      d = data.inRoom && row.state === "Ready" ? sampleInRoomDetail(row) : sampleDetail(row);
+      d =
+        data.inRoom && row.state === "Ready"
+          ? data.inRoom === "recognised"
+            ? sampleRecognisedInRoomDetail(row)
+            : sampleInRoomDetail(row)
+          : sampleDetail(row);
       details.set(id, d);
     }
     return d;
@@ -540,7 +567,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const wordAt = (meeting: string, segment: string, token: number): [TranscriptRow, string] => {
     const row = lineOf(meeting, segment);
     const t = tokensOf(row.text)[token];
-    const core = t === undefined ? "" : splitPunctuation(t)[1];
+    const core = t === undefined ? "" : splitToken(t)[1];
     if (core === "") fail("word_not_found", "This word is no longer in the line. The line may have been edited.");
     return [row, core];
   };
@@ -598,6 +625,21 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       fail("busy", "This meeting is already being re-transcribed or re-summarised.", true);
     }
     jobs.set(meeting, kind);
+    jobTimers.set(meeting, []);
+  };
+  // A job's timer, cancelled with the job (T12.41).
+  const jobTimer = (meeting: string, fn: () => void, ms: number) => {
+    jobTimers.get(meeting)?.push(timer.setTimeout(fn, ms));
+  };
+  // Cancels the job of `meeting`, as `JobRunner::cancel` does: its timers stop and its one last
+  // event says it was cancelled. No job changes nothing.
+  const cancelJob = (meeting: string) => {
+    const kind = jobs.get(meeting);
+    if (kind === undefined) return;
+    for (const stop of jobTimers.get(meeting) ?? []) stop();
+    jobTimers.delete(meeting);
+    jobs.delete(meeting);
+    emitJob({ type: "Cancelled", meeting, job: kind === "Retranscribing" ? "Retranscribe" : "Resummarise" });
   };
 
   const foldersMock = createFoldersMock(meetings, data.folders ?? (data.meetings ? [] : SAMPLE_FOLDERS), {
@@ -630,6 +672,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     ...createBenchmarkMock(data.benchmark, timer),
     ...createCudaMock(data.machine ?? "surface", timer, data.cuda),
     ...createFirstRunMock(data.firstRun),
+    ...createSyncMock(data.sync),
     ...foldersMock,
     listFolders: async () => storeFailure() ?? foldersMock.listFolders(),
     appInfo: async () => ({ ...appInfo }),
@@ -858,7 +901,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     // checks and messages (`setSummaryVocabulary`).
     addDictionaryWord: async (token) => {
       call("addDictionaryWord", token);
-      const word = dictionaryWord(token) ?? fail("invalid_setting", "Only a word can be added to the dictionary.");
+      const word = dictionaryWord(token) ?? fail("invalid_setting", NOT_A_WORD);
       const words = (await summariesMock.summaryVocabulary()).words;
       const there = words.find((w) => w.toLowerCase() === word.toLowerCase());
       if (there !== undefined) return { word: there, added: false };
@@ -867,11 +910,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     removeDictionaryWord: async (word) => {
       call("removeDictionaryWord", word);
-      const wanted = word
-        .split(/\p{White_Space}+/u)
-        .filter((p) => p !== "")
-        .join(" ")
-        .toLowerCase();
+      const wanted = tokensOf(word).join(" ").toLowerCase();
       const words = (await summariesMock.summaryVocabulary()).words;
       if (wanted === "" || !words.some((w) => w.toLowerCase() === wanted)) return false;
       await summariesMock.setSummaryVocabulary(words.filter((w) => w.toLowerCase() !== wanted));
@@ -980,7 +1019,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       if (JSON.stringify(next) === JSON.stringify(s)) return;
       previous.set(meeting, s);
-      details.set(meeting, { ...d, summary: next, can_undo_summary: true });
+      previousEdited.set(meeting, d.header.summary_edited);
+      details.set(meeting, {
+        ...d,
+        header: { ...d.header, summary_edited: true },
+        summary: next,
+        can_undo_summary: true,
+      });
     },
     renameSpeaker: async (meeting, speaker, name) => {
       call("renameSpeaker", meeting, speaker, name);
@@ -1070,6 +1115,30 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       const me = user;
       update(meeting, (x) => markedMe(x, speaker, me));
+      return namedAfterMe().map((p) => ({ ...p }));
+    },
+    mergeIntoMe: async (person) => {
+      call("mergeIntoMe", person);
+      const p =
+        persons.find((x) => x.id === person) ??
+        fail("person_not_found", "This person no longer exists.");
+      if (!namedAfterMe().includes(p)) {
+        fail("not_named_after_user", "Only a person with your name can be merged into you.");
+      }
+      const user = persons.find((x) => x.is_me);
+      if (!user) return fail("not_named_after_user", "Only a person with your name can be merged into you.");
+      if (p.has_voiceprint) user.has_voiceprint = true;
+      persons.splice(persons.indexOf(p), 1);
+      // As `detail::speaker_cards`: a link to a merged-away person stands for the user now.
+      const me = { id: user.id, name: user.name, has_voiceprint: user.has_voiceprint };
+      for (const [id, d] of details) {
+        details.set(id, {
+          ...d,
+          speakers: d.speakers.map((s) =>
+            s.person?.id === person || s.person?.id === user.id ? { ...s, person: me } : s,
+          ),
+        });
+      }
     },
     unmarkMe: async (meeting, speaker) => {
       call("unmarkMe", meeting, speaker);
@@ -1082,6 +1151,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         );
       }
       if (card.kind !== "Me") fail("not_me", "This voice is not marked as you.");
+      if (card.recognised_me) fail("recognised_me", RECOGNISED_ME_COPY);
       update(meeting, (x) => unmarkedMe(x, speaker));
     },
     renamePerson: async (person, name) => {
@@ -1148,14 +1218,17 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       startJob(meeting, "Retranscribing");
       const steps: PostStep[] = POST_STEPS.filter((s) => s.kind !== "Summarising");
       steps.forEach((step, i) => {
-        timer.setTimeout(
+        jobTimer(
+          meeting,
           () => emitJob({ type: "Progress", meeting, step, done: Math.max(0, i - 1), total: 6 }),
           (i + 1) * POST_STEP_MS,
         );
       });
-      timer.setTimeout(
+      jobTimer(
+        meeting,
         () => {
           jobs.delete(meeting);
+          jobTimers.delete(meeting);
           emitJob({
             type: "Retranscribed",
             meeting,
@@ -1175,18 +1248,23 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     allowSummaryWriter: async (meeting) => {
       call("allowSummaryWriter", meeting);
       detailOf(meeting);
+      // `keep_local::allow_writer` (T12.45): refused while the meeting is still worked on.
+      if (deletionAsk(meeting) !== "Free") fail("meeting_still_working", MOCK_STILL_WORKING_COPY);
       keptLocal.delete(meeting);
     },
     resummarise: async (meeting) => {
       call("resummarise", meeting);
       startJob(meeting, "Resummarising");
-      timer.setTimeout(() => {
+      jobTimer(meeting, () => {
         jobs.delete(meeting);
+        jobTimers.delete(meeting);
         const d = detailOf(meeting);
         if (d.summary) previous.set(meeting, d.summary);
+        if (d.summary) previousEdited.set(meeting, d.header.summary_edited);
         const next = d.summary ? resummarised(d.summary) : null;
         details.set(meeting, {
           ...d,
+          header: { ...d.header, summary_edited: false },
           summary: next,
           can_undo_summary: d.summary !== null,
           summary_stale: false,
@@ -1207,13 +1285,23 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         });
       }, POST_STEP_MS);
     },
+    cancelJob: async (meeting) => {
+      call("cancelJob", meeting);
+      cancelJob(meeting);
+    },
     undoSummary: async (meeting) => {
       call("undoSummary", meeting);
       const d = detailOf(meeting);
       const prev = previous.get(meeting);
       if (!prev || !d.can_undo_summary) fail("no_previous_summary", "There is no previous summary.");
       if (d.summary) previous.set(meeting, d.summary);
-      details.set(meeting, { ...d, summary: prev ?? null });
+      const wasEdited = previousEdited.get(meeting) ?? false;
+      previousEdited.set(meeting, d.header.summary_edited);
+      details.set(meeting, {
+        ...d,
+        header: { ...d.header, summary_edited: wasEdited },
+        summary: prev ?? null,
+      });
     },
     exportMeeting: async (meeting) => {
       call("exportMeeting", meeting);
@@ -1235,8 +1323,16 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       detailOf(meeting);
       const ask = deletionAsk(meeting);
       if (ask === "Recording") fail("meeting_recording", MOCK_DELETE_COPY.recording);
-      if (ask === "Retranscribing") fail("meeting_job", MOCK_DELETE_COPY.retranscribing, true);
-      if (ask === "Resummarising") fail("meeting_job", MOCK_DELETE_COPY.resummarising, true);
+      if (ask === "Retranscribing" || ask === "Resummarising") {
+        if (stopFinishing !== true) {
+          fail(
+            "meeting_job",
+            ask === "Retranscribing" ? MOCK_DELETE_COPY.retranscribing : MOCK_DELETE_COPY.resummarising,
+            true,
+          );
+        }
+        cancelJob(meeting);
+      }
       if (ask === "StopsFinishing") {
         if (stopFinishing !== true) fail("meeting_finishing", MOCK_DELETE_COPY.finishing, true);
         finishing.get(meeting)?.(true);

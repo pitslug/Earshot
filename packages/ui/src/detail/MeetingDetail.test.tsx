@@ -1,13 +1,12 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   type Ipc,
   IpcFailure,
   type JobKind,
   MISSING_SEGMENT,
-  type MeetingListItem,
   type MockIpcData,
   POST_STEP_MS,
   SAMPLE_SPEAKERS,
@@ -17,82 +16,11 @@ import {
   samplePersons,
 } from "../ipc";
 import { IpcProvider } from "../ipc/context";
-import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
-import { AppShell } from "../shell/AppShell";
 import { COPIED_MS, handoverLine, savedText, summaryMarkdown } from "./detail";
 import { type JobView, MeetingDetailView } from "./MeetingDetailView";
-
-const ITEM: MeetingListItem = { ...sampleMeetings()[1], started_at_ms: 2_000 };
-/** An older meeting, so `ITEM` is shown first. */
-const OTHER: MeetingListItem = { ...sampleMeetings()[2], started_at_ms: 1_000 };
-
-/** The detail as the app shows it: inside `AppShell` (which follows job events), with
- * `ITEM` selected. */
-async function setup(data: MockIpcData = {}) {
-  const calls: unknown[][] = [];
-  const timer = createManualTimer(10_000);
-  const ipc: Ipc = createMockIpc({
-    timer,
-    meetings: [ITEM, OTHER],
-    onCall: (c) => calls.push(c),
-    ...data,
-  });
-  const user = userEvent.setup();
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
-  await screen.findByRole("heading", { level: 1, name: ITEM.title });
-  return { calls, timer, ipc, user };
-}
-
-const panel = () => screen.getByRole("complementary", { name: "Speakers" });
-const speakerRow = (name: string) => within(panel()).getByRole("listitem", { name });
-/** Opens the panel's collapsed list of named voices (T12.19). */
-async function openNamed(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(within(panel()).getByRole("button", { name: /^Named/ }));
-}
-/** The list row of a meeting and its trash can, also while an open modal hides the page from
- * assistive technology. */
-const listRow = (item: MeetingListItem) =>
-  screen.getByRole("button", { name: new RegExp(`^${item.title}`), hidden: true });
-const trashName = (item: MeetingListItem) => `Delete ${item.title}`;
-
-/** Longer than tabster's deferred aria-hidden pass (`ModalizerAPI.hiddenUpdate`, 250 ms): a
- * dialog still accessible after this wait survived that pass. */
-const TABSTER_HIDE_PASS_MS = 400;
-
-/** Where focus is and whether the alert dialog is hidden, for a failure message. */
-function dialogState(): string {
-  const d = document.querySelector<HTMLElement>('[role="alertdialog"]');
-  const f = document.activeElement;
-  const focus = f
-    ? `<${f.tagName.toLowerCase()} role=${f.getAttribute("role")} label=${f.getAttribute("aria-label")}> "${(f.textContent ?? "").slice(0, 30)}"`
-    : "none";
-  const hidden = d ? d.closest('[aria-hidden="true"]') : null;
-  return `dialog in DOM: ${d !== null}, hidden by aria-hidden: ${hidden === null ? "no" : hidden === d ? "itself" : "an ancestor"}, focus: ${focus}, focus inside dialog: ${d?.contains(f) ?? false}`;
-}
-
-/** The alert dialog as assistive technology sees it; on a miss, says why (T7.3d: on the
- * Surface it stayed aria-hidden). */
-async function accessibleDialog(): Promise<HTMLElement> {
-  try {
-    return await screen.findByRole("alertdialog");
-  } catch (e) {
-    const now = dialogState();
-    await act(() => new Promise((r) => setTimeout(r, 500)));
-    throw new Error(`no accessible alertdialog: ${now}; 0.5 s later: ${dialogState()}`, { cause: e });
-  }
-}
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
+import { ITEM, OTHER, setup, panel, speakerRow, openNamed } from "../test/meetingDetail";
 
 describe("MeetingDetailView", () => {
   it("shows the header, summary and the Speakers panel open on the voices that need names", async () => {
@@ -337,6 +265,24 @@ describe("MeetingDetailView", () => {
       await user.click(screen.getByRole("button", { name: "Switch to previous summary" }));
       expect(await screen.findByText(/\(by Friday\)/)).toBeInTheDocument();
       expect(screen.getByText("Split the pump order into two deliveries")).toBeInTheDocument();
+      // The text before the last edit was itself edited, so the header still says so.
+      expect(screen.getByText(/Summary by Qwen 3\.5 9B \(edited\)/)).toBeInTheDocument();
+    });
+
+    it("says in the header that the summary was edited, until undo brings back the writer's text", async () => {
+      const { user } = await setup();
+      await screen.findByText(/TL;DR/);
+      expect(screen.getByText(/Summary by Qwen 3\.5 9B · /)).toBeInTheDocument();
+      expect(screen.queryByText(/\(edited\)/)).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Edit decision 1" }));
+      const field = screen.getByRole("textbox", { name: "decision 1" });
+      await user.clear(field);
+      await user.type(field, "Split the pump order into two deliveries{Enter}");
+      expect(await screen.findByText(/Summary by Qwen 3\.5 9B \(edited\) · /)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Switch to previous summary" }));
+      expect(await screen.findByText("Split the pump order into two shipments")).toBeInTheDocument();
+      expect(screen.queryByText(/\(edited\)/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Summary by Qwen 3\.5 9B · /)).toBeInTheDocument();
     });
 
     it("shows the due-date editor's label, since the action's text is not shown while it is open", async () => {
@@ -525,327 +471,6 @@ describe("MeetingDetailView", () => {
     });
   });
 
-  it("offers This is me only in the room, and it and its undo follow through the transcript", async () => {
-    const { user, calls } = await setup({ inRoom: true });
-    await screen.findByRole("textbox", { name: "Name of Speaker 1" });
-    expect(within(panel()).getAllByRole("button", { name: "This is me" })).toHaveLength(4);
-    expect(within(panel()).queryByRole("button", { name: "This isn't me" })).toBeNull();
-
-    await user.click(within(speakerRow("Speaker 2")).getByRole("button", { name: "This is me" }));
-    expect(calls).toContainEqual(["markMe", ITEM.id, SAMPLE_SPEAKERS.priya]);
-    // One Me row: the offer leaves every voice, and the user's name shows among the named.
-    await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Speaker 2" })).toBeNull());
-    await openNamed(user);
-    const mine = await within(panel()).findByRole("listitem", { name: "Casey" });
-    expect(within(mine).getByRole("button", { name: "This isn't me" })).toBeInTheDocument();
-    expect(within(panel()).queryByRole("button", { name: "This is me" })).toBeNull();
-    expect(within(mine).queryByRole("textbox")).toBeNull();
-    // Nothing saves a voice and no voiceprint call is made.
-    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
-    await user.click(screen.getByRole("tab", { name: "Transcript" }));
-    const table = screen.getByRole("table", { name: "Transcript" });
-    expect(within(table).getAllByText("Casey").length).toBeGreaterThan(0);
-
-    await user.click(within(mine).getByRole("button", { name: "This isn't me" }));
-    expect(calls).toContainEqual(["unmarkMe", ITEM.id, SAMPLE_SPEAKERS.priya]);
-    const back = await within(panel()).findByRole("listitem", { name: "Speaker 2" });
-    expect(within(back).getByRole("textbox", { name: "Name of Speaker 2" })).toBeInTheDocument();
-    expect(within(panel()).getAllByRole("button", { name: "This is me" })).toHaveLength(4);
-    expect(within(table).queryByText("Casey")).toBeNull();
-  });
-
-  it("offers neither on a call, and the mock refuses like the runtime", async () => {
-    const { ipc } = await setup();
-    await screen.findByRole("textbox", { name: "Name of Speaker 2" });
-    expect(within(panel()).queryByRole("button", { name: "This is me" })).toBeNull();
-    expect(within(panel()).queryByRole("button", { name: "This isn't me" })).toBeNull();
-    await expect(ipc.markMe(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
-      error: { kind: "not_in_room" },
-    });
-    await expect(ipc.unmarkMe(ITEM.id, SAMPLE_SPEAKERS.me)).rejects.toMatchObject({
-      error: { kind: "not_in_room" },
-    });
-  });
-
-  it("refuses a second voice in the mock with the runtime's copy", async () => {
-    const { ipc } = await setup({ inRoom: true });
-    await ipc.markMe(ITEM.id, SAMPLE_SPEAKERS.me);
-    await expect(ipc.markMe(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
-      error: {
-        kind: "meeting_has_me",
-        message: 'One voice in this meeting is already you. Choose "This isn\'t me" on it first.',
-      },
-    });
-    await expect(ipc.unmarkMe(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
-      error: { kind: "not_me" },
-    });
-  });
-
-  it("saves a voice from its name field: named, linked and remembered in one step, and the transcript follows", async () => {
-    const { user, calls } = await setup();
-    const field = await screen.findByRole("textbox", { name: "Name of Speaker 2" });
-    await user.type(field, "Sam Lee{Enter}");
-    await waitFor(() => expect(within(panel()).queryByRole("textbox", { name: "Name of Speaker 2" })).toBeNull());
-    expect(calls).toContainEqual(["saveVoice", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "Sam Lee" }]);
-    expect(calls.filter((c) => c[0] === "saveVoice")).toHaveLength(1);
-    expect(calls.some((c) => c[0] === "linkSpeaker")).toBe(false);
-    expect(await screen.findByText("Saved Sam Lee. Later meetings will recognise this voice.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Speakers, 1 needs a name" })).toBeInTheDocument();
-    // It moved to the named voices, where its voice can be forgotten.
-    await openNamed(user);
-    expect(within(speakerRow("Sam Lee")).getByRole("button", { name: "Forget voice" })).toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Transcript" }));
-    const rows = within(screen.getByRole("table", { name: "Transcript" })).getAllByRole("row");
-    expect(within(rows[0]).getAllByRole("cell")[1].textContent).toBe("Sam Lee");
-  });
-
-  it("renames a named speaker on Enter", async () => {
-    const { user, calls } = await setup();
-    await screen.findByText(/TL;DR/);
-    await openNamed(user);
-    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Rename here" }));
-    expect(within(panel()).getByText("Renames this speaker in this meeting only.")).toBeInTheDocument();
-    const field = within(panel()).getByRole("textbox", { name: "Name of Priya Shah in this meeting" });
-    await user.clear(field);
-    await user.type(field, "Priya S{Enter}");
-    expect(await within(panel()).findByText("Priya S")).toBeInTheDocument();
-    expect(calls).toContainEqual(["renameSpeaker", ITEM.id, SAMPLE_SPEAKERS.priya, "Priya S"]);
-  });
-
-  it("merges a speaker away from the panel", async () => {
-    const { user, calls } = await setup();
-    await screen.findByText(/TL;DR/);
-    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Merge" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Into Priya Shah" }));
-    await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Speaker 3" })).toBeNull());
-    expect(calls).toContainEqual(["mergeSpeakers", ITEM.id, SAMPLE_SPEAKERS.priya, SAMPLE_SPEAKERS.third]);
-    await openNamed(user);
-    expect(within(speakerRow("Priya Shah")).getByText(/29% of talk time/)).toBeInTheDocument();
-    // The user's own row cannot be merged away.
-    expect(within(speakerRow("Me")).getByRole("button", { name: "Merge" })).toHaveAttribute("aria-disabled", "true");
-  });
-
-  it("links a wrong match to a new person from the named voices", async () => {
-    const { user, calls } = await setup();
-    await screen.findByText(/TL;DR/);
-    await openNamed(user);
-    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Link to person" }));
-    const dialog = await screen.findByRole("dialog", { name: "Link Priya Shah to a person" });
-    await user.click(within(dialog).getByRole("combobox"));
-    await user.click(await screen.findByRole("option", { name: "New person" }));
-    await user.type(within(dialog).getByRole("textbox", { name: "New person's name" }), "Ana Diaz");
-    await user.click(within(dialog).getByRole("button", { name: "Link" }));
-    await waitFor(() => expect(within(panel()).getByRole("listitem", { name: "Ana Diaz" })).toBeInTheDocument());
-    expect(calls).toContainEqual(["linkSpeaker", ITEM.id, SAMPLE_SPEAKERS.priya, { kind: "New", name: "Ana Diaz" }]);
-    // Linking is not saving: no voice is remembered by it.
-    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
-  });
-
-  it("saves with the Save button, to an existing person by exact name, and never an empty name", async () => {
-    const { user, calls } = await setup();
-    const save = await screen.findByRole("button", { name: "Save Speaker 3" });
-    expect(save).toBeDisabled();
-    await user.type(within(panel()).getByRole("textbox", { name: "Name of Speaker 3" }), "  ");
-    expect(save).toBeDisabled();
-    await user.type(within(panel()).getByRole("textbox", { name: "Name of Speaker 3" }), "tom reid");
-    await user.click(save);
-    await waitFor(() =>
-      expect(calls).toContainEqual([
-        "saveVoice",
-        ITEM.id,
-        SAMPLE_SPEAKERS.third,
-        { kind: "Existing", person: "9e000000-0000-7000-8000-000000000003" },
-      ]),
-    );
-    expect(await screen.findByText("Saved Tom Reid. Later meetings will recognise this voice.")).toBeInTheDocument();
-  });
-
-  it("ignores a voice: it stops needing a name, keeps its label and can be named after all", async () => {
-    const { user, calls } = await setup();
-    await screen.findByText(/TL;DR/);
-    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Ignore" }));
-    expect(calls).toContainEqual(["ignoreSpeaker", ITEM.id, SAMPLE_SPEAKERS.third]);
-    expect(await screen.findByRole("button", { name: "Speakers, 1 needs a name" })).toBeInTheDocument();
-    const needing = within(panel()).getByRole("region", { name: "Need a name" });
-    expect(within(needing).queryByRole("listitem", { name: "Speaker 3" })).toBeNull();
-    // Nothing is saved or linked by ignoring.
-    expect(calls.some((c) => c[0] === "saveVoice" || c[0] === "linkSpeaker")).toBe(false);
-    // The label stays in the summary and the transcript.
-    expect(within(screen.getByRole("table", { name: "Actions" })).getByText("Speaker 3")).toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Transcript" }));
-    const table = screen.getByRole("table", { name: "Transcript" });
-    expect(within(table).getAllByText("Speaker 3").length).toBeGreaterThan(0);
-
-    await user.click(within(panel()).getByRole("button", { name: "Ignored (1)" }));
-    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Stop ignoring" }));
-    expect(calls).toContainEqual(["unignoreSpeaker", ITEM.id, SAMPLE_SPEAKERS.third]);
-    expect(await screen.findByRole("button", { name: "Speakers, 2 need names" })).toBeInTheDocument();
-    expect(within(panel()).queryByRole("button", { name: /^Ignored/ })).toBeNull();
-    expect(within(panel()).getByRole("textbox", { name: "Name of Speaker 3" })).toBeInTheDocument();
-  });
-
-  it("offers no Ignore for a voice with nothing stored, and the mock refuses like the runtime", async () => {
-    const base = sampleDetail(ITEM);
-    const detail = {
-      ...base,
-      speakers: base.speakers.map((s) => (s.id === SAMPLE_SPEAKERS.third ? { ...s, can_ignore: false } : s)),
-    };
-    const { ipc } = await setup({ details: { [ITEM.id]: detail } });
-    await screen.findByText(/TL;DR/);
-    expect(within(speakerRow("Speaker 3")).queryByRole("button", { name: "Ignore" })).toBeNull();
-    expect(within(speakerRow("Speaker 2")).getByRole("button", { name: "Ignore" })).toBeInTheDocument();
-    await expect(ipc.ignoreSpeaker(ITEM.id, SAMPLE_SPEAKERS.third)).rejects.toMatchObject({
-      error: { kind: "no_stored_voice" },
-    });
-    await expect(ipc.ignoreSpeaker(ITEM.id, SAMPLE_SPEAKERS.priya)).rejects.toMatchObject({
-      error: { kind: "not_unnamed", message: "Only a voice that needs a name can be ignored." },
-    });
-    await expect(ipc.saveVoice(ITEM.id, SAMPLE_SPEAKERS.me, { kind: "New", name: "Sky Moss" })).rejects.toMatchObject({
-      error: { kind: "me_is_the_user" },
-    });
-    expect((await ipc.listPersons()).some((p) => p.name === "Sky Moss")).toBe(false);
-  });
-
-  it("stays closed when no voice needs a name, with recognised voices marked, and the header button toggles it", async () => {
-    const base = sampleDetail(ITEM);
-    const detail = {
-      ...base,
-      speakers: base.speakers.map((s) =>
-        s.needs_name
-          ? {
-              ...s,
-              name: "Tom Reid",
-              person: { id: "9e000000-0000-7000-8000-000000000003", name: "Tom Reid", has_voiceprint: true },
-              source: "Voiceprint" as const,
-              needs_name: false,
-              can_ignore: false,
-            }
-          : s,
-      ),
-    };
-    const { user } = await setup({ details: { [ITEM.id]: detail } });
-    await screen.findByText(/TL;DR/);
-    const toggle = screen.getByRole("button", { name: "Speakers" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
-
-    await user.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(within(panel()).getByText("Every voice in this meeting has a name.")).toBeInTheDocument();
-    await openNamed(user);
-    const recognisedRows = within(panel())
-      .getAllByRole("listitem")
-      .filter((r) => within(r).queryByText("Recognised") !== null);
-    expect(recognisedRows.map((r) => r.getAttribute("aria-label"))).toEqual(["Priya Shah", "Tom Reid", "Tom Reid"]);
-    expect(within(speakerRow("Me")).queryByText("Recognised")).toBeNull();
-
-    await user.click(within(panel()).getByRole("button", { name: "Close Speakers" }));
-    expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await user.click(toggle);
-    expect(panel()).toBeInTheDocument();
-    await user.click(toggle);
-    expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
-  });
-
-  it("slides the panel out while its column closes, hidden and inert, then removes it", async () => {
-    const { user } = await setup();
-    await screen.findByText(/TL;DR/);
-    const toggle = screen.getByRole("button", { name: /^Speakers/ });
-    if (toggle.getAttribute("aria-expanded") !== "true") await user.click(toggle);
-    const open = panel();
-    await user.click(toggle);
-    // Still drawn for the slide out, but no longer reachable.
-    expect(open).toBeInTheDocument();
-    expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
-    const leaving = open.closest('[aria-hidden="true"]');
-    expect(leaving).not.toBeNull();
-    expect(leaving).toHaveAttribute("inert");
-    // The column's own transition end removes it; a child's transition does not.
-    const column = leaving?.parentElement as HTMLElement;
-    fireEvent.transitionEnd(open);
-    expect(open).toBeInTheDocument();
-    fireEvent.transitionEnd(column);
-    expect(open).not.toBeInTheDocument();
-    // Opening again draws a reachable panel.
-    await user.click(toggle);
-    expect(panel()).toBeInTheDocument();
-  });
-
-  it("opens by itself when a reload brings more voices that need a name, and never closes by itself", async () => {
-    const base = sampleDetail(ITEM);
-    const allNamed = {
-      ...base,
-      speakers: base.speakers.map((s) =>
-        s.needs_name
-          ? {
-              ...s,
-              name: "Tom Reid",
-              person: { id: "9e000000-0000-7000-8000-000000000003", name: "Tom Reid", has_voiceprint: true },
-              source: "Voiceprint" as const,
-              needs_name: false,
-              can_ignore: false,
-            }
-          : s,
-      ),
-    };
-    const { user, ipc, timer } = await setup({ details: { [ITEM.id]: allNamed } });
-    await screen.findByText(/TL;DR/);
-    const closed = () => screen.queryByRole("complementary", { name: "Speakers" });
-    expect(closed()).toBeNull();
-    // A reload that brings no new voice to name leaves it closed.
-    await user.click(screen.getByRole("button", { name: "Rename" }));
-    await user.type(screen.getByRole("textbox", { name: "Meeting title" }), " again{Enter}");
-    await screen.findByRole("heading", { level: 1, name: `${ITEM.title} again` });
-    expect(closed()).toBeNull();
-
-    // A re-transcription ends with two voices that need names: the panel opens by itself.
-    ipc.getMeeting = async () => base;
-    await user.click(screen.getByRole("button", { name: "Re-transcribe" }));
-    for (let i = 0; i < 12; i++) act(() => timer.advance(POST_STEP_MS));
-    expect(await screen.findByRole("complementary", { name: "Speakers" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Speakers, 2 need names" })).toHaveAttribute("aria-expanded", "true");
-
-    // Closed by the user, it stays closed on a reload with no more voices to name than before.
-    await user.click(within(panel()).getByRole("button", { name: "Close Speakers" }));
-    await user.click(screen.getByRole("button", { name: "Rename" }));
-    await user.type(screen.getByRole("textbox", { name: "Meeting title" }), "{Enter}");
-    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Meeting title" })).toBeNull());
-    expect(closed()).toBeNull();
-  });
-
-  it("returns focus to the Speakers button when the panel closes, and points at the panel only while it exists", async () => {
-    const { user } = await setup();
-    await screen.findByText(/TL;DR/);
-    const toggle = screen.getByRole("button", { name: "Speakers, 2 need names" });
-    expect(toggle.getAttribute("aria-controls")).toBe(panel().id);
-    within(panel()).getByRole("button", { name: "Close Speakers" }).focus();
-    await user.keyboard("{Enter}");
-    expect(screen.queryByRole("complementary", { name: "Speakers" })).toBeNull();
-    expect(toggle).toHaveFocus();
-    expect(toggle).not.toHaveAttribute("aria-controls");
-    await user.keyboard("{Enter}");
-    expect(toggle.getAttribute("aria-controls")).toBe(panel().id);
-  });
-
-  it("puts the panel beside the summary and transcript, pushing them aside rather than covering them", async () => {
-    await setup();
-    await screen.findByText(/TL;DR/);
-    const aside = panel();
-    const main = screen.getByText(/TL;DR/).closest("div");
-    if (main === null) throw new Error("no summary");
-    // Both live in one grid row: the panel's column is beside the content's, in normal flow.
-    let column: HTMLElement | null = aside;
-    while (column !== null && column.parentElement !== null && !column.parentElement.contains(main)) {
-      column = column.parentElement;
-    }
-    if (column === null || column.parentElement === null) throw new Error("no shared container");
-    expect(getComputedStyle(column.parentElement).display).toBe("grid");
-    for (let el: HTMLElement | null = aside; el !== null && el !== column.parentElement; el = el.parentElement) {
-      expect(["absolute", "fixed"]).not.toContain(getComputedStyle(el).position);
-    }
-  });
-
   it("offers the previous summary only after a re-summary", async () => {
     const { user, timer } = await setup();
     await screen.findByText(/TL;DR/);
@@ -859,116 +484,6 @@ describe("MeetingDetailView", () => {
     await waitFor(() => expect(screen.queryByText(/The client hears the new date by Friday/)).toBeNull());
   });
 
-  it("asks before deleting and names the meeting", async () => {
-    const { user, calls } = await setup();
-    await screen.findByText(/TL;DR/);
-    await user.pointer({ keys: "[MouseRight]", target: listRow(ITEM) });
-    await user.click(await screen.findByRole("menuitem", { name: "Delete meeting..." }));
-    const dialog = await accessibleDialog();
-    expect(within(dialog).getByText(`Delete "${ITEM.title}"?`)).toBeInTheDocument();
-    // Opened from the menu, the dialog must own focus on its first button: the menu hands focus
-    // back to its trigger on close, and a modal whose own surface takes focus is never made
-    // active by tabster, which aria-hides it once its hide timer runs (T7.3d, the Surface flake).
-    expect(within(dialog).getByRole("button", { name: "Delete meeting" })).toHaveFocus();
-    expect(listRow(ITEM)).not.toHaveFocus();
-    await act(() => new Promise((r) => setTimeout(r, TABSTER_HIDE_PASS_MS)));
-    expect(screen.getByRole("alertdialog")).toBe(dialog);
-    // The modal is the active one: the page behind it is hidden, not the dialog.
-    expect(screen.queryByRole("button", { name: trashName(ITEM) })).toBeNull();
-    expect(calls.some((c) => c[0] === "deleteMeeting")).toBe(false);
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(calls.some((c) => c[0] === "deleteMeeting")).toBe(false);
-    // The open modal aria-hid the page; tabster un-hides it on its deferred pass after close.
-    await user.click(await screen.findByRole("button", { name: trashName(ITEM) }));
-    const second = await accessibleDialog();
-    // As a person does: the modal's hide pass has run (the page is aria-hidden) before Delete.
-    // Deleting used to unmount the whole meeting view with its dialog; if a delete ever leaves no
-    // tabster user, tabster is disposed without restoring the page, which then stays aria-hidden
-    // for good.
-    await act(() => new Promise((r) => setTimeout(r, TABSTER_HIDE_PASS_MS)));
-    expect(screen.queryByRole("button", { name: trashName(ITEM) })).toBeNull();
-    await user.click(within(second).getByRole("button", { name: "Delete meeting" }));
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(OTHER.title),
-    );
-    expect(screen.queryByRole("button", { name: new RegExp(`^${ITEM.title}`) })).toBeNull();
-    expect(calls).toContainEqual(["deleteMeeting", ITEM.id]);
-  });
-
-  it("moves keyboard focus to the meeting now shown after a delete, or to New meeting", async () => {
-    const { user } = await setup();
-    await screen.findByText(/TL;DR/);
-    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
-    await user.click(within(await accessibleDialog()).getByRole("button", { name: "Delete meeting" }));
-    await waitFor(() => expect(listRow(OTHER)).toHaveFocus());
-    // Past the closed modal's deferred passes, focus has stayed.
-    await act(() => new Promise((r) => setTimeout(r, TABSTER_HIDE_PASS_MS)));
-    expect(listRow(OTHER)).toHaveFocus();
-    await user.click(screen.getByRole("button", { name: trashName(OTHER) }));
-    await user.click(within(await accessibleDialog()).getByRole("button", { name: "Delete meeting" }));
-    // The empty state has a New meeting button too: the list's own is the one that stays.
-    await waitFor(() =>
-      expect(document.activeElement).toBe(
-        within(screen.getByRole("navigation", { hidden: true })).getByRole("button", { name: "New meeting", hidden: true }),
-      ),
-    );
-    expect(await screen.findByRole("heading", { level: 1, name: "Record your first meeting" })).toBeInTheDocument();
-  });
-
-  it("deletes once on a double click, with the dialog's buttons held and no refusal shown", async () => {
-    const { user, calls, ipc } = await setup();
-    await screen.findByText(/TL;DR/);
-    let finish = () => {};
-    const real = ipc.deleteMeeting;
-    let held = 0;
-    ipc.deleteMeeting = async (meeting) => {
-      held += 1;
-      await new Promise<void>((resolve) => {
-        finish = resolve;
-      });
-      await real(meeting);
-    };
-    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
-    const dialog = await accessibleDialog();
-    const del = within(dialog).getByRole("button", { name: "Delete meeting" });
-    // Two clicks in one tick: the second comes before the buttons have re-rendered.
-    act(() => {
-      del.click();
-      del.click();
-    });
-    expect(held).toBe(1);
-    expect(del).toHaveAttribute("aria-disabled", "true");
-    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveAttribute("aria-disabled", "true");
-    // Neither Cancel nor Escape closes a delete already on its way, and focus stays in the dialog.
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await user.keyboard("{Escape}");
-    expect(screen.getByRole("alertdialog")).toBe(dialog);
-    expect(dialog).toContainElement(document.activeElement as HTMLElement);
-    await act(async () => finish());
-    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(calls.filter((c) => c[0] === "deleteMeeting")).toEqual([["deleteMeeting", ITEM.id]]);
-    await screen.findByRole("heading", { level: 1, name: OTHER.title });
-    expect(screen.queryByText("The meeting was not deleted")).toBeNull();
-  });
-
-  it("frees the dialog's buttons after a refusal, so the next delete can run", async () => {
-    const { user, ipc } = await setup();
-    await screen.findByText(/TL;DR/);
-    const real = ipc.deleteMeeting;
-    ipc.deleteMeeting = async () => {
-      throw new IpcFailure({ kind: "meeting_busy", message: "The meeting is in use.", retryable: true });
-    };
-    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
-    await user.click(within(await accessibleDialog()).getByRole("button", { name: "Delete meeting" }));
-    expect(await screen.findByText("The meeting was not deleted")).toBeInTheDocument();
-    ipc.deleteMeeting = real;
-    await user.click(await screen.findByRole("button", { name: trashName(ITEM) }));
-    const again = await accessibleDialog();
-    expect(within(again).getByRole("button", { name: "Delete meeting" })).not.toHaveAttribute("aria-disabled", "true");
-    await user.click(within(again).getByRole("button", { name: "Delete meeting" }));
-    await screen.findByRole("heading", { level: 1, name: OTHER.title });
-  });
-
   it("shows what a re-transcription's final pass warned of with its result", async () => {
     const warning = "Some remembered voices could not be read.";
     const { user, timer } = await setup({ retranscribeWarnings: [warning] });
@@ -978,158 +493,67 @@ describe("MeetingDetailView", () => {
     expect(await screen.findByText(`The meeting was transcribed again. ${warning}`)).toBeInTheDocument();
   });
 
-  it("deletes a meeting without opening it, and the one shown stays", async () => {
-    const { user, calls } = await setup();
-    await screen.findByText(/TL;DR/);
-    await user.click(screen.getByRole("button", { name: trashName(OTHER) }));
-    const dialog = await accessibleDialog();
-    expect(within(dialog).getByText(`Delete "${OTHER.title}"?`)).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("button", { name: "Delete meeting" }));
-    await waitFor(() => expect(calls).toContainEqual(["deleteMeeting", OTHER.id]));
-    await waitFor(() => expect(screen.queryByRole("button", { name: new RegExp(`^${OTHER.title}`) })).toBeNull());
-    expect(screen.getByRole("heading", { level: 1, name: ITEM.title })).toBeInTheDocument();
-  });
+  describe("cancelling a job (T12.41)", () => {
+    it("cancels a re-summary from its notice, saying so while it stops and when it has", async () => {
+      const { user, calls, ipc, timer } = await setup();
+      await screen.findByText(/TL;DR/);
+      let send = () => {};
+      const real = ipc.cancelJob;
+      ipc.cancelJob = async (meeting) => {
+        await new Promise<void>((resolve) => {
+          send = resolve;
+        });
+        await real(meeting);
+      };
+      await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+      expect(screen.getByText("Writing a new summary")).toBeInTheDocument();
+      const cancel = screen.getByRole("button", { name: "Cancel the new summary" });
+      expect(cancel).toHaveTextContent("Cancel");
+      await user.click(cancel);
+      // Until the job's last event: the bar says it stops, and the button holds.
+      expect(screen.getByText("Stopping. This can take a moment if a model is still working or loading.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Cancel the new summary" })).toHaveAttribute("aria-disabled", "true");
+      await act(async () => send());
+      expect(await screen.findByText("The new summary was cancelled. Nothing was changed.")).toBeInTheDocument();
+      expect(calls).toContainEqual(["cancelJob", ITEM.id]);
+      expect(screen.queryByRole("button", { name: /^Cancel the/ })).toBeNull();
+      act(() => timer.advance(10 * POST_STEP_MS));
+      expect(screen.queryByText(/New summary ready/)).toBeNull();
+      // The old summary is still shown, and a new job can start.
+      expect(screen.getByText(/TL;DR/)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Dismiss" }));
+      await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+      expect(screen.getByRole("button", { name: "Cancel the new summary" })).not.toHaveAttribute("aria-disabled");
+    });
 
-  it("opens the same delete question from the keyboard's context menu", async () => {
-    const { user } = await setup();
-    await screen.findByText(/TL;DR/);
-    listRow(OTHER).focus();
-    await user.keyboard("{Shift>}{F10}{/Shift}");
-    // The menu's first item, "Move to folder" (T9.5c), takes focus; "Delete meeting..." is last.
-    const item = await screen.findByRole("menuitem", { name: "Move to folder" });
-    await waitFor(() => expect(item).toHaveFocus());
-    expect(screen.getByRole("menuitem", { name: "Delete meeting..." })).toBeInTheDocument();
-    await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
-    await waitFor(() => expect(listRow(OTHER)).toHaveFocus());
-    // The Menu key does the same; the browser's own contextmenu event on the row opens it too.
-    await user.keyboard("{ContextMenu}");
-    const first = await screen.findByRole("menuitem", { name: "Move to folder" });
-    await waitFor(() => expect(first).toHaveFocus());
-    await user.keyboard("{ArrowDown}");
-    await waitFor(() => expect(screen.getByRole("menuitem", { name: "Delete meeting..." })).toHaveFocus());
-    await user.keyboard("{Enter}");
-    const dialog = await accessibleDialog();
-    expect(within(dialog).getByText(`Delete "${OTHER.title}"?`)).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "Delete meeting" })).toHaveFocus();
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(listRow(OTHER)).toHaveFocus());
-    fireEvent.contextMenu(listRow(OTHER), { button: 0 });
-    expect(await screen.findByRole("menuitem", { name: "Delete meeting..." })).toBeInTheDocument();
-  });
+    it("cancels a re-transcription during its steps", async () => {
+      const { user, calls, timer } = await setup();
+      await screen.findByText(/TL;DR/);
+      await user.click(screen.getByRole("button", { name: "Re-transcribe" }));
+      act(() => timer.advance(2 * POST_STEP_MS));
+      expect(screen.getByText(/^Re-transcribing: /)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Cancel the re-transcription" }));
+      expect(
+        await screen.findByText("The re-transcription was cancelled. The transcript has not changed."),
+      ).toBeInTheDocument();
+      expect(calls).toContainEqual(["cancelJob", ITEM.id]);
+      act(() => timer.advance(20 * POST_STEP_MS));
+      expect(screen.queryByText("The meeting was transcribed again.")).toBeNull();
+    });
 
-  it("reaches the trash can by Tab from its row and returns there on Cancel", async () => {
-    const { user } = await setup();
-    await screen.findByText(/TL;DR/);
-    listRow(ITEM).focus();
-    await user.tab();
-    const trash = screen.getByRole("button", { name: trashName(ITEM) });
-    expect(trash).toHaveFocus();
-    await user.keyboard("{Enter}");
-    const dialog = await accessibleDialog();
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(trash).toHaveFocus());
-  });
-
-  it("says when a meeting with a job running cannot be deleted, keeps it and leaves the page usable", async () => {
-    const { user, calls } = await setup();
-    await screen.findByText(/TL;DR/);
-    // A job is running on the meeting: jobs have no cancel, so the question says why and offers
-    // nothing to confirm (T12.38).
-    await user.click(screen.getByRole("button", { name: "Re-summarise" }));
-    expect(screen.getByText("Writing a new summary")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
-    const dialog = await accessibleDialog();
-    expect(
-      within(dialog).getByText("This meeting is being summarised again. Delete it when that has finished."),
-    ).toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: "Delete meeting" })).toBeNull();
-    const close = within(dialog).getByRole("button", { name: "Close" });
-    expect(close).toHaveFocus();
-    await user.click(close);
-    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(calls.some((c) => c[0] === "deleteMeeting")).toBe(false);
-    // The closed modal's aria-hidden on the page lifts on tabster's deferred pass.
-    expect(await screen.findByRole("button", { name: new RegExp(`^${ITEM.title}`) })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: ITEM.title })).toBeInTheDocument();
-  });
-
-  it("still shows a refusal that comes only at the delete, with its own words", async () => {
-    const { user, ipc } = await setup();
-    await screen.findByText(/TL;DR/);
-    const refusal = "Earshot is still stopping the work on this meeting, so it was not deleted yet. Try again in a minute.";
-    ipc.deleteMeeting = async () => {
-      throw new IpcFailure({ kind: "meeting_stopping", message: refusal, retryable: true });
-    };
-    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
-    await user.click(within(await accessibleDialog()).getByRole("button", { name: "Delete meeting" }));
-    expect(await screen.findByText("The meeting was not deleted")).toBeInTheDocument();
-    expect(screen.getByText(refusal)).toBeInTheDocument();
-    await user.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
-    expect(screen.queryByText("The meeting was not deleted")).toBeNull();
-  });
-
-  it("asks before stopping a meeting that is still finishing, then stops it and deletes it", async () => {
-    const { user, calls, ipc } = await setup();
-    await screen.findByText(/TL;DR/);
-    // The mock finishes only meetings it recorded (`mockDelete.test.ts` covers that flow).
-    ipc.meetingDeletion = async () => "StopsFinishing";
-    let finish = () => {};
-    const real = ipc.deleteMeeting;
-    ipc.deleteMeeting = async (meeting, stop) => {
-      await new Promise<void>((resolve) => {
-        finish = resolve;
-      });
-      await real(meeting, stop);
-    };
-    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
-    const dialog = await accessibleDialog();
-    expect(within(dialog).getByText(`Delete "${ITEM.title}"?`)).toBeInTheDocument();
-    expect(
-      within(dialog).getByText(
-        "Earshot is still finishing this meeting's transcript and summary. Deleting the meeting stops that work first, then deletes its recording, transcript, summary and speaker names from this computer. The note in your Obsidian vault stays.",
-      ),
-    ).toBeInTheDocument();
-    const stop = within(dialog).getByRole("button", { name: "Stop and delete" });
-    expect(stop).toHaveFocus();
-    expect(within(dialog).queryByRole("button", { name: "Delete meeting" })).toBeNull();
-    // Cancel stops nothing.
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(calls.some((c) => c[0] === "deleteMeeting")).toBe(false);
-
-    await user.click(await screen.findByRole("button", { name: trashName(ITEM) }));
-    const again = await accessibleDialog();
-    await user.click(within(again).getByRole("button", { name: "Stop and delete" }));
-    // While the work stops, the dialog says so and holds its buttons.
-    expect(within(again).getByRole("status")).toHaveTextContent("Stopping the work on this meeting, then deleting it.");
-    expect(within(again).getByRole("button", { name: "Cancel" })).toHaveAttribute("aria-disabled", "true");
-    await act(async () => finish());
-    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(calls).toContainEqual(["deleteMeeting", ITEM.id, true]);
-    await screen.findByRole("heading", { level: 1, name: OTHER.title });
-    expect(screen.queryByText("The meeting was not deleted")).toBeNull();
-  });
-
-  it.each([
-    ["Recording", "This meeting is still recording. Stop the recording first, then delete the meeting."],
-    [
-      "NeedsRestart",
-      "Earshot could not stop earlier work on this meeting, and that work still holds it. Restart Earshot, then delete the meeting.",
-    ],
-    ["Retranscribing", "This meeting is being transcribed again. Delete it when that has finished."],
-  ] as const)("says why a meeting cannot be deleted now (%s) and deletes nothing", async (ask, text) => {
-    const { user, calls, ipc } = await setup();
-    await screen.findByText(/TL;DR/);
-    ipc.meetingDeletion = async () => ask;
-    await user.click(screen.getByRole("button", { name: trashName(ITEM) }));
-    const dialog = await accessibleDialog();
-    expect(within(dialog).getByText(text)).toBeInTheDocument();
-    expect(within(dialog).getAllByRole("button").map((b) => b.textContent)).toEqual(["Close"]);
-    await user.click(within(dialog).getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(calls.some((c) => c[0] === "deleteMeeting")).toBe(false);
-    expect(await screen.findByRole("button", { name: new RegExp(`^${ITEM.title}`) })).toBeInTheDocument();
+    it("keeps the job running when the cancel could not be sent", async () => {
+      const { user, ipc } = await setup();
+      await screen.findByText(/TL;DR/);
+      ipc.cancelJob = async () => {
+        throw new Error("no");
+      };
+      await user.click(screen.getByRole("button", { name: "Re-summarise" }));
+      await user.click(screen.getByRole("button", { name: "Cancel the new summary" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Cancel the new summary" })).not.toHaveAttribute("aria-disabled"),
+      );
+      expect(screen.getByText("Writing a new summary")).toBeInTheDocument();
+    });
   });
 
   it("puts the actions at the top, with no More menu", async () => {
@@ -1827,6 +1251,7 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
             onChanged={() => {}}
             onJobStarted={() => {}}
             onJobDismissed={() => {}}
+            onJobCancel={() => {}}
             finishing={finishing}
             job={job}
           />

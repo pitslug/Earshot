@@ -465,6 +465,12 @@ fn post_in_person_mic_voice_matching_the_users_voiceprint_is_me() {
         ]
     );
     assert!(outcome.enrolled_me.is_none(), "enrolment stays opt-in");
+    // The pass leaves positive evidence that the voiceprint named this Me row (T12.44).
+    let me_row = outcome.speakers[1].id;
+    assert_eq!(
+        crate::edit::voiceprint_me_in(&svc.store(), meeting).unwrap(),
+        Some(me_row)
+    );
 }
 
 #[test]
@@ -1589,69 +1595,6 @@ fn post_voices_without_words_get_no_speaker_row() {
         .map(|s| s.display_name.as_str())
         .collect();
     assert_eq!(names, ["Speaker 1"]);
-}
-
-#[test]
-fn post_enrols_the_person_the_reused_me_row_links_to() {
-    let dir = TempDir::new();
-    let svc = services(&dir);
-    let tracks = meeting_with(&svc, &[TrackId::Mic, TrackId::Reference]);
-    let (meeting, mic) = (tracks[0].meeting_id, tracks[0].clone());
-    let mic_audio = scene_audio(&[SceneTurn::new(0, 0, 15_000)], 15_000);
-    let mut post = PostProcessor::new(
-        FakeTranscriber::scripted([
-            Ok(vec![raw(&[("first", 1_000, 1_300)])]),
-            Ok(vec![raw(&[("second", 1_000, 1_300)])]),
-        ]),
-        FakeSegmenter::segmentation_3_0(),
-        embedder(),
-        PostConfig {
-            enroll_me: true,
-            ..config()
-        },
-    )
-    .unwrap();
-    let run = |post: &mut PostProcessor<_, _, _>, seed| {
-        post.run(
-            &svc,
-            PostInput {
-                echo_locks: Vec::new(),
-                meeting,
-                tracks: vec![track_input(&mic, mic_audio.clone())],
-            },
-            &mut ChaCha8Rng::seed_from_u64(seed),
-            &CancelToken::new(),
-        )
-        .unwrap()
-    };
-    let first = run(&mut post, 62);
-    // The user re-links the Me speaker to a person of their own naming.
-    let casey = enroll_person(&svc, "Casey", false, 5);
-    {
-        let clock = ManualClock::new(1_760_000_000_000);
-        let mut db = svc.store();
-        let mut me = db
-            .speakers(meeting)
-            .unwrap()
-            .into_iter()
-            .find(|s| s.id == first.speakers[0].id)
-            .unwrap();
-        me.person_id = Some(casey);
-        let (store, hlc) = db.parts();
-        me.meta.touch(hlc, &clock);
-        store.put_speaker(me).unwrap();
-    }
-    let second = run(&mut post, 63);
-    assert_eq!(second.speakers[0].id, first.speakers[0].id);
-    assert_eq!(second.speakers[0].person, Some(casey));
-    let vp = second.enrolled_me.expect("enrolled");
-    assert!(
-        svc.store()
-            .voiceprints_of(casey)
-            .unwrap()
-            .iter()
-            .any(|v| v.id == vp)
-    );
 }
 
 /// A transcriber that reports CUDA until its first call, then the CPU (a per-call GPU

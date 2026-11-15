@@ -103,6 +103,42 @@ use crate::view::{MeetingView, format_local};
 mod tests;
 use crate::{RuntimeError, Services, SharedClock};
 
+/// The name the user sees for what wrote a summary, from the model name stored with it
+/// (T12.43): "Claude (Claude Code)" for Claude Code and "Codex" for Codex, whatever model
+/// the CLI was given ([`crate::claude_code::stored_model_name`],
+/// [`crate::codex::stored_model_name`]); a local model's display name
+/// ([`crate::catalogue::display_name`]); anything else is the model name an endpoint was sent,
+/// shown as it is. The one rule for showing a summary's writer.
+///
+/// A stored name carries no marker an endpoint's model name cannot have, so an agent CLI is
+/// named only when the name is exactly one of that CLI's stored forms (`claude-code`,
+/// `claude-code/<model>`, `codex`, `codex/<model>`) and the meeting has a handover to that CLI
+/// (`handed_to`, from its `summary-handovers` record, which every agent-CLI summary writes
+/// before any text reaches the CLI). An endpoint model literally named `codex` therefore shows
+/// as `codex`. What remains ambiguous: an endpoint model with such a name in a meeting that was
+/// also handed to that CLI, which reads as the CLI.
+#[must_use]
+pub fn writer_name(stored: &str, handed_to: &[HandoverCli]) -> String {
+    let is_cli = |cli: HandoverCli, bare: &str| {
+        handed_to.contains(&cli)
+            && (stored == bare
+                || stored
+                    .strip_prefix(bare)
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .is_some_and(|model| !model.is_empty()))
+    };
+    if is_cli(
+        HandoverCli::ClaudeCode,
+        &crate::claude_code::stored_model_name(None),
+    ) {
+        "Claude (Claude Code)".to_owned()
+    } else if is_cli(HandoverCli::Codex, &crate::codex::stored_model_name(None)) {
+        "Codex".to_owned()
+    } else {
+        crate::catalogue::display_name(stored).to_owned()
+    }
+}
+
 /// Where and how summaries are requested.
 #[derive(Debug, Clone)]
 pub struct SummaryConfig {

@@ -39,7 +39,7 @@ use earshot_store::Store;
 use serde::{Deserialize, Serialize};
 
 use crate::RuntimeError;
-use crate::local::{DeviceRecord, LocalKey, MeetingRecord};
+use crate::local::{DeviceRecord, LocalKey, MeetingRecord, Setting};
 
 #[cfg(test)]
 #[path = "live_summaries_tests.rs"]
@@ -83,14 +83,15 @@ impl StoredSwitch {
 /// # Errors
 /// Store errors.
 pub fn live_summaries_setting(store: &Store) -> Result<StoredSwitch, RuntimeError> {
-    let Some(bytes) = store.local_value(LIVE_SUMMARIES_KEY)? else {
-        return Ok(StoredSwitch::Absent);
-    };
-    Ok(match bytes.as_slice() {
-        b"on" => StoredSwitch::Set(true),
-        b"off" => StoredSwitch::Set(false),
-        other => StoredSwitch::Unknown(String::from_utf8_lossy(other).into_owned()),
-    })
+    Ok(
+        match crate::local::read_setting(store, LIVE_SUMMARIES_KEY, |t| {
+            crate::local::on_off(&t).ok_or(t)
+        })? {
+            Setting::Absent => StoredSwitch::Absent,
+            Setting::Known(on) => StoredSwitch::Set(on),
+            Setting::Unknown(u) => StoredSwitch::Unknown(u.stored),
+        },
+    )
 }
 
 /// Stores the setting (replacing an earlier one).
@@ -213,28 +214,23 @@ pub(crate) fn record_key(meeting: EntityId) -> LocalKey {
 /// # Errors
 /// [`RuntimeError::Internal`] if the record does not serialise (never expected).
 pub fn encode(record: &LiveSummaryRecord) -> Result<Vec<u8>, RuntimeError> {
-    let payload = serde_json::to_vec(record)
-        .map_err(|_| RuntimeError::Internal("a live summary record does not serialise"))?;
-    let mut out = Vec::with_capacity(4 + payload.len());
-    out.extend_from_slice(&LIVE_SUMMARY_RECORD_VERSION.to_le_bytes());
-    out.extend_from_slice(&payload);
-    Ok(out)
+    earshot_store::encode_versioned(LIVE_SUMMARY_RECORD_VERSION, record)
+        .map_err(|_| RuntimeError::Internal("a live summary record does not serialise"))
 }
 
 /// Reads [`encode`]: the record, or why it cannot be used (never an error).
 #[must_use]
 pub fn decode(bytes: &[u8]) -> StoredLiveSummaries {
-    let Some(head) = bytes.get(..4) else {
+    let Some((version, payload)) = earshot_store::split_version(bytes) else {
         return StoredLiveSummaries::Unreadable("the live summary record is truncated".into());
     };
-    let version = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
     if !READABLE_VERSIONS.contains(&version) {
         return StoredLiveSummaries::Unreadable(format!(
             "live summary record version {version}, this build reads \
              {LIVE_SUMMARY_RECORD_VERSION}"
         ));
     }
-    match serde_json::from_slice::<LiveSummaryRecord>(&bytes[4..]) {
+    match serde_json::from_slice::<LiveSummaryRecord>(payload) {
         Ok(mut record) => {
             // Version 1 never recorded the words, whatever its JSON holds.
             if version == 1 {

@@ -4,8 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { type AudioCheckEvent, type AudioCheckView, useIpc } from "../ipc";
-import { errorText } from "./useModels";
+import { type AudioCheckEvent, type AudioCheckView, errorText, useIpc } from "../ipc";
 
 /** The check as last reported. */
 export type CheckRun =

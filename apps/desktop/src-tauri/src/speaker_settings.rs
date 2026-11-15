@@ -10,9 +10,10 @@
 //! held in memory on that thread only and dropped there; only the voiceprint is stored.
 //! Tests drive it through [`VoiceWork`] fakes over replay sources, never the microphone.
 
-use std::panic::AssertUnwindSafe;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::thread::JoinHandle;
+use std::sync::Arc;
+// The tests reach it through `super::*`.
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::Duration;
 
 use earshot_core::asr::CancelToken;
@@ -28,6 +29,7 @@ use tauri_specta::Event;
 
 use crate::activity::WorkGate;
 use crate::ipc::IpcError;
+use crate::slot_job::{SlotJob, progress_every};
 
 /// When speaker detection runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -124,14 +126,6 @@ pub struct SpeakersView {
     pub voice: VoiceView,
 }
 
-fn invalid(message: &str) -> IpcError {
-    IpcError {
-        kind: "invalid_setting".into(),
-        message: message.into(),
-        retryable: false,
-    }
-}
-
 /// The page for `services`' store; `laptop`: this computer has a battery.
 ///
 /// # Errors
@@ -187,7 +181,7 @@ pub fn set_timing(
 ) -> Result<SpeakersView, IpcError> {
     let timing = choice.timing();
     if timing == SpeakerTiming::AfterCallOnBattery && !laptop {
-        return Err(invalid(
+        return Err(IpcError::invalid(
             "This computer has no battery, so this choice would work as during the call.",
         ));
     }
@@ -326,16 +320,11 @@ pub trait VoiceWork: Send + Sync {
 /// Where voice events go.
 pub type VoiceSink = Arc<dyn Fn(VoiceEvent) + Send + Sync>;
 
-struct Running {
-    cancel: CancelToken,
-    thread: JoinHandle<()>,
-}
-
 struct Inner {
     work: Arc<dyn VoiceWork>,
     sink: VoiceSink,
     gate: WorkGate,
-    slot: Mutex<Option<Running>>,
+    job: SlotJob,
 }
 
 /// Runs at most one voice sample (cheap to clone; clones share it).
@@ -355,12 +344,11 @@ impl VoiceJobs {
             work,
             sink,
             gate,
-            slot: Mutex::new(None),
+            job: SlotJob::new(
+                "earshot-voice",
+                "Your voice sample is already being recorded.",
+            ),
         }))
-    }
-
-    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Running>> {
-        self.0.slot.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Starts a sample (events follow).
@@ -368,76 +356,41 @@ impl VoiceJobs {
     /// # Errors
     /// `busy` (retryable) while a sample, a meeting or the model check runs.
     pub fn start(&self, services: &Services) -> Result<(), IpcError> {
-        let mut slot = self.slot();
-        if let Some(old) = slot.take() {
-            if !old.thread.is_finished() {
-                *slot = Some(old);
-                return Err(IpcError {
-                    kind: "busy".into(),
-                    message: "Your voice sample is already being recorded.".into(),
-                    retryable: true,
-                });
-            }
-            let _ = old.thread.join();
-        }
-        let pass = self.0.gate.enter_voice()?;
-        let cancel = CancelToken::new();
         let inner = Arc::clone(&self.0);
         let svc = services.clone();
-        let token = cancel.clone();
-        let thread = std::thread::Builder::new()
-            .name("earshot-voice".into())
-            .spawn(move || {
-                let event =
-                    std::panic::catch_unwind(AssertUnwindSafe(|| run(&inner, &svc, &token)))
-                        .unwrap_or_else(|_| VoiceEvent::Failed {
-                            message: VOICE_PANIC_MESSAGE.into(),
-                        });
-                drop(pass);
-                (inner.sink)(event);
-            })
-            .map_err(|e| IpcError {
-                kind: "internal".into(),
-                message: format!("cannot start the voice thread: {e}"),
-                retryable: false,
-            })?;
-        *slot = Some(Running { cancel, thread });
-        Ok(())
+        let sink = Arc::clone(&self.0.sink);
+        self.0.job.start(
+            || self.0.gate.enter_voice(),
+            move |token| run(&inner, &svc, token),
+            || VoiceEvent::Failed {
+                message: VOICE_PANIC_MESSAGE.into(),
+            },
+            move |event| sink(event),
+        )
     }
 
     /// Cancels the running sample (a `Cancelled` follows unless it already ended).
     pub fn cancel(&self) {
-        if let Some(r) = self.slot().as_ref() {
-            r.cancel.cancel();
-        }
+        self.0.job.cancel();
     }
 
     /// Waits for the running sample.
     #[cfg(test)]
     pub fn join(&self) {
-        if let Some(r) = self.slot().take() {
-            let _ = r.thread.join();
-        }
+        self.0.job.join();
     }
 }
 
 /// The sample, from recording to the terminal event (returned, sent by the caller after the
 /// pass is released).
 fn run(inner: &Inner, svc: &Services, cancel: &CancelToken) -> VoiceEvent {
-    let total_ms = u64::try_from(SAMPLE_LENGTH.as_millis()).unwrap_or(u64::MAX);
-    let step = u64::try_from(PROGRESS_STEP.as_millis()).unwrap_or(1).max(1);
-    let mut next = 0u64;
     let sink = Arc::clone(&inner.sink);
-    let mut progress = |d: Duration| {
-        let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
-        if ms >= next {
-            sink(VoiceEvent::Recording {
-                recorded_ms: ms.min(total_ms),
-                total_ms,
-            });
-            next = (ms / step + 1) * step;
-        }
-    };
+    let mut progress = progress_every(PROGRESS_STEP, SAMPLE_LENGTH, |recorded_ms, total_ms| {
+        sink(VoiceEvent::Recording {
+            recorded_ms,
+            total_ms,
+        });
+    });
     let audio = match inner.work.record(cancel, &mut progress) {
         Ok(Some(a)) => a,
         Ok(None) => return VoiceEvent::Cancelled,

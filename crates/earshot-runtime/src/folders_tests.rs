@@ -53,6 +53,159 @@ fn folders_are_listed_by_name_with_case_folded() {
 }
 
 #[test]
+fn folders_order_follows_the_shared_case_table() {
+    let table: serde_json::Value =
+        serde_json::from_str(include_str!("../../../fixtures/ui/folder_sort_cases.json")).unwrap();
+    let cases = table["cases"].as_array().unwrap();
+    assert!(cases.len() >= 8);
+    let strings = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_owned())
+            .collect()
+    };
+    for (i, case) in cases.iter().enumerate() {
+        let dir = TempDir::new(&format!("folders-order-{i}"));
+        let (svc, _clock) = services(&dir);
+        let given = strings(&case["names"]);
+        for name in &given {
+            create(&svc, name).unwrap();
+        }
+        assert_eq!(names(&svc), strings(&case["sorted"]), "names {given:?}");
+    }
+}
+
+/// Every character core's `fold_diacritic` maps, with its base letters, in code point order.
+fn base_letter_table() -> Vec<(char, &'static str)> {
+    (char::MIN..=char::MAX)
+        .filter_map(|c| earshot_core::metrics::normalize::fold_diacritic(c).map(|b| (c, b)))
+        .collect()
+}
+
+/// Core's base-letter table as it was when the folder order was chosen (T12.45), so a change
+/// to core's `fold_diacritic` (which moves folders in the list) is seen here. Until T12.54 it
+/// was `fixtures/ui/base_letter_cases.json`, shared with the UI mock, which no longer folds.
+const BASE_LETTERS: &[(char, &str)] = &[
+    ('ß', "ss"),
+    ('à', "a"),
+    ('á', "a"),
+    ('â', "a"),
+    ('ã', "a"),
+    ('ä', "a"),
+    ('å', "a"),
+    ('æ', "ae"),
+    ('ç', "c"),
+    ('è', "e"),
+    ('é', "e"),
+    ('ê', "e"),
+    ('ë', "e"),
+    ('ì', "i"),
+    ('í', "i"),
+    ('î', "i"),
+    ('ï', "i"),
+    ('ð', "d"),
+    ('ñ', "n"),
+    ('ò', "o"),
+    ('ó', "o"),
+    ('ô', "o"),
+    ('õ', "o"),
+    ('ö', "o"),
+    ('ø', "o"),
+    ('ù', "u"),
+    ('ú', "u"),
+    ('û', "u"),
+    ('ü', "u"),
+    ('ý', "y"),
+    ('þ', "th"),
+    ('ÿ', "y"),
+    ('ā', "a"),
+    ('ă', "a"),
+    ('ą', "a"),
+    ('ć', "c"),
+    ('ĉ', "c"),
+    ('ċ', "c"),
+    ('č', "c"),
+    ('ď', "d"),
+    ('đ', "d"),
+    ('ē', "e"),
+    ('ĕ', "e"),
+    ('ė', "e"),
+    ('ę', "e"),
+    ('ě', "e"),
+    ('ĝ', "g"),
+    ('ğ', "g"),
+    ('ġ', "g"),
+    ('ģ', "g"),
+    ('ĥ', "h"),
+    ('ĩ', "i"),
+    ('ī', "i"),
+    ('ĭ', "i"),
+    ('į', "i"),
+    ('ĵ', "j"),
+    ('ķ', "k"),
+    ('ĺ', "l"),
+    ('ļ', "l"),
+    ('ľ', "l"),
+    ('ł', "l"),
+    ('ń', "n"),
+    ('ņ', "n"),
+    ('ň', "n"),
+    ('ō', "o"),
+    ('ŏ', "o"),
+    ('ő', "o"),
+    ('œ', "oe"),
+    ('ŕ', "r"),
+    ('ŗ', "r"),
+    ('ř', "r"),
+    ('ś', "s"),
+    ('ŝ', "s"),
+    ('ş', "s"),
+    ('š', "s"),
+    ('ţ', "t"),
+    ('ť', "t"),
+    ('ũ', "u"),
+    ('ū', "u"),
+    ('ŭ', "u"),
+    ('ů', "u"),
+    ('ű', "u"),
+    ('ų', "u"),
+    ('ŵ', "w"),
+    ('ŷ', "y"),
+    ('ź', "z"),
+    ('ż', "z"),
+    ('ž', "z"),
+];
+
+#[test]
+fn folders_base_letters_are_cores_whole_table() {
+    assert_eq!(base_letter_table(), BASE_LETTERS);
+    assert!(BASE_LETTERS.len() > 50);
+    // `name_order` folds case first, then each letter of the table to its base letters. Every
+    // letter is checked as itself (it is lower case), and some through their upper case too.
+    let (mut as_itself, mut through_upper) = (0, 0);
+    for &(letter, base) in BASE_LETTERS {
+        let upper: String = letter.to_uppercase().collect();
+        for (n, name) in [letter.to_string(), upper].into_iter().enumerate() {
+            if fold_case(&name).collect::<String>() == letter.to_string() {
+                assert_eq!(name_order(&name).0, base, "{name}");
+                if n == 0 {
+                    as_itself += 1;
+                } else {
+                    through_upper += 1;
+                }
+            }
+        }
+    }
+    // A guard that skipped the assertions would pass silently: count what was checked.
+    assert_eq!(as_itself, BASE_LETTERS.len());
+    assert!(
+        through_upper > 50,
+        "{through_upper} upper-case letters checked"
+    );
+}
+
+#[test]
 fn folders_names_follow_the_name_rule() {
     let dir = TempDir::new("folders-name-rule");
     let (svc, _clock) = services(&dir);
@@ -102,10 +255,10 @@ fn folders_duplicate_names_are_refused_ignoring_case_without_quoting_the_name() 
         refused(rename(&svc, other, "LANTERN WORKS")),
         EditError::FolderNameTaken(clients)
     );
-    // Folded per character and compared by code point, so an accented letter sorts after z.
+    // An accented letter sorts with its base letter (T12.45: it used to sort after z).
     assert_eq!(
         names(&svc),
-        ["Lantern Works", "Orchard", "\u{c9}quipe Nord"]
+        ["\u{c9}quipe Nord", "Lantern Works", "Orchard"]
     );
 }
 

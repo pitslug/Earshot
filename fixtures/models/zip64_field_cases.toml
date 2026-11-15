@@ -1,0 +1,93 @@
+# Shared zip64 extra-field cases (T12.50). `zip64_fields` exists twice: in xtask
+# (`archive::zip64_fields`, fetch-fixtures and fetch-models) and in earshot-runtime
+# (`archive::zip64_fields`, in-app downloads). Both test suites run every case below with
+# their own reader and must give exactly `values`, or refuse when `refused = true`, so the
+# two copies follow one rule (PKWARE APPNOTE 4.5.3):
+# - `fields` are a central-directory entry's uncompressed size, compressed size and local
+#   header offset as 32-bit values; each that reads 4294967295 (0xFFFFFFFF) is replaced by
+#   the next 8 bytes (little-endian) of the zip64 extra field (header id 1), in that order;
+# - other extra fields before id 1 are walked over; with no field marked, the extra bytes
+#   are not read at all;
+# - a marked field with no id 1 field, an id 1 field too short for the marked fields, or
+#   an extra field running past the entry's extra bytes is refused, never guessed.
+# `extra` is the entry's extra bytes in hex, no spaces. `values` are decimal strings,
+# because 18446744073709551615 (u64::MAX) is not a TOML integer. Each case has exactly the
+# keys `name`, `fields`, `extra` and one of `values` or `refused`.
+
+[[cases]]
+name = "no field marked"
+fields = [1, 2, 3]
+extra = ""
+values = ["1", "2", "3"]
+
+[[cases]]
+name = "no field marked: the extra bytes are not read"
+fields = [1, 2, 3]
+extra = "0100"
+values = ["1", "2", "3"]
+
+[[cases]]
+name = "size marked"
+fields = [4294967295, 2, 3]
+extra = "010008000a00000000000000"
+values = ["10", "2", "3"]
+
+[[cases]]
+name = "compressed size marked"
+fields = [1, 4294967295, 3]
+extra = "010008000a00000000000000"
+values = ["1", "10", "3"]
+
+[[cases]]
+name = "offset marked"
+fields = [1, 2, 4294967295]
+extra = "010008000000000001000000"
+values = ["1", "2", "4294967296"]
+
+[[cases]]
+name = "all three marked, in order"
+fields = [4294967295, 4294967295, 4294967295]
+extra = "010018000a0000000000000014000000000000001e00000000000000"
+values = ["10", "20", "30"]
+
+[[cases]]
+name = "a marked field without an extra field"
+fields = [1, 2, 4294967295]
+extra = ""
+refused = true
+
+[[cases]]
+name = "an extra field too short for its marked fields"
+fields = [4294967295, 4294967295, 3]
+extra = "010008000a00000000000000"
+refused = true
+
+[[cases]]
+name = "an unrelated extra field before id 1"
+fields = [1, 2, 4294967295]
+extra = "0a00040000000000010008000500000000000000"
+values = ["1", "2", "5"]
+
+[[cases]]
+name = "only an unrelated extra field"
+fields = [1, 2, 4294967295]
+extra = "0a00040000000000"
+refused = true
+
+[[cases]]
+name = "an extra field running past the entry"
+fields = [1, 2, 4294967295]
+extra = "010010000000000000000000"
+refused = true
+
+[[cases]]
+name = "an extra field header cut short"
+fields = [1, 2, 4294967295]
+extra = "010008"
+refused = true
+
+[[cases]]
+name = "a value of u64::MAX is read, not refused here"
+fields = [4294967295, 2, 3]
+extra = "01000800ffffffffffffffff"
+values = ["18446744073709551615", "2", "3"]

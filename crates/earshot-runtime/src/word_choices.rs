@@ -97,20 +97,18 @@ pub(crate) fn record_key(meeting: EntityId) -> LocalKey {
 /// # Errors
 /// `Internal` when the list cannot be encoded.
 pub(crate) fn encode(choices: &[WordChoice]) -> Result<Vec<u8>, RuntimeError> {
-    let mut out = WORD_CHOICES_RECORD_VERSION.to_le_bytes().to_vec();
-    serde_json::to_writer(&mut out, choices)
-        .map_err(|_| RuntimeError::Internal("word choices encoding"))?;
-    Ok(out)
+    earshot_store::encode_versioned(WORD_CHOICES_RECORD_VERSION, choices)
+        .map_err(|_| RuntimeError::Internal("word choices encoding"))
 }
 
 /// The choices of a stored record; a record this version cannot read (another version, a
 /// damaged payload) is no choices.
 #[must_use]
 pub(crate) fn decode(bytes: &[u8]) -> Vec<WordChoice> {
-    let Some((head, body)) = bytes.split_first_chunk::<4>() else {
+    let Some((version, body)) = earshot_store::split_version(bytes) else {
         return Vec::new();
     };
-    if u32::from_le_bytes(*head) != WORD_CHOICES_RECORD_VERSION {
+    if version != WORD_CHOICES_RECORD_VERSION {
         return Vec::new();
     }
     serde_json::from_slice(body).unwrap_or_default()
@@ -321,4 +319,35 @@ pub fn word_marks(store: &Store, view: &MeetingView) -> Result<WordMarks, Runtim
         }
     }
     Ok(WordMarks { list, lines })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_choices_record_bytes_are_pinned() {
+        // T12.52: the exact stored form of a fixed record, so a change to the framing shows.
+        let choices = vec![WordChoice {
+            segment: EntityId::from_bytes([1; 16]),
+            token: 3,
+            decoded: "Zorbek,".into(),
+            choice: Choice::Changed {
+                written: "Zorbeck,".into(),
+            },
+        }];
+        let pinned_json = concat!(
+            r#"[{"segment":"01010101-0101-0101-0101-010101010101","token":3,"#,
+            r#""decoded":"Zorbek,","choice":{"kind":"changed","written":"Zorbeck,"}}]"#,
+        );
+        let bytes = encode(&choices).unwrap();
+        assert_eq!(bytes[..4], [1, 0, 0, 0]);
+        assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), pinned_json);
+        let mut pinned = vec![1, 0, 0, 0];
+        pinned.extend_from_slice(pinned_json.as_bytes());
+        assert_eq!(decode(&pinned), choices);
+        assert!(decode(&[1, 0]).is_empty());
+        assert!(decode(&[2, 0, 0, 0, b'[', b']']).is_empty());
+        assert!(decode(&[1, 0, 0, 0, b'[']).is_empty());
+    }
 }

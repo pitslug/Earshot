@@ -265,6 +265,7 @@ fn meeting_kept_local_resummarise_fails_and_sends_nothing() {
         let e = crate::jobs::summarise_with(
             &svc,
             id,
+            &earshot_core::asr::CancelToken::new(),
             &models,
             &keys,
             &NeverClaude,
@@ -314,7 +315,7 @@ fn meeting_detail_shows_a_kept_local_meeting_until_the_writer_is_allowed() {
         );
     }
     // Allowing changes this meeting only, and sends nothing (no handover, no summary).
-    allow(&svc, &kept.to_string()).unwrap();
+    allow(&svc, &kept.to_string(), &|_| false).unwrap();
     assert_eq!(view(kept), None);
     assert!(
         earshot_core::model::MeetingRepo::summaries(&**svc.store(), kept)
@@ -324,7 +325,7 @@ fn meeting_detail_shows_a_kept_local_meeting_until_the_writer_is_allowed() {
     keep_local(&svc, open, &record());
     assert!(view(open).is_some());
     // An unknown meeting is refused as the detail refuses edits.
-    let e = allow(&svc, &EntityId::from_bytes([7; 16]).to_string()).unwrap_err();
+    let e = allow(&svc, &EntityId::from_bytes([7; 16]).to_string(), &|_| false).unwrap_err();
     assert_eq!(
         e.kind,
         crate::detail::edit_error(&earshot_runtime::edit::EditError::MeetingNotFound(
@@ -332,5 +333,53 @@ fn meeting_detail_shows_a_kept_local_meeting_until_the_writer_is_allowed() {
         ))
         .kind
     );
-    assert!(allow(&svc, "not an id").is_err());
+    assert!(allow(&svc, "not an id", &|_| false).is_err());
+}
+
+#[test]
+fn meeting_allow_while_worked_on_follows_the_shared_case_table() {
+    let table: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/keep_local_cases.json"
+    ))
+    .unwrap();
+    let dir = TempDir::new("keep-local-busy");
+    let svc = services(&dir);
+    let kept = meeting(&svc, 3);
+    keep_local(&svc, kept, &record());
+    let lease = svc
+        .lease_meeting_for(kept, earshot_runtime::MeetingJob::Processing)
+        .unwrap();
+    // Work still running says to wait; work left behind says to restart.
+    for (left, case) in [(false, "still_working"), (true, "needs_restart")] {
+        let e = allow(&svc, &kept.to_string(), &|id| {
+            assert_eq!(id, kept);
+            left
+        })
+        .unwrap_err();
+        assert_eq!(e.kind, table[case]["kind"].as_str().unwrap(), "{case}");
+        assert_eq!(
+            e.message,
+            table[case]["message"].as_str().unwrap(),
+            "{case}"
+        );
+        assert!(!e.retryable);
+        assert!(
+            crate::detail::meeting_detail(&svc, kept)
+                .unwrap()
+                .kept_local
+                .is_some()
+        );
+    }
+    drop(lease);
+    // Free: nobody is asked about left work.
+    allow(&svc, &kept.to_string(), &|_| {
+        panic!("asked about left work while free")
+    })
+    .unwrap();
+    assert!(
+        crate::detail::meeting_detail(&svc, kept)
+            .unwrap()
+            .kept_local
+            .is_none()
+    );
 }

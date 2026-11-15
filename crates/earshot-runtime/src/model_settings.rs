@@ -347,29 +347,26 @@ pub fn model_settings(store: &Store) -> Result<(ModelSettings, Vec<UnknownSettin
         SUMMARY_PART_KEY,
         MEETING_LANGUAGES_KEY,
     ] {
-        let Some(bytes) = store.local_value(key)? else {
-            continue;
-        };
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let known = match key {
-            TRANSCRIPTION_MODEL_KEY => ModelPick::parse(&text, is_transcription_model)
-                .map(|p| out.transcription = p)
-                .is_some(),
-            TRANSCRIPTION_PART_KEY => Part::parse(&text)
-                .map(|p| out.transcription_part = p)
-                .is_some(),
-            SUMMARY_MODEL_KEY => ModelPick::parse(&text, is_summary_model)
-                .map(|p| out.summary = p)
-                .is_some(),
-            SUMMARY_PART_KEY => Part::parse(&text)
-                .filter(|p| *p != Part::Npu)
-                .map(|p| out.summary_part = p)
-                .is_some(),
-            _ => parse_languages(&text).map(|l| out.languages = l).is_some(),
-        };
-        if !known {
-            unknown.push(UnknownSetting { key, stored: text });
-        }
+        crate::local::read_setting(store, key, |text| {
+            let known = match key {
+                TRANSCRIPTION_MODEL_KEY => ModelPick::parse(&text, is_transcription_model)
+                    .map(|p| out.transcription = p)
+                    .is_some(),
+                TRANSCRIPTION_PART_KEY => Part::parse(&text)
+                    .map(|p| out.transcription_part = p)
+                    .is_some(),
+                SUMMARY_MODEL_KEY => ModelPick::parse(&text, is_summary_model)
+                    .map(|p| out.summary = p)
+                    .is_some(),
+                SUMMARY_PART_KEY => Part::parse(&text)
+                    .filter(|p| *p != Part::Npu)
+                    .map(|p| out.summary_part = p)
+                    .is_some(),
+                _ => parse_languages(&text).map(|l| out.languages = l).is_some(),
+            };
+            if known { Ok(()) } else { Err(text) }
+        })?
+        .known(&mut unknown);
     }
     // A chosen model that no longer covers the stored languages is not used.
     if let ModelPick::Named(m) = &out.transcription

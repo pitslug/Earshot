@@ -787,3 +787,53 @@ fn edit_summary_keeps_the_summary_out_of_date_after_a_transcript_edit() {
     undo_summary(&svc, m).unwrap();
     assert!(view(&svc, m).summary_out_of_date());
 }
+
+#[test]
+fn edit_summary_edited_label_follows_the_row_through_undo_and_a_new_summary() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Release", 430);
+    let edited = |svc: &Services| {
+        let id = view(svc, m).summary.unwrap().id;
+        crate::summary_edits::is_edited(&svc.store(), m, id).unwrap()
+    };
+    let id = store_full(&svc, m, 431);
+    assert!(!edited(&svc), "a writer's summary is not edited");
+    // The same text writes nothing and marks nothing.
+    let same = "The release moves to Friday.";
+    assert!(!edit_summary(&svc, m, id, SummaryField::Tldr, same).unwrap());
+    assert!(!edited(&svc));
+
+    // One edit, then undo: the writer's text again, so not edited; undo again: edited.
+    assert!(edit_summary(&svc, m, id, SummaryField::Tldr, "Friday it is.").unwrap());
+    assert!(edited(&svc));
+    let first = undo_summary(&svc, m).unwrap();
+    assert!(!edited(&svc), "undo brings back the writer's text");
+    assert_eq!(undo_summary(&svc, m).unwrap(), id);
+    assert!(edited(&svc));
+
+    // Two edits, then undo: the text after the first edit is still edited.
+    assert!(edit_summary(&svc, m, id, SummaryField::Decision(0), "Ship Friday.").unwrap());
+    undo_summary(&svc, m).unwrap();
+    assert!(edited(&svc));
+    let current = view(&svc, m).summary.unwrap().id;
+    assert_ne!(current, first);
+
+    // Editing a restored copy marks it, and its own copy keeps the label it had.
+    let text = "Ship Friday noon.";
+    assert!(edit_summary(&svc, m, current, SummaryField::Decision(0), text).unwrap());
+    assert!(edited(&svc));
+    undo_summary(&svc, m).unwrap();
+    assert!(edited(&svc));
+
+    // A new summary is the writer's text; undo returns to the edited one.
+    store_full(&svc, m, 432);
+    assert!(!edited(&svc));
+    undo_summary(&svc, m).unwrap();
+    assert!(edited(&svc));
+
+    // Deleting the meeting erases the record.
+    delete(&svc, m);
+    let key = crate::summary_edits::record_key(m);
+    assert_eq!(svc.store().local_value(key.as_str()).unwrap(), None);
+}

@@ -18,37 +18,25 @@ import {
   Field,
   Input,
   MessageBar,
-  MessageBarActions,
   MessageBarBody,
   MessageBarTitle,
   ProgressBar,
   Radio,
   RadioGroup,
   Spinner,
-  Subtitle2,
   Title2,
   makeStyles,
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { type PersonItem, type SpeakerTimingChoice, type VoiceView, useIpc } from "../ipc";
+import { NotLoaded, NoticeBar, Section, UnknownSettings, usePageStyles } from "./parts";
 import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import { type SpeakersNotice, type SpeakersPageState, sampleRunning, useSpeakers } from "./useSpeakers";
 
 const useStyles = makeStyles({
-  page: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
-  },
-  section: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalS,
-  },
   heading: {
     margin: 0,
   },
@@ -155,18 +143,6 @@ export const FORGET_EXPLAINED =
 /** The page's line for "a change applies from the next meeting". */
 export const NEXT_MEETING = "A change applies from the next meeting.";
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  const styles = useStyles();
-  const id = useId();
-  return (
-    <section className={styles.section} aria-labelledby={id}>
-      <Subtitle2 as="h2" id={id} className={styles.heading}>
-        {title}
-      </Subtitle2>
-      {children}
-    </section>
-  );
-}
 
 function secondsOf(ms: number): number {
   return Math.floor(ms / 1000);
@@ -551,14 +527,8 @@ function PeopleSection() {
 
 /** What shows until the settings are read: the spinner or the failure. */
 export function SpeakersNotLoaded({ load }: { load: Exclude<SpeakersPageState["load"], { status: "loaded" }> }) {
-  if (load.status === "loading") return <Spinner label="Reading the speaker settings" />;
   return (
-    <MessageBar intent="error">
-      <MessageBarBody>
-        <MessageBarTitle>The speaker settings could not be read</MessageBarTitle>
-        {load.message}
-      </MessageBarBody>
-    </MessageBar>
+    <NotLoaded load={load} loading="Reading the speaker settings" failed="The speaker settings could not be read" />
   );
 }
 
@@ -576,21 +546,7 @@ export function SpeakersNoticeBar({
 }) {
   if (state.notice === null) return null;
   if (!kinds.includes(state.notice.kind)) return null;
-  return (
-    <MessageBar intent="error">
-      <MessageBarBody>
-        <MessageBarTitle>{state.notice.title}</MessageBarTitle>
-        {state.notice.message}
-      </MessageBarBody>
-      <MessageBarActions
-        containerAction={
-          <Button size="small" appearance="transparent" onClick={state.dismiss}>
-            Dismiss
-          </Button>
-        }
-      />
-    </MessageBar>
-  );
+  return <NoticeBar title={state.notice.title} message={state.notice.message} onDismiss={state.dismiss} />;
 }
 
 /** When speakers are found (the T6.13d4 setting, used from the next meeting): a section of the
@@ -608,14 +564,7 @@ export function SpeakerTimingSection() {
       ) : (
         <>
           <SpeakersNoticeBar state={state} kinds={["timing"]} />
-          {load.view.unknown.length > 0 && (
-            <MessageBar intent="warning">
-              <MessageBarBody>
-                <MessageBarTitle>A stored setting is not known to this version</MessageBarTitle>
-                {load.view.unknown.join(" ")}
-              </MessageBarBody>
-            </MessageBar>
-          )}
+          <UnknownSettings unknown={load.view.unknown} title="A stored setting is not known to this version" />
           <span id={timingLabel} hidden>
             When speakers are found
           </span>
@@ -647,6 +596,7 @@ export function SpeakerTimingSection() {
 /** The People page of Settings: your name, your voice and the people Earshot knows. */
 export function PeoplePage() {
   const styles = useStyles();
+  const page = usePageStyles();
   const state = useSpeakers();
   const { load } = state;
 
@@ -654,7 +604,7 @@ export function PeoplePage() {
   const { view } = load;
 
   return (
-    <div className={styles.page}>
+    <div className={page.page}>
       <Title2 as="h1" className={styles.heading}>
         People
       </Title2>

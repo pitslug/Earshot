@@ -262,6 +262,20 @@ fn prompt_style_text_is_checked() {
             "{bad:?}"
         );
     }
+    // Invisible formatting characters (T12.46): zero-width and text-direction marks.
+    for bad in [
+        "Be\u{200b} brief.",
+        "\u{feff}Be brief.",
+        "\u{202e}.feirb eB",
+        "Be \u{2067}brief\u{2069}.",
+    ] {
+        assert_eq!(
+            SummaryStyle::new(bad),
+            Err(StyleError::FormatCharacter),
+            "{bad:?}"
+        );
+    }
+    assert!(serde_json::from_value::<SummaryStyle>(serde_json::json!("a\u{200e}")).is_err());
     assert!(SummaryStyle::new("tabs\tand\nlines").is_ok());
     // Deserialising applies the same rules.
     assert!(serde_json::from_value::<SummaryStyle>(serde_json::json!("a\u{0}")).is_err());

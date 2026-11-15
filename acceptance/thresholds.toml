@@ -245,7 +245,7 @@ provisional = true
 
 [thresholds."sync.no_audio"]
 milestone = "m11"
-metric = "no audio types/bytes in any sync payload or server table"
+metric = "no audio types/bytes in any sync plaintext; no server row over the size limit"
 op = "pass"
 unit = ""
 provisional = false

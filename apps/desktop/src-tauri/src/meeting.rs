@@ -116,6 +116,9 @@ pub struct Prepared {
     pub notices: Vec<MeetingEvent>,
     /// What the call app's render sessions do (T9.4); `None`: this meeting has no offer to stop.
     pub call_signal: Option<CallSignal>,
+    /// The NPU note to record as shown once `notices` went out (T12.45): never on a start that
+    /// failed.
+    pub npu_note: Option<host::NpuNoteShown>,
 }
 
 /// The pre-flight of a meeting. Runs on the meeting thread, before any capture starts.
@@ -299,11 +302,7 @@ impl MeetingDriver {
         {
             let mut threads = self.threads();
             if threads.recording() {
-                return Err(IpcError {
-                    kind: "busy".into(),
-                    message: "a meeting is already recording".into(),
-                    retryable: true,
-                });
+                return Err(IpcError::busy("a meeting is already recording"));
             }
             let pass = self.0.gate.enter_meeting()?;
             if let Some(old) = threads.newest.take() {
@@ -335,11 +334,7 @@ impl MeetingDriver {
                     run_guarded(&inner, &svc, &request, &flags, &tx, seq);
                     drop(flags);
                 })
-                .map_err(|_| IpcError {
-                    kind: "internal".into(),
-                    message: crate::plain_text::INTERNAL.into(),
-                    retryable: false,
-                })?;
+                .map_err(|_| IpcError::internal())?;
             threads.newest = Some(Running {
                 stop,
                 keep,
@@ -348,11 +343,10 @@ impl MeetingDriver {
             });
         }
         let started = rx.recv().unwrap_or_else(|_| {
-            Err(IpcError {
-                kind: "internal".into(),
-                message: "the meeting thread stopped before the meeting started".into(),
-                retryable: false,
-            })
+            Err(IpcError::new(
+                "internal",
+                "the meeting thread stopped before the meeting started",
+            ))
         });
         if started.is_err() {
             // The thread ends right after reporting a failed start; join it so the next
@@ -377,11 +371,7 @@ impl MeetingDriver {
                 r.stop.store(true, Ordering::SeqCst);
                 Ok(())
             }
-            _ => Err(IpcError {
-                kind: "not_recording".into(),
-                message: "no meeting is recording".into(),
-                retryable: false,
-            }),
+            _ => Err(IpcError::new("not_recording", "no meeting is recording")),
         }
     }
 
@@ -980,11 +970,10 @@ fn run_guarded(
                 },
             );
         } else {
-            let _ = started.send(Err(IpcError {
-                kind: "internal".into(),
-                message: "The meeting stopped unexpectedly before it started.".into(),
-                retryable: false,
-            }));
+            let _ = started.send(Err(IpcError::new(
+                "internal",
+                "The meeting stopped unexpectedly before it started.",
+            )));
         }
     }
 }
@@ -1040,6 +1029,7 @@ fn run(
     let mut saved_seen = false;
     let mut mapper = EventMapper::new(request.mode);
     let mut notices = Some(prepared.notices);
+    let mut npu_note = prepared.npu_note;
     // Calls only: in the room nothing ends when a call app does.
     let mut call_end = prepared
         .call_signal
@@ -1110,6 +1100,9 @@ fn run(
                         && let Some(n) = notices.take()
                     {
                         n.into_iter().for_each(send);
+                        if let Some(shown) = npu_note.take() {
+                            shown.record(&mut svc.store());
+                        }
                     }
                     if is_end {
                         break;
@@ -1221,11 +1214,7 @@ fn run(
 }
 
 fn setup_err(kind: &str, message: String) -> IpcError {
-    IpcError {
-        kind: kind.into(),
-        message,
-        retryable: false,
-    }
+    IpcError::new(kind, message)
 }
 
 /// The banner text of an ONNX Runtime library that could not load (the CPU one is used).
@@ -1555,9 +1544,11 @@ pub type SourceFn =
 /// The production pre-flight (module docs, step 1): the CLI's `record` checks through
 /// `earshot_runtime::host`; the capture source is its one variable, WASAPI on the Audio page's
 /// devices in the app ([`HostPrepare::wasapi`]) and a replay in `accept m7`
-/// (`crate::headless`).
+/// (`crate::headless`), which also runs no provisional words ([`HostPrepare::without_previews`]).
 pub struct HostPrepare {
     source: SourceFn,
+    /// Whether the meeting may run provisional words (T9.1m); off only in the hidden replay.
+    previews: bool,
 }
 
 impl HostPrepare {
@@ -1570,7 +1561,35 @@ impl HostPrepare {
     /// Everything of a real meeting except where the audio comes from.
     #[must_use]
     pub fn with_source(source: SourceFn) -> Self {
-        Self { source }
+        Self {
+            source,
+            previews: true,
+        }
+    }
+
+    /// No provisional words, whatever the setting says (T12.46): the hidden replay shows no
+    /// window, so preview sessions would only add load to what it measures.
+    #[must_use]
+    pub fn without_previews(mut self) -> Self {
+        self.previews = false;
+        self
+    }
+
+    /// The provisional words a meeting gets from this pre-flight: `None` in the hidden
+    /// replay, else the stored choice (a setting never costs a recording: one that cannot be
+    /// read is automatic). [`Prepare::prepare`] puts exactly this in `LiveConfig::previews`.
+    #[must_use]
+    pub fn live_previews(
+        &self,
+        svc: &Services,
+        models: &ModelDir,
+    ) -> Option<earshot_runtime::live::LivePreviews> {
+        if !self.previews {
+            return None;
+        }
+        let choice = earshot_runtime::preview_settings::preview_choice(&svc.store())
+            .map_or_else(|_| Default::default(), |(choice, _)| choice);
+        Some(host::live_previews(models, choice))
     }
 }
 
@@ -1612,11 +1631,10 @@ fn call_signal(mode: CaptureMode) -> Option<CallSignal> {
 
 #[cfg(not(windows))]
 fn wasapi_source(_: &Services, _: &StartRequest) -> Result<MeetingSource, IpcError> {
-    Err(IpcError {
-        kind: "unsupported".into(),
-        message: "live capture needs Windows (WASAPI)".into(),
-        retryable: false,
-    })
+    Err(IpcError::new(
+        "unsupported",
+        "live capture needs Windows (WASAPI)",
+    ))
 }
 
 mod production {
@@ -1643,11 +1661,14 @@ mod production {
             // a meeting whose files are missing. What it runs on is read when its turn comes
             // (`MeetingModels`), so it keeps what the start decides.
             let build = earshot_runtime::backends::accelerator_order();
-            let setup = {
+            let mut setup = {
                 let db = svc.store();
                 host::transcription_setup(&db, &models, &build, &earshot_runtime::hardware())?
             };
             host::require_models(&models, &setup.choice.model, true)?;
+            // "Runs on the processor" for want of an NPU version: once until it changes,
+            // recorded only once the meeting started and its banners went out (T12.45).
+            let npu_note = host::npu_note_once(&svc.store(), &mut setup);
             let checked = host::ResolvedModels {
                 model: setup.choice.model.clone(),
                 order: setup.order.clone(),
@@ -1670,9 +1691,8 @@ mod production {
                     &earshot_runtime::codex::InstalledCodex::meeting_start(),
                 ),
             )?;
-            // A setting never costs a recording: one that cannot be read is automatic.
-            let previews = earshot_runtime::preview_settings::preview_choice(&svc.store())
-                .map_or_else(|_| Default::default(), |(choice, _)| choice);
+            // None in the hidden replay (T12.46).
+            let previews = self.live_previews(svc, &models);
             // "Where it runs" not honoured, or a stored setting this version does not know.
             let mut notices =
                 super::setup_notices(setup.notes.into_iter().chain(summary_notes).collect());
@@ -1716,7 +1736,7 @@ mod production {
                 speaker_timing: timing,
                 live_summaries,
                 hold: Some(hold),
-                previews: Some(host::live_previews(&models, previews)),
+                previews,
                 keep_summary_local,
                 ..LiveConfig::default()
             };
@@ -1760,6 +1780,7 @@ mod production {
                 after,
                 notices,
                 call_signal,
+                npu_note: Some(npu_note),
             })
         }
     }

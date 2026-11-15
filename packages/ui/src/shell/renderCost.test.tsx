@@ -11,7 +11,6 @@ import * as detailModule from "../detail/detail";
 import { type Ipc, IpcProvider, type MeetingEvent, type MeetingListItem, createMockIpc } from "../ipc";
 import { sampleDetail } from "../ipc/mockDetail";
 import * as liveModule from "../meeting/liveMeeting";
-import { installMatchMedia } from "../test/matchMedia";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppShell } from "./AppShell";
@@ -89,7 +88,6 @@ const landed = (i: number): MeetingEvent => ({
 const clockCallsAt = (ms: number) => clockSpy.mock.calls.filter(([x]) => x === ms).length;
 
 beforeEach(() => {
-  installMatchMedia(false);
   clockSpy.mockClear();
   rowTimeSpy.mockClear();
   listRowSpy.mockClear();

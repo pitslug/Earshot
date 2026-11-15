@@ -283,11 +283,7 @@ fn recording_placement(
 
 /// The replayed capture source: `mic.wav` and `loopback.wav`, as fast as the session reads them.
 fn replay_source(dir: &Path, record: Arc<Mutex<AfterRecord>>) -> Result<MeetingSource, IpcError> {
-    let bad = |message: String| IpcError {
-        kind: "replay".into(),
-        message,
-        retryable: false,
-    };
+    let bad = |message: String| IpcError::new("replay", message);
     let mic = read_wav_track(&dir.join("mic.wav")).map_err(bad)?;
     let reference = read_wav_track(&dir.join("loopback.wav")).map_err(bad)?;
     let source = ReplayBuilder::new(ORIGIN, mic)
@@ -332,6 +328,11 @@ fn network_line(host: &HostOutcome) -> Vec<String> {
         .collect()
 }
 
+/// The replay's pre-flight: the app's own, with no provisional words (T12.46).
+fn replay_prepare(source: crate::meeting::SourceFn) -> HostPrepare {
+    HostPrepare::with_source(source).without_previews()
+}
+
 /// [`HostPrepare`] with what its `after` step did kept for the report.
 struct RecordingPrepare {
     inner: HostPrepare,
@@ -352,6 +353,7 @@ impl Prepare for RecordingPrepare {
             start: prepared.start,
             notices: prepared.notices,
             call_signal: prepared.call_signal,
+            npu_note: prepared.npu_note,
             after: Box::new(
                 move |svc: &Services,
                       outcome: &LiveOutcome,
@@ -614,7 +616,7 @@ fn run(args: &Args, out: &mut dyn Write) -> Result<(), String> {
     let dir = args.replay.clone();
     let source_record = Arc::clone(&record);
     let prepare = RecordingPrepare {
-        inner: HostPrepare::with_source(Box::new(move |_, _| {
+        inner: replay_prepare(Box::new(move |_, _| {
             replay_source(&dir, Arc::clone(&source_record))
         })),
         record: Arc::clone(&record),

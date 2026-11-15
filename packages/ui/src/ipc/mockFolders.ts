@@ -36,6 +36,16 @@ const fail = (kind: string, message: string): never => {
 
 const fold = (name: string) => name.toLocaleLowerCase();
 
+/** Compares by code point, as Rust compares strings (`<` on JS strings compares UTF-16 units). */
+function compareCodePoints(a: string, b: string): number {
+  const x = [...a].map((c) => c.codePointAt(0)!);
+  const y = [...b].map((c) => c.codePointAt(0)!);
+  for (let i = 0; i < Math.min(x.length, y.length); i += 1) {
+    if (x[i] !== y[i]) return x[i] - y[i];
+  }
+  return x.length - y.length;
+}
+
 /** The folder commands of the mock `Ipc`, over `meetings` (shared with the mock, changed in
  * place). */
 export function createFoldersMock(
@@ -45,8 +55,12 @@ export function createFoldersMock(
 ): FolderCommands {
   let folders = start.map((f) => ({ ...f }));
   let seq = 0;
+  // By lower-case name and code point: the app's order (accented letters beside their base
+  // letters, `folders::name_order`) is the runtime's alone, and the UI shows what it is sent.
   const sorted = () =>
-    [...folders].sort((a, b) => fold(a.name).localeCompare(fold(b.name)) || a.id.localeCompare(b.id));
+    [...folders].sort(
+      (a, b) => compareCodePoints(a.name.toLowerCase(), b.name.toLowerCase()) || a.id.localeCompare(b.id),
+    );
   const cleanName = (name: string) => {
     const n = name.trim();
     if (n === "") fail("invalid_name", "Enter a name.");

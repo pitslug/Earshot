@@ -4,7 +4,6 @@ members = [
     "crates/earshot-core",
     "crates/earshot-asr-whisper",
     "crates/earshot-onnx",
-    "crates/earshot-asr-qnn",
     "crates/earshot-net",
     "crates/earshot-proc",
     "crates/earshot-update",
@@ -12,18 +11,18 @@ members = [
     "crates/earshot-llm-replay",
     "crates/earshot-llm-local",
     "crates/earshot-store",
+    "crates/earshot-sync",
+    "crates/earshot-sync-server",
     "crates/earshot-capture-wasapi",
     "crates/earshot-hardware",
-    "crates/earshot-capture-android",
     "crates/earshot-runtime",
     "crates/earshot-cli",
     "apps/desktop/src-tauri",
     "xtask",
 ]
-# earshot-sync-server is added in M11.
 
 [workspace.package]
-version = "0.3.6"
+version = "0.3.7"
 edition = "2024"
 rust-version = "1.99"
 publish = false

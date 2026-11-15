@@ -73,7 +73,7 @@ import {
   otherLinesSuggesting,
   pointTarget,
 } from "./DictionaryWords";
-import { dictionaryWord, inDictionary } from "./dictionaryWord";
+import { dictionaryWord, inDictionary, tokensOf } from "./dictionaryWord";
 import { LineText, WORD_ATTRIBUTE, type WordActions } from "./WordMarks";
 import {
   COPIED_MS,
@@ -351,6 +351,8 @@ export interface MeetingDetailViewProps {
   onJobStarted(job: JobKind): void;
   /** The job's notice was dismissed. */
   onJobDismissed(): void;
+  /** The user asked to cancel the running job (T12.41). */
+  onJobCancel(): void;
   /** Timers (injected by tests). */
   timer?: Timer;
   /** Shown at the top of the page: the meeting that has just ended says how its finishing goes
@@ -372,21 +374,31 @@ export interface MeetingDetailViewProps {
 const FINISHING_TIP = "Available when the summary is done.";
 
 /** A meeting's job: which one, and its latest event (`null` until the first). `seq` changes
- * with every event. */
+ * with every event. `cancelling`: the user asked to cancel it and its last event has not come. */
 export interface JobView {
   job: JobKind;
   last: JobEvent | null;
   seq: number;
+  cancelling?: boolean;
 }
 
 /** Whether `e` ends its job. */
 export function isTerminal(e: JobEvent | null): boolean {
-  return e !== null && (e.type === "Retranscribed" || e.type === "Summary" || e.type === "Failed");
+  return (
+    e !== null &&
+    (e.type === "Retranscribed" || e.type === "Summary" || e.type === "Cancelled" || e.type === "Failed")
+  );
 }
+
+/** What a job's notice says while it stops (as the meeting's own Cancel finishing says). */
+export const JOB_STOPPING_TEXT = "Stopping. This can take a moment if a model is still working or loading.";
 
 /** The notice of a job. */
 export function jobNotice(view: JobView): Notice {
   const e = view.last;
+  if (view.cancelling === true && !isTerminal(e)) {
+    return { key: "job", intent: "info", text: JOB_STOPPING_TEXT, busy: true };
+  }
   if (e === null) {
     return view.job === "Retranscribe"
       ? { key: "job", intent: "info", text: "Re-transcribing from the recording", busy: true }
@@ -435,6 +447,15 @@ export function jobNotice(view: JobView): Notice {
           return unhandled;
         }
       }
+    case "Cancelled":
+      return {
+        key: "job",
+        intent: "info",
+        text:
+          e.job === "Retranscribe"
+            ? "The re-transcription was cancelled. The transcript has not changed."
+            : "The new summary was cancelled. Nothing was changed.",
+      };
     case "Failed":
       return {
         key: "job",
@@ -454,6 +475,7 @@ export function MeetingDetailView({
   job,
   onJobStarted,
   onJobDismissed,
+  onJobCancel,
   timer = realTimer,
   status,
   finishing = false,
@@ -472,6 +494,8 @@ export function MeetingDetailView({
   const [notice, setNotice] = useState<Notice | null>(null);
   const [noAudio, setNoAudio] = useState<Set<string>>(new Set());
   const [editingTitle, setEditingTitle] = useState(false);
+  // Separate persons named after the user, offered one at a time after "This is me" (T12.44).
+  const [mergeOffers, setMergeOffers] = useState<PersonItem[]>([]);
   // The Speakers panel: `null` until the meeting loads, then open by itself only when a
   // voice needs a name (T12.19); the header's Speakers button toggles it.
   const [speakersOpen, setSpeakersOpen] = useState<boolean | null>(null);
@@ -752,7 +776,18 @@ export function MeetingDetailView({
           </MessageBarBody>
           <MessageBarActions>
             {jobBar.busy ? (
-              <Spinner size="extra-tiny" aria-label="Working" />
+              <>
+                <Spinner size="extra-tiny" aria-label="Working" />
+                {/* Focusable while disabled, so focus stays on it after the press. */}
+                <Button
+                  size="small"
+                  aria-label={job?.job === "Resummarise" ? "Cancel the new summary" : "Cancel the re-transcription"}
+                  disabledFocusable={job?.cancelling === true}
+                  onClick={onJobCancel}
+                >
+                  Cancel
+                </Button>
+              </>
             ) : (
               <Button size="small" appearance="transparent" onClick={onJobDismissed}>
                 Dismiss
@@ -890,8 +925,25 @@ export function MeetingDetailView({
                     onLink={(s, choice: LinkChoice) =>
                       run(() => ipc.linkSpeaker(id, s, choice), "The speaker was not linked")
                     }
-                    onMarkMe={(s) => run(() => ipc.markMe(id, s), "The voice was not marked as you")}
-                    onUnmarkMe={(s) => run(() => ipc.unmarkMe(id, s), "The voice was not changed")}
+                    onMarkMe={(s) =>
+                      run(async () => setMergeOffers(await ipc.markMe(id, s)), "The voice was not marked as you")
+                    }
+                    mergeOffer={mergeOffers[0] ?? null}
+                    onMergeIntoMe={(person) =>
+                      run(async () => {
+                        await ipc.mergeIntoMe(person);
+                        const name = mergeOffers.find((p) => p.id === person)?.name ?? "";
+                        setMergeOffers((offers) => offers.filter((p) => p.id !== person));
+                        setNotice({ key: "edit", intent: "success", text: `${name} is now merged into you.` });
+                      }, "The person was not merged into you")
+                    }
+                    onKeepSeparate={() => setMergeOffers((offers) => offers.slice(1))}
+                    onUnmarkMe={(s) =>
+                      run(async () => {
+                        await ipc.unmarkMe(id, s);
+                        setMergeOffers([]);
+                      }, "The voice was not changed")
+                    }
                     onMerge={(keep, merge) =>
                       run(() => ipc.mergeSpeakers(id, keep, merge), "The speakers were not merged")
                     }
@@ -1442,7 +1494,7 @@ function TranscriptTab({
   const wordsOf = (r: TranscriptRow): string[] => {
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const t of r.text.split(/\p{White_Space}+/u)) {
+    for (const t of tokensOf(r.text)) {
       const w = dictionaryWord(t);
       if (w === null || seen.has(w.toLowerCase())) continue;
       seen.add(w.toLowerCase());

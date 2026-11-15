@@ -127,6 +127,7 @@ function sampleSpeakers(): SpeakerCard[] {
       can_ignore: false,
       can_mark_me: false,
       can_unmark_me: false,
+      recognised_me: false,
     },
     {
       id: SAMPLE_SPEAKERS.priya,
@@ -141,6 +142,7 @@ function sampleSpeakers(): SpeakerCard[] {
       can_ignore: false,
       can_mark_me: false,
       can_unmark_me: false,
+      recognised_me: false,
     },
     {
       id: SAMPLE_SPEAKERS.second,
@@ -155,6 +157,7 @@ function sampleSpeakers(): SpeakerCard[] {
       can_ignore: true,
       can_mark_me: false,
       can_unmark_me: false,
+      recognised_me: false,
     },
     {
       id: SAMPLE_SPEAKERS.third,
@@ -169,6 +172,7 @@ function sampleSpeakers(): SpeakerCard[] {
       can_ignore: true,
       can_mark_me: false,
       can_unmark_me: false,
+      recognised_me: false,
     },
   ];
 }
@@ -198,7 +202,8 @@ export function sampleDetail(item: MeetingListItem): MeetingDetail {
       duration_ms: item.duration_ms,
       mode: "Call",
       transcript: draft ? "Draft" : "Final",
-      summary_model: ready ? "Qwen 3.5 9B" : null,
+      summary_writer: ready ? "Qwen 3.5 9B" : null,
+      summary_edited: false,
       transcript_backend: "GPU (CUDA)",
     },
     summary: ready ? sampleSummary() : null,
@@ -234,6 +239,33 @@ export function sampleInRoomDetail(item: MeetingListItem): MeetingDetail {
   return {
     ...d,
     header: { ...d.header, mode: "InRoom" },
+    speakers,
+    transcript: transcriptOf(LINES, speakers).map((r) => ({ ...r, track: "Room" })),
+  };
+}
+
+/** A meeting recorded in the room where the user's voiceprint named the first voice (T12.44):
+ * "This isn't me" is refused on it until the user's voice is forgotten. */
+export function sampleRecognisedInRoomDetail(item: MeetingListItem): MeetingDetail {
+  const d = sampleInRoomDetail(item);
+  const user = samplePersons()[0];
+  const speakers = d.speakers.map(
+    (s, i): SpeakerCard =>
+      i === 0
+        ? {
+            ...s,
+            kind: "Me",
+            name: user.name,
+            person: { id: user.id, name: user.name, has_voiceprint: true },
+            needs_name: false,
+            can_ignore: false,
+            can_mark_me: false,
+            recognised_me: true,
+          }
+        : { ...s, can_mark_me: false },
+  );
+  return {
+    ...d,
     speakers,
     transcript: transcriptOf(LINES, speakers).map((r) => ({ ...r, track: "Room" })),
   };
@@ -333,6 +365,7 @@ export function unmarkedMe(detail: MeetingDetail, id: string): MeetingDetail {
             can_ignore: true,
             can_mark_me: true,
             can_unmark_me: false,
+            recognised_me: false,
           }
         : { ...s, can_mark_me: true },
     ),

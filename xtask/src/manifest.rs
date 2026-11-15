@@ -40,6 +40,10 @@ pub struct Manifest {
     /// artefacts; the app extracts these files (earshot-runtime `cuda`).
     #[serde(default, rename = "cuda_archive")]
     pub cuda_archives: Vec<CudaArchive>,
+    /// Names an earlier manifest put in the CUDA folder and no part pins now (T12.48): the app
+    /// ignores them on a load and deletes them on a removal or download.
+    #[serde(default, rename = "cuda_retired")]
+    pub cuda_retired: Vec<CudaRetired>,
 }
 
 /// The parts of the app's opt-in CUDA download.
@@ -74,6 +78,19 @@ pub struct CudaFile {
     pub sha256: String,
     /// Size in bytes.
     pub size: u64,
+}
+
+/// A name an earlier manifest put in the app's CUDA folder.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CudaRetired {
+    /// Its name in the folder (flat).
+    pub name: String,
+}
+
+/// Whether `name` is a plain file name of the CUDA folder: no folder, drive or dot entry.
+fn is_plain_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
 }
 
 /// Transcription model engines.
@@ -357,7 +374,8 @@ impl Manifest {
     /// (a rule change edits both): a known part and format; an artefact that exists, used by one
     /// archive only; every file a plain name, unique without regard to case across both parts,
     /// its digest and size given and equal to the artefact's own pin of that member if it has
-    /// one; and no cache artefact stored inside the folder.
+    /// one; no cache artefact stored inside the folder; and every `[[cuda_retired]]` name
+    /// (T12.48) a plain name, unique without regard to case, and pinned by no part.
     fn validate_cuda(&self) -> Result<()> {
         for a in &self.artefacts {
             let into = a.extract.as_ref().map_or("", |x| x.into.as_str());
@@ -386,11 +404,7 @@ impl Manifest {
                 bail!("{}: names no file", ctx());
             }
             for f in &r.files {
-                if f.name.is_empty()
-                    || f.name == "."
-                    || f.name == ".."
-                    || f.name.contains(['/', '\\', ':'])
-                {
+                if !is_plain_name(&f.name) {
                     bail!("{}: file name `{}` is not a plain name", ctx(), f.name);
                 }
                 if !names.insert(f.name.to_lowercase()) {
@@ -411,6 +425,20 @@ impl Manifest {
                         f.name
                     );
                 }
+            }
+        }
+        let mut retired = BTreeSet::new();
+        for r in &self.cuda_retired {
+            let ctx = || format!("cuda_retired `{}`", r.name);
+            if !is_plain_name(&r.name) {
+                bail!("{}: not a plain name", ctx());
+            }
+            let lower = r.name.to_lowercase();
+            if names.contains(&lower) {
+                bail!("{}: a part still pins it", ctx());
+            }
+            if !retired.insert(lower) {
+                bail!("{}: repeats", ctx());
             }
         }
         Ok(())

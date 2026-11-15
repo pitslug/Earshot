@@ -1265,3 +1265,225 @@ fn cuda_every_runtime_path_to_onnx_runtime_waits_for_the_choice() {
         assert!(at < text.find("init_onnx_for("), "{name}");
     }
 }
+
+/// `fixture`'s manifest with `[[cuda_retired]]` tables for `names`.
+fn with_retired(archives: &[(&str, &str, &[&str])], names: &[&str]) -> Fixture {
+    let base = fixture(archives);
+    let mut text = "sets = [\"s\"]\nhosts = [\"example.org\"]\n\n".to_owned();
+    for ((part, id, files), (_, z)) in archives.iter().zip(&base.zips) {
+        text.push_str(&artefact_table(id, z));
+        text.push_str(&archive_table(part, id, files));
+    }
+    for name in names {
+        text.push_str(&format!("[[cuda_retired]]\nname = '{name}'\n\n"));
+    }
+    Fixture {
+        catalogue: Catalogue::parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}")),
+        zips: base.zips,
+    }
+}
+
+/// The retired-name rule exists in both manifest parsers; the shared table pins them together.
+#[test]
+fn cuda_retired_names_follow_the_shared_cases() {
+    #[derive(serde::Deserialize)]
+    struct Cases {
+        retired: Vec<Retired>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Retired {
+        names: Vec<String>,
+        ok: bool,
+    }
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/models/cuda_folder_cases.toml");
+    let cases: Cases = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert!(cases.retired.iter().any(|c| c.ok) && cases.retired.iter().any(|c| !c.ok));
+    let z = zip(&[("bin/a.dll".to_owned(), bytes_of("a.dll"))]);
+    let base = format!(
+        "sets = [\"s\"]\nhosts = [\"example.org\"]\n\n{}{}",
+        artefact_table("x", &z),
+        archive_table("summaries", "x", &["a.dll"])
+    );
+    for c in cases.retired {
+        let mut text = base.clone();
+        for name in &c.names {
+            text.push_str(&format!(
+                "[[cuda_retired]]\nname = {}\n\n",
+                toml::Value::String(name.clone())
+            ));
+        }
+        let parsed = Catalogue::parse(&text);
+        assert_eq!(parsed.is_ok(), c.ok, "{:?}: {parsed:?}", c.names);
+        if let Ok(catalogue) = parsed {
+            assert_eq!(catalogue.cuda_retired(), c.names.as_slice());
+        }
+    }
+    // An unknown field is refused, as by xtask's parser.
+    let unknown = format!("{base}[[cuda_retired]]\nname = 'b.dll'\nsha256 = 'x'\n");
+    assert!(Catalogue::parse(&unknown).is_err());
+}
+
+/// A library renamed in a manifest bump leaves its old file behind: the check deletes exactly that
+/// name before a load, so Windows can never resolve an import to it, and never another file.
+#[test]
+fn cuda_a_retired_library_is_deleted_by_the_check_before_a_load() {
+    let files = CudaPart::Summaries.required_files();
+    let f = with_retired(&[("summaries", "s", files)], &["cublas64_12.dll"]);
+    let dir = TempDir::new("cuda-retired-verify");
+    let models = models_in(&dir);
+    f.download(&models, CudaPart::Summaries).unwrap();
+    let cuda = folder(&models);
+    // As an older manifest left it, spelled in another case.
+    let old = cuda.join("CUBLAS64_12.dll");
+    std::fs::write(&old, b"old version").unwrap();
+    std::fs::write(cuda.join("notes.txt"), b"mine").unwrap();
+    // The size-only state already reads as it will after the check.
+    let state = install_state(&f.catalogue, &models, CudaPart::Summaries).unwrap();
+    assert!(state.unexpected_libraries.is_empty());
+    assert!(state.looks_usable());
+    // Without the retired entry the same folder is refused and the file stays.
+    let plain = fixture(&[("summaries", "s", files)]);
+    assert!(matches!(
+        verify_part_in(&plain.catalogue, &models, CudaPart::Summaries),
+        Err(CudaError::UnexpectedLibrary { name, .. }) if name == "CUBLAS64_12.dll"
+    ));
+    assert!(old.exists());
+    // The load sees a folder without it: it is gone before `load` runs.
+    let mut seen = None;
+    load_verified_in(&f.catalogue, &models, CudaPart::Summaries, |d| {
+        seen = Some(d.join("CUBLAS64_12.dll").exists());
+    })
+    .unwrap();
+    assert_eq!(seen, Some(false));
+    assert!(!old.exists());
+    assert!(cuda.join("notes.txt").exists(), "never another file");
+    // Any other unpinned library still stops the load, and is never deleted.
+    std::fs::write(cuda.join("cublas64_11.dll"), b"stray").unwrap();
+    assert!(matches!(
+        verify_part_in(&f.catalogue, &models, CudaPart::Summaries),
+        Err(CudaError::UnexpectedLibrary { name, .. }) if name == "cublas64_11.dll"
+    ));
+    assert!(cuda.join("cublas64_11.dll").exists());
+}
+
+/// A retired file held open fails the check loudly: the load never runs and nothing is deleted.
+#[cfg(windows)]
+#[test]
+fn cuda_a_held_retired_file_fails_the_check_and_the_load_never_runs() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let files = CudaPart::Summaries.required_files();
+    let f = with_retired(&[("summaries", "s", files)], &["cublas64_12.dll"]);
+    let dir = TempDir::new("cuda-retired-verify-held");
+    let models = models_in(&dir);
+    f.download(&models, CudaPart::Summaries).unwrap();
+    let old = folder(&models).join("cublas64_12.dll");
+    std::fs::write(&old, b"old").unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&old)
+        .unwrap();
+    let mut ran = false;
+    let err =
+        load_verified_in(&f.catalogue, &models, CudaPart::Summaries, |_| ran = true).unwrap_err();
+    assert!(
+        matches!(&err, CudaError::InUse { name, .. } if name == "cublas64_12.dll"),
+        "{err}"
+    );
+    assert!(!ran);
+    drop(held);
+    assert!(old.exists());
+    verify_part_in(&f.catalogue, &models, CudaPart::Summaries).unwrap();
+    assert!(!old.exists());
+}
+
+/// A removal deletes exactly the retired names, never another stray file.
+#[test]
+fn cuda_a_removal_deletes_the_retired_files_and_nothing_else() {
+    let files = CudaPart::Summaries.required_files();
+    let f = with_retired(&[("summaries", "s", files)], &["cublas64_12.dll"]);
+    let dir = TempDir::new("cuda-retired-remove");
+    let models = models_in(&dir);
+    f.download(&models, CudaPart::Summaries).unwrap();
+    let cuda = folder(&models);
+    std::fs::write(cuda.join("CUBLAS64_12.dll"), b"old version").unwrap();
+    std::fs::write(cuda.join("cublas64_11.dll"), b"stray").unwrap();
+    let removed = remove_part(&f.catalogue, &models, CudaPart::Summaries).unwrap();
+    assert!(
+        !cuda.join("CUBLAS64_12.dll").exists(),
+        "the retired file goes"
+    );
+    assert!(
+        removed
+            .files
+            .iter()
+            .any(|p| p.file_name().is_some_and(|n| n == "CUBLAS64_12.dll"))
+    );
+    assert_eq!(removed.left_in_folder, ["cublas64_11.dll"], "never another");
+    assert!(cuda.join("cublas64_11.dll").exists());
+}
+
+/// The next download deletes exactly the retired names, whatever part it brings.
+#[test]
+fn cuda_the_next_download_deletes_the_retired_files_and_nothing_else() {
+    let f = with_retired(
+        &[
+            ("summaries", "s", CudaPart::Summaries.required_files()),
+            (
+                "transcription",
+                "t",
+                CudaPart::Transcription.required_files(),
+            ),
+        ],
+        &["cudnn64_8.dll", "old-notes.txt"],
+    );
+    let dir = TempDir::new("cuda-retired-download");
+    let models = models_in(&dir);
+    f.download(&models, CudaPart::Summaries).unwrap();
+    let cuda = folder(&models);
+    std::fs::write(cuda.join("cudnn64_8.dll"), b"old").unwrap();
+    std::fs::write(cuda.join("old-notes.txt"), b"old").unwrap();
+    std::fs::write(cuda.join("mine.txt"), b"mine").unwrap();
+    std::fs::create_dir_all(cuda.join("cudnn64_8.dll.d")).unwrap();
+    f.download(&models, CudaPart::Transcription).unwrap();
+    assert!(!cuda.join("cudnn64_8.dll").exists());
+    assert!(!cuda.join("old-notes.txt").exists());
+    assert!(
+        cuda.join("mine.txt").exists(),
+        "a file no manifest named stays"
+    );
+    assert!(cuda.join("cudnn64_8.dll.d").is_dir());
+    verify_part_in(&f.catalogue, &models, CudaPart::Transcription).unwrap();
+}
+
+/// A retired file held open stops a removal whole, like any of the part's own files.
+#[cfg(windows)]
+#[test]
+fn cuda_a_held_retired_file_stops_the_removal_whole() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let files = CudaPart::Summaries.required_files();
+    let f = with_retired(&[("summaries", "s", files)], &["cublas64_12.dll"]);
+    let dir = TempDir::new("cuda-retired-held");
+    let models = models_in(&dir);
+    f.download(&models, CudaPart::Summaries).unwrap();
+    let cuda = folder(&models);
+    let old = cuda.join("cublas64_12.dll");
+    std::fs::write(&old, b"old").unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&old)
+        .unwrap();
+    let err = remove_part(&f.catalogue, &models, CudaPart::Summaries).unwrap_err();
+    assert!(
+        matches!(&err, CudaError::InUse { name, .. } if name == "cublas64_12.dll"),
+        "{err}"
+    );
+    assert!(cuda.join(files[0]).exists(), "nothing removed");
+    drop(held);
+    remove_part(&f.catalogue, &models, CudaPart::Summaries).unwrap();
+    assert!(!old.exists());
+}

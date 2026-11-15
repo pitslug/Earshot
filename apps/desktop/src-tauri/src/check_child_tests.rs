@@ -157,6 +157,29 @@ fn model_check_a_truncated_stream_is_a_retryable_failure() {
     }
 }
 
+/// A reader whose first read fails with the operating system's words.
+struct BrokenPipe;
+
+impl std::io::Read for BrokenPipe {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other(
+            "the pipe has been ended (os error 109)",
+        ))
+    }
+}
+
+/// The child's output that cannot be read says fixed copy, never the operating system's text.
+#[test]
+fn model_check_output_that_cannot_be_read_reports_fixed_copy() {
+    let mut heard = Heard::default();
+    let e =
+        read_lines(std::io::BufReader::new(BrokenPipe), &mut heard).expect_err("the read failed");
+    assert_eq!(e.kind, "model_check");
+    assert_eq!(e.message, crate::plain_text::INTERNAL);
+    assert!(e.retryable);
+    assert!(!e.message.contains("os error"), "{}", e.message);
+}
+
 #[test]
 fn model_check_an_error_line_is_a_failure_with_its_message() {
     let (r, heard) = read(
@@ -334,4 +357,25 @@ fn check_child_that_cannot_keep_the_cuda_choice_runs_no_check() {
         !CUDA_CHOICE_NOT_KEPT.contains("  "),
         "{CUDA_CHOICE_NOT_KEPT}"
     );
+}
+
+/// The child's exit reaches the page as fixed copy, never the exit code or the operating
+/// system's words.
+#[cfg(windows)]
+#[test]
+fn model_check_a_failed_exit_reports_fixed_copy() {
+    use std::os::windows::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
+    assert_eq!(exit_verdict(Ok(ExitStatus::from_raw(0))), Ok(()));
+    for status in [
+        Ok(ExitStatus::from_raw(1)),
+        Ok(ExitStatus::from_raw(0xC000_0409)),
+        Err(std::io::Error::other("the handle is invalid (os error 6)")),
+    ] {
+        let e = exit_verdict(status).unwrap_err();
+        assert_eq!(e.kind, "model_check");
+        assert_eq!(e.message, crate::plain_text::INTERNAL);
+        assert!(e.retryable);
+    }
 }

@@ -498,7 +498,7 @@ impl ExportLease {
 impl Store {
     /// Runs `f` in one `IMMEDIATE` transaction (the write lock taken at the start, so
     /// what `f` reads cannot change before what it writes): committed if `f` returns `Ok`.
-    fn immediate<T>(
+    pub(crate) fn immediate<T>(
         &mut self,
         f: impl FnOnce(&mut StoreTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {

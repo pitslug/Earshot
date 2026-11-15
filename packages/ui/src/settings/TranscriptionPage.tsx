@@ -16,19 +16,14 @@ import {
 } from "@fluentui/react-components";
 import { useEffect, useId, useState } from "react";
 
-import { type PreviewsChoice, type PreviewsView, useIpc } from "../ipc";
-import { ModelNotices, ModelsNotLoaded, NpuVersions, Section, TranscriptionChoices } from "./ModelSections";
+import { type PreviewsChoice, type PreviewsView, errorText, useIpc } from "../ipc";
+import { ModelNotices, ModelsNotLoaded, NpuVersions, TranscriptionChoices } from "./ModelSections";
 import { LANGUAGES_LABEL, LanguagesPicker } from "./ModelsParts";
 import { SpeakerTimingSection } from "./PeoplePage";
-import { type ModelsPageState, errorText } from "./useModels";
+import { Section, usePageStyles } from "./parts";
+import { type ModelsPageState } from "./useModels";
 
 const useStyles = makeStyles({
-  page: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
-  },
   heading: {
     margin: 0,
   },
@@ -147,8 +142,9 @@ export interface TranscriptionPageProps {
 /** The Transcription page of Settings. */
 export function TranscriptionPage({ models }: TranscriptionPageProps) {
   const styles = useStyles();
+  const page = usePageStyles();
   return (
-    <div className={styles.page}>
+    <div className={page.page}>
       <Title2 as="h1" className={styles.heading}>
         Transcription
       </Title2>

@@ -74,8 +74,9 @@ export function createTauriIpc(): Ipc {
     },
     linkSpeaker: async (meeting, speaker, choice) =>
       unwrap(await commands.linkSpeaker(meeting, speaker, choice)),
-    markMe: async (meeting, speaker) => {
-      unwrap(await commands.markMe(meeting, speaker));
+    markMe: async (meeting, speaker) => unwrap(await commands.markMe(meeting, speaker)),
+    mergeIntoMe: async (person) => {
+      unwrap(await commands.mergeIntoMe(person));
     },
     unmarkMe: async (meeting, speaker) => {
       unwrap(await commands.unmarkMe(meeting, speaker));
@@ -101,6 +102,9 @@ export function createTauriIpc(): Ipc {
     },
     resummarise: async (meeting) => {
       unwrap(await commands.resummarise(meeting));
+    },
+    cancelJob: async (meeting) => {
+      unwrap(await commands.cancelJob(meeting));
     },
     allowSummaryWriter: async (meeting) => {
       unwrap(await commands.allowSummaryWriter(meeting));
@@ -160,6 +164,15 @@ export function createTauriIpc(): Ipc {
     setSummaryTemplate: async (template) => unwrap(await commands.setSummaryTemplate(template)),
     summaryVocabulary: async () => unwrap(await commands.summaryVocabulary()),
     setSummaryVocabulary: async (words) => unwrap(await commands.setSummaryVocabulary(words)),
+    syncView: async () => unwrap(await commands.syncView()),
+    syncDevices: async () => unwrap(await commands.syncDevices()),
+    setUpSync: async (address, setupSecret) => unwrap(await commands.setUpSync(address, setupSecret)),
+    offerSyncCode: async () => unwrap(await commands.offerSyncCode()),
+    joinSync: async (address, code) => unwrap(await commands.joinSync(address, code)),
+    setSyncOn: async (on) => unwrap(await commands.setSyncOn(on)),
+    setSyncVoiceprints: async (on) => unwrap(await commands.setSyncVoiceprints(on)),
+    syncNow: async () => unwrap(await commands.syncNow()),
+    removeSyncDevice: async () => unwrap(await commands.removeSyncDevice()),
     audioSettings: async () => unwrap(await commands.audioSettings()),
     setAudioSettings: async (settings) => unwrap(await commands.setAudioSettings(settings)),
     defaultCaptureMode: async () => unwrap(await commands.defaultCaptureMode()),

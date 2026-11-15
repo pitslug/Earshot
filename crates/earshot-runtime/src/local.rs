@@ -7,9 +7,16 @@
 //! erases every key that any [`MeetingRecord`] names for it ([`meeting_of`]), so a new kind
 //! of meeting record is swept by construction once it is listed here, and
 //! `local_state_is_written_only_through_the_registry` fails for a writer that bypasses it.
+//!
+//! Settings are read through [`read_setting`] (or [`setting_of`] for bytes already read): a
+//! value this build does not know is reported as an [`UnknownSetting`] and the caller's default
+//! is used (T12.52).
 
 use earshot_core::identity::EntityId;
 use earshot_store::{Store, StoreError};
+
+use crate::RuntimeError;
+use crate::model_settings::UnknownSetting;
 
 /// Declares [`MeetingRecord`] with its key prefix and the position of the meeting id among
 /// the key's `/`-separated components after the prefix; `ALL` lists every variant.
@@ -68,7 +75,9 @@ meeting_records! {
     /// format in `earshot_store::encode_retention_clock`, [`crate::retention`]).
     AudioRetention => "audio-retention/", meeting at 0;
     /// `summary-kept-local/<meeting>`: the meeting's summary stays on this computer (T12.13;
-    /// presence is the answer, [`crate::keep_local`]).
+    /// presence is the answer, [`crate::keep_local`]). Never written since T11.1a, which made
+    /// it the synced field `Meeting::summary_kept_local`: read only for meetings from before
+    /// store migration 5, and removable once no store predates it.
     KeptLocal => "summary-kept-local/", meeting at 0;
     /// `word-choices/<meeting>`: the user's choices on suggested words (content, T12.15ec;
     /// [`crate::word_choices`]).
@@ -76,6 +85,12 @@ meeting_records! {
     /// `recovered-recording/<meeting>`: how much of an interrupted recording start-up recovery
     /// saved, until the app has said so once (T9.18; no content, [`crate::recover`]).
     RecoveredRecording => "recovered-recording/", meeting at 0;
+    /// `summary-edits/<meeting>`: which of the meeting's summary rows hold text the user
+    /// edited (T12.43; row ids only, [`crate::summary_edits`]).
+    SummaryEdits => "summary-edits/", meeting at 0;
+    /// `voiceprint-me/<meeting>`: the in-room "Me" row the final pass named by the user's
+    /// voiceprint (T12.44; no biometric data, [`crate::identities::voiceprint_me_key`]).
+    VoiceprintMe => "voiceprint-me/", meeting at 0;
 }
 
 impl MeetingRecord {
@@ -205,6 +220,24 @@ pub(crate) enum DeviceRecord {
     /// `npu-compiled`: the latest NPU load of each kind that did not use the compiled model, path
     /// free (T12.12e; [`crate::npu_compiled::RefusalRecord`]).
     NpuCompiled,
+    /// `npu-note-shown`: the "no NPU version, runs on the processor" note last shown at a
+    /// meeting or job start (T12.45; [`crate::host::npu_note_once`]).
+    NpuNoteShown,
+    /// `settings/sync-server`: the sync server's address (T11.3).
+    SyncServer,
+    /// `settings/sync`: whether sync runs (T11.3).
+    SyncOn,
+    /// `settings/sync-voiceprints`: whether voiceprints sync (T11.3).
+    SyncVoiceprints,
+    /// `sync-cursor`: the relay sequence number pulled up to (T11.3).
+    SyncCursor,
+    /// `sync-status`: the last sync tick's outcome; times, a problem word, counts (T11.3).
+    SyncStatus,
+    /// `settings/device-name`: this device's name as its other devices show it (T11.3c).
+    DeviceName,
+    /// `settings/sync-offer-summaries`: whether this device writes summaries for the others
+    /// (T11.3c).
+    OfferSummaries,
 }
 
 impl DeviceRecord {
@@ -248,6 +281,14 @@ impl DeviceRecord {
         DeviceRecord::UpdateNotified,
         DeviceRecord::Vocabulary,
         DeviceRecord::NpuCompiled,
+        DeviceRecord::NpuNoteShown,
+        DeviceRecord::SyncServer,
+        DeviceRecord::SyncOn,
+        DeviceRecord::SyncVoiceprints,
+        DeviceRecord::SyncCursor,
+        DeviceRecord::SyncStatus,
+        DeviceRecord::DeviceName,
+        DeviceRecord::OfferSummaries,
     ];
 
     /// Its key.
@@ -297,6 +338,14 @@ impl DeviceRecord {
                 DeviceRecord::UpdateNotified => crate::update::NOTIFIED_KEY,
                 DeviceRecord::Vocabulary => crate::vocabulary::VOCABULARY_KEY,
                 DeviceRecord::NpuCompiled => crate::npu_compiled::REFUSALS_KEY,
+                DeviceRecord::NpuNoteShown => crate::host::NPU_NOTE_SHOWN_KEY,
+                DeviceRecord::SyncServer => crate::sync::SYNC_SERVER_KEY,
+                DeviceRecord::SyncOn => crate::sync::SYNC_ON_KEY,
+                DeviceRecord::SyncVoiceprints => crate::sync::SYNC_VOICEPRINTS_KEY,
+                DeviceRecord::SyncCursor => crate::sync::SYNC_CURSOR_KEY,
+                DeviceRecord::SyncStatus => crate::sync::SYNC_STATUS_KEY,
+                DeviceRecord::DeviceName => crate::sync::DEVICE_NAME_KEY,
+                DeviceRecord::OfferSummaries => crate::sync::OFFER_SUMMARIES_KEY,
             }
             .to_owned(),
         )
@@ -334,9 +383,135 @@ pub(crate) fn set_tx(
     tx.set_local_value(key.as_str(), value)
 }
 
+/// A device-local setting as read ([`read_setting`], [`setting_of`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Setting<T> {
+    /// Nothing stored: the caller's default.
+    Absent,
+    /// A stored value this build reads.
+    Known(T),
+    /// A stored value this build does not know or refuses: reported, and the caller's default
+    /// is used.
+    Unknown(UnknownSetting),
+}
+
+impl<T> Setting<T> {
+    /// The value read, if any; an unknown one is added to `unknown`.
+    pub(crate) fn known(self, unknown: &mut Vec<UnknownSetting>) -> Option<T> {
+        match self {
+            Self::Absent => None,
+            Self::Known(v) => Some(v),
+            Self::Unknown(u) => {
+                unknown.push(u);
+                None
+            }
+        }
+    }
+
+    /// The value read, else `default()`, and what was not known.
+    pub(crate) fn or_default_with(
+        self,
+        default: impl FnOnce() -> T,
+    ) -> (T, Option<UnknownSetting>) {
+        match self {
+            Self::Absent => (default(), None),
+            Self::Known(v) => (v, None),
+            Self::Unknown(u) => (default(), Some(u)),
+        }
+    }
+}
+
+/// The setting `key` from its stored bytes (`None`: nothing stored): `parse` reads them, and
+/// what it refuses is reported with the text it returns (the stored text, or a reason when the
+/// text must not be shown).
+pub(crate) fn setting_of<T>(
+    key: &'static str,
+    bytes: Option<&[u8]>,
+    parse: impl FnOnce(&[u8]) -> Result<T, String>,
+) -> Setting<T> {
+    match bytes.map(parse) {
+        None => Setting::Absent,
+        Some(Ok(v)) => Setting::Known(v),
+        Some(Err(stored)) => Setting::Unknown(UnknownSetting { key, stored }),
+    }
+}
+
+/// Reads the device-local setting `key` as text (bytes that are not UTF-8 read with
+/// replacement characters) and parses it with `parse`, as [`setting_of`] does.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn read_setting<T>(
+    store: &Store,
+    key: &'static str,
+    parse: impl FnOnce(String) -> Result<T, String>,
+) -> Result<Setting<T>, RuntimeError> {
+    Ok(setting_of(key, store.local_value(key)?.as_deref(), |b| {
+        parse(String::from_utf8_lossy(b).into_owned())
+    }))
+}
+
+/// An on/off setting's stored word: `on` or `off`, anything else `None`.
+pub(crate) fn on_off(text: &str) -> Option<bool> {
+    match text {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_setting_reader_reports_what_it_does_not_know() {
+        let parse = |t: String| on_off(&t).ok_or(t);
+        let of =
+            |b: Option<&[u8]>| setting_of("k", b, |b| parse(String::from_utf8_lossy(b).into()));
+        assert_eq!(of(None), Setting::Absent);
+        assert_eq!(of(Some(b"on")), Setting::Known(true));
+        assert_eq!(of(Some(b"off")), Setting::Known(false));
+        let unknown = UnknownSetting {
+            key: "k",
+            stored: "later".into(),
+        };
+        assert_eq!(of(Some(b"later")), Setting::Unknown(unknown.clone()));
+        let mut seen = Vec::new();
+        assert_eq!(of(Some(b"later")).known(&mut seen), None);
+        assert_eq!(of(Some(b"on")).known(&mut seen), Some(true));
+        assert_eq!(of(None).known(&mut seen), None);
+        assert_eq!(seen, vec![unknown.clone()]);
+        assert_eq!(of(None).or_default_with(|| false), (false, None));
+        assert_eq!(of(Some(b"on")).or_default_with(|| false), (true, None));
+        assert_eq!(
+            of(Some(b"later")).or_default_with(|| false),
+            (false, Some(unknown))
+        );
+        for word in ["On", "ON", " on", "", "true"] {
+            assert_eq!(on_off(word), None, "{word:?}");
+        }
+    }
+
+    #[test]
+    fn local_setting_reader_reads_the_store_as_text() {
+        let dir = crate::testutil::TempDir::new("local-setting");
+        let (svc, _) = crate::testutil::services(&dir);
+        let mut db = svc.store();
+        let key = crate::live_summaries::LIVE_SUMMARIES_KEY;
+        let read = |db: &Store| read_setting(db, key, |t| on_off(&t).ok_or(t)).unwrap();
+        assert_eq!(read(&db), Setting::Absent);
+        set(&mut db, &DeviceRecord::LiveSummaries.key(), b"on").unwrap();
+        assert_eq!(read(&db), Setting::Known(true));
+        set(&mut db, &DeviceRecord::LiveSummaries.key(), b"o\xffn").unwrap();
+        assert_eq!(
+            read(&db),
+            Setting::Unknown(UnknownSetting {
+                key,
+                stored: "o\u{fffd}n".into()
+            })
+        );
+    }
 
     fn id(n: u8) -> EntityId {
         EntityId::from_bytes([0x01, 0x90, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, n])

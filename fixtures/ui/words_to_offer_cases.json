@@ -6,6 +6,8 @@
     { "before": "", "after": "Tarnwick and Quillmarsh", "listed": ["tarnwick"], "offer": ["Quillmarsh"] },
     { "before": "Zorbek", "after": "so we think it is on", "listed": [], "offer": [] },
     { "before": "", "after": "(Zorbek), 42 -- ...", "listed": [], "offer": ["Zorbek"] },
+    { "before": "the 'Zorbek' pump", "after": "the Zorbek pump", "listed": [], "offer": [] },
+    { "before": "the pump", "after": "the 'Velmora' pump", "listed": [], "offer": ["Velmora"] },
     { "before": "Velmora,", "after": "\"Velmora.\"", "listed": [], "offer": [] },
     { "before": "velmora", "after": "Velmora", "listed": [], "offer": ["Velmora"] },
     { "before": "", "after": "Quillmarsh Velmora\tTarnwick", "listed": ["Velmora"], "offer": ["Quillmarsh", "Tarnwick"] },

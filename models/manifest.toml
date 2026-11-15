@@ -1266,6 +1266,14 @@ source = "docs/asr-models.md"
 # in `cuda/` under the models folder, by part. `cuda::CudaPart::required_files` lists what each part
 # cannot run without; a required file missing here is reported by `cuda::not_available_yet` and the
 # part is never installed.
+#
+# A manifest bump that renames a pinned file lists the old name as `[[cuda_retired]]` (T12.48),
+# `name = "<old file name>"`: the check before every load deletes exactly that name (otherwise any
+# `.dll` no part pins refuses the load; a held one fails it), and so do a removal of either part
+# and the next download. Both parsers check it: a plain name, unique without regard to case,
+# pinned by no part. A bump that retires a name first confirms from the import tables of every
+# pinned library (`dumpbin /DEPENDENTS`) that none imports it, and says so in its comment. None
+# today.
 [[cuda_archive]]
 part = "summaries"
 artefact = "nvidia-cublas-13.7.0.27-win-x64"

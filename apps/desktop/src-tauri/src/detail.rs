@@ -223,7 +223,15 @@ pub struct SpeakerCard {
     pub can_mark_me: bool,
     /// The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`).
     pub can_unmark_me: bool,
+    /// This in-room "Me" row was named by the user's own voiceprint, so "This isn't me" is
+    /// refused until the user's voice is forgotten (`edit::recognised_me`, T12.44).
+    pub recognised_me: bool,
 }
+
+/// Why "This isn't me" is refused on a "Me" row the user's voiceprint named (T12.44): the
+/// refusal's copy and the Speakers panel's tooltip (mirrored in TypeScript).
+pub const RECOGNISED_ME_COPY: &str = "Earshot recognised your voice here from your voiceprint. \
+     To change this, forget your voice in Settings, People, then choose \"This isn't me\".";
 
 /// The meeting's header line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
@@ -238,8 +246,12 @@ pub struct DetailHeader {
     pub mode: CaptureMode,
     /// Which transcript is shown (`None` without any).
     pub transcript: Option<TranscriptKind>,
-    /// The model that wrote the current summary, when known.
-    pub summary_model: Option<String>,
+    /// What wrote the current summary, as the user sees it (`summary::writer_name`: a local
+    /// model's display name, "Claude (Claude Code)", "Codex" or an endpoint's model name;
+    /// never a manifest id), when known.
+    pub summary_writer: Option<String>,
+    /// Whether the user edited the current summary's text (`summary_edits`, T12.43).
+    pub summary_edited: bool,
     /// The backend that ran the shown transcript ("GPU (CUDA)"), when recorded.
     pub transcript_backend: Option<String>,
 }
@@ -450,11 +462,7 @@ pub struct ExportDone {
 }
 
 fn err(kind: &str, message: &str) -> IpcError {
-    IpcError {
-        kind: kind.into(),
-        message: message.into(),
-        retryable: false,
-    }
+    IpcError::new(kind, message)
 }
 
 /// Plain user copy for an edit refusal. Exhaustive: a new refusal needs its copy here.
@@ -502,6 +510,12 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "One voice in this meeting is already you. Choose \"This isn't me\" on it first.",
         ),
         EditError::NotMe(_) => err("not_me", "This voice is not marked as you."),
+        // T12.44.
+        EditError::RecognisedMe(_) => err("recognised_me", RECOGNISED_ME_COPY),
+        EditError::NotNamedAfterUser(_) => err(
+            "not_named_after_user",
+            "Only a person with your name can be merged into you.",
+        ),
         EditError::NoPreviousSummary => err("no_previous_summary", "There is no previous summary."),
         EditError::PreviousSummaryStale => err(
             "previous_summary_stale",
@@ -583,6 +597,12 @@ pub fn edit_error(e: &EditError) -> IpcError {
         EditError::NoWordChoice(_) => err(
             "no_word_choice",
             "There is nothing to put back for this word. The line may have been edited.",
+        ),
+        // T12.45: the summary writer of the work in progress was chosen when it started.
+        EditError::MeetingStillWorking(_) => err(
+            "meeting_still_working",
+            "Earshot is still working on this meeting, and that work keeps the summary on this \
+             computer. Allow the summary writer once it has finished.",
         ),
     }
 }
@@ -685,8 +705,13 @@ fn speaker_cards(
     view: &MeetingView,
     persons: &[PersonInfo],
     identities: &[SpeakerIdentity],
+    voiceprint_me: Option<EntityId>,
+    resolved: &BTreeMap<EntityId, EntityId>,
 ) -> Vec<SpeakerCard> {
     let total: u64 = view.segments.iter().map(duration_ms).sum();
+    // `list_persons_in` counts the voiceprints of everyone merged into a person, as
+    // `edit::user_has_voiceprint` does.
+    let user_print = persons.iter().any(|p| p.is_me && p.has_voiceprint);
     view.speakers
         .iter()
         .filter_map(|s| {
@@ -709,8 +734,10 @@ fn speaker_cards(
                 .max_by_key(|seg| (duration_ms(seg), std::cmp::Reverse(seg.start)))
                 .map(|seg| sample_line(&seg.text))
                 .unwrap_or_default();
-            let person = s.person_id.and_then(|id| {
-                persons.iter().find(|p| p.id == id).map(|p| PersonRef {
+            // A link to a person merged into another (T12.44, `merged_into`) stands for that
+            // other person, as voiceprint matching and renames treat it.
+            let person = s.person_id.and_then(|id| resolved.get(&id)).and_then(|id| {
+                persons.iter().find(|p| p.id == *id).map(|p| PersonRef {
                     id: p.id.to_string(),
                     name: p.name.clone(),
                     has_voiceprint: p.has_voiceprint,
@@ -737,7 +764,8 @@ fn speaker_cards(
                 ignored,
                 can_ignore: edit::can_ignore(s, identities),
                 can_mark_me: edit::can_mark_me(&view.tracks, &view.speakers, s),
-                can_unmark_me: edit::can_unmark_me(&view.tracks, s),
+                can_unmark_me: edit::can_unmark_me(&view.tracks, s, voiceprint_me, user_print),
+                recognised_me: edit::recognised_me(&view.tracks, s, voiceprint_me, user_print),
                 person,
                 source,
                 share_percent,
@@ -772,6 +800,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         kept_local,
         words,
         dictionary,
+        summary_edited,
     ) = {
         let db = services.store();
         let persons = edit::list_persons_in(&db)?;
@@ -783,7 +812,19 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         let view = MeetingView::load(&**db, meeting)
             .map_err(RuntimeError::from)?
             .ok_or_else(not_found)?;
-        let identities = edit::identities_in(&db, meeting)?;
+        // The identity entries, the voiceprint-named "Me" row and where each linked person
+        // resolves to (T12.44), read in the same snapshot.
+        let mut resolved = BTreeMap::new();
+        for id in view.speakers.iter().filter_map(|s| s.person_id) {
+            if let Some(to) = edit::resolved_person(&**db, id)? {
+                resolved.insert(id, to);
+            }
+        }
+        let identities = (
+            edit::identities_in(&db, meeting)?,
+            edit::voiceprint_me_in(&db, meeting)?,
+            resolved,
+        );
         let backend = match view.pass {
             Some(TranscriptPass::Final) => pass_backend(&db, meeting, TranscriptPass::Final, None)?,
             Some(TranscriptPass::Live) => {
@@ -805,9 +846,22 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         } else {
             Vec::new()
         };
+        let summary_edited = match &view.summary {
+            Some(s) => earshot_runtime::summary_edits::is_edited(&db, meeting, s.id)?,
+            None => false,
+        };
         (
-            persons, history, view, identities, backend, handovers, audio_kept, kept_local, words,
+            persons,
+            history,
+            view,
+            identities,
+            backend,
+            handovers,
+            audio_kept,
+            kept_local,
+            words,
             dictionary,
+            summary_edited,
         )
     };
     // The final pass's own rule, as the Speakers panel's offers use it.
@@ -867,6 +921,9 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         .map(|s| summary_view(s.id, &s.summary, &rows));
     let summary_stale = view.summary_out_of_date();
     let can_undo_summary = history.previous.is_some_and(|p| p.restorable);
+    // The CLIs this meeting was handed to: an agent-CLI writer name counts only with one.
+    let handed_to: Vec<earshot_runtime::claude_code::HandoverCli> =
+        handovers.entries.iter().map(|e| e.cli).collect();
     Ok(MeetingDetail {
         id: meeting.to_string(),
         state,
@@ -883,10 +940,15 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
                 TranscriptPass::Final => TranscriptKind::Final,
                 TranscriptPass::Live => TranscriptKind::Draft,
             }),
-            summary_model: view.summary.as_ref().and_then(|s| s.model.clone()),
+            summary_writer: view
+                .summary
+                .as_ref()
+                .and_then(|s| s.model.as_deref())
+                .map(|m| earshot_runtime::summary::writer_name(m, &handed_to)),
+            summary_edited,
             transcript_backend: backend.map(|b| backend_label(b.kind).to_owned()),
         },
-        speakers: speaker_cards(&view, &persons, &identities),
+        speakers: speaker_cards(&view, &persons, &identities.0, identities.1, &identities.2),
         summary,
         transcript,
         can_undo_summary,
@@ -978,6 +1040,24 @@ fn token_index(token: usize) -> u32 {
 /// Store errors.
 pub fn persons(services: &Services) -> Result<Vec<PersonItem>, IpcError> {
     Ok(edit::list_persons(services)?
+        .iter()
+        .map(PersonItem::of)
+        .collect())
+}
+
+/// "This is me" on voice `speaker` of `meeting` (T9.12); returns the separate persons
+/// named after the user, whom the panel then offers to merge into the user (T12.44,
+/// `edit::named_after_me`), read after the mark is written.
+///
+/// # Errors
+/// Edit refusals ([`edit_error`]); store errors.
+pub fn mark_me(
+    services: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<Vec<PersonItem>, IpcError> {
+    edit::mark_me(services, meeting, speaker)?;
+    Ok(edit::named_after_me(services)?
         .iter()
         .map(PersonItem::of)
         .collect())

@@ -43,11 +43,14 @@ mod recovery;
 mod shell;
 #[cfg(windows)]
 mod shutdown_win;
+mod slot_job;
 mod speaker_settings;
 mod storage_settings;
 mod summaries;
 mod summary_style;
 mod summary_vocabulary;
+mod sync_settings;
+mod sync_vault;
 #[cfg(test)]
 mod testutil;
 #[cfg(windows)]
@@ -62,6 +65,17 @@ use std::time::Instant;
 
 use tauri::Manager;
 use tauri_specta::Event;
+
+/// A sink that sends each event to this app's own webview (nothing leaves the device).
+fn emitter<E>(app: &tauri::AppHandle) -> Arc<dyn Fn(E) + Send + Sync>
+where
+    E: Event + serde::Serialize + Clone + 'static,
+{
+    let handle = app.clone();
+    Arc::new(move |e: E| {
+        let _ = e.emit(&handle);
+    })
+}
 
 fn main() {
     // The hidden model check mode runs and exits before anything of the app (Tauri, the
@@ -163,11 +177,7 @@ fn main() {
             }
             // In-app updates (T9.1b): what an earlier update left goes first; a check only if the
             // user turned automatic checks on, at the start and then on their schedule (T12.22).
-            let handle = app.handle().clone();
-            let update_sink: update_settings::UpdateSink =
-                Arc::new(move |e: update_settings::UpdateEvent| {
-                    let _ = e.emit(&handle);
-                });
+            let update_sink: update_settings::UpdateSink = emitter(app.handle());
             let update_dir = state.data_dir().map(earshot_runtime::update::updates_dir);
             if let Some(dir) = &update_dir {
                 earshot_runtime::update::remove_leftovers(dir);
@@ -208,6 +218,17 @@ fn main() {
             if let Ok(services) = state.services() {
                 update_settings::spawn_schedule(services, update_jobs.clone(), update_clock);
             }
+            // Sync (T11.3a): started off the setup path (Credential Manager is read first).
+            let sync = std::sync::Arc::new(sync_settings::SyncHost::new(std::sync::Arc::new(
+                sync_vault::SyncCredentials::app(),
+            )));
+            if let Ok(services) = state.services() {
+                let sync = std::sync::Arc::clone(&sync);
+                let _ = std::thread::Builder::new()
+                    .name("earshot-sync-start".into())
+                    .spawn(move || sync.start_if_on(&services));
+            }
+            app.manage(sync);
             app.manage(update_jobs);
             app.manage(state);
             app.manage(earshot_runtime::search::Searches::default());
@@ -240,22 +261,14 @@ fn main() {
                 gate.clone(),
                 &cuda_latch,
             ));
-            let handle = app.handle().clone();
-            let model_sink: model_jobs::ModelSink =
-                Arc::new(move |e: model_jobs::ModelJobEvent| {
-                    let _ = e.emit(&handle);
-                });
+            let model_sink: model_jobs::ModelSink = emitter(app.handle());
             let model_jobs = model_jobs::ModelJobs::new(
                 Arc::new(model_jobs::HostModelWork),
                 model_sink,
                 gate.clone(),
             );
             app.manage(model_jobs.clone());
-            let handle = app.handle().clone();
-            let cuda_sink: cuda_settings::CudaSink =
-                Arc::new(move |e: cuda_settings::CudaEvent| {
-                    let _ = e.emit(&handle);
-                });
+            let cuda_sink: cuda_settings::CudaSink = emitter(app.handle());
             // A run that chose CUDA for transcription finds the stored check out of date.
             if let Ok(services) = app.state::<ipc::AppState>().services() {
                 cuda_settings::check_after_start(
@@ -269,31 +282,19 @@ fn main() {
                 cuda_files, cuda_sink, model_jobs,
             ));
             app.manage(gate.clone());
-            let handle = app.handle().clone();
-            let voice_sink: speaker_settings::VoiceSink =
-                Arc::new(move |e: speaker_settings::VoiceEvent| {
-                    let _ = e.emit(&handle);
-                });
+            let voice_sink: speaker_settings::VoiceSink = emitter(app.handle());
             app.manage(speaker_settings::VoiceJobs::new(
                 Arc::new(speaker_settings::HostVoiceWork),
                 voice_sink,
                 gate.clone(),
             ));
-            let handle = app.handle().clone();
-            let check_sink: audio_check::AudioCheckSink =
-                Arc::new(move |e: audio_check::AudioCheckEvent| {
-                    let _ = e.emit(&handle);
-                });
+            let check_sink: audio_check::AudioCheckSink = emitter(app.handle());
             app.manage(audio_check::AudioCheckJobs::new(
                 Arc::new(audio_check::HostAudioCheckWork),
                 check_sink,
                 gate.clone(),
             ));
-            let handle = app.handle().clone();
-            let bench_sink: benchmark::BenchmarkSink =
-                Arc::new(move |e: benchmark::BenchmarkEvent| {
-                    let _ = e.emit(&handle);
-                });
+            let bench_sink: benchmark::BenchmarkSink = emitter(app.handle());
             app.manage(benchmark::BenchmarkJobs::new(
                 Arc::new(benchmark::HostBenchmarkWork),
                 bench_sink,

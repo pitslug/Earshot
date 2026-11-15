@@ -2,6 +2,7 @@
 // machine (NPU) and a desktop-like one (NVIDIA GPU), as the T7.4 mockup shows them, plus
 // downloads, removal, settings and the model check played on the given timer.
 
+import copy from "../../../../fixtures/ui/model_copy_cases.json";
 import type { Timer } from "../time";
 import {
   type ChoiceView,
@@ -390,7 +391,7 @@ export function createModelsMock(
     }
     return { asr, sum, notes };
   };
-  const item = (name: string) => all.get(name) ?? fail("unknown_model", "That model is not part of this version of Earshot.");
+  const item = (name: string) => all.get(name) ?? fail("unknown_model", copy.fixed.unknown_model);
   const view = (): ModelsView => {
     const keep = protectedModels();
     const { asr, sum, notes } = placement();
@@ -440,27 +441,32 @@ export function createModelsMock(
   };
   const validate = (s: ModelSettingsValue) => {
     const languages = [...new Set(s.languages.map((l) => l.trim().split(/[-_]/)[0].toLowerCase()).filter((l) => l !== ""))];
-    if (languages.length === 0) fail("invalid_setting", "choose at least one meeting language");
+    if (languages.length === 0) fail("invalid_setting", copy.fixed.no_languages);
     for (const l of languages) {
       if (!WHISPER.includes(l) && !PARAKEET_V3.includes(l)) {
-        fail("invalid_setting", "No transcription model understands one of the chosen meeting languages. Choose another one.");
+        fail("invalid_setting", copy.fixed.unknown_language);
       }
     }
     if (s.transcription !== null) {
       const t = all.get(s.transcription);
       if (!t || t.kind !== "Transcription") {
-        fail("invalid_setting", "That transcription model is not part of this version of Earshot. Choose another one.");
+        fail("invalid_setting", copy.fixed.unknown_transcription_model);
       } else {
         const missing = languages.filter((l) => !t.languages.includes(l));
         if (missing.length > 0) {
-          fail("invalid_setting", `${t.title} does not transcribe ${missing.join(", ")}; choose a multilingual model`);
+          fail(
+            "invalid_setting",
+            copy.templates.model_languages
+              .replace("{model}", () => t.title)
+              .replace("{missing}", () => missing.join(", ")),
+          );
         }
       }
     }
     if (s.summary !== null && all.get(s.summary)?.kind !== "Summary") {
-      fail("invalid_setting", "That summary model is not part of this version of Earshot. Choose another one.");
+      fail("invalid_setting", copy.fixed.unknown_summary_model);
     }
-    if (s.summary_part === "Npu") fail("invalid_setting", "summaries cannot run on the NPU");
+    if (s.summary_part === "Npu") fail("invalid_setting", copy.fixed.npu_for_summaries);
     return { ...s, languages };
   };
 
@@ -540,7 +546,10 @@ export function createModelsMock(
       if (checking) fail("busy", CHECK_RUNNING_MESSAGE, true);
       if (downloads.has(model)) fail("busy", "This model is downloading; cancel the download first.", true);
       if (protectedModels().has(model)) {
-        fail("model_in_use", `${title(model)} is in use; choose another model first`);
+        fail(
+          "model_in_use",
+          copy.templates.chosen.replace("{model}", () => title(model)),
+        );
       }
       const freed = i.held;
       i.held = 0;

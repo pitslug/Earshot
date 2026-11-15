@@ -9,6 +9,7 @@ use std::thread;
 use earshot_core::identity::ManualClock;
 use earshot_llm_replay::tcp;
 use earshot_net::{AuditOutcome, DenyReason};
+use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::testutil::{T0, TempDir};

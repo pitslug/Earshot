@@ -1,12 +1,10 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { type Ipc, IpcFailure, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
+import { type Ipc, IpcFailure, type MockIpcData, createMockIpc } from "../ipc";
 import { DOWNLOADING_MESSAGE, MOCK_DISPLAY_NAMES, MODEL_STEP_MS } from "../ipc/mockModels";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { renderApp } from "../test/app";
 import { type ManualTimer, createManualTimer } from "../time";
 import { SETTINGS_SECTIONS, type SettingsSection } from "./SettingsView";
 import { formatSize } from "./copy";
@@ -20,13 +18,7 @@ interface Setup {
 function setup(data: MockIpcData = {}, wrap: (ipc: Ipc) => Ipc = (i) => i): Setup {
   const timer = createManualTimer(1_000_000);
   const ipc = wrap(createMockIpc({ meetings: [], timer, ...data }));
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   return { timer, ipc, user: userEvent.setup() };
 }
 
@@ -73,12 +65,8 @@ function card(model: string): HTMLElement {
   return el;
 }
 
-beforeEach(() => {
-  installMatchMedia(false);
-});
-
 describe("Settings", () => {
-  it("opens on General, lists the eight pages in order, switches and goes back to the meetings", async () => {
+  it("opens on General, lists the nine pages in order, switches and goes back to the meetings", async () => {
     const s = setup();
     await openSettings(s);
     expect(SETTINGS_SECTIONS).toEqual([
@@ -89,6 +77,7 @@ describe("Settings", () => {
       "Summaries",
       "Dictionary",
       "People",
+      "Sync",
       "Notes and storage",
     ]);
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
@@ -177,10 +166,12 @@ describe("Settings", () => {
       document.getElementById(el.getAttribute("aria-labelledby") ?? "")?.textContent === "Provider";
     const seen = new Set<string>();
     const checkPage = () => {
-      const saves = within(screen.getByRole("main")).queryAllByRole("button", { name: /^(Save|Use this endpoint|Add$)/ });
+      const saves = within(screen.getByRole("main")).queryAllByRole("button", { name: /^(Save|Use this endpoint|Add$|Set up$|Join$)/ });
       for (const button of saves) {
         const part = button.closest("form, [role='group'], section");
         expect(part).not.toBeNull();
+        // Sync's Set up and Join each submit their own form.
+        if (/^(Set up|Join)$/.test(button.textContent ?? "")) expect(part?.tagName).toBe("FORM");
         const choices = [
           ...(part as Element).querySelectorAll("input[type='radio'], input[type='checkbox'], select, [role='combobox']"),
         ].filter((el) => !allowed(el));
@@ -194,6 +185,7 @@ describe("Settings", () => {
       await goTo(s, section);
       if (section === "People") await screen.findByRole("textbox", { name: "Your name" });
       if (section === "Dictionary") await screen.findByRole("textbox", { name: "Add a word" });
+      if (section === "Sync") await screen.findByRole("form", { name: "Set up the first computer" });
       if (section === "Notes and storage") await screen.findByRole("textbox", { name: "Vault folder" });
       checkPage();
     }
@@ -216,7 +208,7 @@ describe("Settings", () => {
     await s.user.selectOptions(within(codex).getByRole("combobox", { name: "Model" }), "Other");
     within(codex).getByRole("button", { name: "Save model" });
     checkPage();
-    expect([...seen].sort()).toEqual(["Add", "Save", "Save key", "Save model", "Use this endpoint"]);
+    expect([...seen].sort()).toEqual(["Add", "Join", "Save", "Save key", "Save model", "Set up", "Use this endpoint"]);
   });
 
   it("holds one subscription to model job events across its pages, and the setup guide its own", async () => {

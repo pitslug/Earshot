@@ -1,12 +1,10 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { CUDA_STEP_MS, type CudaMockData } from "../ipc/mockCuda";
-import { type Ipc, IpcFailure, IpcProvider, createMockIpc } from "../ipc";
-import { AppShell } from "../shell/AppShell";
-import { installMatchMedia } from "../test/matchMedia";
-import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { type Ipc, IpcFailure, createMockIpc } from "../ipc";
+import { openSettings, renderApp } from "../test/app";
 import { type ManualTimer, createManualTimer } from "../time";
 import { CUDA_APPLIES, CUDA_CHECKING_LINE, CUDA_RUNNING, CUDA_TRANSCRIPTION_WHY } from "./CudaSection";
 
@@ -26,17 +24,9 @@ async function open(
   const timer = createManualTimer(1_000_000);
   const base = createMockIpc({ meetings: [], timer, machine, cuda });
   const ipc = override ? override(base) : base;
-  render(
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell timer={timer} />
-      </IpcProvider>
-    </EarshotThemeProvider>,
-  );
+  renderApp(ipc, { timer });
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "Settings" }));
-  const nav = await screen.findByRole("navigation", { name: "Settings sections" });
-  await user.click(within(nav).getByRole("button", { name: "System" }));
+  await openSettings(user, "System");
   await screen.findByRole("list", { name: "This is your hardware" });
   return { ipc, timer, user };
 }
@@ -49,10 +39,6 @@ const part = async (name: "Summaries" | "Transcription") => {
   if (found === null) throw new Error(`no ${name} part`);
   return within(found);
 };
-
-beforeEach(() => {
-  installMatchMedia(false);
-});
 
 describe("Settings, System: the CUDA section", () => {
   it("is not there on a computer without a suitable card", async () => {

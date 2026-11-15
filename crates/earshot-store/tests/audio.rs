@@ -1097,17 +1097,6 @@ fn audio_sweep_keeps_a_live_meetings_unfinished_audio_past_the_grace_period() {
         !gone_part.parent().unwrap().exists(),
         "its emptied folder too"
     );
-    // The start-up cleanup follows the same rule.
-    std::fs::create_dir_all(gone_part.parent().unwrap()).unwrap();
-    std::fs::write(&gone_part, b"fLaC").unwrap();
-    make_old(&gone_part);
-    assert_eq!(
-        w.data
-            .cleanup_stale_parts(&w.store, now, earshot_store::ORPHAN_GRACE_MS)
-            .unwrap(),
-        1
-    );
-    assert!(live_part.exists() && !gone_part.exists());
     // And so does a whole retention run.
     let r = run_retention(&mut w.store, &w.data, RetentionPolicy::days(1), now).unwrap();
     assert_eq!(r.orphans_removed, 0);

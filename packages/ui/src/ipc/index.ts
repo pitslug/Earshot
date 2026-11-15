@@ -4,6 +4,8 @@ export {
   EVENT_METHODS,
   IpcFailure,
   NEWER_DATA_KIND,
+  RECOGNISED_ME_COPY,
+  errorText,
   everyCommandIsInIpc,
 } from "./ipc";
 export type {
@@ -156,6 +158,9 @@ export { BENCHMARK_MEETING_MS, BENCHMARK_STEP_MS, MOCK_BENCHMARK_FAILURE, create
 export type { BenchmarkMockData, MockBenchmarkEnd } from "./mockBenchmark";
 export type { SummaryStyleCommands, SummaryStyleView, SummaryTemplateOption } from "./summaryStyle";
 export type { SummaryVocabularyCommands, SummaryVocabularyView } from "./summaryVocabulary";
+export type { SyncCodeView, SyncCommands, SyncDeviceView, SyncView } from "./sync";
+export { MOCK_SYNC_CODE, MOCK_SYNC_SECRET, createSyncMock } from "./mockSync";
+export type { SyncMockData } from "./mockSync";
 export type { FirstRunCommands, FirstRunView } from "./firstRun";
 export type { FolderCommands, FolderDeleted, FolderListItem } from "./folders";
 export { SAMPLE_FOLDERS } from "./mockFolders";

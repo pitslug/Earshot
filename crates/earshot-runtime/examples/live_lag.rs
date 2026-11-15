@@ -7,7 +7,7 @@
 //!     [--seconds <n>] [--previews off|on|everyone] [--force-previews] [--card-memory-gib <n>]
 //!     [--window <s>] [--interval <s>] [--max-piece <s>] [--stream nemotron]
 //!     [--stream-threads <n>] [--summary off|alone|beside [--summary-on cpu|gpu]
-//!     [--summary-model <id>]] [--out <file.json>]
+//!     [--summary-model <id>]] [--own-encoders] [--hold-card-gib <n>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --example live_lag -- <repo-root> --memory
 //!     [--backend cpu|cuda|qnn] [--card-memory-gib <n>] [--out <file.json>]
 //! cargo run --release -p earshot-runtime --features onnx-cuda --example live_lag -- <repo-root>
@@ -32,11 +32,34 @@
 //! records it (`simulated_card_gib`). With `--memory` the two preview sessions load where the rule
 //! puts them on that machine (Everyone), not past the refusal.
 //!
-//! `--contention alone|own|shared` (evaluation only, T12.3b, CUDA) replays nothing: it times a
+//! `--contention alone|preview` (evaluation only, T12.3b, CUDA) replays nothing: it times a
 //! track's real decodes of the reference track while previews run at the app's cadence on another
-//! thread, with no preview (`alone`), the preview on its own session (`own`, today) or borrowing
-//! the track's encoder through `backends::load_preview_sharing_encoder` (`shared`). It reports
-//! every real decode's time, its wait for the shared encoder's lock and a hash of its words.
+//! thread (`preview`) or with no preview (`alone`). Both load as the app loads, so the preview
+//! borrows the track's encoder (T12.58; T12.3b's `shared`); with `--own-encoders` it has its own
+//! (T12.3b's `own`). It reports every real decode's time, its wait for the shared encoder and a
+//! hash of its words.
+//!
+//! `--own-encoders` (evaluation only, T12.58, CUDA) gives every CUDA Parakeet session its own
+//! encoder, as before T12.58 (`backends::own_encoders_for_evaluation`), for a comparison run.
+//! Without it a CUDA replay holds the shared encoder (`backends::hold_shared_encoder_for_evaluation`)
+//! and reports its placement, its handles when the live transcript finished and each thread's
+//! waits for it (`shared_encoder`).
+//!
+//! `--hold-card-gib <n>` (evaluation only, T12.59, CUDA) makes the card look like an `n` GiB card
+//! in free memory: before anything loads, a second process (this exe as `--card-holder <n>`) loads
+//! CUDA Parakeet sessions, each with its own encoder (`backends::hold_card_for_evaluation`: Parakeet
+//! 0.6B v2 sessions of 2.58 to 2.80 GiB on the desktop while one more stays above the target, then
+//! Parakeet 110M sessions of about 0.66 GiB), until `nvidia-smi`'s free memory is at most `n - 1.5` GiB (1.5 GiB
+//! taken as other programs' share), and keeps them loaded until the replay ends; the run then tells
+//! it to stop by closing its stdin, and stops it through its own process handle if it has not
+//! exited within a minute. The report's `card_holder` has every load, the free memory left and
+//! what each graphics adapter reports as dedicated memory. The preview rule still reads the card's
+//! real size.
+//!
+//! `--own-voice-cpu` (evaluation only, T12.60, CUDA, `--previews everyone`) loads the user's own
+//! preview session on the CPU, where T12.3a put it beside CUDA, through
+//! `backends::load_preview_second_on_cpu_for_evaluation` (the app's rule and refusals, then the
+//! CPU), so the card and CPU columns of T12.60's rule run on one build.
 //!
 //! `--stream nemotron` (evaluation only, T12.23) gives each previewed track a streaming model
 //! instead of window decodes: NVIDIA's Nemotron Speech Streaming 0.6B (manifest set `stream-eval`,
@@ -100,8 +123,8 @@ use earshot_core::capture::{DeviceTime, ReplayBuilder, TrackId};
 use earshot_core::model::ClockDomain;
 use earshot_runtime::backends::{
     Accelerator, ModelDir, PreviewSlot, init_onnx, load_nemotron_preview, load_preview_on_hardware,
-    load_preview_unrefused, onnx_library, preview_backend, previews_refused,
-    previews_refused_second, second_preview_backend,
+    load_preview_second_on_cpu_for_evaluation, load_preview_unrefused, onnx_library,
+    preview_backend, previews_refused, previews_refused_second, second_preview_backend,
 };
 use earshot_runtime::live::{
     LiveAsrFactory, LiveConfig, LivePreviews, LiveTranscription, PreviewLoader, RuntimeEvent,
@@ -165,6 +188,18 @@ struct Args {
     summary_gpu: bool,
     /// That summary's model by id (`None`: the app's choice for this machine).
     summary_model: Option<String>,
+    /// Evaluation only (T12.58): every CUDA Parakeet session loads its own encoder, as before one
+    /// was shared (`backends::own_encoders_for_evaluation`), for a comparison run.
+    own_encoders: bool,
+    /// Evaluation only (T12.59): a second process holds the card until its free memory is what a
+    /// card of this many GiB with 1.5 GiB used by other programs would have ([`CardHolder`]).
+    hold_card_gib: Option<f64>,
+    /// That second process: hold the card for a card of this many GiB until stdin closes
+    /// ([`run_card_holder`]).
+    card_holder: Option<f64>,
+    /// Evaluation only (T12.60): the user's own preview session on the CPU, where T12.3a put it,
+    /// through `backends::load_preview_second_on_cpu_for_evaluation` ([`own_voice_cpu_loader`]).
+    own_voice_cpu: bool,
 }
 
 /// What `--summary` runs (T12.39).
@@ -205,6 +240,10 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         summary: None,
         summary_gpu: false,
         summary_model: None,
+        own_encoders: false,
+        hold_card_gib: None,
+        card_holder: None,
+        own_voice_cpu: false,
     };
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -253,8 +292,7 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
             "--contention" => {
                 args.contention = Some(match value()?.as_str() {
                     "alone" => Contention::Alone,
-                    "own" => Contention::Own,
-                    "shared" => Contention::Shared,
+                    "preview" => Contention::Preview,
                     other => return Err(format!("unknown --contention {other}")),
                 });
             }
@@ -289,8 +327,44 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
             }
             "--summary-model" => args.summary_model = Some(value()?),
+            "--own-encoders" => args.own_encoders = true,
+            "--hold-card-gib" => args.hold_card_gib = Some(card_gib(&flag, &value()?)?),
+            "--card-holder" => args.card_holder = Some(card_gib(&flag, &value()?)?),
+            "--own-voice-cpu" => args.own_voice_cpu = true,
             other => return Err(format!("unknown flag {other}")),
         }
+    }
+    if args.own_voice_cpu
+        && (args.previews != Some(PreviewChoice::Everyone)
+            || args.backend != BackendKind::Cuda
+            || args.force_previews
+            || args.card_memory_gib.is_some()
+            || args.stream.is_some())
+    {
+        return Err(
+            "--own-voice-cpu moves the user's own previews of a CUDA replay to the CPU: it needs \
+             --backend cuda --previews everyone and no --force-previews, --card-memory-gib or \
+             --stream"
+                .to_owned(),
+        );
+    }
+    if args.hold_card_gib.is_some()
+        && (args.backend != BackendKind::Cuda
+            || args.memory
+            || args.contention.is_some()
+            || args.card_holder.is_some())
+    {
+        return Err(
+            "--hold-card-gib fills the graphics card beside a replay: it needs --backend cuda \
+             and no --memory, --contention or --card-holder"
+                .to_owned(),
+        );
+    }
+    if args.own_encoders && args.backend != BackendKind::Cuda {
+        return Err(
+            "--own-encoders compares encoders on the graphics card: it needs --backend cuda"
+                .to_owned(),
+        );
     }
     if args.stream.is_some()
         && (args.memory
@@ -346,6 +420,22 @@ fn parse_from(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         );
     }
     Ok(args)
+}
+
+/// What a card of `gib` GiB is taken to have in use by other programs (T12.59's rule: the 1.3 GiB
+/// measured on the desktop, rounded up).
+const OTHER_PROGRAMS_GIB: f64 = 1.5;
+
+/// A card size for `--hold-card-gib` / `--card-holder`: a number of GiB above what other programs
+/// are taken to use.
+fn card_gib(flag: &str, text: &str) -> Result<f64, String> {
+    let gib: f64 = text.parse().map_err(|e| format!("{flag}: {e}"))?;
+    if !gib.is_finite() || gib <= OTHER_PROGRAMS_GIB || gib > 1024.0 {
+        return Err(format!(
+            "{flag} must be a card size in GiB above {OTHER_PROGRAMS_GIB}"
+        ));
+    }
+    Ok(gib)
 }
 
 /// The live stretches' piece config (T12.24, evaluation only): production's
@@ -501,6 +591,33 @@ fn simulated_loader(
                 .map_err(String::as_str),
         );
         record["simulated_card_gib"] = json!(simulated_card_gib(&machine));
+        log.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(record);
+        result.map(|p| p.transcriber).map_err(Into::into)
+    })
+}
+
+/// Evaluation only (`--own-voice-cpu`, T12.60): the user's own preview session through
+/// `backends::load_preview_second_on_cpu_for_evaluation` (the app's rule, then always the CPU), with
+/// the placement of every session written to `log`.
+fn own_voice_cpu_loader(
+    models: ModelDir,
+    choice: PreviewChoice,
+    log: Arc<Mutex<Vec<Value>>>,
+) -> PreviewLoader {
+    Arc::new(move |backend: &BackendInfo| {
+        let result = load_preview_second_on_cpu_for_evaluation(&models, backend, choice);
+        let mut record = preview_record(
+            "own_voice",
+            false,
+            backend,
+            result
+                .as_ref()
+                .map(|p| (p.transcriber.backend_info(), Some(p.placement.clone())))
+                .map_err(String::as_str),
+        );
+        record["own_voice_cpu"] = json!(true);
         log.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(record);
@@ -723,6 +840,32 @@ impl Transcriber for Timed {
     fn may_skip_speech(&self) -> bool {
         self.inner.may_skip_speech()
     }
+}
+
+/// T12.58: the shared encoder in a replay report: where it ran, how many handles it had when the
+/// live transcript finished (this tool's own handle plus one per borrowing session), and each
+/// asking thread's waits for it (`earshot-live-mic` and `earshot-live-reference` are the tracks'
+/// real decodes, `earshot-live-preview` the previews). Times only.
+fn shared_encoder_report(
+    encoder: &earshot_onnx::parakeet::SharedEncoder,
+    users_at_finish: Option<usize>,
+) -> Value {
+    let mut by_thread: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
+    for (thread, waited) in encoder.wait_log() {
+        by_thread
+            .entry(thread)
+            .or_default()
+            .push(waited.as_secs_f64());
+    }
+    json!({
+        "placement": encoder.backend().to_string(),
+        "broken": encoder.is_broken(),
+        "handles_at_transcript_finished": users_at_finish,
+        "wait_s_by_thread": by_thread
+            .iter()
+            .map(|(thread, waits)| (thread.clone(), spread(waits)))
+            .collect::<serde_json::Map<_, _>>(),
+    })
 }
 
 /// `factory` with every track's transcriber timed into `logs`.
@@ -1118,15 +1261,15 @@ fn memory_report(
     })
 }
 
-/// The set-ups `--contention` compares (T12.3b, evaluation only).
+/// The set-ups `--contention` compares (T12.3b, evaluation only). Both load as the app loads, so
+/// on CUDA the preview borrows the track's encoder (T12.58); with `--own-encoders` each session
+/// has its own, as T12.3b's `own` set-up had (T12.3b's `shared` is today's `preview`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Contention {
     /// The track's session alone: the reference times.
     Alone,
-    /// Today: a preview on its own session, loaded as the app loads one.
-    Own,
-    /// The preview borrowing the track's encoder (`backends::load_preview_sharing_encoder`).
-    Shared,
+    /// A preview session beside the track, loaded as the app loads one.
+    Preview,
 }
 
 /// Length of a track's real decode in `--contention` (a speech stretch's piece).
@@ -1164,7 +1307,7 @@ fn plain_decode(mut t: Box<dyn Transcriber + Send>) -> ContentionDecode {
     })
 }
 
-fn sharing_decode(mut t: earshot_onnx::parakeet::ParakeetTdt) -> ContentionDecode {
+fn waiting_decode(mut t: earshot_onnx::parakeet::ParakeetTdt) -> ContentionDecode {
     let options = TranscribeOptions::live();
     let cancel = CancelToken::new();
     Box::new(move |audio| {
@@ -1176,8 +1319,7 @@ fn sharing_decode(mut t: earshot_onnx::parakeet::ParakeetTdt) -> ContentionDecod
 }
 
 /// Evaluation only (T12.3b): how long a track's real decodes take while previews run at the app's
-/// cadence on another thread, with the preview on its own session (`own`), on the track's encoder
-/// (`shared`) or absent (`alone`). Real decodes are consecutive [`CONTENTION_PIECE_S`] pieces of
+/// cadence on another thread (`preview`) or with no preview (`alone`). Real decodes are consecutive [`CONTENTION_PIECE_S`] pieces of
 /// `audio`, [`CONTENTION_PASSES`] times after an untimed warm-up pass, [`CONTENTION_GAP`] apart;
 /// previews decode a [`CONTENTION_WINDOW_S`] window moving 1 s at a time and wait the longer of
 /// [`CONTENTION_INTERVAL`] and their own decode. Counts, times and word hashes only.
@@ -1208,59 +1350,38 @@ fn contention_report(
     let mut placements = serde_json::Map::new();
     let mut encoder_users = None;
     let began = Instant::now();
-    let (mut track, preview): (ContentionDecode, Option<ContentionDecode>) = match setup {
-        Contention::Alone | Contention::Own => {
-            let earshot_runtime::backends::AsrModel::Parakeet(parakeet) =
-                earshot_runtime::backends::asr_model(model).unwrap_or_else(|e| fail(e))
-            else {
-                fail("the contention report is for Parakeet")
-            };
-            let t =
-                earshot_runtime::backends::load_parakeet(models, parakeet, accel, Some(threads))
-                    .unwrap_or_else(|e| fail(e));
-            placements.insert(
-                "track".into(),
-                json!(
-                    t.backends()
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                ),
-            );
-            let preview = (setup == Contention::Own).then(|| {
-                let p = load_preview_unrefused(models, &requested).unwrap_or_else(|e| fail(e));
-                placements.insert("preview".into(), json!(p.placement));
-                plain_decode(p.transcriber)
-            });
-            (plain_decode(Box::new(t)), preview)
-        }
-        Contention::Shared => {
-            let pair = earshot_runtime::backends::load_preview_sharing_encoder(
-                models,
-                model,
-                accel,
-                Some(threads),
-            )
-            .unwrap_or_else(|e| fail(e));
-            let names = |t: &earshot_onnx::parakeet::ParakeetTdt| {
-                t.backends()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-            };
-            placements.insert("track".into(), json!(names(&pair.track)));
-            placements.insert("preview".into(), json!(names(&pair.preview)));
-            placements.insert(
-                "shared_encoder".into(),
-                json!(pair.encoder.backend().to_string()),
-            );
-            encoder_users = Some(pair.encoder.users());
-            (
-                sharing_decode(pair.track),
-                Some(sharing_decode(pair.preview)),
-            )
-        }
+    let earshot_runtime::backends::AsrModel::Parakeet(parakeet) =
+        earshot_runtime::backends::asr_model(model).unwrap_or_else(|e| fail(e))
+    else {
+        fail("the contention report is for Parakeet")
     };
+    let t = earshot_runtime::backends::load_parakeet(models, parakeet, accel, Some(threads))
+        .unwrap_or_else(|e| fail(e));
+    placements.insert(
+        "track".into(),
+        json!(
+            t.backends()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        ),
+    );
+    let earshot_runtime::backends::ParakeetTranscriber::Tdt(t) = t else {
+        fail("the contention report is for a Parakeet TDT model")
+    };
+    let preview = (setup == Contention::Preview).then(|| {
+        let p = load_preview_unrefused(models, &requested).unwrap_or_else(|e| fail(e));
+        placements.insert("preview".into(), json!(p.placement));
+        plain_decode(p.transcriber)
+    });
+    if let Some(encoder) = t.shared_encoder() {
+        placements.insert(
+            "shared_encoder".into(),
+            json!(encoder.backend().to_string()),
+        );
+        encoder_users = Some(encoder.users());
+    }
+    let mut track = waiting_decode(*t);
     let load_s = began.elapsed().as_secs_f64();
     let loaded_memory = memory();
 
@@ -1556,6 +1677,203 @@ impl CardLog {
     }
 }
 
+/// The graphics card's free memory in bytes, from one `nvidia-smi` reading (the first card it
+/// lists); `None` when it cannot be read.
+fn card_free_bytes() -> Option<u64> {
+    let out = Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mib: u64 = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(mib * 1024 * 1024)
+}
+
+/// The free memory a card of `gib` GiB has with [`OTHER_PROGRAMS_GIB`] in use by other programs,
+/// in bytes: what the holder leaves at most.
+fn holder_target_bytes(gib: f64) -> u64 {
+    // `card_gib` keeps `gib` finite and above the other programs' share.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let bytes = ((gib - OTHER_PROGRAMS_GIB) * GIB as f64) as u64;
+    bytes
+}
+
+/// What this machine's graphics adapters report as dedicated memory (`earshot_hardware`), in GiB,
+/// beside each adapter's own name (a hardware fact, not content).
+fn adapters_json() -> Value {
+    earshot_runtime::hardware()
+        .gpus
+        .iter()
+        .map(|g| {
+            json!({
+                "name": g.name,
+                "integrated": g.integrated,
+                "dedicated_memory_bytes": g.dedicated_memory,
+                "dedicated_memory_gib": g.dedicated_memory.map(gib_of),
+            })
+        })
+        .collect()
+}
+
+/// Bytes in GiB, for a report.
+#[allow(clippy::cast_precision_loss)]
+fn gib_of(bytes: u64) -> f64 {
+    bytes as f64 / GIB as f64
+}
+
+/// The prefix of the holder's one report line on stdout.
+const HOLDER_LINE: &str = "card_holder: ";
+
+/// `live_lag <repo> --card-holder <gib>` (evaluation only, T12.59): the second process of
+/// `--hold-card-gib`. Loads own-encoder CUDA sessions through
+/// `backends::hold_card_for_evaluation` until the card's free memory is at most what a card of
+/// `gib` GiB would have with [`OTHER_PROGRAMS_GIB`] used by other programs, prints one line
+/// ([`HOLDER_LINE`] and JSON: every load, the free memory left, the adapters' dedicated memory),
+/// then keeps everything loaded until stdin closes or reads `stop`. Started and stopped only by its
+/// parent, through its own process handle.
+fn run_card_holder(models: &ModelDir, gib: f64) -> ! {
+    use std::io::{BufRead, Write};
+    let large = earshot_runtime::backends::CARD_HOLD_LARGE;
+    earshot_runtime::cuda::use_for_transcription(models, true)
+        .unwrap_or_else(|e| fail(format!("holder: CUDA: {e}")));
+    init_onnx(models, onnx_library(large, &[Accelerator::Cuda]))
+        .unwrap_or_else(|e| fail(format!("holder: ONNX Runtime: {e}")));
+    let target = holder_target_bytes(gib);
+    let free_at_start = card_free_bytes();
+    let hold = earshot_runtime::backends::hold_card_for_evaluation(models, target, card_free_bytes)
+        .unwrap_or_else(|e| fail(format!("holder: {e}")));
+    let to_gib = gib_of;
+    let line = json!({
+        "card_gib": gib,
+        "other_programs_gib": OTHER_PROGRAMS_GIB,
+        "target_free_gib": to_gib(target),
+        "free_at_start_gib": free_at_start.map(to_gib),
+        "free_left_gib": hold.free_left.map(to_gib),
+        "under_target_by_gib": hold.free_left.map(|f| to_gib(target.saturating_sub(f))),
+        "reached_target": hold.free_left.is_some_and(|f| f <= target),
+        "sessions": hold.sessions(),
+        "loads": hold.loads.iter().map(|l| json!({
+            "model": l.model,
+            "free_before_gib": to_gib(l.free_before),
+            "free_after_gib": to_gib(l.free_after),
+        })).collect::<Vec<_>>(),
+        "stopped": hold.stopped,
+        "adapters": adapters_json(),
+    });
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{HOLDER_LINE}{line}");
+    let _ = out.flush();
+    drop(out);
+    for read in std::io::stdin().lock().lines() {
+        match read {
+            Ok(l) if l.trim() == "stop" => break,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    drop(hold);
+    std::process::exit(0)
+}
+
+/// The holder process of `--hold-card-gib` (T12.59), seen from the run: its child handle (the
+/// only way it is stopped), its report line and its stdin.
+struct CardHolder {
+    child: std::process::Child,
+    report: Value,
+}
+
+impl CardHolder {
+    /// How long the holder may take to fill the card.
+    const FILL_LIMIT: Duration = Duration::from_secs(600);
+    /// How long it may take to exit once told to stop.
+    const STOP_LIMIT: Duration = Duration::from_secs(60);
+
+    /// Starts this exe as `--card-holder <gib>` and waits for its report line.
+    fn start(repo: &Path, models: &ModelDir, gib: f64) -> Self {
+        use std::io::BufRead;
+        let exe = std::env::current_exe().unwrap_or_else(|e| fail(format!("holder: {e}")));
+        let mut child = Command::new(exe)
+            .arg(repo)
+            .args([
+                "--backend",
+                "cuda",
+                "--card-holder",
+                &gib.to_string(),
+                "--models",
+            ])
+            .arg(models.root())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .unwrap_or_else(|e| fail(format!("holder: {e}")));
+        let out = child
+            .stdout
+            .take()
+            .unwrap_or_else(|| fail("holder: no stdout"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if let Some(rest) = line.strip_prefix(HOLDER_LINE) {
+                    let _ = tx.send(rest.to_owned());
+                }
+            }
+        });
+        let Ok(line) = rx.recv_timeout(Self::FILL_LIMIT) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            fail("holder: no report within the fill limit");
+        };
+        let report: Value = serde_json::from_str(&line).unwrap_or_else(|e| {
+            let _ = child.kill();
+            let _ = child.wait();
+            fail(format!("holder: report: {e}"))
+        });
+        eprintln!(
+            "live_lag: holder pid {} left {:?} GiB free (target {:?})",
+            child.id(),
+            report["free_left_gib"],
+            report["target_free_gib"]
+        );
+        Self { child, report }
+    }
+
+    /// Tells the holder to stop (closes its stdin), waits for it, and stops it by its own handle
+    /// past [`Self::STOP_LIMIT`]; the report, with the card's free memory just before.
+    fn finish(mut self) -> Value {
+        let free_before_stop = card_free_bytes().map(gib_of);
+        drop(self.child.stdin.take());
+        let deadline = Instant::now() + Self::STOP_LIMIT;
+        let mut killed = false;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                _ => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    killed = true;
+                    break;
+                }
+            }
+        }
+        let mut report = self.report;
+        report["free_before_stop_gib"] = json!(free_before_stop);
+        report["killed"] = json!(killed);
+        report
+    }
+}
+
 fn main() {
     // NPU compiles in a helper, as in the app (T12.12b).
     let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
@@ -1564,6 +1882,9 @@ fn main() {
     }
     earshot_runtime::npu_compiled::use_this_exe();
     let args = parse_args();
+    if args.own_encoders {
+        earshot_runtime::backends::own_encoders_for_evaluation();
+    }
     let models = args.models.clone().map_or_else(
         || {
             let root = std::env::var_os("EARSHOT_MODELS")
@@ -1578,6 +1899,13 @@ fn main() {
         },
         ModelDir::new,
     );
+    if let Some(gib) = args.card_holder {
+        run_card_holder(&models, gib);
+    }
+    // T12.59 (evaluation only): the card filled by a second process before anything here loads.
+    let holder = args
+        .hold_card_gib
+        .map(|gib| CardHolder::start(&args.repo, &models, gib));
     let (mic, reference) = load_audio(&args);
     let length = PIPELINE_RATE.duration_of(mic.len());
 
@@ -1691,6 +2019,12 @@ fn main() {
         Arc::new(Mutex::new(Vec::new())),
     ];
     let evidence = Arc::new(Mutex::new(Vec::new()));
+    // T12.58: the shared encoder every CUDA session borrows, held for the report (loaded here, as
+    // the first track's load would load it).
+    // A model with no shared encoder (not a Parakeet TDT model) still runs, reported as such.
+    let held = (args.backend == BackendKind::Cuda && !args.own_encoders)
+        .then(|| earshot_runtime::backends::hold_shared_encoder_for_evaluation(&models, model).ok())
+        .flatten();
     let factory = timed(
         host::live_factory(&models, model, &order, clock, args.speakers),
         logs.clone(),
@@ -1728,7 +2062,7 @@ fn main() {
                 .map(|k| format!("{k:?}")),
             "app_own_voice": (choice == PreviewChoice::Everyone)
                 .then(|| previews_refused_second(args.backend, &machine, choice)),
-            // Where the app would run the user's own track's session (T12.3a: the CPU beside CUDA).
+            // Where the app would run the user's own track's session (T12.60: with the first).
             "app_own_voice_on": (choice == PreviewChoice::Everyone)
                 .then(|| second_preview_backend(args.backend, &machine, choice).ok())
                 .flatten()
@@ -1746,6 +2080,13 @@ fn main() {
         } else {
             previews_for(&models, choice, &loads, &preview_sessions)
         };
+        if args.own_voice_cpu {
+            p.own_voice = Some(own_voice_cpu_loader(
+                models.clone(),
+                choice,
+                Arc::clone(&preview_sessions),
+            ));
+        }
         if let Some(s) = args.window {
             p.window = Duration::from_secs_f64(s);
         }
@@ -1773,6 +2114,7 @@ fn main() {
     let mut backends = Vec::new();
     let mut problems = 0usize;
     let mut catch_up = None;
+    let mut users_at_finish = None;
     let mut preview_reports = Vec::new();
     let first = host_reading();
     let first_cpu = first.map(|r| r.1);
@@ -1867,6 +2209,9 @@ fn main() {
             }
             Ok(RuntimeEvent::LiveTranscriptFinished { after_capture_end }) => {
                 catch_up = Some(after_capture_end.as_secs_f64());
+                users_at_finish = held
+                    .as_ref()
+                    .map(earshot_onnx::parakeet::SharedEncoder::users);
             }
             Ok(RuntimeEvent::Warning(w)) => {
                 problems += 1;
@@ -1892,6 +2237,7 @@ fn main() {
         summaries_json(mode, args.summary_gpu, args.summary_model.as_deref(), &runs)
     });
     let card = card.map(CardLog::finish);
+    let card_holder = holder.map(CardHolder::finish);
     drop(stop_readings);
     let readings = sampler
         .join()
@@ -1927,6 +2273,7 @@ fn main() {
         "summary": args.summary.map(|m| format!("{m:?}")),
         "summaries": summaries,
         "card": card,
+        "card_holder": card_holder,
         "pieces": format!("{:?}", stretch_pieces(args.max_piece).unwrap_or_else(|e| fail(e))),
         "live_backends": backends,
         "onnx_placement": *evidence.lock().unwrap_or_else(PoisonError::into_inner),
@@ -1942,6 +2289,12 @@ fn main() {
             .collect::<Vec<_>>(),
         "stopped_with": format!("{:?}", outcome.reason),
         "capture_max_lag_s": state.max_lag().as_secs_f64(),
+        "own_encoders": args.own_encoders,
+        "own_voice_cpu": args.own_voice_cpu,
+        "shared_encoder": held.as_ref().map_or_else(
+            || json!("no shared encoder"),
+            |e| shared_encoder_report(e, users_at_finish),
+        ),
         "catch_up_after_end_s": catch_up,
         "previews": preview_reports,
         "preview_refusal": refusal,
@@ -2054,6 +2407,70 @@ mod tests {
         assert!(parse(&["--backend"]).is_err());
         assert!(parse(&["--previews", "some"]).is_err());
         assert!(parse(&["--share-npu"]).is_err(), "no such flag");
+    }
+
+    /// T12.59: the holder runs beside a CUDA replay only, and its card size must leave room
+    /// above the other programs' share.
+    #[test]
+    fn live_lag_card_holder_needs_a_cuda_replay_and_a_card_size() {
+        let a = parse(&["--backend", "cuda", "--hold-card-gib", "7.5"]).unwrap();
+        assert_eq!(a.hold_card_gib, Some(7.5));
+        assert_eq!(a.card_holder, None);
+        assert!(parse(&["--hold-card-gib", "7.5"]).is_err(), "needs CUDA");
+        assert!(parse(&["--backend", "cuda", "--hold-card-gib", "7.5", "--memory"]).is_err());
+        assert!(
+            parse(&[
+                "--backend",
+                "cuda",
+                "--hold-card-gib",
+                "7.5",
+                "--contention",
+                "alone"
+            ])
+            .is_err()
+        );
+        for bad in ["1.5", "1", "0", "-3", "nan", "inf", "x"] {
+            assert!(
+                parse(&["--backend", "cuda", "--hold-card-gib", bad]).is_err(),
+                "{bad}"
+            );
+        }
+        let h = parse(&["--backend", "cuda", "--card-holder", "5.5"]).unwrap();
+        assert_eq!(h.card_holder, Some(5.5));
+        // A card of 7.5 GiB with 1.5 GiB used elsewhere has 6 GiB free.
+        assert_eq!(holder_target_bytes(7.5), 6 * GIB);
+        assert_eq!(holder_target_bytes(12.0), 21 * GIB / 2);
+    }
+
+    /// T12.60: the CPU column needs a CUDA replay under Everyone and the app's own rule.
+    #[test]
+    fn live_lag_own_voice_cpu_needs_everyone_on_cuda() {
+        let ok = [
+            "--backend",
+            "cuda",
+            "--previews",
+            "everyone",
+            "--own-voice-cpu",
+        ];
+        assert!(parse(&ok).unwrap().own_voice_cpu);
+        assert!(
+            !parse(&ok[..4]).unwrap().own_voice_cpu,
+            "never unless asked"
+        );
+        assert!(parse(&["--backend", "cuda", "--previews", "on", "--own-voice-cpu"]).is_err());
+        assert!(parse(&["--previews", "everyone", "--own-voice-cpu"]).is_err());
+        assert!(
+            parse(&[
+                "--backend",
+                "cuda",
+                "--previews",
+                "everyone",
+                "--own-voice-cpu",
+                "--card-memory-gib",
+                "6"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -2203,13 +2620,13 @@ mod tests {
             ],
             ..earshot_hardware::Hardware::default()
         };
-        let sim = simulated_machine(machine.clone(), 12).unwrap();
+        let sim = simulated_machine(machine.clone(), 6).unwrap();
         assert_eq!(sim.total_memory, machine.total_memory);
-        assert_eq!(sim.gpus[0].dedicated_memory, Some(12 * GIB));
+        assert_eq!(sim.gpus[0].dedicated_memory, Some(6 * GIB));
         assert_eq!(sim.gpus[1].dedicated_memory, Some(GIB / 2), "integrated");
-        assert_eq!(sim.gpus[2].dedicated_memory, Some(12 * GIB));
+        assert_eq!(sim.gpus[2].dedicated_memory, Some(6 * GIB));
         assert_eq!(sim.gpus[0].name, machine.gpus[0].name);
-        assert_eq!(simulated_card_gib(&sim), Some(12));
+        assert_eq!(simulated_card_gib(&sim), Some(6));
         // The rule sees a small card: a CUDA track's previews move to the CPU.
         assert_eq!(
             preview_backend(BackendKind::Cuda, &sim, PreviewChoice::Automatic),
@@ -2234,7 +2651,7 @@ mod tests {
     fn live_lag_simulated_preview_loads_apply_the_apps_rule_to_the_simulated_card() {
         let machine = earshot_hardware::Hardware {
             total_memory: Some(64 * GIB),
-            gpus: vec![a_card(Some(12 * GIB), Some(false))],
+            gpus: vec![a_card(Some(6 * GIB), Some(false))],
             ..earshot_hardware::Hardware::default()
         };
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -2266,7 +2683,7 @@ mod tests {
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 4);
         assert!(log.iter().all(|r| r["refusal_bypassed"] == false));
-        assert!(log.iter().all(|r| r["simulated_card_gib"] == 12));
+        assert!(log.iter().all(|r| r["simulated_card_gib"] == 6));
     }
 
     #[test]
@@ -2409,20 +2826,23 @@ mod tests {
     fn live_lag_contention_needs_cuda_and_no_other_mode() {
         for (value, setup) in [
             ("alone", Contention::Alone),
-            ("own", Contention::Own),
-            ("shared", Contention::Shared),
+            ("preview", Contention::Preview),
         ] {
             let a = parse(&["--backend", "cuda", "--contention", value]).unwrap();
             assert_eq!(a.contention, Some(setup));
         }
-        assert!(parse(&["--contention", "shared"]).is_err(), "the CPU");
+        assert!(parse(&["--contention", "preview"]).is_err(), "the CPU");
         assert!(parse(&["--backend", "cuda", "--contention", "both"]).is_err());
+        assert!(
+            parse(&["--backend", "cuda", "--contention", "shared"]).is_err(),
+            "T12.3b's set-ups are gone"
+        );
         for extra in [
             &["--memory"][..],
             &["--previews", "on"],
             &["--card-memory-gib", "12"],
         ] {
-            let mut a = vec!["--backend", "cuda", "--contention", "shared"];
+            let mut a = vec!["--backend", "cuda", "--contention", "preview"];
             a.extend_from_slice(extra);
             assert!(parse(&a).is_err(), "{extra:?}");
         }

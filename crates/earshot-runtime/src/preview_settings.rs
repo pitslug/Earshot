@@ -52,18 +52,15 @@ pub enum PreviewSetting {
 /// # Errors
 /// Store errors.
 pub fn preview_choice(store: &Store) -> Result<(PreviewChoice, Option<String>), RuntimeError> {
-    let Some(bytes) = store.local_value(PREVIEWS_KEY)? else {
-        return Ok((PreviewChoice::Automatic, None));
-    };
-    Ok(match bytes.as_slice() {
-        b"on" => (PreviewChoice::On, None),
-        b"everyone" => (PreviewChoice::Everyone, None),
-        b"off" => (PreviewChoice::Off, None),
-        other => (
-            PreviewChoice::Automatic,
-            Some(String::from_utf8_lossy(other).into_owned()),
-        ),
-    })
+    let (choice, unknown) =
+        crate::local::read_setting(store, PREVIEWS_KEY, |text| match text.as_str() {
+            "on" => Ok(PreviewChoice::On),
+            "everyone" => Ok(PreviewChoice::Everyone),
+            "off" => Ok(PreviewChoice::Off),
+            _ => Err(text),
+        })?
+        .or_default_with(|| PreviewChoice::Automatic);
+    Ok((choice, unknown.map(|u| u.stored)))
 }
 
 /// Stores the user's choice.
@@ -106,9 +103,6 @@ pub const NOTE_EVERYONE_MEMORY: &str = "This computer shows them for the other p
 /// Everyone chosen with transcription on the NPU, which runs no session for the user's own voice
 /// (T12.12c, `backends::OWN_VOICE_NPU_REFUSED`).
 pub const NOTE_EVERYONE_NPU: &str = "On the NPU they show for the other people only for now: some provisional words of your own voice appeared there and then vanished, which is not understood yet.";
-/// Everyone chosen with transcription on the graphics card: the user's own words run on the
-/// processor (T12.3a).
-pub const NOTE_EVERYONE_PROCESSOR: &str = "Provisional words for your own voice run on the processor, so the graphics card keeps its room for the rest of the meeting.";
 
 /// The page for a machine whose transcription would lead with `lead`.
 #[must_use]
@@ -148,8 +142,9 @@ pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardwar
         ),
         PreviewChoice::Everyone => {
             let note = match second_preview_backend(backend, hardware, choice) {
+                // Beside a card too small for the first, both run on the processor (T12.3c);
+                // with room, both run on the card (T12.60), so the second runs with the first.
                 Ok(_) if card_note.is_some() => card_note,
-                Ok(second) if second != backend => Some(NOTE_EVERYONE_PROCESSOR),
                 Ok(_) => below_limit.then_some(NOTE_ON_BELOW_LIMIT),
                 // T12.12c: the NPU runs no session for the user's own voice, whatever the memory.
                 Err(_) if backend == BackendKind::Qnn => Some(NOTE_EVERYONE_NPU),
@@ -243,8 +238,10 @@ mod tests {
         assert_eq!(PREVIEW_MIN_MEMORY, 12 * GIB);
         // The notes say "12 GB" for the NPU too.
         assert_eq!(PREVIEW_MIN_MEMORY_NPU, 12 * GIB);
-        assert_eq!(PREVIEW_MIN_MEMORY_CUDA, 20 * GIB);
-        assert_eq!(PREVIEW_MIN_CARD_MEMORY, 14 * GIB);
+        // T12.61 (the owner): 12 GiB on the card too, kept as its own constant.
+        assert_eq!(PREVIEW_MIN_MEMORY_CUDA, 12 * GIB);
+        // T12.59: 7.5 GiB, an 8 GB card less half a GiB.
+        assert_eq!(PREVIEW_MIN_CARD_MEMORY, 15 * GIB / 2);
     }
 
     #[test]
@@ -376,7 +373,7 @@ mod tests {
     /// on the processor, and the page says so for every choice that shows them.
     #[test]
     fn preview_beside_a_small_card_runs_on_the_processor_and_says_so() {
-        for card in [Some(8 * GIB), Some(PREVIEW_MIN_CARD_MEMORY - 1), None] {
+        for card in [Some(6 * GIB), Some(PREVIEW_MIN_CARD_MEMORY - 1), None] {
             let m = machine(Some(64 * GIB), card);
             assert_eq!(
                 previews_refused(BackendKind::Cuda, &m, PreviewChoice::On),
@@ -416,7 +413,7 @@ mod tests {
     /// T12.3c: beside a small card the CPU's memory limit applies, with the CPU's notes.
     #[test]
     fn preview_beside_a_small_card_keeps_the_cpus_memory_notes() {
-        let small_card = Some(8 * GIB);
+        let small_card = Some(6 * GIB);
         let below = machine(Some(PREVIEW_MIN_MEMORY - 1), small_card);
         assert_eq!(
             preview_page(PreviewChoice::Automatic, Accelerator::Cuda, &below),
@@ -456,19 +453,132 @@ mod tests {
         );
     }
 
+    /// T12.61: the card placement's memory limit is 12 GiB, as the processor's (the owner,
+    /// 2026-11-15). A 16 GB machine beside a card with room runs them on the card by default with
+    /// no note; at the limit they run there, one under they are off by default with the 12 GB note,
+    /// and "on" lifts it.
     #[test]
-    fn preview_cuda_keeps_its_higher_memory_limit() {
+    fn preview_cuda_memory_limit_is_twelve_gib_beside_a_card_with_room() {
         let m = machine(Some(16 * GIB), Some(16 * GIB));
-        assert!(previews_refused(BackendKind::Cuda, &m, PreviewChoice::Automatic).is_some());
+        assert_eq!(
+            previews_refused(BackendKind::Cuda, &m, PreviewChoice::Automatic),
+            None
+        );
+        assert_eq!(
+            preview_backend(BackendKind::Cuda, &m, PreviewChoice::Automatic),
+            Ok(BackendKind::Cuda)
+        );
+        assert_eq!(
+            preview_page(PreviewChoice::Automatic, Accelerator::Cuda, &m).note,
+            None
+        );
         assert_eq!(
             previews_refused(BackendKind::Cuda, &m, PreviewChoice::On),
             None
+        );
+        assert_eq!(
+            preview_backend(BackendKind::Cuda, &m, PreviewChoice::On),
+            Ok(BackendKind::Cuda)
         );
         let big = machine(Some(PREVIEW_MIN_MEMORY_CUDA), Some(PREVIEW_MIN_CARD_MEMORY));
         assert_eq!(
             previews_refused(BackendKind::Cuda, &big, PreviewChoice::Automatic),
             None
         );
+        let under = machine(
+            Some(PREVIEW_MIN_MEMORY_CUDA - 1),
+            Some(PREVIEW_MIN_CARD_MEMORY),
+        );
+        assert!(previews_refused(BackendKind::Cuda, &under, PreviewChoice::Automatic).is_some());
+        assert_eq!(
+            preview_page(PreviewChoice::Automatic, Accelerator::Cuda, &under),
+            PreviewPage {
+                shown: PreviewSetting::Off,
+                can_change: true,
+                note: Some(NOTE_DEFAULT_OFF)
+            }
+        );
+        assert_eq!(
+            preview_backend(BackendKind::Cuda, &under, PreviewChoice::On),
+            Ok(BackendKind::Cuda)
+        );
+    }
+
+    /// After review of T12.59/T12.60, with T12.61's 12 GiB on the card: what the page shows and
+    /// says for a CUDA lead, for every choice, memory (unknown, 12 GiB - 1, 12 GiB, 20 GiB) and card
+    /// (unknown, one under the limit, at it), beside where `backends::cuda_preview_table` puts the
+    /// sessions.
+    #[test]
+    fn preview_page_on_cuda_follows_the_table_for_every_choice_memory_and_card() {
+        use PreviewSetting::{Everyone as Ev, Off as O, OtherPeople as Op};
+        let (memories, _) = crate::backends::tests::cuda_preview_table();
+        let limit = Some(PREVIEW_MIN_CARD_MEMORY);
+        let under = Some(PREVIEW_MIN_CARD_MEMORY - 1);
+        let (df, below, card, every) = (
+            Some(NOTE_DEFAULT_OFF),
+            Some(NOTE_ON_BELOW_LIMIT),
+            Some(NOTE_CARD_PROCESSOR),
+            Some(NOTE_EVERYONE_MEMORY),
+        );
+        let rows = [
+            // choice, card, (shown, note) by memory
+            (
+                PreviewChoice::Automatic,
+                None,
+                [(O, df), (O, df), (Op, card), (Op, card)],
+            ),
+            (
+                PreviewChoice::Automatic,
+                under,
+                [(O, df), (O, df), (Op, card), (Op, card)],
+            ),
+            (
+                PreviewChoice::Automatic,
+                limit,
+                [(O, df), (O, df), (Op, None), (Op, None)],
+            ),
+            (
+                PreviewChoice::On,
+                None,
+                [(Op, below), (Op, below), (Op, card), (Op, card)],
+            ),
+            (
+                PreviewChoice::On,
+                under,
+                [(Op, below), (Op, below), (Op, card), (Op, card)],
+            ),
+            (
+                PreviewChoice::On,
+                limit,
+                [(Op, below), (Op, below), (Op, None), (Op, None)],
+            ),
+            (
+                PreviewChoice::Everyone,
+                None,
+                [(Ev, every), (Ev, every), (Ev, card), (Ev, card)],
+            ),
+            (
+                PreviewChoice::Everyone,
+                under,
+                [(Ev, every), (Ev, every), (Ev, card), (Ev, card)],
+            ),
+            (
+                PreviewChoice::Everyone,
+                limit,
+                [(Ev, every), (Ev, every), (Ev, None), (Ev, None)],
+            ),
+        ];
+        for (choice, card_memory, want) in rows {
+            for (i, memory) in memories.iter().enumerate() {
+                let page = preview_page(choice, Accelerator::Cuda, &machine(*memory, card_memory));
+                assert_eq!(
+                    (page.shown, page.note),
+                    want[i],
+                    "{choice:?} card {card_memory:?} memory {memory:?}"
+                );
+                assert!(page.can_change);
+            }
+        }
     }
 
     #[test]
@@ -542,17 +652,55 @@ mod tests {
         );
     }
 
-    /// T12.3a: beside CUDA the user's own words run on the processor, and the page says so.
+    /// T12.60: beside a card with room the user's own words run on the card with the far end's,
+    /// so the page has nothing to add; beside a card one under the limit, or of unknown memory,
+    /// both run on the processor and the page says so (T12.3c).
     #[test]
-    fn preview_everyone_beside_the_graphics_card_says_your_words_run_on_the_processor() {
+    fn preview_everyone_beside_the_graphics_card_runs_where_the_first_runs() {
         let m = machine(Some(64 * GIB), Some(PREVIEW_MIN_CARD_MEMORY));
+        assert_eq!(
+            second_preview_backend(BackendKind::Cuda, &m, PreviewChoice::Everyone),
+            Ok(BackendKind::Cuda)
+        );
         assert_eq!(
             preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &m),
             PreviewPage {
                 shown: PreviewSetting::Everyone,
                 can_change: true,
-                note: Some(NOTE_EVERYONE_PROCESSOR)
+                note: None
             }
+        );
+        for card in [Some(PREVIEW_MIN_CARD_MEMORY - 1), None] {
+            let small = machine(Some(64 * GIB), card);
+            assert_eq!(
+                second_preview_backend(BackendKind::Cuda, &small, PreviewChoice::Everyone),
+                Ok(BackendKind::Cpu),
+                "{card:?}"
+            );
+            assert_eq!(
+                preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &small),
+                PreviewPage {
+                    shown: PreviewSetting::Everyone,
+                    can_change: true,
+                    note: Some(NOTE_CARD_PROCESSOR)
+                },
+                "{card:?}"
+            );
+        }
+        // After review: on the card the second session needs the CPU's limit for both sessions
+        // (12 GiB); a 16 GB machine runs it, below the limit the page says so.
+        let short = machine(Some(15 * GIB), Some(PREVIEW_MIN_CARD_MEMORY));
+        assert_eq!(
+            preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &short).note,
+            None
+        );
+        let too_short = machine(
+            Some(PREVIEW_BOTH_MIN_MEMORY - 1),
+            Some(PREVIEW_MIN_CARD_MEMORY),
+        );
+        assert_eq!(
+            preview_page(PreviewChoice::Everyone, Accelerator::Cuda, &too_short).note,
+            Some(NOTE_EVERYONE_MEMORY)
         );
         // On the CPU nothing moves, so nothing is said.
         assert_eq!(
@@ -621,7 +769,6 @@ mod tests {
             NOTE_CARD_PROCESSOR,
             NOTE_EVERYONE_MEMORY,
             NOTE_EVERYONE_NPU,
-            NOTE_EVERYONE_PROCESSOR,
         ] {
             assert_eq!(crate::catalogue::manifest_id_in(note), None, "{note}");
             assert!(!note.contains("not measured"), "{note}");
@@ -637,7 +784,6 @@ mod tests {
             NOTE_CARD_PROCESSOR,
             NOTE_EVERYONE_MEMORY,
             NOTE_EVERYONE_NPU,
-            NOTE_EVERYONE_PROCESSOR,
         ] {
             assert!(!note.contains('\u{2014}'), "{note}");
         }

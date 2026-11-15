@@ -95,8 +95,13 @@ export const commands = {
 	mergeSpeakers: (meeting: string, keep: string, merge: string) => typedError<null, IpcError>(__TAURI_INVOKE("merge_speakers", { meeting, keep, merge })),
 	/**  Links a speaker to an existing or a new person; returns the person's id. */
 	linkSpeaker: (meeting: string, speaker: string, choice: LinkChoice) => typedError<string, IpcError>(__TAURI_INVOKE("link_speaker", { meeting, speaker, choice })),
-	/**  Says a voice of an in-room meeting is the user's ("This is me"). */
-	markMe: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("mark_me", { meeting, speaker })),
+	/**
+	 *  Says a voice of an in-room meeting is the user's ("This is me"); returns the separate
+	 *  persons named after the user, to offer merging them into the user (T12.44).
+	 */
+	markMe: (meeting: string, speaker: string) => typedError<PersonItem[], IpcError>(__TAURI_INVOKE("mark_me", { meeting, speaker })),
+	/**  Merges a separate person named after the user into the user (T12.44). */
+	mergeIntoMe: (person: string) => typedError<null, IpcError>(__TAURI_INVOKE("merge_into_me", { person })),
 	/**  Puts a "Me" row of an in-room meeting back as an unnamed voice ("This isn't me"). */
 	unmarkMe: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("unmark_me", { meeting, speaker })),
 	/**  Renames a person (and their speaker rows in every meeting); returns how many rows changed. */
@@ -128,6 +133,12 @@ export const commands = {
 	 *  kept for one undo (`JobEvent`s follow).
 	 */
 	resummarise: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("resummarise", { meeting })),
+	/**
+	 *  Cancels the re-transcription or re-summary of `meeting` (T12.41); its last `JobEvent` follows
+	 *  as usual (`Cancelled`, or what the job finished with if it had finished). No job is not an
+	 *  error.
+	 */
+	cancelJob: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("cancel_job", { meeting })),
 	/**  Swaps the current summary with the previous one. */
 	undoSummary: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("undo_summary", { meeting })),
 	/**
@@ -139,9 +150,9 @@ export const commands = {
 	meetingDeletion: (meeting: string) => typedError<DeleteAsk, IpcError>(__TAURI_INVOKE("meeting_deletion", { meeting })),
 	/**
 	 *  Deletes `meeting` with its audio, transcript and summaries. With `stop_finishing`, a final
-	 *  pass or summary that runs on it is stopped first (`meeting_finishing` without it). Refused
-	 *  while it records (`meeting_recording`), while a job runs on it (`meeting_job`), and while work
-	 *  given up on still holds it (`meeting_needs_restart`).
+	 *  pass, summary, re-transcription or re-summary that runs on it is stopped first
+	 *  (`meeting_finishing` or `meeting_job` without it). Refused while it records
+	 *  (`meeting_recording`) and while work given up on still holds it (`meeting_needs_restart`).
 	 */
 	deleteMeeting: (meeting: string, stopFinishing: boolean) => typedError<null, IpcError>(__TAURI_INVOKE("delete_meeting", { meeting, stopFinishing })),
 	/**
@@ -349,6 +360,24 @@ export const commands = {
 	 *  stored).
 	 */
 	setSummaryVocabulary: (words: string[]) => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("set_summary_vocabulary", { words })),
+	/**  The Sync page's view. */
+	syncView: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("sync_view")),
+	/**  The vault's devices (asks the server). */
+	syncDevices: () => typedError<SyncDeviceView[], IpcError>(__TAURI_INVOKE("sync_devices")),
+	/**  Sets this computer up as the first device with the server's setup secret. */
+	setUpSync: (address: string, setupSecret: string) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_up_sync", { address, setupSecret })),
+	/**  A pairing code for adding another device. */
+	offerSyncCode: () => typedError<SyncCodeView, IpcError>(__TAURI_INVOKE("offer_sync_code")),
+	/**  Joins the vault with a pairing code shown on another device. */
+	joinSync: (address: string, code: string) => typedError<SyncView, IpcError>(__TAURI_INVOKE("join_sync", { address, code })),
+	/**  Turns sync on or off. */
+	setSyncOn: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_on", { on })),
+	/**  Turns voiceprint sync on or off. */
+	setSyncVoiceprints: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_voiceprints", { on })),
+	/**  Asks for a sync now. */
+	syncNow: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("sync_now")),
+	/**  Removes this computer from sync. */
+	removeSyncDevice: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("remove_sync_device")),
 	/**  Whether the app opens on the first-run wizard. */
 	firstRunState: () => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("first_run_state")),
 	/**  Marks the first-run wizard done, whichever steps were skipped. */
@@ -867,9 +896,9 @@ export type DeleteAsk =
 "StopsFinishing" | 
 /**  It is still recording: not deletable until the recording stops. */
 "Recording" | 
-/**  A re-transcription runs on it: not deletable until it ends. */
+/**  A re-transcription runs on it: deleting stops it first (T12.41). */
 "Retranscribing" | 
-/**  A re-summary runs on it: not deletable until it ends. */
+/**  A re-summary runs on it: deleting stops it first (T12.41). */
 "Resummarising" | 
 /**  Work Earshot gave up on (T9.22) still holds it: not deletable until Earshot restarts. */
 "NeedsRestart";
@@ -886,8 +915,14 @@ export type DetailHeader = {
 	mode: CaptureMode,
 	/**  Which transcript is shown (`None` without any). */
 	transcript: TranscriptKind | null,
-	/**  The model that wrote the current summary, when known. */
-	summary_model: string | null,
+	/**
+	 *  What wrote the current summary, as the user sees it (`summary::writer_name`: a local
+	 *  model's display name, "Claude (Claude Code)", "Codex" or an endpoint's model name;
+	 *  never a manifest id), when known.
+	 */
+	summary_writer: string | null,
+	/**  Whether the user edited the current summary's text (`summary_edits`, T12.43). */
+	summary_edited: boolean,
 	/**  The backend that ran the shown transcript ("GPU (CUDA)"), when recorded. */
 	transcript_backend: string | null,
 };
@@ -1076,7 +1111,7 @@ export type IpcError = {
 
 /**
  *  One event of a job on a stored meeting: `Progress` steps and `Warning`s (re-transcription
- *  only), then exactly one of `Retranscribed`, `Summary` or `Failed`.
+ *  only), then exactly one of `Retranscribed`, `Summary`, `Cancelled` or `Failed`.
  */
 export type JobEvent = 
 /**  A re-transcription step. */
@@ -1116,6 +1151,15 @@ result: SummaryEvent } |
 meeting: string; 
 /**  Plain copy. */
 message: string } | 
+/**
+ *  The job was cancelled ([`JobRunner::cancel`], T12.41): the transcript and the summary are
+ *  as they were.
+ */
+{ type: "Cancelled"; 
+/**  Meeting id. */
+meeting: string; 
+/**  Which job. */
+job: JobKind } | 
 /**  The job failed; nothing was changed by it (also a job that stopped unexpectedly). */
 { type: "Failed"; 
 /**  Meeting id. */
@@ -1823,6 +1867,11 @@ export type SpeakerCard = {
 	can_mark_me: boolean,
 	/**  The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`). */
 	can_unmark_me: boolean,
+	/**
+	 *  This in-room "Me" row was named by the user's own voiceprint, so "This isn't me" is
+	 *  refused until the user's voice is forgotten (`edit::recognised_me`, T12.44).
+	 */
+	recognised_me: boolean,
 };
 
 /**  Whether a speaker is the user. */
@@ -2086,6 +2135,60 @@ export type SummaryVocabularyView = {
 	max_word_chars: number,
 	/**  The longest list accepted, in characters over every word. */
 	max_chars: number,
+};
+
+/**  A pairing code to show for adding a device. */
+export type SyncCodeView = {
+	/**  The code, in groups. */
+	code: string,
+	/**  Seconds until it stops working. */
+	expires_in_s: number,
+};
+
+/**  One device of the vault. */
+export type SyncDeviceView = {
+	/**  Whether it is this computer. */
+	this_device: boolean,
+	/**  Its name from its presence (`None` until it sends one this computer can read). */
+	name: string | null,
+	/**  Whether it is online now (its presence is at most 150 s old and does not say gone). */
+	online: boolean,
+	/**  Whether it is recording now. */
+	recording: boolean,
+	/**  The first eight hex digits of its id. */
+	short_id: string,
+	/**  When it joined (Unix seconds, the server's clock). */
+	joined_unix_s: number,
+	/**  Seconds since it last reached the server. */
+	seen_s_ago: number,
+};
+
+/**  What the Sync page shows. Never a key, token, setup secret or used pairing code. */
+export type SyncView = {
+	/**  A key and token are stored: this computer is set up. */
+	set_up: boolean,
+	/**  Sync is on. */
+	on: boolean,
+	/**  The sync thread is running now. */
+	running: boolean,
+	/**  Voiceprints sync. */
+	voiceprints: boolean,
+	/**  The server's address, when one is stored and usable. */
+	address: string | null,
+	/**  Why a stored address is not usable (fixed copy). */
+	address_problem: string | null,
+	/**  When sync last finished without a problem (Unix ms). */
+	last_success_unix_ms: number | null,
+	/**  The last problem (fixed copy). */
+	problem: string | null,
+	/**  Whether that problem stopped sync until something is done. */
+	stopped: boolean,
+	/**  Rows from other devices that could not be read, in all. */
+	unreadable: number,
+	/**  Rows changed here and not yet sent. */
+	waiting: number,
+	/**  Rows from other devices held for later. */
+	held: number,
 };
 
 /**  NVIDIA's terms for a part. */

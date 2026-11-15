@@ -23,19 +23,14 @@ import {
 } from "@fluentui/react-components";
 import { useEffect, useState } from "react";
 
-import { IpcFailure, type ScheduleChoice, type UpdatePhase, type UpdateView, useIpc } from "../ipc";
+import { IpcFailure, type ScheduleChoice, type UpdatePhase, type UpdateView, errorText, useIpc } from "../ipc";
 import { formatSize } from "./copy";
-import { errorText } from "./useModels";
 
 const useStyles = makeStyles({
   section: {
     display: "flex",
     flexDirection: "column",
     gap: tokens.spacingVerticalS,
-  },
-  row: {
-    display: "flex",
-    gap: tokens.spacingHorizontalS,
   },
   action: {
     alignSelf: "flex-start",
