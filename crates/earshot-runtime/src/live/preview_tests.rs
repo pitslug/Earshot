@@ -1381,7 +1381,11 @@ fn assert_left_at_the_end(stop_wait: Duration) {
 /// not cost the rest of the meeting its previews.
 #[test]
 fn live_preview_slow_previews_pause_and_come_back() {
-    let scene = scene_of(27);
+    // Four bursts of far-end speech, not two: previews run only while a burst is unsettled
+    // (about half a second of wall time each at ten times real time), and the three slow
+    // decodes below need two of them. With two bursts the comeback had about 230 ms to
+    // spare, less than the scripted sleeps overrun in a full `cargo test --workspace`.
+    let scene = scene_of(53);
     let seen = Arc::new(Seen::default());
     // The slow decodes are far above the threshold and every other decode far below it, so a
     // busy host (a full `cargo test --workspace`) cannot make an ordinary fake decode count as
@@ -1929,6 +1933,8 @@ struct FakeStream {
     words: Vec<Word>,
     /// Each push that finishes a word takes at least this long.
     slow: Duration,
+    /// The first word (by index, half a second each) whose push is slow.
+    slow_from: usize,
 }
 
 impl crate::live::StreamingPreview for FakeStream {
@@ -1953,7 +1959,7 @@ impl crate::live::StreamingPreview for FakeStream {
         let before = self.position / 8000;
         self.position += samples.len();
         let after = self.position / 8000;
-        if after > before {
+        if after > before && after > self.slow_from {
             std::thread::sleep(self.slow);
         }
         // Each word ends where the half second that finished it ends: at the newest audio.
@@ -1980,14 +1986,20 @@ fn fake_stream(heard: &Arc<Heard>) -> FakeStream {
         position: 0,
         words: Vec::new(),
         slow: Duration::ZERO,
+        slow_from: 0,
     }
 }
 
 fn stream_loader(heard: &Arc<Heard>) -> crate::live::StreamLoader {
-    slow_stream_loader(heard, Duration::ZERO)
+    slow_stream_loader(heard, Duration::ZERO, 0)
 }
 
-fn slow_stream_loader(heard: &Arc<Heard>, slow: Duration) -> crate::live::StreamLoader {
+/// A stream whose pushes take `slow` from word `slow_from` on.
+fn slow_stream_loader(
+    heard: &Arc<Heard>,
+    slow: Duration,
+    slow_from: usize,
+) -> crate::live::StreamLoader {
     let heard = Arc::clone(heard);
     Arc::new(move |_| {
         Ok(Box::new(FakeStream {
@@ -1995,6 +2007,7 @@ fn slow_stream_loader(heard: &Arc<Heard>, slow: Duration) -> crate::live::Stream
             position: 0,
             words: Vec::new(),
             slow,
+            slow_from,
         }) as Box<dyn crate::live::StreamingPreview + Send>)
     })
 }
@@ -2168,7 +2181,11 @@ fn live_preview_stream_paused_for_slowness_still_clears_covered_words() {
     let seen = Arc::new(Seen::default());
     let heard = Arc::new(Heard::default());
     let config = LivePreviews {
-        stream: Some(slow_stream_loader(&heard, Duration::from_millis(20))),
+        // Slow from the far end's first burst of speech (7 s in), not from the start: text
+        // settles at once through the silence before it, so words finished there can be
+        // covered before the thread shows them, and under load the pause then came with
+        // nothing ever shown. During the burst nothing settles until its piece is decoded.
+        stream: Some(slow_stream_loader(&heard, Duration::from_millis(20), 15)),
         slow: Duration::from_millis(4),
         slow_pause: Duration::from_secs(600),
         ..previews(loader(&seen, marker_words))

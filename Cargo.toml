@@ -34,5 +34,22 @@ publish = false
 [profile.release.package.earshot-desktop]
 debug = "line-tables-only"
 
+# Optimised signal processing in debug and test builds: the echo canceller, delay and
+# simulator tests run minutes each unoptimised (13 core tests and 6 xtask `echo_nl` tests
+# over 60 s each, measured 2026-11-15). Debug assertions and overflow checks stay on, and
+# debug and release give the same canceller results (AGENTS.md 11). Named packages only,
+# never "*": the cmake crate picks its configuration from a package's own opt-level.
+[profile.dev.package.earshot-core]
+opt-level = 2
+[profile.dev.package.rustfft]
+opt-level = 2
+[profile.dev.package.rubato]
+opt-level = 2
+[profile.dev.package.num-complex]
+opt-level = 2
+# xtask's own `echo_nl` loops (its tests still ran over 60 s each with only the above).
+[profile.dev.package.xtask]
+opt-level = 1
+
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

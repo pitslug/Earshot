@@ -23,7 +23,9 @@ pub const STEPS: &[(&str, &[&str])] = &[
             "warnings",
         ],
     ),
-    ("test", &["test", "--workspace"]),
+    // `--no-fail-fast`: one run names every failing test binary, so a late failure does not
+    // hide another behind a second full run. The step still fails.
+    ("test", &["test", "--workspace", "--no-fail-fast"]),
 ];
 
 fn cargo() -> String {
