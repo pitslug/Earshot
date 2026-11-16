@@ -1,9 +1,9 @@
 {
   "milestone": "m3",
   "requested_backend": null,
-  "timestamp": "2026-11-06T21:23:40Z",
+  "timestamp": "2026-11-16T12:42:00Z",
   "host": "x86_64-pc-windows-msvc",
-  "commit": "2495b2d-dirty",
+  "commit": "440b59d-dirty",
   "backends": [
     "cpu"
   ],
