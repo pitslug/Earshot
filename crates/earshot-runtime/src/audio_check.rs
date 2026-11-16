@@ -632,6 +632,9 @@ pub fn run_check(
             .unwrap_or_default(),
     };
     let fallbacks = source.fallbacks().to_vec();
+    // What the mic opened with at the start holds for the whole run: a mid-check fallback to
+    // the processed stream is a discontinuity, which fails the run in `measure`, so a mixed
+    // run is never stored.
     let raw_mic = source.mic_opened_raw();
     let raw_refused = source.raw_refused().is_some();
     // Held across `measure`: a panic there drops it, which stops and joins the playback.

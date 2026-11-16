@@ -208,8 +208,10 @@ fn opened<'a>(listed: &'a [DeviceItem], setting: &DeviceSetting) -> Option<&'a D
 }
 
 /// The check part of the page: the stored result of the pair `settings` opens among
-/// `devices`, recorded with the microphone signal `settings` asks for (T12.36; none when they
-/// could not be listed).
+/// `devices`, recorded with the microphone signal `settings` asks for (T12.36). With the raw
+/// setting and only a processed result (a microphone that could not be opened raw is checked
+/// and stored processed), that one is shown with [`RAW_NOT_CHECKED_NOTE`]. None when the
+/// devices could not be listed.
 ///
 /// # Errors
 /// Store errors.
@@ -222,9 +224,16 @@ pub fn check_view(
     let result = devices.ok().and_then(|d| {
         let mic = opened(&d.microphones, &settings.microphone)?;
         let out = opened(&d.outputs, &settings.output)?;
-        stored
-            .pair(&mic.id, &out.id, settings.mic_signal.is_raw())
-            .map(|c| result_view(c, max_delay()))
+        let raw = settings.mic_signal.is_raw();
+        match stored.pair(&mic.id, &out.id, raw) {
+            Some(c) => Some(result_view(c, max_delay())),
+            None if raw => stored.pair(&mic.id, &out.id, false).map(|c| {
+                let mut view = result_view(c, max_delay());
+                view.details.push(RAW_NOT_CHECKED_NOTE.to_owned());
+                view
+            }),
+            None => None,
+        }
     });
     Ok(AudioCheckView {
         result,
@@ -243,9 +252,16 @@ fn done_view(services: &Services, m: &Measured) -> Result<AudioCheckView, Runtim
     })
 }
 
-/// What a raw microphone that refused raw (T12.36) adds to the check's note.
-pub const RAW_REFUSED_NOTE: &str = "This microphone does not allow recording without Windows' \
-     own sound processing, so it was checked with that processing, as meetings record it.";
+/// What a raw microphone that could not be opened raw (T12.36) adds to the check's note.
+pub const RAW_REFUSED_NOTE: &str = "This microphone could not be recorded without Windows' \
+     sound processing, so it was checked with that processing, as meetings record it.";
+
+/// The detail shown when the raw setting has no stored check for the devices but a check with
+/// Windows' processing exists (T12.36: a microphone that could not be opened raw is checked
+/// and stored that way).
+pub const RAW_NOT_CHECKED_NOTE: &str = "This is the check with Windows' sound processing: \
+     meetings use it when the microphone cannot be recorded without it. No check without the \
+     processing is stored for these devices.";
 
 /// The note for chosen devices that were not connected (the default was checked) and for a
 /// raw microphone that refused raw.

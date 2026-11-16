@@ -990,8 +990,8 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
         RuntimeWarning::RawMicRefused => warning(
             RAW_MIC_KEY.into(),
             WarningKind::Audio,
-            "Your microphone does not allow recording without Windows' own sound processing, so \
-             this meeting records it with that processing. Nothing is lost."
+            "Your microphone could not be recorded without Windows' sound processing, so this \
+             meeting records it with that processing. Nothing is lost."
                 .into(),
         ),
         RuntimeWarning::SleepNotPrevented => warning(

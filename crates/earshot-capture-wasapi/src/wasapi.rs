@@ -184,17 +184,15 @@ impl CaptureError {
         matches!(self, Self::DeviceGone { .. }) || self.is_device_loss()
     }
 
-    /// True when a microphone stream could not be made raw (T12.36): the endpoint refuses raw
-    /// processing ([`CaptureError::RawMic`]), or the calls that ask for it failed. Not a lost
-    /// device: the same endpoint opens with its default processing.
-    fn is_raw_refusal(&self) -> bool {
-        match self {
-            Self::RawMic(_) => true,
-            Self::Windows { context, .. } => {
-                *context == RAW_PROPERTIES_CONTEXT || *context == RAW_CLIENT2_CONTEXT
-            }
-            _ => false,
-        }
+    /// Whether the live source answers this failure of a raw microphone open by opening the
+    /// default stream (T12.36): any failure that is not a lost or missing device
+    /// ([`is_device_gone`](Self::is_device_gone)), wherever in the open it happened (the
+    /// refusal, the raw calls, the format, `Initialize`, `Start`). A lost device is retried
+    /// raw like any lost device. The one rule for the live start ([`prefer_raw`],
+    /// [`choose_stream`]) and the live re-open (`Track::with_raw_fallback`); the raw recorder
+    /// never falls back.
+    fn raw_falls_back(&self) -> bool {
+        !self.is_device_gone()
     }
 }
 
@@ -1819,7 +1817,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
     }
 
     /// The live source's mic (T12.36): a re-open that cannot get a raw stream
-    /// ([`CaptureError::is_raw_refusal`]) opens the default stream at once and keeps it for
+    /// ([`CaptureError::raw_falls_back`]) opens the default stream at once and keeps it for
     /// the rest of the capture, telling the observer once
     /// ([`TrackObserver::raw_fell_back`]), so a setting never costs the recording. Without
     /// it a refused raw re-open leaves the track without a stream (the raw recorder).
@@ -1934,7 +1932,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             Err(e)
                 if self.raw_fallback
                     && self.processing == MicProcessing::Raw
-                    && e.is_raw_refusal() =>
+                    && e.raw_falls_back() =>
             {
                 fell_back = true;
                 self.processing = MicProcessing::Default;
@@ -2166,10 +2164,7 @@ fn open_chosen<'com>(
     open_chosen_as(com, endpoint, track, choice, MicProcessing::Default)
 }
 
-/// [`open_chosen`] asking every stream for `processing`. A stream that cannot be made raw
-/// ([`CaptureError::is_raw_refusal`]) is the processing's failure, not the device's: it is
-/// returned as it is and never replaced by the default endpoint, so the chosen device wins
-/// over the raw request ([`open_live_mic`]).
+/// [`open_chosen`] asking every stream for `processing` ([`choose_stream`]).
 fn open_chosen_as<'com>(
     com: &'com ComApartment,
     endpoint: Endpoint,
@@ -2177,23 +2172,68 @@ fn open_chosen_as<'com>(
     choice: &DeviceChoice,
     processing: MicProcessing,
 ) -> Result<ChosenStream<'com>, CaptureError> {
-    let open = |id| CaptureStream::open_with(com, endpoint, id, None, None, processing);
-    let Some(id) = choice.id() else {
-        return Ok((open(None)?, DeviceChoice::Default, None));
+    choose_stream(choice.id(), processing, &mut |id, p| {
+        CaptureStream::open_with(com, endpoint, id, None, None, p)
+    })
+    .map(|c| chosen_stream(track, choice, c))
+}
+
+/// What [`choose_stream`] opened.
+#[derive(Debug)]
+enum Chosen<S> {
+    /// The endpoint asked for: the chosen one, or the default when none was chosen.
+    Asked(S),
+    /// The default endpoint, because the chosen one failed with `error`.
+    Default {
+        /// The default endpoint's stream.
+        stream: S,
+        /// Why the chosen endpoint was not used.
+        error: CaptureError,
+    },
+}
+
+/// Opens the endpoint `id` (`None`: the default) with `open(id, processing)`; a chosen
+/// endpoint that fails is replaced by the default one. Except for a raw request whose failure
+/// falls back ([`CaptureError::raw_falls_back`]): that failure is the processing's, not the
+/// device's, so it is returned and the caller opens the same device with the default
+/// processing ([`open_live_mic_with`]); the chosen device wins over the raw request.
+/// Platform independent, so the rule is tested without a device.
+fn choose_stream<S>(
+    id: Option<&str>,
+    processing: MicProcessing,
+    open: &mut impl FnMut(Option<&str>, MicProcessing) -> Result<S, CaptureError>,
+) -> Result<Chosen<S>, CaptureError> {
+    let Some(id) = id else {
+        return Ok(Chosen::Asked(open(None, processing)?));
     };
-    match open(Some(id)) {
-        Ok(stream) => Ok((stream, choice.clone(), None)),
-        Err(e) if e.is_raw_refusal() => Err(e),
-        Err(e) => {
-            let stream = open(None)?;
+    match open(Some(id), processing) {
+        Ok(stream) => Ok(Chosen::Asked(stream)),
+        Err(e) if processing == MicProcessing::Raw && e.raw_falls_back() => Err(e),
+        Err(error) => Ok(Chosen::Default {
+            stream: open(None, processing)?,
+            error,
+        }),
+    }
+}
+
+/// The opened stream of `choice` for `track`, with the fallback to report when the default
+/// replaced a chosen endpoint ([`crate::devices::fallback`]).
+fn chosen_stream<'com>(
+    track: TrackId,
+    choice: &DeviceChoice,
+    chosen: Chosen<CaptureStream<'com>>,
+) -> ChosenStream<'com> {
+    match chosen {
+        Chosen::Asked(stream) => (stream, choice.clone(), None),
+        Chosen::Default { stream, error } => {
             let fallback = crate::devices::fallback(
                 track,
                 choice,
-                e.is_device_gone(),
-                &e.detail(),
+                error.is_device_gone(),
+                &error.detail(),
                 stream.device_name(),
             );
-            Ok((stream, DeviceChoice::Default, fallback))
+            (stream, DeviceChoice::Default, fallback)
         }
     }
 }
@@ -2209,35 +2249,49 @@ fn open_mic<'com>(
 }
 
 /// The live source's microphone (T12.36): opened as `processing` asks (the Audio page's
-/// setting), and a raw request that fails for any reason is retried at once with the default
-/// processing, so a setting never costs a recording ([`prefer_raw`]). Returns the stream, the
-/// processing it was opened with and, after such a retry, why raw was not used.
+/// setting) on `choice`, with [`open_live_mic_with`]'s rule. Returns the stream, the
+/// processing it was opened with and, after a fallback, why raw was not used.
 fn open_live_mic<'com>(
     com: &'com ComApartment,
     mic_role: MicRole,
     choice: &DeviceChoice,
     processing: MicProcessing,
 ) -> Result<(ChosenStream<'com>, MicProcessing, Option<String>), CaptureError> {
-    prefer_raw(processing, |p| {
-        open_chosen_as(com, Endpoint::Microphone(mic_role), TrackId::Mic, choice, p)
+    let endpoint = Endpoint::Microphone(mic_role);
+    open_live_mic_with(choice.id(), processing, |id, p| {
+        CaptureStream::open_with(com, endpoint, id, None, None, p)
     })
+    .map(|(c, p, why)| (chosen_stream(TrackId::Mic, choice, c), p, why))
 }
 
-/// Opens with `open(processing)`; when that asked for raw and failed, opens with the default
-/// processing and returns the raw attempt's error as text ([`CaptureError::detail`]) beside
-/// the stream. An error opening the default is the open's. Platform independent, so the
-/// live start's rule is tested without a device.
+/// The live mic's start rule: [`choose_stream`] inside [`prefer_raw`]. A chosen mic that
+/// cannot be opened raw is opened again on the same device with the default processing, and
+/// only a chosen mic that cannot be opened at all is replaced by the default device.
+/// Platform independent, so the composition is tested without a device.
+fn open_live_mic_with<S>(
+    id: Option<&str>,
+    processing: MicProcessing,
+    mut open: impl FnMut(Option<&str>, MicProcessing) -> Result<S, CaptureError>,
+) -> Result<(Chosen<S>, MicProcessing, Option<String>), CaptureError> {
+    prefer_raw(processing, |p| choose_stream(id, p, &mut open))
+}
+
+/// Opens with `open(processing)`; when that asked for raw and failed in a way that falls back
+/// ([`CaptureError::raw_falls_back`]), opens with the default processing and returns the raw
+/// attempt's error as text ([`CaptureError::detail`]) beside the stream. Any other error, and
+/// an error opening the default, is the open's. Platform independent, so the live start's
+/// rule is tested without a device.
 fn prefer_raw<S>(
     processing: MicProcessing,
     mut open: impl FnMut(MicProcessing) -> Result<S, CaptureError>,
 ) -> Result<(S, MicProcessing, Option<String>), CaptureError> {
     match (processing, open(processing)) {
         (_, Ok(stream)) => Ok((stream, processing, None)),
-        (MicProcessing::Raw, Err(raw)) => {
+        (MicProcessing::Raw, Err(raw)) if raw.raw_falls_back() => {
             let stream = open(MicProcessing::Default)?;
             Ok((stream, MicProcessing::Default, Some(raw.detail())))
         }
-        (MicProcessing::Default, Err(e)) => Err(e),
+        (_, Err(e)) => Err(e),
     }
 }
 

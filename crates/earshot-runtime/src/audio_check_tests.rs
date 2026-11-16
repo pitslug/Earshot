@@ -163,6 +163,28 @@ fn audio_check_a_break_in_a_track_fails_the_run() {
 }
 
 #[test]
+fn audio_check_a_mic_that_falls_back_during_the_check_stores_nothing() {
+    // T12.36: a raw mic re-opened processed mid-check sends its DeviceChanged and then a
+    // RawMicRefused note; the run mixes two streams, so it fails and nothing is stored as raw
+    // (the result keyed by what was opened at the start would be wrong).
+    let (builder, _) = call(48_000, 48_000, 60, 0, 0.5);
+    let builder = builder
+        .discontinuity(
+            TrackId::Mic,
+            24_000,
+            DiscontinuityKind::Note {
+                warning: earshot_core::capture::EndpointWarning::RawMicRefused,
+            },
+        )
+        .unwrap();
+    let e = run(&mut builder.build().unwrap()).unwrap_err();
+    assert!(
+        matches!(&e, RuntimeError::Capture(m) if m.contains("run it again")),
+        "{e:?}"
+    );
+}
+
+#[test]
 fn audio_check_needs_the_output_track() {
     let mic = TrackBuffer::new(rate(48_000), ch(1), vec![0.0; 48_000]).unwrap();
     let mut source = ReplayBuilder::new(ORIGIN, mic).build().unwrap();

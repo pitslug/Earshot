@@ -365,6 +365,20 @@ fn audio_check_results_follow_the_microphone_signal() {
         check::delay_hint_for(&svc.store(), MIC, OUT, true, max_delay()).unwrap(),
         None
     );
+    // After a reload the page still shows that check for the raw setting, saying which it is.
+    let shown = check_view(&svc, &raw_settings, Ok(&devices()))
+        .unwrap()
+        .result
+        .expect("the processed check is shown");
+    assert_eq!(
+        shown.details.last().map(String::as_str),
+        Some(RAW_NOT_CHECKED_NOTE)
+    );
+    let processed = check_view(&svc, &AudioSettings::default(), Ok(&devices()))
+        .unwrap()
+        .result
+        .unwrap();
+    assert!(!processed.details.iter().any(|d| d == RAW_NOT_CHECKED_NOTE));
 }
 
 fn stored(result: &CheckResult) -> StoredCheck {

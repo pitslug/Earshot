@@ -632,9 +632,9 @@ pub enum RuntimeWarning {
         /// Track.
         track: TrackId,
     },
-    /// The Audio page asks for the microphone without Windows' own processing (T12.36), but the
-    /// microphone refused it, at the start or when it was opened again during the meeting, so
-    /// the meeting records it with that processing. The recording goes on. At most once per
+    /// The Audio page asks for the microphone without Windows' own processing (T12.36), but it
+    /// could not be opened that way (refused, or the raw open failed), at the start or when it
+    /// was opened again during the meeting, so the meeting records it with that processing. The recording goes on. At most once per
     /// session.
     RawMicRefused,
     /// Windows refused to keep the computer awake for this recording (T9.16), so a sleep during

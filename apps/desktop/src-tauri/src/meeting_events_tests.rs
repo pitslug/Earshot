@@ -515,7 +515,12 @@ fn meeting_events_a_refused_raw_mic_is_one_fixed_banner() {
     assert_eq!(key, "raw-mic");
     assert_eq!(kind, WarningKind::Audio);
     assert_copy(&message);
-    assert!(message.contains("processing"), "{message}");
+    // Neutral: any failure of the raw open falls back, not only a refusal by the microphone.
+    assert!(
+        message.contains("could not be recorded without"),
+        "{message}"
+    );
+    assert!(!message.contains("does not allow"), "{message}");
     assert!(message.contains("Nothing is lost"), "{message}");
 }
 
