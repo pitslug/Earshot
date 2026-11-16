@@ -1,5 +1,5 @@
 {
-  "_comment": "Summary writers in order (T12.63b, docs/summary-order.md sections 2, 4.4, 4.5, 5 and 10). steps: each step's label on the Summaries page and the re-summarise menu ({device} a computer's name from its presence, {writer} its writer kind from offload_copy_cases.json writers, {host} the endpoint's host). destinations: the line under each step saying where the transcript goes. writers: the same steps as the subject of a banner sentence. words: the fixed outcome word of each step that was left for the next one, by the runtime's OutcomeWord. step_outcome joins a writer and its word, joiner joins those. later_writer: banner summary-steps when a later step wrote the summary; no_summary: the same banner when every step failed. start_check / start_check_last: the meeting-start banner of a step known to fail now, with and without a later step. interrupted: a run that did not end (a restart, or a record that cannot be read). named_hand_back: a computer named by a re-summarise that handed the request back. continue_note: the first warning of the re-summary that goes on with the next step after a computer handed it back. not_now: a local step skipped while a newer meeting needed this computer. page: the Summaries page section. resummarise: the meeting header's split button and its job notices' titles. refusals: a refused order, as the page shows the runtime's refusal. unnamed: a computer whose name is not known, at the start of a sentence. Pinned to the desktop's copy by its tests and read by the UI and its mock. Shipped with the app: public copy only.",
+  "_comment": "Summary writers in order (T12.63b, docs/summary-order.md sections 2, 4.4, 4.5, 5 and 10). steps: each step's label on the Summaries page and the re-summarise menu ({device} a computer's name from its presence, {writer} its writer kind from offload_copy_cases.json writers, {host} the endpoint's host). destinations: the line under each step saying where the transcript goes. writers: the same steps as the subject of a banner sentence. words: the fixed outcome word of each step that was left for the next one, by the runtime's OutcomeWord. step_outcome joins a writer and its word, joiner joins those. later_writer: banner summary-steps when a later step wrote the summary; no_summary: the same banner when every step failed. start_check / start_check_last: the meeting-start banner of a step known to fail now, with and without a later step. interrupted: a run that did not end (a restart, or a record that cannot be read). named_hand_back: a computer named by a re-summarise that handed the request back. continue_note: the first warning of the re-summary that goes on with the next step after a computer handed it back. not_now: a local step skipped while a newer meeting needed this computer. page: the Summaries page section (T12.68: one list of writers, each ticked writer with its rank; list its accessible name, use, move_up and move_down a writer's controls ({writer} its label), too_many a fourth tick ({n} the most steps), not_set_up an endpoint and not_downloaded the local model that cannot be ticked yet, kept_local the line under the list). resummarise: the meeting header's split button and its job notices' titles. refusals: a refused order, as the page shows the runtime's refusal. unnamed: a computer whose name is not known, at the start of a sentence. Pinned to the desktop's copy by its tests and read by the UI and its mock. Shipped with the app: public copy only.",
   "steps": {
     "local": "On this computer",
     "endpoint_anthropic": "Anthropic API",
@@ -54,13 +54,19 @@
   "continue_note": "{device} could not write the summary, so the next writer in your order writes it instead.",
   "not_now": "The summary model was not run while a newer meeting needed this computer. Summarise this meeting again to write it.",
   "page": {
-    "write": "Write a summary",
+    "write": "Write summaries",
     "no_summary": "No summary",
     "no_summary_why": "Transcript and speakers only.",
+    "list": "Summary writers, in order",
     "step": "Step {n}",
-    "if_cant": "If it can't",
-    "nothing_else": "Nothing else",
-    "explained": "Earshot tries the first step. If it can't write the summary, the next step tries, in this order. A writer appears once.",
+    "use": "Use {writer}",
+    "move_up": "Move {writer} up",
+    "move_down": "Move {writer} down",
+    "too_many": "At most {n} writers can be ticked. Untick one first.",
+    "not_set_up": "Not set up",
+    "not_downloaded": "Not downloaded",
+    "explained": "Earshot asks the ticked writers in order. If one can't write the summary, the next one tries. Untick a writer to leave it out.",
+    "kept_local": "Meetings you keep on this computer skip your own server, Claude Code and Codex, and use the model on this computer when no other computer of yours writes the summary.",
     "reading": "Reading the order of summary writers",
     "not_read": "The order of summary writers could not be read"
   },

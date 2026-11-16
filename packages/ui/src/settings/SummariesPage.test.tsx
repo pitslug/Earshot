@@ -2,7 +2,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { type Ipc, type MockIpcData, createMockIpc } from "../ipc";
+import { type Ipc, type MockIpcData, ORDER_COPY, createMockIpc, fillCopy } from "../ipc";
 import {
   CLAUDE_CODE_EFFORT_NEEDS_NEWER,
   CLAUDE_CODE_NOT_INSTALLED,
@@ -44,6 +44,20 @@ async function open(data: MockIpcData = {}): Promise<Setup> {
 }
 
 const radio = (name: RegExp) => screen.getByRole("radio", { name });
+/** A writer's tick box in the list (T12.68). */
+const tick = (writer: string) => screen.getByRole("checkbox", { name: fillCopy(ORDER_COPY.page.use, { writer }) });
+const moveUp = (writer: string) =>
+  screen.getByRole("button", { name: fillCopy(ORDER_COPY.page.move_up, { writer }) });
+const LOCAL = ORDER_COPY.steps.local;
+const CLAUDE = ORDER_COPY.steps.claude_code;
+const CODEX = ORDER_COPY.steps.codex;
+/** Ticks `writer` and moves it to the top of the order. */
+async function makeFirst(s: Setup, writer: string): Promise<void> {
+  await waitFor(() => expect(tick(writer)).toBeEnabled());
+  await s.user.click(tick(writer));
+  await waitFor(() => expect(moveUp(writer)).toBeEnabled());
+  await s.user.click(moveUp(writer));
+}
 const optionTexts = (select: HTMLElement) => [...select.querySelectorAll("option")].map((o) => o.textContent);
 const live = () => screen.getByRole("switch", { name: "Summarise during the meeting" });
 
@@ -55,12 +69,14 @@ describe("Settings, Summaries", () => {
   it("shows on this computer with the model in use on both sample machines", async () => {
     for (const machine of ["surface", "desktop"] as const) {
       const s = await open({ machine });
-      expect(radio(/^On this computer/)).toBeChecked();
+      await waitFor(() => expect(tick(LOCAL)).toBeChecked());
       const models = await s.ipc.models();
       const detail = `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
       expect(await screen.findByText(detail)).toBeInTheDocument();
-      expect(screen.getByText("Nothing leaves this computer.")).toBeInTheDocument();
-      expect(screen.queryByRole("group", { name: "Your own server" })).toBeNull();
+      expect(screen.getByText(ORDER_COPY.destinations.local)).toBeInTheDocument();
+      // The endpoint is not set up: its form shows so it can be, nothing filled in.
+      const form = screen.getByRole("group", { name: "Your own server" });
+      expect(within(form).getByLabelText("Address")).toHaveValue("");
       expect(live()).not.toBeChecked();
       expect(live()).toBeEnabled();
       expect(screen.getByText(LIVE_DESCRIPTION)).toBeInTheDocument();
@@ -80,7 +96,7 @@ describe("Settings, Summaries", () => {
         'Summarising during the meeting needs a local summary model. Choose "On this computer" to use it.',
       ),
     ).toBeInTheDocument();
-    await s.user.click(radio(/^On this computer/));
+    await s.user.click(radio(new RegExp(`^${ORDER_COPY.page.write}`)));
     await waitFor(() => expect(live()).toBeEnabled());
     await s.user.click(live());
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.live).toBe(true));
@@ -89,31 +105,33 @@ describe("Settings, Summaries", () => {
 
   it("uses a local network endpoint only once saved, without the remote warning", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own server/));
     const form = screen.getByRole("group", { name: "Your own server" });
-    // Nothing is stored until the endpoint is saved.
+    // Not set up: the endpoint cannot be ticked, and nothing is stored until it is saved.
+    expect(tick(ORDER_COPY.steps.endpoint_unset)).toBeDisabled();
     expect((await s.ipc.summarySettings()).value.writer).toBe("OnThisComputer");
     await s.user.type(within(form).getByLabelText("Address"), "http://192.168.1.20:8080/v1");
     await s.user.type(within(form).getByLabelText("Model"), "qwen");
     await s.user.click(within(form).getByRole("button", { name: "Use this endpoint" }));
-    await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("OwnEndpoint"));
+    const server = fillCopy(ORDER_COPY.steps.endpoint_server, { host: "192.168.1.20" });
+    await waitFor(() => expect(tick(server)).toBeChecked());
     const stored = (await s.ipc.summarySettings()).value;
     expect(stored).toMatchObject({ provider: "OpenAiCompatible", url: "http://192.168.1.20:8080/v1", model: "qwen" });
     expect(await within(form).findByText("Saved.")).toBeInTheDocument();
     expect(screen.queryByText(/^The meeting's transcript, title, speaker names and notes are sent to /)).toBeNull();
     expect(within(form).getByLabelText("Model")).toHaveAttribute("placeholder", MODEL_PLACEHOLDER.OpenAiCompatible);
     expect(within(form).queryByLabelText("API key")).toBeNull();
-    expect(live()).toBeDisabled();
-    // Back to this computer and to the endpoint again: the stored one is used at once.
-    await s.user.click(radio(/^On this computer/));
-    await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("OnThisComputer"));
-    await s.user.click(radio(/^Your own server/));
+    // The endpoint alone writes the summary: no summarising during the meeting.
+    await s.user.click(tick(LOCAL));
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("OwnEndpoint"));
+    expect(live()).toBeDisabled();
+    // This computer first again: the stored endpoint stays as the next writer.
+    await makeFirst(s, LOCAL);
+    await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("OnThisComputer"));
+    expect(tick(server)).toBeChecked();
   });
 
   it("shows a refused endpoint as a message and stores nothing", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own server/));
     const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.type(within(form).getByLabelText("Address"), "http://llm.example.com/v1");
     await s.user.type(within(form).getByLabelText("Model"), "m");
@@ -137,7 +155,6 @@ describe("Settings, Summaries", () => {
 
   it("refuses an address holding the path the client appends", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own server/));
     const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     await s.user.type(within(form).getByLabelText("Address"), "/v1");
@@ -163,7 +180,6 @@ describe("Settings, Summaries", () => {
 
   it("keeps the Anthropic key write-only: save shows Key saved, remove brings the field back", async () => {
     const s = await open();
-    await s.user.click(radio(/^Your own server/));
     const form = screen.getByRole("group", { name: "Your own server" });
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     expect(within(form).getByLabelText("Address")).toHaveValue(MOCK_ANTHROPIC_URL);
@@ -224,7 +240,8 @@ describe("Settings, Summaries", () => {
         apiKeySaved: true,
       },
     });
-    expect(radio(/^Your own server/)).toBeChecked();
+    await waitFor(() => expect(tick(ORDER_COPY.steps.endpoint_anthropic)).toBeChecked());
+    expect(tick(LOCAL)).not.toBeChecked();
     expect(await screen.findByText("Key saved")).toBeInTheDocument();
     expect(screen.getByText(remoteWarning("api.anthropic.com"))).toBeInTheDocument();
     expect(live()).toBeDisabled();
@@ -234,7 +251,6 @@ describe("Settings, Summaries", () => {
     const texts: string[] = [];
     const s = await open();
     texts.push(pageText());
-    await s.user.click(radio(/^Your own server/));
     const form = screen.getByRole("group", { name: "Your own server" });
     texts.push(pageText());
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
@@ -242,10 +258,20 @@ describe("Settings, Summaries", () => {
     await s.user.click(within(form).getByRole("button", { name: "Use this endpoint" }));
     await screen.findByText(remoteWarning("api.anthropic.com"));
     texts.push(pageText());
-    await s.user.click(radio(/^No summary/));
+    await s.user.click(tick(LOCAL));
+    await s.user.click(tick(ORDER_COPY.steps.endpoint_anthropic));
+    await waitFor(async () => expect((await s.ipc.summaryOrder()).none).toBe(true));
     await waitFor(() => expect(live()).toBeDisabled());
     texts.push(pageText());
-    await s.user.click(radio(/^Claude \(through Claude Code\)/));
+    await s.user.click(radio(new RegExp(`^${ORDER_COPY.page.write}`)));
+    await waitFor(() => expect(tick(CLAUDE)).toBeEnabled());
+    // A fourth tick's refusal too.
+    await s.user.click(tick(CLAUDE));
+    await waitFor(() => expect(tick(CODEX)).toBeEnabled());
+    await s.user.click(tick(CODEX));
+    await waitFor(() => expect(tick(ORDER_COPY.steps.endpoint_anthropic)).toBeEnabled());
+    await s.user.click(tick(ORDER_COPY.steps.endpoint_anthropic));
+    await screen.findByText(fillCopy(ORDER_COPY.page.too_many, { n: "3" }));
     await screen.findByText(CLAUDE_CODE_STATUS.surface.message);
     texts.push(pageText());
     for (const t of texts) expect(t).not.toMatch(/—|please|!/i);
@@ -259,10 +285,16 @@ describe("Settings, Summaries", () => {
       asked.n += 1;
       return status();
     };
+    // Before it is ticked (PLAN 3.9: the disclosure comes before the choice): where the
+    // transcript goes and the privacy line, no card and no question to Claude Code.
+    expect(screen.getByText(ORDER_COPY.destinations.claude_code)).toBeInTheDocument();
     expect(screen.getByText(CLAUDE_CODE_PRIVACY)).toBeInTheDocument();
+    expect(tick(CLAUDE)).toHaveAccessibleDescription(
+      `${ORDER_COPY.destinations.claude_code} ${CLAUDE_CODE_PRIVACY}`,
+    );
     expect(screen.queryByRole("group", { name: "Claude through Claude Code" })).toBeNull();
     expect(asked.n).toBe(0);
-    await s.user.click(radio(/^Claude \(through Claude Code\)/));
+    await makeFirst(s, CLAUDE);
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("ClaudeCode"));
     const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
     expect(await within(card).findByText("Claude Code 2.1.290 is installed and signed in.")).toBeInTheDocument();
@@ -407,7 +439,7 @@ describe("Settings, Summaries", () => {
 
   it("says how to sign in to Claude Code or install it", async () => {
     await open({ machine: "surface", summaries: { settings: { writer: "ClaudeCode" } } });
-    expect(radio(/^Claude \(through Claude Code\)/)).toBeChecked();
+    await waitFor(() => expect(tick(CLAUDE)).toBeChecked());
     const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
     expect(await within(card).findByText(CLAUDE_CODE_STATUS.surface.message)).toBeInTheDocument();
     expect(within(card).getByText(CLAUDE_CODE_STATUS.surface.fix ?? "")).toBeInTheDocument();
@@ -431,11 +463,12 @@ describe("Settings, Summaries", () => {
       asked.claude += 1;
       return claude();
     };
+    expect(screen.getByText(ORDER_COPY.destinations.codex)).toBeInTheDocument();
     expect(screen.getByText(CODEX_PRIVACY)).toBeInTheDocument();
     expect(CODEX_PRIVACY).toContain("handed to Codex, which sends them to OpenAI on your ChatGPT sign-in");
     expect(screen.queryByRole("group", { name: "OpenAI through Codex" })).toBeNull();
     expect(asked.codex).toBe(0);
-    await s.user.click(radio(/^OpenAI \(through Codex\)/));
+    await makeFirst(s, CODEX);
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("Codex"));
     const card = await screen.findByRole("group", { name: "OpenAI through Codex" });
     expect(await within(card).findByText(CODEX_STATUS.desktop.message)).toBeInTheDocument();
@@ -477,7 +510,7 @@ describe("Settings, Summaries", () => {
 
   it("says how to install Codex or sign in to it", async () => {
     await open({ machine: "surface", summaries: { settings: { writer: "Codex" } } });
-    expect(radio(/^OpenAI \(through Codex\)/)).toBeChecked();
+    await waitFor(() => expect(tick(CODEX)).toBeChecked());
     const card = await screen.findByRole("group", { name: "OpenAI through Codex" });
     expect(await within(card).findByText(CODEX_NOT_INSTALLED.message)).toBeInTheDocument();
     expect(within(card).getByText(CODEX_NOT_INSTALLED.fix ?? "")).toBeInTheDocument();
