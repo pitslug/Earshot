@@ -1,6 +1,7 @@
-// Settings, Summaries (docs/ui-mockups/t7-4.html, PLAN T7.4g): who writes the summary (this
-// computer, your own endpoint, Claude through Claude Code (T7.4ga), OpenAI through Codex
-// (T7.4gc) or no summary), the summary model under "On this computer" (T12.5b, was on Models),
+// Settings, Summaries (docs/ui-mockups/t7-4.html, PLAN T7.4g): who writes the summary (one
+// ordered list of this computer, your own endpoint, Claude through Claude Code (T7.4ga), OpenAI
+// through Codex (T7.4gc) and your other computers, or no summary; T12.68), the summary model
+// when this computer writes (T12.5b, was on Models),
 // the endpoint with its API key for Anthropic, Claude Code's and Codex's status and model (a
 // list with Other, T12.18) and Claude Code's effort, summarising during the meeting, and the
 // summary style (T7.4b, `SummaryStyleSection`). Choices save as they change; the endpoint and a
@@ -12,6 +13,7 @@ import {
   Body1Strong,
   Button,
   Caption1,
+  Checkbox,
   Field,
   Input,
   MessageBar,
@@ -84,13 +86,60 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
     paddingLeft: "32px",
   },
-  later: {
-    display: "grid",
-    gap: tokens.spacingVerticalM,
+  // The writers (T12.68): one bordered list, a row per writer. No width caps: the names and
+  // where each writer sends the transcript wrap with the page.
+  writerList: {
+    listStyleType: "none",
+    margin: 0,
+    padding: 0,
+    border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke1}`,
+    borderRadius: tokens.borderRadiusMedium,
+    backgroundColor: tokens.colorNeutralBackground1,
   },
-  // The list itself is capped; its hint (where the transcript goes) fills the page.
-  laterSelect: {
-    maxWidth: "520px",
+  writerListOff: {
+    opacity: 0.55,
+  },
+  writerRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: tokens.spacingHorizontalS,
+    padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalM}`,
+    "&:not(:first-child)": {
+      borderTop: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    },
+  },
+  writerOff: {
+    color: tokens.colorNeutralForegroundDisabled,
+  },
+  rank: {
+    flexShrink: 0,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "24px",
+    height: "24px",
+    borderRadius: tokens.borderRadiusCircular,
+    backgroundColor: tokens.colorBrandBackground,
+    color: tokens.colorNeutralForegroundOnBrand,
+    fontSize: tokens.fontSizeBase200,
+    fontWeight: tokens.fontWeightSemibold,
+  },
+  rankEmpty: {
+    backgroundColor: "transparent",
+    border: `${tokens.strokeWidthThin} dashed ${tokens.colorNeutralStroke1}`,
+    boxSizing: "border-box",
+  },
+  writerText: {
+    flexGrow: 1,
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: tokens.spacingVerticalXXS,
+  },
+  moves: {
+    flexShrink: 0,
+    display: "flex",
+    gap: tokens.spacingHorizontalXXS,
   },
   muted: {
     color: tokens.colorNeutralForeground3,
@@ -194,6 +243,9 @@ function Choice({
 /** The value of "No summary" among step 1's choices. */
 const NO_SUMMARY = "NoSummary";
 
+/** The value of "Write summaries" on the Summaries page. */
+const WRITE = "Write";
+
 /** The endpoint form, the remote warning and the API key. `inUse`: a step of the order is the
  * endpoint; `onUse` stores the fields with the endpoint in its step. */
 function EndpointForm({
@@ -242,6 +294,7 @@ function EndpointForm({
 
   return (
     <div className={styles.endpoint} role="group" aria-label="Your own server">
+      <Body1Strong>Your own server</Body1Strong>
       <div className={styles.fields}>
         <Field label="Provider">
           <Select
@@ -449,11 +502,14 @@ function AgentCliCard({
   hint,
   saveModel,
   effort,
+  privacy,
   saveOnNext,
 }: {
   state: SummariesPageState;
   /** Whether a step of the order is this CLI. */
   inUse: boolean;
+  /** Where the meeting goes, said at the top of the card. */
+  privacy?: string;
   /** The CLI's product name ("Claude Code", "Codex"). */
   name: string;
   /** The card's accessible name. */
@@ -494,6 +550,7 @@ function AgentCliCard({
   useSaveOnNext(saveOnNext, async () => !changed || state.save(saveModel(typed)));
   return (
     <div className={styles.endpoint} role="group" aria-label={group}>
+      {privacy !== undefined && <Caption1 className={styles.muted}>{privacy}</Caption1>}
       {check.status === "checking" && <Spinner size="tiny" label={`Checking ${name}`} />}
       {check.status === "failed" && (
         <MessageBar intent="error">
@@ -582,11 +639,13 @@ interface WriterCardProps {
   settings: SummarySettingsView;
   /** Whether a step of the order is this writer. */
   inUse: boolean;
+  /** Where the meeting goes, said at the top of the card. */
+  privacy?: string;
   saveOnNext?: SaveOnNext;
 }
 
 /** Claude Code's status, the model it is asked for and its effort (T7.4ga, T12.18). */
-function ClaudeCodeCard({ state, settings, inUse, saveOnNext }: WriterCardProps) {
+function ClaudeCodeCard({ state, settings, inUse, privacy, saveOnNext }: WriterCardProps) {
   const check = state.claudeCode;
   return (
     <AgentCliCard
@@ -608,13 +667,14 @@ function ClaudeCodeCard({ state, settings, inUse, saveOnNext }: WriterCardProps)
           note={check.status === "done" ? check.view.effort_note : null}
         />
       }
+      privacy={privacy}
       saveOnNext={saveOnNext}
     />
   );
 }
 
 /** Codex's status and the model it is asked for (T7.4gc). */
-function CodexCard({ state, settings, inUse, saveOnNext }: WriterCardProps) {
+function CodexCard({ state, settings, inUse, privacy, saveOnNext }: WriterCardProps) {
   return (
     <AgentCliCard
       state={state}
@@ -628,220 +688,44 @@ function CodexCard({ state, settings, inUse, saveOnNext }: WriterCardProps) {
       placeholder={CODEX_MODEL_PLACEHOLDER}
       hint="A model name Codex accepts."
       saveModel={(m) => ({ codex_model: m })}
+      privacy={privacy}
       saveOnNext={saveOnNext}
     />
   );
 }
 
-/** "Who writes the summary" (T12.63b, docs/summary-order.md 2): the order of summary writers.
- * Step 1 is a choice among the writers on this computer, the user's other computers that write
- * summaries, and "No summary" (which clears the order); steps 2 and 3 ("If it can't") are
- * optional and offer only writers not already used. Under each step the page says where the
- * transcript goes, and under the order each writer in it shows its form or card. Choices apply at
- * once; an endpoint without its address waits for its form's button. With `endpointUnderOther`
- * (the first-run wizard) there is one step, no computers, and your own endpoint comes last,
- * behind "Other". */
-function WriterSection({
+/** The parts under the writers: the summary models when this computer writes, the endpoint form
+ * (also while the endpoint is not set up, so it can be), and the Claude Code and Codex cards for
+ * the writers in the order. Nothing shows while the order is unread (`locked`). */
+function WriterForms({
   state,
   settings,
   keySaved,
-  endpointUnderOther = false,
-  saveOnNext,
+  stored,
+  locked,
+  endpointShown,
+  useEndpoint,
   localModels,
+  privacy,
+  saveOnNext,
 }: {
   state: SummariesPageState;
   settings: SummarySettingsView;
   keySaved: boolean | null;
-  endpointUnderOther?: boolean;
-  saveOnNext?: SaveOnNext;
-  /** The model state Settings holds: with it, the summary models show under "On this computer". */
+  stored: StepChoice[];
+  locked: boolean;
+  endpointShown: boolean;
+  useEndpoint(change: Partial<SummarySettingsValue>): Promise<boolean>;
   localModels?: ModelsPageState;
+  /** Whether the CLI cards say where the meeting goes (the wizard says it on its choices). */
+  privacy: boolean;
+  saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
-  const writerLabel = useId();
   const localLabel = useId();
-  const oneStep = endpointUnderOther;
-  // The step whose endpoint waits for its form (null: none).
-  const [pending, setPending] = useState<number | null>(null);
-  const [otherOpen, setOtherOpen] = useState(false);
-  const value = settings.value;
-  const order = state.order;
-  // Nothing is offered before the order is read: a choice then would replace an order nobody
-  // has seen (the old writer setting holds only its first writer step).
-  const locked = order === null;
-  const stored: StepChoice[] = order !== null ? order.steps.map((s) => s.step) : [];
-  const offered: StepView[] = order?.offered ?? [];
-  const viewOf = (step: StepChoice) => offered.find((o) => sameStep(o.step, step));
-  const hasEndpoint = value.url !== "" && value.model !== "";
-  const maxSteps = oneStep ? 1 : (order?.max_steps ?? 3);
-  const shown = locked ? "" : pending === 0 ? "Endpoint" : stored.length > 0 ? stepKey(stored[0]) : NO_SUMMARY;
-  const loaded = localModels?.load.status === "loaded" ? localModels.load.data : null;
-  const models = loaded?.models ?? state.models;
-  const local =
-    models === null
-      ? undefined
-      : `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
   const inOrder = (kind: StepChoice["kind"]) => stored.some((s) => s.kind === kind);
-
-  // `step` at `index`, a later copy of it removed (a writer appears once).
-  const placed = (index: number, step: StepChoice): StepChoice[] => {
-    const next = [...stored];
-    next[index] = step;
-    return next.filter((s, i) => !next.slice(0, i).some((t) => sameStep(s, t))).slice(0, maxSteps);
-  };
-  const chooseAt = (index: number, step: StepChoice | null) => {
-    if (locked) return;
-    if (step === null) {
-      // "No summary" for step 1; "Nothing else" for a later step (the steps after it go too).
-      setPending(null);
-      void state.saveOrder(stored.slice(0, index));
-      return;
-    }
-    if (step.kind === "Endpoint" && !hasEndpoint) {
-      // No endpoint yet: show the form; the step is stored once it is saved.
-      setPending(index);
-      return;
-    }
-    setPending(null);
-    void state.saveOrder(oneStep ? [step] : placed(index, step));
-  };
-  const stepOfKey = (key: string): StepChoice | null =>
-    key === NO_SUMMARY || key === "" ? null : (offered.find((o) => stepKey(o.step) === key)?.step ?? null);
-  const useEndpoint = async (change: Partial<SummarySettingsValue>) => {
-    if (locked) return false;
-    const at = pending ?? stored.findIndex((s) => s.kind === "Endpoint");
-    const index = at < 0 ? stored.length : at;
-    const steps = oneStep ? [{ kind: "Endpoint" } as StepChoice] : placed(index, { kind: "Endpoint" });
-    const ok = await state.saveOrder(steps, change);
-    if (ok) setPending(null);
-    return ok;
-  };
-  const dest = (step: StepChoice) => viewOf(step)?.destination;
-  const ownEndpoint = (
-    <Choice
-      value="Endpoint"
-      label="Your own server"
-      detail={hasEndpoint ? viewOf({ kind: "Endpoint" })?.label : undefined}
-      why="An OpenAI-compatible server or Claude. The meeting's transcript, title, speaker names and notes are sent to the address you enter, and only there."
-      destination={hasEndpoint ? dest({ kind: "Endpoint" }) : undefined}
-      selected={shown === "Endpoint"}
-    />
-  );
-  // What is stored always shows.
-  const endpointOpen = otherOpen || shown === "Endpoint";
-  const computers = oneStep ? [] : offered.filter((o) => o.step.kind === "Computer");
-  // The later steps: each shown once the one before it is chosen.
-  const later = oneStep
-    ? []
-    : Array.from({ length: maxSteps - 1 }, (_, k) => k + 1).filter((i) => stored.length >= i && stored.length > 0);
-  const endpointShown = inOrder("Endpoint") || pending !== null;
-
   return (
-    <Section title="Who writes the summary">
-      <span id={writerLabel} hidden>
-        Who writes the summary
-      </span>
-      {!oneStep && <Caption1 className={styles.muted}>{ORDER_COPY.page.explained}</Caption1>}
-      {state.orderError !== null && (
-        <MessageBar intent="error">
-          <MessageBarBody>
-            <MessageBarTitle>{ORDER_COPY.page.not_read}</MessageBarTitle>
-            {state.orderError}
-          </MessageBarBody>
-        </MessageBar>
-      )}
-      {locked && state.orderError === null && <Spinner size="tiny" label={ORDER_COPY.page.reading} />}
-      <RadioGroup
-        aria-labelledby={writerLabel}
-        value={shown}
-        disabled={state.busy || locked}
-        onChange={(_, d) => chooseAt(0, stepOfKey(d.value))}
-        className={styles.choices}
-      >
-        <Choice
-          value="Local"
-          label="On this computer"
-          detail={local}
-          why="Nothing leaves this computer."
-          destination={dest({ kind: "Local" })}
-          selected={shown === "Local"}
-        />
-        {!endpointUnderOther && ownEndpoint}
-        <Choice
-          value="ClaudeCode"
-          label="Claude (through Claude Code)"
-          detail="Uses your Claude sign-in"
-          why={CLAUDE_CODE_PRIVACY}
-          destination={dest({ kind: "ClaudeCode" })}
-          selected={shown === "ClaudeCode"}
-        />
-        <Choice
-          value="Codex"
-          label="OpenAI (through Codex)"
-          detail="Uses your ChatGPT sign-in"
-          why={CODEX_PRIVACY}
-          destination={dest({ kind: "Codex" })}
-          selected={shown === "Codex"}
-        />
-        {computers.map((c) => (
-          <Choice
-            key={stepKey(c.step)}
-            value={stepKey(c.step)}
-            label={c.label}
-            destination={c.destination}
-            selected={shown === stepKey(c.step)}
-          />
-        ))}
-        <Choice
-          value={NO_SUMMARY}
-          label={ORDER_COPY.page.no_summary}
-          why={ORDER_COPY.page.no_summary_why}
-          selected={shown === NO_SUMMARY}
-        />
-        {endpointUnderOther && endpointOpen && ownEndpoint}
-      </RadioGroup>
-      {endpointUnderOther && shown !== "Endpoint" && (
-        <Button
-          appearance="subtle"
-          className={styles.other}
-          aria-expanded={otherOpen}
-          onClick={() => setOtherOpen((open) => !open)}
-        >
-          Other
-        </Button>
-      )}
-      {later.length > 0 && (
-        <div className={styles.later} role="group" aria-label={ORDER_COPY.page.if_cant}>
-          <Body1Strong>{ORDER_COPY.page.if_cant}</Body1Strong>
-          {later.map((i) => {
-            const current = stored[i];
-            const value = current !== undefined ? stepKey(current) : pending === i ? "Endpoint" : "";
-            const choices = offered.filter((o) => !stored.some((s, j) => j !== i && sameStep(s, o.step)));
-            return (
-              <Field
-                key={i}
-                label={fillCopy(ORDER_COPY.page.step, { n: String(i + 1) })}
-                hint={current !== undefined ? dest(current) : undefined}
-              >
-                <Select
-                  className={styles.laterSelect}
-                  value={value}
-                  disabled={state.busy || locked}
-                  onChange={(_, d) => chooseAt(i, stepOfKey(d.value))}
-                >
-                  <option value="">{ORDER_COPY.page.nothing_else}</option>
-                  {choices.map((o) => (
-                    <option key={stepKey(o.step)} value={stepKey(o.step)}>
-                      {o.label}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            );
-          })}
-        </div>
-      )}
-      {order !== null && order.notes.length > 0 && <UnknownSettings unknown={order.notes} />}
+    <>
       {state.modelsError !== null && (
         <Caption1 className={styles.muted}>The model in use could not be read: {state.modelsError}</Caption1>
       )}
@@ -867,9 +751,461 @@ function WriterSection({
         />
       )}
       {inOrder("ClaudeCode") && (
-        <ClaudeCodeCard state={state} settings={settings} inUse saveOnNext={saveOnNext} />
+        <ClaudeCodeCard
+          state={state}
+          settings={settings}
+          inUse
+          privacy={privacy ? CLAUDE_CODE_PRIVACY : undefined}
+          saveOnNext={saveOnNext}
+        />
       )}
-      {inOrder("Codex") && <CodexCard state={state} settings={settings} inUse saveOnNext={saveOnNext} />}
+      {inOrder("Codex") && (
+        <CodexCard
+          state={state}
+          settings={settings}
+          inUse
+          privacy={privacy ? CODEX_PRIVACY : undefined}
+          saveOnNext={saveOnNext}
+        />
+      )}
+    </>
+  );
+}
+
+/** "Who writes the summary" in the first-run wizard: one writer among this computer, Claude
+ * Code, Codex and "No summary", with your own endpoint last, behind "Other". A choice applies at
+ * once; an endpoint without its address waits for its form's button. */
+function WriterSection({
+  state,
+  settings,
+  keySaved,
+  saveOnNext,
+}: {
+  state: SummariesPageState;
+  settings: SummarySettingsView;
+  keySaved: boolean | null;
+  saveOnNext?: SaveOnNext;
+}) {
+  const styles = useStyles();
+  const writerLabel = useId();
+  // Whether the endpoint waits for its form.
+  const [pending, setPending] = useState(false);
+  const [otherOpen, setOtherOpen] = useState(false);
+  const value = settings.value;
+  const order = state.order;
+  // Nothing is offered before the order is read: a choice then would replace an order nobody
+  // has seen (the old writer setting holds only its first writer step).
+  const locked = order === null;
+  const stored: StepChoice[] = order !== null ? order.steps.map((s) => s.step) : [];
+  const offered: StepView[] = order?.offered ?? [];
+  const viewOf = (step: StepChoice) => offered.find((o) => sameStep(o.step, step));
+  const hasEndpoint = value.url !== "" && value.model !== "";
+  const shown = locked ? "" : pending ? "Endpoint" : stored.length > 0 ? stepKey(stored[0]) : NO_SUMMARY;
+  const models = state.models;
+  const local =
+    models === null
+      ? undefined
+      : `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
+
+  const choose = (key: string) => {
+    if (locked) return;
+    const step = key === NO_SUMMARY || key === "" ? null : (offered.find((o) => stepKey(o.step) === key)?.step ?? null);
+    if (step !== null && step.kind === "Endpoint" && !hasEndpoint) {
+      // No endpoint yet: show the form; the step is stored once it is saved.
+      setPending(true);
+      return;
+    }
+    setPending(false);
+    void state.saveOrder(step === null ? [] : [step]);
+  };
+  const useEndpoint = async (change: Partial<SummarySettingsValue>) => {
+    if (locked) return false;
+    const ok = await state.saveOrder([{ kind: "Endpoint" }], change);
+    if (ok) setPending(false);
+    return ok;
+  };
+  const dest = (step: StepChoice) => viewOf(step)?.destination;
+  // What is stored always shows.
+  const endpointOpen = otherOpen || shown === "Endpoint";
+
+  return (
+    <Section title="Who writes the summary">
+      <span id={writerLabel} hidden>
+        Who writes the summary
+      </span>
+      {state.orderError !== null && (
+        <MessageBar intent="error">
+          <MessageBarBody>
+            <MessageBarTitle>{ORDER_COPY.page.not_read}</MessageBarTitle>
+            {state.orderError}
+          </MessageBarBody>
+        </MessageBar>
+      )}
+      {locked && state.orderError === null && <Spinner size="tiny" label={ORDER_COPY.page.reading} />}
+      <RadioGroup
+        aria-labelledby={writerLabel}
+        value={shown}
+        disabled={state.busy || locked}
+        onChange={(_, d) => choose(d.value)}
+        className={styles.choices}
+      >
+        <Choice
+          value="Local"
+          label="On this computer"
+          detail={local}
+          why="Nothing leaves this computer."
+          destination={dest({ kind: "Local" })}
+          selected={shown === "Local"}
+        />
+        <Choice
+          value="ClaudeCode"
+          label="Claude (through Claude Code)"
+          detail="Uses your Claude sign-in"
+          why={CLAUDE_CODE_PRIVACY}
+          destination={dest({ kind: "ClaudeCode" })}
+          selected={shown === "ClaudeCode"}
+        />
+        <Choice
+          value="Codex"
+          label="OpenAI (through Codex)"
+          detail="Uses your ChatGPT sign-in"
+          why={CODEX_PRIVACY}
+          destination={dest({ kind: "Codex" })}
+          selected={shown === "Codex"}
+        />
+        <Choice
+          value={NO_SUMMARY}
+          label={ORDER_COPY.page.no_summary}
+          why={ORDER_COPY.page.no_summary_why}
+          selected={shown === NO_SUMMARY}
+        />
+        {endpointOpen && (
+          <Choice
+            value="Endpoint"
+            label="Your own server"
+            detail={hasEndpoint ? viewOf({ kind: "Endpoint" })?.label : undefined}
+            why="An OpenAI-compatible server or Claude. The meeting's transcript, title, speaker names and notes are sent to the address you enter, and only there."
+            destination={hasEndpoint ? dest({ kind: "Endpoint" }) : undefined}
+            selected={shown === "Endpoint"}
+          />
+        )}
+      </RadioGroup>
+      {shown !== "Endpoint" && (
+        <Button
+          appearance="subtle"
+          className={styles.other}
+          aria-expanded={otherOpen}
+          onClick={() => setOtherOpen((open) => !open)}
+        >
+          Other
+        </Button>
+      )}
+      {order !== null && order.notes.length > 0 && <UnknownSettings unknown={order.notes} />}
+      <WriterForms
+        state={state}
+        settings={settings}
+        keySaved={keySaved}
+        stored={stored}
+        locked={locked}
+        endpointShown={stored.some((s) => s.kind === "Endpoint") || pending}
+        useEndpoint={useEndpoint}
+        privacy={false}
+        saveOnNext={saveOnNext}
+      />
+    </Section>
+  );
+}
+
+/** The writers the list always holds, in its order (the user's other computers follow). */
+const WRITERS: StepChoice[] = [{ kind: "Local" }, { kind: "Endpoint" }, { kind: "ClaudeCode" }, { kind: "Codex" }];
+
+/** A writer's row while the order is unread: the table's label and destination for a writer
+ * not yet set up (nothing in it can be used until the order is read). */
+function unreadView(step: StepChoice): StepView {
+  const key =
+    step.kind === "Local"
+      ? "local"
+      : step.kind === "ClaudeCode"
+        ? "claude_code"
+        : step.kind === "Codex"
+          ? "codex"
+          : "endpoint_unset";
+  return { step, label: ORDER_COPY.steps[key], destination: ORDER_COPY.destinations[key] };
+}
+
+function ArrowIcon({ up }: { up: boolean }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
+      <path d={up ? "M4 10l4-4 4 4" : "M4 6l4 4 4-4"} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** One writer in the list: its rank while ticked, its tick box, its name and kind, where it
+ * sends the transcript, why it cannot be ticked yet, and up and down while ticked. */
+function WriterRow({
+  view,
+  kind,
+  rank,
+  first,
+  last,
+  disabled,
+  notSetUp,
+  onTick,
+  onMove,
+}: {
+  view: StepView;
+  /** What kind of writer it is, in a lighter span after its name. */
+  kind?: string;
+  /** Its place in the order (1-based), or null when not ticked. */
+  rank: number | null;
+  first: boolean;
+  last: boolean;
+  /** Nothing in the row can be used (busy, unread, no summary). */
+  disabled: boolean;
+  /** It cannot be ticked until it is set up. */
+  notSetUp: boolean;
+  onTick(on: boolean): void;
+  onMove(by: -1 | 1): void;
+}) {
+  const styles = useStyles();
+  const ticked = rank !== null;
+  const writer = view.label;
+  return (
+    <li
+      className={mergeClasses(styles.writerRow, notSetUp && !ticked && styles.writerOff)}
+      data-rank={rank ?? undefined}
+      data-step={stepKey(view.step)}
+    >
+      {ticked ? (
+        <span className={styles.rank} title={fillCopy(ORDER_COPY.page.step, { n: String(rank) })}>
+          {rank}
+        </span>
+      ) : (
+        <span className={mergeClasses(styles.rank, styles.rankEmpty)} aria-hidden="true" />
+      )}
+      <Checkbox
+        aria-label={fillCopy(ORDER_COPY.page.use, { writer })}
+        checked={ticked}
+        disabled={disabled || (notSetUp && !ticked)}
+        onChange={(_, d) => onTick(d.checked === true)}
+      />
+      <div className={styles.writerText}>
+        <span className={styles.title}>
+          <Body1Strong>{writer}</Body1Strong>
+          {kind !== undefined && <Caption1 className={styles.muted}>{kind}</Caption1>}
+          {notSetUp && (
+            <Badge appearance="outline" color="informative" size="small">
+              {ORDER_COPY.page.not_set_up}
+            </Badge>
+          )}
+        </span>
+        <Caption1 className={styles.muted}>{view.destination}</Caption1>
+      </div>
+      {ticked && (
+        <div className={styles.moves}>
+          <Button
+            appearance="subtle"
+            size="small"
+            icon={<ArrowIcon up />}
+            aria-label={fillCopy(ORDER_COPY.page.move_up, { writer })}
+            disabled={disabled || first}
+            onClick={() => onMove(-1)}
+          />
+          <Button
+            appearance="subtle"
+            size="small"
+            icon={<ArrowIcon up={false} />}
+            aria-label={fillCopy(ORDER_COPY.page.move_down, { writer })}
+            disabled={disabled || last}
+            onClick={() => onMove(1)}
+          />
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** "Who writes the summary" on the Summaries page (T12.68, docs/summary-order.md 2): "Write
+ * summaries" or "No summary", then one list of every writer this computer can use (this
+ * computer, your own server, Claude Code, Codex, each other computer that offers summaries). The
+ * ticked writers come first, in the order Earshot asks them, each with its rank and up and down
+ * buttons; at most `max_steps` are ticked. A writer not set up is listed, greyed, with why, and
+ * cannot be ticked; "No summary" greys the whole list. Every change saves the order at once
+ * through `set_summary_order`, and nothing changes while the order is unread. */
+function OrderSection({
+  state,
+  settings,
+  keySaved,
+  localModels,
+}: {
+  state: SummariesPageState;
+  settings: SummarySettingsView;
+  keySaved: boolean | null;
+  /** The model state Settings holds: with it, the summary models show under the list. */
+  localModels?: ModelsPageState;
+}) {
+  const styles = useStyles();
+  const writerLabel = useId();
+  const listLabel = useId();
+  // A tick refused because the order is full.
+  const [full, setFull] = useState(false);
+  const value = settings.value;
+  const order = state.order;
+  // Nothing is offered before the order is read: a change then would replace an order nobody
+  // has seen.
+  const locked = order === null;
+  const stored: StepChoice[] = order !== null ? order.steps.map((s) => s.step) : [];
+  const offered: StepView[] = order?.offered ?? WRITERS.map(unreadView);
+  const hasEndpoint = value.url !== "" && value.model !== "";
+  const maxSteps = order?.max_steps ?? 3;
+  const none = !locked && stored.length === 0;
+  const off = state.busy || locked || none;
+  const loaded = localModels?.load.status === "loaded" ? localModels.load.data : null;
+  const models = loaded?.models ?? state.models;
+  const local =
+    models === null
+      ? undefined
+      : `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
+  const kindOf = (step: StepChoice): string | undefined => {
+    switch (step.kind) {
+      case "Local":
+        return local;
+      case "ClaudeCode":
+        return "Uses your Claude sign-in";
+      case "Codex":
+        return "Uses your ChatGPT sign-in";
+      default:
+        return undefined;
+    }
+  };
+  const viewOf = (step: StepChoice): StepView =>
+    order?.steps.find((v) => sameStep(v.step, step)) ??
+    offered.find((o) => sameStep(o.step, step)) ??
+    unreadView(step);
+  const rows: StepView[] = [
+    ...stored.map(viewOf),
+    ...offered.filter((o) => !stored.some((s) => sameStep(s, o.step))),
+  ];
+  const notSetUp = (step: StepChoice) => step.kind === "Endpoint" && !hasEndpoint;
+
+  const save = (steps: StepChoice[]) => {
+    if (locked) return;
+    setFull(false);
+    void state.saveOrder(steps);
+  };
+  const tickOne = (step: StepChoice, on: boolean) => {
+    if (locked) return;
+    if (!on) {
+      save(stored.filter((s) => !sameStep(s, step)));
+      return;
+    }
+    if (stored.length >= maxSteps) {
+      setFull(true);
+      return;
+    }
+    save([...stored, step]);
+  };
+  const move = (index: number, by: -1 | 1) => {
+    const to = index + by;
+    if (to < 0 || to >= stored.length) return;
+    const next = [...stored];
+    [next[index], next[to]] = [next[to], next[index]];
+    save(next);
+  };
+  const choose = (key: string) => {
+    if (locked) return;
+    if (key === NO_SUMMARY) save([]);
+    // "Write summaries" from no summary starts with this computer, the writer always set up.
+    else if (stored.length === 0) save([{ kind: "Local" }]);
+  };
+  const useEndpoint = async (change: Partial<SummarySettingsValue>) => {
+    if (locked) return false;
+    // A writer the user just set up is ticked last, when there is room.
+    const steps: StepChoice[] =
+      stored.some((s) => s.kind === "Endpoint") || stored.length >= maxSteps
+        ? stored
+        : [...stored, { kind: "Endpoint" }];
+    setFull(false);
+    return state.saveOrder(steps, change);
+  };
+
+  return (
+    <Section title="Who writes the summary">
+      <span id={writerLabel} hidden>
+        Who writes the summary
+      </span>
+      {state.orderError !== null && (
+        <MessageBar intent="error">
+          <MessageBarBody>
+            <MessageBarTitle>{ORDER_COPY.page.not_read}</MessageBarTitle>
+            {state.orderError}
+          </MessageBarBody>
+        </MessageBar>
+      )}
+      {locked && state.orderError === null && <Spinner size="tiny" label={ORDER_COPY.page.reading} />}
+      <RadioGroup
+        aria-labelledby={writerLabel}
+        value={locked ? "" : none ? NO_SUMMARY : WRITE}
+        disabled={state.busy || locked}
+        onChange={(_, d) => choose(d.value)}
+      >
+        <Radio value={WRITE} label={ORDER_COPY.page.write} />
+        <Radio
+          value={NO_SUMMARY}
+          label={
+            <span className={styles.title}>
+              <span>{ORDER_COPY.page.no_summary}</span>
+              <Caption1 className={styles.muted}>{ORDER_COPY.page.no_summary_why}</Caption1>
+            </span>
+          }
+        />
+      </RadioGroup>
+      <Caption1 className={styles.muted}>{ORDER_COPY.page.explained}</Caption1>
+      <span id={listLabel} hidden>
+        {ORDER_COPY.page.list}
+      </span>
+      <ul
+        className={mergeClasses(styles.writerList, none && styles.writerListOff)}
+        aria-labelledby={listLabel}
+        aria-disabled={none || locked ? true : undefined}
+      >
+        {rows.map((view) => {
+          const at = stored.findIndex((s) => sameStep(s, view.step));
+          return (
+            <WriterRow
+              key={stepKey(view.step)}
+              view={view}
+              kind={kindOf(view.step)}
+              rank={at < 0 ? null : at + 1}
+              first={at === 0}
+              last={at === stored.length - 1}
+              disabled={off}
+              notSetUp={notSetUp(view.step)}
+              onTick={(on) => tickOne(view.step, on)}
+              onMove={(by) => move(at, by)}
+            />
+          );
+        })}
+      </ul>
+      {full && (
+        <MessageBar intent="warning">
+          <MessageBarBody>{fillCopy(ORDER_COPY.page.too_many, { n: String(maxSteps) })}</MessageBarBody>
+        </MessageBar>
+      )}
+      <Caption1 className={styles.muted}>{ORDER_COPY.page.kept_local}</Caption1>
+      {order !== null && order.notes.length > 0 && <UnknownSettings unknown={order.notes} />}
+      <WriterForms
+        state={state}
+        settings={settings}
+        keySaved={keySaved}
+        stored={stored}
+        locked={locked}
+        endpointShown={!locked && (stored.some((s) => s.kind === "Endpoint") || !hasEndpoint)}
+        useEndpoint={useEndpoint}
+        localModels={localModels}
+        privacy
+      />
     </Section>
   );
 }
@@ -902,13 +1238,7 @@ export function SummaryWriterChoices({ saveOnNext }: { saveOnNext: SaveOnNext })
   return (
     <div className={page.page}>
       <SummariesNotices state={state} settings={load.settings} />
-      <WriterSection
-        state={state}
-        settings={load.settings}
-        keySaved={load.keySaved}
-        endpointUnderOther
-        saveOnNext={saveOnNext}
-      />
+      <WriterSection state={state} settings={load.settings} keySaved={load.keySaved} saveOnNext={saveOnNext} />
     </div>
   );
 }
@@ -946,7 +1276,7 @@ export function SummariesPage({ models }: SummariesPageProps) {
       </Title2>
       <SummariesNotices state={state} settings={settings} />
 
-      <WriterSection state={state} settings={settings} keySaved={keySaved} localModels={models} />
+      <OrderSection state={state} settings={settings} keySaved={keySaved} localModels={models} />
 
       <Section title="During the meeting">
         <Switch

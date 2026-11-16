@@ -86,6 +86,21 @@ fn summary_order_copy_matches_the_shared_table() {
         assert_eq!(order_error(e).message, refusals[word], "{word}");
     }
     assert_eq!(refusals.len(), 3);
+    // The Summaries page's list (T12.68): each control names its writer, a refused fourth tick
+    // names the most steps, which is the order's own limit.
+    let page = &COPY.page;
+    for text in [&page.r#use, &page.move_up, &page.move_down] {
+        assert!(text.contains("{writer}"), "{text}");
+    }
+    assert!(page.step.contains("{n}") && page.too_many.contains("{n}"));
+    assert_eq!(
+        page.too_many.replace(
+            "{n}",
+            &earshot_runtime::summary_order::MAX_STEPS.to_string()
+        ),
+        "At most 3 writers can be ticked. Untick one first."
+    );
+    assert!(!page.kept_local.is_empty() && !page.not_set_up.is_empty() && !page.list.is_empty());
     // Public copy only: no em dash anywhere in the table.
     let text = include_str!("../../../../fixtures/ui/summary_order_cases.json");
     assert!(!text.contains('\u{2014}'));

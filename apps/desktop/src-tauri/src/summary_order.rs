@@ -97,14 +97,24 @@ pub struct PageTexts {
     pub no_summary: String,
     /// What no summary means.
     pub no_summary_why: String,
-    /// "Step {n}".
+    /// The list of writers' accessible name (T12.68).
+    pub list: String,
+    /// "Step {n}": a ticked writer's rank.
     pub step: String,
-    /// The later steps' heading.
-    pub if_cant: String,
-    /// A later step left empty.
-    pub nothing_else: String,
+    /// A writer's tick box (`{writer}` its label).
+    pub r#use: String,
+    /// A ticked writer's up button (`{writer}`).
+    pub move_up: String,
+    /// A ticked writer's down button (`{writer}`).
+    pub move_down: String,
+    /// A tick refused because the order is full (`{n}` the most steps).
+    pub too_many: String,
+    /// A writer that cannot be ticked until it is set up.
+    pub not_set_up: String,
     /// What the order does.
     pub explained: String,
+    /// What a meeting kept on this computer does with the order (under the list).
+    pub kept_local: String,
     /// While the order is read.
     pub reading: String,
     /// The order could not be read.
