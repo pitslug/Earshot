@@ -32,7 +32,7 @@ A candidate never changes the baseline's clusters, centroids or the speaker any 
 2. **Grouping.** The candidate groups are clustered among themselves by centroid linkage (the same Euclidean distance between the means of unit embeddings as step 2), each group starting as one node, merging while the closest pair's distance is at most `d`. Lowest index on ties.
 3. **Enough speech.** A grouped cluster becomes a new speaker only when its speech estimate is at least `m` seconds. Speech estimate: the sum over its member embeddings of each embedding's clean frames times the segmenter's frame step, divided by the number of windows that cover one moment (window length over window step, 10 with the shipped settings). A grouped cluster below `m` falls back: each of its groups stays where the baseline put it.
 4. **Weighting.** Two variants of step 2: **plain** (every member embedding counts once in a mean) and **weighted** (each member embedding counts by its clean frames, so a longer stretch of speech pulls the mean further).
-5. **Stitching.** The baseline's stitching is computed first, unchanged. Then each window local whose embedding is a member of a new speaker is given to that new speaker instead of its baseline speaker; two locals of one window given to the same new speaker keep only the more similar one there (the other keeps its baseline speaker). An embedding outside the clustering's training subset (more than 1000 embeddings) is given to a new speaker only when its cosine to that new speaker's centroid is higher than to its baseline speaker's centroid. Reconstruction and turns are then the baseline's code over the baseline's speakers plus the new ones.
+5. **Stitching.** The baseline's stitching is computed first, unchanged. Then each window local whose embedding is a member of a new speaker is given to that new speaker instead of its baseline speaker; two locals of one window given to the same new speaker keep only the more similar one there (the other keeps its baseline speaker). An embedding outside the clustering's training subset (more than 1000 embeddings) is given to a new speaker only when its cosine to that new speaker's centroid is higher than to its baseline speaker's centroid. A local left out of clustering by the `min_active_ratio` filter (off in the shipped settings) is given to a new speaker by the same similarity test against the speaker it was stitched to. Reconstruction keeps the baseline's speakers on each frame as the baseline would have them (computed from the baseline's stitching), except that a baseline speaker on in a frame is replaced there by a new speaker when more of its activity in that frame went to that new speaker than stayed with it; so a baseline speaker never gains a frame and only ever loses one to a new speaker. Turns then come from the baseline's code.
 
 The candidate is a setting of `earshot_core::diar` that is off by default; turning it on anywhere but this tool needs its own task.
 
@@ -54,6 +54,8 @@ Per item and setting, inside the item's UEM, with DER by `DerConfig::nist(AMI_CO
 - **False new speaker:** a new speaker not owned by an S scene's short-turn talker. On L scenes and AMI dev meetings every new speaker is false.
 - **False scenes:** L scenes with at least one new speaker.
 - **Moved speech:** seconds that left a baseline speaker for a new one, split into right (the frame's reference holds the new speaker's owner) and wrong.
+- **Kept speakers gaining:** seconds where a baseline speaker is on that the baseline did not have on. Must be 0 on every item and setting; the tool fails otherwise.
+- Per item: the number of embeddings and whether it exceeds the clustering's 1000 training embeddings.
 - DER per item; pooled DER over A, over L and over S.
 
 ## The rule
@@ -76,8 +78,11 @@ If a setting passes, the result is a production task for the owner to agree (AGE
 - Ten talkers: a pass at 5 of 10 is a weak signal, which is why rules 2 to 5 guard the cost.
 - 10 ms frames; owners per setting.
 - Close-talking AMI mixes only.
+- The speech estimate sums training members only. On an item with more than 1000 embeddings (likely every AMI meeting, unlikely a 300 s scene) only a sample of 1000 trains, so a group's speech is under-counted by about 1000 over the embedding count: at one `m` a new speaker is harder to make on AMI than on a scene, which makes rule 4 easier to pass and a picked `m` not directly transferable to long real meetings.
 
 Correction (2026-11-17, before the first run): the first commit of this file had long turns of 8 to 25 s and a talker turn after a long turn with probability 1/3, and expected 25 to 40 s of talker speech per scene. The implementer found those parameters give 3 to 21 s (about 13 s on average), so `m` = 16 could pass rule 1 in at most 4 scenes and one scene could not reach `m` = 4. Long turns became 8 to 20 s, the probability 2/3, and a scene below 16 s of talker speech now fails the tool. The scene builder's draws do not depend on the audio, so the new talker speech per scene is known without a run: 18.8 to 33.0 s. No measurement had been made.
+
+Second correction (2026-11-17, before any result was seen): a review of the tool found that reconstruction, which picks each frame's speakers by activity, could let one of today's speakers win a frame from another when locals moved to a new speaker, breaking the promise in "The candidates" at the frame level while the tool did not measure it. A first run had started; it was stopped before writing any result, and its progress log was deleted unread. Step 5 now pins each frame's baseline speakers (above), the tool checks per frame that no baseline speaker gains a frame, and reports embedding counts. The `min_active_ratio` sentence and the training-subset caveat were added at the same time.
 
 ## Result
 
