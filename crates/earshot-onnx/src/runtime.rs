@@ -1103,9 +1103,11 @@ mod tests {
     }
 
     #[test]
-    fn onnx_init_from_refuses_runtimes_older_than_the_pinned_api() {
+    fn onnx_pinned_runtime_matches_orts_api_floor() {
         // `init` leaves the version check to `ort::init_from`, which refuses a library whose
-        // minor version is below this (api-31: ONNX Runtime 1.31).
+        // minor version is below ort's `MINOR_VERSION` (api-31: ONNX Runtime 1.31). This pins only
+        // that floor against the pinned runtime; the refusal itself is untested, because no
+        // older ONNX Runtime is fetched (docs/cuda-install.md).
         assert_eq!(ort::MINOR_VERSION, 31);
         assert!(ORT_VERSION.starts_with("1.31."), "{ORT_VERSION}");
     }

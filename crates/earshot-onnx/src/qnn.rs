@@ -265,17 +265,7 @@ pub fn register_qnn_in(
     let rel = package_root;
     let dir = std::path::absolute(rel)
         .map_err(|e| OnnxError::Library(format!("{}: {e}", rel.display())))?;
-    let same = |r: &'static Registered| -> Result<&'static QnnDevice, OnnxError> {
-        if r.dir == dir {
-            r.device.as_ref().map_err(|message| failed(message.clone()))
-        } else {
-            Err(failed(format!(
-                "{} requested but the QNN plugin from {} is already registered",
-                dir.display(),
-                r.dir.display()
-            )))
-        }
-    };
+    let same = |r: &'static Registered| answer(r, &dir);
     // Already registered: no second hash of the 100 MB libraries.
     if let Some(r) = QNN.get() {
         return same(r);
@@ -298,34 +288,76 @@ pub fn register_qnn_in(
     let env = environment()?;
     env.register_ep_library(QNN_REGISTRATION, dir.join(QNN_PROVIDER_LIB))
         .map_err(|e| failed(e.to_string()))?;
-    let devices: Vec<(&str, DeviceType)> = env
+    let devices: Vec<(&str, DeviceType, String)> = env
         .devices()
-        .map(|d| (d.ep().unwrap_or(""), d.hardware_device().ty()))
+        .map(|d| {
+            let hw = d.hardware_device();
+            (
+                d.ep().unwrap_or(""),
+                hw.ty(),
+                hw.vendor().map(str::to_owned).unwrap_or_default(),
+            )
+        })
         .collect();
-    let arm = cfg!(target_arch = "aarch64");
-    let device = match choose_qnn_device(&devices, arm) {
+    let registered = QNN
+        .get_or_init(|| after_registration(&devices, cfg!(target_arch = "aarch64"), dir.clone()));
+    same(registered)
+}
+
+/// What a registration of the plugin from `dir` keeps, given the `(execution provider, device
+/// type, vendor)` triples ONNX Runtime then reports: the device [`choose_qnn_device`] picks, or
+/// the refusal that every later call repeats (the plugin cannot be unregistered).
+fn after_registration(
+    devices: &[(&str, DeviceType, String)],
+    arm: bool,
+    dir: PathBuf,
+) -> Registered {
+    let pairs: Vec<(&str, DeviceType)> = devices.iter().map(|(ep, ty, _)| (*ep, *ty)).collect();
+    let device = match choose_qnn_device(&pairs, arm) {
         Some((index, hardware)) => Ok(QnnDevice {
             hardware,
-            vendor: env
-                .devices()
-                .nth(index)
-                .and_then(|d| d.hardware_device().vendor().ok().map(str::to_owned))
-                .unwrap_or_default(),
+            vendor: devices[index].2.clone(),
             backend_path: dir.join(QNN_HTP_LIB),
         }),
-        None => Err(no_device_message(&devices, arm)),
+        None => Err(no_device_message(&pairs, arm)),
     };
-    let registered = QNN.get_or_init(|| Registered {
-        device,
-        dir: dir.clone(),
-    });
-    same(registered)
+    Registered { dir, device }
+}
+
+/// What a registration call for the folder `dir` answers once `registered` exists: its device or
+/// its stored refusal for the same folder, a refusal naming both folders for another.
+fn answer<'r>(registered: &'r Registered, dir: &Path) -> Result<&'r QnnDevice, OnnxError> {
+    if registered.dir == dir {
+        usable_device(Some(registered))
+    } else {
+        Err(failed(format!(
+            "{} requested but the QNN plugin from {} is already registered",
+            dir.display(),
+            registered.dir.display()
+        )))
+    }
+}
+
+/// The device of a registration, if it found one.
+fn device_of(registered: Option<&Registered>) -> Option<&QnnDevice> {
+    registered.and_then(|r| r.device.as_ref().ok())
+}
+
+/// The device a session needs: refused with the stored message after a registration that found
+/// none, or with "not registered" before any.
+fn usable_device(registered: Option<&Registered>) -> Result<&QnnDevice, OnnxError> {
+    match registered {
+        Some(r) => r.device.as_ref().map_err(|message| failed(message.clone())),
+        None => Err(failed(
+            "the QNN plugin is not registered; call earshot_onnx::qnn::register_qnn first",
+        )),
+    }
 }
 
 /// The QNN device registered by [`register_qnn`], if any.
 #[must_use]
 pub fn registered_qnn() -> Option<&'static QnnDevice> {
-    QNN.get().and_then(|r| r.device.as_ref().ok())
+    device_of(QNN.get())
 }
 
 /// The refusal when the registered plugin offers no device [`choose_qnn_device`] accepts.
@@ -341,9 +373,7 @@ fn no_device_message(devices: &[(&str, DeviceType)], arm: bool) -> String {
 pub(crate) fn with_qnn_device(
     builder: ort::session::builder::SessionBuilder,
 ) -> Result<ort::session::builder::SessionBuilder, OnnxError> {
-    let device = registered_qnn().ok_or_else(|| {
-        failed("the QNN plugin is not registered; call earshot_onnx::qnn::register_qnn first")
-    })?;
+    let device = usable_device(QNN.get())?;
     let env = environment()?;
     let want = match device.hardware {
         QnnHardware::Npu => DeviceType::NPU,
@@ -418,9 +448,7 @@ impl ort::ep::ExecutionProvider for QnnEpName {
 /// [`OnnxError::Model`] when ONNX Runtime cannot read the model or answer.
 pub fn compiled_model_fit(context_model: &Path) -> Result<CompiledFit, OnnxError> {
     use ort::device::DeviceCompatibility as D;
-    let device = registered_qnn().ok_or_else(|| {
-        failed("the QNN plugin is not registered; call earshot_onnx::qnn::register_qnn first")
-    })?;
+    let device = usable_device(QNN.get())?;
     let env = environment()?;
     let want = match device.hardware {
         QnnHardware::Npu => DeviceType::NPU,
@@ -448,6 +476,46 @@ pub fn compiled_model_fit(context_model: &Path) -> Result<CompiledFit, OnnxError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qnn_a_registration_with_no_device_is_kept_as_one_refusal() {
+        let dir = PathBuf::from(r"C:\qnn-test");
+        // The x64 simulator's CPU device on ARM64, and no NPU: nothing usable there.
+        let devices = [
+            (crate::CPU_EP, DeviceType::CPU, "Qualcomm".to_owned()),
+            (QNN_REGISTRATION, DeviceType::CPU, "Qualcomm".to_owned()),
+        ];
+        let r = after_registration(&devices, true, dir.clone());
+        assert!(device_of(Some(&r)).is_none());
+        let first = answer(&r, &dir).map(|_| ()).unwrap_err().to_string();
+        let second = answer(&r, &dir).map(|_| ()).unwrap_err().to_string();
+        assert_eq!(first, second, "the same fixed refusal every time");
+        assert!(
+            first.contains("offers no NPU device") && first.contains("restart"),
+            "{first}"
+        );
+        // Sessions and the compiled-model check say why, never "not registered".
+        let session = usable_device(Some(&r)).map(|_| ()).unwrap_err().to_string();
+        assert_eq!(session, first);
+        assert!(!session.contains("not registered"), "{session}");
+        // Another folder is still the one-plugin refusal.
+        let other = answer(&r, Path::new(r"C:\elsewhere"))
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(other.contains("already registered"), "{other}");
+        // Before any registration: not registered.
+        let none = usable_device(None).map(|_| ()).unwrap_err().to_string();
+        assert!(none.contains("not registered"), "{none}");
+
+        // The same devices on x64 hold the simulator, with its vendor.
+        let x64 = after_registration(&devices, false, dir.clone());
+        let device = device_of(Some(&x64)).expect("the simulator");
+        assert_eq!(device.hardware, QnnHardware::Simulator);
+        assert_eq!(device.vendor, "Qualcomm");
+        assert_eq!(device.backend_path, dir.join(QNN_HTP_LIB));
+        assert!(answer(&x64, &dir).is_ok());
+    }
 
     #[test]
     fn qnn_compiled_fit_refuses_only_an_unsupported_model() {
