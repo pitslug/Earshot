@@ -2482,8 +2482,14 @@ fn backends_previews_own_voice_stays_refused_on_the_npu_with_its_reason() {
         assert!(previews_refused_second(BackendKind::Qnn, &big, choice).is_some());
     }
     assert!(OWN_VOICE_NPU_REFUSED.contains("own voice"));
-    assert!(OWN_VOICE_NPU_REFUSED.contains("vanished"));
-    for text in [OWN_VOICE_NPU_REFUSED, PREVIEW_NEEDS_COMPILED] {
+    assert!(OWN_VOICE_NPU_REFUSED.contains("T12.12d"));
+    assert!(!OWN_VOICE_NPU_REFUSED.contains("not understood"));
+    for text in [
+        OWN_VOICE_NPU_REFUSED,
+        PREVIEW_NEEDS_COMPILED,
+        PREVIEW_COMPILED_REFUSED,
+        PREVIEW_NO_COMPILE_KEY,
+    ] {
         assert_eq!(crate::catalogue::manifest_id_in(text), None, "{text}");
         assert!(!text.contains('\u{2014}'), "{text}");
         assert!(!text.contains("not measured"), "{text}");
@@ -2742,6 +2748,91 @@ fn backends_preview_on_the_npu_never_takes_the_ordinary_load() {
             assert_eq!(result.unwrap().0, "ordinary");
             assert_eq!(ordinaries.get(), 1);
         }
+    }
+}
+
+/// T12.64: a preview's NPU refusal says which case it is: no prepared model yet (still preparing),
+/// a prepared one its checks or the NPU refused, or no record to prepare one from; and each reaches
+/// the user as its own kind.
+#[test]
+fn backends_preview_on_the_npu_tells_a_refused_model_from_a_missing_one() {
+    use crate::npu_compiled::{Compile, CompileKey, Step};
+    let key = CompileKey::from_parts(
+        &[("encoder.onnx", "aa11"), ("encoder.weights", "bb22")],
+        &earshot_onnx::qnn::QNN_ARM64,
+        "cc33",
+        &[],
+    );
+    let preview_load = |dir: &Path, fit: bool, loads: bool| {
+        let never: Compile<'_, &'static str, AsrError> =
+            Compile::Helper(Box::new(|_: &Path| panic!("a preview never compiles")));
+        let (compile, ordinary) = qnn_load_steps(QnnLoadFor::Preview, never, || {
+            panic!("a preview never takes the ordinary load")
+        });
+        crate::npu_compiled::load(
+            dir,
+            &key,
+            |_| Ok(fit),
+            |_| {
+                if loads {
+                    Ok("compiled")
+                } else {
+                    Err(AsrError::Backend("refused".to_owned()))
+                }
+            },
+            compile,
+            ordinary,
+        )
+        .map(|(s, _)| s)
+    };
+    let off = |r: Result<&'static str, AsrError>| {
+        let e = r.expect_err("refused");
+        let refusal = preview_load_refusal(&e);
+        (e, refusal.reason)
+    };
+
+    // Nothing prepared yet: still preparing.
+    let dir = crate::testutil::TempDir::new("qnn-preview-missing");
+    let (e, reason) = off(preview_load(&dir.0, true, true));
+    assert!(e.to_string().contains(PREVIEW_NEEDS_COMPILED), "{e}");
+    assert_eq!(reason, PreviewOffReason::NeedsCompiledModel);
+
+    // A track's load prepares one; the preview then loads it.
+    assert_eq!(qnn_steps_run(&dir.0, false, true), (Ok("compiled"), 1, 0));
+    assert_eq!(preview_load(&dir.0, true, true).unwrap(), "compiled");
+    // The NPU asks for it to be prepared again: refused, not preparing.
+    let (e, reason) = off(preview_load(&dir.0, false, true));
+    assert!(e.to_string().contains(PREVIEW_COMPILED_REFUSED), "{e}");
+    assert_eq!(reason, PreviewOffReason::CompiledModelRefused);
+    // The prepared model does not load: refused too.
+    let (e, reason) = off(preview_load(&dir.0, true, false));
+    assert!(e.to_string().contains(PREVIEW_COMPILED_REFUSED), "{e}");
+    assert_eq!(reason, PreviewOffReason::CompiledModelRefused);
+    // The preview put nothing aside: the track's load still finds the folder.
+    assert_eq!(preview_load(&dir.0, true, true).unwrap(), "compiled");
+
+    // No record to prepare from: a load that failed, never "still preparing".
+    let (_, ordinary) = qnn_load_steps(
+        QnnLoadFor::Preview,
+        Compile::<'_, &'static str, AsrError>::Helper(Box::new(|_: &Path| Ok(()))),
+        || Ok("ordinary"),
+    );
+    let (e, reason) = off(ordinary());
+    assert!(e.to_string().contains(PREVIEW_NO_COMPILE_KEY), "{e}");
+    assert_eq!(reason, PreviewOffReason::LoadFailed);
+
+    // Each step a preview's load can refuse at maps to its case.
+    assert_eq!(
+        preview_npu_refusal(&[Step::NotCompiled]),
+        PREVIEW_NEEDS_COMPILED
+    );
+    assert_eq!(preview_npu_refusal(&[Step::NoKey]), PREVIEW_NO_COMPILE_KEY);
+    for step in [Step::Verify, Step::NpuFit, Step::CompiledLoad] {
+        assert_eq!(
+            preview_npu_refusal(&[step]),
+            PREVIEW_COMPILED_REFUSED,
+            "{step:?}"
+        );
     }
 }
 

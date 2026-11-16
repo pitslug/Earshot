@@ -173,6 +173,11 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
     out
 }
 
+/// The banner when the NPU's libraries could not load (T12.64): fixed copy, no library name or
+/// error text. QNN stays out of every order for the rest of the process, so a restart tries again.
+pub const NPU_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the NPU this time, so speech \
+     models run on the processor. Restart Earshot to try again.";
+
 /// Whose provisional words a banner sentence is about (T12.33).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewScope {
@@ -184,18 +189,21 @@ pub enum PreviewScope {
     Them,
 }
 
-/// The user's own voice is refused beside the NPU: the other people's words are still shown.
+/// The user's own voice is refused beside the NPU: the other people's words are still shown. A
+/// rule while transcription runs on the NPU, not a limit of the computer (T12.64): on the
+/// processor the user's own voice has its provisional words.
 pub const PREVIEWS_OWN_VOICE_NPU: &str = "Provisional words are shown for other people only. \
-     Earshot cannot show them for your own voice on this computer yet.";
+     While transcription runs on the NPU, Earshot does not show them for your own voice.";
 
 /// The user's own voice is refused for want of memory: the other people's words are still shown.
 pub const PREVIEWS_OWN_VOICE_MEMORY: &str = "Provisional words are shown for other people only. \
      This computer does not have enough memory to show them for your own voice as well.";
 
 /// The user's own voice is refused beside the NPU, said alone: nothing about other people's words,
-/// which are off themselves or not started yet.
-pub const PREVIEWS_OWN_VOICE_NPU_ALONE: &str =
-    "Earshot cannot show provisional words for your own voice on this computer yet.";
+/// which are off themselves or not started yet (as [`PREVIEWS_OWN_VOICE_NPU`], a rule while
+/// transcription runs on the NPU).
+pub const PREVIEWS_OWN_VOICE_NPU_ALONE: &str = "While transcription runs on the NPU, Earshot does \
+     not show provisional words for your own voice.";
 
 /// The user's own voice is refused for want of memory, said alone (as
 /// [`PREVIEWS_OWN_VOICE_NPU_ALONE`]).
@@ -233,6 +241,12 @@ pub fn provisional_words_copy(reason: PreviewOffReason, scope: PreviewScope) -> 
         PreviewOffReason::NeedsCompiledModel => {
             "are off for this meeting because Earshot is still preparing the transcription model \
              for this computer. They start in a later meeting once it is ready."
+        }
+        // A prepared copy was there and was refused (T12.64): not "still preparing".
+        PreviewOffReason::CompiledModelRefused => {
+            "are off for this meeting because the copy of the transcription model Earshot \
+             prepared for this computer could not be used. Earshot prepares it again when it \
+             needs to, so they may start in a later meeting."
         }
         PreviewOffReason::Model => {
             "are not available with the transcription model this meeting uses. You can choose \
@@ -751,12 +765,13 @@ mod provisional_words_tests {
 
     /// One of every kind. `index` is exhaustive, so a new kind fails to compile until it has an
     /// index here, a place in `ALL` and an entry in `plain_text_provisional_words_*` below.
-    const ALL: [PreviewOffReason; 15] = [
+    const ALL: [PreviewOffReason; 16] = [
         PreviewOffReason::OnBattery,
         PreviewOffReason::CatchingUp,
         PreviewOffReason::FellBehind,
         PreviewOffReason::TranscriptStopped,
         PreviewOffReason::NeedsCompiledModel,
+        PreviewOffReason::CompiledModelRefused,
         PreviewOffReason::OwnVoiceOnNpu,
         PreviewOffReason::NotEnoughMemory,
         PreviewOffReason::OffByDefault,
@@ -776,16 +791,17 @@ mod provisional_words_tests {
             PreviewOffReason::FellBehind => 2,
             PreviewOffReason::TranscriptStopped => 3,
             PreviewOffReason::NeedsCompiledModel => 4,
-            PreviewOffReason::OwnVoiceOnNpu => 5,
-            PreviewOffReason::NotEnoughMemory => 6,
-            PreviewOffReason::OffByDefault => 7,
-            PreviewOffReason::Model => 8,
-            PreviewOffReason::TurnedOff => 9,
-            PreviewOffReason::NotAsked => 10,
-            PreviewOffReason::NotApplicable => 11,
-            PreviewOffReason::LoadFailed => 12,
-            PreviewOffReason::Failed => 13,
-            PreviewOffReason::MeetingEnded => 14,
+            PreviewOffReason::CompiledModelRefused => 5,
+            PreviewOffReason::OwnVoiceOnNpu => 6,
+            PreviewOffReason::NotEnoughMemory => 7,
+            PreviewOffReason::OffByDefault => 8,
+            PreviewOffReason::Model => 9,
+            PreviewOffReason::TurnedOff => 10,
+            PreviewOffReason::NotAsked => 11,
+            PreviewOffReason::NotApplicable => 12,
+            PreviewOffReason::LoadFailed => 13,
+            PreviewOffReason::Failed => 14,
+            PreviewOffReason::MeetingEnded => 15,
         }
     }
 
@@ -804,6 +820,7 @@ mod provisional_words_tests {
             PreviewOffReason::CatchingUp,
             PreviewOffReason::FellBehind,
             PreviewOffReason::NeedsCompiledModel,
+            PreviewOffReason::CompiledModelRefused,
             PreviewOffReason::OwnVoiceOnNpu,
             PreviewOffReason::NotEnoughMemory,
             PreviewOffReason::Model,
@@ -851,9 +868,66 @@ mod provisional_words_tests {
                 "preview", "session", "parakeet", "whisper", "onnx", "qnn", "npu", "cuda",
                 "backend", "thread", "decode", "compiled", "please",
             ] {
+                if word == "npu" && reason == PreviewOffReason::OwnVoiceOnNpu {
+                    continue;
+                }
                 assert!(!lower.contains(word), "{word:?} in: {copy}");
             }
         }
+    }
+
+    /// T12.64: the own-voice refusal beside the NPU is a rule while transcription runs there (the
+    /// processor shows the user's own voice), never a limit of this computer. "NPU" is the part's
+    /// own name on the System page, so it is the one kind allowed to name it.
+    #[test]
+    fn plain_text_provisional_words_own_voice_on_the_npu_says_it_is_while_transcription_runs_there()
+    {
+        let alone = own_voice_alone_copy(PreviewOffReason::OwnVoiceOnNpu).unwrap();
+        let beside =
+            provisional_words_copy(PreviewOffReason::OwnVoiceOnNpu, PreviewScope::All).unwrap();
+        assert_eq!(alone, PREVIEWS_OWN_VOICE_NPU_ALONE);
+        assert_eq!(beside, PREVIEWS_OWN_VOICE_NPU);
+        for copy in [alone, beside.as_str()] {
+            assert!(
+                copy.contains("While transcription runs on the NPU"),
+                "{copy}"
+            );
+            assert!(!copy.contains("this computer"), "{copy}");
+            assert!(!copy.contains("yet"), "{copy}");
+        }
+        assert_eq!(
+            beside,
+            "Provisional words are shown for other people only. While transcription runs on the \
+             NPU, Earshot does not show them for your own voice."
+        );
+        assert_eq!(
+            alone,
+            "While transcription runs on the NPU, Earshot does not show provisional words for \
+             your own voice."
+        );
+    }
+
+    /// T12.64: a prepared model the NPU refused is not "still preparing", and still preparing is
+    /// not a refusal: each kind has its own words.
+    #[test]
+    fn plain_text_provisional_words_tell_a_refused_model_from_one_still_preparing() {
+        for scope in SCOPES {
+            let preparing =
+                provisional_words_copy(PreviewOffReason::NeedsCompiledModel, scope).unwrap();
+            let refused =
+                provisional_words_copy(PreviewOffReason::CompiledModelRefused, scope).unwrap();
+            assert!(preparing.contains("still preparing"), "{preparing}");
+            assert!(!refused.contains("still preparing"), "{refused}");
+            assert!(refused.contains("could not be used"), "{refused}");
+            assert!(refused.contains("prepares it again"), "{refused}");
+        }
+        assert_eq!(
+            provisional_words_copy(PreviewOffReason::CompiledModelRefused, PreviewScope::All)
+                .unwrap(),
+            "Provisional words are off for this meeting because the copy of the transcription \
+             model Earshot prepared for this computer could not be used. Earshot prepares it \
+             again when it needs to, so they may start in a later meeting."
+        );
     }
 
     /// Plain sentences: no developer term, model id or part name, no em dash, no run of spaces
@@ -878,6 +952,11 @@ mod provisional_words_tests {
                     "preview", "session", "parakeet", "whisper", "onnx", "qnn", "npu", "cuda",
                     "backend", "thread", "decode", "compiled", "please",
                 ] {
+                    // T12.64: the own-voice rule applies while transcription runs on the NPU,
+                    // and says so (the part's own name on the System page).
+                    if word == "npu" && reason == PreviewOffReason::OwnVoiceOnNpu {
+                        continue;
+                    }
                     assert!(!lower.contains(word), "{word:?} in: {copy}");
                 }
                 seen.insert((index(reason), copy));
@@ -1310,6 +1389,34 @@ mod tests {
         assert!(check.contains("it is not downloaded"), "{check}");
     }
 
+    /// T12.64: the NPU's library banner is fixed copy: no `Qnn`, no library name and none of the
+    /// error's words, whatever the error.
+    #[test]
+    fn plain_text_the_npu_library_banner_is_fixed_copy_with_no_error_text() {
+        let dir = TempDir::new("plain-npu-library");
+        let missing = earshot_runtime::backends::init_onnx(
+            &ModelDir::new(dir.0.join("models")),
+            Accelerator::Cpu,
+        )
+        .unwrap_err();
+        let raw = RuntimeError::Asr(earshot_core::asr::AsrError::Backend(
+            "zq-raw-words QnnHtp.dll refused (0x80004005)".into(),
+        ));
+        for e in [&missing, &raw] {
+            let banner = crate::meeting::onnx_fallback_message(Accelerator::Qnn, e);
+            assert_eq!(banner, NPU_LIBRARY_UNAVAILABLE);
+        }
+        for word in ["Qnn", "QNN", "ONNX", "library", "zq-raw-words", "dll", "0x"] {
+            assert!(!NPU_LIBRARY_UNAVAILABLE.contains(word), "{word}");
+        }
+        no_developer_text(NPU_LIBRARY_UNAVAILABLE);
+        assert_eq!(
+            NPU_LIBRARY_UNAVAILABLE,
+            "Earshot could not use the NPU this time, so speech models run on the processor. \
+             Restart Earshot to try again."
+        );
+    }
+
     /// With the helpers there, the copy names only the transcription model.
     #[test]
     fn plain_text_a_missing_transcription_model_names_the_helpers_only_when_they_are_missing_too() {
@@ -1571,6 +1678,12 @@ mod every_variant_tests {
             crate::model_jobs::NO_SERVER_ANSWERED,
             crate::meeting::SAVED_BUT_LIVE_FAILED,
             crate::meeting::MEETING_PANIC_MESSAGE,
+            NPU_LIBRARY_UNAVAILABLE,
+            PREVIEWS_OWN_VOICE_NPU,
+            PREVIEWS_OWN_VOICE_NPU_ALONE,
+            earshot_runtime::npu_compiled::NOTE,
+            earshot_runtime::npu_compiled::NOTE_PREPARED_AGAIN,
+            earshot_runtime::preview_settings::NOTE_EVERYONE_NPU,
         ]
         .into_iter()
         .map(str::to_owned)

@@ -693,6 +693,54 @@ fn npu_compiled_steps_have_plain_copy_and_their_stored_word() {
     }
 }
 
+/// T12.64: a refusal the helper answered by preparing the copy again loaded as a prepared copy
+/// does, so its note says that and nothing of the slower way or more memory; every other refusal
+/// keeps the ordinary load's note, and a load that refused nothing has none.
+#[test]
+fn npu_compiled_a_copy_the_helper_prepared_again_has_its_own_note() {
+    let refused = || Some(Refusal::new(Step::NpuFit, "the NPU asks for a new compile"));
+    assert_eq!(
+        How::CompiledByHelper { refused: refused() }.note(),
+        Some(NOTE_PREPARED_AGAIN)
+    );
+    for how in [
+        How::Compiling {
+            refused: refused(),
+            kept: Ok(()),
+        },
+        How::Compiling {
+            refused: None,
+            kept: Err("x".to_owned()),
+        },
+        How::Ordinary {
+            steps: vec![Step::Helper],
+            why: "x".to_owned(),
+        },
+    ] {
+        assert_eq!(how.note(), Some(NOTE), "{how:?}");
+    }
+    for how in [
+        How::Compiled,
+        How::CompiledByHelper { refused: None },
+        How::Compiling {
+            refused: None,
+            kept: Ok(()),
+        },
+    ] {
+        assert_eq!(how.note(), None, "{how:?}");
+    }
+    for word in ["slower", "memory", "half a minute and more"] {
+        assert!(!NOTE_PREPARED_AGAIN.contains(word), "{word}");
+    }
+    for copy in [NOTE, NOTE_PREPARED_AGAIN] {
+        assert!(!copy.contains('\u{2014}'), "{copy}");
+        assert!(!copy.contains("  "), "{copy}");
+        for word in ["QNN", "onnx", "compiled.json", "cargo", "/", "\\"] {
+            assert!(!copy.contains(word), "{word} in {copy}");
+        }
+    }
+}
+
 /// The only test that touches the process's note state.
 #[test]
 fn npu_compiled_a_refusal_is_noted_once_per_process() {

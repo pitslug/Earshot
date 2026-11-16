@@ -101,8 +101,10 @@ pub const NOTE_CARD_PROCESSOR: &str =
 /// Everyone chosen, and no room for the second session.
 pub const NOTE_EVERYONE_MEMORY: &str = "This computer shows them for the other people only: it needs more memory to run them for you too.";
 /// Everyone chosen with transcription on the NPU, which runs no session for the user's own voice
-/// (T12.12c, `backends::OWN_VOICE_NPU_REFUSED`).
-pub const NOTE_EVERYONE_NPU: &str = "On the NPU they show for the other people only for now: some provisional words of your own voice appeared there and then vanished, which is not understood yet.";
+/// (T12.12c, `backends::OWN_VOICE_NPU_REFUSED`): a rule while transcription runs there, kept until
+/// T12.12d fixes shown words leaving early and the owner decides (T12.64); on the processor the
+/// user's own voice has its session.
+pub const NOTE_EVERYONE_NPU: &str = "While transcription runs on the NPU they show for the other people only. To show them for your own voice too, choose Processor for transcription in Settings, System, Where it runs.";
 
 /// The page for a machine whose transcription would lead with `lead`.
 #[must_use]
@@ -756,7 +758,14 @@ mod tests {
             );
         }
         assert!(NOTE_EVERYONE_NPU.contains("other people only"));
-        assert!(NOTE_EVERYONE_NPU.contains("vanished"));
+        // A rule while transcription runs on the NPU, with the way round it (T12.64): no reason
+        // T12.12c step 4 showed is not the NPU's.
+        assert!(NOTE_EVERYONE_NPU.contains("While transcription runs on the NPU"));
+        assert!(NOTE_EVERYONE_NPU.contains("Processor"));
+        assert!(NOTE_EVERYONE_NPU.contains("Where it runs"));
+        for word in ["vanished", "not understood", "this computer"] {
+            assert!(!NOTE_EVERYONE_NPU.contains(word), "{word}");
+        }
     }
 
     /// No note names a model by its manifest id, and none says "not measured" any more (T12.12c).

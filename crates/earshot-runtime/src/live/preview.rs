@@ -134,9 +134,14 @@ pub enum PreviewOffReason {
     FellBehind,
     /// The live transcript stopped for this meeting.
     TranscriptStopped,
-    /// On the NPU a preview loads only the model compiled on this computer, and it did not load.
+    /// On the NPU a preview loads only the model compiled on this computer, and none was prepared
+    /// yet (the start-up or a track's load is preparing it, T12.64).
     NeedsCompiledModel,
-    /// The user's own voice has no previews beside the NPU yet.
+    /// On the NPU a preview loads only the model compiled on this computer, and the prepared one
+    /// was refused (its files did not match, the NPU asked for a new one, or it did not load; a
+    /// track's load that refuses it too prepares it again, T12.64).
+    CompiledModelRefused,
+    /// The user's own voice has no previews beside the NPU until T12.12d (the owner's decision).
     OwnVoiceOnNpu,
     /// The user asked for their own voice too, and this computer has too little memory for it.
     NotEnoughMemory,

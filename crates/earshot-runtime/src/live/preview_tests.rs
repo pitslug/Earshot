@@ -2569,6 +2569,14 @@ fn live_preview_refusals_carry_their_kind_beside_the_same_text() {
     let needs = preview_load_refusal(&AsrError::Backend(PREVIEW_NEEDS_COMPILED.to_owned()));
     assert_eq!(needs.reason, PreviewOffReason::NeedsCompiledModel);
     assert!(needs.contains(PREVIEW_NEEDS_COMPILED), "{needs}");
+    let refused = preview_load_refusal(&AsrError::Backend(
+        crate::backends::PREVIEW_COMPILED_REFUSED.to_owned(),
+    ));
+    assert_eq!(refused.reason, PreviewOffReason::CompiledModelRefused);
+    let no_key = preview_load_refusal(&AsrError::Backend(
+        crate::backends::PREVIEW_NO_COMPILE_KEY.to_owned(),
+    ));
+    assert_eq!(no_key.reason, PreviewOffReason::LoadFailed);
     let other = preview_load_refusal(&AsrError::Backend("a file is missing".to_owned()));
     assert_eq!(other.reason, PreviewOffReason::LoadFailed);
     assert!(other.contains("a file is missing"), "{other}");

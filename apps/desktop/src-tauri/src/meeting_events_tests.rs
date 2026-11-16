@@ -1361,6 +1361,7 @@ fn meeting_events_provisional_words_own_voice_never_contradicts_the_other_track(
             PreviewOffReason::CatchingUp,
             PreviewOffReason::FellBehind,
             PreviewOffReason::NeedsCompiledModel,
+            PreviewOffReason::CompiledModelRefused,
             PreviewOffReason::Model,
             PreviewOffReason::LoadFailed,
             PreviewOffReason::Failed,
