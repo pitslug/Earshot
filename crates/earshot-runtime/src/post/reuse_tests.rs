@@ -317,6 +317,7 @@ fn processor<T: Transcriber + Send>(
     let id = EmbeddingModelId::new(model);
     let cfg = PostConfig {
         clustering_thresholds: ModelThresholds::new().with(id.clone(), 0.704_565_5),
+        unassigned_floors: ModelThresholds::new().with(id.clone(), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(id.clone(), 0.5),
         ..PostConfig::default()
     };
@@ -1328,6 +1329,7 @@ fn speaker_processor(
     let id = EmbeddingModelId::new(emb);
     let mut cfg = PostConfig {
         clustering_thresholds: ModelThresholds::new().with(id.clone(), 0.704_565_5),
+        unassigned_floors: ModelThresholds::new().with(id.clone(), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(id, 0.5),
         ..PostConfig::default()
     };
@@ -1850,6 +1852,7 @@ fn post_failed_or_cancelled_final_pass_keeps_the_live_records() {
     let id = EmbeddingModelId::new(LEVEL_MODEL);
     let cfg = PostConfig {
         clustering_thresholds: ModelThresholds::new().with(id.clone(), 0.704_565_5),
+        unassigned_floors: ModelThresholds::new().with(id.clone(), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(id, 0.5),
         ..PostConfig::default()
     };

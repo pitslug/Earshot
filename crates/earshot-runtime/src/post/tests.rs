@@ -78,6 +78,7 @@ fn config() -> PostConfig {
         diarization: DiarizationConfig::default(),
         clustering_thresholds: ModelThresholds::new()
             .with(EmbeddingModelId::new(MODEL), 0.704_565_5),
+        unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.5),
         enroll_me: true,
         enrolment: EnrolmentConfig::default(),
@@ -378,6 +379,34 @@ fn post_without_calibration_is_an_error_at_construction() {
         })
     ));
     assert!(!defaults.enroll_me, "biometric enrolment is opt-in");
+    // T12.65: the unassigned floor too, keyed by the exact model.
+    assert_eq!(
+        defaults.unassigned_floor(&campp).ok(),
+        earshot_core::diar::cluster::calibrated_unassigned_floor(&campp)
+    );
+    assert!(matches!(
+        defaults.unassigned_floor(&EmbeddingModelId::new("unknown@1")),
+        Err(RuntimeError::Uncalibrated {
+            purpose: Calibration::UnassignedFloor,
+            ..
+        })
+    ));
+    let missing_floor = PostConfig {
+        unassigned_floors: ModelThresholds::new(),
+        ..config()
+    };
+    assert!(matches!(
+        PostProcessor::new(
+            transcriber(),
+            FakeSegmenter::segmentation_3_0(),
+            embedder(),
+            missing_floor,
+        ),
+        Err(RuntimeError::Uncalibrated {
+            purpose: Calibration::UnassignedFloor,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -1236,6 +1265,7 @@ fn post_round_trip_from_a_live_session_through_flac() {
     let model = EmbeddingModelId::new("level@1");
     let cfg = PostConfig {
         clustering_thresholds: ModelThresholds::new().with(model.clone(), 0.704_565_5),
+        unassigned_floors: ModelThresholds::new().with(model.clone(), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
         ..PostConfig::default()
     };
@@ -1389,6 +1419,7 @@ fn post_in_room_session_stores_one_track_and_names_me_by_voiceprint_only() {
             }),
             PostConfig {
                 clustering_thresholds: ModelThresholds::new().with(model.clone(), 0.704_565_5),
+                unassigned_floors: ModelThresholds::new().with(model.clone(), -1.0),
                 voiceprint_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
                 enroll_me: false,
                 ..PostConfig::default()
@@ -1750,6 +1781,7 @@ fn echo_config(model: &str) -> PostConfig {
     PostConfig {
         clustering_thresholds: ModelThresholds::new()
             .with(EmbeddingModelId::new(model), 0.704_565_5),
+        unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(model), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(model), 0.5),
         enroll_me: false,
         ..config()
@@ -3645,4 +3677,214 @@ fn post_echo_quiet_voice_is_never_judged_without_an_echo_path_or_audio() {
         .unwrap();
         assert_eq!(d.speakers.len(), 2);
     }
+}
+
+/// A far end with one long-spoken voice and a third voice in a single short turn, and its
+/// transcript: a word of the long voice before and after, and one inside the short turn.
+fn short_turn_scene() -> (MonoBuffer, MonoBuffer, FakeTranscriber) {
+    let mic = scene_audio(&[SceneTurn::new(0, 0, 8_000)], 150_000);
+    let mut turns = Vec::new();
+    let mut t = 10_000;
+    while t + 6_000 <= 148_000 {
+        if (74_000..80_000).contains(&t) {
+            turns.push(SceneTurn::new(2, t, t + 600));
+            t += 900;
+            continue;
+        }
+        turns.push(SceneTurn::new(1, t, t + 6_000));
+        t += 6_300;
+    }
+    let short = *turns.iter().find(|x| x.speaker == 2).unwrap();
+    let them = scene_audio(&turns, 150_000);
+    let words = FakeTranscriber::scripted([
+        Ok(vec![raw(&[("hello", 1_000, 1_400)])]),
+        Ok(vec![
+            raw(&[("first", 11_000, 11_400)]),
+            raw(&[("aside", short.start_ms + 100, short.end_ms - 100)]),
+            raw(&[("last", 130_000, 130_400)]),
+        ]),
+    ]);
+    (mic, them, words)
+}
+
+#[test]
+fn post_a_short_turn_voice_like_no_speaker_keeps_its_words_with_no_speaker() {
+    // T12.65: with a floor above the short voice's cosine to every speaker (one-hot fakes:
+    // 0), its word keeps its text and time, has no speaker, and is counted in the warning;
+    // no row, centroid or "Speaker N" is made for it.
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let (mic_audio, them_audio, words) = short_turn_scene();
+    let floor = PostConfig {
+        unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.5),
+        ..config()
+    };
+    let mut post =
+        PostProcessor::new(words, FakeSegmenter::segmentation_3_0(), embedder(), floor).unwrap();
+    let outcome = post
+        .run(
+            &svc,
+            PostInput {
+                echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
+                meeting,
+                tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+            },
+            &mut ChaCha8Rng::seed_from_u64(91),
+            &CancelToken::new(),
+        )
+        .unwrap();
+    let unknown: Vec<&PostWarning> = outcome
+        .warnings
+        .iter()
+        .filter(|w| matches!(w, PostWarning::SpeakerUnknown { .. }))
+        .collect();
+    assert_eq!(
+        unknown,
+        [&PostWarning::SpeakerUnknown {
+            track: TrackId::Reference,
+            lines: 1,
+            words: 1
+        }],
+        "{:?}",
+        outcome.warnings
+    );
+    let finals = finals_of(&svc, meeting);
+    let aside = finals.iter().find(|s| s.text.contains("aside")).unwrap();
+    assert_eq!(aside.speaker_id, None);
+    assert!(!aside.words.is_empty());
+    let speakers = live_speakers(&svc, meeting);
+    let far: Vec<&str> = speakers
+        .iter()
+        .filter(|s| s.role == SpeakerRole::Remote)
+        .map(|s| s.display_name.as_str())
+        .collect();
+    assert_eq!(far, ["Speaker 1"], "the short voice gets no row or number");
+    for word in ["first", "last"] {
+        let seg = finals.iter().find(|s| s.text.contains(word)).unwrap();
+        assert!(seg.speaker_id.is_some(), "{word}");
+    }
+    // Summaries and exports name the line an unknown speaker; the speakers keep their names.
+    let view = crate::view::MeetingView::load(&**svc.store(), meeting)
+        .unwrap()
+        .unwrap();
+    let line = view
+        .segments
+        .iter()
+        .find(|s| s.text.contains("aside"))
+        .unwrap();
+    assert!(view.is_unknown_speaker(line));
+    assert_eq!(view.speaker_name(line), earshot_core::diar::UNKNOWN_SPEAKER);
+    let first = view
+        .segments
+        .iter()
+        .find(|s| s.text.contains("first"))
+        .unwrap();
+    assert!(!view.is_unknown_speaker(first));
+    assert_eq!(view.speaker_name(first), "Speaker 1");
+}
+
+#[test]
+fn post_the_default_floor_gives_a_short_turn_voice_to_a_speaker_as_before() {
+    // Floor -1 (the shipped CAM++ floor today, and these tests' override): no line is left
+    // without a speaker and no warning is given.
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let (mic_audio, them_audio, words) = short_turn_scene();
+    let mut post = PostProcessor::new(
+        words,
+        FakeSegmenter::segmentation_3_0(),
+        embedder(),
+        config(),
+    )
+    .unwrap();
+    let outcome = post
+        .run(
+            &svc,
+            PostInput {
+                echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
+                meeting,
+                tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+            },
+            &mut ChaCha8Rng::seed_from_u64(92),
+            &CancelToken::new(),
+        )
+        .unwrap();
+    assert!(
+        !outcome
+            .warnings
+            .iter()
+            .any(|w| matches!(w, PostWarning::SpeakerUnknown { .. })),
+        "{:?}",
+        outcome.warnings
+    );
+    assert!(
+        finals_of(&svc, meeting)
+            .iter()
+            .all(|s| s.speaker_id.is_some())
+    );
+}
+
+#[test]
+fn post_an_unknown_speaker_line_is_given_a_speaker_through_edit() {
+    // T12.65: `edit::assign_line_speaker` gives the unknown line to a speaker of the meeting in
+    // one transaction, marks it edited, and refuses a line with a speaker, a stranger, and a
+    // busy meeting.
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let (mic_audio, them_audio, words) = short_turn_scene();
+    let floor = PostConfig {
+        unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.5),
+        ..config()
+    };
+    let mut post =
+        PostProcessor::new(words, FakeSegmenter::segmentation_3_0(), embedder(), floor).unwrap();
+    post.run(
+        &svc,
+        PostInput {
+            echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
+            meeting,
+            tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+        },
+        &mut ChaCha8Rng::seed_from_u64(93),
+        &CancelToken::new(),
+    )
+    .unwrap();
+    let finals = finals_of(&svc, meeting);
+    let aside = finals.iter().find(|s| s.text.contains("aside")).unwrap().id;
+    let named = finals.iter().find(|s| s.text.contains("first")).unwrap();
+    let far = named.speaker_id.unwrap();
+    let stranger = EntityId::from_bytes([7; 16]);
+    assert!(matches!(
+        crate::edit::assign_line_speaker(&svc, meeting, aside, stranger),
+        Err(RuntimeError::Edit(crate::edit::EditError::SpeakerNotFound(id))) if id == stranger
+    ));
+    assert!(matches!(
+        crate::edit::assign_line_speaker(&svc, meeting, named.id, far),
+        Ok(false)
+    ));
+    {
+        let _busy = svc
+            .lease_meeting_for(meeting, crate::MeetingJob::Processing)
+            .unwrap();
+        assert!(matches!(
+            crate::edit::assign_line_speaker(&svc, meeting, aside, far),
+            Err(RuntimeError::MeetingBusy { .. })
+        ));
+    }
+    assert!(crate::edit::assign_line_speaker(&svc, meeting, aside, far).unwrap());
+    let rows = svc.store().segments(meeting).unwrap();
+    let row = rows.iter().find(|r| r.segment.id == aside).unwrap();
+    assert_eq!(row.segment.speaker_id, Some(far));
+    assert!(row.text_edited_at.is_some());
+    let mic_speaker = finals.iter().find(|s| s.text.contains("hello")).unwrap();
+    assert!(matches!(
+        crate::edit::assign_line_speaker(&svc, meeting, aside, mic_speaker.speaker_id.unwrap()),
+        Err(RuntimeError::Edit(crate::edit::EditError::LineHasSpeaker(id))) if id == aside
+    ));
 }

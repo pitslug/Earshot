@@ -127,6 +127,10 @@ pub struct TranscriptRow {
     pub speaker_id: Option<String>,
     /// The name shown.
     pub speaker: String,
+    /// A final line diarisation gave to none of its speakers (T12.65): shown as
+    /// `earshot_core::diar::UNKNOWN_SPEAKER`, and the user can give it a speaker from the
+    /// line (`assign_line_speaker`).
+    pub unknown_speaker: bool,
     /// Where it was heard.
     pub track: RowTrack,
     /// The text.
@@ -611,6 +615,11 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "Earshot is still working on this meeting, and that work keeps the summary on this \
              computer. Allow the summary writer once it has finished.",
         ),
+        // T12.65: only an unknown speaker's line is given a speaker from the line.
+        EditError::LineHasSpeaker(_) => err(
+            "line_has_speaker",
+            "This line already has a speaker. Rename or merge speakers in Speakers instead.",
+        ),
     }
 }
 
@@ -898,6 +907,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             start_ms: s.start.as_millis(),
             speaker_id: s.speaker_id.map(|id| id.to_string()),
             speaker: view.speaker_name(s),
+            unknown_speaker: view.is_unknown_speaker(s),
             track: track_of(s),
             text: s.text.clone(),
             edited: view.edited.contains_key(&s.id),

@@ -192,10 +192,14 @@ pub const CALIBRATED_UNASSIGNED_FLOORS: &[CalibratedUnassignedFloor] =
         model: "campplus-en-voxceleb@357a834f702b",
         floor: CAMPPLUS_UNASSIGNED_FLOOR,
         source: "T12.65 rule (docs/far-speakers/unassigned-floor.md) on the five AMI dev \
-                 mixes and 16 dev-clean long scenes at clustering threshold 0.68",
+                 mixes and 16 dev-clean long scenes at clustering threshold 0.68: no floor on \
+                 the grid 0.00-0.60 passed (right speech left out was 4-9 times the wrong \
+                 speech left out), so -1, today's clustering",
     }];
 
-/// The CAM++ VoxCeleb unassigned floor (see [`CALIBRATED_UNASSIGNED_FLOORS`]).
+/// The CAM++ VoxCeleb unassigned floor (see [`CALIBRATED_UNASSIGNED_FLOORS`]): -1, nothing left
+/// unassigned, because no floor passed the T12.65 rule on dev data (2026-11-16; the measurement
+/// is `docs/far-speakers/unassigned-floor.json`). A new value needs a new rule run.
 pub const CAMPPLUS_UNASSIGNED_FLOOR: f32 = -1.0;
 
 /// The dev-chosen unassigned floor for `model`, or `None` if it has none (a new embedding

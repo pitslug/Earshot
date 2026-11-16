@@ -606,6 +606,45 @@ two",
 }
 
 #[test]
+fn detail_a_line_with_no_speaker_is_an_unknown_speaker_the_user_can_assign() {
+    // T12.65: a final line the final pass gave no speaker, on a track whose other lines have
+    // one, shows as the unknown speaker; giving it Priya from the line names it and marks it
+    // edited, and a line with a speaker is refused as user copy.
+    let dir = TempDir::new("detail-unknown");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 46);
+    {
+        // Test set-up: the far end's third line written as the final pass leaves it.
+        let mut store = svc.store();
+        let mut row = store
+            .segments(f.meeting)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.segment.id == f.segments[2])
+            .unwrap();
+        row.segment.speaker_id = None;
+        store.put_segment(row).unwrap();
+    }
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let row = &d.transcript[2];
+    assert!(row.unknown_speaker);
+    assert_eq!(row.speaker, earshot_core::diar::UNKNOWN_SPEAKER);
+    assert_eq!(row.speaker_id, None);
+    assert_eq!(d.transcript.iter().filter(|r| r.unknown_speaker).count(), 1);
+
+    assert!(edit::assign_line_speaker(&svc, f.meeting, f.segments[2], f.priya).unwrap());
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let row = &d.transcript[2];
+    assert!(!row.unknown_speaker);
+    assert_eq!(row.speaker, "Priya Shah");
+    assert!(row.edited);
+    let e: IpcError = edit::assign_line_speaker(&svc, f.meeting, f.segments[0], f.priya)
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "line_has_speaker");
+}
+
+#[test]
 fn detail_a_summary_edit_shows_at_once_and_can_be_undone() {
     let dir = TempDir::new("detail-summary-edit");
     let svc = services(&dir);
@@ -1127,6 +1166,7 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::WordNotListed, "word_not_listed"),
         (EditError::NoWordChoice(id), "no_word_choice"),
         (EditError::MeetingStillWorking(id), "meeting_still_working"),
+        (EditError::LineHasSpeaker(id), "line_has_speaker"),
     ];
     for (e, kind) in all {
         let ipc = IpcError::from(RuntimeError::Edit(e.clone()));

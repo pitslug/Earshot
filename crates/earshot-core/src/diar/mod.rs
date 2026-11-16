@@ -36,7 +36,10 @@ mod stream_tests;
 #[cfg(test)]
 mod tests;
 
-pub use assign::{assign_words, label_segment_speakers, label_segments};
+pub use assign::{
+    UNKNOWN_SPEAKER, assign_words, label_segment_speakers, label_segment_speakers_unassigned,
+    label_segments,
+};
 pub use cluster::{Clustering, ClusteringConfig, cluster_embeddings};
 pub use echo::{
     CALIBRATED_SPEAKER_ECHO_MARGINS, CAMPPLUS_SPEAKER_ECHO_MARGIN, CalibratedSpeakerEchoMargin,
@@ -51,7 +54,8 @@ pub use pipeline::{
     DiarSpeaker, Diarization, DiarizationConfig, Diarizer, SpeakerTurn, UnassignedSpan,
 };
 pub use policy::{
-    MeetingDiarization, MeetingSpeaker, MeetingTurn, SpeakerRole, in_person, two_track,
+    MeetingDiarization, MeetingSpeaker, MeetingTurn, MeetingUnassigned, SpeakerRole, in_person,
+    two_track,
 };
 pub use stream::{DiarStream, WINDOW_RESULTS_FORMAT, WindowParams, WindowResults};
 pub use types::{

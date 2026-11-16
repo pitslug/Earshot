@@ -9,6 +9,10 @@
 //! word counts as overlapping the turns that contain its instant.
 
 use super::pipeline::SpeakerTurn;
+
+/// What a final transcript line with no speaker is called in summaries, exports and the app
+/// (T12.65: speech diarisation could not give to any speaker it found).
+pub const UNKNOWN_SPEAKER: &str = "Unknown speaker";
 use crate::asr::{MeetingTime, Segment, Word};
 use crate::identity::EntityId;
 
@@ -103,6 +107,44 @@ pub fn label_segments(
             seg
         })
         .collect()
+}
+
+/// [`label_segment_speakers`] with the speech diarisation left without a speaker (T12.65,
+/// [`super::Diarization::unassigned`]): the unassigned spans take part in the rule of the
+/// module docs as one more speaker, ranked after every real one (so a tie goes to a real
+/// speaker), and a word or segment that goes to them gets `None`. A segment is split where
+/// its words move between a speaker and unassigned speech. Returns the parts and the number
+/// of words (a wordless segment counts as one) that went unassigned. With no unassigned
+/// span the parts are exactly [`label_segment_speakers`]'s.
+pub fn label_segment_speakers_unassigned(
+    segments: Vec<Segment>,
+    turns: &[SpeakerTurn],
+    unassigned: &[super::UnassignedSpan],
+    new_id: &mut dyn FnMut() -> EntityId,
+) -> (Vec<(Segment, Option<usize>)>, usize) {
+    if unassigned.is_empty() {
+        return (label_segment_speakers(segments, turns, new_id), 0);
+    }
+    let pseudo = turns.iter().map(|t| t.speaker + 1).max().unwrap_or(0);
+    let mut all = turns.to_vec();
+    all.extend(unassigned.iter().map(|s| SpeakerTurn {
+        speaker: pseudo,
+        start: s.start,
+        end: s.end,
+    }));
+    let mut words = 0;
+    let parts = label_segment_speakers(segments, &all, new_id)
+        .into_iter()
+        .map(|(seg, k)| {
+            if k == Some(pseudo) {
+                words += seg.words.len().max(1);
+                (seg, None)
+            } else {
+                (seg, k)
+            }
+        })
+        .collect();
+    (parts, words)
 }
 
 /// [`label_segments`] before the ids are set: each segment part (split, text and ids

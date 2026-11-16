@@ -179,12 +179,12 @@ use earshot_core::asr::{
 use earshot_core::audio::{MonoBuffer, SampleRate};
 use earshot_core::capture::TrackId;
 use earshot_core::diar::DiarError;
-use earshot_core::diar::cluster::calibrated_cluster_threshold;
+use earshot_core::diar::cluster::{calibrated_cluster_threshold, calibrated_unassigned_floor};
 use earshot_core::diar::{
     Diarization, DiarizationConfig, Diarizer, EmbeddingModelId, MeetingDiarization, MeetingSpeaker,
     SpanEmbedding, SpeakerEchoConfig, SpeakerEmbedder, SpeakerRole, SpeakerSegmenter, SpeakerTurn,
-    in_person, label_segment_speakers, label_segments, remove_speaker_echo, speaker_echo_spans,
-    two_track,
+    UnassignedSpan, in_person, label_segment_speakers_unassigned, label_segments,
+    remove_speaker_echo, speaker_echo_spans, two_track,
 };
 use earshot_core::diar::{echo_span_pieces, me_speakers};
 use earshot_core::identity::EntityId;
@@ -221,6 +221,9 @@ pub enum Calibration {
     Clustering,
     /// The open-set voiceprint match threshold.
     Voiceprint,
+    /// The cosine floor below which a short-spoken voice is left without a speaker
+    /// (T12.65, [`earshot_core::diar::ClusteringConfig::unassigned_floor`]).
+    UnassignedFloor,
 }
 
 impl fmt::Display for Calibration {
@@ -228,6 +231,7 @@ impl fmt::Display for Calibration {
         f.write_str(match self {
             Self::Clustering => "clustering",
             Self::Voiceprint => "voiceprint",
+            Self::UnassignedFloor => "unassigned floor",
         })
     }
 }
@@ -266,6 +270,9 @@ pub struct PostConfig {
     /// Clustering thresholds that override the core calibration (tests, a newly
     /// calibrated model). Default: empty.
     pub clustering_thresholds: ModelThresholds,
+    /// Unassigned floors that override the core calibration (tests, a newly calibrated
+    /// model). Default: empty.
+    pub unassigned_floors: ModelThresholds,
     /// Voiceprint match thresholds that override the core calibration (tests, a newly
     /// calibrated model). Default: empty.
     pub voiceprint_thresholds: ModelThresholds,
@@ -290,6 +297,7 @@ impl Default for PostConfig {
         Self {
             diarization: DiarizationConfig::default(),
             clustering_thresholds: ModelThresholds::new(),
+            unassigned_floors: ModelThresholds::new(),
             voiceprint_thresholds: ModelThresholds::new(),
             enroll_me: false,
             enrolment: EnrolmentConfig::default(),
@@ -327,6 +335,21 @@ impl PostConfig {
             .or_else(|| calibrated_cluster_threshold(model))
             .ok_or_else(|| RuntimeError::Uncalibrated {
                 purpose: Calibration::Clustering,
+                model: model.clone(),
+            })
+    }
+
+    /// The unassigned floor for `model`: an override, else the core calibration
+    /// ([`calibrated_unassigned_floor`], T12.65).
+    ///
+    /// # Errors
+    /// [`RuntimeError::Uncalibrated`] if neither has one.
+    pub fn unassigned_floor(&self, model: &EmbeddingModelId) -> Result<f32, RuntimeError> {
+        self.unassigned_floors
+            .get(model)
+            .or_else(|| calibrated_unassigned_floor(model))
+            .ok_or_else(|| RuntimeError::Uncalibrated {
+                purpose: Calibration::UnassignedFloor,
                 model: model.clone(),
             })
     }
@@ -467,6 +490,18 @@ pub enum PostWarning {
         track: TrackId,
         /// How much speech diarisation gave it.
         speech: Duration,
+    },
+    /// Diarisation left some of a track's speech without a speaker, because it sounded like
+    /// none of the speakers it found (T12.65, `ClusteringConfig::unassigned_floor`): those
+    /// lines keep their words and times and have no speaker, shown as an unknown speaker
+    /// the user can assign.
+    SpeakerUnknown {
+        /// The track.
+        track: TrackId,
+        /// Transcript lines with no speaker.
+        lines: usize,
+        /// Their words.
+        words: usize,
     },
     /// An in-room meeting's earlier "Me" row was not found again and this run has no "Me" of
     /// its own: a voice the user marked as themselves (T9.12) that did not match, or had no
@@ -1033,9 +1068,11 @@ where
     ) -> Result<Self, RuntimeError> {
         let model = embedder.info().model.clone();
         let clustering = config.clustering_threshold(&model)?;
+        let floor = config.unassigned_floor(&model)?;
         let voiceprint_threshold = config.voiceprint_threshold(&model)?;
         let mut diarization = config.diarization.clone();
         diarization.clustering.threshold = clustering;
+        diarization.clustering.unassigned_floor = floor;
         let diarizer =
             Diarizer::new(segmenter, embedder, diarization).map_err(RuntimeError::Diar)?;
         Ok(Self {
@@ -1463,8 +1500,28 @@ where
                         end: t.end,
                     })
                     .collect();
+                let unassigned: Vec<UnassignedSpan> = meeting_diar
+                    .unassigned
+                    .iter()
+                    .filter(|s| s.track == kind)
+                    .map(|s| UnassignedSpan {
+                        start: s.start,
+                        end: s.end,
+                    })
+                    .collect();
                 let mut next_id = || EntityId::generate(stamp.clock, &mut *stamp.rng);
-                labelled.extend(label_segment_speakers(segments, &turns, &mut next_id));
+                let (parts, words) =
+                    label_segment_speakers_unassigned(segments, &turns, &unassigned, &mut next_id);
+                // Words with no speaker (T12.65): kept with their text and times, no row.
+                if words > 0 {
+                    let lines = parts.iter().filter(|(_, k)| k.is_none()).count();
+                    warnings.push(PostWarning::SpeakerUnknown {
+                        track: kind,
+                        lines,
+                        words,
+                    });
+                }
+                labelled.extend(parts);
             }
             if !edited.is_empty() {
                 warnings.push(PostWarning::EditedLinesKept {

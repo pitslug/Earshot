@@ -3,7 +3,7 @@
 
 use earshot_core::asr::Segment;
 use earshot_core::capture::TrackId;
-use earshot_core::diar::SpeakerRole;
+use earshot_core::diar::{SpeakerRole, UNKNOWN_SPEAKER};
 use std::collections::{BTreeMap, BTreeSet};
 
 use earshot_core::identity::{EntityId, HlcTimestamp};
@@ -123,6 +123,10 @@ impl MeetingView {
     /// person rename must rewrite the display name of that person's speaker rows (the
     /// rename command does this), so summaries and exports, which compare rendered
     /// content, pick it up.
+    ///
+    /// In a final transcript, a line with no speaker on a track whose other lines have one is
+    /// speech diarisation could give to none of its speakers (T12.65): it is
+    /// [`UNKNOWN_SPEAKER`], never the track's label, which would name the wrong side.
     #[must_use]
     pub fn speaker_name(&self, segment: &Segment) -> String {
         if let Some(id) = segment.speaker_id
@@ -130,10 +134,25 @@ impl MeetingView {
         {
             return label;
         }
+        if self.is_unknown_speaker(segment) {
+            return UNKNOWN_SPEAKER.to_owned();
+        }
         self.tracks
             .iter()
             .find(|t| t.id == segment.track)
             .map_or_else(String::new, |t| track_label(t.kind).to_owned())
+    }
+
+    /// Whether `segment` is a final line with no speaker on a track where another final line
+    /// has one (T12.65: diarisation left it unassigned; [`MeetingView::speaker_name`]).
+    #[must_use]
+    pub fn is_unknown_speaker(&self, segment: &Segment) -> bool {
+        segment.speaker_id.is_none()
+            && self.pass == Some(TranscriptPass::Final)
+            && self
+                .segments
+                .iter()
+                .any(|s| s.track == segment.track && s.speaker_id.is_some())
     }
 
     /// Attendee names: the speakers' display names, first appearance first, without

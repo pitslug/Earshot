@@ -301,7 +301,7 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
             let who = seg
                 .speaker_id
                 .and_then(|id| names.get(&id).copied())
-                .unwrap_or("Unknown");
+                .unwrap_or(crate::diar::UNKNOWN_SPEAKER);
             let _ = writeln!(
                 s,
                 "> **`{}` {}:** {}",

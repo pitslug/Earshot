@@ -124,7 +124,14 @@ export {
   sampleMeetings,
 } from "./mock";
 export type { MockIpcData, ScriptLine } from "./mock";
-export { MISSING_SEGMENT, SAMPLE_SPEAKERS, sampleDetail, samplePersons } from "./mockDetail";
+export {
+  MISSING_SEGMENT,
+  SAMPLE_SPEAKERS,
+  UNKNOWN_SPEAKER,
+  sampleDetail,
+  samplePersons,
+  withUnknownLine,
+} from "./mockDetail";
 export { MOCK_FALLBACK_MODEL, MODEL_STEP_MS, createModelsMock, sampleHardware } from "./mockModels";
 export type { ModelsMock, SampleMachine } from "./mockModels";
 export {

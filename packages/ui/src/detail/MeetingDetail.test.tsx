@@ -10,10 +10,12 @@ import {
   type MockIpcData,
   POST_STEP_MS,
   SAMPLE_SPEAKERS,
+  UNKNOWN_SPEAKER,
   createMockIpc,
   sampleDetail,
   sampleMeetings,
   samplePersons,
+  withUnknownLine,
 } from "../ipc";
 import { IpcProvider } from "../ipc/context";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
@@ -1338,5 +1340,92 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
     render(show(false, ipc, failed));
     await user.click(await screen.findByRole("tab", { name: "Transcript" }));
     expect(screen.getByRole("button", { name: "Edit line 8" })).not.toHaveAttribute("aria-disabled");
+  });
+});
+
+describe("MeetingDetailView, a line with an unknown speaker (T12.65)", () => {
+  /** The sample with line 6 left without a speaker by the final pass. */
+  const unknown = (transcript: "Final" | "Draft" = "Final") => {
+    const d = withUnknownLine(sampleDetail(ITEM), 5);
+    return { ...d, header: { ...d.header, transcript } };
+  };
+  const row = (n: number) => within(screen.getByRole("table", { name: "Transcript" })).getAllByRole("row")[n - 1];
+
+  async function transcript(data: MockIpcData) {
+    const s = await setup(data);
+    await s.user.click(await screen.findByRole("tab", { name: "Transcript" }));
+    return s;
+  }
+
+  it("shows the line as an unknown speaker and gives it a speaker chosen from the line", async () => {
+    const { user, calls } = await transcript({ details: { [ITEM.id]: unknown() } });
+    const speakerCell = within(row(6)).getAllByRole("cell")[1];
+    expect(speakerCell).toHaveTextContent(UNKNOWN_SPEAKER);
+    // Only the unknown line offers a choice.
+    expect(screen.getAllByRole("button", { name: /^Choose who said line/ })).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Choose who said line 6" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      "Me",
+      "Priya Shah",
+      "Speaker 2",
+      "Speaker 3",
+    ]);
+    await user.click(within(menu).getByRole("menuitem", { name: "Speaker 3" }));
+    await waitFor(() => expect(within(row(6)).getAllByRole("cell")[1]).toHaveTextContent("Speaker 3"));
+    expect(within(row(6)).getAllByRole("cell")[1]).not.toHaveTextContent(UNKNOWN_SPEAKER);
+    expect(row(6)).toHaveTextContent("(edited)");
+    expect(screen.queryByRole("button", { name: /^Choose who said line/ })).toBeNull();
+    expect(calls.filter((c) => c[0] === "assignLineSpeaker")).toEqual([
+      ["assignLineSpeaker", ITEM.id, sampleDetail(ITEM).transcript[5].segment_id, SAMPLE_SPEAKERS.third],
+    ]);
+  });
+
+  it("offers no choice on a draft transcript", async () => {
+    await transcript({ details: { [ITEM.id]: unknown("Draft") } });
+    expect(screen.queryByRole("button", { name: /^Choose who said line/ })).toBeNull();
+  });
+
+  it("keeps the choice off while the meeting is busy", async () => {
+    const calls: unknown[][] = [];
+    const ipc = createMockIpc({
+      timer: createManualTimer(10_000),
+      meetings: [ITEM, OTHER],
+      details: { [ITEM.id]: unknown() },
+      onCall: (c) => calls.push(c),
+    });
+    const user = userEvent.setup();
+    render(
+      <EarshotThemeProvider>
+        <IpcProvider ipc={ipc}>
+          <MeetingDetailView
+            item={ITEM}
+            onChanged={() => {}}
+            onJobStarted={() => {}}
+            onJobDismissed={() => {}}
+            onJobCancel={() => {}}
+            finishing
+          />
+        </IpcProvider>
+      </EarshotThemeProvider>,
+    );
+    await user.click(await screen.findByRole("tab", { name: "Transcript" }));
+    const choose = screen.getByRole("button", { name: "Choose who said line 6" });
+    expect(choose).toHaveAttribute("aria-disabled", "true");
+    await user.click(choose);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(calls.some((c) => c[0] === "assignLineSpeaker")).toBe(false);
+  });
+
+  it("the mock refuses a line that already has a speaker, as the runtime does", async () => {
+    const ipc = createMockIpc({ meetings: [ITEM], details: { [ITEM.id]: unknown() } });
+    const line1 = sampleDetail(ITEM).transcript[0].segment_id;
+    await expect(ipc.assignLineSpeaker(ITEM.id, line1, SAMPLE_SPEAKERS.third)).rejects.toMatchObject({
+      error: { kind: "line_has_speaker" },
+    });
+    const line6 = sampleDetail(ITEM).transcript[5].segment_id;
+    await expect(ipc.assignLineSpeaker(ITEM.id, line6, "5a000000-0000-7000-8000-00000000ffff")).rejects.toMatchObject({
+      error: { kind: "speaker_not_found" },
+    });
   });
 });

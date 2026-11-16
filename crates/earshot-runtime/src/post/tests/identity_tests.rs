@@ -211,6 +211,7 @@ fn post_rerun_merge_keeps_the_renamed_speaker() {
         embedder(),
         PostConfig {
             clustering_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 1.9),
+            unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), -1.0),
             ..config()
         },
     )
@@ -464,6 +465,7 @@ fn post_rerun_with_another_embedding_model_carries_nothing_and_says_so() {
         PostConfig {
             clustering_thresholds: ModelThresholds::new()
                 .with(EmbeddingModelId::new(OTHER), 0.704_565_5),
+            unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(OTHER), -1.0),
             voiceprint_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(OTHER), 0.5),
             ..config()
         },
@@ -588,6 +590,7 @@ fn post_rerun_as_a_whole_pass_through_flac_keeps_the_renamed_speaker() {
             }),
             PostConfig {
                 clustering_thresholds: ModelThresholds::new().with(model.clone(), 0.704_565_5),
+                unassigned_floors: ModelThresholds::new().with(model.clone(), -1.0),
                 voiceprint_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
                 reuse_live,
                 ..PostConfig::default()

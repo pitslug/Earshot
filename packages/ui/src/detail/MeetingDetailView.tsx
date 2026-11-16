@@ -14,6 +14,11 @@ import {
   Input,
   Label,
   Link,
+  Menu,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
@@ -934,6 +939,12 @@ export function MeetingDetailView({
                       return { error: failureText(e) };
                     }
                   }}
+                  onAssignSpeaker={(segment, speaker) =>
+                    void save(
+                      () => ipc.assignLineSpeaker(id, segment, speaker),
+                      "The line was not given a speaker",
+                    )
+                  }
                   wordActions={(segment) => ({
                     onUse: (token, word) =>
                       void save(() => ipc.useWord(id, segment, token, word), "The word was not changed"),
@@ -1452,6 +1463,7 @@ function TranscriptTab({
   wordActions,
   onAddWord,
   onRemoveWord,
+  onAssignSpeaker,
   rowRef,
   locked,
 }: {
@@ -1469,6 +1481,9 @@ function TranscriptTab({
   /** "Remove from Dictionary" and "Undo" (T12.15f); the detail is read again before it
    * resolves. */
   onRemoveWord(word: string): Promise<{ error: string } | null>;
+  /** Gives a line with an unknown speaker (T12.65) to one of the meeting's speakers; the detail
+   * is read again after it. */
+  onAssignSpeaker(segment: string, speaker: string): void;
   rowRef(segment: string, el: HTMLDivElement | null): void;
 }) {
   const styles = useStyles();
@@ -1525,6 +1540,7 @@ function TranscriptTab({
       closeBar: (segment) => latest.current?.closeBar(segment),
       keep: (segment, token) => latest.current?.keep(segment, token),
       undo: (segment, word) => latest.current?.undo(segment, word),
+      assign: (segment, speaker) => latest.current?.assign(segment, speaker),
       rowRef: (segment, el) => rowRefLatest.current(segment, el),
       wordActions: (segment) =>
         latest.current?.wordActions(segment) ?? { onUse: noop, onPutBack: noop, onKeep: noop },
@@ -1632,9 +1648,16 @@ function TranscriptTab({
       keep: (segment, token) =>
         void Promise.resolve(wordActions(segment).onKeep(token)).then(() => setFocusNext({ edit: segment })),
       undo: (segment, word) => void undo(segment, word),
+      assign: onAssignSpeaker,
       wordActions,
     };
   });
+  // The speakers a line with an unknown speaker can be given to (T12.65), one array per
+  // detail, so other lines' props stay the same.
+  const choices = useMemo<SpeakerChoice[]>(
+    () => detail.speakers.map((s) => ({ id: s.id, name: s.name })),
+    [detail.speakers],
+  );
 
   if (detail.transcript.length === 0) {
     return <Body1 className={styles.muted}>No speech was transcribed in this meeting.</Body1>;
@@ -1653,6 +1676,7 @@ function TranscriptTab({
             editing={editing === r.segment_id}
             canEdit={canEdit}
             locked={locked}
+            speakers={r.unknown_speaker ? choices : NO_CHOICES}
             wordList={detail.word_list}
             dictionary={detail.dictionary}
             offered={offer?.segment === r.segment_id ? offer.words : null}
@@ -1686,6 +1710,14 @@ function TranscriptTab({
 
 const noop = () => {};
 
+/** A speaker a line with an unknown speaker can be given to. */
+interface SpeakerChoice {
+  id: string;
+  name: string;
+}
+
+const NO_CHOICES: SpeakerChoice[] = [];
+
 /** The Edit button of line `segment` inside `root`: where focus goes when the control that had
  * it is gone or took none. */
 function lineEditButton(root: Element | null, segment: string): HTMLElement | null {
@@ -1705,6 +1737,8 @@ interface LineHandlers {
   /** "Keep" on a suggestion: the mark leaves the line, so focus goes to its Edit button. */
   keep(segment: string, token: number): void;
   undo(segment: string, word: string): void;
+  /** Gives a line with an unknown speaker to `speaker` (T12.65). */
+  assign(segment: string, speaker: string): void;
   rowRef(segment: string, el: HTMLDivElement | null): void;
   wordActions(segment: string): WordActions;
 }
@@ -1719,6 +1753,7 @@ const TranscriptLine = memo(function TranscriptLine({
   editing,
   canEdit,
   locked,
+  speakers,
   wordList,
   dictionary,
   offered,
@@ -1734,6 +1769,9 @@ const TranscriptLine = memo(function TranscriptLine({
   canEdit: boolean;
   /** The meeting is busy: Edit and the word choices are off. */
   locked: boolean;
+  /** For a line with an unknown speaker (T12.65): the speakers it can be given to; empty for
+   * every other line. */
+  speakers: SpeakerChoice[];
   wordList: string[];
   dictionary: string[];
   /** The words the bar under this line offers, `null` without the bar. */
@@ -1774,6 +1812,29 @@ const TranscriptLine = memo(function TranscriptLine({
       </Caption1>
       <Body1Strong role="cell" className={styles.speaker}>
         {r.speaker}
+        {r.unknown_speaker && canEdit && !editing && speakers.length > 0 && (
+          <Menu>
+            <MenuTrigger disableButtonEnhancement>
+              <Button
+                size="small"
+                appearance="subtle"
+                aria-label={`Choose who said line ${i + 1}`}
+                disabledFocusable={locked}
+              >
+                Choose
+              </Button>
+            </MenuTrigger>
+            <MenuPopover>
+              <MenuList>
+                {speakers.map((s) => (
+                  <MenuItem key={s.id} onClick={() => h.assign(segment, s.id)}>
+                    {s.name}
+                  </MenuItem>
+                ))}
+              </MenuList>
+            </MenuPopover>
+          </Menu>
+        )}
       </Body1Strong>
       {editing ? (
         <div role="cell" className={styles.text}>

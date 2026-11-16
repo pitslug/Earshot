@@ -723,6 +723,8 @@ fn diar_cluster_unassigned_floor_is_validated_and_calibrated_per_model() {
         assert!(matches!(c.validate(), Err(DiarError::Config(_))), "{bad}");
     }
     use super::cluster::{CAMPPLUS_UNASSIGNED_FLOOR, calibrated_unassigned_floor};
+    // T12.65: no floor passed its rule on dev data, so CAM++ ships today's clustering.
+    assert_eq!(CAMPPLUS_UNASSIGNED_FLOOR, -1.0);
     assert_eq!(
         calibrated_unassigned_floor(&EmbeddingModelId::new("campplus-en-voxceleb@357a834f702b")),
         Some(CAMPPLUS_UNASSIGNED_FLOOR)
@@ -757,7 +759,7 @@ fn diar_pipeline_a_short_turn_voice_like_no_speaker_is_left_unassigned() {
         worst < floor,
         "the fake voice is too like a speaker: {worst}"
     );
-    let short = turns.iter().find(|t| t.speaker == 2).unwrap().clone();
+    let short = *turns.iter().find(|t| t.speaker == 2).unwrap();
 
     let today = run_exact(&turns, total, DiarizationConfig::default());
     assert!(today.unassigned.is_empty());
@@ -780,11 +782,72 @@ fn diar_pipeline_a_short_turn_voice_like_no_speaker_is_left_unassigned() {
     );
     assert!(!d.turns.iter().any(|t| t.start <= mid && mid < t.end));
     // The speakers' own turns are unchanged by the floor away from the short turn.
-    let long: Vec<SceneTurn> = turns.iter().filter(|t| t.speaker != 2).cloned().collect();
+    let long: Vec<SceneTurn> = turns.iter().filter(|t| t.speaker != 2).copied().collect();
     assert!(score(&long, &d).confusion <= score(&long, &today).confusion + 1e-9);
     // The left-out speech is missed, not confused, against the full reference.
     let full = score(&turns, &d);
     assert!(full.missed > score(&turns, &today).missed);
+}
+
+#[test]
+fn diar_assign_unassigned_speech_leaves_words_without_a_speaker() {
+    // Speaker 0 holds 0-4 s and 6-10 s; 4-6 s is unassigned. The word inside it has no
+    // speaker, its segment is split from the speaker's words, and a tie goes to the speaker.
+    let turns = vec![turn(0, 0, 4_000), turn(0, 6_000, 10_000)];
+    let gap = [UnassignedSpan {
+        start: MeetingTime::from_millis(4_000),
+        end: MeetingTime::from_millis(6_000),
+    }];
+    let w = |text: &str, s: u64, e: u64| Word {
+        text: text.to_owned(),
+        start: MeetingTime::from_millis(s),
+        end: MeetingTime::from_millis(e),
+        probability: 0.9,
+    };
+    let seg = Segment::from_words(
+        EntityId::from_bytes([1; 16]),
+        EntityId::from_bytes([2; 16]),
+        vec![
+            w("one", 1_000, 1_500),
+            w("edge", 3_500, 4_500),
+            w("two", 4_600, 5_000),
+            w("three", 7_000, 7_500),
+        ],
+        MeetingTime::ZERO,
+    );
+    let mut n = 10u8;
+    let mut new_id = || {
+        n += 1;
+        EntityId::from_bytes([n; 16])
+    };
+    let (parts, words) =
+        label_segment_speakers_unassigned(vec![seg.clone()], &turns, &gap, &mut new_id);
+    assert_eq!(words, 1);
+    let labels: Vec<(String, Option<usize>)> =
+        parts.iter().map(|(s, k)| (s.text.clone(), *k)).collect();
+    assert_eq!(
+        labels,
+        [
+            ("one edge".to_owned(), Some(0)),
+            ("two".to_owned(), None),
+            ("three".to_owned(), Some(0)),
+        ]
+    );
+    // No unassigned speech: exactly label_segment_speakers.
+    let mut m = 10u8;
+    let mut id_a = || {
+        m += 1;
+        EntityId::from_bytes([m; 16])
+    };
+    let mut k = 10u8;
+    let mut id_b = || {
+        k += 1;
+        EntityId::from_bytes([k; 16])
+    };
+    let (plain, none) =
+        label_segment_speakers_unassigned(vec![seg.clone()], &turns, &[], &mut id_a);
+    assert_eq!(none, 0);
+    assert_eq!(plain, label_segment_speakers(vec![seg], &turns, &mut id_b));
 }
 
 #[test]

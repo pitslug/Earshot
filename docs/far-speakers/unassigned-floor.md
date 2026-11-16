@@ -57,4 +57,30 @@ If a floor ships, `cargo xtask accept m3` and `cargo xtask accept m6` are re-run
 
 ## Result
 
-(Filled in after the run.)
+Everything above was committed before the tool was written (3f3a915), with the switch from homes to owners committed before any run (02b327a). Raw report: `unassigned-floor.json` (every floor, every meeting and scene, as the tool wrote it). One run on the CPU, CAM++ `campplus-en-voxceleb@357a834f702b`, clustering threshold 0.68; the replay at floor -1 equalled the direct run on all 21 inputs. R = 8990.1 s of reference speech.
+
+**No floor passes; the rule picks -1, and nothing ships.** `CAMPPLUS_UNASSIGNED_FLOOR` stays -1 (today's clustering bit for bit, pinned by `diar_cluster_unassigned_floor_is_validated_and_calibrated_per_model`). At every floor the right speech taken away is several times the wrong speech taken away, so rule 2 (loss <= 0.25 x gain) fails everywhere; from 0.20 up rule 3 fails too, and rule 4 at 0.20 and from 0.30.
+
+| floor | A(f) AMI dev | L(f) scenes | gain s | loss s | non-speech s | unassigned s | rules 1-4 |
+|---|---|---|---|---|---|---|---|
+| -1 (today) | 0.1014 | 0.1456 | 0.00 | 0.00 | 0.00 | 0.00 | (reference) |
+| 0.00 | 0.1010 | 0.1456 | 1.89 | 7.41 | 0.28 | 9.58 | yes, no, yes, yes |
+| 0.05 | 0.1006 | 0.1456 | 1.74 | 11.67 | 0.36 | 13.77 | yes, no, yes, yes |
+| 0.10 | 0.1013 | 0.1456 | 3.10 | 28.63 | 0.75 | 32.48 | yes, no, yes, yes |
+| 0.15 | 0.1017 | 0.1456 | 5.41 | 39.47 | 1.41 | 46.29 | yes, no, yes, yes |
+| 0.20 | 0.1040 | 0.1460 | 8.46 | 52.26 | 1.75 | 62.47 | yes, no, no, no |
+| 0.30 | 0.1058 | 0.1460 | 14.58 | 81.82 | 5.60 | 102.00 | yes, no, no, no |
+| 0.40 | 0.1113 | 0.1460 | 22.21 | 134.60 | 10.37 | 167.18 | yes, no, no, no |
+| 0.50 | 0.1183 | 0.1458 | 31.90 | 202.90 | 15.92 | 250.72 | yes, no, no, no |
+| 0.60 | 0.1370 | 0.1474 | 40.32 | 346.14 | 25.66 | 412.12 | yes, no, no, no |
+
+(0.25, 0.35, 0.45 and 0.55 follow the same pattern; every row is in the JSON.)
+
+What this does and does not say:
+
+- Almost all the effect is on the AMI dev meetings: the scenes leave only 0.11 s unassigned at 0.00 and their DER barely moves. On AMI the small clusters that fall below a low floor are mostly fragments of a real speaker's own speech (loss), not another talker (gain): at 0.00, TS3004a gains 1.7 s and loses 3.4 s, TS3006a gains 0.2 s and loses 3.8 s.
+- The pooled AMI DER dips by up to 0.0008 at 0.00-0.05 (a few seconds of confusion become missed speech, and a few small clusters no longer pull a centroid), but by the rule that is not the question: the name taken away is right more often than wrong.
+- The dev data has no short-turn talker of the kind the private finding was about (as this doc expected under "How far this can be trusted"), so this does not show the floor is useless there; it shows that on ordinary meetings a cosine floor alone costs more right names than it saves wrong ones. T12.66 builds short-turn scenes.
+- The tool reports unassigned seconds rather than the number of small clusters left out (`Diarization` keeps spans, not clusters); a deviation from "The measures", noted rather than changed after the run.
+
+The code stays behind the default: `ClusteringConfig::unassigned_floor`, `Diarization::unassigned`, the post path's `PostWarning::SpeakerUnknown`, the unknown-speaker line in the app and summaries and exports. With the shipped floor of -1 none of it changes a transcript. For the owner: a floor on this data is not worth shipping; a rule that also needs the small cluster's members to be like each other (T12.66) is the next thing to measure.
