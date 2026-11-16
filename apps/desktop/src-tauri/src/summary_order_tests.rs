@@ -911,3 +911,75 @@ fn summary_order_preflight_holds_the_local_model_when_any_step_is_it() {
         }
     }
 }
+
+/// Whether `text` sets a `RunPlan`'s `order` to something: the field name on its own (not
+/// `order_run` or `summary_order`), then `: Some`.
+fn sets_run_order(text: &str) -> bool {
+    let needle = concat!("order", ": Some");
+    text.match_indices(needle).any(|(i, _)| {
+        !text[..i]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
+/// No run of the app overrides the order of summary writers (review of T12.63b): every app
+/// `RunPlan` reads the stored order (`order: None`); only earshot-cli runs the writer its command
+/// line names.
+#[test]
+fn summary_order_no_app_run_overrides_the_order() {
+    use std::path::{Path, PathBuf};
+    // The rule itself, on the test's own fixture text.
+    let set = concat!(
+        "RunPlan { writers, local_not_now: &f, ",
+        "order",
+        ": Some(o) }"
+    );
+    assert!(sets_run_order(set));
+    assert!(sets_run_order(concat!(
+        "\n    ",
+        "order",
+        ": Some(writers.order()),"
+    )));
+    assert!(!sets_run_order("order_run: Some(plan),"));
+    assert!(!sets_run_order("summary_order: Some(x)"));
+    assert!(!sets_run_order(concat!("order", ": None,")));
+
+    fn scan(dir: &Path, found: &mut Vec<(PathBuf, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                scan(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                found.push((path.clone(), std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    scan(&src, &mut files);
+    let setting: Vec<_> = files
+        .iter()
+        .filter(|(_, text)| sets_run_order(text))
+        .map(|(p, _)| p.display().to_string())
+        .collect();
+    assert!(
+        setting.is_empty(),
+        "an app run overrides the order: {setting:?}"
+    );
+    // The scan reads the right files: the meeting's run plan is there, reading the stored order.
+    assert!(
+        files.iter().any(|(p, text)| p.ends_with("meeting.rs")
+            && text.contains("with_order_run")
+            && text.contains(concat!("order", ": None"))),
+        "the scan did not read meeting.rs"
+    );
+    // And the one place that may, the CLI, does (the rule finds a real use).
+    let cli =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crates/earshot-cli/src/session.rs");
+    assert!(sets_run_order(&std::fs::read_to_string(cli).unwrap()));
+}
