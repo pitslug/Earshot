@@ -322,6 +322,8 @@ pub(crate) struct TestHooks {
     pub(crate) fell_behind_seen: Option<FellBehindSeen>,
     /// Lowering the preview thread's priority fails with this text, as it does off Windows.
     pub(crate) refuse_lowering: Option<String>,
+    /// Set once the thread has sent [`FromPreview::Running`] (window previews).
+    pub(crate) running_sent: Option<Arc<AtomicBool>>,
 }
 
 /// Lowers the preview thread's priority ([`LivePreviews::background`]).
@@ -571,6 +573,10 @@ impl PreviewWork {
             r.backend = Some(ran);
         });
         let _ = self.out.send(FromPreview::Running);
+        #[cfg(test)]
+        if let Some(sent) = &self.previews.test_hooks.running_sent {
+            sent.store(true, Ordering::SeqCst);
+        }
         let keep = PIPELINE_RATE.frames_for(self.previews.window);
         let min = PIPELINE_RATE.frames_for(MIN_PREVIEW_AUDIO) as u64;
         let options = TranscribeOptions::live();
@@ -1178,15 +1184,26 @@ where
     /// The computer went on battery: `track`'s running previews stop and wait to start again
     /// (T12.37, module docs). Never waits: the thread is told to stop and its decode cancelled,
     /// and the next start waits for it to have stopped, reading what it said last. A thread that
-    /// gave up, now or before it stopped, keeps its own reason for the rest of the meeting.
+    /// gave up, now or before it stopped, keeps its own reason for the rest of the meeting. A
+    /// `Running` it sent and the session had not read yet is said first, so the host hears the
+    /// states in order (T12.70); words read here are not shown, since the pause clears them.
     fn previews_pause(&mut self, track: TrackId) {
         let PreviewState::Running(p) = std::mem::take(&mut self.previews[slot(track)]) else {
             return;
         };
-        let gave_up = p.from.try_iter().find_map(|message| match message {
-            FromPreview::Off(why) => Some(why),
-            _ => None,
-        });
+        let (mut running, mut gave_up) = (false, None);
+        for message in p.from.try_iter() {
+            match message {
+                FromPreview::Running => running = true,
+                FromPreview::Off(why) => {
+                    gave_up.get_or_insert(why);
+                }
+                FromPreview::Words(_) | FromPreview::Done => {}
+            }
+        }
+        if running {
+            self.say_previews(track, None);
+        }
         if let Some(why) = gave_up {
             self.previews[slot(track)] = PreviewState::Running(p);
             self.previews_off(track, why);

@@ -3402,6 +3402,91 @@ fn wait_for(flag: &AtomicBool) {
     }
 }
 
+/// Mains until the preview thread is loading; then holds the session (one supply read) until the
+/// thread has sent `Running`, and says battery from then on.
+struct BatteryOnceRunningIsQueued {
+    loading: Arc<AtomicBool>,
+    holding: Arc<AtomicBool>,
+    running_sent: Arc<AtomicBool>,
+}
+
+impl PowerSource for BatteryOnceRunningIsQueued {
+    fn supply(&self) -> PowerSupply {
+        if !self.loading.load(Ordering::SeqCst) {
+            return PowerSupply::Mains;
+        }
+        self.holding.store(true, Ordering::SeqCst);
+        wait_for(&self.running_sent);
+        assert!(
+            self.running_sent.load(Ordering::SeqCst),
+            "the thread never said it runs"
+        );
+        PowerSupply::Battery
+    }
+}
+
+/// T12.70: a `Running` the thread sent but the session had not read when the battery paused the
+/// previews is still said, before the battery. The thread's load waits until a supply read holds
+/// the session, and that read holds it until `Running` is queued: the pause that follows always
+/// finds it unread, so the order is forced, not timed.
+#[test]
+fn live_preview_a_pause_says_a_running_state_it_found_unread() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let flag = || Arc::new(AtomicBool::new(false));
+    let (loading, holding, running_sent) = (flag(), flag(), flag());
+    let load: PreviewLoader = {
+        let (seen, loading, holding) = (
+            Arc::clone(&seen),
+            Arc::clone(&loading),
+            Arc::clone(&holding),
+        );
+        Arc::new(move |on| {
+            loading.store(true, Ordering::SeqCst);
+            wait_for(&holding);
+            assert!(
+                holding.load(Ordering::SeqCst),
+                "the session never read the supply"
+            );
+            Ok(fake_session_on(&seen, on))
+        })
+    };
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let config = LiveConfig {
+        power: PowerProbe::new(BatteryOnceRunningIsQueued {
+            loading,
+            holding,
+            running_sent: Arc::clone(&running_sent),
+        }),
+        // Read on every look, before the thread's messages are.
+        power_poll: Duration::ZERO,
+        ..config_with(Some(LivePreviews {
+            test_hooks: TestHooks {
+                running_sent: Some(running_sent),
+                ..TestHooks::default()
+            },
+            ..previews(load)
+        }))
+    };
+    let session = start_live(
+        fast_source(&scene),
+        svc.clone(),
+        config,
+        Some(factory_of(&scene, Arc::default())),
+        Box::new(ChaCha8Rng::seed_from_u64(335)),
+    )
+    .unwrap();
+    let (events, _) = collect(session);
+    assert_eq!(
+        states_of(&events),
+        vec![
+            (TrackId::Reference, None),
+            (TrackId::Reference, Some(PreviewOffReason::OnBattery)),
+        ]
+    );
+}
+
 /// T12.37 review: a paused thread that does not stop (a decode that never returns) does not keep
 /// the track paused on mains under the battery banner: past the end wait it is off, said as a
 /// failure, and nothing loads again.
