@@ -2167,6 +2167,17 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: (1) the own-voice banner (`PREVIEWS_OWN_VOICE_NPU`, `_ALONE`) says it is while transcription runs on the NPU, not "on this computer"; (2) `NOTE_EVERYONE_NPU` drops the "vanished, not understood" reason (T12.12c step 4 found a flicker on every backend) and points to Processor under Where it runs; (3) `PreviewOffReason::NeedsCompiledModel` splits into still preparing (missing or compiling) and refused (a prepared model the NPU would not use, prepared again); (4) `npu_compiled::NOTE` gets its own wording for `CompiledByHelper { refused }` (prepared again and loaded compiled: no "slower way", no "more memory"); (5) the QNN `onnx_fallback_message` becomes fixed copy (no `{library:?}`, no raw error). Stale comments and docs (backends.rs `OWN_VOICE_NPU_REFUSED`, preview_settings.rs, docs/live-previews.md) say the refusal waits on the owner's T12.12d decision. A follow-up, not here: a waiting message during the start-up NPU compile.
   - accept: `cargo test -p earshot-desktop --bin earshot plain_text`; `cargo test -p earshot-desktop --bin earshot meeting_events`; `cargo test -p earshot-runtime preview`; `cargo test -p earshot-runtime npu_compiled`; `cmd /c pnpm --filter @earshot/ui test`
 
+- [ ] T12.65 Summary writers as one ordered list
+  - found (owner, 2026-11-16, after using 0.3.9; mockup agreed the same day): the order is easier to read as one list than as a step-1 radio plus two selects.
+  - deps: T12.63b
+  - do: the Summaries page's "Who writes the summary" becomes one list: a row per writer this computer can use (this computer, the endpoint, Claude Code, Codex, each computer that offers summaries), each with a tick box, its rank number while ticked, its destination copy (from `fixtures/ui/summary_order_cases.json`) and up and down buttons (touch and keyboard; the first cannot go up, the last ticked cannot go down). At most three ticked: a fourth tick is refused with fixed copy. A writer that is not set up stays listed, greyed, with its reason, and cannot be ticked. "No summary" stays a choice above the list and greys it. The kept-local line sits under the list. The per-writer setup forms stay below. No drag-and-drop (no new dependency); it saves through `set_summary_order` unchanged, every T12.63b rule kept (no change while the order is unread, the mirror writer patched at once, no fixed width caps on descriptive text). UI mock and tests; screenshots light and dark.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo test -p earshot-desktop summary`
+- [ ] T12.66 Say when the NPU is being prepared at start-up
+  - found (T12.64 audit, 2026-11-16): on ARM64 the app compiles the NPU model at start-up (`host::prepare_npu_model`, about 30 s, holding the NPU load lock); a meeting started meanwhile shows only the generic "Transcription will begin soon".
+  - deps: T12.64
+  - do: while that compile holds a meeting's model load, the meeting screen says so in fixed copy (e.g. "Earshot is preparing the NPU for this computer; transcription begins in about half a minute."), cleared when the load starts; no new waiting, only the message. Tests through the hold's existing seams.
+  - accept: `cargo test -p earshot-runtime npu_compiled`; `cargo test -p earshot-desktop --bin earshot meeting_events`
+
 ### Parked (the owner, 2026-11-14)
 
 Research and hardware runs moved out of TODO.md: no decision is needed now. Each comes back as a task when the hardware, a recording or a better approach exists.
