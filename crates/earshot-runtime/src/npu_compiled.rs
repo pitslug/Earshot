@@ -35,7 +35,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -500,6 +500,103 @@ pub type RefuseLoad<'a, E> = Box<dyn FnOnce(Vec<Step>) -> E + 'a>;
 /// together (the second waits about 30 s, then loads the first one's compile in about a second).
 static LOADS: Mutex<()> = Mutex::new(());
 
+/// Whether a [`prepare`] is compiling now, under [`LOADS`] (T12.69): a load that finds the lock
+/// held while this is set waits for the start-up compile, and tells its watcher ([`watch_prepare`]).
+static PREPARING: AtomicBool = AtomicBool::new(false);
+
+/// What a load waiting for the start-up compile hears ([`watch_prepare`], T12.69).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrepareWait {
+    /// The load found the NPU lock held by the start-up compile and waits for it.
+    Waiting,
+    /// That wait is over: the load holds the lock and starts.
+    Started,
+}
+
+type Watcher = Box<dyn FnMut(PrepareWait)>;
+
+thread_local! {
+    /// The watcher of the NPU loads on this thread ([`watch_prepare`]).
+    static WATCHER: std::cell::RefCell<Option<Watcher>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` with `watcher` hearing every NPU load on this thread that waits for the start-up
+/// compile ([`prepare`]): [`PrepareWait::Waiting`] when it finds the lock held by that compile,
+/// then [`PrepareWait::Started`] once it holds the lock (T12.69). A load that waits for another
+/// load, or does not wait, says nothing. It adds no waiting. The watcher before is back after `f`,
+/// a panic included.
+pub fn watch_prepare<R>(watcher: impl FnMut(PrepareWait) + 'static, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Watcher>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let before = self.0.take();
+            WATCHER.with(|w| *w.borrow_mut() = before);
+        }
+    }
+    let before = WATCHER.with(|w| w.borrow_mut().replace(Box::new(watcher)));
+    let _restore = Restore(before);
+    f()
+}
+
+/// Tells this thread's watcher, if any ([`watch_prepare`]).
+fn tell(wait: PrepareWait) {
+    WATCHER.with(|w| {
+        if let Some(watcher) = w.borrow_mut().as_mut() {
+            watcher(wait);
+        }
+    });
+}
+
+/// Whether a start-up compile holds the NPU lock now (T12.69).
+#[must_use]
+pub fn preparing() -> bool {
+    PREPARING.load(Ordering::SeqCst)
+}
+
+/// Takes `lock`; when another holds it while `preparing` is set (a start-up compile), tells this
+/// thread's watcher it waits and, once taken, that it starts. `on_block` runs when the lock was
+/// found held, before waiting (a test seam: production passes nothing to do).
+fn lock_watched<'a>(
+    lock: &'a Mutex<()>,
+    preparing: &AtomicBool,
+    on_block: impl FnOnce(),
+) -> std::sync::MutexGuard<'a, ()> {
+    match lock.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            let told = preparing.load(Ordering::SeqCst);
+            if told {
+                tell(PrepareWait::Waiting);
+            }
+            on_block();
+            let guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if told {
+                tell(PrepareWait::Started);
+            }
+            guard
+        }
+    }
+}
+
+/// Marks [`PREPARING`] for its life.
+struct Preparing;
+
+impl Preparing {
+    fn mark() -> Self {
+        PREPARING.store(true, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for Preparing {
+    fn drop(&mut self) {
+        PREPARING.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Loads the NPU conversion in `conversion` for `key` (module docs), returning the loaded value
 /// and how. `fit` is the plugin's answer for a context model (true: use it); `compiled` loads
 /// everything from a context model, `compile` says how a missing one is made, and `ordinary` is
@@ -515,9 +612,7 @@ pub fn load<S, E: std::fmt::Display>(
     compile: Compile<'_, S, E>,
     ordinary: impl FnOnce() -> Result<S, E>,
 ) -> Result<(S, How), E> {
-    let _one = LOADS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _one = lock_watched(&LOADS, &PREPARING, || {});
     let root = conversion.join(COMPILED_DIR);
     let dest = root.join(key.folder_name());
     let mut refused: Option<Refusal> = None;
@@ -676,6 +771,9 @@ pub fn prepare(
         }
         put_aside(&root, &dest).map_err(|e| format!("the folder cannot be replaced ({e})"))?;
     }
+    // Marked only while it compiles (about 30 s): a load waiting on the check of an intact folder
+    // is told nothing (T12.69).
+    let _preparing = Preparing::mark();
     let tmp = unique(&root, ".tmp");
     std::fs::create_dir_all(&tmp).map_err(|e| format!("no folder to compile into ({e})"))?;
     made_by_helper(&root, &tmp, &dest, key, helper)?;

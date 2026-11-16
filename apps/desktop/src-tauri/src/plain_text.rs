@@ -184,6 +184,11 @@ pub const NPU_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the NPU this ti
 pub const CHECK_NPU_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the NPU this time, so the \
      model check tests Parakeet models on the processor only.";
 
+/// The banner while a meeting's live transcription waits for the NPU model Earshot compiles at
+/// start-up (T12.69, `RuntimeWarning::NpuPreparing`): fixed copy, cleared when the load starts.
+pub const NPU_PREPARING: &str = "Earshot is preparing the NPU for this computer. Transcription \
+     begins in about half a minute.";
+
 /// Whose provisional words a banner sentence is about (T12.33).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewScope {
@@ -1696,6 +1701,7 @@ mod every_variant_tests {
             crate::meeting::MEETING_PANIC_MESSAGE,
             NPU_LIBRARY_UNAVAILABLE,
             CHECK_NPU_LIBRARY_UNAVAILABLE,
+            NPU_PREPARING,
             PREVIEWS_OWN_VOICE_NPU,
             PREVIEWS_OWN_VOICE_NPU_ALONE,
             earshot_runtime::npu_compiled::NOTE,

@@ -674,6 +674,9 @@ fn meeting_clock(ms: u64) -> String {
     }
 }
 
+/// The banner key of [`RuntimeWarning::NpuPreparing`] (T12.69).
+pub const NPU_PREPARING_KEY: &str = "npu-preparing";
+
 /// The banner key of [`RuntimeWarning::RawMicRefused`] (T12.36): one banner whether the mic
 /// refused raw at the start or on a re-open.
 pub const RAW_MIC_KEY: &str = "raw-mic";
@@ -864,6 +867,15 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
         RuntimeWarning::HostNote { key, message } => {
             warning(key.clone(), WarningKind::Backend, message.clone())
         }
+        // While the live load waits for the start-up NPU compile, then gone when it starts.
+        RuntimeWarning::NpuPreparing { waiting: true } => warning(
+            NPU_PREPARING_KEY.into(),
+            WarningKind::Backend,
+            crate::plain_text::NPU_PREPARING.into(),
+        ),
+        RuntimeWarning::NpuPreparing { waiting: false } => Some(MeetingEvent::WarningCleared {
+            key: NPU_PREPARING_KEY.into(),
+        }),
         RuntimeWarning::Pipeline(PipelineError::LiveAsr { track, .. }) => {
             let t = LiveTrack::of(*track);
             warning(

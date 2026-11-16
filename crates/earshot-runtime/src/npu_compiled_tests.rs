@@ -842,6 +842,127 @@ fn npu_compiled_prepare_compiles_ahead_so_the_first_load_is_compiled() {
     assert_eq!(calls.get(), 2);
 }
 
+/// What a watcher heard ([`watch_prepare`]), shareable with another thread.
+type Heard = std::sync::Arc<std::sync::Mutex<Vec<PrepareWait>>>;
+
+fn listener(heard: &Heard) -> impl FnMut(PrepareWait) + 'static {
+    let heard = std::sync::Arc::clone(heard);
+    move |w| heard.lock().unwrap().push(w)
+}
+
+/// T12.69: a meeting's load that waits while the start-up compile holds the NPU lock hears
+/// `Waiting` while it waits and `Started` once it holds the lock, then loads the compiled model.
+#[test]
+fn npu_compiled_a_load_waiting_for_the_start_up_compile_says_so_then_starts() {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+    let dir = TempDir::new("npu-prepare-wait");
+    let (in_helper, helper_started) = channel::<()>();
+    let (release, released) = channel::<()>();
+    let conversion = dir.0.clone();
+    let compile = std::thread::spawn(move || {
+        prepare(&conversion, &key(), |model: &Path| {
+            assert!(preparing(), "the compile is marked while it runs");
+            in_helper.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(60)).unwrap();
+            write_fake_compile(model);
+            Ok(())
+        })
+    });
+    helper_started
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the helper ran");
+
+    let heard: Heard = Heard::default();
+    let (waiting_tx, waiting) = channel::<()>();
+    let conversion = dir.0.clone();
+    let watcher = {
+        let mut inner = listener(&heard);
+        move |w| {
+            inner(w);
+            if w == PrepareWait::Waiting {
+                let _ = waiting_tx.send(());
+            }
+        }
+    };
+    let loading = std::thread::spawn(move || {
+        watch_prepare(watcher, || {
+            let calls = Calls::default();
+            run(&conversion, &key(), &calls, true, true, true).0
+        })
+    });
+    waiting
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the waiting load says so before the compile ends");
+    assert_eq!(*heard.lock().unwrap(), [PrepareWait::Waiting]);
+    release.send(()).unwrap();
+    assert_eq!(
+        compile.join().unwrap(),
+        Ok(Prepared::Compiled { replaced: None })
+    );
+    assert_eq!(loading.join().unwrap(), "compiled", "it loads the compile");
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [PrepareWait::Waiting, PrepareWait::Started]
+    );
+}
+
+/// T12.69: only a wait on the start-up compile is told: no wait, a wait on another load, and a
+/// wait with nobody watching say nothing; the watcher is the caller's only for its call.
+#[test]
+fn npu_compiled_only_a_wait_on_the_start_up_compile_is_told() {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    // A lock and mark of the test's own: other tests' loads share the real ones.
+    let lock: &'static Mutex<()> = Box::leak(Box::new(Mutex::new(())));
+    let mark: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    // Takes `lock` while another thread holds it, as a load or the compile would: the holder lets
+    // go only once this take found it held (the block hook), so the wait is certain, with no clock.
+    let contended = || {
+        let (held_tx, held) = std::sync::mpsc::channel::<()>();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _g = lock.lock().unwrap();
+            held_tx.send(()).unwrap();
+            gone.recv().unwrap();
+        });
+        held.recv().unwrap();
+        drop(lock_watched(lock, mark, move || go.send(()).unwrap()));
+        holder.join().unwrap();
+    };
+    let free = || drop(lock_watched(lock, mark, || panic!("the lock was free")));
+
+    let heard: Heard = Heard::default();
+    mark.store(true, Ordering::SeqCst);
+    watch_prepare(listener(&heard), free);
+    assert!(heard.lock().unwrap().is_empty(), "no wait, nothing said");
+
+    mark.store(false, Ordering::SeqCst);
+    watch_prepare(listener(&heard), contended);
+    assert!(heard.lock().unwrap().is_empty(), "a wait on another load");
+
+    mark.store(true, Ordering::SeqCst);
+    watch_prepare(listener(&heard), contended);
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [PrepareWait::Waiting, PrepareWait::Started]
+    );
+
+    // After its call the watcher hears nothing more; nobody watching is no failure.
+    contended();
+    assert_eq!(heard.lock().unwrap().len(), 2);
+
+    // A watcher inside another one is the inner call's; the outer one is back after it.
+    let outer: Heard = Heard::default();
+    let inner: Heard = Heard::default();
+    watch_prepare(listener(&outer), || {
+        watch_prepare(listener(&inner), contended);
+        contended();
+    });
+    assert_eq!(inner.lock().unwrap().len(), 2);
+    assert_eq!(outer.lock().unwrap().len(), 2);
+}
+
 #[test]
 fn npu_compiled_prepare_with_a_failed_helper_leaves_nothing() {
     let dir = TempDir::new("npu-prepare-fails");
