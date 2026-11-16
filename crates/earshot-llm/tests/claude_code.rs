@@ -272,13 +272,16 @@ struct Scenario {
 
 impl Scenario {
     fn new(name: &str) -> Self {
+        // The counter keeps two tests in one clock tick apart (T12.70).
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let base = std::env::temp_dir().join(format!(
-            "earshot-fake-claude-{}-{name}-{}",
+            "earshot-fake-claude-{}-{name}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let dir = base.join("scenario");
         let temp_root = base.join("runs");
