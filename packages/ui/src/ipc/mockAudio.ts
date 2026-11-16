@@ -11,7 +11,7 @@ import type { SampleMachine } from "./mockModels";
 
 /** What the Audio mock starts with. */
 export interface AudioMockData {
-  /** The stored settings (default: the Windows defaults, a call). */
+  /** The stored settings (default: the Windows defaults, a call, Windows' processing). */
   settings?: Partial<AudioSettingsValue>;
   /** The microphones listed (default: the sample machine's). */
   microphones?: DeviceItem[];
@@ -116,6 +116,7 @@ export function createAudioMock(data: AudioMockData = {}, machine: SampleMachine
     microphone: null,
     output: null,
     capture_mode: "Call",
+    mic_signal: "Processed",
     ...data.settings,
   };
   const microphones = data.microphones ?? SAMPLE_DEVICES[machine].microphones;
@@ -146,7 +147,12 @@ export function createAudioMock(data: AudioMockData = {}, machine: SampleMachine
     audioSettings: async () => view(),
     defaultCaptureMode: async () => settings.capture_mode,
     setAudioSettings: async (s) => {
-      settings = { microphone: checked(s.microphone), output: checked(s.output), capture_mode: s.capture_mode };
+      settings = {
+        microphone: checked(s.microphone),
+        output: checked(s.output),
+        capture_mode: s.capture_mode,
+        mic_signal: s.mic_signal,
+      };
       return view();
     },
   };

@@ -556,6 +556,8 @@ export type AudioSettingsValue = {
 	output: ChosenDevice | null,
 	/**  What a new meeting records unless the user picks the other mode. */
 	capture_mode: CaptureMode,
+	/**  How every meeting records the microphone. */
+	mic_signal: MicSignal,
 };
 
 /**  Progress and the end of a benchmark run. */
@@ -1423,6 +1425,16 @@ export type MeetingState =
 "Unprocessed" | 
 /**  Recorded and processed. */
 "Ready";
+
+/**
+ *  How a meeting records the microphone (T12.36,
+ *  `earshot_runtime::audio_settings::MicSignal`).
+ */
+export type MicSignal = 
+/**  With Windows' own sound processing (the default). */
+"Processed" | 
+/**  Without it, where the microphone allows it. */
+"Raw";
 
 /**  One model of the catalogue. */
 export type ModelItem = {

@@ -78,14 +78,15 @@ pub struct EndpointProperties {
 #[serde(rename_all = "snake_case")]
 pub enum MicProcessing {
     /// The stream declares nothing: Windows applies the endpoint's default processing
-    /// (on some machines the vendor's noise suppression or echo control). What the app and
-    /// every live session use.
+    /// (on some machines the vendor's noise suppression or echo control). What every live
+    /// session uses unless the Audio page asks for raw.
     #[default]
     Default,
     /// `AUDCLNT_STREAMOPTIONS_RAW`: the stream asks for the endpoint's signal without that
-    /// processing. An explicit request of the raw recorder for measurements: an endpoint
-    /// that cannot deliver it refuses the stream ([`raw_refusal`]) and is never opened
-    /// with the default processing instead.
+    /// processing. Asked for by the raw recorder for measurements (T12.32), where an endpoint
+    /// that cannot deliver it refuses the stream ([`raw_refusal`]) and is never opened with
+    /// the default processing instead; and by the live source when the Audio page's setting
+    /// asks for it (T12.36), where a refusal opens the default stream with a warning.
     Raw,
 }
 

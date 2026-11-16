@@ -632,6 +632,9 @@ pub(crate) fn format_warning(w: &RuntimeWarning) -> String {
         RuntimeWarning::SleepNotPrevented => "warning: Windows did not agree to keep the \
              computer awake; a sleep during the recording leaves a gap"
             .to_owned(),
+        RuntimeWarning::RawMicRefused => "warning: the microphone refused to record raw, so it \
+             is recorded with Windows' own processing"
+            .to_owned(),
         RuntimeWarning::Persistence(m) => format!("warning: storing failed: {m}"),
         RuntimeWarning::LiveLoadFailed { error } => {
             format!("warning: live transcription did not start: {error}")

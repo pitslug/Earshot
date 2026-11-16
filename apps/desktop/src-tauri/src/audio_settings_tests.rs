@@ -45,6 +45,7 @@ fn audio_page_defaults_and_round_trip() {
             microphone: None,
             output: None,
             capture_mode: CaptureMode::Call,
+            mic_signal: MicSignal::Processed,
         }
     );
     assert!(v.unknown.is_empty());
@@ -57,10 +58,25 @@ fn audio_page_defaults_and_round_trip() {
         microphone: chosen(HEADSET, "Headset (Acme Headset)"),
         output: chosen(SPEAKERS, "Speakers"),
         capture_mode: CaptureMode::InRoom,
+        mic_signal: MicSignal::Processed,
     };
     let stored = set_settings(&svc, &want, Ok(surface())).unwrap();
     assert_eq!(stored.value, want);
     assert_eq!(audio_page(&svc, Ok(surface())).unwrap().value, want);
+    // T12.36: the raw microphone is stored like the other choices.
+    let raw = AudioSettingsValue {
+        mic_signal: MicSignal::Raw,
+        ..want
+    };
+    assert_eq!(set_settings(&svc, &raw, Ok(surface())).unwrap().value, raw);
+    assert_eq!(audio_page(&svc, Ok(surface())).unwrap().value, raw);
+    assert_eq!(
+        earshot_runtime::audio_settings::audio_settings(&svc.store())
+            .unwrap()
+            .0
+            .mic_signal,
+        Signal::Raw
+    );
 }
 
 #[test]
@@ -71,6 +87,7 @@ fn audio_page_marks_a_chosen_device_that_is_not_listed() {
         microphone: chosen(HEADSET, "Headset (Acme Headset)"),
         output: chosen("{gone}", "USB speakers"),
         capture_mode: CaptureMode::Call,
+        mic_signal: MicSignal::Processed,
     };
     let v = set_settings(&svc, &value, Ok(surface())).unwrap();
     assert!(!v.microphone_missing);
@@ -99,6 +116,7 @@ fn audio_page_shows_a_listing_failure_and_keeps_the_settings() {
         microphone: chosen(MIC, "Microphone Array"),
         output: None,
         capture_mode: CaptureMode::InRoom,
+        mic_signal: MicSignal::Processed,
     };
     let v = set_settings(
         &svc,
@@ -124,6 +142,7 @@ fn audio_page_refuses_an_unusable_device_and_stores_nothing() {
         microphone: chosen("bad\nid", "Mic"),
         output: None,
         capture_mode: CaptureMode::InRoom,
+        mic_signal: MicSignal::Processed,
     };
     let e = set_settings(&svc, &bad, Ok(surface())).unwrap_err();
     assert_eq!(e.kind, "invalid_setting");
@@ -147,6 +166,7 @@ fn audio_default_capture_mode_reads_only_the_store() {
         microphone: None,
         output: None,
         capture_mode: CaptureMode::InRoom,
+        mic_signal: MicSignal::Processed,
     };
     set_settings(&svc, &value, Err("not listed".into())).unwrap();
     assert_eq!(stored_capture_mode(&svc).unwrap(), CaptureMode::InRoom);
@@ -212,6 +232,7 @@ fn audio_settings_reach_the_meeting_capture() {
             microphone: chosen(HEADSET, "Headset"),
             output: chosen(SPEAKERS, "Speakers"),
             capture_mode: CaptureMode::Call,
+            mic_signal: MicSignal::Processed,
         },
         Ok(surface()),
     )
@@ -232,6 +253,23 @@ fn audio_settings_reach_the_meeting_capture() {
             name: "Speakers".into()
         }
     );
+    let processed = c.devices.clone();
+    // T12.36: the raw microphone reaches the capture as the runtime's selection, in the room
+    // and in a call alike.
+    let raw = AudioSettingsValue {
+        microphone: chosen(HEADSET, "Headset"),
+        output: chosen(SPEAKERS, "Speakers"),
+        capture_mode: CaptureMode::Call,
+        mic_signal: MicSignal::Raw,
+    };
+    set_settings(&svc, &raw, Ok(surface())).unwrap();
+    let want = raw.settings().devices();
+    assert_ne!(want, processed);
+    for mode in [CaptureMode::InRoom, CaptureMode::Call] {
+        let c = meeting_capture(&svc, &request(mode)).unwrap();
+        assert_eq!(c.devices, want, "{mode:?}");
+        assert!(c.notices.is_empty());
+    }
     // A stored value this version cannot use is a start banner, never silent.
     svc.store()
         .set_local_value(earshot_runtime::audio_settings::MICROPHONE_KEY, b"bad\nid")

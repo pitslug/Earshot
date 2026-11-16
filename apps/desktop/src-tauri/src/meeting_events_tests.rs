@@ -507,6 +507,24 @@ fn meeting_events_a_refused_keep_awake_is_one_fixed_banner() {
 }
 
 #[test]
+fn meeting_events_a_refused_raw_mic_is_one_fixed_banner() {
+    // T12.36: the Audio page asked for the raw mic and the mic refused it (at the start or on
+    // a re-open); the meeting records the processed stream and says so once, under one key.
+    let (key, kind, message) = banner(&RuntimeWarning::RawMicRefused);
+    assert_eq!(key, RAW_MIC_KEY);
+    assert_eq!(key, "raw-mic");
+    assert_eq!(kind, WarningKind::Audio);
+    assert_copy(&message);
+    // Neutral: any failure of the raw open falls back, not only a refusal by the microphone.
+    assert!(
+        message.contains("could not be recorded without"),
+        "{message}"
+    );
+    assert!(!message.contains("does not allow"), "{message}");
+    assert!(message.contains("Nothing is lost"), "{message}");
+}
+
+#[test]
 fn meeting_events_a_stopped_recording_says_when_and_why_in_plain_words() {
     // T9.17: once per track (one key per track), the time it stopped and a full disk named.
     let stopped = |track, ms, disk_full| {

@@ -76,6 +76,15 @@ pub trait TrackObserver {
         let _ = qpc;
     }
 
+    /// A live mic asked for raw processing (T12.36) could not be re-opened raw at `qpc`, so the
+    /// track asked for the default stream instead and keeps it for the rest of the capture.
+    /// Called once, right after the [`reopened`](Self::reopened) of that attempt (whether the
+    /// default stream opened or not). Never called for the raw recorder's mic, which refuses
+    /// ([`raw_refused`](Self::raw_refused)). Default: ignored.
+    fn raw_fell_back(&mut self, qpc: u64) {
+        let _ = qpc;
+    }
+
     /// The track ended at `qpc` after its stream kept failing for
     /// [`STREAM_ERROR_GRACE_QPC`](crate::follow::STREAM_ERROR_GRACE_QPC) (T9.21); `hresult` is
     /// the last stream error. No packet or re-open follows, and the other track goes on.

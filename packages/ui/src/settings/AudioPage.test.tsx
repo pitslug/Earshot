@@ -14,6 +14,8 @@ import {
   MICROPHONE_DESCRIPTION,
   MODE_DESCRIPTION,
   OUTPUT_DESCRIPTION,
+  SIGNAL_DESCRIPTION,
+  SIGNAL_LABEL,
 } from "./AudioPage";
 
 interface Setup {
@@ -166,6 +168,22 @@ describe("Settings, Audio", () => {
     await user.click((await screen.findAllByRole("button", { name: "New meeting" }))[0]);
     await waitFor(() => expect(screen.getByRole("radio", { name: MODE_LABEL.InRoom })).toBeChecked());
     expect(calls).toEqual(["defaultCaptureMode"]);
+  });
+
+  it("records the microphone with Windows' processing unless raw is chosen, and stores raw", async () => {
+    const s = await open();
+    expect(screen.getByRole("radio", { name: SIGNAL_LABEL.Processed })).toBeChecked();
+    expect(screen.getByRole("radiogroup", { name: "Microphone sound processing" })).toBeInTheDocument();
+    expect(pageText()).toContain(SIGNAL_DESCRIPTION);
+    await s.user.click(screen.getByRole("radio", { name: SIGNAL_LABEL.Raw }));
+    await waitFor(async () => expect((await s.ipc.audioSettings()).value.mic_signal).toBe("Raw"));
+    expect(screen.getByRole("radio", { name: SIGNAL_LABEL.Raw })).toBeChecked();
+    // The other choices are kept.
+    const stored = (await s.ipc.audioSettings()).value;
+    expect(stored.capture_mode).toBe("Call");
+    expect(stored.microphone).toBeNull();
+    await s.user.click(screen.getByRole("radio", { name: SIGNAL_LABEL.Processed }));
+    await waitFor(async () => expect((await s.ipc.audioSettings()).value.mic_signal).toBe("Processed"));
   });
 
   it("pins the mock's device rule to the app's shared case table", () => {

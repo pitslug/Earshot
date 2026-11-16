@@ -632,6 +632,11 @@ pub enum RuntimeWarning {
         /// Track.
         track: TrackId,
     },
+    /// The Audio page asks for the microphone without Windows' own processing (T12.36), but it
+    /// could not be opened that way (refused, or the raw open failed), at the start or when it
+    /// was opened again during the meeting, so the meeting records it with that processing. The recording goes on. At most once per
+    /// session.
+    RawMicRefused,
     /// Windows refused to keep the computer awake for this recording (T9.16), so a sleep during
     /// it leaves a gap ([`RuntimeWarning::RecordingGap`]). The recording goes on. Sent once, at
     /// the start.
@@ -1223,6 +1228,7 @@ where
         waiting_power: None,
         speaking: [false, false],
         recording_stopped: [false, false],
+        raw_mic_refused: false,
         stop_self: false,
         recording_saved: false,
         catch_up: catch_up.clone(),
@@ -1415,6 +1421,8 @@ struct Session<S> {
     speaking: [bool; 2],
     /// Each track whose recording stopped on a write error (by [`slot`], T9.17).
     recording_stopped: [bool; 2],
+    /// [`RuntimeWarning::RawMicRefused`] was sent (T12.36: at most once).
+    raw_mic_refused: bool,
     /// Every track stopped recording, so the session stops the meeting itself.
     stop_self: bool,
     /// [`RuntimeEvent::RecordingSaved`] was sent (T9.19: a panic after it does not send it
@@ -1464,6 +1472,7 @@ where
             self.emit(RuntimeEvent::LiveSummariesOff { reason });
         }
         for warning in std::mem::take(&mut self.start_warnings) {
+            self.raw_mic_refused |= warning == RuntimeWarning::RawMicRefused;
             self.warn(warning);
         }
         self.begin_hold();
@@ -2159,6 +2168,15 @@ where
         {
             self.warn(RuntimeWarning::DeviceStoppedAnswering);
             self.problems.push(RuntimeWarning::DeviceStoppedAnswering);
+            return;
+        }
+        if let DiscontinuityKind::Note {
+            warning: EndpointWarning::RawMicRefused,
+        } = kind
+        {
+            if !std::mem::replace(&mut self.raw_mic_refused, true) {
+                self.warn(RuntimeWarning::RawMicRefused);
+            }
             return;
         }
         if let DiscontinuityKind::Note {

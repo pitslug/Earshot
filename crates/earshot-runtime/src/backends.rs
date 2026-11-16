@@ -2870,7 +2870,9 @@ pub fn start_wasapi_session(
 /// chosen microphone instead of the default one and the chosen output for a device
 /// loopback. A chosen endpoint that cannot be opened is replaced by the default and reported
 /// at the start as [`crate::live::RuntimeWarning::ChosenDeviceUnavailable`] (after any
-/// Bluetooth hands-free warning).
+/// Bluetooth hands-free warning). A raw microphone the selection asks for (T12.36) that
+/// refuses raw records the processed stream, reported as
+/// [`crate::live::RuntimeWarning::RawMicRefused`].
 ///
 /// # Errors
 /// [`RuntimeError::CaptureStart`] if capture cannot start; as [`crate::live::start_live`].
@@ -2890,8 +2892,8 @@ pub fn start_wasapi_session_on(
         clock_domain: earshot_core::model::ClockDomain::Qpc,
         ..config
     };
-    // The audio check's delay for the pair opened (T7.4j): a warm-start hint only. A store
-    // error only loses the hint.
+    // The audio check's delay for the pair and microphone signal opened (T7.4j, T12.36): a
+    // warm-start hint only. A store error only loses the hint.
     if config.pipeline.delay_hint.is_none()
         && let (Some(mic), Some(output)) = (
             source.mic_endpoint().and_then(|p| p.id.as_deref()),
@@ -2899,32 +2901,41 @@ pub fn start_wasapi_session_on(
         )
     {
         let max_delay = config.pipeline.aec.linear.delay.max_delay;
-        config.pipeline.delay_hint =
-            crate::audio_check::delay_hint_for(&services.store(), mic, output, max_delay)
-                .ok()
-                .flatten();
+        config.pipeline.delay_hint = crate::audio_check::delay_hint_for(
+            &services.store(),
+            mic,
+            output,
+            source.mic_opened_raw(),
+            max_delay,
+        )
+        .ok()
+        .flatten();
     }
     let warnings = start_warnings(
         source.mic_warning(),
         source.fallbacks(),
+        source.raw_refused(),
         source.sleep_not_prevented(),
     );
     crate::live::start_live_with_warnings(source, services, config, live_asr, rng, warnings)
 }
 
 /// The warnings a WASAPI session starts with, in order: a Bluetooth hands-free mic, each chosen
-/// endpoint replaced by the default, and Windows refusing to keep the computer awake (T9.16; only
-/// that it refused reaches the session, never why).
+/// endpoint replaced by the default, a raw microphone refused (T12.36), and Windows refusing to
+/// keep the computer awake (T9.16). For the last two only that it happened reaches the session,
+/// never why.
 #[cfg(windows)]
 #[must_use]
 pub fn start_warnings(
     mic: Option<earshot_capture_wasapi::HandsFreeMic>,
     fallbacks: &[earshot_capture_wasapi::DeviceFallback],
+    raw_refused: Option<&str>,
     sleep_not_prevented: Option<&str>,
 ) -> Vec<crate::live::RuntimeWarning> {
     mic.map(hands_free_warning)
         .into_iter()
         .chain(fallbacks.iter().map(device_fallback_warning))
+        .chain(raw_refused.map(|_| crate::live::RuntimeWarning::RawMicRefused))
         .chain(sleep_not_prevented.map(|_| crate::live::RuntimeWarning::SleepNotPrevented))
         .collect()
 }

@@ -87,6 +87,32 @@ impl AudioCheckWork for ReplayWork {
     }
 }
 
+/// [`ReplayWork`] recording the microphone as the settings ask (T12.36), as a mic that
+/// refuses raw when `refuses_raw` is set.
+struct SignalWork {
+    refuses_raw: bool,
+}
+
+impl AudioCheckWork for SignalWork {
+    fn run(
+        &self,
+        settings: &AudioSettings,
+        cancel: &CancelToken,
+        progress: &mut dyn FnMut(Duration),
+    ) -> Result<Option<Measured>, RuntimeError> {
+        let replay = ReplayWork {
+            bulk_ms: 60,
+            gain: 0.5,
+        };
+        let asked = settings.mic_signal.is_raw();
+        Ok(replay.run(settings, cancel, progress)?.map(|mut m| {
+            m.raw_mic = asked && !self.refuses_raw;
+            m.raw_refused = asked && self.refuses_raw;
+            m
+        }))
+    }
+}
+
 /// Runs until cancelled (it says when it started), panics, or fails.
 struct WaitingWork {
     started: Mutex<Option<mpsc::Sender<()>>>,
@@ -192,7 +218,7 @@ fn audio_check_runs_stores_and_shows_the_result_for_the_devices_in_use() {
     assert_eq!(r.headline, "Your microphone hears your speakers.");
     assert_eq!(r.details[0], "Delay from speaker to microphone: 61 ms.");
     // Stored for the pair, and it seeds the next meeting on it.
-    let hint = check::delay_hint_for(&svc.store(), MIC, OUT, max_delay()).unwrap();
+    let hint = check::delay_hint_for(&svc.store(), MIC, OUT, false, max_delay()).unwrap();
     assert!(
         hint.is_some_and(|h| (h / 16.0 - 61.0).abs() < 1.0),
         "{hint:?}"
@@ -262,9 +288,97 @@ fn audio_check_headphones_are_shown_in_plain_words() {
     );
     assert!(r.details.is_empty(), "{:?}", r.details);
     assert_eq!(
-        check::delay_hint_for(&svc.store(), MIC, OUT, max_delay()).unwrap(),
+        check::delay_hint_for(&svc.store(), MIC, OUT, false, max_delay()).unwrap(),
         None
     );
+}
+
+#[test]
+fn audio_check_results_follow_the_microphone_signal() {
+    use earshot_runtime::audio_settings::MicSignal;
+    let raw_settings = AudioSettings {
+        mic_signal: MicSignal::Raw,
+        ..AudioSettings::default()
+    };
+    let raw_page = crate::audio_settings::AudioSettingsValue {
+        microphone: None,
+        output: None,
+        capture_mode: crate::meeting_events::CaptureMode::Call,
+        mic_signal: crate::audio_settings::MicSignal::Raw,
+    };
+    // A raw-capable mic checked with the raw setting: stored as raw, shown for raw only, and
+    // a raw meeting gets its delay where a processed one does not.
+    let dir = TempDir::new("audio-check-raw");
+    let svc = services(&dir);
+    crate::audio_settings::set_settings(&svc, &raw_page, Ok(devices())).unwrap();
+    let gate = WorkGate::new();
+    let (capable, events) = jobs(SignalWork { refuses_raw: false }, &gate);
+    capable.start(&svc).unwrap();
+    capable.join();
+    let last = events.lock().unwrap().last().cloned().unwrap();
+    let AudioCheckEvent::Done { view, note } = last else {
+        panic!("{last:?}")
+    };
+    assert_eq!(note, None);
+    assert!(view.result.is_some());
+    assert!(
+        check::delay_hint_for(&svc.store(), MIC, OUT, true, max_delay())
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        check::delay_hint_for(&svc.store(), MIC, OUT, false, max_delay()).unwrap(),
+        None
+    );
+    assert!(
+        check_view(&svc, &raw_settings, Ok(&devices()))
+            .unwrap()
+            .result
+            .is_some()
+    );
+    assert_eq!(
+        check_view(&svc, &AudioSettings::default(), Ok(&devices()))
+            .unwrap()
+            .result,
+        None
+    );
+
+    // A mic that refuses raw: checked processed, as a meeting records it, and the note says so.
+    let dir = TempDir::new("audio-check-raw-refused");
+    let svc = services(&dir);
+    crate::audio_settings::set_settings(&svc, &raw_page, Ok(devices())).unwrap();
+    let (refusing, events) = jobs(SignalWork { refuses_raw: true }, &gate);
+    refusing.start(&svc).unwrap();
+    refusing.join();
+    let last = events.lock().unwrap().last().cloned().unwrap();
+    let AudioCheckEvent::Done { view, note } = last else {
+        panic!("{last:?}")
+    };
+    assert_eq!(note.as_deref(), Some(RAW_REFUSED_NOTE));
+    assert!(view.result.is_some(), "the result just measured is shown");
+    assert!(
+        check::delay_hint_for(&svc.store(), MIC, OUT, false, max_delay())
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        check::delay_hint_for(&svc.store(), MIC, OUT, true, max_delay()).unwrap(),
+        None
+    );
+    // After a reload the page still shows that check for the raw setting, saying which it is.
+    let shown = check_view(&svc, &raw_settings, Ok(&devices()))
+        .unwrap()
+        .result
+        .expect("the processed check is shown");
+    assert_eq!(
+        shown.details.last().map(String::as_str),
+        Some(RAW_NOT_CHECKED_NOTE)
+    );
+    let processed = check_view(&svc, &AudioSettings::default(), Ok(&devices()))
+        .unwrap()
+        .result
+        .unwrap();
+    assert!(!processed.details.iter().any(|d| d == RAW_NOT_CHECKED_NOTE));
 }
 
 fn stored(result: &CheckResult) -> StoredCheck {
