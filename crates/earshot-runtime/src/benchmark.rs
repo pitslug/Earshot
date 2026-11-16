@@ -977,18 +977,19 @@ pub fn stored_benchmark(store: &Store) -> Result<StoredBenchmark, RuntimeError> 
     })
 }
 
-/// What the user is told when an accelerator's ONNX Runtime library could not load.
+/// What the user is told when an accelerator's ONNX Runtime library could not load: fixed copy by
+/// part, naming no library (T12.64, as the meeting's banners).
 #[must_use]
 pub fn onnx_fallback_note(library: Accelerator) -> String {
     let part = match library {
-        Accelerator::Cpu => "processor",
+        // The processor's library is what every other falls back to: it is not a fallback.
+        Accelerator::Cpu => {
+            return "Earshot could not load what speech models need this time.".into();
+        }
         Accelerator::Cuda | Accelerator::Vulkan => "graphics card",
         Accelerator::Qnn => "NPU",
     };
-    format!(
-        "The {part} library of ONNX Runtime could not be loaded, so speech models ran on the \
-         processor."
-    )
+    format!("Earshot could not use the {part} this time, so speech models ran on the processor.")
 }
 
 /// The production run (module docs): the settings in `user` (read, never changed), the

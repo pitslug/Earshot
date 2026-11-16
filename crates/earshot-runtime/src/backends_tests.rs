@@ -2489,6 +2489,7 @@ fn backends_previews_own_voice_stays_refused_on_the_npu_with_its_reason() {
         PREVIEW_NEEDS_COMPILED,
         PREVIEW_COMPILED_REFUSED,
         PREVIEW_NO_COMPILE_KEY,
+        PREVIEW_NPU_LOAD_FAILED,
     ] {
         assert_eq!(crate::catalogue::manifest_id_in(text), None, "{text}");
         assert!(!text.contains('\u{2014}'), "{text}");
@@ -2834,6 +2835,26 @@ fn backends_preview_on_the_npu_tells_a_refused_model_from_a_missing_one() {
             "{step:?}"
         );
     }
+    // Steps a preview's load never takes: a load that failed, never "still preparing".
+    for step in [
+        Step::Replace,
+        Step::NoTempFolder,
+        Step::Compile,
+        Step::Helper,
+        Step::HelperLoad,
+        Step::Keep,
+    ] {
+        assert_eq!(
+            preview_npu_refusal(&[step]),
+            PREVIEW_NPU_LOAD_FAILED,
+            "{step:?}"
+        );
+    }
+    assert_eq!(preview_npu_refusal(&[]), PREVIEW_NPU_LOAD_FAILED);
+    assert_eq!(
+        preview_load_refusal(&AsrError::Backend(PREVIEW_NPU_LOAD_FAILED.to_owned())).reason,
+        PreviewOffReason::LoadFailed
+    );
 }
 
 /// T12.4: the evaluation load skips only the refusal: it goes on to load (and fails here on an

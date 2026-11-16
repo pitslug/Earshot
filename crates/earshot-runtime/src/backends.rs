@@ -2263,6 +2263,11 @@ pub const PREVIEW_COMPILED_REFUSED: &str =
 pub const PREVIEW_NO_COMPILE_KEY: &str = "a preview on the NPU loads only the compiled model, and \
      the NPU version has no record to prepare one from";
 
+/// Why a preview on the NPU did not load, for a step its load never takes (T12.64 review): a load
+/// that failed ([`PreviewOffReason::LoadFailed`]), with no claim about a prepared model.
+pub const PREVIEW_NPU_LOAD_FAILED: &str =
+    "a preview on the NPU loads only the compiled model, and its load failed";
+
 /// What a preview's NPU load that found no usable compiled model says (T12.64), by the step that
 /// refused it: none prepared yet, a prepared one refused, or no record to prepare one from.
 pub(crate) fn preview_npu_refusal(steps: &[crate::npu_compiled::Step]) -> &'static str {
@@ -2270,9 +2275,19 @@ pub(crate) fn preview_npu_refusal(steps: &[crate::npu_compiled::Step]) -> &'stat
     match steps.first() {
         Some(Step::NotCompiled) => PREVIEW_NEEDS_COMPILED,
         Some(Step::NoKey) => PREVIEW_NO_COMPILE_KEY,
-        // A preview's load refuses only at a folder's checks (`Verify`, `NpuFit`) or its load
-        // (`CompiledLoad`): a prepared model was there.
-        _ => PREVIEW_COMPILED_REFUSED,
+        // A preview's load refuses at a folder's checks or its load: a prepared model was there.
+        Some(Step::Verify | Step::NpuFit | Step::CompiledLoad) => PREVIEW_COMPILED_REFUSED,
+        // Steps of a compile or of putting a folder aside, which a preview never takes
+        // (`Compile::Never`), and no step at all: a load that failed, which promises nothing.
+        Some(
+            Step::Replace
+            | Step::NoTempFolder
+            | Step::Compile
+            | Step::Helper
+            | Step::HelperLoad
+            | Step::Keep,
+        )
+        | None => PREVIEW_NPU_LOAD_FAILED,
     }
 }
 

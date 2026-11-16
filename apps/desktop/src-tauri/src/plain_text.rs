@@ -248,11 +248,11 @@ pub fn provisional_words_copy(reason: PreviewOffReason, scope: PreviewScope) -> 
             "are off for this meeting because Earshot is still preparing the transcription model \
              for this computer. They start in a later meeting once it is ready."
         }
-        // A prepared copy was there and was refused (T12.64): not "still preparing".
+        // A prepared copy was there and was refused (T12.64): not "still preparing", and no
+        // promise of a new copy, which a refusal only the preview's own load meets never gets.
         PreviewOffReason::CompiledModelRefused => {
             "are off for this meeting because the copy of the transcription model Earshot \
-             prepared for this computer could not be used. Earshot prepares it again when it \
-             needs to, so they may start in a later meeting."
+             prepared for this computer could not be used. The transcript is not affected."
         }
         PreviewOffReason::Model => {
             "are not available with the transcription model this meeting uses. You can choose \
@@ -925,14 +925,18 @@ mod provisional_words_tests {
             assert!(preparing.contains("still preparing"), "{preparing}");
             assert!(!refused.contains("still preparing"), "{refused}");
             assert!(refused.contains("could not be used"), "{refused}");
-            assert!(refused.contains("prepares it again"), "{refused}");
+            // No promise of a new copy or a later meeting (T12.64 review): a refusal only the
+            // preview's own load meets is never prepared again.
+            for word in ["prepares", "again", "later meeting"] {
+                assert!(!refused.contains(word), "{word} in {refused}");
+            }
         }
         assert_eq!(
             provisional_words_copy(PreviewOffReason::CompiledModelRefused, PreviewScope::All)
                 .unwrap(),
             "Provisional words are off for this meeting because the copy of the transcription \
-             model Earshot prepared for this computer could not be used. Earshot prepares it \
-             again when it needs to, so they may start in a later meeting."
+             model Earshot prepared for this computer could not be used. The transcript is not \
+             affected."
         );
     }
 
@@ -1691,6 +1695,7 @@ mod every_variant_tests {
             earshot_runtime::npu_compiled::NOTE,
             earshot_runtime::npu_compiled::NOTE_PREPARED_AGAIN,
             earshot_runtime::preview_settings::NOTE_EVERYONE_NPU,
+            earshot_runtime::preview_settings::NOTE_EVERYONE_NPU_ONLY,
         ]
         .into_iter()
         .map(str::to_owned)
