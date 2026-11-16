@@ -399,10 +399,31 @@ fn model_job_check_library_fallback_is_one_warning_before_the_trials() {
         earshot_runtime::backends::Accelerator::Qnn,
         &earshot_runtime::RuntimeError::Unavailable("QNN needs a build with the `qnn` feature"),
     );
+    // T12.64: the NPU's case is fixed copy, with no library name and none of the error's words.
+    assert_eq!(message, crate::plain_text::CHECK_NPU_LIBRARY_UNAVAILABLE);
     assert_eq!(
         message,
-        "The Qnn library of ONNX Runtime is unavailable, so the model check tests Parakeet \
-         models on the processor only (unavailable: QNN needs a build with the `qnn` feature)."
+        "Earshot could not use the NPU this time, so the model check tests Parakeet models on \
+         the processor only."
+    );
+    for word in ["Qnn", "QNN", "ONNX", "library", "feature", "unavailable"] {
+        assert!(!message.contains(word), "{word} in {message}");
+    }
+    let raw = earshot_runtime::RuntimeError::Asr(earshot_core::asr::AsrError::Backend(
+        "zq-raw-words QnnHtp.dll refused (0x80004005)".into(),
+    ));
+    assert_eq!(
+        check_fallback_message(earshot_runtime::backends::Accelerator::Qnn, &raw),
+        message
+    );
+    // Other libraries keep their library and reason.
+    let cuda = check_fallback_message(
+        earshot_runtime::backends::Accelerator::Cuda,
+        &earshot_runtime::RuntimeError::Unavailable("x"),
+    );
+    assert!(
+        cuda.starts_with("The Cuda library of ONNX Runtime"),
+        "{cuda}"
     );
     for mode in [Mode::Succeed, Mode::Fail, Mode::Panic] {
         let (tx, rx_go) = mpsc::channel();

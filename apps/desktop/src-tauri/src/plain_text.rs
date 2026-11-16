@@ -178,6 +178,12 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
 pub const NPU_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the NPU this time, so speech \
      models run on the processor. Restart Earshot to try again.";
 
+/// The model check's warning when the NPU's libraries could not load (T12.64): fixed copy, as
+/// [`NPU_LIBRARY_UNAVAILABLE`], saying what the check then tests. No "restart": the check runs in
+/// a child process of its own, so the next check tries the NPU again.
+pub const CHECK_NPU_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the NPU this time, so the \
+     model check tests Parakeet models on the processor only.";
+
 /// Whose provisional words a banner sentence is about (T12.33).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewScope {
@@ -1679,6 +1685,7 @@ mod every_variant_tests {
             crate::meeting::SAVED_BUT_LIVE_FAILED,
             crate::meeting::MEETING_PANIC_MESSAGE,
             NPU_LIBRARY_UNAVAILABLE,
+            CHECK_NPU_LIBRARY_UNAVAILABLE,
             PREVIEWS_OWN_VOICE_NPU,
             PREVIEWS_OWN_VOICE_NPU_ALONE,
             earshot_runtime::npu_compiled::NOTE,
