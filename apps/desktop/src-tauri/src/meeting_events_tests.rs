@@ -1483,3 +1483,33 @@ fn meeting_events_provisional_words_say_nothing_when_nobody_asked_for_them() {
     });
     assert!(m.map(&report, now).is_empty());
 }
+
+/// T12.69: a live load waiting for the start-up NPU compile shows its own banner in fixed copy,
+/// which goes when the load starts.
+#[test]
+fn meeting_events_npu_preparing_shows_then_clears_its_banner() {
+    let mut m = EventMapper::new(CaptureMode::Call);
+    let now = Instant::now();
+    let waiting = RuntimeEvent::Warning(RuntimeWarning::NpuPreparing { waiting: true });
+    assert_eq!(
+        m.map(&waiting, now),
+        vec![MeetingEvent::Warning {
+            key: NPU_PREPARING_KEY.into(),
+            kind: WarningKind::Backend,
+            message: crate::plain_text::NPU_PREPARING.into(),
+        }]
+    );
+    let started = RuntimeEvent::Warning(RuntimeWarning::NpuPreparing { waiting: false });
+    assert_eq!(
+        m.map(&started, now),
+        vec![MeetingEvent::WarningCleared {
+            key: NPU_PREPARING_KEY.into(),
+        }]
+    );
+    assert_eq!(NPU_PREPARING_KEY, "npu-preparing");
+    // Fixed copy that promises no duration (a compile can take longer on a busy machine).
+    assert_eq!(
+        crate::plain_text::NPU_PREPARING,
+        "Earshot is preparing the NPU for this computer. Transcription starts shortly."
+    );
+}

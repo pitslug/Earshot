@@ -6,6 +6,17 @@ use crate::testutil::TempDir;
 
 const BINARY: &str = "encoder_ctx_qnn.bin";
 
+/// Held by every test that runs the real [`prepare`] (which marks the process-wide
+/// [`PREPARING`]) and by every test that asserts what a watched load on the real [`LOADS`] hears,
+/// so one never hears the other's start-up hold.
+static REAL_PREPARE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn real_prepare_alone() -> std::sync::MutexGuard<'static, ()> {
+    REAL_PREPARE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn npu(driver: &str) -> earshot_hardware::Npu {
     earshot_hardware::Npu {
         name: "Test NPU".to_owned(),
@@ -809,6 +820,7 @@ fn link_tree(from: &Path, to: &Path) {
 /// nothing; a damaged folder is compiled again; a failed helper leaves nothing behind.
 #[test]
 fn npu_compiled_prepare_compiles_ahead_so_the_first_load_is_compiled() {
+    let _alone = real_prepare_alone();
     let dir = TempDir::new("npu-prepare");
     let calls = Cell::new(0);
     let helper = |model: &Path| {
@@ -842,8 +854,247 @@ fn npu_compiled_prepare_compiles_ahead_so_the_first_load_is_compiled() {
     assert_eq!(calls.get(), 2);
 }
 
+/// What a watcher heard ([`watch_prepare`]), shareable with another thread.
+type Heard = std::sync::Arc<std::sync::Mutex<Vec<PrepareWait>>>;
+
+fn listener(heard: &Heard) -> impl FnMut(PrepareWait) + 'static {
+    let heard = std::sync::Arc::clone(heard);
+    move |w| heard.lock().unwrap().push(w)
+}
+
+/// T12.69: a meeting's load that waits while the start-up compile holds the NPU lock hears
+/// `Waiting` while it waits and `Started` once it holds the lock, then loads the compiled model.
+#[test]
+fn npu_compiled_a_load_waiting_for_the_start_up_compile_says_so_then_starts() {
+    let _alone = real_prepare_alone();
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+    let dir = TempDir::new("npu-prepare-wait");
+    let (in_helper, helper_started) = channel::<()>();
+    let (release, released) = channel::<()>();
+    let conversion = dir.0.clone();
+    let compile = std::thread::spawn(move || {
+        prepare(&conversion, &key(), |model: &Path| {
+            assert!(preparing(), "the compile is marked while it runs");
+            in_helper.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(60)).unwrap();
+            write_fake_compile(model);
+            Ok(())
+        })
+    });
+    helper_started
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the helper ran");
+
+    let heard: Heard = Heard::default();
+    let (waiting_tx, waiting) = channel::<()>();
+    let conversion = dir.0.clone();
+    let watcher = {
+        let mut inner = listener(&heard);
+        move |w| {
+            inner(w);
+            if w == PrepareWait::Waiting {
+                let _ = waiting_tx.send(());
+            }
+        }
+    };
+    let loading = std::thread::spawn(move || {
+        watch_prepare(watcher, || {
+            let calls = Calls::default();
+            run(&conversion, &key(), &calls, true, true, true).0
+        })
+    });
+    waiting
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the waiting load says so before the compile ends");
+    assert_eq!(*heard.lock().unwrap(), [PrepareWait::Waiting]);
+    release.send(()).unwrap();
+    assert_eq!(
+        compile.join().unwrap(),
+        Ok(Prepared::Compiled { replaced: None })
+    );
+    assert_eq!(loading.join().unwrap(), "compiled", "it loads the compile");
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [PrepareWait::Waiting, PrepareWait::Started]
+    );
+}
+
+/// T12.69: only a wait on the start-up compile is told: no wait, a wait on another load, and a
+/// wait with nobody watching say nothing; the watcher is the caller's only for its call.
+#[test]
+fn npu_compiled_only_a_wait_on_the_start_up_compile_is_told() {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    // A lock and mark of the test's own: other tests' loads share the real ones.
+    let lock: &'static Mutex<()> = Box::leak(Box::new(Mutex::new(())));
+    let mark: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    // Takes `lock` while another thread holds it, as a load or the compile would: the holder lets
+    // go only once this take found it held (the block hook), so the wait is certain, with no clock.
+    let contended = || {
+        let (held_tx, held) = std::sync::mpsc::channel::<()>();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _g = lock.lock().unwrap();
+            held_tx.send(()).unwrap();
+            gone.recv().unwrap();
+        });
+        held.recv().unwrap();
+        drop(lock_watched(lock, mark, move || go.send(()).unwrap()));
+        holder.join().unwrap();
+    };
+    let free = || drop(lock_watched(lock, mark, || panic!("the lock was free")));
+
+    let heard: Heard = Heard::default();
+    mark.store(true, Ordering::SeqCst);
+    watch_prepare(listener(&heard), free);
+    assert!(heard.lock().unwrap().is_empty(), "no wait, nothing said");
+
+    mark.store(false, Ordering::SeqCst);
+    watch_prepare(listener(&heard), contended);
+    assert!(heard.lock().unwrap().is_empty(), "a wait on another load");
+
+    mark.store(true, Ordering::SeqCst);
+    watch_prepare(listener(&heard), contended);
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [PrepareWait::Waiting, PrepareWait::Started]
+    );
+
+    // After its call the watcher hears nothing more; nobody watching is no failure.
+    contended();
+    assert_eq!(heard.lock().unwrap().len(), 2);
+
+    // A watcher inside another one is the inner call's; the outer one is back after it.
+    let outer: Heard = Heard::default();
+    let inner: Heard = Heard::default();
+    watch_prepare(listener(&outer), || {
+        watch_prepare(listener(&inner), contended);
+        contended();
+    });
+    assert_eq!(inner.lock().unwrap().len(), 2);
+    assert_eq!(outer.lock().unwrap().len(), 2);
+}
+
+/// T12.69 review: the start-up hold is marked from the moment it takes the lock, before any folder
+/// check, so a load arriving while it checks or puts aside a refused folder hears it; the mark is
+/// gone before the lock is.
+#[test]
+fn npu_compiled_a_load_arriving_while_the_start_up_check_runs_hears_it() {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    let lock: &'static Mutex<()> = Box::leak(Box::new(Mutex::new(())));
+    let mark: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    let (held_tx, held) = std::sync::mpsc::channel::<()>();
+    let (go, gone) = std::sync::mpsc::channel::<()>();
+    let start_up = std::thread::spawn(move || {
+        let hold = hold_for_prepare(lock, mark);
+        held_tx.send(()).unwrap();
+        gone.recv().unwrap();
+        drop(hold);
+        assert!(!mark.load(Ordering::SeqCst), "cleared with the hold");
+    });
+    held.recv().unwrap();
+    assert!(
+        mark.load(Ordering::SeqCst),
+        "marked as soon as the lock is held"
+    );
+    let heard: Heard = Heard::default();
+    watch_prepare(listener(&heard), || {
+        drop(lock_watched(lock, mark, move || go.send(()).unwrap()));
+    });
+    start_up.join().unwrap();
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [PrepareWait::Waiting, PrepareWait::Started]
+    );
+}
+
+/// T12.69 review: a meeting's load that compiles in the helper itself (it beat the start-up thread,
+/// or the start-up compile failed) tells its watcher around that compile, whether it works or not;
+/// a load of a compiled model tells nothing.
+#[test]
+fn npu_compiled_a_load_compiling_in_the_helper_says_so_around_the_compile() {
+    let _alone = real_prepare_alone();
+    for helper_ok in [true, false] {
+        let dir = TempDir::new("npu-helper-told");
+        let heard: Heard = Heard::default();
+        let during = std::cell::RefCell::new(Vec::new());
+        let loaded = watch_prepare(listener(&heard), || {
+            load(
+                &dir.0,
+                &key(),
+                |_| Ok(true),
+                |_| Ok::<_, String>("compiled"),
+                Compile::Helper(Box::new(|model: &Path| {
+                    during.replace(heard.lock().unwrap().clone());
+                    if !helper_ok {
+                        return Err("the helper ended with exit code: 1".to_owned());
+                    }
+                    write_fake_compile(model);
+                    Ok(())
+                })),
+                || Ok::<_, String>("ordinary"),
+            )
+            .unwrap()
+            .0
+        });
+        assert_eq!(loaded, if helper_ok { "compiled" } else { "ordinary" });
+        assert_eq!(*during.borrow(), [PrepareWait::Waiting], "told before");
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [PrepareWait::Waiting, PrepareWait::Started],
+            "helper_ok {helper_ok}"
+        );
+    }
+    let dir = TempDir::new("npu-helper-told-compiled");
+    run_helper(&dir.0, &key(), &Calls::default(), true, true);
+    let heard: Heard = Heard::default();
+    let (s, how) = watch_prepare(listener(&heard), || {
+        run_helper(&dir.0, &key(), &Calls::default(), true, true)
+    });
+    assert_eq!((s, how), ("compiled", How::Compiled));
+    assert!(
+        heard.lock().unwrap().is_empty(),
+        "a compiled load says nothing"
+    );
+}
+
+/// T12.69 review: `prepare` leaves no mark on any return: after a compile, after finding the
+/// folder already compiled, and after a failed helper; during its compile it is marked.
+#[test]
+fn npu_compiled_prepare_leaves_no_mark_on_any_return() {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    let lock = Mutex::new(());
+    let mark = AtomicBool::new(false);
+    let dir = TempDir::new("npu-prepare-mark");
+    let r = prepare_with(&lock, &mark, &dir.0, &key(), |model: &Path| {
+        assert!(mark.load(Ordering::SeqCst), "marked while it compiles");
+        write_fake_compile(model);
+        Ok(())
+    });
+    assert_eq!(r, Ok(Prepared::Compiled { replaced: None }));
+    assert!(!mark.load(Ordering::SeqCst));
+    let r = prepare_with(&lock, &mark, &dir.0, &key(), |_: &Path| {
+        panic!("an intact folder is not compiled again")
+    });
+    assert_eq!(r, Ok(Prepared::AlreadyCompiled));
+    assert!(
+        !mark.load(Ordering::SeqCst),
+        "no mark after AlreadyCompiled"
+    );
+    let failed = TempDir::new("npu-prepare-mark-fails");
+    let r = prepare_with(&lock, &mark, &failed.0, &key(), |_: &Path| {
+        Err("the helper ended with exit code: 1".to_owned())
+    });
+    assert!(r.is_err());
+    assert!(!mark.load(Ordering::SeqCst), "no mark after a failure");
+}
+
 #[test]
 fn npu_compiled_prepare_with_a_failed_helper_leaves_nothing() {
+    let _alone = real_prepare_alone();
     let dir = TempDir::new("npu-prepare-fails");
     let r = prepare(&dir.0, &key(), |_| {
         Err("the helper ended with exit code: 1".to_owned())

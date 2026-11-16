@@ -1498,3 +1498,22 @@ fn host_transcription_setup_names_its_npu_note() {
     let without = transcription_setup(&db, &models, &[Accelerator::Cpu], &hw).unwrap();
     assert_eq!(without.npu_note, None);
 }
+
+/// T12.69: what a meeting's live load hears while it waits for the start-up NPU compile reaches
+/// the hold's notes, in order, as the banner and its clearing.
+#[test]
+fn host_npu_compiled_a_wait_for_the_start_up_compile_reaches_the_hold_notes() {
+    use crate::live::RuntimeWarning;
+    use crate::npu_compiled::PrepareWait;
+    let notes = crate::live::HoldNotes::default();
+    let mut hear = npu_wait_notes(&notes);
+    hear(PrepareWait::Waiting);
+    hear(PrepareWait::Started);
+    assert_eq!(
+        *notes.lock().unwrap(),
+        [
+            RuntimeWarning::NpuPreparing { waiting: true },
+            RuntimeWarning::NpuPreparing { waiting: false },
+        ]
+    );
+}

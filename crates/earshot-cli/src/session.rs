@@ -640,6 +640,12 @@ pub(crate) fn format_warning(w: &RuntimeWarning) -> String {
             format!("warning: live transcription did not start: {error}")
         }
         RuntimeWarning::HostNote { message, .. } => format!("note: {message}"),
+        RuntimeWarning::NpuPreparing { waiting: true } => {
+            "note: live transcription waits for an NPU compile".to_owned()
+        }
+        RuntimeWarning::NpuPreparing { waiting: false } => {
+            "note: the NPU model is compiled; live transcription loads".to_owned()
+        }
         RuntimeWarning::BackendFallback {
             track,
             backend,

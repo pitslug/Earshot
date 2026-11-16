@@ -669,6 +669,14 @@ pub enum RuntimeWarning {
         /// Plain copy.
         message: String,
     },
+    /// A held session's live transcription load waits for the NPU model the app compiles at
+    /// start-up, or compiles it in the helper itself (T12.69,
+    /// [`crate::npu_compiled::watch_prepare`]): `waiting` while it waits, then once more with
+    /// `waiting: false` when the load goes on. Never sent without an NPU compile.
+    NpuPreparing {
+        /// Whether the load still waits.
+        waiting: bool,
+    },
     /// A track's live transcription runs on a slower backend than the best one tried
     /// (for example CUDA was refused and the CPU runs it).
     BackendFallback {
