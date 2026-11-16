@@ -213,6 +213,7 @@ export function sampleDetail(item: MeetingListItem): MeetingDetail {
     summary_stale: false,
     audio_kept: true,
     waiting_for: null,
+    summary_run: null,
     handovers: [],
     kept_local: null,
     // Filled from the Dictionary and the persons when the mock serves the detail.

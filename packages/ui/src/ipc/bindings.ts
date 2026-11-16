@@ -391,6 +391,37 @@ export const commands = {
 	setSummaryHelper: (device: string | null) => typedError<SummaryHelpersView, IpcError>(__TAURI_INVOKE("set_summary_helper", { device })),
 	/**  Asks another computer to write a meeting's summary now; returns the meeting's waiting line. */
 	askSummaryHelper: (meeting: string, device: string) => typedError<string, IpcError>(__TAURI_INVOKE("ask_summary_helper", { meeting, device })),
+	/**  The Summaries page's order (asks the server for the computers). */
+	summaryOrder: () => typedError<SummaryOrderView, IpcError>(__TAURI_INVOKE("summary_order")),
+	/**
+	 *  Stores the order of summary writers (empty: no summary), with the endpoint settings when the
+	 *  page changes both.
+	 */
+	setSummaryOrder: (steps: StepChoice[], settings: {
+	/**  Who writes the summary. */
+	writer: WriterChoice,
+	/**  The endpoint's provider. */
+	provider: ProviderChoice,
+	/**  The endpoint address ("" when none). */
+	url: string,
+	/**  The model name sent to the endpoint ("" when none). */
+	model: string,
+	/**  Summarise during the meeting. */
+	live: boolean,
+	/**  The model Claude Code is asked for ("" for Claude Code's own default). */
+	claude_model: string,
+	/**  The effort Claude Code is asked for (`null` for Claude Code's own default; T12.18). */
+	claude_effort: EffortChoice | null,
+	/**  The model Codex is asked for ("" for Codex's own default). */
+	codex_model: string,
+} | null) => typedError<SummaryOrderView, IpcError>(__TAURI_INVOKE("set_summary_order", { steps, settings })),
+	/**  The re-summarise menu's writers for a meeting. */
+	resummariseWriters: (meeting: string) => typedError<ResummariseView, IpcError>(__TAURI_INVOKE("resummarise_writers", { meeting })),
+	/**
+	 *  Starts a re-summary of `meeting` by the one writer `step` names (a named run: no next step).
+	 *  A computer is asked through `ask_summary_helper`.
+	 */
+	resummariseWith: (meeting: string, step: StepChoice) => typedError<null, IpcError>(__TAURI_INVOKE("resummarise_with", { meeting, step })),
 	/**  Whether the app opens on the first-run wizard. */
 	firstRunState: () => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("first_run_state")),
 	/**  Marks the first-run wizard done, whichever steps were skipped. */
@@ -1159,7 +1190,30 @@ warnings: string[] } |
 /**  Meeting id. */
 meeting: string; 
 /**  What happened. */
-result: SummaryEvent } | 
+result: SummaryEvent; 
+/**
+ *  A summary written by a later step of the order, or none because every step failed
+ *  (T12.63b: banner `summary-steps`, `summary_order::steps_text`). Here and not as a
+ *  `Warning` because the screen keeps a job's last event only.
+ */
+note: string | null } | 
+/**
+ *  A re-summary that went on with a run after a computer handed it back found nothing to go
+ *  on with (T12.63b: the run no longer waits on that request): nothing was run, written or
+ *  sent, and the screen drops the job without a notice.
+ */
+{ type: "Settled"; 
+/**  Meeting id. */
+meeting: string } | 
+/**
+ *  The re-summary asked one of the user's other computers (T12.63b): it arrives by sync, or
+ *  the run goes on when that computer hands it back.
+ */
+{ type: "Offloaded"; 
+/**  Meeting id. */
+meeting: string; 
+/**  The meeting's waiting line (fixed copy, `offload::waiting_copy`). */
+message: string } | 
 /**  Something the user may need to know while the job runs (a backend fallback). */
 { type: "Warning"; 
 /**  Meeting id. */
@@ -1275,6 +1329,12 @@ export type MeetingDetail = {
 	 *  the meeting's waiting line (fixed copy, `offload::waiting_copy`).
 	 */
 	waiting_for: string | null,
+	/**
+	 *  The last run of the order of summary writers, when it has something to say (T12.63b,
+	 *  `summary_order::run_note`): interrupted, a named computer's hand-back, or what became of
+	 *  each step. Fixed copy, computer names and the endpoint's host only.
+	 */
+	summary_run: string | null,
 };
 
 /**
@@ -1754,6 +1814,22 @@ export type RemovedView = {
 	kept_shared: string[],
 };
 
+/**  One writer the re-summarise menu offers. */
+export type ResummariseItem = {
+	/**  The writer. */
+	step: StepChoice,
+	/**  Its label. */
+	label: string,
+	/**  Why it cannot be chosen (a meeting kept on this computer); `null` when it can. */
+	disabled: string | null,
+};
+
+/**  The re-summarise menu's writers on this computer (computers come from the helpers list). */
+export type ResummariseView = {
+	/**  Every writer that can run here now, labelled as on the Summaries page. */
+	writers: ResummariseItem[],
+};
+
 /**  What a choice would delete ([`retention_preview`]). */
 export type RetentionCount = {
 	/**  Meetings whose recordings would be deleted now. */
@@ -1956,6 +2032,31 @@ export type SpeakersView = {
 	voice: VoiceView,
 };
 
+/**  One step as the page sends and reads it. */
+export type StepChoice = 
+/**  The local model. */
+{ kind: "Local" } | 
+/**  The user's one endpoint. */
+{ kind: "Endpoint" } | 
+/**  Claude through Claude Code. */
+{ kind: "ClaudeCode" } | 
+/**  OpenAI through Codex. */
+{ kind: "Codex" } | 
+/**  One of the user's other computers. */
+{ kind: "Computer"; 
+/**  Its device id. */
+device: string };
+
+/**  One step with its copy. */
+export type StepView = {
+	/**  The step. */
+	step: StepChoice,
+	/**  Its label. */
+	label: string,
+	/**  Where it sends the transcript. */
+	destination: string,
+};
+
 /**  What storing a choice did. */
 export type StorageSaved = {
 	/**  The settings as stored. */
@@ -2109,6 +2210,23 @@ export type SummaryHelpersView = {
 	helpers: SummaryHelperView[],
 	/**  Why the computers could not be read now (fixed copy); the chosen one is still listed. */
 	problem: string | null,
+};
+
+/**  The order as the page shows it. */
+export type SummaryOrderView = {
+	/**  No summary. */
+	none: boolean,
+	/**  The steps in order (empty with `none`). */
+	steps: StepView[],
+	/**
+	 *  Every step the page can offer: the four writers, then each computer that writes
+	 *  summaries for the others, or is in the order.
+	 */
+	offered: StepView[],
+	/**  What the user is told about the stored order (fixed copy). */
+	notes: string[],
+	/**  The most steps an order holds. */
+	max_steps: number,
 };
 
 /**  The Summaries page settings as the UI sends and reads them. */

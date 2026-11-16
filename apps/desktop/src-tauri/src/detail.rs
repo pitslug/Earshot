@@ -297,6 +297,10 @@ pub struct MeetingDetail {
     /// While another computer was asked to write the summary and has not answered (T11.3db):
     /// the meeting's waiting line (fixed copy, `offload::waiting_copy`).
     pub waiting_for: Option<String>,
+    /// The last run of the order of summary writers, when it has something to say (T12.63b,
+    /// `summary_order::run_note`): interrupted, a named computer's hand-back, or what became of
+    /// each step. Fixed copy, computer names and the endpoint's host only.
+    pub summary_run: Option<String>,
 }
 
 /// One handover to Claude Code or Codex.
@@ -805,6 +809,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         dictionary,
         summary_edited,
         waiting_for,
+        run_view,
     ) = {
         let db = services.store();
         let persons = edit::list_persons_in(&db)?;
@@ -856,6 +861,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         };
         let waiting_for = earshot_runtime::offload::waiting_for(&db, db.device(), meeting)?
             .map(|_| crate::offload::waiting_copy(None));
+        let run_view = earshot_runtime::summary_order::run::run_view(&db, meeting)?;
         (
             persons,
             history,
@@ -869,6 +875,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             dictionary,
             summary_edited,
             waiting_for,
+            run_view,
         )
     };
     // The final pass's own rule, as the Speakers panel's offers use it.
@@ -981,6 +988,15 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         word_list: words.list,
         dictionary,
         waiting_for,
+        // A run not ended while the meeting's work or a job still holds it is not interrupted.
+        summary_run: crate::summary_order::run_note(
+            &run_view,
+            matches!(
+                state,
+                MeetingState::Recording | MeetingState::Processing | MeetingState::Waiting
+            ),
+            &crate::summary_order::StepContext::read(services),
+        ),
     })
 }
 

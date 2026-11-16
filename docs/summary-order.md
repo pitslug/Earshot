@@ -1,6 +1,6 @@
 # Summary writers in order (T12.63)
 
-Status: T12.63a (runtime) built; T12.63b (app) open. Tasks T12.63a (runtime) and T12.63b (app), PLAN.md section 8. Spec review, 2026-11-16: round 1 four blocking findings, round 2 one (the hand-back protocol), round 3 one (an unreadable run record, adopted as the reviewer wrote it), all addressed below.
+Status: T12.63a (runtime) and T12.63b (app) built. Tasks T12.63a (runtime) and T12.63b (app), PLAN.md section 8. Spec review, 2026-11-16: round 1 four blocking findings, round 2 one (the hand-back protocol), round 3 one (an unreadable run record, adopted as the reviewer wrote it), all addressed below.
 
 ## 1. Why
 

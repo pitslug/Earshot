@@ -1145,10 +1145,8 @@ pub fn skip_copy(reason: &SkipReason) -> String {
         SkipReason::KeptLocalNoModel { model } => {
             crate::plain_text::kept_local_no_model(model, false)
         }
-        // T12.63a; the app runs no order until T12.63b, which owns this copy.
-        SkipReason::NotNow => "The summary model was not run while a newer meeting needed this \
-                               computer. Re-summarise this meeting to write it."
-            .into(),
+        // T12.63b: the copy table's.
+        SkipReason::NotNow => crate::summary_order::COPY.not_now.clone(),
     }
 }
 

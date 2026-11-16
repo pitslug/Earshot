@@ -53,14 +53,16 @@ import type { FolderListItem } from "./folders";
 import { type SampleMachine, createModelsMock } from "./mockModels";
 import { searchSample } from "./mockSearch";
 import { type SettingsMockData, createSettingsMock } from "./mockSettings";
-import { NOT_A_WORD, type SummariesMockData, createSummariesMock } from "./mockSummaries";
+import { LIVE_NEEDS_LOCAL, NOT_A_WORD, type SummariesMockData, createSummariesMock } from "./mockSummaries";
+import { createSummaryOrderMock, liveAllowed } from "./mockSummaryOrder";
+import { ORDER_COPY, type StepChoice, isRemoteWriter } from "./summaryOrder";
 import { type StorageMockData, createStorageMock } from "./mockStorage";
 import { type BenchmarkMockData, createBenchmarkMock } from "./mockBenchmark";
 import { type CudaMockData, createCudaMock } from "./mockCuda";
 import { type AudioMockData, createAudioMock } from "./mockAudio";
 import { type AudioCheckMockData, createAudioCheckMock } from "./mockAudioCheck";
 import { type FirstRunMockData, createFirstRunMock } from "./mockFirstRun";
-import { OFFLOAD_COPY, type SyncMockData, createSyncMock, offloadCopy } from "./mockSync";
+import { OFFLOAD_COPY, type SyncMockData, createSyncMock, mockDeviceId, offloadCopy } from "./mockSync";
 import { SAMPLE_FOLDERS, createFoldersMock } from "./mockFolders";
 
 const MINUTE = 60_000;
@@ -260,6 +262,11 @@ export interface MockIpcData {
   firstRun?: FirstRunMockData;
   /** The Sync page (default: this computer is not set up). */
   sync?: SyncMockData;
+  /** The order of summary writers (T12.63b; default: the stored writer alone). */
+  summaryOrder?: StepChoice[];
+  /** The meeting detail's account of a meeting's last summary run, by meeting id (T12.63b:
+   * fixture data; the mock runs no order). */
+  summaryRuns?: Record<string, string>;
   /** Offers to stop this long into a meeting (the preview's `?callEnded=1`). */
   callEndOfferAfterMs?: number;
   /** The folders (default: `SAMPLE_FOLDERS` with the sample meetings, none with given ones). */
@@ -375,6 +382,17 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   );
   const summariesMock = createSummariesMock(data.summaries, data.machine ?? "surface");
   const syncMock = createSyncMock(data.sync);
+  // T12.63b: the order of summary writers, with the old writer setting mirrored from it.
+  const orderMock = createSummaryOrderMock(
+    {
+      summaries: summariesMock,
+      helpers: () => syncMock.summaryHelpers(),
+      thisDevice: (data.sync?.devices?.find((d) => d.this_device) ?? { id: mockDeviceId("3f2a9c1e") }).id,
+      keptLocal: (meeting) => keptLocal.has(meeting),
+    },
+    data.summaryOrder,
+  );
+  const summaryRuns = new Map(Object.entries(data.summaryRuns ?? {}));
   // Meetings asked of another computer, with their waiting line (T11.3db).
   const waitingFor = new Map<string, string>();
   const { exportTarget, ...settingsMock } = createSettingsMock(
@@ -658,11 +676,63 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
   });
 
+  // A re-summary (by the order or a named writer): the mock writes the next sample summary.
+  function runResummary(meeting: string) {
+    startJob(meeting, "Resummarising");
+    jobTimer(meeting, () => {
+      jobs.delete(meeting);
+      jobTimers.delete(meeting);
+      const d = detailOf(meeting);
+      if (d.summary) previous.set(meeting, d.summary);
+      if (d.summary) previousEdited.set(meeting, d.header.summary_edited);
+      const next = d.summary ? resummarised(d.summary) : null;
+      details.set(meeting, {
+        ...d,
+        header: { ...d.header, summary_edited: false },
+        summary: next,
+        can_undo_summary: d.summary !== null,
+        summary_stale: false,
+      });
+      const voices = d.speakers.filter((s) => s.needs_name).length;
+      emitJob({
+        type: "Summary",
+        meeting,
+        result: next
+          ? {
+              kind: "Stored",
+              title: next.title,
+              actions: next.actions.length,
+              decisions: next.decisions.length,
+              voices_to_name: voices,
+            }
+          : { kind: "Skipped", reason: "Summaries are turned off." },
+        note: null,
+      });
+    }, POST_STEP_MS);
+  }
+
   // The mock's whole-list Dictionary write is not an `Ipc` command (T11.3e).
   const { setSummaryVocabulary: _wholeList, ...summaryCommands } = summariesMock;
   return {
     ...modelsMock,
     ...summaryCommands,
+    // The live switch follows the order (`live_summaries_allowed`), and a writer saved by the page
+    // takes the order's first writer step (`SummaryOrder::with_writer`).
+    summarySettings: async () => {
+      const v = await summariesMock.summarySettings();
+      return { ...v, live_unavailable: liveAllowed(await orderMock.steps()) ? null : LIVE_NEEDS_LOCAL };
+    },
+    setSummarySettings: async (s) => {
+      const v = await summariesMock.setSummarySettings(s);
+      await orderMock.writerSaved(v.value.writer);
+      return { ...v, live_unavailable: liveAllowed(await orderMock.steps()) ? null : LIVE_NEEDS_LOCAL };
+    },
+    summaryOrder: () => orderMock.summaryOrder(),
+    setSummaryOrder: (steps, settings) => orderMock.setSummaryOrder(steps, settings),
+    resummariseWriters: async (meeting) => {
+      detailOf(meeting);
+      return orderMock.resummariseWriters(meeting);
+    },
     models: async () => {
       const [view, summaries] = await Promise.all([modelsMock.models(), summariesMock.summarySettings()]);
       return {
@@ -864,6 +934,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         word_list,
         dictionary,
         waiting_for: waitingFor.get(meeting) ?? d.waiting_for,
+        summary_run: summaryRuns.get(meeting) ?? d.summary_run,
         state: row?.state ?? d.state,
         header: { ...d.header, title: row?.title ?? d.header.title },
       });
@@ -1265,38 +1336,17 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       if (deletionAsk(meeting) !== "Free") fail("meeting_still_working", MOCK_STILL_WORKING_COPY);
       keptLocal.delete(meeting);
     },
+    resummariseWith: async (meeting, step) => {
+      call("resummariseWith", meeting, step);
+      // A named remote writer on a meeting kept here is refused (`summary_kept_local`).
+      if (keptLocal.has(meeting) && isRemoteWriter(step)) {
+        fail("summary_kept_local", ORDER_COPY.resummarise.kept_local);
+      }
+      runResummary(meeting);
+    },
     resummarise: async (meeting) => {
       call("resummarise", meeting);
-      startJob(meeting, "Resummarising");
-      jobTimer(meeting, () => {
-        jobs.delete(meeting);
-        jobTimers.delete(meeting);
-        const d = detailOf(meeting);
-        if (d.summary) previous.set(meeting, d.summary);
-        if (d.summary) previousEdited.set(meeting, d.header.summary_edited);
-        const next = d.summary ? resummarised(d.summary) : null;
-        details.set(meeting, {
-          ...d,
-          header: { ...d.header, summary_edited: false },
-          summary: next,
-          can_undo_summary: d.summary !== null,
-          summary_stale: false,
-        });
-        const voices = d.speakers.filter((s) => s.needs_name).length;
-        emitJob({
-          type: "Summary",
-          meeting,
-          result: next
-            ? {
-                kind: "Stored",
-                title: next.title,
-                actions: next.actions.length,
-                decisions: next.decisions.length,
-                voices_to_name: voices,
-              }
-            : { kind: "Skipped", reason: "Summaries are turned off." },
-        });
-      }, POST_STEP_MS);
+      runResummary(meeting);
     },
     cancelJob: async (meeting) => {
       call("cancelJob", meeting);

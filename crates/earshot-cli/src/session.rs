@@ -1144,18 +1144,27 @@ pub fn run_meeting(
     // 3 and 4. The post-meeting pass, then the summary (network only there, only to the
     // configured endpoint; a local model makes no connection).
     let post_cancel = CancelToken::new();
+    // The summary is a run of the order of summary writers (T12.63b): one step, the writer the
+    // command line names, so the run's steps are printed like the app's.
+    let had_summary = summary.is_some();
+    let writers = CliWriters::new(&plan, summary);
+    let run_plan = earshot_runtime::summary_order::run::RunPlan {
+        writers: &writers,
+        local_not_now: &|| false,
+        order: Some(writers.order()),
+    };
     let after = AfterMeeting {
         models: &models,
         model: &model,
         order: &order,
         post: !opts.no_post,
         whole_pass: opts.whole_pass,
-        summary: summary.as_ref().map(|s| &s.service),
-        no_summary: skip_reason(&plan).unwrap_or(SkipReason::NotRequested),
+        summary: None,
+        no_summary: SkipReason::NotRequested,
         post_cancel: &post_cancel,
         summary_cancel: &CancelToken::new(),
         offload: None,
-        order_run: None,
+        order_run: Some(&run_plan),
     };
     let mut printer = PostPrinter {
         out: &mut *out,
@@ -1213,7 +1222,7 @@ pub fn run_meeting(
     for (i, step) in host.steps.iter().enumerate() {
         writeln!(out, "summary step {}: {}", i + 1, step.line())?;
     }
-    if summary.is_some() {
+    if had_summary {
         for e in &host.network {
             writeln!(
                 out,
@@ -2765,5 +2774,127 @@ mod tests {
                 && line.contains(AFTER_CALL_REASON),
             "{line}"
         );
+    }
+}
+
+/// The writers of the CLI's order run (T12.63b): its one step is the writer the command line
+/// names, built before the meeting (the endpoint, the local model, Claude Code or Codex); a
+/// plan that runs no summary is an empty order. No computer step is ever asked.
+pub struct CliWriters {
+    step: Option<earshot_runtime::summary_order::WriterStep>,
+    prepared: std::sync::Mutex<Option<host::PreparedSummary>>,
+    skip: SkipReason,
+}
+
+impl CliWriters {
+    /// The writers of `plan`, with its prepared service.
+    #[must_use]
+    pub fn new(plan: &SummaryPlan, prepared: Option<host::PreparedSummary>) -> Self {
+        use earshot_runtime::summary_order::WriterStep;
+        let step = match plan {
+            SummaryPlan::Skip => None,
+            SummaryPlan::Local(_)
+            | SummaryPlan::NotInstalled(..)
+            | SummaryPlan::KeptLocalNoModel(_) => Some(WriterStep::Local),
+            SummaryPlan::Remote(_) | SummaryPlan::NoApiKey(_) => Some(WriterStep::Endpoint),
+            SummaryPlan::ClaudeCode(_) | SummaryPlan::ClaudeCodeUnavailable(_) => {
+                Some(WriterStep::ClaudeCode)
+            }
+            SummaryPlan::Codex(_) | SummaryPlan::CodexUnavailable(_) => Some(WriterStep::Codex),
+        };
+        Self {
+            step,
+            prepared: std::sync::Mutex::new(prepared),
+            skip: skip_reason(plan).unwrap_or(SkipReason::NotRequested),
+        }
+    }
+
+    /// The order the run runs: the one step, or none.
+    #[must_use]
+    pub fn order(&self) -> earshot_runtime::summary_order::SummaryOrder {
+        earshot_runtime::summary_order::SummaryOrder::new(
+            self.step
+                .map(earshot_runtime::summary_order::OrderStep::Writer)
+                .into_iter()
+                .collect(),
+        )
+        .unwrap_or_default()
+    }
+}
+
+impl earshot_runtime::summary_order::run::StepWriters for CliWriters {
+    fn writer(
+        &self,
+        _: &Services,
+        step: earshot_runtime::summary_order::WriterStep,
+    ) -> earshot_runtime::summary_order::run::Built {
+        use earshot_runtime::summary_order::run::Built;
+        if Some(step) != self.step {
+            return Built::Stop(RuntimeError::Internal(
+                "a step the command line did not name",
+            ));
+        }
+        match self
+            .prepared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            Some(prepared) => Built::Service(Box::new(prepared)),
+            None => Built::Skip(self.skip.clone()),
+        }
+    }
+
+    fn computer(
+        &self,
+        _: &Services,
+        device: earshot_core::identity::DeviceId,
+    ) -> earshot_runtime::offload::OffloadChoice {
+        earshot_runtime::offload::decide(Some(device), None, false)
+    }
+}
+
+#[cfg(test)]
+mod cli_writers_tests {
+    use earshot_runtime::summary_order::run::{Built, StepWriters};
+    use earshot_runtime::summary_order::{OrderStep, WriterStep};
+
+    use super::*;
+
+    fn services(tag: &str) -> Services {
+        let dir =
+            std::env::temp_dir().join(format!("earshot-cli-writers-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let data = DataDir::new(dir);
+        data.create().unwrap();
+        let store = data.open_store().unwrap();
+        Services::new(store, data, Arc::new(SystemClock)).unwrap()
+    }
+
+    /// The CLI's summary is a one-step order of the writer its command line names (T12.63b):
+    /// no summary is an empty order, and no other writer is ever built.
+    #[test]
+    fn cli_writers_run_only_the_writer_the_command_line_names() {
+        let svc = services("names");
+        let none = CliWriters::new(&SummaryPlan::Skip, None);
+        assert!(none.order().is_none());
+        let key = CliWriters::new(
+            &SummaryPlan::NoApiKey(earshot_runtime::summary_settings::ApiKeyError::Missing),
+            None,
+        );
+        assert_eq!(
+            key.order().steps(),
+            [OrderStep::Writer(WriterStep::Endpoint)]
+        );
+        assert!(matches!(
+            key.writer(&svc, WriterStep::Endpoint),
+            Built::Skip(SkipReason::NoApiKey(_))
+        ));
+        for other in [WriterStep::Local, WriterStep::ClaudeCode, WriterStep::Codex] {
+            assert!(
+                matches!(key.writer(&svc, other), Built::Stop(_)),
+                "{other:?}"
+            );
+        }
     }
 }

@@ -169,6 +169,15 @@ export type {
 } from "./sync";
 export { MOCK_SYNC_CODE, MOCK_SYNC_SECRET, OFFLOAD_COPY, createSyncMock, mockDeviceId, offloadCopy } from "./mockSync";
 export type { SyncMockData } from "./mockSync";
+export { ORDER_COPY, fillCopy, isRemoteWriter, mirrorWriter, sameStep, stepKey } from "./summaryOrder";
+export type {
+  ResummariseItem,
+  ResummariseView,
+  StepChoice,
+  StepView,
+  SummaryOrderCommands,
+  SummaryOrderView,
+} from "./summaryOrder";
 export type { FirstRunCommands, FirstRunView } from "./firstRun";
 export type { FolderCommands, FolderDeleted, FolderListItem } from "./folders";
 export { SAMPLE_FOLDERS } from "./mockFolders";

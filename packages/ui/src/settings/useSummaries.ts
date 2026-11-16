@@ -9,6 +9,9 @@ import {
   type ClaudeCodeStatusView,
   type CodexStatusView,
   type ModelsView,
+  type StepChoice,
+  mirrorWriter,
+  type SummaryOrderView,
   type SummarySettingsValue,
   type SummarySettingsView,
   errorText,
@@ -43,6 +46,15 @@ export interface SummariesPageState {
   load: SummariesLoad;
   /** The models view for "On this computer" (null until read or when it failed). */
   models: ModelsView | null;
+  /** The order of summary writers (T12.63b; null until read or when it failed). Nothing that
+   * changes the order may be offered while it is null: a choice made then would replace an
+   * order nobody has seen. */
+  order: SummaryOrderView | null;
+  /** Why the order could not be read (null while it loads or once read). */
+  orderError: string | null;
+  /** Stores the order of `steps` (empty: no summary), with the endpoint settings when they
+   * change too; resolves true when stored. */
+  saveOrder(steps: StepChoice[], settings?: Partial<SummarySettingsValue>): Promise<boolean>;
   /** Why the models view could not be read. */
   modelsError: string | null;
   notice: SummariesNotice | null;
@@ -69,6 +81,14 @@ export function useSummaries(): SummariesPageState {
   const ipc = useIpc();
   const [load, setLoad] = useState<SummariesLoad>({ status: "loading" });
   const [models, setModels] = useState<ModelsView | null>(null);
+  const [order, setOrderState] = useState<SummaryOrderView | null>(null);
+  const [orderError, setOrderError] = useState<string | null>(null);
+  const orderRef = useRef<SummaryOrderView | null>(null);
+  const setOrder = (o: SummaryOrderView) => {
+    orderRef.current = o;
+    setOrderState(o);
+    setOrderError(null);
+  };
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [notice, setNotice] = useState<SummariesNotice | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -95,6 +115,14 @@ export function useSummaries(): SummariesPageState {
         if (live) setLoad({ status: "failed", message: errorText(e) });
       }
     })();
+    void ipc.summaryOrder().then(
+      (o) => {
+        if (live) setOrder(o);
+      },
+      (e: unknown) => {
+        if (live) setOrderError(errorText(e));
+      },
+    );
     void ipc.models().then(
       (m) => {
         if (live) setModels(m);
@@ -123,6 +151,44 @@ export function useSummaries(): SummariesPageState {
       try {
         setSettings(await ipc.setSummarySettings({ ...now.value, ...change }));
         setNotice(null);
+        // The steps' labels name the endpoint's host.
+        try {
+          setOrder(await ipc.summaryOrder());
+        } catch {
+          // Kept as read: the setting itself was stored.
+        }
+        return true;
+      } catch (e) {
+        setNotice({ title: "This setting was not saved", message: errorText(e) });
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [ipc],
+  );
+
+  const saveOrder = useCallback(
+    async (steps: StepChoice[], change?: Partial<SummarySettingsValue>) => {
+      const now = current.current;
+      // Never over an order that was not read.
+      if (now === null || orderRef.current === null) return false;
+      setBusy(true);
+      try {
+        const stored = await ipc.setSummaryOrder(steps, change === undefined ? null : { ...now.value, ...change });
+        setOrder(stored);
+        // The writer the old setting mirrors follows the order at once, so no later save sends a
+        // writer the order no longer holds (it would put that writer back first).
+        const writer = mirrorWriter(stored.steps.map((v) => v.step));
+        const value = { ...now.value, ...change, writer };
+        setSettings({ ...now, value });
+        setNotice(null);
+        // The live switch and the endpoint's host as stored; the order is saved either way.
+        try {
+          setSettings(await ipc.summarySettings());
+        } catch {
+          // Kept as patched above.
+        }
         return true;
       } catch (e) {
         setNotice({ title: "This setting was not saved", message: errorText(e) });
@@ -188,6 +254,9 @@ export function useSummaries(): SummariesPageState {
   return {
     load,
     models,
+    order,
+    orderError,
+    saveOrder,
     modelsError,
     notice,
     keyError,

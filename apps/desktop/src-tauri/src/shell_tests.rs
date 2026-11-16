@@ -237,6 +237,7 @@ fn shell_a_resummary_notifies_like_a_meetings_summary() {
     let done = JobEvent::Summary {
         meeting: id.clone(),
         result: stored(2),
+        note: None,
     };
     assert_eq!(
         job_toast(&done),
@@ -249,6 +250,7 @@ fn shell_a_resummary_notifies_like_a_meetings_summary() {
             message: "Sam's secret reason".into(),
             retryable: true,
         },
+        note: None,
     };
     let failed_job = JobEvent::Failed {
         meeting: id.clone(),
@@ -268,6 +270,11 @@ fn shell_a_resummary_notifies_like_a_meetings_summary() {
         JobEvent::Summary {
             meeting: id.clone(),
             result: SummaryEvent::Cancelled,
+            note: None,
+        },
+        JobEvent::Offloaded {
+            meeting: id.clone(),
+            message: "Waiting for your other computer to write the summary.".into(),
         },
         JobEvent::Cancelled {
             meeting: id.clone(),

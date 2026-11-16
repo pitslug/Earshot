@@ -197,6 +197,12 @@ fn replay_two_tracks_records_transcribes_summarises_and_exports_on_request() {
         assert!(l.contains(&host_port), "{l}\n{}", describe(&out));
     }
     assert_eq!(server.requests().len(), 1);
+    // The summary is a run of the order of summary writers (T12.63b): one step, printed.
+    assert!(
+        stdout.contains("summary step 1: your endpoint: wrote the summary"),
+        "{}",
+        describe(&out)
+    );
     assert_eq!(server.unscripted(), 0);
 
     let mut store = open_store(&data);
@@ -287,6 +293,8 @@ fn replay_without_endpoint_or_vault_stays_offline_and_exports_nothing() {
         "{}",
         describe(&out)
     );
+    // No summary is an empty order: no step to print.
+    assert!(!stdout.contains("summary step"), "{}", describe(&out));
     assert!(
         stdout.contains("aec off (no reference)"),
         "{}",

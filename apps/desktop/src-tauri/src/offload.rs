@@ -23,9 +23,8 @@ use earshot_core::asr::CancelToken;
 use earshot_core::identity::DeviceId;
 use earshot_core::model::SummaryRequest;
 use earshot_runtime::Services;
-use earshot_runtime::host::SkipReason;
 use earshot_runtime::keep_local::SummaryPrivacy;
-use earshot_runtime::meeting_queue::{MeetingQueue, SummaryHold};
+use earshot_runtime::meeting_queue::MeetingQueue;
 use earshot_runtime::offload::{
     Continuation, ContinueAnswer, HelperWriter, HereReason, OffloadChoice, OffloadHost,
     Unavailable, WriteHere, WriterKind, reason,
@@ -240,9 +239,47 @@ pub struct SummaryHelpersView {
     pub problem: Option<String>,
 }
 
-fn device_id(text: &str) -> Result<DeviceId, IpcError> {
+/// The device id in `text`.
+///
+/// # Errors
+/// [`IpcError::invalid`] for text that is not one.
+pub(crate) fn device_id(text: &str) -> Result<DeviceId, IpcError> {
     serde_json::from_value(serde_json::Value::String(text.to_owned()))
         .map_err(|_| IpcError::invalid("That computer is not one Earshot knows."))
+}
+
+/// The name and writer kind each of the user's other computers last said in its presence, as
+/// this process heard it (memory only; for the copy of the order of summary writers, T12.63b).
+static COMPUTERS: std::sync::Mutex<
+    std::collections::BTreeMap<DeviceId, crate::summary_order::Named>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Remembers what `device`'s presence said (a known name or kind is kept when `None`).
+pub(crate) fn remember_computer(
+    device: DeviceId,
+    name: Option<String>,
+    writer: Option<WriterKind>,
+) {
+    let mut all = COMPUTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let known = all.entry(device).or_default();
+    if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+        known.name = Some(n);
+    }
+    if writer.is_some() {
+        known.writer = writer;
+    }
+}
+
+/// What this process has heard of the user's other computers.
+#[must_use]
+pub(crate) fn known_computers() -> std::collections::BTreeMap<DeviceId, crate::summary_order::Named>
+{
+    COMPUTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 fn short(device: DeviceId) -> String {
@@ -297,6 +334,9 @@ pub fn helpers_view(services: &Services, host: &SyncHost) -> Result<SummaryHelpe
             )));
         }
     };
+    for d in devices.iter().filter(|d| !d.this_device) {
+        remember_computer(d.device, d.name.clone(), d.writer_kind);
+    }
     let helpers = devices
         .into_iter()
         .filter(|d| !d.this_device && (d.offers_summaries || chosen == Some(d.device)))
@@ -389,25 +429,113 @@ pub fn ask_helper(
         Some(_) => return Err(IpcError::new(OFFLOAD_ERROR_KIND, ALREADY_WAITING)),
         None => {}
     }
-    let name = match choice {
-        OffloadChoice::Ask { name, .. } => name,
+    let name = match &choice {
+        OffloadChoice::Ask { name, writer, .. } => {
+            remember_computer(device, Some(name.clone()), Some(*writer));
+            name.clone()
+        }
         OffloadChoice::HereInstead { why, name, .. } => {
             return Err(IpcError::new(
                 OFFLOAD_ERROR_KIND,
-                not_asked_copy(why, name.as_deref()),
+                not_asked_copy(*why, name.as_deref()),
             ));
         }
         OffloadChoice::Here => return Err(IpcError::internal()),
     };
-    match earshot_runtime::offload::ask(services, meeting, device)? {
-        Some(_) => {
+    // A named run (T12.63b, docs/summary-order.md 5): its record names the request, so a
+    // hand-back ends the run and nothing is written on this computer instead.
+    let writers = AskOnly { device, choice };
+    let out = earshot_runtime::summary_order::run::run_summary_order(
+        services,
+        meeting,
+        earshot_runtime::summary_order::run::RunStart::Named(
+            earshot_runtime::summary_order::OrderStep::Computer(device),
+        ),
+        &earshot_runtime::summary_order::run::RunPlan {
+            writers: &writers,
+            local_not_now: &|| false,
+            order: None,
+        },
+        &CancelToken::new(),
+    );
+    match out.summary {
+        earshot_runtime::host::SummaryResult::Offloaded { .. } => {
             host.nudge();
             Ok(waiting_copy(Some(&name)))
         }
-        None => Err(IpcError::new(
-            OFFLOAD_ERROR_KIND,
-            not_asked_copy(Unavailable::NoFinalTranscript, Some(&name)),
-        )),
+        earshot_runtime::host::SummaryResult::Failed { error, .. } => Err(IpcError::from(error)),
+        // Not asked after all: why, from what the run recorded for its one step.
+        _ => {
+            let word = out.steps.first().and_then(|v| match v.result {
+                earshot_runtime::summary_order::run::StepResult::Moved(w) => Some(w),
+                _ => None,
+            });
+            let has_final = {
+                use earshot_core::model::MeetingRepo;
+                services
+                    .store()
+                    .has_live_segment(meeting, earshot_core::model::TranscriptPass::Final)
+                    .unwrap_or(false)
+            };
+            Err(IpcError::new(
+                OFFLOAD_ERROR_KIND,
+                not_asked_copy(not_asked_reason(word, has_final), Some(&name)),
+            ))
+        }
+    }
+}
+
+/// Why a named computer run did not ask its computer, from the outcome word its step recorded:
+/// the presence words name themselves; a step that failed to ask (`failed`, which the run records
+/// both for a meeting with no final transcript and for a request it could not write) is the
+/// former only when the meeting has no final transcript.
+#[must_use]
+pub(crate) fn not_asked_reason(
+    word: Option<earshot_runtime::summary_order::run::OutcomeWord>,
+    has_final: bool,
+) -> Unavailable {
+    use earshot_runtime::summary_order::run::OutcomeWord;
+    match word {
+        Some(OutcomeWord::Offline | OutcomeWord::NoReply) => Unavailable::Offline,
+        Some(OutcomeWord::Recording) => Unavailable::Recording,
+        Some(OutcomeWord::NotOffering) => Unavailable::NotOffering,
+        Some(OutcomeWord::NoWriter) => Unavailable::NoWriter,
+        _ if !has_final => Unavailable::NoFinalTranscript,
+        _ => Unavailable::NotAsked,
+    }
+}
+
+/// The writers of a named computer run: its own computer answers as already decided, any other
+/// device reads as not asked (the run's trust boundary holds even here), and no writer step
+/// exists.
+pub(crate) struct AskOnly {
+    /// The computer the user named.
+    pub(crate) device: DeviceId,
+    /// What was decided about it.
+    pub(crate) choice: OffloadChoice,
+}
+
+impl earshot_runtime::summary_order::run::StepWriters for AskOnly {
+    fn writer(
+        &self,
+        _: &Services,
+        _: earshot_runtime::summary_order::WriterStep,
+    ) -> earshot_runtime::summary_order::run::Built {
+        earshot_runtime::summary_order::run::Built::Stop(earshot_runtime::RuntimeError::Internal(
+            "a named computer run has no writer step",
+        ))
+    }
+
+    fn computer(&self, _: &Services, device: DeviceId) -> OffloadChoice {
+        if device == self.device {
+            self.choice.clone()
+        } else {
+            earshot_runtime::offload::OffloadChoice::HereInstead {
+                device,
+                name: None,
+                why: Unavailable::NotAsked,
+            }
+        }
     }
 }
 
@@ -471,40 +599,44 @@ pub trait HelperWork: Send + Sync {
     fn writer(&self, services: &Services, privacy: SummaryPrivacy) -> HelperWriter;
 }
 
-/// The production [`HelperWork`]: `meeting::summary_setup` with the app's models, key store and
-/// agent CLIs. A kept-local meeting without a local model declines `kept_local_no_model`; no
-/// writer (no summary, a CLI not signed in, a key that cannot be read) declines `no_writer`.
-pub struct HostHelperWork;
+/// The production [`HelperWork`] (docs/summary-order.md 4.6): exactly the writer kind this
+/// computer's presence advertised, the first writer step of its order
+/// (`summary_order::run::helper_writer` over the production writers with the app's models, key
+/// store and agent CLIs); never a computer step or a next step. A kept-local meeting without a
+/// local model declines `kept_local_no_model`; no writer (no summary, a CLI not signed in, a key
+/// that cannot be read) declines `no_writer`.
+pub struct HostHelperWork {
+    /// What a writer step reads when it is built.
+    pub probes: crate::summary_order::SummaryProbes,
+    /// Where the models are (`None`: the app's own folder).
+    pub models: Option<earshot_runtime::backends::ModelDir>,
+}
 
-impl HelperWork for HostHelperWork {
-    fn writer(&self, svc: &Services, privacy: SummaryPrivacy) -> HelperWriter {
-        let models = earshot_runtime::host::model_dir(&svc.data);
-        let setup = crate::meeting::summary_setup(
-            svc,
-            &models,
-            &crate::credentials::CredentialManager::anthropic(),
-            &earshot_runtime::claude_code::InstalledClaudeCode::meeting_start(),
-            &earshot_runtime::codex::InstalledCodex::meeting_start(),
-            privacy,
-        );
-        writer_of(setup)
+impl HostHelperWork {
+    /// The app's: the installed key store and CLIs, the app's models folder.
+    #[must_use]
+    pub fn installed() -> Self {
+        Self {
+            probes: crate::summary_order::SummaryProbes::installed(),
+            models: None,
+        }
     }
 }
 
-/// The helper writer of a summary setup.
-pub(crate) fn writer_of(setup: Result<crate::meeting::SummarySetup, IpcError>) -> HelperWriter {
-    match setup {
-        Ok(s) => match s.summary {
-            Some(prepared) if s.chosen_missing.is_none() => {
-                let hold = SummaryHold::of(Some(&prepared));
-                HelperWriter::Write(Box::new(prepared.service), hold)
-            }
-            _ => HelperWriter::Decline(match s.no_summary {
-                SkipReason::KeptLocalNoModel { .. } => reason::KEPT_LOCAL_NO_MODEL,
-                _ => reason::NO_WRITER,
-            }),
-        },
-        Err(_) => HelperWriter::Decline(reason::NO_WRITER),
+impl HelperWork for HostHelperWork {
+    fn writer(&self, svc: &Services, privacy: SummaryPrivacy) -> HelperWriter {
+        let models = self
+            .models
+            .clone()
+            .unwrap_or_else(|| earshot_runtime::host::model_dir(&svc.data));
+        crate::summary_order::with_writers(
+            &models,
+            &*self.probes.keys,
+            &*self.probes.claude,
+            &*self.probes.codex,
+            None,
+            |writers| earshot_runtime::summary_order::run::helper_writer(svc, writers, privacy),
+        )
     }
 }
 
@@ -553,26 +685,31 @@ impl HostOffload {
 
 impl OffloadHost for HostOffload {
     fn continue_run(&self, job: WriteHere) -> ContinueAnswer {
-        match job.continuation {
+        let (start, note) = match job.continuation {
             // A request asked before the order of summary writers (T12.63a): written here as
-            // before.
-            Continuation::Legacy => {}
-            // The app asks computers only through `host::after_meeting`'s one prepared writer
-            // until T12.63b runs the order, so no run waits here; one that does is never written
-            // with the current writer instead of its copied steps.
-            Continuation::Order { .. } => return ContinueAnswer::Settled,
-        }
-        let note = written_here_copy(&job.why, None);
+            // before, with the order's first writer step under the meeting's privacy.
+            Continuation::Legacy => (
+                crate::jobs::SummaryStart::Legacy,
+                written_here_copy(&job.why, None),
+            ),
+            // The run waiting on this request goes on from its copied steps (T12.63b), never
+            // from the order as it is now.
+            Continuation::Order { word } => (
+                crate::jobs::SummaryStart::Continue {
+                    request: job.request,
+                    word,
+                },
+                crate::summary_order::continue_note(
+                    job.helper,
+                    &crate::summary_order::StepContext::read(&self.services),
+                ),
+            ),
+        };
         // A job of the meeting that already runs, the model check or a meeting in use refuses:
         // the next step hands it again.
         if self
             .jobs
-            .start_noted(
-                &self.services,
-                job.meeting,
-                crate::jobs::JobKind::Resummarise,
-                Some(note),
-            )
+            .start_summary(&self.services, job.meeting, start, Some(note))
             .is_ok()
         {
             ContinueAnswer::Started

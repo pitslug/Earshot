@@ -2223,7 +2223,10 @@ where
             crate::summary_order::run::RunOutcome::cancelled()
         } else {
             progress(HostStep::SummaryStarting);
-            let order = crate::summary_order::summary_order(&services.store());
+            let order = match &plan.order {
+                Some(o) => Ok((o.clone(), Vec::new())),
+                None => crate::summary_order::summary_order(&services.store()),
+            };
             match order {
                 Ok((order, _)) => crate::summary_order::run::run_summary_order(
                     services,

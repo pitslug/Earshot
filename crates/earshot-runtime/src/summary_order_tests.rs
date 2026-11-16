@@ -565,3 +565,42 @@ fn summary_order_choosing_a_helper_keeps_an_endpoint_writer_without_its_fields()
     crate::offload::set_chosen_helper(&svc, None).unwrap();
     assert_eq!(crate::offload::chosen_helper(&svc.store()).unwrap(), None);
 }
+
+/// T12.63a re-review: a stored order this build cannot read (a newer build's format) is never
+/// overwritten by choosing a helper; the helper goes into the old key, which the unreadable order
+/// reads as anyway.
+#[test]
+fn summary_order_choosing_a_helper_leaves_an_unreadable_order_untouched() {
+    let dir = TempDir::new("summary-order-helper-unreadable");
+    let (svc, _) = services(&dir);
+    let mut v9 = 9u32.to_le_bytes().to_vec();
+    v9.extend_from_slice(br#"{"steps":[{"writer":"a-newer-writer"}]}"#);
+    crate::local::set(&mut svc.store(), &DeviceRecord::SummaryOrder.key(), &v9).unwrap();
+    crate::offload::set_chosen_helper(&svc, Some(DESK)).unwrap();
+    let db = svc.store();
+    assert_eq!(
+        db.local_value(SUMMARY_ORDER_KEY).unwrap().as_deref(),
+        Some(v9.as_slice()),
+        "the newer build's order is kept byte for byte"
+    );
+    assert_eq!(crate::offload::chosen_helper(&db).unwrap(), Some(DESK));
+    let (o, notes) = summary_order(&db).unwrap();
+    assert_eq!(o, order(&[OrderStep::Computer(DESK), LOCAL]));
+    assert_eq!(notes, vec![UNREADABLE_ORDER.to_owned()]);
+    drop(db);
+    crate::offload::set_chosen_helper(&svc, None).unwrap();
+    let db = svc.store();
+    assert_eq!(
+        db.local_value(SUMMARY_ORDER_KEY).unwrap().as_deref(),
+        Some(v9.as_slice())
+    );
+    assert_eq!(crate::offload::chosen_helper(&db).unwrap(), None);
+    // The negative control: a readable order is written as before.
+    drop(db);
+    set_summary_order(&mut svc.store(), &order(&[LOCAL]), None).unwrap();
+    crate::offload::set_chosen_helper(&svc, Some(DESK)).unwrap();
+    assert_eq!(
+        decode(&svc.store().local_value(SUMMARY_ORDER_KEY).unwrap().unwrap()),
+        Some(order(&[OrderStep::Computer(DESK), LOCAL]))
+    );
+}

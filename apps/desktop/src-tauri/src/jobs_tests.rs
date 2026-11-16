@@ -230,6 +230,7 @@ fn jobs_resummarise_holds_the_meeting_and_reports_the_summary() {
             result: SummaryEvent::Skipped {
                 reason: "Summaries are turned off.".into()
             },
+            note: None,
         }
     );
     jobs.join();

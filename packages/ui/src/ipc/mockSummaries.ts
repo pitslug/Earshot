@@ -24,7 +24,7 @@ import type { SummaryVocabularyAdded, SummaryVocabularyView } from "./summaryVoc
 export const MOCK_ANTHROPIC_URL = table.messages.anthropic_url;
 
 /** The reason the app gives when summarising during the meeting cannot be used. */
-const LIVE_NEEDS_LOCAL = table.messages.live_needs_local;
+export const LIVE_NEEDS_LOCAL = table.messages.live_needs_local;
 
 /** What the app says when a token of the transcript holds no word (T12.15f). */
 export const NOT_A_WORD = table.messages.not_a_word;

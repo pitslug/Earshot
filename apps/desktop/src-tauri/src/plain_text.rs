@@ -665,9 +665,14 @@ pub fn plain_meeting_event(event: MeetingEvent) -> MeetingEvent {
 #[must_use]
 pub fn plain_job_event(event: JobEvent) -> JobEvent {
     match event {
-        JobEvent::Summary { meeting, result } => JobEvent::Summary {
+        JobEvent::Summary {
+            meeting,
+            result,
+            note,
+        } => JobEvent::Summary {
             meeting,
             result: plain_summary(result),
+            note: note.map(plain),
         },
         JobEvent::Warning { meeting, message } => JobEvent::Warning {
             meeting,
@@ -1223,6 +1228,7 @@ mod tests {
                 result: SummaryEvent::Skipped {
                     reason: dev.clone(),
                 },
+                note: Some(dev.clone()),
             },
         ] {
             no_developer_text(&serde_json::to_string(&plain_job_event(event)).unwrap());
