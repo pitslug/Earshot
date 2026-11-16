@@ -1723,6 +1723,60 @@ fn offload_times_are_pruned_and_survive_a_restart() {
     );
 }
 
+/// T12.70: a deleted meeting's readings go with it, open and closed, whether it was deleted here or
+/// its tombstone was pulled from another device; other meetings' readings stay.
+#[test]
+fn offload_times_of_a_deleted_meeting_go_with_its_deletion() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let stored = || {
+        read_times(
+            a.svc
+                .store()
+                .local_value(OFFLOAD_TIMES_KEY)
+                .unwrap()
+                .as_deref(),
+        )
+    };
+    let gone = meeting(&a.svc, "Invented gone", 43);
+    let kept = meeting(&a.svc, "Invented kept", 44);
+    let (gone_r, kept_r) = (
+        ask(&a.svc, gone, b.id()).unwrap().unwrap().to_string(),
+        ask(&a.svc, kept, b.id()).unwrap().unwrap().to_string(),
+    );
+    // Both withdrawn unclaimed, then closed readings with their start.
+    a.clock.advance_ms(CLAIM_WITHIN_MS + 1);
+    let asker = Recorder::default();
+    let fresh = Offload::new();
+    assert_eq!(
+        fresh.step(&a.svc, &mut || None, &asker).unwrap().withdrawn,
+        2
+    );
+    fresh.step(&a.svc, &mut || None, &asker).unwrap();
+    let t = stored();
+    assert!(t.closed.contains_key(&gone_r) && t.closed.contains_key(&kept_r));
+    a.svc.delete_meeting(gone).unwrap();
+    let t = stored();
+    assert!(!t.closed.contains_key(&gone_r), "deleted here: {t:?}");
+    assert!(t.closed.contains_key(&kept_r), "{t:?}");
+    // An open reading of a meeting deleted on the other device goes when the tombstone arrives.
+    let pulled = meeting(&a.svc, "Invented pulled", 45);
+    let pulled_r = ask(&a.svc, pulled, b.id()).unwrap().unwrap().to_string();
+    assert!(stored().requests.contains_key(&pulled_r));
+    sync(&ca, &cb);
+    b.svc.delete_meeting(pulled).unwrap();
+    cb.tick().unwrap();
+    ca.tick().unwrap();
+    assert!(
+        a.svc.store().meeting(pulled).unwrap().unwrap().meta.deleted,
+        "the tombstone was pulled"
+    );
+    let t = stored();
+    assert!(!t.requests.contains_key(&pulled_r), "pulled: {t:?}");
+    assert!(t.closed.contains_key(&kept_r), "{t:?}");
+}
+
 /// The summary step names the device its request asks: a meeting that already waited for another
 /// device is reported as waiting for that one, not the newly chosen (re-review item 4).
 #[test]

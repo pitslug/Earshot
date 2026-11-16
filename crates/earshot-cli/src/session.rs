@@ -550,7 +550,15 @@ pub fn format_stats(stats: &PipelineStats) -> String {
 /// own (T12.58), once per process, so the fallback is never silent here (T12.62). Called after
 /// each stage that loads models; the note answers once.
 pub(crate) fn write_shared_encoder_note(out: &mut dyn Write) -> std::io::Result<()> {
-    match earshot_runtime::shared_encoders::take_note() {
+    write_note_from(out, earshot_runtime::shared_encoders::take_note)
+}
+
+/// [`write_shared_encoder_note`] with the runtime's answer from `take` (tests give their own).
+fn write_note_from(
+    out: &mut dyn Write,
+    take: impl FnOnce() -> Option<&'static str>,
+) -> std::io::Result<()> {
+    match take() {
         Some(note) => writeln!(out, "{}", shared_encoder_note_line(note)),
         None => Ok(()),
     }
@@ -1825,6 +1833,21 @@ mod tests {
         let mut out = Vec::new();
         write_shared_encoder_note(&mut out).unwrap();
         assert!(out.is_empty());
+    }
+
+    /// T12.70: a note the runtime reports is printed as one line, and it is asked once.
+    #[test]
+    fn session_shared_encoder_note_reported_by_the_runtime_is_printed() {
+        let note = earshot_runtime::shared_encoders::NOTE;
+        let mut asked = 0;
+        let mut out = Vec::new();
+        write_note_from(&mut out, || {
+            asked += 1;
+            Some(note)
+        })
+        .unwrap();
+        assert_eq!(asked, 1);
+        assert_eq!(String::from_utf8(out).unwrap(), format!("note: {note}\n"));
     }
 
     #[test]

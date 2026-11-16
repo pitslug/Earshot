@@ -11,6 +11,7 @@
 //!   fingerprints), and the same records of other meetings that are already deleted or
 //!   gone (a withdrawn session, a meeting deleted before its cleanup ran) unless a job holds
 //!   them;
+//! - its summary requests' offload clock readings in the `offload-times` record (T12.70);
 //! - then a truncating checkpoint, so with `secure_delete` none of it survives in free pages
 //!   or the WAL.
 //!
@@ -65,6 +66,10 @@ impl Services {
                 gone.insert(m);
             }
         }
+        // Offload's clock readings of its requests live in one device record for every meeting:
+        // first, so a checkpoint `Busy` after the deletion's commit cannot leave them (a failed
+        // deletion only restarts the offload waits of a meeting still there, which only grow).
+        db.transaction(|tx| crate::offload::forget_meeting_times(tx, meeting))?;
         let (store, hlc) = db.parts();
         let report = store.delete_meeting(&self.data, meeting, hlc, &*clock, &mut |key| {
             crate::local::meeting_of(key).is_some_and(|m| m == meeting || gone.contains(&m))

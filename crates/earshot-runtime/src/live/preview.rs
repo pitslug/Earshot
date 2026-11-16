@@ -1558,12 +1558,17 @@ mod off_tests {
     }
 
     /// T12.62: a thread that crashed just before the session stops it for another reason: the
-    /// stop's `finish` finds the crash, and the report keeps it.
+    /// stop's `finish` finds the crash, and the report keeps it. Not on background threads (T12.70):
+    /// off Windows lowering the priority fails first, so the thread gave up without ever loading
+    /// and the report rightly took the stop's reason (linux-check run 43699930057).
     #[test]
     fn live_preview_a_crash_found_by_a_stop_for_another_reason_is_kept() {
         let load: PreviewLoader = Arc::new(|_| panic!("a test crash at load"));
         let thread = PreviewThread::spawn(
-            LivePreviews::new(load),
+            LivePreviews {
+                background: false,
+                ..LivePreviews::new(load)
+            },
             TrackId::Reference,
             BackendInfo {
                 kind: earshot_core::asr::BackendKind::Fake,

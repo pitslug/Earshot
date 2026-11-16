@@ -499,7 +499,8 @@ fn open_request<R: SummaryRequestRepo + ?Sized>(
 /// started is never left. Every timer of offload runs on the device clock from these, never on
 /// HLC wall time, which can run ahead of the clock by up to the apply window. Device-local:
 /// open readings are pruned to the open requests at every step, closed ones to the requests the
-/// store still holds. A step's write re-reads and merges, so an `ask` meanwhile is never lost.
+/// store still holds, and a meeting's go with its deletion ([`forget_meeting_times`]). A step's
+/// write re-reads and merges, so an `ask` meanwhile is never lost.
 pub(crate) const OFFLOAD_TIMES_KEY: &str = "offload-times";
 
 /// [`OFFLOAD_TIMES_KEY`]'s format version.
@@ -579,6 +580,34 @@ fn read_times(bytes: Option<&[u8]>) -> Times {
 
 fn encode_times(times: &Times) -> Vec<u8> {
     earshot_store::encode_versioned(TIMES_VERSION, times).expect("times serialise")
+}
+
+/// Drops the readings of `meeting`'s requests, open and closed (T12.70): called by
+/// [`crate::Services::delete_meeting`], the one deletion path (in the app and for a pulled tombstone).
+/// Leaves the record as it is when it holds none of them.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn forget_meeting_times(
+    tx: &mut earshot_store::StoreTx<'_>,
+    meeting: EntityId,
+) -> Result<(), RuntimeError> {
+    let Some(bytes) = tx.local_value(OFFLOAD_TIMES_KEY)? else {
+        return Ok(());
+    };
+    let mut times = read_times(Some(&bytes));
+    let before = times.clone();
+    for r in tx.summary_requests()? {
+        if r.meeting_id == meeting {
+            let id = r.id.to_string();
+            times.requests.remove(&id);
+            times.closed.remove(&id);
+        }
+    }
+    if times != before {
+        local::set_tx(tx, &DeviceRecord::OffloadTimes.key(), &encode_times(&times))?;
+    }
+    Ok(())
 }
 
 /// The helper `meeting` waits for: a request this device asked that is still open (requested or

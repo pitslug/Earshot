@@ -2986,6 +2986,82 @@ fn backends_card_hold_is_used_by_no_shipped_code() {
         let found = shipped_files_naming(name);
         assert!(found.is_empty(), "shipped code names {name}: {found:?}");
     }
+    // T12.70: nor does earshot-onnx itself call the public block holder outside its declaration.
+    let name = concat!("hold_device_", "bytes");
+    let (declared, found) = onnx_lines_naming(name);
+    assert_eq!(declared, 1, "earshot-onnx declares {name} once");
+    assert!(found.is_empty(), "earshot-onnx names {name}: {found:?}");
+}
+
+/// T12.70: the earshot-onnx scan finds a call beside the declaration (a negative control).
+#[test]
+fn backends_onnx_scan_finds_a_call_beside_the_declaration() {
+    let name = concat!("hold_device_", "bytes");
+    let declaration = concat!(
+        "    pub fn hold_device_",
+        "bytes(&self, bytes: usize) -> R {"
+    );
+    let call = concat!("        let b = session.hold_device_", "bytes(1 << 30)?;");
+    let comment = concat!("    /// See [`OnnxSession::hold_device_", "bytes`].");
+    let text = format!("{comment}\n{declaration}\n    }}\n    fn other() {{\n{call}\n    }}\n");
+    let (declared, found) = lines_naming_beside_declaration(&text, name);
+    assert_eq!(declared, 1);
+    assert_eq!(found, [call.trim()]);
+    let (declared, found) = lines_naming_beside_declaration(&format!("{declaration}\n"), name);
+    assert_eq!((declared, found.len()), (1, 0));
+}
+
+/// The code lines (comments left out) of `text` naming `name`: how many declare `fn <name>(`, and
+/// every other line.
+fn lines_naming_beside_declaration(text: &str, name: &str) -> (usize, Vec<String>) {
+    let declaration = format!("fn {name}(");
+    let mut declared = 0;
+    let mut others = Vec::new();
+    for (_, line) in code_lines(text) {
+        if !line.contains(name) {
+            continue;
+        }
+        if line.contains(&declaration) {
+            declared += 1;
+        } else {
+            others.push(line.to_owned());
+        }
+    }
+    (declared, others)
+}
+
+/// [`lines_naming_beside_declaration`] over every source file of earshot-onnx (recursively), the
+/// other lines labelled with their file.
+fn onnx_lines_naming(name: &str) -> (usize, Vec<String>) {
+    fn scan(
+        dir: &Path,
+        name: &str,
+        declared: &mut usize,
+        found: &mut Vec<String>,
+        read: &mut usize,
+    ) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan(&path, name, declared, found, read);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                *read += 1;
+                let text = std::fs::read_to_string(&path).unwrap();
+                let (d, others) = lines_naming_beside_declaration(&text, name);
+                *declared += d;
+                found.extend(
+                    others
+                        .into_iter()
+                        .map(|l| format!("{}: {l}", path.display())),
+                );
+            }
+        }
+    }
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../earshot-onnx/src");
+    let (mut declared, mut found, mut read) = (0, Vec::new(), 0);
+    scan(&dir, name, &mut declared, &mut found, &mut read);
+    assert!(read > 5, "earshot-onnx/src: {read} files read");
+    (declared, found)
 }
 
 /// T12.60: the CPU column's loader (`live_lag --own-voice-cpu`) is evaluation only: nothing shipped

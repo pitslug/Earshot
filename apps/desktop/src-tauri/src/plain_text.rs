@@ -418,6 +418,9 @@ pub const MEETING_BUSY: &str = "This meeting is being recorded, finished, export
      Try again when that has finished.";
 /// Something inside Earshot went wrong (a bug, not an input problem).
 pub const INTERNAL: &str = "Something went wrong inside Earshot. Restart Earshot and try again.";
+/// Windows did not say where its own folder is, so Earshot cannot reach the registry tool.
+pub const NO_WINDOWS_FOLDER: &str = "Earshot could not find the Windows folder on this computer. \
+     Restart Windows and try again.";
 /// The audio could not be set up for a recording.
 pub const PIPELINE_FAILED: &str = "Earshot could not process the sound from this device. Try \
      again, or choose another microphone in Settings, Audio.";
@@ -1669,6 +1672,7 @@ mod every_variant_tests {
             TRY_AGAIN_SOON,
             MEETING_BUSY,
             INTERNAL,
+            NO_WINDOWS_FOLDER,
             PIPELINE_FAILED,
             TRANSCRIPTION_FAILED,
             VOICES_FAILED,
