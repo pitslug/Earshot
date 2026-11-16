@@ -455,6 +455,51 @@ fn sync_a_removed_device_follows_the_copy_and_syncs_again() {
     assert_only_the_relay(&cb, &relay);
 }
 
+/// A credential store that refuses every save.
+struct RefusingVault;
+
+impl SyncVault for RefusingVault {
+    fn save(&self, _: &VaultKey, _: &DeviceToken) -> Result<(), VaultError> {
+        Err(VaultError::Store)
+    }
+    fn has(&self) -> Result<bool, VaultError> {
+        Ok(false)
+    }
+    fn remove(&self) -> Result<(), VaultError> {
+        Ok(())
+    }
+    fn load(&self) -> Result<Option<SyncSecrets>, VaultError> {
+        Ok(None)
+    }
+}
+
+/// The residual the spec names (T11.6c "Coming back"): a rejoin the relay registered but this
+/// computer could not keep leaves a live id no one holds a token for; the next code is
+/// `device_exists` until another computer removes it, and then the join works.
+#[test]
+fn sync_a_rejoin_that_could_not_be_kept_is_recovered_by_removing_it_again() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let b_id = b.svc.store().device();
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    assert_eq!(b.client().tick(), Err(SyncProblem::UnknownDevice));
+    remove_this_device(&b.svc, b.vault()).unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    assert_eq!(
+        join_with_code(&b.svc, &RefusingVault, &relay.relay.url(), offer.code()),
+        Err(SyncProblem::Store)
+    );
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    assert_eq!(
+        join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()),
+        Err(SyncProblem::DeviceExists)
+    );
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+    b.client().tick().unwrap();
+}
+
 #[test]
 fn sync_removing_another_device_never_takes_this_one_or_works_once_removed() {
     let relay = relay();

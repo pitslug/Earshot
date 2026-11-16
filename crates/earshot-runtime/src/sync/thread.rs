@@ -245,6 +245,51 @@ impl Drop for SyncThread {
     }
 }
 
+/// How long a stopping sync thread keeps handing back meetings its host refused to start writing
+/// (a job of the meeting runs, the meeting is in use) before it ends anyway (30 minutes, a
+/// judgement: longer than a re-transcription or summary job, short enough that a thread left
+/// behind does not outlive the reason). A meeting still refused then is handed again by the next
+/// thread's first step, as after a restart.
+pub const STOPPED_HANDBACK_LIMIT: Duration = Duration::from_secs(30 * 60);
+
+/// The last offload step of a thread that runs no more steps (T11.6c), repeated every `tick`
+/// while the host refuses a hand-back, until none is refused or `limit` has passed. With
+/// `honour_stop` (a stopping problem) a stop asked meanwhile ends it at once, so a removal or a
+/// replacement never waits for it; turning sync off asked the stop before this began, and the
+/// host retires that thread on a thread of its own.
+fn hand_back_until_started(
+    services: &Services,
+    offload: &(Arc<Offload>, Arc<dyn OffloadHost>),
+    signal: &(Mutex<Signal>, Condvar),
+    tick: Duration,
+    limit: Duration,
+    honour_stop: bool,
+) {
+    let (state, host) = offload;
+    let deadline = Instant::now() + limit;
+    loop {
+        let refused = catch_unwind(AssertUnwindSafe(|| {
+            state.step_sync_stopped(services, &**host)
+        }))
+        .ok()
+        .and_then(Result::ok)
+        .is_some_and(|r| r.refused_here > 0);
+        let now = Instant::now();
+        if !refused || now >= deadline {
+            return;
+        }
+        let (lock, cv) = signal;
+        let s = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let s = cv
+            .wait_timeout_while(s, tick.min(deadline - now), |s| !(honour_stop && s.stop))
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+        if honour_stop && s.stop {
+            return;
+        }
+    }
+}
+
 fn outbox_len(services: &Services) -> Option<u64> {
     services.store().outbox_len().ok()
 }
@@ -295,10 +340,15 @@ fn run(
                 drop(b);
                 // Turned off: no step runs until it is turned on, so what this device asked is
                 // handed back now rather than left waiting (T11.6c).
-                if say_gone && let Some((state, host)) = offload {
-                    let _ = catch_unwind(AssertUnwindSafe(|| {
-                        state.step_sync_stopped(&services, &**host)
-                    }));
+                if say_gone && let Some(pair) = offload {
+                    hand_back_until_started(
+                        &services,
+                        pair,
+                        signal,
+                        timing.tick,
+                        STOPPED_HANDBACK_LIMIT,
+                        false,
+                    );
                 }
                 return;
             }
@@ -351,18 +401,26 @@ fn run(
             continue;
         }
         let ticked = catch_unwind(AssertUnwindSafe(|| client.tick()));
-        if let Some((state, host)) = offload {
+        if let Some(pair) = offload {
             // A store failure or a panic here is the next step's to retry; it never ends sync.
-            // A problem that stops sync gets one last step that withdraws and writes here what
-            // this device asked (T11.6c): no later step runs until the user acts.
-            let stopped = matches!(&ticked, Ok(Err(p)) if p.stops());
-            let _ = catch_unwind(AssertUnwindSafe(|| {
-                if stopped {
-                    state.step_sync_stopped(&services, &**host)
-                } else {
+            // A problem that stops sync gets a last step that withdraws and writes here what
+            // this device asked (T11.6c), repeated while the host refuses one: no later step
+            // runs until the user acts.
+            if matches!(&ticked, Ok(Err(p)) if p.stops()) {
+                hand_back_until_started(
+                    &services,
+                    pair,
+                    signal,
+                    timing.tick,
+                    STOPPED_HANDBACK_LIMIT,
+                    true,
+                );
+            } else {
+                let (state, host) = pair;
+                let _ = catch_unwind(AssertUnwindSafe(|| {
                     state.step(&services, &mut || client.peers().ok(), &**host)
-                }
-            }));
+                }));
+            }
         }
         match ticked {
             Ok(Ok(_)) => {

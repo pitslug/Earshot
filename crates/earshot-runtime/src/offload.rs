@@ -655,6 +655,9 @@ pub struct StepReport {
     pub withdrawn: usize,
     /// Meetings handed back to the host to write here.
     pub written_here: usize,
+    /// Meetings the host refused to start writing here (a job of the meeting runs, it is in
+    /// use): the next step hands them again.
+    pub refused_here: usize,
 }
 
 /// The offload state of one running process: which requests were already handed to the host,
@@ -1009,6 +1012,7 @@ impl Offload {
                 // Refused (a job of the meeting runs, the meeting is in use): the next step tries
                 // again.
                 self.unhand(r.id);
+                report.refused_here += 1;
             }
         }
         Ok(())

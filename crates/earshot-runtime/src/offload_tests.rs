@@ -1237,6 +1237,63 @@ fn offload_a_device_whose_sync_stops_withdraws_what_it_asked_and_writes_here() {
     assert!(host.for_others().is_empty());
 }
 
+/// A stopping thread whose host refuses the hand-back (a job of the meeting runs) keeps handing it
+/// back every tick until the host starts it, then ends (T11.6c re-review).
+#[test]
+fn offload_a_refused_hand_back_after_sync_stops_is_retried_until_it_starts() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Invented busy meeting", 25);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    a.client().tick().unwrap();
+    crate::sync::remove_other_device(&b.svc, b.vault(), a.id()).unwrap();
+    let host = Arc::new(Recorder::default());
+    host.refuse_here
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let thread = crate::sync::SyncThread::start_offloading(
+        a.client(),
+        crate::sync::SyncTiming {
+            tick: std::time::Duration::from_millis(20),
+            poll: std::time::Duration::from_millis(5),
+            presence: std::time::Duration::from_secs(3600),
+        },
+        Arc::clone(&host) as Arc<dyn OffloadHost>,
+    )
+    .unwrap();
+    let wait = |what: &str, done: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    // Refused, and handed again while the thread waits (it has not ended).
+    wait("never handed again", &|| host.here().len() >= 3);
+    assert!(
+        !thread.ended(),
+        "a refused hand-back keeps the thread going"
+    );
+    assert_eq!(a.request(request).state, RequestState::Withdrawn);
+    // The job ends: the next hand-back starts, and the thread ends.
+    host.refuse_here
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    wait("the thread never ended", &|| thread.ended());
+    let handed = host.here();
+    assert!(
+        handed
+            .iter()
+            .all(|w| w.request == request && w.why == HereReason::Withdrawn)
+    );
+    let after = handed.len();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(
+        host.here().len(),
+        after,
+        "nothing is handed once it started"
+    );
+    thread.stop();
+}
+
 /// Turning sync off (`stop_saying_gone`) hands back what this device asked, as a stopping
 /// problem does; a thread only replaced (`stop`) hands back nothing (T11.6c).
 #[test]
