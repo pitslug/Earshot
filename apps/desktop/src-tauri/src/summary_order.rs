@@ -111,6 +111,8 @@ pub struct PageTexts {
     pub too_many: String,
     /// A writer that cannot be ticked until it is set up.
     pub not_set_up: String,
+    /// The local model while no summary model is installed (it cannot be ticked then).
+    pub not_downloaded: String,
     /// What the order does.
     pub explained: String,
     /// What a meeting kept on this computer does with the order (under the list).

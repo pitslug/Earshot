@@ -253,6 +253,7 @@ function EndpointForm({
   settings,
   keySaved,
   inUse,
+  saveOnly = false,
   onUse,
   locked,
   saveOnNext,
@@ -261,6 +262,8 @@ function EndpointForm({
   settings: SummarySettingsView;
   keySaved: boolean | null;
   inUse: boolean;
+  /** A set-up endpoint that is not in the order: saving changes only its fields (T12.68). */
+  saveOnly?: boolean;
   onUse(change: Partial<SummarySettingsValue>): Promise<boolean>;
   /** The order is not read yet (or could not be): nothing may store the endpoint in it. */
   locked: boolean;
@@ -281,7 +284,8 @@ function EndpointForm({
   }, [stored.provider, stored.url, stored.model]);
 
   const anthropic = provider === "Anthropic";
-  const changed = !inUse || provider !== stored.provider || url !== stored.url || model !== stored.model;
+  const saves = inUse || saveOnly;
+  const changed = !saves || provider !== stored.provider || url !== stored.url || model !== stored.model;
   const showWarning = inUse && settings.endpoint_host !== null && !settings.endpoint_local;
   const wizard = saveOnNext !== undefined;
   useSaveOnNext(saveOnNext, async () => {
@@ -339,9 +343,9 @@ function EndpointForm({
             disabled={state.busy || locked || !changed}
             onClick={() => void onUse({ provider, url, model })}
           >
-            {inUse ? "Save endpoint" : "Use this endpoint"}
+            {saves ? "Save endpoint" : "Use this endpoint"}
           </Button>
-          {inUse && !changed && <Caption1 className={styles.muted}>Saved.</Caption1>}
+          {saves && !changed && <Caption1 className={styles.muted}>Saved.</Caption1>}
         </div>
       )}
       {showWarning && (
@@ -502,14 +506,11 @@ function AgentCliCard({
   hint,
   saveModel,
   effort,
-  privacy,
   saveOnNext,
 }: {
   state: SummariesPageState;
   /** Whether a step of the order is this CLI. */
   inUse: boolean;
-  /** Where the meeting goes, said at the top of the card. */
-  privacy?: string;
   /** The CLI's product name ("Claude Code", "Codex"). */
   name: string;
   /** The card's accessible name. */
@@ -550,7 +551,6 @@ function AgentCliCard({
   useSaveOnNext(saveOnNext, async () => !changed || state.save(saveModel(typed)));
   return (
     <div className={styles.endpoint} role="group" aria-label={group}>
-      {privacy !== undefined && <Caption1 className={styles.muted}>{privacy}</Caption1>}
       {check.status === "checking" && <Spinner size="tiny" label={`Checking ${name}`} />}
       {check.status === "failed" && (
         <MessageBar intent="error">
@@ -639,13 +639,11 @@ interface WriterCardProps {
   settings: SummarySettingsView;
   /** Whether a step of the order is this writer. */
   inUse: boolean;
-  /** Where the meeting goes, said at the top of the card. */
-  privacy?: string;
   saveOnNext?: SaveOnNext;
 }
 
 /** Claude Code's status, the model it is asked for and its effort (T7.4ga, T12.18). */
-function ClaudeCodeCard({ state, settings, inUse, privacy, saveOnNext }: WriterCardProps) {
+function ClaudeCodeCard({ state, settings, inUse, saveOnNext }: WriterCardProps) {
   const check = state.claudeCode;
   return (
     <AgentCliCard
@@ -667,14 +665,13 @@ function ClaudeCodeCard({ state, settings, inUse, privacy, saveOnNext }: WriterC
           note={check.status === "done" ? check.view.effort_note : null}
         />
       }
-      privacy={privacy}
       saveOnNext={saveOnNext}
     />
   );
 }
 
 /** Codex's status and the model it is asked for (T7.4gc). */
-function CodexCard({ state, settings, inUse, privacy, saveOnNext }: WriterCardProps) {
+function CodexCard({ state, settings, inUse, saveOnNext }: WriterCardProps) {
   return (
     <AgentCliCard
       state={state}
@@ -688,7 +685,6 @@ function CodexCard({ state, settings, inUse, privacy, saveOnNext }: WriterCardPr
       placeholder={CODEX_MODEL_PLACEHOLDER}
       hint="A model name Codex accepts."
       saveModel={(m) => ({ codex_model: m })}
-      privacy={privacy}
       saveOnNext={saveOnNext}
     />
   );
@@ -704,9 +700,10 @@ function WriterForms({
   stored,
   locked,
   endpointShown,
+  endpointSaveOnly = false,
+  localShown,
   useEndpoint,
   localModels,
-  privacy,
   saveOnNext,
 }: {
   state: SummariesPageState;
@@ -715,10 +712,12 @@ function WriterForms({
   stored: StepChoice[];
   locked: boolean;
   endpointShown: boolean;
+  /** The endpoint form saves only its fields (a set-up endpoint not in the order). */
+  endpointSaveOnly?: boolean;
+  /** Whether the summary models show (this computer writes, or no summary model is installed). */
+  localShown: boolean;
   useEndpoint(change: Partial<SummarySettingsValue>): Promise<boolean>;
   localModels?: ModelsPageState;
-  /** Whether the CLI cards say where the meeting goes (the wizard says it on its choices). */
-  privacy: boolean;
   saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
@@ -729,7 +728,7 @@ function WriterForms({
       {state.modelsError !== null && (
         <Caption1 className={styles.muted}>The model in use could not be read: {state.modelsError}</Caption1>
       )}
-      {inOrder("Local") && localModels !== undefined && (
+      {localShown && localModels !== undefined && (
         <div className={styles.endpoint} role="group" aria-labelledby={localLabel}>
           <Body1Strong id={localLabel}>Which model writes the summary</Body1Strong>
           {localModels.load.status === "loaded" ? (
@@ -745,28 +744,17 @@ function WriterForms({
           settings={settings}
           keySaved={keySaved}
           inUse={inOrder("Endpoint")}
+          saveOnly={endpointSaveOnly}
           onUse={useEndpoint}
           locked={locked}
           saveOnNext={saveOnNext}
         />
       )}
       {inOrder("ClaudeCode") && (
-        <ClaudeCodeCard
-          state={state}
-          settings={settings}
-          inUse
-          privacy={privacy ? CLAUDE_CODE_PRIVACY : undefined}
-          saveOnNext={saveOnNext}
-        />
+        <ClaudeCodeCard state={state} settings={settings} inUse saveOnNext={saveOnNext} />
       )}
       {inOrder("Codex") && (
-        <CodexCard
-          state={state}
-          settings={settings}
-          inUse
-          privacy={privacy ? CODEX_PRIVACY : undefined}
-          saveOnNext={saveOnNext}
-        />
+        <CodexCard state={state} settings={settings} inUse saveOnNext={saveOnNext} />
       )}
     </>
   );
@@ -908,8 +896,8 @@ function WriterSection({
         stored={stored}
         locked={locked}
         endpointShown={stored.some((s) => s.kind === "Endpoint") || pending}
+        localShown={stored.some((s) => s.kind === "Local")}
         useEndpoint={useEndpoint}
-        privacy={false}
         saveOnNext={saveOnNext}
       />
     </Section>
@@ -941,66 +929,94 @@ function ArrowIcon({ up }: { up: boolean }) {
   );
 }
 
-/** One writer in the list: its rank while ticked, its tick box, its name and kind, where it
- * sends the transcript, why it cannot be ticked yet, and up and down while ticked. */
+/** Which control of a row keeps the keyboard focus after a change (T12.68). */
+type RowControl = "tick" | "up" | "down";
+
+/** One writer in the list: its rank while ticked ("Step n" to a screen reader), its tick box,
+ * its name and kind, where it sends the transcript, what the writer does with the meeting (the
+ * agent CLIs' privacy line, shown before it is ticked), why it cannot be ticked yet, and up and
+ * down while ticked. */
 function WriterRow({
   view,
   kind,
+  privacy,
   rank,
   first,
   last,
   disabled,
-  notSetUp,
+  reason,
   onTick,
   onMove,
 }: {
   view: StepView;
   /** What kind of writer it is, in a lighter span after its name. */
   kind?: string;
+  /** Where the meeting goes, said in full (PLAN 3.9: before it is chosen). */
+  privacy?: string;
   /** Its place in the order (1-based), or null when not ticked. */
   rank: number | null;
   first: boolean;
   last: boolean;
-  /** Nothing in the row can be used (busy, unread, no summary). */
+  /** Nothing in the row can be used (unread, no summary). */
   disabled: boolean;
-  /** It cannot be ticked until it is set up. */
-  notSetUp: boolean;
+  /** Why it cannot be ticked yet (null: it can). */
+  reason: string | null;
   onTick(on: boolean): void;
-  onMove(by: -1 | 1): void;
+  onMove(by: -1 | 1, from: RowControl): void;
 }) {
   const styles = useStyles();
   const ticked = rank !== null;
   const writer = view.label;
+  const stepId = useId();
+  const destId = useId();
+  const privacyId = useId();
+  const described = [ticked ? stepId : null, destId, privacy !== undefined ? privacyId : null]
+    .filter((id) => id !== null)
+    .join(" ");
   return (
     <li
-      className={mergeClasses(styles.writerRow, notSetUp && !ticked && styles.writerOff)}
+      className={mergeClasses(styles.writerRow, reason !== null && !ticked && styles.writerOff)}
       data-rank={rank ?? undefined}
       data-step={stepKey(view.step)}
     >
       {ticked ? (
-        <span className={styles.rank} title={fillCopy(ORDER_COPY.page.step, { n: String(rank) })}>
-          {rank}
-        </span>
+        <>
+          <span className={styles.rank} aria-hidden="true">
+            {rank}
+          </span>
+          <span id={stepId} hidden>
+            {fillCopy(ORDER_COPY.page.step, { n: String(rank) })}
+          </span>
+        </>
       ) : (
         <span className={mergeClasses(styles.rank, styles.rankEmpty)} aria-hidden="true" />
       )}
       <Checkbox
         aria-label={fillCopy(ORDER_COPY.page.use, { writer })}
+        aria-describedby={described}
+        data-control="tick"
         checked={ticked}
-        disabled={disabled || (notSetUp && !ticked)}
+        disabled={disabled || (reason !== null && !ticked)}
         onChange={(_, d) => onTick(d.checked === true)}
       />
       <div className={styles.writerText}>
         <span className={styles.title}>
           <Body1Strong>{writer}</Body1Strong>
           {kind !== undefined && <Caption1 className={styles.muted}>{kind}</Caption1>}
-          {notSetUp && (
+          {reason !== null && (
             <Badge appearance="outline" color="informative" size="small">
-              {ORDER_COPY.page.not_set_up}
+              {reason}
             </Badge>
           )}
         </span>
-        <Caption1 className={styles.muted}>{view.destination}</Caption1>
+        <Caption1 id={destId} className={styles.muted}>
+          {view.destination}
+        </Caption1>
+        {privacy !== undefined && (
+          <Caption1 id={privacyId} className={styles.muted}>
+            {privacy}
+          </Caption1>
+        )}
       </div>
       {ticked && (
         <div className={styles.moves}>
@@ -1008,17 +1024,19 @@ function WriterRow({
             appearance="subtle"
             size="small"
             icon={<ArrowIcon up />}
+            data-control="up"
             aria-label={fillCopy(ORDER_COPY.page.move_up, { writer })}
             disabled={disabled || first}
-            onClick={() => onMove(-1)}
+            onClick={() => onMove(-1, "up")}
           />
           <Button
             appearance="subtle"
             size="small"
             icon={<ArrowIcon up={false} />}
+            data-control="down"
             aria-label={fillCopy(ORDER_COPY.page.move_down, { writer })}
             disabled={disabled || last}
-            onClick={() => onMove(1)}
+            onClick={() => onMove(1, "down")}
           />
         </div>
       )}
@@ -1030,9 +1048,11 @@ function WriterRow({
  * summaries" or "No summary", then one list of every writer this computer can use (this
  * computer, your own server, Claude Code, Codex, each other computer that offers summaries). The
  * ticked writers come first, in the order Earshot asks them, each with its rank and up and down
- * buttons; at most `max_steps` are ticked. A writer not set up is listed, greyed, with why, and
- * cannot be ticked; "No summary" greys the whole list. Every change saves the order at once
- * through `set_summary_order`, and nothing changes while the order is unread. */
+ * buttons; at most `max_steps` are ticked. A writer that cannot run yet (an endpoint not set up,
+ * this computer with no summary model) is listed, greyed, with why, and cannot be ticked; "No
+ * summary" greys the whole list. Every change saves the order at once through
+ * `set_summary_order`, nothing changes while the order is unread, and the keyboard focus stays
+ * on the control used, on its row wherever the row moved. */
 function OrderSection({
   state,
   settings,
@@ -1048,6 +1068,9 @@ function OrderSection({
   const styles = useStyles();
   const writerLabel = useId();
   const listLabel = useId();
+  const list = useRef<HTMLUListElement>(null);
+  // The control to focus once the change it made is shown.
+  const focusNext = useRef<{ key: string; control: RowControl } | null>(null);
   // A tick refused because the order is full.
   const [full, setFull] = useState(false);
   const value = settings.value;
@@ -1060,11 +1083,16 @@ function OrderSection({
   const hasEndpoint = value.url !== "" && value.model !== "";
   const maxSteps = order?.max_steps ?? 3;
   const none = !locked && stored.length === 0;
-  const off = state.busy || locked || none;
+  // Busy (a save in flight) does not disable anything, so the focused control keeps the focus;
+  // a change while busy is ignored instead.
+  const off = locked || none;
   const loaded = localModels?.load.status === "loaded" ? localModels.load.data : null;
   const models = loaded?.models ?? state.models;
+  // No summary model on this computer (unknown while the models are not read: then nothing is
+  // said).
+  const noLocalModel = models !== null && !models.summary.some((m) => m.installed === "Yes");
   const local =
-    models === null
+    models === null || noLocalModel
       ? undefined
       : `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
   const kindOf = (step: StepChoice): string | undefined => {
@@ -1079,6 +1107,16 @@ function OrderSection({
         return undefined;
     }
   };
+  const privacyOf = (step: StepChoice): string | undefined =>
+    step.kind === "ClaudeCode" ? CLAUDE_CODE_PRIVACY : step.kind === "Codex" ? CODEX_PRIVACY : undefined;
+  // Claude Code and Codex stay tickable whatever their sign-in: the CLI is asked only once its
+  // card shows, and a run that finds it signed out moves to the next writer.
+  const reasonOf = (step: StepChoice): string | null =>
+    step.kind === "Endpoint" && !hasEndpoint
+      ? ORDER_COPY.page.not_set_up
+      : step.kind === "Local" && noLocalModel
+        ? ORDER_COPY.page.not_downloaded
+        : null;
   const viewOf = (step: StepChoice): StepView =>
     order?.steps.find((v) => sameStep(v.step, step)) ??
     offered.find((o) => sameStep(o.step, step)) ??
@@ -1087,47 +1125,77 @@ function OrderSection({
     ...stored.map(viewOf),
     ...offered.filter((o) => !stored.some((s) => sameStep(s, o.step))),
   ];
-  const notSetUp = (step: StepChoice) => step.kind === "Endpoint" && !hasEndpoint;
 
-  const save = (steps: StepChoice[]) => {
-    if (locked) return;
+  // Back to the control used, on its row, once the change shows; an arrow that reached its end
+  // hands the focus to the other one.
+  useEffect(() => {
+    const next = focusNext.current;
+    if (next === null || state.busy || list.current === null) return;
+    focusNext.current = null;
+    const row = [...list.current.querySelectorAll<HTMLElement>("li[data-step]")].find(
+      (r) => r.dataset.step === next.key,
+    );
+    const control = (c: RowControl) => row?.querySelector<HTMLElement>(`[data-control="${c}"]`) ?? null;
+    let target = control(next.control);
+    if (next.control !== "tick" && (target === null || (target as HTMLButtonElement).disabled)) {
+      target = control(next.control === "up" ? "down" : "up");
+      if (target !== null && (target as HTMLButtonElement).disabled) target = null;
+    }
+    (target ?? control("tick"))?.focus();
+  });
+
+  const save = (steps: StepChoice[], focus: { key: string; control: RowControl }) => {
+    if (locked || state.busy) return;
     setFull(false);
+    focusNext.current = focus;
     void state.saveOrder(steps);
   };
   const tickOne = (step: StepChoice, on: boolean) => {
-    if (locked) return;
+    if (locked || state.busy) return;
+    const focus = { key: stepKey(step), control: "tick" as const };
     if (!on) {
-      save(stored.filter((s) => !sameStep(s, step)));
+      save(
+        stored.filter((s) => !sameStep(s, step)),
+        focus,
+      );
       return;
     }
     if (stored.length >= maxSteps) {
       setFull(true);
       return;
     }
-    save([...stored, step]);
+    save([...stored, step], focus);
   };
-  const move = (index: number, by: -1 | 1) => {
+  const move = (index: number, by: -1 | 1, from: RowControl) => {
     const to = index + by;
     if (to < 0 || to >= stored.length) return;
     const next = [...stored];
     [next[index], next[to]] = [next[to], next[index]];
-    save(next);
+    save(next, { key: stepKey(stored[index]), control: from });
   };
   const choose = (key: string) => {
-    if (locked) return;
-    if (key === NO_SUMMARY) save([]);
-    // "Write summaries" from no summary starts with this computer, the writer always set up.
-    else if (stored.length === 0) save([{ kind: "Local" }]);
+    if (locked || state.busy) return;
+    setFull(false);
+    if (key === NO_SUMMARY) void state.saveOrder([]);
+    // "Write summaries" from no summary starts with this computer.
+    else if (stored.length === 0) void state.saveOrder([{ kind: "Local" }]);
   };
+  const endpointTicked = stored.some((s) => s.kind === "Endpoint");
   const useEndpoint = async (change: Partial<SummarySettingsValue>) => {
     if (locked) return false;
-    // A writer the user just set up is ticked last, when there is room.
-    const steps: StepChoice[] =
-      stored.some((s) => s.kind === "Endpoint") || stored.length >= maxSteps
-        ? stored
-        : [...stored, { kind: "Endpoint" }];
+    // A set-up endpoint that is not ticked: only its fields change.
+    if (endpointTicked || hasEndpoint) {
+      setFull(false);
+      return state.saveOrder(stored, change);
+    }
+    // An endpoint the user just set up is ticked last; with the order full that is refused
+    // before anything is stored, and the form keeps what was typed.
+    if (stored.length >= maxSteps) {
+      setFull(true);
+      return false;
+    }
     setFull(false);
-    return state.saveOrder(steps, change);
+    return state.saveOrder([...stored, { kind: "Endpoint" }], change);
   };
 
   return (
@@ -1147,7 +1215,7 @@ function OrderSection({
       <RadioGroup
         aria-labelledby={writerLabel}
         value={locked ? "" : none ? NO_SUMMARY : WRITE}
-        disabled={state.busy || locked}
+        disabled={locked}
         onChange={(_, d) => choose(d.value)}
       >
         <Radio value={WRITE} label={ORDER_COPY.page.write} />
@@ -1166,9 +1234,9 @@ function OrderSection({
         {ORDER_COPY.page.list}
       </span>
       <ul
+        ref={list}
         className={mergeClasses(styles.writerList, none && styles.writerListOff)}
         aria-labelledby={listLabel}
-        aria-disabled={none || locked ? true : undefined}
       >
         {rows.map((view) => {
           const at = stored.findIndex((s) => sameStep(s, view.step));
@@ -1177,13 +1245,14 @@ function OrderSection({
               key={stepKey(view.step)}
               view={view}
               kind={kindOf(view.step)}
+              privacy={privacyOf(view.step)}
               rank={at < 0 ? null : at + 1}
               first={at === 0}
               last={at === stored.length - 1}
               disabled={off}
-              notSetUp={notSetUp(view.step)}
+              reason={reasonOf(view.step)}
               onTick={(on) => tickOne(view.step, on)}
-              onMove={(by) => move(at, by)}
+              onMove={(by, from) => move(at, by, from)}
             />
           );
         })}
@@ -1195,17 +1264,20 @@ function OrderSection({
       )}
       <Caption1 className={styles.muted}>{ORDER_COPY.page.kept_local}</Caption1>
       {order !== null && order.notes.length > 0 && <UnknownSettings unknown={order.notes} />}
-      <WriterForms
-        state={state}
-        settings={settings}
-        keySaved={keySaved}
-        stored={stored}
-        locked={locked}
-        endpointShown={!locked && (stored.some((s) => s.kind === "Endpoint") || !hasEndpoint)}
-        useEndpoint={useEndpoint}
-        localModels={localModels}
-        privacy
-      />
+      {!none && (
+        <WriterForms
+          state={state}
+          settings={settings}
+          keySaved={keySaved}
+          stored={stored}
+          locked={locked}
+          endpointShown={!locked}
+          endpointSaveOnly={hasEndpoint && !endpointTicked}
+          localShown={stored.some((s) => s.kind === "Local") || noLocalModel}
+          useEndpoint={useEndpoint}
+          localModels={localModels}
+        />
+      )}
     </Section>
   );
 }

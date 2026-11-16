@@ -173,12 +173,14 @@ describe("Settings, Summaries, the order of summary writers", () => {
       expect(box).toBeDisabled();
       expect(box).not.toBeChecked();
     }
-    expect(list()).toHaveAttribute("aria-disabled", "true");
+    expect(list()).not.toHaveAttribute("aria-disabled");
     expect(screen.queryByRole("group", { name: "Claude through Claude Code" })).toBeNull();
+    // No writer's form under No summary: saving one would turn summaries back on unasked.
+    expect(screen.queryByRole("group", { name: "Your own server" })).toBeNull();
     await s.user.click(writeRadio());
     await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]));
     await waitFor(() => expect(tick(CODEX_LABEL)).toBeEnabled());
-    expect(list()).not.toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("group", { name: "Your own server" })).toBeInTheDocument();
     // Unticking the last writer is no summary.
     await s.user.click(tick(LOCAL_LABEL));
     await waitFor(async () => expect((await s.ipc.summaryOrder()).none).toBe(true));
@@ -200,6 +202,92 @@ describe("Settings, Summaries, the order of summary writers", () => {
     await waitFor(() => expect(tick(SERVER_LABEL)).toBeChecked());
     expect(listed()[1]).toBe(`2 ${SERVER_LABEL}`);
     expect(screen.queryByText(PAGE.not_set_up)).toBeNull();
+  });
+
+  it("refuses to tick a newly set-up endpoint into a full order, keeping what was typed", async () => {
+    const s = await open({ summaryOrder: [{ kind: "Local" }, { kind: "ClaudeCode" }, { kind: "Codex" }] });
+    const form = await screen.findByRole("group", { name: "Your own server" });
+    await s.user.type(within(form).getByLabelText("Address"), "http://192.168.1.20:8080/v1");
+    await s.user.type(within(form).getByLabelText("Model"), "qwen");
+    await s.user.click(within(form).getByRole("button", { name: "Use this endpoint" }));
+    expect(await screen.findByText(TOO_MANY)).toBeInTheDocument();
+    expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }, { kind: "Codex" }]);
+    expect((await s.ipc.summarySettings()).value.url).toBe("");
+    expect(within(form).getByLabelText("Address")).toHaveValue("http://192.168.1.20:8080/v1");
+  });
+
+  it("shows a set-up endpoint's form without ticking it, and saves only its fields", async () => {
+    const s = await open({
+      summaryOrder: [{ kind: "Local" }],
+      summaries: { settings: { url: "http://192.168.1.20:8080/v1", model: "qwen" } },
+    });
+    await waitFor(() => expect(tick(SERVER_LABEL)).toBeEnabled());
+    expect(tick(SERVER_LABEL)).not.toBeChecked();
+    const form = screen.getByRole("group", { name: "Your own server" });
+    const model = within(form).getByLabelText("Model");
+    expect(model).toHaveValue("qwen");
+    await s.user.clear(model);
+    await s.user.type(model, "qwen-big");
+    await s.user.click(within(form).getByRole("button", { name: "Save endpoint" }));
+    await waitFor(async () => expect((await s.ipc.summarySettings()).value.model).toBe("qwen-big"));
+    expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
+    expect(tick(SERVER_LABEL)).not.toBeChecked();
+  });
+
+  it("greys this computer as not downloaded while no summary model is installed", async () => {
+    const s = await open({ noModels: true });
+    await waitFor(() => expect(within(rows()[0]).getByText(PAGE.not_downloaded)).toBeInTheDocument());
+    // Ticked by default: it stays and can be unticked, but not ticked again until a model is in.
+    expect(tick(LOCAL_LABEL)).toBeChecked();
+    await s.user.click(tick(LOCAL_LABEL));
+    await waitFor(async () => expect((await s.ipc.summaryOrder()).none).toBe(true));
+    await s.user.click(writeRadio());
+    await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
+    await s.user.click(tick(CLAUDE_LABEL));
+    await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }]));
+    await s.user.click(tick(LOCAL_LABEL));
+    await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "ClaudeCode" }]));
+    await waitFor(() => expect(tick(LOCAL_LABEL)).not.toBeChecked());
+    expect(tick(LOCAL_LABEL)).toBeDisabled();
+    // Its model can be downloaded right here.
+    expect(screen.getByRole("group", { name: "Which model writes the summary" })).toBeInTheDocument();
+    // Claude Code and Codex stay tickable: their sign-in is asked only once their card shows.
+    expect(tick(CODEX_LABEL)).toBeEnabled();
+  });
+
+  it("keeps the keyboard focus on the control used, on its row wherever it moved", async () => {
+    const s = await open({ summaryOrder: [{ kind: "Local" }, { kind: "ClaudeCode" }] });
+    await waitFor(() => expect(tick(CODEX_LABEL)).toBeEnabled());
+    // The rank and where it goes reach a screen reader with the tick box.
+    expect(tick(LOCAL_LABEL)).toHaveAccessibleDescription(
+      `${fillCopy(PAGE.step, { n: "1" })} ${ORDER_COPY.destinations.local}`,
+    );
+    await s.user.click(tick(CODEX_LABEL));
+    await waitFor(async () =>
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }, { kind: "Codex" }]),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(tick(CODEX_LABEL)));
+    await s.user.click(up(CODEX_LABEL)!);
+    await waitFor(async () =>
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "Codex" }, { kind: "ClaudeCode" }]),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(up(CODEX_LABEL)));
+    // Moved to the top: up cannot be used, so the focus goes to its down button.
+    await s.user.click(up(CODEX_LABEL)!);
+    await waitFor(async () =>
+      expect(await stored(s.ipc)).toEqual([{ kind: "Codex" }, { kind: "Local" }, { kind: "ClaudeCode" }]),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(down(CODEX_LABEL)));
+    // From the keyboard too: Enter on the focused button moves it again, focus kept.
+    await s.user.keyboard("{Enter}");
+    await waitFor(async () =>
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "Codex" }, { kind: "ClaudeCode" }]),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(down(CODEX_LABEL)));
+    // An untick keeps the focus on the tick box, now in the unticked part of the list.
+    await s.user.click(tick(LOCAL_LABEL));
+    await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Codex" }, { kind: "ClaudeCode" }]));
+    await waitFor(() => expect(document.activeElement).toBe(tick(LOCAL_LABEL)));
   });
 
   it("offers another computer as a writer, and summarising during the meeting follows the order", async () => {

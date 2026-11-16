@@ -100,7 +100,12 @@ fn summary_order_copy_matches_the_shared_table() {
         ),
         "At most 3 writers can be ticked. Untick one first."
     );
-    assert!(!page.kept_local.is_empty() && !page.not_set_up.is_empty() && !page.list.is_empty());
+    assert!(
+        !page.kept_local.is_empty()
+            && !page.not_set_up.is_empty()
+            && !page.not_downloaded.is_empty()
+            && !page.list.is_empty()
+    );
     // Public copy only: no em dash anywhere in the table.
     let text = include_str!("../../../../fixtures/ui/summary_order_cases.json");
     assert!(!text.contains('\u{2014}'));

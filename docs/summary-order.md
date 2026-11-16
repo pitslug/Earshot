@@ -13,15 +13,15 @@ That is already an order of two steps, split over two sections and fixed at two.
 
 ## 2. What changes for the user
 
-- One section, "Who writes the summary", holds an ordered list of up to three steps. Step 1 is required; steps 2 and 3 are optional ("If it can't").
-- Each step is one of:
-  - **On this computer**: the local model.
+- One section, "Who writes the summary", holds "Write summaries" or "No summary", then one list of every writer this computer can use (T12.68, which replaced T12.63b's step 1 choice and "If it can't" selects). Each row has a tick box; the ticked writers come first, in the order Earshot asks them, each with its rank ("Step n" to a screen reader) and up and down buttons (the first cannot go up, the last ticked cannot go down). At most three are ticked: a fourth tick is refused with fixed copy and stores nothing. No drag and drop.
+- The writers are:
+  - **On this computer**: the local model. Listed greyed with "Not downloaded" while no summary model is installed; it cannot be ticked then (a ticked one stays and can be unticked).
   - **A computer of yours**: a paired computer or worker whose presence offers summaries, shown "On <name> (<writer kind>)" as today.
-  - **Your endpoint**: the one endpoint the page already configures, labelled by its provider: "Anthropic API" or "Model server (<host>)". There is still one endpoint configuration.
-  - **Claude (through Claude Code)** or **OpenAI (through Codex)**, with their existing model and effort fields.
-- "No summary" is a choice of its own instead of a step: it clears the order.
-- A writer appears at most once; a later step offers only writers not already used.
-- Under each step the page says where the transcript goes, in fixed copy: "Stays on this computer", "Goes to <name>, which writes it with its <writer kind>", "Goes to <host>", "Goes to Anthropic", "Goes to Anthropic through Claude Code", "Goes to OpenAI through Codex".
+  - **Your endpoint**: the one endpoint the page already configures, labelled by its provider: "Anthropic API" or "Model server (<host>)". There is still one endpoint configuration. Without an address and model it is listed greyed with "Not set up" and cannot be ticked; its form shows below the list, and saving it ticks it last when there is room (with three ticked, the save is refused with the same fixed copy). A set-up endpoint that is not ticked keeps its form below the list, and saving it changes only its fields.
+  - **Claude (through Claude Code)** or **OpenAI (through Codex)**, with their existing model and effort fields. They stay tickable whatever their sign-in: the page asks the CLI only once its card shows (it is ticked), and a run that finds it not signed in moves to the next writer (4.4).
+- "No summary" is a choice of its own instead of a step: it clears the order and greys the list (no writer's form shows under it). "Write summaries" from no summary starts with this computer; unticking the last writer is no summary.
+- A writer appears at most once.
+- Each row says where the transcript goes, in fixed copy: "Stays on this computer", "Goes to <name>, which writes it with its <writer kind>", "Goes to <host>", "Goes to Anthropic", "Goes to Anthropic through Claude Code", "Goes to OpenAI through Codex"; the Claude Code and Codex rows also carry their privacy line before they are ticked (PLAN 3.9). Under the list, one line says what a meeting kept on this computer does with the order (4.2).
 - The "Another computer" section is removed.
 
 ## 3. Stored setting
@@ -118,7 +118,7 @@ A computer or worker writing another computer's request runs **exactly one write
 
 ## 6. First run
 
-The wizard's Summaries step keeps one choice; Next stores a one-step order (or `none`). Steps 2 and 3 are only on the Summaries page.
+The wizard's Summaries step keeps one choice; Next stores a one-step order (or `none`). The list with more than one writer is only on the Summaries page.
 
 ## 7. Privacy
 

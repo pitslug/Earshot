@@ -285,14 +285,18 @@ describe("Settings, Summaries", () => {
       asked.n += 1;
       return status();
     };
-    // Before it is ticked: where the transcript goes, no card and no question to Claude Code.
+    // Before it is ticked (PLAN 3.9: the disclosure comes before the choice): where the
+    // transcript goes and the privacy line, no card and no question to Claude Code.
     expect(screen.getByText(ORDER_COPY.destinations.claude_code)).toBeInTheDocument();
+    expect(screen.getByText(CLAUDE_CODE_PRIVACY)).toBeInTheDocument();
+    expect(tick(CLAUDE)).toHaveAccessibleDescription(
+      `${ORDER_COPY.destinations.claude_code} ${CLAUDE_CODE_PRIVACY}`,
+    );
     expect(screen.queryByRole("group", { name: "Claude through Claude Code" })).toBeNull();
     expect(asked.n).toBe(0);
     await makeFirst(s, CLAUDE);
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("ClaudeCode"));
     const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
-    expect(within(card).getByText(CLAUDE_CODE_PRIVACY)).toBeInTheDocument();
     expect(await within(card).findByText("Claude Code 2.1.290 is installed and signed in.")).toBeInTheDocument();
     expect(asked.n).toBe(1);
     expect(live()).toBeDisabled();
@@ -460,14 +464,13 @@ describe("Settings, Summaries", () => {
       return claude();
     };
     expect(screen.getByText(ORDER_COPY.destinations.codex)).toBeInTheDocument();
-    expect(screen.queryByText(CODEX_PRIVACY)).toBeNull();
+    expect(screen.getByText(CODEX_PRIVACY)).toBeInTheDocument();
     expect(CODEX_PRIVACY).toContain("handed to Codex, which sends them to OpenAI on your ChatGPT sign-in");
     expect(screen.queryByRole("group", { name: "OpenAI through Codex" })).toBeNull();
     expect(asked.codex).toBe(0);
     await makeFirst(s, CODEX);
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("Codex"));
     const card = await screen.findByRole("group", { name: "OpenAI through Codex" });
-    expect(within(card).getByText(CODEX_PRIVACY)).toBeInTheDocument();
     expect(await within(card).findByText(CODEX_STATUS.desktop.message)).toBeInTheDocument();
     expect(asked.codex).toBe(1);
     // Claude Code is not asked for the Codex choice.
