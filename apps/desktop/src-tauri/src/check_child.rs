@@ -421,11 +421,12 @@ fn child_failed(message: impl Into<String>) -> IpcError {
     }
 }
 
-/// A manifest model's name as the runtime's tables hold it.
+/// A manifest model's name as the runtime's tables hold it. A name this version does not know is
+/// a line it cannot read: fixed copy, never the name (T12.70).
 fn known_model(name: &str) -> Result<&'static str, IpcError> {
     model_check::model_facts(name)
         .map(|f| f.name)
-        .ok_or_else(|| child_failed(format!("the model check named an unknown model {name:?}")))
+        .ok_or_else(|| child_failed(UNREADABLE_LINE))
 }
 
 fn trial_report(t: &TrialLine) -> Result<(TrialReport, Verdict), IpcError> {

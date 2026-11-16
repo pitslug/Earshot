@@ -394,12 +394,17 @@ mod tests {
 
     impl ScratchDir {
         fn new() -> Self {
+            // The counter keeps two tests in one clock tick apart (T12.70: they shared a folder).
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let p = std::env::temp_dir()
-                .join(format!("earshot-cli-test-{}-{nanos}", std::process::id()));
+            let p = std::env::temp_dir().join(format!(
+                "earshot-cli-test-{}-{nanos}-{n}",
+                std::process::id()
+            ));
             fs::create_dir_all(&p).unwrap();
             Self(p)
         }

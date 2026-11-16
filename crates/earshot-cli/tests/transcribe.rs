@@ -206,12 +206,17 @@ struct ScratchDir(PathBuf);
 
 impl ScratchDir {
     fn new(tag: &str) -> Self {
+        // The counter keeps two tests in one clock tick apart (T12.70).
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p =
-            std::env::temp_dir().join(format!("earshot-cli-{tag}-{}-{nanos}", std::process::id()));
+        let p = std::env::temp_dir().join(format!(
+            "earshot-cli-{tag}-{}-{nanos}-{n}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&p).unwrap();
         Self(p)
     }

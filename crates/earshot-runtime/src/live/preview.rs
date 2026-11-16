@@ -305,6 +305,36 @@ pub struct LivePreviews {
     /// model this loads, instead of window decodes of `load`'s or `own_voice`'s session; those
     /// still say which tracks have previews. `None` in the app.
     pub stream: Option<StreamLoader>,
+    /// Test seams (T12.70); absent outside `cfg(test)`.
+    #[cfg(test)]
+    pub(crate) test_hooks: TestHooks,
+}
+
+/// A track's backlog and limit (frames) at a fell-behind stop ([`TestHooks::fell_behind_seen`]).
+#[cfg(test)]
+pub(crate) type FellBehindSeen = Arc<Mutex<Option<(u64, u64)>>>;
+
+/// What a test can see or change in a session's previews (T12.70).
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct TestHooks {
+    /// Set to the track's backlog and the limit (frames) when previews stop for falling behind.
+    pub(crate) fell_behind_seen: Option<FellBehindSeen>,
+    /// Lowering the preview thread's priority fails with this text, as it does off Windows.
+    pub(crate) refuse_lowering: Option<String>,
+    /// Set once the thread has sent [`FromPreview::Running`] (window previews).
+    pub(crate) running_sent: Option<Arc<AtomicBool>>,
+}
+
+/// Lowers the preview thread's priority ([`LivePreviews::background`]).
+fn lower_preview_thread(previews: &LivePreviews) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(why) = &previews.test_hooks.refuse_lowering {
+        return Err(why.clone());
+    }
+    #[cfg(not(test))]
+    let _ = previews;
+    crate::priority::lower_current_thread()
 }
 
 impl LivePreviews {
@@ -324,6 +354,8 @@ impl LivePreviews {
             fell_behind: CAUGHT_UP_BACKLOG,
             background: true,
             stream: None,
+            #[cfg(test)]
+            test_hooks: TestHooks::default(),
         }
     }
 }
@@ -528,7 +560,7 @@ impl PreviewWork {
     fn decode_until_stopped(&self) -> Result<(), PreviewRefusal> {
         let failed = |text: String| PreviewRefusal::new(PreviewOffReason::Failed, text);
         if self.previews.background {
-            crate::priority::lower_current_thread().map_err(failed)?;
+            lower_preview_thread(&self.previews).map_err(failed)?;
         }
         if let Some(load) = &self.previews.stream {
             return self.stream_until_stopped(load);
@@ -541,6 +573,10 @@ impl PreviewWork {
             r.backend = Some(ran);
         });
         let _ = self.out.send(FromPreview::Running);
+        #[cfg(test)]
+        if let Some(sent) = &self.previews.test_hooks.running_sent {
+            sent.store(true, Ordering::SeqCst);
+        }
         let keep = PIPELINE_RATE.frames_for(self.previews.window);
         let min = PIPELINE_RATE.frames_for(MIN_PREVIEW_AUDIO) as u64;
         let options = TranscribeOptions::live();
@@ -1148,15 +1184,26 @@ where
     /// The computer went on battery: `track`'s running previews stop and wait to start again
     /// (T12.37, module docs). Never waits: the thread is told to stop and its decode cancelled,
     /// and the next start waits for it to have stopped, reading what it said last. A thread that
-    /// gave up, now or before it stopped, keeps its own reason for the rest of the meeting.
+    /// gave up, now or before it stopped, keeps its own reason for the rest of the meeting. A
+    /// `Running` it sent and the session had not read yet is said first, so the host hears the
+    /// states in order (T12.70); words read here are not shown, since the pause clears them.
     fn previews_pause(&mut self, track: TrackId) {
         let PreviewState::Running(p) = std::mem::take(&mut self.previews[slot(track)]) else {
             return;
         };
-        let gave_up = p.from.try_iter().find_map(|message| match message {
-            FromPreview::Off(why) => Some(why),
-            _ => None,
-        });
+        let (mut running, mut gave_up) = (false, None);
+        for message in p.from.try_iter() {
+            match message {
+                FromPreview::Running => running = true,
+                FromPreview::Off(why) => {
+                    gave_up.get_or_insert(why);
+                }
+                FromPreview::Words(_) | FromPreview::Done => {}
+            }
+        }
+        if running {
+            self.say_previews(track, None);
+        }
         if let Some(why) = gave_up {
             self.previews[slot(track)] = PreviewState::Running(p);
             self.previews_off(track, why);
@@ -1216,12 +1263,19 @@ where
         for track in TRACKS {
             if let PreviewState::Running(p) = &self.previews[slot(track)] {
                 let limit = p.fell_behind;
-                let behind = self
+                let backlog = self
                     .workers
                     .iter()
                     .find(|w| w.track() == track)
-                    .is_some_and(|w| w.backlog() > limit);
-                if behind {
+                    .map(super::worker::LiveWorker::backlog);
+                if let Some(backlog) = backlog.filter(|b| *b > limit) {
+                    #[cfg(test)]
+                    if let Some(seen) = &p.previews.test_hooks.fell_behind_seen {
+                        *seen.lock().unwrap_or_else(PoisonError::into_inner) =
+                            Some((backlog, limit));
+                    }
+                    #[cfg(not(test))]
+                    let _ = backlog;
                     self.previews_off(
                         track,
                         PreviewRefusal::new(PreviewOffReason::FellBehind, FELL_BEHIND_REASON),
@@ -1558,12 +1612,17 @@ mod off_tests {
     }
 
     /// T12.62: a thread that crashed just before the session stops it for another reason: the
-    /// stop's `finish` finds the crash, and the report keeps it.
+    /// stop's `finish` finds the crash, and the report keeps it. Not on background threads (T12.70):
+    /// off Windows lowering the priority fails first, so the thread gave up without ever loading
+    /// and the report rightly took the stop's reason (linux-check run 43699930057).
     #[test]
     fn live_preview_a_crash_found_by_a_stop_for_another_reason_is_kept() {
         let load: PreviewLoader = Arc::new(|_| panic!("a test crash at load"));
         let thread = PreviewThread::spawn(
-            LivePreviews::new(load),
+            LivePreviews {
+                background: false,
+                ..LivePreviews::new(load)
+            },
             TrackId::Reference,
             BackendInfo {
                 kind: earshot_core::asr::BackendKind::Fake,

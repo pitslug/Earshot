@@ -1723,6 +1723,177 @@ fn offload_times_are_pruned_and_survive_a_restart() {
     );
 }
 
+/// T12.70: a deleted meeting's readings go with it, open and closed, whether it was deleted here or
+/// its tombstone was pulled from another device; other meetings' readings stay.
+#[test]
+fn offload_times_of_a_deleted_meeting_go_with_its_deletion() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let stored = || {
+        read_times(
+            a.svc
+                .store()
+                .local_value(OFFLOAD_TIMES_KEY)
+                .unwrap()
+                .as_deref(),
+        )
+    };
+    let gone = meeting(&a.svc, "Invented gone", 43);
+    let kept = meeting(&a.svc, "Invented kept", 44);
+    let (gone_r, kept_r) = (
+        ask(&a.svc, gone, b.id()).unwrap().unwrap().to_string(),
+        ask(&a.svc, kept, b.id()).unwrap().unwrap().to_string(),
+    );
+    // Both withdrawn unclaimed, then closed readings with their start.
+    a.clock.advance_ms(CLAIM_WITHIN_MS + 1);
+    let asker = Recorder::default();
+    let fresh = Offload::new();
+    assert_eq!(
+        fresh.step(&a.svc, &mut || None, &asker).unwrap().withdrawn,
+        2
+    );
+    fresh.step(&a.svc, &mut || None, &asker).unwrap();
+    let t = stored();
+    assert!(t.closed.contains_key(&gone_r) && t.closed.contains_key(&kept_r));
+    a.svc.delete_meeting(gone).unwrap();
+    let t = stored();
+    assert!(!t.closed.contains_key(&gone_r), "deleted here: {t:?}");
+    assert!(t.closed.contains_key(&kept_r), "{t:?}");
+    // An open reading of a meeting deleted on the other device goes when the tombstone arrives.
+    let pulled = meeting(&a.svc, "Invented pulled", 45);
+    let pulled_r = ask(&a.svc, pulled, b.id()).unwrap().unwrap().to_string();
+    assert!(stored().requests.contains_key(&pulled_r));
+    sync(&ca, &cb);
+    b.svc.delete_meeting(pulled).unwrap();
+    cb.tick().unwrap();
+    ca.tick().unwrap();
+    assert!(
+        a.svc.store().meeting(pulled).unwrap().unwrap().meta.deleted,
+        "the tombstone was pulled"
+    );
+    let t = stored();
+    assert!(!t.requests.contains_key(&pulled_r), "pulled: {t:?}");
+    assert!(t.closed.contains_key(&kept_r), "{t:?}");
+}
+
+/// T12.70 (review): a deletion that fails before its transaction (an audio file that cannot be
+/// removed) keeps the meeting and its readings, so a closed request is not handed again; the
+/// deletion that then works drops them.
+#[test]
+fn offload_times_survive_a_deletion_that_fails_before_it_commits() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let stored = || {
+        read_times(
+            a.svc
+                .store()
+                .local_value(OFFLOAD_TIMES_KEY)
+                .unwrap()
+                .as_deref(),
+        )
+    };
+    let m = meeting(&a.svc, "Invented stuck", 46);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap().to_string();
+    a.clock.advance_ms(CLAIM_WITHIN_MS + 1);
+    let fresh = Offload::new();
+    assert_eq!(
+        fresh
+            .step(&a.svc, &mut || None, &Recorder::default())
+            .unwrap()
+            .withdrawn,
+        1
+    );
+    fresh
+        .step(&a.svc, &mut || None, &Recorder::default())
+        .unwrap();
+    assert!(stored().closed.contains_key(&request));
+    // A mic recording whose file is a non-empty folder: removing it fails.
+    let audio = {
+        let mut db = a.svc.store();
+        let track = db
+            .tracks(m)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.kind == earshot_core::capture::TrackId::Mic)
+            .unwrap();
+        let mut w = a
+            .svc
+            .data
+            .track_writer(m, earshot_core::capture::TrackId::Mic, 16_000)
+            .unwrap();
+        w.write(&[0.2; 320]).unwrap();
+        let clock = Arc::clone(&a.svc.clock);
+        db.finalize_track_audio(
+            w,
+            &a.svc.data,
+            &track,
+            earshot_store::AudioProvenance {
+                pipeline_version: "p".into(),
+                aec_version: None,
+            },
+            &*clock,
+            &mut <rand_chacha::ChaCha8Rng as rand_core::SeedableRng>::seed_from_u64(46),
+        )
+        .unwrap();
+        a.svc
+            .data
+            .resolve(&earshot_store::DataDir::audio_rel(
+                m,
+                earshot_core::capture::TrackId::Mic,
+            ))
+            .unwrap()
+    };
+    std::fs::remove_file(&audio).unwrap();
+    std::fs::create_dir_all(audio.join("held")).unwrap();
+    assert!(a.svc.delete_meeting(m).is_err());
+    assert!(!a.svc.store().meeting(m).unwrap().unwrap().meta.deleted);
+    assert!(
+        stored().closed.contains_key(&request),
+        "kept: {:?}",
+        stored()
+    );
+    std::fs::remove_dir_all(&audio).unwrap();
+    a.svc.delete_meeting(m).unwrap();
+    assert!(!stored().closed.contains_key(&request), "{:?}", stored());
+}
+
+/// T12.70 (review): a step that read the readings before a meeting's deletion and changed one of
+/// that meeting's never writes it back.
+#[test]
+fn offload_a_step_merging_after_a_deletion_does_not_bring_back_its_readings() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let stored = || {
+        read_times(
+            a.svc
+                .store()
+                .local_value(OFFLOAD_TIMES_KEY)
+                .unwrap()
+                .as_deref(),
+        )
+    };
+    let gone = meeting(&a.svc, "Invented merged", 47);
+    let kept = meeting(&a.svc, "Invented beside", 48);
+    let gone_r = ask(&a.svc, gone, b.id()).unwrap().unwrap().to_string();
+    let kept_r = ask(&a.svc, kept, b.id()).unwrap().unwrap().to_string();
+    // What a step read, and what it would write: both readings changed.
+    let before = stored();
+    let mut after = before.clone();
+    for since in after.requests.values_mut() {
+        since.absent_since_ms = Some(7);
+    }
+    a.svc.delete_meeting(gone).unwrap();
+    assert!(!stored().requests.contains_key(&gone_r));
+    a.svc
+        .store()
+        .transaction(|tx| store_step_times(tx, &before, &after))
+        .unwrap();
+    let t = stored();
+    assert!(!t.requests.contains_key(&gone_r), "brought back: {t:?}");
+    assert_eq!(t.requests[&kept_r].absent_since_ms, Some(7), "{t:?}");
+}
+
 /// The summary step names the device its request asks: a meeting that already waited for another
 /// device is reported as waiting for that one, not the newly chosen (re-review item 4).
 #[test]

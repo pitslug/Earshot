@@ -14,7 +14,7 @@ use super::queue_tests::{Scene, by_kind, factory_of, held_config, held_gates, sc
 use super::*;
 use crate::live::preview::{
     COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PREVIEW_THREAD_LEFT, PreviewWords,
-    StreamFeed,
+    StreamFeed, TestHooks,
 };
 use crate::live::{LivePreviews, PreviewLoader, PreviewOffReason, PreviewRefusal, PreviewReport};
 use crate::power::{PowerProbe, PowerSource, PowerSupply};
@@ -208,6 +208,7 @@ fn previews(load: PreviewLoader) -> LivePreviews {
         own_voice_rule: None,
         user_asked: true,
         stream: None,
+        test_hooks: TestHooks::default(),
     }
 }
 
@@ -1583,6 +1584,207 @@ fn live_preview_a_track_falling_behind_turns_them_off() {
     assert_eq!(report.off.as_deref(), Some(FELL_BEHIND_REASON));
 }
 
+/// Sets its flag when dropped: a thread-local's value is dropped after the thread's main
+/// function has returned, so its preview channel is closed and its panic recorded by then.
+struct SetOnDrop(Arc<AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+thread_local! {
+    static ON_THREAD_EXIT: std::cell::RefCell<Option<SetOnDrop>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Delivers nothing until the preview thread is loading; then, inside one pump, lets that thread
+/// crash, waits until it has ended and delivers the whole replay. The session's next look at its
+/// previews finds a crashed thread and a track far behind at once.
+struct CrashThenBurst<S> {
+    inner: S,
+    loading: Arc<AtomicBool>,
+    crash: Arc<AtomicBool>,
+    gone: Arc<AtomicBool>,
+    delivered: Arc<AtomicBool>,
+    /// Set by the pump after the burst: the session has looked once since.
+    looked: Arc<AtomicBool>,
+    burst: bool,
+}
+
+impl<S: AudioSource> AudioSource for CrashThenBurst<S> {
+    type Error = S::Error;
+
+    fn session(&self) -> &CaptureSession {
+        self.inner.session()
+    }
+
+    fn pump(&mut self, sink: &mut dyn CaptureSink) -> Result<SourceStatus, Self::Error> {
+        if self.burst {
+            self.looked.store(true, Ordering::SeqCst);
+            return self.inner.pump(sink);
+        }
+        if !self.loading.load(Ordering::SeqCst) {
+            return Ok(SourceStatus::Idle);
+        }
+        self.crash.store(true, Ordering::SeqCst);
+        let limit = Instant::now() + GUARD;
+        while !self.gone.load(Ordering::SeqCst) {
+            assert!(Instant::now() < limit, "the preview thread never ended");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        while !self.delivered.load(Ordering::SeqCst) {
+            assert!(Instant::now() < limit, "the replay never ended");
+            self.inner.pump(sink)?;
+        }
+        self.burst = true;
+        Ok(SourceStatus::Delivered)
+    }
+
+    fn stop(&mut self) {
+        self.inner.stop();
+    }
+}
+
+/// T12.70: a preview thread that crashed and a track that fell behind, both found in one look:
+/// the session stops the previews for falling behind (that check comes first), and the report
+/// still says the thread crashed (`previews_off` keeps a crash its `finish` found).
+#[test]
+fn live_preview_a_crash_and_a_fell_behind_stop_in_one_look_report_the_crash() {
+    let scene = scene_of(27);
+    let flag = || Arc::new(AtomicBool::new(false));
+    let (loading, crash, gone) = (flag(), flag(), flag());
+    let load: PreviewLoader = {
+        let (loading, crash, gone) = (Arc::clone(&loading), Arc::clone(&crash), Arc::clone(&gone));
+        Arc::new(move |_| {
+            loading.store(true, Ordering::SeqCst);
+            let limit = Instant::now() + GUARD;
+            while !crash.load(Ordering::SeqCst) {
+                assert!(Instant::now() < limit, "never told to crash");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            ON_THREAD_EXIT.with(|g| *g.borrow_mut() = Some(SetOnDrop(Arc::clone(&gone))));
+            panic!("a test crash at load");
+        })
+    };
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (inner, handles) = super::queue_tests::source_of(&scene);
+    let looked = Arc::new(AtomicBool::new(false));
+    let seen = Arc::new(Mutex::new(None));
+    let source = CrashThenBurst {
+        inner,
+        loading,
+        crash,
+        gone,
+        delivered: Arc::clone(&handles.delivered),
+        looked: Arc::clone(&looked),
+        burst: false,
+    };
+    // Real decodes wait, so the whole replay is queued behind the first one.
+    let open = Arc::new(AtomicBool::new(false));
+    let session = start_live(
+        source,
+        svc.clone(),
+        config_with(Some(LivePreviews {
+            // The production limit: 27 s queued is far past it.
+            fell_behind: LivePreviews::new(load.clone()).fell_behind,
+            test_hooks: TestHooks {
+                fell_behind_seen: Some(Arc::clone(&seen)),
+                ..TestHooks::default()
+            },
+            ..previews(load)
+        })),
+        Some(gated_factory(Arc::clone(&open))),
+        Box::new(ChaCha8Rng::seed_from_u64(329)),
+    )
+    .unwrap();
+    let limit = Instant::now() + GUARD;
+    while !looked.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < limit,
+            "the session never looked after the burst"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    open.store(true, Ordering::SeqCst);
+    handles.released.store(true, Ordering::SeqCst);
+    let (events, _) = collect(session);
+    let said: Vec<Option<PreviewOffReason>> = events
+        .iter()
+        .filter_map(|e| match e {
+            RuntimeEvent::LivePreviewState {
+                track: TrackId::Reference,
+                off,
+            } => Some(*off),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(said, [Some(PreviewOffReason::Failed)], "{said:?}");
+    // The witness: the stop at that look was the fell-behind one (the crash path never ran first,
+    // or the previews would have been off already), and the track really was past the limit.
+    let (backlog, limit) = seen
+        .lock()
+        .unwrap()
+        .expect("previews stopped for falling behind");
+    assert!(
+        backlog > limit,
+        "backlog {backlog} within the limit {limit}"
+    );
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.off.as_deref(), Some("the preview thread crashed"));
+    assert_eq!(report.reason, Some(PreviewOffReason::Failed));
+}
+
+/// T12.70: previews on a below-normal thread, as the app runs them, load and decode (Windows
+/// only: elsewhere lowering a thread's priority is refused, the next test's path).
+#[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "below-normal threads exist only on Windows; elsewhere the refusal is tested"
+)]
+fn live_preview_on_a_background_thread_runs_and_reports_no_failure() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let config = LivePreviews {
+        background: true,
+        ..previews(loader(&seen, marker_words))
+    };
+    let (_, events, ..) = run_with(&scene, Some(config), 331);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.off, None, "{report:?}");
+    assert_eq!(report.backend, Some(BackendKind::Fake), "{report:?}");
+}
+
+/// T12.70: a preview thread that cannot lower its priority gives up before loading, with the
+/// reason as a failure; the recording and the words go on.
+#[test]
+fn live_preview_a_thread_that_cannot_lower_its_priority_turns_them_off() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let config = LivePreviews {
+        background: true,
+        test_hooks: TestHooks {
+            refuse_lowering: Some("a test refusal to lower the priority".to_owned()),
+            ..TestHooks::default()
+        },
+        ..previews(loader(&seen, marker_words))
+    };
+    let (with, events, ..) = run_with(&scene, Some(config), 333);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(
+        report.off.as_deref(),
+        Some("a test refusal to lower the priority")
+    );
+    assert_eq!(report.reason, Some(PreviewOffReason::Failed));
+    assert_eq!(report.backend, None, "nothing loaded: {report:?}");
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 0);
+    assert!(previews_of(&events).iter().all(|(_, w)| w.is_empty()));
+    let (without, ..) = run_with(&scene, None, 333);
+    assert_eq!(with, without);
+}
+
 /// After review of T12.59/T12.60: a meeting's two preview loaders (`backends::load_preview_with`,
 /// `load_preview_second_with`) on a CUDA track ask for the backend `backends::cuda_preview_table`
 /// gives, or refuse with its kind before loading anything, for every choice, memory and card.
@@ -2185,8 +2387,11 @@ fn live_preview_stream_paused_for_slowness_still_clears_covered_words() {
         // settles at once through the silence before it, so words finished there can be
         // covered before the thread shows them, and under load the pause then came with
         // nothing ever shown. During the burst nothing settles until its piece is decoded.
-        stream: Some(slow_stream_loader(&heard, Duration::from_millis(20), 15)),
-        slow: Duration::from_millis(4),
+        // The slow pushes are far above the threshold and every other push far below it, so a
+        // busy host cannot make three ordinary pushes in a row count as slow (T12.70: at 4 ms
+        // against 20 ms it could, as the neighbouring test found at 4 ms).
+        stream: Some(slow_stream_loader(&heard, Duration::from_millis(250), 15)),
+        slow: Duration::from_millis(200),
         slow_pause: Duration::from_secs(600),
         ..previews(loader(&seen, marker_words))
     };
@@ -3195,6 +3400,91 @@ fn wait_for(flag: &AtomicBool) {
     while !flag.load(Ordering::SeqCst) && Instant::now() < limit {
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// Mains until the preview thread is loading; then holds the session (one supply read) until the
+/// thread has sent `Running`, and says battery from then on.
+struct BatteryOnceRunningIsQueued {
+    loading: Arc<AtomicBool>,
+    holding: Arc<AtomicBool>,
+    running_sent: Arc<AtomicBool>,
+}
+
+impl PowerSource for BatteryOnceRunningIsQueued {
+    fn supply(&self) -> PowerSupply {
+        if !self.loading.load(Ordering::SeqCst) {
+            return PowerSupply::Mains;
+        }
+        self.holding.store(true, Ordering::SeqCst);
+        wait_for(&self.running_sent);
+        assert!(
+            self.running_sent.load(Ordering::SeqCst),
+            "the thread never said it runs"
+        );
+        PowerSupply::Battery
+    }
+}
+
+/// T12.70: a `Running` the thread sent but the session had not read when the battery paused the
+/// previews is still said, before the battery. The thread's load waits until a supply read holds
+/// the session, and that read holds it until `Running` is queued: the pause that follows always
+/// finds it unread, so the order is forced, not timed.
+#[test]
+fn live_preview_a_pause_says_a_running_state_it_found_unread() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let flag = || Arc::new(AtomicBool::new(false));
+    let (loading, holding, running_sent) = (flag(), flag(), flag());
+    let load: PreviewLoader = {
+        let (seen, loading, holding) = (
+            Arc::clone(&seen),
+            Arc::clone(&loading),
+            Arc::clone(&holding),
+        );
+        Arc::new(move |on| {
+            loading.store(true, Ordering::SeqCst);
+            wait_for(&holding);
+            assert!(
+                holding.load(Ordering::SeqCst),
+                "the session never read the supply"
+            );
+            Ok(fake_session_on(&seen, on))
+        })
+    };
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let config = LiveConfig {
+        power: PowerProbe::new(BatteryOnceRunningIsQueued {
+            loading,
+            holding,
+            running_sent: Arc::clone(&running_sent),
+        }),
+        // Read on every look, before the thread's messages are.
+        power_poll: Duration::ZERO,
+        ..config_with(Some(LivePreviews {
+            test_hooks: TestHooks {
+                running_sent: Some(running_sent),
+                ..TestHooks::default()
+            },
+            ..previews(load)
+        }))
+    };
+    let session = start_live(
+        fast_source(&scene),
+        svc.clone(),
+        config,
+        Some(factory_of(&scene, Arc::default())),
+        Box::new(ChaCha8Rng::seed_from_u64(335)),
+    )
+    .unwrap();
+    let (events, _) = collect(session);
+    assert_eq!(
+        states_of(&events),
+        vec![
+            (TrackId::Reference, None),
+            (TrackId::Reference, Some(PreviewOffReason::OnBattery)),
+        ]
+    );
 }
 
 /// T12.37 review: a paused thread that does not stop (a decode that never returns) does not keep

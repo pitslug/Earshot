@@ -158,10 +158,8 @@ impl RunKey {
     /// # Errors
     /// `autostart` when the Windows folder is unknown.
     pub fn new(key: &str, name: &str, exe: &Path) -> Result<Self, IpcError> {
-        let windows = std::env::var_os("SystemRoot")
-            .ok_or_else(|| autostart_error("the Windows folder is unknown (SystemRoot)"))?;
         Ok(Self {
-            reg: PathBuf::from(windows).join("System32").join("reg.exe"),
+            reg: system_reg_exe(std::env::var_os("SystemRoot"))?,
             key: key.into(),
             name: name.into(),
             command: run_command(exe),
@@ -207,13 +205,18 @@ pub fn run_reg(
     args: &[&str],
     failure: &'static str,
 ) -> Result<earshot_proc::ChildOutput, IpcError> {
-    let windows = std::env::var_os("SystemRoot")
-        .ok_or_else(|| autostart_error("the Windows folder is unknown (SystemRoot)"))?;
     reg_at(
-        &PathBuf::from(windows).join("System32").join("reg.exe"),
+        &system_reg_exe(std::env::var_os("SystemRoot"))?,
         args,
         failure,
     )
+}
+
+/// The system's `reg.exe` under `windows` (the `SystemRoot` variable); an unknown folder is fixed
+/// copy, never the variable's name (T12.70).
+fn system_reg_exe(windows: Option<OsString>) -> Result<PathBuf, IpcError> {
+    let windows = windows.ok_or_else(|| autostart_error(crate::plain_text::NO_WINDOWS_FOLDER))?;
+    Ok(PathBuf::from(windows).join("System32").join("reg.exe"))
 }
 
 impl Autostart for RunKey {
@@ -500,6 +503,24 @@ mod tests {
         assert_eq!(
             (e.kind.as_str(), e.message.as_str()),
             ("autostart", NO_PROGRAM_FILE)
+        );
+    }
+
+    /// T12.70: an unknown Windows folder is fixed copy, never the variable's name.
+    #[test]
+    fn general_an_unknown_windows_folder_is_fixed_copy_without_the_variables_name() {
+        let e = system_reg_exe(None).unwrap_err();
+        assert_eq!(
+            (e.kind.as_str(), e.message.as_str()),
+            ("autostart", crate::plain_text::NO_WINDOWS_FOLDER)
+        );
+        assert!(!crate::plain_text::names_developer_tool(&e.message));
+        assert!(!e.message.contains("SystemRoot"), "{}", e.message);
+        assert_eq!(
+            system_reg_exe(Some(OsString::from("C:\\Windows"))).unwrap(),
+            PathBuf::from("C:\\Windows")
+                .join("System32")
+                .join("reg.exe")
         );
     }
 

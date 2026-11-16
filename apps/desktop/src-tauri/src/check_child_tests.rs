@@ -211,9 +211,12 @@ fn model_check_an_unreadable_line_is_a_failure_not_a_panic() {
         // Fixed copy: serde's words (which quote the line) never reach the page (T12.56).
         assert_eq!(e.message, UNREADABLE_LINE, "{line}");
     }
-    // A model the runtime does not know.
+    // A model the runtime does not know: fixed copy too, never the name the child wrote (T12.70).
     let (r, _) = read(&DONE.replace("large-v3-turbo", "whisper-v9"));
-    assert!(r.unwrap_err().message.contains("unknown model"));
+    let e = r.unwrap_err();
+    assert!(e.retryable);
+    assert_eq!(e.message, UNREADABLE_LINE);
+    assert!(!e.message.contains("whisper-v9"), "{}", e.message);
     // Anything after the final line.
     let (r, _) = read(&[DONE, WARNING].join("\n"));
     assert!(r.unwrap_err().message.contains("after its last line"));
