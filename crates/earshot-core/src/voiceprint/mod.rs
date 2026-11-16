@@ -714,6 +714,23 @@ pub fn match_embedding_with_report<Repo: VoiceprintRepo + ?Sized>(
     embedding: &Embedding,
     threshold: f32,
 ) -> Result<MatchReport, VoiceprintError> {
+    match_embedding_with_margin(repo, embedding, threshold, 0.0)
+}
+
+/// [`match_embedding_with_report`] with a margin (T12.67): the best person is `Known` only if
+/// its score also exceeds the runner-up person's by at least `margin` (with no runner-up no
+/// margin is needed); otherwise the outcome is `Unknown` with the best person. A margin of 0
+/// is [`match_embedding_with_report`] exactly. A model's margin comes from
+/// [`calibrated_margin`].
+///
+/// # Errors
+/// As [`match_embedding_with_report`].
+pub fn match_embedding_with_margin<Repo: VoiceprintRepo + ?Sized>(
+    repo: &Repo,
+    embedding: &Embedding,
+    threshold: f32,
+    margin: f32,
+) -> Result<MatchReport, VoiceprintError> {
     if !embedding.is_valid() {
         return Err(DiarError::Shape("embedding is non-finite or all zeros".to_owned()).into());
     }
@@ -734,13 +751,23 @@ pub fn match_embedding_with_report<Repo: VoiceprintRepo + ?Sized>(
         *e = e.max(s);
     }
     let top = best
-        .into_iter()
-        .fold(None::<(EntityId, f32)>, |acc, (p, s)| match acc {
+        .iter()
+        .fold(None::<(EntityId, f32)>, |acc, (&p, &s)| match acc {
             Some((_, bs)) if bs >= s => acc,
             _ => Some((p, s)),
         });
+    let runner_up = top.and_then(|(winner, _)| {
+        best.iter()
+            .filter(|(p, _)| **p != winner)
+            .map(|(_, s)| *s)
+            .max_by(f32::total_cmp)
+    });
     let outcome = match top {
-        Some((person, score)) if score >= threshold => MatchOutcome::Known { person, score },
+        Some((person, score))
+            if score >= threshold && runner_up.is_none_or(|r| score - r >= margin) =>
+        {
+            MatchOutcome::Known { person, score }
+        }
         other => MatchOutcome::Unknown { best: other },
     };
     Ok(MatchReport {
@@ -780,6 +807,45 @@ pub const CALIBRATED_THRESHOLDS: &[CalibratedThreshold] = &[CalibratedThreshold 
 /// [`CALIBRATED_THRESHOLDS`]). Dev-clean at this value: unknown false accepts 3/120 (2.5%),
 /// known clips top-1 120/120, top-1 and accepted 119/120.
 pub const CAMPPLUS_DEV_CLEAN_THRESHOLD: f32 = 0.461_961_03;
+
+/// A margin over the runner-up person ([`match_embedding_with_margin`]) chosen on dev meeting
+/// audio for one exact embedding model (T12.67).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CalibratedMargin {
+    /// Exact [`EmbeddingModelId`] string.
+    pub model: &'static str,
+    /// Cosine margin.
+    pub margin: f32,
+    /// How it was obtained.
+    pub source: &'static str,
+}
+
+/// Margins chosen by the rule in `docs/voiceprint-meetings.md` on AMI dev meetings (never an
+/// acceptance meeting), measured by `cargo run --release -p earshot-runtime --example
+/// vp_meetings -- <repo> --models <dir>`.
+pub const CALIBRATED_MARGINS: &[CalibratedMargin] = &[CalibratedMargin {
+    model: "campplus-en-voxceleb@357a834f702b",
+    margin: CAMPPLUS_MEETING_MARGIN,
+    source: "T12.67 rule (docs/voiceprint-meetings.md): AMI dev series, enrolled from each \
+             first meeting's diarised centroids, 40 voices of the second and third meetings; \
+             the smallest margin on 0.00-0.20 step 0.02 with false accepts <= 5% in both \
+             conditions at the 0.462 threshold",
+}];
+
+/// The CAM++ VoxCeleb margin (see [`CALIBRATED_MARGINS`]), measured 2026-11-16: at 0.08 the
+/// meetings' unknown voices were named 1/40 times (20% with no margin) and known voices wrongly
+/// 1/40 (2/40), with no known voice missed (0/38 either way).
+pub const CAMPPLUS_MEETING_MARGIN: f32 = 0.08;
+
+/// The margin chosen for `model`, or `None` if it has none (it is then matched by its threshold
+/// alone).
+#[must_use]
+pub fn calibrated_margin(model: &EmbeddingModelId) -> Option<f32> {
+    CALIBRATED_MARGINS
+        .iter()
+        .find(|c| c.model == model.as_str())
+        .map(|c| c.margin)
+}
 
 /// The calibrated open-set threshold for `model`.
 ///

@@ -56,7 +56,8 @@
 //!   `enrol` utterance (>= 10 s per speaker) whole and enrols them with core
 //!   `voiceprint::enroll` (`EnrolmentConfig::default()`); test clips are the centre 2.5 s of
 //!   each of a speaker's 3 `test` utterances. Each clip is matched open-set with core
-//!   `voiceprint::match_embedding` at the calibrated threshold, as production matches.
+//!   `voiceprint::match_embedding_with_margin` at the calibrated threshold and margin
+//!   (`PostConfig::voiceprint_margin`, T12.67), as production matches.
 //!   `vp.top1` = enrolled speakers' clips matched `Known` as their own person / all enrolled
 //!   speakers' clips (a correct best match below the threshold is a miss); the closed-set
 //!   top-1 (best score only) is reported for information. `vp.false_accept` = unknown
@@ -77,7 +78,8 @@ use earshot_core::diar::{Diarizer, Embedding, SpeakerEmbedder, SpeakerSegmenter}
 use earshot_core::identity::{DeviceId, EntityId, Hlc, ManualClock};
 use earshot_core::metrics::der::{AMI_COLLAR_PER_SIDE_S, DerConfig, DerResult, Turn, der};
 use earshot_core::voiceprint::{
-    InMemoryVoiceprintRepo, MatchOutcome, Person, Stamp, VoiceprintRepo, enroll, match_embedding,
+    InMemoryVoiceprintRepo, MatchOutcome, Person, Stamp, VoiceprintRepo, enroll,
+    match_embedding_with_margin,
 };
 use earshot_onnx::embed::CamppEmbedder;
 use earshot_onnx::segment::PyannoteSegmenter;
@@ -655,6 +657,7 @@ fn eval_voiceprints(
     utts: &[Utt],
     speakers: &[u32],
     threshold: f32,
+    margin: f32,
 ) -> (VpTally, Vec<Value>) {
     let cancel = CancelToken::new();
     let embedded: Vec<VpSpeaker> = speakers
@@ -733,14 +736,16 @@ fn eval_voiceprints(
                 .map(|(_, p)| *p)
                 .unwrap_or_else(|| fail("enrolled person missing"));
             for t in &s.tests {
-                let o = match_embedding(&repo, t, threshold)
+                let o = match_embedding_with_margin(&repo, t, threshold, margin)
+                    .map(|r| r.outcome)
                     .unwrap_or_else(|e| fail(format!("match: {e}")));
                 tally.add_known(me, &o);
             }
         }
         for s in unknown {
             for t in &s.tests {
-                let o = match_embedding(&repo, t, threshold)
+                let o = match_embedding_with_margin(&repo, t, threshold, margin)
+                    .map(|r| r.outcome)
                     .unwrap_or_else(|e| fail(format!("match: {e}")));
                 tally.add_unknown(&o);
             }
@@ -787,8 +792,10 @@ fn main() {
     let vp_threshold = post
         .voiceprint_threshold(&model)
         .unwrap_or_else(|e| fail(e));
+    let vp_margin = post.voiceprint_margin(&model);
     let mut config = post.diarization.clone();
     config.clustering.threshold = cluster_threshold;
+    config.clustering.unassigned_floor = post.unassigned_floor(&model).unwrap_or_else(|e| fail(e));
     let mut d = Diarizer::new(segmenter, embedder, config.clone()).unwrap_or_else(|e| fail(e));
 
     // AMI DER and count.
@@ -871,6 +878,7 @@ fn main() {
         &utts,
         &speakers,
         vp_threshold,
+        vp_margin,
     );
     let tally_json = json!({
         "known": tally.known, "known_correct": tally.known_correct,
@@ -917,6 +925,7 @@ fn main() {
         "embedding_model": model.as_str(),
         "cluster_threshold": cluster_threshold,
         "voiceprint_threshold": vp_threshold,
+        "voiceprint_margin": vp_margin,
         "diarization_config": format!("{config:?}"),
         "ami": ami.iter().map(|r| r.1.clone()).collect::<Vec<_>>(),
         "synthetic": {

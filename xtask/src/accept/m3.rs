@@ -31,7 +31,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail, ensure};
 use earshot_core::diar::EmbeddingModelId;
 use earshot_core::diar::cluster::calibrated_cluster_threshold;
-use earshot_core::voiceprint::calibrated_threshold;
+use earshot_core::voiceprint::{calibrated_margin, calibrated_threshold};
 use serde_json::Value;
 
 use super::{Check, Ctx, Measurement, RunOutput};
@@ -237,6 +237,8 @@ pub fn evaluate(json: &Value) -> Result<RunOutput> {
     // comparison is in f32.
     let cluster = num(json, "cluster_threshold", "report")? as f32;
     let vp = num(json, "voiceprint_threshold", "report")? as f32;
+    let margin = num(json, "voiceprint_margin", "report")? as f32;
+    let want_margin = calibrated_margin(&id).unwrap_or(0.0);
     let want_cluster = calibrated_cluster_threshold(&id);
     let want_vp = calibrated_threshold(&id).ok();
     let sessions = json["placement"]
@@ -271,6 +273,11 @@ pub fn evaluate(json: &Value) -> Result<RunOutput> {
         "voiceprint threshold is the dev-clean calibration for the embedding model",
         want_vp == Some(vp),
         format!("{model}: used {vp}, calibrated {want_vp:?}"),
+    ));
+    checks.push(Check::new(
+        "voiceprint margin is the one chosen for the embedding model (T12.67)",
+        want_margin == margin,
+        format!("{model}: used {margin}, chosen {want_margin}"),
     ));
     checks.push(Check::new(
         "speaker models on the CPU (ONNX Runtime node placement)",
@@ -646,6 +653,7 @@ mod tests {
             ],
             "cluster_threshold": f64::from(earshot_core::diar::cluster::CAMPPLUS_DEV_CLEAN_CLUSTER_THRESHOLD),
             "voiceprint_threshold": f64::from(earshot_core::voiceprint::CAMPPLUS_DEV_CLEAN_THRESHOLD),
+            "voiceprint_margin": f64::from(earshot_core::voiceprint::CAMPPLUS_MEETING_MARGIN),
             "ami": ami,
             "synthetic": {"der_percent": 10.0, "speakers": [1, 2], "scenes": scenes},
             "voiceprints": {"folds": [{"fold": 0, "enrolled": [1], "unknown": [2]},
@@ -952,10 +960,17 @@ mod tests {
             failing(&j),
             ["voiceprint threshold is the dev-clean calibration for the embedding model"]
         );
-        // An uncalibrated model fails both.
+        let mut j = sample();
+        j["voiceprint_margin"] = json!(0.0);
+        assert_eq!(
+            failing(&j),
+            ["voiceprint margin is the one chosen for the embedding model (T12.67)"]
+        );
+        // An uncalibrated model fails both thresholds, and its margin (none) is not the
+        // sample's.
         let mut j = sample();
         j["embedding_model"] = json!("other@1");
-        assert_eq!(failing(&j).len(), 2);
+        assert_eq!(failing(&j).len(), 3);
         // A session placed elsewhere.
         let mut j = sample();
         j["placement"][1]["placement"] = json!("requested cuda, placed: CUDAExecutionProvider=20");

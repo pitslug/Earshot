@@ -61,4 +61,32 @@ The **miss cost**: M at the candidate is at most M(shipped) + 0.10.
 
 ## Result
 
-(Filled in after the run.)
+Everything above was committed (440b59d) before the test meetings were fetched or the tool written. Raw report: `voiceprint-meetings.json` (the tool's output). One run on the CPU, CAM++ `campplus-en-voxceleb@357a834f702b`, clustering threshold 0.68, unassigned floor -1. 19 of the 20 dev speakers were enrolled (one had no found speaker in its first meeting that was both its home and owned by it, or too little speech for a voiceprint); 40 trials (every found speaker of the ten test meetings). The tool's naming at the shipped threshold equalled `match_embedding` on every trial.
+
+**The shipped rule fails the false-accept requirement on meeting audio.** With nobody of the meeting stored, a voice was still named someone 8 times in 40 (FA 0.20, against 0.025 on dev-clean clips); with everyone stored, 2 of 40 voices got another person's name (W 0.05) and every voice whose person was stored got its own name (M 0 of 38). The known condition also has 2 mixed events (two voices of one meeting given one person with different owners) and no split.
+
+| rule | FA (unknown) | W (known) | M (known) | correct | mixed events |
+|---|---|---|---|---|---|
+| shipped, 0.462 | 0.200 (8/40) | 0.050 (2/40) | 0 (0/38) | 38 | 2 |
+| A 0.50 | 0.150 | 0.050 | 0 | 38 | 2 |
+| A 0.52 | 0.075 | 0.050 | 0 | 38 | 2 |
+| **A 0.56 (pick)** | 0.025 (1/40) | 0.050 (2/40) | 0 | 38 | 2 |
+| A 0.58 | 0 | 0.025 | 0 | 38 | 1 |
+| A 0.60-0.80 | 0 | 0 | 0 | 38 | 0 |
+| B m 0.02 | 0.125 | 0.050 | 0 | 38 | 2 |
+| B m 0.04 | 0.075 | 0.050 | 0 | 38 | 2 |
+| B m 0.06 | 0.075 | 0.025 | 0 | 38 | 1 |
+| **B m 0.08 (pick)** | 0.025 (1/40) | 0.025 (1/40) | 0 | 38 | 1 |
+| B m 0.12-0.20 | 0 | 0 | 0 | 38 | 0 |
+| C | 0.175 | 0.050 | 0 | 38 | 2 |
+
+- **A picks 0.56**, the lowest grid threshold above 0.462 meeting the requirement within the miss cost. A threshold move is the owner's decision (AGENTS 6.2): it is reported here, not shipped; `CAMPPLUS_DEV_CLEAN_THRESHOLD` stays 0.462.
+- **B picks a margin of 0.08** and ships (rule step 4): `voiceprint::CAMPPLUS_MEETING_MARGIN`, applied by `match_embedding_with_margin` in the final pass's naming and in `accept m3`'s `vp.*` protocol. Rule step 3 (`vp.top1`, `vp.false_accept` unchanged thresholds) is below.
+- **C does not pass**: in the known condition it removes no name (the two voices of each mixed event score at least 0.462 against each other, so C reads them as one voice split in two), so mixed events do not fall. In the unknown condition it removes one false accept (0.175).
+- Every candidate costs no miss here: all 38 known voices score far above any of these settings against their own person. The miss cost never binds on this data.
+
+How far this goes: forty voices, so one trial is 2.5 points; the margin's win over the shipped rule is 7 false accepts fewer in 40 in the unknown condition and 1 fewer wrong name in the known one. Close-talking mixes of one corpus; impostors are other AMI dev participants. The margin also applies to the user's own person (a mic voice is named the user only when clear of the runner-up), which this data does not test, because no user is enrolled here.
+
+**Rule step 3 holds** with the margin in place (`cargo xtask accept m3`): `vp.top1` 100% (unchanged) and `vp.false_accept` 1.67% (2.5% before; 2 of 120 unknown clips accepted instead of 3), thresholds unchanged; the DER and count measurements are unchanged.
+
+Reproduction: `vp_meetings` fails if the margin it picks differs from `CAMPPLUS_MEETING_MARGIN` (that check was added after this run, changing nothing the tool computes; a re-run passed it).

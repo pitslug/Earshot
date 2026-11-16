@@ -467,6 +467,7 @@ fn post_rerun_with_another_embedding_model_carries_nothing_and_says_so() {
                 .with(EmbeddingModelId::new(OTHER), 0.704_565_5),
             unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(OTHER), -1.0),
             voiceprint_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(OTHER), 0.5),
+            voiceprint_margins: ModelThresholds::new(),
             ..config()
         },
     )
@@ -592,6 +593,7 @@ fn post_rerun_as_a_whole_pass_through_flac_keeps_the_renamed_speaker() {
                 clustering_thresholds: ModelThresholds::new().with(model.clone(), 0.704_565_5),
                 unassigned_floors: ModelThresholds::new().with(model.clone(), -1.0),
                 voiceprint_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
+                voiceprint_margins: ModelThresholds::new(),
                 reuse_live,
                 ..PostConfig::default()
             },

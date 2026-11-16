@@ -80,6 +80,7 @@ fn config() -> PostConfig {
             .with(EmbeddingModelId::new(MODEL), 0.704_565_5),
         unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.5),
+        voiceprint_margins: ModelThresholds::new(),
         enroll_me: true,
         enrolment: EnrolmentConfig::default(),
         reuse_live: true,
@@ -343,6 +344,7 @@ fn post_without_calibration_is_an_error_at_construction() {
     ));
     let missing_voiceprint = PostConfig {
         voiceprint_thresholds: ModelThresholds::new(),
+        voiceprint_margins: ModelThresholds::new(),
         ..config()
     };
     assert!(matches!(
@@ -1267,6 +1269,7 @@ fn post_round_trip_from_a_live_session_through_flac() {
         clustering_thresholds: ModelThresholds::new().with(model.clone(), 0.704_565_5),
         unassigned_floors: ModelThresholds::new().with(model.clone(), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
+        voiceprint_margins: ModelThresholds::new(),
         ..PostConfig::default()
     };
     let mut post = PostProcessor::new(
@@ -1421,6 +1424,7 @@ fn post_in_room_session_stores_one_track_and_names_me_by_voiceprint_only() {
                 clustering_thresholds: ModelThresholds::new().with(model.clone(), 0.704_565_5),
                 unassigned_floors: ModelThresholds::new().with(model.clone(), -1.0),
                 voiceprint_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
+                voiceprint_margins: ModelThresholds::new(),
                 enroll_me: false,
                 ..PostConfig::default()
             },
@@ -1783,6 +1787,7 @@ fn echo_config(model: &str) -> PostConfig {
             .with(EmbeddingModelId::new(model), 0.704_565_5),
         unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(model), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(model), 0.5),
+        voiceprint_margins: ModelThresholds::new(),
         enroll_me: false,
         ..config()
     }
@@ -3887,4 +3892,93 @@ fn post_an_unknown_speaker_line_is_given_a_speaker_through_edit() {
         crate::edit::assign_line_speaker(&svc, meeting, aside, mic_speaker.speaker_id.unwrap()),
         Err(RuntimeError::Edit(crate::edit::EditError::LineHasSpeaker(id))) if id == aside
     ));
+}
+
+#[test]
+fn post_a_voice_close_to_two_people_is_named_only_with_a_clear_margin() {
+    // T12.67: the far-end voice of scene speaker 1 scores about 1.0 against Alex and about
+    // 0.95 against Blair. With no margin (a model without one) it is Alex; with a 0.1 margin
+    // over the runner-up it is left a "Speaker N".
+    let run = |margins: ModelThresholds| {
+        let dir = TempDir::new();
+        let svc = services(&dir);
+        let alex = enroll_person(&svc, "Alex", false, 1);
+        {
+            let clock = ManualClock::new(1_760_000_000_000);
+            let mut rng = ChaCha8Rng::seed_from_u64(77);
+            let mut db = svc.store();
+            let (store, hlc) = db.parts();
+            let mut stamp = Stamp {
+                clock: &clock,
+                hlc,
+                rng: &mut rng,
+            };
+            let p = Person::new("Blair", false, &mut stamp);
+            store.put_person(p.clone()).unwrap();
+            let mut v = centroid(1);
+            v[1] = 0.95;
+            v[7] = 0.31;
+            let e = earshot_core::diar::Embedding::new(EmbeddingModelId::new(MODEL), v);
+            enroll(
+                &mut *store,
+                p.id,
+                &[e],
+                Duration::from_secs(20),
+                &EnrolmentConfig::default(),
+                &mut stamp,
+            )
+            .unwrap();
+        }
+        let (meeting, mic, them) = meeting_rows(&svc);
+        let (mic_audio, them_audio) = scene();
+        let mut post = PostProcessor::new(
+            transcriber(),
+            FakeSegmenter::segmentation_3_0(),
+            embedder(),
+            PostConfig {
+                voiceprint_margins: margins,
+                ..config()
+            },
+        )
+        .unwrap();
+        let outcome = post
+            .run(
+                &svc,
+                PostInput {
+                    echo_locks: Vec::new(),
+                    echo_locks_unreadable: false,
+                    meeting,
+                    tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+                },
+                &mut ChaCha8Rng::seed_from_u64(95),
+                &CancelToken::new(),
+            )
+            .unwrap();
+        let far: Vec<(String, Option<EntityId>)> = outcome
+            .speakers
+            .iter()
+            .filter(|s| s.role == SpeakerRole::Remote)
+            .map(|s| (s.display_name.clone(), s.person))
+            .collect();
+        (far, alex)
+    };
+    let (far, alex) = run(ModelThresholds::new());
+    assert!(far.contains(&("Alex".to_owned(), Some(alex))), "{far:?}");
+    let (far, _) = run(ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.1));
+    assert!(far.iter().all(|(_, p)| p.is_none()), "{far:?}");
+    assert!(
+        far.iter().all(|(n, _)| n.starts_with("Speaker ")),
+        "{far:?}"
+    );
+    // The shipped CAM++ margin comes from the core choice; another model has none.
+    let defaults = PostConfig::default();
+    let campp = EmbeddingModelId::new("campplus-en-voxceleb@357a834f702b");
+    assert_eq!(
+        Some(defaults.voiceprint_margin(&campp)),
+        earshot_core::voiceprint::calibrated_margin(&campp)
+    );
+    assert_eq!(
+        defaults.voiceprint_margin(&EmbeddingModelId::new("unknown@1")),
+        0.0
+    );
 }

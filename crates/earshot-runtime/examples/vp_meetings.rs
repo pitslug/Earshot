@@ -635,6 +635,13 @@ fn main() {
     if let Some(out) = &out {
         std::fs::write(out, &text).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
     }
+    // The shipped margin must be what the rule picks here (the reproduction check).
+    let shipped_margin = earshot_core::voiceprint::calibrated_margin(&model).unwrap_or(0.0);
+    if pick_b.unwrap_or(0.0) != shipped_margin {
+        fail(format!(
+            "the rule picks margin {pick_b:?}, the shipped margin is {shipped_margin}"
+        ));
+    }
 }
 
 #[cfg(test)]

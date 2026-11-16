@@ -1,9 +1,9 @@
 {
   "milestone": "m3",
   "requested_backend": null,
-  "timestamp": "2026-11-16T12:42:00Z",
+  "timestamp": "2026-11-16T13:39:09Z",
   "host": "x86_64-pc-windows-msvc",
-  "commit": "440b59d-dirty",
+  "commit": "6d9abc2-dirty",
   "backends": [
     "cpu"
   ],
@@ -62,11 +62,11 @@
       "op": "<=",
       "threshold": 5.0,
       "unit": "%",
-      "value": 2.5,
+      "value": 1.6666666666666667,
       "passed": null,
       "backend": "cpu",
       "pass": true,
-      "reason": "2.5 <= 5"
+      "reason": "1.6666666666666667 <= 5"
     },
     {
       "id": "vp.top1",
@@ -91,6 +91,11 @@
       "name": "voiceprint threshold is the dev-clean calibration for the embedding model",
       "pass": true,
       "detail": "campplus-en-voxceleb@357a834f702b: used 0.46196103, calibrated Some(0.46196103)"
+    },
+    {
+      "name": "voiceprint margin is the one chosen for the embedding model (T12.67)",
+      "pass": true,
+      "detail": "campplus-en-voxceleb@357a834f702b: used 0.08, chosen 0.08"
     },
     {
       "name": "speaker models on the CPU (ONNX Runtime node placement)",
@@ -120,7 +125,7 @@
     {
       "name": "vp.* tallies (test-clean, 2 folds of 20 enrolled / 20 unknown, 2.5 s clips)",
       "pass": true,
-      "detail": "threshold 0.46196103; enrolled clips matched to their own person 120/120, to another person 0, rejected as unknown 0 (closed-set top-1 120/120); unknown clips accepted 3/120; folds 0: enrolled [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729] unknown [4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555]; 1: enrolled [4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555] unknown [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729]"
+      "detail": "threshold 0.46196103; enrolled clips matched to their own person 120/120, to another person 0, rejected as unknown 0 (closed-set top-1 120/120); unknown clips accepted 2/120; folds 0: enrolled [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729] unknown [4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555]; 1: enrolled [4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555] unknown [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729]"
     }
   ],
   "pass": true

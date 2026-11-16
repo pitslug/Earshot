@@ -319,6 +319,7 @@ fn processor<T: Transcriber + Send>(
         clustering_thresholds: ModelThresholds::new().with(id.clone(), 0.704_565_5),
         unassigned_floors: ModelThresholds::new().with(id.clone(), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(id.clone(), 0.5),
+        voiceprint_margins: ModelThresholds::new(),
         ..PostConfig::default()
     };
     PostProcessor::new(
@@ -1331,6 +1332,7 @@ fn speaker_processor(
         clustering_thresholds: ModelThresholds::new().with(id.clone(), 0.704_565_5),
         unassigned_floors: ModelThresholds::new().with(id.clone(), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(id, 0.5),
+        voiceprint_margins: ModelThresholds::new(),
         ..PostConfig::default()
     };
     cfg.diarization.onset = onset;
@@ -1854,6 +1856,7 @@ fn post_failed_or_cancelled_final_pass_keeps_the_live_records() {
         clustering_thresholds: ModelThresholds::new().with(id.clone(), 0.704_565_5),
         unassigned_floors: ModelThresholds::new().with(id.clone(), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(id, 0.5),
+        voiceprint_margins: ModelThresholds::new(),
         ..PostConfig::default()
     };
     let failing: BoxEmb = Box::new(FailingAfter {

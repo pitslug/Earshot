@@ -90,7 +90,9 @@
 //!    remote speakers on the loopback), also when only one of them is processed now;
 //!    [`in_person`] for a single-track meeting, on that track.
 //! 4. **Naming**: stored voiceprints are loaded once and every speaker's centroid is
-//!    matched against them ([`match_embedding_with_report`]). A known person gives the
+//!    matched against them ([`match_embedding_with_margin`]: the calibrated threshold and,
+//!    since T12.67, a margin over the runner-up person, [`PostConfig::voiceprint_margin`]).
+//!    A known person gives the
 //!    speaker their name. Among several mic voices ([`SpeakerRole::Local`], or the
 //!    [`SpeakerRole::Room`] voices of an in-person meeting recorded on the mic, T6.27), the
 //!    one that best matches the user becomes "Me" (the promotion is made in the diarisation
@@ -194,7 +196,7 @@ use earshot_core::model::{
 use earshot_core::pipeline::FinalPassRequest;
 use earshot_core::voiceprint::{
     EnrolmentConfig, InMemoryVoiceprintRepo, MatchOutcome, VoiceprintError, VoiceprintRepo,
-    calibrated_threshold, enroll_me, match_embedding_with_report, me_person,
+    calibrated_margin, calibrated_threshold, enroll_me, match_embedding_with_margin, me_person,
 };
 use earshot_store::read_flac;
 use rand_core::Rng;
@@ -276,6 +278,9 @@ pub struct PostConfig {
     /// Voiceprint match thresholds that override the core calibration (tests, a newly
     /// calibrated model). Default: empty.
     pub voiceprint_thresholds: ModelThresholds,
+    /// Voiceprint margins over the runner-up person that override the core choice (tests, a
+    /// newly measured model, T12.67). Default: empty.
+    pub voiceprint_margins: ModelThresholds,
     /// Store the user's voiceprint from the "Me" speaker. Default off: voiceprints are
     /// biometric data (PLAN.md 3.9), so the host turns this on after the user agrees.
     pub enroll_me: bool,
@@ -299,6 +304,7 @@ impl Default for PostConfig {
             clustering_thresholds: ModelThresholds::new(),
             unassigned_floors: ModelThresholds::new(),
             voiceprint_thresholds: ModelThresholds::new(),
+            voiceprint_margins: ModelThresholds::new(),
             enroll_me: false,
             enrolment: EnrolmentConfig::default(),
             reuse_live: true,
@@ -322,6 +328,17 @@ impl PostConfig {
             },
             other => RuntimeError::Voiceprint(other),
         })
+    }
+
+    /// The margin a voiceprint match must hold over the runner-up person for `model` (T12.67):
+    /// an override, else the core choice ([`calibrated_margin`]), else none (0: the threshold
+    /// alone, the rule before T12.67).
+    #[must_use]
+    pub fn voiceprint_margin(&self, model: &EmbeddingModelId) -> f32 {
+        self.voiceprint_margins
+            .get(model)
+            .or_else(|| calibrated_margin(model))
+            .unwrap_or(0.0)
     }
 
     /// The clustering threshold for `model`: an override, else the core calibration
@@ -1406,6 +1423,7 @@ where
 
         // 4-5. Naming and persistence in one transaction.
         let threshold = self.voiceprint_threshold;
+        let margin = self.config.voiceprint_margin(&model);
         let config = &self.config;
         let meeting = input.meeting;
         let mut db = services.store();
@@ -1472,8 +1490,14 @@ where
                 .max()
                 .unwrap_or(0);
 
-            let mut namings =
-                self::name_speakers(&*tx, &mut meeting_diar, &model, threshold, &mut warnings)?;
+            let mut namings = self::name_speakers(
+                &*tx,
+                &mut meeting_diar,
+                &model,
+                threshold,
+                margin,
+                &mut warnings,
+            )?;
             // Neither the policy nor a voiceprint named "Me": the speaker check may, when it
             // discriminated (one mic voice passes its user test). Never enrolled from.
             let check_named_me = meeting_diar.me().is_none()
@@ -2417,6 +2441,7 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
     diar: &mut MeetingDiarization,
     model: &EmbeddingModelId,
     threshold: f32,
+    margin: f32,
     warnings: &mut Vec<PostWarning>,
 ) -> Result<Vec<Naming>, RuntimeError> {
     let vp = RuntimeError::Voiceprint;
@@ -2437,7 +2462,8 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
             matches.push(None);
             continue;
         }
-        let report = match_embedding_with_report(&snapshot, &s.centroid, threshold).map_err(vp)?;
+        let report =
+            match_embedding_with_margin(&snapshot, &s.centroid, threshold, margin).map_err(vp)?;
         if report.skipped_invalid > 0 {
             warnings.push(PostWarning::SkippedVoiceprints(report.skipped_invalid));
         }
