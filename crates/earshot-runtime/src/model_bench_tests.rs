@@ -60,16 +60,32 @@ fn model_check_bundled_clip_takes_turns_with_a_cancelled_echo() {
 
 #[test]
 fn model_check_hardware_read_reports_cores_memory_and_the_build() {
+    let failed_before = crate::backends::qnn_load_failed();
     let facts = hardware_facts();
     assert!(facts.cores >= 1);
     if cfg!(windows) {
         assert!(facts.memory > 1 << 30 && facts.memory < u64::MAX);
     }
     let backends: Vec<BackendKind> = facts.accelerators.iter().map(|a| a.backend).collect();
+    // An ARM64 `qnn` build lists the NPU unless this process recorded a QNN load failure
+    // (process-wide, so read on both sides of the call: a flag set in between proves nothing).
+    let qnn_listed = backends.contains(&BackendKind::Qnn);
+    let failed_after = crate::backends::qnn_load_failed();
+    if !crate::backends::NPU_BUILD {
+        assert!(!qnn_listed, "{backends:?}");
+    } else if !failed_after {
+        assert!(qnn_listed, "{backends:?}");
+    } else if failed_before {
+        assert!(!qnn_listed, "{backends:?}");
+    }
+    let others: Vec<BackendKind> = backends
+        .into_iter()
+        .filter(|b| *b != BackendKind::Qnn)
+        .collect();
     if cfg!(feature = "cuda") {
-        assert_eq!(backends, [BackendKind::Cuda]);
+        assert_eq!(others, [BackendKind::Cuda]);
     } else {
-        assert!(backends.is_empty());
+        assert!(others.is_empty(), "{others:?}");
     }
 }
 
