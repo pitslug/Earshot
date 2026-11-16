@@ -83,6 +83,7 @@ pub enum ExportSelection {
 
 fn rendered(view: &MeetingView, options: &ExportOptions) -> Result<RenderedExport, RuntimeError> {
     let attendees = view.attendees();
+    let unknown = view.unknown_speaker_lines();
     render(
         &ExportInput {
             meeting: &view.meeting,
@@ -92,6 +93,7 @@ fn rendered(view: &MeetingView, options: &ExportOptions) -> Result<RenderedExpor
             notes: &view.notes,
             summary: view.summary.as_ref().map(|s| &s.summary),
             transcript: view.pass,
+            unknown_speaker_lines: &unknown,
         },
         options,
     )
@@ -161,7 +163,7 @@ pub fn export_meeting<R: Rng + ?Sized>(
     let _lease = services.lease_meeting(meeting)?;
     let (view, device) = {
         let db = services.store();
-        (MeetingView::load(&**db, meeting)?, db.device())
+        (MeetingView::load_named(&db, meeting)?, db.device())
     };
     let view = view.ok_or(RuntimeError::Internal("no such meeting"))?;
     let note = rendered(&view, options)?;
@@ -216,7 +218,7 @@ fn export_meetings_observed<R: Rng + ?Sized>(
             continue;
         };
         // One short lock per meeting; rendering runs without it.
-        let Some(view) = MeetingView::load(&**services.store(), m.id)? else {
+        let Some(view) = MeetingView::load_named(&services.store(), m.id)? else {
             continue;
         };
         let note = rendered(&view, options)?;

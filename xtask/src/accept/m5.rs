@@ -104,6 +104,7 @@ impl ExportCase {
                 notes: &i.notes,
                 summary: i.summary.as_ref(),
                 transcript: i.transcript,
+                unknown_speaker_lines: &[],
             },
             &o,
         )

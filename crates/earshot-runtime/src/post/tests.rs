@@ -3771,7 +3771,7 @@ fn post_a_short_turn_voice_like_no_speaker_keeps_its_words_with_no_speaker() {
         assert!(seg.speaker_id.is_some(), "{word}");
     }
     // Summaries and exports name the line an unknown speaker; the speakers keep their names.
-    let view = crate::view::MeetingView::load(&**svc.store(), meeting)
+    let view = crate::view::MeetingView::load_named(&svc.store(), meeting)
         .unwrap()
         .unwrap();
     let line = view
@@ -3781,6 +3781,10 @@ fn post_a_short_turn_voice_like_no_speaker_keeps_its_words_with_no_speaker() {
         .unwrap();
     assert!(view.is_unknown_speaker(line));
     assert_eq!(view.speaker_name(line), earshot_core::diar::UNKNOWN_SPEAKER);
+    assert_eq!(
+        view.unknown_lines.iter().copied().collect::<Vec<_>>(),
+        [line.id]
+    );
     let first = view
         .segments
         .iter()
@@ -3788,6 +3792,26 @@ fn post_a_short_turn_voice_like_no_speaker_keeps_its_words_with_no_speaker() {
         .unwrap();
     assert!(!view.is_unknown_speaker(first));
     assert_eq!(view.speaker_name(first), "Speaker 1");
+    // Only a line the pass recorded is unknown: without the record a line with no speaker
+    // keeps the track's label, even beside lines that have one.
+    svc.store()
+        .delete_local_value(crate::unknown_lines::record_key(meeting).as_str())
+        .unwrap();
+    let view = crate::view::MeetingView::load_named(&svc.store(), meeting)
+        .unwrap()
+        .unwrap();
+    let line = view
+        .segments
+        .iter()
+        .find(|s| s.text.contains("aside"))
+        .unwrap();
+    assert!(!view.is_unknown_speaker(line));
+    assert_eq!(view.speaker_name(line), "Them");
+    // A plain load (no names needed) has no unknown lines.
+    let plain = crate::view::MeetingView::load(&**svc.store(), meeting)
+        .unwrap()
+        .unwrap();
+    assert!(plain.unknown_lines.is_empty());
 }
 
 #[test]
@@ -3981,4 +4005,83 @@ fn post_a_voice_close_to_two_people_is_named_only_with_a_clear_margin() {
         defaults.voiceprint_margin(&EmbeddingModelId::new("unknown@1")),
         0.0
     );
+}
+
+#[test]
+fn post_the_margin_never_costs_the_user_their_own_name() {
+    // T12.67: in the room, a voice whose best match is the user's own identity stays "Me"
+    // with another stored person within the margin; when the best match is the other person
+    // and the user is within the margin, the voice is left unnamed, as for any two people.
+    let run = |user_vector: Vec<f32>, other_vector: Vec<f32>| {
+        let dir = TempDir::new();
+        let svc = services(&dir);
+        let mut persons = Vec::new();
+        for (name, is_me, v) in [("Casey", true, user_vector), ("Alex", false, other_vector)] {
+            let clock = ManualClock::new(1_760_000_000_000);
+            let mut rng = ChaCha8Rng::seed_from_u64(if is_me { 81 } else { 82 });
+            let mut db = svc.store();
+            let (store, hlc) = db.parts();
+            let mut stamp = Stamp {
+                clock: &clock,
+                hlc,
+                rng: &mut rng,
+            };
+            let p = Person::new(name, is_me, &mut stamp);
+            store.put_person(p.clone()).unwrap();
+            let e = earshot_core::diar::Embedding::new(EmbeddingModelId::new(MODEL), v);
+            enroll(
+                &mut *store,
+                p.id,
+                &[e],
+                Duration::from_secs(20),
+                &EnrolmentConfig::default(),
+                &mut stamp,
+            )
+            .unwrap();
+            persons.push(p.id);
+        }
+        let tracks = meeting_with(&svc, &[TrackId::Mic]);
+        let (meeting, mic) = (tracks[0].meeting_id, tracks[0].clone());
+        let room = scene_audio(&[SceneTurn::new(0, 0, 20_000)], 20_000);
+        let mut post = PostProcessor::new(
+            FakeTranscriber::scripted([Ok(vec![raw(&[("one", 2_000, 2_300)])])]),
+            FakeSegmenter::segmentation_3_0(),
+            embedder(),
+            PostConfig {
+                enroll_me: false,
+                voiceprint_margins: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.1),
+                ..config()
+            },
+        )
+        .unwrap();
+        let outcome = post
+            .run(
+                &svc,
+                PostInput {
+                    echo_locks: Vec::new(),
+                    echo_locks_unreadable: false,
+                    meeting,
+                    tracks: vec![track_input(&mic, room)],
+                },
+                &mut ChaCha8Rng::seed_from_u64(83),
+                &CancelToken::new(),
+            )
+            .unwrap();
+        let s = &outcome.speakers[0];
+        (s.role, s.display_name.clone(), s.person, persons)
+    };
+    let mut near = centroid(0);
+    near[0] = 0.95;
+    near[7] = 0.31;
+    // The user is the best match, Alex within 0.05: still Me.
+    let (role, name, person, persons) = run(centroid(0), near.clone());
+    assert_eq!(
+        (role, name.as_str(), person),
+        (SpeakerRole::Me, "Casey", Some(persons[0]))
+    );
+    // Alex is the best match, the user within 0.05: nobody.
+    let (role, name, person, _) = run(near, centroid(0));
+    assert_eq!(role, SpeakerRole::Room);
+    assert_eq!(person, None);
+    assert!(name.starts_with("Speaker "), "{name}");
 }

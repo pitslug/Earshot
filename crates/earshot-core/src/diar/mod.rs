@@ -37,8 +37,8 @@ mod stream_tests;
 mod tests;
 
 pub use assign::{
-    UNKNOWN_SPEAKER, assign_words, label_segment_speakers, label_segment_speakers_unassigned,
-    label_segments,
+    UNKNOWN_SPEAKER, UnassignedLabelling, assign_words, label_segment_speakers,
+    label_segment_speakers_unassigned, label_segments,
 };
 pub use cluster::{Clustering, ClusteringConfig, cluster_embeddings};
 pub use echo::{

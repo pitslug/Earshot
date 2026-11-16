@@ -838,7 +838,9 @@ pub const CALIBRATED_MARGINS: &[CalibratedMargin] = &[CalibratedMargin {
 pub const CAMPPLUS_MEETING_MARGIN: f32 = 0.08;
 
 /// The margin chosen for `model`, or `None` if it has none (it is then matched by its threshold
-/// alone).
+/// alone). A margin acts only when two or more persons are stored (with one there is no
+/// runner-up), and the final pass never lets it take the user's own name away (a best match
+/// to the user's identity at the threshold stands).
 #[must_use]
 pub fn calibrated_margin(model: &EmbeddingModelId) -> Option<f32> {
     CALIBRATED_MARGINS

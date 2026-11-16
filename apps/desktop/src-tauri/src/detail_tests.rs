@@ -624,6 +624,23 @@ fn detail_a_line_with_no_speaker_is_an_unknown_speaker_the_user_can_assign() {
             .unwrap();
         row.segment.speaker_id = None;
         store.put_segment(row).unwrap();
+        // And recorded as left unassigned, as the final pass records it.
+        let ids = [f.segments[2]].into_iter().collect();
+        store
+            .set_local_value(
+                &format!("unknown-lines/{}", f.meeting),
+                &earshot_runtime::unknown_lines::encode(&ids).unwrap(),
+            )
+            .unwrap();
+        // A line with no speaker the pass did not record keeps its track's label.
+        let mut other = store
+            .segments(f.meeting)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.segment.id == f.segments[1])
+            .unwrap();
+        other.segment.speaker_id = None;
+        store.put_segment(other).unwrap();
     }
     let d = meeting_detail(&svc, f.meeting).unwrap();
     let row = &d.transcript[2];
@@ -631,6 +648,8 @@ fn detail_a_line_with_no_speaker_is_an_unknown_speaker_the_user_can_assign() {
     assert_eq!(row.speaker, earshot_core::diar::UNKNOWN_SPEAKER);
     assert_eq!(row.speaker_id, None);
     assert_eq!(d.transcript.iter().filter(|r| r.unknown_speaker).count(), 1);
+    assert!(!d.transcript[1].unknown_speaker);
+    assert_eq!(d.transcript[1].speaker, "Them");
 
     assert!(edit::assign_line_speaker(&svc, f.meeting, f.segments[2], f.priya).unwrap());
     let d = meeting_detail(&svc, f.meeting).unwrap();

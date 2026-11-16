@@ -57,6 +57,10 @@ pub struct ExportInput<'a> {
     /// yet processed after recording, written `transcript: draft` so it is visibly not the
     /// final text); `None` without a transcript.
     pub transcript: Option<TranscriptPass>,
+    /// Segments of `segments` the final pass left without a speaker (T12.65): named
+    /// [`crate::diar::UNKNOWN_SPEAKER`]. Any other segment without a speaker name is
+    /// "Unknown", as before.
+    pub unknown_speaker_lines: &'a [EntityId],
 }
 
 /// A rendered note.
@@ -301,7 +305,11 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
             let who = seg
                 .speaker_id
                 .and_then(|id| names.get(&id).copied())
-                .unwrap_or(crate::diar::UNKNOWN_SPEAKER);
+                .unwrap_or(if input.unknown_speaker_lines.contains(&seg.id) {
+                    crate::diar::UNKNOWN_SPEAKER
+                } else {
+                    "Unknown"
+                });
             let _ = writeln!(
                 s,
                 "> **`{}` {}:** {}",

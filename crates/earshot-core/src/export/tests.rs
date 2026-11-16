@@ -228,6 +228,7 @@ fn input(f: &Fixture) -> ExportInput<'_> {
         notes: &f.notes,
         summary: Some(&f.summary),
         transcript: Some(TranscriptPass::Final),
+        unknown_speaker_lines: &[],
     }
 }
 
@@ -271,6 +272,28 @@ fn export_golden_em_dash_kept_and_plain_attendees() {
     };
     let r = render(&input(&f), &o).unwrap();
     assert_snapshot("em_dash_off", &r.to_file());
+}
+
+#[test]
+fn export_golden_unknown_speaker_line() {
+    // T12.65: the last line is one the final pass left without a speaker: "Unknown speaker".
+    // The first line also has no speaker but is not among them: "Unknown", as before.
+    let mut f = fixture();
+    let first = f.segments.first().unwrap().id;
+    let last = f.segments.last().unwrap().id;
+    for s in &mut f.segments {
+        if s.id == first || s.id == last {
+            s.speaker_id = None;
+        }
+    }
+    let unknown = [last];
+    let mut i = input(&f);
+    i.unknown_speaker_lines = &unknown;
+    let r = render(&i, &opts()).unwrap();
+    let file = r.to_file();
+    assert_eq!(file.matches(" Unknown speaker:**").count(), 1, "{file}");
+    assert_eq!(file.matches(" Unknown:**").count(), 1, "{file}");
+    assert_snapshot("unknown_speaker", &file);
 }
 
 // ---- file name ----

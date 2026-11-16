@@ -663,31 +663,62 @@ fn diar_cluster_unassigned_floor_still_merges_a_small_cluster_near_a_speaker() {
     assert_eq!(strict.unassigned, vec![false, false, true]);
 }
 
+/// FNV-1a over the bit patterns of every centroid value, in order.
+fn centroid_hash(centroids: &[Vec<f32>]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for v in centroids {
+        for x in v {
+            for b in x.to_bits().to_le_bytes() {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    }
+    h
+}
+
 #[test]
 fn diar_cluster_unassigned_floor_of_minus_one_is_todays_clustering() {
-    // -1 (the default) is pyannote's step 5 bit for bit: equal results on scenes with
-    // outliers, small clusters and known counts, and nothing ever unassigned.
+    // -1 (the default) is pyannote's step 5 bit for bit. The labels and centroid bits below
+    // were captured from the clustering before the floor existed (commit 0a75751, these
+    // inputs and configs), on scenes with small clusters merged into large ones (the three
+    // outlier singletons), a known count and a minimum size of 1; any change to step 5 at -1
+    // fails here.
     assert_eq!(ClusteringConfig::default().unassigned_floor, -1.0);
     let c = unit_centroids(4, 64, 81);
     let (mut pts, _) = points(&c, 20, 0.05, 82);
     pts.extend(outliers(3, 64, 83));
-    for base in [
-        cfg(PYANNOTE_THRESHOLD, 12),
-        cfg(0.2, 12),
-        cfg(2.0, 12).with_num_speakers(4),
-        cfg(0.5, 1),
-    ] {
-        let explicit = ClusteringConfig {
-            unassigned_floor: -1.0,
-            ..base.clone()
-        };
-        let a = cluster_embeddings(&pts, &base).unwrap();
-        let b = cluster_embeddings(&pts, &explicit).unwrap();
-        assert_eq!(a, b);
-        assert!(a.unassigned.iter().all(|u| !u));
+    let round_robin =
+        |tail: [usize; 3]| -> Vec<usize> { (0..80).map(|i| i % 4).chain(tail).collect() };
+    let cases: [(ClusteringConfig, usize, Vec<usize>, u64); 4] = [
+        (
+            cfg(PYANNOTE_THRESHOLD, 12),
+            4,
+            round_robin([1, 3, 3]),
+            0x309c_a7dc_18ec_7f5b,
+        ),
+        (cfg(0.2, 12), 1, vec![0; 83], 0x4bdf_9397_468a_9b3e),
+        (
+            cfg(2.0, 12).with_num_speakers(4),
+            4,
+            round_robin([1, 3, 3]),
+            0x309c_a7dc_18ec_7f5b,
+        ),
+        (
+            cfg(0.5, 1),
+            7,
+            round_robin([4, 5, 6]),
+            0x964c_e42f_4c55_66ac,
+        ),
+    ];
+    for (base, k, labels, hash) in cases {
+        let r = cluster_embeddings(&pts, &base).unwrap();
+        assert_eq!(r.centroids.len(), k, "{base:?}");
+        assert_eq!(r.labels, labels, "{base:?}");
+        assert_eq!(centroid_hash(&r.centroids), hash, "{base:?}");
+        assert!(r.unassigned.iter().all(|u| !u));
     }
 }
-
 #[test]
 fn diar_cluster_unassigned_outliers_never_count_as_speakers() {
     // A known count of 2 with three orthogonal outlier singletons and a high floor: the
@@ -820,9 +851,10 @@ fn diar_assign_unassigned_speech_leaves_words_without_a_speaker() {
         n += 1;
         EntityId::from_bytes([n; 16])
     };
-    let (parts, words) =
-        label_segment_speakers_unassigned(vec![seg.clone()], &turns, &gap, &mut new_id);
-    assert_eq!(words, 1);
+    let out = label_segment_speakers_unassigned(vec![seg.clone()], &turns, &gap, &mut new_id);
+    assert_eq!(out.words, 1);
+    let parts = out.parts;
+    assert_eq!(out.unassigned, [parts[1].0.id]);
     let labels: Vec<(String, Option<usize>)> =
         parts.iter().map(|(s, k)| (s.text.clone(), *k)).collect();
     assert_eq!(
@@ -844,10 +876,12 @@ fn diar_assign_unassigned_speech_leaves_words_without_a_speaker() {
         k += 1;
         EntityId::from_bytes([k; 16])
     };
-    let (plain, none) =
-        label_segment_speakers_unassigned(vec![seg.clone()], &turns, &[], &mut id_a);
-    assert_eq!(none, 0);
-    assert_eq!(plain, label_segment_speakers(vec![seg], &turns, &mut id_b));
+    let plain = label_segment_speakers_unassigned(vec![seg.clone()], &turns, &[], &mut id_a);
+    assert_eq!((plain.words, plain.unassigned.len()), (0, 0));
+    assert_eq!(
+        plain.parts,
+        label_segment_speakers(vec![seg], &turns, &mut id_b)
+    );
 }
 
 #[test]

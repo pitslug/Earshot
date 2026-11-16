@@ -1510,6 +1510,7 @@ where
             // reported instead.
             let edited_segments: Vec<Segment> = edited.iter().map(|r| r.segment.clone()).collect();
             let mut words_under_edits = 0;
+            let mut unknown_lines: BTreeSet<EntityId> = BTreeSet::new();
             let mut labelled: Vec<(Segment, Option<usize>)> = Vec::new();
             for (kind, segments) in transcripts {
                 let (segments, dropped) = drop_words_under_edits(segments, &edited_segments);
@@ -1534,18 +1535,19 @@ where
                     })
                     .collect();
                 let mut next_id = || EntityId::generate(stamp.clock, &mut *stamp.rng);
-                let (parts, words) =
+                let out =
                     label_segment_speakers_unassigned(segments, &turns, &unassigned, &mut next_id);
-                // Words with no speaker (T12.65): kept with their text and times, no row.
-                if words > 0 {
-                    let lines = parts.iter().filter(|(_, k)| k.is_none()).count();
+                // Words with no speaker (T12.65): kept with their text and times, no row, and
+                // the lines recorded as unknown (`crate::unknown_lines`).
+                if out.words > 0 {
                     warnings.push(PostWarning::SpeakerUnknown {
                         track: kind,
-                        lines,
-                        words,
+                        lines: out.unassigned.len(),
+                        words: out.words,
                     });
                 }
-                labelled.extend(parts);
+                unknown_lines.extend(out.unassigned);
+                labelled.extend(out.parts);
             }
             if !edited.is_empty() {
                 warnings.push(PostWarning::EditedLinesKept {
@@ -1935,6 +1937,7 @@ where
                 );
                 tx.put_segment(row)?;
             }
+            crate::unknown_lines::record_tx(tx, meeting, &unknown_lines)?;
             // Word choices on lines this run replaced go with them (transcript words);
             // choices on kept lines (edited, or another track's) stay.
             crate::word_choices::drop_stale_tx(tx, meeting)?;
@@ -2469,6 +2472,11 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
         }
         matches.push(match report.outcome {
             MatchOutcome::Known { person, score } => Some((person, score)),
+            // The margin (T12.67) never costs the user their own name: a best match to the
+            // user's identity at the threshold stands, however close the runner-up.
+            MatchOutcome::Unknown {
+                best: Some((person, score)),
+            } if score >= threshold && is_me(person) => Some((person, score)),
             MatchOutcome::Unknown { .. } => None,
         });
     }

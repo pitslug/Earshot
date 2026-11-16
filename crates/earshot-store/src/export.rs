@@ -1277,6 +1277,7 @@ mod tests {
                     segments: &[],
                     notes: &[],
                     summary: None,
+                    unknown_speaker_lines: &[],
                 },
                 &ExportOptions::default(),
             )
@@ -1520,6 +1521,7 @@ mod tests {
                 segments: &[],
                 notes: &[],
                 summary: None,
+                unknown_speaker_lines: &[],
             },
             &ExportOptions::default(),
         )
@@ -2244,6 +2246,7 @@ mod tests {
                 segments: &[],
                 notes: &[],
                 summary: None,
+                unknown_speaker_lines: &[],
             },
             &ExportOptions::default(),
         )

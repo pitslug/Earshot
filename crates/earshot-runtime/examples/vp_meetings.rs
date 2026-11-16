@@ -369,7 +369,21 @@ fn main() {
         }
     }
     let models = models.unwrap_or_else(|| fail("--models is required"));
-    let fixtures = fixtures_dir();
+    let (report, pick_b, shipped_margin) = measure(&models, &fixtures_dir());
+    let text = serde_json::to_string_pretty(&report).unwrap_or_else(|e| fail(e));
+    if let Some(out) = &out {
+        std::fs::write(out, &text).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
+    }
+    // The shipped margin must be what the rule picks here (the reproduction check).
+    if pick_b.unwrap_or(0.0) != shipped_margin {
+        fail(format!(
+            "the rule picks margin {pick_b:?}, the shipped margin is {shipped_margin}"
+        ));
+    }
+}
+
+/// The whole measurement of the rule doc: the report, B's pick and the shipped margin.
+fn measure(models: &ModelDir, fixtures: &std::path::Path) -> (Value, Option<f32>, f32) {
     let meetings_xml: String =
         std::fs::read(fixtures.join("ami/annotations/corpusResources/meetings.xml"))
             .unwrap_or_else(|e| fail(format!("meetings.xml: {e}")))
@@ -377,9 +391,9 @@ fn main() {
             .map(|&b| char::from(b))
             .collect();
 
-    init_onnx(&models, Accelerator::Cpu).unwrap_or_else(|e| fail(format!("ONNX Runtime: {e}")));
+    init_onnx(models, Accelerator::Cpu).unwrap_or_else(|e| fail(format!("ONNX Runtime: {e}")));
     let (segmenter, embedder) =
-        load_diarisation(&models, Accelerator::Cpu).unwrap_or_else(|e| fail(e));
+        load_diarisation(models, Accelerator::Cpu).unwrap_or_else(|e| fail(e));
     let model = embedder.info().model.clone();
     let post = PostConfig::default();
     let mut config = post.diarization.clone();
@@ -394,8 +408,8 @@ fn main() {
 
     let mut diarize = |meeting: &str| -> (Diarization, ami::Reference, BTreeMap<String, String>) {
         eprintln!("vp_meetings: {meeting}");
-        let reference = ami::reference(&fixtures, meeting).unwrap_or_else(|e| fail(e));
-        let audio = ami::mix(&fixtures, meeting).unwrap_or_else(|e| fail(e));
+        let reference = ami::reference(fixtures, meeting).unwrap_or_else(|e| fail(e));
+        let audio = ami::mix(fixtures, meeting).unwrap_or_else(|e| fail(e));
         let d = diarizer
             .diarize(
                 &MonoBuffer::new(PIPELINE_RATE, audio),
@@ -631,17 +645,8 @@ fn main() {
             "c_passes": c_passes,
         },
     });
-    let text = serde_json::to_string_pretty(&report).unwrap_or_else(|e| fail(e));
-    if let Some(out) = &out {
-        std::fs::write(out, &text).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
-    }
-    // The shipped margin must be what the rule picks here (the reproduction check).
     let shipped_margin = earshot_core::voiceprint::calibrated_margin(&model).unwrap_or(0.0);
-    if pick_b.unwrap_or(0.0) != shipped_margin {
-        fail(format!(
-            "the rule picks margin {pick_b:?}, the shipped margin is {shipped_margin}"
-        ));
-    }
+    (report, pick_b, shipped_margin)
 }
 
 #[cfg(test)]
@@ -791,5 +796,17 @@ mod tests {
         let b = identities(xml, "XX1b");
         assert_eq!(b.get("A").map(String::as_str), Some("G2"));
         assert_eq!(b.len(), 1);
+    }
+
+    #[test]
+    #[ignore = "needs fixture set ami-dev and the speaker models, about 15 minutes in release: cargo test --release -p earshot-runtime --example vp_meetings -- --ignored"]
+    fn vp_meetings_the_rule_still_picks_the_shipped_margin() {
+        // T12.67 step 4: the margin is reproduced by the rule on the dev meetings.
+        let data = earshot_store::DataDir::from_local_app_data()
+            .unwrap_or_else(|| panic!("no LOCALAPPDATA"));
+        let models = ModelDir::from_env(&data);
+        let (_, pick, shipped) = measure(&models, &fixtures_dir());
+        assert_eq!(pick, Some(shipped));
+        assert_eq!(shipped, earshot_core::voiceprint::CAMPPLUS_MEETING_MARGIN);
     }
 }

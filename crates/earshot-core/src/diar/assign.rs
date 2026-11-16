@@ -113,17 +113,20 @@ pub fn label_segments(
 /// [`super::Diarization::unassigned`]): the unassigned spans take part in the rule of the
 /// module docs as one more speaker, ranked after every real one (so a tie goes to a real
 /// speaker), and a word or segment that goes to them gets `None`. A segment is split where
-/// its words move between a speaker and unassigned speech. Returns the parts and the number
-/// of words (a wordless segment counts as one) that went unassigned. With no unassigned
-/// span the parts are exactly [`label_segment_speakers`]'s.
+/// its words move between a speaker and unassigned speech. With no unassigned span the parts
+/// are exactly [`label_segment_speakers`]'s.
 pub fn label_segment_speakers_unassigned(
     segments: Vec<Segment>,
     turns: &[SpeakerTurn],
     unassigned: &[super::UnassignedSpan],
     new_id: &mut dyn FnMut() -> EntityId,
-) -> (Vec<(Segment, Option<usize>)>, usize) {
+) -> UnassignedLabelling {
     if unassigned.is_empty() {
-        return (label_segment_speakers(segments, turns, new_id), 0);
+        return UnassignedLabelling {
+            parts: label_segment_speakers(segments, turns, new_id),
+            unassigned: Vec::new(),
+            words: 0,
+        };
     }
     let pseudo = turns.iter().map(|t| t.speaker + 1).max().unwrap_or(0);
     let mut all = turns.to_vec();
@@ -132,19 +135,36 @@ pub fn label_segment_speakers_unassigned(
         start: s.start,
         end: s.end,
     }));
-    let mut words = 0;
+    let (mut words, mut ids) = (0, Vec::new());
     let parts = label_segment_speakers(segments, &all, new_id)
         .into_iter()
         .map(|(seg, k)| {
             if k == Some(pseudo) {
                 words += seg.words.len().max(1);
+                ids.push(seg.id);
                 (seg, None)
             } else {
                 (seg, k)
             }
         })
         .collect();
-    (parts, words)
+    UnassignedLabelling {
+        parts,
+        unassigned: ids,
+        words,
+    }
+}
+
+/// What [`label_segment_speakers_unassigned`] returns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnassignedLabelling {
+    /// Each segment part with its diarisation speaker (`None`: no speaker).
+    pub parts: Vec<(Segment, Option<usize>)>,
+    /// Ids of the parts that went to unassigned speech (a part with no speaker because its
+    /// track has no turns at all is not among them).
+    pub unassigned: Vec<EntityId>,
+    /// Words of those parts (a wordless segment counts as one).
+    pub words: usize,
 }
 
 /// [`label_segments`] before the ids are set: each segment part (split, text and ids

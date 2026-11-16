@@ -827,9 +827,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             Err(RuntimeError::Edit(EditError::MeetingNotFound(_))) => return Err(not_found()),
             Err(e) => return Err(e.into()),
         };
-        let view = MeetingView::load(&**db, meeting)
-            .map_err(RuntimeError::from)?
-            .ok_or_else(not_found)?;
+        let view = MeetingView::load_named(&db, meeting)?.ok_or_else(not_found)?;
         // The identity entries, the voiceprint-named "Me" row and where each linked person
         // resolves to (T12.44), read in the same snapshot.
         let mut resolved = BTreeMap::new();
