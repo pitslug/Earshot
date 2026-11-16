@@ -1262,3 +1262,7 @@ pub fn kind_of(
 #[cfg(test)]
 #[path = "run_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "production_tests.rs"]
+mod production_tests;

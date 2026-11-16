@@ -50,6 +50,7 @@ mod slot_job;
 mod speaker_settings;
 mod storage_settings;
 mod summaries;
+mod summary_order;
 mod summary_style;
 mod summary_vocabulary;
 mod sync_settings;
@@ -228,12 +229,17 @@ fn main() {
             // Gone on sleep, online on resume (T11.3ca).
             #[cfg(windows)]
             let _ = power_win::watch(std::sync::Arc::clone(&sync));
-            // Summary offload (T11.3db): a meeting's summary step asks the chosen computer.
-            let offload_slot = meeting::OffloadSlot::default();
+            // Summary offload (T11.3db, T12.63b): a computer step of the order of summary
+            // writers asks that computer when it is tried.
+            let computers = summary_order::ComputerSlot::default();
             if let Ok(services) = state.services() {
                 let vault = sync.vault();
-                let _ = offload_slot.set(Arc::new(move || {
-                    earshot_runtime::offload::choose_now(&services, Arc::clone(&vault))
+                let _ = computers.set(Arc::new(move |device| {
+                    earshot_runtime::offload::choose_device_now(
+                        &services,
+                        Arc::clone(&vault),
+                        device,
+                    )
                 }));
             }
             let sync_for_start = Arc::clone(&sync);
@@ -251,7 +257,7 @@ fn main() {
                 }
             });
             let driver = meeting::MeetingDriver::new(
-                Arc::new(meeting::HostPrepare::wasapi().with_offload(offload_slot)),
+                Arc::new(meeting::HostPrepare::wasapi().with_computers(Arc::clone(&computers))),
                 sink,
                 Arc::new(Instant::now),
                 gate.clone(),
@@ -267,7 +273,7 @@ fn main() {
                 }
             });
             let job_runner = jobs::JobRunner::new(
-                Arc::new(jobs::HostJobs),
+                Arc::new(jobs::HostJobs { computers }),
                 job_sink,
                 gate.clone(),
                 &cuda_latch,
@@ -280,7 +286,7 @@ fn main() {
                     job_runner.clone(),
                     meeting_queue,
                     gate.clone(),
-                    Arc::new(offload::HostHelperWork),
+                    Arc::new(offload::HostHelperWork::installed()),
                 )));
                 let _ = std::thread::Builder::new()
                     .name("earshot-sync-start".into())

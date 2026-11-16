@@ -457,9 +457,9 @@ pub fn finished_toast(result: &SummaryEvent) -> Option<Toast> {
 pub fn job_toast(event: &crate::jobs::JobEvent) -> Option<(Toast, String)> {
     use crate::jobs::{JobEvent, JobKind};
     match event {
-        JobEvent::Summary { meeting, result } => {
-            finished_toast(result).map(|t| (t, meeting.clone()))
-        }
+        JobEvent::Summary {
+            meeting, result, ..
+        } => finished_toast(result).map(|t| (t, meeting.clone())),
         JobEvent::Failed {
             meeting,
             job: JobKind::Resummarise,

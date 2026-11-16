@@ -21,6 +21,31 @@ use crate::testutil::{TempDir, services};
 
 const SECRET: &str = "sk-ant-api03-summaries-test-secret-42";
 
+/// A stored meeting (T12.63b: a re-summary is a run of the order, which starts by recording its
+/// run on the meeting, so a meeting that does not exist fails before any writer is set up).
+fn stored_meeting(svc: &earshot_runtime::Services) -> EntityId {
+    use rand_core::SeedableRng;
+    let clock = std::sync::Arc::clone(&svc.clock);
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = earshot_core::model::Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let m = earshot_core::model::Meeting::new(
+        "Invented review",
+        1_000,
+        600,
+        earshot_core::prompt::Template::General,
+        &mut stamp,
+    );
+    let id = m.id;
+    earshot_core::model::MeetingRepo::put_meeting(store, m).unwrap();
+    id
+}
+
 fn value(
     writer: WriterChoice,
     provider: ProviderChoice,
@@ -674,7 +699,7 @@ fn summaries_resummarise_with_a_chosen_summary_model_not_downloaded_fails_naming
     let mut warned = Vec::new();
     let e = crate::jobs::summarise_with(
         &svc,
-        EntityId::from_bytes([1; 16]),
+        stored_meeting(&svc),
         &earshot_core::asr::CancelToken::new(),
         &models,
         &MemoryVault::default(),
@@ -696,7 +721,7 @@ fn summaries_resummarise_without_an_api_key_fails_with_the_api_key_message() {
     anthropic(&svc);
     let vault = MemoryVault::default();
     let mut warned = Vec::new();
-    let meeting = EntityId::from_bytes([1; 16]);
+    let meeting = stored_meeting(&svc);
     let e = crate::jobs::summarise_with(
         &svc,
         meeting,
@@ -963,7 +988,7 @@ fn summaries_resummarise_through_claude_code_not_signed_in_fails_with_the_reason
     let svc = services(&dir);
     let models = earshot_runtime::backends::ModelDir::new(dir.0.join("models"));
     claude_code(&svc, "opus");
-    let meeting = EntityId::from_bytes([1; 16]);
+    let meeting = stored_meeting(&svc);
     let e = crate::jobs::summarise_with(
         &svc,
         meeting,
@@ -1185,7 +1210,7 @@ fn summaries_resummarise_through_codex_not_signed_in_fails_with_the_reason() {
     let svc = services(&dir);
     let models = earshot_runtime::backends::ModelDir::new(dir.0.join("models"));
     codex(&svc, "gpt-5.6-luna");
-    let meeting = EntityId::from_bytes([1; 16]);
+    let meeting = stored_meeting(&svc);
     let e = crate::jobs::summarise_with(
         &svc,
         meeting,

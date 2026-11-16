@@ -581,30 +581,103 @@ fn offload_host_declines_a_request_it_has_no_writer_for() {
     }
 }
 
+/// A Claude Code probe that must never be asked.
+struct NeverClaude;
+impl earshot_runtime::claude_code::ClaudeCodeProbe for NeverClaude {
+    fn status(&self) -> earshot_runtime::claude_code::ClaudeCodeStatus {
+        panic!("the helper asked a writer its presence did not advertise")
+    }
+}
+
+/// A Codex probe that must never be asked.
+struct NeverCodex;
+impl earshot_runtime::codex::CodexProbe for NeverCodex {
+    fn status(&self) -> earshot_runtime::codex::CodexStatus {
+        panic!("the helper asked a writer its presence did not advertise")
+    }
+}
+
+/// A Claude Code probe that counts its calls and answers "not installed".
+#[derive(Default)]
+struct CountedClaude(std::sync::atomic::AtomicU32);
+impl earshot_runtime::claude_code::ClaudeCodeProbe for CountedClaude {
+    fn status(&self) -> earshot_runtime::claude_code::ClaudeCodeStatus {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        earshot_runtime::claude_code::ClaudeCodeStatus::NotInstalled
+    }
+}
+
+fn store_order(svc: &Services, steps: &[earshot_runtime::summary_order::OrderStep]) {
+    earshot_runtime::summary_order::set_summary_order(
+        &mut svc.store(),
+        &earshot_runtime::summary_order::SummaryOrder::new(steps.to_vec()).unwrap(),
+        None,
+    )
+    .unwrap();
+}
+
+/// The app's helper answers another computer's request through `helper_writer` only (T12.63b,
+/// docs/summary-order.md 4.6; replaces T11.3db's `writer_of` over the one-writer setup): exactly
+/// the writer kind its presence advertised, the first writer step of its own order, and never a
+/// later step.
 #[test]
-fn offload_writer_of_a_setup_declines_without_a_service() {
-    let setup = |no_summary| crate::meeting::SummarySetup {
-        summary: None,
-        no_summary,
-        notes: Vec::new(),
-        live: false,
-        local_chosen: false,
-        chosen_missing: None,
+fn offload_host_helper_runs_only_the_writer_its_presence_advertised() {
+    use earshot_runtime::summary_order::{OrderStep, WriterStep};
+    let dir = TempDir::new("offload-helper-writer");
+    let svc = services(&dir);
+    let models = earshot_runtime::backends::ModelDir::new(dir.0.join("no-models"));
+    let never = |models: &earshot_runtime::backends::ModelDir| HostHelperWork {
+        probes: crate::summary_order::SummaryProbes {
+            keys: Arc::new(crate::credentials::MemoryVault::default()),
+            claude: Arc::new(NeverClaude),
+            codex: Arc::new(NeverCodex),
+        },
+        models: Some(models.clone()),
     };
+    // Its own order is [local, Claude Code] and no local model is installed: it declines, and
+    // Claude Code is never asked.
+    store_order(
+        &svc,
+        &[OrderStep::LOCAL, OrderStep::Writer(WriterStep::ClaudeCode)],
+    );
     assert!(matches!(
-        writer_of(Ok(setup(SkipReason::KeptLocalNoModel {
-            model: "qwen3.5-4b-q4_k_m"
-        }))),
+        never(&models).writer(&svc, SummaryPrivacy::Writer),
+        HelperWriter::Decline(reason::NO_WRITER)
+    ));
+    // A meeting kept on its asker's computer turns a remote kind local: no local model declines
+    // `kept_local_no_model`, and Claude Code is never asked.
+    store_order(&svc, &[OrderStep::Writer(WriterStep::ClaudeCode)]);
+    assert!(matches!(
+        never(&models).writer(&svc, SummaryPrivacy::KeptLocal),
         HelperWriter::Decline(reason::KEPT_LOCAL_NO_MODEL)
     ));
+    // No writer in its order (a computer only): it declines `no_writer`.
+    store_order(
+        &svc,
+        &[OrderStep::Computer(
+            earshot_core::identity::DeviceId::from_bytes([6; 16]),
+        )],
+    );
     assert!(matches!(
-        writer_of(Ok(setup(SkipReason::NotRequested))),
+        never(&models).writer(&svc, SummaryPrivacy::Writer),
         HelperWriter::Decline(reason::NO_WRITER)
     ));
+    // The negative control: with Claude Code first it is the writer asked, once.
+    store_order(&svc, &[OrderStep::Writer(WriterStep::ClaudeCode)]);
+    let claude = Arc::new(CountedClaude::default());
+    let work = HostHelperWork {
+        probes: crate::summary_order::SummaryProbes {
+            keys: Arc::new(crate::credentials::MemoryVault::default()),
+            claude: Arc::clone(&claude) as Arc<_>,
+            codex: Arc::new(NeverCodex),
+        },
+        models: Some(models),
+    };
     assert!(matches!(
-        writer_of(Err(IpcError::internal())),
+        work.writer(&svc, SummaryPrivacy::Writer),
         HelperWriter::Decline(reason::NO_WRITER)
     ));
+    assert_eq!(claude.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 /// A write here the job runner refuses (the meeting is in use) says so, so the step hands it
@@ -760,3 +833,6 @@ fn offload_host_declines_when_its_thread_cannot_start() {
         (RequestState::Declined, reason::FAILED)
     );
 }
+
+#[path = "offload_order_tests.rs"]
+mod order;

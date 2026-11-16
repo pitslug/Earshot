@@ -155,7 +155,7 @@ impl SummarySettingsValue {
         }
     }
 
-    fn settings(&self) -> SummarySettings {
+    pub(crate) fn settings(&self) -> SummarySettings {
         SummarySettings {
             writer: self.writer.writer(),
             provider: self.provider.provider(),
@@ -188,7 +188,7 @@ pub struct SummarySettingsView {
 }
 
 /// `text` with its first letter upper-case and a full stop (runtime reasons are clauses).
-fn sentence(text: &str) -> String {
+pub(crate) fn sentence(text: &str) -> String {
     let mut c = text.chars();
     let mut out: String = c
         .next()
@@ -201,14 +201,13 @@ fn sentence(text: &str) -> String {
     out
 }
 
-fn view(s: &SummarySettings, unknown: Vec<String>) -> SummarySettingsView {
+fn view(s: &SummarySettings, unknown: Vec<String>, live_allowed: bool) -> SummarySettingsView {
     SummarySettingsView {
         value: SummarySettingsValue::of(s),
         unknown,
         endpoint_host: s.endpoint_host(),
         endpoint_local: s.endpoint_is_local(),
-        live_unavailable: (s.writer != SummaryWriter::OnThisComputer)
-            .then(|| sentence(LIVE_SUMMARIES_NEED_LOCAL)),
+        live_unavailable: (!live_allowed).then(|| sentence(LIVE_SUMMARIES_NEED_LOCAL)),
         anthropic_url: ANTHROPIC_DEFAULT_URL.to_owned(),
     }
 }
@@ -219,7 +218,11 @@ fn view(s: &SummarySettings, unknown: Vec<String>) -> SummarySettingsView {
 /// Store errors.
 pub fn settings_view(services: &Services) -> Result<SummarySettingsView, IpcError> {
     let (s, unknown) = summary_settings(&services.store())?;
-    Ok(view(&s, unknown.iter().map(ToString::to_string).collect()))
+    Ok(view(
+        &s,
+        unknown.iter().map(ToString::to_string).collect(),
+        live_allowed(services)?,
+    ))
 }
 
 /// The UI error of a refused setting.
@@ -243,7 +246,16 @@ pub fn set_settings(
         let mut db = services.store();
         set_summary_settings(&mut db, &value.settings()).map_err(settings_error)?
     };
-    Ok(view(&stored, Vec::new()))
+    Ok(view(&stored, Vec::new(), live_allowed(services)?))
+}
+
+/// Whether the stored order lets "summarise during the meeting" run (T12.63b,
+/// docs/summary-order.md 4.5): the local model first, or a computer then the local model.
+fn live_allowed(services: &Services) -> Result<bool, IpcError> {
+    let (order, _) = earshot_runtime::summary_order::summary_order(&services.store())?;
+    Ok(earshot_runtime::summary_order::live_summaries_allowed(
+        &order.filtered(earshot_runtime::keep_local::SummaryPrivacy::Writer),
+    ))
 }
 
 /// The UI error of a key that could not be stored, read or removed (never the key).

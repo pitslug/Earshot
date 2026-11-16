@@ -54,6 +54,7 @@ import type { FolderCommands } from "./folders";
 import type { StorageCommands } from "./storage";
 import type { SummaryStyleCommands } from "./summaryStyle";
 import type { SummaryVocabularyCommands } from "./summaryVocabulary";
+import type { SummaryOrderCommands } from "./summaryOrder";
 import type { SyncCommands } from "./sync";
 
 // Every generated type, for the UI to import from here.
@@ -68,7 +69,8 @@ export interface IpcCommands
     FirstRunCommands,
     FolderCommands,
     CudaCommands,
-    SyncCommands {
+    SyncCommands,
+    SummaryOrderCommands {
   /** The app version and data directory. */
   appInfo(): Promise<AppInfo>;
   /** The meetings, newest first. Rejects with an `IpcFailure`. */

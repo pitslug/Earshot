@@ -532,7 +532,7 @@ pub fn set_summary_order(
     order: &SummaryOrder,
     settings: Option<&SummarySettings>,
 ) -> Result<SummaryOrder, SummaryOrderError> {
-    write_order(store, order, settings, false)
+    write_order(store, order, settings, false, false)
 }
 
 /// [`set_summary_order`] for a change that leaves the writer alone (choosing the helper,
@@ -540,6 +540,10 @@ pub fn set_summary_order(
 /// (a word this build does not know, or "your own endpoint" without a usable endpoint, both read
 /// as the default) is kept as stored instead of being replaced by the mirror of that default.
 /// The old keys then differ from the mirror, so the order reads from them, as it did before.
+///
+/// Likewise a stored order that does not read as itself ([`UNREADABLE_ORDER`]: a newer build's
+/// format, or one refused on read) is left as stored (T12.63b): only the old keys are written,
+/// and the order reads from them, as it already did.
 ///
 /// # Errors
 /// As [`set_summary_order`].
@@ -550,7 +554,11 @@ pub(crate) fn set_summary_order_keeping_writer(
     let (writer, _) = old_keys(store)?;
     let effective = crate::summary_settings::summary_settings(store)?.0.writer;
     let keep = writer.is_some_and(|w| w != effective.as_str());
-    write_order(store, order, None, keep)
+    let unreadable = summary_order(store)?
+        .1
+        .iter()
+        .any(|n| n == UNREADABLE_ORDER);
+    write_order(store, order, None, keep, unreadable)
 }
 
 fn write_order(
@@ -558,6 +566,7 @@ fn write_order(
     order: &SummaryOrder,
     settings: Option<&SummarySettings>,
     keep_writer: bool,
+    keep_order: bool,
 ) -> Result<SummaryOrder, SummaryOrderError> {
     let checked = match settings {
         Some(s) => Some(crate::summary_settings::validate(&SummarySettings {
@@ -580,7 +589,9 @@ fn write_order(
         .unwrap_or_default();
     store
         .transaction(|tx| -> Result<(), RuntimeError> {
-            crate::local::set_tx(tx, &DeviceRecord::SummaryOrder.key(), &bytes)?;
+            if !keep_order {
+                crate::local::set_tx(tx, &DeviceRecord::SummaryOrder.key(), &bytes)?;
+            }
             #[cfg(test)]
             if fault::take() {
                 return Err(RuntimeError::Internal("an injected fault"));
