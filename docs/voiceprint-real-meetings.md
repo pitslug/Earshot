@@ -40,4 +40,11 @@ The tool prints counts and bands only. Its per-voice report (scores, labels `m<k
 
 ## Result
 
-(Added after the run.)
+**First run (2026-11-17, desktop, debug build of `vp_readout` at 7c0a2df): not enough voices; keep 0.462.**
+
+- 8 voices across the meetings with a stored speaker record (6 meetings had none; 1 ignored voice left out).
+- Confirmed: 2, of which 1 scorable. Its own score is 1.00: its centroid is its person's whole voiceprint, which is the stated limit (saved, then re-transcribed, so the saved centroid could not be taken out). It is not independent evidence. The other confirmed voice's person has no voiceprint once its own enrolment is left out.
+- Both settings name every voice the same way: confirmed correct 1 / 1, wrong 0, miss 0 at both.
+- No voice of any kind scores between 0.462 and 0.56 against its best person: the best scores are 0.29, 0.37 and then 0.71 to 0.86 (and 1.00). On this data the threshold choice changes no name.
+- 3 no-name voices score 0.82 to 0.85 against a stored person and are named under both settings; 2 more (0.71, 0.86) best match the user's identity and stay unnamed, as the final pass does for a voice that is not a Me row.
+- Verdict by the rule: step 1 fails (1 confirmed, scorable voice; 10 needed). Re-run after more call voices are named.
