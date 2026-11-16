@@ -361,6 +361,173 @@ fn sync_removing_a_device_revokes_its_token() {
 }
 
 #[test]
+fn sync_removing_another_device_stops_it_and_keeps_its_rows() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let cb = b.client();
+    let from_b = meeting(&b.svc, "Kept after removal", 3);
+    cb.tick().unwrap();
+    let b_id = b.svc.store().device();
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    // The removed device's next request is refused as for a removed self, and it stops.
+    assert_eq!(cb.tick(), Err(SyncProblem::UnknownDevice));
+    assert_eq!(
+        sync_status(&b.svc.store()).unwrap().problem,
+        Some(SyncProblem::UnknownDevice)
+    );
+    // It leaves the list; this device keeps syncing.
+    let listed: Vec<_> = vault_devices(&a.svc, a.vault())
+        .unwrap()
+        .into_iter()
+        .map(|d| (d.device, d.this_device))
+        .collect();
+    assert_eq!(listed, [(a.svc.store().device(), true)]);
+    let ca = a.client();
+    ca.tick().unwrap();
+    assert_eq!(a.title(from_b).as_deref(), Some("Kept after removal"));
+    // Its rows stay on the server: a computer joining now still receives them.
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    let c = Device::new("sync-c");
+    join_with_code(&c.svc, &*c.vault, &relay.relay.url(), offer.code()).unwrap();
+    c.client().tick().unwrap();
+    assert_eq!(c.title(from_b).as_deref(), Some("Kept after removal"));
+    // Removing it again changes nothing.
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    assert_only_the_relay(&ca, &relay);
+}
+
+/// The recovery the removed computer's page offers (T11.6c, the owner's decision 2026-11-16):
+/// remove it here, then join again with a pairing code from a live computer; it syncs again
+/// under its own device id, both ways, with no request to the relay while forgetting.
+#[test]
+fn sync_a_removed_device_follows_the_copy_and_syncs_again() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let before = meeting(&a.svc, "Before the removal", 4);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    let b_id = b.svc.store().device();
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    assert_eq!(cb.tick(), Err(SyncProblem::UnknownDevice));
+
+    // "Remove it here": forgetting asks the server nothing (it would only hear 401 again), so
+    // it works even with the server out of reach (a port nothing listens on).
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    {
+        let mut db = b.svc.store();
+        crate::local::set(
+            &mut db,
+            &DeviceRecord::SyncServer.key(),
+            format!("http://127.0.0.1:{port}").as_bytes(),
+        )
+        .unwrap();
+    }
+    remove_this_device(&b.svc, b.vault()).unwrap();
+    assert!(!b.vault.has().unwrap());
+
+    // "Then join again with a pairing code": shown on the live computer.
+    let during = meeting(&a.svc, "While it was removed", 5);
+    ca.tick().unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+    assert_eq!(b.svc.store().device(), b_id, "the same device id came back");
+    let cb = b.client();
+    cb.tick().unwrap();
+    assert_eq!(b.title(before).as_deref(), Some("Before the removal"));
+    assert_eq!(b.title(during).as_deref(), Some("While it was removed"));
+    // Both ways again.
+    let after = meeting(&b.svc, "After rejoining", 6);
+    cb.tick().unwrap();
+    ca.tick().unwrap();
+    assert_eq!(a.title(after).as_deref(), Some("After rejoining"));
+    let listed: Vec<_> = vault_devices(&a.svc, a.vault())
+        .unwrap()
+        .into_iter()
+        .map(|d| d.device)
+        .collect();
+    assert_eq!(listed.len(), 2);
+    assert!(listed.contains(&b_id));
+    assert_only_the_relay(&cb, &relay);
+}
+
+/// A credential store that refuses every save.
+struct RefusingVault;
+
+impl SyncVault for RefusingVault {
+    fn save(&self, _: &VaultKey, _: &DeviceToken) -> Result<(), VaultError> {
+        Err(VaultError::Store)
+    }
+    fn has(&self) -> Result<bool, VaultError> {
+        Ok(false)
+    }
+    fn remove(&self) -> Result<(), VaultError> {
+        Ok(())
+    }
+    fn load(&self) -> Result<Option<SyncSecrets>, VaultError> {
+        Ok(None)
+    }
+}
+
+/// The residual the spec names (T11.6c "Coming back"): a rejoin the relay registered but this
+/// computer could not keep leaves a live id no one holds a token for; the next code is
+/// `device_exists` until another computer removes it, and then the join works.
+#[test]
+fn sync_a_rejoin_that_could_not_be_kept_is_recovered_by_removing_it_again() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let b_id = b.svc.store().device();
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    assert_eq!(b.client().tick(), Err(SyncProblem::UnknownDevice));
+    remove_this_device(&b.svc, b.vault()).unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    assert_eq!(
+        join_with_code(&b.svc, &RefusingVault, &relay.relay.url(), offer.code()),
+        Err(SyncProblem::Store)
+    );
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    assert_eq!(
+        join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()),
+        Err(SyncProblem::DeviceExists)
+    );
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+    b.client().tick().unwrap();
+}
+
+#[test]
+fn sync_removing_another_device_never_takes_this_one_or_works_once_removed() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    // This device goes only through remove_this_device: the other path refuses it and sends
+    // nothing.
+    let me = a.svc.store().device();
+    assert_eq!(
+        remove_other_device(&a.svc, a.vault(), me),
+        Err(SyncProblem::Internal)
+    );
+    a.client().tick().unwrap();
+    // A removed device cannot remove another: it hears that it was removed.
+    remove_other_device(&a.svc, a.vault(), b.svc.store().device()).unwrap();
+    assert_eq!(
+        remove_other_device(&b.svc, b.vault(), me),
+        Err(SyncProblem::UnknownDevice)
+    );
+    a.client().tick().unwrap();
+    // A device that is not set up has nothing to ask with.
+    let lone = Device::new("sync-lone");
+    assert_eq!(
+        remove_other_device(&lone.svc, lone.vault(), me),
+        Err(SyncProblem::Vault)
+    );
+}
+
+#[test]
 fn sync_server_unreachable_is_a_status_and_a_retry() {
     let a = Device::new("sync-down");
     // A loopback port nothing listens on.

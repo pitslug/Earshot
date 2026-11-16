@@ -1,5 +1,5 @@
 {
-  "_comment": "Sync page copy (T11.3a). problems: the last sync's status, by word. command_problems: a button press that failed, by word (nothing retries those). Pinned to sync_settings::problem_copy and command_copy by the desktop's tests and read by the UI mock. Shipped with the app: public copy only. device_name_too_long: the refusal of a computer name over 64 characters (T11.3db).",
+  "_comment": "Sync page copy (T11.3a). problems: the last sync's status, by word. command_problems: a button press that failed, by word (nothing retries those). Pinned to sync_settings::problem_copy and command_copy by the desktop's tests and read by the UI mock. Shipped with the app: public copy only. device_name_too_long: the refusal of a computer name over 64 characters (T11.3db). remove_other: removing another computer from its row (T11.6c); {device} is the row's name, not_another is sync_settings::NOT_ANOTHER_DEVICE.",
   "problems": {
     "unreachable": "The sync server could not be reached. Earshot will try again.",
     "server": "The sync server gave an answer Earshot does not understand. Earshot will try again.",
@@ -84,5 +84,12 @@
       "copy": "Enter the server's address without a path, for example https://sync.example.com"
     }
   ],
-  "device_name_too_long": "The name can have at most 64 characters."
+  "device_name_too_long": "The name can have at most 64 characters.",
+  "remove_other": {
+    "button": "Remove {device}",
+    "title": "Remove {device} from sync?",
+    "explained": "It stops reaching your sync server and leaves this list. The meetings it already synced stay on your other computers. Removing it does not take back the sync key it already holds: if that computer is lost or no longer yours, also wipe it.",
+    "confirm": "Remove",
+    "not_another": "That is not another of your computers. To remove this computer, use Remove this computer."
+  }
 }

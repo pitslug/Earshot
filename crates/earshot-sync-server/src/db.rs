@@ -130,7 +130,7 @@ pub(crate) enum Registered {
     KeyMismatch,
     /// The slot was used or expired between the check and the write.
     SlotGone,
-    /// A slot registration named a device id the relay already has (live or revoked).
+    /// A slot registration named a live device id (not revoked): a code never takes one over.
     DeviceExists,
 }
 
@@ -276,22 +276,25 @@ impl Db {
             if used != 1 {
                 return Ok(Registered::SlotGone);
             }
-            // A pairing code adds a device; it never takes over one the relay knows, nor
-            // undoes a revocation. Only the setup secret registers an existing id again.
-            let known: bool = tx
+            // A pairing code adds a device, or brings back one that was removed (the owner,
+            // 2026-11-16: the code was shown on a live device of the vault, which already holds
+            // the key the joiner unwrapped). It never takes over a live device: that would hand
+            // a live device's id to whoever holds a code. The setup secret registers any id.
+            let revoked: Option<bool> = tx
                 .query_row(
-                    "SELECT 1 FROM device WHERE device_id = ?1",
+                    "SELECT revoked FROM device WHERE device_id = ?1",
                     params![&device[..]],
-                    |_| Ok(()),
+                    |r| r.get::<_, i64>(0).map(|v| v != 0),
                 )
-                .optional()?
-                .is_some();
-            if known {
+                .optional()?;
+            if revoked == Some(false) {
                 return Ok(Registered::DeviceExists);
             }
         }
-        // A device registering again with the setup secret (a lost token, or set up anew)
-        // keeps its first date and is no longer revoked: the owner holds the secret.
+        // A device registering again (the setup secret: a lost token, or set up anew; a pairing
+        // code: a removed device coming back) keeps its first date, gets the new token and is no
+        // longer revoked. A revoked device's presence was cleared by the revoke, so it starts
+        // with none.
         tx.execute(
             "INSERT INTO device (device_id, token_sha256, created_unix_s, last_seen_unix_s, revoked)
              VALUES (?1, ?2, ?3, ?3, 0)

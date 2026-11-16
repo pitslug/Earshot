@@ -40,6 +40,9 @@ export function mockDeviceId(shortId: string): string {
   return `${shortId}-0000-7000-8000-000000000000`;
 }
 
+/** A UUID as the app reads a device id (hyphenated or not, either case). */
+const UUID = /^(?:[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})$/i;
+
 /** A problem word the app sends (`sync_settings::problem_copy`). */
 export type SyncProblemWord = keyof typeof table.problems;
 
@@ -126,6 +129,7 @@ const DEFAULT_DEVICES: SyncDeviceView[] = [
     recording: false,
     offers_summaries: false,
     writer: null,
+    id: mockDeviceId("3f2a9c1e"),
     short_id: "3f2a9c1e",
     joined_unix_s: 1_793_000_000,
     seen_s_ago: 0,
@@ -137,6 +141,7 @@ const DEFAULT_DEVICES: SyncDeviceView[] = [
     recording: false,
     offers_summaries: false,
     writer: null,
+    id: mockDeviceId("b71d04a8"),
     short_id: "b71d04a8",
     joined_unix_s: 1_793_100_000,
     seen_s_ago: 7_200,
@@ -148,6 +153,7 @@ const DEFAULT_DEVICES: SyncDeviceView[] = [
     recording: true,
     offers_summaries: true,
     writer: offload.writers.claude_code,
+    id: mockDeviceId("c5e09b72"),
     short_id: "c5e09b72",
     joined_unix_s: 1_793_200_000,
     seen_s_ago: 20,
@@ -159,6 +165,7 @@ const DEFAULT_DEVICES: SyncDeviceView[] = [
     recording: false,
     offers_summaries: true,
     writer: offload.writers.local,
+    id: mockDeviceId("e4a17d30"),
     short_id: "e4a17d30",
     joined_unix_s: 1_793_300_000,
     seen_s_ago: 30,
@@ -412,6 +419,17 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
       stopped = false;
       waiting = 0;
       return view();
+    },
+    removeOtherSyncDevice: async (id) => {
+      call("removeOtherSyncDevice");
+      // Rust's order: text that is not an id, or this computer's, is refused before anything
+      // else; then a computer that is not set up has no key (`vault`); an id the server does not
+      // list changes nothing.
+      const me = devices.find((d) => d.this_device);
+      if (!UUID.test(id) || id.toLowerCase() === me?.id) invalid(table.remove_other.not_another);
+      if (!setUp) commandFailure("vault");
+      devices = devices.filter((d) => d.id !== id.toLowerCase());
+      return { devices: devices.map((d) => ({ ...d })) };
     },
   };
 }

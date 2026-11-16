@@ -510,6 +510,72 @@ async fn relay_presence_ages_by_its_own_clock_and_revoked_devices_leave() {
 }
 
 #[tokio::test]
+async fn relay_a_device_removed_by_another_keeps_its_rows_and_cannot_act() {
+    // T11.6c: any device of the vault may remove any other (docs/sync-spec.md section 3).
+    let h = harness("remove-other");
+    let a = h.register(1, 0xC1).await;
+    let b = h.register(2, 0xC1).await;
+    let (s, _) = h
+        .post(
+            "/v1/rows",
+            Some(&b),
+            &json!({"format": 1, "rows": [row(9, 100, 0, b"sealed-by-b")]}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    h.post("/v1/presence", Some(&b), &json!({"blob": b64(b"sealed-b")}))
+        .await;
+    let revoke = |id: u8| json!({"device_id": b64(&[id; 16])});
+    let (s, v) = h.post("/v1/devices/revoke", Some(&a), &revoke(2)).await;
+    assert_eq!((s, v), (StatusCode::OK, json!({})));
+    // Every call of the removed device is refused, its own removal of another included.
+    for (method, uri) in [
+        ("GET", "/v1/vault"),
+        ("GET", "/v1/presence"),
+        ("GET", "/v1/rows"),
+    ] {
+        let (s, v) = h.call(method, uri, Some(&b), Some(1), None).await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::UNAUTHORIZED, "unknown_device"),
+            "{uri}"
+        );
+    }
+    let (s, _) = h.post("/v1/devices/revoke", Some(&b), &revoke(1)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = h.call("GET", "/v1/vault", Some(&a), None, None).await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the removed device could not remove the other"
+    );
+    // Its rows stay; its presence is gone.
+    let (_, v) = h
+        .call("GET", "/v1/rows?after=0", Some(&a), Some(1), None)
+        .await;
+    let rows = v["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["body"], b64(b"sealed-by-b"));
+    let (_, v) = h.call("GET", "/v1/presence", Some(&a), None, None).await;
+    assert!(v["devices"].as_array().unwrap().is_empty(), "{v}");
+    // Removing it again, or an id the relay does not know, changes nothing and revives nobody.
+    for id in [2, 7] {
+        let (s, _) = h.post("/v1/devices/revoke", Some(&a), &revoke(id)).await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let (s, _) = h.call("GET", "/v1/vault", Some(&b), None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (_, v) = h.call("GET", "/v1/vault", Some(&a), None, None).await;
+    let ids: Vec<&Value> = v["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| &d["device_id"])
+        .collect();
+    assert_eq!(ids, [&json!(b64(&[1; 16]))]);
+}
+
+#[tokio::test]
 async fn relay_slows_an_address_after_ten_failures_for_a_minute() {
     let h = harness("limiter");
     let wrong = json!({"device_id": b64(&[1; 16]), "key_check": b64(&[1; 32]),
@@ -698,45 +764,92 @@ async fn relay_push_must_announce_the_format_it_carries() {
     assert_eq!(v["vault_format"], 0, "the vault's format did not move");
 }
 
+/// Offers and takes pairing slot `n` from device `token`; returns the slot to register with.
+async fn taken_slot(h: &Harness, token: &str, n: u8) -> String {
+    let slot = b64(&[n; 16]);
+    let (s, _) = h
+        .post(
+            "/v1/pairing",
+            Some(token),
+            &json!({"slot": slot, "wrapped": b64(&[7; 73])}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = h
+        .post("/v1/pairing/take", None, &json!({"slot": slot}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    slot
+}
+
+/// A pairing code never takes over a live device (T11.2). Changed by the owner on 2026-11-16
+/// (T11.6c): a revoked device comes back with a valid code; before, a code refused it too.
 #[tokio::test]
-async fn relay_pairing_code_never_takes_over_a_known_device() {
+async fn relay_pairing_code_never_takes_over_a_live_device_but_brings_back_a_removed_one() {
     let h = harness("takeover");
     let a = h.register(1, 0xC1).await;
     let b = h.register(2, 0xC1).await;
+    let join = |id: u8, slot: &str| json!({"device_id": b64(&[id; 16]), "key_check": b64(&[0xC1; 32]), "slot": slot});
+    // A live device: refused, and nothing changes (the code stays usable for its own device).
+    let slot = taken_slot(&h, &a, 0x61).await;
+    let (s, v) = h.post("/v1/devices", None, &join(1, &slot)).await;
+    assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "device_exists"));
+    let (s, _) = h.call("GET", "/v1/vault", Some(&a), None, None).await;
+    assert_eq!(s, StatusCode::OK, "device 1 keeps its token");
+
+    h.post("/v1/presence", Some(&b), &json!({"blob": b64(b"sealed-b")}))
+        .await;
     h.post(
         "/v1/devices/revoke",
         Some(&a),
         &json!({"device_id": b64(&[2; 16])}),
     )
     .await;
-    for (n, id) in [(0x61u8, 1u8), (0x62, 2)] {
-        let slot = b64(&[n; 16]);
-        h.post(
-            "/v1/pairing",
-            Some(&a),
-            &json!({"slot": slot, "wrapped": b64(&[7; 73])}),
-        )
+    // A revoked device with a code that is wrong, never taken, or used: refused, still revoked.
+    let (s, v) = h
+        .post("/v1/devices", None, &join(2, &b64(&[0x70; 16])))
         .await;
-        h.post("/v1/pairing/take", None, &json!({"slot": slot}))
-            .await;
-        // A live device (1) or a revoked one (2): refused, and nothing changes.
-        let (s, v) = h
-            .post(
-                "/v1/devices",
-                None,
-                &json!({"device_id": b64(&[id; 16]), "key_check": b64(&[0xC1; 32]), "slot": slot}),
-            )
-            .await;
-        assert_eq!(
-            (s, error_of(&v)),
-            (StatusCode::CONFLICT, "device_exists"),
-            "{id}"
-        );
-    }
-    let (s, _) = h.call("GET", "/v1/vault", Some(&a), None, None).await;
-    assert_eq!(s, StatusCode::OK, "device 1 keeps its token");
+    assert_eq!((s, error_of(&v)), (StatusCode::NOT_FOUND, "no_slot"));
+    let untaken = b64(&[0x71; 16]);
+    h.post(
+        "/v1/pairing",
+        Some(&a),
+        &json!({"slot": untaken, "wrapped": b64(&[7; 73])}),
+    )
+    .await;
+    let (s, _) = h.post("/v1/devices", None, &join(2, &untaken)).await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "a slot not taken registers nobody"
+    );
     let (s, _) = h.call("GET", "/v1/vault", Some(&b), None, None).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED, "device 2 stays revoked");
+    let (_, v) = h.call("GET", "/v1/vault", Some(&a), None, None).await;
+    assert_eq!(v["devices"].as_array().unwrap().len(), 1);
+
+    // A revoked device with a valid code: registered again with a fresh token; the old token
+    // stays dead and its presence starts empty.
+    let slot = taken_slot(&h, &a, 0x62).await;
+    let (s, v) = h.post("/v1/devices", None, &join(2, &slot)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let fresh = v["token"].as_str().unwrap().to_owned();
+    assert_ne!(fresh, b);
+    let (s, _) = h.call("GET", "/v1/vault", Some(&b), None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "the old token stays dead");
+    let (s, v) = h.call("GET", "/v1/vault", Some(&fresh), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["devices"].as_array().unwrap().len(), 2);
+    let (_, v) = h.call("GET", "/v1/presence", Some(&a), None, None).await;
+    assert!(v["devices"].as_array().unwrap().is_empty(), "{v}");
+    // The code is used up: it cannot bring it back a second time, and the device is live now.
+    let (s, _) = h.post("/v1/devices", None, &join(2, &slot)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let slot = taken_slot(&h, &a, 0x63).await;
+    let (s, v) = h.post("/v1/devices", None, &join(2, &slot)).await;
+    assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "device_exists"));
+    let (s, _) = h.call("GET", "/v1/vault", Some(&fresh), None, None).await;
+    assert_eq!(s, StatusCode::OK, "a live device is never registered over");
 }
 
 #[tokio::test]

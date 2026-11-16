@@ -379,6 +379,8 @@ export const commands = {
 	syncNow: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("sync_now")),
 	/**  Removes this computer from sync. */
 	removeSyncDevice: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("remove_sync_device")),
+	/**  Removes another computer from sync; returns the computers left when they can be listed. */
+	removeOtherSyncDevice: (id: string) => typedError<SyncRemovedView, IpcError>(__TAURI_INVOKE("remove_other_sync_device", { id })),
 	/**  Turns "Write summaries for my other computers" on or off. */
 	setSyncOfferSummaries: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_offer_summaries", { on })),
 	/**  Sets this computer's name as the other computers show it. */
@@ -2249,12 +2251,27 @@ export type SyncDeviceView = {
 	 *  [`crate::offload::writer_label`]); `None` when it does not offer summaries.
 	 */
 	writer: string | null,
+	/**
+	 *  Its whole id (hyphenated UUID, as the summary helper list gives it): what
+	 *  [`remove_other_sync_device`] names. Not a secret (the server lists it to every device of
+	 *  the vault).
+	 */
+	id: string,
 	/**  The first eight hex digits of its id. */
 	short_id: string,
 	/**  When it joined (Unix seconds, the server's clock). */
 	joined_unix_s: number,
 	/**  Seconds since it last reached the server. */
 	seen_s_ago: number,
+};
+
+/**  Another computer was removed (T11.6c). */
+export type SyncRemovedView = {
+	/**
+	 *  The computers left, or `None` when they could not be listed after the removal (the page
+	 *  asks again; the removal itself happened).
+	 */
+	devices: SyncDeviceView[] | null,
 };
 
 /**  What the Sync page shows. Never a key, token, setup secret or used pairing code. */

@@ -761,6 +761,9 @@ pub struct StepReport {
     pub withdrawn: usize,
     /// Meetings handed back to the host to write here.
     pub written_here: usize,
+    /// Meetings the host refused to start writing here (a job of the meeting runs, it is in
+    /// use): the next step hands them again.
+    pub refused_here: usize,
 }
 
 /// The offload state of one running process: which requests were already handed to the host,
@@ -847,6 +850,35 @@ impl Offload {
         peers: &mut dyn FnMut() -> Option<Vec<Peer>>,
         host: &dyn OffloadHost,
     ) -> Result<StepReport, RuntimeError> {
+        self.step_with(services, peers, host, false)
+    }
+
+    /// The last step of a sync thread that stops on a problem the user must act on (this device
+    /// was removed, another vault, an update needed, no usable address or key) or because sync
+    /// was turned off (T11.6c). Nothing
+    /// this device writes reaches the helper until sync works again, so every open request it
+    /// asked is withdrawn here at once (no claim window, no presence) and its meeting handed to
+    /// `host` to write here ([`HereReason::Withdrawn`]); requests asked of this device are left
+    /// alone (a claim could not reach the asker, which withdraws on its own rules). A withdrawal
+    /// is final, so when sync works again it wins over the request on every device.
+    ///
+    /// # Errors
+    /// Store errors; what was done before stays done.
+    pub fn step_sync_stopped(
+        &self,
+        services: &Services,
+        host: &dyn OffloadHost,
+    ) -> Result<StepReport, RuntimeError> {
+        self.step_with(services, &mut || None, host, true)
+    }
+
+    fn step_with(
+        &self,
+        services: &Services,
+        peers: &mut dyn FnMut() -> Option<Vec<Peer>>,
+        host: &dyn OffloadHost,
+        sync_stopped: bool,
+    ) -> Result<StepReport, RuntimeError> {
         let (me, now) = (services.store().device(), services.clock.now_unix_ms());
         let (seen, offers, mut times, held) = {
             let db = services.store();
@@ -869,7 +901,7 @@ impl Offload {
                             && !self.is_settled(r.id)
                             && crate::summary_order::run::waits_on(&db, r.meeting_id, r.id)?)
                 } else {
-                    r.target_device == me && r.state.is_open()
+                    !sync_stopped && r.target_device == me && r.state.is_open()
                 };
                 if r.meta.deleted
                     || !wanted
@@ -911,11 +943,12 @@ impl Offload {
                 .any(|s| s.request.state.is_open() && s.request.id.to_string() == *id)
         });
         times.closed.retain(|id, _| held.contains(id));
-        let waits_on_claim = seen.iter().any(|s| {
-            s.meeting_live
-                && s.request.asking_device == me
-                && s.request.state == RequestState::Claimed
-        });
+        let waits_on_claim = !sync_stopped
+            && seen.iter().any(|s| {
+                s.meeting_live
+                    && s.request.asking_device == me
+                    && s.request.state == RequestState::Claimed
+            });
         let peers = if waits_on_claim { peers() } else { None };
         let mut report = StepReport::default();
         let mut outcome = Ok(());
@@ -934,6 +967,7 @@ impl Offload {
                     &mut times,
                     host,
                     &mut report,
+                    sync_stopped,
                 )
             } else {
                 self.as_helper(services, &s, now, offers, &mut times, host, &mut report)
@@ -1004,9 +1038,17 @@ impl Offload {
         times: &mut Times,
         host: &dyn OffloadHost,
         report: &mut StepReport,
+        sync_stopped: bool,
     ) -> Result<(), RuntimeError> {
         let r = &s.request;
         let why = match r.state {
+            RequestState::Requested | RequestState::Claimed if sync_stopped => {
+                if !move_request(services, r.id, r.state, RequestState::Withdrawn, "")? {
+                    return Ok(());
+                }
+                report.withdrawn += 1;
+                HereReason::Withdrawn
+            }
             RequestState::Requested => {
                 if now.saturating_sub(Self::since(times, r, now)) < CLAIM_WITHIN_MS {
                     return Ok(());
@@ -1111,7 +1153,10 @@ impl Offload {
                 }
                 // Refused (a job of the meeting runs, the meeting is in use): the next step tries
                 // again.
-                ContinueAnswer::Refused => self.unhand(r.id),
+                ContinueAnswer::Refused => {
+                    self.unhand(r.id);
+                    report.refused_here += 1;
+                }
                 ContinueAnswer::Settled => self.settle(r.id),
             }
         }
