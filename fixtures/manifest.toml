@@ -291,6 +291,120 @@ size = 40091692
 licence = "CC-BY-4.0"
 attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
 
+# AMI dev-series second and third meetings (T12.67, set ami-dev): voiceprint trials on meeting
+# audio (docs/voiceprint-meetings.md), enrolled from the first meetings above. Never an
+# acceptance set. sha256 and size pinned on first download, 2026-11-16.
+
+[[artefact]]
+id = "ami-ES2003b-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2003b/audio/ES2003b.Mix-Headset.wav"
+path = "ami/audio/ES2003b.Mix-Headset.wav"
+sha256 = "71ba1c132d1957bd9b20f4c0ccae8b05ebf2399302b451897624a6de9611032f"
+size = 67514072
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2003c-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2003c/audio/ES2003c.Mix-Headset.wav"
+path = "ami/audio/ES2003c.Mix-Headset.wav"
+sha256 = "828faf52f14ae584c299c35009fa519b4780bfcc2c966288eebb6af091ef0fd7"
+size = 72221740
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2011b-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2011b/audio/ES2011b.Mix-Headset.wav"
+path = "ami/audio/ES2011b.Mix-Headset.wav"
+sha256 = "63459ac9811903fe49f79982e9155b457425fa62c5f1f47d4047f512cd348c83"
+size = 50600664
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2011c-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2011c/audio/ES2011c.Mix-Headset.wav"
+path = "ami/audio/ES2011c.Mix-Headset.wav"
+sha256 = "8c2d75e76817ab770ccab71e48e1d41e62729992e6f928bf2a6a8a4bd381e111"
+size = 51714092
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1008b-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1008b/audio/IS1008b.Mix-Headset.wav"
+path = "ami/audio/IS1008b.Mix-Headset.wav"
+sha256 = "0d992a210480c6e9652b317ed7f66261e80a1aa86f7e5c3dffd10e81b8e30de2"
+size = 56593427
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1008c-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1008c/audio/IS1008c.Mix-Headset.wav"
+path = "ami/audio/IS1008c.Mix-Headset.wav"
+sha256 = "1965c56162efb29953d21a5e7f5659f7f78a41e8923b7c399d3b4bbf9ae4b0a9"
+size = 49484093
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3004b-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3004b/audio/TS3004b.Mix-Headset.wav"
+path = "ami/audio/TS3004b.Mix-Headset.wav"
+sha256 = "3c8e8e9f4b24cc9a8c2fa5932cbecebcf9d14b6b415ac48d6229547fc014c9b2"
+size = 71873920
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3004c-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3004c/audio/TS3004c.Mix-Headset.wav"
+path = "ami/audio/TS3004c.Mix-Headset.wav"
+sha256 = "4fea0b90a24164511a902f9bc148322ee9dea236195690af081bc0033db640ea"
+size = 95040044
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3006b-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3006b/audio/TS3006b.Mix-Headset.wav"
+path = "ami/audio/TS3006b.Mix-Headset.wav"
+sha256 = "65008347971a4da203260860cbf0266814dcd8db3ac63a5242628e21d06c88c0"
+size = 75324800
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3006c-audio-Mix-Headset"
+sets = ["ami-dev"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3006c/audio/TS3006c.Mix-Headset.wav"
+path = "ami/audio/TS3006c.Mix-Headset.wav"
+sha256 = "9922fc1f145d5089e56401f044ebff84ad30a9d0caab8a8e46a51d1d74d1d265"
+size = 82695552
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
 # AMI dev-series headsets (T12.15c, set ami-dev-ihm): the four individual headsets and the UEM
 # of each ami-dev meeting, for the vocabulary evaluation (docs/vocabulary.md); their oracle
 # segments and named entities are pinned members of the annotations archive below. Dev data,

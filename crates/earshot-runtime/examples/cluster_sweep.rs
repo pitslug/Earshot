@@ -16,12 +16,10 @@
 //! written; the annotation words are read only for their times.
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use earshot_core::asr::{CancelToken, MeetingTime};
-use earshot_core::audio::{MonoBuffer, PIPELINE_RATE, Sample, quantise_pcm16, read_wav};
+use earshot_core::audio::{MonoBuffer, PIPELINE_RATE, Sample, quantise_pcm16};
 use earshot_core::diar::{
     DiarError, Diarization, DiarizationConfig, Diarizer, EmbedderInfo, Embedding, LocalActivity,
     SegmenterInfo, SpeakerEmbedder, SpeakerSegmenter,
@@ -31,6 +29,8 @@ use earshot_runtime::backends::{Accelerator, ModelDir, init_onnx, load_diarisati
 use earshot_runtime::post::PostConfig;
 use serde_json::{Value, json};
 
+#[path = "cluster_sweep_parts/ami.rs"]
+mod ami;
 #[path = "cluster_sweep_parts/floors.rs"]
 mod floors;
 
@@ -40,10 +40,6 @@ const HELD: u32 = 68;
 const GRID: std::ops::RangeInclusive<u32> = 55..=100;
 /// The first meeting of each AMI dev series.
 const AMI_DEV: [&str; 5] = ["ES2003a", "ES2011a", "IS1008a", "TS3004a", "TS3006a"];
-/// Letters a speaker's words file can have.
-const AMI_LETTERS: [&str; 5] = ["A", "B", "C", "D", "E"];
-/// One speaker's reference intervals closer than this are joined (s).
-const JOIN_GAP_S: f64 = 0.5;
 /// Scene length (s).
 const SCENE_S: usize = 360;
 /// Silence between utterances of a stream and at a change in `even` and `dominant` (ms).
@@ -398,101 +394,17 @@ fn short_curve(text: &str) -> HashMap<u32, f64> {
 
 // ---- AMI ---------------------------------------------------------------------------------
 
-fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let key = format!(" {name}=\"");
-    let at = tag.find(&key)? + key.len();
-    let rest = &tag[at..];
-    Some(&rest[..rest.find('"')?])
-}
-
-/// One speaker's word intervals (s): every `<w>` that is not punctuation and has times with
-/// end > start, in file order.
-fn word_intervals(xml: &str) -> Vec<(f64, f64)> {
-    let mut out = Vec::new();
-    let mut rest = xml;
-    while let Some(at) = rest.find("<w ") {
-        rest = &rest[at..];
-        let close = rest.find('>').unwrap_or_else(|| fail("unterminated <w>"));
-        let tag = &rest[..close];
-        rest = &rest[close + 1..];
-        if attr(tag, "punc") == Some("true") {
-            continue;
-        }
-        let time = |n: &str| attr(tag, n).and_then(|v| v.parse::<f64>().ok());
-        if let (Some(s), Some(e)) = (time("starttime"), time("endtime"))
-            && e > s
-        {
-            out.push((s, e));
-        }
-    }
-    out
-}
-
-/// Joins intervals closer than [`JOIN_GAP_S`] (sorted first).
-fn join(mut v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
-    v.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut out: Vec<(f64, f64)> = Vec::new();
-    for (s, e) in v {
-        match out.last_mut() {
-            Some(last) if s - last.1 < JOIN_GAP_S => last.1 = last.1.max(e),
-            _ => out.push((s, e)),
-        }
-    }
-    out
-}
-
 fn ami_item(fixtures: &Path, meeting: &str) -> Item {
-    let mut reference = Vec::new();
-    let mut true_k = 0;
-    for letter in AMI_LETTERS {
-        let p = fixtures
-            .join("ami/annotations/words")
-            .join(format!("{meeting}.{letter}.words.xml"));
-        let Ok(bytes) = std::fs::read(&p) else {
-            continue;
-        };
-        let xml: String = bytes.iter().map(|&b| char::from(b)).collect();
-        let speech = join(word_intervals(&xml));
-        if speech.is_empty() {
-            continue;
-        }
-        true_k += 1;
-        reference.extend(speech.into_iter().map(|(s, e)| Turn::new(s, e, letter)));
-    }
-    if true_k == 0 {
-        fail(format!(
-            "{meeting}: no words files; run `cargo xtask fetch-fixtures --set ami-sum`"
-        ));
-    }
-    let uem = (
-        reference
-            .iter()
-            .map(|t| t.start)
-            .fold(f64::INFINITY, f64::min),
-        reference.iter().map(|t| t.end).fold(0.0, f64::max),
-    );
-    let path = fixtures.join(format!("ami/audio/{meeting}.Mix-Headset.wav"));
-    let file = File::open(&path).unwrap_or_else(|e| {
-        fail(format!(
-            "{}: {e}; run `cargo xtask fetch-fixtures --set ami-dev`",
-            path.display()
-        ))
-    });
-    let wav =
-        read_wav(BufReader::new(file)).unwrap_or_else(|e| fail(format!("{}: {e}", path.display())));
-    if wav.rate() != PIPELINE_RATE || wav.channels() != 1 {
-        fail(format!("{}: expected 16 kHz mono", path.display()));
-    }
+    let r = ami::reference(fixtures, meeting).unwrap_or_else(|e| fail(e));
     Item {
         name: meeting.to_owned(),
         kind: "ami",
-        audio: quantise_pcm16(&wav.into_samples()),
-        reference,
-        true_k,
-        uem,
+        audio: ami::mix(fixtures, meeting).unwrap_or_else(|e| fail(e)),
+        reference: r.turns,
+        true_k: r.speakers,
+        uem: r.uem,
     }
 }
-
 // ---- scenes ------------------------------------------------------------------------------
 
 fn sorted_entries(dir: &Path) -> Vec<PathBuf> {
@@ -1161,7 +1073,7 @@ mod tests {
     #[test]
     fn cluster_sweep_joins_close_intervals_only() {
         assert_eq!(
-            join(vec![(2.2, 3.0), (0.0, 1.0), (1.4, 1.6), (3.6, 4.0)]),
+            ami::join(vec![(2.2, 3.0), (0.0, 1.0), (1.4, 1.6), (3.6, 4.0)]),
             vec![(0.0, 1.6), (2.2, 3.0), (3.6, 4.0)]
         );
     }
@@ -1172,7 +1084,10 @@ mod tests {
 <w nite:id="y" starttime="1.5" endtime="1.5" punc="true">.</w>
 <w nite:id="z" starttime="2.0" endtime="2.4" trunc="true">wh</w>
 <w nite:id="q" starttime="3.0" endtime="2.0">bad</w>"#;
-        assert_eq!(word_intervals(xml), vec![(1.0, 1.5), (2.0, 2.4)]);
+        assert_eq!(
+            ami::word_intervals(xml).unwrap(),
+            vec![(1.0, 1.5), (2.0, 2.4)]
+        );
     }
 
     fn streams(n: usize, seconds: usize) -> Vec<Vec<f32>> {
