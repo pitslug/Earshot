@@ -102,6 +102,7 @@ export function transcriptOf(lines: typeof LINES, speakers: SpeakerCard[]): Tran
       start_ms: at,
       speaker_id: id,
       speaker: card?.name ?? NAMES[who],
+      unknown_speaker: false,
       track: who === "me" ? "You" : "Them",
       text,
       edited: false,
@@ -175,6 +176,32 @@ function sampleSpeakers(): SpeakerCard[] {
       recognised_me: false,
     },
   ];
+}
+
+/** The name of a final line with no speaker (`earshot_core::diar::UNKNOWN_SPEAKER`, T12.65). */
+export const UNKNOWN_SPEAKER = "Unknown speaker";
+
+/** `detail` with line `index` (from 0) left without a speaker by the final pass (T12.65). */
+export function withUnknownLine(detail: MeetingDetail, index: number): MeetingDetail {
+  return {
+    ...detail,
+    transcript: detail.transcript.map((r, i) =>
+      i === index ? { ...r, speaker_id: null, speaker: UNKNOWN_SPEAKER, unknown_speaker: true } : r,
+    ),
+  };
+}
+
+/** `assignLineSpeaker` on the sample: the line takes `speaker`'s name and counts as edited. */
+export function assignedLine(detail: MeetingDetail, segment: string, speaker: SpeakerCard): MeetingDetail {
+  return {
+    ...detail,
+    transcript: detail.transcript.map((r) =>
+      r.segment_id === segment
+        ? { ...r, speaker_id: speaker.id, speaker: speaker.name, unknown_speaker: false, edited: true }
+        : r,
+    ),
+    summary_stale: detail.summary !== null || detail.summary_stale,
+  };
 }
 
 /** The sample detail of a meeting in the list (a draft without summary while it is processed

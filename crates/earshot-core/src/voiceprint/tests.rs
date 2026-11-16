@@ -412,3 +412,56 @@ fn voiceprint_thresholds_exist_only_for_calibrated_models() {
         assert!(!c.source.contains("test-clean"), "{}", c.model);
     }
 }
+
+#[test]
+fn voiceprint_margin_names_the_best_person_only_clear_of_the_runner_up() {
+    // T12.67: A and B both above the threshold; a voice between them is named only when its
+    // best person beats the runner-up by the margin. With no runner-up no margin is needed,
+    // and a margin of 0 is the plain match.
+    let mut w = World::new();
+    let a = w.person("Ada");
+    let b = w.person("Bo");
+    w.enroll(a, &[emb(&[1.0, 0.0, 0.0])], 12).unwrap();
+    w.enroll(b, &[emb(&[0.0, 1.0, 0.0])], 12).unwrap();
+    // Cosine about 0.83 to A and 0.55 to B: 0.28 apart.
+    let near_a = emb(&[0.83, 0.55, 0.0]);
+    let known = |m: f32| match match_embedding_with_margin(&w.repo, &near_a, 0.5, m)
+        .unwrap()
+        .outcome
+    {
+        MatchOutcome::Known { person, .. } => Some(person),
+        MatchOutcome::Unknown { best } => {
+            assert_eq!(
+                best.map(|(p, _)| p),
+                Some(a),
+                "the best person is still reported"
+            );
+            None
+        }
+    };
+    assert_eq!(known(0.0), Some(a));
+    assert_eq!(known(0.2), Some(a));
+    assert_eq!(known(0.3), None);
+    assert_eq!(
+        match_embedding_with_margin(&w.repo, &near_a, 0.5, 0.0).unwrap(),
+        match_embedding_with_report(&w.repo, &near_a, 0.5).unwrap()
+    );
+    // Alone: nobody to be clear of.
+    let mut alone = World::new();
+    let c = alone.person("Cy");
+    alone.enroll(c, &[emb(&[1.0, 0.0, 0.0])], 12).unwrap();
+    assert!(matches!(
+        match_embedding_with_margin(&alone.repo, &near_a, 0.5, 0.9).unwrap().outcome,
+        MatchOutcome::Known { person, .. } if person == c
+    ));
+}
+
+#[test]
+fn voiceprint_margin_is_chosen_per_model() {
+    assert_eq!(
+        calibrated_margin(&EmbeddingModelId::new("campplus-en-voxceleb@357a834f702b")),
+        Some(CAMPPLUS_MEETING_MARGIN)
+    );
+    assert_eq!(CAMPPLUS_MEETING_MARGIN, 0.08);
+    assert_eq!(calibrated_margin(&model()), None);
+}

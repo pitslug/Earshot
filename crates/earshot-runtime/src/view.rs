@@ -3,7 +3,7 @@
 
 use earshot_core::asr::Segment;
 use earshot_core::capture::TrackId;
-use earshot_core::diar::SpeakerRole;
+use earshot_core::diar::{SpeakerRole, UNKNOWN_SPEAKER};
 use std::collections::{BTreeMap, BTreeSet};
 
 use earshot_core::identity::{EntityId, HlcTimestamp};
@@ -43,9 +43,29 @@ pub struct MeetingView {
     pub notes: Vec<Note>,
     /// The current summary: the most recently updated live one.
     pub summary: Option<Summary>,
+    /// The final lines diarisation left without a speaker (T12.65, `crate::unknown_lines`):
+    /// empty from [`MeetingView::load`], read by [`MeetingView::load_named`].
+    pub unknown_lines: BTreeSet<EntityId>,
 }
 
 impl MeetingView {
+    /// [`MeetingView::load`] with the lines left without a speaker
+    /// ([`MeetingView::unknown_lines`]), for anything that shows speaker names: summaries,
+    /// exports and the meeting detail.
+    ///
+    /// # Errors
+    /// Storage errors.
+    pub fn load_named(
+        store: &earshot_store::Store,
+        meeting: EntityId,
+    ) -> Result<Option<Self>, crate::RuntimeError> {
+        let Some(mut view) = Self::load(store, meeting)? else {
+            return Ok(None);
+        };
+        view.unknown_lines = crate::unknown_lines::read(store, meeting)?;
+        Ok(Some(view))
+    }
+
     /// Loads `meeting`; `None` if it does not exist or is deleted.
     ///
     /// # Errors
@@ -97,6 +117,7 @@ impl MeetingView {
             edited,
             notes,
             summary,
+            unknown_lines: BTreeSet::new(),
         }))
     }
 
@@ -123,6 +144,11 @@ impl MeetingView {
     /// person rename must rewrite the display name of that person's speaker rows (the
     /// rename command does this), so summaries and exports, which compare rendered
     /// content, pick it up.
+    ///
+    /// In a final transcript, a line the final pass left without a speaker because it sounded
+    /// like none of the speakers found ([`MeetingView::is_unknown_speaker`], T12.65) is
+    /// [`UNKNOWN_SPEAKER`], never the track's label, which would name the wrong side. Any other
+    /// line without a speaker keeps the track's label.
     #[must_use]
     pub fn speaker_name(&self, segment: &Segment) -> String {
         if let Some(id) = segment.speaker_id
@@ -130,10 +156,32 @@ impl MeetingView {
         {
             return label;
         }
+        if self.is_unknown_speaker(segment) {
+            return UNKNOWN_SPEAKER.to_owned();
+        }
         self.tracks
             .iter()
             .find(|t| t.id == segment.track)
             .map_or_else(String::new, |t| track_label(t.kind).to_owned())
+    }
+
+    /// Whether `segment` is a final line with no speaker that the final pass recorded as left
+    /// unassigned ([`MeetingView::unknown_lines`]; T12.65, [`MeetingView::speaker_name`]).
+    #[must_use]
+    pub fn is_unknown_speaker(&self, segment: &Segment) -> bool {
+        segment.speaker_id.is_none()
+            && self.pass == Some(TranscriptPass::Final)
+            && self.unknown_lines.contains(&segment.id)
+    }
+
+    /// The ids of the lines [`MeetingView::is_unknown_speaker`] holds, in meeting order.
+    #[must_use]
+    pub fn unknown_speaker_lines(&self) -> Vec<EntityId> {
+        self.segments
+            .iter()
+            .filter(|s| self.is_unknown_speaker(s))
+            .map(|s| s.id)
+            .collect()
     }
 
     /// Attendee names: the speakers' display names, first appearance first, without

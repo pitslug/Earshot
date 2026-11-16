@@ -2,8 +2,12 @@
 //!
 //! ```text
 //! cargo run --release -p earshot-runtime --example cluster_sweep -- <repo-root> \
-//!     --models <dir> [--out <file.json>]
+//!     --models <dir> [--out <file.json>] [--floors]
 //! ```
+//!
+//! With `--floors` (T12.65) the threshold is held and the unassigned floor is swept instead:
+//! the data are the same, the measures and rule are `docs/far-speakers/unassigned-floor.md`
+//! (module `cluster_sweep_parts/floors.rs`).
 //!
 //! The data, measures and selection rule are `docs/far-speakers/ami-dev-calibration.md`,
 //! committed before this tool was written and before any run. Dev data only: the AMI dev mixes
@@ -12,12 +16,10 @@
 //! written; the annotation words are read only for their times.
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use earshot_core::asr::{CancelToken, MeetingTime};
-use earshot_core::audio::{MonoBuffer, PIPELINE_RATE, Sample, quantise_pcm16, read_wav};
+use earshot_core::audio::{MonoBuffer, PIPELINE_RATE, Sample, quantise_pcm16};
 use earshot_core::diar::{
     DiarError, Diarization, DiarizationConfig, Diarizer, EmbedderInfo, Embedding, LocalActivity,
     SegmenterInfo, SpeakerEmbedder, SpeakerSegmenter,
@@ -27,16 +29,17 @@ use earshot_runtime::backends::{Accelerator, ModelDir, init_onnx, load_diarisati
 use earshot_runtime::post::PostConfig;
 use serde_json::{Value, json};
 
+#[path = "cluster_sweep_parts/ami.rs"]
+mod ami;
+#[path = "cluster_sweep_parts/floors.rs"]
+mod floors;
+
 /// The held constant.
 const HELD: u32 = 68;
 /// Thresholds tried, in hundredths.
 const GRID: std::ops::RangeInclusive<u32> = 55..=100;
 /// The first meeting of each AMI dev series.
 const AMI_DEV: [&str; 5] = ["ES2003a", "ES2011a", "IS1008a", "TS3004a", "TS3006a"];
-/// Letters a speaker's words file can have.
-const AMI_LETTERS: [&str; 5] = ["A", "B", "C", "D", "E"];
-/// One speaker's reference intervals closer than this are joined (s).
-const JOIN_GAP_S: f64 = 0.5;
 /// Scene length (s).
 const SCENE_S: usize = 360;
 /// Silence between utterances of a stream and at a change in `even` and `dominant` (ms).
@@ -391,101 +394,17 @@ fn short_curve(text: &str) -> HashMap<u32, f64> {
 
 // ---- AMI ---------------------------------------------------------------------------------
 
-fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let key = format!(" {name}=\"");
-    let at = tag.find(&key)? + key.len();
-    let rest = &tag[at..];
-    Some(&rest[..rest.find('"')?])
-}
-
-/// One speaker's word intervals (s): every `<w>` that is not punctuation and has times with
-/// end > start, in file order.
-fn word_intervals(xml: &str) -> Vec<(f64, f64)> {
-    let mut out = Vec::new();
-    let mut rest = xml;
-    while let Some(at) = rest.find("<w ") {
-        rest = &rest[at..];
-        let close = rest.find('>').unwrap_or_else(|| fail("unterminated <w>"));
-        let tag = &rest[..close];
-        rest = &rest[close + 1..];
-        if attr(tag, "punc") == Some("true") {
-            continue;
-        }
-        let time = |n: &str| attr(tag, n).and_then(|v| v.parse::<f64>().ok());
-        if let (Some(s), Some(e)) = (time("starttime"), time("endtime"))
-            && e > s
-        {
-            out.push((s, e));
-        }
-    }
-    out
-}
-
-/// Joins intervals closer than [`JOIN_GAP_S`] (sorted first).
-fn join(mut v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
-    v.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut out: Vec<(f64, f64)> = Vec::new();
-    for (s, e) in v {
-        match out.last_mut() {
-            Some(last) if s - last.1 < JOIN_GAP_S => last.1 = last.1.max(e),
-            _ => out.push((s, e)),
-        }
-    }
-    out
-}
-
 fn ami_item(fixtures: &Path, meeting: &str) -> Item {
-    let mut reference = Vec::new();
-    let mut true_k = 0;
-    for letter in AMI_LETTERS {
-        let p = fixtures
-            .join("ami/annotations/words")
-            .join(format!("{meeting}.{letter}.words.xml"));
-        let Ok(bytes) = std::fs::read(&p) else {
-            continue;
-        };
-        let xml: String = bytes.iter().map(|&b| char::from(b)).collect();
-        let speech = join(word_intervals(&xml));
-        if speech.is_empty() {
-            continue;
-        }
-        true_k += 1;
-        reference.extend(speech.into_iter().map(|(s, e)| Turn::new(s, e, letter)));
-    }
-    if true_k == 0 {
-        fail(format!(
-            "{meeting}: no words files; run `cargo xtask fetch-fixtures --set ami-sum`"
-        ));
-    }
-    let uem = (
-        reference
-            .iter()
-            .map(|t| t.start)
-            .fold(f64::INFINITY, f64::min),
-        reference.iter().map(|t| t.end).fold(0.0, f64::max),
-    );
-    let path = fixtures.join(format!("ami/audio/{meeting}.Mix-Headset.wav"));
-    let file = File::open(&path).unwrap_or_else(|e| {
-        fail(format!(
-            "{}: {e}; run `cargo xtask fetch-fixtures --set ami-dev`",
-            path.display()
-        ))
-    });
-    let wav =
-        read_wav(BufReader::new(file)).unwrap_or_else(|e| fail(format!("{}: {e}", path.display())));
-    if wav.rate() != PIPELINE_RATE || wav.channels() != 1 {
-        fail(format!("{}: expected 16 kHz mono", path.display()));
-    }
+    let r = ami::reference(fixtures, meeting).unwrap_or_else(|e| fail(e));
     Item {
         name: meeting.to_owned(),
         kind: "ami",
-        audio: quantise_pcm16(&wav.into_samples()),
-        reference,
-        true_k,
-        uem,
+        audio: ami::mix(fixtures, meeting).unwrap_or_else(|e| fail(e)),
+        reference: r.turns,
+        true_k: r.speakers,
+        uem: r.uem,
     }
 }
-
 // ---- scenes ------------------------------------------------------------------------------
 
 fn sorted_entries(dir: &Path) -> Vec<PathBuf> {
@@ -770,8 +689,20 @@ fn diarize(
     t: u32,
     audio: &MonoBuffer,
 ) -> (Diarization, (Segmenter, Embedder)) {
+    diarize_at(parts, config, t, floors::OFF, audio)
+}
+
+/// [`diarize`] at unassigned floor `floor` (hundredths; [`floors::OFF`] is -1).
+fn diarize_at(
+    parts: (Segmenter, Embedder),
+    config: &DiarizationConfig,
+    t: u32,
+    floor: i32,
+    audio: &MonoBuffer,
+) -> (Diarization, (Segmenter, Embedder)) {
     let mut config = config.clone();
     config.clustering.threshold = threshold(t);
+    config.clustering.unassigned_floor = floors::floor(floor);
     let mut d = Diarizer::new(parts.0, parts.1, config).unwrap_or_else(|e| fail(e));
     let out = d
         .diarize(audio, MeetingTime::ZERO, &CancelToken::new())
@@ -793,14 +724,146 @@ fn round4(x: f64) -> f64 {
     (x * 10_000.0).round() / 10_000.0
 }
 
+/// `--floors` (T12.65, `docs/far-speakers/unassigned-floor.md`): the held threshold, every
+/// unassigned floor of the grid, the moved-speech measures and the rule's pick.
+fn run_floors(
+    items: &[Item],
+    mut parts: (Segmenter, Embedder),
+    config: &DiarizationConfig,
+    model: &str,
+    out: Option<&Path>,
+) {
+    let grid: Vec<i32> = std::iter::once(floors::OFF)
+        .chain(floors::FLOOR_GRID)
+        .collect();
+    // rows[item][grid index]
+    let mut rows: Vec<Vec<(Score, floors::Moved)>> = Vec::new();
+    for item in items {
+        eprintln!("cluster_sweep --floors: {}", item.name);
+        let buffer = MonoBuffer::new(PIPELINE_RATE, item.audio.clone());
+        parts.0.replay = false;
+        parts.1.replay = false;
+        let (direct, p) = diarize_at(parts, config, HELD, floors::OFF, &buffer);
+        parts = p;
+        parts.0.replay = true;
+        parts.1.replay = true;
+        let base = direct.der_turns();
+        let mut row = Vec::new();
+        for &f in &grid {
+            let (d, p) = diarize_at(parts, config, HELD, f, &buffer);
+            parts = p;
+            if f == floors::OFF && d != direct {
+                fail(format!(
+                    "{}: the replay at floor -1 differs from the direct run",
+                    item.name
+                ));
+            }
+            let moved = floors::moved(
+                &item.reference,
+                &base,
+                &floors::unassigned_turns(&d),
+                item.uem,
+            );
+            row.push((score(item, &d), moved));
+        }
+        parts.0.log.clear();
+        parts.1.log.clear();
+        rows.push(row);
+    }
+
+    let n_ami = AMI_DEV.len();
+    let reference_s: f64 = rows.iter().map(|r| r[0].0.der.total).sum();
+    let points: Vec<floors::FloorPoint> = grid
+        .iter()
+        .enumerate()
+        .map(|(g, &f)| floors::FloorPoint {
+            f,
+            gain_s: rows.iter().map(|r| r[g].1.gain_s).sum(),
+            loss_s: rows.iter().map(|r| r[g].1.loss_s).sum(),
+            meeting_der: rows[..n_ami].iter().map(|r| r[g].0.der.der()).collect(),
+        })
+        .collect();
+    let pick = floors::pick(&points, reference_s);
+    let off = &points[0];
+
+    println!(
+        "floor A(f) L(f) gain_s loss_s non_speech_s unassigned_s | conditions | DER per meeting"
+    );
+    for (g, p) in points.iter().enumerate() {
+        let col: Vec<&Score> = rows.iter().map(|r| &r[g].0).collect();
+        let sum = |k: fn(&floors::Moved) -> f64| rows.iter().map(|r| k(&r[g].1)).sum::<f64>();
+        let ders: Vec<String> = p.meeting_der.iter().map(|d| format!("{d:.4}")).collect();
+        println!(
+            "{:.2} {:.4} {:.4} {:.2} {:.2} {:.2} {:.2} | {:?} | {}",
+            floors::floor(p.f),
+            pooled(&col[..n_ami]),
+            pooled(&col[n_ami..]),
+            p.gain_s,
+            p.loss_s,
+            sum(|m| m.non_speech_s),
+            sum(|m| m.unassigned_s),
+            floors::conditions(p, off, reference_s),
+            ders.join(","),
+        );
+    }
+    println!(
+        "rule: picks floor {:.2} (reference speech {:.1} s)",
+        floors::floor(pick),
+        reference_s
+    );
+
+    let report = json!({
+        "model": model,
+        "rule": "docs/far-speakers/unassigned-floor.md",
+        "threshold": threshold(HELD),
+        "reference_s": round4(reference_s),
+        "curve": points.iter().enumerate().map(|(g, p)| {
+            let col: Vec<&Score> = rows.iter().map(|r| &r[g].0).collect();
+            json!({
+                "floor": floors::floor(p.f),
+                "ami_der": round4(pooled(&col[..n_ami])),
+                "scene_der": round4(pooled(&col[n_ami..])),
+                "gain_s": round4(p.gain_s),
+                "loss_s": round4(p.loss_s),
+                "conditions": floors::conditions(p, off, reference_s),
+                "items": items.iter().zip(&rows).map(|(i, r)| {
+                    let (s, m) = &r[g];
+                    json!({
+                        "name": i.name,
+                        "kind": i.kind,
+                        "found": s.found,
+                        "der": round4(s.der.der()),
+                        "missed": round4(s.der.missed),
+                        "confusion": round4(s.der.confusion),
+                        "total": round4(s.der.total),
+                        "gain_s": round4(m.gain_s),
+                        "loss_s": round4(m.loss_s),
+                        "non_speech_s": round4(m.non_speech_s),
+                        "unassigned_s": round4(m.unassigned_s),
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
+        "pick": floors::floor(pick),
+    });
+    let text = serde_json::to_string_pretty(&report).unwrap_or_else(|e| fail(e));
+    if let Some(out) = out {
+        std::fs::write(out, &text).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
+    }
+}
+
 fn main() {
     let mut it = std::env::args().skip(1);
     let root = PathBuf::from(
         it.next()
             .unwrap_or_else(|| fail("usage: cluster_sweep <repo-root> --models <dir>")),
     );
-    let (mut models, mut out) = (None, None);
+    let (mut models, mut out, mut floor_mode) = (None, None, false);
     while let Some(flag) = it.next() {
+        if flag == "--floors" {
+            floor_mode = true;
+            continue;
+        }
         let value = it
             .next()
             .unwrap_or_else(|| fail(format!("{flag} needs a value")));
@@ -832,6 +895,10 @@ fn main() {
     }
     let config = post.diarization.clone();
     let mut parts = (Cached::new(segmenter), Cached::new(embedder));
+    if floor_mode {
+        run_floors(&items, parts, &config, &model.to_string(), out.as_deref());
+        return;
+    }
 
     // scores[item][grid index]
     let grid: Vec<u32> = GRID.collect();
@@ -1006,7 +1073,7 @@ mod tests {
     #[test]
     fn cluster_sweep_joins_close_intervals_only() {
         assert_eq!(
-            join(vec![(2.2, 3.0), (0.0, 1.0), (1.4, 1.6), (3.6, 4.0)]),
+            ami::join(vec![(2.2, 3.0), (0.0, 1.0), (1.4, 1.6), (3.6, 4.0)]),
             vec![(0.0, 1.6), (2.2, 3.0), (3.6, 4.0)]
         );
     }
@@ -1017,7 +1084,10 @@ mod tests {
 <w nite:id="y" starttime="1.5" endtime="1.5" punc="true">.</w>
 <w nite:id="z" starttime="2.0" endtime="2.4" trunc="true">wh</w>
 <w nite:id="q" starttime="3.0" endtime="2.0">bad</w>"#;
-        assert_eq!(word_intervals(xml), vec![(1.0, 1.5), (2.0, 2.4)]);
+        assert_eq!(
+            ami::word_intervals(xml).unwrap(),
+            vec![(1.0, 1.5), (2.0, 2.4)]
+        );
     }
 
     fn streams(n: usize, seconds: usize) -> Vec<Vec<f32>> {

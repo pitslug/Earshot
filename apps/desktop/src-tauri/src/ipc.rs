@@ -50,6 +50,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             get_meeting,
             rename_meeting,
             edit_segment,
+            assign_line_speaker,
             use_word,
             put_back_word,
             keep_word,
@@ -721,6 +722,29 @@ async fn edit_segment(
     let services = state.services()?;
     let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
     blocking(move || crate::detail::edit_line(&services, meeting, segment, &text)).await
+}
+
+/// Gives a line of `meeting`'s final transcript that has an unknown speaker (T12.65) to one
+/// of the meeting's speakers.
+#[tauri::command]
+#[specta::specta]
+async fn assign_line_speaker(
+    state: State<'_, AppState>,
+    meeting: String,
+    segment: String,
+    speaker: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, segment, speaker) = (
+        parse_id(&meeting)?,
+        parse_id(&segment)?,
+        parse_id(&speaker)?,
+    );
+    blocking(move || {
+        earshot_runtime::edit::assign_line_speaker(&services, meeting, segment, speaker)?;
+        Ok(())
+    })
+    .await
 }
 
 /// "Add to Dictionary" on a word of the transcript (T12.15f): the word of `token` joins the

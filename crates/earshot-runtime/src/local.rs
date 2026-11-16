@@ -94,6 +94,9 @@ meeting_records! {
     /// `summary-run/<meeting>`: the meeting's last run of the order of summary writers (T12.63a;
     /// fixed words, step and request ids only, [`crate::summary_order::run`]).
     SummaryRun => "summary-run/", meeting at 0;
+    /// `unknown-lines/<meeting>`: the final transcript lines diarisation left without a
+    /// speaker (T12.65; row ids only, [`crate::unknown_lines`]).
+    UnknownLines => "unknown-lines/", meeting at 0;
 }
 
 impl MeetingRecord {

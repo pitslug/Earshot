@@ -1082,7 +1082,7 @@ fn load_input(
 ) -> Result<(MeetingView, PromptSettings), RuntimeError> {
     let db = services.store();
     let view =
-        MeetingView::load(&**db, meeting)?.ok_or(RuntimeError::Internal("no such meeting"))?;
+        MeetingView::load_named(&db, meeting)?.ok_or(RuntimeError::Internal("no such meeting"))?;
     let (style, _refused) = crate::summary_style::summary_style(&db)?;
     let (style_preset, _refused) = crate::summary_style::summary_template(&db)?;
     let (vocabulary, _refused) = crate::vocabulary::vocabulary(&db)?;

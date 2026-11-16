@@ -77,7 +77,9 @@ pub(crate) fn fake_post() -> Result<Fakes, RuntimeError> {
     let model = EmbeddingModelId::new("level@1");
     let cfg = PostConfig {
         clustering_thresholds: ModelThresholds::new().with(model.clone(), 0.704_565_5),
+        unassigned_floors: ModelThresholds::new().with(model.clone(), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
+        voiceprint_margins: ModelThresholds::new(),
         ..PostConfig::default()
     };
     let processor = PostProcessor::new(

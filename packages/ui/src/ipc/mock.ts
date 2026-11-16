@@ -37,6 +37,7 @@ import { dictionaryWord, splitToken, tokensOf } from "../detail/dictionaryWord";
 import { DELETE_COPY } from "../shell/deleteCopy";
 import { marksAfterEdit, withWord, wordListOf, wordsToOffer } from "./mockWords";
 import {
+  assignedLine,
   ignoredVoice,
   linked,
   markedMe,
@@ -48,6 +49,7 @@ import {
   sampleRecognisedInRoomDetail,
   samplePersons,
   unmarkedMe,
+  withUnknownLine,
 } from "./mockDetail";
 import type { FolderListItem } from "./folders";
 import { type SampleMachine, createModelsMock } from "./mockModels";
@@ -210,6 +212,9 @@ export interface MockIpcData {
   /** Finished meetings without a detail of their own were recorded in the room, with no
    * saved voice (`sampleInRoomDetail`). */
   inRoom?: boolean | "recognised";
+  /** Finished meetings without a detail of their own have this line (from 0) left without a
+   * speaker by the final pass (T12.65, `withUnknownLine`). */
+  unknownLine?: number;
   /** The persons (default: `samplePersons()`). */
   persons?: PersonItem[];
   /** The vault exports go to (the stored Obsidian vault); without one `exportMeeting`
@@ -548,6 +553,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
             ? sampleRecognisedInRoomDetail(row)
             : sampleInRoomDetail(row)
           : sampleDetail(row);
+      if (data.unknownLine !== undefined && row.state === "Ready") d = withUnknownLine(d, data.unknownLine);
       details.set(id, d);
     }
     return d;
@@ -980,7 +986,25 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       });
       return offer;
     },
-    // T12.15f: `vocabulary::add_word` and `remove_word`, through the Dictionary page's own
+    // T12.65: `edit::assign_line_speaker`, refusals first, as its one transaction.
+    assignLineSpeaker: async (meeting, segment, speaker) => {
+      call("assignLineSpeaker", meeting, segment, speaker);
+      const d = detailOf(meeting);
+      if (d.header.transcript === "Draft") {
+        fail("draft_transcript", "The words can be corrected once the final transcript is ready.");
+      }
+      const row =
+        d.transcript.find((r) => r.segment_id === segment) ??
+        fail("segment_not_found", "This line is no longer in the transcript. It may have been transcribed again.");
+      if (row.speaker_id === speaker) return;
+      if (row.speaker_id !== null) {
+        fail("line_has_speaker", "This line already has a speaker. Rename or merge speakers in Speakers instead.");
+      }
+      const card =
+        d.speakers.find((s) => s.id === speaker) ??
+        fail("speaker_not_found", "This speaker is no longer in the meeting.");
+      update(meeting, (d) => assignedLine(d, segment, card));
+    },    // T12.15f: `vocabulary::add_word` and `remove_word`, through the Dictionary page's own
     // one-word commands (T11.3e: its checks, messages and the refusal while words are not in
     // use).
     addDictionaryWord: async (token) => {

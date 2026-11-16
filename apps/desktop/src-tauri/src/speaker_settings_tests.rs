@@ -21,7 +21,9 @@ fn config() -> PostConfig {
         diarization: DiarizationConfig::default(),
         clustering_thresholds: ModelThresholds::new()
             .with(EmbeddingModelId::new(MODEL), 0.704_565_5),
+        unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.5),
+        voiceprint_margins: ModelThresholds::new(),
         ..PostConfig::default()
     }
 }

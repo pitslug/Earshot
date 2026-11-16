@@ -68,6 +68,20 @@ pub struct MeetingDiarization {
     pub speakers: Vec<MeetingSpeaker>,
     /// Turns sorted by start, then speaker.
     pub turns: Vec<MeetingTurn>,
+    /// Speech diarisation left without a speaker (T12.65), per track, sorted by start. Under
+    /// [`two_track`] a mic with one voice keeps none: all its speech is "Me".
+    pub unassigned: Vec<MeetingUnassigned>,
+}
+
+/// A stretch of one track's speech that has no speaker (T12.65).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeetingUnassigned {
+    /// Track it comes from.
+    pub track: TrackId,
+    /// Start (meeting time).
+    pub start: MeetingTime,
+    /// End (meeting time, exclusive).
+    pub end: MeetingTime,
 }
 
 impl MeetingDiarization {
@@ -102,11 +116,18 @@ fn append(
             end: t.end,
         });
     }
+    out.unassigned
+        .extend(d.unassigned.iter().map(|s| MeetingUnassigned {
+            track,
+            start: s.start,
+            end: s.end,
+        }));
     (base..out.speakers.len()).collect()
 }
 
-fn sort_turns(turns: &mut [MeetingTurn]) {
-    turns.sort_by_key(|t| (t.start, t.speaker, t.end));
+fn sort_turns(out: &mut MeetingDiarization) {
+    out.turns.sort_by_key(|t| (t.start, t.speaker, t.end));
+    out.unassigned.sort_by_key(|s| (s.start, s.end, s.track));
 }
 
 /// Turns the single mic speaker of `d` into "Me": its unit-length centroid, and its turns
@@ -185,6 +206,7 @@ pub fn two_track(
     let mut out = MeetingDiarization {
         speakers: Vec::new(),
         turns: Vec::new(),
+        unassigned: Vec::new(),
     };
     match mic.speakers.len() {
         0 => {}
@@ -198,7 +220,7 @@ pub fn two_track(
         }
     }
     append(&mut out, loopback, TrackId::Reference, SpeakerRole::Remote);
-    sort_turns(&mut out.turns);
+    sort_turns(&mut out);
     Ok(out)
 }
 
@@ -210,9 +232,10 @@ pub fn in_person(room: &Diarization, track: TrackId) -> MeetingDiarization {
     let mut out = MeetingDiarization {
         speakers: Vec::new(),
         turns: Vec::new(),
+        unassigned: Vec::new(),
     };
     append(&mut out, room, track, SpeakerRole::Room);
-    sort_turns(&mut out.turns);
+    sort_turns(&mut out);
     out
 }
 
@@ -244,12 +267,50 @@ mod tests {
         Diarization {
             speakers,
             turns,
+            unassigned: Vec::new(),
             embedding_model: model(),
         }
     }
 
     fn empty() -> Diarization {
         diar(Vec::new(), Vec::new())
+    }
+
+    fn span(s: u64, e: u64) -> crate::diar::UnassignedSpan {
+        crate::diar::UnassignedSpan {
+            start: MeetingTime::from_millis(s),
+            end: MeetingTime::from_millis(e),
+        }
+    }
+
+    #[test]
+    fn diar_policy_unassigned_speech_keeps_its_track_and_one_mic_voice_keeps_none() {
+        // T12.65: the far end's unassigned speech keeps its track; a mic with one voice is all
+        // "Me", so its unassigned speech is dropped; in the room every track keeps its own.
+        let mut mic = diar(
+            vec![speaker(vec![1.0, 0.0, 0.0], 4)],
+            vec![turn(0, 0, 1000)],
+        );
+        mic.unassigned = vec![span(2000, 2500)];
+        let mut lb = diar(
+            vec![speaker(vec![0.0, 1.0, 0.0], 3)],
+            vec![turn(0, 3000, 6000)],
+        );
+        lb.unassigned = vec![span(7000, 7600), span(1000, 1400)];
+        let m = two_track(&mic, &lb).unwrap();
+        let got: Vec<(TrackId, u64)> = m
+            .unassigned
+            .iter()
+            .map(|s| (s.track, s.start.as_millis()))
+            .collect();
+        assert_eq!(
+            got,
+            [(TrackId::Reference, 1000), (TrackId::Reference, 7000)]
+        );
+        let room = in_person(&mic, TrackId::Mic);
+        assert_eq!(room.unassigned.len(), 1);
+        assert_eq!(room.unassigned[0].track, TrackId::Mic);
+        assert!(two_track(&empty(), &empty()).unwrap().unassigned.is_empty());
     }
 
     #[test]

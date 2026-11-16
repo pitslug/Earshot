@@ -33,7 +33,9 @@
 //!    speakers, so a forced count cannot merge two real speakers to keep an outlier.
 //! 5. Small clusters are merged into the large cluster whose centroid is most
 //!    cosine-similar (pyannote's small-cluster reassignment, `cdist(..., metric=
-//!    "cosine")`).
+//!    "cosine")`), unless that best cosine is below [`ClusteringConfig::unassigned_floor`]:
+//!    such a small cluster is kept apart and marked unassigned ([`Clustering::unassigned`]),
+//!    so its speech gets no speaker rather than an unlike one (T12.65).
 //!
 //! The search keeps each cluster's nearest neighbour and recomputes it only for clusters
 //! affected by a merge (the "generic" algorithm of D. Müllner, "Modern hierarchical,
@@ -61,6 +63,14 @@
 //!   `min_speakers` 1) the biggest cluster absorbs the rest. Same partition.
 //! - **Subsampling.** pyannote shuffles with Python's unseeded `random`; here a fixed-seed
 //!   xorshift draws the subset, so results are reproducible. No systematic DER effect.
+//! - **Unassigned small clusters** (T12.65, not in pyannote). pyannote merges every small
+//!   cluster into its most similar large cluster however unlike they are; here a small
+//!   cluster whose best cosine is below `unassigned_floor` stays out and its speech is left
+//!   without a speaker. Scored as missed speech, that turns confusion into missed speech
+//!   (no DER change) where the small cluster was another talker, and raises DER where it
+//!   belonged to the large cluster after all. The default floor, -1, is pyannote's
+//!   behaviour bit for bit; a model's floor is chosen on dev data by the rule in
+//!   `docs/far-speakers/unassigned-floor.md` ([`calibrated_unassigned_floor`]).
 //! - The threshold was tuned by pyannote for its WeSpeaker ResNet34 embeddings. A
 //!   different embedding model (CAM++) needs its own threshold, calibrated on dev data
 //!   (T3.2/T3.5).
@@ -92,6 +102,11 @@ pub struct ClusteringConfig {
     /// nearest centroid. Default 1000, pyannote.audio 3.1 `BaseClustering`
     /// `max_num_embeddings`; it also bounds the hierarchy's cost.
     pub max_train_embeddings: usize,
+    /// A small cluster whose highest cosine similarity to every large cluster's centroid is
+    /// below this is left unassigned instead of merged (module docs, step 5). In `[-1, 1]`;
+    /// default -1, which never leaves anything out (pyannote 3.1 bit for bit). A model's
+    /// value comes from [`calibrated_unassigned_floor`].
+    pub unassigned_floor: f32,
 }
 
 impl Default for ClusteringConfig {
@@ -102,6 +117,7 @@ impl Default for ClusteringConfig {
             max_speakers: None,
             min_cluster_size: 12,
             max_train_embeddings: 1000,
+            unassigned_floor: -1.0,
         }
     }
 }
@@ -155,6 +171,47 @@ pub fn calibrated_cluster_threshold(model: &EmbeddingModelId) -> Option<f32> {
         .map(|c| c.threshold)
 }
 
+/// An unassigned floor ([`ClusteringConfig::unassigned_floor`]) chosen on dev data for one
+/// exact embedding model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CalibratedUnassignedFloor {
+    /// Exact [`EmbeddingModelId`] string.
+    pub model: &'static str,
+    /// Cosine floor in `[-1, 1]`; -1 leaves nothing unassigned.
+    pub floor: f32,
+    /// How it was obtained.
+    pub source: &'static str,
+}
+
+/// Unassigned floors chosen by the rule in `docs/far-speakers/unassigned-floor.md` (T12.65)
+/// on dev data only (AMI dev mixes and dev-clean scenes, never the acceptance sets), measured
+/// by `cargo run --release -p earshot-runtime --example cluster_sweep -- <repo> --models <dir>
+/// --floors`.
+pub const CALIBRATED_UNASSIGNED_FLOORS: &[CalibratedUnassignedFloor] =
+    &[CalibratedUnassignedFloor {
+        model: "campplus-en-voxceleb@357a834f702b",
+        floor: CAMPPLUS_UNASSIGNED_FLOOR,
+        source: "T12.65 rule (docs/far-speakers/unassigned-floor.md) on the five AMI dev \
+                 mixes and 16 dev-clean long scenes at clustering threshold 0.68: no floor on \
+                 the grid 0.00-0.60 passed (right speech left out was 4-9 times the wrong \
+                 speech left out), so -1, today's clustering",
+    }];
+
+/// The CAM++ VoxCeleb unassigned floor (see [`CALIBRATED_UNASSIGNED_FLOORS`]): -1, nothing left
+/// unassigned, because no floor passed the T12.65 rule on dev data (2026-11-16; the measurement
+/// is `docs/far-speakers/unassigned-floor.json`). A new value needs a new rule run.
+pub const CAMPPLUS_UNASSIGNED_FLOOR: f32 = -1.0;
+
+/// The dev-chosen unassigned floor for `model`, or `None` if it has none (a new embedding
+/// model needs its own, like its clustering threshold).
+#[must_use]
+pub fn calibrated_unassigned_floor(model: &EmbeddingModelId) -> Option<f32> {
+    CALIBRATED_UNASSIGNED_FLOORS
+        .iter()
+        .find(|c| c.model == model.as_str())
+        .map(|c| c.floor)
+}
+
 impl ClusteringConfig {
     /// The same configuration with a known count of `n` speakers: the result has `n`
     /// clusters when the dendrogram allows it (and there are at least `n` embeddings),
@@ -170,8 +227,14 @@ impl ClusteringConfig {
     ///
     /// # Errors
     /// [`DiarError::Config`] for a threshold outside `[0, 2]`, `min_speakers == 0`,
-    /// `max_speakers < min_speakers`, or `max_train_embeddings == 0`.
+    /// `max_speakers < min_speakers`, `max_train_embeddings == 0`, or an unassigned floor
+    /// outside `[-1, 1]`.
     pub fn validate(&self) -> Result<(), DiarError> {
+        if !(-1.0..=1.0).contains(&self.unassigned_floor) {
+            return Err(DiarError::Config(
+                "the unassigned floor must be a cosine in [-1, 1]".to_owned(),
+            ));
+        }
         if !(0.0..=2.0).contains(&self.threshold) {
             return Err(DiarError::Config(
                 "clustering threshold must be a distance in [0, 2]".to_owned(),
@@ -202,6 +265,9 @@ pub struct Clustering {
     pub labels: Vec<usize>,
     /// Unit-length centroid of each cluster (normalised mean of its unit-length members).
     pub centroids: Vec<Vec<f32>>,
+    /// Per cluster: a small cluster left unassigned because it is like no large cluster
+    /// (module docs, step 5). Always all false with the default floor.
+    pub unassigned: Vec<bool>,
 }
 
 /// Clusters `embeddings` (all the same dimension, any scale). See the module docs.
@@ -219,6 +285,7 @@ pub fn cluster_embeddings(
         return Ok(Clustering {
             labels: Vec::new(),
             centroids: Vec::new(),
+            unassigned: Vec::new(),
         });
     }
     let dim = embeddings[0].len();
@@ -367,10 +434,19 @@ pub fn cluster_embeddings(
         }
     }
     let large_centroids: Vec<Vec<f64>> = final_members.iter().map(|g| sum_of(g)).collect();
+    // A floor of -1 never leaves anything out (exactly pyannote's step 5).
+    let floor = f64::from(cfg.unassigned_floor);
+    let mut left_out: Vec<Vec<usize>> = Vec::new();
     for g in small_groups {
-        let target = nearest(&sum_of(&g), &large_centroids);
-        final_members[target].extend(g);
+        let (target, best) = nearest_with_cosine(&sum_of(&g), &large_centroids);
+        if floor > -1.0 && best < floor {
+            left_out.push(g);
+        } else {
+            final_members[target].extend(g);
+        }
     }
+    let assigned_count = final_members.len();
+    final_members.extend(left_out);
 
     // Final centroids from the training members, then every embedding to its nearest one.
     let centroids: Vec<Vec<f64>> = final_members
@@ -417,15 +493,18 @@ pub fn cluster_embeddings(
         labels.push(l);
     }
     let mut out_centroids = vec![Vec::new(); next];
+    let mut unassigned = vec![false; next];
     for (r, l) in order.iter().enumerate() {
         if let Some(l) = l {
             let nrm = norm(&centroids[r]).max(f64::MIN_POSITIVE);
             out_centroids[*l] = centroids[r].iter().map(|&x| (x / nrm) as f32).collect();
+            unassigned[*l] = r >= assigned_count;
         }
     }
     Ok(Clustering {
         labels,
         centroids: out_centroids,
+        unassigned,
     })
 }
 
@@ -568,6 +647,11 @@ fn training_subset(n: usize, max: usize) -> Vec<usize> {
 /// Index of the centroid (any scale) with the highest cosine similarity to `v`; lowest
 /// index on ties.
 fn nearest(v: &[f64], centroids: &[Vec<f64>]) -> usize {
+    nearest_with_cosine(v, centroids).0
+}
+
+/// [`nearest`] with the winning cosine similarity (`-inf` with no centroid).
+fn nearest_with_cosine(v: &[f64], centroids: &[Vec<f64>]) -> (usize, f64) {
     let nv = norm(v).max(f64::MIN_POSITIVE);
     let mut best = (f64::NEG_INFINITY, 0usize);
     for (k, c) in centroids.iter().enumerate() {
@@ -576,7 +660,7 @@ fn nearest(v: &[f64], centroids: &[Vec<f64>]) -> usize {
             best = (s, k);
         }
     }
-    best.1
+    (best.1, best.0)
 }
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {

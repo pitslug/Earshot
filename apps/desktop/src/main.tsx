@@ -24,7 +24,8 @@ import { createRoot } from "react-dom/client";
 // for the transcript and the banner is taken back (T12.33). `?sync=1` shows a computer set up for
 // sync with other computers that write summaries, `?summary=offloaded` a meeting whose summary
 // another computer writes (T11.3db). `?notInUse=3` shows a Dictionary whose words joined from
-// the user's computers pass a limit, three of them not in use (T11.3e). The mock is loaded only here, with a
+// the user's computers pass a limit, three of them not in use (T11.3e). `?unknownSpeaker=1` leaves line
+// 6 of finished meetings with an unknown speaker (T12.65). The mock is loaded only here, with a
 // dynamic import, so the app's own bundle starts without it (T12.54).
 async function previewIpc(): Promise<Ipc> {
   const { createMockIpc, samplePersons } = await import("@earshot/ui/preview");
@@ -38,6 +39,7 @@ async function previewIpc(): Promise<Ipc> {
     cleanInstall: query.get("clean") === "1",
     noModels: query.get("clean") === "1",
     inRoom: query.get("inRoom") === "recognised" ? "recognised" : query.get("inRoom") === "1",
+    unknownLine: query.get("unknownSpeaker") === "1" ? 5 : undefined,
     ...(query.get("selfNamed") === "1"
       ? { persons: [...samplePersons(), { id: "9e000000-0000-7000-8000-000000000009", name: "Casey", has_voiceprint: true, is_me: false }] }
       : {}),

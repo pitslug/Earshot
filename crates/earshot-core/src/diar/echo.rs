@@ -381,6 +381,7 @@ mod tests {
                     end: MeetingTime::from_millis(e),
                 })
                 .collect(),
+            unassigned: Vec::new(),
             embedding_model: model(),
         }
     }

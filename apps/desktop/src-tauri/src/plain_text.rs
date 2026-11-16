@@ -15,6 +15,7 @@
 //! ([`Catalogue::model_of_file`]); otherwise it points at the System and Transcription pages,
 //! which list what is missing. Telling someone to fetch the wrong thing is worse than telling them where to look.
 
+use earshot_core::diar::UNKNOWN_SPEAKER;
 use earshot_runtime::NetError;
 use earshot_runtime::catalogue::{Catalogue, ModelKind, display_name};
 use earshot_runtime::claude_code::LlmError;
@@ -103,6 +104,31 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
                 ),
             ));
         }
+        // T12.65: lines like none of the speakers found are left without one.
+        let unknown: usize = warnings
+            .iter()
+            .map(|w| match w {
+                PostWarning::SpeakerUnknown {
+                    track: t, lines, ..
+                } if of_track(*t) => *lines,
+                _ => 0,
+            })
+            .sum();
+        if unknown > 0 {
+            let lines = if unknown == 1 {
+                "1 line".to_owned()
+            } else {
+                format!("{unknown} lines")
+            };
+            out.push((
+                format!("post-unknown:{}", track.key()),
+                format!(
+                    "{lines} from {} sounded like none of the speakers Earshot found, so they \
+                     show as {UNKNOWN_SPEAKER}. Choose who said them from the line.",
+                    track.device()
+                ),
+            ));
+        }
     }
     // T12.16: the user's corrected lines were kept over the new transcript.
     let edited: usize = warnings
@@ -162,6 +188,7 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
             | PostWarning::EchoRecordUnreadable
             | PostWarning::RepetitionDropped { .. }
             | PostWarning::VoiceWithoutWords { .. }
+            | PostWarning::SpeakerUnknown { .. }
             | PostWarning::EditedLinesKept { .. } => None,
         };
         if let Some((key, text)) = shown
@@ -1054,6 +1081,39 @@ mod post_warning_tests {
         assert!(copy[0].1.starts_with("3 passages from your microphone"));
         assert!(copy[1].1.contains("1 voice on your microphone"));
         assert!(copy[2].1.contains("2 voices on computer audio"));
+    }
+
+    /// T12.65: lines left without a speaker, counted per track, named as the transcript names
+    /// them.
+    #[test]
+    fn post_warnings_say_how_many_lines_have_an_unknown_speaker() {
+        let unknown = |track, lines| PostWarning::SpeakerUnknown {
+            track,
+            lines,
+            words: 9,
+        };
+        let copy = post_warning_copy(&[
+            unknown(TrackId::Reference, 2),
+            unknown(TrackId::Reference, 1),
+            unknown(TrackId::Mic, 1),
+        ]);
+        let keys: Vec<&str> = copy.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["post-unknown:you", "post-unknown:them"]);
+        assert!(
+            copy[0].1.starts_with("1 line from your microphone"),
+            "{}",
+            copy[0].1
+        );
+        assert!(
+            copy[1].1.starts_with("3 lines from computer audio"),
+            "{}",
+            copy[1].1
+        );
+        for (_, text) in &copy {
+            assert!(text.contains("Unknown speaker"), "{text}");
+            assert!(!text.contains('\u{2014}') && !text.contains('!'), "{text}");
+            assert!(!names_developer_tool(text));
+        }
     }
 
     #[test]

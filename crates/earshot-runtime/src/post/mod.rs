@@ -90,7 +90,9 @@
 //!    remote speakers on the loopback), also when only one of them is processed now;
 //!    [`in_person`] for a single-track meeting, on that track.
 //! 4. **Naming**: stored voiceprints are loaded once and every speaker's centroid is
-//!    matched against them ([`match_embedding_with_report`]). A known person gives the
+//!    matched against them ([`match_embedding_with_margin`]: the calibrated threshold and,
+//!    since T12.67, a margin over the runner-up person, [`PostConfig::voiceprint_margin`]).
+//!    A known person gives the
 //!    speaker their name. Among several mic voices ([`SpeakerRole::Local`], or the
 //!    [`SpeakerRole::Room`] voices of an in-person meeting recorded on the mic, T6.27), the
 //!    one that best matches the user becomes "Me" (the promotion is made in the diarisation
@@ -179,12 +181,12 @@ use earshot_core::asr::{
 use earshot_core::audio::{MonoBuffer, SampleRate};
 use earshot_core::capture::TrackId;
 use earshot_core::diar::DiarError;
-use earshot_core::diar::cluster::calibrated_cluster_threshold;
+use earshot_core::diar::cluster::{calibrated_cluster_threshold, calibrated_unassigned_floor};
 use earshot_core::diar::{
     Diarization, DiarizationConfig, Diarizer, EmbeddingModelId, MeetingDiarization, MeetingSpeaker,
     SpanEmbedding, SpeakerEchoConfig, SpeakerEmbedder, SpeakerRole, SpeakerSegmenter, SpeakerTurn,
-    in_person, label_segment_speakers, label_segments, remove_speaker_echo, speaker_echo_spans,
-    two_track,
+    UnassignedSpan, in_person, label_segment_speakers_unassigned, label_segments,
+    remove_speaker_echo, speaker_echo_spans, two_track,
 };
 use earshot_core::diar::{echo_span_pieces, me_speakers};
 use earshot_core::identity::EntityId;
@@ -194,7 +196,7 @@ use earshot_core::model::{
 use earshot_core::pipeline::FinalPassRequest;
 use earshot_core::voiceprint::{
     EnrolmentConfig, InMemoryVoiceprintRepo, MatchOutcome, VoiceprintError, VoiceprintRepo,
-    calibrated_threshold, enroll_me, match_embedding_with_report, me_person,
+    calibrated_margin, calibrated_threshold, enroll_me, match_embedding_with_margin, me_person,
 };
 use earshot_store::read_flac;
 use rand_core::Rng;
@@ -221,6 +223,9 @@ pub enum Calibration {
     Clustering,
     /// The open-set voiceprint match threshold.
     Voiceprint,
+    /// The cosine floor below which a short-spoken voice is left without a speaker
+    /// (T12.65, [`earshot_core::diar::ClusteringConfig::unassigned_floor`]).
+    UnassignedFloor,
 }
 
 impl fmt::Display for Calibration {
@@ -228,6 +233,7 @@ impl fmt::Display for Calibration {
         f.write_str(match self {
             Self::Clustering => "clustering",
             Self::Voiceprint => "voiceprint",
+            Self::UnassignedFloor => "unassigned floor",
         })
     }
 }
@@ -266,9 +272,15 @@ pub struct PostConfig {
     /// Clustering thresholds that override the core calibration (tests, a newly
     /// calibrated model). Default: empty.
     pub clustering_thresholds: ModelThresholds,
+    /// Unassigned floors that override the core calibration (tests, a newly calibrated
+    /// model). Default: empty.
+    pub unassigned_floors: ModelThresholds,
     /// Voiceprint match thresholds that override the core calibration (tests, a newly
     /// calibrated model). Default: empty.
     pub voiceprint_thresholds: ModelThresholds,
+    /// Voiceprint margins over the runner-up person that override the core choice (tests, a
+    /// newly measured model, T12.67). Default: empty.
+    pub voiceprint_margins: ModelThresholds,
     /// Store the user's voiceprint from the "Me" speaker. Default off: voiceprints are
     /// biometric data (PLAN.md 3.9), so the host turns this on after the user agrees.
     pub enroll_me: bool,
@@ -290,7 +302,9 @@ impl Default for PostConfig {
         Self {
             diarization: DiarizationConfig::default(),
             clustering_thresholds: ModelThresholds::new(),
+            unassigned_floors: ModelThresholds::new(),
             voiceprint_thresholds: ModelThresholds::new(),
+            voiceprint_margins: ModelThresholds::new(),
             enroll_me: false,
             enrolment: EnrolmentConfig::default(),
             reuse_live: true,
@@ -316,6 +330,17 @@ impl PostConfig {
         })
     }
 
+    /// The margin a voiceprint match must hold over the runner-up person for `model` (T12.67):
+    /// an override, else the core choice ([`calibrated_margin`]), else none (0: the threshold
+    /// alone, the rule before T12.67).
+    #[must_use]
+    pub fn voiceprint_margin(&self, model: &EmbeddingModelId) -> f32 {
+        self.voiceprint_margins
+            .get(model)
+            .or_else(|| calibrated_margin(model))
+            .unwrap_or(0.0)
+    }
+
     /// The clustering threshold for `model`: an override, else the core calibration
     /// ([`calibrated_cluster_threshold`]).
     ///
@@ -327,6 +352,21 @@ impl PostConfig {
             .or_else(|| calibrated_cluster_threshold(model))
             .ok_or_else(|| RuntimeError::Uncalibrated {
                 purpose: Calibration::Clustering,
+                model: model.clone(),
+            })
+    }
+
+    /// The unassigned floor for `model`: an override, else the core calibration
+    /// ([`calibrated_unassigned_floor`], T12.65).
+    ///
+    /// # Errors
+    /// [`RuntimeError::Uncalibrated`] if neither has one.
+    pub fn unassigned_floor(&self, model: &EmbeddingModelId) -> Result<f32, RuntimeError> {
+        self.unassigned_floors
+            .get(model)
+            .or_else(|| calibrated_unassigned_floor(model))
+            .ok_or_else(|| RuntimeError::Uncalibrated {
+                purpose: Calibration::UnassignedFloor,
                 model: model.clone(),
             })
     }
@@ -467,6 +507,18 @@ pub enum PostWarning {
         track: TrackId,
         /// How much speech diarisation gave it.
         speech: Duration,
+    },
+    /// Diarisation left some of a track's speech without a speaker, because it sounded like
+    /// none of the speakers it found (T12.65, `ClusteringConfig::unassigned_floor`): those
+    /// lines keep their words and times and have no speaker, shown as an unknown speaker
+    /// the user can assign.
+    SpeakerUnknown {
+        /// The track.
+        track: TrackId,
+        /// Transcript lines with no speaker.
+        lines: usize,
+        /// Their words.
+        words: usize,
     },
     /// An in-room meeting's earlier "Me" row was not found again and this run has no "Me" of
     /// its own: a voice the user marked as themselves (T9.12) that did not match, or had no
@@ -1033,9 +1085,11 @@ where
     ) -> Result<Self, RuntimeError> {
         let model = embedder.info().model.clone();
         let clustering = config.clustering_threshold(&model)?;
+        let floor = config.unassigned_floor(&model)?;
         let voiceprint_threshold = config.voiceprint_threshold(&model)?;
         let mut diarization = config.diarization.clone();
         diarization.clustering.threshold = clustering;
+        diarization.clustering.unassigned_floor = floor;
         let diarizer =
             Diarizer::new(segmenter, embedder, diarization).map_err(RuntimeError::Diar)?;
         Ok(Self {
@@ -1348,6 +1402,7 @@ where
         let none = Diarization {
             speakers: Vec::new(),
             turns: Vec::new(),
+            unassigned: Vec::new(),
             embedding_model: model.clone(),
         };
         let two = recorded.contains(&TrackId::Mic) && recorded.contains(&TrackId::Reference);
@@ -1368,6 +1423,7 @@ where
 
         // 4-5. Naming and persistence in one transaction.
         let threshold = self.voiceprint_threshold;
+        let margin = self.config.voiceprint_margin(&model);
         let config = &self.config;
         let meeting = input.meeting;
         let mut db = services.store();
@@ -1434,8 +1490,14 @@ where
                 .max()
                 .unwrap_or(0);
 
-            let mut namings =
-                self::name_speakers(&*tx, &mut meeting_diar, &model, threshold, &mut warnings)?;
+            let mut namings = self::name_speakers(
+                &*tx,
+                &mut meeting_diar,
+                &model,
+                threshold,
+                margin,
+                &mut warnings,
+            )?;
             // Neither the policy nor a voiceprint named "Me": the speaker check may, when it
             // discriminated (one mic voice passes its user test). Never enrolled from.
             let check_named_me = meeting_diar.me().is_none()
@@ -1448,6 +1510,7 @@ where
             // reported instead.
             let edited_segments: Vec<Segment> = edited.iter().map(|r| r.segment.clone()).collect();
             let mut words_under_edits = 0;
+            let mut unknown_lines: BTreeSet<EntityId> = BTreeSet::new();
             let mut labelled: Vec<(Segment, Option<usize>)> = Vec::new();
             for (kind, segments) in transcripts {
                 let (segments, dropped) = drop_words_under_edits(segments, &edited_segments);
@@ -1462,8 +1525,29 @@ where
                         end: t.end,
                     })
                     .collect();
+                let unassigned: Vec<UnassignedSpan> = meeting_diar
+                    .unassigned
+                    .iter()
+                    .filter(|s| s.track == kind)
+                    .map(|s| UnassignedSpan {
+                        start: s.start,
+                        end: s.end,
+                    })
+                    .collect();
                 let mut next_id = || EntityId::generate(stamp.clock, &mut *stamp.rng);
-                labelled.extend(label_segment_speakers(segments, &turns, &mut next_id));
+                let out =
+                    label_segment_speakers_unassigned(segments, &turns, &unassigned, &mut next_id);
+                // Words with no speaker (T12.65): kept with their text and times, no row, and
+                // the lines recorded as unknown (`crate::unknown_lines`).
+                if out.words > 0 {
+                    warnings.push(PostWarning::SpeakerUnknown {
+                        track: kind,
+                        lines: out.unassigned.len(),
+                        words: out.words,
+                    });
+                }
+                unknown_lines.extend(out.unassigned);
+                labelled.extend(out.parts);
             }
             if !edited.is_empty() {
                 warnings.push(PostWarning::EditedLinesKept {
@@ -1853,6 +1937,7 @@ where
                 );
                 tx.put_segment(row)?;
             }
+            crate::unknown_lines::record_tx(tx, meeting, &unknown_lines)?;
             // Word choices on lines this run replaced go with them (transcript words);
             // choices on kept lines (edited, or another track's) stay.
             crate::word_choices::drop_stale_tx(tx, meeting)?;
@@ -2359,6 +2444,7 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
     diar: &mut MeetingDiarization,
     model: &EmbeddingModelId,
     threshold: f32,
+    margin: f32,
     warnings: &mut Vec<PostWarning>,
 ) -> Result<Vec<Naming>, RuntimeError> {
     let vp = RuntimeError::Voiceprint;
@@ -2379,12 +2465,18 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
             matches.push(None);
             continue;
         }
-        let report = match_embedding_with_report(&snapshot, &s.centroid, threshold).map_err(vp)?;
+        let report =
+            match_embedding_with_margin(&snapshot, &s.centroid, threshold, margin).map_err(vp)?;
         if report.skipped_invalid > 0 {
             warnings.push(PostWarning::SkippedVoiceprints(report.skipped_invalid));
         }
         matches.push(match report.outcome {
             MatchOutcome::Known { person, score } => Some((person, score)),
+            // The margin (T12.67) never costs the user their own name: a best match to the
+            // user's identity at the threshold stands, however close the runner-up.
+            MatchOutcome::Unknown {
+                best: Some((person, score)),
+            } if score >= threshold && is_me(person) => Some((person, score)),
             MatchOutcome::Unknown { .. } => None,
         });
     }

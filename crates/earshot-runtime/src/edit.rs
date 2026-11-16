@@ -190,6 +190,9 @@ pub enum EditError {
     /// allowing the writer now would change nothing for it
     /// ([`crate::keep_local::allow_writer`], T12.45).
     MeetingStillWorking(EntityId),
+    /// The line (the id) already has a speaker: only a line with no speaker (an unknown
+    /// speaker, T12.65) is given one from the line ([`assign_line_speaker`]).
+    LineHasSpeaker(EntityId),
 }
 
 /// What is wrong with a title or transcript text.
@@ -306,6 +309,9 @@ impl fmt::Display for EditError {
                 write!(f, "segment {id} has no word at that position")
             }
             Self::WordNotListed => f.write_str("the word is not on the word list"),
+            Self::LineHasSpeaker(id) => {
+                write!(f, "segment {id} already has a speaker")
+            }
             Self::NoWordChoice(id) => {
                 write!(
                     f,
@@ -450,6 +456,48 @@ pub fn edit_segment_offering(
         }
         let listed = word_choices::word_list_tx(tx)?;
         Ok(crate::vocabulary::words_to_offer(&before, &after, &listed))
+    })
+}
+
+/// Gives line `segment` of `meeting`'s final transcript, a line with no speaker (T12.65: an
+/// unknown speaker, `MeetingView::is_unknown_speaker`), to `speaker`, one of the meeting's
+/// live speakers, in one transaction. The line counts as the user's edit from then on
+/// (`SegmentRow::text_edited_at`), so a later final pass keeps it with its speaker as it keeps
+/// a corrected line. Returns whether the row changed.
+///
+/// Refused as a line edit is ([`edit_segment`]): only the final transcript, and not while a
+/// live session, final pass or summary works on the meeting.
+///
+/// # Errors
+/// [`EditError::LineHasSpeaker`] for a line that already has a speaker,
+/// [`EditError::SpeakerNotFound`] for a speaker not of this meeting, and [`edit_segment`]'s.
+pub fn assign_line_speaker(
+    services: &Services,
+    meeting: EntityId,
+    segment: EntityId,
+    speaker: EntityId,
+) -> Result<bool, RuntimeError> {
+    let _claim = line_edit_claim(services, meeting)?;
+    write(services, |tx, stamp| {
+        let (mut row, _) = final_line(tx, meeting, segment)?;
+        if row.segment.speaker_id == Some(speaker) {
+            return Ok(false);
+        }
+        if row.segment.speaker_id.is_some() {
+            return Err(EditError::LineHasSpeaker(segment).into());
+        }
+        let known = tx
+            .speakers(meeting)?
+            .into_iter()
+            .any(|s| s.id == speaker && !s.meta.deleted);
+        if !known {
+            return Err(EditError::SpeakerNotFound(speaker).into());
+        }
+        row.segment.speaker_id = Some(speaker);
+        row.meta.touch(stamp.hlc, stamp.clock);
+        row.text_edited_at = Some(row.meta.updated_at);
+        tx.put_segment(row)?;
+        Ok(true)
     })
 }
 

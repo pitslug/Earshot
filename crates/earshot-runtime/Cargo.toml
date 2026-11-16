@@ -134,6 +134,11 @@ test = true
 name = "cluster_sweep"
 test = true
 
+# T12.67: voiceprint matches on AMI dev meeting audio (docs/voiceprint-meetings.md).
+[[example]]
+name = "vp_meetings"
+test = true
+
 # `cargo xtask bench` (T8.1): RTF, live latency and peak memory; its unit tests run with the
 # crate's tests.
 [[example]]

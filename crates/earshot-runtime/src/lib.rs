@@ -84,6 +84,7 @@ pub mod summary_order;
 pub mod summary_settings;
 pub mod summary_style;
 pub mod sync;
+pub mod unknown_lines;
 pub mod update;
 pub mod view;
 pub mod vocabulary;

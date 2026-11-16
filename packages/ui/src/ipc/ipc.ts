@@ -102,6 +102,10 @@ export interface IpcCommands
    * (T12.15f: words the edit wrote, neither common nor on the word list; nothing is added).
    * Rejects with `invalid_text`, `segment_not_found` or `draft_transcript`. */
   editSegment(meeting: string, segment: string, text: string): Promise<string[]>;
+  /** Gives a final line with an unknown speaker (T12.65, `TranscriptRow.unknown_speaker`) to
+   * `speaker`, one of the meeting's speakers; the line is marked edited. Rejects with
+   * `line_has_speaker`, `speaker_not_found`, `segment_not_found` or `draft_transcript`. */
+  assignLineSpeaker(meeting: string, segment: string, speaker: string): Promise<void>;
   /** "Use it", or another word from `MeetingDetail.word_list` (T12.15e): word `token` of a
    * final line becomes `word`, its punctuation kept; the line is marked edited. Rejects with
    * `word_not_listed`, `word_not_found`, `segment_not_found` or `draft_transcript`. */

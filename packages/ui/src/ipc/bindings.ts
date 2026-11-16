@@ -66,6 +66,11 @@ export const commands = {
 	 */
 	editSegment: (meeting: string, segment: string, text: string) => typedError<string[], IpcError>(__TAURI_INVOKE("edit_segment", { meeting, segment, text })),
 	/**
+	 *  Gives a line of `meeting`'s final transcript that has an unknown speaker (T12.65) to one
+	 *  of the meeting's speakers.
+	 */
+	assignLineSpeaker: (meeting: string, segment: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("assign_line_speaker", { meeting, segment, speaker })),
+	/**
 	 *  "Use it", or another word from the list (T12.15e): word `token` of a final transcript line
 	 *  becomes `word`, which must be on the word list.
 	 */
@@ -2453,6 +2458,12 @@ export type TranscriptRow = {
 	speaker_id: string | null,
 	/**  The name shown. */
 	speaker: string,
+	/**
+	 *  A final line diarisation gave to none of its speakers (T12.65): shown as
+	 *  `earshot_core::diar::UNKNOWN_SPEAKER`, and the user can give it a speaker from the
+	 *  line (`assign_line_speaker`).
+	 */
+	unknown_speaker: boolean,
 	/**  Where it was heard. */
 	track: RowTrack,
 	/**  The text. */
