@@ -601,6 +601,192 @@ fn diar_cluster_small_clusters_join_the_nearest_large_one() {
     assert_eq!(three.centroids.len(), 3);
 }
 
+/// Two large clusters on axes 0 and 1 (30 points each) plus `small` points of a voice in
+/// direction `voice` (one small cluster at a low threshold).
+fn two_large_and_a_voice(voice: &[f32], small: usize) -> (Vec<Vec<f32>>, usize) {
+    let dim = voice.len();
+    let (mut pts, _) = points(&[axis(0, dim), axis(1, dim)], 30, 0.02, 91);
+    let first = pts.len();
+    let mut n = Noise(93);
+    for _ in 0..small {
+        pts.push(voice.iter().map(|&x| x + 0.01 * n.next()).collect());
+    }
+    (pts, first)
+}
+
+fn floored(threshold: f32, floor: f32) -> ClusteringConfig {
+    ClusteringConfig {
+        unassigned_floor: floor,
+        ..cfg(threshold, 12)
+    }
+}
+
+#[test]
+fn diar_cluster_unassigned_floor_leaves_a_voice_like_no_speaker_out() {
+    // A short-spoken voice orthogonal to both speakers (cosine 0 to each): today it is
+    // merged into a speaker; with a floor of 0.3 it is left out, as its own cluster marked
+    // unassigned, and the two speakers are untouched.
+    let (pts, first) = two_large_and_a_voice(&axis(5, 64), 4);
+    let today = cluster_embeddings(&pts, &cfg(0.3, 12)).unwrap();
+    assert_eq!(today.centroids.len(), 2);
+    assert_eq!(today.unassigned, vec![false, false]);
+    let r = cluster_embeddings(&pts, &floored(0.3, 0.3)).unwrap();
+    assert_eq!(r.centroids.len(), 3);
+    assert_eq!(r.unassigned, vec![false, false, true]);
+    let voice = r.labels[first];
+    assert!(r.unassigned[voice]);
+    assert!(r.labels[first..].iter().all(|&l| l == voice));
+    assert!(r.labels[..first].iter().all(|&l| !r.unassigned[l]));
+    assert_eq!(&r.labels[..first], &today.labels[..first]);
+    assert!(cosine(&r.centroids[voice], &axis(5, 64)) > 0.99);
+}
+
+#[test]
+fn diar_cluster_unassigned_floor_still_merges_a_small_cluster_near_a_speaker() {
+    // A small cluster at cosine 0.9 to speaker 0 (beyond a 0.3 threshold, so it stays
+    // small in the hierarchy) still joins speaker 0 under a floor of 0.3; it is left out
+    // only when the floor is above its cosine.
+    let dim = 64;
+    let near: Vec<f32> = (0..dim)
+        .map(|i| match i {
+            0 => 0.9,
+            2 => (1.0f32 - 0.81).sqrt(),
+            _ => 0.0,
+        })
+        .collect();
+    let (pts, first) = two_large_and_a_voice(&near, 4);
+    let r = cluster_embeddings(&pts, &floored(0.3, 0.3)).unwrap();
+    assert_eq!(r.centroids.len(), 2);
+    assert!(r.unassigned.iter().all(|u| !u));
+    assert!(r.labels[first..].iter().all(|&l| l == r.labels[0]));
+    let strict = cluster_embeddings(&pts, &floored(0.3, 0.95)).unwrap();
+    assert_eq!(strict.unassigned, vec![false, false, true]);
+}
+
+#[test]
+fn diar_cluster_unassigned_floor_of_minus_one_is_todays_clustering() {
+    // -1 (the default) is pyannote's step 5 bit for bit: equal results on scenes with
+    // outliers, small clusters and known counts, and nothing ever unassigned.
+    assert_eq!(ClusteringConfig::default().unassigned_floor, -1.0);
+    let c = unit_centroids(4, 64, 81);
+    let (mut pts, _) = points(&c, 20, 0.05, 82);
+    pts.extend(outliers(3, 64, 83));
+    for base in [
+        cfg(PYANNOTE_THRESHOLD, 12),
+        cfg(0.2, 12),
+        cfg(2.0, 12).with_num_speakers(4),
+        cfg(0.5, 1),
+    ] {
+        let explicit = ClusteringConfig {
+            unassigned_floor: -1.0,
+            ..base.clone()
+        };
+        let a = cluster_embeddings(&pts, &base).unwrap();
+        let b = cluster_embeddings(&pts, &explicit).unwrap();
+        assert_eq!(a, b);
+        assert!(a.unassigned.iter().all(|u| !u));
+    }
+}
+
+#[test]
+fn diar_cluster_unassigned_outliers_never_count_as_speakers() {
+    // A known count of 2 with three orthogonal outlier singletons and a high floor: the
+    // two speakers are recovered and counted; each outlier is left unassigned rather than
+    // made a speaker or merged into one.
+    let dim = 64;
+    let c = vec![axis(0, dim), axis(1, dim)];
+    let (mut pts, mut truth) = points(&c, 30, 0.02, 71);
+    for a in [5, 6, 7] {
+        pts.push(axis(a, dim));
+        truth.push(2);
+    }
+    let cfg2 = ClusteringConfig {
+        unassigned_floor: 0.5,
+        ..ClusteringConfig::default().with_num_speakers(2)
+    };
+    let r = cluster_embeddings(&pts, &cfg2).unwrap();
+    let speakers = r.unassigned.iter().filter(|u| !**u).count();
+    assert_eq!(speakers, 2);
+    assert!(speakers_recovered(&r.labels, &truth, 2));
+    for i in 60..63 {
+        assert!(r.unassigned[r.labels[i]], "outlier {i} was given a speaker");
+    }
+}
+
+#[test]
+fn diar_cluster_unassigned_floor_is_validated_and_calibrated_per_model() {
+    for bad in [-1.01f32, 1.01, f32::NAN] {
+        let c = ClusteringConfig {
+            unassigned_floor: bad,
+            ..ClusteringConfig::default()
+        };
+        assert!(matches!(c.validate(), Err(DiarError::Config(_))), "{bad}");
+    }
+    use super::cluster::{CAMPPLUS_UNASSIGNED_FLOOR, calibrated_unassigned_floor};
+    assert_eq!(
+        calibrated_unassigned_floor(&EmbeddingModelId::new("campplus-en-voxceleb@357a834f702b")),
+        Some(CAMPPLUS_UNASSIGNED_FLOOR)
+    );
+    assert_eq!(
+        calibrated_unassigned_floor(&EmbeddingModelId::new("unknown@1")),
+        None
+    );
+}
+
+#[test]
+fn diar_pipeline_a_short_turn_voice_like_no_speaker_is_left_unassigned() {
+    // Two speakers in long turns and a third voice in one short turn (fewer windows than a
+    // large cluster's size). Today its speech goes to a speaker; with a floor above its
+    // cosine to both, it has no speaker: no third speaker, its time in `unassigned`, and
+    // scored as missed speech.
+    let mut turns = Vec::new();
+    let mut t = 500;
+    for r in 0..24 {
+        turns.push(SceneTurn::new(r % 2, t, t + 6_000));
+        t += 6_300;
+        if r == 11 {
+            turns.push(SceneTurn::new(2, t, t + 600));
+            t += 1_100;
+        }
+    }
+    let total = t + 500;
+    let voices = unit_centroids(MAX_SCENE_SPEAKERS, DIM, 99);
+    let worst = cosine(&voices[2], &voices[0]).max(cosine(&voices[2], &voices[1]));
+    let floor = 0.6;
+    assert!(
+        worst < floor,
+        "the fake voice is too like a speaker: {worst}"
+    );
+    let short = turns.iter().find(|t| t.speaker == 2).unwrap().clone();
+
+    let today = run_exact(&turns, total, DiarizationConfig::default());
+    assert!(today.unassigned.is_empty());
+    assert_eq!(today.speakers.len(), 2);
+    let config = DiarizationConfig {
+        clustering: ClusteringConfig {
+            unassigned_floor: floor,
+            ..ClusteringConfig::default()
+        },
+        ..DiarizationConfig::default()
+    };
+    let d = run_exact(&turns, total, config);
+    assert_eq!(d.speakers.len(), 2);
+    assert!(!d.unassigned.is_empty());
+    let mid = MeetingTime::from_millis(u64::midpoint(short.start_ms, short.end_ms));
+    assert!(
+        d.unassigned.iter().any(|s| s.start <= mid && mid < s.end),
+        "{:?}",
+        d.unassigned
+    );
+    assert!(!d.turns.iter().any(|t| t.start <= mid && mid < t.end));
+    // The speakers' own turns are unchanged by the floor away from the short turn.
+    let long: Vec<SceneTurn> = turns.iter().filter(|t| t.speaker != 2).cloned().collect();
+    assert!(score(&long, &d).confusion <= score(&long, &today).confusion + 1e-9);
+    // The left-out speech is missed, not confused, against the full reference.
+    let full = score(&turns, &d);
+    assert!(full.missed > score(&turns, &today).missed);
+}
+
 #[test]
 fn diar_cluster_subsampled_training_still_labels_everything() {
     let c = unit_centroids(3, 64, 31);

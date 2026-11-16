@@ -1348,6 +1348,7 @@ where
         let none = Diarization {
             speakers: Vec::new(),
             turns: Vec::new(),
+            unassigned: Vec::new(),
             embedding_model: model.clone(),
         };
         let two = recorded.contains(&TrackId::Mic) && recorded.contains(&TrackId::Reference);

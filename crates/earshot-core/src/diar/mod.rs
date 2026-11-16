@@ -47,7 +47,9 @@ pub use echo::{
 pub use fake::{
     FakeEmbedder, FakeSegmenter, MAX_SCENE_SPEAKERS, SceneTurn, sample_mask, scene_audio,
 };
-pub use pipeline::{DiarSpeaker, Diarization, DiarizationConfig, Diarizer, SpeakerTurn};
+pub use pipeline::{
+    DiarSpeaker, Diarization, DiarizationConfig, Diarizer, SpeakerTurn, UnassignedSpan,
+};
 pub use policy::{
     MeetingDiarization, MeetingSpeaker, MeetingTurn, SpeakerRole, in_person, two_track,
 };

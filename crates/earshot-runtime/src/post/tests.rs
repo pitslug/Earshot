@@ -2526,6 +2526,7 @@ fn diar_of(centroids: &[Vec<f32>], turns: &[(u64, u64)]) -> Diarization {
                 end: MeetingTime::from_millis(e),
             })
             .collect(),
+        unassigned: Vec::new(),
         embedding_model: EmbeddingModelId::new(MODEL),
     }
 }

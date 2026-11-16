@@ -2,8 +2,12 @@
 //!
 //! ```text
 //! cargo run --release -p earshot-runtime --example cluster_sweep -- <repo-root> \
-//!     --models <dir> [--out <file.json>]
+//!     --models <dir> [--out <file.json>] [--floors]
 //! ```
+//!
+//! With `--floors` (T12.65) the threshold is held and the unassigned floor is swept instead:
+//! the data are the same, the measures and rule are `docs/far-speakers/unassigned-floor.md`
+//! (module `cluster_sweep_parts/floors.rs`).
 //!
 //! The data, measures and selection rule are `docs/far-speakers/ami-dev-calibration.md`,
 //! committed before this tool was written and before any run. Dev data only: the AMI dev mixes
@@ -26,6 +30,9 @@ use earshot_core::metrics::der::{AMI_COLLAR_PER_SIDE_S, DerConfig, DerResult, Tu
 use earshot_runtime::backends::{Accelerator, ModelDir, init_onnx, load_diarisation};
 use earshot_runtime::post::PostConfig;
 use serde_json::{Value, json};
+
+#[path = "cluster_sweep_parts/floors.rs"]
+mod floors;
 
 /// The held constant.
 const HELD: u32 = 68;
@@ -770,8 +777,20 @@ fn diarize(
     t: u32,
     audio: &MonoBuffer,
 ) -> (Diarization, (Segmenter, Embedder)) {
+    diarize_at(parts, config, t, floors::OFF, audio)
+}
+
+/// [`diarize`] at unassigned floor `floor` (hundredths; [`floors::OFF`] is -1).
+fn diarize_at(
+    parts: (Segmenter, Embedder),
+    config: &DiarizationConfig,
+    t: u32,
+    floor: i32,
+    audio: &MonoBuffer,
+) -> (Diarization, (Segmenter, Embedder)) {
     let mut config = config.clone();
     config.clustering.threshold = threshold(t);
+    config.clustering.unassigned_floor = floors::floor(floor);
     let mut d = Diarizer::new(parts.0, parts.1, config).unwrap_or_else(|e| fail(e));
     let out = d
         .diarize(audio, MeetingTime::ZERO, &CancelToken::new())
@@ -793,14 +812,146 @@ fn round4(x: f64) -> f64 {
     (x * 10_000.0).round() / 10_000.0
 }
 
+/// `--floors` (T12.65, `docs/far-speakers/unassigned-floor.md`): the held threshold, every
+/// unassigned floor of the grid, the moved-speech measures and the rule's pick.
+fn run_floors(
+    items: &[Item],
+    mut parts: (Segmenter, Embedder),
+    config: &DiarizationConfig,
+    model: &str,
+    out: Option<&Path>,
+) {
+    let grid: Vec<i32> = std::iter::once(floors::OFF)
+        .chain(floors::FLOOR_GRID)
+        .collect();
+    // rows[item][grid index]
+    let mut rows: Vec<Vec<(Score, floors::Moved)>> = Vec::new();
+    for item in items {
+        eprintln!("cluster_sweep --floors: {}", item.name);
+        let buffer = MonoBuffer::new(PIPELINE_RATE, item.audio.clone());
+        parts.0.replay = false;
+        parts.1.replay = false;
+        let (direct, p) = diarize_at(parts, config, HELD, floors::OFF, &buffer);
+        parts = p;
+        parts.0.replay = true;
+        parts.1.replay = true;
+        let base = direct.der_turns();
+        let mut row = Vec::new();
+        for &f in &grid {
+            let (d, p) = diarize_at(parts, config, HELD, f, &buffer);
+            parts = p;
+            if f == floors::OFF && d != direct {
+                fail(format!(
+                    "{}: the replay at floor -1 differs from the direct run",
+                    item.name
+                ));
+            }
+            let moved = floors::moved(
+                &item.reference,
+                &base,
+                &floors::unassigned_turns(&d),
+                item.uem,
+            );
+            row.push((score(item, &d), moved));
+        }
+        parts.0.log.clear();
+        parts.1.log.clear();
+        rows.push(row);
+    }
+
+    let n_ami = AMI_DEV.len();
+    let reference_s: f64 = rows.iter().map(|r| r[0].0.der.total).sum();
+    let points: Vec<floors::FloorPoint> = grid
+        .iter()
+        .enumerate()
+        .map(|(g, &f)| floors::FloorPoint {
+            f,
+            gain_s: rows.iter().map(|r| r[g].1.gain_s).sum(),
+            loss_s: rows.iter().map(|r| r[g].1.loss_s).sum(),
+            meeting_der: rows[..n_ami].iter().map(|r| r[g].0.der.der()).collect(),
+        })
+        .collect();
+    let pick = floors::pick(&points, reference_s);
+    let off = &points[0];
+
+    println!(
+        "floor A(f) L(f) gain_s loss_s non_speech_s unassigned_s | conditions | DER per meeting"
+    );
+    for (g, p) in points.iter().enumerate() {
+        let col: Vec<&Score> = rows.iter().map(|r| &r[g].0).collect();
+        let sum = |k: fn(&floors::Moved) -> f64| rows.iter().map(|r| k(&r[g].1)).sum::<f64>();
+        let ders: Vec<String> = p.meeting_der.iter().map(|d| format!("{d:.4}")).collect();
+        println!(
+            "{:.2} {:.4} {:.4} {:.2} {:.2} {:.2} {:.2} | {:?} | {}",
+            floors::floor(p.f),
+            pooled(&col[..n_ami]),
+            pooled(&col[n_ami..]),
+            p.gain_s,
+            p.loss_s,
+            sum(|m| m.non_speech_s),
+            sum(|m| m.unassigned_s),
+            floors::conditions(p, off, reference_s),
+            ders.join(","),
+        );
+    }
+    println!(
+        "rule: picks floor {:.2} (reference speech {:.1} s)",
+        floors::floor(pick),
+        reference_s
+    );
+
+    let report = json!({
+        "model": model,
+        "rule": "docs/far-speakers/unassigned-floor.md",
+        "threshold": threshold(HELD),
+        "reference_s": round4(reference_s),
+        "curve": points.iter().enumerate().map(|(g, p)| {
+            let col: Vec<&Score> = rows.iter().map(|r| &r[g].0).collect();
+            json!({
+                "floor": floors::floor(p.f),
+                "ami_der": round4(pooled(&col[..n_ami])),
+                "scene_der": round4(pooled(&col[n_ami..])),
+                "gain_s": round4(p.gain_s),
+                "loss_s": round4(p.loss_s),
+                "conditions": floors::conditions(p, off, reference_s),
+                "items": items.iter().zip(&rows).map(|(i, r)| {
+                    let (s, m) = &r[g];
+                    json!({
+                        "name": i.name,
+                        "kind": i.kind,
+                        "found": s.found,
+                        "der": round4(s.der.der()),
+                        "missed": round4(s.der.missed),
+                        "confusion": round4(s.der.confusion),
+                        "total": round4(s.der.total),
+                        "gain_s": round4(m.gain_s),
+                        "loss_s": round4(m.loss_s),
+                        "non_speech_s": round4(m.non_speech_s),
+                        "unassigned_s": round4(m.unassigned_s),
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
+        "pick": floors::floor(pick),
+    });
+    let text = serde_json::to_string_pretty(&report).unwrap_or_else(|e| fail(e));
+    if let Some(out) = out {
+        std::fs::write(out, &text).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
+    }
+}
+
 fn main() {
     let mut it = std::env::args().skip(1);
     let root = PathBuf::from(
         it.next()
             .unwrap_or_else(|| fail("usage: cluster_sweep <repo-root> --models <dir>")),
     );
-    let (mut models, mut out) = (None, None);
+    let (mut models, mut out, mut floor_mode) = (None, None, false);
     while let Some(flag) = it.next() {
+        if flag == "--floors" {
+            floor_mode = true;
+            continue;
+        }
         let value = it
             .next()
             .unwrap_or_else(|| fail(format!("{flag} needs a value")));
@@ -832,6 +983,10 @@ fn main() {
     }
     let config = post.diarization.clone();
     let mut parts = (Cached::new(segmenter), Cached::new(embedder));
+    if floor_mode {
+        run_floors(&items, parts, &config, &model.to_string(), out.as_deref());
+        return;
+    }
 
     // scores[item][grid index]
     let grid: Vec<u32> = GRID.collect();

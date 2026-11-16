@@ -31,7 +31,9 @@
 //!    of active local speakers over the covering windows. The `count` most active clusters
 //!    are marked active, so overlapped speech yields two simultaneous turns.
 //! 7. **Turns.** Runs of active frames per cluster become [`SpeakerTurn`]s; same-speaker
-//!    gaps up to `merge_gap` are closed. Speakers are numbered by first turn.
+//!    gaps up to `merge_gap` are closed. Speakers are numbered by first turn. The runs of
+//!    clusters the clustering left unassigned (T12.65) become [`Diarization::unassigned`]
+//!    spans instead: no speaker, no centroid.
 //!
 //! # Deviations from pyannote 3.1 and their expected effect on DER
 //!
@@ -161,6 +163,15 @@ pub struct SpeakerTurn {
     pub end: MeetingTime,
 }
 
+/// A stretch of speech that diarisation left without a speaker (T12.65).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnassignedSpan {
+    /// Start (meeting time).
+    pub start: MeetingTime,
+    /// End (meeting time, exclusive).
+    pub end: MeetingTime,
+}
+
 /// One speaker found by diarisation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiarSpeaker {
@@ -177,6 +188,10 @@ pub struct Diarization {
     pub speakers: Vec<DiarSpeaker>,
     /// Turns sorted by start, then speaker.
     pub turns: Vec<SpeakerTurn>,
+    /// Speech left without a speaker (T12.65: small clusters like no speaker, see
+    /// [`super::cluster`] step 5), sorted and non-overlapping. Empty with the default
+    /// floor. Not in [`Diarization::der_turns`], so it scores as missed speech.
+    pub unassigned: Vec<UnassignedSpan>,
     /// The embedding model that produced the centroids.
     pub embedding_model: EmbeddingModelId,
 }
@@ -405,6 +420,7 @@ impl<S: SpeakerSegmenter, E: SpeakerEmbedder> Diarizer<S, E> {
             return Ok(Diarization {
                 speakers: Vec::new(),
                 turns: Vec::new(),
+                unassigned: Vec::new(),
                 embedding_model: model,
             });
         }
@@ -421,7 +437,8 @@ impl<S: SpeakerSegmenter, E: SpeakerEmbedder> Diarizer<S, E> {
             .iter()
             .filter_map(|&i| locals[i].embedding.clone())
             .collect();
-        let centroids = cluster_embeddings(&vectors, &self.config.clustering)?.centroids;
+        let clustering = cluster_embeddings(&vectors, &self.config.clustering)?;
+        let (centroids, left_out) = (clustering.centroids, clustering.unassigned);
         // 5: stitching, one window at a time.
         let mut by_window: Vec<Vec<usize>> = vec![Vec::new(); bins.len()];
         for &i in &embedded {
@@ -538,7 +555,22 @@ impl<S: SpeakerSegmenter, E: SpeakerEmbedder> Diarizer<S, E> {
                 }
             }
         }
-        let mut used: Vec<usize> = (0..k).filter(|&c| !runs[c].is_empty()).collect();
+        // Unassigned clusters (T12.65) become speech with no speaker, never a speaker.
+        let mut spans: Vec<(usize, usize)> = (0..k)
+            .filter(|&c| left_out[c])
+            .flat_map(|c| runs[c].iter().copied())
+            .collect();
+        spans.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        for (lo, hi) in spans {
+            match merged.last_mut() {
+                Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
+                _ => merged.push((lo, hi)),
+            }
+        }
+        let mut used: Vec<usize> = (0..k)
+            .filter(|&c| !left_out[c] && !runs[c].is_empty())
+            .collect();
         used.sort_by_key(|&c| (runs[c][0].0, c));
         let to_time = |x: usize| origin + MeetingTime::from_pipeline_frames(x as u64);
         let mut speakers = Vec::with_capacity(used.len());
@@ -559,9 +591,17 @@ impl<S: SpeakerSegmenter, E: SpeakerEmbedder> Diarizer<S, E> {
             });
         }
         turns.sort_by_key(|t| (t.start, t.speaker));
+        let unassigned = merged
+            .into_iter()
+            .map(|(lo, hi)| UnassignedSpan {
+                start: to_time(lo),
+                end: to_time(hi),
+            })
+            .collect();
         Ok(Diarization {
             speakers,
             turns,
+            unassigned,
             embedding_model: model,
         })
     }

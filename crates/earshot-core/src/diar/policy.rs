@@ -244,6 +244,7 @@ mod tests {
         Diarization {
             speakers,
             turns,
+            unassigned: Vec::new(),
             embedding_model: model(),
         }
     }
