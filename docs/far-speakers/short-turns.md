@@ -16,8 +16,8 @@ Dev data only: no AMI test-series meeting, no LibriSpeech test-clean, no private
 - **L.** The 16 dev-clean long scenes of `cluster_sweep` (T12.9), unchanged. No speaker there speaks only in short turns.
 - **S.** 10 new dev-clean short-turn scenes, built by `cluster_sweep` from a fixed seed (`SHORT_SEED` = 16_600 plus the scene index):
   - 4 speakers each, 300 s long. Scene `i` (0 to 9): the short-turn talker is dev-clean speaker position `i`, the three long-turn speakers are positions `10 + 3i`, `11 + 3i` and `12 + 3i` (positions in sorted folder order, as T12.9). Every one of the 40 speakers is in exactly one S scene.
-  - Long-turn speakers take turns of 8 to 25 s in a random order, never the same speaker twice in a row. After each long turn, with probability 1/3, the short-turn talker speaks one turn of 1.0 to 3.5 s before the next long turn. Gaps between turns are 100 to 800 ms; no overlap.
-  - The talker's speech in a scene is reported (expected about 25 to 40 s).
+  - Long-turn speakers take turns of 8 to 20 s in a random order, never the same speaker twice in a row. After each long turn, with probability 2/3, the short-turn talker speaks one turn of 1.0 to 3.5 s before the next long turn. Gaps between turns are 100 to 800 ms; no overlap.
+  - The talker's speech in a scene is reported, and the tool fails if any scene holds less than 16 s (the top of the `m` grid).
   - **No audio is played twice.** S scenes read each speaker's utterances from the last one backwards; L scenes read them from the first one forwards. The tool fails unless, for every speaker, no utterance file is used by both its L scene and its S scene, and no turn within a scene replays a sample.
 
 ## The pipeline
@@ -76,6 +76,8 @@ If a setting passes, the result is a production task for the owner to agree (AGE
 - Ten talkers: a pass at 5 of 10 is a weak signal, which is why rules 2 to 5 guard the cost.
 - 10 ms frames; owners per setting.
 - Close-talking AMI mixes only.
+
+Correction (2026-11-17, before the first run): the first commit of this file had long turns of 8 to 25 s and a talker turn after a long turn with probability 1/3, and expected 25 to 40 s of talker speech per scene. The implementer found those parameters give 3 to 21 s (about 13 s on average), so `m` = 16 could pass rule 1 in at most 4 scenes and one scene could not reach `m` = 4. Long turns became 8 to 20 s, the probability 2/3, and a scene below 16 s of talker speech now fails the tool. The scene builder's draws do not depend on the audio, so the new talker speech per scene is known without a run: 18.8 to 33.0 s. No measurement had been made.
 
 ## Result
 
