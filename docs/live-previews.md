@@ -68,7 +68,7 @@ First run, in a busy period (machine load median 5%, largest 30%):
 
 ## Can a preview share the track's session?
 
-No. `Transcriber::transcribe` and `ort::Session::run` (2.0.0-rc.14) both take `&mut self`. Parakeet
+No. `Transcriber::transcribe` and `ort::Session::run` (2.0.0-rc.14 and rc.15) both take `&mut self`. Parakeet
 keeps no state between calls, so sharing would be correct, but only behind a lock a real decode could
 wait on for a whole preview (0.5-1.6 s measured), or on the worker's own thread with the same wait.
 "No preview may delay a real decode" rules both out. Whisper is worse: sampled retries depend on the

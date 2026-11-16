@@ -165,14 +165,17 @@ pub fn choose_qnn_device(
         .map(|i| (i, wanted.1))
 }
 
+/// A plugin registered into ONNX Runtime. It stays registered for the life of the process
+/// (ort 2.0.0-rc.15 has no way to unregister one; sessions hold the plugin's code anyway).
 struct Registered {
     dir: PathBuf,
-    device: QnnDevice,
-    // Kept for the life of the process: sessions hold the plugin's code.
-    _library: ort::ep::ExecutionProviderLibrary,
+    /// The device chosen, or why none could be: a plugin that offered no usable device stays
+    /// registered too, so that refusal is kept and every later call gets it again.
+    device: Result<QnnDevice, String>,
 }
 
-/// The successful registration (a failure is not kept: a later call tries again).
+/// The registration once the plugin was handed to ONNX Runtime. A failure before that (a
+/// missing or mismatched file) is not kept: a later call tries again.
 static QNN: OnceLock<Registered> = OnceLock::new();
 /// Serialises registration attempts.
 static REGISTERING: Mutex<()> = Mutex::new(());
@@ -264,7 +267,7 @@ pub fn register_qnn_in(
         .map_err(|e| OnnxError::Library(format!("{}: {e}", rel.display())))?;
     let same = |r: &'static Registered| -> Result<&'static QnnDevice, OnnxError> {
         if r.dir == dir {
-            Ok(&r.device)
+            r.device.as_ref().map_err(|message| failed(message.clone()))
         } else {
             Err(failed(format!(
                 "{} requested but the QNN plugin from {} is already registered",
@@ -293,36 +296,28 @@ pub fn register_qnn_in(
         verify(&dir.join(name), sha, package)?;
     }
     let env = environment()?;
-    let library = env
-        .register_ep_library(QNN_REGISTRATION, dir.join(QNN_PROVIDER_LIB))
+    env.register_ep_library(QNN_REGISTRATION, dir.join(QNN_PROVIDER_LIB))
         .map_err(|e| failed(e.to_string()))?;
     let devices: Vec<(&str, DeviceType)> = env
         .devices()
         .map(|d| (d.ep().unwrap_or(""), d.hardware_device().ty()))
         .collect();
     let arm = cfg!(target_arch = "aarch64");
-    let Some((index, hardware)) = choose_qnn_device(&devices, arm) else {
-        let message = format!(
-            "the QNN plugin offers no {} device (ONNX Runtime devices: {devices:?})",
-            if arm { "NPU" } else { "HTP simulator (CPU)" }
-        );
-        // Unregistered again, so a later call can try afresh.
-        let _ = library.unregister();
-        return Err(failed(message));
-    };
-    let vendor = env
-        .devices()
-        .nth(index)
-        .and_then(|d| d.hardware_device().vendor().ok().map(str::to_owned))
-        .unwrap_or_default();
-    let registered = QNN.get_or_init(|| Registered {
-        device: QnnDevice {
+    let device = match choose_qnn_device(&devices, arm) {
+        Some((index, hardware)) => Ok(QnnDevice {
             hardware,
-            vendor,
+            vendor: env
+                .devices()
+                .nth(index)
+                .and_then(|d| d.hardware_device().vendor().ok().map(str::to_owned))
+                .unwrap_or_default(),
             backend_path: dir.join(QNN_HTP_LIB),
-        },
+        }),
+        None => Err(no_device_message(&devices, arm)),
+    };
+    let registered = QNN.get_or_init(|| Registered {
+        device,
         dir: dir.clone(),
-        _library: library,
     });
     same(registered)
 }
@@ -330,7 +325,16 @@ pub fn register_qnn_in(
 /// The QNN device registered by [`register_qnn`], if any.
 #[must_use]
 pub fn registered_qnn() -> Option<&'static QnnDevice> {
-    QNN.get().map(|r| &r.device)
+    QNN.get().and_then(|r| r.device.as_ref().ok())
+}
+
+/// The refusal when the registered plugin offers no device [`choose_qnn_device`] accepts.
+fn no_device_message(devices: &[(&str, DeviceType)], arm: bool) -> String {
+    format!(
+        "the QNN plugin offers no {} device (ONNX Runtime devices: {devices:?}); it stays \
+         registered for the rest of this process, so restart to try again",
+        if arm { "NPU" } else { "HTP simulator (CPU)" }
+    )
 }
 
 /// The session builder with the registered QNN device appended (backend `QnnHtp.dll`).
