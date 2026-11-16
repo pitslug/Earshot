@@ -1239,12 +1239,16 @@ fn setup_err(kind: &str, message: String) -> IpcError {
     IpcError::new(kind, message)
 }
 
-/// The banner text of an ONNX Runtime library that could not load (the CPU one is used).
+/// The banner text of an ONNX Runtime library that could not load (the CPU one is used). The NPU's
+/// is fixed copy, with no library name or error text (T12.64).
 #[must_use]
 pub(crate) fn onnx_fallback_message(
     library: earshot_runtime::backends::Accelerator,
     e: &RuntimeError,
 ) -> String {
+    if library == earshot_runtime::backends::Accelerator::Qnn {
+        return crate::plain_text::NPU_LIBRARY_UNAVAILABLE.to_owned();
+    }
     let why = crate::plain_text::library_problem(e);
     format!(
         "The {library:?} library of ONNX Runtime is unavailable, so speech models run on the CPU \

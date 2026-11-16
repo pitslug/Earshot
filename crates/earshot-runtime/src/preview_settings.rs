@@ -101,8 +101,15 @@ pub const NOTE_CARD_PROCESSOR: &str =
 /// Everyone chosen, and no room for the second session.
 pub const NOTE_EVERYONE_MEMORY: &str = "This computer shows them for the other people only: it needs more memory to run them for you too.";
 /// Everyone chosen with transcription on the NPU, which runs no session for the user's own voice
-/// (T12.12c, `backends::OWN_VOICE_NPU_REFUSED`).
-pub const NOTE_EVERYONE_NPU: &str = "On the NPU they show for the other people only for now: some provisional words of your own voice appeared there and then vanished, which is not understood yet.";
+/// (T12.12c, `backends::OWN_VOICE_NPU_REFUSED`): a rule while transcription runs there, kept until
+/// T12.12d fixes shown words leaving early and the owner decides (T12.64); on the processor the
+/// user's own voice has its session. Shown only where the processor's rule would run that session
+/// ([`NOTE_EVERYONE_NPU_ONLY`] otherwise, T12.64 review).
+pub const NOTE_EVERYONE_NPU: &str = "While transcription runs on the NPU they show for the other people only. To show them for your own voice too, choose Processor for transcription in Settings, System, Where it runs.";
+/// [`NOTE_EVERYONE_NPU`] without the pointer to the processor, for a machine whose processor would
+/// refuse the user's own voice too (too little or unknown memory).
+pub const NOTE_EVERYONE_NPU_ONLY: &str =
+    "While transcription runs on the NPU they show for the other people only.";
 
 /// The page for a machine whose transcription would lead with `lead`.
 #[must_use]
@@ -147,7 +154,15 @@ pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardwar
                 Ok(_) if card_note.is_some() => card_note,
                 Ok(_) => below_limit.then_some(NOTE_ON_BELOW_LIMIT),
                 // T12.12c: the NPU runs no session for the user's own voice, whatever the memory.
-                Err(_) if backend == BackendKind::Qnn => Some(NOTE_EVERYONE_NPU),
+                // The pointer to the processor only where its rule would run the user's own
+                // voice (T12.64 review): below its memory limit it refuses too.
+                Err(_) if backend == BackendKind::Qnn => Some(
+                    if second_preview_backend(BackendKind::Cpu, hardware, choice).is_ok() {
+                        NOTE_EVERYONE_NPU
+                    } else {
+                        NOTE_EVERYONE_NPU_ONLY
+                    },
+                ),
                 Err(_) => Some(NOTE_EVERYONE_MEMORY),
             };
             (PreviewSetting::Everyone, note)
@@ -739,15 +754,37 @@ mod tests {
     /// the memory (never the memory note).
     #[test]
     fn preview_everyone_on_the_npu_shows_the_other_people_only_and_says_why() {
-        for memory in [Some(64 * GIB), Some(15 * GIB), Some(8 * GIB), None] {
+        // T12.64 review: the pointer to the processor only where the processor's rule would run
+        // the user's own voice; below its limit, or with unknown memory, it would refuse too.
+        for (memory, note) in [
+            (Some(64 * GIB), NOTE_EVERYONE_NPU),
+            (Some(16 * GIB), NOTE_EVERYONE_NPU),
+            (Some(15 * GIB), NOTE_EVERYONE_NPU),
+            (
+                Some(crate::backends::PREVIEW_BOTH_MIN_MEMORY),
+                NOTE_EVERYONE_NPU,
+            ),
+            (
+                Some(crate::backends::PREVIEW_BOTH_MIN_MEMORY - 1),
+                NOTE_EVERYONE_NPU_ONLY,
+            ),
+            (Some(8 * GIB), NOTE_EVERYONE_NPU_ONLY),
+            (None, NOTE_EVERYONE_NPU_ONLY),
+        ] {
             let m = npu_machine(memory);
             assert_eq!(
                 preview_page(PreviewChoice::Everyone, Accelerator::Qnn, &m),
                 PreviewPage {
                     shown: PreviewSetting::Everyone,
                     can_change: true,
-                    note: Some(NOTE_EVERYONE_NPU)
+                    note: Some(note)
                 },
+                "{memory:?}"
+            );
+            // The pointer agrees with what the processor's rule says on this machine.
+            assert_eq!(
+                note == NOTE_EVERYONE_NPU,
+                second_preview_backend(BackendKind::Cpu, &m, PreviewChoice::Everyone).is_ok(),
                 "{memory:?}"
             );
             assert_eq!(
@@ -756,7 +793,19 @@ mod tests {
             );
         }
         assert!(NOTE_EVERYONE_NPU.contains("other people only"));
-        assert!(NOTE_EVERYONE_NPU.contains("vanished"));
+        // A rule while transcription runs on the NPU, with the way round it (T12.64): no reason
+        // T12.12c step 4 showed is not the NPU's.
+        assert!(NOTE_EVERYONE_NPU.contains("While transcription runs on the NPU"));
+        assert!(NOTE_EVERYONE_NPU.contains("Processor"));
+        assert!(NOTE_EVERYONE_NPU.contains("Where it runs"));
+        for word in ["vanished", "not understood", "this computer"] {
+            assert!(!NOTE_EVERYONE_NPU.contains(word), "{word}");
+            assert!(!NOTE_EVERYONE_NPU_ONLY.contains(word), "{word}");
+        }
+        assert!(NOTE_EVERYONE_NPU.starts_with(NOTE_EVERYONE_NPU_ONLY));
+        for word in ["Processor", "Where it runs", "own voice"] {
+            assert!(!NOTE_EVERYONE_NPU_ONLY.contains(word), "{word}");
+        }
     }
 
     /// No note names a model by its manifest id, and none says "not measured" any more (T12.12c).
@@ -769,6 +818,7 @@ mod tests {
             NOTE_CARD_PROCESSOR,
             NOTE_EVERYONE_MEMORY,
             NOTE_EVERYONE_NPU,
+            NOTE_EVERYONE_NPU_ONLY,
         ] {
             assert_eq!(crate::catalogue::manifest_id_in(note), None, "{note}");
             assert!(!note.contains("not measured"), "{note}");
@@ -784,6 +834,7 @@ mod tests {
             NOTE_CARD_PROCESSOR,
             NOTE_EVERYONE_MEMORY,
             NOTE_EVERYONE_NPU,
+            NOTE_EVERYONE_NPU_ONLY,
         ] {
             assert!(!note.contains('\u{2014}'), "{note}");
         }

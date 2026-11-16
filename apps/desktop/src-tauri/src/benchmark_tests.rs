@@ -481,6 +481,27 @@ fn benchmark_failures_are_plain_words_with_no_manifest_id() {
         ]
         .map(bench::onnx_fallback_note),
     );
+    // T12.64: fixed copy that names no library, as the meeting's banners.
+    assert_eq!(
+        bench::onnx_fallback_note(Accelerator::Qnn),
+        "Earshot could not use the NPU this time, so speech models ran on the processor."
+    );
+    assert_eq!(
+        bench::onnx_fallback_note(Accelerator::Cuda),
+        "Earshot could not use the graphics card this time, so speech models ran on the processor."
+    );
+    for library in [
+        Accelerator::Cpu,
+        Accelerator::Cuda,
+        Accelerator::Vulkan,
+        Accelerator::Qnn,
+    ] {
+        let note = bench::onnx_fallback_note(library);
+        for word in ["ONNX", "library", "Runtime"] {
+            assert!(!note.contains(word), "{word} in {note}");
+        }
+        assert!(!note.contains("  ") && note.ends_with('.'), "{note:?}");
+    }
     let notes = result_view(&r).notes;
     assert_eq!(notes.len(), 5);
     for text in &notes {

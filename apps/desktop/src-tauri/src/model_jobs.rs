@@ -743,6 +743,10 @@ pub fn check_fallback_message(
     library: earshot_runtime::backends::Accelerator,
     e: &earshot_runtime::RuntimeError,
 ) -> String {
+    // The NPU's is fixed copy, with no library name or error text (T12.64).
+    if library == earshot_runtime::backends::Accelerator::Qnn {
+        return crate::plain_text::CHECK_NPU_LIBRARY_UNAVAILABLE.to_owned();
+    }
     let why = crate::plain_text::library_problem(e);
     format!(
         "The {library:?} library of ONNX Runtime is unavailable, so the model check tests \

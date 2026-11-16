@@ -1280,9 +1280,12 @@ pub const PREVIEW_MIN_MEMORY_NPU: u64 = 12 * 1024 * 1024 * 1024;
 
 /// Why the user's own track in a call has no preview session on the NPU (T12.12c): under
 /// "Everyone" on the Surface 52 of 236 provisional words of the user's own voice were shown and
-/// then vanished, and why is not understood yet (docs/live-previews.md).
-pub const OWN_VOICE_NPU_REFUSED: &str = "not for your own voice on the NPU yet: some words shown \
-                                         there vanished again, and why is not understood";
+/// then left before their settled text landed. T12.12c step 4 found that a flicker on every
+/// backend (docs/live-previews.md); the refusal stays until T12.12d fixes it and the owner judges
+/// "Everyone" on the NPU again (with a Surface memory measurement). A report text, never shown.
+pub const OWN_VOICE_NPU_REFUSED: &str = "not for your own voice on the NPU yet: it waits on the \
+                                         fix for shown words leaving early and the owner's \
+                                         decision (T12.12d)";
 
 /// Where this computer runs the previews' session for a track on `backend` (the far end in a call,
 /// the mic in the room), or why it runs none. The one rule (`live::preview` docs): the user's
@@ -1785,6 +1788,11 @@ pub(crate) fn preview_load_refusal(e: &AsrError) -> PreviewRefusal {
         AsrError::Backend(why) if why == PREVIEW_NEEDS_COMPILED => {
             PreviewOffReason::NeedsCompiledModel
         }
+        AsrError::Backend(why) if why == PREVIEW_COMPILED_REFUSED => {
+            PreviewOffReason::CompiledModelRefused
+        }
+        // No record to prepare from (`PREVIEW_NO_COMPILE_KEY`) is never ready later: a load that
+        // failed, like any other.
         _ => PreviewOffReason::LoadFailed,
     };
     PreviewRefusal::new(reason, e.to_string())
@@ -2240,9 +2248,48 @@ pub(crate) fn recorded_qnn_load<S>(
     session
 }
 
-/// Why a preview on the NPU did not load (T12.12c): it loads only a compiled model.
+/// Why a preview on the NPU did not load (T12.12c, T12.64): it loads only a compiled model, and
+/// none was prepared yet (the start-up or a track's load prepares it).
 pub const PREVIEW_NEEDS_COMPILED: &str =
-    "a preview on the NPU loads only the compiled model, and it did not load";
+    "a preview on the NPU loads only the compiled model, and none was prepared yet";
+
+/// Why a preview on the NPU did not load (T12.64): a prepared model was there, and its checks or
+/// the NPU refused it (a track's load that refuses it too prepares it again).
+pub const PREVIEW_COMPILED_REFUSED: &str =
+    "a preview on the NPU loads only the compiled model, and the prepared one was refused";
+
+/// Why a preview on the NPU did not load (T12.64): the NPU version has no record to prepare a
+/// compiled model from, so none is ever prepared (a track loads the ordinary way).
+pub const PREVIEW_NO_COMPILE_KEY: &str = "a preview on the NPU loads only the compiled model, and \
+     the NPU version has no record to prepare one from";
+
+/// Why a preview on the NPU did not load, for a step its load never takes (T12.64 review): a load
+/// that failed ([`PreviewOffReason::LoadFailed`]), with no claim about a prepared model.
+pub const PREVIEW_NPU_LOAD_FAILED: &str =
+    "a preview on the NPU loads only the compiled model, and its load failed";
+
+/// What a preview's NPU load that found no usable compiled model says (T12.64), by the step that
+/// refused it: none prepared yet, a prepared one refused, or no record to prepare one from.
+pub(crate) fn preview_npu_refusal(steps: &[crate::npu_compiled::Step]) -> &'static str {
+    use crate::npu_compiled::Step;
+    match steps.first() {
+        Some(Step::NotCompiled) => PREVIEW_NEEDS_COMPILED,
+        Some(Step::NoKey) => PREVIEW_NO_COMPILE_KEY,
+        // A preview's load refuses at a folder's checks or its load: a prepared model was there.
+        Some(Step::Verify | Step::NpuFit | Step::CompiledLoad) => PREVIEW_COMPILED_REFUSED,
+        // Steps of a compile or of putting a folder aside, which a preview never takes
+        // (`Compile::Never`), and no step at all: a load that failed, which promises nothing.
+        Some(
+            Step::Replace
+            | Step::NoTempFolder
+            | Step::Compile
+            | Step::Helper
+            | Step::HelperLoad
+            | Step::Keep,
+        )
+        | None => PREVIEW_NPU_LOAD_FAILED,
+    }
+}
 
 /// The ordinary load of an NPU encoder, or what stands in for it ([`qnn_load_steps`]).
 pub(crate) type OrdinaryLoad<'a, S> = Box<dyn FnOnce() -> Result<S, AsrError> + 'a>;
@@ -2254,7 +2301,7 @@ pub(crate) type OrdinaryLoad<'a, S> = Box<dyn FnOnce() -> Result<S, AsrError> + 
 /// track, holding the one NPU load lock, never measured), never takes the ordinary load, which
 /// holds the about 2 GiB of an ordinary session for the process's life (a QNN session is never
 /// closed, T12.12b), for words that are display only, and never puts a refused folder aside, which
-/// is the track's to replace (T12.12e). Its refusal is [`PREVIEW_NEEDS_COMPILED`], its steps are
+/// is the track's to replace (T12.12e). Its refusal is [`preview_npu_refusal`]'s, its steps are
 /// recorded for the device record ([`crate::npu_compiled::record_preview_refusal`]; the ordinary
 /// load stands in only when the conversion gives no key), and the meeting goes on without previews.
 ///
@@ -2271,18 +2318,19 @@ pub(crate) fn qnn_load_steps<'a, S: 'a>(
     if load_for == QnnLoadFor::Track {
         return (compile, Box::new(ordinary));
     }
-    let refused = || AsrError::Backend(PREVIEW_NEEDS_COMPILED.to_owned());
+    let refused = |steps: &[Step]| AsrError::Backend(preview_npu_refusal(steps).to_owned());
     // Whichever compile was offered, nothing compiles.
     drop(compile);
     let compile = Compile::Never(Box::new(move |steps: Vec<Step>| {
+        let e = refused(&steps);
         record_preview_refusal(steps);
-        refused()
+        e
     }));
     (
         compile,
         Box::new(move || {
             record_preview_refusal(vec![Step::NoKey]);
-            Err(refused())
+            Err(refused(&[Step::NoKey]))
         }),
     )
 }
