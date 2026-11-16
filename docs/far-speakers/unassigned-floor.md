@@ -25,10 +25,10 @@ Grid (floors, cosine): -1 (today), then 0.00, 0.05, 0.10, ..., 0.60.
 
 ## The measures
 
-On a 10 ms grid inside each item's scored region (UEM), compare floor `f` with floor -1 frame by frame. A frame is **moved** when, at `f`, it lies in unassigned speech and at -1 it lay in some found speaker's turn. Homes are T12.9's (the found speaker overlapping a true speaker's reference speech the longest, at floor -1). A moved frame is:
+On a 10 ms grid inside each item's scored region (UEM), compare floor `f` with floor -1 frame by frame. A frame is **moved** when, at `f`, it lies in unassigned speech and at -1 it lay in some found speaker's turn. The **owner** of a found speaker at floor -1 is the true speaker whose reference speech it overlaps the longest inside the UEM (ties to the lower label): the person that found speaker's name stands for. A moved frame is:
 
-- a **loss** when one of the speakers active at -1 in that frame is the home of a true speaker active in that frame (right speech taken away);
-- a **gain** when the reference has speech in that frame and no speaker active at -1 is the home of a true speaker active there (wrong speech taken away);
+- a **loss** when one of the speakers active at -1 in that frame is owned by a true speaker active in that frame (right speech taken away);
+- a **gain** when the reference has speech in that frame and no speaker active at -1 is owned by a true speaker active there (wrong speech taken away);
 - **non-speech** when the reference has no speech in that frame (a false alarm taken away; reported, selects nothing).
 
 Also per floor: the unassigned speech in seconds, the number of small clusters left unassigned, and DER with `DerConfig::nist(AMI_COLLAR_PER_SIDE_S)` over the UEM where **unassigned speech is scored as missed** (unassigned turns are not in the hypothesis). Moving wrong speech to missed leaves DER unchanged; moving right speech raises it.
@@ -51,7 +51,8 @@ If a floor ships, `cargo xtask accept m3` and `cargo xtask accept m6` are re-run
 ## How far this can be trusted
 
 - The dev data was not chosen for short-turn talkers: the five AMI dev meetings have four speakers each with long turns, and the scenes give every speaker long turns. If no small cluster there falls below a floor, rule 1 fails at every floor and nothing ships; that says the data cannot show a benefit, not that there is none (T12.66 adds short-turn scenes).
-- 10 ms frames; homes are taken at floor -1 and not recomputed per floor.
+- 10 ms frames; owners are taken at floor -1 and not recomputed per floor.
+- Correction before the first run: the first commit of this file judged a frame by T12.9's homes (each true speaker's main found speaker). The tool's own unit test showed that this counts a short-turn talker's speech under a long-turn speaker as right whenever that speaker is the talker's home, the very case this task is about. Owners (each found speaker's main true speaker) replace homes. No run had been made.
 - Close-talking mixes only, as in T12.9.
 
 ## Result
