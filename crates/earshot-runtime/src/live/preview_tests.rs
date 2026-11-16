@@ -14,7 +14,7 @@ use super::queue_tests::{Scene, by_kind, factory_of, held_config, held_gates, sc
 use super::*;
 use crate::live::preview::{
     COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PREVIEW_THREAD_LEFT, PreviewWords,
-    StreamFeed,
+    StreamFeed, TestHooks,
 };
 use crate::live::{LivePreviews, PreviewLoader, PreviewOffReason, PreviewRefusal, PreviewReport};
 use crate::power::{PowerProbe, PowerSource, PowerSupply};
@@ -208,6 +208,7 @@ fn previews(load: PreviewLoader) -> LivePreviews {
         own_voice_rule: None,
         user_asked: true,
         stream: None,
+        test_hooks: TestHooks::default(),
     }
 }
 
@@ -1671,6 +1672,7 @@ fn live_preview_a_crash_and_a_fell_behind_stop_in_one_look_report_the_crash() {
     let svc = services(&dir);
     let (inner, handles) = super::queue_tests::source_of(&scene);
     let looked = Arc::new(AtomicBool::new(false));
+    let seen = Arc::new(Mutex::new(None));
     let source = CrashThenBurst {
         inner,
         loading,
@@ -1688,6 +1690,10 @@ fn live_preview_a_crash_and_a_fell_behind_stop_in_one_look_report_the_crash() {
         config_with(Some(LivePreviews {
             // The production limit: 27 s queued is far past it.
             fell_behind: LivePreviews::new(load.clone()).fell_behind,
+            test_hooks: TestHooks {
+                fell_behind_seen: Some(Arc::clone(&seen)),
+                ..TestHooks::default()
+            },
             ..previews(load)
         })),
         Some(gated_factory(Arc::clone(&open))),
@@ -1716,9 +1722,67 @@ fn live_preview_a_crash_and_a_fell_behind_stop_in_one_look_report_the_crash() {
         })
         .collect();
     assert_eq!(said, [Some(PreviewOffReason::Failed)], "{said:?}");
+    // The witness: the stop at that look was the fell-behind one (the crash path never ran first,
+    // or the previews would have been off already), and the track really was past the limit.
+    let (backlog, limit) = seen
+        .lock()
+        .unwrap()
+        .expect("previews stopped for falling behind");
+    assert!(
+        backlog > limit,
+        "backlog {backlog} within the limit {limit}"
+    );
     let report = report_of(&events).expect("a report");
     assert_eq!(report.off.as_deref(), Some("the preview thread crashed"));
     assert_eq!(report.reason, Some(PreviewOffReason::Failed));
+}
+
+/// T12.70: previews on a below-normal thread, as the app runs them, load and decode (Windows
+/// only: elsewhere lowering a thread's priority is refused, the next test's path).
+#[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "below-normal threads exist only on Windows; elsewhere the refusal is tested"
+)]
+fn live_preview_on_a_background_thread_runs_and_reports_no_failure() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let config = LivePreviews {
+        background: true,
+        ..previews(loader(&seen, marker_words))
+    };
+    let (_, events, ..) = run_with(&scene, Some(config), 331);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(report.off, None, "{report:?}");
+    assert_eq!(report.backend, Some(BackendKind::Fake), "{report:?}");
+}
+
+/// T12.70: a preview thread that cannot lower its priority gives up before loading, with the
+/// reason as a failure; the recording and the words go on.
+#[test]
+fn live_preview_a_thread_that_cannot_lower_its_priority_turns_them_off() {
+    let scene = scene_of(27);
+    let seen = Arc::new(Seen::default());
+    let config = LivePreviews {
+        background: true,
+        test_hooks: TestHooks {
+            refuse_lowering: Some("a test refusal to lower the priority".to_owned()),
+            ..TestHooks::default()
+        },
+        ..previews(loader(&seen, marker_words))
+    };
+    let (with, events, ..) = run_with(&scene, Some(config), 333);
+    let report = report_of(&events).expect("a report");
+    assert_eq!(
+        report.off.as_deref(),
+        Some("a test refusal to lower the priority")
+    );
+    assert_eq!(report.reason, Some(PreviewOffReason::Failed));
+    assert_eq!(report.backend, None, "nothing loaded: {report:?}");
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 0);
+    assert!(previews_of(&events).iter().all(|(_, w)| w.is_empty()));
+    let (without, ..) = run_with(&scene, None, 333);
+    assert_eq!(with, without);
 }
 
 /// After review of T12.59/T12.60: a meeting's two preview loaders (`backends::load_preview_with`,

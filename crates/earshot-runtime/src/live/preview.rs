@@ -305,6 +305,34 @@ pub struct LivePreviews {
     /// model this loads, instead of window decodes of `load`'s or `own_voice`'s session; those
     /// still say which tracks have previews. `None` in the app.
     pub stream: Option<StreamLoader>,
+    /// Test seams (T12.70); absent outside `cfg(test)`.
+    #[cfg(test)]
+    pub(crate) test_hooks: TestHooks,
+}
+
+/// A track's backlog and limit (frames) at a fell-behind stop ([`TestHooks::fell_behind_seen`]).
+#[cfg(test)]
+pub(crate) type FellBehindSeen = Arc<Mutex<Option<(u64, u64)>>>;
+
+/// What a test can see or change in a session's previews (T12.70).
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct TestHooks {
+    /// Set to the track's backlog and the limit (frames) when previews stop for falling behind.
+    pub(crate) fell_behind_seen: Option<FellBehindSeen>,
+    /// Lowering the preview thread's priority fails with this text, as it does off Windows.
+    pub(crate) refuse_lowering: Option<String>,
+}
+
+/// Lowers the preview thread's priority ([`LivePreviews::background`]).
+fn lower_preview_thread(previews: &LivePreviews) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(why) = &previews.test_hooks.refuse_lowering {
+        return Err(why.clone());
+    }
+    #[cfg(not(test))]
+    let _ = previews;
+    crate::priority::lower_current_thread()
 }
 
 impl LivePreviews {
@@ -324,6 +352,8 @@ impl LivePreviews {
             fell_behind: CAUGHT_UP_BACKLOG,
             background: true,
             stream: None,
+            #[cfg(test)]
+            test_hooks: TestHooks::default(),
         }
     }
 }
@@ -528,7 +558,7 @@ impl PreviewWork {
     fn decode_until_stopped(&self) -> Result<(), PreviewRefusal> {
         let failed = |text: String| PreviewRefusal::new(PreviewOffReason::Failed, text);
         if self.previews.background {
-            crate::priority::lower_current_thread().map_err(failed)?;
+            lower_preview_thread(&self.previews).map_err(failed)?;
         }
         if let Some(load) = &self.previews.stream {
             return self.stream_until_stopped(load);
@@ -1216,12 +1246,19 @@ where
         for track in TRACKS {
             if let PreviewState::Running(p) = &self.previews[slot(track)] {
                 let limit = p.fell_behind;
-                let behind = self
+                let backlog = self
                     .workers
                     .iter()
                     .find(|w| w.track() == track)
-                    .is_some_and(|w| w.backlog() > limit);
-                if behind {
+                    .map(super::worker::LiveWorker::backlog);
+                if let Some(backlog) = backlog.filter(|b| *b > limit) {
+                    #[cfg(test)]
+                    if let Some(seen) = &p.previews.test_hooks.fell_behind_seen {
+                        *seen.lock().unwrap_or_else(PoisonError::into_inner) =
+                            Some((backlog, limit));
+                    }
+                    #[cfg(not(test))]
+                    let _ = backlog;
                     self.previews_off(
                         track,
                         PreviewRefusal::new(PreviewOffReason::FellBehind, FELL_BEHIND_REASON),

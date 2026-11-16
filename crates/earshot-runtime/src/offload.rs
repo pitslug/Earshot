@@ -582,6 +582,37 @@ fn encode_times(times: &Times) -> Vec<u8> {
     earshot_store::encode_versioned(TIMES_VERSION, times).expect("times serialise")
 }
 
+/// Writes what one step changed (`before` to `after`) over the stored readings ([`merge`]), and
+/// drops every reading of a request whose meeting is deleted or gone: a step that read the
+/// readings before the meeting's deletion forgot them ([`forget_meeting_times`]) never writes
+/// them back (T12.70).
+///
+/// # Errors
+/// Store errors.
+fn store_step_times(
+    tx: &mut earshot_store::StoreTx<'_>,
+    before: &Times,
+    after: &Times,
+) -> Result<(), RuntimeError> {
+    let mut stored = read_times(tx.local_value(OFFLOAD_TIMES_KEY)?.as_deref());
+    merge(&mut stored.requests, &before.requests, &after.requests);
+    merge(&mut stored.closed, &before.closed, &after.closed);
+    let mut gone = BTreeSet::new();
+    for r in tx.summary_requests()? {
+        if tx.meeting(r.meeting_id)?.is_none_or(|m| m.meta.deleted) {
+            gone.insert(r.id.to_string());
+        }
+    }
+    stored.requests.retain(|id, _| !gone.contains(id));
+    stored.closed.retain(|id, _| !gone.contains(id));
+    local::set_tx(
+        tx,
+        &DeviceRecord::OffloadTimes.key(),
+        &encode_times(&stored),
+    )?;
+    Ok(())
+}
+
 /// Drops the readings of `meeting`'s requests, open and closed (T12.70): called by
 /// [`crate::Services::delete_meeting`], the one deletion path (in the app and for a pulled tombstone).
 /// Leaves the record as it is when it holds none of them.
@@ -1010,17 +1041,7 @@ impl Offload {
             // Re-read and merged in one transaction: an `ask` since this step read is kept.
             services
                 .store()
-                .transaction(|tx| -> Result<(), RuntimeError> {
-                    let mut stored = read_times(tx.local_value(OFFLOAD_TIMES_KEY)?.as_deref());
-                    merge(&mut stored.requests, &before.requests, &times.requests);
-                    merge(&mut stored.closed, &before.closed, &times.closed);
-                    local::set_tx(
-                        tx,
-                        &DeviceRecord::OffloadTimes.key(),
-                        &encode_times(&stored),
-                    )?;
-                    Ok(())
-                })?;
+                .transaction(|tx| store_step_times(tx, &before, &times))?;
         }
         outcome.map(|()| report)
     }

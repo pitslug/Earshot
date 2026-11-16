@@ -66,15 +66,20 @@ impl Services {
                 gone.insert(m);
             }
         }
-        // Offload's clock readings of its requests live in one device record for every meeting:
-        // first, so a checkpoint `Busy` after the deletion's commit cannot leave them (a failed
-        // deletion only restarts the offload waits of a meeting still there, which only grow).
-        db.transaction(|tx| crate::offload::forget_meeting_times(tx, meeting))?;
         let (store, hlc) = db.parts();
-        let report = store.delete_meeting(&self.data, meeting, hlc, &*clock, &mut |key| {
+        let deleted = store.delete_meeting(&self.data, meeting, hlc, &*clock, &mut |key| {
             crate::local::meeting_of(key).is_some_and(|m| m == meeting || gone.contains(&m))
-        })?;
-        Ok(report)
+        });
+        // Offload's clock readings of its requests live in one device record for every meeting,
+        // so they go here, once the meeting reads deleted: after a deletion that worked, or one
+        // whose checkpoint was `Busy` after its commit. A deletion that failed before its
+        // transaction keeps them: a meeting still there must not lose them (a closed request
+        // would be handed again). A step that read them earlier cannot write them back
+        // (`offload::store_step_times`).
+        if deleted.is_ok() || db.meeting(meeting)?.is_some_and(|m| m.meta.deleted) {
+            db.transaction(|tx| crate::offload::forget_meeting_times(tx, meeting))?;
+        }
+        Ok(deleted?)
     }
 }
 
