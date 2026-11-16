@@ -157,6 +157,13 @@ test = true
 name = "store_inputs"
 test = true
 
+# T12.71: voiceprint names on a read-only copy of the owner's store under the shipped setting
+# and T12.67's threshold pick (docs/voiceprint-real-meetings.md); its unit tests use an invented
+# store.
+[[example]]
+name = "vp_readout"
+test = true
+
 # Your words in the transcript (T12.15b, a spike, evaluation only; docs/vocabulary.md); its unit
 # tests pin the lists, boosting graph, correction pass and scoring.
 [[example]]

@@ -189,6 +189,15 @@ impl ReadOnlyStore {
         }
         Ok(ReadOnlyStore { conn })
     }
+
+    /// [`Store::local_value`] on the read-only copy (T12.71): a device-local value, or
+    /// `None` when the key is absent.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn local_value(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        get_local(&self.conn, key)
+    }
 }
 
 /// Pause between tries of the WAL switch while another connection holds the file.

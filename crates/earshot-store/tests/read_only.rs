@@ -110,3 +110,66 @@ fn read_only_open_refuses_another_schema_version_and_a_missing_file() {
         assert_eq!(v, version);
     }
 }
+
+#[test]
+fn read_only_open_reads_persons_voiceprints_and_local_values_and_refuses_their_writes() {
+    use earshot_core::diar::{Embedding, EmbeddingModelId};
+    use earshot_core::voiceprint::{
+        EnrolmentConfig, Person, Stamp as VpStamp, VoiceprintRepo, enroll,
+    };
+    let dir = TempDir::new("read-only-voices");
+    let path = dir.path().join("earshot.db");
+    let model = EmbeddingModelId::new("invented-embedder@0");
+    let clock = ManualClock::new(1_800_000_000_000);
+    let mut hlc = Hlc::new(DeviceId::from_bytes([4; 16]));
+    let mut rng = ChaCha8Rng::seed_from_u64(71);
+    let (person, print) = {
+        let mut store = Store::open(&path).unwrap();
+        let mut stamp = VpStamp {
+            clock: &clock,
+            hlc: &mut hlc,
+            rng: &mut rng,
+        };
+        let person = Person::new("An invented colleague", false, &mut stamp);
+        store.put_person(person.clone()).unwrap();
+        let e = Embedding::new(model.clone(), vec![0.6, 0.8, 0.0]);
+        let print = enroll(
+            &mut store,
+            person.id,
+            &[e],
+            std::time::Duration::from_secs(20),
+            &EnrolmentConfig::default(),
+            &mut stamp,
+        )
+        .unwrap();
+        store
+            .set_local_value("speaker-identities/invented", b"\x02\x00\x00\x00{}")
+            .unwrap();
+        (person, print)
+    };
+    let before = files(dir.path());
+    {
+        let mut ro = ReadOnlyStore::open(&path).unwrap();
+        assert_eq!(ro.persons().unwrap(), vec![person.clone()]);
+        assert_eq!(ro.person(person.id).unwrap(), Some(person.clone()));
+        let prints = ro.voiceprints(&model).unwrap();
+        assert_eq!(prints.len(), 1);
+        assert_eq!(prints[0].id, print);
+        assert_eq!(ro.voiceprints_of(person.id).unwrap(), prints);
+        assert!(
+            ro.voiceprints(&EmbeddingModelId::new("another@0"))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            ro.local_value("speaker-identities/invented").unwrap(),
+            Some(b"\x02\x00\x00\x00{}".to_vec())
+        );
+        assert_eq!(ro.local_value("speaker-identities/none").unwrap(), None);
+        assert!(ro.put_person(person.clone()).is_err());
+        assert!(ro.put_voiceprint(prints[0].clone()).is_err());
+    }
+    let after = files(dir.path());
+    let db = |v: &[(String, Vec<u8>)]| v.iter().find(|(n, _)| n == "earshot.db").cloned();
+    assert_eq!(db(&after), db(&before));
+}

@@ -1205,3 +1205,26 @@ impl MeetingRepo for ReadOnlyStore {
         Err(read_only())
     }
 }
+
+/// Reads persons and voiceprints as [`Store`] does (T12.71); every write is refused before
+/// SQLite sees it.
+impl VoiceprintRepo for ReadOnlyStore {
+    fn person(&self, id: EntityId) -> Result<Option<Person>, VoiceprintError> {
+        get_person(&self.conn, id).map_err(vp_err)
+    }
+    fn persons(&self) -> Result<Vec<Person>, VoiceprintError> {
+        all_persons(&self.conn).map_err(vp_err)
+    }
+    fn put_person(&mut self, _person: Person) -> Result<(), VoiceprintError> {
+        Err(vp_err(read_only()))
+    }
+    fn voiceprints(&self, model: &EmbeddingModelId) -> Result<Vec<Voiceprint>, VoiceprintError> {
+        voiceprints_where(&self.conn, "model", text(model.as_str())).map_err(vp_err)
+    }
+    fn voiceprints_of(&self, person: EntityId) -> Result<Vec<Voiceprint>, VoiceprintError> {
+        voiceprints_where(&self.conn, "person_id", id_value(person)).map_err(vp_err)
+    }
+    fn put_voiceprint(&mut self, _voiceprint: Voiceprint) -> Result<(), VoiceprintError> {
+        Err(vp_err(read_only()))
+    }
+}

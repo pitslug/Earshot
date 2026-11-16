@@ -2437,6 +2437,34 @@ pub(crate) fn in_room_kinds(recorded: &BTreeSet<TrackId>) -> bool {
     recorded.contains(&TrackId::Mic) && !recorded.contains(&TrackId::Reference)
 }
 
+/// The person one voice matches in the final pass (module docs, step 4): the best person at
+/// `threshold` holding `margin` over the runner-up ([`match_embedding_with_margin`]), except
+/// that the margin (T12.67) never costs the user their own name: a best match to the user's
+/// identity (`is_me`) at the threshold stands, however close the runner-up. Returns the match
+/// (person and score) and how many stored voiceprints were skipped as unscorable. Whether a
+/// match to the user names a voice depends on the voice's role, decided by the caller. The
+/// one rule for the pass and for evaluation (`vp_readout`, T12.71).
+///
+/// # Errors
+/// As [`match_embedding_with_margin`].
+pub fn voice_match<Repo: VoiceprintRepo + ?Sized>(
+    repo: &Repo,
+    centroid: &earshot_core::diar::Embedding,
+    threshold: f32,
+    margin: f32,
+    is_me: &dyn Fn(EntityId) -> bool,
+) -> Result<(Option<(EntityId, f32)>, usize), VoiceprintError> {
+    let report = match_embedding_with_margin(repo, centroid, threshold, margin)?;
+    let found = match report.outcome {
+        MatchOutcome::Known { person, score } => Some((person, score)),
+        MatchOutcome::Unknown {
+            best: Some((person, score)),
+        } if score >= threshold && is_me(person) => Some((person, score)),
+        MatchOutcome::Unknown { .. } => None,
+    };
+    Ok((found, report.skipped_invalid))
+}
+
 /// Names the diarised speakers against the stored voiceprints (module docs, step 4),
 /// promoting the best user match among several mic voices to "Me" in `diar`.
 fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
@@ -2465,20 +2493,12 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
             matches.push(None);
             continue;
         }
-        let report =
-            match_embedding_with_margin(&snapshot, &s.centroid, threshold, margin).map_err(vp)?;
-        if report.skipped_invalid > 0 {
-            warnings.push(PostWarning::SkippedVoiceprints(report.skipped_invalid));
+        let (found, skipped) =
+            voice_match(&snapshot, &s.centroid, threshold, margin, &is_me).map_err(vp)?;
+        if skipped > 0 {
+            warnings.push(PostWarning::SkippedVoiceprints(skipped));
         }
-        matches.push(match report.outcome {
-            MatchOutcome::Known { person, score } => Some((person, score)),
-            // The margin (T12.67) never costs the user their own name: a best match to the
-            // user's identity at the threshold stands, however close the runner-up.
-            MatchOutcome::Unknown {
-                best: Some((person, score)),
-            } if score >= threshold && is_me(person) => Some((person, score)),
-            MatchOutcome::Unknown { .. } => None,
-        });
+        matches.push(found);
     }
     // The best user match among the mic voices (several local voices of a call, or the
     // voices of an in-person recording on the mic) becomes "Me" (only if there is no Me

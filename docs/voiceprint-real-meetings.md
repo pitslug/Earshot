@@ -27,10 +27,12 @@ For a confirmed, scorable voice under a setting: *correct* (named its owner), *w
 ## Rule (fixed before the first run)
 
 1. **Enough evidence:** at least 10 confirmed, scorable voices. Fewer: the readout is inconclusive and the recommendation is to keep 0.462.
-2. **No lost names:** misses(T) must equal misses(S) on confirmed voices. Any confirmed voice that S names correctly and T does not fails the rule.
+2. **No lost names:** no confirmed voice that S names correctly may be named otherwise (wrongly or not at all) by T.
 3. **A gain:** wrong(T) must be less than wrong(S) on confirmed voices (at least one wrong name removed).
 4. **Recommend 0.56** only if 1, 2 and 3 all hold. Otherwise keep 0.462. Unconfirmed and no-name counts never decide; they are reported beside the result.
 5. Raising it, if recommended and agreed, is its own task: a meeting threshold separate from the dev-clean calibration (which `voiceprint_calibration` pins), with `accept m3` re-run.
+
+Correction (2026-11-17, before the first run on the owner's data): step 2 first also required misses(T) to equal misses(S). A wrong name that T removes becomes a miss, so that clause made step 3 impossible to meet whenever it held; the tool's own rule test found it. The clause was removed; the per-voice check in step 2 was already there and is unchanged.
 
 ## Privacy
 

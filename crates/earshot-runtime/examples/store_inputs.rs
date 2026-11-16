@@ -23,6 +23,9 @@
 //! Everything it writes stays in `--into`. It prints counts and the folder only: never a
 //! meeting id, title, name or transcript text, also in its errors.
 
+#[path = "store_parts/copy.rs"]
+mod copy;
+
 use std::path::{Path, PathBuf};
 
 use earshot_core::identity::EntityId;
@@ -30,7 +33,6 @@ use earshot_core::model::{Meeting, MeetingRepo, TranscriptPass};
 use earshot_core::prompt::{ContextBudget, PromptPlan, Role, SummaryInput, plan};
 use earshot_runtime::summary::evaluation_input;
 use earshot_runtime::view::MeetingView;
-use earshot_store::ReadOnlyStore;
 use serde_json::json;
 
 /// What to do.
@@ -166,66 +168,12 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Whether some process holds `shm` open. On Windows: an open for reading that shares
-/// nothing fails while any other handle exists (it never writes the file). Elsewhere: whether
-/// it exists, which can refuse a stale one.
-fn shm_in_use(shm: &Path) -> bool {
-    if !shm.exists() {
-        return false;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(0)
-            .open(shm)
-            .is_err()
-    }
-    #[cfg(not(windows))]
-    {
-        true
-    }
-}
-
 /// Steps 1 to 4 of the module docs.
 fn run(a: &Args) -> Result<Counts, String> {
-    let copy = a.into.join("earshot.db");
-    if copy.exists() {
-        return Err(format!(
-            "{} already holds a copy; give the run another name",
-            a.into.display()
-        ));
+    if !copy::inside_private_tree(&a.into) {
+        return Err("--into must lie inside a fixtures/private/real-meetings/ folder".into());
     }
-    if !a.db.is_file() {
-        return Err("--db is not a file".into());
-    }
-    // A copy taken while a connection is open could be a torn database and WAL pair. Every
-    // open connection holds the `-shm` file; one left behind by an app that exited without a
-    // clean close (Earshot's quit ends the process) is held by nobody and is no reason to
-    // refuse.
-    let mut shm = a.db.clone().into_os_string();
-    shm.push("-shm");
-    if shm_in_use(Path::new(&shm)) {
-        return Err(
-            "the database is open (a process holds its -shm file); quit Earshot and \
-                    try again"
-                .into(),
-        );
-    }
-    for sub in ["inputs", "transcripts"] {
-        let d = a.into.join(sub);
-        std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
-    }
-    std::fs::copy(&a.db, &copy).map_err(|e| format!("copying the database: {e}"))?;
-    let mut wal = a.db.clone().into_os_string();
-    wal.push("-wal");
-    let wal = PathBuf::from(wal);
-    if wal.is_file() {
-        std::fs::copy(&wal, a.into.join("earshot.db-wal"))
-            .map_err(|e| format!("copying the database's WAL: {e}"))?;
-    }
-    let store = ReadOnlyStore::open(&copy).map_err(|e| format!("the copy: {e}"))?;
+    let store = copy::copy_and_open(&a.db, &a.into, &["inputs", "transcripts"])?;
     let meetings: Vec<Meeting> = store.meetings().map_err(|e| e.to_string())?;
     let mut candidates = Vec::with_capacity(meetings.len());
     for m in &meetings {
@@ -330,7 +278,7 @@ mod tests {
     use earshot_core::identity::{DeviceId, Hlc, ManualClock};
     use earshot_core::model::{ClockDomain, SegmentRow, Speaker, Stamp, Track};
     use earshot_core::prompt::Template;
-    use earshot_store::Store;
+    use earshot_store::{ReadOnlyStore, Store};
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
 
@@ -525,7 +473,7 @@ mod tests {
             (old, new, draft)
         };
         let source_bytes = std::fs::read(&db).unwrap();
-        let into = root.join("private").join("run-1");
+        let into = root.join("fixtures/private/real-meetings").join("run-1");
         let a = Args {
             db: db.clone(),
             into: into.clone(),
@@ -570,11 +518,22 @@ mod tests {
         let text = std::fs::read_to_string(into.join("transcripts").join("r2.txt")).unwrap();
         assert!(text.contains("We agree to ship the blue one."), "{text}");
         assert!(text.contains("[2]"), "{text}");
+        // A folder outside fixtures/private/real-meetings/ is refused before anything is copied.
+        let outside = Args {
+            into: root.join("private").join("run-0"),
+            ..a.clone()
+        };
+        assert!(
+            run(&outside)
+                .unwrap_err()
+                .contains("fixtures/private/real-meetings")
+        );
+        assert!(!outside.into.exists());
         // A second run into the same folder is refused, the copy kept.
         assert!(run(&a).unwrap_err().contains("already holds a copy"));
         // An --exclude id that names nothing is refused without naming it.
         let b = Args {
-            into: root.join("private").join("run-2"),
+            into: root.join("fixtures/private/real-meetings").join("run-2"),
             exclude: vec![id(1)],
             ..a.clone()
         };
@@ -582,7 +541,7 @@ mod tests {
         assert!(!err.contains(&id(1).to_string()), "{err}");
         // Excluding the newest picks the older one as r1.
         let c = Args {
-            into: root.join("private").join("run-3"),
+            into: root.join("fixtures/private/real-meetings").join("run-3"),
             exclude: vec![new],
             ..a
         };
@@ -594,7 +553,7 @@ mod tests {
         std::fs::write(&shm, b"").unwrap();
         let held = std::fs::File::open(&shm).unwrap();
         let d = Args {
-            into: root.join("private").join("run-4"),
+            into: root.join("fixtures/private/real-meetings").join("run-4"),
             ..c
         };
         assert!(run(&d).unwrap_err().contains("is open"));
