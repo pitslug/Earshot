@@ -9,6 +9,8 @@ import {
   type ClaudeCodeStatusView,
   type CodexStatusView,
   type ModelsView,
+  type StepChoice,
+  type SummaryOrderView,
   type SummarySettingsValue,
   type SummarySettingsView,
   errorText,
@@ -43,6 +45,11 @@ export interface SummariesPageState {
   load: SummariesLoad;
   /** The models view for "On this computer" (null until read or when it failed). */
   models: ModelsView | null;
+  /** The order of summary writers (T12.63b; null until read or when it failed). */
+  order: SummaryOrderView | null;
+  /** Stores the order of `steps` (empty: no summary), with the endpoint settings when they
+   * change too; resolves true when stored. */
+  saveOrder(steps: StepChoice[], settings?: Partial<SummarySettingsValue>): Promise<boolean>;
   /** Why the models view could not be read. */
   modelsError: string | null;
   notice: SummariesNotice | null;
@@ -69,6 +76,7 @@ export function useSummaries(): SummariesPageState {
   const ipc = useIpc();
   const [load, setLoad] = useState<SummariesLoad>({ status: "loading" });
   const [models, setModels] = useState<ModelsView | null>(null);
+  const [order, setOrder] = useState<SummaryOrderView | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [notice, setNotice] = useState<SummariesNotice | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -95,6 +103,14 @@ export function useSummaries(): SummariesPageState {
         if (live) setLoad({ status: "failed", message: errorText(e) });
       }
     })();
+    void ipc.summaryOrder().then(
+      (o) => {
+        if (live) setOrder(o);
+      },
+      (e: unknown) => {
+        if (live) setNotice({ title: "The order of summary writers could not be read", message: errorText(e) });
+      },
+    );
     void ipc.models().then(
       (m) => {
         if (live) setModels(m);
@@ -122,6 +138,33 @@ export function useSummaries(): SummariesPageState {
       setBusy(true);
       try {
         setSettings(await ipc.setSummarySettings({ ...now.value, ...change }));
+        setNotice(null);
+        // The steps' labels name the endpoint's host.
+        try {
+          setOrder(await ipc.summaryOrder());
+        } catch {
+          // Kept as read: the setting itself was stored.
+        }
+        return true;
+      } catch (e) {
+        setNotice({ title: "This setting was not saved", message: errorText(e) });
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [ipc],
+  );
+
+  const saveOrder = useCallback(
+    async (steps: StepChoice[], change?: Partial<SummarySettingsValue>) => {
+      const now = current.current;
+      if (now === null) return false;
+      setBusy(true);
+      try {
+        setOrder(await ipc.setSummaryOrder(steps, change === undefined ? null : { ...now.value, ...change }));
+        // The writer the old setting mirrors and the live switch follow the order.
+        setSettings(await ipc.summarySettings());
         setNotice(null);
         return true;
       } catch (e) {
@@ -188,6 +231,8 @@ export function useSummaries(): SummariesPageState {
   return {
     load,
     models,
+    order,
+    saveOrder,
     modelsError,
     notice,
     keyError,

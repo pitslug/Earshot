@@ -455,7 +455,7 @@ export function AppShell({
             all[e.meeting]?.job ??
             (e.type === "Failed" || e.type === "Cancelled"
               ? e.job
-              : e.type === "Summary"
+              : e.type === "Summary" || e.type === "Offloaded"
                 ? "Resummarise"
                 : "Retranscribe");
           // A cancel pressed holds until the job's last event.

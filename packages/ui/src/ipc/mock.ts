@@ -62,7 +62,7 @@ import { type CudaMockData, createCudaMock } from "./mockCuda";
 import { type AudioMockData, createAudioMock } from "./mockAudio";
 import { type AudioCheckMockData, createAudioCheckMock } from "./mockAudioCheck";
 import { type FirstRunMockData, createFirstRunMock } from "./mockFirstRun";
-import { OFFLOAD_COPY, type SyncMockData, createSyncMock, offloadCopy } from "./mockSync";
+import { OFFLOAD_COPY, type SyncMockData, createSyncMock, mockDeviceId, offloadCopy } from "./mockSync";
 import { SAMPLE_FOLDERS, createFoldersMock } from "./mockFolders";
 
 const MINUTE = 60_000;
@@ -387,7 +387,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     {
       summaries: summariesMock,
       helpers: () => syncMock.summaryHelpers(),
-      thisDevice: null,
+      thisDevice: (data.sync?.devices?.find((d) => d.this_device) ?? { id: mockDeviceId("3f2a9c1e") }).id,
       keptLocal: (meeting) => keptLocal.has(meeting),
     },
     data.summaryOrder,

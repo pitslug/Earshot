@@ -1,11 +1,15 @@
-// Re-summarise by hand with summary offload (T11.3db, docs/sync.md section 10): "Here" runs this
-// computer's writer (the ordinary job), "On <device>" asks one of the user's other computers that
-// writes summaries for the others. The other computers are read when the page opens and again
-// whenever the menu opens; without sync (and no computer chosen) the plain button stays.
+// Re-summarise by hand (T12.63b, docs/summary-order.md 5): a split button whose primary action is
+// "Use my order" (the order of summary writers, as a meeting's own summary runs it); its menu
+// offers "Use my order", then every writer that can run on this computer now and each of the
+// user's other computers that would write it now, each labelled as on the Summaries page. A
+// writer chosen there writes it alone, with no next step. On a meeting kept on this computer the
+// writers that would send it elsewhere are disabled with the reason until "Allow". The writers
+// and computers are read when the page opens and again whenever the menu opens.
 
 import {
-  Button,
+  Caption1,
   Menu,
+  MenuDivider,
   MenuItem,
   MenuList,
   MenuPopover,
@@ -15,58 +19,61 @@ import {
 } from "@fluentui/react-components";
 import { useCallback, useEffect, useState } from "react";
 
-import { type SummaryHelpersView, useIpc } from "../ipc";
+import {
+  ORDER_COPY,
+  type ResummariseView,
+  type StepChoice,
+  type SummaryHelpersView,
+  fillCopy,
+  stepKey,
+  useIpc,
+} from "../ipc";
 
-/** A computer's label in the menu: "On <name> (<writer>)". */
+/** A computer's label in the menu: "On <name> (<writer>)" (the order's step label). */
 export function helperLabel(name: string | null, shortId: string, writer: string | null): string {
-  const who = name ?? `Computer ${shortId}`;
-  return writer === null ? `On ${who}` : `On ${who} (${writer})`;
+  const device = name !== null && name.trim() !== "" ? name : `Computer ${shortId}`;
+  return writer === null
+    ? fillCopy(ORDER_COPY.steps.computer_no_writer, { device })
+    : fillCopy(ORDER_COPY.steps.computer, { device, writer });
 }
 
-/** What the menu says while it reads the other computers. */
-export const LOOKING = "Looking for your other computers";
-/** What the menu says when no other computer would write it now. */
-export const NONE_AVAILABLE = "No other computer can write it now";
+/** What the menu says while it reads the writers and computers. */
+export const LOOKING = "Looking for writers";
 
 export interface ResummariseControlProps {
+  /** The meeting. */
+  meeting: string;
   /** The button's words ("Re-summarise" or "Summarise"). */
   label: string;
   disabled: boolean;
-  /** Runs this computer's writer. */
-  onHere(): void;
-  /** Asks `device`; the page shows the outcome. */
+  /** Runs the order of summary writers ("Use my order"). */
+  onOrder(): void;
+  /** Runs one writer on this computer, alone. */
+  onWriter(step: StepChoice): void;
+  /** Asks one of the user's other computers; the page shows the outcome. */
   onAsk(device: string): void;
 }
 
-/** The header's Re-summarise: a plain button, or a split button with "Here" and the other
- * computers once sync can ask one. */
-export function ResummariseControl({ label, disabled, onHere, onAsk }: ResummariseControlProps) {
+/** The header's Re-summarise: "Use my order", or one writer chosen from its menu. */
+export function ResummariseControl({ meeting, label, disabled, onOrder, onWriter, onAsk }: ResummariseControlProps) {
   const ipc = useIpc();
+  const [writers, setWriters] = useState<ResummariseView | null>(null);
   const [helpers, setHelpers] = useState<SummaryHelpersView | null>(null);
   const [loading, setLoading] = useState(false);
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      setHelpers(await ipc.summaryHelpers());
-    } catch {
-      // Not read: the menu offers only "Here".
-    } finally {
-      setLoading(false);
-    }
-  }, [ipc]);
+    // Each list stands alone: one that cannot be read leaves the other and "Use my order".
+    const [w, h] = await Promise.allSettled([ipc.resummariseWriters(meeting), ipc.summaryHelpers()]);
+    if (w.status === "fulfilled") setWriters(w.value);
+    if (h.status === "fulfilled") setHelpers(h.value);
+    setLoading(false);
+  }, [ipc, meeting]);
   useEffect(() => {
     void load();
   }, [load]);
 
-  const offered = helpers !== null && (helpers.sync_ready || helpers.chosen !== null);
-  if (!offered) {
-    return (
-      <Button disabled={disabled} onClick={onHere}>
-        {label}
-      </Button>
-    );
-  }
-  const available = helpers.helpers.filter((h) => h.available);
+  const computers = helpers?.helpers.filter((h) => h.available) ?? [];
+  const items = writers?.writers ?? [];
   return (
     <Menu
       positioning="below-end"
@@ -78,8 +85,8 @@ export function ResummariseControl({ label, disabled, onHere, onAsk }: Resummari
         {(triggerProps: MenuButtonProps) => (
           <SplitButton
             disabled={disabled}
-            menuButton={{ ...triggerProps, "aria-label": `${label}: choose where` }}
-            primaryActionButton={{ onClick: onHere }}
+            menuButton={{ ...triggerProps, "aria-label": fillCopy(ORDER_COPY.resummarise.choose, { label }) }}
+            primaryActionButton={{ onClick: onOrder }}
           >
             {label}
           </SplitButton>
@@ -87,13 +94,24 @@ export function ResummariseControl({ label, disabled, onHere, onAsk }: Resummari
       </MenuTrigger>
       <MenuPopover>
         <MenuList>
-          <MenuItem onClick={onHere}>Here</MenuItem>
-          {available.map((h) => (
+          <MenuItem onClick={onOrder}>{ORDER_COPY.resummarise.order}</MenuItem>
+          {(items.length > 0 || computers.length > 0) && <MenuDivider />}
+          {items.map((w) => (
+            <MenuItem
+              key={stepKey(w.step)}
+              disabled={w.disabled !== null}
+              secondaryContent={w.disabled !== null ? <Caption1>{w.disabled}</Caption1> : undefined}
+              onClick={() => onWriter(w.step)}
+            >
+              {w.label}
+            </MenuItem>
+          ))}
+          {computers.map((h) => (
             <MenuItem key={h.id} onClick={() => onAsk(h.id)}>
               {helperLabel(h.name, h.short_id, h.writer)}
             </MenuItem>
           ))}
-          {available.length === 0 && <MenuItem disabled>{loading ? LOOKING : NONE_AVAILABLE}</MenuItem>}
+          {loading && items.length === 0 && computers.length === 0 && <MenuItem disabled>{LOOKING}</MenuItem>}
         </MenuList>
       </MenuPopover>
     </Menu>
