@@ -73,7 +73,7 @@ use std::time::Duration;
 
 use earshot_core::asr::CancelToken;
 use earshot_core::identity::EntityId;
-use earshot_core::model::{MeetingRepo, Stamp, Summary};
+use earshot_core::model::{MeetingRepo, Stamp, Summary, SummaryRequestRepo};
 use earshot_core::prompt::{
     ContextBudget, MeetingInfo, PromptSegment, SummaryInput, SummaryStyle, TimeChunkError,
     UserNote, Vocabulary, time_chunks,
@@ -516,6 +516,10 @@ enum Backend {
         model: String,
         /// Through an agent CLI, Claude Code or Codex (the report says so).
         cli: Option<HandoverCli>,
+        /// The endpoint is this device's own local model ([`SummaryService::own_model_endpoint`]:
+        /// the summary worker's llama.cpp server on its own compose network), so it may write a
+        /// meeting kept on this computer.
+        own_model: bool,
     },
     Local {
         config: LocalSummaryConfig,
@@ -634,11 +638,32 @@ impl SummaryService {
                 summarizer: LlmSummarizer::new(LlmClient::new(net, llm)),
                 model: config.model.clone(),
                 cli: None,
+                own_model: false,
             },
             audit,
             handovers: Handovers::None,
             record_failures: Arc::default(),
         })
+    }
+
+    /// [`SummaryService::new`] for an OpenAI-compatible endpoint that is this device's own local
+    /// model: the summary worker's llama.cpp server on the worker's own compose network (T11.6,
+    /// docs/sync.md section 10). Unlike any other remote service it may write a meeting kept on
+    /// this computer ([`crate::keep_local`]). Only `earshot-worker` calls it, and only for an
+    /// endpoint its own-network rule accepted (`earshot_worker::endpoint`); pinned by
+    /// `summary_own_model_endpoint_is_called_only_by_the_worker`.
+    ///
+    /// # Errors
+    /// As [`SummaryService::new`].
+    pub fn own_model_endpoint(
+        config: &SummaryConfig,
+        clock: SharedClock,
+    ) -> Result<Self, RuntimeError> {
+        let mut service = Self::new(config, clock)?;
+        if let Backend::Remote { own_model, .. } = &mut service.backend {
+            *own_model = true;
+        }
+        Ok(service)
     }
 
     /// A service summarising through the user's Claude Code CLI ([`crate::claude_code`]):
@@ -675,6 +700,7 @@ impl SummaryService {
                 summarizer: LlmSummarizer::new(client),
                 model: crate::claude_code::stored_model_name(config.model.as_deref()),
                 cli: Some(HandoverCli::ClaudeCode),
+                own_model: false,
             },
             audit: AuditLog::new(),
             handovers: Handovers::ClaudeCode(handovers),
@@ -714,6 +740,7 @@ impl SummaryService {
                 summarizer: LlmSummarizer::new(client),
                 model: crate::codex::stored_model_name(config.model.as_deref()),
                 cli: Some(HandoverCli::Codex),
+                own_model: false,
             },
             audit: AuditLog::new(),
             handovers: Handovers::Codex(handovers),
@@ -905,11 +932,66 @@ impl SummaryService {
         rng: &mut R,
         cancel: &CancelToken,
     ) -> Result<SummaryOutcome, RuntimeError> {
+        self.summarize_inner(services, meeting, None, None, rng, cancel)
+    }
+
+    /// [`SummaryService::summarize`] as one step of a run of the order of summary writers
+    /// (T12.63a, [`crate::summary_order::run`]): the run's ended record is stored in the
+    /// summary's own write transaction, when the meeting's record is still of that run.
+    ///
+    /// # Errors
+    /// As [`SummaryService::summarize`].
+    pub fn summarize_in_run<R: Rng + ?Sized>(
+        &self,
+        services: &Services,
+        meeting: EntityId,
+        end: &crate::summary_order::run::RunEnd,
+        rng: &mut R,
+        cancel: &CancelToken,
+    ) -> Result<SummaryOutcome, RuntimeError> {
+        self.summarize_inner(services, meeting, None, Some(end), rng, cancel)
+    }
+
+    /// [`SummaryService::summarize`] for another device's summary request (summary offload,
+    /// [`crate::offload`]): the request is read again in the summary's write transaction, which
+    /// stores nothing unless it is still claimed by this device, and marks it done in the same
+    /// transaction.
+    ///
+    /// # Errors
+    /// As [`SummaryService::summarize`]; [`RuntimeError::Conflict`] with
+    /// [`crate::offload::REQUEST_NOT_CLAIMED`] when the request is no longer this device's to
+    /// answer (withdrawn by the asker, deleted, or never claimed here); nothing is written then.
+    pub fn summarize_answering<R: Rng + ?Sized>(
+        &self,
+        services: &Services,
+        meeting: EntityId,
+        request: EntityId,
+        rng: &mut R,
+        cancel: &CancelToken,
+    ) -> Result<SummaryOutcome, RuntimeError> {
+        self.summarize_inner(services, meeting, Some(request), None, rng, cancel)
+    }
+
+    fn summarize_inner<R: Rng + ?Sized>(
+        &self,
+        services: &Services,
+        meeting: EntityId,
+        answering: Option<EntityId>,
+        run_end: Option<&crate::summary_order::run::RunEnd>,
+        rng: &mut R,
+        cancel: &CancelToken,
+    ) -> Result<SummaryOutcome, RuntimeError> {
         // A meeting kept on this computer (T12.13) is summarised only by a local model: any
         // other service is refused before the transcript is read (`crate::keep_local`).
-        if !matches!(self.backend, Backend::Local { .. })
-            && crate::keep_local::summary_privacy(&services.store(), meeting)
-                == crate::keep_local::SummaryPrivacy::KeptLocal
+        if !matches!(
+            self.backend,
+            Backend::Local { .. }
+                | Backend::Remote {
+                    own_model: true,
+                    ..
+                }
+        ) && crate::keep_local::summary_privacy(&services.store(), meeting)
+            == crate::keep_local::SummaryPrivacy::KeptLocal
         {
             return Err(RuntimeError::SummaryKeptLocal(meeting));
         }
@@ -936,6 +1018,7 @@ impl SummaryService {
                 summarizer,
                 model,
                 cli,
+                ..
             } => {
                 let run = runtime.block_on(summarizer.summarize_with_report(&input, cancel));
                 let summary = run.result.map_err(RuntimeError::Llm)?;
@@ -968,7 +1051,8 @@ impl SummaryService {
                 )
             }
         };
-        let (summary_id, title_set) = store_summary(services, &view, model, &summary, rng)?;
+        let (summary_id, title_set) =
+            store_summary_answering(services, &view, model, &summary, answering, run_end, rng)?;
         Ok(SummaryOutcome {
             summary_id,
             summary,
@@ -1536,11 +1620,30 @@ fn load_with_fallback(
 /// docs: the meeting must still exist with the same segment ids; older summaries become
 /// tombstones; only an empty title is filled; the partials made during the meeting are
 /// deleted, [`crate::live_summaries`]). Returns the row id and whether the title was set.
+/// Tests store summaries through it; production goes through [`store_summary_answering`].
+#[cfg(test)]
 pub(crate) fn store_summary<R: Rng + ?Sized>(
     services: &Services,
     view: &MeetingView,
     model: String,
     summary: &SummaryV1,
+    rng: &mut R,
+) -> Result<(EntityId, bool), RuntimeError> {
+    store_summary_answering(services, view, model, summary, None, None, rng)
+}
+
+/// [`store_summary`], answering another device's summary request when `answering` names one:
+/// inside the transaction the request must still be claimed by this device (else
+/// [`RuntimeError::Conflict`] with [`crate::offload::REQUEST_NOT_CLAIMED`], nothing stored) and
+/// is marked done with the summary. With `run_end` the run of the order of summary writers that
+/// wrote it is ended in the same transaction ([`crate::summary_order::run`]).
+fn store_summary_answering<R: Rng + ?Sized>(
+    services: &Services,
+    view: &MeetingView,
+    model: String,
+    summary: &SummaryV1,
+    answering: Option<EntityId>,
+    run_end: Option<&crate::summary_order::run::RunEnd>,
     rng: &mut R,
 ) -> Result<(EntityId, bool), RuntimeError> {
     let meeting = view.meeting.id;
@@ -1571,6 +1674,16 @@ pub(crate) fn store_summary<R: Rng + ?Sized>(
                 "the transcript changed during the summary",
             ));
         }
+        // Summary offload: the asker may have withdrawn the request while the model ran.
+        let answered = match answering {
+            Some(request) => Some(crate::offload::still_claimed(
+                &*tx,
+                request,
+                meeting,
+                stamp.hlc.node(),
+            )?),
+            None => None,
+        };
         for mut old in tx.summaries(meeting)? {
             if !old.meta.deleted {
                 old.meta.mark_deleted(stamp.hlc, stamp.clock);
@@ -1590,6 +1703,14 @@ pub(crate) fn store_summary<R: Rng + ?Sized>(
             m.meta.touch(stamp.hlc, stamp.clock);
             tx.put_meeting(m)?;
             title_set = true;
+        }
+        if let Some(mut request) = answered {
+            request.state = earshot_core::model::RequestState::Done;
+            request.meta.touch(stamp.hlc, stamp.clock);
+            tx.put_summary_request(request)?;
+        }
+        if let Some(end) = run_end {
+            crate::summary_order::run::end_in_tx(tx, meeting, end)?;
         }
         // The live partials are content; a summary now exists, so they go.
         tx.delete_local_value(crate::live_summaries::record_key(meeting).as_str())?;

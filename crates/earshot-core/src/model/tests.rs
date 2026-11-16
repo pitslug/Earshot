@@ -63,6 +63,7 @@ fn model_entities_have_the_sync_classes_of_plan_3_5() {
     assert_eq!(kind::<Note>(), SyncClassKind::Syncable);
     assert_eq!(kind::<Summary>(), SyncClassKind::Syncable);
     assert_eq!(kind::<Folder>(), SyncClassKind::Syncable);
+    assert_eq!(kind::<SummaryRequest>(), SyncClassKind::Syncable);
     assert_eq!(kind::<Person>(), SyncClassKind::Syncable);
     assert_eq!(kind::<Voiceprint>(), SyncClassKind::SyncableOptIn);
     assert_eq!(kind::<AudioFile>(), SyncClassKind::NeverSync);
@@ -121,6 +122,16 @@ fn model_syncable_rows_go_through_the_sync_envelope_with_their_entity_names() {
     assert_eq!(sync_envelope(&s).entity, "summary");
     let folder = Folder::new("Projects", &mut w.stamp());
     assert_eq!(sync_envelope(&folder).entity, "folder");
+    let request = SummaryRequest::new(
+        m.id,
+        DeviceId::from_bytes([2; 16]),
+        DeviceId::from_bytes([1; 16]),
+        12,
+        &mut w.stamp(),
+    );
+    assert_eq!(sync_envelope(&request).entity, "summary_request");
+    assert_eq!(request.state, RequestState::Requested);
+    assert!(request.reason.is_empty());
     let env = sync_envelope(&row);
     assert_eq!(env.entity, "segment");
     assert_eq!(env.id, seg.id, "a segment row keeps the ASR segment's id");
@@ -227,6 +238,44 @@ fn model_in_memory_repo_meeting_deletion_contract() {
 #[test]
 fn model_in_memory_repo_folder_contract() {
     repo_contract::folder_repo(InMemoryRepo::new);
+}
+
+#[test]
+fn model_in_memory_repo_summary_request_contract() {
+    repo_contract::summary_request_repo(InMemoryRepo::new);
+}
+
+#[test]
+fn model_in_memory_repo_dictionary_contract() {
+    repo_contract::dictionary_repo(InMemoryRepo::new);
+}
+
+#[test]
+fn model_dictionary_word_is_opt_in_and_goes_through_the_sync_envelope() {
+    let mut w = World::new();
+    assert_eq!(kind::<DictionaryWord>(), SyncClassKind::SyncableOptIn);
+    let word = DictionaryWord::new("Quillmarsh", &mut w.stamp());
+    let env = sync_envelope(&word);
+    assert_eq!(env.entity, "dictionary_word");
+    assert_eq!(env.class, SyncClassKind::SyncableOptIn);
+    assert!(word.is_live());
+}
+
+#[test]
+fn model_summary_request_states_have_stable_names() {
+    for s in RequestState::ALL {
+        assert_eq!(RequestState::from_name(s.name()), Some(s));
+        assert_eq!(
+            serde_json::to_value(s).unwrap(),
+            serde_json::Value::String(s.name().into())
+        );
+    }
+    assert_eq!(RequestState::from_name("lost"), None);
+    let open: Vec<RequestState> = RequestState::ALL
+        .into_iter()
+        .filter(|s| s.is_open())
+        .collect();
+    assert_eq!(open, [RequestState::Requested, RequestState::Claimed]);
 }
 
 #[test]

@@ -276,6 +276,13 @@ impl MeetingDriver {
         }))
     }
 
+    /// The queue meetings take turns in; summary offload's work for another computer takes its
+    /// turn here too (T11.3db).
+    #[must_use]
+    pub fn queue(&self) -> MeetingQueue {
+        self.0.queue.clone()
+    }
+
     fn threads(&self) -> std::sync::MutexGuard<'_, Threads> {
         self.0
             .threads
@@ -1198,6 +1205,21 @@ fn run(
     if host.claude_effort_unread {
         send(crate::meeting_events::claude_effort_unread_warning());
     }
+    // A summary written by a later step of the order, or none because every step failed
+    // (T12.63b): one banner saying what became of each step.
+    let cx = crate::summary_order::StepContext::read(svc);
+    if let Some(banner) = crate::summary_order::steps_banner(&host.steps, &cx) {
+        send(banner);
+    } else if crate::summary_order::tried_steps(&host.steps) <= 1
+        && let Some(banner) = host
+            .offload
+            .as_ref()
+            .and_then(|choice| crate::offload::offload_banner(choice, &host.summary))
+    {
+        // A one-step order of a computer that was not asked: today's banner (T11.3db), which
+        // says this computer wrote the summary only when one was stored.
+        send(banner);
+    }
     if let Some(message) = crate::meeting_events::summary_fallback_note(&host.summary) {
         send(MeetingEvent::Warning {
             key: "summary-processor".into(),
@@ -1217,12 +1239,16 @@ fn setup_err(kind: &str, message: String) -> IpcError {
     IpcError::new(kind, message)
 }
 
-/// The banner text of an ONNX Runtime library that could not load (the CPU one is used).
+/// The banner text of an ONNX Runtime library that could not load (the CPU one is used). The NPU's
+/// is fixed copy, with no library name or error text (T12.64).
 #[must_use]
 pub(crate) fn onnx_fallback_message(
     library: earshot_runtime::backends::Accelerator,
     e: &RuntimeError,
 ) -> String {
+    if library == earshot_runtime::backends::Accelerator::Qnn {
+        return crate::plain_text::NPU_LIBRARY_UNAVAILABLE.to_owned();
+    }
     let why = crate::plain_text::library_problem(e);
     format!(
         "The {library:?} library of ONNX Runtime is unavailable, so speech models run on the CPU \
@@ -1358,8 +1384,44 @@ pub(crate) struct SummarySetup {
     /// The summary is to be written on this computer.
     pub local_chosen: bool,
     /// The summary model chosen by name is not installed: what an explicit re-summarise fails
-    /// with (a meeting skips the summary instead, `SkipReason::ChosenNotInstalled`).
+    /// with (a meeting skips the summary instead, `SkipReason::ChosenNotInstalled`). Since
+    /// T12.63b the re-summary says it from its run (`jobs::summarise_run_with`); the setup's tests
+    /// still pin it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub chosen_missing: Option<IpcError>,
+}
+
+/// Runs `f` with the plan of a meeting's run of the order of summary writers (T12.63b): the
+/// production writers over `models` and `probes`, each read when its step is tried, computer
+/// steps through `computers` once the app set it, and a local step "not now" while a newer
+/// meeting's ticket is open that `ticket`'s hold did not cover (docs/summary-order.md 4.5).
+pub(crate) fn with_order_run<R>(
+    models: &ModelDir,
+    probes: &crate::summary_order::SummaryProbes,
+    computers: &crate::summary_order::ComputerSlot,
+    ticket: &QueueTicket,
+    f: impl FnOnce(&earshot_runtime::summary_order::run::RunPlan<'_>) -> R,
+) -> R {
+    let chooser = crate::summary_order::chooser_of(computers);
+    let ask = |d| match &chooser {
+        Some(c) => crate::summary_order::remembering(c, d),
+        None => earshot_runtime::offload::decide(Some(d), None, false),
+    };
+    let not_now = || earshot_runtime::summary_order::run::local_not_now(ticket);
+    crate::summary_order::with_writers(
+        models,
+        &*probes.keys,
+        &*probes.claude,
+        &*probes.codex,
+        Some(&ask),
+        |writers| {
+            f(&earshot_runtime::summary_order::run::RunPlan {
+                writers,
+                local_not_now: &not_now,
+                order: None,
+            })
+        },
+    )
 }
 
 /// The live summaries of a meeting with `setup` on `order` (T8.3jc): only with the setting
@@ -1394,7 +1456,9 @@ pub(crate) fn live_summaries(
 pub(crate) struct MeetingSummary {
     /// The service, `None` when no summary runs.
     pub summary: Option<PreparedSummary>,
-    /// Why none runs (when `summary` is `None`).
+    /// Why none runs (when `summary` is `None`); its banners are in `banners`, and the run says
+    /// why at the end (T12.63b), so only the tests read it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub no_summary: SkipReason,
     /// The setup notes, the live summaries' note last: they follow the transcription's notes.
     pub notes: Vec<String>,
@@ -1404,6 +1468,9 @@ pub(crate) struct MeetingSummary {
     pub live_summaries: Option<earshot_runtime::live_summaries::LiveSummaries>,
     /// `LiveConfig::keep_summary_local`: the meeting is kept on this computer (T12.13).
     pub keep_summary_local: bool,
+    /// The order of summary writers at the start, filtered by the meeting's privacy (T12.63b):
+    /// what the queue hold covers. The summary reads the order again when it is due.
+    pub steps: Vec<earshot_runtime::summary_order::OrderStep>,
 }
 
 /// The summary part of `request`'s pre-flight on transcription order `order`: its privacy reaches
@@ -1419,9 +1486,23 @@ pub(crate) fn meeting_summary(
     probes: (&dyn ApiKeyStore, &dyn ClaudeCodeProbe, &dyn CodexProbe),
 ) -> Result<MeetingSummary, IpcError> {
     let (keys, claude, codex) = probes;
+    // One answer per CLI for the setup and the start checks.
+    let claude = crate::summary_order::Once::new(claude);
+    let codex = crate::summary_order::Once::new(codex);
     let privacy = request.summary_privacy();
-    let setup = summary_setup(svc, models, keys, claude, codex, privacy)?;
-    let (live_summaries, live_note) = live_summaries(&setup, order);
+    let setup = summary_setup(svc, models, keys, &claude, &codex, privacy)?;
+    // The order of summary writers (T12.63b) as it is at the start: only for the start banner,
+    // the queue hold and live summaries. The summary reads it again when it is due.
+    let (stored, _) = earshot_runtime::summary_order::summary_order(&svc.store())?;
+    let steps = stored.filtered(privacy);
+    let (live_summaries, live_note) =
+        if earshot_runtime::summary_order::live_summaries_allowed(&steps) {
+            live_summaries(&setup, order)
+        } else {
+            (None, None)
+        };
+    // `chosen_missing` is what an explicit re-summarise of one writer fails with; the order's
+    // run says it there (`jobs::summarise_run_with`), so a meeting does not need it.
     let SummarySetup {
         summary,
         no_summary,
@@ -1429,6 +1510,24 @@ pub(crate) fn meeting_summary(
         ..
     } = setup;
     notes.extend(live_note);
+    if steps.len() >= 2 {
+        // A step known to fail is said once; every step is still tried at summary time.
+        let failing =
+            crate::summary_order::with_writers(models, keys, &claude, &codex, None, |w| {
+                crate::summary_order::writer_start_checks(svc, &steps, w)
+            });
+        let cx = crate::summary_order::StepContext::read(svc);
+        return Ok(MeetingSummary {
+            summary,
+            no_summary,
+            notes,
+            banners: crate::summary_order::start_banners(&steps, &failing, &cx),
+            live_summaries,
+            keep_summary_local: privacy == host::SummaryPrivacy::KeptLocal,
+            steps,
+        });
+    }
+    // A one-step order: today's banners for that cause.
     let banners = [
         // An endpoint without its API key: the meeting runs, the summary is skipped.
         crate::meeting_events::no_key_banner(&no_summary),
@@ -1451,6 +1550,7 @@ pub(crate) fn meeting_summary(
         banners,
         live_summaries,
         keep_summary_local: privacy == host::SummaryPrivacy::KeptLocal,
+        steps,
     })
 }
 
@@ -1549,6 +1649,11 @@ pub struct HostPrepare {
     source: SourceFn,
     /// Whether the meeting may run provisional words (T9.1m); off only in the hidden replay.
     previews: bool,
+    /// Asks a computer step's computer (T12.63b), set by the app once sync is ready; empty: every
+    /// computer step reads as sync off.
+    computers: crate::summary_order::ComputerSlot,
+    /// What a summary's writer steps read when they are tried (the start's checks too).
+    probes: crate::summary_order::SummaryProbes,
 }
 
 impl HostPrepare {
@@ -1564,7 +1669,24 @@ impl HostPrepare {
         Self {
             source,
             previews: true,
+            computers: crate::summary_order::ComputerSlot::default(),
+            probes: crate::summary_order::SummaryProbes::installed(),
         }
+    }
+
+    /// Computer steps are asked through `slot` once the app sets it (T11.3db, T12.63b).
+    #[must_use]
+    pub fn with_computers(mut self, slot: crate::summary_order::ComputerSlot) -> Self {
+        self.computers = slot;
+        self
+    }
+
+    /// Writer steps read `probes` (tests: fakes that count what is read).
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_probes(mut self, probes: crate::summary_order::SummaryProbes) -> Self {
+        self.probes = probes;
+        self
     }
 
     /// No provisional words, whatever the setting says (T12.46): the hidden replay shows no
@@ -1644,7 +1766,7 @@ mod production {
     use earshot_runtime::Services;
     use earshot_runtime::host::{self, AfterMeeting, HostOutcome, MeetingModels};
     use earshot_runtime::live::{LiveConfig, LiveHold};
-    use earshot_runtime::meeting_queue::{Beside, MeetingHold, QueueTicket, SummaryHold};
+    use earshot_runtime::meeting_queue::{Beside, MeetingHold, QueueTicket};
 
     use super::{HostPrepare, Prepare, Prepared, StartRequest};
     use crate::ipc::IpcError;
@@ -1673,24 +1795,25 @@ mod production {
                 model: setup.choice.model.clone(),
                 order: setup.order.clone(),
             };
+            let probes = self.probes.clone();
             let super::MeetingSummary {
                 summary,
-                no_summary,
                 notes: summary_notes,
                 banners,
                 live_summaries,
                 keep_summary_local,
+                steps,
+                ..
             } = super::meeting_summary(
                 svc,
                 &models,
                 request,
                 &setup.order,
-                (
-                    &crate::credentials::CredentialManager::anthropic(),
-                    &earshot_runtime::claude_code::InstalledClaudeCode::meeting_start(),
-                    &earshot_runtime::codex::InstalledCodex::meeting_start(),
-                ),
+                (&*probes.keys, &*probes.claude, &*probes.codex),
             )?;
+            // The order's run reads its writers when the summary is due; this prepared one only
+            // checked the setup (a missing DLL refuses the meeting) and fed live summaries.
+            drop(summary);
             // None in the hidden replay (T12.46).
             let previews = self.live_previews(svc, &models);
             // "Where it runs" not honoured, or a stored setting this version does not know.
@@ -1712,10 +1835,14 @@ mod production {
                 Arc::clone(&notes),
                 Box::new(super::onnx_fallback_message),
             ));
-            // What this meeting's summary will hold, from the summary its `after` runs, and what
-            // its live work needs: a newer meeting's transcript waits only for an older summary on
-            // a device it needs (T12.39).
-            ticket.set_summary(SummaryHold::of(summary.as_ref()));
+            // What this meeting's summary will hold: the local model whenever any step of its
+            // order at the start is the local model (T12.63b, docs/summary-order.md 4.5), and
+            // what its live work needs: a newer meeting's transcript waits only for an older
+            // summary on a device it needs (T12.39).
+            ticket.set_summary({
+                let db = svc.store();
+                host::order_summary_hold(&db, &steps, &setup.order, &earshot_runtime::hardware())
+            });
             let gates = Arc::new(MeetingHold::beside(
                 Arc::clone(ticket),
                 Beside::this_machine(meeting_models.live_needs(live_summaries.is_some())),
@@ -1741,6 +1868,8 @@ mod production {
                 ..LiveConfig::default()
             };
             let factory = meeting_models.live_factory();
+            let computers = Arc::clone(&self.computers);
+            let summary_ticket = Arc::clone(ticket);
             let starter = source.starter;
             let call_signal = source.call_signal;
             let start =
@@ -1760,19 +1889,26 @@ mod production {
                         Ok(r) => r,
                         Err(e) => return HostOutcome::not_started(e),
                     };
-                    let run = AfterMeeting {
-                        models: &models,
-                        model: &resolved.model,
-                        order: &resolved.order,
-                        post: true,
-                        whole_pass: false,
-                        summary: summary.as_ref().map(|s| &s.service),
-                        no_summary,
-                        // One token: the user's Cancel stops both, so no summary runs on the draft.
-                        post_cancel: cancel,
-                        summary_cancel: cancel,
-                    };
-                    host::after_meeting(svc, outcome, &run, progress)
+                    super::with_order_run(&models, &probes, &computers, &summary_ticket, |plan| {
+                        let run = AfterMeeting {
+                            models: &models,
+                            model: &resolved.model,
+                            order: &resolved.order,
+                            post: true,
+                            whole_pass: false,
+                            summary: None,
+                            no_summary: host::SkipReason::NotRequested,
+                            // One token: the user's Cancel stops both, so no summary runs on
+                            // the draft.
+                            post_cancel: cancel,
+                            summary_cancel: cancel,
+                            offload: None,
+                            // The order of summary writers, read when the summary is due
+                            // (T12.63b).
+                            order_run: Some(plan),
+                        };
+                        host::after_meeting(svc, outcome, &run, progress)
+                    })
                 },
             );
             Ok(Prepared {

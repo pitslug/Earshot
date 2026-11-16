@@ -1,0 +1,284 @@
+# The Linux spike (T11.5, docs/sync.md section 10): which crates the summary worker would need
+# build and pass their tests on x86_64-unknown-linux-gnu. Run by hand or by a push to a branch
+# named linux/<anything>; never by a push to main, a tag or a pull request (a run by hand may
+# name any branch: it is read-only and uses no secret).
+#
+# No third-party or GitHub actions, as in relay-image.yml: every step is a shell command on the
+# runner, so there is nothing to pin and nothing else runs with the token. The token can read
+# the repository, nothing more, and no secret is used. This log is public: no step prints
+# anything but the toolchain, build and test output.
+name: linux-check
+
+on:
+  push:
+    branches:
+      - "linux/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The repository's rust-toolchain.toml also lists Windows targets; this variable makes rustup
+  # use the pinned version alone and ignore that file (as the relay's Dockerfile does).
+  RUSTUP_TOOLCHAIN: "1.99.1"
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  # .cargo/config.toml sets these to MSVC flags for Windows release builds of whisper.cpp and
+  # llama.cpp; a real environment variable takes precedence, so give gcc its own.
+  CMAKE_C_FLAGS_RELEASE: "-O2 -DNDEBUG"
+  CMAKE_CXX_FLAGS_RELEASE: "-O2 -DNDEBUG"
+
+jobs:
+  crates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Fetch the pushed commit
+        run: |
+          git init -q src
+          cd src
+          git fetch -q --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install "${RUSTUP_TOOLCHAIN}" --profile minimal --component rustfmt
+          rustc --version
+          cargo --version
+          cmake --version | head -n 1
+          cc --version | head -n 1
+
+      # One build and one test step per crate, each allowed to fail, so one failure does not
+      # hide the next. The summary at the end lists every outcome.
+      - name: Build earshot-core
+        id: build_core
+        continue-on-error: true
+        working-directory: src
+        run: cargo build --locked -p earshot-core --lib
+      - name: Build earshot-proc
+        id: build_proc
+        continue-on-error: true
+        working-directory: src
+        run: cargo build --locked -p earshot-proc
+      - name: Test earshot-proc
+        id: test_proc
+        continue-on-error: true
+        working-directory: src
+        run: cargo test --locked -p earshot-proc
+
+      - name: Build earshot-net
+        id: build_net
+        continue-on-error: true
+        working-directory: src
+        run: cargo build --locked -p earshot-net
+      - name: Test earshot-net
+        id: test_net
+        continue-on-error: true
+        working-directory: src
+        run: cargo test --locked -p earshot-net
+
+      - name: Build earshot-store
+        id: build_store
+        continue-on-error: true
+        working-directory: src
+        run: cargo build --locked -p earshot-store
+      - name: Test earshot-store
+        id: test_store
+        continue-on-error: true
+        working-directory: src
+        run: cargo test --locked -p earshot-store
+
+      - name: Build earshot-sync
+        id: build_sync
+        continue-on-error: true
+        working-directory: src
+        run: cargo build --locked -p earshot-sync
+      - name: Test earshot-sync
+        id: test_sync
+        continue-on-error: true
+        working-directory: src
+        run: cargo test --locked -p earshot-sync
+
+      - name: Build earshot-llm
+        id: build_llm
+        continue-on-error: true
+        working-directory: src
+        run: cargo build --locked -p earshot-llm
+      - name: Test earshot-llm
+        id: test_llm
+        continue-on-error: true
+        working-directory: src
+        run: cargo test --locked -p earshot-llm
+
+      - name: Build earshot-sync-server
+        id: build_relay
+        continue-on-error: true
+        working-directory: src
+        run: cargo build --locked -p earshot-sync-server
+      - name: Test earshot-sync-server
+        id: test_relay
+        continue-on-error: true
+        working-directory: src
+        run: cargo test --locked -p earshot-sync-server
+
+      - name: Build earshot-runtime (lib)
+        id: build_runtime
+        continue-on-error: true
+        working-directory: src
+        run: cargo build --locked -p earshot-runtime --lib
+      # llama-cpp-sys-2 0.1.160 hard-links its shared libraries (with their .so symlinks) into
+      # target/debug, target/debug/deps and target/debug/examples whenever its build script
+      # runs, and panics (File exists) when a link from an earlier run is a dangling symlink:
+      # the test build runs it again with other features than the library build. Remove the
+      # links first; cargo test finds the libraries through the build's own search path.
+      - name: Remove llama.cpp's links from the library build
+        working-directory: src
+        run: |
+          for d in target/debug target/debug/deps target/debug/examples; do
+            rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
+          done
+      # The summary path and sync: the runtime's summary and sync tests.
+      - name: Test earshot-runtime (lib, summary)
+        id: test_runtime_summary
+        continue-on-error: true
+        working-directory: src
+        run: cargo test --locked -p earshot-runtime --lib summary
+      - name: Test earshot-runtime (lib, sync)
+        id: test_runtime_sync
+        continue-on-error: true
+        working-directory: src
+        run: cargo test --locked -p earshot-runtime --lib sync
+      # Everything else in the library, for the record: tests that need fetched models or
+      # fixtures fail here by design (the AGENTS.md rule), so this step is informational.
+      - name: Test earshot-runtime (lib, all)
+        id: test_runtime_all
+        continue-on-error: true
+        working-directory: src
+        run: cargo test --locked -p earshot-runtime --lib -- --skip summary --skip sync
+
+      # The runtime's library carries no Linux-only warnings (T11.5b).
+      - name: Clippy earshot-runtime (lib)
+        id: clippy_runtime
+        continue-on-error: true
+        working-directory: src
+        run: |
+          rustup component add clippy --toolchain "${RUSTUP_TOOLCHAIN}"
+          # llama-cpp-sys-2's build script runs again here (see the step above).
+          for d in target/debug target/debug/deps target/debug/examples; do
+            rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
+          done
+          cargo clippy --locked -p earshot-runtime --lib -- -D warnings
+
+      # The summary worker (T11.6): gating build, tests and clippy. llama-cpp-sys-2's build
+      # script runs again for each (see the step above), so its links go first.
+      - name: Build earshot-worker
+        id: build_worker
+        continue-on-error: true
+        working-directory: src
+        run: |
+          for d in target/debug target/debug/deps target/debug/examples; do
+            rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
+          done
+          cargo build --locked -p earshot-worker
+      - name: Test earshot-worker
+        id: test_worker
+        continue-on-error: true
+        working-directory: src
+        run: |
+          for d in target/debug target/debug/deps target/debug/examples; do
+            rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
+          done
+          cargo test --locked -p earshot-worker
+      - name: Clippy earshot-worker
+        id: clippy_worker
+        continue-on-error: true
+        working-directory: src
+        run: |
+          for d in target/debug target/debug/deps target/debug/examples; do
+            rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
+          done
+          cargo clippy --locked -p earshot-worker --all-targets -- -D warnings
+
+      # Last, because core's debug echo-canceller tests run for a long time, and bounded; core
+      # is already checked for wasm32 by `cargo xtask purity`. Its fixture tests fail here by
+      # design (no fetched fixtures).
+      - name: Test earshot-core (lib, informational)
+        id: test_core
+        continue-on-error: true
+        timeout-minutes: 45
+        working-directory: src
+        run: cargo test --locked -p earshot-core --lib
+
+      - name: Outcomes
+        if: always()
+        run: |
+          echo "build earshot-core: ${{ steps.build_core.outcome }}"
+          echo "test earshot-core (lib): ${{ steps.test_core.outcome }}"
+          echo "build earshot-proc: ${{ steps.build_proc.outcome }}"
+          echo "test earshot-proc: ${{ steps.test_proc.outcome }}"
+          echo "build earshot-net: ${{ steps.build_net.outcome }}"
+          echo "test earshot-net: ${{ steps.test_net.outcome }}"
+          echo "build earshot-store: ${{ steps.build_store.outcome }}"
+          echo "test earshot-store: ${{ steps.test_store.outcome }}"
+          echo "build earshot-sync: ${{ steps.build_sync.outcome }}"
+          echo "test earshot-sync: ${{ steps.test_sync.outcome }}"
+          echo "build earshot-llm: ${{ steps.build_llm.outcome }}"
+          echo "test earshot-llm: ${{ steps.test_llm.outcome }}"
+          echo "build earshot-sync-server: ${{ steps.build_relay.outcome }}"
+          echo "test earshot-sync-server: ${{ steps.test_relay.outcome }}"
+          echo "build earshot-runtime (lib): ${{ steps.build_runtime.outcome }}"
+          echo "test earshot-runtime (summary): ${{ steps.test_runtime_summary.outcome }}"
+          echo "test earshot-runtime (sync): ${{ steps.test_runtime_sync.outcome }}"
+          echo "test earshot-runtime (rest, informational): ${{ steps.test_runtime_all.outcome }}"
+          echo "clippy earshot-runtime (lib): ${{ steps.clippy_runtime.outcome }}"
+          echo "build earshot-worker: ${{ steps.build_worker.outcome }}"
+          echo "test earshot-worker: ${{ steps.test_worker.outcome }}"
+          echo "clippy earshot-worker: ${{ steps.clippy_worker.outcome }}"
+
+      # Every step above may fail without stopping the next, so the run's own result comes from
+      # here: it fails when a build, or a test step that is not marked informational, failed.
+      - name: Fail when a gating step failed
+        if: always()
+        run: |
+          failed=0
+          for outcome in \
+            "${{ steps.build_core.outcome }}" \
+            "${{ steps.build_proc.outcome }}" "${{ steps.test_proc.outcome }}" \
+            "${{ steps.build_net.outcome }}" "${{ steps.test_net.outcome }}" \
+            "${{ steps.build_store.outcome }}" "${{ steps.test_store.outcome }}" \
+            "${{ steps.build_sync.outcome }}" "${{ steps.test_sync.outcome }}" \
+            "${{ steps.build_llm.outcome }}" "${{ steps.test_llm.outcome }}" \
+            "${{ steps.build_relay.outcome }}" "${{ steps.test_relay.outcome }}" \
+            "${{ steps.build_runtime.outcome }}" \
+            "${{ steps.test_runtime_summary.outcome }}" "${{ steps.test_runtime_sync.outcome }}" \
+            "${{ steps.clippy_runtime.outcome }}" \
+            "${{ steps.build_worker.outcome }}" "${{ steps.test_worker.outcome }}" \
+            "${{ steps.clippy_worker.outcome }}"; do
+            if [ "${outcome}" != "success" ]; then failed=1; fi
+          done
+          exit "${failed}"
+
+  # The summary worker's image (T11.6), built and checked on the runner and never pushed (this
+  # workflow can only read the repository): crates/earshot-worker/image-check.sh reads the
+  # binary's libraries with ldd, checks that a worker that is not joined waits and says so, and
+  # that a joined one (invented vault files made for this run) starts against a relay that does
+  # not exist and answers its health check (docs/sync.md section 10).
+  worker-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Fetch the pushed commit
+        run: |
+          git init -q src
+          cd src
+          git fetch -q --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+
+      - name: Build the worker image
+        working-directory: src
+        run: docker build --progress plain -f crates/earshot-worker/Dockerfile -t earshot-worker:check .
+
+      - name: Check the worker image
+        working-directory: src
+        run: sh crates/earshot-worker/image-check.sh earshot-worker:check

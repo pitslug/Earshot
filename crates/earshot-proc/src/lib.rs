@@ -38,7 +38,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
-pub use job_win::{KillOnClose, SpawnError, peak_memory};
+pub use job_win::{KillOnClose, SpawnError, awake_time, peak_memory};
 
 /// A process's peak memory so far ([`peak_memory`]; `cargo xtask bench`, T8.1), in bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +53,13 @@ pub struct PeakMemory {
 #[cfg(not(windows))]
 #[must_use]
 pub fn peak_memory() -> Option<PeakMemory> {
+    None
+}
+
+/// Not read off Windows: callers judge by their own monotonic clock.
+#[cfg(not(windows))]
+#[must_use]
+pub fn awake_time() -> Option<Duration> {
     None
 }
 

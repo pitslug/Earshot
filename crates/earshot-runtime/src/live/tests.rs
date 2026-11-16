@@ -4174,6 +4174,57 @@ fn live_an_ended_track_is_said_once_and_kept_in_the_problems() {
     );
 }
 
+#[test]
+fn live_a_refused_raw_mic_is_said_once_per_meeting() {
+    // T12.36: the mic could not be (re-)opened raw and records the processed stream. Said
+    // once, whether it came at the start, during the meeting or both; nothing is lost, so it is
+    // not one of the recording's problems.
+    let refused = DiscontinuityKind::Note {
+        warning: EndpointWarning::RawMicRefused,
+    };
+    for at_start in [false, true] {
+        let dir = TempDir::new();
+        let svc = services(&dir);
+        let session_info =
+            CaptureSession::new(ORIGIN, TrackInfo::new(R16), Some(TrackInfo::new(R16)));
+        let at = |packet: u64| ORIGIN.after_frames(packet * 160, R16);
+        let mut script = Vec::new();
+        for i in 0..40 {
+            if i == 10 || i == 20 {
+                script.push(marker(TrackId::Mic, at(i), refused.clone()));
+            }
+            script.push(frames(TrackId::Mic, noise(i, 160, 0.01), at(i)));
+            script.push(frames(
+                TrackId::Reference,
+                noise(i + 1000, 160, 0.01),
+                at(i),
+            ));
+        }
+        script.push(Ok(CaptureEvent::End(EndOfStream {
+            at: at(40),
+            reason: EndReason::Finished,
+        })));
+        let start = if at_start {
+            vec![RuntimeWarning::RawMicRefused]
+        } else {
+            Vec::new()
+        };
+        let session = start_live_with_warnings(
+            ScriptSource::new(session_info, script),
+            svc,
+            config(earshot_core::model::ClockDomain::Qpc),
+            None,
+            Box::new(ChaCha8Rng::seed_from_u64(33)),
+            start,
+        )
+        .unwrap();
+        let (events, outcome) = collect(session);
+        let all = warnings(&events);
+        assert_eq!(all, [RuntimeWarning::RawMicRefused], "{events:?}");
+        assert!(!outcome.problems.contains(&RuntimeWarning::RawMicRefused));
+    }
+}
+
 /// A source that panics on its `panic_at`th pump (a bug on the session thread, T9.19).
 struct PanicSource<S> {
     inner: S,

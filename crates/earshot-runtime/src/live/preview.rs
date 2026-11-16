@@ -134,9 +134,14 @@ pub enum PreviewOffReason {
     FellBehind,
     /// The live transcript stopped for this meeting.
     TranscriptStopped,
-    /// On the NPU a preview loads only the model compiled on this computer, and it did not load.
+    /// On the NPU a preview loads only the model compiled on this computer, and none was prepared
+    /// yet (the start-up or a track's load is preparing it, T12.64).
     NeedsCompiledModel,
-    /// The user's own voice has no previews beside the NPU yet.
+    /// On the NPU a preview loads only the model compiled on this computer, and the prepared one
+    /// was refused (its files did not match, the NPU asked for a new one, or it did not load; a
+    /// track's load that refuses it too prepares it again, T12.64).
+    CompiledModelRefused,
+    /// The user's own voice has no previews beside the NPU until T12.12d (the owner's decision).
     OwnVoiceOnNpu,
     /// The user asked for their own voice too, and this computer has too little memory for it.
     NotEnoughMemory,
@@ -989,6 +994,20 @@ impl PreviewThread {
     }
 }
 
+/// The report of a track's previews turned off for `why`: a crash already in `report` (one
+/// [`PreviewThread::finish`] found in the same moment as the stop, or earlier) keeps its own
+/// reason, so a stop for another reason never hides it (T12.62); anything else becomes `why`.
+fn off_report(report: PreviewReport, why: PreviewRefusal) -> PreviewReport {
+    if report.off.as_deref() == Some(PREVIEW_THREAD_CRASHED) {
+        return report;
+    }
+    PreviewReport {
+        off: Some(why.text),
+        reason: Some(why.reason),
+        ..report
+    }
+}
+
 /// What a track's previews did before the battery paused them (T12.37): the report they go on
 /// adding to, and their thread (told to stop) until it is seen to have ended, with when it was
 /// told.
@@ -1120,12 +1139,10 @@ where
                 ..PreviewReport::default()
             },
         };
-        self.previews[slot(track)] = PreviewState::Off(PreviewReport {
-            off: Some(why.text),
-            reason: Some(why.reason),
-            ..report
-        });
-        self.say_previews(track, Some(why.reason));
+        let report = off_report(report, why);
+        let reason = report.reason;
+        self.previews[slot(track)] = PreviewState::Off(report);
+        self.say_previews(track, reason);
     }
 
     /// The computer went on battery: `track`'s running previews stop and wait to start again
@@ -1509,5 +1526,66 @@ where
             };
             self.emit(RuntimeEvent::LivePreviewReport(report));
         }
+    }
+}
+
+#[cfg(test)]
+mod off_tests {
+    use super::*;
+
+    fn fell_behind() -> PreviewRefusal {
+        PreviewRefusal::new(PreviewOffReason::FellBehind, FELL_BEHIND_REASON)
+    }
+
+    /// T12.62: a stop for another reason never replaces a crash; anything else takes its reason.
+    #[test]
+    fn live_preview_off_report_keeps_a_crash_and_takes_any_other_reason() {
+        let crashed = PreviewReport {
+            off: Some(PREVIEW_THREAD_CRASHED.to_owned()),
+            reason: Some(PreviewOffReason::Failed),
+            decodes: 3,
+            ..PreviewReport::default()
+        };
+        assert_eq!(off_report(crashed.clone(), fell_behind()), crashed);
+        let running = PreviewReport {
+            decodes: 3,
+            ..PreviewReport::default()
+        };
+        let off = off_report(running, fell_behind());
+        assert_eq!(off.off.as_deref(), Some(FELL_BEHIND_REASON));
+        assert_eq!(off.reason, Some(PreviewOffReason::FellBehind));
+        assert_eq!(off.decodes, 3);
+    }
+
+    /// T12.62: a thread that crashed just before the session stops it for another reason: the
+    /// stop's `finish` finds the crash, and the report keeps it.
+    #[test]
+    fn live_preview_a_crash_found_by_a_stop_for_another_reason_is_kept() {
+        let load: PreviewLoader = Arc::new(|_| panic!("a test crash at load"));
+        let thread = PreviewThread::spawn(
+            LivePreviews::new(load),
+            TrackId::Reference,
+            BackendInfo {
+                kind: earshot_core::asr::BackendKind::Fake,
+                device: "cpu".to_owned(),
+                model: "fake".to_owned(),
+            },
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Mutex::new(PreviewReport::default())),
+        )
+        .unwrap();
+        // The panic ends the thread before it reads anything; wait for that, bounded.
+        let guard = Instant::now() + Duration::from_secs(60);
+        while !thread.thread.as_ref().is_some_and(JoinHandle::is_finished) {
+            assert!(Instant::now() < guard, "the preview thread never ended");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let report = off_report(
+            thread.finish(Duration::ZERO, StopAt::DuringMeeting),
+            fell_behind(),
+        );
+        assert_eq!(report.off.as_deref(), Some(PREVIEW_THREAD_CRASHED));
+        assert_eq!(report.reason, Some(PreviewOffReason::Failed));
     }
 }

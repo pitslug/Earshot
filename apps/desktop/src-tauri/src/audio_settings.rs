@@ -1,5 +1,6 @@
 //! The Audio page of Settings (T7.4i): the microphone and output a meeting records (the
-//! Windows default or one endpoint, by id) and the capture mode a new meeting starts with.
+//! Windows default or one endpoint, by id), the capture mode a new meeting starts with, and
+//! whether the microphone is recorded with Windows' own processing or raw (T12.36).
 //! The settings and their rules are `earshot_runtime::audio_settings`; the endpoints are
 //! listed by `earshot_capture_wasapi` (WASAPI, on a thread of its own), and whether a chosen
 //! one is connected is `earshot_capture_wasapi::DeviceList`'s rule. This module only maps
@@ -8,7 +9,7 @@
 
 use earshot_runtime::Services;
 use earshot_runtime::audio_settings::{
-    AudioSettings, AudioSettingsError, DefaultCaptureMode, DeviceSetting,
+    AudioSettings, AudioSettingsError, DefaultCaptureMode, DeviceSetting, MicSignal as Signal,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -25,6 +26,16 @@ pub struct ChosenDevice {
     pub name: String,
 }
 
+/// How a meeting records the microphone (T12.36,
+/// `earshot_runtime::audio_settings::MicSignal`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum MicSignal {
+    /// With Windows' own sound processing (the default).
+    Processed,
+    /// Without it, where the microphone allows it.
+    Raw,
+}
+
 /// The Audio page settings as the UI sends and reads them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct AudioSettingsValue {
@@ -34,6 +45,8 @@ pub struct AudioSettingsValue {
     pub output: Option<ChosenDevice>,
     /// What a new meeting records unless the user picks the other mode.
     pub capture_mode: CaptureMode,
+    /// How every meeting records the microphone.
+    pub mic_signal: MicSignal,
 }
 
 fn device_value(d: &DeviceSetting) -> Option<ChosenDevice> {
@@ -62,6 +75,10 @@ impl AudioSettingsValue {
                 DefaultCaptureMode::Call => CaptureMode::Call,
                 DefaultCaptureMode::InRoom => CaptureMode::InRoom,
             },
+            mic_signal: match s.mic_signal {
+                Signal::Processed => MicSignal::Processed,
+                Signal::Raw => MicSignal::Raw,
+            },
         }
     }
 
@@ -72,6 +89,10 @@ impl AudioSettingsValue {
             capture_mode: match self.capture_mode {
                 CaptureMode::Call => DefaultCaptureMode::Call,
                 CaptureMode::InRoom => DefaultCaptureMode::InRoom,
+            },
+            mic_signal: match self.mic_signal {
+                MicSignal::Processed => Signal::Processed,
+                MicSignal::Raw => Signal::Raw,
             },
         }
     }
@@ -261,7 +282,7 @@ pub async fn audio_settings(
     state: tauri::State<'_, crate::ipc::AppState>,
 ) -> Result<AudioPageView, IpcError> {
     let services = state.services()?;
-    blocking(move || audio_page(&services, list_devices())).await
+    crate::ipc::blocking(move || audio_page(&services, list_devices())).await
 }
 
 /// Checks and stores the Audio page settings (`invalid_setting`: nothing stored); returns
@@ -273,7 +294,7 @@ pub async fn set_audio_settings(
     settings: AudioSettingsValue,
 ) -> Result<AudioPageView, IpcError> {
     let services = state.services()?;
-    blocking(move || set_settings(&services, &settings, list_devices())).await
+    crate::ipc::blocking(move || set_settings(&services, &settings, list_devices())).await
 }
 
 /// The stored capture mode a new meeting starts with: a store read only, no device listing
@@ -284,7 +305,7 @@ pub async fn default_capture_mode(
     state: tauri::State<'_, crate::ipc::AppState>,
 ) -> Result<CaptureMode, IpcError> {
     let services = state.services()?;
-    blocking(move || stored_capture_mode(&services)).await
+    crate::ipc::blocking(move || stored_capture_mode(&services)).await
 }
 
 /// The stored capture mode (the default for a value this version cannot use).
@@ -294,15 +315,6 @@ pub async fn default_capture_mode(
 pub fn stored_capture_mode(services: &Services) -> Result<CaptureMode, IpcError> {
     let (s, _) = earshot_runtime::audio_settings::audio_settings(&services.store())?;
     Ok(AudioSettingsValue::of(&s).capture_mode)
-}
-
-/// Runs blocking work off the main thread.
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, IpcError> + Send + 'static,
-) -> Result<T, IpcError> {
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .map_err(|_| IpcError::new("internal", "the task stopped"))?
 }
 
 #[cfg(test)]

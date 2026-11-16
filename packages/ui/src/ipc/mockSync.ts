@@ -6,9 +6,42 @@
 // address and pairing code rules are only as much of the Rust rules as the table and the page
 // tests need (`mockSync.test.ts` runs every `address_cases` row).
 
+import offload from "../../../../fixtures/ui/offload_copy_cases.json";
 import table from "../../../../fixtures/ui/sync_copy_cases.json";
 import { IpcFailure } from "./ipc";
-import type { SyncCodeView, SyncCommands, SyncDeviceView, SyncView } from "./sync";
+import type {
+  SummaryHelperView,
+  SummaryHelpersView,
+  SyncCodeView,
+  SyncCommands,
+  SyncDeviceView,
+  SyncView,
+} from "./sync";
+
+/** The offload copy the app sends (`fixtures/ui/offload_copy_cases.json`, pinned to the
+ * desktop's `offload` copy by its tests). */
+export const OFFLOAD_COPY = offload;
+
+/** `template` with `{device}` filled: the name, else the table's unnamed words. */
+export function offloadCopy(template: string, name: string | null, inline = false): string {
+  const fill = name !== null && name.trim() !== "" ? name : inline ? offload.unnamed_inline : offload.unnamed;
+  return template.replace("{device}", fill);
+}
+
+/** The longest name the app keeps for this computer (characters). */
+export const MAX_DEVICE_NAME = 64;
+
+/** What the app says about a longer name (`sync_settings::DEVICE_NAME_TOO_LONG`, the table's
+ * `device_name_too_long`). */
+export const DEVICE_NAME_TOO_LONG = table.device_name_too_long;
+
+/** The full id the mock gives a device: its short id padded to a UUID. */
+export function mockDeviceId(shortId: string): string {
+  return `${shortId}-0000-7000-8000-000000000000`;
+}
+
+/** A UUID as the app reads a device id (hyphenated or not, either case). */
+const UUID = /^(?:[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})$/i;
 
 /** A problem word the app sends (`sync_settings::problem_copy`). */
 export type SyncProblemWord = keyof typeof table.problems;
@@ -54,6 +87,8 @@ export interface SyncMockData {
   running?: boolean;
   /** Voiceprints sync (default false). */
   voiceprints?: boolean;
+  /** Dictionary words sync (default true, T11.3e). */
+  dictionary?: boolean;
   /** The server's address (default `https://sync.example.com` when set up). */
   address?: string | null;
   /** When sync last finished without a problem (Unix ms, default none). */
@@ -68,8 +103,14 @@ export interface SyncMockData {
   held?: number;
   /** Rows from other devices that could not be read (default 0). */
   unreadable?: number;
-  /** The vault's devices (default: this computer and one other). */
+  /** The vault's devices (default: this computer and three others). */
   devices?: SyncDeviceView[];
+  /** "Write summaries for my other computers" (default false). */
+  offersSummaries?: boolean;
+  /** This computer's name (default "Desk"). */
+  deviceName?: string;
+  /** The chosen helper's short id (default none). */
+  helper?: string | null;
   /** Commands refused with a problem word (their `command_problems` copy). */
   refuse?: Partial<Record<SyncCommandName, SyncProblemWord>>;
   /** The clock a sync now stamps (default 2026-11-02 15:00 UTC). */
@@ -86,6 +127,9 @@ const DEFAULT_DEVICES: SyncDeviceView[] = [
     name: "Desk",
     online: true,
     recording: false,
+    offers_summaries: false,
+    writer: null,
+    id: mockDeviceId("3f2a9c1e"),
     short_id: "3f2a9c1e",
     joined_unix_s: 1_793_000_000,
     seen_s_ago: 0,
@@ -95,6 +139,9 @@ const DEFAULT_DEVICES: SyncDeviceView[] = [
     name: null,
     online: false,
     recording: false,
+    offers_summaries: false,
+    writer: null,
+    id: mockDeviceId("b71d04a8"),
     short_id: "b71d04a8",
     joined_unix_s: 1_793_100_000,
     seen_s_ago: 7_200,
@@ -104,9 +151,24 @@ const DEFAULT_DEVICES: SyncDeviceView[] = [
     name: "Laptop",
     online: true,
     recording: true,
+    offers_summaries: true,
+    writer: offload.writers.claude_code,
+    id: mockDeviceId("c5e09b72"),
     short_id: "c5e09b72",
     joined_unix_s: 1_793_200_000,
     seen_s_ago: 20,
+  },
+  {
+    this_device: false,
+    name: "Studio",
+    online: true,
+    recording: false,
+    offers_summaries: true,
+    writer: offload.writers.local,
+    id: mockDeviceId("e4a17d30"),
+    short_id: "e4a17d30",
+    joined_unix_s: 1_793_300_000,
+    seen_s_ago: 30,
   },
 ];
 
@@ -160,6 +222,7 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
   let on = data.on ?? setUp;
   let running = data.running ?? (setUp && on);
   let voiceprints = data.voiceprints ?? false;
+  let dictionary = data.dictionary ?? true;
   let address = data.address ?? (setUp ? "https://sync.example.com" : null);
   let lastSuccess = data.lastSuccessUnixMs ?? null;
   let problem: SyncProblemWord | null = data.problem ?? null;
@@ -169,6 +232,36 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
   const unreadable = data.unreadable ?? 0;
   let devices = (data.devices ?? DEFAULT_DEVICES).map((d) => ({ ...d }));
   const now = data.now ?? Date.UTC(2026, 10, 2, 15, 0);
+  let offersSummaries = data.offersSummaries ?? false;
+  let deviceName = data.deviceName ?? "Desk";
+  let helper: string | null = data.helper ?? null;
+  // The computer each meeting was asked of (`offload::ask` keeps one open request per meeting).
+  const asked = new Map<string, string>();
+  const available = (d: SyncDeviceView) => d.online && d.offers_summaries && !d.recording && d.writer !== null;
+  const helpers = (): SummaryHelpersView => {
+    const ready = setUp && on;
+    const listed = ready
+      ? devices.filter((d) => !d.this_device && (d.offers_summaries || d.short_id === helper))
+      : devices.filter((d) => d.short_id === helper);
+    return {
+      sync_ready: ready,
+      chosen: helper === null ? null : mockDeviceId(helper),
+      helpers: listed.map(
+        (d): SummaryHelperView => ({
+          id: mockDeviceId(d.short_id),
+          name: ready ? d.name : null,
+          short_id: d.short_id,
+          writer: ready && d.offers_summaries ? d.writer : null,
+          offers: ready && d.offers_summaries,
+          online: ready && d.online,
+          recording: ready && d.recording,
+          available: ready && available(d),
+          chosen: d.short_id === helper,
+        }),
+      ),
+      problem: null,
+    };
+  };
 
   const call = (name: SyncCommandName) => {
     data.onCall?.(name);
@@ -181,6 +274,7 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
     on,
     running: setUp && on && running,
     voiceprints,
+    dictionary,
     address,
     address_problem: null,
     last_success_unix_ms: lastSuccess,
@@ -189,6 +283,8 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
     unreadable,
     waiting,
     held,
+    offers_summaries: offersSummaries,
+    device_name: deviceName,
   });
   const storedAddress = (input: string) => {
     const checked = checkSyncAddress(input);
@@ -247,6 +343,11 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
       voiceprints = value;
       return view();
     },
+    setSyncDictionary: async (value) => {
+      call("setSyncDictionary");
+      dictionary = value;
+      return view();
+    },
     syncNow: async () => {
       call("syncNow");
       if (setUp && on) {
@@ -257,6 +358,54 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
         }
       }
       return view();
+    },
+    setSyncOfferSummaries: async (value) => {
+      call("setSyncOfferSummaries");
+      offersSummaries = value;
+      return view();
+    },
+    setSyncDeviceName: async (name) => {
+      call("setSyncDeviceName");
+      const t = name.trim();
+      if ([...t].length > MAX_DEVICE_NAME) invalid(DEVICE_NAME_TOO_LONG);
+      deviceName = t === "" ? "Desk" : t;
+      return view();
+    },
+    summaryHelpers: async () => {
+      call("summaryHelpers");
+      return helpers();
+    },
+    setSummaryHelper: async (device) => {
+      call("setSummaryHelper");
+      const found = device === null ? null : devices.find((d) => mockDeviceId(d.short_id) === device);
+      if (device !== null && (found === undefined || found?.this_device)) {
+        invalid("This computer cannot write summaries for itself.");
+      }
+      helper = found?.short_id ?? null;
+      return helpers();
+    },
+    askSummaryHelper: async (_meeting, device) => {
+      call("askSummaryHelper");
+      const d = devices.find((x) => mockDeviceId(x.short_id) === device);
+      const notAsked = (template: string) => {
+        throw new IpcFailure({
+          kind: "offload",
+          message: offloadCopy(template, d?.name ?? null),
+          retryable: false,
+        });
+      };
+      if (!(setUp && on)) notAsked(offload.not_asked.sync_off);
+      if (d === undefined || !d.online) notAsked(offload.not_asked.offline);
+      else if (!d.offers_summaries) notAsked(offload.not_asked.not_offering);
+      else if (d.recording) notAsked(offload.not_asked.recording);
+      else if (d.writer === null) notAsked(offload.not_asked.no_writer);
+      // One computer at a time per meeting.
+      const open = asked.get(_meeting);
+      if (open !== undefined && open !== device) {
+        throw new IpcFailure({ kind: "offload", message: offload.already_waiting, retryable: false });
+      }
+      asked.set(_meeting, device);
+      return offloadCopy(offload.waiting, d?.name ?? null, true);
     },
     removeSyncDevice: async () => {
       call("removeSyncDevice");
@@ -270,6 +419,17 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
       stopped = false;
       waiting = 0;
       return view();
+    },
+    removeOtherSyncDevice: async (id) => {
+      call("removeOtherSyncDevice");
+      // Rust's order: text that is not an id, or this computer's, is refused before anything
+      // else; then a computer that is not set up has no key (`vault`); an id the server does not
+      // list changes nothing.
+      const me = devices.find((d) => d.this_device);
+      if (!UUID.test(id) || id.toLowerCase() === me?.id) invalid(table.remove_other.not_another);
+      if (!setUp) commandFailure("vault");
+      devices = devices.filter((d) => d.id !== id.toLowerCase());
+      return { devices: devices.map((d) => ({ ...d })) };
     },
   };
 }

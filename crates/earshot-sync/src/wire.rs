@@ -271,8 +271,8 @@ pub enum ErrorWord {
     KeyMismatch,
     /// 409: the vault holds rows of a newer format than the device writes: update Earshot.
     UpdateNeeded,
-    /// 409: a pairing code cannot register a device id that is already registered (or was
-    /// revoked); only the setup secret re-registers one.
+    /// 409: a pairing code cannot register a device id that is registered and not revoked (a
+    /// revoked one comes back with a code); only the setup secret re-registers a live one.
     DeviceExists,
     /// 413: over a size limit.
     TooLarge,

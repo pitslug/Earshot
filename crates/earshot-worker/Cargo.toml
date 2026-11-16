@@ -1,0 +1,37 @@
+[package]
+name = "earshot-worker"
+description = "The summary worker (T11.6, docs/sync.md section 10): a headless paired device that writes summaries other devices ask for, with a llama.cpp server beside it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "earshot-worker"
+path = "src/main.rs"
+
+[dependencies]
+# Sync, summary offload and the summary path exist once, in the runtime (docs/sync.md section 10,
+# the T11.5 recommendation): the worker adds only its configuration, its vault files, the
+# own-network rule and its loop.
+earshot-runtime = { path = "../earshot-runtime" }
+earshot-core = { path = "../earshot-core" }
+earshot-store = { path = "../earshot-store" }
+# `Url` and `wipe_string` only: every request still goes through the runtime's clients.
+earshot-net = { path = "../earshot-net" }
+# The run loop's heartbeat and the stop signals (SIGTERM from `docker stop`, Ctrl+C). The same
+# version as the runtime; `signal` and `macros` are already in the workspace (the relay).
+tokio = { version = "1.53.3", default-features = false, features = ["rt", "time", "signal", "macros"] }
+
+[dev-dependencies]
+# Loopback mock LLM endpoint (test support only; the ci `net` step fails on a normal edge).
+earshot-llm-replay = { path = "../earshot-llm-replay" }
+# The real relay in process (`LocalRelay`); a dev edge only, as in the runtime.
+earshot-sync-server = { path = "../earshot-sync-server" }
+# Rows of the simulated asker's meeting (same versions as the runtime).
+rand_core = { version = "0.10.1", default-features = false }
+rand_chacha = { version = "0.10.0", default-features = false }
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

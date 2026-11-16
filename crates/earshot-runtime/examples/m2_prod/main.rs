@@ -9,8 +9,8 @@
 //!     [--max-piece <s>]
 //! ```
 //!
-//! Prints one JSON object on stdout (`default_model`, `loads`, `metrics`, `informational`);
-//! progress on stderr. `--metric` selects metrics or the informational `ami_sdm` (for
+//! Prints one JSON object on stdout (`default_model`, `loads`, `metrics`, `informational`,
+//! `shared_encoder_note`); progress on stderr. `--metric` selects metrics or the informational `ami_sdm` (for
 //! development; `accept m2` runs everything). The other M2 metrics (`asr.wer_smoke_base`,
 //! `asr.wer_ls_base`, `asr.echo_leak`, on base.en, and the base.en values of the two deltas
 //! under their earlier definitions, as informational entries) come from `asr_eval` in
@@ -998,8 +998,15 @@ fn main() {
         model_check::candidates(args.backend, &[]),
         model_check::quality_rank(prod.name)
     );
+    // A CUDA load that could not share the encoder loaded its own (T12.58): said on stderr and in
+    // the report, never silent (T12.62). `null` when every load shared or nothing was shared.
+    let shared_encoder_note = earshot_runtime::shared_encoders::take_note();
+    if let Some(note) = shared_encoder_note {
+        eprintln!("m2_prod: note: {note}");
+    }
     let out = json!({
         "selected_backend": backend_name(args.backend),
+        "shared_encoder_note": shared_encoder_note,
         "max_piece_override_s": args.max_piece,
         "default_model": {"name": prod.name, "rule": rule},
         "loads": prod.loads,

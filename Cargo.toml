@@ -13,6 +13,7 @@ members = [
     "crates/earshot-store",
     "crates/earshot-sync",
     "crates/earshot-sync-server",
+    "crates/earshot-worker",
     "crates/earshot-capture-wasapi",
     "crates/earshot-hardware",
     "crates/earshot-runtime",
@@ -22,7 +23,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.7"
+version = "0.3.9"
 edition = "2024"
 rust-version = "1.99"
 publish = false

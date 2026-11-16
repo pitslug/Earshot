@@ -611,6 +611,9 @@ fn load_parakeet_cli(
     let t = load_parakeet(&models, p, accel, None).map_err(|e| anyhow::anyhow!("{e}"))?;
     let evidence = json!({
         "onnx_placement": t.backends().iter().map(ToString::to_string).collect::<Vec<_>>(),
+        // A CUDA load that could not share the encoder loaded its own: said, never silent
+        // (T12.62); `null` when it shared or nothing was shared.
+        "shared_encoder_note": earshot_runtime::shared_encoders::take_note(),
     });
     let info = t.backend_info();
     Ok((Box::new(t), info, evidence))

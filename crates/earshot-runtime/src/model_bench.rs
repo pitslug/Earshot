@@ -772,18 +772,24 @@ pub fn record_check(store: &mut Store, check: &StoredCheck) -> Result<(), Runtim
     Ok(())
 }
 
-/// The recorded answer, if any.
+/// The recorded answer, if any; one this build cannot read is `None`, as if no check had run
+/// (the next check replaces it). [`stored_check_record`] says which, so a host can report it
+/// (T12.56).
 ///
 /// # Errors
-/// Store errors; [`RuntimeError::Internal`] for a value that does not parse.
+/// Store errors.
 pub fn stored_check(store: &Store) -> Result<Option<StoredCheck>, RuntimeError> {
-    store
-        .local_value(DeviceRecord::ModelCheck.key().as_str())?
-        .map(|v| {
-            serde_json::from_slice(&v)
-                .map_err(|_| RuntimeError::Internal("the stored model check does not parse"))
-        })
-        .transpose()
+    Ok(stored_check_record(store)?.value())
+}
+
+/// The record behind [`stored_check`]: absent, read, or stored but unreadable.
+///
+/// # Errors
+/// Store errors.
+pub fn stored_check_record(
+    store: &Store,
+) -> Result<crate::StoredRecord<StoredCheck>, RuntimeError> {
+    crate::local::json_record(store, &DeviceRecord::ModelCheck.key())
 }
 
 #[cfg(test)]

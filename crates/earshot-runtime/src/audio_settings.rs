@@ -10,9 +10,14 @@
 //!   [`crate::host::wasapi_starter_on`]).
 //! - **Capture mode** ([`DefaultCaptureMode`]): what a new meeting records unless the user
 //!   picks the other one (a call: mic and computer audio; in the room: mic only).
+//! - **Microphone signal** ([`MicSignal`], T12.36): the mic stream with Windows' own
+//!   processing (the default) or raw, without it. The one place the setting becomes the
+//!   capture layer's request ([`AudioSettings::devices`]); every meeting, in a call or in the
+//!   room, starts with it. A mic that refuses raw records the default stream with a warning
+//!   (`RuntimeWarning::RawMicRefused`): the setting never costs a recording.
 //!
 //! Each value is stored as text: `default` or the endpoint id, the name, `call` or
-//! `in-room`. A value this build cannot use reads as the default and is reported
+//! `in-room`, `default` or `raw`. A value this build cannot use reads as the default and is reported
 //! ([`UnknownSetting`]), as the Models page settings do. Setting a value checks it first
 //! ([`validate`]).
 
@@ -38,6 +43,8 @@ pub const OUTPUT_KEY: &str = "settings/output";
 pub const OUTPUT_NAME_KEY: &str = "settings/output-name";
 /// `local_state` key of the capture mode a new meeting starts with.
 pub const CAPTURE_MODE_KEY: &str = "settings/capture-mode";
+/// `local_state` key of the microphone signal ([`MicSignal`]).
+pub const MIC_SIGNAL_KEY: &str = "settings/mic-signal";
 
 /// The longest endpoint id kept (Windows' are about 55 characters).
 pub const MAX_DEVICE_ID: usize = 512;
@@ -115,6 +122,43 @@ impl DefaultCaptureMode {
     }
 }
 
+/// How a meeting records the microphone (T12.36). The measurement behind it is
+/// docs/echo-fragments.md (T12.32): on the Surface the default stream arrives already
+/// processed, which the echo canceller cannot model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MicSignal {
+    /// With the signal processing Windows or the device's driver applies by default.
+    #[default]
+    Processed,
+    /// Without it (a raw stream), where the microphone allows it.
+    Raw,
+}
+
+impl MicSignal {
+    /// The stored name: `default`, `raw`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Processed => "default",
+            Self::Raw => "raw",
+        }
+    }
+
+    /// Reads [`MicSignal::as_str`].
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        [Self::Processed, Self::Raw]
+            .into_iter()
+            .find(|m| m.as_str() == text)
+    }
+
+    /// True for [`MicSignal::Raw`].
+    #[must_use]
+    pub fn is_raw(self) -> bool {
+        self == Self::Raw
+    }
+}
+
 /// Every Audio page setting.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AudioSettings {
@@ -124,16 +168,24 @@ pub struct AudioSettings {
     pub output: DeviceSetting,
     /// The capture mode a new meeting starts with.
     pub capture_mode: DefaultCaptureMode,
+    /// How the microphone is recorded.
+    pub mic_signal: MicSignal,
 }
 
 impl AudioSettings {
-    /// The capture layer's device selection.
+    /// The capture layer's device selection: the endpoints, and the microphone signal as the
+    /// mic's processing (the only place the setting becomes a raw request).
     #[cfg(windows)]
     #[must_use]
     pub fn devices(&self) -> earshot_capture_wasapi::DeviceSelection {
+        use earshot_capture_wasapi::MicProcessing;
         earshot_capture_wasapi::DeviceSelection {
             microphone: self.microphone.choice(),
             output: self.output.choice(),
+            mic_processing: match self.mic_signal {
+                MicSignal::Processed => MicProcessing::Default,
+                MicSignal::Raw => MicProcessing::Raw,
+            },
         }
     }
 }
@@ -227,6 +279,7 @@ pub fn validate(settings: &AudioSettings) -> Result<AudioSettings, AudioSettings
         microphone: checked(&settings.microphone)?,
         output: checked(&settings.output)?,
         capture_mode: settings.capture_mode,
+        mic_signal: settings.mic_signal,
     })
 }
 
@@ -274,11 +327,17 @@ pub fn audio_settings(store: &Store) -> Result<(AudioSettings, Vec<UnknownSettin
     })?
     .known(&mut unknown)
     .unwrap_or_default();
+    let mic_signal = read_setting(store, MIC_SIGNAL_KEY, |text| {
+        MicSignal::parse(&text).ok_or(text)
+    })?
+    .known(&mut unknown)
+    .unwrap_or_default();
     Ok((
         AudioSettings {
             microphone,
             output,
             capture_mode,
+            mic_signal,
         },
         unknown,
     ))
@@ -306,6 +365,7 @@ pub fn set_audio_settings(
         (DeviceRecord::Output, output.as_str()),
         (DeviceRecord::OutputName, output_name.as_str()),
         (DeviceRecord::CaptureMode, s.capture_mode.as_str()),
+        (DeviceRecord::MicSignal, s.mic_signal.as_str()),
     ];
     store
         .transaction(|tx| -> Result<(), earshot_store::StoreError> {

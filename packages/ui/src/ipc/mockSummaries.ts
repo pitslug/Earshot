@@ -18,13 +18,13 @@ import {
 } from "./ipc";
 import type { SampleMachine } from "./mockModels";
 import type { SummaryStyleView, SummaryTemplateOption } from "./summaryStyle";
-import type { SummaryVocabularyView } from "./summaryVocabulary";
+import type { SummaryVocabularyAdded, SummaryVocabularyView } from "./summaryVocabulary";
 
 /** The Anthropic API address the app offers. */
 export const MOCK_ANTHROPIC_URL = table.messages.anthropic_url;
 
 /** The reason the app gives when summarising during the meeting cannot be used. */
-const LIVE_NEEDS_LOCAL = table.messages.live_needs_local;
+export const LIVE_NEEDS_LOCAL = table.messages.live_needs_local;
 
 /** What the app says when a token of the transcript holds no word (T12.15f). */
 export const NOT_A_WORD = table.messages.not_a_word;
@@ -47,6 +47,17 @@ export interface SummariesMockData {
   template?: string;
   /** The stored Dictionary words (T12.15a; default: none). */
   vocabulary?: string[];
+  /** Stored Dictionary words not in use because the list joined by Dictionary sync passes a
+   * limit (T11.3e; default 0). The mock runs no sync: this is fixture data. */
+  notInUse?: number;
+}
+
+/** What the Dictionary page says about `n` words not in use (the app's copy,
+ * `summary_vocabulary::not_in_use_note`, T11.3e); `null` for none. */
+export function notInUseNote(n: number): string | null {
+  if (n <= 0) return null;
+  if (n === 1) return table.messages.not_in_use.one;
+  return table.messages.not_in_use.many.replace("{n}", String(n));
 }
 
 /** The longest summary style the app accepts (`earshot_core::prompt::MAX_STYLE_CHARS`). */
@@ -129,7 +140,11 @@ export interface SummariesMock {
   setSummaryStyle(style: string): Promise<SummaryStyleView>;
   setSummaryTemplate(template: string): Promise<SummaryStyleView>;
   summaryVocabulary(): Promise<SummaryVocabularyView>;
+  /** The mock's whole-list write (its case table and the transcript's word actions use it;
+   * not an `Ipc` command: the page edits one word at a time, T11.3e). */
   setSummaryVocabulary(words: string[]): Promise<SummaryVocabularyView>;
+  addSummaryVocabularyWord(text: string): Promise<SummaryVocabularyAdded>;
+  removeSummaryVocabularyWord(word: string): Promise<SummaryVocabularyView>;
 }
 
 /** An invisible formatting character (Unicode Cf: zero-width characters, text-direction marks)
@@ -336,12 +351,15 @@ export function createSummariesMock(
     templates: SUMMARY_TEMPLATES.map((t) => ({ ...t })),
   });
   let vocabulary = checkVocabulary(data.vocabulary ?? []);
+  const notInUse = data.notInUse ?? 0;
   const vocabularyView = (): SummaryVocabularyView => ({
     words: [...vocabulary],
     unknown: [],
     max_words: MAX_VOCABULARY_WORDS,
     max_word_chars: MAX_VOCABULARY_WORD_CHARS,
     max_chars: MAX_VOCABULARY_CHARS,
+    not_in_use: notInUse,
+    not_in_use_note: notInUseNote(notInUse),
   });
   const store = () => {
     if (data.keyStoreError !== undefined) {
@@ -386,6 +404,22 @@ export function createSummariesMock(
     summaryVocabulary: async () => vocabularyView(),
     setSummaryVocabulary: async (words) => {
       vocabulary = checkVocabulary(words);
+      return vocabularyView();
+    },
+    // `vocabulary::add_entry` and `remove_entry` (T11.3e): one word, the stored list read here.
+    addSummaryVocabularyWord: async (text) => {
+      const [word] = checkVocabulary([text]);
+      if (word === undefined) fail("invalid_setting", table.messages.not_a_word);
+      if (vocabulary.some((w) => w.toLowerCase() === word.toLowerCase())) {
+        return { added: false, view: vocabularyView() };
+      }
+      if (notInUse > 0) fail("invalid_setting", table.messages.add_not_in_use);
+      vocabulary = checkVocabulary([...vocabulary, word]);
+      return { added: true, view: vocabularyView() };
+    },
+    removeSummaryVocabularyWord: async (word) => {
+      const wanted = word.split(/\p{White_Space}+/u).filter((t) => t !== "").join(" ").toLowerCase();
+      vocabulary = vocabulary.filter((w) => w.toLowerCase() !== wanted);
       return vocabularyView();
     },
   };

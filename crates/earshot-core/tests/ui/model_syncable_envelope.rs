@@ -1,6 +1,7 @@
 use earshot_core::identity::{SyncClass, SyncPermitted, SyncSerialize, sync_envelope};
 use earshot_core::model::{
-    Folder, Meeting, Note, Person, SegmentRow, Speaker, Summary, Track, Voiceprint,
+    DictionaryWord, Folder, Meeting, Note, Person, SegmentRow, Speaker, Summary, SummaryRequest,
+    Track, Voiceprint,
 };
 
 fn sync_permitted<T: SyncClass>()
@@ -24,6 +25,8 @@ fn all(
     p: &Person,
     v: &Voiceprint,
     f: &Folder,
+    r: &SummaryRequest,
+    d: &DictionaryWord,
 ) {
     send(m);
     send(t);
@@ -34,6 +37,8 @@ fn all(
     send(p);
     send(v);
     send(f);
+    send(r);
+    send(d);
 }
 
 fn main() {
@@ -46,4 +51,6 @@ fn main() {
     sync_permitted::<Person>();
     sync_permitted::<Voiceprint>();
     sync_permitted::<Folder>();
+    sync_permitted::<SummaryRequest>();
+    sync_permitted::<DictionaryWord>();
 }

@@ -884,6 +884,105 @@ fn live_preview_own_voice_in_a_call_shows_both_tracks_and_reports_each() {
     assert_eq!(with, without);
 }
 
+/// Words where the audio is loud: one `loud` word per run of loud 10 ms frames, in the buffer's own
+/// time. A preview session that only hears its own track says words only in that track's speech.
+struct LevelWords;
+
+/// A 10 ms frame is loud above this RMS (the scene's speech is 0.3 times noise, its silence 1e-4).
+const LOUD_RMS: f32 = 0.05;
+
+/// The loud runs of `samples`, as (start, end) ms.
+fn loud_runs(samples: &[f32]) -> Vec<(u64, u64)> {
+    let mut runs: Vec<(u64, u64)> = Vec::new();
+    for (k, frame) in samples.chunks(160).enumerate() {
+        let rms = (frame.iter().map(|x| x * x).sum::<f32>() / frame.len() as f32).sqrt();
+        if rms <= LOUD_RMS {
+            continue;
+        }
+        let (start, end) = (k as u64 * 10, k as u64 * 10 + 10);
+        match runs.last_mut() {
+            Some(last) if last.1 == start => last.1 = end,
+            _ => runs.push((start, end)),
+        }
+    }
+    runs
+}
+
+impl earshot_core::asr::Transcriber for LevelWords {
+    fn transcribe(
+        &mut self,
+        audio: &MonoBuffer,
+        _: &TranscribeOptions,
+        _: &CancelToken,
+    ) -> Result<Transcription, AsrError> {
+        let words = loud_runs(&audio.samples)
+            .into_iter()
+            .map(|(start, end)| Word::new("loud", start, end, 0.9))
+            .collect();
+        Ok(Transcription {
+            segments: vec![RawSegment::from_words(words)],
+            language: None,
+            backend: self.backend_info(),
+        })
+    }
+
+    fn backend_info(&self) -> BackendInfo {
+        BackendInfo {
+            kind: BackendKind::Fake,
+            device: "fake".to_owned(),
+            model: "level".to_owned(),
+        }
+    }
+}
+
+fn level_loader() -> PreviewLoader {
+    Arc::new(|_| Ok(Box::new(LevelWords) as Box<dyn earshot_core::asr::Transcriber + Send>))
+}
+
+/// T12.62: in a call under Everyone the mic's previews come only from the mic: no word the far end
+/// says (in the far end's speech, heard by its own session) is shown on the mic, and the far end
+/// shows only its own. The scene has no echo, so this checks which audio and which session each
+/// track's previews come from; echo in the mic itself is the canceller's and the settled text's
+/// echo rule's (module docs of `preview.rs`).
+#[test]
+fn live_preview_own_voice_in_a_call_never_shows_far_end_words_on_the_mic() {
+    let scene = scene_of(27);
+    let config = LivePreviews {
+        own_voice: Some(level_loader()),
+        ..previews(level_loader())
+    };
+    let (_, events, ..) = run_with(&scene, Some(config), 343);
+    let (mine, theirs) = (loud_runs(&scene.mic), loud_runs(&scene.them));
+    assert!(!mine.is_empty() && !theirs.is_empty());
+    // Times move by the canceller's latency compensation and frame rounding: well under this.
+    let slack = 200;
+    let inside = |w: &Word, runs: &[(u64, u64)]| {
+        runs.iter()
+            .any(|&(a, b)| w.start.as_millis() + slack >= a && w.end.as_millis() <= b + slack)
+    };
+    for (track, own, other) in [
+        (TrackId::Mic, &mine, &theirs),
+        (TrackId::Reference, &theirs, &mine),
+    ] {
+        let shown: Vec<Word> = previews_of(&events)
+            .into_iter()
+            .filter(|(t, _)| *t == track)
+            .flat_map(|(_, words)| words)
+            .collect();
+        assert!(!shown.is_empty(), "nothing shown on {track:?}");
+        for w in &shown {
+            assert!(
+                inside(w, own),
+                "{track:?} showed {w:?} outside its own speech"
+            );
+            assert!(
+                !inside(w, other),
+                "{track:?} showed {w:?} in the other track's speech"
+            );
+        }
+    }
+}
+
 /// T12.60: in a meeting transcribed on CUDA beside a card with room, the far end's previews and the
 /// user's own track's session both load on the track's backend (`backends::load_preview_second_with`,
 /// the rule's own decision); each track's report says where its session ran.
@@ -2470,6 +2569,14 @@ fn live_preview_refusals_carry_their_kind_beside_the_same_text() {
     let needs = preview_load_refusal(&AsrError::Backend(PREVIEW_NEEDS_COMPILED.to_owned()));
     assert_eq!(needs.reason, PreviewOffReason::NeedsCompiledModel);
     assert!(needs.contains(PREVIEW_NEEDS_COMPILED), "{needs}");
+    let refused = preview_load_refusal(&AsrError::Backend(
+        crate::backends::PREVIEW_COMPILED_REFUSED.to_owned(),
+    ));
+    assert_eq!(refused.reason, PreviewOffReason::CompiledModelRefused);
+    let no_key = preview_load_refusal(&AsrError::Backend(
+        crate::backends::PREVIEW_NO_COMPILE_KEY.to_owned(),
+    ));
+    assert_eq!(no_key.reason, PreviewOffReason::LoadFailed);
     let other = preview_load_refusal(&AsrError::Backend("a file is missing".to_owned()));
     assert_eq!(other.reason, PreviewOffReason::LoadFailed);
     assert!(other.contains("a file is missing"), "{other}");

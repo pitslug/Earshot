@@ -371,6 +371,9 @@ pub fn prepare_bench_summary(
     clock: SharedClock,
     dll_dirs: &[PathBuf],
 ) -> Result<BenchSummary, RuntimeError> {
+    // `settings.writer` is the order's first writer step on this computer, computer steps
+    // skipped (its mirror, docs/summary-order.md 4.5): [computer, local] benchmarks the local
+    // model as before, [Claude Code, local] does not.
     Ok(match settings.writer {
         SummaryWriter::NoSummary => BenchSummary::Skipped(BenchSkip::NotRequested),
         SummaryWriter::OnThisComputer => {
@@ -580,6 +583,10 @@ fn skip_of(reason: &SkipReason, skip: Option<&BenchSkip>) -> Result<BenchSkip, R
         SkipReason::PostFailed => Err(RuntimeError::Internal(
             "the benchmark summary was skipped after a failed final pass",
         )),
+        // The benchmark runs no order (one prepared local step, no queue): never reached.
+        SkipReason::NotNow => Err(RuntimeError::Internal(
+            "the benchmark summary was skipped as not now",
+        )),
     }
 }
 
@@ -609,7 +616,8 @@ fn run_in(
     crate::summary_style::set_summary_style(&mut svc.store(), run.style.as_str())
         .map_err(|_| RuntimeError::Internal("the summary style cannot be copied"))?;
     crate::summary_style::set_summary_template(&mut svc.store(), run.style_preset)?;
-    crate::vocabulary::set_vocabulary(&mut svc.store(), run.vocabulary.words())
+    // A fresh scratch store holds no words: that is the list this write replaces.
+    crate::vocabulary::set_vocabulary(&svc, &[] as &[&str], run.vocabulary.words())
         .map_err(|_| RuntimeError::Internal("the word list cannot be copied"))?;
     let total = run.meeting.duration();
     let source = ReplayBuilder::new(
@@ -752,6 +760,12 @@ fn run_in(
         SummaryResult::Skipped { reason } => MeasuredSummary::Skipped(skip_of(&reason, skip)?),
         SummaryResult::Cancelled => return Ok(None),
         SummaryResult::Failed { error, .. } => return Err(error),
+        // The benchmark's run has no offload choice, so nothing is ever asked of another device.
+        SummaryResult::Offloaded { .. } => {
+            return Err(RuntimeError::Internal(
+                "the benchmark reached outside this computer",
+            ));
+        }
     };
     let final_backend = {
         let db = svc.store();
@@ -963,18 +977,19 @@ pub fn stored_benchmark(store: &Store) -> Result<StoredBenchmark, RuntimeError> 
     })
 }
 
-/// What the user is told when an accelerator's ONNX Runtime library could not load.
+/// What the user is told when an accelerator's ONNX Runtime library could not load: fixed copy by
+/// part, naming no library (T12.64, as the meeting's banners).
 #[must_use]
 pub fn onnx_fallback_note(library: Accelerator) -> String {
     let part = match library {
-        Accelerator::Cpu => "processor",
+        // The processor's library is what every other falls back to: it is not a fallback.
+        Accelerator::Cpu => {
+            return "Earshot could not load what speech models need this time.".into();
+        }
         Accelerator::Cuda | Accelerator::Vulkan => "graphics card",
         Accelerator::Qnn => "NPU",
     };
-    format!(
-        "The {part} library of ONNX Runtime could not be loaded, so speech models ran on the \
-         processor."
-    )
+    format!("Earshot could not use the {part} this time, so speech models ran on the processor.")
 }
 
 /// The production run (module docs): the settings in `user` (read, never changed), the
@@ -1040,6 +1055,8 @@ pub fn run_from_settings(
             no_summary,
             post_cancel: cancel,
             summary_cancel: cancel,
+            offload: None,
+            order_run: None,
         };
         host::after_meeting(svc, outcome, &run, progress)
     });

@@ -62,9 +62,8 @@ fn keep(
     token: &DeviceToken,
 ) -> Result<(), SyncProblem> {
     vault.save(key, token)?;
-    let mut db = services.store();
-    db.queue_everything()?;
-    db.transaction(|tx| -> Result<(), SyncProblem> {
+    services.store().queue_everything()?;
+    crate::vocabulary::with_stamp(services, |tx, stamp| -> Result<(), SyncProblem> {
         local::set_tx(
             tx,
             &DeviceRecord::SyncServer.key(),
@@ -72,6 +71,8 @@ fn keep(
         )?;
         local::set_tx(tx, &DeviceRecord::SyncCursor.key(), &encode_cursor(0))?;
         local::set_tx(tx, &DeviceRecord::SyncOn.key(), b"on")?;
+        // Dictionary sync is on by default: rows for the words here, the list from the rows.
+        crate::vocabulary::syncing_turned_on_tx(tx, stamp)?;
         // A thread of an earlier setup may have written a status after it was stopped.
         tx.delete_local_value(SYNC_STATUS_KEY)?;
         Ok(())
@@ -161,9 +162,40 @@ pub fn join_with_code(
     keep(services, vault, &address, &key, &token)
 }
 
+/// Removes another device of the vault (T11.6c): the server revokes its token and drops its
+/// presence; the rows it synced stay. Any device of the vault may remove any other, because
+/// each already holds the vault key; removal does not take that key back. The removed device's
+/// next request is refused with [`SyncProblem::UnknownDevice`], as for a device that removed
+/// itself. Removing a device the server no longer lists changes nothing.
+///
+/// # Errors
+/// [`SyncProblem::Vault`] when this device is not set up; [`SyncProblem::Internal`] for this
+/// device's own id (it leaves only through [`remove_this_device`], which also forgets what it
+/// kept), with nothing sent; [`SyncProblem::UnknownDevice`] when this device was itself
+/// removed; the relay's other problems.
+pub fn remove_other_device(
+    services: &Services,
+    vault: std::sync::Arc<dyn SyncVault>,
+    device: earshot_core::identity::DeviceId,
+) -> Result<(), SyncProblem> {
+    let secrets = vault.load()?.ok_or(SyncProblem::Vault)?;
+    if device == services.store().device() {
+        return Err(SyncProblem::Internal);
+    }
+    let client = SyncClient::new(services.clone(), vault)?;
+    client.relay().revoke(
+        &secrets.token,
+        &RevokeRequest {
+            device_id: B64(device.as_uuid().as_bytes().to_vec()),
+        },
+    )
+}
+
 /// Removes this device from sync: the server revokes its token, then the key, the token, the
 /// address, the cursor, the status and the voiceprint switch are deleted here. Meetings stay. A token the server no
-/// longer knows counts as revoked. The host stops its [`super::SyncThread`] first, or a tick in
+/// longer knows counts as revoked, and a device whose last sync said it was removed asks the
+/// server nothing. Afterwards it may join again with a pairing code from a live device: the
+/// relay registers its id again (T11.6c). The host stops its [`super::SyncThread`] first, or a tick in
 /// flight writes the cursor and status back.
 ///
 /// # Errors
@@ -179,7 +211,12 @@ pub fn remove_this_device(
         Err(SyncProblem::Address) => None,
         Err(p) => return Err(p),
     };
-    if let (Some(secrets), Some(client)) = (vault.load()?, client) {
+    // A device the relay already removed has nothing left to revoke there: forgetting here works
+    // without the server, so it can join again with a pairing code even while the server is out
+    // of reach.
+    let removed =
+        super::sync_status(&services.store())?.problem == Some(SyncProblem::UnknownDevice);
+    if !removed && let (Some(secrets), Some(client)) = (vault.load()?, client) {
         match client.relay().revoke(
             &secrets.token,
             &RevokeRequest {

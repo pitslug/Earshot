@@ -208,7 +208,8 @@ fn model_check_an_unreadable_line_is_a_failure_not_a_panic() {
         let (r, _) = read(&[TESTING, line, DONE].join("\n"));
         let e = r.unwrap_err();
         assert!(e.retryable, "{line}");
-        assert!(e.message.contains("cannot read"), "{line}: {}", e.message);
+        // Fixed copy: serde's words (which quote the line) never reach the page (T12.56).
+        assert_eq!(e.message, UNREADABLE_LINE, "{line}");
     }
     // A model the runtime does not know.
     let (r, _) = read(&DONE.replace("large-v3-turbo", "whisper-v9"));

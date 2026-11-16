@@ -108,6 +108,8 @@ pub fn run(args: &BenchmarkArgs, out: &mut dyn Write) -> Result<()> {
     };
     let outcome =
         run_check(&models, &languages, &mut progress).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // A trial that could not share the encoder on CUDA (T12.62).
+    crate::session::write_shared_encoder_note(out)?;
     let gpus: Vec<String> = earshot_asr_whisper::gpu_devices()
         .iter()
         .map(|d| {

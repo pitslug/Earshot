@@ -8,6 +8,15 @@ fn owned(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| (*w).to_owned()).collect()
 }
 
+/// Replaces the whole list through the runtime's whole-list path, with the stored list as the
+/// base, and maps a refusal as the page's commands do (the page itself edits one word at a
+/// time since T11.3e).
+fn set_words(svc: &Services, words: &[String]) -> Result<SummaryVocabularyView, IpcError> {
+    let base = vocabulary::vocabulary(&svc.store()).unwrap().0;
+    vocabulary::set_vocabulary(svc, base.words(), words).map_err(refusal)?;
+    vocabulary_view(svc)
+}
+
 #[test]
 fn summary_vocabulary_view_starts_empty_and_saves_checked_words() {
     let dir = TempDir::new("summary-vocabulary");
@@ -21,6 +30,8 @@ fn summary_vocabulary_view_starts_empty_and_saves_checked_words() {
             max_words: 100,
             max_word_chars: 40,
             max_chars: 1000,
+            not_in_use: 0,
+            not_in_use_note: None,
         }
     );
     let saved = set_words(&svc, &owned(&[" Quillmarsh ", "", "QXR-7", "qxr-7"])).unwrap();
@@ -59,7 +70,7 @@ fn summary_vocabulary_refusals_are_plain_sentences_and_store_nothing() {
 
 #[test]
 fn summary_vocabulary_the_view_serialises_for_the_ui() {
-    let json = serde_json::to_value(view(&owned(&["QXR-7"]), vec![])).unwrap();
+    let json = serde_json::to_value(view(&owned(&["QXR-7"]), vec![], 0)).unwrap();
     assert_eq!(
         json,
         serde_json::json!({
@@ -68,6 +79,8 @@ fn summary_vocabulary_the_view_serialises_for_the_ui() {
             "max_words": 100,
             "max_word_chars": 40,
             "max_chars": 1000,
+            "not_in_use": 0,
+            "not_in_use_note": null,
         })
     );
 }
@@ -98,6 +111,90 @@ fn summary_vocabulary_follows_the_shared_case_table() {
             }
             (Err(e), _) => wrong.push(format!("{name}: refused {:?}", e.message)),
             (Ok(view), Some(_)) => wrong.push(format!("{name}: stored {:?}", view.words)),
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn summary_vocabulary_words_not_in_use_follow_the_shared_table() {
+    let table = crate::testutil::summary_cases();
+    let copy = &table["messages"]["not_in_use"];
+    assert_eq!(not_in_use_note(0), None);
+    assert_eq!(not_in_use_note(1).as_deref(), copy["one"].as_str());
+    let many = copy["many"].as_str().unwrap();
+    assert!(many.contains("{n}"));
+    assert_eq!(not_in_use_note(7), Some(many.replace("{n}", "7")));
+    // A view counts them and says so.
+    let v = view(&owned(&["QXR-7"]), vec![], 3);
+    assert_eq!(v.not_in_use, 3);
+    assert_eq!(v.not_in_use_note, Some(many.replace("{n}", "3")));
+}
+
+#[test]
+fn summary_vocabulary_the_page_adds_and_removes_one_word_at_a_time() {
+    let dir = TempDir::new("summary-vocabulary");
+    let svc = services(&dir);
+    let added = add_word(&svc, "  Velmora   Ridge ").unwrap();
+    assert!(added.added);
+    assert_eq!(added.view.words, owned(&["Velmora Ridge"]));
+    // Already there in another case: the result says so, nothing is written.
+    let again = add_word(&svc, "velmora ridge").unwrap();
+    assert!(!again.added);
+    assert_eq!(again.view.words, owned(&["Velmora Ridge"]));
+    let err = add_word(&svc, &"q".repeat(41)).unwrap_err();
+    assert_eq!(
+        err.message,
+        "A word can have at most 40 characters; this one has 41."
+    );
+    assert!(remove_word(&svc, "VELMORA RIDGE").unwrap().words.is_empty());
+}
+
+#[test]
+fn summary_vocabulary_refusals_of_t11_3e_follow_the_shared_table() {
+    let table = crate::testutil::summary_cases();
+    let m = &table["messages"];
+    let not_in_use = refusal(SetVocabularyError::NotInUse);
+    assert_eq!(not_in_use.kind, "invalid_setting");
+    assert_eq!(
+        Some(not_in_use.message.as_str()),
+        m["add_not_in_use"].as_str()
+    );
+    let stale = refusal(SetVocabularyError::Stale);
+    assert_eq!(stale.kind, "invalid_setting");
+    assert_eq!(Some(stale.message.as_str()), m["stale_list"].as_str());
+}
+
+#[test]
+fn summary_vocabulary_the_shared_table_holds_for_the_pages_one_word_adds() {
+    // The page adds one word at a time (T11.3e): each case's words added in turn (blank ones
+    // are never sent: the page's Add is off for them) end in the stored list, or the first
+    // refusal is the case's message.
+    let table = crate::testutil::summary_cases();
+    let mut wrong = Vec::new();
+    for case in table["vocabulary"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let dir = TempDir::new("summary-vocabulary");
+        let svc = services(&dir);
+        let words: Vec<String> = serde_json::from_value(case["words"].clone()).unwrap();
+        let mut refused = None;
+        for w in words.iter().filter(|w| !w.trim().is_empty()) {
+            if let Err(e) = add_word(&svc, w) {
+                refused = Some(e);
+                break;
+            }
+        }
+        match (refused, case["error"].as_str()) {
+            (Some(e), Some(want)) if e.kind == "invalid_setting" && e.message == want => {}
+            (None, None) => {
+                let want: Vec<String> = serde_json::from_value(case["stored"].clone()).unwrap();
+                let got = vocabulary_view(&svc).unwrap().words;
+                if got != want {
+                    wrong.push(format!("{name}: stored {got:?}"));
+                }
+            }
+            (Some(e), _) => wrong.push(format!("{name}: refused {:?}", e.message)),
+            (None, Some(_)) => wrong.push(format!("{name}: not refused")),
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");

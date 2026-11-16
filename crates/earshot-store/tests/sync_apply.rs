@@ -12,13 +12,23 @@ use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp, ManualClock, Sync
 use earshot_core::model::{ClockDomain, Meeting, MeetingRepo, Track};
 use earshot_core::prompt::Template;
 use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintRepo};
-use earshot_store::{ApplyRules, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, Store, SyncedRow};
+use earshot_store::{
+    ApplyRules, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, Store, SyncKinds, SyncedRow,
+};
 
 /// This device and another one.
 const HERE: DeviceId = DeviceId::from_bytes([0x11; 16]);
 const THERE: DeviceId = DeviceId::from_bytes([0x22; 16]);
 
 const T0: u64 = 1_800_000_000_000;
+
+/// The opt-in switches with voiceprints `on` and Dictionary words on (T11.3e).
+fn vp(on: bool) -> SyncKinds {
+    SyncKinds {
+        voiceprints: on,
+        dictionary: true,
+    }
+}
 
 fn id(n: u8) -> EntityId {
     EntityId::from_bytes([0x01, 0x90, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, n, 1])
@@ -104,9 +114,10 @@ fn free(_: EntityId) -> bool {
 
 fn rules(voiceprints: bool) -> ApplyRules<'static> {
     ApplyRules {
-        voiceprints,
+        kinds: vp(voiceprints),
         leased: &free,
         now_ms: T0 + 10_000,
+        after: None,
     }
 }
 
@@ -337,9 +348,10 @@ fn store_sync_rows_of_a_meeting_in_use_wait_for_it() {
     );
     let busy = |m: EntityId| m == id(1);
     let leased = ApplyRules {
-        voiceprints: false,
+        kinds: vp(false),
         leased: &busy,
         now_ms: T0 + 10_000,
+        after: None,
     };
     let a = e.apply(std::slice::from_ref(&m), &leased);
     assert_eq!(a.held, held(1, HoldReason::Busy));
@@ -446,20 +458,20 @@ fn store_sync_outbox_leaves_out_a_recording_meeting_and_switched_off_voiceprints
     let ids = |rows: Vec<SyncedRow>| rows.iter().map(SyncedRow::id).collect::<Vec<_>>();
     // A limit of 2 still reaches the saved meeting: the recording's rows are not read at all.
     assert_eq!(
-        ids(e.store.outbox_except(2, &[id(1)], true).unwrap()),
+        ids(e.store.outbox_except(2, &[id(1)], vp(true)).unwrap()),
         [id(2), id(3)]
     );
     assert_eq!(
-        ids(e.store.outbox_except(10, &[id(1)], true).unwrap()),
+        ids(e.store.outbox_except(10, &[id(1)], vp(true)).unwrap()),
         [id(2), id(3), id(4), id(5)]
     );
     assert_eq!(
-        ids(e.store.outbox_except(10, &[id(1)], false).unwrap()),
+        ids(e.store.outbox_except(10, &[id(1)], vp(false)).unwrap()),
         [id(2), id(3), id(4)],
         "voiceprints wait while their switch is off"
     );
     // Nothing left out: every row, oldest first, as `outbox` reads them.
-    let all = ids(e.store.outbox_except(100, &[], true).unwrap());
+    let all = ids(e.store.outbox_except(100, &[], vp(true)).unwrap());
     assert_eq!(all, ids(e.store.outbox(100).unwrap()));
     assert_eq!(all.len(), 11);
     assert_eq!(all[0], id(1));
@@ -553,13 +565,16 @@ fn store_sync_waiting_counts_only_what_the_push_would_send() {
         .put_voiceprint(voiceprint(5, 4, at(T0 + 5, 0, HERE)))
         .unwrap();
     assert_eq!(e.store.outbox_len().unwrap(), 5);
-    assert_eq!(e.store.outbox_len_except(&[], true).unwrap(), 5);
-    assert_eq!(e.store.outbox_len_except(&[], false).unwrap(), 4);
-    assert_eq!(e.store.outbox_len_except(&[id(1)], false).unwrap(), 2);
-    for (meetings, vp) in [(vec![], true), (vec![id(1)], false), (vec![id(1)], true)] {
+    assert_eq!(e.store.outbox_len_except(&[], vp(true)).unwrap(), 5);
+    assert_eq!(e.store.outbox_len_except(&[], vp(false)).unwrap(), 4);
+    assert_eq!(e.store.outbox_len_except(&[id(1)], vp(false)).unwrap(), 2);
+    for (meetings, on) in [(vec![], true), (vec![id(1)], false), (vec![id(1)], true)] {
         assert_eq!(
-            e.store.outbox_len_except(&meetings, vp).unwrap(),
-            e.store.outbox_except(1000, &meetings, vp).unwrap().len() as u64,
+            e.store.outbox_len_except(&meetings, vp(on)).unwrap(),
+            e.store
+                .outbox_except(1000, &meetings, vp(on))
+                .unwrap()
+                .len() as u64,
             "the count is the push's own"
         );
     }

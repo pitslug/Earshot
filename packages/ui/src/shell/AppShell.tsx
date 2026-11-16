@@ -249,9 +249,6 @@ const useStyles = makeStyles({
   heading: {
     margin: 0,
   },
-  meta: {
-    color: tokens.colorNeutralForeground3,
-  },
   emptyFolder: {
     display: "block",
     paddingLeft: tokens.spacingHorizontalS,
@@ -454,11 +451,16 @@ export function AppShell({
         jobSeq.current += 1;
         const seq = jobSeq.current;
         setJobs((all) => {
+          // A continuation that found nothing to go on with (T12.63b): the job goes, quietly.
+          if (e.type === "Settled") {
+            const { [e.meeting]: _gone, ...rest } = all;
+            return rest;
+          }
           const kind =
             all[e.meeting]?.job ??
             (e.type === "Failed" || e.type === "Cancelled"
               ? e.job
-              : e.type === "Summary"
+              : e.type === "Summary" || e.type === "Offloaded"
                 ? "Resummarise"
                 : "Retranscribe");
           // A cancel pressed holds until the job's last event.

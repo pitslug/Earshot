@@ -506,8 +506,34 @@ pub fn summary_settings(
     Ok((out, unknown))
 }
 
+/// The stored values of every Summaries setting but the writer (which is the order's mirror,
+/// [`crate::summary_order`]), as [`set_summary_settings`] writes them.
+pub(crate) fn stored_values(s: &SummarySettings) -> Vec<(DeviceRecord, String)> {
+    vec![
+        (
+            DeviceRecord::SummaryProvider,
+            s.provider.as_str().to_owned(),
+        ),
+        (DeviceRecord::SummaryEndpoint, s.url.clone()),
+        (DeviceRecord::SummaryEndpointModel, s.model.clone()),
+        (DeviceRecord::SummaryClaudeCodeModel, s.claude_model.clone()),
+        (DeviceRecord::SummaryCodexModel, s.codex_model.clone()),
+        (
+            DeviceRecord::SummaryClaudeCodeEffort,
+            s.claude_effort.map_or("", Effort::as_str).to_owned(),
+        ),
+        (
+            DeviceRecord::LiveSummaries,
+            if s.live { "on" } else { "off" }.to_owned(),
+        ),
+    ]
+}
+
 /// Checks and stores every setting (replacing earlier ones) in one transaction; returns
-/// what was stored.
+/// what was stored. The writer is stored as the first writer step of the order
+/// ([`crate::summary_order::SummaryOrder::with_writer`]) through
+/// [`crate::summary_order::set_summary_order`], the one writer of `settings/summary-writer`
+/// (T12.63a).
 ///
 /// # Errors
 /// [`SummarySettingsError`]: nothing is stored on a refusal.
@@ -515,33 +541,18 @@ pub fn set_summary_settings(
     store: &mut Store,
     settings: &SummarySettings,
 ) -> Result<SummarySettings, SummarySettingsError> {
+    use crate::summary_order::{SummaryOrderError, set_summary_order, summary_order};
     let s = validate(settings)?;
-    let values: [(DeviceRecord, &str); 8] = [
-        (DeviceRecord::SummaryWriter, s.writer.as_str()),
-        (DeviceRecord::SummaryProvider, s.provider.as_str()),
-        (DeviceRecord::SummaryEndpoint, s.url.as_str()),
-        (DeviceRecord::SummaryEndpointModel, s.model.as_str()),
-        (
-            DeviceRecord::SummaryClaudeCodeModel,
-            s.claude_model.as_str(),
-        ),
-        (DeviceRecord::SummaryCodexModel, s.codex_model.as_str()),
-        (
-            DeviceRecord::SummaryClaudeCodeEffort,
-            s.claude_effort.map_or("", Effort::as_str),
-        ),
-        (
-            DeviceRecord::LiveSummaries,
-            if s.live { "on" } else { "off" },
-        ),
-    ];
-    store
-        .transaction(|tx| -> Result<(), earshot_store::StoreError> {
-            for (record, value) in values {
-                crate::local::set_tx(tx, &record.key(), value.as_bytes())?;
-            }
-            Ok(())
-        })
-        .map_err(RuntimeError::from)?;
+    let (order, _) = summary_order(store)?;
+    let order = order.with_writer(s.writer);
+    set_summary_order(store, &order, Some(&s)).map_err(|e| match e {
+        SummaryOrderError::Settings(e) => e,
+        SummaryOrderError::Store(e) => SummarySettingsError::Store(e),
+        SummaryOrderError::TooManySteps
+        | SummaryOrderError::Twice
+        | SummaryOrderError::ThisDevice => SummarySettingsError::Store(RuntimeError::Internal(
+            "the order of summary writers could not be kept",
+        )),
+    })?;
     Ok(s)
 }

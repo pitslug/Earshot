@@ -228,6 +228,13 @@ impl Services {
         })
     }
 
+    /// Whether another thread holds the store lock now (tests of what may run between a
+    /// read and a write).
+    #[cfg(test)]
+    pub(crate) fn store_is_held(&self) -> bool {
+        matches!(self.db.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+    }
+
     /// Locks the store (and the HLC).
     ///
     /// A thread that panicked while holding the lock does not make the store unusable:
@@ -329,7 +336,9 @@ impl Services {
         } else if m.duration_ms.is_none() {
             MeetingActivity::Interrupted
         } else if db.has_live_segment(meeting, TranscriptPass::Final)?
-            || crate::backends::pass_backend(&db, meeting, TranscriptPass::Final, None)?.is_some()
+            // A pass backend this build cannot read still says the final pass ran (T12.56).
+            || crate::backends::pass_backend_record(&db, meeting, TranscriptPass::Final, None)?
+                .exists()
         {
             MeetingActivity::Ready
         } else {

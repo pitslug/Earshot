@@ -131,6 +131,15 @@ pub const READ_FAILED: &str = "Earshot could not read this setting from Windows.
 /// What the page says when the setting cannot be changed.
 pub const CHANGE_FAILED: &str = "Earshot could not change this setting in Windows. Try again.";
 
+/// What the page says when Earshot cannot find its own program file.
+pub const NO_PROGRAM_FILE: &str = "Earshot could not find its own program file.";
+
+/// `current_exe`'s failure as fixed copy: the operating system's words never reach the page
+/// (T12.56).
+fn program_file_error(_: std::io::Error) -> IpcError {
+    autostart_error(NO_PROGRAM_FILE)
+}
+
 /// How long one `reg.exe` run may take.
 const REG_DEADLINE: Duration = Duration::from_secs(10);
 
@@ -140,8 +149,7 @@ impl RunKey {
     /// # Errors
     /// `autostart` when the exe or the Windows folder is unknown.
     pub fn for_this_app() -> Result<Self, IpcError> {
-        let exe = std::env::current_exe()
-            .map_err(|e| autostart_error(format!("cannot find Earshot's program file: {e}")))?;
+        let exe = std::env::current_exe().map_err(program_file_error)?;
         Self::new(RUN_KEY, RUN_VALUE, &exe)
     }
 
@@ -483,6 +491,15 @@ mod tests {
                 .unwrap_err()
                 .kind,
             "autostart"
+        );
+    }
+
+    #[test]
+    fn general_a_missing_program_file_is_fixed_copy_without_the_systems_words() {
+        let e = program_file_error(std::io::Error::other("os words: C:\\Users\\someone"));
+        assert_eq!(
+            (e.kind.as_str(), e.message.as_str()),
+            ("autostart", NO_PROGRAM_FILE)
         );
     }
 

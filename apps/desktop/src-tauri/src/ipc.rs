@@ -138,7 +138,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::summary_style::set_summary_style,
             crate::summary_style::set_summary_template,
             crate::summary_vocabulary::summary_vocabulary,
-            crate::summary_vocabulary::set_summary_vocabulary,
+            crate::summary_vocabulary::add_summary_vocabulary_word,
+            crate::summary_vocabulary::remove_summary_vocabulary_word,
             crate::sync_settings::sync_view,
             crate::sync_settings::sync_devices,
             crate::sync_settings::set_up_sync,
@@ -146,8 +147,19 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::sync_settings::join_sync,
             crate::sync_settings::set_sync_on,
             crate::sync_settings::set_sync_voiceprints,
+            crate::sync_settings::set_sync_dictionary,
             crate::sync_settings::sync_now,
             crate::sync_settings::remove_sync_device,
+            crate::sync_settings::remove_other_sync_device,
+            crate::sync_settings::set_sync_offer_summaries,
+            crate::sync_settings::set_sync_device_name,
+            crate::offload::summary_helpers,
+            crate::offload::set_summary_helper,
+            crate::offload::ask_summary_helper,
+            crate::summary_order::summary_order,
+            crate::summary_order::set_summary_order,
+            crate::summary_order::resummarise_writers,
+            crate::summary_order::resummarise_with,
             crate::first_run::first_run_state,
             crate::first_run::finish_first_run,
             crate::cuda_settings::cuda_settings,
@@ -639,13 +651,14 @@ fn keep_recording(driver: State<'_, MeetingDriver>) {
     driver.keep_recording();
 }
 
-/// Runs blocking work off the main thread.
+/// Runs blocking work off the main thread. Work that panics or is cancelled reaches the page as
+/// [`IpcError::internal`], never the panic's or the runtime's words (T12.56).
 pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, IpcError> + Send + 'static,
 ) -> Result<T, IpcError> {
     tauri::async_runtime::spawn_blocking(f)
         .await
-        .map_err(|_| IpcError::new("internal", "the task stopped"))?
+        .map_err(|_| IpcError::internal())?
 }
 
 /// Everything the meeting detail screen shows of `meeting`.

@@ -16,6 +16,10 @@
 //!   returned to a window.
 //! - Voiceprints sync only while `settings/sync-voiceprints` is on (off by default); turning
 //!   it on reads every earlier row again ([`set_sync_voiceprints`]).
+//! - Dictionary words sync while `settings/sync-dictionary` is on (on by default, T11.3e);
+//!   turning it on makes a row for each word this device has and reads every earlier row
+//!   again ([`set_sync_dictionary`]). After every applied page `settings/vocabulary` is rebuilt
+//!   from the live rows in the page's own transaction (`crate::vocabulary`).
 //!
 //! Setting up a device is [`set_up_first_device`], [`offer_pairing_code`] and
 //! [`join_with_code`]; [`remove_this_device`] undoes it.
@@ -30,7 +34,7 @@ use std::fmt;
 use std::sync::Mutex;
 
 use earshot_net::Url;
-use earshot_store::{Store, encode_versioned, split_version};
+use earshot_store::{Store, SyncKinds, encode_versioned, split_version};
 use serde::{Deserialize, Serialize};
 
 use crate::local::{self, DeviceRecord};
@@ -38,12 +42,14 @@ use crate::services::Services;
 
 /// The vault key type, for hosts that store it ([`SyncVault`]).
 pub use earshot_sync::VaultKey;
-pub use engine::{Peer, SyncClient, TickReport};
+pub use engine::{Peer, SyncClient, TickReport, WorkerWriter};
 pub use presence::{
-    MAX_DEVICE_NAME, ONLINE_WITHIN_S, PRESENCE_EVERY, Presence, clean_name, computer_name, online,
+    Beats, KIND_APP, KIND_SERVER, MAX_DEVICE_NAME, ONLINE_WITHIN_S, PRESENCE_EVERY, Presence,
+    clean_name, computer_name, online,
 };
 pub use setup::{
-    PairingOffer, join_with_code, offer_pairing_code, remove_this_device, set_up_first_device,
+    PairingOffer, join_with_code, offer_pairing_code, remove_other_device, remove_this_device,
+    set_up_first_device,
 };
 pub use thread::{SyncThread, SyncTiming, backoff};
 
@@ -53,6 +59,8 @@ pub(crate) const SYNC_SERVER_KEY: &str = "settings/sync-server";
 pub(crate) const SYNC_ON_KEY: &str = "settings/sync";
 /// `settings/sync-voiceprints`: whether voiceprints sync (`on`/`off`; absent is off).
 pub(crate) const SYNC_VOICEPRINTS_KEY: &str = "settings/sync-voiceprints";
+/// `settings/sync-dictionary`: whether Dictionary words sync (`on`/`off`; absent is on).
+pub(crate) const SYNC_DICTIONARY_KEY: &str = "settings/sync-dictionary";
 /// `sync-cursor`: the relay sequence number pulled up to.
 pub(crate) const SYNC_CURSOR_KEY: &str = "sync-cursor";
 /// `sync-status`: the last tick's outcome (times, a problem word, counts; never content).
@@ -393,17 +401,35 @@ pub struct SyncSettings {
     pub on: bool,
     /// Whether voiceprints sync.
     pub voiceprints: bool,
+    /// Whether Dictionary words sync (on unless turned off).
+    pub dictionary: bool,
     /// This device's name as its other devices show it.
     pub device_name: String,
     /// Whether this device writes summaries for the others.
     pub offers_summaries: bool,
 }
 
+impl SyncSettings {
+    /// The opt-in kinds these settings sync.
+    #[must_use]
+    pub fn kinds(&self) -> SyncKinds {
+        SyncKinds {
+            voiceprints: self.voiceprints,
+            dictionary: self.dictionary,
+        }
+    }
+}
+
 fn on_setting(store: &Store, key: &str) -> Result<bool, SyncProblem> {
+    on_setting_or(store, key, false)
+}
+
+/// A stored `on`/`off` switch; absent or unreadable is `default`.
+fn on_setting_or(store: &Store, key: &str, default: bool) -> Result<bool, SyncProblem> {
     Ok(store
         .local_value(key)?
         .and_then(|b| local::on_off(&String::from_utf8_lossy(&b)))
-        .unwrap_or(false))
+        .unwrap_or(default))
 }
 
 /// The stored sync settings (an unreadable switch reads as off).
@@ -418,6 +444,7 @@ pub fn sync_settings(store: &Store) -> Result<SyncSettings, SyncProblem> {
         address,
         on: on_setting(store, SYNC_ON_KEY)?,
         voiceprints: on_setting(store, SYNC_VOICEPRINTS_KEY)?,
+        dictionary: on_setting_or(store, SYNC_DICTIONARY_KEY, true)?,
         device_name: store
             .local_value(DEVICE_NAME_KEY)?
             .and_then(|b| clean_name(&String::from_utf8_lossy(&b)))
@@ -467,9 +494,15 @@ fn on_off_word(on: bool) -> &'static [u8] {
 /// # Errors
 /// [`SyncProblem::Store`].
 pub fn set_sync_on(services: &Services, on: bool) -> Result<(), SyncProblem> {
-    let mut db = services.store();
-    local::set(&mut db, &DeviceRecord::SyncOn.key(), on_off_word(on))?;
-    Ok(())
+    crate::vocabulary::with_stamp(services, |tx, stamp| -> Result<(), SyncProblem> {
+        local::set_tx(tx, &DeviceRecord::SyncOn.key(), on_off_word(on))?;
+        if on {
+            // Dictionary words changed while sync was off get rows and the list follows them
+            // (T11.3e), as turning the Dictionary switch on does.
+            crate::vocabulary::syncing_turned_on_tx(tx, stamp)?;
+        }
+        Ok(())
+    })
 }
 
 /// Turns voiceprint sync on or off. Turning it on resets the pull cursor, so voiceprints
@@ -488,6 +521,28 @@ pub fn set_sync_voiceprints(services: &Services, on: bool) -> Result<(), SyncPro
         Ok(())
     })?;
     Ok(())
+}
+
+/// Turns Dictionary sync on or off (docs/sync.md section 9). Turning it on makes a row for each
+/// word this device already has and resets the pull cursor, so words pushed while it was off
+/// are read; off keeps this device's list as it is and neither sends nor applies word rows.
+/// One transaction.
+///
+/// # Errors
+/// [`SyncProblem::Store`].
+pub fn set_sync_dictionary(services: &Services, on: bool) -> Result<(), SyncProblem> {
+    crate::vocabulary::with_stamp(services, |tx, stamp| -> Result<(), SyncProblem> {
+        let was = tx
+            .local_value(SYNC_DICTIONARY_KEY)?
+            .and_then(|b| local::on_off(&String::from_utf8_lossy(&b)))
+            .unwrap_or(true);
+        local::set_tx(tx, &DeviceRecord::SyncDictionary.key(), on_off_word(on))?;
+        if on && !was {
+            crate::vocabulary::syncing_turned_on_tx(tx, stamp)?;
+            local::set_tx(tx, &DeviceRecord::SyncCursor.key(), &encode_cursor(0))?;
+        }
+        Ok(())
+    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -569,9 +624,9 @@ pub fn sync_overview(
     Ok(SyncOverview {
         set_up,
         status: sync_status(&store)?,
-        // What the push would send now: a recording's rows and switched-off voiceprints are
-        // not behind.
-        waiting: store.outbox_len_except(&recording, settings.voiceprints)?,
+        // What the push would send now: a recording's rows and switched-off kinds are not
+        // behind.
+        waiting: store.outbox_len_except(&recording, settings.kinds())?,
         held: u64::try_from(store.held_rows()?.len()).unwrap_or(u64::MAX),
         settings,
     })
@@ -580,6 +635,8 @@ pub fn sync_overview(
 /// One device of the vault, as the server knows it, with its presence when it sent one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncDevice {
+    /// Its id.
+    pub device: earshot_core::identity::DeviceId,
     /// Whether it is this device.
     pub this_device: bool,
     /// Its name, from its presence (`None` until it sends one this device can read).
@@ -590,6 +647,9 @@ pub struct SyncDevice {
     pub recording: bool,
     /// Whether it writes summaries for the other devices (from its presence).
     pub offers_summaries: bool,
+    /// The kind of writer it would use, when it offers summaries and this build knows the
+    /// kind (from its presence; summary offload names it so the user knows where text goes).
+    pub writer_kind: Option<crate::offload::WriterKind>,
     /// The first eight hex digits of its id: enough to tell two devices apart on the page.
     pub short_id: String,
     /// When it joined (Unix seconds, the server's clock).
@@ -621,12 +681,18 @@ pub fn vault_devices(
                 .iter()
                 .find(|p| p.device.as_uuid().as_bytes()[..] == d.device_id.0[..]);
             let presence = peer.and_then(|p| p.presence.as_ref());
+            let id: [u8; 16] = d.device_id.0.as_slice().try_into().unwrap_or([0; 16]);
             SyncDevice {
+                device: earshot_core::identity::DeviceId::from_bytes(id),
                 this_device: d.device_id.0 == me,
                 name: presence.map(|p| p.name.clone()).filter(|n| !n.is_empty()),
                 online: peer.is_some_and(|p| p.online),
                 recording: presence.is_some_and(|p| p.recording),
                 offers_summaries: presence.is_some_and(|p| p.offers_summaries),
+                writer_kind: presence
+                    .filter(|p| p.offers_summaries)
+                    .and_then(|p| p.writer_kind.as_deref())
+                    .and_then(crate::offload::WriterKind::parse),
                 short_id: d
                     .device_id
                     .0

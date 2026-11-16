@@ -54,6 +54,7 @@ fn run_room(
         svc,
         PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting: track.meeting_id,
             tracks: vec![track_input(track, audio)],
         },
@@ -373,6 +374,7 @@ fn post_rerun_of_a_call_never_carries_an_edit_mark_record_onto_the_me_row() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![
                     track_input(&mic, mic_audio.clone()),

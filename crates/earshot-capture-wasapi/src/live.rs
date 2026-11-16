@@ -274,6 +274,20 @@ impl TrackEmitter {
         );
     }
 
+    /// A raw mic could not be re-opened raw at `qpc` and records the default stream from now on
+    /// (T12.36): one note on this track.
+    pub fn raw_fell_back(&mut self, qpc: u64, sink: &mut dyn CaptureSink) {
+        sink.discontinuity(
+            self.track,
+            Discontinuity {
+                at: DeviceTime::from_ticks(qpc),
+                kind: DiscontinuityKind::Note {
+                    warning: EndpointWarning::RawMicRefused,
+                },
+            },
+        );
+    }
+
     /// The capture loop ended this track at `qpc` after its stream kept failing (T9.21): one
     /// note, so a consumer can tell it from a track still being retried. No frames follow.
     pub fn track_ended(&mut self, qpc: u64, sink: &mut dyn CaptureSink) {
@@ -465,6 +479,10 @@ impl<E> TrackObserver for EmitterTrack<E> {
     fn call_output_refused(&mut self, qpc: u64, wanted: &str, used: Option<&str>, _error: &str) {
         self.emitter
             .call_output_refused(qpc, wanted, used, &mut self.sink);
+    }
+
+    fn raw_fell_back(&mut self, qpc: u64) {
+        self.emitter.raw_fell_back(qpc, &mut self.sink);
     }
 
     fn track_ended(&mut self, qpc: u64, _hresult: i32) {
@@ -1248,6 +1266,40 @@ mod tests {
             )),
             "on the ended track"
         );
+    }
+
+    #[test]
+    fn live_a_raw_mic_that_fell_back_is_one_note_on_the_mic() {
+        let (tx, rx) = mpsc::channel::<LiveMsg<()>>();
+        let mut track = EmitterTrack {
+            emitter: emitter(),
+            sink: ChannelSink::new(tx),
+        };
+        TrackObserver::packet(&mut track, pkt(T0, 480), &ramp(480));
+        TrackObserver::raw_fell_back(&mut track, T0 + PQ);
+        let events: Vec<CaptureEvent> = rx
+            .try_iter()
+            .map(|m| match m {
+                LiveMsg::Event(e) => e,
+                LiveMsg::Failed(()) => panic!("a fallback is not a failed capture"),
+            })
+            .collect();
+        assert_eq!(
+            markers(&events),
+            [Discontinuity {
+                at: t(T0 + PQ),
+                kind: DiscontinuityKind::Note {
+                    warning: EndpointWarning::RawMicRefused,
+                },
+            }]
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            CaptureEvent::Discontinuity {
+                track: TrackId::Mic,
+                ..
+            }
+        )));
     }
 
     #[test]

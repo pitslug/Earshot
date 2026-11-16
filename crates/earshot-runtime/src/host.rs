@@ -37,13 +37,14 @@ use earshot_core::identity::EntityId;
 use earshot_net::AuditEntry;
 use earshot_store::{DataDir, Store};
 
+use crate::StoredRecord;
 use crate::backends::{
     Accelerator, CAMPPLUS, EvidenceLoader, ModelDir, SEGMENTATION, SILERO, asr_model, init_onnx,
     live_asr_factory, onnx_library, order_from, post_processor, with_live_speakers,
 };
 pub use crate::keep_local::SummaryPrivacy;
 use crate::live::{LiveAsrFactory, LiveConfig, LiveOutcome, LiveSession};
-use crate::model_bench::{check_fingerprint, hardware_facts, stored_check};
+use crate::model_bench::{check_fingerprint, hardware_facts, stored_check, stored_check_record};
 use crate::post::{
     CleanupWork, PostConfig, PostInput, PostOutcome, PostProcessor, PostStage, load_post_input,
 };
@@ -396,7 +397,7 @@ pub enum ModelSource {
 /// `languages`.
 ///
 /// # Errors
-/// The stored model check does not parse; store errors.
+/// Store errors.
 pub fn models_advice(
     store: &Store,
     models: &ModelDir,
@@ -412,16 +413,21 @@ pub fn models_advice(
     )
 }
 
+/// Why the fallback model runs when the stored model check cannot be read (T12.56): the next
+/// check replaces it.
+pub const UNREADABLE_CHECK: &str = "the stored model check cannot be read";
+
 /// The meeting languages of a host that has no language setting yet (T7.4e adds one).
 pub const DEFAULT_LANGUAGES: &[&str] = &["en"];
 
 /// The transcription model of a run: `requested`, else the model check recorded in `store`
 /// when it is current for this machine, `models` and the meeting `languages` (T6.10c; the
 /// check's fingerprint holds the languages it ran for), else [`FALLBACK_MODEL`]. A host
-/// without a language setting passes [`DEFAULT_LANGUAGES`].
+/// without a language setting passes [`DEFAULT_LANGUAGES`]. A stored check this build cannot
+/// read is the fallback, with that reason (T12.56).
 ///
 /// # Errors
-/// The stored model check does not parse; store errors.
+/// Store errors.
 pub fn choose_model(
     requested: Option<&str>,
     store: &Store,
@@ -429,9 +435,9 @@ pub fn choose_model(
     languages: &[&str],
 ) -> Result<(ModelChoice, ModelSource), RuntimeError> {
     let check = if requested.is_some() {
-        None
+        StoredRecord::Absent
     } else {
-        stored_check(store)?
+        stored_check_record(store)?
     };
     Ok(choose_model_from(requested, check, models, languages))
 }
@@ -439,7 +445,7 @@ pub fn choose_model(
 /// [`choose_model`] with the stored model check `check` already read.
 fn choose_model_from(
     requested: Option<&str>,
-    check: Option<crate::model_bench::StoredCheck>,
+    check: StoredRecord<crate::model_bench::StoredCheck>,
     models: &ModelDir,
     languages: &[&str],
 ) -> (ModelChoice, ModelSource) {
@@ -452,15 +458,16 @@ fn choose_model_from(
     }
     let fingerprint = check_fingerprint(models, &hardware_facts(), languages);
     let why = match check {
-        Some(c) if c.current(&fingerprint) => {
+        StoredRecord::Read(c) if c.current(&fingerprint) => {
             let choice = ModelChoice {
                 model: c.model,
                 backend: Some(c.backend),
             };
             return (choice, ModelSource::ModelCheck);
         }
-        Some(_) => "the model check is out of date for this machine",
-        None => "no model check yet",
+        StoredRecord::Read(_) => "the model check is out of date for this machine",
+        StoredRecord::Unreadable => UNREADABLE_CHECK,
+        StoredRecord::Absent => "no model check yet",
     };
     let choice = ModelChoice {
         model: FALLBACK_MODEL.to_owned(),
@@ -644,7 +651,7 @@ impl NpuNoteShown {
 /// runs" ([`crate::model_settings::transcription_placement`]).
 ///
 /// # Errors
-/// The stored model check does not parse; store errors.
+/// Store errors.
 pub fn transcription_setup(
     store: &Store,
     models: &ModelDir,
@@ -662,20 +669,20 @@ pub struct TranscriptionReads {
     settings: crate::model_settings::ModelSettings,
     unknown: Vec<crate::model_settings::UnknownSetting>,
     /// The stored model check; read only under the automatic choice, as before.
-    check: Option<crate::model_bench::StoredCheck>,
+    check: StoredRecord<crate::model_bench::StoredCheck>,
 }
 
 impl TranscriptionReads {
     /// The model settings in `store`, and its stored model check when the choice is automatic.
     ///
     /// # Errors
-    /// The stored model check does not parse; store errors.
+    /// Store errors.
     pub fn read(store: &Store) -> Result<Self, RuntimeError> {
         use crate::model_settings::{ModelPick, model_settings};
         let (settings, unknown) = model_settings(store)?;
         let check = match settings.transcription {
-            ModelPick::Automatic => stored_check(store)?,
-            ModelPick::Named(_) => None,
+            ModelPick::Automatic => stored_check_record(store)?,
+            ModelPick::Named(_) => StoredRecord::Absent,
         };
         Ok(Self {
             settings,
@@ -818,8 +825,37 @@ pub fn summary_from_settings(
     keys: &dyn crate::summary_settings::ApiKeyStore,
     privacy: SummaryPrivacy,
 ) -> Result<SettingsSummary, RuntimeError> {
+    summary_for(store, None, order, hardware, keys, privacy)
+}
+
+/// [`summary_from_settings`] for one writer of the order of summary writers (T12.63a,
+/// [`SettingsWriters`]): `writer`'s own settings (endpoint fields and key, Claude Code model
+/// and effort, Codex model) whatever the page's first writer is.
+///
+/// # Errors
+/// As [`summary_from_settings`].
+pub fn summary_for_writer(
+    store: &Store,
+    writer: crate::summary_settings::SummaryWriter,
+    order: &[Accelerator],
+    hardware: &earshot_hardware::Hardware,
+    keys: &dyn crate::summary_settings::ApiKeyStore,
+    privacy: SummaryPrivacy,
+) -> Result<SettingsSummary, RuntimeError> {
+    summary_for(store, Some(writer), order, hardware, keys, privacy)
+}
+
+fn summary_for(
+    store: &Store,
+    writer: Option<crate::summary_settings::SummaryWriter>,
+    order: &[Accelerator],
+    hardware: &earshot_hardware::Hardware,
+    keys: &dyn crate::summary_settings::ApiKeyStore,
+    privacy: SummaryPrivacy,
+) -> Result<SettingsSummary, RuntimeError> {
     use crate::summary_settings::{ApiKeyError, EndpointProvider, SummaryWriter, summary_settings};
     let (settings, unknown) = summary_settings(store)?;
+    let chosen = writer.unwrap_or(settings.writer);
     let mut placement = local_summary_placement(store, order, hardware)?;
     let mut request = SummaryRequest {
         graphics_memory: crate::model_settings::graphics_memory(hardware),
@@ -827,14 +863,14 @@ pub fn summary_from_settings(
     };
     // The one place a kept-local meeting's writer is decided (T12.13).
     let remote = !matches!(
-        settings.writer,
+        chosen,
         SummaryWriter::OnThisComputer | SummaryWriter::NoSummary
     );
     let writer = if privacy == SummaryPrivacy::KeptLocal && remote {
         request.kept_local = true;
         SummaryWriter::OnThisComputer
     } else {
-        settings.writer
+        chosen
     };
     match writer {
         SummaryWriter::OnThisComputer => request.local_model = placement.requested.clone(),
@@ -890,6 +926,139 @@ pub fn summary_from_settings(
         live: settings.live,
         notes,
     })
+}
+
+/// The production [`StepWriters`](crate::summary_order::run::StepWriters) (T12.63a): each writer
+/// step from this computer's settings when it is tried ([`summary_for_writer`],
+/// [`summary_plan`], the Claude Code and Codex probes, [`prepare_summary_on`]), and each computer
+/// step from `computers` (the app: [`crate::offload::choose_device_now`]; without it every
+/// computer reads as sync off).
+pub struct SettingsWriters<'a> {
+    /// Where the models are.
+    pub models: &'a ModelDir,
+    /// The Anthropic key store, read when an endpoint step is tried.
+    pub keys: &'a dyn crate::summary_settings::ApiKeyStore,
+    /// Claude Code, probed when its step is tried.
+    pub claude: &'a dyn crate::claude_code::ClaudeCodeProbe,
+    /// Codex, probed when its step is tried.
+    pub codex: &'a dyn crate::codex::CodexProbe,
+    /// Where the exe finds llama.cpp's DLLs ([`dll_search_dirs`]).
+    pub dll_dirs: Vec<PathBuf>,
+    /// Accelerators, best first (where a local summary may run).
+    pub order: Vec<Accelerator>,
+    /// This computer's hardware.
+    pub hardware: &'a earshot_hardware::Hardware,
+    /// Whether to ask a computer now.
+    pub computers:
+        Option<&'a dyn Fn(earshot_core::identity::DeviceId) -> crate::offload::OffloadChoice>,
+}
+
+impl crate::summary_order::run::StepWriters for SettingsWriters<'_> {
+    fn writer(
+        &self,
+        services: &Services,
+        step: crate::summary_order::WriterStep,
+    ) -> crate::summary_order::run::Built {
+        use crate::summary_order::run::Built;
+        // The run applies the meeting's privacy itself (docs/summary-order.md 4.2).
+        let settings = {
+            let db = services.store();
+            summary_for_writer(
+                &db,
+                step.writer(),
+                &self.order,
+                self.hardware,
+                self.keys,
+                SummaryPrivacy::Writer,
+            )
+        };
+        let settings = match settings {
+            Ok(s) => s,
+            Err(e) => return Built::Stop(e),
+        };
+        let plan = match summary_plan(
+            &settings.request,
+            earshot_store::total_memory(),
+            settings.placement.gpu,
+            self.models,
+        ) {
+            Ok(plan) => plan,
+            Err(SummaryPlanError::UnknownModel(e)) => return Built::Stop(e),
+            Err(SummaryPlanError::NotInstalled(e)) => {
+                return match settings
+                    .request
+                    .local_model
+                    .as_deref()
+                    .and_then(|id| crate::summary_model::summary_model(id).ok())
+                {
+                    Some(model) => Built::Skip(SkipReason::ChosenNotInstalled { model: model.id }),
+                    None => Built::Stop(e),
+                };
+            }
+        };
+        let plan = check_codex(check_claude_code(plan, self.claude), self.codex);
+        if let Some(reason) = skip_reason(&plan) {
+            return Built::Skip(reason);
+        }
+        match prepare_summary_on(
+            &plan,
+            self.models,
+            Arc::clone(&services.clock),
+            &self.dll_dirs,
+            settings.placement.gpu,
+        ) {
+            Ok(Some(prepared)) => Built::Service(Box::new(prepared)),
+            Ok(None) => Built::Skip(SkipReason::NotRequested),
+            Err(SummarySetupError::Runtime(e)) => Built::Stop(e),
+            Err(SummarySetupError::LlamaDllsMissing(_)) => Built::Stop(RuntimeError::Unavailable(
+                crate::benchmark::LLAMA_DLLS_MISSING,
+            )),
+            Err(SummarySetupError::CudaDllsMissing(_)) => Built::Stop(RuntimeError::Unavailable(
+                crate::benchmark::CUDA_DLLS_MISSING,
+            )),
+        }
+    }
+
+    fn computer(
+        &self,
+        _services: &Services,
+        device: earshot_core::identity::DeviceId,
+    ) -> crate::offload::OffloadChoice {
+        match self.computers {
+            Some(choose) => choose(device),
+            None => crate::offload::decide(Some(device), None, false),
+        }
+    }
+}
+
+/// What a meeting's summary will hold on this computer when its filtered order is `steps`
+/// (docs/summary-order.md 4.5): the local model whenever any step is the local model, else
+/// nothing. `Unknown` when the local model cannot be told.
+#[must_use]
+pub fn order_summary_hold(
+    store: &Store,
+    steps: &[crate::summary_order::OrderStep],
+    order: &[Accelerator],
+    hardware: &earshot_hardware::Hardware,
+) -> crate::meeting_queue::SummaryHold {
+    use crate::meeting_queue::{Device, SummaryHold};
+    if !crate::summary_order::any_local(steps) {
+        return SummaryHold::OffThisComputer;
+    }
+    let Ok(placement) = local_summary_placement(store, order, hardware) else {
+        return SummaryHold::Unknown;
+    };
+    match summary_model_for(&placement, hardware) {
+        Ok(choice) => SummaryHold::Local {
+            device: if placement.gpu {
+                Device::GraphicsCard
+            } else {
+                Device::Cpu
+            },
+            size: choice.model.size,
+        },
+        Err(_) => SummaryHold::Unknown,
+    }
 }
 
 /// The local summary model a run with `placement` ([`local_summary_placement`]) uses on
@@ -1783,6 +1952,9 @@ pub enum SkipReason {
         /// The local model it would have used.
         model: &'static str,
     },
+    /// The order's local step would have run beside a newer meeting the meeting queue did not
+    /// hold for it, and no later step wrote the summary (T12.63a, docs/summary-order.md 4.5).
+    NotNow,
 }
 
 /// Where a stored summary was made.
@@ -1828,6 +2000,20 @@ pub enum SummaryResult {
     },
     /// Cancelled through [`AfterMeeting::summary_cancel`]; nothing was stored.
     Cancelled,
+    /// Another of the user's devices was asked to write it (summary offload,
+    /// [`crate::offload`]): nothing was written here; the summary arrives by sync, or this
+    /// device writes it if the helper does not ([`crate::offload::Offload::step`]).
+    Offloaded {
+        /// The request.
+        request: EntityId,
+        /// The helper asked.
+        device: earshot_core::identity::DeviceId,
+        /// Its name, from its presence; empty when it is not the chosen device (the meeting
+        /// already waited for another).
+        name: String,
+        /// The kind of writer it uses, when known (the chosen device's).
+        writer: Option<crate::offload::WriterKind>,
+    },
 }
 
 /// Result of [`after_meeting`].
@@ -1853,6 +2039,14 @@ pub struct HostOutcome {
     /// chosen, because its help could not be read ([`claude_effort_unread`], T12.20); false
     /// for any summary that was not stored.
     pub claude_effort_unread: bool,
+    /// What the summary step decided about the chosen helper (summary offload; `None` when the
+    /// run had no [`AfterMeeting::offload`] or stopped before the summary). A
+    /// [`crate::offload::OffloadChoice::HereInstead`] is shown: this device's writer ran because
+    /// the chosen one was not available.
+    pub offload: Option<crate::offload::OffloadChoice>,
+    /// The steps of the run of the order of summary writers (T12.63a; empty for a run with no
+    /// [`AfterMeeting::order_run`]): one line each in the CLI.
+    pub steps: Vec<crate::summary_order::run::RunStepView>,
 }
 
 impl HostOutcome {
@@ -1869,6 +2063,8 @@ impl HostOutcome {
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
             claude_effort_unread: false,
+            offload: None,
+            steps: Vec::new(),
         }
     }
 
@@ -1886,6 +2082,8 @@ impl HostOutcome {
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
             claude_effort_unread: false,
+            offload: None,
+            steps: Vec::new(),
         }
     }
 }
@@ -1911,6 +2109,15 @@ pub struct AfterMeeting<'a> {
     pub post_cancel: &'a CancelToken,
     /// Cancels the summary.
     pub summary_cancel: &'a CancelToken,
+    /// Summary offload (T11.3da): the decision of the summary step, made when the summary is
+    /// due (after the final pass), e.g. [`crate::offload::choose_now`]. `None`: this device's
+    /// writer, as before.
+    pub offload: Option<&'a dyn Fn() -> crate::offload::OffloadChoice>,
+    /// The order of summary writers (T12.63a, docs/summary-order.md): when given, the summary
+    /// step reads the order now and runs it ([`crate::summary_order::run::run_summary_order`]),
+    /// and `summary`, `no_summary` and `offload` are unused. `None`: the one prepared writer, as
+    /// before.
+    pub order_run: Option<&'a crate::summary_order::run::RunPlan<'a>>,
 }
 
 /// The skip reason of a plan that runs no summary (`None` for one that runs a summary).
@@ -2007,6 +2214,87 @@ where
         Ok(HostPost::Skipped)
     };
     progress(HostStep::PostFinished(&post));
+    // The order of summary writers (T12.63a): read and started now, when the summary is due,
+    // never at meeting start; `summary`, `no_summary` and `offload` are then unused.
+    if let Some(plan) = run.order_run {
+        let done = if post.is_err() {
+            crate::summary_order::run::RunOutcome::skipped(SkipReason::PostFailed)
+        } else if run.summary_cancel.is_cancelled() {
+            crate::summary_order::run::RunOutcome::cancelled()
+        } else {
+            progress(HostStep::SummaryStarting);
+            let order = match &plan.order {
+                Some(o) => Ok((o.clone(), Vec::new())),
+                None => crate::summary_order::summary_order(&services.store()),
+            };
+            match order {
+                Ok((order, _)) => crate::summary_order::run::run_summary_order(
+                    services,
+                    meeting,
+                    crate::summary_order::run::RunStart::Order(order),
+                    plan,
+                    run.summary_cancel,
+                ),
+                Err(e) => crate::summary_order::run::RunOutcome::from_error(e),
+            }
+        };
+        return HostOutcome {
+            missing_tracks,
+            post,
+            summary: done.summary,
+            network: done.network,
+            handovers: done.handovers,
+            handover_record_failures: done.handover_record_failures,
+            claude_effort_unread: done.claude_effort_unread,
+            offload: done.offload,
+            steps: done.steps,
+        };
+    }
+    // Summary offload: decided once, when the summary is due (never for a failed pass or a
+    // cancelled summary).
+    let mut offload = None;
+    let mut offloaded = None;
+    if post.is_ok()
+        && !run.summary_cancel.is_cancelled()
+        && let Some(choose) = run.offload
+    {
+        let choice = match choose() {
+            crate::offload::OffloadChoice::Ask {
+                device,
+                name,
+                writer,
+            } => match crate::offload::ask_for(services, meeting, device) {
+                Ok(Some(asked)) => {
+                    // A meeting that already waited keeps its request: name its device, and the
+                    // chosen one's name and writer only when it is that device.
+                    let same = asked.target == device;
+                    offloaded = Some(SummaryResult::Offloaded {
+                        request: asked.request,
+                        device: asked.target,
+                        name: if same { name.clone() } else { String::new() },
+                        writer: same.then_some(writer),
+                    });
+                    crate::offload::OffloadChoice::Ask {
+                        device,
+                        name,
+                        writer,
+                    }
+                }
+                Ok(None) => crate::offload::OffloadChoice::HereInstead {
+                    device,
+                    name: Some(name),
+                    why: crate::offload::Unavailable::NoFinalTranscript,
+                },
+                Err(_) => crate::offload::OffloadChoice::HereInstead {
+                    device,
+                    name: Some(name),
+                    why: crate::offload::Unavailable::NotAsked,
+                },
+            },
+            other => other,
+        };
+        offload = Some(choice);
+    }
     let (summary, network, handovers, handover_record_failures) = if post.is_err() {
         (
             SummaryResult::Skipped {
@@ -2016,6 +2304,8 @@ where
             Vec::new(),
             Vec::new(),
         )
+    } else if let Some(offloaded) = offloaded {
+        (offloaded, Vec::new(), Vec::new(), Vec::new())
     } else {
         match run.summary {
             // Cancelled already: nothing to load or send, whatever the transcript holds.
@@ -2053,6 +2343,8 @@ where
         handovers,
         handover_record_failures,
         claude_effort_unread,
+        offload,
+        steps: Vec::new(),
     }
 }
 
@@ -2167,7 +2459,33 @@ pub fn run_summary(
     service: &SummaryService,
     cancel: &CancelToken,
 ) -> SummaryResult {
-    match service.summarize(services, meeting, &mut *os_seeded_rng(), cancel) {
+    summary_result(
+        service,
+        service.summarize(services, meeting, &mut *os_seeded_rng(), cancel),
+    )
+}
+
+/// [`run_summary`] as one step of a run of the order (T12.63a): the run's ended record is stored
+/// with the summary ([`SummaryService::summarize_in_run`]).
+#[must_use]
+pub fn run_summary_in_run(
+    services: &Services,
+    meeting: EntityId,
+    service: &SummaryService,
+    end: &crate::summary_order::run::RunEnd,
+    cancel: &CancelToken,
+) -> SummaryResult {
+    summary_result(
+        service,
+        service.summarize_in_run(services, meeting, end, &mut *os_seeded_rng(), cancel),
+    )
+}
+
+fn summary_result(
+    service: &SummaryService,
+    result: Result<SummaryOutcome, RuntimeError>,
+) -> SummaryResult {
+    match result {
         Ok(outcome) => SummaryResult::Stored {
             summary_id: outcome.summary_id,
             model: service.model().to_owned(),

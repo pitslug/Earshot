@@ -27,8 +27,9 @@ import {
   tokens,
   useRestoreFocusTarget,
 } from "@fluentui/react-components";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 
+import table from "../../../../fixtures/ui/sync_copy_cases.json";
 import type { SyncDeviceView, SyncView } from "../ipc";
 import { clockTime, recordedDate } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
@@ -88,11 +89,21 @@ const useStyles = makeStyles({
   },
   device: {
     display: "flex",
-    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: tokens.spacingHorizontalM,
     padding: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalM}`,
     border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke1}`,
     borderRadius: tokens.borderRadiusMedium,
     backgroundColor: tokens.colorNeutralBackground1,
+  },
+  deviceText: {
+    display: "flex",
+    flexDirection: "column",
+    minWidth: 0,
+  },
+  removeOther: {
+    flexShrink: 0,
   },
 });
 
@@ -104,12 +115,27 @@ export const SYNC_INTRO =
 export const VOICEPRINTS_EXPLAINED =
   "Voice samples are biometric data, so they stay on each computer unless you turn this on. Turning it on also brings in the ones your other computers saved earlier.";
 
+/** What Dictionary sync means (T11.3e). */
+export const DICTIONARY_EXPLAINED =
+  "Your Dictionary words stay the same on each computer that syncs them. Turned off, this computer keeps its own list.";
+
 /** What Status says when sync is on but its thread is not running. */
 export const NOT_RUNNING = "Sync is not running. Choose Sync now to start it.";
 
 /** What removing this computer does, in its dialog. */
 export const REMOVE_EXPLAINED =
   "Your meetings stay on this computer. It stops syncing and forgets the sync server and its key. To sync again, set it up again or join with a pairing code.";
+
+/** Removing another computer (T11.6c): the shared table's copy, which the desktop's tests also
+ * read. */
+export const REMOVE_OTHER = table.remove_other;
+
+/** What "Write summaries for my other computers" means (T11.3db). */
+export const OFFER_EXPLAINED =
+  "When another of your computers asks, this computer writes the meeting's summary with its own summary writer. The other computer chooses it on its Summaries page.";
+
+/** What the computer's name is for. */
+export const NAME_EXPLAINED = "How your other computers show this one. Leave it empty to use the computer's own name.";
 
 /** How long ago a computer last reached the server, in words. */
 export function seenText(secondsAgo: number): string {
@@ -140,6 +166,39 @@ export function deviceState(d: SyncDeviceView): string {
   if (d.this_device) return seenText(d.seen_s_ago);
   if (d.online) return d.recording ? "Online, recording" : "Online";
   return seenText(d.seen_s_ago);
+}
+
+/** What a computer that writes summaries for the others uses, in the list. */
+export function writesText(d: SyncDeviceView): string | null {
+  if (d.this_device || !d.offers_summaries) return null;
+  return d.writer === null ? "Writes summaries" : `Writes summaries (${d.writer})`;
+}
+
+/** This computer's name, typed, saved with its own button (typed text needs Save). */
+function NameForm({ view, state }: { view: SyncView; state: SyncPageState }) {
+  const styles = useStyles();
+  const [name, setName] = useState(view.device_name);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <form
+      aria-label="This computer's name"
+      className={styles.form}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void state.saveDeviceName(name).then((refused) => {
+          setError(refused);
+          if (refused === null) setName((n) => n.trim());
+        });
+      }}
+    >
+      <Field label="This computer's name" hint={NAME_EXPLAINED} validationMessage={error ?? undefined}>
+        <Input value={name} onChange={(_, d) => setName(d.value)} />
+      </Field>
+      <Button type="submit" className={styles.action} disabled={state.busy || name.trim() === view.device_name}>
+        Save name
+      </Button>
+    </form>
+  );
 }
 
 /** One of the two forms of a computer that is not set up. */
@@ -328,7 +387,39 @@ function AddComputer({ state }: { state: SyncPageState }) {
   );
 }
 
-function Computers({ state }: { state: SyncPageState }) {
+/** A `remove_other` template (`fixtures/ui/sync_copy_cases.json`) with the row's name. */
+export function removeOtherText(template: string, d: SyncDeviceView): string {
+  // A function replacer: a name is text, never a replacement pattern (`$&`, `$1`).
+  return template.replace("{device}", () => deviceName(d));
+}
+
+/** One other computer's Remove; the dialog hands focus back to it on Cancel. */
+function RemoveOther({ device, state, onRemove }: { device: SyncDeviceView; state: SyncPageState; onRemove: () => void }) {
+  const styles = useStyles();
+  const restoreFocus = useRestoreFocusTarget();
+  return (
+    <Button
+      {...restoreFocus}
+      size="small"
+      className={styles.removeOther}
+      aria-label={removeOtherText(REMOVE_OTHER.button, device)}
+      disabled={state.busy}
+      onClick={onRemove}
+    >
+      {REMOVE_OTHER.confirm}
+    </Button>
+  );
+}
+
+function Computers({
+  state,
+  listRef,
+  onRemoveOther,
+}: {
+  state: SyncPageState;
+  listRef: RefObject<HTMLUListElement | null>;
+  onRemoveOther: (d: SyncDeviceView) => void;
+}) {
   const styles = useStyles();
   const { devices } = state;
   return (
@@ -341,11 +432,15 @@ function Computers({ state }: { state: SyncPageState }) {
           failed="The computers could not be listed"
         />
       ) : (
-        <ul className={styles.list} aria-label="Computers">
+        <ul ref={listRef} tabIndex={-1} className={styles.list} aria-label="Computers">
           {devices.view.map((d) => (
-            <li key={d.short_id} className={styles.device}>
-              <Body1>{deviceName(d)}</Body1>
-              <Caption1 className={styles.muted}>{deviceState(d)}</Caption1>
+            <li key={d.id} className={styles.device}>
+              <div className={styles.deviceText}>
+                <Body1>{deviceName(d)}</Body1>
+                <Caption1 className={styles.muted}>{deviceState(d)}</Caption1>
+                {writesText(d) !== null && <Caption1 className={styles.muted}>{writesText(d)}</Caption1>}
+              </div>
+              {!d.this_device && <RemoveOther device={d} state={state} onRemove={() => onRemoveOther(d)} />}
             </li>
           ))}
         </ul>
@@ -354,7 +449,19 @@ function Computers({ state }: { state: SyncPageState }) {
   );
 }
 
-function SetUp({ view, state, onRemove }: { view: SyncView; state: SyncPageState; onRemove: () => void }) {
+function SetUp({
+  view,
+  state,
+  onRemove,
+  listRef,
+  onRemoveOther,
+}: {
+  view: SyncView;
+  state: SyncPageState;
+  onRemove: () => void;
+  listRef: RefObject<HTMLUListElement | null>;
+  onRemoveOther: (d: SyncDeviceView) => void;
+}) {
   const styles = useStyles();
   const restoreFocus = useRestoreFocusTarget();
   return (
@@ -364,7 +471,28 @@ function SetUp({ view, state, onRemove }: { view: SyncView; state: SyncPageState
       )}
       <Status view={view} state={state} />
       <AddComputer state={state} />
-      <Computers state={state} />
+      <Computers state={state} listRef={listRef} onRemoveOther={onRemoveOther} />
+      <Section title="Summaries for your other computers">
+        <Switch
+          label="Write summaries for my other computers"
+          checked={view.offers_summaries}
+          disabled={state.busy}
+          onChange={(_, d) => void state.setOfferSummaries(d.checked)}
+        />
+        <Caption1 className={styles.muted}>{OFFER_EXPLAINED}</Caption1>
+      </Section>
+      <Section title="This computer">
+        <NameForm view={view} state={state} />
+      </Section>
+      <Section title="Dictionary">
+        <Switch
+          label="Sync Dictionary words"
+          checked={view.dictionary}
+          disabled={state.busy}
+          onChange={(_, d) => void state.setDictionary(d.checked)}
+        />
+        <Caption1 className={styles.muted}>{DICTIONARY_EXPLAINED}</Caption1>
+      </Section>
       <Section title="Voiceprints">
         <Switch
           label="Sync voiceprints"
@@ -388,13 +516,26 @@ function SetUp({ view, state, onRemove }: { view: SyncView; state: SyncPageState
   );
 }
 
-/** The Sync page of Settings. The removal dialog lives here, not in the set up part, because a
- * removal replaces that part with the forms while the dialog closes. */
+/** The Sync page of Settings. The removal dialogs live here, not in the set up part, because a
+ * removal of this computer replaces that part with the forms while the dialog closes, and a
+ * removal of another computer takes away the row that opened it. */
 export function SyncPage({ timer = realTimer }: { timer?: Timer }) {
   const styles = useStyles();
   const page = usePageStyles();
   const state = useSync(timer);
   const [removing, setRemoving] = useState(false);
+  // The other computer whose removal is being confirmed (kept while the dialog closes).
+  const [other, setOther] = useState<SyncDeviceView | null>(null);
+  const [otherOpen, setOtherOpen] = useState(false);
+  const listRef = useRef<HTMLUListElement>(null);
+  const removeOther = async (d: SyncDeviceView) => {
+    setOtherOpen(false);
+    // Removed: its row goes, and the Remove that opened the dialog with it. Refused: that Remove
+    // is disabled while the call ran, so the dialog's hand-back found nothing to focus. Either
+    // way focus moves to the list rather than staying on the page.
+    await state.removeOther(d.id);
+    listRef.current?.focus();
+  };
   const { load } = state;
   // After set up, join or removal swaps the page's parts, focus goes to the heading rather than
   // falling to the page. The first read is not a swap.
@@ -415,7 +556,16 @@ export function SyncPage({ timer = realTimer }: { timer?: Timer }) {
       {load.status !== "loaded" ? (
         <NotLoaded load={load} loading="Reading the sync settings" failed="The sync settings could not be read" />
       ) : load.view.set_up ? (
-        <SetUp view={load.view} state={state} onRemove={() => setRemoving(true)} />
+        <SetUp
+          view={load.view}
+          state={state}
+          onRemove={() => setRemoving(true)}
+          listRef={listRef}
+          onRemoveOther={(d) => {
+            setOther(d);
+            setOtherOpen(true);
+          }}
+        />
       ) : (
         <NotSetUp state={state} />
       )}
@@ -435,6 +585,25 @@ export function SyncPage({ timer = realTimer }: { timer?: Timer }) {
                 Remove
               </Button>
               <Button onClick={() => setRemoving(false)}>Cancel</Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+      <Dialog modalType="alert" open={otherOpen} onOpenChange={(_, d) => setOtherOpen(d.open)}>
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>{other === null ? "" : removeOtherText(REMOVE_OTHER.title, other)}</DialogTitle>
+            <DialogContent>{REMOVE_OTHER.explained}</DialogContent>
+            <DialogActions>
+              <Button
+                appearance="primary"
+                onClick={() => {
+                  if (other !== null) void removeOther(other);
+                }}
+              >
+                {REMOVE_OTHER.confirm}
+              </Button>
+              <Button onClick={() => setOtherOpen(false)}>Cancel</Button>
             </DialogActions>
           </DialogBody>
         </DialogSurface>

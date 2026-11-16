@@ -355,11 +355,10 @@ export const commands = {
 	setSummaryTemplate: (template: string) => typedError<SummaryStyleView, IpcError>(__TAURI_INVOKE("set_summary_template", { template })),
 	/**  The user's own words for summaries (and a stored list this version refuses). */
 	summaryVocabulary: () => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("summary_vocabulary")),
-	/**
-	 *  Checks and stores the user's own words (empty for none; `invalid_setting`: nothing
-	 *  stored).
-	 */
-	setSummaryVocabulary: (words: string[]) => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("set_summary_vocabulary", { words })),
+	/**  Adds one word typed on the Dictionary page (`invalid_setting`: nothing stored). */
+	addSummaryVocabularyWord: (text: string) => typedError<SummaryVocabularyAdded, IpcError>(__TAURI_INVOKE("add_summary_vocabulary_word", { text })),
+	/**  Removes one word from the Dictionary page. */
+	removeSummaryVocabularyWord: (word: string) => typedError<SummaryVocabularyView, IpcError>(__TAURI_INVOKE("remove_summary_vocabulary_word", { word })),
 	/**  The Sync page's view. */
 	syncView: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("sync_view")),
 	/**  The vault's devices (asks the server). */
@@ -374,10 +373,55 @@ export const commands = {
 	setSyncOn: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_on", { on })),
 	/**  Turns voiceprint sync on or off. */
 	setSyncVoiceprints: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_voiceprints", { on })),
+	/**  Turns Dictionary sync on or off. */
+	setSyncDictionary: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_dictionary", { on })),
 	/**  Asks for a sync now. */
 	syncNow: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("sync_now")),
 	/**  Removes this computer from sync. */
 	removeSyncDevice: () => typedError<SyncView, IpcError>(__TAURI_INVOKE("remove_sync_device")),
+	/**  Removes another computer from sync; returns the computers left when they can be listed. */
+	removeOtherSyncDevice: (id: string) => typedError<SyncRemovedView, IpcError>(__TAURI_INVOKE("remove_other_sync_device", { id })),
+	/**  Turns "Write summaries for my other computers" on or off. */
+	setSyncOfferSummaries: (on: boolean) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_offer_summaries", { on })),
+	/**  Sets this computer's name as the other computers show it. */
+	setSyncDeviceName: (name: string) => typedError<SyncView, IpcError>(__TAURI_INVOKE("set_sync_device_name", { name })),
+	/**  The Summaries page's offload part (asks the server). */
+	summaryHelpers: () => typedError<SummaryHelpersView, IpcError>(__TAURI_INVOKE("summary_helpers")),
+	/**  Chooses the computer this one asks to write its summaries (`None`: none). */
+	setSummaryHelper: (device: string | null) => typedError<SummaryHelpersView, IpcError>(__TAURI_INVOKE("set_summary_helper", { device })),
+	/**  Asks another computer to write a meeting's summary now; returns the meeting's waiting line. */
+	askSummaryHelper: (meeting: string, device: string) => typedError<string, IpcError>(__TAURI_INVOKE("ask_summary_helper", { meeting, device })),
+	/**  The Summaries page's order (asks the server for the computers). */
+	summaryOrder: () => typedError<SummaryOrderView, IpcError>(__TAURI_INVOKE("summary_order")),
+	/**
+	 *  Stores the order of summary writers (empty: no summary), with the endpoint settings when the
+	 *  page changes both.
+	 */
+	setSummaryOrder: (steps: StepChoice[], settings: {
+	/**  Who writes the summary. */
+	writer: WriterChoice,
+	/**  The endpoint's provider. */
+	provider: ProviderChoice,
+	/**  The endpoint address ("" when none). */
+	url: string,
+	/**  The model name sent to the endpoint ("" when none). */
+	model: string,
+	/**  Summarise during the meeting. */
+	live: boolean,
+	/**  The model Claude Code is asked for ("" for Claude Code's own default). */
+	claude_model: string,
+	/**  The effort Claude Code is asked for (`null` for Claude Code's own default; T12.18). */
+	claude_effort: EffortChoice | null,
+	/**  The model Codex is asked for ("" for Codex's own default). */
+	codex_model: string,
+} | null) => typedError<SummaryOrderView, IpcError>(__TAURI_INVOKE("set_summary_order", { steps, settings })),
+	/**  The re-summarise menu's writers for a meeting. */
+	resummariseWriters: (meeting: string) => typedError<ResummariseView, IpcError>(__TAURI_INVOKE("resummarise_writers", { meeting })),
+	/**
+	 *  Starts a re-summary of `meeting` by the one writer `step` names (a named run: no next step).
+	 *  A computer is asked through `ask_summary_helper`.
+	 */
+	resummariseWith: (meeting: string, step: StepChoice) => typedError<null, IpcError>(__TAURI_INVOKE("resummarise_with", { meeting, step })),
 	/**  Whether the app opens on the first-run wizard. */
 	firstRunState: () => typedError<FirstRunView, IpcError>(__TAURI_INVOKE("first_run_state")),
 	/**  Marks the first-run wizard done, whichever steps were skipped. */
@@ -545,6 +589,8 @@ export type AudioSettingsValue = {
 	output: ChosenDevice | null,
 	/**  What a new meeting records unless the user picks the other mode. */
 	capture_mode: CaptureMode,
+	/**  How every meeting records the microphone. */
+	mic_signal: MicSignal,
 };
 
 /**  Progress and the end of a benchmark run. */
@@ -1144,7 +1190,30 @@ warnings: string[] } |
 /**  Meeting id. */
 meeting: string; 
 /**  What happened. */
-result: SummaryEvent } | 
+result: SummaryEvent; 
+/**
+ *  A summary written by a later step of the order, or none because every step failed
+ *  (T12.63b: banner `summary-steps`, `summary_order::steps_text`). Here and not as a
+ *  `Warning` because the screen keeps a job's last event only.
+ */
+note: string | null } | 
+/**
+ *  A re-summary that went on with a run after a computer handed it back found nothing to go
+ *  on with (T12.63b: the run no longer waits on that request): nothing was run, written or
+ *  sent, and the screen drops the job without a notice.
+ */
+{ type: "Settled"; 
+/**  Meeting id. */
+meeting: string } | 
+/**
+ *  The re-summary asked one of the user's other computers (T12.63b): it arrives by sync, or
+ *  the run goes on when that computer hands it back.
+ */
+{ type: "Offloaded"; 
+/**  Meeting id. */
+meeting: string; 
+/**  The meeting's waiting line (fixed copy, `offload::waiting_copy`). */
+message: string } | 
 /**  Something the user may need to know while the job runs (a backend fallback). */
 { type: "Warning"; 
 /**  Meeting id. */
@@ -1255,6 +1324,17 @@ export type MeetingDetail = {
 	 *  for a draft transcript, which offers neither.
 	 */
 	dictionary: string[],
+	/**
+	 *  While another computer was asked to write the summary and has not answered (T11.3db):
+	 *  the meeting's waiting line (fixed copy, `offload::waiting_copy`).
+	 */
+	waiting_for: string | null,
+	/**
+	 *  The last run of the order of summary writers, when it has something to say (T12.63b,
+	 *  `summary_order::run_note`): interrupted, a named computer's hand-back, or what became of
+	 *  each step. Fixed copy, computer names and the endpoint's host only.
+	 */
+	summary_run: string | null,
 };
 
 /**
@@ -1407,6 +1487,16 @@ export type MeetingState =
 "Unprocessed" | 
 /**  Recorded and processed. */
 "Ready";
+
+/**
+ *  How a meeting records the microphone (T12.36,
+ *  `earshot_runtime::audio_settings::MicSignal`).
+ */
+export type MicSignal = 
+/**  With Windows' own sound processing (the default). */
+"Processed" | 
+/**  Without it, where the microphone allows it. */
+"Raw";
 
 /**  One model of the catalogue. */
 export type ModelItem = {
@@ -1724,6 +1814,22 @@ export type RemovedView = {
 	kept_shared: string[],
 };
 
+/**  One writer the re-summarise menu offers. */
+export type ResummariseItem = {
+	/**  The writer. */
+	step: StepChoice,
+	/**  Its label. */
+	label: string,
+	/**  Why it cannot be chosen (a meeting kept on this computer); `null` when it can. */
+	disabled: string | null,
+};
+
+/**  The re-summarise menu's writers on this computer (computers come from the helpers list). */
+export type ResummariseView = {
+	/**  Every writer that can run here now, labelled as on the Summaries page. */
+	writers: ResummariseItem[],
+};
+
 /**  What a choice would delete ([`retention_preview`]). */
 export type RetentionCount = {
 	/**  Meetings whose recordings would be deleted now. */
@@ -1926,6 +2032,31 @@ export type SpeakersView = {
 	voice: VoiceView,
 };
 
+/**  One step as the page sends and reads it. */
+export type StepChoice = 
+/**  The local model. */
+{ kind: "Local" } | 
+/**  The user's one endpoint. */
+{ kind: "Endpoint" } | 
+/**  Claude through Claude Code. */
+{ kind: "ClaudeCode" } | 
+/**  OpenAI through Codex. */
+{ kind: "Codex" } | 
+/**  One of the user's other computers. */
+{ kind: "Computer"; 
+/**  Its device id. */
+device: string };
+
+/**  One step with its copy. */
+export type StepView = {
+	/**  The step. */
+	step: StepChoice,
+	/**  Its label. */
+	label: string,
+	/**  Where it sends the transcript. */
+	destination: string,
+};
+
 /**  What storing a choice did. */
 export type StorageSaved = {
 	/**  The settings as stored. */
@@ -1995,6 +2126,13 @@ retryable: boolean } |
 /**  The summary was cancelled; nothing was stored. A final transcript stays. */
 { kind: "Cancelled" } | 
 /**
+ *  Another of the user's computers was asked to write the summary (T11.3db): it arrives by
+ *  sync, or this computer writes it if that one does not.
+ */
+{ kind: "Offloaded"; 
+/**  The meeting's waiting line (fixed copy, `offload::waiting_copy`). */
+message: string } | 
+/**
  *  The final pass was cancelled, so no summary ran either: the recording and any draft
  *  transcript stay and the meeting reads as `Unprocessed`.
  */
@@ -2039,6 +2177,57 @@ bullet: number } |
 { kind: "OpenQuestion"; 
 /**  Which. */
 index: number };
+
+/**  One paired computer the Summaries page can ask. */
+export type SummaryHelperView = {
+	/**  Its id. */
+	id: string,
+	/**  Its name, from its presence; `None` until it sends one (the page shows the short id). */
+	name: string | null,
+	/**  The first eight hex digits of its id. */
+	short_id: string,
+	/**  The kind of writer it uses (fixed copy, [`writer_label`]); `None` when it has none. */
+	writer: string | null,
+	/**  Whether it writes summaries for the others now. */
+	offers: boolean,
+	/**  Whether it is online now. */
+	online: boolean,
+	/**  Whether it is recording now. */
+	recording: boolean,
+	/**  Whether it would be asked now: online, offering, with a writer, not recording. */
+	available: boolean,
+	/**  Whether it is the chosen one. */
+	chosen: boolean,
+};
+
+/**  The Summaries page's offload part. */
+export type SummaryHelpersView = {
+	/**  Sync is set up and on, so another computer can be asked. */
+	sync_ready: boolean,
+	/**  The chosen computer's id, if any. */
+	chosen: string | null,
+	/**  The computers that offer summaries, and the chosen one whatever it offers now. */
+	helpers: SummaryHelperView[],
+	/**  Why the computers could not be read now (fixed copy); the chosen one is still listed. */
+	problem: string | null,
+};
+
+/**  The order as the page shows it. */
+export type SummaryOrderView = {
+	/**  No summary. */
+	none: boolean,
+	/**  The steps in order (empty with `none`). */
+	steps: StepView[],
+	/**
+	 *  Every step the page can offer: the four writers, then each computer that writes
+	 *  summaries for the others, or is in the order.
+	 */
+	offered: StepView[],
+	/**  What the user is told about the stored order (fixed copy). */
+	notes: string[],
+	/**  The most steps an order holds. */
+	max_steps: number,
+};
 
 /**  The Summaries page settings as the UI sends and reads them. */
 export type SummarySettingsValue = {
@@ -2123,9 +2312,20 @@ export type SummaryView = {
 	open_questions: string[],
 };
 
+/**  What an Add on the Dictionary page did (T11.3e: the page edits one word at a time). */
+export type SummaryVocabularyAdded = {
+	/**  False when the word was already there (case ignored): nothing was written. */
+	added: boolean,
+	/**  The words after the add. */
+	view: SummaryVocabularyView,
+};
+
 /**  The stored words with what the page says about them. */
 export type SummaryVocabularyView = {
-	/**  The words in use, in the user's order (empty for none, the default). */
+	/**
+	 *  The words in use (empty for none, the default): in the user's order while Dictionary
+	 *  sync is off, in creation order while it is on (T11.3e).
+	 */
 	words: string[],
 	/**  One line when the stored list is one this version refuses (none is used). */
 	unknown: string[],
@@ -2135,6 +2335,13 @@ export type SummaryVocabularyView = {
 	max_word_chars: number,
 	/**  The longest list accepted, in characters over every word. */
 	max_chars: number,
+	/**
+	 *  Words stored but not in use: the list joined from the user's computers by Dictionary
+	 *  sync passes a limit (T11.3e). Always 0 while Dictionary sync is off.
+	 */
+	not_in_use: number,
+	/**  What the page says about them ([`not_in_use_note`]); `None` when every word is in use. */
+	not_in_use_note: string | null,
 };
 
 /**  A pairing code to show for adding a device. */
@@ -2155,12 +2362,34 @@ export type SyncDeviceView = {
 	online: boolean,
 	/**  Whether it is recording now. */
 	recording: boolean,
+	/**  Whether it writes summaries for the other computers (T11.3db). */
+	offers_summaries: boolean,
+	/**
+	 *  The kind of writer it uses, as the page names it (fixed copy,
+	 *  [`crate::offload::writer_label`]); `None` when it does not offer summaries.
+	 */
+	writer: string | null,
+	/**
+	 *  Its whole id (hyphenated UUID, as the summary helper list gives it): what
+	 *  [`remove_other_sync_device`] names. Not a secret (the server lists it to every device of
+	 *  the vault).
+	 */
+	id: string,
 	/**  The first eight hex digits of its id. */
 	short_id: string,
 	/**  When it joined (Unix seconds, the server's clock). */
 	joined_unix_s: number,
 	/**  Seconds since it last reached the server. */
 	seen_s_ago: number,
+};
+
+/**  Another computer was removed (T11.6c). */
+export type SyncRemovedView = {
+	/**
+	 *  The computers left, or `None` when they could not be listed after the removal (the page
+	 *  asks again; the removal itself happened).
+	 */
+	devices: SyncDeviceView[] | null,
 };
 
 /**  What the Sync page shows. Never a key, token, setup secret or used pairing code. */
@@ -2173,6 +2402,8 @@ export type SyncView = {
 	running: boolean,
 	/**  Voiceprints sync. */
 	voiceprints: boolean,
+	/**  Dictionary words sync (T11.3e; on unless turned off). */
+	dictionary: boolean,
 	/**  The server's address, when one is stored and usable. */
 	address: string | null,
 	/**  Why a stored address is not usable (fixed copy). */
@@ -2189,6 +2420,10 @@ export type SyncView = {
 	waiting: number,
 	/**  Rows from other devices held for later. */
 	held: number,
+	/**  "Write summaries for my other computers" (T11.3db). */
+	offers_summaries: boolean,
+	/**  This computer's name as the other computers show it (T11.3db). */
+	device_name: string,
 };
 
 /**  NVIDIA's terms for a part. */

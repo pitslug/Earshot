@@ -61,6 +61,7 @@ pub mod model_check;
 pub mod model_settings;
 pub mod my_voice;
 pub mod npu_compiled;
+pub mod offload;
 pub mod post;
 pub mod power;
 pub mod preview_settings;
@@ -79,6 +80,7 @@ pub mod summary;
 pub mod summary_child;
 pub mod summary_edits;
 pub mod summary_model;
+pub mod summary_order;
 pub mod summary_settings;
 pub mod summary_style;
 pub mod sync;
@@ -92,6 +94,7 @@ mod testutil;
 
 /// The hardware facts' types (T7.4d), for hosts that show them.
 pub use earshot_hardware;
+pub use local::StoredRecord;
 pub use post::Calibration;
 
 /// This machine's hardware facts: `earshot_hardware::read()`, the one source of them.

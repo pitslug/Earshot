@@ -10,7 +10,7 @@ use rand_core::SeedableRng;
 
 use super::*;
 use crate::summary::{SummaryConfig, SummaryService};
-use crate::testutil::{TempDir, meeting, services};
+use crate::testutil::{TempDir, meeting, replace_words, services};
 
 fn store(dir: &TempDir) -> Store {
     Store::open(&dir.0.join("earshot.db")).unwrap()
@@ -26,27 +26,30 @@ fn summary_vocabulary_is_empty_until_one_is_saved() {
 #[test]
 fn summary_vocabulary_saves_checked_words_and_empty_clears_them() {
     let dir = TempDir::new("summary-vocabulary");
-    let mut s = store(&dir);
-    let saved = set_vocabulary(&mut s, &[" Quillmarsh ", "", "QXR-7", "quillmarsh"]).unwrap();
+    let (svc, _clock) = services(&dir);
+    let saved = replace_words(&svc, &[" Quillmarsh ", "", "QXR-7", "quillmarsh"]).unwrap();
     assert_eq!(saved.words(), ["Quillmarsh", "QXR-7"]);
-    assert_eq!(vocabulary(&s).unwrap(), (saved, None));
+    assert_eq!(vocabulary(&svc.store()).unwrap(), (saved, None));
     assert_eq!(
-        s.local_value(VOCABULARY_KEY).unwrap().as_deref(),
+        svc.store().local_value(VOCABULARY_KEY).unwrap().as_deref(),
         Some(br#"["Quillmarsh","QXR-7"]"#.as_slice())
     );
-    let cleared = set_vocabulary(&mut s, &["  ", ""]).unwrap();
+    let cleared = replace_words(&svc, &["  ", ""]).unwrap();
     assert!(cleared.is_empty());
-    assert_eq!(vocabulary(&s).unwrap(), (Vocabulary::default(), None));
-    assert!(set_vocabulary::<&str>(&mut s, &[]).unwrap().is_empty());
+    assert_eq!(
+        vocabulary(&svc.store()).unwrap(),
+        (Vocabulary::default(), None)
+    );
+    assert!(replace_words::<&str>(&svc, &[]).unwrap().is_empty());
 }
 
 #[test]
 fn summary_vocabulary_refusals_store_nothing() {
     let dir = TempDir::new("summary-vocabulary");
-    let mut s = store(&dir);
-    set_vocabulary(&mut s, &["Quillmarsh"]).unwrap();
+    let (svc, _clock) = services(&dir);
+    replace_words(&svc, &["Quillmarsh"]).unwrap();
     let long = "q".repeat(MAX_VOCABULARY_WORD_CHARS + 1);
-    let err = set_vocabulary(&mut s, &["QXR-7", long.as_str()]).unwrap_err();
+    let err = replace_words(&svc, &["QXR-7", long.as_str()]).unwrap_err();
     assert!(matches!(
         err,
         SetVocabularyError::Refused(VocabularyError::WordTooLong { line: 2, .. })
@@ -55,21 +58,23 @@ fn summary_vocabulary_refusals_store_nothing() {
         err.to_string(),
         "a word can have at most 40 characters; this one has 41"
     );
-    let err = set_vocabulary(&mut s, &["a\nb"]).unwrap_err();
+    let err = replace_words(&svc, &["a\nb"]).unwrap_err();
     assert!(matches!(
         err,
         SetVocabularyError::Refused(VocabularyError::ControlCharacter { line: 1 })
     ));
-    assert_eq!(vocabulary(&s).unwrap().0.words(), ["Quillmarsh"]);
+    assert_eq!(vocabulary(&svc.store()).unwrap().0.words(), ["Quillmarsh"]);
 }
 
 #[test]
 fn summary_vocabulary_a_stored_value_this_version_refuses_reads_as_none_and_is_reported() {
     let dir = TempDir::new("summary-vocabulary");
-    let mut s = store(&dir);
+    let (svc, _clock) = services(&dir);
     let private_ish = serde_json::to_vec(&[format!("Quillmarsh{}", "x".repeat(60))]).unwrap();
-    s.set_local_value(VOCABULARY_KEY, &private_ish).unwrap();
-    let (words, refused) = vocabulary(&s).unwrap();
+    svc.store()
+        .set_local_value(VOCABULARY_KEY, &private_ish)
+        .unwrap();
+    let (words, refused) = vocabulary(&svc.store()).unwrap();
     assert!(words.is_empty());
     let refused = refused.expect("reported");
     assert_eq!(refused.key, VOCABULARY_KEY);
@@ -77,8 +82,8 @@ fn summary_vocabulary_a_stored_value_this_version_refuses_reads_as_none_and_is_r
     assert!(refused.to_string().contains("40"), "{refused}");
 
     for bad in [&b"\xff\xfe"[..], b"\"Quillmarsh\"", b"[1, 2]", b"{}"] {
-        s.set_local_value(VOCABULARY_KEY, bad).unwrap();
-        let (words, refused) = vocabulary(&s).unwrap();
+        svc.store().set_local_value(VOCABULARY_KEY, bad).unwrap();
+        let (words, refused) = vocabulary(&svc.store()).unwrap();
         assert!(words.is_empty());
         let refused = refused.unwrap().to_string();
         assert!(refused.contains("not a list of words"), "{refused}");
@@ -90,8 +95,9 @@ fn summary_vocabulary_a_stored_value_this_version_refuses_reads_as_none_and_is_r
 fn summary_vocabulary_a_refused_stored_value_is_a_meeting_note() {
     use earshot_hardware::{Cpu, Hardware};
     let dir = TempDir::new("summary-vocabulary");
-    let mut s = store(&dir);
-    s.set_local_value(VOCABULARY_KEY, b"[\"bad\\u0007\"]")
+    let (svc, _clock) = services(&dir);
+    svc.store()
+        .set_local_value(VOCABULARY_KEY, b"[\"bad\\u0007\"]")
         .unwrap();
     let hw = Hardware {
         cpu: Cpu {
@@ -104,7 +110,7 @@ fn summary_vocabulary_a_refused_stored_value_is_a_meeting_note() {
     };
     let cpu = [crate::backends::Accelerator::Cpu];
     let setup = crate::host::summary_from_settings(
-        &s,
+        &svc.store(),
         &cpu,
         &hw,
         &crate::summary_settings::NoApiKeys,
@@ -117,9 +123,9 @@ fn summary_vocabulary_a_refused_stored_value_is_a_meeting_note() {
         setup.notes
     );
     // A readable list is no note.
-    set_vocabulary(&mut s, &["QXR-7"]).unwrap();
+    replace_words(&svc, &["QXR-7"]).unwrap();
     let setup = crate::host::summary_from_settings(
-        &s,
+        &svc.store(),
         &cpu,
         &hw,
         &crate::summary_settings::NoApiKeys,
@@ -157,7 +163,7 @@ fn summary_vocabulary_reaches_the_summary_request_and_a_resummarise_uses_the_cur
             .vocabulary
             .is_empty()
     );
-    set_vocabulary(&mut svc.store(), &["Quillmarsh", "QXR-7"]).unwrap();
+    replace_words(&svc, &["Quillmarsh", "QXR-7"]).unwrap();
     assert_eq!(
         SummaryService::input(&svc, id).unwrap().vocabulary.words(),
         ["Quillmarsh", "QXR-7"]
@@ -181,7 +187,7 @@ fn summary_vocabulary_reaches_the_summary_request_and_a_resummarise_uses_the_cur
             .unwrap()
     };
     run(&svc);
-    set_vocabulary(&mut svc.store(), &["Ostrelby Ridge"]).unwrap();
+    replace_words(&svc, &["Ostrelby Ridge"]).unwrap();
     run(&svc);
     let bodies: Vec<String> = server
         .requests()
@@ -236,18 +242,19 @@ fn vocabulary_dictionary_word_follows_the_shared_case_table() {
 #[test]
 fn vocabulary_an_entry_stored_with_quotes_reads_as_its_stripped_form() {
     let dir = TempDir::new("summary-vocabulary");
-    let mut s = store(&dir);
+    let (svc, _clock) = services(&dir);
     // As a word added from the transcript before T12.45 was stored (written raw).
-    s.set_local_value(
-        VOCABULARY_KEY,
-        br#"["'Zorbek'", "zorbek", "''", "(Velmora)", "Quill 'n' Marsh"]"#,
-    )
-    .unwrap();
-    let (words, refused) = vocabulary(&s).unwrap();
+    svc.store()
+        .set_local_value(
+            VOCABULARY_KEY,
+            br#"["'Zorbek'", "zorbek", "''", "(Velmora)", "Quill 'n' Marsh"]"#,
+        )
+        .unwrap();
+    let (words, refused) = vocabulary(&svc.store()).unwrap();
     assert_eq!(refused, None);
     assert_eq!(words.words(), ["Zorbek", "(Velmora)", "Quill 'n' Marsh"]);
     // It matches the stripped word: not added twice, and removable.
-    let added = add_word(&mut s, "'Zorbek'").unwrap();
+    let added = add_word(&svc, "'Zorbek'").unwrap();
     assert_eq!(
         added,
         AddedWord {
@@ -255,9 +262,9 @@ fn vocabulary_an_entry_stored_with_quotes_reads_as_its_stripped_form() {
             added: false
         }
     );
-    assert!(remove_word(&mut s, "Zorbek").unwrap());
+    assert!(remove_word(&svc, "Zorbek").unwrap());
     assert_eq!(
-        vocabulary(&s).unwrap().0.words(),
+        vocabulary(&svc.store()).unwrap().0.words(),
         ["(Velmora)", "Quill 'n' Marsh"]
     );
 }
@@ -291,9 +298,9 @@ fn vocabulary_words_to_offer_follows_the_shared_case_table() {
 #[test]
 fn vocabulary_add_word_appends_the_core_and_remove_takes_exactly_it_back() {
     let dir = TempDir::new("summary-vocabulary");
-    let mut s = store(&dir);
-    set_vocabulary(&mut s, &["QXR-7", "Velmora Ridge"]).unwrap();
-    let added = add_word(&mut s, "(Quillmarsh),").unwrap();
+    let (svc, _clock) = services(&dir);
+    replace_words(&svc, &["QXR-7", "Velmora Ridge"]).unwrap();
+    let added = add_word(&svc, "(Quillmarsh),").unwrap();
     assert_eq!(
         added,
         AddedWord {
@@ -302,11 +309,11 @@ fn vocabulary_add_word_appends_the_core_and_remove_takes_exactly_it_back() {
         }
     );
     assert_eq!(
-        vocabulary(&s).unwrap().0.words(),
+        vocabulary(&svc.store()).unwrap().0.words(),
         ["QXR-7", "Velmora Ridge", "Quillmarsh"]
     );
     // Already there in another case: nothing written, the stored spelling reported.
-    let again = add_word(&mut s, "quillmarsh").unwrap();
+    let again = add_word(&svc, "quillmarsh").unwrap();
     assert_eq!(
         again,
         AddedWord {
@@ -314,45 +321,45 @@ fn vocabulary_add_word_appends_the_core_and_remove_takes_exactly_it_back() {
             added: false
         }
     );
-    assert_eq!(vocabulary(&s).unwrap().0.words().len(), 3);
+    assert_eq!(vocabulary(&svc.store()).unwrap().0.words().len(), 3);
     // Undo: exactly that entry goes, case ignored; the others keep their order.
-    assert!(remove_word(&mut s, " QUILLMARSH ").unwrap());
+    assert!(remove_word(&svc, " QUILLMARSH ").unwrap());
     assert_eq!(
-        vocabulary(&s).unwrap().0.words(),
+        vocabulary(&svc.store()).unwrap().0.words(),
         ["QXR-7", "Velmora Ridge"]
     );
     // A word only inside a phrase is not an entry: nothing goes.
-    assert!(!remove_word(&mut s, "Velmora").unwrap());
-    assert!(!remove_word(&mut s, "Quillmarsh").unwrap());
-    assert!(!remove_word(&mut s, "   ").unwrap());
+    assert!(!remove_word(&svc, "Velmora").unwrap());
+    assert!(!remove_word(&svc, "Quillmarsh").unwrap());
+    assert!(!remove_word(&svc, "   ").unwrap());
     assert_eq!(
-        vocabulary(&s).unwrap().0.words(),
+        vocabulary(&svc.store()).unwrap().0.words(),
         ["QXR-7", "Velmora Ridge"]
     );
     // A phrase entry is removed whole when named whole.
-    assert!(remove_word(&mut s, "velmora  ridge").unwrap());
-    assert_eq!(vocabulary(&s).unwrap().0.words(), ["QXR-7"]);
+    assert!(remove_word(&svc, "velmora  ridge").unwrap());
+    assert_eq!(vocabulary(&svc.store()).unwrap().0.words(), ["QXR-7"]);
 }
 
 #[test]
 fn vocabulary_add_word_refuses_a_token_that_is_not_a_word_and_stores_nothing() {
     let dir = TempDir::new("summary-vocabulary");
-    let mut s = store(&dir);
-    set_vocabulary(&mut s, &["QXR-7"]).unwrap();
+    let (svc, _clock) = services(&dir);
+    replace_words(&svc, &["QXR-7"]).unwrap();
     for token in ["42", "--", "", "  "] {
-        let err = add_word(&mut s, token).unwrap_err();
+        let err = add_word(&svc, token).unwrap_err();
         assert!(matches!(err, SetVocabularyError::NotAWord), "{token:?}");
     }
-    assert_eq!(vocabulary(&s).unwrap().0.words(), ["QXR-7"]);
+    assert_eq!(vocabulary(&svc.store()).unwrap().0.words(), ["QXR-7"]);
 }
 
 #[test]
 fn vocabulary_add_word_keeps_the_dictionary_page_limits_and_messages() {
     let dir = TempDir::new("summary-vocabulary");
-    let mut s = store(&dir);
+    let (svc, _clock) = services(&dir);
     let full: Vec<String> = (0..100).map(|i| format!("w{i}")).collect();
-    set_vocabulary(&mut s, &full).unwrap();
-    let err = add_word(&mut s, "Quillmarsh").unwrap_err();
+    replace_words(&svc, &full).unwrap();
+    let err = add_word(&svc, "Quillmarsh").unwrap_err();
     assert!(matches!(
         err,
         SetVocabularyError::Refused(VocabularyError::TooManyWords(101))
@@ -361,12 +368,12 @@ fn vocabulary_add_word_keeps_the_dictionary_page_limits_and_messages() {
         err.to_string(),
         "the list can hold at most 100 words; this one has 101"
     );
-    assert_eq!(vocabulary(&s).unwrap().0.words(), full.as_slice());
+    assert_eq!(vocabulary(&svc.store()).unwrap().0.words(), full.as_slice());
 
     // A word too long, and a list too long in all: the page's own messages.
     let long = "q".repeat(MAX_VOCABULARY_WORD_CHARS + 1);
-    set_vocabulary(&mut s, &["QXR-7"]).unwrap();
-    let err = add_word(&mut s, &long).unwrap_err();
+    replace_words(&svc, &["QXR-7"]).unwrap();
+    let err = add_word(&svc, &long).unwrap_err();
     assert_eq!(
         err.to_string(),
         "a word can have at most 40 characters; this one has 41"
@@ -374,23 +381,23 @@ fn vocabulary_add_word_keeps_the_dictionary_page_limits_and_messages() {
     let near: Vec<String> = (0..25)
         .map(|i| format!("{i:02}{}", "q".repeat(38)))
         .collect();
-    set_vocabulary(&mut s, &near).unwrap();
-    let err = add_word(&mut s, "Quillmarsh").unwrap_err();
+    replace_words(&svc, &near).unwrap();
+    let err = add_word(&svc, "Quillmarsh").unwrap_err();
     assert_eq!(
         err.to_string(),
         "the list can have at most 1000 characters in all; this one has 1010"
     );
-    assert_eq!(vocabulary(&s).unwrap().0.words(), near.as_slice());
+    assert_eq!(vocabulary(&svc.store()).unwrap().0.words(), near.as_slice());
 }
 
 #[test]
 fn vocabulary_add_word_over_a_refused_stored_list_holds_the_word_alone() {
     let dir = TempDir::new("summary-vocabulary");
-    let mut s = store(&dir);
-    s.set_local_value(VOCABULARY_KEY, b"{}").unwrap();
-    assert!(add_word(&mut s, "Quillmarsh").unwrap().added);
+    let (svc, _clock) = services(&dir);
+    svc.store().set_local_value(VOCABULARY_KEY, b"{}").unwrap();
+    assert!(add_word(&svc, "Quillmarsh").unwrap().added);
     assert_eq!(
-        vocabulary(&s).unwrap(),
+        vocabulary(&svc.store()).unwrap(),
         (Vocabulary::new(["Quillmarsh"]).unwrap(), None)
     );
 }
@@ -417,4 +424,49 @@ fn vocabulary_words_to_offer_are_the_new_uncommon_unlisted_words_of_the_edit() {
     // Nothing written: nothing offered.
     assert!(words_to_offer("ask Velmora", "ask Velmora", &listed).is_empty());
     assert!(words_to_offer("ask Velmora", "ask", &listed).is_empty());
+}
+
+#[test]
+fn vocabulary_writes_keep_one_synced_row_per_word_with_sync_off() {
+    use earshot_core::model::DictionaryRepo;
+    let dir = TempDir::new("summary-vocabulary");
+    let (svc, _clock) = services(&dir);
+    let rows = || -> Vec<(String, bool)> {
+        svc.store()
+            .dictionary_words()
+            .unwrap()
+            .into_iter()
+            .map(|w| (w.word, w.meta.deleted))
+            .collect()
+    };
+    replace_words(&svc, &["Quillmarsh", "QXR-7"]).unwrap();
+    assert_eq!(
+        rows(),
+        [("Quillmarsh".into(), false), ("QXR-7".into(), false)]
+    );
+    add_word(&svc, "Velmora").unwrap();
+    assert!(remove_word(&svc, "qxr-7").unwrap());
+    // A removal is a tombstone with its word cleared; the list is the device's own, as written.
+    assert_eq!(
+        rows(),
+        [
+            ("Quillmarsh".into(), false),
+            (String::new(), true),
+            ("Velmora".into(), false)
+        ]
+    );
+    assert_eq!(
+        vocabulary(&svc.store()).unwrap().0.words(),
+        ["Quillmarsh", "Velmora"]
+    );
+    // Writing the same words again writes no row; every row waits to be sent.
+    replace_words(&svc, &["Velmora", "Quillmarsh"]).unwrap();
+    assert_eq!(rows().len(), 3);
+    assert_eq!(
+        vocabulary(&svc.store()).unwrap().0.words(),
+        ["Velmora", "Quillmarsh"],
+        "with sync off the user's order is kept"
+    );
+    assert_eq!(svc.store().outbox_len().unwrap(), 3);
+    assert_eq!(dictionary_state(&svc.store()).unwrap().not_in_use, 0);
 }

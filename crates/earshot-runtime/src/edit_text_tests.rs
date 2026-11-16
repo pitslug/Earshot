@@ -263,7 +263,7 @@ fn edit_segment_waits_while_a_summary_or_final_pass_works_on_the_meeting() {
 }
 
 fn set_words_for_lines(svc: &Services, words: &[&str]) {
-    crate::vocabulary::set_vocabulary(&mut svc.store(), words).unwrap();
+    crate::testutil::replace_words(svc, words).unwrap();
 }
 
 #[test]

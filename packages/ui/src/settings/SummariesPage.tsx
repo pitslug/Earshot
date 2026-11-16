@@ -29,7 +29,18 @@ import {
 } from "@fluentui/react-components";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
-import type { EffortChoice, ProviderChoice, SummarySettingsView, WriterChoice } from "../ipc";
+import {
+  type EffortChoice,
+  ORDER_COPY,
+  type ProviderChoice,
+  type StepChoice,
+  type StepView,
+  type SummarySettingsValue,
+  type SummarySettingsView,
+  fillCopy,
+  sameStep,
+  stepKey,
+} from "../ipc";
 import { ModelsNotLoaded, SummaryModelChoices } from "./ModelSections";
 import { SummaryStyleSection } from "./SummaryStyleSection";
 import { partName, titleOf } from "./copy";
@@ -68,7 +79,18 @@ const useStyles = makeStyles({
   why: {
     color: tokens.colorNeutralForeground2,
     paddingLeft: "32px",
-    maxWidth: "62ch",
+  },
+  destination: {
+    color: tokens.colorNeutralForeground3,
+    paddingLeft: "32px",
+  },
+  later: {
+    display: "grid",
+    gap: tokens.spacingVerticalM,
+  },
+  // The list itself is capped; its hint (where the transcript goes) fills the page.
+  laterSelect: {
+    maxWidth: "520px",
   },
   muted: {
     color: tokens.colorNeutralForeground3,
@@ -133,22 +155,27 @@ export function remoteWarning(host: string): string {
   return `The meeting's transcript, title, speaker names and notes are sent to ${host}. Nothing else leaves this computer.`;
 }
 
+/** One choice of step 1: a writer card with what it is and where the transcript goes. */
 function Choice({
   value,
   label,
   detail,
   why,
+  destination,
   selected,
 }: {
-  value: WriterChoice;
+  /** A step's key (`stepKey`), or `NoSummary`. */
+  value: string;
   label: string;
   detail?: string;
-  why: string;
+  why?: string;
+  /** Where the transcript goes (the order's copy). */
+  destination?: string;
   selected: boolean;
 }) {
   const styles = useStyles();
   return (
-    <div className={mergeClasses(styles.card, selected && styles.selected)} data-writer={value}>
+    <div className={mergeClasses(styles.card, selected && styles.selected)} data-step={value}>
       <Radio
         value={value}
         label={
@@ -158,21 +185,33 @@ function Choice({
           </span>
         }
       />
-      <Caption1 className={styles.why}>{why}</Caption1>
+      {why !== undefined && <Caption1 className={styles.why}>{why}</Caption1>}
+      {destination !== undefined && <Caption1 className={styles.destination}>{destination}</Caption1>}
     </div>
   );
 }
 
-/** The endpoint form, the remote warning and the API key. */
+/** The value of "No summary" among step 1's choices. */
+const NO_SUMMARY = "NoSummary";
+
+/** The endpoint form, the remote warning and the API key. `inUse`: a step of the order is the
+ * endpoint; `onUse` stores the fields with the endpoint in its step. */
 function EndpointForm({
   state,
   settings,
   keySaved,
+  inUse,
+  onUse,
+  locked,
   saveOnNext,
 }: {
   state: SummariesPageState;
   settings: SummarySettingsView;
   keySaved: boolean | null;
+  inUse: boolean;
+  onUse(change: Partial<SummarySettingsValue>): Promise<boolean>;
+  /** The order is not read yet (or could not be): nothing may store the endpoint in it. */
+  locked: boolean;
   saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
@@ -189,13 +228,12 @@ function EndpointForm({
     setModel(stored.model);
   }, [stored.provider, stored.url, stored.model]);
 
-  const inUse = stored.writer === "OwnEndpoint";
   const anthropic = provider === "Anthropic";
   const changed = !inUse || provider !== stored.provider || url !== stored.url || model !== stored.model;
   const showWarning = inUse && settings.endpoint_host !== null && !settings.endpoint_local;
   const wizard = saveOnNext !== undefined;
   useSaveOnNext(saveOnNext, async () => {
-    if (changed && !(await state.save({ writer: "OwnEndpoint", provider, url, model }))) return false;
+    if (changed && (locked || !(await onUse({ provider, url, model })))) return false;
     if (!anthropic || key.trim() === "") return true;
     const saved = await state.saveKey(key);
     if (saved) setKey("");
@@ -245,8 +283,8 @@ function EndpointForm({
         <div className={styles.row}>
           <Button
             appearance="primary"
-            disabled={state.busy || !changed}
-            onClick={() => void state.save({ writer: "OwnEndpoint", provider, url, model })}
+            disabled={state.busy || locked || !changed}
+            onClick={() => void onUse({ provider, url, model })}
           >
             {inUse ? "Save endpoint" : "Use this endpoint"}
           </Button>
@@ -361,12 +399,10 @@ export function otherKeepsText(label: string): string {
 /** The effort list (Claude Code only, T12.18): a choice, applied at once. */
 function EffortField({
   state,
-  writer,
   stored,
   note,
 }: {
   state: SummariesPageState;
-  writer: WriterChoice;
   stored: EffortChoice | null;
   /** Why the choice does nothing with the installed CLI, when it does nothing. */
   note: string | null;
@@ -383,7 +419,7 @@ function EffortField({
         value={stored ?? ""}
         disabled={state.busy}
         onChange={(_, d) =>
-          void state.save({ writer, claude_effort: d.value === "" ? null : (d.value as EffortChoice) })
+          void state.save({ claude_effort: d.value === "" ? null : (d.value as EffortChoice) })
         }
       >
         <option value="">Claude Code's default</option>
@@ -402,7 +438,6 @@ function EffortField({
  * with its button (T12.18). */
 function AgentCliCard({
   state,
-  writer,
   inUse,
   name,
   group,
@@ -417,9 +452,7 @@ function AgentCliCard({
   saveOnNext,
 }: {
   state: SummariesPageState;
-  /** The choice this card belongs to. */
-  writer: WriterChoice;
-  /** Whether that choice is the stored one. */
+  /** Whether a step of the order is this CLI. */
   inUse: boolean;
   /** The CLI's product name ("Claude Code", "Codex"). */
   name: string;
@@ -458,7 +491,7 @@ function AgentCliCard({
   // An empty name under Other is no choice yet: saving it would store the CLI's default, which
   // has its own entry in the list.
   const changed = otherOpen && typed.trim() !== "" && typed.trim() !== stored;
-  useSaveOnNext(saveOnNext, async () => !changed || state.save({ writer, ...saveModel(typed) }));
+  useSaveOnNext(saveOnNext, async () => !changed || state.save(saveModel(typed)));
   return (
     <div className={styles.endpoint} role="group" aria-label={group}>
       {check.status === "checking" && <Spinner size="tiny" label={`Checking ${name}`} />}
@@ -494,7 +527,7 @@ function AgentCliCard({
                 return;
               }
               setOtherOpen(false);
-              void state.save({ writer, ...saveModel(d.value) });
+              void state.save(saveModel(d.value));
             }}
           >
             {models.map((m) => (
@@ -526,7 +559,7 @@ function AgentCliCard({
                 <Button
                   appearance="primary"
                   disabled={state.busy || !changed}
-                  onClick={() => void state.save({ writer, ...saveModel(typed) })}
+                  onClick={() => void state.save(saveModel(typed))}
                 >
                   Save model
                 </Button>
@@ -547,17 +580,18 @@ function AgentCliCard({
 interface WriterCardProps {
   state: SummariesPageState;
   settings: SummarySettingsView;
+  /** Whether a step of the order is this writer. */
+  inUse: boolean;
   saveOnNext?: SaveOnNext;
 }
 
 /** Claude Code's status, the model it is asked for and its effort (T7.4ga, T12.18). */
-function ClaudeCodeCard({ state, settings, saveOnNext }: WriterCardProps) {
+function ClaudeCodeCard({ state, settings, inUse, saveOnNext }: WriterCardProps) {
   const check = state.claudeCode;
   return (
     <AgentCliCard
       state={state}
-      writer="ClaudeCode"
-      inUse={settings.value.writer === "ClaudeCode"}
+      inUse={inUse}
       name="Claude Code"
       group="Claude through Claude Code"
       check={check}
@@ -570,7 +604,6 @@ function ClaudeCodeCard({ state, settings, saveOnNext }: WriterCardProps) {
       effort={
         <EffortField
           state={state}
-          writer="ClaudeCode"
           stored={settings.value.claude_effort}
           note={check.status === "done" ? check.view.effort_note : null}
         />
@@ -581,12 +614,11 @@ function ClaudeCodeCard({ state, settings, saveOnNext }: WriterCardProps) {
 }
 
 /** Codex's status and the model it is asked for (T7.4gc). */
-function CodexCard({ state, settings, saveOnNext }: WriterCardProps) {
+function CodexCard({ state, settings, inUse, saveOnNext }: WriterCardProps) {
   return (
     <AgentCliCard
       state={state}
-      writer="Codex"
-      inUse={settings.value.writer === "Codex"}
+      inUse={inUse}
       name="Codex"
       group="OpenAI through Codex"
       check={state.codex}
@@ -601,8 +633,14 @@ function CodexCard({ state, settings, saveOnNext }: WriterCardProps) {
   );
 }
 
-/** "Who writes the summary": the choices and, under the chosen one, its form or card. With
- * `endpointUnderOther` (the first-run wizard) your own endpoint comes last, behind "Other". */
+/** "Who writes the summary" (T12.63b, docs/summary-order.md 2): the order of summary writers.
+ * Step 1 is a choice among the writers on this computer, the user's other computers that write
+ * summaries, and "No summary" (which clears the order); steps 2 and 3 ("If it can't") are
+ * optional and offer only writers not already used. Under each step the page says where the
+ * transcript goes, and under the order each writer in it shows its form or card. Choices apply at
+ * once; an endpoint without its address waits for its form's button. With `endpointUnderOther`
+ * (the first-run wizard) there is one step, no computers, and your own endpoint comes last,
+ * behind "Other". */
 function WriterSection({
   state,
   settings,
@@ -622,55 +660,111 @@ function WriterSection({
   const styles = useStyles();
   const writerLabel = useId();
   const localLabel = useId();
-  const [pendingEndpoint, setPendingEndpoint] = useState(false);
+  const oneStep = endpointUnderOther;
+  // The step whose endpoint waits for its form (null: none).
+  const [pending, setPending] = useState<number | null>(null);
   const [otherOpen, setOtherOpen] = useState(false);
   const value = settings.value;
-  const shown: WriterChoice = pendingEndpoint ? "OwnEndpoint" : value.writer;
+  const order = state.order;
+  // Nothing is offered before the order is read: a choice then would replace an order nobody
+  // has seen (the old writer setting holds only its first writer step).
+  const locked = order === null;
+  const stored: StepChoice[] = order !== null ? order.steps.map((s) => s.step) : [];
+  const offered: StepView[] = order?.offered ?? [];
+  const viewOf = (step: StepChoice) => offered.find((o) => sameStep(o.step, step));
+  const hasEndpoint = value.url !== "" && value.model !== "";
+  const maxSteps = oneStep ? 1 : (order?.max_steps ?? 3);
+  const shown = locked ? "" : pending === 0 ? "Endpoint" : stored.length > 0 ? stepKey(stored[0]) : NO_SUMMARY;
   const loaded = localModels?.load.status === "loaded" ? localModels.load.data : null;
   const models = loaded?.models ?? state.models;
   const local =
     models === null
       ? undefined
       : `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
+  const inOrder = (kind: StepChoice["kind"]) => stored.some((s) => s.kind === kind);
 
-  const choose = (w: WriterChoice) => {
-    if (w === "OwnEndpoint" && !(value.url !== "" && value.model !== "")) {
-      // No endpoint yet: show the form; it is used once saved.
-      setPendingEndpoint(true);
+  // `step` at `index`, a later copy of it removed (a writer appears once).
+  const placed = (index: number, step: StepChoice): StepChoice[] => {
+    const next = [...stored];
+    next[index] = step;
+    return next.filter((s, i) => !next.slice(0, i).some((t) => sameStep(s, t))).slice(0, maxSteps);
+  };
+  const chooseAt = (index: number, step: StepChoice | null) => {
+    if (locked) return;
+    if (step === null) {
+      // "No summary" for step 1; "Nothing else" for a later step (the steps after it go too).
+      setPending(null);
+      void state.saveOrder(stored.slice(0, index));
       return;
     }
-    setPendingEndpoint(false);
-    void state.save({ writer: w });
+    if (step.kind === "Endpoint" && !hasEndpoint) {
+      // No endpoint yet: show the form; the step is stored once it is saved.
+      setPending(index);
+      return;
+    }
+    setPending(null);
+    void state.saveOrder(oneStep ? [step] : placed(index, step));
   };
+  const stepOfKey = (key: string): StepChoice | null =>
+    key === NO_SUMMARY || key === "" ? null : (offered.find((o) => stepKey(o.step) === key)?.step ?? null);
+  const useEndpoint = async (change: Partial<SummarySettingsValue>) => {
+    if (locked) return false;
+    const at = pending ?? stored.findIndex((s) => s.kind === "Endpoint");
+    const index = at < 0 ? stored.length : at;
+    const steps = oneStep ? [{ kind: "Endpoint" } as StepChoice] : placed(index, { kind: "Endpoint" });
+    const ok = await state.saveOrder(steps, change);
+    if (ok) setPending(null);
+    return ok;
+  };
+  const dest = (step: StepChoice) => viewOf(step)?.destination;
   const ownEndpoint = (
     <Choice
-      value="OwnEndpoint"
+      value="Endpoint"
       label="Your own server"
+      detail={hasEndpoint ? viewOf({ kind: "Endpoint" })?.label : undefined}
       why="An OpenAI-compatible server or Claude. The meeting's transcript, title, speaker names and notes are sent to the address you enter, and only there."
-      selected={shown === "OwnEndpoint"}
+      destination={hasEndpoint ? dest({ kind: "Endpoint" }) : undefined}
+      selected={shown === "Endpoint"}
     />
   );
   // What is stored always shows.
-  const endpointOpen = otherOpen || shown === "OwnEndpoint";
+  const endpointOpen = otherOpen || shown === "Endpoint";
+  const computers = oneStep ? [] : offered.filter((o) => o.step.kind === "Computer");
+  // The later steps: each shown once the one before it is chosen.
+  const later = oneStep
+    ? []
+    : Array.from({ length: maxSteps - 1 }, (_, k) => k + 1).filter((i) => stored.length >= i && stored.length > 0);
+  const endpointShown = inOrder("Endpoint") || pending !== null;
 
   return (
     <Section title="Who writes the summary">
       <span id={writerLabel} hidden>
         Who writes the summary
       </span>
+      {!oneStep && <Caption1 className={styles.muted}>{ORDER_COPY.page.explained}</Caption1>}
+      {state.orderError !== null && (
+        <MessageBar intent="error">
+          <MessageBarBody>
+            <MessageBarTitle>{ORDER_COPY.page.not_read}</MessageBarTitle>
+            {state.orderError}
+          </MessageBarBody>
+        </MessageBar>
+      )}
+      {locked && state.orderError === null && <Spinner size="tiny" label={ORDER_COPY.page.reading} />}
       <RadioGroup
         aria-labelledby={writerLabel}
         value={shown}
-        disabled={state.busy}
-        onChange={(_, d) => choose(d.value as WriterChoice)}
+        disabled={state.busy || locked}
+        onChange={(_, d) => chooseAt(0, stepOfKey(d.value))}
         className={styles.choices}
       >
         <Choice
-          value="OnThisComputer"
+          value="Local"
           label="On this computer"
           detail={local}
           why="Nothing leaves this computer."
-          selected={shown === "OnThisComputer"}
+          destination={dest({ kind: "Local" })}
+          selected={shown === "Local"}
         />
         {!endpointUnderOther && ownEndpoint}
         <Choice
@@ -678,6 +772,7 @@ function WriterSection({
           label="Claude (through Claude Code)"
           detail="Uses your Claude sign-in"
           why={CLAUDE_CODE_PRIVACY}
+          destination={dest({ kind: "ClaudeCode" })}
           selected={shown === "ClaudeCode"}
         />
         <Choice
@@ -685,17 +780,27 @@ function WriterSection({
           label="OpenAI (through Codex)"
           detail="Uses your ChatGPT sign-in"
           why={CODEX_PRIVACY}
+          destination={dest({ kind: "Codex" })}
           selected={shown === "Codex"}
         />
+        {computers.map((c) => (
+          <Choice
+            key={stepKey(c.step)}
+            value={stepKey(c.step)}
+            label={c.label}
+            destination={c.destination}
+            selected={shown === stepKey(c.step)}
+          />
+        ))}
         <Choice
-          value="NoSummary"
-          label="No summary"
-          why="Transcript and speakers only."
-          selected={shown === "NoSummary"}
+          value={NO_SUMMARY}
+          label={ORDER_COPY.page.no_summary}
+          why={ORDER_COPY.page.no_summary_why}
+          selected={shown === NO_SUMMARY}
         />
         {endpointUnderOther && endpointOpen && ownEndpoint}
       </RadioGroup>
-      {endpointUnderOther && shown !== "OwnEndpoint" && (
+      {endpointUnderOther && shown !== "Endpoint" && (
         <Button
           appearance="subtle"
           className={styles.other}
@@ -705,10 +810,42 @@ function WriterSection({
           Other
         </Button>
       )}
+      {later.length > 0 && (
+        <div className={styles.later} role="group" aria-label={ORDER_COPY.page.if_cant}>
+          <Body1Strong>{ORDER_COPY.page.if_cant}</Body1Strong>
+          {later.map((i) => {
+            const current = stored[i];
+            const value = current !== undefined ? stepKey(current) : pending === i ? "Endpoint" : "";
+            const choices = offered.filter((o) => !stored.some((s, j) => j !== i && sameStep(s, o.step)));
+            return (
+              <Field
+                key={i}
+                label={fillCopy(ORDER_COPY.page.step, { n: String(i + 1) })}
+                hint={current !== undefined ? dest(current) : undefined}
+              >
+                <Select
+                  className={styles.laterSelect}
+                  value={value}
+                  disabled={state.busy || locked}
+                  onChange={(_, d) => chooseAt(i, stepOfKey(d.value))}
+                >
+                  <option value="">{ORDER_COPY.page.nothing_else}</option>
+                  {choices.map((o) => (
+                    <option key={stepKey(o.step)} value={stepKey(o.step)}>
+                      {o.label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            );
+          })}
+        </div>
+      )}
+      {order !== null && order.notes.length > 0 && <UnknownSettings unknown={order.notes} />}
       {state.modelsError !== null && (
         <Caption1 className={styles.muted}>The model in use could not be read: {state.modelsError}</Caption1>
       )}
-      {shown === "OnThisComputer" && localModels !== undefined && (
+      {inOrder("Local") && localModels !== undefined && (
         <div className={styles.endpoint} role="group" aria-labelledby={localLabel}>
           <Body1Strong id={localLabel}>Which model writes the summary</Body1Strong>
           {localModels.load.status === "loaded" ? (
@@ -718,11 +855,21 @@ function WriterSection({
           )}
         </div>
       )}
-      {shown === "OwnEndpoint" && (
-        <EndpointForm state={state} settings={settings} keySaved={keySaved} saveOnNext={saveOnNext} />
+      {endpointShown && (
+        <EndpointForm
+          state={state}
+          settings={settings}
+          keySaved={keySaved}
+          inUse={inOrder("Endpoint")}
+          onUse={useEndpoint}
+          locked={locked}
+          saveOnNext={saveOnNext}
+        />
       )}
-      {shown === "ClaudeCode" && <ClaudeCodeCard state={state} settings={settings} saveOnNext={saveOnNext} />}
-      {shown === "Codex" && <CodexCard state={state} settings={settings} saveOnNext={saveOnNext} />}
+      {inOrder("ClaudeCode") && (
+        <ClaudeCodeCard state={state} settings={settings} inUse saveOnNext={saveOnNext} />
+      )}
+      {inOrder("Codex") && <CodexCard state={state} settings={settings} inUse saveOnNext={saveOnNext} />}
     </Section>
   );
 }

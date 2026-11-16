@@ -47,7 +47,7 @@ const useStyles = makeStyles({
   why: {
     color: tokens.colorNeutralForeground2,
     paddingLeft: "32px",
-    maxWidth: "62ch",
+    // No width cap: the card's grid column bounds it, so the text uses the card's width.
   },
   warn: {
     color: tokens.colorPaletteMarigoldForeground2,

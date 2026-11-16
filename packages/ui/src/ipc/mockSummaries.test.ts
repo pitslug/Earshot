@@ -57,6 +57,27 @@ describe("the Summaries mock against the app's case table", () => {
     expect(wrong).toEqual([]);
   });
 
+  it("keeps the Dictionary words as the app does, one word at a time (T11.3e)", async () => {
+    // The page's own command: each case's words added in turn (blank ones are never sent) end
+    // in the stored list, or the first refusal is the case's message.
+    const wrong: string[] = [];
+    for (const c of table.vocabulary) {
+      const mock = createSummariesMock();
+      let got: Outcome<string[]> | null = null;
+      for (const w of c.words.filter((w) => w.trim() !== "")) {
+        const added = await outcome(() => mock.addSummaryVocabularyWord(w));
+        if ("error" in added) {
+          got = added;
+          break;
+        }
+      }
+      got ??= { stored: (await mock.summaryVocabulary()).words };
+      const want = c.error !== null ? { error: c.error } : { stored: c.stored };
+      if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push(`${c.name}: ${JSON.stringify(got)}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
   it("keeps the summary style as the app does", async () => {
     expect(table.style.length).toBeGreaterThanOrEqual(7);
     const wrong: string[] = [];
@@ -94,6 +115,25 @@ describe("the Summaries mock against the app's case table", () => {
       table.limits.max_vocabulary_word_chars,
       table.limits.max_vocabulary_chars,
     ]);
+  });
+
+  it("says how many Dictionary words are not in use as the app does (T11.3e)", async () => {
+    const copy = table.messages.not_in_use;
+    expect(await createSummariesMock().summaryVocabulary()).toMatchObject({ not_in_use: 0, not_in_use_note: null });
+    expect(await createSummariesMock({ notInUse: 1 }).summaryVocabulary()).toMatchObject({
+      not_in_use: 1,
+      not_in_use_note: copy.one,
+    });
+    expect(await createSummariesMock({ notInUse: 4 }).summaryVocabulary()).toMatchObject({
+      not_in_use: 4,
+      not_in_use_note: copy.many.replace("{n}", "4"),
+    });
+    // An Add is refused then, with the app's copy; a word already there is still found.
+    const mock = createSummariesMock({ vocabulary: ["Quillmarsh"], notInUse: 1 });
+    expect(await outcome(() => mock.addSummaryVocabularyWord("Velmora"))).toEqual({
+      error: table.messages.add_not_in_use,
+    });
+    expect(await mock.addSummaryVocabularyWord("QUILLMARSH")).toMatchObject({ added: false });
   });
 
   it("refuses a token with no word as the app does (T12.15f)", async () => {

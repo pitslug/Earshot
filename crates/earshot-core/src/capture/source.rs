@@ -216,6 +216,11 @@ pub enum EndpointWarning {
     /// capture (T9.21): nothing more is recorded on it and the other track goes on. Sent as a
     /// `Note` on the ended track.
     TrackEnded,
+    /// The microphone was to be recorded without Windows' own signal processing (T12.36, the
+    /// Audio page's raw setting), but a re-open could not get that stream, so the track records
+    /// the default (processed) stream for the rest of the capture. Sent as a `Note` on the mic
+    /// track right after the re-open's `DeviceChanged` marker, at most once per capture.
+    RawMicRefused,
 }
 
 /// Why a source ended.

@@ -213,6 +213,11 @@ fn sync_set_up_join_and_remove_through_the_page_carry_no_secret() {
     assert!(on.on && on.running);
     let vp = set_voiceprints(&b.svc, &b.host, true).unwrap();
     assert!(vp.voiceprints);
+    // Dictionary sync is on by default once sync is on (T11.3e), and turns off and on.
+    assert!(vp.dictionary);
+    let dict = set_dictionary(&b.svc, &b.host, false).unwrap();
+    assert!(!dict.dictionary && dict.voiceprints);
+    assert!(set_dictionary(&b.svc, &b.host, true).unwrap().dictionary);
 
     // Removing it stops the thread and forgets the key, token and address.
     let gone = remove(&b.svc, &b.host).unwrap();
@@ -225,6 +230,129 @@ fn sync_set_up_join_and_remove_through_the_page_carry_no_secret() {
         "joining again asks for voiceprint sync afresh"
     );
     assert!(!b.vault.has().unwrap());
+}
+
+#[test]
+fn sync_remove_other_copy_matches_the_shared_table() {
+    let table = table();
+    let copy = table["remove_other"].as_object().unwrap();
+    assert_eq!(copy.len(), 5, "every key is read here: {copy:?}");
+    assert_eq!(copy["not_another"].as_str(), Some(NOT_ANOTHER_DEVICE));
+    for key in ["button", "title"] {
+        assert!(copy[key].as_str().unwrap().contains("{device}"), "{key}");
+    }
+    assert_eq!(copy["confirm"].as_str(), Some("Remove"));
+    // The owner's decision (T11.6c): the dialog says plainly that the key is not taken back
+    // and that a lost computer should be wiped too.
+    let explained = copy["explained"].as_str().unwrap();
+    for words in [
+        "does not take back the sync key",
+        "also wipe it",
+        "stay on your other",
+    ] {
+        assert!(explained.contains(words), "{words}");
+    }
+    for v in copy.values() {
+        let s = v.as_str().unwrap();
+        assert!(!s.contains('\u{2014}') && !s.contains("  "), "{s}");
+    }
+}
+
+#[test]
+fn sync_removing_another_computer_from_its_row() {
+    let env = relay();
+    let a = computer("sync-other-a");
+    let b = computer("sync-other-b");
+    let url = env.relay.url();
+    set_up(&a.svc, &a.host, &url, SECRET).unwrap();
+    let code = offer_code(&a.svc, &a.host).unwrap();
+    join(&b.svc, &b.host, &url, &code.code).unwrap();
+    let list = devices(&a.svc, &a.host).unwrap();
+    assert_eq!(list.len(), 2);
+    let me = list.iter().find(|d| d.this_device).unwrap().id.clone();
+    let other = list.iter().find(|d| !d.this_device).unwrap().id.clone();
+    assert_eq!(other.len(), 36, "{other}");
+    assert!(other.starts_with(&list[1].short_id));
+
+    // This computer, or an id that is not one, is refused with fixed copy and nothing sent.
+    for id in [me.as_str(), "", "not-an-id", &other[..30], "zz"] {
+        let e = remove_other(&a.svc, &a.host, id).unwrap_err();
+        assert_eq!(
+            (e.kind.as_str(), e.message.as_str()),
+            ("invalid_setting", NOT_ANOTHER_DEVICE),
+            "{id:?}"
+        );
+    }
+    assert_eq!(devices(&a.svc, &a.host).unwrap().len(), 2);
+
+    // The other computer: gone from the list returned, and its thread stops on the answer it
+    // gets next, saying this computer was removed.
+    let left = remove_other(&a.svc, &a.host, &other.to_uppercase())
+        .unwrap()
+        .devices
+        .unwrap();
+    assert_eq!(left.len(), 1);
+    assert!(left[0].this_device);
+    b.host.nudge();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let v = view(&b.svc, &b.host).unwrap();
+        if v.stopped {
+            assert_eq!(
+                v.problem.as_deref(),
+                Some(problem_copy(SyncProblem::UnknownDevice))
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the removed computer never stopped: {v:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // It can no longer remove the first one: it hears that it was removed.
+    let e = remove_other(&b.svc, &b.host, &me).unwrap_err();
+    assert_eq!(e.message, command_copy(SyncProblem::UnknownDevice));
+    assert!(view(&a.svc, &a.host).unwrap().set_up);
+    a.host.stop_and_wait();
+    b.host.stop_and_wait();
+}
+
+#[test]
+fn sync_removing_another_computer_is_a_success_when_the_list_then_fails() {
+    let env = relay();
+    let a = computer("sync-other-list-a");
+    let b = computer("sync-other-list-b");
+    let url = env.relay.url();
+    set_up(&a.svc, &a.host, &url, SECRET).unwrap();
+    let code = offer_code(&a.svc, &a.host).unwrap();
+    join(&b.svc, &b.host, &url, &code.code).unwrap();
+    let other = devices(&a.svc, &a.host)
+        .unwrap()
+        .into_iter()
+        .find(|d| !d.this_device)
+        .unwrap()
+        .id;
+    // The revoke happened; the list read after it fails: still a success, with no list.
+    let done = remove_other_then(&a.svc, &a.host, &other, || {
+        Err(sync_error(SyncProblem::Unreachable))
+    })
+    .unwrap();
+    assert_eq!(done, SyncRemovedView { devices: None });
+    let left = devices(&a.svc, &a.host).unwrap();
+    assert_eq!(left.len(), 1, "the removal happened");
+    // A refused revoke is still an error, and the list is never read.
+    let e = remove_other_then(&b.svc, &b.host, &a_id(&a), || -> Result<_, IpcError> {
+        panic!("no list after a refused removal")
+    })
+    .unwrap_err();
+    assert_eq!(e.message, command_copy(SyncProblem::UnknownDevice));
+    a.host.stop_and_wait();
+    b.host.stop_and_wait();
+}
+
+fn a_id(c: &Computer) -> String {
+    c.svc.store().device().to_string()
 }
 
 #[test]
@@ -282,4 +410,58 @@ fn sync_host_starts_only_when_on_and_set_up() {
     again.start_if_on(&a.svc);
     assert!(!again.running(), "turned off: no thread at the next start");
     a.host.stop_and_wait();
+}
+
+/// Whether `b` lists the other computer as online, within `limit`.
+fn sync_other_online_within(b: &Computer, want: bool, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        let online = devices(&b.svc, &b.host)
+            .unwrap()
+            .iter()
+            .find(|d| !d.this_device)
+            .is_some_and(|d| d.online);
+        if online == want {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn sync_sleep_says_gone_at_once_and_resume_says_online_again() {
+    use crate::power_win::{PowerChange, handle};
+    let env = relay();
+    let a = computer("sync-sleep-a");
+    let b = computer("sync-sleep-b");
+    let url = env.relay.url();
+    set_up(&a.svc, &a.host, &url, SECRET).unwrap();
+    let code = offer_code(&a.svc, &a.host).unwrap();
+    join(&b.svc, &b.host, &url, &code.code).unwrap();
+    assert!(
+        sync_other_online_within(&b, true, Duration::from_secs(60)),
+        "the first computer never showed online"
+    );
+    // Suspend: the handler returns once gone is sent (or its wait ends), and the other
+    // computer reads it offline at once, not after the 150 s online window (2 s allows for a
+    // beat that crossed the suspend and the gone sent after it).
+    handle(&a.host, PowerChange::Suspend);
+    assert!(
+        sync_other_online_within(&b, false, Duration::from_secs(2)),
+        "a sleeping computer still reads online"
+    );
+    // It stays offline across several beat intervals: no beats while asleep.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(sync_other_online_within(&b, false, Duration::ZERO));
+    handle(&a.host, PowerChange::Resume);
+    assert!(
+        sync_other_online_within(&b, true, Duration::from_secs(60)),
+        "a resumed computer never said it was back"
+    );
+    a.host.stop_and_wait();
+    b.host.stop_and_wait();
 }

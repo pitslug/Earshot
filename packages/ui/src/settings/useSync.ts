@@ -41,10 +41,18 @@ export interface SyncPageState {
   joinWithCode: () => Promise<void>;
   setOn: (on: boolean) => Promise<void>;
   setVoiceprints: (on: boolean) => Promise<void>;
+  setDictionary: (on: boolean) => Promise<void>;
+  /** "Write summaries for my other computers" (T11.3db). */
+  setOfferSummaries: (on: boolean) => Promise<void>;
+  /** Saves this computer's name; resolves with the refusal's copy, or null when saved. */
+  saveDeviceName: (name: string) => Promise<string | null>;
   syncNow: () => Promise<void>;
   showCode: () => Promise<void>;
   hideCode: () => void;
   remove: () => Promise<boolean>;
+  /** Removes another computer (T11.6c); resolves true when it is gone from the list. A refusal
+   * shows above the parts, as for the other changes. */
+  removeOther: (id: string) => Promise<boolean>;
 }
 
 /** The Sync page's state. */
@@ -139,6 +147,23 @@ export function useSync(timer: Timer): SyncPageState {
     setVoiceprints: async (on) => {
       await change(() => ipc.setSyncVoiceprints(on));
     },
+    setDictionary: async (on) => {
+      await change(() => ipc.setSyncDictionary(on));
+    },
+    setOfferSummaries: async (on) => {
+      await change(() => ipc.setSyncOfferSummaries(on));
+    },
+    saveDeviceName: async (name) => {
+      setBusy(true);
+      try {
+        shown(await ipc.setSyncDeviceName(name));
+        return null;
+      } catch (e) {
+        return errorText(e);
+      } finally {
+        setBusy(false);
+      }
+    },
     syncNow: async () => {
       if (await change(() => ipc.syncNow())) setDevicesAsked((n) => n + 1);
     },
@@ -164,6 +189,25 @@ export function useSync(timer: Timer): SyncPageState {
         setJoin(EMPTY_FORM);
       }
       return removed;
+    },
+    removeOther: async (id) => {
+      setBusy(true);
+      try {
+        const { devices } = await ipc.removeOtherSyncDevice(id);
+        if (devices === null) {
+          // Removed, but the list could not be read after it: ask again.
+          setDevicesAsked((n) => n + 1);
+        } else {
+          setDevices({ status: "loaded", view: devices });
+        }
+        setError(null);
+        return true;
+      } catch (e) {
+        setError(errorText(e));
+        return false;
+      } finally {
+        setBusy(false);
+      }
     },
   };
 }

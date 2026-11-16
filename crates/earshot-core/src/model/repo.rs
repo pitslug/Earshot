@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::entities::{
-    AudioFile, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary, Track,
-    TranscriptPass,
+    AudioFile, DictionaryWord, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary,
+    SummaryRequest, Track, TranscriptPass,
 };
 use crate::asr::Segment;
 use crate::identity::{Clock, DeviceId, EntityId, Hlc};
@@ -200,6 +200,50 @@ pub trait FolderRepo {
     /// # Errors
     /// [`RepoError::Storage`].
     fn put_folder(&mut self, folder: Folder) -> Result<(), RepoError>;
+}
+
+/// Summary offload requests (syncable, docs/sync.md section 10). `put_summary_request`
+/// inserts or replaces by id; reads return tombstoned rows too. A request holds no content,
+/// so a meeting's deletion leaves its requests as they are ([`delete_meeting`]); readers skip
+/// the requests of a deleted meeting ([`super::repo_contract::summary_request_repo`] pins the
+/// rest).
+pub trait SummaryRequestRepo {
+    /// The request with `id`.
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn summary_request(&self, id: EntityId) -> Result<Option<SummaryRequest>, RepoError>;
+    /// Every request, tombstones included, in creation order (`meta.created_at`, then id).
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn summary_requests(&self) -> Result<Vec<SummaryRequest>, RepoError>;
+    /// Inserts or replaces a request by id.
+    ///
+    /// # Errors
+    /// [`RepoError::MissingParent`] if its meeting does not exist.
+    fn put_summary_request(&mut self, request: SummaryRequest) -> Result<(), RepoError>;
+}
+
+/// The user's Dictionary words (syncable opt-in, T11.3e, docs/sync.md section 9). One row per
+/// word; `put_dictionary_word` inserts or replaces by id; reads return removed rows too (the
+/// removal must sync). No parent: a word belongs to no meeting.
+pub trait DictionaryRepo {
+    /// The word row with `id`.
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn dictionary_word(&self, id: EntityId) -> Result<Option<DictionaryWord>, RepoError>;
+    /// Every word row, removed ones included, in creation order (`meta.created_at`, then id).
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn dictionary_words(&self) -> Result<Vec<DictionaryWord>, RepoError>;
+    /// Inserts or replaces a word row by id.
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn put_dictionary_word(&mut self, word: DictionaryWord) -> Result<(), RepoError>;
 }
 
 /// The erasure rule of [`delete_meeting`] and [`delete_folder`]: clears a copy of `row`

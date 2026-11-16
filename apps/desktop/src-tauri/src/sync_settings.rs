@@ -13,8 +13,10 @@
 //! store transaction and a tick replayed after a restart changes nothing.
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use earshot_runtime::Services;
+use earshot_runtime::offload::OffloadHost;
 use earshot_runtime::sync::{
     AddressRefused, SyncClient, SyncOverview, SyncProblem, SyncThread, SyncTiming, SyncVault,
     check_address,
@@ -104,6 +106,9 @@ pub struct SyncHost {
     /// the slot, then the store).
     lifecycle: Mutex<()>,
     timing: SyncTiming,
+    /// Who does summary offload's work (T11.3db): set once the app's meeting driver and job
+    /// runner exist; a thread started without it runs no offload step.
+    offload: Mutex<Option<Arc<dyn OffloadHost>>>,
 }
 
 impl std::fmt::Debug for SyncHost {
@@ -127,7 +132,14 @@ impl SyncHost {
             thread: Mutex::new(None),
             lifecycle: Mutex::new(()),
             timing,
+            offload: Mutex::new(None),
         }
+    }
+
+    /// Sets who does summary offload's work; threads started from now on run its step after
+    /// every tick ([`earshot_runtime::offload::Offload::step`]).
+    pub fn set_offload_host(&self, host: Arc<dyn OffloadHost>) {
+        *self.offload.lock().unwrap_or_else(PoisonError::into_inner) = Some(host);
     }
 
     /// The vault.
@@ -162,10 +174,18 @@ impl SyncHost {
             earshot_runtime::sync::sync_settings(&db).is_ok_and(|s| s.on)
         };
         let ready = on && self.vault.has().unwrap_or(false);
+        let offload = self
+            .offload
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let next = if ready {
             SyncClient::new(services.clone(), self.vault())
                 .ok()
-                .and_then(|c| SyncThread::start(c, self.timing).ok())
+                .and_then(|c| match offload {
+                    Some(host) => SyncThread::start_offloading(c, self.timing, host).ok(),
+                    None => SyncThread::start(c, self.timing).ok(),
+                })
         } else {
             None
         };
@@ -217,9 +237,38 @@ impl SyncHost {
     pub fn running(&self) -> bool {
         self.slot().as_ref().is_some_and(|t| !t.ended())
     }
+
+    /// This computer is going away (the app quits, Windows sleeps; T11.3ca): the running
+    /// thread says gone from a thread of its own and stops its beats. Waits at most `wait` for
+    /// the send (the slot is not held while waiting); never longer, whatever the network does.
+    pub fn say_gone_within(&self, wait: Duration) {
+        if let Some(rx) = self.say_gone() {
+            let _ = rx.recv_timeout(wait);
+        }
+    }
+
+    /// [`Self::say_gone_within`] without the wait: the receiver hears once the send has
+    /// finished; `None` when nothing is sent (no thread, or never seen online).
+    #[must_use]
+    pub fn say_gone(&self) -> Option<std::sync::mpsc::Receiver<()>> {
+        self.slot().as_ref().and_then(SyncThread::say_gone)
+    }
+
+    /// This computer is back from sleep: the running thread says online and ticks now.
+    pub fn back(&self) {
+        if let Some(t) = self.slot().as_ref() {
+            t.back();
+        }
+    }
 }
 
-/// Stops a replaced thread on a thread of its own, so no caller waits for its request.
+/// How long quitting waits for the gone presence, at most (inside [`crate::shell::EXIT_SAVE_LIMIT`]).
+pub const QUIT_GONE_WAIT: Duration = Duration::from_secs(1);
+/// How long a suspend waits for the gone presence: Windows gives a suspend notification about
+/// two seconds before it may go ahead, and the network may already be on its way down (a
+/// judgement).
+pub const SLEEP_GONE_WAIT: Duration = Duration::from_millis(1500);
+
 /// Stops a thread for good on a thread of its own, telling the other devices it is gone.
 fn retire_saying_gone(old: Option<SyncThread>) {
     if let Some(t) = old {
@@ -229,6 +278,7 @@ fn retire_saying_gone(old: Option<SyncThread>) {
     }
 }
 
+/// Stops a replaced thread on a thread of its own, so no caller waits for its request.
 fn retire(old: Option<SyncThread>) {
     if let Some(t) = old {
         let _ = std::thread::Builder::new()
@@ -248,6 +298,8 @@ pub struct SyncView {
     pub running: bool,
     /// Voiceprints sync.
     pub voiceprints: bool,
+    /// Dictionary words sync (T11.3e; on unless turned off).
+    pub dictionary: bool,
     /// The server's address, when one is stored and usable.
     pub address: Option<String>,
     /// Why a stored address is not usable (fixed copy).
@@ -264,6 +316,10 @@ pub struct SyncView {
     pub waiting: u64,
     /// Rows from other devices held for later.
     pub held: u64,
+    /// "Write summaries for my other computers" (T11.3db).
+    pub offers_summaries: bool,
+    /// This computer's name as the other computers show it (T11.3db).
+    pub device_name: String,
 }
 
 fn view_of(o: SyncOverview, running: bool) -> SyncView {
@@ -277,6 +333,7 @@ fn view_of(o: SyncOverview, running: bool) -> SyncView {
         on: o.settings.on,
         running,
         voiceprints: o.settings.voiceprints,
+        dictionary: o.settings.dictionary,
         address,
         address_problem,
         last_success_unix_ms: o.status.last_success_unix_ms,
@@ -285,6 +342,8 @@ fn view_of(o: SyncOverview, running: bool) -> SyncView {
         unreadable: o.status.unreadable,
         waiting: o.waiting,
         held: o.held,
+        offers_summaries: o.settings.offers_summaries,
+        device_name: o.settings.device_name,
     }
 }
 
@@ -309,6 +368,15 @@ pub struct SyncDeviceView {
     pub online: bool,
     /// Whether it is recording now.
     pub recording: bool,
+    /// Whether it writes summaries for the other computers (T11.3db).
+    pub offers_summaries: bool,
+    /// The kind of writer it uses, as the page names it (fixed copy,
+    /// [`crate::offload::writer_label`]); `None` when it does not offer summaries.
+    pub writer: Option<String>,
+    /// Its whole id (hyphenated UUID, as the summary helper list gives it): what
+    /// [`remove_other_sync_device`] names. Not a secret (the server lists it to every device of
+    /// the vault).
+    pub id: String,
     /// The first eight hex digits of its id.
     pub short_id: String,
     /// When it joined (Unix seconds, the server's clock).
@@ -330,6 +398,11 @@ pub fn devices(services: &Services, host: &SyncHost) -> Result<Vec<SyncDeviceVie
             name: d.name,
             online: d.online,
             recording: d.recording,
+            offers_summaries: d.offers_summaries,
+            writer: d
+                .writer_kind
+                .map(|k| crate::offload::writer_label(k).to_owned()),
+            id: d.device.to_string(),
             short_id: d.short_id,
             joined_unix_s: d.joined_unix_s,
             seen_s_ago: d.seen_s_ago,
@@ -432,6 +505,60 @@ pub fn set_voiceprints(
     view(services, host)
 }
 
+/// Turns Dictionary sync on or off (on: rows for the words here, and every earlier row read).
+///
+/// # Errors
+/// Fixed copy of a store failure.
+pub fn set_dictionary(
+    services: &Services,
+    host: &SyncHost,
+    on: bool,
+) -> Result<SyncView, IpcError> {
+    earshot_runtime::sync::set_sync_dictionary(services, on).map_err(sync_error)?;
+    host.nudge();
+    view(services, host)
+}
+
+/// Turns "Write summaries for my other computers" on or off; the next presence says so.
+///
+/// # Errors
+/// Fixed copy of a store failure.
+pub fn set_offer_summaries(
+    services: &Services,
+    host: &SyncHost,
+    on: bool,
+) -> Result<SyncView, IpcError> {
+    earshot_runtime::sync::set_offer_summaries(services, on).map_err(sync_error)?;
+    host.nudge();
+    view(services, host)
+}
+
+/// The longest name the page accepts (characters), as presence keeps it.
+pub const MAX_DEVICE_NAME: usize = earshot_runtime::sync::MAX_DEVICE_NAME;
+
+/// Sets this computer's name as the other computers show it; empty goes back to the computer's
+/// own name.
+///
+/// # Errors
+/// [`IpcError::invalid`] for a name over [`MAX_DEVICE_NAME`] characters; fixed copy of a store
+/// failure.
+pub fn set_device_name(
+    services: &Services,
+    host: &SyncHost,
+    name: &str,
+) -> Result<SyncView, IpcError> {
+    if name.trim().chars().count() > MAX_DEVICE_NAME {
+        return Err(IpcError::invalid(DEVICE_NAME_TOO_LONG));
+    }
+    earshot_runtime::sync::set_device_name(services, name).map_err(sync_error)?;
+    host.nudge();
+    view(services, host)
+}
+
+/// The refusal of a name over [`MAX_DEVICE_NAME`] characters (the table's `device_name_too_long`,
+/// `fixtures/ui/sync_copy_cases.json`).
+pub const DEVICE_NAME_TOO_LONG: &str = "The name can have at most 64 characters.";
+
 /// Removes this computer from sync (the thread first, then the server and what it kept).
 ///
 /// # Errors
@@ -450,6 +577,57 @@ pub fn remove(services: &Services, host: &SyncHost) -> Result<SyncView, IpcError
     };
     removed.map_err(sync_error)?;
     view(services, host)
+}
+
+/// The refusal of an id that is not another computer of the vault (the table's
+/// `remove_other.not_another`, `fixtures/ui/sync_copy_cases.json`).
+pub const NOT_ANOTHER_DEVICE: &str =
+    "That is not another of your computers. To remove this computer, use Remove this computer.";
+
+/// A device id as [`SyncDeviceView::id`] gives it (a UUID, as the summary helper list's ids).
+fn parse_device_id(id: &str) -> Option<earshot_core::identity::DeviceId> {
+    serde_json::from_value(serde_json::Value::String(id.to_owned())).ok()
+}
+
+/// Another computer was removed (T11.6c).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct SyncRemovedView {
+    /// The computers left, or `None` when they could not be listed after the removal (the page
+    /// asks again; the removal itself happened).
+    pub devices: Option<Vec<SyncDeviceView>>,
+}
+
+/// Removes another computer from the vault (T11.6c): the server revokes its token and drops
+/// its presence; its synced rows stay. Returns the computers left. This computer leaves only
+/// through [`remove`].
+///
+/// # Errors
+/// [`IpcError::invalid`] with [`NOT_ANOTHER_DEVICE`] for this computer's id or one that is not
+/// an id, with nothing sent; fixed copy of the problem. Once the server has revoked it, the
+/// answer is a success whatever the list does.
+pub fn remove_other(
+    services: &Services,
+    host: &SyncHost,
+    id: &str,
+) -> Result<SyncRemovedView, IpcError> {
+    remove_other_then(services, host, id, || devices(services, host))
+}
+
+/// [`remove_other`] with the list read after the removal given (a test seam).
+fn remove_other_then(
+    services: &Services,
+    host: &SyncHost,
+    id: &str,
+    list: impl FnOnce() -> Result<Vec<SyncDeviceView>, IpcError>,
+) -> Result<SyncRemovedView, IpcError> {
+    let device = parse_device_id(id)
+        .filter(|d| *d != services.store().device())
+        .ok_or_else(|| IpcError::invalid(NOT_ANOTHER_DEVICE))?;
+    earshot_runtime::sync::remove_other_device(services, host.vault(), device)
+        .map_err(sync_error)?;
+    Ok(SyncRemovedView {
+        devices: list().ok(),
+    })
 }
 
 fn host(state: &tauri::State<'_, Arc<SyncHost>>) -> Arc<SyncHost> {
@@ -568,6 +746,45 @@ pub async fn set_sync_voiceprints(
     blocking(move || set_voiceprints(&services, &host, on)).await
 }
 
+/// Turns Dictionary sync on or off.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_sync_dictionary(
+    state: tauri::State<'_, AppState>,
+    sync: tauri::State<'_, Arc<SyncHost>>,
+    on: bool,
+) -> Result<SyncView, IpcError> {
+    let services = state.services()?;
+    let host = host(&sync);
+    blocking(move || set_dictionary(&services, &host, on)).await
+}
+
+/// Turns "Write summaries for my other computers" on or off.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_sync_offer_summaries(
+    state: tauri::State<'_, AppState>,
+    sync: tauri::State<'_, Arc<SyncHost>>,
+    on: bool,
+) -> Result<SyncView, IpcError> {
+    let services = state.services()?;
+    let host = host(&sync);
+    blocking(move || set_offer_summaries(&services, &host, on)).await
+}
+
+/// Sets this computer's name as the other computers show it.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_sync_device_name(
+    state: tauri::State<'_, AppState>,
+    sync: tauri::State<'_, Arc<SyncHost>>,
+    name: String,
+) -> Result<SyncView, IpcError> {
+    let services = state.services()?;
+    let host = host(&sync);
+    blocking(move || set_device_name(&services, &host, &name)).await
+}
+
 /// Asks for a sync now.
 #[tauri::command]
 #[specta::specta]
@@ -594,6 +811,19 @@ pub async fn remove_sync_device(
     let services = state.services()?;
     let host = host(&sync);
     blocking(move || remove(&services, &host)).await
+}
+
+/// Removes another computer from sync; returns the computers left when they can be listed.
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_other_sync_device(
+    state: tauri::State<'_, AppState>,
+    sync: tauri::State<'_, Arc<SyncHost>>,
+    id: String,
+) -> Result<SyncRemovedView, IpcError> {
+    let services = state.services()?;
+    let host = host(&sync);
+    blocking(move || remove_other(&services, &host, &id)).await
 }
 
 #[cfg(test)]

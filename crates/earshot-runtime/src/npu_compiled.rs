@@ -51,10 +51,17 @@ pub const FORMAT: u32 = 1;
 /// A temp folder older than this is a crash's leftover (a compile takes about 30 s).
 const STALE_TEMP: Duration = Duration::from_secs(60 * 60);
 
-/// The banner text of a refusal, fixed copy ([`take_note`]).
+/// The banner text of a refusal that ended in the ordinary load, fixed copy ([`take_note`],
+/// [`How::note`]).
 pub const NOTE: &str = "The NPU could not use the copy of the speech model Earshot prepared for \
                         it, so it loaded the slower way this time (about half a minute and more \
                         memory). Earshot prepares it again by itself.";
+
+/// The banner text of a refusal the helper process answered by preparing the copy again, which
+/// then loaded as a prepared copy does (T12.64): fixed copy ([`take_note`], [`How::note`]).
+pub const NOTE_PREPARED_AGAIN: &str = "The NPU could not use the copy of the speech model Earshot \
+                                       had prepared for it, so Earshot prepared a new one (about \
+                                       half a minute) and the NPU is using that.";
 
 /// What a compiled folder was made from ([`CompileKey::for_conversion`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,6 +459,18 @@ impl How {
             How::Ordinary { steps, .. } => steps.clone(),
         }
     }
+
+    /// The banner a refusal shows (T12.64): [`NOTE_PREPARED_AGAIN`] when the helper prepared the
+    /// copy again and it loaded as a prepared copy does, else [`NOTE`] (the ordinary load, which is
+    /// what an in-process compile is); `None` for no refusal.
+    #[must_use]
+    pub fn note(&self) -> Option<&'static str> {
+        match self {
+            _ if !self.is_refusal() => None,
+            How::CompiledByHelper { .. } => Some(NOTE_PREPARED_AGAIN),
+            How::Compiled | How::Compiling { .. } | How::Ordinary { .. } => Some(NOTE),
+        }
+    }
 }
 
 /// [`Compile::InProcess`]: the load writing the context model at the path given.
@@ -795,38 +814,39 @@ pub fn last_load() -> Option<How> {
         .clone()
 }
 
-/// The note state of this process: whether a refusal waits to be shown, and whether one was.
-static NOTE_STATE: Mutex<(bool, bool)> = Mutex::new((false, false));
+/// The note state of this process: the note of the first refusal waiting to be shown, and
+/// whether one was.
+static NOTE_STATE: Mutex<(Option<&'static str>, bool)> = Mutex::new((None, false));
 
 /// Records how a track's load went: a refusal ([`How::is_refusal`]) makes [`take_note`] answer
-/// once, the first time only, and waits to be stored ([`take_unstored`]).
+/// once with its [`How::note`], the first refusal only, and waits to be stored ([`take_unstored`]).
 pub fn record(how: &How) {
     *LAST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(how.clone());
-    if how.is_refusal() {
+    if let Some(note) = how.note() {
         unstored(Refused::new(LoadFor::Track, how.steps()));
         let mut state = NOTE_STATE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.1 {
-            state.0 = true;
+        if !state.1 && state.0.is_none() {
+            state.0 = Some(note);
         }
     }
 }
 
-/// [`NOTE`] once per process, after the first refusal [`record`]ed; `None` otherwise.
+/// The first refusal's note ([`How::note`]) once per process, after it was [`record`]ed; `None`
+/// otherwise.
 #[must_use]
 pub fn take_note() -> Option<&'static str> {
     let mut state = NOTE_STATE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if state.0 {
-        *state = (false, true);
-        Some(NOTE)
-    } else {
-        None
+    let note = state.0.take();
+    if note.is_some() {
+        state.1 = true;
     }
+    note
 }
 
 /// Whose load a [`Refused`] was.

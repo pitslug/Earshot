@@ -120,6 +120,8 @@ fn plain_run<'a>(models: &'a ModelDir, cancel: &'a CancelToken) -> AfterMeeting<
         no_summary: SkipReason::NotRequested,
         post_cancel: cancel,
         summary_cancel: cancel,
+        offload: None,
+        order_run: None,
     }
 }
 
@@ -138,6 +140,8 @@ fn after<'a>(clock: &'a Arc<TestClock>, calls: &'a AtomicU64, models: &'a ModelD
             no_summary: SkipReason::NotRequested,
             post_cancel: cancel,
             summary_cancel: cancel,
+            offload: None,
+            order_run: None,
         };
         let result = host::after_meeting_with(svc, outcome, &run, fake_post, &mut |step| {
             if matches!(step, HostStep::PostFinished(_)) {
@@ -322,6 +326,8 @@ fn benchmark_failed_final_pass_is_an_error_and_leaves_no_files() {
             no_summary: SkipReason::NotRequested,
             post_cancel: cancel,
             summary_cancel: cancel,
+            offload: None,
+            order_run: None,
         };
         host::after_meeting_with(
             svc,

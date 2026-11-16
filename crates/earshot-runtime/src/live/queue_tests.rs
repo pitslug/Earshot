@@ -489,6 +489,8 @@ fn meeting_queue_a_second_meeting_records_while_the_older_summary_runs() {
             no_summary: SkipReason::NotRequested,
             post_cancel: &a,
             summary_cancel: &b,
+            offload: None,
+            order_run: None,
         },
         crate::host::tests::fake_post,
         &mut |step: HostStep<'_>| {

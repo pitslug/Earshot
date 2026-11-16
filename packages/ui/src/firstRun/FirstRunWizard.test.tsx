@@ -196,8 +196,10 @@ describe("First run wizard", () => {
       const s = setup();
       await screen.findByRole("radiogroup", { name: "Who writes the summary" });
       expect(screen.getByRole("radio", { name: /^On this computer/ })).toBeChecked();
+      // The radios' values are the order's step keys since T12.63b (they were the old writer
+      // words); the choices and their order are unchanged.
       expect(screen.getAllByRole("radio").map((r) => r.getAttribute("value"))).toEqual([
-        "OnThisComputer",
+        "Local",
         "ClaudeCode",
         "Codex",
         "NoSummary",
@@ -207,6 +209,19 @@ describe("First run wizard", () => {
       expect(screen.getByText(CODEX_PRIVACY)).toBeInTheDocument();
       await s.user.click(screen.getByRole("radio", { name: /^No summary/ }));
       await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("NoSummary"));
+    });
+
+    it("stores a one-step order, or none, whatever order was there before (T12.63b)", async () => {
+      const desk = { kind: "Computer" as const, device: "0f3a91c2-0000-7000-8000-000000000000" };
+      const s = setup({ summaryOrder: [desk, { kind: "Local" }, { kind: "ClaudeCode" }] });
+      await s.user.click(await screen.findByRole("radio", { name: /^OpenAI \(through Codex\)/ }));
+      await waitFor(async () =>
+        expect((await s.ipc.summaryOrder()).steps.map((x) => x.step)).toEqual([{ kind: "Codex" }]),
+      );
+      // Steps 2 and 3 are only on the Summaries page.
+      expect(screen.queryByRole("group", { name: "If it can't" })).toBeNull();
+      await s.user.click(screen.getByRole("radio", { name: /^No summary/ }));
+      await waitFor(async () => expect((await s.ipc.summaryOrder()).none).toBe(true));
     });
 
     it("keeps your own endpoint under Other, with its words", async () => {

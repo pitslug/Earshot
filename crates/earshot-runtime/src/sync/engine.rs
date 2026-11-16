@@ -12,7 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp};
 use earshot_net::{AuditLog, Url};
-use earshot_store::{ApplyRules, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, Store, SyncedRow};
+use earshot_store::{
+    ApplyRules, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, Store, StoreError, StoreTx, SyncKinds,
+    SyncedRow,
+};
 use earshot_sync::wire::{B64, PullResponse, PulledRow, PushRequest, WireRow};
 use earshot_sync::{
     ENVELOPE_FORMAT, Keys, Opened, ROW_KEY_LEN, RowKey, SealError, SealedRow, open_row, seal_row,
@@ -74,6 +77,11 @@ pub struct Peer {
     pub online: bool,
 }
 
+/// The writer kind a summary worker names in its presence, asked again at every presence send
+/// (where its model is can change while it runs).
+pub type WorkerWriter =
+    std::sync::Arc<dyn Fn() -> Option<crate::offload::WriterKind> + Send + Sync>;
+
 /// The sync client of one device: the relay at the stored address and the device's vault.
 pub struct SyncClient {
     services: Services,
@@ -85,6 +93,9 @@ pub struct SyncClient {
     /// Whether rows held for a newer format or a far clock were tried again yet (once per
     /// client: they clear only after an update or with time).
     retried_all: AtomicBool,
+    /// A summary worker's presence ([`SyncClient::as_summary_worker`]): kind `server` and the
+    /// writer it names, asked at every send; `None` for the app.
+    worker: Option<WorkerWriter>,
 }
 
 impl std::fmt::Debug for SyncClient {
@@ -105,6 +116,8 @@ fn seal(keys: &Keys, row: &SyncedRow) -> Result<SealedRow, SealError> {
         SyncedRow::Person(r) => seal_row(keys, r),
         SyncedRow::Voiceprint(r) => seal_row(keys, r),
         SyncedRow::Folder(r) => seal_row(keys, r),
+        SyncedRow::SummaryRequest(r) => seal_row(keys, r),
+        SyncedRow::DictionaryWord(r) => seal_row(keys, r),
     }
 }
 
@@ -120,7 +133,7 @@ fn wire_row(sealed: SealedRow) -> WireRow {
 
 /// A pulled row opened with `keys`: `Ok(Incoming)` to apply or hold, `Err(())` when it
 /// cannot be opened or read (counted and skipped).
-fn open(
+pub(super) fn open(
     keys: &Keys,
     seq: u64,
     key: &[u8],
@@ -189,7 +202,36 @@ impl SyncClient {
             device,
             stop: Arc::new(AtomicBool::new(false)),
             retried_all: AtomicBool::new(false),
+            worker: None,
         })
+    }
+
+    /// The client for the relay at `address` rather than the stored one: the summary worker
+    /// (T11.6), whose configuration names its relay. The address is checked as a stored one is
+    /// ([`super::check_address`]).
+    ///
+    /// # Errors
+    /// [`SyncProblem::Address`] for a refused address; [`SyncProblem::Internal`] when the HTTP
+    /// client cannot be built.
+    pub fn for_address(
+        services: Services,
+        vault: std::sync::Arc<dyn SyncVault>,
+        address: &str,
+    ) -> Result<Self, SyncProblem> {
+        let address = check_address(address).map_err(|_| SyncProblem::Address)?;
+        let device = services.store().device();
+        Self::at(services, vault, address, device)
+    }
+
+    /// This client's presence says it is a summary worker (T11.6, docs/sync.md section 10):
+    /// kind `server`, and the kind of writer `writer` answers at each presence send (sent while
+    /// it offers summaries), in place of the app's kind and its Summaries settings. Asked at
+    /// every send, because the label is what tells the user where a transcript goes, and where
+    /// the worker's model is can change while it runs (its container starting late).
+    #[must_use]
+    pub fn as_summary_worker(mut self, writer: WorkerWriter) -> Self {
+        self.worker = Some(writer);
+        self
     }
 
     /// Every request this client made, one entry per hop.
@@ -218,13 +260,56 @@ impl SyncClient {
     /// # Errors
     /// [`SyncProblem::Vault`] when not set up; the relay's problems.
     pub fn send_presence(&self, gone: bool) -> Result<(), SyncProblem> {
+        // A gone blob names no writer, so a worker's locator (which may look a name up) is not
+        // asked for one.
+        let worker = if gone {
+            self.worker.as_ref().map(|_| None)
+        } else {
+            self.worker_writer_now()
+        };
+        self.send_presence_with(gone, worker)
+    }
+
+    /// A summary worker's writer kind now (its locator asked, which may look a name up; no lock
+    /// is held), or `None` for the app. The sync thread asks before it takes the presence lock
+    /// and passes the answer to [`Self::send_presence_with`].
+    pub(crate) fn worker_writer_now(&self) -> Option<Option<crate::offload::WriterKind>> {
+        self.worker.as_ref().map(|worker| worker())
+    }
+
+    /// [`Self::send_presence`] with a worker's writer kind already found (`worker`: `None` for
+    /// the app, whose writer comes from its Summaries settings).
+    pub(crate) fn send_presence_with(
+        &self,
+        gone: bool,
+        worker: Option<Option<crate::offload::WriterKind>>,
+    ) -> Result<(), SyncProblem> {
         let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
         let keys = secrets.key.keys();
-        let settings = sync_settings(&self.services.store())?;
+        let (settings, writer) = {
+            let db = self.services.store();
+            let settings = sync_settings(&db)?;
+            // The writer kind travels only while this device offers to write: the asker's
+            // label names it, so the user knows where the transcript goes.
+            let writer = match worker {
+                _ if !settings.offers_summaries => None,
+                Some(worker) => worker,
+                None => {
+                    crate::offload::WriterKind::of_order(&db).map_err(|_| SyncProblem::Store)?
+                }
+            };
+            (settings, writer)
+        };
         let recording = !self.services.recording_meetings().is_empty();
         let presence = super::presence::presence_now(
+            if self.worker.is_some() {
+                super::presence::KIND_SERVER
+            } else {
+                super::presence::KIND_APP
+            },
             settings.device_name,
             settings.offers_summaries,
+            writer,
             recording,
             gone,
         );
@@ -294,9 +379,14 @@ impl SyncClient {
     fn tick_into(&self, report: &mut TickReport) -> Result<(), SyncProblem> {
         let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
         let keys = secrets.key.keys();
-        let voiceprints = sync_settings(&self.services.store())?.voiceprints;
-        self.push(&keys, &secrets.token, voiceprints, report)?;
-        self.retry_held(&keys, voiceprints, report)?;
+        let kinds = sync_settings(&self.services.store())?.kinds();
+        if kinds.dictionary {
+            // Words this device had before its rows existed (an older Earshot) get rows before
+            // anything is pulled, so the list rebuilt after a page never loses them.
+            crate::vocabulary::reconcile(&self.services)?;
+        }
+        self.push(&keys, &secrets.token, kinds, report)?;
+        self.retry_held(&keys, kinds, report)?;
         self.pull(&keys, &secrets.token, report)
     }
 
@@ -304,7 +394,7 @@ impl SyncClient {
         &self,
         keys: &Keys,
         token: &super::DeviceToken,
-        voiceprints: bool,
+        kinds: SyncKinds,
         report: &mut TickReport,
     ) -> Result<(), SyncProblem> {
         for _ in 0..MAX_PUSH_PAGES {
@@ -312,10 +402,10 @@ impl SyncClient {
                 return Ok(());
             }
             let recording = self.services.recording_meetings();
-            let mut rows =
-                self.services
-                    .store()
-                    .outbox_except(PUSH_PAGE, &recording, voiceprints)?;
+            let mut rows = self
+                .services
+                .store()
+                .outbox_except(PUSH_PAGE, &recording, kinds)?;
             if rows.is_empty() {
                 return Ok(());
             }
@@ -411,7 +501,7 @@ impl SyncClient {
     fn retry_held(
         &self,
         keys: &Keys,
-        voiceprints: bool,
+        kinds: SyncKinds,
         report: &mut TickReport,
     ) -> Result<(), SyncProblem> {
         let held = self.services.store().held_rows()?;
@@ -422,7 +512,7 @@ impl SyncClient {
             .take(MAX_RETRY)
             .filter_map(|h| open(keys, h.seq, &h.key, h.stamp, h.body).ok())
             .collect();
-        self.apply(&page, voiceprints, report)
+        self.apply(&page, kinds, report)
     }
 
     fn pull(
@@ -435,11 +525,11 @@ impl SyncClient {
             if self.stopping() {
                 return Ok(());
             }
-            // The cursor and the voiceprint switch are read together: turning the switch on
-            // resets the cursor, and the page is applied under the switch it was pulled for.
-            let (after, voiceprints) = {
+            // The cursor and the kind switches are read together: turning a switch on resets
+            // the cursor, and the page is applied under the switches it was pulled for.
+            let (after, kinds) = {
                 let db = self.services.store();
-                (pull_cursor(&db)?, sync_settings(&db)?.voiceprints)
+                (pull_cursor(&db)?, sync_settings(&db)?.kinds())
             };
             let PullResponse {
                 rows,
@@ -461,7 +551,7 @@ impl SyncClient {
                     Err(()) => report.unreadable += 1,
                 }
             }
-            self.apply(&page, voiceprints, report)?;
+            self.apply(&page, kinds, report)?;
             if let Some(last) = last
                 && last > after
                 && !advance_cursor(&mut self.services.store(), after, last)?
@@ -480,7 +570,7 @@ impl SyncClient {
     fn apply(
         &self,
         page: &[Incoming],
-        voiceprints: bool,
+        kinds: SyncKinds,
         report: &mut TickReport,
     ) -> Result<(), SyncProblem> {
         if page.is_empty() {
@@ -496,10 +586,16 @@ impl SyncClient {
         }
         let leased: BTreeSet<EntityId> = self.services.leased_meetings();
         let is_leased = |m: EntityId| leased.contains(&m);
+        // With Dictionary sync on, `settings/vocabulary` is rebuilt from the live word rows in
+        // the page's own transaction, so the list never differs from the rows it came from.
+        let rebuild = |tx: &mut StoreTx<'_>| -> Result<(), StoreError> {
+            crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep).map(|_| ())
+        };
         let rules = ApplyRules {
-            voiceprints,
+            kinds,
             leased: &is_leased,
             now_ms: self.services.clock.now_unix_ms(),
+            after: kinds.dictionary.then_some(&rebuild),
         };
         let clock = std::sync::Arc::clone(&self.services.clock);
         let mut db = self.services.store();
@@ -512,7 +608,8 @@ impl SyncClient {
         report.written += applied.written;
         report.ignored += applied.ignored + applied.skipped;
         report.held += applied.held.iter().sum::<usize>();
-        report.repaired += applied.mes_merged + applied.summaries_replaced;
+        report.repaired +=
+            applied.mes_merged + applied.summaries_replaced + applied.withdrawals_kept;
         Ok(())
     }
 

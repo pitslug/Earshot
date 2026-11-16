@@ -30,6 +30,11 @@ pub const MAX_DEVICE_NAME: usize = 64;
 /// 64-character name of 4-byte characters and a long version included, fits well inside).
 pub const PADDED_LEN: usize = 640;
 
+/// [`Presence::kind`] of Earshot on a computer.
+pub const KIND_APP: &str = "app";
+/// [`Presence::kind`] of a summary worker (`earshot-worker`, T11.6).
+pub const KIND_SERVER: &str = "server";
+
 /// The presence blob's plaintext.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Presence {
@@ -39,12 +44,13 @@ pub struct Presence {
     pub name: String,
     /// Earshot's version on it.
     pub app_version: String,
-    /// `app` for Earshot on a computer (`server` for a summary worker, later).
+    /// [`KIND_APP`] for Earshot on a computer, [`KIND_SERVER`] for a summary worker (T11.6).
     pub kind: String,
     /// Whether it writes summaries for the other devices ("Write summaries for my other
     /// devices").
     pub offers_summaries: bool,
-    /// The kind of writer it would use (phase 2; `None` until then).
+    /// The kind of writer it would use ([`crate::offload::WriterKind::word`]), sent only while
+    /// it offers summaries; `None` otherwise or for "no summary".
     pub writer_kind: Option<String>,
     /// Whether it is recording a meeting now.
     pub recording: bool,
@@ -61,6 +67,53 @@ pub struct Presence {
 #[must_use]
 pub const fn online(age_s: u64, gone: bool) -> bool {
     !gone && age_s <= ONLINE_WITHIN_S
+}
+
+/// What presence this device sends, decided without a clock (T11.3ca): a regular beat says
+/// online, going away (the app quits or Windows sleeps) says gone once, and beats resume when
+/// it comes back. Nothing is said before the first beat got through ("announced"), because the
+/// other devices have not seen this one online yet.
+///
+/// The sync thread holds this behind one lock across every presence send, so sends never
+/// overtake each other at the relay: a gone queued behind a beat in flight lands after it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Beats {
+    announced: bool,
+    away: bool,
+}
+
+impl Beats {
+    /// Whether a regular beat should go out now (not while away).
+    #[must_use]
+    pub const fn beat_due(&self) -> bool {
+        !self.away
+    }
+
+    /// An online beat got through.
+    pub const fn sent_online(&mut self) {
+        self.announced = true;
+    }
+
+    /// This device is going away. Returns whether to send gone now: once announced, and not
+    /// twice for one going away.
+    pub const fn go_away(&mut self) -> bool {
+        let say = self.announced && !self.away;
+        self.away = true;
+        say
+    }
+
+    /// This device is back (Windows resumed): beats resume. Returns whether it had gone away.
+    pub const fn come_back(&mut self) -> bool {
+        let was = self.away;
+        self.away = false;
+        was
+    }
+
+    /// Whether the other devices have seen this one online.
+    #[must_use]
+    pub const fn announced(&self) -> bool {
+        self.announced
+    }
 }
 
 /// A device's name trimmed to [`MAX_DEVICE_NAME`] characters, control characters dropped;
@@ -129,8 +182,10 @@ pub(crate) fn open_blob(
 
 /// The presence this device sends now.
 pub(crate) fn presence_now(
+    kind: &str,
     name: String,
     offers_summaries: bool,
+    writer_kind: Option<crate::offload::WriterKind>,
     recording: bool,
     gone: bool,
 ) -> Presence {
@@ -138,9 +193,9 @@ pub(crate) fn presence_now(
         v: PRESENCE_VERSION,
         name,
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
-        kind: "app".to_owned(),
+        kind: kind.to_owned(),
         offers_summaries,
-        writer_kind: None,
+        writer_kind: writer_kind.map(|k| k.word().to_owned()),
         recording,
         gone,
         pad: String::new(),

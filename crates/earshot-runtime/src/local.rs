@@ -91,6 +91,9 @@ meeting_records! {
     /// `voiceprint-me/<meeting>`: the in-room "Me" row the final pass named by the user's
     /// voiceprint (T12.44; no biometric data, [`crate::identities::voiceprint_me_key`]).
     VoiceprintMe => "voiceprint-me/", meeting at 0;
+    /// `summary-run/<meeting>`: the meeting's last run of the order of summary writers (T12.63a;
+    /// fixed words, step and request ids only, [`crate::summary_order::run`]).
+    SummaryRun => "summary-run/", meeting at 0;
 }
 
 impl MeetingRecord {
@@ -188,6 +191,9 @@ pub(crate) enum DeviceRecord {
     OutputName,
     /// `settings/capture-mode`: the capture mode a new meeting starts with (T7.4i).
     CaptureMode,
+    /// `settings/mic-signal`: whether a meeting records the mic with Windows' own processing
+    /// (`default`) or without it (`raw`, T12.36).
+    MicSignal,
     /// `audio-check`: the audio check's results per microphone + output pair (T7.4j).
     AudioCheck,
     /// `benchmark`: the latest benchmark result (T7.4c; timings, settings and backends, no
@@ -229,6 +235,8 @@ pub(crate) enum DeviceRecord {
     SyncOn,
     /// `settings/sync-voiceprints`: whether voiceprints sync (T11.3).
     SyncVoiceprints,
+    /// `settings/sync-dictionary`: whether Dictionary words sync (T11.3e).
+    SyncDictionary,
     /// `sync-cursor`: the relay sequence number pulled up to (T11.3).
     SyncCursor,
     /// `sync-status`: the last sync tick's outcome; times, a problem word, counts (T11.3).
@@ -238,6 +246,15 @@ pub(crate) enum DeviceRecord {
     /// `settings/sync-offer-summaries`: whether this device writes summaries for the others
     /// (T11.3c).
     OfferSummaries,
+    /// `settings/summary-offload-device`: the device asked to write this one's summaries
+    /// (T11.3da; [`crate::offload`]).
+    SummaryOffloadDevice,
+    /// `offload-times`: this device's clock readings for open summary offload requests (T11.3da;
+    /// [`crate::offload`]).
+    OffloadTimes,
+    /// `settings/summary-order`: the order of summary writers (T12.63a;
+    /// [`crate::summary_order`]).
+    SummaryOrder,
 }
 
 impl DeviceRecord {
@@ -267,6 +284,7 @@ impl DeviceRecord {
         DeviceRecord::Output,
         DeviceRecord::OutputName,
         DeviceRecord::CaptureMode,
+        DeviceRecord::MicSignal,
         DeviceRecord::AudioCheck,
         DeviceRecord::Benchmark,
         DeviceRecord::SummaryStyle,
@@ -285,10 +303,14 @@ impl DeviceRecord {
         DeviceRecord::SyncServer,
         DeviceRecord::SyncOn,
         DeviceRecord::SyncVoiceprints,
+        DeviceRecord::SyncDictionary,
         DeviceRecord::SyncCursor,
         DeviceRecord::SyncStatus,
         DeviceRecord::DeviceName,
         DeviceRecord::OfferSummaries,
+        DeviceRecord::SummaryOffloadDevice,
+        DeviceRecord::OffloadTimes,
+        DeviceRecord::SummaryOrder,
     ];
 
     /// Its key.
@@ -324,6 +346,7 @@ impl DeviceRecord {
                 DeviceRecord::Output => crate::audio_settings::OUTPUT_KEY,
                 DeviceRecord::OutputName => crate::audio_settings::OUTPUT_NAME_KEY,
                 DeviceRecord::CaptureMode => crate::audio_settings::CAPTURE_MODE_KEY,
+                DeviceRecord::MicSignal => crate::audio_settings::MIC_SIGNAL_KEY,
                 DeviceRecord::AudioCheck => crate::audio_check::AUDIO_CHECK_KEY,
                 DeviceRecord::Benchmark => crate::benchmark::BENCHMARK_KEY,
                 DeviceRecord::SummaryStyle => crate::summary_style::SUMMARY_STYLE_KEY,
@@ -342,10 +365,14 @@ impl DeviceRecord {
                 DeviceRecord::SyncServer => crate::sync::SYNC_SERVER_KEY,
                 DeviceRecord::SyncOn => crate::sync::SYNC_ON_KEY,
                 DeviceRecord::SyncVoiceprints => crate::sync::SYNC_VOICEPRINTS_KEY,
+                DeviceRecord::SyncDictionary => crate::sync::SYNC_DICTIONARY_KEY,
                 DeviceRecord::SyncCursor => crate::sync::SYNC_CURSOR_KEY,
                 DeviceRecord::SyncStatus => crate::sync::SYNC_STATUS_KEY,
                 DeviceRecord::DeviceName => crate::sync::DEVICE_NAME_KEY,
                 DeviceRecord::OfferSummaries => crate::sync::OFFER_SUMMARIES_KEY,
+                DeviceRecord::SummaryOffloadDevice => crate::offload::OFFLOAD_DEVICE_KEY,
+                DeviceRecord::OffloadTimes => crate::offload::OFFLOAD_TIMES_KEY,
+                DeviceRecord::SummaryOrder => crate::summary_order::SUMMARY_ORDER_KEY,
             }
             .to_owned(),
         )
@@ -449,6 +476,57 @@ pub(crate) fn read_setting<T>(
     Ok(setting_of(key, store.local_value(key)?.as_deref(), |b| {
         parse(String::from_utf8_lossy(b).into_owned())
     }))
+}
+
+/// A device-local JSON record with no version header (the pass backend, the model check, the
+/// echo state) as read: a value this build cannot parse is [`StoredRecord::Unreadable`], so
+/// the caller reports it and uses its default, never failing the job that reads it (T12.56).
+/// The stored bytes are unchanged.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StoredRecord<T> {
+    /// Nothing stored.
+    Absent,
+    /// A stored value this build reads.
+    Read(T),
+    /// A stored value this build cannot parse.
+    Unreadable,
+}
+
+impl<T> StoredRecord<T> {
+    /// The value read; `None` when nothing is stored or it cannot be read.
+    #[must_use]
+    pub fn value(self) -> Option<T> {
+        match self {
+            Self::Read(v) => Some(v),
+            Self::Absent | Self::Unreadable => None,
+        }
+    }
+
+    /// Something is stored, whether or not this build can read it.
+    #[must_use]
+    pub fn exists(&self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+
+    /// A value is stored that this build cannot read.
+    #[must_use]
+    pub fn is_unreadable(&self) -> bool {
+        matches!(self, Self::Unreadable)
+    }
+}
+
+/// The JSON record stored under `key`, as [`StoredRecord`].
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn json_record<T: serde::de::DeserializeOwned>(
+    store: &Store,
+    key: &LocalKey,
+) -> Result<StoredRecord<T>, RuntimeError> {
+    Ok(match store.local_value(key.as_str())? {
+        None => StoredRecord::Absent,
+        Some(v) => serde_json::from_slice(&v).map_or(StoredRecord::Unreadable, StoredRecord::Read),
+    })
 }
 
 /// An on/off setting's stored word: `on` or `off`, anything else `None`.

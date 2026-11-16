@@ -205,6 +205,37 @@ fn transcriber() -> FakeTranscriber {
 }
 
 #[test]
+fn post_unreadable_echo_locks_are_reported_once_and_the_pass_still_stores() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let (mic_audio, them_audio) = scene();
+    let mut post = PostProcessor::new(
+        transcriber(),
+        FakeSegmenter::segmentation_3_0(),
+        embedder(),
+        config(),
+    )
+    .unwrap();
+    let input = PostInput {
+        echo_locks: Vec::new(),
+        echo_locks_unreadable: true,
+        meeting,
+        tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+    };
+    let mut rng = ChaCha8Rng::seed_from_u64(3);
+    let outcome = post
+        .run(&svc, input, &mut rng, &CancelToken::new())
+        .unwrap();
+    assert_eq!(outcome.warnings, [PostWarning::EchoRecordUnreadable]);
+    assert!(
+        !live_segments(&**svc.store(), meeting, TranscriptPass::Final)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn post_final_pass_diarises_names_and_stores_speakers() {
     let dir = TempDir::new();
     let svc = services(&dir);
@@ -220,6 +251,7 @@ fn post_final_pass_diarises_names_and_stores_speakers() {
     .unwrap();
     let input = PostInput {
         echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
         meeting,
         tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
     };
@@ -379,6 +411,7 @@ fn post_single_track_uses_the_in_person_policy_and_respects_enrolment_opt_out() 
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(&mic, room)],
             },
@@ -443,6 +476,7 @@ fn post_in_person_mic_voice_matching_the_users_voiceprint_is_me() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(&mic, room)],
             },
@@ -481,6 +515,7 @@ fn post_failures_leave_the_live_transcript_and_report_the_stage() {
     let (mic_audio, them_audio) = scene();
     let input = || PostInput {
         echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
         meeting,
         tracks: vec![
             track_input(&mic, mic_audio.clone()),
@@ -581,6 +616,17 @@ fn post_input_loads_the_recorded_tracks_of_a_live_session() {
     crate::echo::record_echo_locks(&mut svc.store(), outcome.meeting, &[lock]).unwrap();
     let (relock, _) = load_post_input(&svc, outcome.meeting, &outcome.final_pass).unwrap();
     assert_eq!(relock.echo_locks, [lock]);
+    assert!(!relock.echo_locks_unreadable);
+    // A lock record this build cannot read is no locks, said, never an error (T12.56).
+    crate::local::set(
+        &mut svc.store(),
+        &crate::echo::locks_key(outcome.meeting),
+        b"[{\"from_ms\":",
+    )
+    .unwrap();
+    let (unread, _) = load_post_input(&svc, outcome.meeting, &outcome.final_pass).unwrap();
+    assert!(unread.echo_locks.is_empty());
+    assert!(unread.echo_locks_unreadable);
     let kinds: Vec<TrackId> = input.tracks.iter().map(|t| t.track.kind).collect();
     assert_eq!(kinds, [TrackId::Mic, TrackId::Reference]);
     for t in &input.tracks {
@@ -637,6 +683,7 @@ fn post_job_runs_on_its_own_thread_and_returns_the_models() {
             svc.clone(),
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(&mic, room)],
             },
@@ -653,6 +700,7 @@ fn post_job_runs_on_its_own_thread_and_returns_the_models() {
         &svc,
         PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting,
             tracks: vec![track_input(
                 &mic,
@@ -689,6 +737,7 @@ fn post_rerun_replaces_the_earlier_speakers_and_final_transcript() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(&mic, room())],
             },
@@ -780,6 +829,7 @@ fn post_reference_only_input_is_diarised_on_the_reference_track() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(&them, them_audio)],
             },
@@ -822,6 +872,7 @@ fn post_without_tracks_is_refused_and_writes_nothing() {
         &svc,
         PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting,
             tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
         },
@@ -835,6 +886,7 @@ fn post_without_tracks_is_refused_and_writes_nothing() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![],
             },
@@ -879,6 +931,7 @@ fn post_rerun_over_fewer_tracks_keeps_the_other_tracks_transcript() {
         &svc,
         PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting,
             tracks: vec![
                 track_input(&mic, mic_audio.clone()),
@@ -904,6 +957,7 @@ fn post_rerun_over_fewer_tracks_keeps_the_other_tracks_transcript() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(&mic, mic_audio)],
             },
@@ -961,6 +1015,7 @@ fn post_failure_inside_the_transaction_writes_nothing() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(
                     &other_mic,
@@ -1022,6 +1077,7 @@ fn post_two_mic_voices_the_users_match_becomes_me() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
             },
@@ -1444,6 +1500,7 @@ fn post_single_loopback_track_meeting_is_in_person_on_that_track() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(&lb, audio)],
             },
@@ -1506,6 +1563,7 @@ fn post_partial_rerun_keeps_speakers_of_the_other_track_without_segments() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![
                     track_input(&mic, mic_audio.clone()),
@@ -1522,6 +1580,7 @@ fn post_partial_rerun_keeps_speakers_of_the_other_track_without_segments() {
         &svc,
         PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting,
             tracks: vec![track_input(&mic, mic_audio)],
         },
@@ -1558,6 +1617,7 @@ fn post_voices_without_words_get_no_speaker_row() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
             },
@@ -1646,6 +1706,7 @@ fn post_a_backend_change_during_the_final_pass_is_reported_and_recorded() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(
                     &mic,
@@ -1769,6 +1830,7 @@ fn run_echo(
         meeting,
         tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
         echo_locks,
+        echo_locks_unreadable: false,
     };
     let outcome = post
         .run(
@@ -1877,6 +1939,7 @@ fn post_echo_two_mic_tracks_panic_in_debug() {
         &svc,
         PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting,
             tracks: vec![
                 track_input(&tracks[0], audio()),
@@ -2034,6 +2097,7 @@ fn run_scene(
             track_input(&them, scene_audio(&turns(them_turns), total)),
         ],
         echo_locks: locks,
+        echo_locks_unreadable: false,
     };
     let outcome = post
         .run(
@@ -2669,6 +2733,7 @@ fn post_pieces_decode_speech_only_and_never_store_a_loop() {
             &svc,
             PostInput {
                 echo_locks: Vec::new(),
+                echo_locks_unreadable: false,
                 meeting,
                 tracks: vec![track_input(&mic, audio)],
             },
@@ -2730,6 +2795,7 @@ fn post_whisper_non_speech_annotations_are_never_stored() {
         &svc,
         PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting,
             tracks: vec![track_input(
                 &mic,
@@ -2769,6 +2835,7 @@ fn progress_names(second: bool) -> Vec<String> {
         &svc,
         PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting,
             tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
         },
@@ -2953,6 +3020,7 @@ fn post_transcription_and_diarisation_run_at_the_same_time_with_the_same_result(
         .unwrap();
         let input = PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting,
             tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
         };
@@ -3018,6 +3086,7 @@ fn post_a_failed_transcription_stops_the_diarisation_and_writes_nothing() {
     .unwrap();
     let input = PostInput {
         echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
         meeting,
         tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
     };
@@ -3074,6 +3143,7 @@ fn post_two_tracks_are_diarised_at_the_same_time_on_two_model_copies() {
         assert_eq!(post.diarises_tracks_in_parallel(), second);
         let input = PostInput {
             echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
             meeting,
             tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
         };
@@ -3191,6 +3261,7 @@ fn post_an_outer_cancel_reaches_both_workers_and_writes_nothing() {
     .unwrap();
     let input = PostInput {
         echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
         meeting,
         tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
     };
@@ -3263,6 +3334,7 @@ fn post_meeting_cannot_be_deleted_while_the_final_pass_runs() {
     .unwrap();
     let input = PostInput {
         echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
         meeting,
         tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
     };
@@ -3317,6 +3389,7 @@ fn post_final_pass_of_a_meeting_deleted_elsewhere_writes_nothing() {
     .unwrap();
     let input = PostInput {
         echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
         meeting,
         tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
     };
@@ -3370,6 +3443,7 @@ fn post_a_failed_diarisation_is_reported_over_the_induced_cancellation() {
     .unwrap();
     let input = PostInput {
         echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
         meeting,
         tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
     };

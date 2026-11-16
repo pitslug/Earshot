@@ -179,6 +179,12 @@ pub enum SummaryEvent {
     },
     /// The summary was cancelled; nothing was stored. A final transcript stays.
     Cancelled,
+    /// Another of the user's computers was asked to write the summary (T11.3db): it arrives by
+    /// sync, or this computer writes it if that one does not.
+    Offloaded {
+        /// The meeting's waiting line (fixed copy, `offload::waiting_copy`).
+        message: String,
+    },
     /// The final pass was cancelled, so no summary ran either: the recording and any draft
     /// transcript stay and the meeting reads as `Unprocessed`.
     PostCancelled,
@@ -668,6 +674,10 @@ fn meeting_clock(ms: u64) -> String {
     }
 }
 
+/// The banner key of [`RuntimeWarning::RawMicRefused`] (T12.36): one banner whether the mic
+/// refused raw at the start or on a re-open.
+pub const RAW_MIC_KEY: &str = "raw-mic";
+
 /// The banner key of [`RuntimeWarning::EveryRecordingStopped`]; the shell notifies on it
 /// whether or not the window is watched (T9.17).
 pub const RECORDING_STOPPED_KEY: &str = "recording-stopped";
@@ -977,6 +987,13 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
                 ),
             )
         }
+        RuntimeWarning::RawMicRefused => warning(
+            RAW_MIC_KEY.into(),
+            WarningKind::Audio,
+            "Your microphone could not be recorded without Windows' sound processing, so this \
+             meeting records it with that processing. Nothing is lost."
+                .into(),
+        ),
         RuntimeWarning::SleepNotPrevented => warning(
             "keep-awake".into(),
             WarningKind::Audio,
@@ -1128,6 +1145,8 @@ pub fn skip_copy(reason: &SkipReason) -> String {
         SkipReason::KeptLocalNoModel { model } => {
             crate::plain_text::kept_local_no_model(model, false)
         }
+        // T12.63b: the copy table's.
+        SkipReason::NotNow => crate::summary_order::COPY.not_now.clone(),
     }
 }
 
@@ -1411,6 +1430,9 @@ pub fn summary_result_event(result: &SummaryResult, voices_to_name: u32) -> Summ
             retryable: *retryable,
         },
         SummaryResult::Cancelled => SummaryEvent::Cancelled,
+        SummaryResult::Offloaded { name, .. } => SummaryEvent::Offloaded {
+            message: crate::offload::waiting_copy(Some(name)),
+        },
     }
 }
 

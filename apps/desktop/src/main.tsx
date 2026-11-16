@@ -21,7 +21,10 @@ import { createRoot } from "react-dom/client";
 // summary or transcript did not finish (T9.23). `?keptLocal=1` keeps the weekly sync
 // on this computer with Claude Code as the summary writer (T12.13). `?previews=battery` shows a
 // meeting whose provisional words are off on battery, `?previews=waiting` one where they wait
-// for the transcript and the banner is taken back (T12.33). The mock is loaded only here, with a
+// for the transcript and the banner is taken back (T12.33). `?sync=1` shows a computer set up for
+// sync with other computers that write summaries, `?summary=offloaded` a meeting whose summary
+// another computer writes (T11.3db). `?notInUse=3` shows a Dictionary whose words joined from
+// the user's computers pass a limit, three of them not in use (T11.3e). The mock is loaded only here, with a
 // dynamic import, so the app's own bundle starts without it (T12.54).
 async function previewIpc(): Promise<Ipc> {
   const { createMockIpc, samplePersons } = await import("@earshot/ui/preview");
@@ -51,6 +54,13 @@ async function previewIpc(): Promise<Ipc> {
             retryable: false,
           },
         }
+      : query.get("summary") === "offloaded"
+        ? {
+            summary: {
+              kind: "Offloaded" as const,
+              message: "Waiting for Studio to write the summary.",
+            },
+          }
       : query.get("summary") === "postFailed"
         ? {
             summary: {
@@ -61,6 +71,15 @@ async function previewIpc(): Promise<Ipc> {
             },
           }
         : {}),
+    ...(query.get("sync") === "1" ? { sync: { setUp: true, lastSuccessUnixMs: Date.now() - 60_000 } } : {}),
+    ...(query.get("notInUse") !== null
+      ? {
+          summaries: {
+            vocabulary: ["Quillmarsh", "QXR-7", "Velmora Ridge"],
+            notInUse: Number(query.get("notInUse")),
+          },
+        }
+      : {}),
     ...(query.get("keptLocal") === "1"
       ? {
           keptLocal: ["0190f1a2-0000-7000-8000-000000000003"],

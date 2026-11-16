@@ -36,9 +36,12 @@ mod meeting_events;
 mod model_jobs;
 mod models;
 mod obsidian;
+mod offload;
 #[cfg(test)]
 mod page_names_tests;
 mod plain_text;
+#[cfg(windows)]
+mod power_win;
 mod recovery;
 mod shell;
 #[cfg(windows)]
@@ -47,6 +50,7 @@ mod slot_job;
 mod speaker_settings;
 mod storage_settings;
 mod summaries;
+mod summary_order;
 mod summary_style;
 mod summary_vocabulary;
 mod sync_settings;
@@ -222,12 +226,23 @@ fn main() {
             let sync = std::sync::Arc::new(sync_settings::SyncHost::new(std::sync::Arc::new(
                 sync_vault::SyncCredentials::app(),
             )));
+            // Gone on sleep, online on resume (T11.3ca).
+            #[cfg(windows)]
+            let _ = power_win::watch(std::sync::Arc::clone(&sync));
+            // Summary offload (T11.3db, T12.63b): a computer step of the order of summary
+            // writers asks that computer when it is tried.
+            let computers = summary_order::ComputerSlot::default();
             if let Ok(services) = state.services() {
-                let sync = std::sync::Arc::clone(&sync);
-                let _ = std::thread::Builder::new()
-                    .name("earshot-sync-start".into())
-                    .spawn(move || sync.start_if_on(&services));
+                let vault = sync.vault();
+                let _ = computers.set(Arc::new(move |device| {
+                    earshot_runtime::offload::choose_device_now(
+                        &services,
+                        Arc::clone(&vault),
+                        device,
+                    )
+                }));
             }
+            let sync_for_start = Arc::clone(&sync);
             app.manage(sync);
             app.manage(update_jobs);
             app.manage(state);
@@ -241,13 +256,15 @@ fn main() {
                     shell.on_meeting_event(&e);
                 }
             });
-            app.manage(meeting::MeetingDriver::new(
-                Arc::new(meeting::HostPrepare::wasapi()),
+            let driver = meeting::MeetingDriver::new(
+                Arc::new(meeting::HostPrepare::wasapi().with_computers(Arc::clone(&computers))),
                 sink,
                 Arc::new(Instant::now),
                 gate.clone(),
                 &cuda_latch,
-            ));
+            );
+            let meeting_queue = driver.queue();
+            app.manage(driver);
             let handle = app.handle().clone();
             let job_sink: jobs::JobSink = Arc::new(move |e: jobs::JobEvent| {
                 let _ = e.emit(&handle);
@@ -255,12 +272,27 @@ fn main() {
                     shell.on_job_event(&e);
                 }
             });
-            app.manage(jobs::JobRunner::new(
-                Arc::new(jobs::HostJobs),
+            let job_runner = jobs::JobRunner::new(
+                Arc::new(jobs::HostJobs { computers }),
                 job_sink,
                 gate.clone(),
                 &cuda_latch,
-            ));
+            );
+            // Sync (T11.3a) starts off the setup path (Credential Manager is read first), once
+            // summary offload's host exists (T11.3db).
+            if let Ok(services) = app.state::<ipc::AppState>().services() {
+                sync_for_start.set_offload_host(Arc::new(offload::HostOffload::new(
+                    services.clone(),
+                    job_runner.clone(),
+                    meeting_queue,
+                    gate.clone(),
+                    Arc::new(offload::HostHelperWork::installed()),
+                )));
+                let _ = std::thread::Builder::new()
+                    .name("earshot-sync-start".into())
+                    .spawn(move || sync_for_start.start_if_on(&services));
+            }
+            app.manage(job_runner);
             let model_sink: model_jobs::ModelSink = emitter(app.handle());
             let model_jobs = model_jobs::ModelJobs::new(
                 Arc::new(model_jobs::HostModelWork),

@@ -361,6 +361,173 @@ fn sync_removing_a_device_revokes_its_token() {
 }
 
 #[test]
+fn sync_removing_another_device_stops_it_and_keeps_its_rows() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let cb = b.client();
+    let from_b = meeting(&b.svc, "Kept after removal", 3);
+    cb.tick().unwrap();
+    let b_id = b.svc.store().device();
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    // The removed device's next request is refused as for a removed self, and it stops.
+    assert_eq!(cb.tick(), Err(SyncProblem::UnknownDevice));
+    assert_eq!(
+        sync_status(&b.svc.store()).unwrap().problem,
+        Some(SyncProblem::UnknownDevice)
+    );
+    // It leaves the list; this device keeps syncing.
+    let listed: Vec<_> = vault_devices(&a.svc, a.vault())
+        .unwrap()
+        .into_iter()
+        .map(|d| (d.device, d.this_device))
+        .collect();
+    assert_eq!(listed, [(a.svc.store().device(), true)]);
+    let ca = a.client();
+    ca.tick().unwrap();
+    assert_eq!(a.title(from_b).as_deref(), Some("Kept after removal"));
+    // Its rows stay on the server: a computer joining now still receives them.
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    let c = Device::new("sync-c");
+    join_with_code(&c.svc, &*c.vault, &relay.relay.url(), offer.code()).unwrap();
+    c.client().tick().unwrap();
+    assert_eq!(c.title(from_b).as_deref(), Some("Kept after removal"));
+    // Removing it again changes nothing.
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    assert_only_the_relay(&ca, &relay);
+}
+
+/// The recovery the removed computer's page offers (T11.6c, the owner's decision 2026-11-16):
+/// remove it here, then join again with a pairing code from a live computer; it syncs again
+/// under its own device id, both ways, with no request to the relay while forgetting.
+#[test]
+fn sync_a_removed_device_follows_the_copy_and_syncs_again() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let before = meeting(&a.svc, "Before the removal", 4);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    let b_id = b.svc.store().device();
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    assert_eq!(cb.tick(), Err(SyncProblem::UnknownDevice));
+
+    // "Remove it here": forgetting asks the server nothing (it would only hear 401 again), so
+    // it works even with the server out of reach (a port nothing listens on).
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    {
+        let mut db = b.svc.store();
+        crate::local::set(
+            &mut db,
+            &DeviceRecord::SyncServer.key(),
+            format!("http://127.0.0.1:{port}").as_bytes(),
+        )
+        .unwrap();
+    }
+    remove_this_device(&b.svc, b.vault()).unwrap();
+    assert!(!b.vault.has().unwrap());
+
+    // "Then join again with a pairing code": shown on the live computer.
+    let during = meeting(&a.svc, "While it was removed", 5);
+    ca.tick().unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+    assert_eq!(b.svc.store().device(), b_id, "the same device id came back");
+    let cb = b.client();
+    cb.tick().unwrap();
+    assert_eq!(b.title(before).as_deref(), Some("Before the removal"));
+    assert_eq!(b.title(during).as_deref(), Some("While it was removed"));
+    // Both ways again.
+    let after = meeting(&b.svc, "After rejoining", 6);
+    cb.tick().unwrap();
+    ca.tick().unwrap();
+    assert_eq!(a.title(after).as_deref(), Some("After rejoining"));
+    let listed: Vec<_> = vault_devices(&a.svc, a.vault())
+        .unwrap()
+        .into_iter()
+        .map(|d| d.device)
+        .collect();
+    assert_eq!(listed.len(), 2);
+    assert!(listed.contains(&b_id));
+    assert_only_the_relay(&cb, &relay);
+}
+
+/// A credential store that refuses every save.
+struct RefusingVault;
+
+impl SyncVault for RefusingVault {
+    fn save(&self, _: &VaultKey, _: &DeviceToken) -> Result<(), VaultError> {
+        Err(VaultError::Store)
+    }
+    fn has(&self) -> Result<bool, VaultError> {
+        Ok(false)
+    }
+    fn remove(&self) -> Result<(), VaultError> {
+        Ok(())
+    }
+    fn load(&self) -> Result<Option<SyncSecrets>, VaultError> {
+        Ok(None)
+    }
+}
+
+/// The residual the spec names (T11.6c "Coming back"): a rejoin the relay registered but this
+/// computer could not keep leaves a live id no one holds a token for; the next code is
+/// `device_exists` until another computer removes it, and then the join works.
+#[test]
+fn sync_a_rejoin_that_could_not_be_kept_is_recovered_by_removing_it_again() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let b_id = b.svc.store().device();
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    assert_eq!(b.client().tick(), Err(SyncProblem::UnknownDevice));
+    remove_this_device(&b.svc, b.vault()).unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    assert_eq!(
+        join_with_code(&b.svc, &RefusingVault, &relay.relay.url(), offer.code()),
+        Err(SyncProblem::Store)
+    );
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    assert_eq!(
+        join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()),
+        Err(SyncProblem::DeviceExists)
+    );
+    remove_other_device(&a.svc, a.vault(), b_id).unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+    b.client().tick().unwrap();
+}
+
+#[test]
+fn sync_removing_another_device_never_takes_this_one_or_works_once_removed() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    // This device goes only through remove_this_device: the other path refuses it and sends
+    // nothing.
+    let me = a.svc.store().device();
+    assert_eq!(
+        remove_other_device(&a.svc, a.vault(), me),
+        Err(SyncProblem::Internal)
+    );
+    a.client().tick().unwrap();
+    // A removed device cannot remove another: it hears that it was removed.
+    remove_other_device(&a.svc, a.vault(), b.svc.store().device()).unwrap();
+    assert_eq!(
+        remove_other_device(&b.svc, b.vault(), me),
+        Err(SyncProblem::UnknownDevice)
+    );
+    a.client().tick().unwrap();
+    // A device that is not set up has nothing to ask with.
+    let lone = Device::new("sync-lone");
+    assert_eq!(
+        remove_other_device(&lone.svc, lone.vault(), me),
+        Err(SyncProblem::Vault)
+    );
+}
+
+#[test]
 fn sync_server_unreachable_is_a_status_and_a_retry() {
     let a = Device::new("sync-down");
     // A loopback port nothing listens on.
@@ -801,9 +968,13 @@ fn apply_page(dev: &Device, rows: &[earshot_store::SyncedRow]) -> earshot_store:
         .collect();
     let never = |_: earshot_core::identity::EntityId| false;
     let rules = earshot_store::ApplyRules {
-        voiceprints: false,
+        kinds: earshot_store::SyncKinds {
+            voiceprints: false,
+            dictionary: true,
+        },
         leased: &never,
         now_ms: dev.svc.clock.now_unix_ms(),
+        after: None,
     };
     let clock = Arc::clone(&dev.svc.clock);
     let mut db = dev.svc.store();
@@ -1056,6 +1227,109 @@ fn presence_round_trip_names_each_device_and_says_who_is_online() {
     );
 }
 
+/// T11.6: a summary worker's presence says kind `server` and names the writer it was given,
+/// not its Summaries settings; the app's says `app`. Its client may name its relay itself.
+#[test]
+fn presence_a_summary_worker_says_server_and_its_own_writer() {
+    use crate::offload::WriterKind;
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_device_name(&b.svc, "Invented server").unwrap();
+    set_offer_summaries(&b.svc, true).unwrap();
+    // Where the worker's model is, as its locator would say now.
+    let local = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let now = Arc::clone(&local);
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    let worker = SyncClient::for_address(b.svc.clone(), b.vault(), &relay.relay.url())
+        .unwrap()
+        .as_summary_worker(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(if now.load(std::sync::atomic::Ordering::SeqCst) {
+                WriterKind::Local
+            } else {
+                WriterKind::OpenaiCompatible
+            })
+        }));
+    worker.send_presence(false).unwrap();
+    a.client().send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    let p = theirs.presence.as_ref().unwrap();
+    assert_eq!(p.kind, KIND_SERVER);
+    assert_eq!(p.writer_kind.as_deref(), Some("local"));
+    assert!(
+        theirs.online && p.offers_summaries && !p.recording,
+        "{theirs:?}"
+    );
+    let mine = peers
+        .iter()
+        .find(|p| p.device == a.svc.store().device())
+        .unwrap();
+    assert_eq!(mine.presence.as_ref().unwrap().kind, KIND_APP);
+    // The Sync page lists it by its name, online.
+    let listed = vault_devices(&a.svc, a.vault()).unwrap();
+    let other = listed.iter().find(|d| !d.this_device).unwrap();
+    assert_eq!(other.name.as_deref(), Some("Invented server"));
+    assert!(other.online && other.offers_summaries);
+    assert_eq!(other.writer_kind, Some(WriterKind::Local));
+    // The model moves (its container was not up yet, or is gone): the next presence says so.
+    local.store(false, std::sync::atomic::Ordering::SeqCst);
+    worker.send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    assert_eq!(
+        theirs.presence.as_ref().unwrap().writer_kind.as_deref(),
+        Some("openai_compatible")
+    );
+    local.store(true, std::sync::atomic::Ordering::SeqCst);
+    worker.send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    assert_eq!(
+        theirs.presence.as_ref().unwrap().writer_kind.as_deref(),
+        Some("local")
+    );
+    // Not offering: no writer is named, whatever it was given.
+    set_offer_summaries(&b.svc, false).unwrap();
+    worker.send_presence(false).unwrap();
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    assert_eq!(theirs.presence.as_ref().unwrap().writer_kind, None);
+    // A gone blob does not ask the locator (it may look a name up) and names no writer.
+    let before = asked.load(std::sync::atomic::Ordering::SeqCst);
+    set_offer_summaries(&b.svc, true).unwrap();
+    worker.send_presence(true).unwrap();
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), before);
+    let peers = a.client().peers().unwrap();
+    let theirs = peers
+        .iter()
+        .find(|p| p.device == b.svc.store().device())
+        .unwrap();
+    let p = theirs.presence.as_ref().unwrap();
+    assert!(
+        p.gone && p.writer_kind.is_none() && p.kind == KIND_SERVER,
+        "{p:?}"
+    );
+    // A refused address is refused as a stored one would be.
+    assert_eq!(
+        SyncClient::for_address(b.svc.clone(), b.vault(), "http://relay.example.com").err(),
+        Some(SyncProblem::Address)
+    );
+}
+
 #[test]
 fn presence_from_another_vault_is_listed_without_a_name() {
     // A blob sealed under another key cannot be opened: no name, not online.
@@ -1112,6 +1386,92 @@ fn presence_the_thread_announces_itself_and_says_gone_when_stopped() {
     assert!(online_now(), "a replaced thread must not say gone");
 }
 
+// T11.3ca: gone on quit and on sleep.
+
+#[test]
+fn presence_beats_say_gone_once_and_online_again_only_after_an_announcement() {
+    // Nothing announced yet: going away and coming back send nothing.
+    let mut b = Beats::default();
+    assert!(b.beat_due());
+    assert!(!b.go_away(), "never seen online: nothing to take back");
+    assert!(!b.beat_due(), "no beats while away");
+    assert!(b.come_back(), "it had gone away, though nothing was said");
+    assert!(b.beat_due());
+    // Announced: gone once per going away; beats resume when back.
+    b.sent_online();
+    assert!(b.announced());
+    assert!(b.go_away(), "seen online: say gone");
+    assert!(!b.go_away(), "not twice for one going away");
+    assert!(!b.beat_due());
+    assert!(b.come_back(), "it had gone away");
+    assert!(!b.come_back(), "and is back only once");
+    assert!(b.beat_due());
+}
+
+#[test]
+fn presence_the_thread_says_gone_when_going_away_and_online_when_back() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_device_name(&a.svc, "Laptop").unwrap();
+    let timing = SyncTiming {
+        tick: Duration::from_millis(100),
+        poll: Duration::from_millis(10),
+        presence: Duration::from_millis(50),
+    };
+    let online_now = || {
+        vault_devices(&b.svc, b.vault())
+            .unwrap()
+            .into_iter()
+            .find(|d| !d.this_device)
+            .is_some_and(|d| d.online && d.name.as_deref() == Some("Laptop"))
+    };
+    let thread = SyncThread::start(a.client(), timing).unwrap();
+    wait_for("the thread never sent its presence", online_now);
+    let sent = thread.say_gone().expect("the gone thread starts");
+    sent.recv_timeout(Duration::from_secs(10))
+        .expect("the gone send never finished");
+    assert!(!online_now(), "a device going away says gone at once");
+    assert!(thread.say_gone().is_none(), "not twice for one going away");
+    // Several beat intervals later it still reads gone: the beats stopped.
+    std::thread::sleep(timing.presence * 6);
+    assert!(!online_now(), "no beat while away");
+    thread.back();
+    wait_for("the thread never said it was back", online_now);
+    thread.stop();
+}
+
+#[test]
+fn presence_back_beats_after_the_first_tick_not_the_next_interval() {
+    // A beat interval far longer than the test: only `back` can bring the device online again
+    // in time.
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_device_name(&a.svc, "Laptop").unwrap();
+    let timing = SyncTiming {
+        tick: Duration::from_millis(100),
+        poll: Duration::from_millis(10),
+        presence: Duration::from_secs(3600),
+    };
+    let online_now = || {
+        vault_devices(&b.svc, b.vault())
+            .unwrap()
+            .into_iter()
+            .find(|d| !d.this_device)
+            .is_some_and(|d| d.online)
+    };
+    let thread = SyncThread::start(a.client(), timing).unwrap();
+    wait_for("the first beat never came", online_now);
+    thread
+        .say_gone()
+        .expect("the gone thread starts")
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the gone send never finished");
+    assert!(!online_now());
+    thread.back();
+    wait_for("back never beat before the next interval", online_now);
+    thread.stop();
+}
+
 #[test]
 fn presence_blobs_are_one_size_whatever_they_say() {
     let key = earshot_sync::VaultKey::generate().unwrap();
@@ -1119,13 +1479,26 @@ fn presence_blobs_are_one_size_whatever_they_say() {
     let device = earshot_core::identity::DeviceId::from_bytes([7; 16]);
     let widest = "\u{1F600}".repeat(MAX_DEVICE_NAME);
     let mut sizes = std::collections::BTreeSet::new();
-    for (name, recording, gone) in [
-        ("A", false, false),
-        ("A", true, false),
-        ("A much longer computer name here", true, true),
-        (widest.as_str(), false, false),
+    let longest = crate::offload::WriterKind::OpenaiCompatible;
+    for (name, recording, gone, writer) in [
+        ("A", false, false, None),
+        ("A", true, false, Some(crate::offload::WriterKind::Local)),
+        (
+            "A much longer computer name here",
+            true,
+            true,
+            Some(longest),
+        ),
+        (widest.as_str(), false, false, Some(longest)),
     ] {
-        let p = presence::presence_now(name.to_owned(), true, recording, gone);
+        let p = presence::presence_now(
+            presence::KIND_APP,
+            name.to_owned(),
+            true,
+            writer,
+            recording,
+            gone,
+        );
         let blob = presence::blob_of(&p, &keys, device).unwrap();
         sizes.insert(blob.len());
         let back = presence::open_blob(&keys, device, &blob).unwrap();
@@ -1177,4 +1550,584 @@ fn sync_waiting_leaves_out_voiceprints_while_their_switch_is_off() {
         a.svc.store().outbox_len().unwrap() > 0,
         "it stays queued for the switch"
     );
+}
+
+/// A row of an entity this build does not know (as `summary_request` is to Earshot 0.3.7, which
+/// syncs at the same envelope format) is held as `format` by the client, never dropped or
+/// applied, and opens again after an update (T11.3da kept the format at 1).
+#[test]
+fn sync_a_row_of_an_entity_this_build_does_not_know_is_held() {
+    use earshot_core::identity::{
+        Clock, EntityId, HlcTimestamp, SyncClass, SyncMeta, SyncSerialize, SyncableClass,
+    };
+    #[derive(serde::Serialize)]
+    struct FromANewerBuild {
+        id: EntityId,
+        meta: SyncMeta,
+        anything: String,
+    }
+    impl SyncClass for FromANewerBuild {
+        type Class = SyncableClass;
+    }
+    impl SyncSerialize for FromANewerBuild {
+        const ENTITY: &'static str = "an_entity_from_a_newer_build";
+        fn sync_id(&self) -> EntityId {
+            self.id
+        }
+        fn sync_meta(&self) -> &SyncMeta {
+            &self.meta
+        }
+    }
+    let node = earshot_core::identity::DeviceId::from_bytes([9; 16]);
+    let stamp = HlcTimestamp {
+        wall_ms: crate::testutil::T0,
+        logical: 0,
+        node,
+    };
+    let row = FromANewerBuild {
+        id: EntityId::from_bytes([0x01, 0x90, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 1, 9]),
+        meta: SyncMeta {
+            created_at: stamp,
+            updated_at: stamp,
+            deleted: false,
+            origin_device_id: node,
+        },
+        anything: "new".into(),
+    };
+    let keys = earshot_sync::VaultKey::from_bytes([3; 32]).keys();
+    let sealed = earshot_sync::seal_row(&keys, &row).unwrap();
+    let inc = engine::open(&keys, 1, &sealed.key.0, sealed.stamp, sealed.body).unwrap();
+    assert!(inc.row.is_none(), "not decoded: held for a newer build");
+    let dir = TempDir::new("sync-unknown-entity");
+    let (svc, clock) = services(&dir);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let free = |_: EntityId| false;
+    let rules = earshot_store::ApplyRules {
+        kinds: earshot_store::SyncKinds {
+            voiceprints: false,
+            dictionary: true,
+        },
+        leased: &free,
+        now_ms: clock.now_unix_ms(),
+        after: None,
+    };
+    let applied = store.apply_remote(&[inc], &rules, hlc, &*clock).unwrap();
+    assert_eq!(applied.held[0], 1, "{applied:?}");
+    assert_eq!(
+        store.held_rows().unwrap()[0].reason,
+        earshot_store::HoldReason::Format
+    );
+}
+
+// ---- Dictionary sync (T11.3e, docs/sync.md section 9). Every name holds `dictionary_sync`;
+// every word is invented. ----
+
+/// The words a device's summaries read now.
+fn words(dev: &Device) -> Vec<String> {
+    crate::vocabulary::vocabulary(&dev.svc.store())
+        .unwrap()
+        .0
+        .words()
+        .to_vec()
+}
+
+/// The live word rows a device holds, in creation order.
+fn live_rows(dev: &Device) -> Vec<String> {
+    use earshot_core::model::DictionaryRepo;
+    dev.svc
+        .store()
+        .dictionary_words()
+        .unwrap()
+        .into_iter()
+        .filter(|w| w.is_live())
+        .map(|w| w.word)
+        .collect()
+}
+
+fn not_in_use(dev: &Device) -> usize {
+    crate::vocabulary::dictionary_state(&dev.svc.store())
+        .unwrap()
+        .not_in_use
+}
+
+/// Ticks `a`, `b`, then `a` again, so each has the other's changes.
+fn exchange(a: &Device, b: &Device) {
+    a.client().tick().unwrap();
+    b.client().tick().unwrap();
+    a.client().tick().unwrap();
+}
+
+#[test]
+fn dictionary_sync_is_on_by_default_once_sync_is_on() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    let settings = sync_settings(&a.svc.store()).unwrap();
+    assert!(settings.dictionary && !settings.voiceprints);
+    assert!(crate::vocabulary::dictionary_syncs(&a.svc.store()).unwrap());
+    // A device that never set sync up keeps its own list.
+    let alone = Device::new("sync-dictionary-alone");
+    assert!(!crate::vocabulary::dictionary_syncs(&alone.svc.store()).unwrap());
+}
+
+#[test]
+fn dictionary_sync_two_devices_adding_different_words_keep_both() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    crate::vocabulary::add_word(&a.svc, "Quillmarsh").unwrap();
+    b.clock.advance_ms(5);
+    crate::vocabulary::add_word(&b.svc, "Velmora").unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&a), ["Quillmarsh", "Velmora"], "creation order");
+    assert_eq!(words(&b), words(&a));
+    assert_eq!((not_in_use(&a), not_in_use(&b)), (0, 0));
+    let ca = a.client();
+    ca.tick().unwrap();
+    assert_only_the_relay(&ca, &relay);
+}
+
+#[test]
+fn dictionary_sync_a_removal_on_one_device_reaches_the_other() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    crate::testutil::replace_words(&a.svc, &["Quillmarsh", "QXR-7"]).unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&b), ["Quillmarsh", "QXR-7"]);
+    b.clock.advance_ms(10);
+    assert!(crate::vocabulary::remove_word(&b.svc, "quillmarsh").unwrap());
+    exchange(&b, &a);
+    assert_eq!(words(&a), ["QXR-7"]);
+    assert_eq!(words(&b), ["QXR-7"]);
+    // The removal is a tombstone with its word cleared: the word is gone from every row.
+    use earshot_core::model::DictionaryRepo;
+    let rows = a.svc.store().dictionary_words().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.is_live() || r.word.is_empty()));
+}
+
+#[test]
+fn dictionary_sync_the_same_word_twice_counts_once_with_the_earliest_spelling() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    crate::vocabulary::add_word(&a.svc, "quillmarsh").unwrap();
+    b.clock.advance_ms(50);
+    crate::vocabulary::add_word(&b.svc, "QuillMarsh").unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&a), ["quillmarsh"]);
+    assert_eq!(words(&b), ["quillmarsh"]);
+    // Both rows stay stored; the repeat is neither in use nor counted as not in use.
+    assert_eq!(live_rows(&b).len(), 2);
+    assert_eq!(not_in_use(&b), 0);
+    // Removing the word removes every spelling of it, everywhere.
+    assert!(crate::vocabulary::remove_word(&b.svc, "QUILLMARSH").unwrap());
+    exchange(&b, &a);
+    assert!(words(&a).is_empty() && live_rows(&a).is_empty());
+}
+
+#[test]
+fn dictionary_sync_a_joined_list_past_the_limits_keeps_every_word_and_counts_the_rest() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let mine: Vec<String> = (0..60).map(|i| format!("alpha{i:02}")).collect();
+    let theirs: Vec<String> = (0..60).map(|i| format!("beta{i:02}")).collect();
+    crate::testutil::replace_words(&a.svc, &mine).unwrap();
+    b.clock.advance_ms(100);
+    crate::testutil::replace_words(&b.svc, &theirs).unwrap();
+    exchange(&a, &b);
+    let mut want = mine.clone();
+    want.extend(theirs[..40].iter().cloned());
+    for dev in [&a, &b] {
+        assert_eq!(words(dev), want, "taken in creation order up to 100 words");
+        assert_eq!(not_in_use(dev), 20);
+        assert_eq!(live_rows(dev).len(), 120, "nothing deleted to make room");
+    }
+    // Removing a word in use lets the next stored word in.
+    assert!(crate::vocabulary::remove_word(&a.svc, "alpha00").unwrap());
+    assert_eq!(not_in_use(&a), 19);
+    assert!(words(&a).contains(&"beta40".to_owned()));
+    exchange(&a, &b);
+    assert_eq!(words(&b), words(&a));
+    assert_eq!(live_rows(&b).len(), 119);
+}
+
+#[test]
+fn dictionary_sync_off_keeps_this_devices_list_and_neither_sends_nor_applies() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_dictionary(&b.svc, false).unwrap();
+    assert!(!sync_settings(&b.svc.store()).unwrap().dictionary);
+    crate::vocabulary::add_word(&a.svc, "Quillmarsh").unwrap();
+    b.clock.advance_ms(5);
+    crate::vocabulary::add_word(&b.svc, "Velmora").unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&a), ["Quillmarsh"], "b sent nothing");
+    assert_eq!(words(&b), ["Velmora"], "b applied nothing");
+    // b's row waits in its outbox, and is not counted as behind.
+    let overview = sync_overview(&b.svc, &*b.vault).unwrap();
+    assert_eq!(overview.waiting, 0);
+    assert!(b.svc.store().outbox_len().unwrap() > 0);
+
+    // Turning it on reads every earlier row and sends b's own.
+    set_sync_dictionary(&b.svc, true).unwrap();
+    assert_eq!(pull_cursor(&b.svc.store()).unwrap(), 0);
+    exchange(&b, &a);
+    b.client().tick().unwrap();
+    assert_eq!(words(&a), ["Quillmarsh", "Velmora"]);
+    assert_eq!(words(&b), ["Quillmarsh", "Velmora"]);
+}
+
+#[test]
+fn dictionary_sync_words_stored_before_rows_existed_get_rows_and_are_kept() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    // As an older Earshot stored them: the list alone, no rows.
+    local::set(
+        &mut a.svc.store(),
+        &DeviceRecord::Vocabulary.key(),
+        br#"["Ostrelby","QXR-7"]"#,
+    )
+    .unwrap();
+    assert!(live_rows(&a).is_empty());
+    exchange(&a, &b);
+    assert_eq!(live_rows(&a), ["Ostrelby", "QXR-7"]);
+    assert_eq!(words(&a), ["Ostrelby", "QXR-7"]);
+    assert_eq!(words(&b), ["Ostrelby", "QXR-7"]);
+}
+
+#[test]
+fn dictionary_sync_turning_it_on_makes_rows_for_the_words_already_here() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    set_sync_dictionary(&a.svc, false).unwrap();
+    local::set(
+        &mut a.svc.store(),
+        &DeviceRecord::Vocabulary.key(),
+        br#"["Velmora"]"#,
+    )
+    .unwrap();
+    assert!(live_rows(&a).is_empty());
+    set_sync_dictionary(&a.svc, true).unwrap();
+    assert_eq!(live_rows(&a), ["Velmora"]);
+    // Already on: nothing more is made and the cursor is left alone.
+    a.client().tick().unwrap();
+    let at = pull_cursor(&a.svc.store()).unwrap();
+    set_sync_dictionary(&a.svc, true).unwrap();
+    assert_eq!(pull_cursor(&a.svc.store()).unwrap(), at);
+    assert_eq!(live_rows(&a), ["Velmora"]);
+}
+
+#[test]
+fn dictionary_sync_words_reach_the_relay_only_sealed() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    crate::vocabulary::add_word(&a.svc, "Zentravelk").unwrap();
+    let ca = a.client();
+    ca.tick().unwrap();
+    // Nothing the relay stored holds the word in the clear.
+    let mut stack = vec![relay._dir.0.clone()];
+    let mut files = 0;
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files += 1;
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(
+                    !bytes.windows(10).any(|w| w == b"Zentravelk"),
+                    "a relay file holds the word"
+                );
+            }
+        }
+    }
+    assert!(files > 0);
+    assert_only_the_relay(&ca, &relay);
+}
+
+/// The stored `settings/vocabulary` bytes of a device.
+fn stored_list(dev: &Device) -> Option<Vec<u8>> {
+    dev.svc
+        .store()
+        .local_value(crate::vocabulary::VOCABULARY_KEY)
+        .unwrap()
+}
+
+#[test]
+fn dictionary_sync_a_stale_page_cannot_delete_a_word_another_device_added() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    // b's page read its list (empty) before a's word arrived.
+    let seen = words(&b);
+    crate::vocabulary::add_word(&a.svc, "Velmora").unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&b), ["Velmora"]);
+    // A whole-list save from that page is refused; nothing is written.
+    let err = crate::vocabulary::set_vocabulary(&b.svc, &seen, &["Quillmarsh"]).unwrap_err();
+    assert!(matches!(err, crate::vocabulary::SetVocabularyError::Stale));
+    assert_eq!(err.to_string(), crate::vocabulary::STALE_LIST);
+    // The page edits one word at a time instead: adding keeps the word that arrived.
+    b.clock.advance_ms(5);
+    crate::vocabulary::add_entry(&b.svc, "Quillmarsh").unwrap();
+    exchange(&b, &a);
+    assert_eq!(words(&a), ["Velmora", "Quillmarsh"]);
+    assert_eq!(words(&b), ["Velmora", "Quillmarsh"]);
+}
+
+#[test]
+fn dictionary_sync_an_apply_between_read_and_write_is_never_a_removal() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    crate::vocabulary::add_word(&b.svc, "Quillmarsh").unwrap();
+    exchange(&b, &a);
+    // b's page shows its list; meanwhile a's word arrives and is applied on b.
+    let page = words(&b);
+    assert_eq!(page, ["Quillmarsh"]);
+    a.clock.advance_ms(5);
+    crate::vocabulary::add_word(&a.svc, "Velmora").unwrap();
+    exchange(&a, &b);
+    assert_eq!(words(&b), ["Quillmarsh", "Velmora"]);
+    // The page's Delete names one word: the word applied in between stays, everywhere.
+    assert!(crate::vocabulary::remove_entry(&b.svc, &page[0]).unwrap());
+    assert_eq!(words(&b), ["Velmora"]);
+    exchange(&b, &a);
+    assert_eq!(words(&a), ["Velmora"]);
+    assert_eq!(live_rows(&a), ["Velmora"]);
+}
+
+#[test]
+fn dictionary_sync_add_is_refused_while_words_are_not_in_use() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let mine: Vec<String> = (0..60).map(|i| format!("alpha{i:02}")).collect();
+    let theirs: Vec<String> = (0..60).map(|i| format!("beta{i:02}")).collect();
+    crate::testutil::replace_words(&a.svc, &mine).unwrap();
+    b.clock.advance_ms(100);
+    crate::testutil::replace_words(&b.svc, &theirs).unwrap();
+    exchange(&a, &b);
+    assert_eq!(not_in_use(&a), 20);
+    let before = live_rows(&a);
+    let err = crate::vocabulary::add_entry(&a.svc, "Quillmarsh").unwrap_err();
+    assert!(matches!(
+        err,
+        crate::vocabulary::SetVocabularyError::NotInUse
+    ));
+    assert_eq!(err.to_string(), crate::vocabulary::NOT_IN_USE_REFUSAL);
+    let err = crate::vocabulary::add_word(&a.svc, "Quillmarsh").unwrap_err();
+    assert!(matches!(
+        err,
+        crate::vocabulary::SetVocabularyError::NotInUse
+    ));
+    assert_eq!(live_rows(&a), before, "nothing stored");
+    // A word already in use is still reported as there, not refused.
+    let there = crate::vocabulary::add_entry(&a.svc, "ALPHA00").unwrap();
+    assert!(!there.added);
+}
+
+#[test]
+fn dictionary_sync_a_list_this_version_refuses_is_kept_over_a_pulled_page() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    local::set(&mut a.svc.store(), &DeviceRecord::Vocabulary.key(), b"{}").unwrap();
+    crate::vocabulary::add_word(&b.svc, "Velmora").unwrap();
+    exchange(&b, &a);
+    // The page still reports it by its reason; the join did not replace it.
+    assert_eq!(stored_list(&a).as_deref(), Some(&b"{}"[..]));
+    let state = crate::vocabulary::dictionary_state(&a.svc.store()).unwrap();
+    assert!(state.unknown.is_some() && state.words.is_empty());
+    // Turning the switch off and on keeps it too.
+    set_sync_dictionary(&a.svc, false).unwrap();
+    set_sync_dictionary(&a.svc, true).unwrap();
+    assert_eq!(stored_list(&a).as_deref(), Some(&b"{}"[..]));
+    // The user's own add replaces it with the joined list.
+    crate::vocabulary::add_entry(&a.svc, "Quillmarsh").unwrap();
+    assert_eq!(words(&a), ["Velmora", "Quillmarsh"]);
+}
+
+#[test]
+fn dictionary_sync_switched_off_inside_the_apply_leaves_the_list_alone() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    crate::vocabulary::add_word(&a.svc, "Velmora").unwrap();
+    local::set(
+        &mut a.svc.store(),
+        &DeviceRecord::Vocabulary.key(),
+        br#"["Ostrelby"]"#,
+    )
+    .unwrap();
+    set_sync_dictionary(&a.svc, false).unwrap();
+    // The hook the apply runs reads the switch inside the transaction.
+    let rebuilt = a
+        .svc
+        .store()
+        .transaction(|tx| crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep))
+        .unwrap();
+    assert_eq!(rebuilt, None);
+    assert_eq!(words(&a), ["Ostrelby"]);
+}
+
+#[test]
+fn dictionary_sync_an_unchanged_rebuild_keeps_the_list_byte_for_byte() {
+    // Live summary windows are reused only with exactly the words they were mapped with
+    // (`live_summaries::reusable`): a tick that changes no row must leave the list as it was,
+    // so a sync during a meeting maps nothing again unless the words themselves changed.
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    crate::vocabulary::add_word(&a.svc, "Velmora").unwrap();
+    b.clock.advance_ms(5);
+    crate::vocabulary::add_word(&b.svc, "Quillmarsh").unwrap();
+    exchange(&a, &b);
+    let before = stored_list(&b);
+    exchange(&a, &b);
+    b.client().tick().unwrap();
+    assert_eq!(stored_list(&b), before);
+}
+
+#[test]
+fn dictionary_sync_a_row_from_another_build_is_matched_by_its_normalised_word() {
+    use earshot_core::model::{DictionaryRepo, DictionaryWord};
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    // A row as another build might write it: quotes and spaces around the word.
+    {
+        let clock = Arc::clone(&a.svc.clock);
+        let mut rng = crate::services::os_seeded_rng();
+        let mut db = a.svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = earshot_core::model::Stamp {
+            clock: &*clock,
+            hlc,
+            rng: &mut *rng,
+        };
+        store
+            .put_dictionary_word(DictionaryWord::new("  'zorbek' ", &mut stamp))
+            .unwrap();
+    }
+    a.client().tick().unwrap();
+    assert_eq!(words(&a), ["zorbek"]);
+    // Adding it again finds it; removing it removes that row.
+    assert!(
+        !crate::vocabulary::add_entry(&a.svc, "Zorbek")
+            .unwrap()
+            .added
+    );
+    assert!(crate::vocabulary::remove_entry(&a.svc, "Zorbek").unwrap());
+    assert!(live_rows(&a).is_empty());
+    assert!(words(&a).is_empty());
+}
+
+#[test]
+fn dictionary_sync_an_add_is_checked_against_the_rebuilt_list() {
+    // A refused stored list is kept over pulls, so the stored list (empty) lags the rows: with
+    // exactly 100 live rows the quick check passes and only the rebuilt list shows the new word
+    // would not be in use. The add rolls back whole.
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    let full: Vec<String> = (0..100).map(|i| format!("w{i:03}")).collect();
+    crate::testutil::replace_words(&a.svc, &full).unwrap();
+    local::set(&mut a.svc.store(), &DeviceRecord::Vocabulary.key(), b"{}").unwrap();
+    assert_eq!(not_in_use(&a), 0);
+    let outbox = a.svc.store().outbox_len().unwrap();
+    let err = crate::vocabulary::add_entry(&a.svc, "Quillmarsh").unwrap_err();
+    assert!(matches!(
+        err,
+        crate::vocabulary::SetVocabularyError::NotInUse
+    ));
+    assert_eq!(live_rows(&a).len(), 100, "no row stored");
+    assert_eq!(
+        stored_list(&a).as_deref(),
+        Some(&b"{}"[..]),
+        "nothing written"
+    );
+    assert_eq!(
+        a.svc.store().outbox_len().unwrap(),
+        outbox,
+        "nothing to sync"
+    );
+    let err = crate::vocabulary::add_word(&a.svc, "Quillmarsh").unwrap_err();
+    assert!(matches!(
+        err,
+        crate::vocabulary::SetVocabularyError::NotInUse
+    ));
+}
+
+#[test]
+fn dictionary_sync_turning_sync_on_again_brings_the_list_back_to_the_rows() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let mine: Vec<String> = (0..60).map(|i| format!("alpha{i:02}")).collect();
+    let theirs: Vec<String> = (0..60).map(|i| format!("beta{i:02}")).collect();
+    crate::testutil::replace_words(&a.svc, &mine).unwrap();
+    b.clock.advance_ms(100);
+    crate::testutil::replace_words(&b.svc, &theirs).unwrap();
+    exchange(&a, &b);
+    assert_eq!(not_in_use(&a), 20);
+    // With sync off the list is this computer's own: a deletion writes it directly.
+    set_sync_on(&a.svc, false).unwrap();
+    assert!(crate::vocabulary::remove_entry(&a.svc, "alpha00").unwrap());
+    assert_eq!(words(&a).len(), 99);
+    // Turning sync on again rebuilds the list from the rows, as the Dictionary switch does,
+    // and an add is decided on that list.
+    set_sync_on(&a.svc, true).unwrap();
+    assert_eq!(words(&a).len(), 100);
+    assert!(words(&a).contains(&"beta40".to_owned()));
+    assert_eq!(not_in_use(&a), 19);
+    let err = crate::vocabulary::add_entry(&a.svc, "Quillmarsh").unwrap_err();
+    assert!(matches!(
+        err,
+        crate::vocabulary::SetVocabularyError::NotInUse
+    ));
+    assert_eq!(live_rows(&a).len(), 119);
+}
+
+#[test]
+fn dictionary_sync_setting_up_makes_rows_and_rebuilds_the_list() {
+    // Dictionary sync is on by default: setting up reconciles and rebuilds at once.
+    let relay = relay();
+    let a = Device::new("sync-dictionary-setup");
+    local::set(
+        &mut a.svc.store(),
+        &DeviceRecord::Vocabulary.key(),
+        br#"["Velmora","'Ostrelby'"]"#,
+    )
+    .unwrap();
+    set_up_first_device(&a.svc, &*a.vault, &relay.relay.url(), SECRET).unwrap();
+    assert_eq!(live_rows(&a), ["Velmora", "Ostrelby"]);
+    assert_eq!(
+        stored_list(&a).as_deref(),
+        Some(&br#"["Velmora","Ostrelby"]"#[..])
+    );
+}
+
+#[test]
+fn dictionary_sync_an_edit_holds_the_store_lock_from_its_read_to_its_write() {
+    // A sync apply runs only under the store lock (`SyncClient::apply`), so it cannot fall
+    // between an edit's read of the stored list and its write while the lock is held: the seam
+    // runs at that point and asks another thread whether it could take the lock.
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    crate::vocabulary::add_entry(&a.svc, "Quillmarsh").unwrap();
+    let probe = a.svc.clone();
+    let seen: Arc<std::sync::Mutex<Vec<bool>>> = Arc::default();
+    let record = Arc::clone(&seen);
+    crate::vocabulary::BETWEEN_READ_AND_WRITE.with(|seam| {
+        *seam.borrow_mut() = Some(Box::new(move || {
+            let svc = probe.clone();
+            let held = std::thread::spawn(move || svc.store_is_held())
+                .join()
+                .unwrap();
+            record.lock().unwrap().push(held);
+        }));
+    });
+    crate::vocabulary::add_entry(&a.svc, "Velmora").unwrap();
+    assert!(crate::vocabulary::remove_entry(&a.svc, "Quillmarsh").unwrap());
+    crate::vocabulary::BETWEEN_READ_AND_WRITE.with(|seam| *seam.borrow_mut() = None);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [true, true],
+        "the seam ran in both edits, lock held"
+    );
+    assert_eq!(words(&a), ["Velmora"]);
+    // Once the edit has committed, the lock is free for an apply.
+    assert!(!a.svc.store_is_held());
 }

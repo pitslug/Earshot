@@ -24,7 +24,7 @@ use std::fmt;
 
 use earshot_core::capture::TrackId;
 
-use crate::endpoint::{EndpointProperties, MicKind, classify_mic};
+use crate::endpoint::{EndpointProperties, MicKind, MicProcessing, classify_mic};
 
 /// Which endpoint a track records.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -60,6 +60,11 @@ pub struct DeviceSelection {
     /// The render endpoint whose loopback is the reference track when a call is captured
     /// from a device.
     pub output: DeviceChoice,
+    /// How the live mic stream is asked to be processed (T12.36, the Audio page's setting).
+    /// The live source opens a mic that refuses raw with the default processing and says so
+    /// (`WasapiSource::raw_refused`, `EndpointWarning::RawMicRefused`); it never costs the
+    /// recording.
+    pub mic_processing: MicProcessing,
 }
 
 /// One endpoint as listed.

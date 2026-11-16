@@ -49,14 +49,19 @@
 //! verify and trial cover the bytes. A folder that fails runs the summary on the CPU with a note.
 
 use std::ffi::OsString;
-use std::io::{BufRead, Read, Write};
+#[cfg(windows)]
+use std::io::BufRead;
+use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
 
 use earshot_core::asr::CancelToken;
 use earshot_core::prompt::SummaryInput;
@@ -80,9 +85,11 @@ pub const SUMMARY_CHILD_FLAG: &str = "--summary-child";
 const LINE_PREFIX: &str = "earshot-summary-child ";
 
 /// The longest line read: a summary is far smaller; past this the child is not well.
+#[cfg(windows)]
 const MAX_LINE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// How long a killed child may take to go, and a finished one to exit, a judgement.
+#[cfg(windows)]
 pub(crate) const KILL_WAIT: Duration = Duration::from_secs(10);
 
 /// How often the parent looks at the child, and the child at its heartbeat.
@@ -207,6 +214,7 @@ impl BackendLine {
         }
     }
 
+    #[cfg(windows)]
     fn backend(self) -> LlamaBackend {
         match self {
             Self::Cpu => LlamaBackend::Cpu,
@@ -226,6 +234,7 @@ pub(crate) struct StepLine {
 }
 
 /// A step's name as the report holds it; a name this list lacks reads as `other`.
+#[cfg(windows)]
 fn known_step(name: &str) -> &'static str {
     match name {
         "single" => "single",
@@ -295,6 +304,7 @@ impl ReportLine {
         }
     }
 
+    #[cfg(windows)]
     fn report(self) -> SummaryReport {
         SummaryReport {
             requests: self.requests,
@@ -363,6 +373,7 @@ pub(crate) enum ChildLine {
 }
 
 impl ChildLine {
+    #[cfg(windows)]
     fn is_final(&self) -> bool {
         !matches!(self, Self::Loaded { .. } | Self::Beat)
     }
@@ -495,6 +506,7 @@ fn beat_while_running(heartbeat: &Heartbeat, stop: &AtomicBool, out: &Mutex<impl
 }
 
 /// What the parent reads from the child's output.
+#[cfg(windows)]
 #[derive(Debug, PartialEq)]
 enum Heard {
     /// A line of the protocol.
@@ -507,6 +519,7 @@ enum Heard {
 
 /// Reads the child's output to its end (module docs). Ends when the child's end of the pipe
 /// closes, which a kill does; never parks the caller, because it runs on a thread of its own.
+#[cfg(windows)]
 fn read_lines(mut reader: impl BufRead, to: &Sender<Heard>) {
     let mut line = Vec::new();
     let mut ended = false;
@@ -558,6 +571,13 @@ pub(crate) struct ChildSummary {
 }
 
 /// How a child's run ended.
+#[cfg_attr(
+    not(windows),
+    expect(
+        dead_code,
+        reason = "matched everywhere; only the Windows child path builds these"
+    )
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ChildEnd {
     /// The summary.
@@ -578,12 +598,14 @@ pub(crate) enum ChildEnd {
 }
 
 /// What the parent reads about a run; the input of [`judge_end`].
+#[cfg(windows)]
 struct Watched {
     last: Option<ChildLine>,
     status: Option<std::process::ExitStatus>,
 }
 
 /// The end of a child whose output ended: only a final line and exit 0 count.
+#[cfg(windows)]
 fn judge_end(watched: Watched) -> ChildEnd {
     let Watched { last, status } = watched;
     match status {
@@ -617,6 +639,13 @@ fn judge_end(watched: Watched) -> ChildEnd {
 }
 
 /// How the parent treats a run.
+#[cfg_attr(
+    not(windows),
+    expect(
+        dead_code,
+        reason = "built everywhere; only the Windows child path reads it"
+    )
+)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Watch {
     /// The limit until `loaded`.
@@ -727,6 +756,7 @@ fn run_windows(child: &GpuChild, bytes: Vec<u8>, watch: Watch, cancel: &CancelTo
 }
 
 /// How [`watch_lines`] ended.
+#[cfg(windows)]
 #[derive(Debug, PartialEq)]
 enum Heading {
     /// The output ended, after this last line.
@@ -740,6 +770,7 @@ enum Heading {
 }
 
 /// Follows the child's lines until its output ends or it must be killed.
+#[cfg(windows)]
 fn watch_lines(heard: &Receiver<Heard>, watch: Watch, cancel: &CancelToken) -> Heading {
     let mut limit = watch.load_limit;
     let mut since = Instant::now();
@@ -773,6 +804,7 @@ fn watch_lines(heard: &Receiver<Heard>, watch: Watch, cancel: &CancelToken) -> H
 }
 
 /// The child's exit within `wait`, `None` when it is still there.
+#[cfg(windows)]
 fn exited_within(
     process: &mut std::process::Child,
     wait: Duration,

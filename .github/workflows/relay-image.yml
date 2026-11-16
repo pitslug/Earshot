@@ -1,10 +1,14 @@
-# The sync relay's image (T11.2b): built when a release tag is pushed, from that tag only,
-# and pushed to ghcr.io/<owner>/earshot-sync-server as the version and as `latest`.
+# The sync relay's image (T11.2b) and the summary worker's (T11.6): built when a release tag is
+# pushed, from that tag only, and pushed to ghcr.io/<owner>/earshot-sync-server and
+# ghcr.io/<owner>/earshot-worker as the version and as `latest` (the owner, 2026-11-15: the two
+# are released side by side). One job builds both and checks both (each starts on the runner and
+# answers its health check) before either is pushed, so one is never published without the
+# other. (Separate jobs would need an action to hand the built images to a push job.)
 #
 # No third-party or GitHub actions: every step is a shell command on the runner, so there is
 # nothing to pin and nothing else runs with the token. The token can read the repository
 # and write packages, nothing more. This log is public: no step prints anything but the
-# build.
+# builds and the checks' fixed words.
 name: relay-image
 
 on:
@@ -17,9 +21,9 @@ permissions:
   packages: write
 
 jobs:
-  image:
+  images:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
       - name: Fetch the tagged commit
         run: |
@@ -50,7 +54,8 @@ jobs:
           esac
           echo "VERSION=${tag}" >> "${GITHUB_ENV}"
           echo "LATEST=${latest}" >> "${GITHUB_ENV}"
-          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-sync-server" >> "${GITHUB_ENV}"
+          echo "RELAY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-sync-server" >> "${GITHUB_ENV}"
+          echo "WORKER=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-worker" >> "${GITHUB_ENV}"
 
       - name: Build the relay image
         working-directory: src
@@ -61,16 +66,58 @@ jobs:
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.licenses=MIT" \
             -f crates/earshot-sync-server/Dockerfile \
-            -t "${IMAGE}:${VERSION}" .
+            -t "${RELAY}:${VERSION}" .
 
-      - name: Push the relay image
+      # The relay starts with a setup secret invented for this run and answers its health check.
+      - name: Check the relay image
+        run: |
+          set -eu
+          secret="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          docker run -d --name earshot-relay-check \
+            --health-interval 2s --health-start-period 5s --health-retries 3 \
+            -e EARSHOT_SYNC_SETUP_SECRET="${secret}" \
+            "${RELAY}:${VERSION}" > /dev/null
+          status=starting
+          for _ in $(seq 1 60); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' earshot-relay-check)"
+            if [ "${status}" = "healthy" ] || [ "${status}" = "unhealthy" ]; then break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' earshot-relay-check)" != "true" ]; then break; fi
+            sleep 2
+          done
+          echo "relay health: ${status}"
+          docker rm -f earshot-relay-check > /dev/null
+          test "${status}" = "healthy"
+
+      - name: Build the worker image
+        working-directory: src
+        run: |
+          docker build --progress plain \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            -f crates/earshot-worker/Dockerfile \
+            -t "${WORKER}:${VERSION}" .
+
+      # The same check as linux-check's worker-image job.
+      - name: Check the worker image
+        working-directory: src
+        run: sh crates/earshot-worker/image-check.sh "${WORKER}:${VERSION}"
+
+      - name: Push both images
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           printf '%s' "${TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-          docker push "${IMAGE}:${VERSION}"
+          # Both version tags first, then both `latest`, so `latest` never names a relay and a
+          # worker of different releases while the other is still on its way.
+          for image in "${RELAY}" "${WORKER}"; do
+            docker push "${image}:${VERSION}"
+          done
           if [ "${LATEST}" = "true" ]; then
-            docker tag "${IMAGE}:${VERSION}" "${IMAGE}:latest"
-            docker push "${IMAGE}:latest"
+            for image in "${RELAY}" "${WORKER}"; do
+              docker tag "${image}:${VERSION}" "${image}:latest"
+              docker push "${image}:latest"
+            done
           fi
           docker logout ghcr.io
