@@ -641,7 +641,7 @@ pub(crate) fn format_warning(w: &RuntimeWarning) -> String {
         }
         RuntimeWarning::HostNote { message, .. } => format!("note: {message}"),
         RuntimeWarning::NpuPreparing { waiting: true } => {
-            "note: live transcription waits for the NPU model compiled at start-up".to_owned()
+            "note: live transcription waits for an NPU compile".to_owned()
         }
         RuntimeWarning::NpuPreparing { waiting: false } => {
             "note: the NPU model is compiled; live transcription loads".to_owned()

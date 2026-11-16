@@ -1507,4 +1507,9 @@ fn meeting_events_npu_preparing_shows_then_clears_its_banner() {
         }]
     );
     assert_eq!(NPU_PREPARING_KEY, "npu-preparing");
+    // Fixed copy that promises no duration (a compile can take longer on a busy machine).
+    assert_eq!(
+        crate::plain_text::NPU_PREPARING,
+        "Earshot is preparing the NPU for this computer. Transcription starts shortly."
+    );
 }

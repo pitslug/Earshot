@@ -276,7 +276,7 @@ impl MeetingModels {
                     factory.insert(live_factory(&me.models, &r.model, &r.order, clock, false))
                 }
             };
-            // A load waiting for the start-up NPU compile says so while it waits (T12.69).
+            // A load waiting for or doing an NPU compile says so while it waits (T12.69).
             let loaded =
                 crate::npu_compiled::watch_prepare(npu_wait_notes(&me.notes), || f(track, entity));
             // A fallback moved the track to another device: the hold re-checks it (T12.39).
@@ -329,7 +329,7 @@ impl MeetingModels {
     }
 }
 
-/// What a meeting's live load does when it waits for the start-up NPU compile (T12.69): it puts
+/// What a meeting's live load does when it waits for or does an NPU compile (T12.69): it puts
 /// [`crate::live::RuntimeWarning::NpuPreparing`] in the hold's notes, which the session sends
 /// between two pumps, so the meeting screen says so while the load waits.
 fn npu_wait_notes(

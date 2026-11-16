@@ -184,10 +184,11 @@ pub const NPU_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the NPU this ti
 pub const CHECK_NPU_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the NPU this time, so the \
      model check tests Parakeet models on the processor only.";
 
-/// The banner while a meeting's live transcription waits for the NPU model Earshot compiles at
-/// start-up (T12.69, `RuntimeWarning::NpuPreparing`): fixed copy, cleared when the load starts.
-pub const NPU_PREPARING: &str = "Earshot is preparing the NPU for this computer. Transcription \
-     begins in about half a minute.";
+/// The banner while a meeting's live transcription waits for, or does, an NPU compile (T12.69,
+/// `RuntimeWarning::NpuPreparing`): fixed copy, cleared when the load goes on. No duration: a
+/// compile on a busy machine can take longer than the usual half minute.
+pub const NPU_PREPARING: &str =
+    "Earshot is preparing the NPU for this computer. Transcription starts shortly.";
 
 /// Whose provisional words a banner sentence is about (T12.33).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

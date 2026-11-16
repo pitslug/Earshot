@@ -498,18 +498,23 @@ pub type RefuseLoad<'a, E> = Box<dyn FnOnce(Vec<Step>) -> E + 'a>;
 
 /// One NPU encoder load at a time in this process, so two sessions of a model never compile it
 /// together (the second waits about 30 s, then loads the first one's compile in about a second).
+/// Taken only through [`lock_watched`] (the waiter's side: [`load`]) or [`hold_for_prepare`] (the
+/// start-up side: [`prepare`]).
 static LOADS: Mutex<()> = Mutex::new(());
 
-/// Whether a [`prepare`] is compiling now, under [`LOADS`] (T12.69): a load that finds the lock
-/// held while this is set waits for the start-up compile, and tells its watcher ([`watch_prepare`]).
+/// Whether a [`prepare`] holds [`LOADS`] and may compile (T12.69): set from the moment it takes
+/// the lock, before it checks a folder, and cleared before it lets go ([`hold_for_prepare`]). A
+/// load that finds the lock held while this is set waits for the start-up compile, and tells its
+/// watcher ([`watch_prepare`]).
 static PREPARING: AtomicBool = AtomicBool::new(false);
 
-/// What a load waiting for the start-up compile hears ([`watch_prepare`], T12.69).
+/// What a meeting's NPU load hears while it waits for, or does, an NPU compile ([`watch_prepare`],
+/// T12.69).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrepareWait {
-    /// The load found the NPU lock held by the start-up compile and waits for it.
+    /// The load waits for the start-up compile, or compiles in the helper itself (about 30 s).
     Waiting,
-    /// That wait is over: the load holds the lock and starts.
+    /// That wait or compile is over: the load goes on.
     Started,
 }
 
@@ -520,11 +525,11 @@ thread_local! {
     static WATCHER: std::cell::RefCell<Option<Watcher>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Runs `f` with `watcher` hearing every NPU load on this thread that waits for the start-up
-/// compile ([`prepare`]): [`PrepareWait::Waiting`] when it finds the lock held by that compile,
-/// then [`PrepareWait::Started`] once it holds the lock (T12.69). A load that waits for another
-/// load, or does not wait, says nothing. It adds no waiting. The watcher before is back after `f`,
-/// a panic included.
+/// Runs `f` with `watcher` hearing every NPU load on this thread that waits for or does an NPU
+/// compile (T12.69): [`PrepareWait::Waiting`] when it finds the lock held by the start-up
+/// [`prepare`], then [`PrepareWait::Started`] once it holds the lock; and the same pair around its
+/// own helper compile ([`Compile::Helper`]). A load that waits for another load, or does not wait,
+/// says nothing. It adds no waiting. The watcher before is back after `f`, a panic included.
 pub fn watch_prepare<R>(watcher: impl FnMut(PrepareWait) + 'static, f: impl FnOnce() -> R) -> R {
     struct Restore(Option<Watcher>);
     impl Drop for Restore {
@@ -547,15 +552,16 @@ fn tell(wait: PrepareWait) {
     });
 }
 
-/// Whether a start-up compile holds the NPU lock now (T12.69).
+/// Whether the start-up [`prepare`] holds the NPU lock now and may compile (T12.69).
 #[must_use]
 pub fn preparing() -> bool {
     PREPARING.load(Ordering::SeqCst)
 }
 
-/// Takes `lock`; when another holds it while `preparing` is set (a start-up compile), tells this
-/// thread's watcher it waits and, once taken, that it starts. `on_block` runs when the lock was
-/// found held, before waiting (a test seam: production passes nothing to do).
+/// The waiter's side of [`LOADS`]: takes `lock`; when another holds it while `preparing` is set
+/// (the start-up compile), tells this thread's watcher it waits and, once taken, that it starts.
+/// `on_block` runs when the lock was found held, before waiting (a test seam: production passes
+/// nothing to do).
 fn lock_watched<'a>(
     lock: &'a Mutex<()>,
     preparing: &AtomicBool,
@@ -581,19 +587,32 @@ fn lock_watched<'a>(
     }
 }
 
-/// Marks [`PREPARING`] for its life.
-struct Preparing;
+/// Marks a flag for its life.
+struct Mark<'a>(&'a AtomicBool);
 
-impl Preparing {
-    fn mark() -> Self {
-        PREPARING.store(true, Ordering::SeqCst);
-        Self
+impl Drop for Mark<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
-impl Drop for Preparing {
-    fn drop(&mut self) {
-        PREPARING.store(false, Ordering::SeqCst);
+/// The start-up side of [`LOADS`] ([`hold_for_prepare`]): the flag is cleared before the lock goes
+/// (fields drop in order), so a load arriving after never reads a stale mark.
+struct PrepareHold<'a> {
+    _mark: Mark<'a>,
+    _lock: std::sync::MutexGuard<'a, ()>,
+}
+
+/// Takes `lock` for the start-up [`prepare`] and marks `preparing` until the hold drops: from
+/// before any folder check, so a load arriving while it checks, puts aside or compiles hears it.
+fn hold_for_prepare<'a>(lock: &'a Mutex<()>, preparing: &'a AtomicBool) -> PrepareHold<'a> {
+    let lock = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    preparing.store(true, Ordering::SeqCst);
+    PrepareHold {
+        _mark: Mark(preparing),
+        _lock: lock,
     }
 }
 
@@ -692,7 +711,11 @@ pub fn load<S, E: std::fmt::Display>(
             }
         },
         Compile::Helper(helper) => {
-            if let Err(e) = made_by_helper(&root, &tmp, &dest, key, helper) {
+            // About 30 s that a meeting's screen tells (T12.69).
+            tell(PrepareWait::Waiting);
+            let made = made_by_helper(&root, &tmp, &dest, key, helper);
+            tell(PrepareWait::Started);
+            if let Err(e) = made {
                 let why = failed(&refused, e);
                 return ordinary_after(first, Step::Helper, why);
             }
@@ -758,9 +781,20 @@ pub fn prepare(
     key: &CompileKey,
     helper: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<Prepared, String> {
-    let _one = LOADS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    prepare_with(&LOADS, &PREPARING, conversion, key, helper)
+}
+
+/// [`prepare`] under `lock`, marking `preparing` (a test seam: production passes [`LOADS`] and
+/// [`PREPARING`]). The mark starts before the folder check (T12.69: a refused folder's check and
+/// put-aside lead to a compile) and ends with the hold on every return.
+fn prepare_with(
+    lock: &Mutex<()>,
+    preparing: &AtomicBool,
+    conversion: &Path,
+    key: &CompileKey,
+    helper: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<Prepared, String> {
+    let _one = hold_for_prepare(lock, preparing);
     let root = conversion.join(COMPILED_DIR);
     let dest = root.join(key.folder_name());
     let mut replaced = None;
@@ -771,9 +805,6 @@ pub fn prepare(
         }
         put_aside(&root, &dest).map_err(|e| format!("the folder cannot be replaced ({e})"))?;
     }
-    // Marked only while it compiles (about 30 s): a load waiting on the check of an intact folder
-    // is told nothing (T12.69).
-    let _preparing = Preparing::mark();
     let tmp = unique(&root, ".tmp");
     std::fs::create_dir_all(&tmp).map_err(|e| format!("no folder to compile into ({e})"))?;
     made_by_helper(&root, &tmp, &dest, key, helper)?;

@@ -670,8 +670,9 @@ pub enum RuntimeWarning {
         message: String,
     },
     /// A held session's live transcription load waits for the NPU model the app compiles at
-    /// start-up (T12.69, [`crate::npu_compiled::watch_prepare`]): `waiting` while it waits, then
-    /// once more with `waiting: false` when the load starts. Never sent without that compile.
+    /// start-up, or compiles it in the helper itself (T12.69,
+    /// [`crate::npu_compiled::watch_prepare`]): `waiting` while it waits, then once more with
+    /// `waiting: false` when the load goes on. Never sent without an NPU compile.
     NpuPreparing {
         /// Whether the load still waits.
         waiting: bool,
