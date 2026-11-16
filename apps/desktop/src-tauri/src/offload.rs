@@ -444,7 +444,7 @@ pub fn ask_helper(
     };
     // A named run (T12.63b, docs/summary-order.md 5): its record names the request, so a
     // hand-back ends the run and nothing is written on this computer instead.
-    let writers = AskOnly(choice);
+    let writers = AskOnly { device, choice };
     let out = earshot_runtime::summary_order::run::run_summary_order(
         services,
         meeting,
@@ -454,6 +454,7 @@ pub fn ask_helper(
         &earshot_runtime::summary_order::run::RunPlan {
             writers: &writers,
             local_not_now: &|| false,
+            order: None,
         },
         &CancelToken::new(),
     );
@@ -463,16 +464,56 @@ pub fn ask_helper(
             Ok(waiting_copy(Some(&name)))
         }
         earshot_runtime::host::SummaryResult::Failed { error, .. } => Err(IpcError::from(error)),
-        _ => Err(IpcError::new(
-            OFFLOAD_ERROR_KIND,
-            not_asked_copy(Unavailable::NoFinalTranscript, Some(&name)),
-        )),
+        // Not asked after all: why, from what the run recorded for its one step.
+        _ => {
+            let word = out.steps.first().and_then(|v| match v.result {
+                earshot_runtime::summary_order::run::StepResult::Moved(w) => Some(w),
+                _ => None,
+            });
+            let has_final = {
+                use earshot_core::model::MeetingRepo;
+                services
+                    .store()
+                    .has_live_segment(meeting, earshot_core::model::TranscriptPass::Final)
+                    .unwrap_or(false)
+            };
+            Err(IpcError::new(
+                OFFLOAD_ERROR_KIND,
+                not_asked_copy(not_asked_reason(word, has_final), Some(&name)),
+            ))
+        }
     }
 }
 
-/// The writers of a named computer run: the computer answers as already decided, and no writer
-/// step exists.
-struct AskOnly(OffloadChoice);
+/// Why a named computer run did not ask its computer, from the outcome word its step recorded:
+/// the presence words name themselves; a step that failed to ask (`failed`, which the run records
+/// both for a meeting with no final transcript and for a request it could not write) is the
+/// former only when the meeting has no final transcript.
+#[must_use]
+pub(crate) fn not_asked_reason(
+    word: Option<earshot_runtime::summary_order::run::OutcomeWord>,
+    has_final: bool,
+) -> Unavailable {
+    use earshot_runtime::summary_order::run::OutcomeWord;
+    match word {
+        Some(OutcomeWord::Offline | OutcomeWord::NoReply) => Unavailable::Offline,
+        Some(OutcomeWord::Recording) => Unavailable::Recording,
+        Some(OutcomeWord::NotOffering) => Unavailable::NotOffering,
+        Some(OutcomeWord::NoWriter) => Unavailable::NoWriter,
+        _ if !has_final => Unavailable::NoFinalTranscript,
+        _ => Unavailable::NotAsked,
+    }
+}
+
+/// The writers of a named computer run: its own computer answers as already decided, any other
+/// device reads as not asked (the run's trust boundary holds even here), and no writer step
+/// exists.
+pub(crate) struct AskOnly {
+    /// The computer the user named.
+    pub(crate) device: DeviceId,
+    /// What was decided about it.
+    pub(crate) choice: OffloadChoice,
+}
 
 impl earshot_runtime::summary_order::run::StepWriters for AskOnly {
     fn writer(
@@ -485,8 +526,16 @@ impl earshot_runtime::summary_order::run::StepWriters for AskOnly {
         ))
     }
 
-    fn computer(&self, _: &Services, _: DeviceId) -> OffloadChoice {
-        self.0.clone()
+    fn computer(&self, _: &Services, device: DeviceId) -> OffloadChoice {
+        if device == self.device {
+            self.choice.clone()
+        } else {
+            earshot_runtime::offload::OffloadChoice::HereInstead {
+                device,
+                name: None,
+                why: Unavailable::NotAsked,
+            }
+        }
     }
 }
 

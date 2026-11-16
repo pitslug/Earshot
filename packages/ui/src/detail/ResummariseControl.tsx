@@ -29,16 +29,17 @@ import {
   useIpc,
 } from "../ipc";
 
-/** A computer's label in the menu: "On <name> (<writer>)" (the order's step label). */
-export function helperLabel(name: string | null, shortId: string, writer: string | null): string {
-  const device = name !== null && name.trim() !== "" ? name : `Computer ${shortId}`;
+/** A computer's label in the menu: "On <name> (<writer>)" (the order's step label; an unknown
+ * name is the table's `unnamed`, as Rust names it). */
+export function helperLabel(name: string | null, writer: string | null): string {
+  const device = name !== null && name.trim() !== "" ? name : ORDER_COPY.unnamed;
   return writer === null
     ? fillCopy(ORDER_COPY.steps.computer_no_writer, { device })
     : fillCopy(ORDER_COPY.steps.computer, { device, writer });
 }
 
 /** What the menu says while it reads the writers and computers. */
-export const LOOKING = "Looking for writers";
+export const LOOKING = ORDER_COPY.resummarise.looking;
 
 export interface ResummariseControlProps {
   /** The meeting. */
@@ -108,7 +109,7 @@ export function ResummariseControl({ meeting, label, disabled, onOrder, onWriter
           ))}
           {computers.map((h) => (
             <MenuItem key={h.id} onClick={() => onAsk(h.id)}>
-              {helperLabel(h.name, h.short_id, h.writer)}
+              {helperLabel(h.name, h.writer)}
             </MenuItem>
           ))}
           {loading && items.length === 0 && computers.length === 0 && <MenuItem disabled>{LOOKING}</MenuItem>}

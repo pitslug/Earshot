@@ -37,7 +37,6 @@ import {
   type StepView,
   type SummarySettingsValue,
   type SummarySettingsView,
-  type WriterChoice,
   fillCopy,
   sameStep,
   stepKey,
@@ -88,6 +87,9 @@ const useStyles = makeStyles({
   later: {
     display: "grid",
     gap: tokens.spacingVerticalM,
+  },
+  // The list itself is capped; its hint (where the transcript goes) fills the page.
+  laterSelect: {
     maxWidth: "520px",
   },
   muted: {
@@ -192,22 +194,6 @@ function Choice({
 /** The value of "No summary" among step 1's choices. */
 const NO_SUMMARY = "NoSummary";
 
-/** The step a writer choice of the old setting stands for (before the order is read). */
-function stepOfWriter(w: WriterChoice): StepChoice | null {
-  switch (w) {
-    case "OnThisComputer":
-      return { kind: "Local" };
-    case "OwnEndpoint":
-      return { kind: "Endpoint" };
-    case "ClaudeCode":
-      return { kind: "ClaudeCode" };
-    case "Codex":
-      return { kind: "Codex" };
-    case "NoSummary":
-      return null;
-  }
-}
-
 /** The endpoint form, the remote warning and the API key. `inUse`: a step of the order is the
  * endpoint; `onUse` stores the fields with the endpoint in its step. */
 function EndpointForm({
@@ -216,6 +202,7 @@ function EndpointForm({
   keySaved,
   inUse,
   onUse,
+  locked,
   saveOnNext,
 }: {
   state: SummariesPageState;
@@ -223,6 +210,8 @@ function EndpointForm({
   keySaved: boolean | null;
   inUse: boolean;
   onUse(change: Partial<SummarySettingsValue>): Promise<boolean>;
+  /** The order is not read yet (or could not be): nothing may store the endpoint in it. */
+  locked: boolean;
   saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
@@ -244,7 +233,7 @@ function EndpointForm({
   const showWarning = inUse && settings.endpoint_host !== null && !settings.endpoint_local;
   const wizard = saveOnNext !== undefined;
   useSaveOnNext(saveOnNext, async () => {
-    if (changed && !(await onUse({ provider, url, model }))) return false;
+    if (changed && (locked || !(await onUse({ provider, url, model })))) return false;
     if (!anthropic || key.trim() === "") return true;
     const saved = await state.saveKey(key);
     if (saved) setKey("");
@@ -294,7 +283,7 @@ function EndpointForm({
         <div className={styles.row}>
           <Button
             appearance="primary"
-            disabled={state.busy || !changed}
+            disabled={state.busy || locked || !changed}
             onClick={() => void onUse({ provider, url, model })}
           >
             {inUse ? "Save endpoint" : "Use this endpoint"}
@@ -677,13 +666,15 @@ function WriterSection({
   const [otherOpen, setOtherOpen] = useState(false);
   const value = settings.value;
   const order = state.order;
-  const stored: StepChoice[] =
-    order !== null ? order.steps.map((s) => s.step) : [stepOfWriter(value.writer)].filter((s) => s !== null);
+  // Nothing is offered before the order is read: a choice then would replace an order nobody
+  // has seen (the old writer setting holds only its first writer step).
+  const locked = order === null;
+  const stored: StepChoice[] = order !== null ? order.steps.map((s) => s.step) : [];
   const offered: StepView[] = order?.offered ?? [];
   const viewOf = (step: StepChoice) => offered.find((o) => sameStep(o.step, step));
   const hasEndpoint = value.url !== "" && value.model !== "";
   const maxSteps = oneStep ? 1 : (order?.max_steps ?? 3);
-  const shown = pending === 0 ? "Endpoint" : stored.length > 0 ? stepKey(stored[0]) : NO_SUMMARY;
+  const shown = locked ? "" : pending === 0 ? "Endpoint" : stored.length > 0 ? stepKey(stored[0]) : NO_SUMMARY;
   const loaded = localModels?.load.status === "loaded" ? localModels.load.data : null;
   const models = loaded?.models ?? state.models;
   const local =
@@ -699,6 +690,7 @@ function WriterSection({
     return next.filter((s, i) => !next.slice(0, i).some((t) => sameStep(s, t))).slice(0, maxSteps);
   };
   const chooseAt = (index: number, step: StepChoice | null) => {
+    if (locked) return;
     if (step === null) {
       // "No summary" for step 1; "Nothing else" for a later step (the steps after it go too).
       setPending(null);
@@ -715,14 +707,8 @@ function WriterSection({
   };
   const stepOfKey = (key: string): StepChoice | null =>
     key === NO_SUMMARY || key === "" ? null : (offered.find((o) => stepKey(o.step) === key)?.step ?? null);
-  const fallbackStep = (key: string): StepChoice | null => {
-    const known = stepOfKey(key);
-    if (known !== null) return known;
-    // Before the order is read, the four writers by their keys.
-    if (key === "Local" || key === "Endpoint" || key === "ClaudeCode" || key === "Codex") return { kind: key };
-    return null;
-  };
   const useEndpoint = async (change: Partial<SummarySettingsValue>) => {
+    if (locked) return false;
     const at = pending ?? stored.findIndex((s) => s.kind === "Endpoint");
     const index = at < 0 ? stored.length : at;
     const steps = oneStep ? [{ kind: "Endpoint" } as StepChoice] : placed(index, { kind: "Endpoint" });
@@ -756,11 +742,20 @@ function WriterSection({
         Who writes the summary
       </span>
       {!oneStep && <Caption1 className={styles.muted}>{ORDER_COPY.page.explained}</Caption1>}
+      {state.orderError !== null && (
+        <MessageBar intent="error">
+          <MessageBarBody>
+            <MessageBarTitle>{ORDER_COPY.page.not_read}</MessageBarTitle>
+            {state.orderError}
+          </MessageBarBody>
+        </MessageBar>
+      )}
+      {locked && state.orderError === null && <Spinner size="tiny" label={ORDER_COPY.page.reading} />}
       <RadioGroup
         aria-labelledby={writerLabel}
         value={shown}
-        disabled={state.busy}
-        onChange={(_, d) => chooseAt(0, fallbackStep(d.value))}
+        disabled={state.busy || locked}
+        onChange={(_, d) => chooseAt(0, stepOfKey(d.value))}
         className={styles.choices}
       >
         <Choice
@@ -828,7 +823,12 @@ function WriterSection({
                 label={fillCopy(ORDER_COPY.page.step, { n: String(i + 1) })}
                 hint={current !== undefined ? dest(current) : undefined}
               >
-                <Select value={value} disabled={state.busy} onChange={(_, d) => chooseAt(i, stepOfKey(d.value))}>
+                <Select
+                  className={styles.laterSelect}
+                  value={value}
+                  disabled={state.busy || locked}
+                  onChange={(_, d) => chooseAt(i, stepOfKey(d.value))}
+                >
                   <option value="">{ORDER_COPY.page.nothing_else}</option>
                   {choices.map((o) => (
                     <option key={stepKey(o.step)} value={stepKey(o.step)}>
@@ -862,6 +862,7 @@ function WriterSection({
           keySaved={keySaved}
           inUse={inOrder("Endpoint")}
           onUse={useEndpoint}
+          locked={locked}
           saveOnNext={saveOnNext}
         />
       )}

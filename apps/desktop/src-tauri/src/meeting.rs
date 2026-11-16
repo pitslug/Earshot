@@ -1414,6 +1414,7 @@ pub(crate) fn with_order_run<R>(
             f(&earshot_runtime::summary_order::run::RunPlan {
                 writers,
                 local_not_now: &not_now,
+                order: None,
             })
         },
     )

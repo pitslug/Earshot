@@ -451,6 +451,11 @@ export function AppShell({
         jobSeq.current += 1;
         const seq = jobSeq.current;
         setJobs((all) => {
+          // A continuation that found nothing to go on with (T12.63b): the job goes, quietly.
+          if (e.type === "Settled") {
+            const { [e.meeting]: _gone, ...rest } = all;
+            return rest;
+          }
           const kind =
             all[e.meeting]?.job ??
             (e.type === "Failed" || e.type === "Cancelled"

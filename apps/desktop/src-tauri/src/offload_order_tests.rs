@@ -57,6 +57,7 @@ fn waiting_run(svc: &Services, m: EntityId, steps: &[OrderStep]) -> EntityId {
         &RunPlan {
             writers: &AskDesk,
             local_not_now: &|| false,
+            order: None,
         },
         &CancelToken::new(),
     );
@@ -297,4 +298,178 @@ fn offload_resummarise_on_a_computer_is_a_named_run_that_a_hand_back_ends() {
         detail.summary_run.as_deref(),
         Some("Invented desk could not write the summary: declined.")
     );
+}
+
+/// A continuation whose run no longer waits on its request (review of T12.63b): the job ends
+/// quietly, with `JobEvent::Settled`, nothing run, written or sent, and never a skipped summary.
+#[test]
+fn offload_continuation_that_finds_nothing_to_go_on_with_ends_quietly() {
+    let dir = TempDir::new("offload-order-settled");
+    let svc = services(&dir);
+    let m = meeting_with_final(&svc, 24, 2);
+    let models = earshot_runtime::backends::ModelDir::new(dir.0.join("no-models"));
+    let vault = crate::credentials::MemoryVault::default();
+    let done = crate::jobs::summarise_run_with(
+        &svc,
+        m,
+        &SummaryStart::Continue {
+            request: EntityId::from_bytes([9; 16]),
+            word: OutcomeWord::Declined,
+        },
+        &CancelToken::new(),
+        &models,
+        (&vault, &NeverClaude, &NeverCodex),
+        None,
+        &mut |w| panic!("nothing to tell: {w}"),
+    )
+    .unwrap();
+    assert!(done.settled);
+    assert_eq!(done.note, None);
+    assert_eq!(
+        earshot_runtime::summary_order::run::read(&svc.store(), m).unwrap(),
+        RunRecord::Absent,
+        "nothing written"
+    );
+    // The runner turns it into the one quiet terminal event.
+    struct Settles;
+    impl JobWork for Settles {
+        fn retranscribe(
+            &self,
+            _: &Services,
+            _: EntityId,
+            _: &CancelToken,
+            _: &mut dyn FnMut(earshot_runtime::host::HostStep<'_>),
+            _: &mut dyn FnMut(String),
+        ) -> Result<earshot_runtime::edit::Retranscribed, IpcError> {
+            unreachable!("only re-summaries here")
+        }
+        fn summarise(
+            &self,
+            _: &Services,
+            _: EntityId,
+            _: &CancelToken,
+            _: &mut dyn FnMut(String),
+        ) -> Result<SummaryResult, IpcError> {
+            unreachable!("the runner asks summarise_run")
+        }
+        fn summarise_run(
+            &self,
+            _: &Services,
+            _: EntityId,
+            _: &SummaryStart,
+            _: &CancelToken,
+            _: &mut dyn FnMut(String),
+        ) -> Result<JobSummary, IpcError> {
+            Ok(JobSummary {
+                settled: true,
+                ..JobSummary::from(SummaryResult::Skipped {
+                    reason: SkipReason::NotRequested,
+                })
+            })
+        }
+    }
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let sink: JobSink = Arc::new(move |e| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let runner = JobRunner::new(
+        Arc::new(Settles),
+        sink,
+        crate::activity::WorkGate::new(),
+        &crate::cuda_settings::CudaLatch::resolved_off(),
+    );
+    runner
+        .start_summary(
+            &svc,
+            m,
+            SummaryStart::Continue {
+                request: EntityId::from_bytes([9; 16]),
+                word: OutcomeWord::Declined,
+            },
+            None,
+        )
+        .unwrap();
+    runner.join();
+    let events: Vec<JobEvent> = rx.try_iter().collect();
+    assert_eq!(
+        events,
+        [JobEvent::Settled {
+            meeting: m.to_string()
+        }]
+    );
+}
+
+/// Why re-summarise "On <device>" did not ask: from the step's outcome word, and "no final
+/// transcript" only when the meeting has none (review of T12.63b).
+#[test]
+fn offload_named_run_reason_follows_its_outcome_word() {
+    use crate::offload::not_asked_reason;
+    use earshot_runtime::offload::Unavailable;
+    assert_eq!(
+        not_asked_reason(Some(OutcomeWord::Failed), false),
+        Unavailable::NoFinalTranscript
+    );
+    assert_eq!(
+        not_asked_reason(Some(OutcomeWord::Failed), true),
+        Unavailable::NotAsked
+    );
+    assert_eq!(
+        not_asked_reason(Some(OutcomeWord::Recording), true),
+        Unavailable::Recording
+    );
+    assert_eq!(
+        not_asked_reason(Some(OutcomeWord::Offline), true),
+        Unavailable::Offline
+    );
+    assert_eq!(not_asked_reason(None, true), Unavailable::NotAsked);
+}
+
+/// A named computer run asks only the computer the user named: an answer about any other
+/// device is not asked, and nothing is written (the run's trust boundary, review of T12.63b).
+#[test]
+fn offload_named_run_never_asks_a_device_it_was_not_decided_for() {
+    use earshot_core::model::SummaryRequestRepo;
+    let dir = TempDir::new("offload-order-mismatch");
+    let svc = services(&dir);
+    let m = meeting_with_final(&svc, 25, 2);
+    let laptop = DeviceId::from_bytes([8; 16]);
+    let writers = crate::offload::AskOnly {
+        device: DESK,
+        choice: OffloadChoice::Ask {
+            device: DESK,
+            name: "Invented desk".into(),
+            writer: WriterKind::Local,
+        },
+    };
+    let out = run_summary_order(
+        &svc,
+        m,
+        RunStart::Named(OrderStep::Computer(laptop)),
+        &RunPlan {
+            writers: &writers,
+            local_not_now: &|| false,
+            order: None,
+        },
+        &CancelToken::new(),
+    );
+    assert!(
+        !matches!(out.summary, SummaryResult::Offloaded { .. }),
+        "{:?}",
+        out.summary
+    );
+    assert!(svc.store().summary_requests().unwrap().is_empty());
+    // Its own computer is asked.
+    let out = run_summary_order(
+        &svc,
+        m,
+        RunStart::Named(OrderStep::Computer(DESK)),
+        &RunPlan {
+            writers: &writers,
+            local_not_now: &|| false,
+            order: None,
+        },
+        &CancelToken::new(),
+    );
+    assert!(matches!(out.summary, SummaryResult::Offloaded { .. }));
 }

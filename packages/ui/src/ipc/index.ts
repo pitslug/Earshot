@@ -169,7 +169,7 @@ export type {
 } from "./sync";
 export { MOCK_SYNC_CODE, MOCK_SYNC_SECRET, OFFLOAD_COPY, createSyncMock, mockDeviceId, offloadCopy } from "./mockSync";
 export type { SyncMockData } from "./mockSync";
-export { ORDER_COPY, fillCopy, isRemoteWriter, sameStep, stepKey } from "./summaryOrder";
+export { ORDER_COPY, fillCopy, isRemoteWriter, mirrorWriter, sameStep, stepKey } from "./summaryOrder";
 export type {
   ResummariseItem,
   ResummariseView,

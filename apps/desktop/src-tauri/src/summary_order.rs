@@ -105,6 +105,10 @@ pub struct PageTexts {
     pub nothing_else: String,
     /// What the order does.
     pub explained: String,
+    /// While the order is read.
+    pub reading: String,
+    /// The order could not be read.
+    pub not_read: String,
 }
 
 /// The re-summarise button's texts (`order` and `choose` are the UI's).
@@ -118,6 +122,12 @@ pub struct ResummariseTexts {
     pub kept_local: String,
     /// The menu button's accessible name (`{label}`).
     pub choose: String,
+    /// While the menu reads the writers.
+    pub looking: String,
+    /// A re-summary that wrote nothing.
+    pub no_summary_title: String,
+    /// A re-summary that asked another computer.
+    pub offloaded_title: String,
 }
 
 /// The copy table (`fixtures/ui/summary_order_cases.json`).

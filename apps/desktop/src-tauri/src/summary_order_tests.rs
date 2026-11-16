@@ -3,8 +3,8 @@
 //! the meeting's run read when its summary is due. Every name holds `summary`
 //! (`cargo test -p earshot-desktop summary`).
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 
 use earshot_core::asr::{CancelToken, MeetingTime, Segment, Word};
 use earshot_core::capture::TrackId;
@@ -734,33 +734,15 @@ fn outcome(meeting: EntityId) -> earshot_runtime::live::LiveOutcome {
     }
 }
 
-/// Runs a meeting's summary step as the production `after` does (`meeting::with_order_run` and
-/// `host::after_meeting`'s order run; the final pass is left out, so no model loads).
-fn summary_step(
+/// The production `after` step of a prepared meeting (`Prepared::after`, made by
+/// `HostPrepare::prepare`) over a meeting with no recorded tracks: its final pass has nothing to
+/// process, so no model loads, and its summary step runs as in the app.
+fn run_after(
+    prepared: crate::meeting::Prepared,
     svc: &Services,
     meeting: EntityId,
-    probes: &SummaryProbes,
-    ticket: &earshot_runtime::meeting_queue::QueueTicket,
 ) -> earshot_runtime::host::HostOutcome {
-    let models = earshot_runtime::backends::ModelDir::new(svc.data.root().join("no-models"));
-    let cancel = CancelToken::new();
-    crate::meeting::with_order_run(&models, probes, &ComputerSlot::default(), ticket, |plan| {
-        let run = earshot_runtime::host::AfterMeeting {
-            models: &models,
-            model: "base.en",
-            order: &[],
-            post: false,
-            whole_pass: false,
-            summary: None,
-            no_summary: SkipReason::NotRequested,
-            post_cancel: &cancel,
-            summary_cancel: &cancel,
-            offload: None,
-            order_run: Some(plan),
-        };
-        // `post: false`: the final pass, and its model load, are left out.
-        earshot_runtime::host::after_meeting(svc, &outcome(meeting), &run, &mut |_| {})
-    })
+    (prepared.after)(svc, &outcome(meeting), &CancelToken::new(), &mut |_| {})
 }
 
 /// The real pre-flight (`HostPrepare::prepare`) with the order at the start, then the summary
@@ -816,10 +798,12 @@ fn summary_order_an_order_changed_during_a_meeting_is_the_one_used() {
         title: String::new(),
         keep_local: false,
     };
-    let prepared = prepare
-        .prepare(&svc, &request, &ticket)
-        .unwrap_or_else(|e| panic!("{e:?}: cargo xtask fetch-models --set ci"));
-    drop(prepared);
+    let preflight = || {
+        prepare
+            .prepare(&svc, &request, &ticket)
+            .unwrap_or_else(|e| panic!("{e:?}: cargo xtask fetch-models --set ci"))
+    };
+    let prepared = preflight();
     // No local step at the start: nothing held here.
     assert_eq!(
         ticket.summary(),
@@ -828,7 +812,7 @@ fn summary_order_an_order_changed_during_a_meeting_is_the_one_used() {
     // During the meeting the user puts Codex in the endpoint's place.
     set_order(&svc, &host, &[StepChoice::Codex], None).unwrap();
     let m = meeting_with_final(&svc, 5, 2);
-    let done = summary_step(&svc, m, &probes, &ticket);
+    let done = run_after(prepared, &svc, m);
     assert!(
         matches!(
             done.summary,
@@ -847,15 +831,15 @@ fn summary_order_an_order_changed_during_a_meeting_is_the_one_used() {
     assert_eq!(codex.0.load(Ordering::SeqCst), 1);
     // The negative control: with the endpoint still in the order, it writes the summary.
     set_order(&svc, &host, &[StepChoice::Endpoint], Some(&value)).unwrap();
+    let prepared = preflight();
     let other = meeting_with_final(&svc, 6, 2);
-    let done = summary_step(&svc, other, &probes, &ticket);
+    let done = run_after(prepared, &svc, other);
     assert!(
         matches!(done.summary, SummaryResult::Stored { .. }),
         "{:?}",
         done.summary
     );
     assert_eq!(server.requests().len(), 1);
-    let _ = Mutex::new(());
 }
 
 /// The pre-flight's queue hold follows the order at the start (docs/summary-order.md 4.5): the

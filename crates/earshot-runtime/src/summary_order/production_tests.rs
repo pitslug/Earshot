@@ -111,6 +111,7 @@ fn summary_order_production_writers_read_no_key_and_probe_no_cli_for_dropped_ste
     let plan = RunPlan {
         writers: &writers,
         local_not_now: &|| false,
+        order: None,
     };
     let (stored, _) = crate::summary_order::summary_order(&svc.store()).unwrap();
     assert_eq!(stored, order(&[ENDPOINT, CLAUDE, CODEX]));

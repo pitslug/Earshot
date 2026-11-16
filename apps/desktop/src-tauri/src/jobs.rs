@@ -80,6 +80,13 @@ pub enum JobEvent {
         /// `Warning` because the screen keeps a job's last event only.
         note: Option<String>,
     },
+    /// A re-summary that went on with a run after a computer handed it back found nothing to go
+    /// on with (T12.63b: the run no longer waits on that request): nothing was run, written or
+    /// sent, and the screen drops the job without a notice.
+    Settled {
+        /// Meeting id.
+        meeting: String,
+    },
     /// The re-summary asked one of the user's other computers (T12.63b): it arrives by sync, or
     /// the run goes on when that computer hands it back.
     Offloaded {
@@ -195,11 +202,17 @@ pub struct JobSummary {
     pub result: SummaryResult,
     /// The `summary-steps` banner's text, when a later step wrote it or every step failed.
     pub note: Option<String>,
+    /// A continuation found nothing to continue: nothing was run, written or sent.
+    pub settled: bool,
 }
 
 impl From<SummaryResult> for JobSummary {
     fn from(result: SummaryResult) -> Self {
-        Self { result, note: None }
+        Self {
+            result,
+            note: None,
+            settled: false,
+        }
     }
 }
 
@@ -553,6 +566,10 @@ fn run(
                 });
             }
             sink(match result {
+                // Nothing to go on with: the job ends without a summary result.
+                Ok(JobSummary { settled: true, .. }) => JobEvent::Settled {
+                    meeting: id.clone(),
+                },
                 Ok(JobSummary {
                     result: SummaryResult::Cancelled,
                     ..
@@ -565,7 +582,7 @@ fn run(
                     meeting: id.clone(),
                     message: crate::offload::waiting_copy(Some(&name)),
                 },
-                Ok(JobSummary { result, note }) => JobEvent::Summary {
+                Ok(JobSummary { result, note, .. }) => JobEvent::Summary {
                     meeting: id.clone(),
                     result: summary_result_event(&result, voices_to_name(svc, meeting)),
                     note,
@@ -769,10 +786,18 @@ pub(crate) fn summarise_run_with(
             &RunPlan {
                 writers: w,
                 local_not_now: &|| false,
+                order: None,
             },
             cancel,
         )
     });
+    // A continuation whose run no longer waits on the request: nothing was run or sent.
+    if out.settled {
+        return Ok(JobSummary {
+            settled: true,
+            ..JobSummary::from(out.summary)
+        });
+    }
     for why in &out.handover_record_failures {
         warn(crate::meeting_events::handover_record_copy(why));
     }
@@ -829,6 +854,7 @@ pub(crate) fn summarise_run_with(
     Ok(JobSummary {
         note: crate::summary_order::steps_text(&out.steps, &cx),
         result: out.summary,
+        settled: false,
     })
 }
 

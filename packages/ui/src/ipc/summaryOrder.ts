@@ -11,6 +11,7 @@ import type {
   StepView,
   SummaryOrderView,
   SummarySettingsValue,
+  WriterChoice,
 } from "./bindings";
 
 export type { ResummariseItem, ResummariseView, StepChoice, StepView, SummaryOrderView };
@@ -38,6 +39,23 @@ export function stepKey(step: StepChoice): string {
  * what a meeting kept on this computer never uses. */
 export function isRemoteWriter(step: StepChoice): boolean {
   return step.kind === "Endpoint" || step.kind === "ClaudeCode" || step.kind === "Codex";
+}
+
+/** The old writer setting an order mirrors: its first writer step, or no summary. */
+export function mirrorWriter(steps: StepChoice[]): WriterChoice {
+  const first = steps.find((s) => s.kind !== "Computer");
+  switch (first?.kind) {
+    case "Local":
+      return "OnThisComputer";
+    case "Endpoint":
+      return "OwnEndpoint";
+    case "ClaudeCode":
+      return "ClaudeCode";
+    case "Codex":
+      return "Codex";
+    default:
+      return "NoSummary";
+  }
 }
 
 /** The order part of `IpcCommands`. Refusals are `invalid_setting` with the app's copy. */

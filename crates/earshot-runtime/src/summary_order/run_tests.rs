@@ -124,6 +124,7 @@ fn plan(writers: &Writers) -> RunPlan<'_> {
     RunPlan {
         writers,
         local_not_now: &|| false,
+        order: None,
     }
 }
 
@@ -782,6 +783,7 @@ fn summary_order_run_a_local_step_the_hold_did_not_cover_is_not_now() {
         &RunPlan {
             writers: &writers,
             local_not_now: &|| true,
+            order: None,
         },
         &CancelToken::new(),
     );
@@ -1165,6 +1167,7 @@ fn summary_order_run_a_local_step_skipped_not_now_says_so() {
         &RunPlan {
             writers: &writers,
             local_not_now: &|| true,
+            order: None,
         },
         &CancelToken::new(),
     );

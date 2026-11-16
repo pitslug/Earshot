@@ -1855,6 +1855,7 @@ mod order_steps {
         RunPlan {
             writers,
             local_not_now: &|| false,
+            order: None,
         }
     }
 

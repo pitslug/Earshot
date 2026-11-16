@@ -1198,6 +1198,14 @@ result: SummaryEvent;
  */
 note: string | null } | 
 /**
+ *  A re-summary that went on with a run after a computer handed it back found nothing to go
+ *  on with (T12.63b: the run no longer waits on that request): nothing was run, written or
+ *  sent, and the screen drops the job without a notice.
+ */
+{ type: "Settled"; 
+/**  Meeting id. */
+meeting: string } | 
+/**
  *  The re-summary asked one of the user's other computers (T12.63b): it arrives by sync, or
  *  the run goes on when that computer hands it back.
  */

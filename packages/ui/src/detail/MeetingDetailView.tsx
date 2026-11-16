@@ -50,6 +50,7 @@ import {
   type TranscriptRow,
   type JobEvent,
   type JobKind,
+  ORDER_COPY,
   type StepChoice,
   type LinkChoice,
   type MeetingDetail,
@@ -391,6 +392,7 @@ export function isTerminal(e: JobEvent | null): boolean {
     (e.type === "Retranscribed" ||
       e.type === "Summary" ||
       e.type === "Offloaded" ||
+      e.type === "Settled" ||
       e.type === "Cancelled" ||
       e.type === "Failed")
   );
@@ -429,9 +431,12 @@ export function jobNotice(view: JobView): Notice {
               text: `The meeting was transcribed again. ${e.warnings.join(" ")}`,
             }
           : { key: "job", intent: "success", text: "The meeting was transcribed again." };
+    // Nothing to go on with (T12.63b): the shell drops the job, so this never shows.
+    case "Settled":
+      return { key: "job", intent: "info", text: "" };
     // A re-summary that asked one of the user's other computers (T12.63b).
     case "Offloaded":
-      return { key: "job", intent: "info", title: "Summary on another computer", text: e.message };
+      return { key: "job", intent: "info", title: ORDER_COPY.resummarise.offloaded_title, text: e.message };
     case "Summary":
       switch (e.result.kind) {
         // A later step of the order wrote it: what became of each step comes first (T12.63b).
@@ -445,7 +450,12 @@ export function jobNotice(view: JobView): Notice {
                 : `${e.note} The previous summary is kept until the next re-summary.`,
           };
         case "Skipped":
-          return { key: "job", intent: "info", title: "No summary", text: e.note ?? e.result.reason };
+          return {
+            key: "job",
+            intent: "info",
+            title: ORDER_COPY.resummarise.no_summary_title,
+            text: e.note ?? e.result.reason,
+          };
         case "Failed":
           return { key: "job", intent: "error", title: "Summary failed", text: e.result.message };
         // A job has no final pass or recording, so these are only here to be complete.
@@ -457,7 +467,12 @@ export function jobNotice(view: JobView): Notice {
           return { key: "job", intent: "info", text: "The summary was cancelled." };
         // Another computer writes it (T11.3db); the summary arrives by sync.
         case "Offloaded":
-          return { key: "job", intent: "info", title: "Summary on another computer", text: e.result.message };
+          return {
+            key: "job",
+            intent: "info",
+            title: ORDER_COPY.resummarise.offloaded_title,
+            text: e.result.message,
+          };
         default: {
           const unhandled: never = e.result;
           return unhandled;

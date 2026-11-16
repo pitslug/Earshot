@@ -15,7 +15,9 @@ import type {
   SummaryOrderCommands,
   SummaryOrderView,
 } from "./summaryOrder";
-import { fillCopy, isRemoteWriter, sameStep } from "./summaryOrder";
+import { fillCopy, isRemoteWriter, mirrorWriter, sameStep } from "./summaryOrder";
+
+export { mirrorWriter };
 import type { SummarySettingsValue, WriterChoice } from "./bindings";
 
 /** The most steps an order holds (`summary_order::MAX_STEPS`). */
@@ -37,23 +39,6 @@ function stepOfWriter(writer: WriterChoice): StepChoice | null {
       return { kind: "Codex" };
     case "NoSummary":
       return null;
-  }
-}
-
-/** The old writer setting an order mirrors: its first writer step, or no summary. */
-export function mirrorWriter(steps: StepChoice[]): WriterChoice {
-  const first = steps.find((s) => s.kind !== "Computer");
-  switch (first?.kind) {
-    case "Local":
-      return "OnThisComputer";
-    case "Endpoint":
-      return "OwnEndpoint";
-    case "ClaudeCode":
-      return "ClaudeCode";
-    case "Codex":
-      return "Codex";
-    default:
-      return "NoSummary";
   }
 }
 

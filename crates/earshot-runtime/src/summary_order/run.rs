@@ -521,6 +521,10 @@ pub struct RunPlan<'a> {
     /// for it (docs/summary-order.md 4.5: a meeting whose hold was recorded without the local
     /// model while a newer meeting's ticket is open). A re-summarise job: never.
     pub local_not_now: &'a dyn Fn() -> bool,
+    /// The order an order run of [`crate::host::after_meeting`] runs instead of the stored one
+    /// (the CLI's: the writer its command line names); `None`: the stored order, read when the
+    /// summary is due. A re-summarise job's run takes its start directly and ignores it.
+    pub order: Option<SummaryOrder>,
 }
 
 /// How a run starts.
