@@ -43,6 +43,7 @@ import {
   sameStep,
   stepKey,
 } from "../ipc";
+import { endpointHost } from "../ipc/localHost";
 import { ModelsNotLoaded, SummaryModelChoices } from "./ModelSections";
 import { SummaryStyleSection } from "./SummaryStyleSection";
 import { partName, titleOf } from "./copy";
@@ -211,22 +212,37 @@ function EndpointForm({
   const [url, setUrl] = useState(stored.url);
   const [model, setModel] = useState(stored.model);
   const [key, setKey] = useState("");
+  // The address is Anthropic's, filled in by choosing Anthropic over an empty address.
+  const [prefilled, setPrefilled] = useState(false);
   const providerId = useId();
   // A stored change (a save) resets the drafts to what was stored.
   useEffect(() => {
     setProvider(stored.provider);
     setUrl(stored.url);
     setModel(stored.model);
+    setPrefilled(false);
   }, [stored.provider, stored.url, stored.model]);
 
   const anthropic = provider === "Anthropic";
   const saves = inUse || saveOnly;
   const changed = !saves || provider !== stored.provider || url !== stored.url || model !== stored.model;
-  const showWarning = inUse && settings.endpoint_host !== null && !settings.endpoint_local;
   const wizard = saveOnNext !== undefined;
   // Next saves the fields only when they differ from what is stored: an endpoint form nobody
   // typed in (shown under the list whether or not the endpoint is set up) never holds Next.
-  const edited = provider !== stored.provider || url !== stored.url || model !== stored.model;
+  // Choosing Anthropic alone fills in its address; with no model typed that is not an edit.
+  const onlyPrefill = prefilled && url === settings.anthropic_url && model.trim() === "" && stored.url === "";
+  const edited = !onlyPrefill && (provider !== stored.provider || url !== stored.url || model !== stored.model);
+  // Where the transcript would go: in the wizard the address being typed, as soon as it is one
+  // (T12.79 review), else what is stored and in use.
+  const typed = wizard && edited ? endpointHost(url) : null;
+  const warnHost =
+    typed !== null
+      ? typed.local
+        ? null
+        : typed.host
+      : inUse && settings.endpoint_host !== null && !settings.endpoint_local
+        ? settings.endpoint_host
+        : null;
   useSaveOnNext(saveOnNext, async () => {
     if (edited && (locked || !(await onUse({ provider, url, model })))) return false;
     if (!anthropic || key.trim() === "") return true;
@@ -246,7 +262,14 @@ function EndpointForm({
             onChange={(_, d) => {
               const p = d.value as ProviderChoice;
               setProvider(p);
-              if (p === "Anthropic" && url.trim() === "") setUrl(settings.anthropic_url);
+              if (p === "Anthropic" && url.trim() === "") {
+                setUrl(settings.anthropic_url);
+                setPrefilled(true);
+              } else if (p !== "Anthropic" && prefilled && url === settings.anthropic_url) {
+                // Switching back undoes the address Anthropic filled in.
+                setUrl("");
+                setPrefilled(false);
+              }
             }}
           >
             {(["OpenAiCompatible", "Anthropic"] as const).map((p) => (
@@ -264,7 +287,14 @@ function EndpointForm({
               : "The server's API address without /chat/completions, for example http://127.0.0.1:8080/v1 for a server on this computer. Plain http only to this computer or the local network."
           }
         >
-          <Input value={url} onChange={(_, d) => setUrl(d.value)} spellCheck={false} />
+          <Input
+            value={url}
+            onChange={(_, d) => {
+              setUrl(d.value);
+              setPrefilled(false);
+            }}
+            spellCheck={false}
+          />
         </Field>
         <Field label="Model" hint="The model name the endpoint expects.">
           <Input
@@ -287,9 +317,9 @@ function EndpointForm({
           {saves && !changed && <Caption1 className={styles.muted}>Saved.</Caption1>}
         </div>
       )}
-      {showWarning && (
+      {warnHost !== null && (
         <MessageBar intent="warning">
-          <MessageBarBody>{remoteWarning(settings.endpoint_host ?? "")}</MessageBarBody>
+          <MessageBarBody>{remoteWarning(warnHost)}</MessageBarBody>
         </MessageBar>
       )}
       {anthropic && (

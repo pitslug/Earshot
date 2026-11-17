@@ -19,7 +19,7 @@ import { VOICE_SAMPLE_MS } from "../ipc/mockSettings";
 import { CHECK_WARNING } from "../settings/AudioCheckSection";
 import { SETUP_EXPLAINED } from "../settings/GeneralPage";
 import { EXPORT_EXPLAINED } from "../settings/ObsidianSection";
-import { CLAUDE_CODE_PRIVACY, CODEX_PRIVACY } from "../settings/SummariesPage";
+import { CLAUDE_CODE_PRIVACY, CODEX_PRIVACY, remoteWarning } from "../settings/SummariesPage";
 import { SYNC_INTRO } from "../settings/SyncPage";
 import { formatSize } from "../settings/copy";
 import { openSettings, renderApp } from "../test/app";
@@ -40,8 +40,10 @@ import {
   SYNC_JOIN,
   SYNC_JOINED,
   SYNC_LATER,
+  SYNC_LATER_NOTE,
   SYNC_QUESTION,
   SYNC_SET_UP,
+  SYNC_STILL_READING,
   stillDownloading,
 } from "./FirstRunWizard";
 
@@ -333,6 +335,39 @@ describe("First run wizard", () => {
       expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
     });
 
+    it("choosing Anthropic alone fills in its address but holds nothing, and switching back undoes it", async () => {
+      const s = setup();
+      const form = within(await screen.findByRole("group", { name: "Your own server" }));
+      const address = form.getByRole("textbox", { name: /^Address/ });
+      const anthropicUrl = (await s.ipc.summarySettings()).anthropic_url;
+      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
+      expect(address).toHaveValue(anthropicUrl);
+      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "OpenAiCompatible");
+      expect(address).toHaveValue("");
+      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
+      expect(address).toHaveValue(anthropicUrl);
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[SYNC].title);
+      expect(screen.queryByText(SAVE_REFUSED_NOTE)).toBeNull();
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
+      expect((await s.ipc.summarySettings()).value).toMatchObject({ url: "", model: "" });
+    });
+
+    it("names where the transcript would go as soon as an address that is not local is typed", async () => {
+      const s = setup();
+      const form = within(await screen.findByRole("group", { name: "Your own server" }));
+      const address = form.getByRole("textbox", { name: /^Address/ });
+      await s.user.type(address, "http://192.168.1.20:8080/v1");
+      expect(screen.queryByText(remoteWarning("192.168.1.20"))).toBeNull();
+      await s.user.clear(address);
+      await s.user.type(address, "https://llm.example.com/v1");
+      expect(await screen.findByText(remoteWarning("llm.example.com"))).toBeInTheDocument();
+      // Nothing is stored until Next.
+      expect((await s.ipc.summarySettings()).value.url).toBe("");
+      await s.user.clear(address);
+      await waitFor(() => expect(screen.queryByText(remoteWarning("llm.example.com"))).toBeNull());
+    });
+
     it("Next saves a typed API key with the endpoint", async () => {
       const s = setup();
       const form = within(await screen.findByRole("group", { name: "Your own server" }));
@@ -401,6 +436,9 @@ describe("First run wizard", () => {
       ]);
       expect(choice(SYNC_LATER)).toBeChecked();
       expect(screen.getByText(SYNC_INTRO)).toBeInTheDocument();
+      // It cannot know whether this computer already syncs, so it says only what Not now does.
+      expect(screen.getByText(SYNC_LATER_NOTE)).toBeInTheDocument();
+      expect(SYNC_LATER_NOTE).not.toMatch(/sent/i);
       expect(screen.queryByRole("form", { name: "Join with a pairing code" })).toBeNull();
       expect(screen.queryByRole("form", { name: "Set up the first computer" })).toBeNull();
       await s.user.click(button("Next"));
@@ -439,9 +477,55 @@ describe("First run wizard", () => {
       await stepHeading(STEPS[SYNC].title);
       expect(await screen.findByText(SYNC_JOINED)).toBeInTheDocument();
       expect(screen.queryByRole("form", { name: "Join with a pairing code" })).toBeNull();
+      // Not now after a join still says this computer syncs.
+      await s.user.click(choice(SYNC_LATER));
+      expect(screen.getByText(SYNC_JOINED)).toBeInTheDocument();
+      expect(screen.queryByText(SYNC_LATER_NOTE)).toBeNull();
       await s.user.click(button("Next"));
       await stepHeading(STEPS[DOWNLOAD].title);
       expect(join).toHaveBeenCalledTimes(1);
+    });
+
+    it("holds the choices while a join is on its way", async () => {
+      const s = setup();
+      await toStep(s, SYNC);
+      await s.user.click(choice(SYNC_JOIN));
+      const form = within(await screen.findByRole("form", { name: "Join with a pairing code" }));
+      const real = s.ipc.joinSync.bind(s.ipc);
+      let answer = () => {};
+      const answered = new Promise<void>((resolve) => {
+        answer = resolve;
+      });
+      vi.spyOn(s.ipc, "joinSync").mockImplementation(async (address, code) => {
+        await answered;
+        return real(address, code);
+      });
+      await s.user.type(form.getByRole("textbox", { name: "Server address" }), "https://sync.example.com");
+      await s.user.type(form.getByRole("textbox", { name: "Pairing code" }), MOCK_SYNC_CODE);
+      await s.user.click(button("Next"));
+      await waitFor(() => expect(choice(SYNC_LATER)).toBeDisabled());
+      expect(choice(SYNC_JOIN)).toBeDisabled();
+      expect(choice(SYNC_SET_UP)).toBeDisabled();
+      await act(async () => answer());
+      await stepHeading(STEPS[DOWNLOAD].title);
+      expect((await s.ipc.syncView()).set_up).toBe(true);
+    });
+
+    it("says why Next waits while the sync settings are still being read", async () => {
+      const s = setup();
+      await toStep(s, SYNC);
+      const read = vi.spyOn(s.ipc, "syncView").mockImplementation(() => new Promise(() => {}));
+      const join = vi.spyOn(s.ipc, "joinSync");
+      await s.user.click(choice(SYNC_JOIN));
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      await s.user.click(button("Next"));
+      expect(await screen.findByText(SYNC_STILL_READING)).toBeInTheDocument();
+      await stepHeading(STEPS[SYNC].title);
+      expect(join).not.toHaveBeenCalled();
+      // Not now still gets past it.
+      await s.user.click(choice(SYNC_LATER));
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
     });
 
     it("a failed join stays on the step with the Sync page's copy, and Next tries again", async () => {
@@ -455,6 +539,10 @@ describe("First run wizard", () => {
       expect(await screen.findByText(syncCopy.command_problems.bad_code)).toBeInTheDocument();
       expect(screen.getByText(SAVE_REFUSED_NOTE)).toBeInTheDocument();
       await stepHeading(STEPS[SYNC].title);
+      // The reason stays once the choices are free again.
+      await waitFor(() => expect(choice(SYNC_LATER)).toBeEnabled());
+      expect(screen.getByText(syncCopy.command_problems.bad_code)).toBeInTheDocument();
+      expect(choice(SYNC_JOIN)).toBeChecked();
       // The code is cleared after every try; the address stays.
       expect(form.getByRole("textbox", { name: "Pairing code" })).toHaveValue("");
       await s.user.type(form.getByRole("textbox", { name: "Pairing code" }), MOCK_SYNC_CODE);
@@ -514,6 +602,21 @@ describe("First run wizard", () => {
       expect(screen.getByRole("region", { name: "Recommendation" })).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Later" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Never" })).toBeNull();
+    });
+
+    it("goes by who writes first when the order cannot be read after the Summaries step", async () => {
+      const s = setup(CLEAN);
+      await waitFor(() => expect(tick(CODEX_LABEL)).toBeEnabled());
+      await s.user.click(tick(CODEX_LABEL));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "Codex" }]));
+      await waitFor(() => expect(up(CODEX_LABEL)).toBeEnabled());
+      await s.user.click(up(CODEX_LABEL)!);
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Codex" }, { kind: "Local" }]));
+      // This computer is second, so the order would count its model; unread, only the first counts.
+      vi.spyOn(s.ipc, "summaryOrder").mockRejectedValueOnce(new Error("unreadable"));
+      await toStepFrom(s, 0, DOWNLOAD);
+      const total = await totalOf(s.ipc, ["speech-helpers", "parakeet-tdt-0.6b-v2"]);
+      await screen.findByText(`Earshot needs ${total} for this computer: Speech helpers and Parakeet 0.6B v2.`);
     });
 
     it("leaves the summary model out unless the Summaries step chose this computer", async () => {
@@ -890,8 +993,10 @@ describe("First run wizard", () => {
       SYNC_JOIN,
       SYNC_JOINED,
       SYNC_LATER,
+      SYNC_LATER_NOTE,
       SYNC_QUESTION,
       SYNC_SET_UP,
+      SYNC_STILL_READING,
       ...STEPS.flatMap((s) => [s.title, s.intro]),
     ];
     for (const w of words) expect(w).not.toContain("\u2014");

@@ -16,6 +16,7 @@ import {
   type SummarySettingsValue,
   type SummarySettingsView,
 } from "./ipc";
+import { isLocalHost } from "./localHost";
 import type { SampleMachine } from "./mockModels";
 import type { SummaryStyleView, SummaryTemplateOption } from "./summaryStyle";
 import type { SummaryVocabularyAdded, SummaryVocabularyView } from "./summaryVocabulary";
@@ -222,17 +223,6 @@ const MAX_URL = 2048;
 const fail = (kind: string, message: string): never => {
   throw new IpcFailure({ kind, message, retryable: false });
 };
-
-/** Whether `host` is this computer or a private LAN address (earshot-net's rule). */
-function isLocalHost(host: string): boolean {
-  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
-  if (h === "localhost" || h === "::1") return true;
-  if (/^f[cd][0-9a-f]{0,2}:/.test(h)) return true;
-  const v4 = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (!v4) return false;
-  const [a, b] = [Number(v4[1]), Number(v4[2])];
-  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
-}
 
 /** The parsed URL, or null when it is not one. */
 function parse(url: string): URL | null {
