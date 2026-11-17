@@ -9,6 +9,7 @@
 // and this copy follow. Fixed messages, limits and templates are read from that table itself.
 
 import table from "../../../../fixtures/ui/summary_settings_cases.json";
+import { withoutEndQuotes } from "../detail/dictionaryWord";
 import {
   type ClaudeCodeStatusView,
   type CodexStatusView,
@@ -154,14 +155,15 @@ const INVISIBLE_IN_WORD =
 const INVISIBLE_IN_STYLE =
   "The summary style cannot hold invisible characters such as zero-width spaces or text-direction marks.";
 
-/** The words as stored, with the app's rules and messages (`Vocabulary::new`): a control or
+/** The words as stored, with the app's rules and messages (`Vocabulary::new`, after the
+ * runtime drops the quotes at each word's ends, `withoutEndQuotes`, T12.78): a control or
  * invisible formatting character refuses the list; each word is trimmed with inner white space joined, empty ones
  * and repeats in another case are dropped (the first spelling wins), then the limits apply. */
 function checkVocabulary(words: string[]): string[] {
   const kept: string[] = [];
   const folded = new Set<string>();
   let total = 0;
-  for (const raw of words) {
+  for (const raw of words.map(withoutEndQuotes)) {
     if (/\p{Cc}/u.test(raw)) fail("invalid_setting", "A word can hold only text, with no line breaks or tabs.");
     if (/\p{Cf}/u.test(raw)) fail("invalid_setting", INVISIBLE_IN_WORD);
     const word = raw
@@ -419,7 +421,7 @@ export function createSummariesMock(
       return { added: true, view: vocabularyView() };
     },
     removeSummaryVocabularyWord: async (word) => {
-      const wanted = word.split(/\p{White_Space}+/u).filter((t) => t !== "").join(" ").toLowerCase();
+      const wanted = withoutEndQuotes(word).split(/\p{White_Space}+/u).filter((t) => t !== "").join(" ").toLowerCase();
       vocabulary = vocabulary.filter((w) => w.toLowerCase() !== wanted);
       return vocabularyView();
     },

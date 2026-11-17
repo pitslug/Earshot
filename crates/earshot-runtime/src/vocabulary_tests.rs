@@ -470,3 +470,163 @@ fn vocabulary_writes_keep_one_synced_row_per_word_with_sync_off() {
     assert_eq!(svc.store().outbox_len().unwrap(), 3);
     assert_eq!(dictionary_state(&svc.store()).unwrap().not_in_use, 0);
 }
+
+// Quotes around a Dictionary word (T12.78): one rule ([`without_end_quotes`]) for every path.
+
+/// The Dictionary page's adds and removals, with sync off and on.
+fn quoted_adds_take_the_word_inside(sync: bool) {
+    let dir = TempDir::new("summary-vocabulary");
+    let (svc, _clock) = services(&dir);
+    if sync {
+        crate::sync::set_sync_on(&svc, true).unwrap();
+        assert!(dictionary_syncs(&svc.store()).unwrap());
+    }
+    let words = |svc: &Services| vocabulary(&svc.store()).unwrap().0.words().to_vec();
+    for (typed, word) in [
+        ("'test'", "test"),
+        ("\"Quillmarsh\"", "Quillmarsh"),
+        ("\u{2018}Velmora\u{2019}", "Velmora"),
+        ("\u{201c}Zorbek\u{201d}", "Zorbek"),
+        ("  \"'QXR-7'\"  ", "QXR-7"),
+        ("O'Brien", "O'Brien"),
+        ("'rock'n'roll'", "rock'n'roll"),
+        ("\"Velmora Ridge\"", "Velmora Ridge"),
+    ] {
+        let added = add_entry(&svc, typed).unwrap();
+        assert_eq!(
+            (added.word.as_str(), added.added),
+            (word, true),
+            "sync {sync}: {typed:?}"
+        );
+    }
+    assert_eq!(
+        words(&svc),
+        [
+            "test",
+            "Quillmarsh",
+            "Velmora",
+            "Zorbek",
+            "QXR-7",
+            "O'Brien",
+            "rock'n'roll",
+            "Velmora Ridge"
+        ],
+        "sync {sync}"
+    );
+    // The same word in other quotes is already there.
+    for typed in ["test", "\u{201c}TEST\u{201d}", "'Test'"] {
+        let again = add_entry(&svc, typed).unwrap();
+        assert_eq!((again.word.as_str(), again.added), ("test", false));
+    }
+    // An entry that is only quotes is not a word.
+    for typed in ["''", "\"\"", "\u{2018}\u{2019}", " \u{201c} \u{201d} "] {
+        assert!(
+            matches!(add_entry(&svc, typed), Err(SetVocabularyError::NotAWord)),
+            "sync {sync}: {typed:?}"
+        );
+    }
+    // A removal named in quotes takes the word.
+    assert!(remove_entry(&svc, "\u{2018}test\u{2019}").unwrap());
+    assert!(remove_entry(&svc, "\"o'brien\"").unwrap());
+    assert_eq!(
+        words(&svc),
+        [
+            "Quillmarsh",
+            "Velmora",
+            "Zorbek",
+            "QXR-7",
+            "rock'n'roll",
+            "Velmora Ridge"
+        ]
+    );
+    // Rows hold the word without its quotes, and the list joined from them keeps every word.
+    let rows: Vec<String> = svc
+        .store()
+        .dictionary_words()
+        .unwrap()
+        .into_iter()
+        .filter(DictionaryWord::is_live)
+        .map(|r| r.word)
+        .collect();
+    assert_eq!(rows, words(&svc));
+    assert_eq!(dictionary_state(&svc.store()).unwrap().not_in_use, 0);
+}
+
+#[test]
+fn vocabulary_quotes_around_a_typed_word_are_dropped_with_sync_off() {
+    quoted_adds_take_the_word_inside(false);
+}
+
+#[test]
+fn vocabulary_quotes_around_a_typed_word_are_dropped_with_sync_on() {
+    quoted_adds_take_the_word_inside(true);
+}
+
+#[test]
+fn vocabulary_a_word_stored_in_double_quotes_reads_matches_and_is_removed() {
+    for sync in [false, true] {
+        let dir = TempDir::new("summary-vocabulary");
+        let (svc, _clock) = services(&dir);
+        // As 0.3.11 stored a typed `"test"` (quotes kept), and a curly-quoted one.
+        svc.store()
+            .set_local_value(
+                VOCABULARY_KEY,
+                "[\"\\\"test\\\"\", \"\u{201c}Zorbek\u{201d}\", \"QXR-7\"]".as_bytes(),
+            )
+            .unwrap();
+        if sync {
+            // Turning sync on makes rows for the stored words and rebuilds the list from them.
+            crate::sync::set_sync_on(&svc, true).unwrap();
+        }
+        let (words, refused) = vocabulary(&svc.store()).unwrap();
+        assert_eq!(refused, None);
+        assert_eq!(words.words(), ["test", "Zorbek", "QXR-7"], "sync {sync}");
+        assert_eq!(dictionary_state(&svc.store()).unwrap().not_in_use, 0);
+        // A typed `test` matches it: not added twice.
+        let again = add_entry(&svc, "test").unwrap();
+        assert_eq!((again.word.as_str(), again.added), ("test", false));
+        // It is removed as `test`, its row with it.
+        assert!(remove_entry(&svc, "test").unwrap(), "sync {sync}");
+        assert_eq!(
+            vocabulary(&svc.store()).unwrap().0.words(),
+            ["Zorbek", "QXR-7"],
+            "sync {sync}"
+        );
+        let live: Vec<String> = svc
+            .store()
+            .dictionary_words()
+            .unwrap()
+            .into_iter()
+            .filter(DictionaryWord::is_live)
+            .map(|r| r.word)
+            .collect();
+        assert!(
+            live.iter().all(|w| !w.to_lowercase().contains("test")),
+            "sync {sync}: {live:?}"
+        );
+        // And it can be added again.
+        assert!(add_entry(&svc, "'test'").unwrap().added, "sync {sync}");
+    }
+}
+
+#[test]
+fn vocabulary_without_end_quotes_keeps_inner_quotes_and_control_characters() {
+    assert_eq!(without_end_quotes("'test'"), "test");
+    assert_eq!(without_end_quotes(" \"' test '\" "), "test");
+    assert_eq!(without_end_quotes("\u{2018}\u{201c}x\u{201d}\u{2019}"), "x");
+    assert_eq!(without_end_quotes("O'Brien"), "O'Brien");
+    assert_eq!(without_end_quotes("rock'n'roll"), "rock'n'roll");
+    assert_eq!(without_end_quotes("say \"hi\" now"), "say \"hi\" now");
+    assert_eq!(without_end_quotes("''"), "");
+    assert_eq!(without_end_quotes("\u{201c}\u{201d}"), "");
+    // A control character is never trimmed away, so the list's own check still refuses it.
+    assert_eq!(without_end_quotes("\tword'"), "\tword");
+    let dir = TempDir::new("summary-vocabulary");
+    let (svc, _clock) = services(&dir);
+    assert!(matches!(
+        add_entry(&svc, "'\tword'"),
+        Err(SetVocabularyError::Refused(
+            VocabularyError::ControlCharacter { .. }
+        ))
+    ));
+}

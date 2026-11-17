@@ -33,7 +33,7 @@ import {
   type SummaryView,
   type TranscriptRow,
 } from "./ipc";
-import { dictionaryWord, splitToken, tokensOf } from "../detail/dictionaryWord";
+import { dictionaryWord, splitToken, tokensOf, withoutEndQuotes } from "../detail/dictionaryWord";
 import { DELETE_COPY } from "../shell/deleteCopy";
 import { marksAfterEdit, withWord, wordListOf, wordsToOffer } from "./mockWords";
 import {
@@ -1018,7 +1018,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     removeDictionaryWord: async (word) => {
       call("removeDictionaryWord", word);
-      const wanted = tokensOf(word).join(" ").toLowerCase();
+      const wanted = tokensOf(withoutEndQuotes(word)).join(" ").toLowerCase();
       const words = (await summariesMock.summaryVocabulary()).words;
       if (wanted === "" || !words.some((w) => w.toLowerCase() === wanted)) return false;
       await summariesMock.removeSummaryVocabularyWord(wanted);

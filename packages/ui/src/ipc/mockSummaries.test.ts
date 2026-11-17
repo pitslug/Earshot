@@ -57,6 +57,31 @@ describe("the Summaries mock against the app's case table", () => {
     expect(wrong).toEqual([]);
   });
 
+  it("drops the quotes around a Dictionary word as the app does (T12.78)", async () => {
+    const cases = table.dictionary_adds.cases;
+    expect(cases.length).toBeGreaterThanOrEqual(12);
+    const wrong: string[] = [];
+    for (const c of cases) {
+      // Stored as it is: the way an earlier version may have stored it.
+      const mock = createSummariesMock({ vocabulary: c.before });
+      const added = await outcome(() => mock.addSummaryVocabularyWord(c.add));
+      if (c.error !== null) {
+        if (!("error" in added) || added.error !== c.error) wrong.push(`${c.add}: ${JSON.stringify(added)}`);
+      } else if (
+        !("stored" in added) ||
+        added.stored.added !== c.added ||
+        c.word === null ||
+        !added.stored.view.words.includes(c.word)
+      ) {
+        wrong.push(`${c.add}: ${JSON.stringify(added)}`);
+      }
+      if ("remove" in c && typeof c.remove === "string") await mock.removeSummaryVocabularyWord(c.remove);
+      const stored = (await mock.summaryVocabulary()).words;
+      if (JSON.stringify(stored) !== JSON.stringify(c.stored)) wrong.push(`${c.add}: stored ${JSON.stringify(stored)}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
   it("keeps the Dictionary words as the app does, one word at a time (T11.3e)", async () => {
     // The page's own command: each case's words added in turn (blank ones are never sent) end
     // in the stored list, or the first refusal is the case's message.

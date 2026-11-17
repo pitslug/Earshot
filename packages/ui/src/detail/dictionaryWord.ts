@@ -38,16 +38,39 @@ export function splitToken(token: string): [string, string, string] {
 /** The word `token` adds: its core, when the core holds a letter; `null` for punctuation or a
  * number. */
 export function dictionaryWord(token: string): string | null {
-  const core = withoutSingleQuotes(splitToken(token.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ""))[1]);
+  const core = withoutQuotesAndPunctuation(splitToken(token.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ""))[1]);
   return LETTER.test(core) ? core : null;
 }
 
-/** `core` without leading and trailing single quotes (T12.45: `'Zorbek'` adds `Zorbek`), split
- * again after each strip so punctuation inside the quotes goes too; an apostrophe inside the
- * word stays. The app's rule is `vocabulary::without_single_quotes`. */
-export function withoutSingleQuotes(core: string): string {
+/** The quotes `withoutEndQuotes` drops at the ends of an entry: straight single and double, and
+ * the curly ones (U+2018, U+2019, U+201C, U+201D). As `vocabulary::END_QUOTES`. */
+export const END_QUOTES = ["'", '"', "‘", "’", "“", "”"];
+
+/** Quotes or non-control white space: what `withoutEndQuotes` drops at the ends. */
+function isEndChar(c: string): boolean {
+  return END_QUOTES.includes(c) || (/\p{White_Space}/u.test(c) && !/\p{Cc}/u.test(c));
+}
+
+/** The Dictionary's one rule for quotes around an entry (T12.78): quotes and white space at both
+ * ends dropped, repeatedly, every quote or apostrophe inside kept (`O'Brien`); an entry that is
+ * only quotes is empty. A control character is never dropped, so the list's own check still
+ * refuses it. The app's rule is `vocabulary::without_end_quotes`
+ * (`fixtures/ui/summary_settings_cases.json` `dictionary_adds`). */
+export function withoutEndQuotes(entry: string): string {
+  const chars = [...entry];
+  let start = 0;
+  let end = chars.length;
+  while (start < end && isEndChar(chars[start])) start += 1;
+  while (end > start && isEndChar(chars[end - 1])) end -= 1;
+  return chars.slice(start, end).join("");
+}
+
+/** `core` without the quotes at its ends (`withoutEndQuotes`; T12.45: `'Zorbek'` adds `Zorbek`),
+ * split again after each strip so punctuation inside the quotes goes too; an apostrophe inside
+ * the word stays. The app's rule is `vocabulary::without_quotes_and_punctuation`. */
+export function withoutQuotesAndPunctuation(core: string): string {
   for (;;) {
-    const stripped = core.replace(/^'+|'+$/g, "");
+    const stripped = withoutEndQuotes(core);
     if (stripped.length === core.length) return core;
     core = splitToken(stripped)[1];
   }

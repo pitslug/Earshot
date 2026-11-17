@@ -527,8 +527,46 @@
    "words": [],
    "stored": [],
    "error": null
+  },
+  {
+   "name": "quotes at the ends of a word dropped, inner ones kept (T12.78)",
+   "words": [
+    "'Quillmarsh'",
+    "\"QXR-7\"",
+    "‘Velmora’",
+    " “'Zorbek'” ",
+    "O'Brien",
+    "'rock'n'roll'",
+    "\"quillmarsh\""
+   ],
+   "stored": [
+    "Quillmarsh",
+    "QXR-7",
+    "Velmora",
+    "Zorbek",
+    "O'Brien",
+    "rock'n'roll"
+   ],
+   "error": null
   }
  ],
+ "dictionary_adds": {
+  "about": "The Dictionary page's one-word adds and removals (T12.78): quotes at the ends of a typed entry (straight single and double, curly U+2018, U+2019, U+201C, U+201D) are dropped, repeatedly, and inner ones kept; an entry that is only quotes is not a word. Each case starts from `before` (stored as it is, the way an earlier version may have stored it), adds `add`, then removes `remove` when given; `added` says whether the add wrote, `word` is the entry as the Dictionary holds it, `stored` the list after both, `error` the add's exact message (nothing stored). Run through the app's IPC functions (summary_vocabulary_tests.rs) and the mock (mockSummaries.test.ts).",
+  "cases": [
+   { "before": [], "add": "'test'", "added": true, "word": "test", "stored": ["test"], "error": null },
+   { "before": [], "add": "\"test\"", "added": true, "word": "test", "stored": ["test"], "error": null },
+   { "before": [], "add": "‘test’", "added": true, "word": "test", "stored": ["test"], "error": null },
+   { "before": [], "add": "“test”", "added": true, "word": "test", "stored": ["test"], "error": null },
+   { "before": [], "add": " \"'Velmora Ridge'\" ", "added": true, "word": "Velmora Ridge", "stored": ["Velmora Ridge"], "error": null },
+   { "before": [], "add": "O'Brien", "added": true, "word": "O'Brien", "stored": ["O'Brien"], "error": null },
+   { "before": [], "add": "'rock'n'roll'", "added": true, "word": "rock'n'roll", "stored": ["rock'n'roll"], "error": null },
+   { "before": ["QXR-7"], "add": "''", "added": false, "word": null, "stored": ["QXR-7"], "error": "Only a word can be added to the dictionary." },
+   { "before": ["QXR-7"], "add": " “ ” ", "added": false, "word": null, "stored": ["QXR-7"], "error": "Only a word can be added to the dictionary." },
+   { "before": ["\"test\""], "add": "test", "added": false, "word": "test", "stored": ["test"], "error": null },
+   { "before": ["\"test\"", "QXR-7"], "add": "TEST", "added": false, "word": "test", "remove": "test", "stored": ["QXR-7"], "error": null },
+   { "before": ["QXR-7", "Velmora"], "add": "'Zorbek'", "added": true, "word": "Zorbek", "remove": "‘velmora’", "stored": ["QXR-7", "Zorbek"], "error": null }
+  ]
+ },
  "templates": {
   "options": [
    {"value": "standard", "label": "Standard", "description": "Short notes with every decision and action item."},

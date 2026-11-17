@@ -1,5 +1,5 @@
 {
-  "about": "Which word a transcript token adds to the Dictionary (T12.15f): the token's core (no surrounding punctuation, the word matcher's split_punctuation, then without leading or trailing single quotes: T12.45) when it holds a letter, else none. crates/earshot-runtime (vocabulary_tests.rs) runs every case through `vocabulary::dictionary_word`, and packages/ui/src/detail/dictionaryWord.test.ts through the UI's `dictionaryWord`, so the UI cannot offer a word the app would refuse. Every word is invented.",
+  "about": "Which word a transcript token adds to the Dictionary (T12.15f): the token's core (no surrounding punctuation, the word matcher's split_punctuation, then without the quotes at its ends, straight or curly, by the Dictionary's one quote rule: T12.45, T12.78) when it holds a letter, else none. crates/earshot-runtime (vocabulary_tests.rs) runs every case through `vocabulary::dictionary_word`, and packages/ui/src/detail/dictionaryWord.test.ts through the UI's `dictionaryWord`, so the UI cannot offer a word the app would refuse. Every word is invented.",
   "cases": [
     { "token": "Quillmarsh", "word": "Quillmarsh" },
     { "token": "Quillmarsh,", "word": "Quillmarsh" },
@@ -14,6 +14,13 @@
     { "token": "Velmoras'", "word": "Velmoras" },
     { "token": "'don't'", "word": "don't" },
     { "token": "''", "word": null },
+    { "token": "\"'Zorbek'\"", "word": "Zorbek" },
+    { "token": "‘don't’", "word": "don't" },
+    { "token": "'“Velmora”',", "word": "Velmora" },
+    { "token": "rock'n'roll,", "word": "rock'n'roll" },
+    { "token": "O'Brien's", "word": "O'Brien's" },
+    { "token": "“”", "word": null },
+    { "token": "'‘'", "word": null },
     { "token": "'42'", "word": null },
     { "token": "3D", "word": "3D" },
     { "token": "\u00d8rsby.", "word": "\u00d8rsby" },
