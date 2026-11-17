@@ -116,6 +116,7 @@ export function createTauriIpc(): Ipc {
     undoSummary: async (meeting) => {
       unwrap(await commands.undoSummary(meeting));
     },
+    markSummarySeen: async (meeting, summary) => unwrap(await commands.markSummarySeen(meeting, summary)),
     exportMeeting: async (meeting) => unwrap(await commands.exportMeeting(meeting)),
     meetingDeletion: async (meeting) => unwrap(await commands.meetingDeletion(meeting)),
     deleteMeeting: async (meeting, stopFinishing) => {

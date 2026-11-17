@@ -79,7 +79,16 @@ import { type Timer, realTimer } from "../time";
 import { MeetingSearchBox, MeetingSearchResults, useMeetingSearch } from "./MeetingSearch";
 import { ALL_MEETINGS_KEY, type FolderEdit, FolderGroup, NEW_FOLDER_KEY } from "./Folders";
 import { folderDeletionCopy, meetingCount, meetingsInFolder } from "./folderRules";
-import { type DayGroup, displayTitle, groupByDay, recoveredText, secondaryLine } from "./meetings";
+import {
+  type DayGroup,
+  type MeetingWork,
+  type RowDot,
+  displayTitle,
+  groupByDay,
+  recoveredText,
+  rowDot,
+  secondaryLine,
+} from "./meetings";
 import { openMenuFromKeyboard } from "./menuKeys";
 import { STOPPING_TEXT, deleteQuestion, stopsWork } from "./deleteQuestion";
 import { DataFolderScreen } from "./DataFolderScreen";
@@ -195,13 +204,16 @@ const useStyles = makeStyles({
     gap: tokens.spacingHorizontalXS,
     color: tokens.colorNeutralForeground3,
   },
-  recordingDot: {
+  // One dot style for every state (T12.76), the recording dot's; the word beside it says the same.
+  statusDot: {
     width: "8px",
     height: "8px",
     borderRadius: tokens.borderRadiusCircular,
-    backgroundColor: tokens.colorStatusDangerBackground3,
     flexShrink: 0,
   },
+  recordingDot: { backgroundColor: tokens.colorStatusDangerBackground3 },
+  workingDot: { backgroundColor: tokens.colorStatusSuccessBackground3 },
+  newSummaryDot: { backgroundColor: tokens.colorBrandBackground },
   paneBottom: {
     padding: tokens.spacingVerticalS,
     borderTop: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
@@ -410,6 +422,9 @@ export function AppShell({
       return job === undefined || isTerminal(job.last) ? all : { ...all, [id]: { ...job, cancelling } };
     });
   }, []);
+  // What each meeting's work after the meeting is doing, as its events said, until its summary
+  // event (T12.76): the list says "Transcribing..." or "Summarising..." for it.
+  const [afterWork, setAfterWork] = useState<Record<string, MeetingWork>>({});
   // Whether an update waits for the user (available, downloading or ready): a mark beside Settings.
   const [updateWaiting, setUpdateWaiting] = useState(false);
 
@@ -542,13 +557,28 @@ export function AppShell({
       setDetailRefresh((n) => n + 1);
       if (event.result.kind === "Stored") setSummaryStored((n) => n + 1);
     }
+    if (event.type === "PostProgress") {
+      const work: MeetingWork = event.step.kind === "Summarising" ? "Summarising" : "Transcribing";
+      setAfterWork((all) => (all[event.meeting] === work ? all : { ...all, [event.meeting]: work }));
+    }
     if (event.type === "Summary") {
+      setAfterWork(({ [event.meeting]: _done, ...rest }) => rest);
       setBehindIds((ids) => ids.filter((id) => id !== event.meeting));
       setCancellingIds((ids) => ids.filter((id) => id !== event.meeting));
     }
   });
   const meeting = live.meeting;
   liveMeetingId.current = meeting?.meetingId ?? null;
+  // What a row says runs (T12.76): a job on the meeting, else the step its work after the meeting
+  // was last heard at, only while the list says that work runs or waits (a meeting's turn can
+  // start after the list was read).
+  const workOf = (m: MeetingListItem): MeetingWork | undefined => {
+    const job = jobs[m.id];
+    if (job !== undefined && !isTerminal(job.last)) {
+      return job.job === "Resummarise" ? "Summarising" : "Transcribing";
+    }
+    return m.state === "Processing" || m.state === "Waiting" ? afterWork[m.id] : undefined;
+  };
   const recording = meeting !== null && meeting.phase === "recording";
   // The list groups by day: it renders when the day changes, never on a clock tick (T9.24).
   const today = useLocalDay(timer, now);
@@ -1113,6 +1143,7 @@ export function AppShell({
                   selectedId={view === "start" ? null : selectedId}
                   folders={folders}
                   handlers={rowHandlers}
+                  workOf={workOf}
                 />
               ))}
             </ul>
@@ -1393,11 +1424,14 @@ function MeetingGroup({
   selectedId,
   folders,
   handlers,
+  workOf,
 }: {
   group: DayGroup;
   selectedId: string | null;
   folders: FolderListItem[];
   handlers: RowHandlers;
+  /** What the window heard each meeting's work doing (T12.76). */
+  workOf(m: MeetingListItem): MeetingWork | undefined;
 }) {
   const styles = useStyles();
   const headingId = useId();
@@ -1409,7 +1443,14 @@ function MeetingGroup({
         </Caption1Strong>
         <ul className={styles.list}>
           {group.meetings.map((m) => (
-            <MeetingRow key={m.id} m={m} selected={m.id === selectedId} folders={folders} handlers={handlers} />
+            <MeetingRow
+              key={m.id}
+              m={m}
+              work={workOf(m)}
+              selected={m.id === selectedId}
+              folders={folders}
+              handlers={handlers}
+            />
           ))}
         </ul>
       </div>
@@ -1417,20 +1458,31 @@ function MeetingGroup({
   );
 }
 
+/** The style of each row dot (T12.76). */
+const DOT_CLASS: Record<RowDot, "recordingDot" | "workingDot" | "newSummaryDot"> = {
+  recording: "recordingDot",
+  working: "workingDot",
+  newSummary: "newSummaryDot",
+};
+
 /** One row of the meeting list. Memoised: every prop is the row's own or never changes, so a
- * live meeting's landed lines leave the list alone (T9.24). */
+ * live meeting's landed lines leave the list alone (T9.24). `work`: what the window heard the
+ * meeting's work doing (T12.76). */
 const MeetingRow = memo(function MeetingRow({
   m,
+  work,
   selected: isSelected,
   folders,
   handlers: h,
 }: {
   m: MeetingListItem;
+  work: MeetingWork | undefined;
   selected: boolean;
   folders: FolderListItem[];
   handlers: RowHandlers;
 }) {
   const styles = useStyles();
+  const dot = rowDot(m, work);
   // The delete dialog opens with no trigger of its own: on Cancel it hands focus back to where it
   // was, the row or its trash can.
   const restoreFocus = useRestoreFocusTarget();
@@ -1452,11 +1504,10 @@ const MeetingRow = memo(function MeetingRow({
             <span className={styles.rowText}>
               <Body1 className={mergeClasses("earshot-row-title", styles.rowTitle)}>{displayTitle(m)}</Body1>
               <Caption1 className={styles.rowMeta}>
-                {m.state === "Recording" && <span className={styles.recordingDot} aria-hidden="true" />}
-                {(m.state === "Processing" || m.state === "Waiting") && (
-                  <Spinner size="extra-tiny" aria-label={m.state} />
+                {dot !== null && (
+                  <span className={mergeClasses(styles.statusDot, styles[DOT_CLASS[dot]])} data-dot={dot} aria-hidden="true" />
                 )}
-                {secondaryLine(m)}
+                {secondaryLine(m, work)}
               </Caption1>
             </span>
           </Button>

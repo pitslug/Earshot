@@ -133,6 +133,11 @@ fn main() {
             if let Ok(services) = state.services() {
                 let models = earshot_runtime::host::model_dir(&services.data);
                 earshot_runtime::host::recover_extractions(&models);
+                // The first start of a version that marks unread summaries (T12.76) marks every
+                // summary already there as read, once and in one transaction, before the window
+                // can list the meetings, so an upgrade lights no mark. A failure only means some
+                // marks show.
+                let _ = earshot_runtime::summary_seen::mark_existing_once(&services);
             }
             // The CUDA switch (T8.4af) before anything can call llama.cpp or load ONNX Runtime,
             // whose libraries cannot be replaced once loaded. It closes their gates and returns at

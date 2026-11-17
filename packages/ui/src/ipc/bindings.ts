@@ -147,6 +147,12 @@ export const commands = {
 	/**  Swaps the current summary with the previous one. */
 	undoSummary: (meeting: string) => typedError<null, IpcError>(__TAURI_INVOKE("undo_summary", { meeting })),
 	/**
+	 *  The meeting's detail showed summary row `summary` (T12.76): the meeting list stops marking it
+	 *  as new. Returns whether that changed anything (`false` for a summary already marked, or a row
+	 *  that is not one of the meeting's summaries).
+	 */
+	markSummarySeen: (meeting: string, summary: string) => typedError<boolean, IpcError>(__TAURI_INVOKE("mark_summary_seen", { meeting, summary })),
+	/**
 	 *  Exports `meeting` to the Obsidian vault and subfolder of the Obsidian settings
 	 *  (`no_vault` while none is set).
 	 */
@@ -1470,6 +1476,11 @@ export type MeetingListItem = {
 	 *  folder and for one that is deleted or unknown.
 	 */
 	folder_id: string | null,
+	/**
+	 *  It has a current summary this device has not opened (T12.76,
+	 *  `earshot_runtime::summary_seen`).
+	 */
+	new_summary: boolean,
 };
 
 /**  Where a meeting is in its life ([`Services::meeting_activity`]). */

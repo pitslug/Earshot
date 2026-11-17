@@ -26,6 +26,7 @@ const row = (id: string, title: string, started: number): MeetingListItem => ({
   duration_ms: 30 * 60_000,
   state: "Ready",
   folder_id: null,
+  new_summary: false,
 });
 
 const MEETINGS: MeetingListItem[] = [

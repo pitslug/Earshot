@@ -1,14 +1,22 @@
 import { describe, expect, it } from "vitest";
 
 import type { MeetingListItem } from "../ipc";
-import { clockTime, displayTitle, groupByDay, recordedDate, recoveredText, secondaryLine } from "./meetings";
+import {
+  clockTime,
+  displayTitle,
+  groupByDay,
+  recordedDate,
+  recoveredText,
+  rowDot,
+  secondaryLine,
+} from "./meetings";
 
 // Local times, so the tests hold in any time zone.
 const at = (day: number, hour: number, minute = 0) =>
   new Date(2026, 10, day, hour, minute).getTime();
 
 function meeting(id: string, started: number, duration: number | null = 30 * 60_000): MeetingListItem {
-  return { id, title: `Meeting ${id}`, started_at_ms: started, duration_ms: duration, state: "Ready", folder_id: null };
+  return { id, title: `Meeting ${id}`, started_at_ms: started, duration_ms: duration, state: "Ready", folder_id: null, new_summary: false };
 }
 
 describe("groupByDay", () => {
@@ -56,12 +64,51 @@ describe("secondaryLine", () => {
     expect(secondaryLine({ ...m, duration_ms: null, state: "Recording" })).toBe(
       "2 Nov 2026 07:00 · Recording...",
     );
-    expect(secondaryLine({ ...m, state: "Processing" })).toBe("2 Nov 2026 07:00 · 47 min · Processing");
     expect(secondaryLine({ ...m, duration_ms: null, state: "Interrupted" })).toBe(
       "2 Nov 2026 07:00 · Interrupted",
     );
     expect(secondaryLine({ ...m, state: "Unprocessed" })).toBe("2 Nov 2026 07:00 · 47 min · Draft transcript");
     expect(secondaryLine({ ...m, state: "Ready" })).toBe("2 Nov 2026 07:00 · 47 min");
+  });
+
+  it("says truthfully what the work after the meeting does (T12.76)", () => {
+    const m = meeting("a", at(2, 7, 0), 47 * 60_000);
+    const processing = { ...m, state: "Processing" as const };
+    const waiting = { ...m, state: "Waiting" as const };
+    // Not heard which step runs (a window opened mid-way): one honest word.
+    expect(secondaryLine(processing)).toBe("2 Nov 2026 07:00 · 47 min · Finishing...");
+    expect(secondaryLine(waiting)).toBe("2 Nov 2026 07:00 · 47 min · Waiting...");
+    // "Summarising..." only while the summary step runs.
+    expect(secondaryLine(processing, "Transcribing")).toBe("2 Nov 2026 07:00 · 47 min · Transcribing...");
+    expect(secondaryLine(processing, "Summarising")).toBe("2 Nov 2026 07:00 · 47 min · Summarising...");
+    // A waiting meeting whose turn started, and a job on a ready meeting, say what runs.
+    expect(secondaryLine(waiting, "Transcribing")).toBe("2 Nov 2026 07:00 · 47 min · Transcribing...");
+    expect(secondaryLine({ ...m, new_summary: true }, "Summarising")).toBe(
+      "2 Nov 2026 07:00 · 47 min · Summarising...",
+    );
+    for (const [item, work] of [
+      [processing, undefined],
+      [waiting, undefined],
+      [processing, "Summarising"],
+      [m, "Transcribing"],
+    ] as const) {
+      expect(rowDot(item, work)).toBe("working");
+    }
+  });
+
+  it("marks a summary this computer has not opened (T12.76)", () => {
+    const m = { ...meeting("a", at(2, 7, 0), 47 * 60_000), new_summary: true };
+    expect(secondaryLine(m)).toBe("2 Nov 2026 07:00 · 47 min · New summary");
+    expect(rowDot(m)).toBe("newSummary");
+    expect(secondaryLine({ ...m, state: "Unprocessed" })).toBe(
+      "2 Nov 2026 07:00 · 47 min · Draft transcript · New summary",
+    );
+    // Recording and running work come first; a read summary has no dot and no word.
+    expect(rowDot({ ...m, state: "Recording" })).toBe("recording");
+    expect(rowDot({ ...m, state: "Processing" })).toBe("working");
+    expect(rowDot({ ...m, new_summary: false })).toBeNull();
+    expect(secondaryLine({ ...m, new_summary: false })).toBe("2 Nov 2026 07:00 · 47 min");
+    expect(rowDot({ ...m, duration_ms: null, state: "Recording" })).toBe("recording");
   });
 
   it("pads the clock", () => {

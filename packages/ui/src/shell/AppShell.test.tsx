@@ -10,10 +10,10 @@ const at = (day: number, hour: number, minute = 0) =>
 const NOW = at(2, 16, 0);
 
 const MEETINGS: MeetingListItem[] = [
-  { id: "m4", title: "Design review", started_at_ms: at(2, 14, 0), duration_ms: 34 * 60_000, state: "Ready", folder_id: null },
-  { id: "m3", title: "", started_at_ms: at(2, 9, 30), duration_ms: 47 * 60_000, state: "Ready", folder_id: null },
-  { id: "m2", title: "Supplier call", started_at_ms: at(1, 11, 5), duration_ms: 22 * 60_000, state: "Ready", folder_id: null },
-  { id: "m1", title: "Quarterly planning", started_at_ms: new Date(2026, 9, 27, 10, 0).getTime(), duration_ms: 95 * 60_000, state: "Ready", folder_id: null },
+  { id: "m4", title: "Design review", started_at_ms: at(2, 14, 0), duration_ms: 34 * 60_000, state: "Ready", folder_id: null, new_summary: false },
+  { id: "m3", title: "", started_at_ms: at(2, 9, 30), duration_ms: 47 * 60_000, state: "Ready", folder_id: null, new_summary: false },
+  { id: "m2", title: "Supplier call", started_at_ms: at(1, 11, 5), duration_ms: 22 * 60_000, state: "Ready", folder_id: null, new_summary: false },
+  { id: "m1", title: "Quarterly planning", started_at_ms: new Date(2026, 9, 27, 10, 0).getTime(), duration_ms: 95 * 60_000, state: "Ready", folder_id: null, new_summary: false },
 ];
 
 function renderShell(ipc: Ipc) {
@@ -120,5 +120,65 @@ describe("AppShell", () => {
   it("shows a notice when given one", async () => {
     renderApp(createMockIpc({ meetings: MEETINGS }), { now: () => NOW, notice: "Preview: sample data" });
     expect(await screen.findByText("Preview: sample data")).toBeInTheDocument();
+  });
+});
+
+describe("AppShell status dots (T12.76)", () => {
+  const row = (title: RegExp) => screen.getByRole("button", { name: title });
+  const dot = (el: HTMLElement) => el.querySelector("[data-dot]")?.getAttribute("data-dot") ?? null;
+  const STATES: MeetingListItem[] = [
+    { ...MEETINGS[0], id: "s5", title: "Read meeting" },
+    { ...MEETINGS[0], id: "s4", title: "Finishing meeting", started_at_ms: at(2, 13, 0), state: "Processing" },
+    { ...MEETINGS[0], id: "s3", title: "Queued meeting", started_at_ms: at(2, 12, 0), state: "Waiting" },
+    { ...MEETINGS[0], id: "s2", title: "Unread meeting", started_at_ms: at(2, 11, 0), new_summary: true },
+    {
+      ...MEETINGS[0],
+      id: "s1",
+      title: "Recording meeting",
+      started_at_ms: at(2, 10, 0),
+      duration_ms: null,
+      state: "Recording",
+    },
+  ];
+
+  it("gives each state the recording dot's style in its own colour, with its word", async () => {
+    renderShell(createMockIpc({ meetings: STATES }));
+    await screen.findByRole("list", { name: "Meetings" });
+    const cases: [RegExp, string | null, string][] = [
+      [/^Read meeting/, null, "2 Nov 2026 14:00 · 34 min"],
+      [/^Finishing meeting/, "working", "2 Nov 2026 13:00 · 34 min · Finishing..."],
+      [/^Queued meeting/, "working", "2 Nov 2026 12:00 · 34 min · Waiting..."],
+      [/^Unread meeting/, "newSummary", "2 Nov 2026 11:00 · 34 min · New summary"],
+      [/^Recording meeting/, "recording", "2 Nov 2026 10:00 · Recording..."],
+    ];
+    for (const [title, want, line] of cases) {
+      await waitFor(() => expect(dot(row(title))).toBe(want));
+      // Never colour alone: the word is in the row's line, and the dot is hidden from readers.
+      expect(row(title)).toHaveTextContent(line);
+      expect(row(title).querySelector("[data-dot]")?.getAttribute("aria-hidden") ?? "true").toBe("true");
+    }
+    // No spinner any more: the dots are the one style.
+    expect(within(screen.getByRole("list", { name: "Meetings" })).queryByRole("progressbar")).toBeNull();
+  });
+
+  it("clears the new summary mark once the meeting's summary is shown", async () => {
+    const user = userEvent.setup();
+    const ipc = createMockIpc({ meetings: STATES });
+    const seen: [string, string][] = [];
+    const spied: Ipc = {
+      ...ipc,
+      markSummarySeen: (meeting, summary) => {
+        seen.push([meeting, summary]);
+        return ipc.markSummarySeen(meeting, summary);
+      },
+    };
+    renderShell(spied);
+    await screen.findByRole("list", { name: "Meetings" });
+    await waitFor(() => expect(dot(row(/^Unread meeting/))).toBe("newSummary"));
+    await user.click(row(/^Unread meeting/));
+    const shown = await spied.getMeeting("s2");
+    await waitFor(() => expect(dot(row(/^Unread meeting/))).toBeNull());
+    expect(row(/^Unread meeting/)).not.toHaveTextContent("New summary");
+    expect(seen).toContainEqual(["s2", shown.summary?.id ?? ""]);
   });
 });

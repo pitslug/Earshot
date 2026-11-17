@@ -183,6 +183,9 @@ export interface IpcCommands
   cancelJob(meeting: string): Promise<void>;
   /** Swaps the current summary with the previous one. */
   undoSummary(meeting: string): Promise<void>;
+  /** The meeting's detail showed summary `summary` (T12.76): the list stops marking it new.
+   * Resolves to whether that changed anything. */
+  markSummarySeen(meeting: string, summary: string): Promise<boolean>;
   /** Lets the summary writer summarise a meeting kept on this computer from now on (T12.13).
    * Sends nothing: the next summary does. */
   allowSummaryWriter(meeting: string): Promise<void>;

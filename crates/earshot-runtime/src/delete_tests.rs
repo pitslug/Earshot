@@ -37,6 +37,7 @@ fn production_key(record: MeetingRecord, meeting: EntityId, device: DeviceId) ->
         MeetingRecord::VoiceprintMe => crate::identities::voiceprint_me_key(meeting),
         MeetingRecord::SummaryRun => crate::summary_order::run::record_key(meeting),
         MeetingRecord::UnknownLines => crate::unknown_lines::record_key(meeting),
+        MeetingRecord::SummarySeen => crate::summary_seen::record_key(meeting),
     }
 }
 

@@ -606,6 +606,22 @@ export function MeetingDetailView({
     setTab("summary");
   }, [showSummary]);
 
+  // The summary this page shows counts as read on this computer (T12.76): the list's "New
+  // summary" mark goes. Asked again only when another summary is shown; the list is read again
+  // only when something changed, also after the page has gone.
+  const shownSummary = tab === "summary" ? (detail?.summary?.id ?? null) : null;
+  const changedRef = useRef(onChanged);
+  changedRef.current = onChanged;
+  useEffect(() => {
+    if (shownSummary === null) return;
+    ipc.markSummarySeen(id, shownSummary).then(
+      (changed) => {
+        if (changed) changedRef.current();
+      },
+      () => {},
+    );
+  }, [ipc, id, shownSummary]);
+
   // "Name voices": open the panel and focus the first name field.
   useEffect(() => {
     if (nameVoices > 0) setSpeakersOpen(true);

@@ -730,6 +730,7 @@ describe("meeting screen", () => {
           duration_ms: 1_800_000,
           state: "Ready",
           folder_id: null,
+          new_summary: false,
         },
       ],
     });
@@ -850,8 +851,14 @@ describe("meeting screen", () => {
     expect(await screen.findByRole("tab", { name: "Transcript", selected: true })).toBeInTheDocument();
     expect(await screen.findByText(/lead time on the second pump set/)).toBeInTheDocument();
     const list = screen.getByRole("list", { name: "Meetings" });
-    await waitFor(() => expect(within(list).getByLabelText("Processing")).toBeInTheDocument());
+    // The list's row (T12.76): a green dot with what the work after the meeting does.
+    const row = () => within(list).getByRole("button", { name: /^Pump order/ });
+    const dot = () => row().querySelector("[data-dot]")?.getAttribute("data-dot") ?? null;
+    await waitFor(() => expect(row()).toHaveTextContent(/· Finishing\.\.\.$/));
+    expect(dot()).toBe("working");
     advance(s.timer, 3 * POST_STEP_MS);
+    await waitFor(() => expect(row()).toHaveTextContent(/· Transcribing\.\.\.$/));
+    expect(dot()).toBe("working");
     expect(within(status).getByText("Finished the transcript for you")).toBeInTheDocument();
     expect(
       within(status).getByText(/making the final transcript \(who said what, with echo removed\)/),
@@ -861,6 +868,7 @@ describe("meeting screen", () => {
     ).toBeInTheDocument();
     advance(s.timer, (POST_STEPS.length - 3) * POST_STEP_MS);
     expect(within(status).getByText("Writing the summary")).toBeInTheDocument();
+    await waitFor(() => expect(row()).toHaveTextContent(/· Summarising\.\.\.$/));
     advance(s.timer, POST_STEP_MS);
     // The summary is stored: the bar goes and the page shows the summary by itself.
     expect(await screen.findByText(/The second pump set slips to 11 weeks/)).toBeInTheDocument();
@@ -869,7 +877,9 @@ describe("meeting screen", () => {
     expect(statusShown()).toBeNull();
     expect(screen.queryByText("Summary ready")).toBeNull();
     expect(screen.getByRole("heading", { level: 1, name: "Pump order" })).toBeInTheDocument();
-    await waitFor(() => expect(within(list).queryByLabelText("Processing")).toBeNull());
+    // The page shows the new summary, so the list marks nothing: no dot, no "New summary".
+    await waitFor(() => expect(dot()).toBeNull());
+    expect(row()).not.toHaveTextContent(/Finishing|Transcribing|Summarising|New summary/);
     // Its two voices still need a name, so the Speakers panel opens.
     expect(await screen.findByRole("complementary", { name: "Speakers" })).toBeInTheDocument();
   });

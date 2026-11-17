@@ -22,6 +22,14 @@ pub fn track_label(track: TrackId) -> &'static str {
     }
 }
 
+/// A meeting's current summary among all its summary rows: the most recently updated live one
+/// (the one rule, shared by [`MeetingView::summary`] and `crate::summary_seen`).
+pub(crate) fn current_summary(all: impl IntoIterator<Item = Summary>) -> Option<Summary> {
+    all.into_iter()
+        .filter(|s| !s.meta.deleted)
+        .max_by_key(|s| s.meta.updated_at)
+}
+
 /// One meeting's current content.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeetingView {
@@ -104,10 +112,7 @@ impl MeetingView {
         segments.sort_by_key(|s| (s.start, s.id));
         let mut notes: Vec<Note> = all_notes.into_iter().filter(|n| !n.meta.deleted).collect();
         notes.sort_by_key(|n| (n.at, n.id));
-        let summary = all_summaries
-            .into_iter()
-            .filter(|s| !s.meta.deleted)
-            .max_by_key(|s| s.meta.updated_at);
+        let summary = current_summary(all_summaries);
         Ok(Some(Self {
             meeting: m,
             tracks,

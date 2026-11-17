@@ -75,6 +75,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             resummarise,
             cancel_job,
             undo_summary,
+            mark_summary_seen,
             export_meeting,
             crate::deletion::meeting_deletion,
             crate::deletion::delete_meeting,
@@ -380,10 +381,13 @@ pub struct MeetingListItem {
     /// The folder it is in (folder id), resolved by `earshot_runtime::folders`: `None` for no
     /// folder and for one that is deleted or unknown.
     pub folder_id: Option<String>,
+    /// It has a current summary this device has not opened (T12.76,
+    /// `earshot_runtime::summary_seen`).
+    pub new_summary: bool,
 }
 
 impl MeetingListItem {
-    fn of(m: &Meeting, state: MeetingState, folder: Option<EntityId>) -> Self {
+    fn of(m: &Meeting, state: MeetingState, folder: Option<EntityId>, new_summary: bool) -> Self {
         Self {
             id: m.id.to_string(),
             title: m.title.clone(),
@@ -391,6 +395,7 @@ impl MeetingListItem {
             duration_ms: m.duration_ms,
             state,
             folder_id: folder.map(|f| f.to_string()),
+            new_summary,
         }
     }
 }
@@ -410,9 +415,17 @@ pub fn meeting_list(services: &Services) -> Result<Vec<MeetingListItem>, IpcErro
     for m in meetings.iter().filter(|m| !m.meta.deleted) {
         // `None`: deleted since the read above.
         if let Some(activity) = services.meeting_activity(m.id)? {
+            // One short store lock per meeting, as `meeting_activity` takes its own.
+            let new_summary =
+                earshot_runtime::summary_seen::has_new_summary(&services.store(), m.id)?;
             items.push((
                 m.started_unix_ms,
-                MeetingListItem::of(m, MeetingState::of(activity), filed.get(&m.id).copied()),
+                MeetingListItem::of(
+                    m,
+                    MeetingState::of(activity),
+                    filed.get(&m.id).copied(),
+                    new_summary,
+                ),
             ));
         }
     }
@@ -1097,6 +1110,26 @@ async fn undo_summary(state: State<'_, AppState>, meeting: String) -> Result<(),
     blocking(move || {
         earshot_runtime::edit::undo_summary(&services, meeting)?;
         Ok(())
+    })
+    .await
+}
+
+/// The meeting's detail showed summary row `summary` (T12.76): the meeting list stops marking it
+/// as new. Returns whether that changed anything (`false` for a summary already marked, or a row
+/// that is not one of the meeting's summaries).
+#[tauri::command]
+#[specta::specta]
+async fn mark_summary_seen(
+    state: State<'_, AppState>,
+    meeting: String,
+    summary: String,
+) -> Result<bool, IpcError> {
+    let services = state.services()?;
+    let (meeting, summary) = (parse_id(&meeting)?, parse_id(&summary)?);
+    blocking(move || {
+        Ok(earshot_runtime::summary_seen::mark_seen(
+            &services, meeting, summary,
+        )?)
     })
     .await
 }
