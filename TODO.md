@@ -5,4 +5,3 @@ Advisory review findings, one per line. Each line says what it waits on: `[owner
 - [open] apps/desktop/src-tauri/src/summary_settings.rs: the endpoint model name limit counts UTF-8 bytes while the agent CLI names now count characters (T12.36); aligning it changes what is accepted.
 - [owner] apps/desktop/src-tauri/src/plain_text.rs `post_warning_copy`: `PostWarning::EchoRecordUnreadable` (T12.56) shows no banner, but unlike the other unreadable-record warnings it changes the transcript (no echo cleaning at all); a `post-*` banner is the owner's call.
 - [open] crates/earshot-onnx/src/shared_encoder.rs: the awake clock (T12.62) is proven on fakes only; one real sleep with a final pass in flight on the desktop (Modern Standby on the Surface) confirms QueryUnbiasedInterruptTime stops there.
-- [open] crates/earshot-onnx/src/runtime.rs `hold_device_bytes`: never run on a card; judge it by `free_left_gib` on the first real `live_lag --hold-card-gib` run (T12.62).
