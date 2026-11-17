@@ -42,6 +42,7 @@ import {
   linked,
   markedMe,
   merged,
+  notThisPersonVoice,
   renamed,
   resummarised,
   sampleDetail,
@@ -1196,6 +1197,21 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       speakerOf(detailOf(meeting), speaker);
       update(meeting, (x) => ignoredVoice(x, speaker, false));
     },
+    notThisPerson: async (meeting, speaker) => {
+      call("notThisPerson", meeting, speaker);
+      const card = speakerOf(detailOf(meeting), speaker);
+      if (card.kind === "Me") {
+        fail("user_row", 'This voice is you. In a meeting in the room, choose "This isn\'t me" instead.');
+      }
+      if (card.person === null) fail("no_person", "Name this voice or link it to a person first.");
+      if (!card.can_not_this_person) {
+        fail(
+          "no_stored_voice",
+          "Earshot kept nothing of this voice to remember the choice by. Re-transcribe the meeting, then ignore it.",
+        );
+      }
+      update(meeting, (x) => notThisPersonVoice(x, speaker));
+    },
     markMe: async (meeting, speaker) => {
       call("markMe", meeting, speaker);
       const d = detailOf(meeting);
@@ -1312,7 +1328,14 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
             let n = 1;
             while (taken.includes(`Speaker ${n}`)) n += 1;
             taken.push(`Speaker ${n}`);
-            return { ...s, name: `Speaker ${n}`, person: null, needs_name: true, can_ignore: true };
+            return {
+              ...s,
+              name: `Speaker ${n}`,
+              person: null,
+              needs_name: true,
+              can_ignore: true,
+              can_not_this_person: false,
+            };
           }),
         });
       }

@@ -94,6 +94,9 @@ export function createTauriIpc(): Ipc {
     unignoreSpeaker: async (meeting, speaker) => {
       unwrap(await commands.unignoreSpeaker(meeting, speaker));
     },
+    notThisPerson: async (meeting, speaker) => {
+      unwrap(await commands.notThisPerson(meeting, speaker));
+    },
     forgetPersonVoices: async (person) => unwrap(await commands.forgetPersonVoices(person)),
     removePerson: async (person) => {
       unwrap(await commands.removePerson(person));

@@ -223,6 +223,9 @@ pub struct SpeakerCard {
     pub ignored: bool,
     /// The user may ignore this voice (`edit::can_ignore`).
     pub can_ignore: bool,
+    /// The user may say this named voice is not that person ("Not <name>", T12.77:
+    /// `edit::can_not_this_person`).
+    pub can_not_this_person: bool,
     /// The user may say this voice is theirs ("This is me": `edit::can_mark_me`).
     pub can_mark_me: bool,
     /// The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`).
@@ -615,6 +618,11 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "Earshot is still working on this meeting, and that work keeps the summary on this \
              computer. Allow the summary writer once it has finished.",
         ),
+        // T12.77: "Not <name>" is for someone else's voice.
+        EditError::UserRow(_) => err(
+            "user_row",
+            "This voice is you. In a meeting in the room, choose \"This isn't me\" instead.",
+        ),
         // T12.65: only an unknown speaker's line is given a speaker from the line.
         EditError::LineHasSpeaker(_) => err(
             "line_has_speaker",
@@ -779,6 +787,7 @@ fn speaker_cards(
                 needs_name: needs_name(s.role, s.person_id.is_some(), ignored),
                 ignored,
                 can_ignore: edit::can_ignore(s, identities),
+                can_not_this_person: edit::can_not_this_person(s, identities),
                 can_mark_me: edit::can_mark_me(&view.tracks, &view.speakers, s),
                 can_unmark_me: edit::can_unmark_me(&view.tracks, s, voiceprint_me, user_print),
                 recognised_me: edit::recognised_me(&view.tracks, s, voiceprint_me, user_print),

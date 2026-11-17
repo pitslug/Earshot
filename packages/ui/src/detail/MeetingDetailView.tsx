@@ -1037,6 +1037,7 @@ export function MeetingDetailView({
                     }
                     onIgnore={(s) => run(() => ipc.ignoreSpeaker(id, s), "The voice was not ignored")}
                     onUnignore={(s) => run(() => ipc.unignoreSpeaker(id, s), "The voice was not changed")}
+                    onNotThisPerson={(s) => run(() => ipc.notThisPerson(id, s), "The voice was not changed")}
                     firstNameField={(el) => {
                       nameField.current = el;
                     }}

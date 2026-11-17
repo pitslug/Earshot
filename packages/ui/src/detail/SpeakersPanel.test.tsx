@@ -249,6 +249,44 @@ describe("MeetingDetailView", () => {
     expect(within(panel()).getByRole("textbox", { name: "Name of Speaker 3" })).toBeInTheDocument();
   });
 
+  it("puts a wrongly named voice back as an ignored speaker with Not <name>, and never on the user", async () => {
+    const { user, calls } = await setup();
+    await screen.findByText(/TL;DR/);
+    await openNamed(user);
+    expect(within(speakerRow("Me")).queryByRole("button", { name: /^Not / })).toBeNull();
+    const not = within(speakerRow("Priya Shah")).getByRole("button", { name: "Not Priya Shah" });
+    expect(not).toHaveAccessibleDescription(
+      "Shows this voice as an unnamed speaker again and stops asking for its name in this meeting. Priya Shah and their saved voice are not changed.",
+    );
+    await user.click(not);
+    expect(calls).toContainEqual(["notThisPerson", ITEM.id, SAMPLE_SPEAKERS.priya]);
+    // The row leaves the named voices for the ignored ones, under the first free label.
+    await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Priya Shah" })).toBeNull());
+    await user.click(within(panel()).getByRole("button", { name: "Ignored (1)" }));
+    const back = within(panel()).getByRole("list", { name: "Ignored" });
+    expect(within(back).getByRole("listitem", { name: "Speaker 1" })).toBeInTheDocument();
+    // It does not ask for a name, and nothing is linked, saved or forgotten.
+    expect(within(panel()).queryByRole("textbox", { name: "Name of Speaker 1" })).toBeNull();
+    expect(
+      calls.some((c) => ["saveVoice", "linkSpeaker", "forgetPersonVoices", "removePerson"].includes(c[0] as string)),
+    ).toBe(false);
+    await user.click(screen.getByRole("tab", { name: "Transcript" }));
+    const table = screen.getByRole("table", { name: "Transcript" });
+    expect(within(table).queryByText("Priya Shah")).toBeNull();
+    expect(within(table).getAllByText("Speaker 1").length).toBeGreaterThan(0);
+  });
+
+  it("the mock refuses Not <name> like the runtime", async () => {
+    const { ipc } = await setup();
+    await screen.findByText(/TL;DR/);
+    await expect(ipc.notThisPerson(ITEM.id, SAMPLE_SPEAKERS.me)).rejects.toMatchObject({
+      error: { kind: "user_row" },
+    });
+    await expect(ipc.notThisPerson(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
+      error: { kind: "no_person" },
+    });
+  });
+
   it("offers no Ignore for a voice with nothing stored, and the mock refuses like the runtime", async () => {
     const base = sampleDetail(ITEM);
     const detail = {

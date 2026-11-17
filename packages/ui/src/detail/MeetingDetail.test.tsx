@@ -1290,7 +1290,17 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
     }
     await user.click(within(row).getByRole("button", { name: "Ignore" }));
     await user.click(within(named).getAllByRole("button", { name: "Link to person" })[0]);
-    const edits = ["saveVoice", "ignoreSpeaker", "linkSpeaker", "renameSpeaker", "mergeSpeakers", "markMe", "unmarkMe"];
+    await user.click(within(named).getByRole("button", { name: "Not Priya Shah" }));
+    const edits = [
+      "saveVoice",
+      "ignoreSpeaker",
+      "linkSpeaker",
+      "renameSpeaker",
+      "mergeSpeakers",
+      "markMe",
+      "unmarkMe",
+      "notThisPerson",
+    ];
     expect(calls.filter((c) => edits.includes(c[0] as string))).toEqual([]);
     expect(screen.queryByRole("dialog", { name: /Link .* to a person/ })).toBeNull();
 

@@ -407,3 +407,232 @@ fn edit_save_voice_never_enrols_the_user_and_writes_nothing_when_refused() {
         EditError::InvalidName(NameProblem::Empty)
     );
 }
+
+/// The first free "Speaker N" among the other live speakers of `meeting`.
+fn free_label(svc: &Services, meeting: EntityId, speaker: EntityId) -> String {
+    let taken: Vec<String> = view(svc, meeting)
+        .speakers
+        .into_iter()
+        .filter(|s| s.id != speaker)
+        .map(|s| s.display_name)
+        .collect();
+    first_free_speaker_name(&taken)
+}
+
+#[test]
+fn edit_not_this_person_unlinks_relabels_and_ignores_a_named_voice() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 550);
+    let s = remote_speakers(&svc, m)[0].clone();
+    let rowan = link_speaker(
+        &svc,
+        m,
+        s.id,
+        &PersonChoice::New {
+            name: "Rowan".into(),
+        },
+    )
+    .unwrap();
+    let identities = identities_in(&svc.store(), m).unwrap();
+    let linked = row(&svc, m, s.id);
+    assert!(can_not_this_person(&linked, &identities));
+    let label = free_label(&svc, m, s.id);
+
+    assert_eq!(not_this_person(&svc, m, s.id).unwrap(), rowan);
+    let after = row(&svc, m, s.id);
+    assert_eq!(after.person_id, None);
+    assert_eq!(after.display_name, label);
+    assert!(after.display_name.starts_with("Speaker "));
+    assert!(ignored(&svc, m, s.id));
+    let e = entry(&svc, m, s.id);
+    assert!(e.ignored && e.edited(&after));
+    assert_eq!(e.given_person, None);
+    // The person stays: only this meeting's row is unlinked.
+    assert!(
+        list_persons(&svc).unwrap().iter().any(|p| p.id == rowan),
+        "Rowan is kept"
+    );
+    // Not linked any more: nothing to say "not" to.
+    assert_eq!(
+        refused(not_this_person(&svc, m, s.id)),
+        EditError::NoPerson(s.id)
+    );
+    let identities = identities_in(&svc.store(), m).unwrap();
+    assert!(!can_not_this_person(&after, &identities));
+}
+
+#[test]
+fn edit_not_this_person_on_a_recognised_voice_is_carried_by_a_retranscribe() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    // As `edit_ignored_voice_stays_unlinked_when_a_voiceprint_would_name_it`: a meeting
+    // processed before the voiceprint exists, re-run after it, names the voice by it.
+    let m = processed(&svc, 561);
+    let elsewhere = processed(&svc, 560);
+    let avery = save_voice_with(
+        &svc,
+        elsewhere,
+        remote_speakers(&svc, elsewhere)[0].id,
+        &PersonChoice::New {
+            name: "Avery".into(),
+        },
+        &calibrated(true),
+    )
+    .unwrap()
+    .person;
+    let cancel = CancelToken::new();
+    retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    let voice = view(&svc, m)
+        .speakers
+        .into_iter()
+        .find(|s| s.person_id == Some(avery))
+        .expect("the voiceprint names the voice on a re-run");
+    let count = print_count(&svc, avery);
+    let label = free_label(&svc, m, voice.id);
+
+    assert_eq!(not_this_person(&svc, m, voice.id).unwrap(), avery);
+    // Only recognised here, never saved from this meeting: the voiceprint is untouched.
+    assert_eq!(print_count(&svc, avery), count);
+    assert!(!entry(&svc, m, voice.id).enrolled);
+
+    // A re-run continues the choice: the same row, its label, unlinked and ignored, and no
+    // other row takes the voiceprint's name.
+    let again = retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    let HostPost::Done(outcome) = again.post else {
+        panic!("{:?}", again.post);
+    };
+    let carried = outcome.speakers.iter().find(|p| p.id == voice.id).unwrap();
+    assert!(carried.ignored && carried.person.is_none(), "{carried:?}");
+    let after = row(&svc, m, voice.id);
+    assert_eq!(after.person_id, None);
+    assert_eq!(after.display_name, label);
+    assert!(ignored(&svc, m, voice.id));
+    assert!(
+        view(&svc, m)
+            .speakers
+            .iter()
+            .all(|s| s.person_id != Some(avery))
+    );
+    // "Stop ignoring" works as on any ignored voice.
+    assert!(unignore_speaker(&svc, m, voice.id).unwrap());
+    assert!(!entry(&svc, m, voice.id).ignored);
+}
+
+#[test]
+fn edit_not_this_person_leaves_a_voiceprint_saved_from_this_meeting_as_it_is() {
+    // T12.77 step 2 (taking the saved contribution back out) waits on the owner: f32
+    // addition is not invertible, so `sum - centroid` is not the sum before the save.
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 570);
+    let s = remote_speakers(&svc, m)[0].id;
+    let saved = save_voice_with(
+        &svc,
+        m,
+        s,
+        &PersonChoice::New {
+            name: "Morgan".into(),
+        },
+        &calibrated(true),
+    )
+    .unwrap();
+    let before = svc.store().voiceprints_of(saved.person).unwrap();
+    not_this_person(&svc, m, s).unwrap();
+    assert_eq!(svc.store().voiceprints_of(saved.person).unwrap(), before);
+    assert!(
+        entry(&svc, m, s).enrolled,
+        "what was saved is still recorded"
+    );
+    assert_eq!(row(&svc, m, s).person_id, None);
+}
+
+#[test]
+fn edit_not_this_person_refuses_the_user_an_unlinked_voice_and_nothing_stored() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 580);
+    let me = view(&svc, m)
+        .speakers
+        .into_iter()
+        .find(|s| s.role == SpeakerRole::Me)
+        .unwrap();
+    assert_eq!(
+        refused(not_this_person(&svc, m, me.id)),
+        EditError::UserRow(me.id)
+    );
+    assert_eq!(row(&svc, m, me.id), me, "nothing written");
+    let identities = identities_in(&svc.store(), m).unwrap();
+    assert!(!can_not_this_person(&me, &identities));
+    let s = remote_speakers(&svc, m)[0].clone();
+    assert_eq!(
+        refused(not_this_person(&svc, m, s.id)),
+        EditError::NoPerson(s.id)
+    );
+    // A named voice the final pass kept nothing of: the choice has nowhere to live.
+    let quiet = add_speaker(
+        &svc,
+        m,
+        TrackId::Reference,
+        "Speaker 9",
+        "hello there",
+        9_000,
+        581,
+    );
+    link_speaker(
+        &svc,
+        m,
+        quiet,
+        &PersonChoice::New {
+            name: "Sasha".into(),
+        },
+    )
+    .unwrap();
+    let linked = row(&svc, m, quiet);
+    assert!(!can_not_this_person(&linked, &identities));
+    assert_eq!(
+        refused(not_this_person(&svc, m, quiet)),
+        EditError::NoStoredVoice(quiet)
+    );
+    assert_eq!(row(&svc, m, quiet), linked, "nothing written");
+    let nobody = EntityId::from_bytes([6; 16]);
+    assert_eq!(
+        refused(not_this_person(&svc, m, nobody)),
+        EditError::SpeakerNotFound(nobody)
+    );
+}
+
+#[test]
+fn edit_not_this_person_waits_while_the_meeting_records_or_finishes() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 590);
+    let s = remote_speakers(&svc, m)[0].id;
+    link_speaker(
+        &svc,
+        m,
+        s,
+        &PersonChoice::New {
+            name: "Jules".into(),
+        },
+    )
+    .unwrap();
+    let before = row(&svc, m, s);
+    for job in [
+        MeetingJob::Processing,
+        MeetingJob::Recording,
+        MeetingJob::Waiting,
+    ] {
+        let lease = svc.lease_meeting_for(m, job).unwrap();
+        let r = not_this_person(&svc, m, s);
+        assert!(
+            matches!(r, Err(RuntimeError::MeetingBusy(x)) if x == m),
+            "{job:?}: {r:?}"
+        );
+        assert_eq!(row(&svc, m, s), before, "{job:?}: nothing written");
+        drop(lease);
+    }
+    not_this_person(&svc, m, s).unwrap();
+    // The edit's own claim is gone afterwards.
+    drop(svc.lease_meeting_alone(m, MeetingJob::Processing).unwrap());
+}
