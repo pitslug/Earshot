@@ -15,7 +15,7 @@
 //! ```
 //!
 //! `--backend qnn` needs an ARM64 build with `--features qnn` (the NPU, T12.4). Since T12.12c the
-//! app runs the far end's previews there and refuses the user's own voice
+//! app runs the far end's previews there, and since T12.75 the user's own voice too under Everyone
 //! (`backends::previews_refused_second`); `--force-previews` (evaluation only) loads the preview
 //! sessions through `backends::load_preview_unrefused` instead, which skips only the refusals. The report's `preview_refusal` says what the app would decide on this machine and
 //! whether this run went past it; `preview_sessions` lists every preview load with the backend
@@ -2495,11 +2495,10 @@ mod tests {
     }
 
     /// Without `--force-previews` the app's loaders run unchanged (T12.12c): on the NPU the far end's
-    /// goes on to load (and fails here for a load reason, on an empty models folder) and the user's
-    /// own voice is refused with its reason, recorded.
+    /// goes on to load (and fails here for a load reason, on an empty models folder), and the user's
+    /// own voice does the same (T12.75) unless this computer's memory refuses it, recorded.
     #[test]
     fn live_lag_preview_loads_are_the_apps_unless_forced() {
-        use earshot_runtime::backends::OWN_VOICE_NPU_REFUSED;
         let log = Arc::new(Mutex::new(Vec::new()));
         let p = previews_for(
             &empty_models(),
@@ -2509,12 +2508,19 @@ mod tests {
         );
         let own = p.own_voice.clone().expect("everyone has a second loader");
         let why = (p.load)(&npu_track()).err().expect("no models here");
-        assert_ne!(why, OWN_VOICE_NPU_REFUSED);
         assert!(!why.contains("not measured"), "{why}");
-        assert_eq!(
-            own(&npu_track()).err().as_deref(),
-            Some(OWN_VOICE_NPU_REFUSED)
-        );
+        let own_why = own(&npu_track()).err().expect("no models here");
+        match earshot_runtime::backends::previews_refused_second(
+            BackendKind::Qnn,
+            &earshot_runtime::hardware(),
+            PreviewChoice::Everyone,
+        ) {
+            Some(refused) => assert_eq!(own_why.text, refused),
+            None => assert!(
+                !own_why.contains("not measured") && !own_why.contains("memory"),
+                "{own_why}"
+            ),
+        }
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2);
         for (record, slot) in log.iter().zip(["first", "own_voice"]) {
@@ -2522,7 +2528,7 @@ mod tests {
             assert_eq!(record["refusal_bypassed"], false);
             assert_eq!(record["requested"]["kind"], "Qnn");
         }
-        assert_eq!(log[1]["not_loaded"], OWN_VOICE_NPU_REFUSED);
+        assert_eq!(log[1]["not_loaded"], own_why.text);
         let on = previews_for(
             &empty_models(),
             PreviewChoice::Automatic,
@@ -2646,7 +2652,7 @@ mod tests {
 
     /// With a simulated card the app's rule runs on that machine: a CUDA track's previews are
     /// asked for on the CPU (the load fails here for a load reason, on an empty models folder), on
-    /// the NPU the user's own voice is still refused (T12.12c), and every record names the
+    /// the NPU the user's own voice goes on to load too (T12.75), and every record names the
     /// simulated card and no bypass.
     #[test]
     fn live_lag_simulated_preview_loads_apply_the_apps_rule_to_the_simulated_card() {
@@ -2677,9 +2683,10 @@ mod tests {
             !why.contains("not measured") && !why.contains("memory"),
             "{why}"
         );
-        assert_eq!(
-            own(&npu_track()).err().as_deref(),
-            Some(earshot_runtime::backends::OWN_VOICE_NPU_REFUSED)
+        let own_why = own(&npu_track()).err().expect("no models here");
+        assert!(
+            !own_why.contains("not measured") && !own_why.contains("memory"),
+            "{own_why}"
         );
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 4);

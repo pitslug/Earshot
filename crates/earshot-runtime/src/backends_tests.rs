@@ -1839,7 +1839,12 @@ fn backends_previews_second_session_only_for_everyone_on_a_big_cpu_machine() {
         previews_refused_second(BackendKind::Cuda, &big, PreviewChoice::Everyone),
         None
     );
-    for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
+    // T12.75: on the NPU it runs beside the first session there.
+    assert_eq!(
+        second_preview_backend(BackendKind::Qnn, &big, PreviewChoice::Everyone),
+        Ok(BackendKind::Qnn)
+    );
+    for kind in [BackendKind::Vulkan, BackendKind::Fake] {
         assert!(
             previews_refused_second(kind, &big, PreviewChoice::Everyone).is_some(),
             "{kind:?}"
@@ -1960,7 +1965,12 @@ fn backends_previews_second_session_beside_cuda_follows_the_first() {
         assert_eq!(cuda, cpu, "{:?}", m.total_memory);
     }
     let big = machine(roomy, card);
-    for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
+    // T12.75: a QNN track's second session runs on the NPU, never on the card.
+    assert_eq!(
+        second_preview_backend(BackendKind::Qnn, &big, everyone),
+        Ok(BackendKind::Qnn)
+    );
+    for kind in [BackendKind::Vulkan, BackendKind::Fake] {
         assert!(
             second_preview_backend(kind, &big, everyone).is_err(),
             "{kind:?}"
@@ -2313,27 +2323,22 @@ fn backends_preview_on_hardware_load_applies_the_rule_to_the_given_machine() {
         };
         assert!(want.is_some());
         assert_eq!(off.err(), want, "{slot:?}");
-        // T12.12c: on the NPU the first session goes on to load (and fails here for a load
-        // reason); the user's own voice is refused there.
+        // T12.12c, T12.75: on the NPU both sessions go on to load (and fail here for a load
+        // reason), the user's own voice included.
         let npu = BackendInfo {
             kind: BackendKind::Qnn,
             ..cuda.clone()
         };
-        let npu_load =
-            load_preview_on_hardware(&models, &npu, PreviewChoice::Everyone, slot, &small).err();
-        match slot {
-            PreviewSlot::First => {
-                let why = npu_load.expect("an empty models folder");
-                assert_ne!(why, OWN_VOICE_NPU_REFUSED);
-                assert!(
-                    !why.contains("not measured") && !why.contains("memory"),
-                    "{why}"
-                );
-            }
-            PreviewSlot::OwnVoice => {
-                assert_eq!(npu_load.as_deref(), Some(OWN_VOICE_NPU_REFUSED));
-            }
-        }
+        let why = load_preview_on_hardware(&models, &npu, PreviewChoice::Everyone, slot, &small)
+            .err()
+            .expect("an empty models folder");
+        assert!(
+            !why.contains("not measured")
+                && !why.contains("memory")
+                && !why.contains("own voice")
+                && !why.contains("CPU or CUDA"),
+            "{slot:?}: refused instead of loading: {why}"
+        );
     }
     // "Other people only" has no second session, on any machine.
     let second = load_preview_on_hardware(
@@ -2440,28 +2445,49 @@ fn backends_previews_on_the_npu_run_there_above_the_limit_and_refuse_below() {
     }
 }
 
-/// T12.12c: the user's own track in a call has no preview session beside the NPU, whatever the
-/// memory and the choice, and the reason says why without naming a model.
+/// T12.75 (the owner, 2026-11-17, lifting T12.12c's refusal): under Everyone the user's own track
+/// in a call has its preview session on the NPU beside the first, with
+/// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there; below it, or with memory unknown, it is refused
+/// for memory; "Other people only" and the other choices give no second session.
 #[test]
-fn backends_previews_own_voice_stays_refused_on_the_npu_with_its_reason() {
+fn backends_previews_own_voice_runs_on_the_npu_with_enough_memory() {
     use crate::preview_settings::PreviewChoice;
     for memory in [
         Some(64 * GIB),
-        Some(15 * GIB),
-        Some(PREVIEW_MIN_MEMORY_NPU - 1),
-        None,
+        Some(15 * GIB + GIB / 2),
+        Some(PREVIEW_BOTH_MIN_MEMORY),
     ] {
         let m = npu_machine(memory);
         assert_eq!(
-            previews_refused_second(BackendKind::Qnn, &m, PreviewChoice::Everyone).as_deref(),
-            Some(OWN_VOICE_NPU_REFUSED),
+            second_preview_backend_or_refusal(BackendKind::Qnn, &m, PreviewChoice::Everyone),
+            Ok(BackendKind::Qnn),
             "{memory:?}"
         );
         assert_eq!(
-            second_preview_backend(BackendKind::Qnn, &m, PreviewChoice::Everyone),
-            Err(OWN_VOICE_NPU_REFUSED.to_owned())
+            previews_refused_second(BackendKind::Qnn, &m, PreviewChoice::Everyone),
+            None
         );
-        // The first session still runs: only the user's own voice is refused.
+        assert_eq!(
+            previews_refused(BackendKind::Qnn, &m, PreviewChoice::Everyone),
+            None
+        );
+    }
+    for memory in [Some(PREVIEW_BOTH_MIN_MEMORY - 1), Some(8 * GIB), None] {
+        let m = npu_machine(memory);
+        let refusal =
+            second_preview_backend_or_refusal(BackendKind::Qnn, &m, PreviewChoice::Everyone)
+                .expect_err("too little memory for a second session");
+        assert_eq!(
+            refusal.reason,
+            PreviewOffReason::NotEnoughMemory,
+            "{memory:?}"
+        );
+        assert_eq!(
+            previews_refused_second(BackendKind::Qnn, &m, PreviewChoice::Everyone).as_deref(),
+            Some("not enough memory for a third session of the model"),
+            "{memory:?}"
+        );
+        // The first session still runs: Everyone lifts its own limit as "on" does.
         assert_eq!(
             previews_refused(BackendKind::Qnn, &m, PreviewChoice::Everyone),
             None
@@ -2469,23 +2495,20 @@ fn backends_previews_own_voice_stays_refused_on_the_npu_with_its_reason() {
     }
     // Choices without a second session keep their own reason.
     let big = npu_machine(Some(64 * GIB));
+    assert_eq!(
+        second_preview_backend_or_refusal(BackendKind::Qnn, &big, PreviewChoice::On)
+            .expect_err("Other people only")
+            .reason,
+        PreviewOffReason::NotAsked
+    );
     for choice in [
         PreviewChoice::Off,
         PreviewChoice::Automatic,
         PreviewChoice::On,
     ] {
-        assert_ne!(
-            previews_refused_second(BackendKind::Qnn, &big, choice).as_deref(),
-            Some(OWN_VOICE_NPU_REFUSED),
-            "{choice:?}"
-        );
         assert!(previews_refused_second(BackendKind::Qnn, &big, choice).is_some());
     }
-    assert!(OWN_VOICE_NPU_REFUSED.contains("own voice"));
-    assert!(OWN_VOICE_NPU_REFUSED.contains("T12.12d"));
-    assert!(!OWN_VOICE_NPU_REFUSED.contains("not understood"));
     for text in [
-        OWN_VOICE_NPU_REFUSED,
         PREVIEW_NEEDS_COMPILED,
         PREVIEW_COMPILED_REFUSED,
         PREVIEW_NO_COMPILE_KEY,
@@ -2497,8 +2520,8 @@ fn backends_previews_own_voice_stays_refused_on_the_npu_with_its_reason() {
     }
 }
 
-/// T12.12c: the loaders the app uses ask for the NPU for the first session and load nothing for a
-/// refusal: the user's own voice, or a machine below the limit by default.
+/// T12.12c, T12.75: the loaders the app uses ask for the NPU for both sessions and load nothing for
+/// a refusal: a machine below the limit by default, or below the second session's limit.
 #[test]
 fn backends_previews_on_the_npu_load_there_and_refuse_before_loading() {
     use crate::preview_settings::PreviewChoice;
@@ -2519,42 +2542,53 @@ fn backends_previews_on_the_npu_load_there_and_refuse_before_loading() {
             Ok(BackendKind::Qnn)
         );
     }
-    assert_eq!(*asked.borrow(), vec![BackendKind::Qnn; 3]);
+    assert_eq!(
+        load_preview_second_with(&track, &surface, PreviewChoice::Everyone, load),
+        Ok(BackendKind::Qnn)
+    );
+    assert_eq!(*asked.borrow(), vec![BackendKind::Qnn; 4]);
     asked.borrow_mut().clear();
     let small = npu_machine(Some(8 * GIB));
     assert!(load_preview_with(&track, &small, PreviewChoice::Automatic, load).is_err());
     assert_eq!(
-        load_preview_second_with(&track, &surface, PreviewChoice::Everyone, load),
-        Err(OWN_VOICE_NPU_REFUSED.to_owned())
+        load_preview_second_with(&track, &small, PreviewChoice::Everyone, load),
+        Err("not enough memory for a third session of the model".to_owned())
     );
+    assert!(load_preview_second_with(&track, &surface, PreviewChoice::On, load).is_err());
     assert!(load_preview_with(&track, &surface, PreviewChoice::Off, load).is_err());
     assert!(
         asked.borrow().is_empty(),
         "a refusal loaded {:?}",
         asked.borrow()
     );
-    // The real loaders on an empty models folder: the first goes on to load and fails for a load
-    // reason (no NPU version here), never a refusal; the second refuses before touching a file.
+    // The real loaders on an empty models folder: both go on to load and fail for a load reason
+    // (no NPU version here), never a refusal.
     let empty = std::env::temp_dir().join(format!("earshot-preview-npu-{}", std::process::id()));
     let models = ModelDir::new(&empty);
+    let refused_instead = |why: &str| {
+        why.contains("not measured")
+            || why.contains("memory")
+            || why.contains("Settings")
+            || why.contains("own voice")
+    };
     for choice in [PreviewChoice::On, PreviewChoice::Everyone] {
         let why = load_preview(&models, &track, choice)
             .err()
             .expect("an empty models folder");
         assert!(
-            !why.contains("not measured")
-                && !why.contains("memory")
-                && !why.contains("Settings")
-                && why != OWN_VOICE_NPU_REFUSED,
+            !refused_instead(&why),
             "{choice:?}: refused instead of loading: {why}"
         );
     }
-    assert_eq!(
-        load_preview_second(&models, &track, PreviewChoice::Everyone)
-            .err()
-            .as_deref(),
-        Some(OWN_VOICE_NPU_REFUSED)
-    );
+    // The second session through the production loader of `load_preview_second`, on the Surface's
+    // memory: it asks the NPU's compiled model (`QnnLoadFor::Preview`), which is not there.
+    let why = load_preview_second_with(&track, &surface, PreviewChoice::Everyone, |on| {
+        load_preview_session(&models, on)
+    })
+    .err()
+    .expect("an empty models folder");
+    assert!(!refused_instead(&why), "refused instead of loading: {why}");
+    assert_eq!(why.reason, PreviewOffReason::LoadFailed, "{why}");
 }
 
 /// T12.12c: a Parakeet model whose NPU version is not installed runs its tracks on the processor

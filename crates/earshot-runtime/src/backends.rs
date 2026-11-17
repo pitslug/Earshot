@@ -1281,15 +1281,6 @@ pub const PREVIEW_MIN_CARD_MEMORY: u64 = 15 * 512 * 1024 * 1024;
 /// numbers. The user's "on" lifts it, as on the CPU.
 pub const PREVIEW_MIN_MEMORY_NPU: u64 = 12 * 1024 * 1024 * 1024;
 
-/// Why the user's own track in a call has no preview session on the NPU (T12.12c): under
-/// "Everyone" on the Surface 52 of 236 provisional words of the user's own voice were shown and
-/// then left before their settled text landed. T12.12c step 4 found that a flicker on every
-/// backend (docs/live-previews.md); the refusal stays until T12.12d fixes it and the owner judges
-/// "Everyone" on the NPU again (with a Surface memory measurement). A report text, never shown.
-pub const OWN_VOICE_NPU_REFUSED: &str = "not for your own voice on the NPU yet: it waits on the \
-                                         fix for shown words leaving early and the owner's \
-                                         decision (T12.12d)";
-
 /// Where this computer runs the previews' session for a track on `backend` (the far end in a call,
 /// the mic in the room), or why it runs none. The one rule (`live::preview` docs): the user's
 /// "off"; on the NPU it runs on the NPU, from the compiled model only ([`load_preview`], T12.12c),
@@ -1415,16 +1406,20 @@ pub fn previews_refused(
 /// call, T9.14) on the CPU: the same as one session's limit, because the second shares the model's
 /// weights and took a meeting's peak from 5.81 to 6.08 GiB (measured 2026-11-08, docs/live-previews.md).
 /// It cost about half a core more on a 32-thread host; the slow-preview pause covers smaller ones.
+/// The same limit on the NPU (T12.75): there the two preview sessions added 1.26 GiB of working set
+/// to a meeting on the Surface (docs/live-previews.md, report `t1275-memory-qnn.json`).
 pub const PREVIEW_BOTH_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 
 /// Where this computer runs the second preview session, for the user's own track in a call (T9.14),
 /// when the track runs on `backend`; `Err` says why it runs none. The one rule: only when the user
-/// chose everyone, only where the first session runs ([`previews_refused`]), never beside the NPU
-/// ([`OWN_VOICE_NPU_REFUSED`], T12.12c), and only with [`PREVIEW_BOTH_MIN_MEMORY`] known to be
-/// there. It runs where the first runs: on CUDA when the first does (a CUDA track and a card at or
-/// above [`PREVIEW_MIN_CARD_MEMORY`], T12.60), borrowing the shared encoder like every CUDA session
-/// (T12.58); everywhere else on the CPU with the CPU's shared weights, beside the CPU's own
-/// sessions and beside a card too small for the first (T12.3c). The memory limit is the CPU's on
+/// chose everyone, only where the first session runs ([`previews_refused`]), and only with
+/// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there. It runs where the first runs: on CUDA when the
+/// first does (a CUDA track and a card at or above [`PREVIEW_MIN_CARD_MEMORY`], T12.60), borrowing
+/// the shared encoder like every CUDA session (T12.58); on the NPU beside a first session on the NPU,
+/// from the compiled model only, as the first ([`load_preview`], T12.75: the owner lifted T12.12c's
+/// refusal once T12.12d's fix measured 1 vanished word where 52 had been); everywhere else on the
+/// CPU with the CPU's shared weights, beside the CPU's own sessions and beside a card too small for
+/// the first (T12.3c). The memory limit is the CPU's on
 /// the card too: under Everyone the card placement peaked at less private memory than the CPU
 /// placement that limit admitted beside CUDA (9.33 against 11.36 GiB on bundled audio, 8.61
 /// against 10.80 GiB on continuous; measured 2026-11-15, docs/live-previews.md, reports
@@ -1457,21 +1452,22 @@ pub fn second_preview_backend_or_refusal(
         return refused(PreviewOffReason::NotAsked, "only for the other people");
     }
     let first = preview_backend_or_refusal(backend, hardware, choice)?;
-    if backend == BackendKind::Qnn {
-        return refused(PreviewOffReason::OwnVoiceOnNpu, OWN_VOICE_NPU_REFUSED);
-    }
-    if !matches!(backend, BackendKind::Cpu | BackendKind::Cuda) {
+    if !matches!(
+        backend,
+        BackendKind::Cpu | BackendKind::Cuda | BackendKind::Qnn
+    ) {
         return refused(
             PreviewOffReason::Model,
-            "previews run on Parakeet on the CPU or CUDA only",
+            "previews run on Parakeet on the CPU, CUDA or the NPU only",
         );
     }
-    // T12.60: on the card beside a first session on the card, else on the CPU; the same memory
-    // limit either way.
-    let runs_on = if first == BackendKind::Cuda {
-        BackendKind::Cuda
-    } else {
-        BackendKind::Cpu
+    // T12.60: on the card beside a first session on the card; T12.75: on the NPU beside a first
+    // session on the NPU (from the compiled model only, as the first); else on the CPU. The same
+    // memory limit everywhere.
+    let runs_on = match first {
+        BackendKind::Cuda => BackendKind::Cuda,
+        BackendKind::Qnn => BackendKind::Qnn,
+        _ => BackendKind::Cpu,
     };
     if hardware
         .total_memory
@@ -1535,8 +1531,9 @@ pub(crate) fn load_preview_with<T, E: From<PreviewRefusal>>(
 
 /// [`load_preview`] for the second session, the user's own track in a call (T9.14), loaded where
 /// [`second_preview_backend`] says (on CUDA beside a first session on CUDA, T12.60, borrowing the
-/// shared encoder through the same loader as the first; else the CPU) or refused by it. It has its
-/// own session and thread; on CUDA it shares only the encoder with the first.
+/// shared encoder through the same loader as the first; on the NPU beside a first session on the
+/// NPU, from the compiled model only through the same loader, T12.75; else the CPU) or refused by
+/// it. It has its own session and thread; on CUDA it shares only the encoder with the first.
 ///
 /// # Errors
 /// As [`load_preview`], with the second session's rule.

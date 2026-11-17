@@ -149,8 +149,6 @@ pub enum PreviewOffReason {
     /// was refused (its files did not match, the NPU asked for a new one, or it did not load; a
     /// track's load that refuses it too prepares it again, T12.64).
     CompiledModelRefused,
-    /// The user's own voice has no previews beside the NPU until T12.12d (the owner's decision).
-    OwnVoiceOnNpu,
     /// The user asked for their own voice too, and this computer has too little memory for it.
     NotEnoughMemory,
     /// Off by default here, and the user did not turn them on: a computer with this little memory,
