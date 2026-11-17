@@ -1351,6 +1351,30 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
     await user.click(await screen.findByRole("tab", { name: "Transcript" }));
     expect(screen.getByRole("button", { name: "Edit line 8" })).not.toHaveAttribute("aria-disabled");
   });
+
+  it("keeps Not <name> off while a job runs, as the runtime refuses it, and on again after", async () => {
+    const calls: unknown[][] = [];
+    const ipc = createMockIpc({ timer: createManualTimer(10_000), meetings: [ITEM, OTHER], onCall: (c) => calls.push(c) });
+    const user = userEvent.setup();
+    const running: JobView = { job: "Resummarise", last: null, seq: 1 };
+    const view = render(show(false, ipc, running));
+    await screen.findByRole("complementary", { name: "Speakers" });
+    await openNamed(user);
+    const not = within(speakerRow("Priya Shah")).getByRole("button", { name: "Not Priya Shah" });
+    expect(not).toBeDisabled();
+    // Other speaker edits keep their own lock (finishing only).
+    expect(within(speakerRow("Priya Shah")).getByRole("button", { name: "Link to person" })).toBeEnabled();
+    await user.click(not);
+    expect(calls.some((c) => c[0] === "notThisPerson")).toBe(false);
+
+    const done: JobView = {
+      job: "Resummarise",
+      last: { type: "Failed", meeting: ITEM.id, job: "Resummarise", message: "Invented.", retryable: true },
+      seq: 2,
+    };
+    view.rerender(show(false, ipc, done));
+    expect(within(speakerRow("Priya Shah")).getByRole("button", { name: "Not Priya Shah" })).toBeEnabled();
+  });
 });
 
 describe("MeetingDetailView, a line with an unknown speaker (T12.65)", () => {

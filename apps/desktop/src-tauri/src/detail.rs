@@ -621,7 +621,8 @@ pub fn edit_error(e: &EditError) -> IpcError {
         // T12.77: "Not <name>" is for someone else's voice.
         EditError::UserRow(_) => err(
             "user_row",
-            "This voice is you. In a meeting in the room, choose \"This isn't me\" instead.",
+            "This voice is you. Only a voice named as someone else can be put back as an \
+             unnamed speaker.",
         ),
         // T12.65: only an unknown speaker's line is given a speaker from the line.
         EditError::LineHasSpeaker(_) => err(
@@ -767,6 +768,12 @@ fn speaker_cards(
                     has_voiceprint: p.has_voiceprint,
                 })
             });
+            // The row's person resolves to the user (a person merged into them, T12.44):
+            // "Not <name>" is refused there, so it is not offered.
+            let linked_to_user = s
+                .person_id
+                .and_then(|id| resolved.get(&id))
+                .is_some_and(|id| persons.iter().any(|p| p.id == *id && p.is_me));
             let ignored = edit::is_ignored(s, identities);
             let kind = if s.role == SpeakerRole::Me {
                 SpeakerKind::Me
@@ -787,7 +794,7 @@ fn speaker_cards(
                 needs_name: needs_name(s.role, s.person_id.is_some(), ignored),
                 ignored,
                 can_ignore: edit::can_ignore(s, identities),
-                can_not_this_person: edit::can_not_this_person(s, identities),
+                can_not_this_person: edit::can_not_this_person(s, identities, linked_to_user),
                 can_mark_me: edit::can_mark_me(&view.tracks, &view.speakers, s),
                 can_unmark_me: edit::can_unmark_me(&view.tracks, s, voiceprint_me, user_print),
                 recognised_me: edit::recognised_me(&view.tracks, s, voiceprint_me, user_print),

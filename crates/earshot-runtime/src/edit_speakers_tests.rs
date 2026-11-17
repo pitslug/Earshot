@@ -436,7 +436,7 @@ fn edit_not_this_person_unlinks_relabels_and_ignores_a_named_voice() {
     .unwrap();
     let identities = identities_in(&svc.store(), m).unwrap();
     let linked = row(&svc, m, s.id);
-    assert!(can_not_this_person(&linked, &identities));
+    assert!(can_not_this_person(&linked, &identities, false));
     let label = free_label(&svc, m, s.id);
 
     assert_eq!(not_this_person(&svc, m, s.id).unwrap(), rowan);
@@ -459,7 +459,7 @@ fn edit_not_this_person_unlinks_relabels_and_ignores_a_named_voice() {
         EditError::NoPerson(s.id)
     );
     let identities = identities_in(&svc.store(), m).unwrap();
-    assert!(!can_not_this_person(&after, &identities));
+    assert!(!can_not_this_person(&after, &identities, false));
 }
 
 #[test]
@@ -563,7 +563,7 @@ fn edit_not_this_person_refuses_the_user_an_unlinked_voice_and_nothing_stored() 
     );
     assert_eq!(row(&svc, m, me.id), me, "nothing written");
     let identities = identities_in(&svc.store(), m).unwrap();
-    assert!(!can_not_this_person(&me, &identities));
+    assert!(!can_not_this_person(&me, &identities, false));
     let s = remote_speakers(&svc, m)[0].clone();
     assert_eq!(
         refused(not_this_person(&svc, m, s.id)),
@@ -589,7 +589,7 @@ fn edit_not_this_person_refuses_the_user_an_unlinked_voice_and_nothing_stored() 
     )
     .unwrap();
     let linked = row(&svc, m, quiet);
-    assert!(!can_not_this_person(&linked, &identities));
+    assert!(!can_not_this_person(&linked, &identities, false));
     assert_eq!(
         refused(not_this_person(&svc, m, quiet)),
         EditError::NoStoredVoice(quiet)
@@ -635,4 +635,36 @@ fn edit_not_this_person_waits_while_the_meeting_records_or_finishes() {
     not_this_person(&svc, m, s).unwrap();
     // The edit's own claim is gone afterwards.
     drop(svc.lease_meeting_alone(m, MeetingJob::Processing).unwrap());
+}
+
+#[test]
+fn edit_not_this_person_refuses_a_row_linked_to_a_person_merged_into_the_user() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 595);
+    let s = remote_speakers(&svc, m)[0].id;
+    crate::my_voice::set_my_name(&svc, "Casey Lane").unwrap();
+    // Before marking existed, the user named a voice after themselves, then merged that
+    // person into themselves: the row now stands for the user.
+    let twin = link_speaker(
+        &svc,
+        m,
+        s,
+        &PersonChoice::New {
+            name: "Casey Lane".into(),
+        },
+    )
+    .unwrap();
+    let identities = identities_in(&svc.store(), m).unwrap();
+    let before = row(&svc, m, s);
+    assert!(can_not_this_person(&before, &identities, false));
+    let user = merge_into_me(&svc, twin).unwrap();
+    assert_eq!(resolved_person(&**svc.store(), twin).unwrap(), Some(user));
+    let before = row(&svc, m, s);
+    let entry_before = entry(&svc, m, s);
+
+    assert!(!can_not_this_person(&before, &identities, true));
+    assert_eq!(refused(not_this_person(&svc, m, s)), EditError::UserRow(s));
+    assert_eq!(row(&svc, m, s), before, "nothing written");
+    assert_eq!(entry(&svc, m, s), entry_before, "nothing written");
 }

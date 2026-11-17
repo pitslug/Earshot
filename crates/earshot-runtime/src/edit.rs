@@ -2000,15 +2000,19 @@ pub fn unignore_speaker(
 }
 
 /// Whether [`not_this_person`] would accept `row` with these `identities`: what the Speakers
-/// panel offers, by the refusals' own rule (a row linked to the user other than "Me", which
-/// no edit makes, is offered and then refused).
+/// panel offers, by the refusals' own rule. `linked_to_user` says whether the row's person
+/// resolves to the user ([`resolve_person`], [`resolved_person`]): a row linked to a person
+/// later merged into the user ([`merge_into_me`]) is the user's and is refused
+/// ([`EditError::UserRow`]), so it is not offered.
 #[must_use]
 pub fn can_not_this_person(
     row: &Speaker,
     identities: &[crate::identities::SpeakerIdentity],
+    linked_to_user: bool,
 ) -> bool {
     row.role != SpeakerRole::Me
         && row.person_id.is_some()
+        && !linked_to_user
         && identities.iter().any(|i| i.speaker == row.id)
 }
 

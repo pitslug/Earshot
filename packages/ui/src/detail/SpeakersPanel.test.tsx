@@ -256,7 +256,7 @@ describe("MeetingDetailView", () => {
     expect(within(speakerRow("Me")).queryByRole("button", { name: /^Not / })).toBeNull();
     const not = within(speakerRow("Priya Shah")).getByRole("button", { name: "Not Priya Shah" });
     expect(not).toHaveAccessibleDescription(
-      "Shows this voice as an unnamed speaker again and stops asking for its name in this meeting. Priya Shah and their saved voice are not changed.",
+      "Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it Priya Shah, because Priya Shah's saved voice may hold it. Forget voice removes everything saved for Priya Shah.",
     );
     await user.click(not);
     expect(calls).toContainEqual(["notThisPerson", ITEM.id, SAMPLE_SPEAKERS.priya]);
@@ -284,6 +284,23 @@ describe("MeetingDetailView", () => {
     });
     await expect(ipc.notThisPerson(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
       error: { kind: "no_person" },
+    });
+  });
+
+  it("offers no Not <name> on a voice linked to a person merged into the user, and the mock refuses it", async () => {
+    const { ipc } = await setup({ persons: [...samplePersons(), TWIN] });
+    await screen.findByText(/TL;DR/);
+    await ipc.linkSpeaker(ITEM.id, SAMPLE_SPEAKERS.second, { kind: "Existing", person: TWIN.id });
+    const card = async () =>
+      (await ipc.getMeeting(ITEM.id)).speakers.find((s) => s.id === SAMPLE_SPEAKERS.second);
+    expect((await card())?.can_not_this_person).toBe(true);
+    await ipc.mergeIntoMe(TWIN.id);
+    expect((await card())?.can_not_this_person).toBe(false);
+    await expect(ipc.notThisPerson(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
+      error: {
+        kind: "user_row",
+        message: "This voice is you. Only a voice named as someone else can be put back as an unnamed speaker.",
+      },
     });
   });
 

@@ -1200,8 +1200,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     notThisPerson: async (meeting, speaker) => {
       call("notThisPerson", meeting, speaker);
       const card = speakerOf(detailOf(meeting), speaker);
-      if (card.kind === "Me") {
-        fail("user_row", 'This voice is you. In a meeting in the room, choose "This isn\'t me" instead.');
+      // The card's person is the resolved one: a person merged into the user shows as the user.
+      if (card.kind === "Me" || persons.some((p) => p.is_me && p.id === card.person?.id)) {
+        fail("user_row", "This voice is you. Only a voice named as someone else can be put back as an unnamed speaker.");
       }
       if (card.person === null) fail("no_person", "Name this voice or link it to a person first.");
       if (!card.can_not_this_person) {
@@ -1259,7 +1260,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         details.set(id, {
           ...d,
           speakers: d.speakers.map((s) =>
-            s.person?.id === person || s.person?.id === user.id ? { ...s, person: me } : s,
+            s.person?.id === person || s.person?.id === user.id
+              ? { ...s, person: me, can_not_this_person: false }
+              : s,
           ),
         });
       }

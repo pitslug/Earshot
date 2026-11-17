@@ -1361,6 +1361,22 @@ fn detail_not_this_person_puts_a_named_voice_back_as_an_ignored_speaker() {
 }
 
 #[test]
+fn detail_not_this_person_is_not_offered_on_a_voice_linked_to_a_person_merged_into_the_user() {
+    let dir = TempDir::new("detail-not-person-me");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 62);
+    earshot_runtime::my_voice::set_my_name(&svc, "Priya Shah").unwrap();
+    edit::merge_into_me(&svc, f.priya_person).unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(!card(&d, f.priya).can_not_this_person);
+    let e: IpcError = edit::not_this_person(&svc, f.meeting, f.priya)
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "user_row");
+    assert!(!e.message.contains("This isn't me"), "{}", e.message);
+}
+
+#[test]
 fn detail_an_ignored_voice_keeps_its_label_and_no_longer_needs_a_name() {
     let dir = TempDir::new("detail-ignore");
     let svc = services(&dir);

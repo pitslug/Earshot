@@ -353,7 +353,10 @@ export function linked(detail: MeetingDetail, id: string, person: PersonItem): M
             needs_name: false,
             ignored: false,
             can_ignore: false,
-            can_not_this_person: true,
+            // `edit::can_not_this_person`: not the user's row, not linked to the user, and a
+            // stored voice (the mock reads one from the voice's own offers before the link).
+            can_not_this_person:
+              s.kind === "Other" && !person.is_me && (s.can_ignore || s.can_not_this_person),
           }
         : s,
     ),

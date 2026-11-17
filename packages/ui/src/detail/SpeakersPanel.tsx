@@ -162,6 +162,9 @@ export interface SpeakersPanelProps {
   /** The meeting is still finishing (T12.28): the voices can be seen and heard, but every edit
    * waits, because the final pass may change who is who and would drop it. */
   locked?: boolean;
+  /** The meeting is busy as line edits see it (recording, finishing, or a job on it): the runtime
+   * refuses "Not <name>" then (it holds the line-edit claim), so it waits too. */
+  linesLocked?: boolean;
   /** A separate person named after the user, offered for merging into the user after "This is
    * me" (T12.44); `null` or absent when there is none. */
   mergeOffer?: PersonItem | null;
@@ -193,9 +196,10 @@ export function mergeOfferText(person: PersonItem): string {
   return `There is also a person called ${person.name}. If that is you, merge them into you.${voice}`;
 }
 
-/** What "Not <name>" does (T12.77), for its tooltip. */
+/** What "Not <name>" does (T12.77), for its tooltip. Until T12.77b, a voice saved for the
+ * person stays in their saved voice, so the tooltip says so. */
 export function notThisPersonHint(name: string): string {
-  return `Shows this voice as an unnamed speaker again and stops asking for its name in this meeting. ${name} and their saved voice are not changed.`;
+  return `Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it ${name}, because ${name}'s saved voice may hold it. Forget voice removes everything saved for ${name}.`;
 }
 
 /** Why the Speakers panel's edits wait while the meeting finishes. */
@@ -504,8 +508,18 @@ function IgnoredRow(props: RowProps) {
 /** A voice with a name: the user, a linked voice or a recognised one. */
 function NamedRow(props: RowProps) {
   const styles = useStyles();
-  const { card, persons, onRename, onLink, onUnmarkMe, onNotThisPerson, onForget, onRenamePerson, locked } =
-    props;
+  const {
+    card,
+    persons,
+    onRename,
+    onLink,
+    onUnmarkMe,
+    onNotThisPerson,
+    onForget,
+    onRenamePerson,
+    locked,
+    linesLocked,
+  } = props;
   // Which rename is open: this meeting's row, or the person in every meeting.
   const [editing, setEditing] = useState<"row" | "person" | null>(null);
   const [forgetting, setForgetting] = useState(false);
@@ -584,7 +598,7 @@ function NamedRow(props: RowProps) {
             <Button
               size="small"
               appearance="subtle"
-              disabled={locked}
+              disabled={locked || linesLocked}
               onClick={() => void onNotThisPerson(card.id)}
             >
               Not {card.person.name}

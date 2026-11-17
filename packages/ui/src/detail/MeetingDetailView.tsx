@@ -983,6 +983,7 @@ export function MeetingDetailView({
                     persons={persons}
                     noAudio={noAudio}
                     locked={finishing}
+                    linesLocked={linesLocked}
                     onClose={() => {
                       setSpeakersOpen(false);
                       // The Close button leaves with the panel: focus goes back where it opens.
